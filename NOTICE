@@ -1,6 +1,10 @@
-# Legal Disclaimer and Third-Party Notices
+# Legal Disclaimer, AI Notice, and Third-Party Notices
 
-## 1. Non-Affiliation and Trademark Disclaimer
+## 1. AI Notice
+
+This software project (`beeper-rs`) was built using **Gemini 4 Argon**.
+
+## 2. Non-Affiliation and Trademark Disclaimer
 
 `beeper-rs` is an independent, unofficial open-source project.
 `beeper-rs` is NOT affiliated with, endorsed by, sponsored by, approved by, or formally associated with Beeper Inc., Automattic Inc., Texts.com, or any of their subsidiaries or affiliates.
@@ -8,12 +12,12 @@
 All product names, logos, brands, trademarks, and registered trademarks (including "Beeper", "Automattic", "Texts", and third-party messaging network names) are the property of their respective owners.
 Use of these names, trademarks, and brands in this repository is strictly for identification and protocol interoperability purposes and does not imply endorsement or affiliation.
 
-## 2. Warranty and Liability Disclaimer
+## 3. Warranty and Liability Disclaimer
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
 IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-## 3. Third-Party Open-Source Assets
+## 4. Third-Party Open-Source Assets
 
 This repository distributes original software under the MIT License.
 This repository also includes third-party open-source assets under their respective licenses:

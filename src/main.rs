@@ -3,8 +3,8 @@ use beeper_rs::{
     config::{
         CentralConfig, APP_BUNDLE_ID, APP_NAME, APP_VERSION, DEFAULT_PAS_HOST, DEFAULT_PAS_PORT,
     },
-    platform::{build_tray_icon_rgba, current_desktop_data_dir},
-    server::{build_router, SharedStore},
+    platform::{build_tray_icon_rgba, current_desktop_data_dir, current_original_beeper_data_dir},
+    server::{build_router, serve_http, SharedStore},
     store::BeeperStore,
     ui::BeeperGuiApp,
 };
@@ -24,6 +24,7 @@ struct CliArgs {
     port: u16,
     profile: Option<String>,
     data_dir: Option<PathBuf>,
+    import_from: Option<PathBuf>,
     headless: bool,
     base_url: String,
     command: Command,
@@ -38,6 +39,7 @@ fn parse_args() -> CliArgs {
         .unwrap_or(DEFAULT_PAS_PORT);
     let mut profile: Option<String> = None;
     let mut data_dir: Option<PathBuf> = None;
+    let mut import_from: Option<PathBuf> = None;
     let mut headless = false;
     let mut base_url = format!("http://{DEFAULT_PAS_HOST}:{DEFAULT_PAS_PORT}");
     let mut command = Command::Gui;
@@ -63,6 +65,11 @@ fn parse_args() -> CliArgs {
                     args.next().expect("missing value for --data-dir"),
                 ))
             }
+            "--import-from" => {
+                import_from = Some(PathBuf::from(
+                    args.next().expect("missing value for --import-from"),
+                ))
+            }
             "--base-url" => base_url = args.next().expect("missing value for --base-url"),
             "--version" | "-V" => {
                 println!("{APP_NAME} {APP_VERSION}");
@@ -70,7 +77,7 @@ fn parse_args() -> CliArgs {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: beeper-rs [OPTIONS] [COMMAND]\n\nCommands:\n  serve\n  info\n  auth-extract\n\nOptions:\n  --host <HOST>\n  --port <PORT>\n  --profile <PROFILE>\n  --data-dir <DIR>\n  --base-url <URL>\n  --headless"
+                    "Usage: beeper-rs [OPTIONS] [COMMAND]\n\nCommands:\n  serve\n  info\n  auth-extract\n\nOptions:\n  --host <HOST>\n  --port <PORT>\n  --profile <PROFILE>\n  --data-dir <DIR>\n  --import-from <DIR>\n  --base-url <URL>\n  --headless"
                 );
                 std::process::exit(0);
             }
@@ -83,6 +90,7 @@ fn parse_args() -> CliArgs {
         port,
         profile,
         data_dir,
+        import_from,
         headless,
         base_url,
         command,
@@ -95,7 +103,11 @@ async fn main() {
     let data_dir = cli
         .data_dir
         .unwrap_or_else(|| current_desktop_data_dir(cli.profile.as_deref()));
-    let cfg = CentralConfig::new(data_dir.clone(), cli.host, cli.port, cli.profile);
+    let source_beeper_dir = cli
+        .import_from
+        .or_else(|| Some(current_original_beeper_data_dir(cli.profile.as_deref())));
+    let cfg = CentralConfig::new(data_dir.clone(), cli.host, cli.port, cli.profile)
+        .with_source_beeper_dir(source_beeper_dir);
 
     match cli.command {
         Command::Info => {
@@ -124,11 +136,11 @@ async fn main() {
 
     if cli.headless || matches!(cli.command, Command::Serve) {
         let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
-        axum::serve(listener, app_router).await.unwrap();
+        serve_http(listener, app_router).await;
     } else {
         tokio::spawn(async move {
             let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
-            axum::serve(listener, app_router).await.unwrap();
+            serve_http(listener, app_router).await;
         });
         let (icon_rgba, icon_w, icon_h) = {
             let st = store.read().unwrap();

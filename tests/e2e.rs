@@ -1,17 +1,21 @@
 use beeper_rs::{
     client::{extract_state_from_index_db, BeeperClient},
-    config::{CentralConfig, APP_BUNDLE_ID, DEFAULT_RECOVERY_CODE},
+    config::{
+        is_original_beeper_dir, CentralConfig, APP_BUNDLE_ID, DEFAULT_HOMESERVER,
+        DEFAULT_RECOVERY_CODE,
+    },
     css::ResolvedTheme,
     models::*,
     platform::{
-        build_tray_icon_rgba, generate_os_autostart_manifest, resolve_desktop_data_dir, OsKind,
-        SystemTrayState,
+        build_tray_icon_rgba, generate_os_autostart_manifest, resolve_desktop_data_dir,
+        resolve_original_beeper_data_dir, OsKind, SystemTrayState,
     },
-    server::{build_router, SharedStore},
+    server::{build_router, serve_http, SharedStore, StatusCode},
     store::BeeperStore,
     ui::{search_settings_catalog, BeeperGuiApp, InboxTab},
 };
 use eframe::egui;
+use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -21,7 +25,7 @@ async fn spawn_e2e_beeper_instance(
     profile_suffix: &str,
 ) -> (PathBuf, u16, SharedStore, BeeperClient) {
     let data_dir = std::env::temp_dir().join(format!(
-        "beeper_rs_e2e_{}_{}",
+        "BeeperRs_e2e_{}_{}",
         profile_suffix,
         std::process::id()
     ));
@@ -36,7 +40,7 @@ async fn spawn_e2e_beeper_instance(
     let router = build_router(store.clone());
 
     tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
+        serve_http(listener, router).await;
     });
 
     let client = BeeperClient::new(format!("http://127.0.0.1:{port}"), token);
@@ -49,18 +53,48 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let home = PathBuf::from("/Users/alex");
     assert_eq!(
         resolve_desktop_data_dir(OsKind::MacOs, None, &env_vars, &home),
-        PathBuf::from("/Users/alex/Library/Application Support/BeeperTexts")
+        PathBuf::from("/Users/alex/Library/Application Support/BeeperRs")
     );
     assert_eq!(
         resolve_desktop_data_dir(OsKind::MacOs, Some("dev"), &env_vars, &home),
-        PathBuf::from("/Users/alex/Library/Application Support/BeeperTexts-dev")
+        PathBuf::from("/Users/alex/Library/Application Support/BeeperRs-dev")
     );
+    assert_eq!(
+        resolve_original_beeper_data_dir(OsKind::MacOs, None, &env_vars, &home),
+        PathBuf::from("/Users/alex/Library/Application Support/BeeperTexts")
+    );
+    assert!(is_original_beeper_dir(&PathBuf::from(
+        "/Users/alex/Library/Application Support/BeeperTexts"
+    )));
+    assert!(is_original_beeper_dir(&PathBuf::from(
+        "/Users/alex/Library/Application Support/BeeperTexts-dev"
+    )));
+    assert!(!is_original_beeper_dir(&PathBuf::from(
+        "/Users/alex/Library/Application Support/BeeperRs"
+    )));
+    let blocked_orig = std::panic::catch_unwind(|| {
+        CentralConfig::new(
+            PathBuf::from("/Users/alex/Library/Application Support/BeeperTexts"),
+            "127.0.0.1".to_string(),
+            23373,
+            None,
+        )
+    });
+    assert!(
+        blocked_orig.is_err(),
+        "CentralConfig::new must refuse original BeeperTexts path"
+    );
+
     env_vars.insert(
         "APPDATA".to_string(),
         "C:\\Users\\alex\\AppData\\Roaming".to_string(),
     );
     assert_eq!(
         resolve_desktop_data_dir(OsKind::Windows, None, &env_vars, &home),
+        PathBuf::from("C:\\Users\\alex\\AppData\\Roaming/BeeperRs")
+    );
+    assert_eq!(
+        resolve_original_beeper_data_dir(OsKind::Windows, None, &env_vars, &home),
         PathBuf::from("C:\\Users\\alex\\AppData\\Roaming/BeeperTexts")
     );
     env_vars.insert(
@@ -69,8 +103,115 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     );
     assert_eq!(
         resolve_desktop_data_dir(OsKind::Linux, Some("nightly"), &env_vars, &home),
+        PathBuf::from("/home/alex/.config/BeeperRs-nightly")
+    );
+    assert_eq!(
+        resolve_original_beeper_data_dir(OsKind::Linux, Some("nightly"), &env_vars, &home),
         PathBuf::from("/home/alex/.config/BeeperTexts-nightly")
     );
+
+    let orig_dir = std::env::temp_dir().join(format!("BeeperTexts-orig_{}", std::process::id()));
+    let isolated_copy_dir =
+        std::env::temp_dir().join(format!("BeeperRs-isolated_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&orig_dir);
+    let _ = std::fs::remove_dir_all(&isolated_copy_dir);
+    std::fs::create_dir_all(orig_dir.join("media")).unwrap();
+    std::fs::write(orig_dir.join("SingletonLock"), b"locked_by_electron").unwrap();
+    std::fs::write(
+        orig_dir.join("media").join("orig_sample.bin"),
+        b"ORIG_MEDIA",
+    )
+    .unwrap();
+    {
+        let orig_conn = Connection::open(orig_dir.join("index.db")).unwrap();
+        orig_conn
+            .execute_batch("CREATE TABLE key_values (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            .unwrap();
+        let orig_state = BeeperStateRecord {
+            access_token: "bp_tok_from_original_beeper".to_string(),
+            device_id: "ORIG_DEV_01".to_string(),
+            user_id: "@imported_from_original:beeper.com".to_string(),
+            homeserver: DEFAULT_HOMESERVER.to_string(),
+            first_sync_done: true,
+            initialized: true,
+            secret_storage: true,
+            cross_signing: true,
+            verified: true,
+            key_backup: true,
+            has_backed_up_code: true,
+            secrets: BeeperStateSecrets {
+                master_key: "mk_orig".to_string(),
+                self_signing_key: "ssk_orig".to_string(),
+                user_signing_key: "usk_orig".to_string(),
+                megolm_backup_key: "mbk_orig".to_string(),
+                recovery_code: DEFAULT_RECOVERY_CODE.to_string(),
+            },
+        };
+        let orig_bridges = vec![BridgeAccountInfo {
+            account_id: "acc_whatsapp".to_string(),
+            bridge_id: "whatsapp".to_string(),
+            bridge_type: "whatsapp".to_string(),
+            is_running: true,
+            login_id: Some("login_wa_orig".to_string()),
+            mode: Some("on_device".to_string()),
+            network_name: "WhatsApp".to_string(),
+            state: "CONNECTED".to_string(),
+        }];
+        orig_conn
+            .execute(
+                "INSERT INTO key_values (key, value) VALUES (?1, ?2)",
+                params!["beeperState", serde_json::to_string(&orig_state).unwrap()],
+            )
+            .unwrap();
+        orig_conn
+            .execute(
+                "INSERT INTO key_values (key, value) VALUES (?1, ?2)",
+                params![
+                    "bridgeAccounts",
+                    serde_json::to_string(&orig_bridges).unwrap()
+                ],
+            )
+            .unwrap();
+    }
+    let orig_db_snapshot = std::fs::read(orig_dir.join("index.db")).unwrap();
+
+    let (ext_orig_state, ext_orig_bridges) = extract_state_from_index_db(&orig_dir);
+    assert_eq!(ext_orig_state.user_id, "@imported_from_original:beeper.com");
+    assert_eq!(ext_orig_bridges.len(), 1);
+
+    let isolated_cfg = CentralConfig::new(
+        isolated_copy_dir.clone(),
+        "127.0.0.1".to_string(),
+        23379,
+        None,
+    )
+    .with_source_beeper_dir(Some(orig_dir.clone()));
+    let mut isolated_store = BeeperStore::from_config(isolated_cfg);
+    assert_eq!(isolated_store.copied_files_from_source, 2);
+    assert!(!isolated_copy_dir.join("SingletonLock").exists());
+    assert!(isolated_copy_dir
+        .join("media")
+        .join("orig_sample.bin")
+        .exists());
+    assert_eq!(
+        isolated_store.beeper_state.user_id,
+        "@imported_from_original:beeper.com"
+    );
+    isolated_store
+        .send_message(
+            "!wa_eric:beeper.com",
+            Some("Mutating isolated copy only".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+    let orig_db_after = std::fs::read(orig_dir.join("index.db")).unwrap();
+    assert_eq!(
+        orig_db_snapshot, orig_db_after,
+        "original BeeperTexts/index.db must never be modified"
+    );
+    let _ = std::fs::remove_dir_all(&orig_dir);
+    let _ = std::fs::remove_dir_all(&isolated_copy_dir);
 
     let mac_manifest = generate_os_autostart_manifest(
         OsKind::MacOs,
@@ -142,16 +283,16 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let (st1, _) = client
         .patch_chat_draft("!wa_eric:beeper.com", Some("First draft text"))
         .await;
-    assert_eq!(st1, reqwest::StatusCode::OK);
+    assert_eq!(st1, StatusCode::OK);
     let (st2, _) = client
         .patch_chat_draft(
             "!wa_eric:beeper.com",
             Some("Overwrite attempt without clear"),
         )
         .await;
-    assert_eq!(st2, reqwest::StatusCode::CONFLICT);
+    assert_eq!(st2, StatusCode::CONFLICT);
     let (st3, cleared_chat) = client.patch_chat_draft("!wa_eric:beeper.com", None).await;
-    assert_eq!(st3, reqwest::StatusCode::OK);
+    assert_eq!(st3, StatusCode::OK);
     assert!(cleared_chat.get("draft").is_none() || cleared_chat["draft"].is_null());
 
     let merged_resp = client
@@ -223,7 +364,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         .await;
     let mxc_url = uploaded["srcURL"].as_str().unwrap();
     let (range_status, slice) = client.serve_asset_range(mxc_url, Some("bytes=10-15")).await;
-    assert_eq!(range_status, reqwest::StatusCode::PARTIAL_CONTENT);
+    assert_eq!(range_status, StatusCode::PARTIAL_CONTENT);
     assert_eq!(&slice, b"ABCDEF");
 
     let search_res = client.search_messages("edited", None).await;

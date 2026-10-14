@@ -1,25 +1,35 @@
-use crate::config::url_encode;
-use crate::models::*;
-use base64::{
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
-    Engine as _,
+use crate::config::{
+    base64_encode_standard, base64_encode_url_nopad, copy_beeper_data_to_isolated_dir,
+    is_original_beeper_dir, sha256, url_encode,
 };
-use futures_util::{SinkExt, StreamExt};
+use crate::models::*;
+use crate::server::{read_ws_frame, write_ws_frame, StatusCode};
 use rusqlite::Connection;
+use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::path::Path;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as TungsteniteMsg};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 
 pub fn extract_state_from_index_db(data_dir: &Path) -> (BeeperStateRecord, Vec<BridgeAccountInfo>) {
-    let db_path = data_dir.join("index.db");
+    let working_dir = if is_original_beeper_dir(data_dir) {
+        let isolated =
+            std::env::temp_dir().join(format!("beeper_rs_isolated_extract_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&isolated);
+        copy_beeper_data_to_isolated_dir(data_dir, &isolated);
+        isolated
+    } else {
+        data_dir.to_path_buf()
+    };
+
+    let db_path = working_dir.join("index.db");
     assert!(
         db_path.exists(),
-        "BeeperTexts/index.db does not exist at {:?}",
+        "isolated index.db does not exist at {:?}",
         db_path
     );
     let conn = Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .expect("open index.db readonly");
+        .expect("open isolated index.db readonly");
 
     let state_raw: String = conn
         .query_row(
@@ -47,96 +57,190 @@ pub fn extract_state_from_index_db(data_dir: &Path) -> (BeeperStateRecord, Vec<B
 #[derive(Clone)]
 pub struct BeeperClient {
     pub base_url: String,
+    pub host_port: String,
     pub access_token: String,
-    http: reqwest::Client,
 }
 
 impl BeeperClient {
     pub fn new(base_url: impl Into<String>, access_token: impl Into<String>) -> Self {
         let base = base_url.into().trim_end_matches('/').to_string();
         assert!(!base.is_empty(), "base_url must not be empty");
-        let http = reqwest::Client::builder()
-            .no_proxy()
-            .build()
-            .expect("build reqwest client");
+        let stripped = base
+            .strip_prefix("http://")
+            .or_else(|| base.strip_prefix("https://"))
+            .unwrap_or(&base);
+        let host_port = stripped.split('/').next().unwrap_or(stripped).to_string();
         Self {
             base_url: base,
+            host_port,
             access_token: access_token.into(),
-            http,
         }
     }
 
-    pub async fn info(&self) -> InfoResponse {
-        let resp = self
-            .http
-            .get(format!("{}/v1/info", self.base_url))
-            .send()
+    async fn raw_request(
+        &self,
+        method: &str,
+        path_and_query: &str,
+        extra_headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+    ) -> (StatusCode, Vec<u8>) {
+        let mut stream = TcpStream::connect(&self.host_port)
             .await
-            .expect("GET /v1/info");
-        assert_eq!(resp.status(), reqwest::StatusCode::OK);
-        resp.json().await.expect("parse InfoResponse")
+            .expect("connect to Beeper server");
+        let body_bytes = body.unwrap_or(&[]);
+        let mut req = format!(
+            "{method} {path_and_query} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n",
+            self.host_port,
+            body_bytes.len()
+        );
+        if !self.access_token.is_empty() {
+            req.push_str(&format!("Authorization: Bearer {}\r\n", self.access_token));
+        }
+        if body.is_some() {
+            req.push_str("Content-Type: application/json\r\n");
+        }
+        for (k, v) in extra_headers {
+            req.push_str(&format!("{k}: {v}\r\n"));
+        }
+        req.push_str("\r\n");
+        stream
+            .write_all(req.as_bytes())
+            .await
+            .expect("write HTTP request header");
+        if !body_bytes.is_empty() {
+            stream
+                .write_all(body_bytes)
+                .await
+                .expect("write HTTP request body");
+        }
+
+        let mut buf = Vec::with_capacity(4096);
+        let mut tmp = [0u8; 4096];
+        let hdr_end = loop {
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos + 4;
+            }
+            let n = stream.read(&mut tmp).await.expect("read HTTP response");
+            assert!(n > 0, "unexpected EOF reading HTTP response header");
+            buf.extend_from_slice(&tmp[..n]);
+        };
+        let hdr_str = std::str::from_utf8(&buf[..hdr_end - 4]).expect("HTTP response header utf8");
+        let mut lines = hdr_str.lines();
+        let status_line = lines.next().expect("HTTP status line");
+        let status_code: u16 = status_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .expect("HTTP status code");
+        let mut content_len = 0usize;
+        for line in lines {
+            if let Some((k, v)) = line.split_once(':') {
+                if k.trim().eq_ignore_ascii_case("content-length") {
+                    content_len = v.trim().parse().unwrap_or(0);
+                }
+            }
+        }
+        while buf.len() - hdr_end < content_len {
+            let n = stream
+                .read(&mut tmp)
+                .await
+                .expect("read HTTP response body");
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..n]);
+        }
+        (
+            StatusCode(status_code),
+            buf[hdr_end..hdr_end + content_len].to_vec(),
+        )
+    }
+
+    async fn request_json<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        path_and_query: &str,
+        extra_headers: &[(&str, &str)],
+        json_body: Option<&Value>,
+    ) -> T {
+        let body_vec = json_body.map(|v| serde_json::to_vec(v).expect("serialize request JSON"));
+        let (_, resp_body) = self
+            .raw_request(method, path_and_query, extra_headers, body_vec.as_deref())
+            .await;
+        serde_json::from_slice(&resp_body).expect("parse JSON response")
+    }
+
+    fn build_query_path(path: &str, params: &[(&str, &str)]) -> String {
+        if params.is_empty() {
+            return path.to_string();
+        }
+        let mut out = format!("{path}?");
+        for (i, (k, v)) in params.iter().enumerate() {
+            if i > 0 {
+                out.push('&');
+            }
+            out.push_str(&url_encode(k));
+            out.push('=');
+            out.push_str(&url_encode(v));
+        }
+        out
+    }
+
+    pub async fn info(&self) -> InfoResponse {
+        let (status, bytes) = self.raw_request("GET", "/v1/info", &[], None).await;
+        assert_eq!(status, StatusCode::OK);
+        serde_json::from_slice(&bytes).expect("parse InfoResponse")
     }
 
     pub async fn oauth_pkce_login(&mut self, client_name: &str, code_verifier: &str) -> String {
         assert!(code_verifier.len() >= 16, "PKCE code_verifier too short");
         let reg_resp: Value = self
-            .http
-            .post(format!("{}/oauth/register", self.base_url))
-            .json(&json!({
-                "client_name": client_name,
-                "redirect_uris": ["http://127.0.0.1:0/callback"]
-            }))
-            .send()
-            .await
-            .expect("POST /oauth/register")
-            .json()
-            .await
-            .expect("parse client reg");
+            .request_json(
+                "POST",
+                "/oauth/register",
+                &[],
+                Some(&json!({
+                    "client_name": client_name,
+                    "redirect_uris": ["http://127.0.0.1:0/callback"]
+                })),
+            )
+            .await;
         let client_id = reg_resp["client_id"]
             .as_str()
             .expect("client_id")
             .to_string();
 
-        let mut hasher = Sha256::new();
-        hasher.update(code_verifier.as_bytes());
-        let challenge = URL_SAFE_NO_PAD.encode(hasher.finalize());
-
-        let auth_resp: Value = self
-            .http
-            .get(format!("{}/oauth/authorize", self.base_url))
-            .header("Accept", "application/json")
-            .query(&[
+        let challenge = base64_encode_url_nopad(&sha256(code_verifier.as_bytes()));
+        let auth_path = Self::build_query_path(
+            "/oauth/authorize",
+            &[
                 ("client_id", client_id.as_str()),
                 ("redirect_uri", "http://127.0.0.1:0/callback"),
                 ("response_type", "code"),
                 ("code_challenge", challenge.as_str()),
                 ("code_challenge_method", "S256"),
                 ("state", "pkce_state_1"),
-            ])
-            .send()
-            .await
-            .expect("GET /oauth/authorize")
-            .json()
-            .await
-            .expect("parse auth code");
+            ],
+        );
+        let auth_resp: Value = self
+            .request_json("GET", &auth_path, &[("Accept", "application/json")], None)
+            .await;
         let code = auth_resp["code"].as_str().expect("auth code").to_string();
 
         let tok_resp: Value = self
-            .http
-            .post(format!("{}/oauth/token", self.base_url))
-            .json(&json!({
-                "grant_type": "authorization_code",
-                "client_id": client_id,
-                "code": code,
-                "redirect_uri": "http://127.0.0.1:0/callback",
-                "code_verifier": code_verifier
-            }))
-            .send()
-            .await
-            .expect("POST /oauth/token")
-            .json()
-            .await
-            .expect("parse token response");
+            .request_json(
+                "POST",
+                "/oauth/token",
+                &[],
+                Some(&json!({
+                    "grant_type": "authorization_code",
+                    "client_id": client_id,
+                    "code": code,
+                    "redirect_uri": "http://127.0.0.1:0/callback",
+                    "code_verifier": code_verifier
+                })),
+            )
+            .await;
         let token = tok_resp["access_token"]
             .as_str()
             .expect("access_token present")
@@ -147,113 +251,81 @@ impl BeeperClient {
 
     pub async fn setup_email_login(&self, email: &str, code: &str) -> SetupStatusResponse {
         let _start: SetupStatusResponse = self
-            .http
-            .post(format!("{}/v1/app/setup/start", self.base_url))
-            .bearer_auth(&self.access_token)
-            .json(&json!({ "reset": true, "env": "PRODUCTION" }))
-            .send()
-            .await
-            .expect("setup start")
-            .json()
-            .await
-            .expect("parse setup start");
+            .request_json(
+                "POST",
+                "/v1/app/setup/start",
+                &[],
+                Some(&json!({ "reset": true, "env": "PRODUCTION" })),
+            )
+            .await;
 
         let email_step: SetupStatusResponse = self
-            .http
-            .post(format!("{}/v1/app/setup/email", self.base_url))
-            .bearer_auth(&self.access_token)
-            .json(&json!({ "email": email, "env": "PRODUCTION" }))
-            .send()
-            .await
-            .expect("setup email")
-            .json()
-            .await
-            .expect("parse setup email");
+            .request_json(
+                "POST",
+                "/v1/app/setup/email",
+                &[],
+                Some(&json!({ "email": email, "env": "PRODUCTION" })),
+            )
+            .await;
         let login_token = email_step
             .setup_flow
             .as_ref()
             .and_then(|f| f.login_token.clone())
             .expect("login_token from email step");
 
-        self.http
-            .post(format!("{}/v1/app/setup/response", self.base_url))
-            .bearer_auth(&self.access_token)
-            .json(&json!({
+        self.request_json(
+            "POST",
+            "/v1/app/setup/response",
+            &[],
+            Some(&json!({
                 "code": code,
                 "email": email,
                 "loginToken": login_token,
                 "env": "PRODUCTION"
-            }))
-            .send()
-            .await
-            .expect("setup response")
-            .json()
-            .await
-            .expect("parse setup response")
+            })),
+        )
+        .await
     }
 
     pub async fn verify_recovery_key(&self, recovery_key: &str) -> Value {
-        self.http
-            .post(format!(
-                "{}/v1/app/setup/verification/recovery-key",
-                self.base_url
-            ))
-            .bearer_auth(&self.access_token)
-            .json(&json!({ "recoveryKey": recovery_key }))
-            .send()
-            .await
-            .expect("recovery key verify")
-            .json()
-            .await
-            .expect("parse recovery key verify")
+        self.request_json(
+            "POST",
+            "/v1/app/setup/verification/recovery-key",
+            &[],
+            Some(&json!({ "recoveryKey": recovery_key })),
+        )
+        .await
     }
 
     pub async fn verify_device_sas(&self) -> Value {
         let started: Value = self
-            .http
-            .post(format!("{}/v1/app/setup/verifications", self.base_url))
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .expect("start verification")
-            .json()
-            .await
-            .expect("parse start verification");
+            .request_json("POST", "/v1/app/setup/verifications", &[], None)
+            .await;
         let vid = started["verification"]["verificationID"]
             .as_str()
             .expect("verificationID")
             .to_string();
 
         let sas_started: Value = self
-            .http
-            .post(format!(
-                "{}/v1/app/setup/verifications/{vid}/sas/start",
-                self.base_url
-            ))
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .expect("sas start")
-            .json()
-            .await
-            .expect("parse sas start");
+            .request_json(
+                "POST",
+                &format!("/v1/app/setup/verifications/{vid}/sas/start"),
+                &[],
+                None,
+            )
+            .await;
         assert!(!sas_started["verification"]["sas"]["emojis"]
             .as_array()
             .expect("emojis array")
             .is_empty());
 
-        self.http
-            .post(format!(
-                "{}/v1/app/setup/verifications/{vid}/sas/confirm",
-                self.base_url
-            ))
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .expect("sas confirm")
-            .json()
-            .await
-            .expect("parse sas confirm")
+        self.request_json(
+            "POST",
+            &format!("/v1/app/setup/verifications/{vid}/sas/confirm"),
+            &[],
+            None,
+        )
+        .await
     }
 
     pub async fn connect_bridge_session(
@@ -263,57 +335,32 @@ impl BeeperClient {
         mode: &str,
     ) -> BridgeLoginSession {
         let sess: BridgeLoginSession = self
-            .http
-            .post(format!(
-                "{}/v1/bridges/{bridge_id}/login-sessions",
-                self.base_url
-            ))
-            .bearer_auth(&self.access_token)
-            .json(&json!({ "flowID": flow_id }))
-            .send()
-            .await
-            .expect("start bridge session")
-            .json()
-            .await
-            .expect("parse bridge session");
+            .request_json(
+                "POST",
+                &format!("/v1/bridges/{bridge_id}/login-sessions"),
+                &[],
+                Some(&json!({ "flowID": flow_id })),
+            )
+            .await;
 
-        self.http
-            .post(format!(
-                "{}/v1/bridges/{bridge_id}/login-sessions/{}/steps/{}",
-                self.base_url, sess.login_session_id, sess.step.step_id
-            ))
-            .bearer_auth(&self.access_token)
-            .json(&json!({ "mode": mode, "inputs": { "username": "+14155550199", "code": "994812" } }))
-            .send()
-            .await
-            .expect("submit bridge step")
-            .json()
-            .await
-            .expect("parse completed bridge session")
+        self.request_json(
+            "POST",
+            &format!(
+                "/v1/bridges/{bridge_id}/login-sessions/{}/steps/{}",
+                sess.login_session_id, sess.step.step_id
+            ),
+            &[],
+            Some(&json!({ "mode": mode, "inputs": { "username": "+14155550199", "code": "994812" } })),
+        )
+        .await
     }
 
     pub async fn list_accounts(&self) -> Vec<Account> {
-        self.http
-            .get(format!("{}/v1/accounts", self.base_url))
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .expect("GET /v1/accounts")
-            .json()
-            .await
-            .expect("parse accounts")
+        self.request_json("GET", "/v1/accounts", &[], None).await
     }
 
     pub async fn list_chats(&self) -> CursorPage<Chat> {
-        self.http
-            .get(format!("{}/v1/chats", self.base_url))
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .expect("GET /v1/chats")
-            .json()
-            .await
-            .expect("parse chats page")
+        self.request_json("GET", "/v1/chats", &[], None).await
     }
 
     pub async fn merge_chats(
@@ -322,65 +369,52 @@ impl BeeperClient {
         chat_ids: Vec<String>,
         default_chat_id: Option<String>,
     ) -> Value {
-        self.http
-            .post(format!("{}/v1/chats", self.base_url))
-            .bearer_auth(&self.access_token)
-            .json(&json!({
+        self.request_json(
+            "POST",
+            "/v1/chats",
+            &[],
+            Some(&json!({
                 "mode": "merge",
                 "title": title,
                 "merge": {
                     "chatIDs": chat_ids,
                     "defaultChatID": default_chat_id
                 }
-            }))
-            .send()
-            .await
-            .expect("POST /v1/chats merge")
-            .json()
-            .await
-            .expect("parse merge response")
+            })),
+        )
+        .await
     }
 
     pub async fn patch_chat_draft(
         &self,
         chat_id: &str,
         draft_text: Option<&str>,
-    ) -> (reqwest::StatusCode, Value) {
+    ) -> (StatusCode, Value) {
         let payload = match draft_text {
             Some(t) => json!({ "draft": { "text": t } }),
             None => json!({ "draft": null }),
         };
-        let resp = self
-            .http
-            .patch(format!(
-                "{}/v1/chats/{}",
-                self.base_url,
-                url_encode(chat_id)
-            ))
-            .bearer_auth(&self.access_token)
-            .json(&payload)
-            .send()
-            .await
-            .expect("PATCH /v1/chats/:id");
-        let status = resp.status();
-        let val: Value = resp.json().await.expect("parse patch response");
+        let body = serde_json::to_vec(&payload).unwrap();
+        let (status, resp_bytes) = self
+            .raw_request(
+                "PATCH",
+                &format!("/v1/chats/{}", url_encode(chat_id)),
+                &[],
+                Some(&body),
+            )
+            .await;
+        let val: Value = serde_json::from_slice(&resp_bytes).expect("parse patch response");
         (status, val)
     }
 
     pub async fn list_messages(&self, chat_id: &str) -> CursorPage<Message> {
-        self.http
-            .get(format!(
-                "{}/v1/chats/{}/messages",
-                self.base_url,
-                url_encode(chat_id)
-            ))
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .expect("GET /v1/chats/:id/messages")
-            .json()
-            .await
-            .expect("parse messages page")
+        self.request_json(
+            "GET",
+            &format!("/v1/chats/{}/messages", url_encode(chat_id)),
+            &[],
+            None,
+        )
+        .await
     }
 
     pub async fn send_message(
@@ -400,73 +434,55 @@ impl BeeperClient {
         if let Some(u) = upload_id {
             body["attachment"] = json!({ "uploadID": u });
         }
-        self.http
-            .post(format!(
-                "{}/v1/chats/{}/messages",
-                self.base_url,
-                url_encode(chat_id)
-            ))
-            .bearer_auth(&self.access_token)
-            .json(&body)
-            .send()
-            .await
-            .expect("POST /v1/chats/:id/messages")
-            .json()
-            .await
-            .expect("parse send response")
+        self.request_json(
+            "POST",
+            &format!("/v1/chats/{}/messages", url_encode(chat_id)),
+            &[],
+            Some(&body),
+        )
+        .await
     }
 
     pub async fn edit_message(&self, chat_id: &str, message_id: &str, text: &str) -> Value {
-        self.http
-            .put(format!(
-                "{}/v1/chats/{}/messages/{}",
-                self.base_url,
+        self.request_json(
+            "PUT",
+            &format!(
+                "/v1/chats/{}/messages/{}",
                 url_encode(chat_id),
                 url_encode(message_id)
-            ))
-            .bearer_auth(&self.access_token)
-            .json(&json!({ "text": text }))
-            .send()
-            .await
-            .expect("PUT /v1/chats/:id/messages/:mid")
-            .json()
-            .await
-            .expect("parse edit response")
+            ),
+            &[],
+            Some(&json!({ "text": text })),
+        )
+        .await
     }
 
     pub async fn delete_message(&self, chat_id: &str, message_id: &str) -> Value {
-        self.http
-            .delete(format!(
-                "{}/v1/chats/{}/messages/{}",
-                self.base_url,
+        self.request_json(
+            "DELETE",
+            &format!(
+                "/v1/chats/{}/messages/{}",
                 url_encode(chat_id),
                 url_encode(message_id)
-            ))
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .expect("DELETE /v1/chats/:id/messages/:mid")
-            .json()
-            .await
-            .expect("parse delete response")
+            ),
+            &[],
+            None,
+        )
+        .await
     }
 
     pub async fn add_reaction(&self, chat_id: &str, message_id: &str, reaction_key: &str) -> Value {
-        self.http
-            .post(format!(
-                "{}/v1/chats/{}/messages/{}/reactions",
-                self.base_url,
+        self.request_json(
+            "POST",
+            &format!(
+                "/v1/chats/{}/messages/{}/reactions",
                 url_encode(chat_id),
                 url_encode(message_id)
-            ))
-            .bearer_auth(&self.access_token)
-            .json(&json!({ "reactionKey": reaction_key }))
-            .send()
-            .await
-            .expect("POST reaction")
-            .json()
-            .await
-            .expect("parse reaction add")
+            ),
+            &[],
+            Some(&json!({ "reactionKey": reaction_key })),
+        )
+        .await
     }
 
     pub async fn remove_reaction(
@@ -475,21 +491,18 @@ impl BeeperClient {
         message_id: &str,
         reaction_key: &str,
     ) -> Value {
-        self.http
-            .delete(format!(
-                "{}/v1/chats/{}/messages/{}/reactions/{}",
-                self.base_url,
+        self.request_json(
+            "DELETE",
+            &format!(
+                "/v1/chats/{}/messages/{}/reactions/{}",
                 url_encode(chat_id),
                 url_encode(message_id),
                 url_encode(reaction_key)
-            ))
-            .bearer_auth(&self.access_token)
-            .send()
-            .await
-            .expect("DELETE reaction")
-            .json()
-            .await
-            .expect("parse reaction delete")
+            ),
+            &[],
+            None,
+        )
+        .await
     }
 
     pub async fn upload_asset_base64(
@@ -498,40 +511,27 @@ impl BeeperClient {
         mime_type: &str,
         bytes: &[u8],
     ) -> Value {
-        let b64 = STANDARD.encode(bytes);
-        self.http
-            .post(format!("{}/v1/assets/upload/base64", self.base_url))
-            .bearer_auth(&self.access_token)
-            .json(&json!({
+        let b64 = base64_encode_standard(bytes);
+        self.request_json(
+            "POST",
+            "/v1/assets/upload/base64",
+            &[],
+            Some(&json!({
                 "content": b64,
                 "fileName": file_name,
                 "mimeType": mime_type
-            }))
-            .send()
-            .await
-            .expect("POST /v1/assets/upload/base64")
-            .json()
-            .await
-            .expect("parse upload response")
+            })),
+        )
+        .await
     }
 
-    pub async fn serve_asset_range(
-        &self,
-        url: &str,
-        range: Option<&str>,
-    ) -> (reqwest::StatusCode, Vec<u8>) {
-        let mut req = self
-            .http
-            .get(format!("{}/v1/assets/serve", self.base_url))
-            .bearer_auth(&self.access_token)
-            .query(&[("url", url)]);
+    pub async fn serve_asset_range(&self, url: &str, range: Option<&str>) -> (StatusCode, Vec<u8>) {
+        let path = Self::build_query_path("/v1/assets/serve", &[("url", url)]);
+        let mut hdrs = Vec::new();
         if let Some(r) = range {
-            req = req.header("Range", r);
+            hdrs.push(("Range", r));
         }
-        let resp = req.send().await.expect("GET /v1/assets/serve");
-        let status = resp.status();
-        let bytes = resp.bytes().await.expect("asset bytes").to_vec();
-        (status, bytes)
+        self.raw_request("GET", &path, &hdrs, None).await
     }
 
     pub async fn search_messages(
@@ -543,60 +543,67 @@ impl BeeperClient {
         if let Some(mt) = media_types {
             q.push(("mediaTypes", mt));
         }
-        self.http
-            .get(format!("{}/v1/messages/search", self.base_url))
-            .bearer_auth(&self.access_token)
-            .query(&q)
-            .send()
-            .await
-            .expect("GET /v1/messages/search")
-            .json()
-            .await
-            .expect("parse message search")
+        let path = Self::build_query_path("/v1/messages/search", &q);
+        self.request_json("GET", &path, &[], None).await
     }
 
     pub async fn unified_search(&self, query: &str) -> Value {
-        self.http
-            .get(format!("{}/v1/search", self.base_url))
-            .bearer_auth(&self.access_token)
-            .query(&[("query", query)])
-            .send()
-            .await
-            .expect("GET /v1/search")
-            .json()
-            .await
-            .expect("parse unified search")
+        let path = Self::build_query_path("/v1/search", &[("query", query)]);
+        self.request_json("GET", &path, &[], None).await
     }
 
     pub async fn connect_ws(
         &self,
         chat_ids: Vec<String>,
     ) -> tokio::sync::mpsc::UnboundedReceiver<WsEvent> {
-        let ws_url = self
-            .base_url
-            .replacen("http://", "ws://", 1)
-            .replacen("https://", "wss://", 1)
-            + "/v1/ws";
-        let (ws_stream, _) = connect_async(&ws_url).await.expect("connect to /v1/ws");
-        let (mut write, mut read) = ws_stream.split();
+        let mut stream = TcpStream::connect(&self.host_port)
+            .await
+            .expect("connect TCP to /v1/ws");
+        let handshake = format!(
+            "GET /v1/ws HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            self.host_port
+        );
+        stream
+            .write_all(handshake.as_bytes())
+            .await
+            .expect("send WS upgrade request");
+
+        let mut hdr_buf = Vec::with_capacity(256);
+        let mut one = [0u8; 1];
+        while !hdr_buf.ends_with(b"\r\n\r\n") {
+            stream
+                .read_exact(&mut one)
+                .await
+                .expect("read WS upgrade header byte");
+            hdr_buf.push(one[0]);
+        }
+        let hdr_str = std::str::from_utf8(&hdr_buf).expect("WS handshake utf8");
+        assert!(
+            hdr_str.starts_with("HTTP/1.1 101"),
+            "expected 101 Switching Protocols, got: {hdr_str}"
+        );
 
         let sub_msg = json!({
             "type": "subscriptions.set",
             "chatIDs": chat_ids
         })
         .to_string();
-        write
-            .send(TungsteniteMsg::Text(sub_msg))
+        write_ws_frame(&mut stream, sub_msg.as_bytes(), true)
             .await
             .expect("send subscriptions.set");
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
-            let _keep_write = write;
-            while let Some(Ok(msg)) = read.next().await {
-                if let TungsteniteMsg::Text(txt) = msg {
-                    if let Ok(ev) = serde_json::from_str::<WsEvent>(&txt) {
-                        let _ = tx.send(ev);
+            let mut reader = BufReader::new(stream);
+            while let Some((opcode, payload)) = read_ws_frame(&mut reader).await {
+                if opcode == 0x08 {
+                    break;
+                }
+                if opcode == 0x01 {
+                    if let Ok(txt) = std::str::from_utf8(&payload) {
+                        if let Ok(ev) = serde_json::from_str::<WsEvent>(txt) {
+                            let _ = tx.send(ev);
+                        }
                     }
                 }
             }
