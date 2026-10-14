@@ -51,7 +51,7 @@ cargo run -- serve --host 127.0.0.1 --port 23373
 In a second terminal, query the server with the CLI or `curl`:
 
 ```bash
-cargo run -- info --base-url http://127.0.0.1:23373
+cargo run -- info --host 127.0.0.1 --port 23373
 curl -s http://127.0.0.1:23373/v1/info | jq
 curl -s -H "Authorization: Bearer bp_tok_beeper_rs_default_secret" http://127.0.0.1:23373/v1/accounts | jq
 curl -s -H "Authorization: Bearer bp_tok_beeper_rs_default_secret" http://127.0.0.1:23373/v1/chats | jq
