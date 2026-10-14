@@ -16,10 +16,10 @@ use beeper_core::config::{
 use beeper_core::import::has_beeper_data;
 use beeper_core::models::*;
 use beeper_core::platform::{
-    current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind, SystemTrayState,
+    build_tray_icon_rgba, current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind,
+    SystemTrayState,
 };
 use beeper_core::store::{BeeperStore, SettingCatalogEntry, SharedStore, NOTE_CHAT_ID, SETTINGS_CATALOG};
-use beeper_core::theme::ResolvedTheme;
 use iced::font::Weight;
 use iced::gradient::Linear;
 use iced::keyboard::{self, key::Named, Key, Modifiers};
@@ -155,6 +155,7 @@ pub enum UiMessage {
     ToggleDnd,
     CycleTheme,
     SelectTheme(ThemeChoice),
+    SystemTheme(iced::theme::Mode),
     SelectLanguage(String),
     SelectAfterArchive(&'static str),
     SelectRemindLater(&'static str),
@@ -419,6 +420,43 @@ fn plus_pill<'a>(p: &Palette) -> El<'a> {
         .into()
 }
 
+const THEME_WINDOW: &str = r##"<rect x="10" y="7" width="76" height="47" rx="4" fill="WIN"/><circle cx="15" cy="12" r="1.4" fill="#ff5f57"/><circle cx="19.5" cy="12" r="1.4" fill="#febc2e"/><circle cx="24" cy="12" r="1.4" fill="#28c840"/><rect x="36" y="16" width="24" height="3" rx="1.5" fill="LINE"/><rect x="14" y="23" width="68" height="2" rx="1" fill="LINE"/><rect x="14" y="28" width="68" height="11" rx="2.5" fill="#0d4ffb"/><circle cx="19.5" cy="33.5" r="3" fill="#fff"/><rect x="25" y="31" width="28" height="1.8" rx=".9" fill="#fff"/><rect x="25" y="34.6" width="48" height="1.5" rx=".75" fill="#bcd2ff"/><rect x="14" y="43" width="68" height="2" rx="1" fill="LINE"/><rect x="14" y="48" width="48" height="2" rx="1" fill="LINE"/>"##;
+
+static THEME_ART: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock::new(|| {
+    let light = THEME_WINDOW.replace("WIN", "#f5f5f7").replace("LINE", "#d9d9de");
+    let dark = THEME_WINDOW.replace("WIN", "#1f1f23").replace("LINE", "#3a3a41");
+    let svg_of = |body: String| {
+        let doc = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 61"><defs><linearGradient id="l" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#36c5f4"/><stop offset="1" stop-color="#6b4ff0"/></linearGradient><linearGradient id="d" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7a2fe0"/><stop offset="1" stop-color="#160c2e"/></linearGradient><clipPath id="r"><path d="M54 0h42v61H38z"/></clipPath></defs>{body}</svg>"##
+        );
+        svg::Handle::from_memory(doc.into_bytes())
+    };
+    [
+        svg_of(format!(r##"<rect width="96" height="61" rx="6" fill="url(#l)"/>{light}"##)),
+        svg_of(format!(r##"<rect width="96" height="61" rx="6" fill="url(#d)"/>{dark}"##)),
+        svg_of(format!(
+            r##"<rect width="96" height="61" rx="6" fill="url(#l)"/>{light}<g clip-path="url(#r)"><rect width="96" height="61" rx="6" fill="url(#d)"/>{dark}</g>"##
+        )),
+    ]
+});
+
+fn theme_cards<'a>(p: &Palette, current: ThemeChoice) -> El<'a> {
+    let cards = ThemeChoice::ALL.iter().zip(THEME_ART.iter()).map(|(&t, art)| {
+        let on = t == current;
+        let edge = if on { p.accent } else { CLEAR };
+        let img =
+            container(svg(art.clone()).width(96).height(61)).padding(2).style(bordered_box(CLEAR, edge, 2.0, 8.0));
+        let fg = if on { Color::WHITE } else { p.strong };
+        let label = container(txt(t.label(), 13.0).color(fg)).padding([3, 10]).style(fill_box(edge, 12.0));
+        button(column![img, label].spacing(6).align_x(Center))
+            .padding(Padding { top: 7.0, right: 13.0, bottom: 9.0, left: 13.0 })
+            .style(btn_style([CLEAR, p.hover, CLEAR], [p.strong; 3], 8.0))
+            .on_press_maybe((!on).then_some(UiMessage::SelectTheme(t)))
+            .into()
+    });
+    container(Row::with_children(cards).spacing(4)).center_x(Fill).padding([14, 0]).into()
+}
+
 fn pref_row<'a>(
     p: &Palette,
     title: impl ToString,
@@ -450,7 +488,8 @@ pub struct BeeperGuiApp {
     pub os: OsKind,
     pub display_server: DisplayServerKind,
     pub tray: SystemTrayState,
-    pub theme: ResolvedTheme,
+    pub system_dark: bool,
+    pub dark: bool,
     pub pal: Palette,
     pub active_tab: InboxTab,
     pub selected_account_filter: Option<String>,
@@ -498,15 +537,16 @@ impl BeeperGuiApp {
                 .is_none()
                 .then(|| current_original_beeper_data_dir(st.config.profile.as_deref()))
                 .filter(|d| has_beeper_data(d));
-            (ResolvedTheme::compile(s), st.total_unread_chats(), s.show_right_panel_by_default, first, cloud, source)
+            (s.theme.is_dark(false), st.total_unread_chats(), s.show_right_panel_by_default, first, cloud, source)
         };
         let mut app = Self {
             store,
             os,
             display_server,
             tray: SystemTrayState::new(unread, false, try_native_tray),
-            pal: crate::style::palette(&theme),
-            theme,
+            pal: crate::style::palette(theme),
+            system_dark: false,
+            dark: theme,
             active_tab: InboxTab::AllChats,
             selected_account_filter: None,
             selected_chat_id: None,
@@ -550,13 +590,17 @@ impl BeeperGuiApp {
             if signed_in { Self::window_settings(Size::new(1264.0, 893.0)) } else { Self::login_window_settings() };
         let (id, open) = window::open(settings);
         *(if signed_in { &mut app.main_window } else { &mut app.login_window }) = Some(id);
-        (app, open.map(UiMessage::WindowOpened))
+        (app, Task::batch([open.map(UiMessage::WindowOpened), iced::system::theme().map(UiMessage::SystemTheme)]))
     }
 
     fn window_settings(size: Size) -> window::Settings {
         window::Settings {
             size,
             min_size: Some(Size::new(640.0, 480.0)),
+            icon: Some({
+                let (rgba, w, h) = build_tray_icon_rgba(0, false);
+                window::icon::from_rgba(rgba, w, h).expect("the app icon is valid RGBA")
+            }),
             #[cfg(target_os = "linux")]
             platform_specific: window::settings::PlatformSpecific {
                 application_id: APP_BUNDLE_ID.into(),
@@ -581,7 +625,7 @@ impl BeeperGuiApp {
     }
 
     pub fn iced_theme(&self) -> Theme {
-        if self.theme.is_dark {
+        if self.dark {
             Theme::Dark
         } else {
             Theme::Light
@@ -590,8 +634,8 @@ impl BeeperGuiApp {
 
     pub fn refresh_theme_and_tray(&mut self) {
         let st = self.store.read().unwrap();
-        self.theme = ResolvedTheme::compile(&st.settings);
-        self.pal = crate::style::palette(&self.theme);
+        self.dark = st.settings.theme.is_dark(self.system_dark);
+        self.pal = crate::style::palette(self.dark);
         self.tray.update(st.total_unread_chats(), self.dnd_muted);
     }
 
@@ -834,10 +878,13 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
             }
             UiMessage::CycleTheme => {
-                let all = ThemeChoice::all();
-                let cur = all.iter().position(|t| *t == self.theme.choice).expect("current theme is listed");
-                let next = all[(cur + 1) % all.len()];
+                let cur = self.store.read().unwrap().settings.theme;
+                let next = ThemeChoice::ALL[(ThemeChoice::ALL.iter().position(|t| *t == cur).expect("listed") + 1) % 3];
                 return self.update(UiMessage::SelectTheme(next));
+            }
+            UiMessage::SystemTheme(mode) => {
+                self.system_dark = mode == iced::theme::Mode::Dark;
+                self.refresh_theme_and_tray();
             }
             UiMessage::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
             UiMessage::SelectLanguage(label) => {
@@ -1035,6 +1082,7 @@ impl BeeperGuiApp {
             }
             _ => None,
         });
+        let system = iced::system::theme_changes().map(UiMessage::SystemTheme);
         let drag = self.dragging.then(|| {
             iced::event::listen_with(|e, _, _| match e {
                 Event::Mouse(mouse::Event::CursorMoved { position }) => Some(UiMessage::DragMoved(position)),
@@ -1042,7 +1090,7 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
-        Subscription::batch([changes, focus, keys].into_iter().chain(drag))
+        Subscription::batch([changes, focus, keys, system].into_iter().chain(drag))
     }
 
     pub fn view(&self, id: window::Id) -> El<'_> {
@@ -1982,7 +2030,6 @@ impl BeeperGuiApp {
                 ]
             }
             SettingsTab::Appearance => {
-                let themes: Vec<&'static str> = ThemeChoice::all().iter().map(|t| t.label()).collect();
                 let css = text_input(".thread { }", &s.custom_css_source)
                     .on_input(UiMessage::CustomCssChanged)
                     .size(12)
@@ -1993,17 +2040,7 @@ impl BeeperGuiApp {
                         p,
                         Some("Theme"),
                         vec![
-                            pref_row(
-                                p,
-                                "Theme",
-                                None,
-                                None,
-                                select(p, themes, s.theme.label(), |l: &'static str| {
-                                    UiMessage::SelectTheme(
-                                        ThemeChoice::all().into_iter().find(|t| t.label() == l).expect("known theme"),
-                                    )
-                                }),
-                            ),
+                            theme_cards(p, s.theme),
                             tog!("Reduce transparency", None, reduce_transparency),
                             tog!("No transparency", None, no_transparency),
                             tog!("Fix lockdown emojis", None, fix_lockdown_emojis),

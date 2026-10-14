@@ -28,6 +28,30 @@ Environment:
   BEEPER_API_URL      Beeper cloud API (default https://api.beeper.com)
   BEEPER_MATRIX_URL   Matrix homeserver (default https://matrix.beeper.com)";
 
+#[cfg(target_os = "linux")]
+mod frame {
+    use wayland_client::globals::{Global, GlobalListContents as G};
+    use wayland_client::protocol::wl_registry::{Event as E, WlRegistry as R};
+    use wayland_client::{Connection as C, Dispatch, QueueHandle as Q};
+
+    struct Probe;
+
+    impl Dispatch<R, G> for Probe {
+        fn event(_: &mut Self, _: &R, _: E, _: &G, _: &C, _: &Q<Self>) {}
+    }
+
+    pub fn x11() -> bool {
+        let set = ["DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"].map(std::env::var_os);
+        let ssd = || {
+            let c = C::connect_to_env().ok()?;
+            let (globals, _) = wayland_client::globals::registry_queue_init::<Probe>(&c).ok()?;
+            let has = |l: &[Global]| l.iter().any(|g| g.interface.starts_with("zxdg_decoration"));
+            Some(globals.contents().with_list(has))
+        };
+        set.map(|v| v.is_some()) == [true, true, false] && ssd().is_none_or(|s| !s)
+    }
+}
+
 enum Command {
     Gui,
     Serve,
@@ -35,6 +59,10 @@ enum Command {
 }
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    if frame::x11() {
+        unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
+    }
     let mut host = std::env::var("BEEPER_PAS_HOST").unwrap_or_else(|_| DEFAULT_PAS_HOST.to_string());
     let mut port: u16 =
         std::env::var("BEEPER_PAS_PORT").map_or(DEFAULT_PAS_PORT, |v| v.parse().expect("BEEPER_PAS_PORT is a port"));

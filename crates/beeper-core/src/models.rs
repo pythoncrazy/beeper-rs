@@ -635,27 +635,30 @@ pub struct WsEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeChoice {
-    TextsLight,
-    TextsDark,
-    Dracula,
-    Nocturne,
-    DarkPurple,
-    Custom,
+    #[serde(alias = "TextsLight")]
+    Light,
+    #[serde(alias = "TextsDark", alias = "Dracula", alias = "Nocturne", alias = "DarkPurple")]
+    Dark,
+    #[serde(alias = "Custom")]
+    System,
 }
 
 impl ThemeChoice {
-    pub const fn all() -> [Self; 6] {
-        [Self::TextsLight, Self::TextsDark, Self::Dracula, Self::Nocturne, Self::DarkPurple, Self::Custom]
-    }
+    pub const ALL: [Self; 3] = [Self::Light, Self::Dark, Self::System];
 
     pub const fn label(&self) -> &'static str {
         match self {
-            Self::TextsLight => "Light",
-            Self::TextsDark => "Dark",
-            Self::Dracula => "Dracula",
-            Self::Nocturne => "Nocturne",
-            Self::DarkPurple => "Dark Purple",
-            Self::Custom => "Custom CSS",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+            Self::System => "System",
+        }
+    }
+
+    pub const fn is_dark(&self, system_dark: bool) -> bool {
+        match self {
+            Self::Light => false,
+            Self::Dark => true,
+            Self::System => system_dark,
         }
     }
 }

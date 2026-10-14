@@ -1,6 +1,4 @@
 use beeper_core::config::NETWORK_SPECS;
-use beeper_core::models::ThemeChoice;
-use beeper_core::theme::ResolvedTheme;
 use iced::advanced::graphics::text::{cosmic_text, font_system, to_attributes};
 use iced::font::{Family, Font, Weight};
 use iced::overlay::menu;
@@ -475,39 +473,10 @@ pub const BEEPER_LIGHT: Palette = Palette {
     warning: hex(0xf54c03),
 };
 
-pub fn palette(rt: &ResolvedTheme) -> Palette {
-    let c = |v: [u8; 4]| Color::from_rgba8(v[0], v[1], v[2], v[3] as f32 / 255.0);
-    match rt.choice {
-        ThemeChoice::TextsDark => BEEPER_DARK,
-        ThemeChoice::TextsLight => BEEPER_LIGHT,
-        _ => {
-            let frame = c(rt.bg_sidebar);
-            let card = c(rt.bg_window);
-            let text = c(rt.text_primary);
-            Palette {
-                frame,
-                rail: mix(frame, text, 0.1),
-                rail_sel: mix(frame, text, 0.2),
-                card,
-                selected: mix(frame, text, 0.1),
-                elevated: mix(card, text, 0.12),
-                input: mix(card, text, 0.1),
-                link_card: mix(card, text, 0.14),
-                received: c(rt.bubble_other),
-                sent: c(rt.bubble_self),
-                accent: c(rt.brand_primary),
-                toggle_on: c(rt.brand_primary),
-                text,
-                strong: text,
-                sub: c(rt.text_secondary),
-                weak: c(rt.text_secondary),
-                muted: c(rt.text_muted),
-                prefs_pane: mix(frame, card, 0.5),
-                prefs_group: mix(card, text, 0.08),
-                nav_sel: mix(frame, text, 0.12),
-                search: mix(frame, text, 0.06),
-                ..BEEPER_DARK
-            }
-        }
+pub fn palette(dark: bool) -> Palette {
+    if dark {
+        BEEPER_DARK
+    } else {
+        BEEPER_LIGHT
     }
 }

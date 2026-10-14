@@ -13,7 +13,6 @@ use beeper_core::{
         SystemTrayState,
     },
     store::{BeeperStore, Setup, SharedStore, NOTE_CHAT_ID},
-    theme::{parse_css_px, ResolvedTheme},
 };
 use beeper_ui::{
     login::{Login, LoginMsg, Outcome, Screen},
@@ -663,30 +662,24 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let unmerge_chat = store.write().unwrap().patch_chat(&merged_chat_id, false, None, Some(None)).unwrap();
     assert!(unmerge_chat.merge.is_none());
 
-    for choice in [
-        ThemeChoice::TextsLight,
-        ThemeChoice::TextsDark,
-        ThemeChoice::Dracula,
-        ThemeChoice::Nocturne,
-        ThemeChoice::DarkPurple,
-        ThemeChoice::Custom,
-    ] {
-        let s = BeeperSettings {
-            theme: choice,
-            no_transparency: true,
-            reduce_transparency: true,
-            fix_lockdown_emojis: true,
-            custom_css_source: ":root { --color-primary: #ff007f; }".to_string(),
-            ..Default::default()
-        };
-        let compiled = ResolvedTheme::compile(&s);
-        let px = |name: &str| parse_css_px(&compiled.vars[name], &compiled.vars);
-        assert_eq!(px("--header-height"), 48.0);
-        assert_eq!(px("--border-radius-conversation-bubble"), 17.0);
-        assert_eq!(compiled.brand_primary, [255, 0, 127, 255]);
-        assert!(compiled.vars.get("--font-family").unwrap().contains("Twemoji"));
-        assert!(compiled.selector_rules.contains_key(".no-transparency"));
-    }
+    let legacy = |name: &str| serde_json::from_value::<ThemeChoice>(json!(name)).unwrap();
+    assert_eq!(
+        ["TextsLight", "TextsDark", "Dracula", "Nocturne", "DarkPurple", "Custom", "System"].map(legacy),
+        [
+            ThemeChoice::Light,
+            ThemeChoice::Dark,
+            ThemeChoice::Dark,
+            ThemeChoice::Dark,
+            ThemeChoice::Dark,
+            ThemeChoice::System,
+            ThemeChoice::System
+        ]
+    );
+    assert_eq!(BeeperSettings::default().theme, ThemeChoice::System);
+    assert_eq!(
+        ThemeChoice::ALL.map(|t| (t.is_dark(false), t.is_dark(true))),
+        [(false, false), (true, true), (false, true)]
+    );
 
     let (rgba_unread, w, h) = build_tray_icon_rgba(5, false);
     assert_eq!((w, h), (32, 32));
@@ -723,6 +716,16 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         for label in ["Settings", "Search Settings", "Accounts", "Beeper Plus", "Theme", "Custom CSS"] {
             assert!(sim.find(label).is_ok(), "settings window shows {label}");
         }
+        sim.click("Dark").expect("dark theme card");
+        for m in sim.into_messages() {
+            let _ = gui.update(m);
+        }
+    }
+    assert!(gui.dark);
+    let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));
+    for (mode, dark) in [(iced::theme::Mode::Dark, true), (iced::theme::Mode::Light, false)] {
+        let _ = gui.update(UiMessage::SystemTheme(mode));
+        assert_eq!(gui.dark, dark);
     }
     let _ = gui.update(UiMessage::SettingsQueryChanged("theme".to_string()));
     assert!(simulator(gui.view_settings()).find("Results").is_ok());
@@ -736,7 +739,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let app_prog = iced::daemon(
             move || {
                 let (mut app, open) = BeeperGuiApp::boot(emu_store.clone());
-                let _ = app.update(UiMessage::SelectTheme(ThemeChoice::TextsDark));
+                let _ = app.update(UiMessage::SelectTheme(ThemeChoice::Dark));
                 (app, open)
             },
             BeeperGuiApp::update,
