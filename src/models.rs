@@ -464,6 +464,13 @@ pub struct PollOption {
     pub voter_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkPreview {
+    pub site: String,
+    pub title: String,
+    pub summary: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PollData {
     pub question: String,
@@ -909,8 +916,8 @@ impl ThemeChoice {
 
     pub const fn label(&self) -> &'static str {
         match self {
-            Self::TextsLight => "Texts Light",
-            Self::TextsDark => "Texts Dark",
+            Self::TextsLight => "Light",
+            Self::TextsDark => "Dark",
             Self::Dracula => "Dracula",
             Self::Nocturne => "Nocturne",
             Self::DarkPurple => "Dark Purple",
@@ -977,6 +984,12 @@ pub struct BeeperSettings {
     pub pas_port: u16,
     pub launch_at_startup: bool,
     pub minimize_to_tray: bool,
+    pub incognito_mode: bool,
+    pub archive_after_reminder: bool,
+    pub mark_read_on_archive: bool,
+    pub after_archive: u8,
+    pub remind_later_default: u8,
+    pub compact_chat_list: bool,
 }
 
 impl Default for BeeperSettings {

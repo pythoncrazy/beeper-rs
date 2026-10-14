@@ -42,11 +42,9 @@ License: Apache License, Version 2.0 (`http://www.apache.org/licenses/LICENSE-2.
 
 The files in `assets/themes/` come from the `beeper/themes` repository and are licensed under the Apache License, Version 2.0.
 
-### C. Bundled Font Assets (`assets/fonts/*.ttf`) and Iced UI Framework
+### C. Bundled Font, Icon, and Logo Assets and Iced UI Framework
 
-Source repository: `https://github.com/pythoncrazy/navify`
-
-- **Figtree (`Figtree-Regular.ttf`, `Figtree-Medium.ttf`, `Figtree-Bold.ttf`, `Figtree-Black.ttf`)**: Copyright Erik Kennedy (`https://github.com/erikdkennedy/figtree`), licensed under the SIL Open Font License, Version 1.1 (`https://scripts.sil.org/OFL`).
-- **Lucide (`lucide.ttf`)**: Copyright Lucide Contributors (`https://lucide.dev`), licensed under the ISC License.
-- **Phosphor Icons (`Phosphor-Fill.ttf`)**: Copyright Phosphor Icons (`https://phosphoricons.com`), licensed under the MIT License.
+- **Inter (`assets/fonts/Inter-Regular.ttf`, `Inter-Medium.ttf`, `Inter-SemiBold.ttf`, `Inter-Bold.ttf`)**: Copyright The Inter Project Authors (`https://github.com/rsms/inter`), licensed under the SIL Open Font License, Version 1.1. The license text is in `assets/fonts/INTER-LICENSE.txt`. The files are subsets of Inter 4.1.
+- **Lucide (`assets/fonts/lucide.ttf`)**: Copyright Lucide Contributors (`https://lucide.dev`), licensed under the ISC License. The license text is in `assets/fonts/LUCIDE-LICENSE.txt`. The file is a subset of Lucide 1.57.0.
+- **Simple Icons (`assets/brands/*.svg`)**: Simple Icons 16.35.0 (`https://simpleicons.org`), released under CC0 1.0 Universal. The license text is in `assets/brands/SIMPLE-ICONS-LICENSE.md`. All brand names and logos are trademarks of their owners. Their use identifies the networks only and does not imply endorsement.
 - **Iced (`iced`, `iced_test`)**: Copyright Héctor Ramón (`https://github.com/iced-rs/iced`), licensed under the MIT License.

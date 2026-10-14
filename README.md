@@ -13,8 +13,8 @@
 ## Cross-Platform and Rust-Native Architecture
 
 - **Native Iced 0.14 GUI**: Uses `iced` (`0.14.0`) with `wgpu` (`27.0.1`) GPU acceleration and `tiny-skia` software fallback, adapted from the `navify` architecture (`https://github.com/pythoncrazy/navify`).
-- **Bundled typography and vector icons**: Embeds `Figtree` (`Regular`, `Medium`, `Bold`, `Black`), `Lucide`, and `Phosphor-Fill` fonts directly in the binary.
-- **4-pane Beeper Desktop v4 layout**: Renders the `54px` Account Switcher Rail, drag-resizable Threads Sidebar (`320px` default), Conversation View with asymmetric message bubbles, quoted replies, Beeper Audio Bar waveform and transcript, inline file attachments, and interactive polls, and the collapsible Right Inspector (`280px`).
+- **Bundled typography, icons, and network logos**: Embeds `Inter` (`Regular`, `Medium`, `SemiBold`, `Bold`), a `Lucide` icon subset, and CC0 `Simple Icons` network logos directly in the binary.
+- **Beeper Desktop 4.3 layout**: Renders the `68px` account rail, the compact Inbox sidebar (`190px` default, drag-resizable) with pinned chats, the rounded conversation card with a floating chat header, date dividers, link previews, quoted replies, voice notes, files, polls, and reactions, the Beeper composer, the Chat Info panel, and a separate Settings window with the Beeper preference groups.
 - **Native cross-platform support**: Runs natively on Linux (Wayland and X11), macOS (AppKit / Metal), and Windows (Win32 / DirectX 12 / Vulkan) with OS-specific directory resolution, `file://` URL handling, autostart manifests, and protocol handlers.
 - **Fast compilation and linking**: Configured in `.cargo/config.toml` to use `sccache` (`rustc-wrapper = "sccache"`) across all platforms, `mold` v3 on Linux and Windows GNU targets, `rust-lld` on Windows MSVC targets, and unpacked debug info on macOS targets.
 - **Rust-native protocols and primitives**: Implements HTTP/1.1, RFC 6455 WebSockets, SHA-256, SHA-1, Base64, URL percent-encoding, RFC 3339 timestamps, CLI argument parsing, and 32x32 RGBA system tray icon rendering directly in Rust.

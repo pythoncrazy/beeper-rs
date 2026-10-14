@@ -158,6 +158,36 @@ pub struct OAuthCodeEntry {
     pub code_challenge_method: String,
 }
 
+pub const NOTE_CHAT_ID: &str = "!note_self:beeper.com";
+
+const NOTE_MESSAGES: [(&str, &str); 6] = [
+    ("2026-10-06T19:02:00.000Z", "https://arxiv.org/abs/2001.08361"),
+    ("2026-10-06T19:04:00.000Z", "Read this before the Thursday sync"),
+    ("2026-10-11T10:41:00.000Z", "https://github.com/pythoncrazy/navify"),
+    ("2026-10-12T21:15:00.000Z", "Pick up the Pebble Time 2 dev kit from the office"),
+    ("2026-10-14T03:30:00.000Z", "https://github.com/pythoncrazy/beeper-rs"),
+    ("2026-10-14T03:34:00.000Z", "Compare the inbox density with the compact chat list"),
+];
+
+type SeedChat = (&'static str, &'static str, &'static str, &'static str, u32, &'static str, &'static str, &'static str);
+
+const EXTRA_CHATS: [SeedChat; 8] = [
+    ("!wa_family:beeper.com", "acc_whatsapp", "Family", "group", 2, "2026-10-14T03:10:00.000Z", "Mom", "Dinner at 7 tonight? Bring the charger you borrowed"),
+    ("!tg_weekly:beeper.com", "acc_telegram", "This Week in Rust", "group", 0, "2026-10-13T21:00:00.000Z", "Nell", "Issue 620 is out: iced 0.14, wgpu 27, and a new borrow checker"),
+    ("!im_jordan:beeper.com", "acc_imessage", "Jordan Park", "single", 0, "2026-10-13T18:22:00.000Z", "Jordan", ""),
+    ("!sg_lena:beeper.com", "acc_signal", "Lena Fischer", "single", 1, "2026-10-12T16:40:00.000Z", "Lena", "See you at the meetup! I will save you a seat"),
+    ("!ig_kai:beeper.com", "acc_instagram", "Kai Nakamura", "single", 0, "2026-10-11T12:05:00.000Z", "Kai", "haha that reel is exactly us at the hackathon"),
+    ("!sl_design:beeper.com", "acc_slack", "#design-review", "group", 0, "2026-10-10T09:30:00.000Z", "Priya", "New icons are in Figma, please review before Friday"),
+    ("!wa_sam:beeper.com", "acc_whatsapp", "Sam Rivera", "single", 0, "2026-10-08T22:14:00.000Z", "Sam", "ok sounds good 👍"),
+    ("!tg_pebble:beeper.com", "acc_telegram", "Pebble Devs", "group", 0, "2026-10-05T15:00:00.000Z", "Katharine", "Firmware 4.4 beta is live for all testers"),
+];
+
+const LINK_PREVIEWS: [(&str, &str, &str, &str); 3] = [
+    ("https://arxiv.org/abs/2001.08361", "arXiv.org", "Scaling Laws for Neural Language Models", "We study empirical scaling laws for language model performance on the cross-entropy loss. The loss scales as a power-law with model size, dataset size, and the amount of compute used for training."),
+    ("https://github.com/pythoncrazy/navify", "GitHub", "pythoncrazy/navify", "A fast, native Navidrome client written in Rust with iced. Low memory use, instant startup, and a polished desktop interface."),
+    ("https://github.com/pythoncrazy/beeper-rs", "GitHub", "pythoncrazy/beeper-rs", "Ultra-fast, cross-platform, Rust-native drop-in replacement for Beeper Desktop with a compatible Desktop API server."),
+];
+
 #[derive(Debug, Clone)]
 pub struct SettingCatalogEntry {
     pub id: &'static str,
@@ -189,7 +219,7 @@ pub const SETTINGS_CATALOG: [SettingCatalogEntry; 24] = [
     sc("show_right_panel_by_default", "Conversation View", "Show right panel by default", "Keep the Chat Info, Shared Media, and Bookmarks inspector open"),
     sc("load_remote_content_automatically", "Conversation View", "Load remote content automatically", "Fetch external images and link metadata automatically"),
     sc("use_twenty_four_hour_time", "Conversation View", "Use 24-hour time", "Format message timestamps using 24-hour military clock"),
-    sc("theme", "Appearance", "CSS Theme", "Switch between Texts Light, Texts Dark, Dracula, Nocturne, Dark Purple, and Custom CSS"),
+    sc("theme", "Appearance", "CSS Theme", "Switch between Light, Dark, Dracula, Nocturne, Dark Purple, and Custom CSS"),
     sc("no_transparency", "Appearance", "No transparency", "Disable window vibrancy and translucent backgrounds (.no-transparency)"),
     sc("reduce_transparency", "Appearance", "Reduce transparency", "Use solid header and sidebar surfaces (.reduce-transparency)"),
     sc("fix_lockdown_emojis", "Appearance", "Fix Lockdown Mode Emojis", "Apply fix-lockdown-mode-emojis.css bitmap font override"),
@@ -229,6 +259,7 @@ pub struct BeeperStore {
     pub focused_chat_id: Option<String>,
     pub focused_message_id: Option<String>,
     pub ws_tx: broadcast::Sender<WsEvent>,
+    pub link_previews: HashMap<String, LinkPreview>,
     next_seq: u64,
 }
 
@@ -337,6 +368,7 @@ impl BeeperStore {
             settings_search_index,
             assets: HashMap::new(),
             assets_by_mxc: HashMap::new(),
+            link_previews: HashMap::new(),
             oauth_clients: HashMap::new(),
             oauth_codes: HashMap::new(),
             valid_tokens,
@@ -574,12 +606,21 @@ impl BeeperStore {
         }
         if !self.chat_idx_by_id.contains_key("!ig_design:beeper.com")
             || !self.msg_idx_by_id.contains_key("msg_1000b")
+            || !self.chat_idx_by_id.contains_key(NOTE_CHAT_ID)
         {
             self.seed_default_workspace();
         } else {
             self.rebuild_accounts_from_bridges();
         }
+        self.link_previews = LINK_PREVIEWS
+            .iter()
+            .map(|(url, site, title, summary)| (url.to_string(), LinkPreview { site: site.to_string(), title: title.to_string(), summary: summary.to_string() }))
+            .collect();
         self.next_seq = 1000 + self.messages.len() as u64 + self.chats.len() as u64;
+    }
+
+    pub fn me(&self) -> &User {
+        &self.chats[self.chat_idx_by_id[NOTE_CHAT_ID]].participants.items[0]
     }
 
     pub fn rebuild_accounts_from_bridges(&mut self) {
@@ -688,7 +729,9 @@ impl BeeperStore {
             flags: 0,
         };
 
-        let chats_seed = vec![
+        let me = User { id: DEFAULT_USER_ID.to_string(), is_self: Some(true), ..self_user(&[], 0) };
+        let mut chats_seed = vec![
+            mk_chat(NOTE_CHAT_ID, "local_note_self", "hungryserv", "Note to self", "single", 0, "Notes, links, and reminders", false, true, &[], "2026-10-14T03:34:00.000Z", "000000", vec![me.clone()]),
             mk_chat("!wa_eric:beeper.com", "local_wa_eric", "acc_whatsapp", "Eric Migicovsky", "single", 1, "Beeper & Pebble founder", false, true, &["lbl_favorite", "lbl_vip"], "2026-10-14T08:15:00.000Z", "000001", vec![make_user("@eric:beeper.com", "Eric Migicovsky", "eric", Some("+14155550101")), self_user(&self.accounts, 0)]),
             mk_chat("!im_sarah:beeper.com", "local_im_sarah", "acc_imessage", "Sarah Chen", "single", 0, "iMessage on-device", true, true, &["lbl_favorite"], "2026-10-14T08:10:00.000Z", "000002", vec![make_user("@sarah:beeper.com", "Sarah Chen", "sarahc", Some("+14155550102")), self_user(&self.accounts, 1)]),
             mk_chat("!tg_rust:beeper.com", "local_tg_rust", "acc_telegram", "Beeper Rust Core Team", "group", 2, "Architecture, E2EE & native desktop performance", false, true, &["lbl_work"], "2026-10-14T08:20:00.000Z", "000003", vec![make_user("@tulir:beeper.com", "Tulir Asokan", "tulir", None), make_user("@batuhan:beeper.com", "Batuhan", "batuhan", None), self_user(&self.accounts, 2)]),
@@ -696,6 +739,10 @@ impl BeeperStore {
             mk_chat("!ig_design:beeper.com", "local_ig_design", "acc_instagram", "Maya Lin", "single", 0, "Design Systems & Desktop Typography", false, true, &["lbl_favorite"], "2026-10-14T07:30:00.000Z", "000005", vec![make_user("@maya:beeper.com", "Maya Lin", "mayalin", None), self_user(&self.accounts, 4)]),
             mk_chat("!sl_infra:beeper.com", "local_sl_infra", "acc_slack", "#desktop-release", "group", 1, "Beeper v4.3 Desktop release coordination", false, false, &["lbl_work"], "2026-10-14T07:15:00.000Z", "000006", vec![make_user("@devon:beeper.com", "Devon Brooks", "devon", None), make_user("@eric:beeper.com", "Eric Migicovsky", "eric", None), self_user(&self.accounts, 5)]),
         ];
+        for (i, (cid, acc, title, ctype, unread, ts, sender, _)) in EXTRA_CHATS.iter().enumerate() {
+            let peer = make_user(&format!("@{}:beeper.com", sender.to_lowercase()), sender, &sender.to_lowercase(), None);
+            chats_seed.push(mk_chat(cid, &format!("local_x{i}"), acc, title, ctype, *unread, title, false, false, &[], ts, &format!("00010{i}"), vec![peer, self_user(&self.accounts, 0)]));
+        }
 
         self.db.lock().unwrap().execute_batch("BEGIN IMMEDIATE;").expect("begin seed transaction");
         for c in chats_seed {
@@ -763,9 +810,19 @@ impl BeeperStore {
             transcript: None,
         };
 
-        let messages_seed = vec![
+        let mut messages_seed: Vec<Message> = NOTE_MESSAGES
+            .iter()
+            .enumerate()
+            .map(|(i, (ts, text))| mk_msg(&format!("msg_note_{i}"), "hungryserv", NOTE_CHAT_ID, DEFAULT_USER_ID, "Alex", &format!("00009{i:02}"), ts, text, "TEXT", true, false, false, None, Vec::new(), Vec::new(), None, Vec::new()))
+            .collect();
+        for (i, (cid, acc, _, _, unread, ts, sender, text)) in EXTRA_CHATS.iter().enumerate() {
+            let img = text.is_empty().then(|| Attachment { attachment_type: "img".to_string(), id: Some(format!("att_x{i}")), duration: None, file_name: Some("IMG_2041.jpg".to_string()), file_size: Some(812_004), is_gif: Some(false), is_sticker: Some(false), is_voice_note: Some(false), mime_type: Some("image/jpeg".to_string()), poster_img: None, size: None, src_url: Some(format!("mxc://beeper.com/x{i}")), transcript: None });
+            let mtype = if img.is_some() { "IMAGE" } else { "TEXT" };
+            messages_seed.push(mk_msg(&format!("msg_x{i}"), acc, cid, &format!("@{}:beeper.com", sender.to_lowercase()), sender, &format!("00020{i:02}"), ts, text, mtype, false, *unread > 0, false, None, img.into_iter().collect(), Vec::new(), None, Vec::new()));
+        }
+        messages_seed.extend([
             mk_msg("msg_1000a", "acc_whatsapp", "!wa_eric:beeper.com", "@eric:beeper.com", "Eric Migicovsky", "0000997", "2026-10-14T08:11:00.000Z", "Hey Alex! How is the native Rust Beeper Desktop client coming along?", "TEXT", false, false, false, None, Vec::new(), Vec::new(), None, Vec::new()),
-            mk_msg("msg_1000b", "acc_whatsapp", "!wa_eric:beeper.com", "@self_whatsapp:beeper.com", "Alex", "0000998", "2026-10-14T08:12:00.000Z", "Just migrated the UI to Iced with Figtree + Lucide vector rendering and full SQLite WAL persistence. Memory usage is under 28 MB!", "TEXT", true, false, false, Some("msg_1000a"), vec![pdf_att("att_wa_spec", "beeper-rs-v4-architecture.pdf", 428_032)], vec![rx("rx_0", "@eric:beeper.com", "❤️"), rx("rx_0b", "@self_whatsapp:beeper.com", "🔥")], None, Vec::new()),
+            mk_msg("msg_1000b", "acc_whatsapp", "!wa_eric:beeper.com", "@self_whatsapp:beeper.com", "Alex", "0000998", "2026-10-14T08:12:00.000Z", "Just migrated the UI to Iced with Inter + Lucide vector rendering and full SQLite WAL persistence. Memory usage is under 28 MB!", "TEXT", true, false, false, Some("msg_1000a"), vec![pdf_att("att_wa_spec", "beeper-rs-v4-architecture.pdf", 428_032)], vec![rx("rx_0", "@eric:beeper.com", "❤️"), rx("rx_0b", "@self_whatsapp:beeper.com", "🔥")], None, Vec::new()),
             mk_msg("msg_1000c", "acc_whatsapp", "!wa_eric:beeper.com", "@eric:beeper.com", "Eric Migicovsky", "0000999", "2026-10-14T08:14:00.000Z", "Voice note from hardware lab:", "VOICE", false, false, false, None, vec![voice_att("att_wa_vn", "eric-voice-note.ogg", 14.2, "Native Rust + Iced GPU rendering makes Beeper feel instantaneous across Linux, macOS, and Windows.")], Vec::new(), None, Vec::new()),
             mk_msg("msg_1001", "acc_whatsapp", "!wa_eric:beeper.com", "@eric:beeper.com", "Eric Migicovsky", "0001001", "2026-10-14T08:15:00.000Z", "Welcome to beeper-rs! Check out the local Desktop API on port 23373 and the zero-bloat Rust UI.", "TEXT", false, true, true, Some("msg_1000b"), Vec::new(), vec![rx("rx_1", "@self_whatsapp:beeper.com", "⚡")], None, Vec::new()),
             mk_msg("msg_1002", "acc_imessage", "!im_sarah:beeper.com", "@sarah:beeper.com", "Sarah Chen", "0001002", "2026-10-14T08:10:00.000Z", "Let's ship the release at 14:00 UTC. Check https://beeper.com and ping @eric:beeper.com", "TEXT", false, false, false, None, Vec::new(), Vec::new(), None, vec![EditHistoryEntry { text: "Let's ship the release at 13:00 UTC.".to_string(), timestamp: "2026-10-14T08:09:00.000Z".to_string() }]),
@@ -774,16 +831,16 @@ impl BeeperStore {
                 question: "Which default dark theme do you prefer?".to_string(),
                 allow_multiple: false,
                 options: vec![
-                    PollOption { id: "opt_1".to_string(), label: "Texts Dark".to_string(), voter_ids: vec!["@tulir:beeper.com".to_string()] },
+                    PollOption { id: "opt_1".to_string(), label: "Beeper Dark".to_string(), voter_ids: vec!["@tulir:beeper.com".to_string()] },
                     PollOption { id: "opt_2".to_string(), label: "Dracula".to_string(), voter_ids: vec!["@batuhan:beeper.com".to_string()] },
                     PollOption { id: "opt_3".to_string(), label: "Nocturne".to_string(), voter_ids: Vec::new() },
                     PollOption { id: "opt_4".to_string(), label: "Dark Purple".to_string(), voter_ids: Vec::new() },
                 ],
             }), Vec::new()),
             mk_msg("msg_1005", "acc_signal", "!sg_security:beeper.com", "@secops:beeper.com", "SecOps Lead", "0001005", "2026-10-14T07:45:00.000Z", "Cross-signing master key and Megolm backup verified across all connected devices.", "TEXT", false, false, false, None, Vec::new(), Vec::new(), None, Vec::new()),
-            mk_msg("msg_1006", "acc_instagram", "!ig_design:beeper.com", "@maya:beeper.com", "Maya Lin", "0001006", "2026-10-14T07:30:00.000Z", "The 17px bubble radius and #0a84ff accent in Texts Dark match the design spec.", "TEXT", false, false, false, None, Vec::new(), Vec::new(), None, Vec::new()),
+            mk_msg("msg_1006", "acc_instagram", "!ig_design:beeper.com", "@maya:beeper.com", "Maya Lin", "0001006", "2026-10-14T07:30:00.000Z", "The 17px bubble radius and #2561fb accent match the Beeper design spec.", "TEXT", false, false, false, None, Vec::new(), Vec::new(), None, Vec::new()),
             mk_msg("msg_1007", "acc_slack", "!sl_infra:beeper.com", "@devon:beeper.com", "Devon Brooks", "0001007", "2026-10-14T07:15:00.000Z", "Linux, macOS, and Windows builds passed CI with zero warnings.", "TEXT", false, true, false, None, Vec::new(), Vec::new(), None, Vec::new()),
-        ];
+        ]);
 
         for m in messages_seed {
             self.index_and_push_message(m, true);
