@@ -1,6 +1,6 @@
 use beeper_api::{client::BeeperClient, server::serve_http};
 use beeper_core::{
-    config::{CentralConfig, APP_NAME, APP_VERSION, DEFAULT_PAS_HOST, DEFAULT_PAS_PORT},
+    config::{migrate_legacy_data_dir, CentralConfig, APP_NAME, APP_VERSION, DEFAULT_PAS_HOST, DEFAULT_PAS_PORT},
     import::read_beeper_data,
     platform::current_desktop_data_dir,
     store::{BeeperStore, SharedStore},
@@ -56,7 +56,11 @@ fn main() {
             other => panic!("unexpected argument: {other}"),
         }
     }
-    let data_dir = data_dir.unwrap_or_else(|| current_desktop_data_dir(profile.as_deref()));
+    let data_dir = data_dir.unwrap_or_else(|| {
+        let dir = current_desktop_data_dir(profile.as_deref());
+        migrate_legacy_data_dir(&dir, profile.as_deref());
+        dir
+    });
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("build tokio runtime");
     if let Command::Info = command {
         let info = rt.block_on(BeeperClient::new(format!("http://{host}:{port}"), "").info());

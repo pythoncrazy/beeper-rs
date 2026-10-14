@@ -15,7 +15,9 @@ pub const DEFAULT_TOKEN: &str = "bp_tok_beeper_rs_default_secret";
 pub const DEFAULT_RECOVERY_CODE: &str = "EsTc 9K4p Lm2Q Xv8N Beeper RsKey 2026";
 pub const TRAY_ICON_SIZE: u32 = 32;
 pub const WS_CHANNEL_CAPACITY: usize = 512;
-pub const ISOLATED_DATA_FOLDER_PREFIX: &str = "BeeperRs";
+pub const DATA_FOLDER_PREFIX: &str = "beeper-rs";
+const LEGACY_DATA_FOLDER_PREFIX: &str = "BeeperRs";
+const LEGACY_DATA_FILES: [&str; 4] = ["beeper-rs.db", "beeper-rs.db-wal", "beeper-rs.db-shm", "media"];
 pub const ORIGINAL_BEEPER_FOLDER_PREFIX: &str = "BeeperTexts";
 pub const OPENAPI_SPEC_JSON: &str = include_str!("../assets/openapi.json");
 pub const SEED_JSON: &str = include_str!("../assets/seed.json");
@@ -218,11 +220,31 @@ pub fn resolve_data_dir_for_os(
     home_dir: &Path,
 ) -> PathBuf {
     let dir = env_vars.get("BEEPER_RS_DATA_DIR").map_or_else(
-        || os_base_config_dir(os_name, env_vars, home_dir).join(profile_folder(ISOLATED_DATA_FOLDER_PREFIX, profile)),
+        || os_base_config_dir(os_name, env_vars, home_dir).join(profile_folder(DATA_FOLDER_PREFIX, profile)),
         PathBuf::from,
     );
     assert_not_original_beeper_dir(&dir);
     dir
+}
+
+pub fn migrate_legacy_data_dir(data_dir: &Path, profile: Option<&str>) {
+    let legacy = data_dir.with_file_name(profile_folder(LEGACY_DATA_FOLDER_PREFIX, profile));
+    if !legacy.is_dir() || legacy.file_name() == data_dir.file_name() {
+        return;
+    }
+    assert!(
+        !data_dir.exists(),
+        "{} and {} both exist. Remove the one you do not use.",
+        legacy.display(),
+        data_dir.display()
+    );
+    std::fs::create_dir_all(data_dir).unwrap_or_else(|e| panic!("create {}: {e}", data_dir.display()));
+    let keep = legacy.join("beeper-rs.db").is_file();
+    for name in LEGACY_DATA_FILES.iter().filter(|_| keep).map(|n| legacy.join(n)).filter(|p| p.exists()) {
+        let to = data_dir.join(name.file_name().expect("file name"));
+        std::fs::rename(&name, &to).unwrap_or_else(|e| panic!("move {} to {}: {e}", name.display(), to.display()));
+    }
+    std::fs::remove_dir_all(&legacy).unwrap_or_else(|e| panic!("remove {}: {e}", legacy.display()));
 }
 
 fn unix_now() -> std::time::Duration {

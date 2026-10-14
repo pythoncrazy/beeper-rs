@@ -64,7 +64,7 @@ impl InvertedIndex {
 pub struct StoredAsset {
     pub upload_id: String,
     pub mxc_url: String,
-    pub local_file_path: String,
+    pub disk_name: String,
     pub file_name: String,
     pub mime_type: String,
     pub file_size: u64,
@@ -146,7 +146,7 @@ struct Seed {
     messages: Vec<Message>,
 }
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const SCHEMA: &str = "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
      CREATE TABLE chats (id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;
      CREATE TABLE messages (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, sort_key TEXT NOT NULL, json TEXT NOT NULL) STRICT;
@@ -254,13 +254,13 @@ pub struct BeeperStore {
 impl BeeperStore {
     pub fn from_config(config: CentralConfig) -> Self {
         assert_not_original_beeper_dir(&config.data_dir);
-        std::fs::create_dir_all(&config.data_dir).expect("create isolated BeeperRs data_dir");
+        std::fs::create_dir_all(&config.data_dir).expect("create the beeper-rs data dir");
         std::fs::create_dir_all(&config.assets_dir).expect("create isolated media dir");
         let conn = Connection::open(&config.db_path).expect("open beeper-rs.db");
         let sqlite = rusqlite::version_number();
         assert!(
-            sqlite >= 3_037_000,
-            "beeper-rs needs SQLite 3.37 or later for STRICT tables; this system has {}",
+            sqlite >= 3_038_000,
+            "beeper-rs needs SQLite 3.38 or later for STRICT tables and JSON; this system has {}",
             rusqlite::version()
         );
         conn.execute_batch(
@@ -276,6 +276,15 @@ impl BeeperStore {
             0 => conn
                 .execute_batch(&format!("BEGIN; {SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"))
                 .expect("create beeper-rs schema"),
+            1 => conn
+                .execute_batch(
+                    "BEGIN;
+                     UPDATE assets SET json = json_set(json_remove(json, '$.local_file_path'), '$.disk_name',
+                         substr(json_extract(json, '$.local_file_path'), instr(json_extract(json, '$.local_file_path'), upload_id || '_')));
+                     PRAGMA user_version = 2;
+                     COMMIT;",
+                )
+                .expect("migrate beeper-rs schema 1 to 2"),
             SCHEMA_VERSION => {}
             other => panic!(
                 "{} has schema version {other}, and this beeper-rs build reads version {SCHEMA_VERSION}",
@@ -1026,12 +1035,12 @@ impl BeeperStore {
         let upload_id = self.next_id("upl");
         let safe_name: String =
             file_name.chars().map(|c| if c.is_alphanumeric() || ".-_".contains(c) { c } else { '_' }).collect();
-        let file_path = self.config.assets_dir.join(format!("{upload_id}_{safe_name}"));
-        std::fs::write(&file_path, bytes).expect("write uploaded asset to disk");
+        let disk_name = format!("{upload_id}_{safe_name}");
+        std::fs::write(self.config.assets_dir.join(&disk_name), bytes).expect("write uploaded asset to disk");
         let asset = StoredAsset {
             mxc_url: format!("mxc://beeper.com/{upload_id}"),
             upload_id: upload_id.clone(),
-            local_file_path: file_path.to_str().expect("UTF-8 asset path").to_string(),
+            disk_name,
             file_name,
             mime_type,
             file_size: bytes.len() as u64,
@@ -1052,7 +1061,7 @@ impl BeeperStore {
     pub fn resolve_asset_path(&self, url: &str) -> Option<(PathBuf, String)> {
         let id = self.assets_by_mxc.get(url).map_or(url, String::as_str);
         match self.assets.get(id) {
-            Some(a) => Some((PathBuf::from(&a.local_file_path), a.mime_type.clone())),
+            Some(a) => Some((self.config.assets_dir.join(&a.disk_name), a.mime_type.clone())),
             None => crate::platform::file_url_to_path(url)
                 .filter(|p| p.exists())
                 .map(|p| (p, "application/octet-stream".to_string())),
@@ -1066,7 +1075,7 @@ impl BeeperStore {
         for id in &old {
             let a = self.assets.remove(id).unwrap();
             self.assets_by_mxc.remove(&a.mxc_url);
-            std::fs::remove_file(&a.local_file_path).expect("remove cached media file");
+            std::fs::remove_file(self.config.assets_dir.join(&a.disk_name)).expect("remove cached media file");
             self.exec("DELETE FROM assets WHERE upload_id = ?1", params![id]);
         }
         old.len()
