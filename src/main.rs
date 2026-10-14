@@ -76,7 +76,9 @@ fn parse_args() -> CliArgs {
 fn main() {
     let cli = parse_args();
     let data_dir = cli.data_dir.unwrap_or_else(|| current_desktop_data_dir(cli.profile.as_deref()));
-    let source_beeper_dir = cli.import_from.or_else(|| Some(current_original_beeper_data_dir(cli.profile.as_deref())));
+    let source_beeper_dir = cli
+        .import_from
+        .or_else(|| Some(current_original_beeper_data_dir(cli.profile.as_deref())).filter(|d| d.exists()));
     let cfg =
         CentralConfig::new(data_dir.clone(), cli.host, cli.port, cli.profile).with_source_beeper_dir(source_beeper_dir);
 

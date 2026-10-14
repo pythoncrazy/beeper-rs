@@ -54,30 +54,15 @@ impl OsKind {
         match self {
             Self::MacOs => DisplayServerKind::Quartz,
             Self::Windows => DisplayServerKind::Win32,
-            Self::Linux => {
-                if env_vars.get("WAYLAND_DISPLAY").is_some_and(|v| !v.trim().is_empty()) {
-                    DisplayServerKind::Wayland
-                } else if env_vars.get("DISPLAY").is_some_and(|v| !v.trim().is_empty()) {
-                    DisplayServerKind::X11
-                } else {
-                    DisplayServerKind::Headless
-                }
-            }
+            Self::Linux if env_vars.contains_key("WAYLAND_DISPLAY") => DisplayServerKind::Wayland,
+            Self::Linux if env_vars.contains_key("DISPLAY") => DisplayServerKind::X11,
+            Self::Linux => DisplayServerKind::Headless,
         }
     }
 }
 
 pub fn resolve_home_dir(env_vars: &HashMap<String, String>) -> PathBuf {
-    if let Some(h) = env_vars.get("HOME").or_else(|| env_vars.get("USERPROFILE")).filter(|v| !v.trim().is_empty()) {
-        return PathBuf::from(h);
-    }
-    if let (Some(drive), Some(path)) = (env_vars.get("HOMEDRIVE"), env_vars.get("HOMEPATH")) {
-        let combined = format!("{drive}{path}");
-        if !combined.trim().is_empty() {
-            return PathBuf::from(combined);
-        }
-    }
-    std::env::temp_dir()
+    PathBuf::from(env_vars.get("HOME").or_else(|| env_vars.get("USERPROFILE")).expect("HOME or USERPROFILE is set"))
 }
 
 pub fn path_to_file_url(path: &Path) -> String {
@@ -120,8 +105,7 @@ pub fn resolve_original_beeper_data_dir(
 
 pub fn current_original_beeper_data_dir(profile: Option<&str>) -> PathBuf {
     let env_map: HashMap<String, String> = std::env::vars().collect();
-    let home = resolve_home_dir(&env_map);
-    resolve_original_beeper_data_dir(OsKind::current(), profile, &env_map, &home)
+    resolve_original_beeper_data_dir(OsKind::current(), profile, &env_map, &resolve_home_dir(&env_map))
 }
 
 pub fn resolve_desktop_data_dir(
@@ -135,8 +119,7 @@ pub fn resolve_desktop_data_dir(
 
 pub fn current_desktop_data_dir(profile: Option<&str>) -> PathBuf {
     let env_map: HashMap<String, String> = std::env::vars().collect();
-    let home = resolve_home_dir(&env_map);
-    resolve_desktop_data_dir(OsKind::current(), profile, &env_map, &home)
+    resolve_desktop_data_dir(OsKind::current(), profile, &env_map, &resolve_home_dir(&env_map))
 }
 
 #[derive(Debug, Clone)]
@@ -226,46 +209,37 @@ pub struct SystemTrayState {
 
 impl SystemTrayState {
     pub fn new(unread_count: u32, muted: bool, try_native: bool) -> Self {
-        let (icon_rgba, icon_width, icon_height) = build_tray_icon_rgba(unread_count, muted);
-        let tooltip = Self::format_tooltip(unread_count, muted);
-        let menu_items = vec![
-            "Open Beeper".to_string(),
-            format!("Unread Chats ({unread_count})"),
-            if muted { "Unmute Notifications".to_string() } else { "Mute Notifications (DND)".to_string() },
-            "Quit Beeper".to_string(),
-        ];
-        Self {
+        let mut tray = Self {
             unread_count,
             muted,
             window_visible: true,
-            tooltip,
-            icon_rgba,
-            icon_width,
-            icon_height,
-            menu_items,
+            tooltip: String::new(),
+            icon_rgba: Vec::new(),
+            icon_width: 0,
+            icon_height: 0,
+            menu_items: Vec::new(),
             native_enabled: try_native,
-        }
+        };
+        tray.update(unread_count, muted);
+        tray
     }
 
-    fn format_tooltip(unread_count: u32, muted: bool) -> String {
-        match (unread_count, muted) {
+    pub fn update(&mut self, unread_count: u32, muted: bool) {
+        (self.icon_rgba, self.icon_width, self.icon_height) = build_tray_icon_rgba(unread_count, muted);
+        self.tooltip = match (unread_count, muted) {
             (0, false) => "Beeper — All caught up".to_string(),
             (0, true) => "Beeper — Notifications muted (DND)".to_string(),
             (n, false) => format!("Beeper — {n} unread conversation(s)"),
             (n, true) => format!("Beeper — {n} unread (DND active)"),
-        }
-    }
-
-    pub fn update(&mut self, unread_count: u32, muted: bool) {
+        };
+        let mute = if muted { "Unmute Notifications" } else { "Mute Notifications (DND)" };
+        self.menu_items = vec![
+            "Open Beeper".to_string(),
+            format!("Unread Chats ({unread_count})"),
+            mute.to_string(),
+            "Quit Beeper".to_string(),
+        ];
         self.unread_count = unread_count;
         self.muted = muted;
-        let (rgba, w, h) = build_tray_icon_rgba(unread_count, muted);
-        self.icon_rgba = rgba;
-        self.icon_width = w;
-        self.icon_height = h;
-        self.tooltip = Self::format_tooltip(unread_count, muted);
-        self.menu_items[1] = format!("Unread Chats ({unread_count})");
-        self.menu_items[2] =
-            if muted { "Unmute Notifications".to_string() } else { "Mute Notifications (DND)".to_string() };
     }
 }
