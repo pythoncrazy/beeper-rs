@@ -369,7 +369,7 @@ impl BeeperStore {
     }
 
     fn load_from_sqlite_or_seed(&mut self) {
-        let (state, bridges, settings, chats, messages, assets) = {
+        let (state, bridges, settings, seq, chats, messages, assets) = {
             let conn = self.db.lock().unwrap();
             let kv = |k: &str| {
                 conn.query_row("SELECT value FROM key_values WHERE key = ?1", [k], |r| r.get::<_, String>(0))
@@ -384,6 +384,7 @@ impl BeeperStore {
                 kv("beeperState"),
                 kv("bridgeAccounts"),
                 kv("beeperSettings"),
+                kv("nextSeq"),
                 rows("SELECT json FROM beeper_rs_chats"),
                 rows("SELECT json FROM beeper_rs_messages ORDER BY sort_key ASC"),
                 rows("SELECT json FROM beeper_rs_assets"),
@@ -408,7 +409,8 @@ impl BeeperStore {
             self.assets_by_mxc.insert(asset.mxc_url.clone(), asset.upload_id.clone());
             self.assets.insert(asset.upload_id.clone(), asset);
         }
-        if chats.is_empty() {
+        let seeded = chats.is_empty();
+        if seeded {
             assert!(messages.is_empty(), "stored messages without chats");
             self.seed_default_workspace();
         } else {
@@ -421,7 +423,13 @@ impl BeeperStore {
         }
         assert!(self.chat_idx_by_id.contains_key(NOTE_CHAT_ID), "store has no Note to self chat");
         self.rebuild_accounts_from_bridges();
-        self.next_seq = 1000 + self.messages.len() as u64 + self.chats.len() as u64;
+        self.next_seq = match seq {
+            Some(s) => s.parse().expect("parse stored nextSeq"),
+            None => {
+                assert!(seeded, "stored chats without a stored nextSeq");
+                1000 + self.messages.len() as u64 + self.chats.len() as u64
+            }
+        };
     }
 
     fn seed_default_workspace(&mut self) {
@@ -530,6 +538,10 @@ impl BeeperStore {
 
     pub fn next_id(&mut self, prefix: &str) -> String {
         self.next_seq += 1;
+        self.exec(
+            "INSERT OR REPLACE INTO key_values (key, value) VALUES ('nextSeq', ?1)",
+            params![self.next_seq.to_string()],
+        );
         format!("{prefix}_{}", self.next_seq)
     }
 

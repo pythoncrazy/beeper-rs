@@ -203,11 +203,25 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert!(!isolated_copy_dir.join("GPUCache").exists());
     assert!(isolated_copy_dir.join("media").join("orig_sample.bin").exists());
     assert_eq!(isolated_store.beeper_state.user_id, "@imported_from_original:beeper.com");
-    isolated_store
+    let (_, sent_id, _) = isolated_store
         .send_message("!wa_eric:beeper.com", Some("Mutating isolated copy only".to_string()), None, None)
         .unwrap();
     let orig_db_after = std::fs::read(orig_dir.join("index.db")).unwrap();
     assert_eq!(orig_db_snapshot, orig_db_after, "original BeeperTexts/index.db must never be modified");
+    let first = isolated_store.messages[0].clone();
+    isolated_store.delete_message(&first.chat_id, &first.id).unwrap();
+    drop(isolated_store);
+    let mut reopened =
+        BeeperStore::from_config(CentralConfig::new(isolated_copy_dir.clone(), "127.0.0.1".into(), 23379, None));
+    let (_, after_restart_id, _) =
+        reopened.send_message("!wa_eric:beeper.com", Some("After restart".to_string()), None, None).unwrap();
+    assert_ne!(sent_id, after_restart_id, "message IDs stay unique across restarts");
+    let eric_keys: Vec<&str> = reopened.chat_msg_indices["!wa_eric:beeper.com"]
+        .iter()
+        .map(|&i| reopened.messages[i].sort_key.as_str())
+        .collect();
+    assert!(eric_keys.windows(2).all(|w| w[0] < w[1]), "new messages sort after stored ones: {eric_keys:?}");
+    drop(reopened);
     std::fs::remove_dir_all(&orig_dir).unwrap();
     std::fs::remove_dir_all(&isolated_copy_dir).unwrap();
 
