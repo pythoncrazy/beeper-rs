@@ -127,7 +127,6 @@ name = "beeper-api"
 version = "4.3.176"
 dependencies = [
  "beeper-core",
- "rusqlite",
  "serde",
  "serde_json",
  "tokio",

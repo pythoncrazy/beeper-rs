@@ -1,21 +1,22 @@
 use beeper_api::{
-    client::{extract_state_from_index_db, BeeperClient},
+    client::BeeperClient,
     http::{read_message, StatusCode},
     server::serve_http,
 };
 use beeper_core::{
     config::{is_original_beeper_dir, CentralConfig, APP_BUNDLE_ID, DEFAULT_RECOVERY_CODE},
+    import::read_beeper_data,
     models::*,
     platform::{
         build_tray_icon_rgba, file_url_to_path, generate_os_autostart_manifest, open_url_or_path_command,
         path_to_file_url, resolve_desktop_data_dir, resolve_original_beeper_data_dir, DisplayServerKind, OsKind,
         SystemTrayState,
     },
-    store::{BeeperStore, SharedStore, NOTE_CHAT_ID},
+    store::{BeeperStore, Setup, SharedStore, NOTE_CHAT_ID},
     theme::{parse_css_px, ResolvedTheme},
 };
 use beeper_ui::{
-    login::{LoginMsg, Outcome, Screen},
+    login::{Login, LoginMsg, Outcome, Screen},
     search_settings_catalog,
     style::{fw, icon, ALL_FONTS},
     write_rgba_png, BeeperGuiApp, InboxTab, SettingsTab, UiMessage,
@@ -220,70 +221,217 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert_eq!(win_cmd, "cmd");
     assert_eq!(win_args[1], "start");
 
-    let (orig_dir, isolated_copy_dir) = (temp_dir("BeeperTexts-orig"), temp_dir("BeeperRs-isolated"));
+    let (orig_dir, rs_dir) = (temp_dir("BeeperTexts-orig"), temp_dir("BeeperRs-import"));
     std::fs::create_dir_all(orig_dir.join("media")).unwrap();
-    std::fs::create_dir_all(orig_dir.join("GPUCache")).unwrap();
     std::fs::write(orig_dir.join("SingletonLock"), b"locked_by_electron").unwrap();
-    std::fs::write(orig_dir.join("GPUCache").join("data_0"), b"gpu_cache_blob").unwrap();
-    std::fs::write(orig_dir.join("media").join("orig_sample.bin"), b"ORIG_MEDIA").unwrap();
     {
-        let orig_conn = Connection::open(orig_dir.join("index.db")).unwrap();
-        orig_conn
+        let account = Connection::open(orig_dir.join("account.db")).unwrap();
+        account
+            .execute_batch(
+                "CREATE TABLE account (user_id TEXT NOT NULL, device_id TEXT NOT NULL, access_token TEXT, homeserver TEXT NOT NULL);
+                 INSERT INTO account VALUES ('@emile:beeper.com', 'DEV_EMILE', 'syt_emile', 'https://matrix.beeper.com');",
+            )
+            .unwrap();
+        let index = Connection::open(orig_dir.join("index.db")).unwrap();
+        index
             .execute_batch(
                 "CREATE TABLE key_values ('key' VARCHAR NOT NULL, 'value' JSON NOT NULL, PRIMARY KEY(key));
-                 CREATE TABLE messages (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, body TEXT);",
+                 CREATE TABLE threads ('threadID' VARCHAR NOT NULL, 'accountID' VARCHAR NOT NULL, 'thread' JSON NOT NULL,
+                     'timestamp' INTEGER, is_label INTEGER NOT NULL DEFAULT 0, room_type TEXT, PRIMARY KEY(threadID));
+                 CREATE TABLE messages ('messageID' VARCHAR NOT NULL, 'accountID' VARCHAR NOT NULL, 'timestamp' INTEGER NOT NULL,
+                     'threadID' VARCHAR NOT NULL, 'message' JSON NOT NULL, PRIMARY KEY(accountID, messageID));
+                 CREATE TABLE participants (account_id TEXT NOT NULL, room_id TEXT NOT NULL, id TEXT NOT NULL, full_name TEXT,
+                     nickname TEXT, img_url TEXT, is_verified INTEGER, cannot_message INTEGER, is_self INTEGER,
+                     is_network_bot INTEGER, added_by TEXT, is_admin INTEGER, is_pending INTEGER, has_exited INTEGER);
+                 INSERT INTO key_values VALUES ('beeperState', '{\"user_id\":\"\",\"access_token\":\"\"}');
+                 INSERT INTO key_values VALUES ('nextSeq', 1234);
+                 INSERT INTO key_values VALUES ('userProfile', '{\"fullName\":\"Émile Zola\",\"username\":\"emile\",\"email\":\"emile@example.com\"}');",
             )
             .unwrap();
-        let real_beeper_state_json = r#"{"access_token":"bp_tok_from_original_beeper","device_id":"ORIG_DEV_01","user_id":"@imported_from_original:beeper.com","homeserver":"https://matrix.beeper.com","first_sync_done":true,"initialized":true,"secret_storage":true,"cross_signing":true,"verified":true,"key_backup":true,"has_backed_up_code":true,"secrets":{"master_key":"mk_orig","self_signing_key":"ssk_orig","user_signing_key":"usk_orig","megolm_backup_key":"mbk_orig","recovery_code":"EsTc orig"}}"#;
-        let real_bridges_json = r#"[{"bridgeID":"whatsapp","accountID":"wa_1","displayName":"WhatsApp","bridge":{"provider":"cloud","type":"whatsapp","state":"RUNNING"},"network":"WhatsApp","profile":{},"state":{"state":"CONNECTED"}},{"bridgeID":"local-signal","accountID":"sig_1","displayName":"Signal","bridge":{"provider":"local","type":"signal","state":"RUNNING"},"network":"Signal","profile":{},"state":{"state":"CONNECTED"}}]"#;
-        orig_conn
-            .execute(
-                "INSERT INTO key_values (key, value) VALUES (?1, ?2)",
-                params!["beeperState", real_beeper_state_json],
-            )
-            .unwrap();
-        orig_conn
-            .execute(
-                "INSERT INTO key_values (key, value) VALUES (?1, ?2)",
-                params!["bridgeAccounts", real_bridges_json],
-            )
-            .unwrap();
+        let thread = |id: &str, acc: &str, ts: i64, label: i64, json: Value| {
+            index
+                .execute(
+                    "INSERT INTO threads VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+                    params![id, acc, json.to_string(), ts, label],
+                )
+                .unwrap();
+        };
+        thread(
+            "!wa:beeper.local",
+            "local-whatsapp_ba_Xq9",
+            1_760_000_000_000,
+            0,
+            json!({"type": "single", "unreadCount": 2}),
+        );
+        thread(
+            "!dc:beeper.local",
+            "discordgo",
+            1_760_000_100_000,
+            0,
+            json!({"title": "Rust Café ☕", "type": "group", "isPinned": true, "mutedUntil": "forever"}),
+        );
+        thread("!sl:beeper.local", "slackgo.T0123", 1_760_000_200_000, 0, json!({"type": "group", "isArchived": true}));
+        thread(
+            "!mx:beeper.local",
+            "hungryserv",
+            1_760_000_300_000,
+            0,
+            json!({"title": "", "type": "single", "isLowPriority": 1}),
+        );
+        thread(
+            "!zz:beeper.local",
+            "brandnewgo",
+            1_760_000_400_000,
+            0,
+            json!({"title": "Unknown Network", "type": "single"}),
+        );
+        thread("label_inbox", "hungryserv", 1_760_000_500_000, 1, json!({"title": "Label"}));
+        let person = |room: &str, id: &str, name: Option<&str>, nick: Option<&str>, me: i64, exited: i64| {
+            index
+                .execute(
+                    "INSERT INTO participants (account_id, room_id, id, full_name, nickname, is_self, cannot_message, has_exited)
+                     VALUES ('x', ?1, ?2, ?3, ?4, ?5, 0, ?6)",
+                    params![room, id, name, nick, me, exited],
+                )
+                .unwrap();
+        };
+        person("!wa:beeper.local", "@emile:beeper.com", Some("Émile Zola"), None, 1, 0);
+        person("!wa:beeper.local", "@wa_ana:beeper.local", Some("Ana Núñez"), None, 0, 0);
+        person("!dc:beeper.local", "@dc_bo:beeper.local", None, Some("Bo"), 0, 0);
+        person("!dc:beeper.local", "@dc_cy:beeper.local", Some("Cy"), None, 0, 0);
+        person("!dc:beeper.local", "@dc_gone:beeper.local", Some("Gone"), None, 0, 1);
+        person("!sl:beeper.local", "@sl_x:beeper.local", None, None, 0, 0);
+        let message = |id: &str, room: &str, ts: i64, json: Value| {
+            index
+                .execute("INSERT INTO messages VALUES (?1, 'acc', ?2, ?3, ?4)", params![id, ts, room, json.to_string()])
+                .unwrap();
+        };
+        message(
+            "$m1",
+            "!wa:beeper.local",
+            1_760_000_001_000,
+            json!({"senderID": "@wa_ana:beeper.local", "text": "¡Hola! https://example.com/a"}),
+        );
+        message(
+            "$m2",
+            "!wa:beeper.local",
+            1_760_000_002_000,
+            json!({"senderID": "@emile:beeper.com", "isSender": true, "text": "Salut", "linkedMessageID": "$missing"}),
+        );
+        message(
+            "$m3",
+            "!dc:beeper.local",
+            1_760_000_101_000,
+            json!({"senderID": "@dc_bo:beeper.local", "attachments": [{"type": "audio", "isVoiceNote": true}]}),
+        );
+        message(
+            "$m4",
+            "!dc:beeper.local",
+            1_760_000_102_000,
+            json!({"senderID": "@dc_stranger:beeper.local", "text": "who am I", "linkedMessageID": "$m3", "reactions": [{"id": "r1", "participantID": "@dc_cy:beeper.local", "reactionKey": "👍"}]}),
+        );
+        message(
+            "$m5",
+            "!sl:beeper.local",
+            1_760_000_201_000,
+            json!({"senderID": "@sl_x:beeper.local", "attachments": [{"type": "unknown"}, {"type": "img", "size": {"width": 64, "height": 64}}]}),
+        );
+        message(
+            "$m6",
+            "!sl:beeper.local",
+            1_760_000_202_000,
+            json!({"senderID": "@sl_x:beeper.local", "text": "hidden", "isHidden": true}),
+        );
+        message(
+            "$m7",
+            "label_inbox",
+            1_760_000_501_000,
+            json!({"senderID": "@x:beeper.local", "text": "label message"}),
+        );
     }
-    let orig_db_snapshot = std::fs::read(orig_dir.join("index.db")).unwrap();
+    let originals = |d: &PathBuf| ["index.db", "account.db"].map(|f| std::fs::read(d.join(f)).unwrap());
+    let before = originals(&orig_dir);
+    assert!(read_beeper_data(&rs_dir).is_err(), "a dir without Beeper Desktop data has nothing to import");
 
-    let (ext_orig_state, ext_orig_bridges) = extract_state_from_index_db(&orig_dir);
-    assert_eq!(ext_orig_state["user_id"], "@imported_from_original:beeper.com");
-    assert_eq!(ext_orig_bridges[1]["bridgeID"], "local-signal");
-
-    let isolated_cfg = CentralConfig::new(isolated_copy_dir.clone(), "127.0.0.1".to_string(), 23379, None)
-        .with_source_beeper_dir(Some(orig_dir.clone()));
-    let mut isolated_store = BeeperStore::from_config(isolated_cfg);
-    assert_eq!(isolated_store.copied_files_from_source, 2);
-    assert!(!isolated_copy_dir.join("SingletonLock").exists());
-    assert!(!isolated_copy_dir.join("GPUCache").exists());
-    assert!(isolated_copy_dir.join("media").join("orig_sample.bin").exists());
-    assert_eq!(isolated_store.beeper_state.user_id, "@imported_from_original:beeper.com");
-    assert_eq!(isolated_store.beeper_state.access_token, "bp_tok_from_original_beeper");
-    assert!(isolated_store.valid_tokens.contains("bp_tok_from_original_beeper"));
-    assert!(isolated_store.bridge_accounts.is_empty(), "Beeper bridgeAccounts are not imported");
-    assert_eq!(isolated_store.chats.len(), 1, "an imported account starts with only Note to self");
-    let (_, sent_id, _) =
-        isolated_store.send_message(NOTE_CHAT_ID, Some("Mutating isolated copy only".to_string()), None, None).unwrap();
-    let orig_db_after = std::fs::read(orig_dir.join("index.db")).unwrap();
-    assert_eq!(orig_db_snapshot, orig_db_after, "original BeeperTexts/index.db must never be modified");
-    isolated_store.delete_message(NOTE_CHAT_ID, &sent_id).unwrap();
-    drop(isolated_store);
-    let mut reopened =
-        BeeperStore::from_config(CentralConfig::new(isolated_copy_dir.clone(), "127.0.0.1".into(), 23379, None));
-    let (_, after_restart_id, _) =
-        reopened.send_message(NOTE_CHAT_ID, Some("After restart".to_string()), None, None).unwrap();
-    assert_ne!(sent_id, after_restart_id, "message IDs stay unique across restarts");
-    let eric_keys: Vec<&str> =
-        reopened.chat_msg_indices[NOTE_CHAT_ID].iter().map(|&i| reopened.messages[i].sort_key.as_str()).collect();
-    assert!(eric_keys.windows(2).all(|w| w[0] < w[1]), "new messages sort after stored ones: {eric_keys:?}");
+    let fresh = BeeperStore::from_config(CentralConfig::new(rs_dir.clone(), "127.0.0.1".into(), 23379, None));
+    assert!(fresh.setup.is_none() && !fresh.signed_in() && fresh.chats.is_empty(), "a new data dir starts empty");
+    assert!(!rs_dir.join("index.db").exists() && !rs_dir.join("account.db").exists(), "no Beeper files are copied");
+    let shared: SharedStore = Arc::new(RwLock::new(fresh));
+    let mut gui = BeeperGuiApp::new(shared.clone(), false);
+    gui.login_window = Some(iced::window::Id::unique());
+    gui.login = Login::new(Some(orig_dir.clone()));
+    {
+        let mut sim = simulator(gui.view_login());
+        assert!(sim.find("Copy from Beeper Desktop").is_ok() && sim.find("Start Fresh").is_ok());
+    }
+    let data = read_beeper_data(&orig_dir).expect("read the Beeper Desktop fixture");
+    let _ = gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Imported(Arc::new(data))))));
+    assert_eq!(before, originals(&orig_dir), "Beeper Desktop files must never be modified");
+    assert!(gui.login_window.is_none() && gui.main_window.is_some(), "an imported session opens the app");
+    let chats: Vec<(String, String)> = {
+        let st = shared.read().unwrap();
+        assert_eq!(st.setup, Some(Setup::Imported));
+        assert_eq!(st.beeper_state.user_id, "@emile:beeper.com");
+        assert!(st.valid_tokens.contains("syt_emile"));
+        assert_eq!(st.me().email.as_deref(), Some("emile@example.com"));
+        assert_eq!(st.me().full_name.as_deref(), Some("Émile Zola"));
+        let title = |id: &str| st.chats[st.chat_idx_by_id[id]].title.as_str();
+        assert_eq!(title("!wa:beeper.local"), "Ana Núñez", "a single chat without a title uses the other person");
+        assert_eq!(title("!sl:beeper.local"), "@sl_x:beeper.local");
+        assert_eq!(title("!mx:beeper.local"), "Unnamed chat");
+        assert!(!st.chat_idx_by_id.contains_key("label_inbox"), "label threads are not chats");
+        let network =
+            |id: &str| beeper_core::config::account_network(&st.chats[st.chat_idx_by_id[id]].account_id).bridge_id;
+        assert_eq!(
+            ["!wa:beeper.local", "!dc:beeper.local", "!sl:beeper.local", "!mx:beeper.local", "!zz:beeper.local"]
+                .map(network),
+            ["whatsapp", "discord", "slack", "hungryserv", "hungryserv"]
+        );
+        let dc = &st.chats[st.chat_idx_by_id["!dc:beeper.local"]];
+        assert!(dc.is_pinned == Some(true) && dc.is_muted == Some(true) && dc.participants.items.len() == 2);
+        let msg = |id: &str| &st.messages[st.msg_idx_by_id[id]];
+        assert_eq!(msg("$m3").sender_name.as_deref(), Some("Bo"));
+        assert_eq!(msg("$m3").attachments[0].file_name.as_deref(), Some("Voice message"));
+        assert_eq!(msg("$m4").sender_name.as_deref(), Some("@dc_stranger:beeper.local"));
+        assert_eq!(msg("$m4").linked_message_id.as_deref(), Some("$m3"));
+        assert_eq!(msg("$m2").linked_message_id, None, "links to messages that were not imported are dropped");
+        assert_eq!(msg("$m1").timestamp, "2025-10-09T08:53:21.000Z");
+        assert!(!st.msg_idx_by_id.contains_key("$m6") && !st.msg_idx_by_id.contains_key("$m7"));
+        st.chats.iter().map(|c| (c.id.clone(), c.title.clone())).collect()
+    };
+    assert_eq!(chats.len(), 6);
+    for (id, title) in &chats {
+        gui.select_chat(id);
+        assert!(simulator(gui.view_main()).find(title.as_str()).is_ok(), "chat {title} renders");
+    }
+    assert!(simulator(gui.view_settings()).find("emile@example.com").is_ok());
+    drop((gui, shared));
+    let mut reopened = BeeperStore::from_config(CentralConfig::new(rs_dir.clone(), "127.0.0.1".into(), 23379, None));
+    assert_eq!(reopened.setup, Some(Setup::Imported));
+    assert!(reopened.signed_in() && reopened.chats.len() == 6 && reopened.messages.len() == 5);
+    let (_, sent_id, _) = reopened.send_message(NOTE_CHAT_ID, Some("After restart".into()), None, None).unwrap();
+    let keys: Vec<&str> = reopened.messages.iter().map(|m| m.sort_key.as_str()).collect();
+    assert!(keys.windows(2).all(|w| w[0] < w[1]), "new messages sort after imported ones: {keys:?}");
+    reopened.delete_message(NOTE_CHAT_ID, &sent_id).unwrap();
     drop(reopened);
+    let mut fresh_gui = BeeperGuiApp::new(
+        Arc::new(RwLock::new(BeeperStore::from_config(CentralConfig::new(
+            temp_dir("BeeperRs-fresh"),
+            "127.0.0.1".into(),
+            23379,
+            None,
+        )))),
+        false,
+    );
+    fresh_gui.login = Login::new(Some(orig_dir.clone()));
+    let _ = fresh_gui.update(UiMessage::Login(LoginMsg::Fresh));
+    assert_eq!(fresh_gui.login.screen, Screen::Welcome);
+    assert_eq!(fresh_gui.store.read().unwrap().setup, Some(Setup::Fresh));
+    let fresh_dir = fresh_gui.store.read().unwrap().data_dir.clone();
+    drop(fresh_gui);
     std::fs::remove_dir_all(&orig_dir).unwrap();
-    std::fs::remove_dir_all(&isolated_copy_dir).unwrap();
+    std::fs::remove_dir_all(&rs_dir).unwrap();
+    std::fs::remove_dir_all(&fresh_dir).unwrap();
 
     let mac_manifest = generate_os_autostart_manifest(
         OsKind::MacOs,
