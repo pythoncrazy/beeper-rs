@@ -15,7 +15,7 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMA
 
 ## 3. Third-Party Open-Source Assets
 
-This repository distributes original software under the Unlicense, MIT License, or Apache License 2.0.
+This repository distributes original software under the MIT License.
 This repository also includes third-party open-source assets under their respective licenses:
 
 ### A. Beeper Desktop API Specification (`assets/openapi.json`)
@@ -34,7 +34,6 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ### B. Beeper Community Themes (`assets/themes/*.css`)
 
 Source repository: `https://github.com/beeper/themes`
-License: Apache License, Version 2.0
+License: Apache License, Version 2.0 (`http://www.apache.org/licenses/LICENSE-2.0`)
 
-The files in `assets/themes/` come from the `beeper/themes` repository.
-See `LICENSE-APACHE` for the full text of the Apache License, Version 2.0.
+The files in `assets/themes/` come from the `beeper/themes` repository and are licensed under the Apache License, Version 2.0.

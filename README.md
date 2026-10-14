@@ -69,5 +69,5 @@ curl -s -H "Authorization: Bearer beeper-local-dev-token" http://127.0.0.1:23373
 
 ## License
 
-This project is licensed under the Unlicense, MIT License, or Apache License 2.0 at your option.
-See `LICENSE`, `LICENSE-MIT`, `LICENSE-APACHE`, and `NOTICE` for details.
+This project is licensed under the MIT License.
+See `LICENSE` and `NOTICE` for details.

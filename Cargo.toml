@@ -2,7 +2,7 @@
 name = "beeper-rs"
 version = "4.3.176"
 edition = "2021"
-license = "Unlicense OR MIT OR Apache-2.0"
+license = "MIT"
 repository = "https://github.com/pythoncrazy/beeper-rs"
 description = "Unofficial, independent Rust client and server for the Beeper Desktop API protocol (not affiliated with Beeper Inc. or Automattic Inc.)."
 
