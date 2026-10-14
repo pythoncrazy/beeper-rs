@@ -12,6 +12,7 @@
 
 ## Cross-Platform and Rust-Native Architecture
 
+- **Cargo workspace**: `crates/beeper-core` contains the data models, configuration, SQLite store, search index, platform helpers, and CSS theme compiler. `crates/beeper-api` contains the Beeper Desktop API server and client. `crates/beeper-ui` contains the iced interface, fonts, icons, and network logos. The root `beeper-rs` crate contains the binary and the end-to-end tests.
 - **Native Iced 0.14 GUI**: Uses `iced` (`0.14.0`) with `wgpu` (`27.0.1`) GPU acceleration and `tiny-skia` software fallback, adapted from the `navify` architecture (`https://github.com/pythoncrazy/navify`).
 - **Bundled typography, icons, and network logos**: Embeds `Inter` (`Regular`, `Medium`, `SemiBold`, `Bold`), a `Lucide` icon subset, and CC0 `Simple Icons` network logos directly in the binary.
 - **Beeper Desktop 4.3 layout**: Renders the `68px` account rail, the compact Inbox sidebar (`190px` default, drag-resizable) with pinned chats, the rounded conversation card with a floating chat header, date dividers, link previews, quoted replies, voice notes, files, polls, and reactions, the Beeper composer, the Chat Info panel, and a separate Settings window with the Beeper preference groups.

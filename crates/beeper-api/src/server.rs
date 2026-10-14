@@ -1,11 +1,11 @@
-use crate::config::{
+use beeper_core::config::{
     base64_decode_standard, base64_encode_standard, base64_encode_url_nopad,
     network_spec_by_bridge, now_rfc3339_millis, sha1, sha256, url_decode, APP_BUNDLE_ID, APP_NAME,
     APP_VERSION, NETWORK_SPECS, OPENAPI_SPEC_JSON,
 };
-use crate::models::*;
-use crate::platform::OsKind;
-use crate::store::*;
+use beeper_core::models::*;
+use beeper_core::platform::OsKind;
+use beeper_core::store::*;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -16,7 +16,6 @@ use tokio::net::{
     TcpListener, TcpStream,
 };
 
-pub type SharedStore = Arc<RwLock<BeeperStore>>;
 pub type Bytes = Vec<u8>;
 
 pub struct State<T>(pub T);
@@ -2209,7 +2208,7 @@ async fn download_asset_handler(
         .unwrap()
         .resolve_asset_path(url)
         .expect("asset exists");
-    Json(json!({ "srcURL": crate::platform::path_to_file_url(&path) })).into_response()
+    Json(json!({ "srcURL": beeper_core::platform::path_to_file_url(&path) })).into_response()
 }
 
 async fn serve_asset_handler(

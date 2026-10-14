@@ -1,0 +1,3011 @@
+pub mod style;
+
+use crate::style::{
+    bold, bordered_box, brand_svg, btn_style, ell, ensure_fonts_loaded, fill_box, fw, hash_str,
+    hue, ic, icon, initials, input_style, med, pick_menu_style, pick_style, scroll_style, semi,
+    shadow_box, txt, Palette, ALL_FONTS, CLEAR,
+};
+use beeper_core::config::{now_unix_secs, APP_BUNDLE_ID, APP_VERSION, NETWORK_SPECS};
+use beeper_core::models::*;
+use beeper_core::platform::{open_url_or_path_command, DisplayServerKind, OsKind, SystemTrayState};
+use beeper_core::store::{
+    BeeperStore, SettingCatalogEntry, SharedStore, NOTE_CHAT_ID, SETTINGS_CATALOG,
+};
+use beeper_core::theme::ResolvedTheme;
+use iced::font::Weight;
+use iced::gradient::Linear;
+use iced::keyboard::{self, key::Named, Key, Modifiers};
+use iced::widget::scrollable::{Direction, Scrollbar};
+use iced::widget::{
+    button, column, container, mouse_area, operation, pick_list, rich_text, row, scrollable, span,
+    stack, svg, text_input, Column, Row, Space,
+};
+use iced::{
+    mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Padding,
+    Point, Radians, Right, Size, Subscription, Task, Theme,
+};
+
+pub type El<'a> = Element<'a, UiMessage>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InboxTab {
+    AllChats,
+    LowPriority,
+    Archived,
+    Reminders,
+    Drafts,
+    Unread,
+    Pinned,
+}
+
+impl InboxTab {
+    pub const fn label(self) -> &'static str {
+        [
+            "Inbox",
+            "Low Priority",
+            "Archive",
+            "Reminders",
+            "Drafts",
+            "Unread",
+            "Pinned",
+        ][self as usize]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTab {
+    Accounts,
+    General,
+    Appearance,
+    Notifications,
+    Hotkeys,
+    Devices,
+    Ai,
+    BeeperPlus,
+    Integrations,
+    Storage,
+    Help,
+    About,
+}
+
+impl SettingsTab {
+    pub const ALL: [Self; 12] = [
+        Self::Accounts,
+        Self::General,
+        Self::Appearance,
+        Self::Notifications,
+        Self::Hotkeys,
+        Self::Devices,
+        Self::Ai,
+        Self::BeeperPlus,
+        Self::Integrations,
+        Self::Storage,
+        Self::Help,
+        Self::About,
+    ];
+
+    pub const fn meta(self) -> (&'static str, char, u32) {
+        [
+            ("Accounts", icon::AT_SIGN, 0x9647e9),
+            ("General", icon::SETTINGS, 0x16b2ee),
+            ("Appearance", icon::PAINTBRUSH, 0xd736c9),
+            ("Notifications", icon::BELL, 0x1fb93d),
+            ("Hotkeys", icon::KEYBOARD, 0xeaa900),
+            ("Devices", icon::SMARTPHONE, 0xf54d0b),
+            ("AI", icon::SPARKLES, 0x1fc8d3),
+            ("Beeper Plus", icon::PLUS, 0x2a61fb),
+            ("Integrations", icon::PUZZLE, 0x7459ff),
+            ("Storage", icon::DATABASE, 0x35556a),
+            ("Help", icon::CIRCLE_HELP, 0x9a9aa1),
+            ("About", icon::INFO, 0x20b4a1),
+        ][self as usize]
+    }
+
+    fn for_section(section: &str) -> Self {
+        match section {
+            "Chat List" => Self::General,
+            "Appearance" | "Conversation View" => Self::Appearance,
+            "Notifications" => Self::Notifications,
+            "Voice & Media" => Self::Ai,
+            other => panic!("settings section {other} has no tab"),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub enum UiMessage {
+    Noop,
+    SelectTab(InboxTab),
+    SelectAccount(Option<String>),
+    SelectChat(String),
+    ComposerChanged(String),
+    SubmitComposer,
+    CancelComposeMode,
+    StartReply(String),
+    StartEdit(String, String),
+    DeleteMessage(String, String),
+    ToggleReaction(String, String, String),
+    ToggleBookmark(String),
+    MarkUnreadFromHere(String, String),
+    RetranscribeVoice(String),
+    VotePoll(String, String),
+    SendQuickVoiceNote,
+    SendQuickPoll,
+    ToggleAttachMenu,
+    SetReminder(String),
+    TogglePinChat(String),
+    ToggleMuteChat(String),
+    ToggleArchiveChat(String),
+    NotifyAnyway(String),
+    NicknameChanged(String),
+    SaveNickname,
+    ToggleSearch,
+    ToggleFilterMenu,
+    SearchChanged(String),
+    ClearSearch,
+    ToggleCommandPalette,
+    CommandQueryChanged(String),
+    ExecuteCommandChat(String),
+    OpenSettings(SettingsTab),
+    SelectSettingsTab(SettingsTab),
+    SettingsQueryChanged(String),
+    ToggleRightPanel,
+    ToggleDnd,
+    CycleTheme,
+    SelectTheme(ThemeChoice),
+    SelectLanguage(String),
+    SelectAfterArchive(&'static str),
+    SelectRemindLater(&'static str),
+    CustomCssChanged(String),
+    ToggleSettingBool(&'static str, bool),
+    ConnectBridge(String),
+    RecoveryInputChanged(String),
+    VerifyRecoveryCode,
+    VerifySasNow,
+    ClearOldMedia,
+    ExportChatJson(String),
+    OpenQuickLook(String, String),
+    OpenUrl(String),
+    CloseModals,
+    ToggleEditHistory(String),
+    HoverEnter(String),
+    HoverExit(String),
+    DragStart,
+    DragMoved(Point),
+    DragEnd,
+    WindowOpened(window::Id),
+    WindowClosed(window::Id),
+    ScreenshotCaptured(window::Id, window::Screenshot),
+    KeyPressed(Key, Modifiers),
+}
+
+impl std::fmt::Debug for UiMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UiMessage")
+    }
+}
+
+pub fn search_settings_catalog(query: &str) -> Vec<&'static SettingCatalogEntry> {
+    let q = query.trim().to_lowercase();
+    SETTINGS_CATALOG
+        .iter()
+        .filter(|e| {
+            [e.title, e.description, e.section]
+                .iter()
+                .any(|s| s.to_lowercase().contains(&q))
+        })
+        .collect()
+}
+
+pub const ALL_LANGUAGES: [LanguageChoice; 6] = [
+    LanguageChoice::English,
+    LanguageChoice::Spanish,
+    LanguageChoice::French,
+    LanguageChoice::Italian,
+    LanguageChoice::Portuguese,
+    LanguageChoice::German,
+];
+
+const AFTER_ARCHIVE: [&str; 3] = ["Do nothing", "Open next chat", "Open previous chat"];
+const REMIND_LATER: [&str; 3] = ["If no reply", "Always", "Never"];
+const WEEKDAYS: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+const HOTKEYS: [(&str, &str); 7] = [
+    ("Command bar", "Ctrl K"),
+    ("Open settings", "Ctrl ,"),
+    ("Search chats", "Ctrl F"),
+    ("Toggle chat info", "Ctrl ."),
+    ("Next chat", "Alt ↓"),
+    ("Previous chat", "Alt ↑"),
+    ("Close popups", "Esc"),
+];
+
+pub fn network_of(account_id: &str) -> Option<&'static NetworkSpec> {
+    let id = account_id.trim_start_matches("acc_");
+    NETWORK_SPECS.iter().find(|s| s.bridge_id == id)
+}
+
+fn network_name(account_id: &str) -> &'static str {
+    network_of(account_id).map_or("Beeper", |s| s.display_name)
+}
+
+fn brand_key(account_id: &str) -> &'static str {
+    network_of(account_id).map_or("beeper", |s| s.bridge_id)
+}
+
+pub fn format_short_ts(iso: &str, twenty_four: bool) -> String {
+    let (h, m) = (iso[11..13].parse::<u32>().expect("ISO hour"), &iso[14..16]);
+    if twenty_four {
+        return format!("{h:02}:{m}");
+    }
+    format!(
+        "{}:{m} {}",
+        (h + 11) % 12 + 1,
+        ["AM", "PM"][usize::from(h >= 12)]
+    )
+}
+
+fn day_num(iso: &str) -> i64 {
+    let n = |r: std::ops::Range<usize>| iso[r].parse::<i64>().expect("ISO date");
+    let (m, d) = (n(5..7), n(8..10));
+    let y = n(0..4) - i64::from(m <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
+}
+
+fn civil(days: i64) -> (i64, usize, i64) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (
+        yoe + era * 400 + i64::from(m <= 2),
+        m as usize,
+        doy - (153 * mp + 2) / 5 + 1,
+    )
+}
+
+fn day_label(iso: &str) -> String {
+    let (d, today) = (day_num(iso), now_unix_secs().div_euclid(86_400));
+    let wd = WEEKDAYS[(d + 4).rem_euclid(7) as usize];
+    match today - d {
+        0 => "Today".into(),
+        1 => "Yesterday".into(),
+        2..=6 => wd.into(),
+        _ => {
+            let ((y, m, dd), ty) = (civil(d), civil(today).0);
+            let year = if y == ty {
+                String::new()
+            } else {
+                format!(", {y}")
+            };
+            format!("{}, {} {dd}{year}", &wd[..3], MONTHS[m - 1])
+        }
+    }
+}
+
+fn list_ts(iso: &str, h24: bool) -> String {
+    let d = day_num(iso);
+    match now_unix_secs().div_euclid(86_400) - d {
+        0 => format_short_ts(iso, h24),
+        1 => "Yesterday".into(),
+        2..=6 => WEEKDAYS[(d + 4).rem_euclid(7) as usize][..3].into(),
+        _ => {
+            let (y, m, dd) = civil(d);
+            format!("{m}/{dd}/{:02}", y % 100)
+        }
+    }
+}
+
+fn human_size(n: u64) -> String {
+    match n {
+        0..1024 => format!("{n} B"),
+        1024..1_048_576 => format!("{:.0} KB", n as f64 / 1024.0),
+        _ => format!("{:.1} MB", n as f64 / 1_048_576.0),
+    }
+}
+
+fn ghost(p: &Palette, r: f32) -> impl Fn(&Theme, button::Status) -> button::Style + Copy {
+    btn_style([CLEAR, p.hover, p.selected], [p.text; 3], r)
+}
+
+fn icon_btn<'a>(
+    p: &Palette,
+    c: char,
+    size: f32,
+    frame: f32,
+    color: Color,
+    msg: UiMessage,
+) -> El<'a> {
+    button(container(ic(c, size).color(color)).center(frame))
+        .padding(0)
+        .style(ghost(p, 8.0))
+        .on_press(msg)
+        .into()
+}
+
+fn divider<'a>(p: &Palette, left: f32) -> El<'a> {
+    container(
+        container(Space::new())
+            .width(Fill)
+            .height(1)
+            .style(fill_box(p.divider.scale_alpha(0.4), 0.0)),
+    )
+    .padding(Padding::ZERO.left(left))
+    .into()
+}
+
+fn self_avatar<'a>(name: &str, size: f32) -> El<'a> {
+    let g = Linear::new(Radians(std::f32::consts::PI))
+        .add_stop(0.0, Color::from_rgb8(224, 170, 140))
+        .add_stop(1.0, Color::from_rgb8(186, 116, 84));
+    container(semi(initials(name)[..1].to_string(), size * 0.42).color(Color::WHITE))
+        .center(size)
+        .style(move |_: &Theme| container::Style {
+            background: Some(Background::Gradient(Gradient::Linear(g))),
+            border: iced::border::rounded(size / 2.0),
+            ..Default::default()
+        })
+        .into()
+}
+
+fn avatar<'a>(title: &str, size: f32) -> El<'a> {
+    let label = initials(title)[..1].to_string();
+    container(semi(label, size * 0.42).color(Color::WHITE))
+        .center(size)
+        .style(fill_box(hue(hash_str(title)), size / 2.0))
+        .into()
+}
+
+fn chat_avatar<'a>(chat: &Chat, me: &str, size: f32) -> El<'a> {
+    if chat.id == NOTE_CHAT_ID {
+        self_avatar(me, size)
+    } else {
+        avatar(&chat.title, size)
+    }
+}
+
+fn badged<'a>(p: &Palette, inner: El<'a>, account_id: &str, size: f32, badge: f32) -> El<'a> {
+    let ring = container(
+        svg(brand_svg(brand_key(account_id)))
+            .width(badge)
+            .height(badge),
+    )
+    .padding(1.5)
+    .style(fill_box(p.frame, badge));
+    let box_ = size + badge / 3.0;
+    stack![
+        inner,
+        container(ring)
+            .width(box_)
+            .height(box_)
+            .align_right(box_)
+            .align_bottom(box_)
+    ]
+    .width(box_)
+    .height(box_)
+    .into()
+}
+
+fn toggle<'a>(p: &Palette, on: bool, msg: UiMessage) -> El<'a> {
+    let knob = container(Space::new())
+        .width(16)
+        .height(16)
+        .style(fill_box(if on { p.toggle_on } else { p.toggle_off }, 8.0));
+    let track = container(knob)
+        .width(36)
+        .height(24)
+        .padding(2)
+        .align_y(Center)
+        .align_x(if on { Right } else { iced::Left });
+    button(track.style(bordered_box(CLEAR, p.toggle_off, 2.0, 12.0)))
+        .padding(0)
+        .style(btn_style([CLEAR; 3], [p.text; 3], 12.0))
+        .on_press(msg)
+        .into()
+}
+
+fn select<'a, T: ToString + PartialEq + Clone + 'a>(
+    p: &Palette,
+    options: impl std::borrow::Borrow<[T]> + 'a,
+    selected: T,
+    f: impl Fn(T) -> UiMessage + 'a,
+) -> El<'a> {
+    let chevron = pick_list::Icon {
+        font: iced::Font::with_name("lucide"),
+        code_point: icon::CHEVRON_DOWN,
+        size: Some(14.0.into()),
+        line_height: iced::widget::text::LineHeight::Relative(1.0),
+        shaping: iced::widget::text::Shaping::Basic,
+    };
+    pick_list(options, Some(selected), f)
+        .text_size(12)
+        .font(fw(Weight::Semibold))
+        .handle(pick_list::Handle::Static(chevron))
+        .padding([5, 10])
+        .style(pick_style(p.hover, p.selected, p.text, p.sub))
+        .menu_style(pick_menu_style(
+            p.elevated,
+            p.selected,
+            p.text,
+            p.prefs_border,
+        ))
+        .into()
+}
+
+fn pill_btn<'a>(p: &Palette, label: impl ToString, msg: UiMessage) -> El<'a> {
+    button(med(label.to_string(), 13.0).color(p.text))
+        .padding([5, 12])
+        .style(btn_style(
+            [p.hover, p.selected, p.selected],
+            [p.text; 3],
+            6.0,
+        ))
+        .on_press(msg)
+        .into()
+}
+
+fn plus_pill<'a>(p: &Palette) -> El<'a> {
+    container(
+        row![
+            semi("+", 12.0).color(p.text),
+            semi("Plus", 10.0).color(p.text)
+        ]
+        .spacing(2)
+        .align_y(Center),
+    )
+    .padding([2, 6])
+    .style(fill_box(p.received, 25.0))
+    .into()
+}
+
+fn pref_row<'a>(
+    p: &Palette,
+    title: impl ToString,
+    desc: Option<&str>,
+    extra: Option<El<'a>>,
+    control: El<'a>,
+) -> El<'a> {
+    let head = row![txt(title.to_string(), 13.0).color(p.text)]
+        .push(extra)
+        .spacing(6)
+        .align_y(Center);
+    let left = column![head]
+        .push(desc.map(|d| txt(d.to_string(), 12.0).color(p.sub)))
+        .spacing(3)
+        .width(Fill);
+    row![left, control]
+        .spacing(12)
+        .align_y(Center)
+        .padding([10, 14])
+        .into()
+}
+
+fn group<'a>(p: &Palette, title: Option<&str>, rows: Vec<El<'a>>) -> El<'a> {
+    let card = container(Column::with_children(rows))
+        .width(Fill)
+        .padding([4, 0])
+        .style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0));
+    column![]
+        .push(title.map(|t| container(med(t.to_string(), 12.0).color(p.weak)).padding([0, 4])))
+        .push(card)
+        .spacing(8)
+        .into()
+}
+
+pub struct BeeperGuiApp {
+    pub store: SharedStore,
+    pub os: OsKind,
+    pub display_server: DisplayServerKind,
+    pub tray: SystemTrayState,
+    pub theme: ResolvedTheme,
+    pub pal: Palette,
+    pub active_tab: InboxTab,
+    pub selected_account_filter: Option<String>,
+    pub selected_chat_id: Option<String>,
+    pub search_query: String,
+    pub show_search: bool,
+    pub show_filter_menu: bool,
+    pub show_attach_menu: bool,
+    pub command_palette_query: String,
+    pub composer_text: String,
+    pub reply_to_message_id: Option<String>,
+    pub editing_message_id: Option<String>,
+    pub nickname_edit_buffer: String,
+    pub recovery_code_input: String,
+    pub show_command_palette: bool,
+    pub active_settings_tab: SettingsTab,
+    pub settings_query: String,
+    pub show_right_panel: bool,
+    pub quick_look_target: Option<(String, String)>,
+    pub expanded_history_msg_id: Option<String>,
+    pub hovered_msg: Option<String>,
+    pub status_banner: String,
+    pub dnd_muted: bool,
+    pub sidebar_width: f32,
+    pub dragging: bool,
+    pub main_window: Option<window::Id>,
+    pub settings_window: Option<window::Id>,
+}
+
+impl BeeperGuiApp {
+    pub fn new(store: SharedStore, try_native_tray: bool) -> Self {
+        ensure_fonts_loaded();
+        let os = OsKind::current();
+        let display_server = os.detect_display_server(&std::env::vars().collect());
+        let (settings, unread, first_chat) = {
+            let st = store.read().unwrap();
+            let first = if st.chat_idx_by_id.contains_key(NOTE_CHAT_ID) {
+                NOTE_CHAT_ID.to_string()
+            } else {
+                st.chats[0].id.clone()
+            };
+            (st.settings.clone(), st.total_unread_chats(), first)
+        };
+        let theme = ResolvedTheme::compile(&settings);
+        let mut app = Self {
+            store,
+            os,
+            display_server,
+            tray: SystemTrayState::new(unread, false, try_native_tray),
+            pal: crate::style::palette(&theme),
+            theme,
+            active_tab: InboxTab::AllChats,
+            selected_account_filter: None,
+            selected_chat_id: None,
+            search_query: String::new(),
+            show_search: false,
+            show_filter_menu: false,
+            show_attach_menu: false,
+            command_palette_query: String::new(),
+            composer_text: String::new(),
+            reply_to_message_id: None,
+            editing_message_id: None,
+            nickname_edit_buffer: String::new(),
+            recovery_code_input: String::new(),
+            show_command_palette: false,
+            active_settings_tab: SettingsTab::General,
+            settings_query: String::new(),
+            show_right_panel: settings.show_right_panel_by_default,
+            quick_look_target: None,
+            expanded_history_msg_id: None,
+            hovered_msg: None,
+            status_banner: String::new(),
+            dnd_muted: false,
+            sidebar_width: 190.0,
+            dragging: false,
+            main_window: None,
+            settings_window: None,
+        };
+        app.select_chat(&first_chat);
+        app
+    }
+
+    pub fn boot(store: SharedStore) -> (Self, Task<UiMessage>) {
+        let app = Self::new(store, true);
+        let (_, open) = window::open(Self::window_settings(Size::new(1264.0, 893.0)));
+        (app, open.map(UiMessage::WindowOpened))
+    }
+
+    fn window_settings(size: Size) -> window::Settings {
+        window::Settings {
+            size,
+            min_size: Some(Size::new(640.0, 480.0)),
+            #[cfg(target_os = "linux")]
+            platform_specific: window::settings::PlatformSpecific {
+                application_id: APP_BUNDLE_ID.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn open_settings(&mut self, tab: SettingsTab) -> Task<UiMessage> {
+        self.active_settings_tab = tab;
+        if let Some(id) = self.settings_window {
+            return window::gain_focus(id);
+        }
+        let (id, open) = window::open(Self::window_settings(Size::new(793.0, 705.0)));
+        self.settings_window = Some(id);
+        open.map(UiMessage::WindowOpened)
+    }
+
+    pub fn title(&self, id: window::Id) -> String {
+        if Some(id) == self.settings_window {
+            "Settings"
+        } else {
+            "Beeper"
+        }
+        .into()
+    }
+
+    pub fn iced_theme(&self) -> Theme {
+        if self.theme.is_dark {
+            Theme::Dark
+        } else {
+            Theme::Light
+        }
+    }
+
+    pub fn refresh_theme_and_tray(&mut self) {
+        let (settings, unread) = {
+            let st = self.store.read().unwrap();
+            (st.settings.clone(), st.total_unread_chats())
+        };
+        self.theme = ResolvedTheme::compile(&settings);
+        self.pal = crate::style::palette(&self.theme);
+        self.tray.update(unread, self.dnd_muted);
+    }
+
+    pub fn visible_chats(&self) -> Vec<Chat> {
+        let st = self.store.read().unwrap();
+        let q_ids = (!self.search_query.trim().is_empty())
+            .then(|| st.chat_search_index.query_all_tokens(&self.search_query));
+        let mut list: Vec<Chat> = st
+            .chats
+            .iter()
+            .enumerate()
+            .filter(|(idx, c)| {
+                c.merged_into_chat_id.is_none()
+                    && self
+                        .selected_account_filter
+                        .as_ref()
+                        .is_none_or(|a| &c.account_id == a)
+                    && q_ids
+                        .as_ref()
+                        .is_none_or(|ids| ids.contains(&(*idx as u32)))
+                    && match self.active_tab {
+                        InboxTab::AllChats => c.flags & (CHAT_ARCHIVED | CHAT_LOW_PRIORITY) == 0,
+                        InboxTab::Unread => c.flags & CHAT_UNREAD != 0,
+                        InboxTab::Pinned => c.flags & CHAT_PINNED != 0,
+                        InboxTab::Drafts => c.draft.is_some(),
+                        InboxTab::Archived => c.flags & CHAT_ARCHIVED != 0,
+                        InboxTab::LowPriority => c.flags & CHAT_LOW_PRIORITY != 0,
+                        InboxTab::Reminders => c.reminder.is_some(),
+                    }
+            })
+            .map(|(_, c)| c.clone())
+            .collect();
+        let unread_top = st.settings.unread_chats_always_on_top;
+        list.sort_by(|a, b| {
+            let u = |c: &Chat| unread_top && c.flags & CHAT_UNREAD != 0;
+            u(b).cmp(&u(a))
+                .then_with(|| b.last_activity.cmp(&a.last_activity))
+        });
+        list
+    }
+
+    pub fn select_chat(&mut self, chat_id: &str) {
+        if let Some(prev_id) = self
+            .selected_chat_id
+            .clone()
+            .filter(|p| p != chat_id && self.editing_message_id.is_none())
+        {
+            let draft = self.composer_text.trim().to_string();
+            let draft = (!draft.is_empty()).then(|| ChatDraft {
+                text: Some(draft),
+                reply_to_message_id: self.reply_to_message_id.clone(),
+                attachments: Vec::new(),
+            });
+            let mut st = self.store.write().unwrap();
+            st.patch_chat(&prev_id, true, None, None)
+                .expect("mark previous chat read");
+            if draft.is_some() {
+                st.patch_chat(&prev_id, false, draft, None)
+                    .expect("save draft");
+            }
+        }
+        let mut st = self.store.write().unwrap();
+        let idx = st.resolve_chat_idx(chat_id).expect("selected chat exists");
+        self.selected_chat_id = Some(chat_id.to_string());
+        st.focused_chat_id = Some(chat_id.to_string());
+        let chat = &mut st.chats[idx];
+        chat.unread_count = 0;
+        chat.is_marked_unread = Some(false);
+        chat.sync_flags();
+        self.composer_text = chat
+            .draft
+            .as_ref()
+            .and_then(|d| d.text.clone())
+            .unwrap_or_default();
+        self.nickname_edit_buffer = chat
+            .participants
+            .items
+            .iter()
+            .find(|u| u.is_self != Some(true))
+            .and_then(|u| u.custom_nickname.clone().or_else(|| u.full_name.clone()))
+            .unwrap_or_default();
+        self.reply_to_message_id = None;
+        self.editing_message_id = None;
+        drop(st);
+        self.refresh_theme_and_tray();
+    }
+
+    pub fn submit_composer(&mut self) {
+        let chat_id = self.selected_chat_id.clone().expect("a chat is selected");
+        let text = self.composer_text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let mut st = self.store.write().unwrap();
+        if let Some(edit_id) = self.editing_message_id.take() {
+            st.edit_message(&chat_id, &edit_id, text)
+                .expect("edit message");
+        } else {
+            st.send_message(&chat_id, Some(text), self.reply_to_message_id.take(), None)
+                .expect("send message");
+            st.patch_chat(&chat_id, true, None, None)
+                .expect("mark chat read");
+        }
+        self.composer_text.clear();
+        drop(st);
+        self.refresh_theme_and_tray();
+    }
+
+    pub fn step_chat(&mut self, delta: isize) {
+        let chats = self.visible_chats();
+        if chats.is_empty() {
+            return;
+        }
+        let cur = self
+            .selected_chat_id
+            .as_ref()
+            .and_then(|id| chats.iter().position(|c| &c.id == id))
+            .unwrap_or(0);
+        let next = (cur as isize + delta).rem_euclid(chats.len() as isize) as usize;
+        self.select_chat(&chats[next].id.clone());
+    }
+
+    pub fn update(&mut self, msg: UiMessage) -> Task<UiMessage> {
+        match msg {
+            UiMessage::SelectTab(tab) => self.active_tab = tab,
+            UiMessage::SelectAccount(acc) => self.selected_account_filter = acc,
+            UiMessage::SelectChat(id) => self.select_chat(&id),
+            UiMessage::ComposerChanged(v) => self.composer_text = v,
+            UiMessage::SubmitComposer => self.submit_composer(),
+            UiMessage::CancelComposeMode => {
+                self.reply_to_message_id = None;
+                self.editing_message_id = None;
+                self.composer_text.clear();
+            }
+            UiMessage::StartReply(mid) => {
+                self.editing_message_id = None;
+                self.reply_to_message_id = Some(mid);
+                return operation::focus("composer-input");
+            }
+            UiMessage::StartEdit(mid, old_txt) => {
+                self.reply_to_message_id = None;
+                self.editing_message_id = Some(mid);
+                self.composer_text = old_txt;
+                return operation::focus("composer-input");
+            }
+            UiMessage::DeleteMessage(cid, mid) => {
+                let _ = self.store.write().unwrap().delete_message(&cid, &mid);
+            }
+            UiMessage::ToggleReaction(cid, mid, key) => {
+                let mut st = self.store.write().unwrap();
+                let has_rx = st
+                    .msg_idx_by_id
+                    .get(&mid)
+                    .map(|&i| {
+                        st.messages[i].reactions.iter().any(|r| {
+                            r.reaction_key == key && r.participant_id.starts_with("@self_")
+                        })
+                    })
+                    .unwrap_or(false);
+                if has_rx {
+                    let _ = st.remove_reaction(&cid, &mid, &key);
+                } else {
+                    let _ = st.add_reaction(&cid, &mid, &key, None);
+                }
+            }
+            UiMessage::ToggleBookmark(mid) => {
+                self.store.write().unwrap().toggle_bookmark(&mid);
+            }
+            UiMessage::MarkUnreadFromHere(cid, mid) => {
+                self.store
+                    .write()
+                    .unwrap()
+                    .mark_unread_from_message(&cid, &mid);
+                self.refresh_theme_and_tray();
+            }
+            UiMessage::RetranscribeVoice(mid) => {
+                self.status_banner = self.store.write().unwrap().retranscribe_voice_note(&mid);
+            }
+            UiMessage::VotePoll(mid, opt_id) => {
+                self.store
+                    .write()
+                    .unwrap()
+                    .vote_poll(&mid, &opt_id, "@self:beeper.com");
+            }
+            UiMessage::SendQuickVoiceNote => {
+                if let Some(cid) = self.selected_chat_id.clone() {
+                    let att = Attachment {
+                        attachment_type: "audio".to_string(),
+                        id: Some("att_vn_quick".to_string()),
+                        duration: Some(8.4),
+                        file_name: Some("voice-note.ogg".to_string()),
+                        file_size: Some(34_816),
+                        is_gif: Some(false),
+                        is_sticker: Some(false),
+                        is_voice_note: Some(true),
+                        mime_type: Some("audio/ogg".to_string()),
+                        poster_img: None,
+                        size: None,
+                        src_url: Some("mxc://beeper.com/quick_vn".to_string()),
+                        transcript: None,
+                    };
+                    let _ = self.store.write().unwrap().send_message(
+                        &cid,
+                        Some("Voice note".to_string()),
+                        None,
+                        Some(att),
+                    );
+                    self.refresh_theme_and_tray();
+                }
+            }
+            UiMessage::SendQuickPoll => {
+                if let Some(cid) = self.selected_chat_id.clone() {
+                    let mut st = self.store.write().unwrap();
+                    if let Ok((_, mid, _)) = st.send_message(
+                        &cid,
+                        Some("Poll: Ship Beeper v4.3 today?".to_string()),
+                        None,
+                        None,
+                    ) {
+                        if let Some(&idx) = st.msg_idx_by_id.get(&mid) {
+                            st.messages[idx].poll = Some(PollData {
+                                question: "Ship Beeper v4.3 today?".to_string(),
+                                allow_multiple: false,
+                                options: vec![
+                                    PollOption {
+                                        id: "p_yes".to_string(),
+                                        label: "Yes, ship it".to_string(),
+                                        voter_ids: vec!["@self:beeper.com".to_string()],
+                                    },
+                                    PollOption {
+                                        id: "p_no".to_string(),
+                                        label: "Wait for QA".to_string(),
+                                        voter_ids: Vec::new(),
+                                    },
+                                ],
+                            });
+                        }
+                    }
+                    drop(st);
+                    self.refresh_theme_and_tray();
+                }
+            }
+            UiMessage::SetReminder(cid) => {
+                let mut st = self.store.write().unwrap();
+                if let Some(idx) = st.resolve_chat_idx(&cid) {
+                    st.chats[idx].reminder = Some(ChatReminder {
+                        remind_at: "2026-10-15T09:00:00.000Z".to_string(),
+                        dismiss_on_incoming_message: true,
+                    });
+                }
+                self.status_banner = "Reminder scheduled for tomorrow 09:00".to_string();
+            }
+            UiMessage::TogglePinChat(cid) => {
+                let mut st = self.store.write().unwrap();
+                if let Some(idx) = st.resolve_chat_idx(&cid) {
+                    let next = !(st.chats[idx].is_pinned == Some(true));
+                    st.chats[idx].is_pinned = Some(next);
+                    st.chats[idx].sync_flags();
+                }
+            }
+            UiMessage::ToggleMuteChat(cid) => {
+                let mut st = self.store.write().unwrap();
+                if let Some(idx) = st.resolve_chat_idx(&cid) {
+                    let next = !(st.chats[idx].is_muted == Some(true));
+                    st.chats[idx].is_muted = Some(next);
+                    st.chats[idx].sync_flags();
+                }
+            }
+            UiMessage::ToggleArchiveChat(cid) => {
+                let mut st = self.store.write().unwrap();
+                if let Some(idx) = st.resolve_chat_idx(&cid) {
+                    let next = !(st.chats[idx].is_archived == Some(true));
+                    st.chats[idx].is_archived = Some(next);
+                    st.chats[idx].sync_flags();
+                }
+                drop(st);
+                self.refresh_theme_and_tray();
+            }
+            UiMessage::NotifyAnyway(cid) => {
+                let mut st = self.store.write().unwrap();
+                if let Some(idx) = st.resolve_chat_idx(&cid) {
+                    st.chats[idx].is_muted = Some(false);
+                    st.chats[idx].sync_flags();
+                }
+                self.status_banner = "Notifications unmuted for conversation".to_string();
+            }
+            UiMessage::NicknameChanged(v) => self.nickname_edit_buffer = v,
+            UiMessage::SaveNickname => {
+                if let Some(cid) = self.selected_chat_id.clone() {
+                    let mut st = self.store.write().unwrap();
+                    let target_uid = st.resolve_chat_idx(&cid).and_then(|idx| {
+                        st.chats[idx]
+                            .participants
+                            .items
+                            .iter()
+                            .find(|u| u.is_self != Some(true))
+                            .map(|u| u.id.clone())
+                    });
+                    if let Some(uid) = target_uid {
+                        let nick = (!self.nickname_edit_buffer.trim().is_empty())
+                            .then(|| self.nickname_edit_buffer.trim().to_string());
+                        st.set_user_nickname(&cid, &uid, nick);
+                    }
+                }
+            }
+            UiMessage::SearchChanged(q) => self.search_query = q,
+            UiMessage::ClearSearch => self.search_query.clear(),
+            UiMessage::ToggleCommandPalette => {
+                self.show_command_palette = !self.show_command_palette;
+                if self.show_command_palette {
+                    return operation::focus("cmd-palette-input");
+                }
+            }
+            UiMessage::CommandQueryChanged(q) => self.command_palette_query = q,
+            UiMessage::ExecuteCommandChat(cid) => {
+                self.show_command_palette = false;
+                self.command_palette_query.clear();
+                self.select_chat(&cid);
+            }
+            UiMessage::SelectSettingsTab(t) => self.active_settings_tab = t,
+            UiMessage::ToggleRightPanel => self.show_right_panel = !self.show_right_panel,
+            UiMessage::ToggleDnd => {
+                self.dnd_muted = !self.dnd_muted;
+                self.refresh_theme_and_tray();
+            }
+            UiMessage::CycleTheme => {
+                let all = ThemeChoice::all();
+                let cur = all
+                    .iter()
+                    .position(|t| *t == self.theme.choice)
+                    .unwrap_or(0);
+                let next = all[(cur + 1) % all.len()];
+                return self.update(UiMessage::SelectTheme(next));
+            }
+            UiMessage::SelectTheme(choice) => {
+                {
+                    let mut st = self.store.write().unwrap();
+                    st.settings.theme = choice;
+                    st.persist_state_to_sqlite();
+                }
+                self.refresh_theme_and_tray();
+            }
+            UiMessage::SelectLanguage(label) => {
+                if let Some(&lang) = ALL_LANGUAGES.iter().find(|l| l.label() == label) {
+                    let mut st = self.store.write().unwrap();
+                    st.settings.language = lang;
+                    st.persist_state_to_sqlite();
+                }
+            }
+            UiMessage::CustomCssChanged(css) => {
+                {
+                    let mut st = self.store.write().unwrap();
+                    st.settings.custom_css_source = css;
+                    st.persist_state_to_sqlite();
+                }
+                self.refresh_theme_and_tray();
+            }
+            UiMessage::ToggleSettingBool(key, val) => {
+                {
+                    let mut st = self.store.write().unwrap();
+                    let s = &mut st.settings;
+                    match key {
+                        "show_archived_count" => s.show_archived_count = val,
+                        "show_starred_pin_view" => s.show_starred_pin_view = val,
+                        "show_all_chats_pin_view" => s.show_all_chats_pin_view = val,
+                        "show_unread_pin_view" => s.show_unread_pin_view = val,
+                        "show_drafts_pin_view" => s.show_drafts_pin_view = val,
+                        "filter_pins_by_network" => s.filter_pins_by_network = val,
+                        "show_favorite_chats_section" => s.show_favorite_chats_section = val,
+                        "keep_favorites_in_inbox" => s.keep_favorites_in_inbox = val,
+                        "show_message_previews" => s.show_message_previews = val,
+                        "unread_chats_always_on_top" => s.unread_chats_always_on_top = val,
+                        "show_full_names_in_chats" => s.show_full_names_in_chats = val,
+                        "auto_play_videos" => s.auto_play_videos = val,
+                        "show_chat_header" => s.show_chat_header = val,
+                        "show_message_input_buttons" => s.show_message_input_buttons = val,
+                        "link_previews" => s.link_previews = val,
+                        "show_right_panel_by_default" => {
+                            s.show_right_panel_by_default = val;
+                            self.show_right_panel = val;
+                        }
+                        "load_remote_content_automatically" => {
+                            s.load_remote_content_automatically = val
+                        }
+                        "use_twenty_four_hour_time" => s.use_twenty_four_hour_time = val,
+                        "no_transparency" => s.no_transparency = val,
+                        "reduce_transparency" => s.reduce_transparency = val,
+                        "fix_lockdown_emojis" => s.fix_lockdown_emojis = val,
+                        "auto_transcribe_voice_notes" => s.auto_transcribe_voice_notes = val,
+                        "incognito_mode" => s.incognito_mode = val,
+                        "archive_after_reminder" => s.archive_after_reminder = val,
+                        "mark_read_on_archive" => s.mark_read_on_archive = val,
+                        "compact_chat_list" => s.compact_chat_list = val,
+                        "launch_at_startup" => s.launch_at_startup = val,
+                        "minimize_to_tray" => s.minimize_to_tray = val,
+                        "enable_pas_api" => s.enable_pas_api = val,
+                        "repeat_message_alerts" => {
+                            s.repeat_message_alerts = if val { 3 } else { 1 }
+                        }
+                        other => panic!("unknown setting key {other}"),
+                    }
+                    st.persist_state_to_sqlite();
+                }
+                self.refresh_theme_and_tray();
+            }
+            UiMessage::ConnectBridge(bid) => {
+                let mut st = self.store.write().unwrap();
+                if let Some(existing) = st.bridge_accounts.iter_mut().find(|b| b.bridge_id == bid) {
+                    existing.state = "CONNECTED".to_string();
+                    existing.is_running = true;
+                } else {
+                    let net_name = NETWORK_SPECS
+                        .iter()
+                        .find(|n| n.bridge_id == bid)
+                        .map(|n| n.display_name)
+                        .unwrap_or("Bridge");
+                    st.bridge_accounts.push(BridgeAccountInfo {
+                        account_id: format!("acc_{bid}"),
+                        bridge_id: bid.clone(),
+                        bridge_type: bid,
+                        is_running: true,
+                        login_id: Some("login_ui_01".to_string()),
+                        mode: Some("cloud".to_string()),
+                        network_name: net_name.to_string(),
+                        state: "CONNECTED".to_string(),
+                    });
+                }
+                st.rebuild_accounts_from_bridges();
+                st.persist_state_to_sqlite();
+            }
+            UiMessage::RecoveryInputChanged(v) => self.recovery_code_input = v,
+            UiMessage::VerifyRecoveryCode => {
+                let mut st = self.store.write().unwrap();
+                st.beeper_state.verified = true;
+                st.beeper_state.cross_signing = true;
+                st.beeper_state.key_backup = true;
+                st.setup_status = BeeperStore::build_setup_from_state(&st.beeper_state, None);
+                st.persist_state_to_sqlite();
+                self.status_banner = "E2EE Recovery Key verified".to_string();
+            }
+            UiMessage::VerifySasNow => {
+                let mut st = self.store.write().unwrap();
+                st.beeper_state.verified = true;
+                st.setup_status = BeeperStore::build_setup_from_state(&st.beeper_state, None);
+                st.persist_state_to_sqlite();
+                self.status_banner = "Device SAS E2EE verification complete".to_string();
+            }
+            UiMessage::ClearOldMedia => {
+                let n = self
+                    .store
+                    .write()
+                    .unwrap()
+                    .clear_cached_media_older_than_days(30);
+                self.status_banner = format!("Cleared {n} cached media files");
+            }
+            UiMessage::ExportChatJson(cid) => {
+                let st = self.store.read().unwrap();
+                let count = st.chat_msg_indices.get(&cid).map_or(0, Vec::len);
+                let out_path = st.data_dir.join("chat-export.json");
+                let payload = serde_json::json!({ "chatID": cid, "messageCount": count });
+                std::fs::write(&out_path, serde_json::to_vec_pretty(&payload).unwrap())
+                    .expect("write export json");
+                self.status_banner = format!("Exported {count} messages to {}", out_path.display());
+            }
+            UiMessage::OpenQuickLook(title, detail) => {
+                self.quick_look_target = Some((title, detail));
+            }
+            UiMessage::CloseModals => {
+                self.show_command_palette = false;
+                self.show_filter_menu = false;
+                self.show_attach_menu = false;
+                self.quick_look_target = None;
+            }
+            UiMessage::ToggleEditHistory(mid) => {
+                self.expanded_history_msg_id =
+                    (self.expanded_history_msg_id.as_ref() != Some(&mid)).then_some(mid);
+            }
+            UiMessage::Noop => {}
+            UiMessage::OpenUrl(url) => {
+                let (cmd, args) = open_url_or_path_command(self.os, &url);
+                std::thread::spawn(move || {
+                    assert!(std::process::Command::new(cmd)
+                        .args(args)
+                        .status()
+                        .expect("run URL opener")
+                        .success())
+                });
+            }
+            UiMessage::ToggleAttachMenu => self.show_attach_menu = !self.show_attach_menu,
+            UiMessage::ToggleSearch => {
+                self.show_search = !self.show_search;
+                self.search_query.clear();
+                if self.show_search {
+                    return operation::focus("sidebar-search-input");
+                }
+            }
+            UiMessage::ToggleFilterMenu => self.show_filter_menu = !self.show_filter_menu,
+            UiMessage::OpenSettings(tab) => return self.open_settings(tab),
+            UiMessage::SettingsQueryChanged(q) => self.settings_query = q,
+            UiMessage::SelectAfterArchive(v) => self.patch_settings(|s| {
+                s.after_archive = AFTER_ARCHIVE
+                    .iter()
+                    .position(|o| *o == v)
+                    .expect("known option") as u8
+            }),
+            UiMessage::SelectRemindLater(v) => self.patch_settings(|s| {
+                s.remind_later_default = REMIND_LATER
+                    .iter()
+                    .position(|o| *o == v)
+                    .expect("known option") as u8
+            }),
+            UiMessage::HoverEnter(id) => self.hovered_msg = Some(id),
+            UiMessage::HoverExit(id) => {
+                if self.hovered_msg.as_ref() == Some(&id) {
+                    self.hovered_msg = None;
+                }
+            }
+            UiMessage::DragStart => self.dragging = true,
+            UiMessage::DragMoved(pt) => self.sidebar_width = (pt.x - 72.0).clamp(190.0, 420.0),
+            UiMessage::DragEnd => self.dragging = false,
+            UiMessage::WindowOpened(id) => {
+                let key = if Some(id) == self.settings_window {
+                    "BEEPER_SCREENSHOT_SETTINGS"
+                } else {
+                    "BEEPER_SCREENSHOT_EXIT"
+                };
+                self.main_window = self.main_window.or(Some(id));
+                if std::env::var(key).is_ok() {
+                    return window::screenshot(id)
+                        .map(move |s| UiMessage::ScreenshotCaptured(id, s));
+                }
+            }
+            UiMessage::WindowClosed(id) => {
+                if Some(id) == self.settings_window {
+                    self.settings_window = None;
+                } else {
+                    return iced::exit();
+                }
+            }
+            UiMessage::ScreenshotCaptured(id, shot) => {
+                let is_settings = Some(id) == self.settings_window;
+                let path = std::env::var(if is_settings {
+                    "BEEPER_SCREENSHOT_SETTINGS"
+                } else {
+                    "BEEPER_SCREENSHOT_EXIT"
+                })
+                .expect("screenshot path");
+                write_rgba_png(
+                    std::path::Path::new(&path),
+                    shot.size.width,
+                    shot.size.height,
+                    &shot.rgba,
+                );
+                if !is_settings && std::env::var("BEEPER_SCREENSHOT_SETTINGS").is_ok() {
+                    return self.open_settings(SettingsTab::General);
+                }
+                return iced::exit();
+            }
+            UiMessage::KeyPressed(key, mods) => {
+                let cmd = mods.command() || mods.control();
+                match key.as_ref() {
+                    Key::Character("k") if cmd => {
+                        return self.update(UiMessage::ToggleCommandPalette)
+                    }
+                    Key::Character(",") if cmd => {
+                        return self.open_settings(self.active_settings_tab)
+                    }
+                    Key::Character("f") if cmd => return self.update(UiMessage::ToggleSearch),
+                    Key::Character(".") if cmd => self.show_right_panel = !self.show_right_panel,
+                    Key::Named(Named::Escape) => return self.update(UiMessage::CloseModals),
+                    Key::Named(Named::ArrowDown) if mods.alt() => self.step_chat(1),
+                    Key::Named(Named::ArrowUp) if mods.alt() => self.step_chat(-1),
+                    _ => {}
+                }
+            }
+        }
+        Task::none()
+    }
+
+    fn patch_settings(&mut self, f: impl FnOnce(&mut BeeperSettings)) {
+        {
+            let mut st = self.store.write().unwrap();
+            f(&mut st.settings);
+            st.persist_state_to_sqlite();
+        }
+        self.refresh_theme_and_tray();
+    }
+
+    pub fn subscription(&self) -> Subscription<UiMessage> {
+        let base = iced::event::listen_with(|e, _, id| match e {
+            Event::Window(window::Event::Closed) => Some(UiMessage::WindowClosed(id)),
+            Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
+                if modifiers.command()
+                    || modifiers.control()
+                    || modifiers.alt()
+                    || key == Key::Named(Named::Escape) =>
+            {
+                Some(UiMessage::KeyPressed(key, modifiers))
+            }
+            _ => None,
+        });
+        if !self.dragging {
+            return base;
+        }
+        Subscription::batch([
+            base,
+            iced::event::listen_with(|e, _, _| match e {
+                Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Some(UiMessage::DragMoved(position))
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::DragEnd),
+                _ => None,
+            }),
+        ])
+    }
+
+    pub fn view(&self, id: window::Id) -> El<'_> {
+        if Some(id) == self.settings_window {
+            self.view_settings()
+        } else {
+            self.view_main()
+        }
+    }
+
+    pub fn view_main(&self) -> El<'_> {
+        let p = &self.pal;
+        let grip = mouse_area(container(Space::new()).width(8).height(Fill))
+            .on_press(UiMessage::DragStart)
+            .interaction(mouse::Interaction::ResizingHorizontally);
+        let card = container(self.view_conversation())
+            .padding(Padding::new(8.0).left(0.0))
+            .width(Fill);
+        let body = row![self.view_rail(), self.view_sidebar(), grip, card]
+            .push(self.show_right_panel.then(|| self.view_info()));
+        let base: El<'_> = container(body)
+            .width(Fill)
+            .height(Fill)
+            .style(fill_box(p.frame, 0.0))
+            .into();
+        let modal = match (&self.quick_look_target, self.show_command_palette) {
+            (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
+            (None, true) => Some(self.view_command_palette()),
+            _ => None,
+        };
+        let scrim = modal.map(|m| {
+            mouse_area(
+                container(mouse_area(m).on_press(UiMessage::Noop))
+                    .padding(Padding::ZERO.top(90.0))
+                    .center_x(Fill)
+                    .height(Fill)
+                    .style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.45), 0.0)),
+            )
+            .on_press(UiMessage::CloseModals)
+        });
+        stack![base].push(scrim).into()
+    }
+
+    fn view_rail(&self) -> El<'_> {
+        let p = &self.pal;
+        let rail_btn = |glyph: El<'static>, on: bool, msg: UiMessage| {
+            button(container(glyph).center(36))
+                .padding(0)
+                .style(btn_style(
+                    [if on { p.rail_sel } else { CLEAR }, p.hover, p.rail_sel],
+                    [p.strong; 3],
+                    14.0,
+                ))
+                .on_press(msg)
+        };
+        let tab = |id: &'static str, glyph: El<'static>, t: InboxTab| -> El<'static> {
+            container(rail_btn(
+                glyph,
+                self.active_tab == t && self.selected_account_filter.is_none(),
+                UiMessage::SelectTab(t),
+            ))
+            .id(id)
+            .into()
+        };
+        let g = |c: char| -> El<'static> { ic(c, 18.0).color(p.strong).into() };
+        let scheduled: El<'static> = stack![
+            container(g(icon::SEND_HORIZONTAL)).center(36),
+            container(
+                container(ic(icon::CLOCK, 8.0).color(p.strong))
+                    .center(11)
+                    .style(fill_box(p.rail, 6.0))
+            )
+            .padding(Padding::new(0.0).top(18.0).left(19.0))
+        ]
+        .into();
+        let add_space = container(g(icon::MESSAGE_CIRCLE_PLUS))
+            .center(36)
+            .style(bordered_box(CLEAR, p.tertiary, 1.0, 12.0));
+        let st = self.store.read().unwrap();
+        let accounts = std::iter::once("hungryserv".to_string())
+            .chain(st.accounts.iter().map(|a| a.account_id.clone()));
+        let accounts = accounts.fold(Column::new().spacing(8).align_x(Center), |c, acc| {
+            let on = self.selected_account_filter.as_ref() == Some(&acc);
+            let logo: El<'static> = svg(brand_svg(brand_key(&acc))).width(28).height(28).into();
+            c.push(rail_btn(
+                logo,
+                on,
+                UiMessage::SelectAccount((!on).then_some(acc)),
+            ))
+        });
+        let top = column![
+            tab("rail-inbox", g(icon::INBOX), InboxTab::AllChats),
+            tab(
+                "rail-low-priority",
+                g(icon::LIST_RESTART),
+                InboxTab::LowPriority
+            ),
+            tab("rail-archive", g(icon::ARCHIVE), InboxTab::Archived),
+            tab("rail-reminders", g(icon::CLOCK), InboxTab::Reminders),
+            tab("rail-drafts", scheduled, InboxTab::Drafts),
+            tab("rail-unread", g(icon::MAIL), InboxTab::Unread),
+            button(add_space)
+                .padding(0)
+                .style(ghost(p, 12.0))
+                .on_press(UiMessage::ToggleCommandPalette),
+            accounts,
+            rail_btn(
+                g(icon::ELLIPSIS),
+                false,
+                UiMessage::OpenSettings(SettingsTab::Accounts)
+            ),
+        ]
+        .spacing(8)
+        .align_x(Center)
+        .width(68)
+        .padding(Padding::ZERO.top(14.0));
+        let me = st.me().full_name.clone().expect("self name");
+        let footer = column![
+            rail_btn(
+                g(icon::IMAGES),
+                false,
+                UiMessage::OpenQuickLook(
+                    "Media".into(),
+                    "Photos, videos, and files from all chats".into()
+                )
+            ),
+            rail_btn(g(icon::COPY_PLUS), false, UiMessage::ToggleCommandPalette),
+            button(self_avatar(&me, 36.0))
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.text; 3], 18.0))
+                .on_press(UiMessage::OpenSettings(SettingsTab::General)),
+        ]
+        .spacing(8)
+        .align_x(Center)
+        .padding(Padding::ZERO.bottom(16.0));
+        let scroll = scrollable(top)
+            .direction(Direction::Vertical(Scrollbar::hidden()))
+            .height(Fill);
+        container(column![scroll, footer].align_x(Center))
+            .width(68)
+            .height(Fill)
+            .style(fill_box(p.rail, 0.0))
+            .into()
+    }
+
+    fn view_sidebar(&self) -> El<'_> {
+        let p = &self.pal;
+        let w = self.sidebar_width;
+        let chats = self.visible_chats();
+        let st = self.store.read().unwrap();
+        let me = st.me().full_name.clone().expect("self name");
+        let h24 = st.settings.use_twenty_four_hour_time;
+        let previews = st.settings.show_message_previews;
+        let header_icon = p.text.scale_alpha(0.8);
+        let title = button(
+            row![
+                semi(self.active_tab.label(), 13.0).color(p.strong),
+                ic(icon::CHEVRONS_UP_DOWN, 13.0).color(p.weak)
+            ]
+            .spacing(4)
+            .align_y(Center),
+        )
+        .padding([4, 8])
+        .style(ghost(p, 6.0))
+        .on_press(UiMessage::ToggleFilterMenu);
+        let header = row![
+            title,
+            Space::new().width(Fill),
+            icon_btn(
+                p,
+                icon::LIST_FILTER,
+                16.0,
+                26.0,
+                header_icon,
+                UiMessage::ToggleFilterMenu
+            ),
+            icon_btn(
+                p,
+                icon::SEARCH,
+                16.0,
+                26.0,
+                header_icon,
+                UiMessage::ToggleSearch
+            ),
+            icon_btn(
+                p,
+                icon::SQUARE_PEN,
+                16.0,
+                26.0,
+                header_icon,
+                UiMessage::ToggleCommandPalette
+            )
+        ]
+        .align_y(Center)
+        .height(38)
+        .padding(Padding::ZERO.right(4.0));
+        let filters = self.show_filter_menu.then(|| {
+            let tabs = [
+                InboxTab::AllChats,
+                InboxTab::Unread,
+                InboxTab::Pinned,
+                InboxTab::Drafts,
+                InboxTab::Reminders,
+                InboxTab::LowPriority,
+                InboxTab::Archived,
+            ];
+            let chips = tabs.into_iter().fold(Row::new().spacing(4), |r, t| {
+                let on = self.active_tab == t;
+                r.push(
+                    button(med(t.label(), 12.0).color(if on { Color::WHITE } else { p.text }))
+                        .padding([3, 8])
+                        .style(btn_style(
+                            [if on { p.accent } else { p.hover }, p.selected, p.selected],
+                            [p.text; 3],
+                            12.0,
+                        ))
+                        .on_press(UiMessage::SelectTab(t)),
+                )
+            });
+            container(chips.wrap().vertical_spacing(4)).padding([4, 8])
+        });
+        let search = self.show_search.then(|| {
+            let input = text_input("Search", &self.search_query)
+                .id("sidebar-search-input")
+                .on_input(UiMessage::SearchChanged)
+                .size(13)
+                .font(fw(Weight::Normal))
+                .padding([6, 4])
+                .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
+            container(
+                container(
+                    row![
+                        ic(icon::SEARCH, 14.0).color(p.sub),
+                        input,
+                        icon_btn(p, icon::X, 12.0, 20.0, p.sub, UiMessage::ToggleSearch)
+                    ]
+                    .spacing(4)
+                    .align_y(Center)
+                    .padding([0, 8]),
+                )
+                .style(fill_box(p.search, 8.0)),
+            )
+            .padding([4, 8])
+        });
+        let selected = self.selected_chat_id.as_deref();
+        let pin_section = self.active_tab == InboxTab::AllChats && self.search_query.is_empty();
+        let (pinned, rest): (Vec<&Chat>, Vec<&Chat>) = chats
+            .iter()
+            .partition(|c| pin_section && c.flags & CHAT_PINNED != 0);
+        let cols = (((w - 16.0) / 80.0).floor() as usize).max(1);
+        let cell = (w - 16.0) / cols as f32;
+        let pins = pinned.chunks(cols).fold(Column::new(), |col, chunk| {
+            col.push(chunk.iter().fold(Row::new(), |r, c| {
+                let on = selected == Some(c.id.as_str());
+                let label = row![ell(
+                    &c.title,
+                    cell - if c.is_muted == Some(true) { 34.0 } else { 20.0 },
+                    11.0,
+                    Weight::Medium
+                )
+                .color(p.text)]
+                .push((c.is_muted == Some(true)).then(|| ic(icon::BELL_OFF, 10.0).color(p.sub)))
+                .spacing(3)
+                .align_y(Center);
+                let unread = (c.unread_count > 0).then(|| {
+                    container(semi(c.unread_count.to_string(), 10.0).color(Color::WHITE))
+                        .padding([1, 5])
+                        .style(fill_box(p.accent, 9.0))
+                });
+                let face = stack![
+                    chat_avatar(c, &me, 40.0),
+                    container(unread).width(44).align_right(44)
+                ]
+                .width(44)
+                .height(40);
+                let item = column![face, label]
+                    .spacing(4)
+                    .align_x(Center)
+                    .width(cell)
+                    .padding(Padding::new(8.0).top(8.0).bottom(6.0).left(4.0).right(4.0));
+                r.push(
+                    button(item)
+                        .padding(0)
+                        .style(btn_style(
+                            [if on { p.selected } else { CLEAR }, p.hover, p.selected],
+                            [p.text; 3],
+                            10.0,
+                        ))
+                        .on_press(UiMessage::SelectChat(c.id.clone())),
+                )
+            }))
+        });
+        let text_w = w - 8.0 - 16.0 - 34.0 - 4.0;
+        let rows = rest.iter().fold(Column::new(), |col, c| {
+            let on = selected == Some(c.id.as_str());
+            let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
+            let m = st
+                .chat_msg_indices
+                .get(&c.id)
+                .and_then(|v| v.last())
+                .map(|&i| &st.messages[i]);
+            let ts = c
+                .last_activity
+                .as_deref()
+                .map(|t| list_ts(t, h24))
+                .unwrap_or_default();
+            let ts_w = crate::style::text_width(&ts, 10.0, Weight::Normal) + 8.0;
+            let top = row![
+                ell(&c.title, text_w - ts_w, 13.0, Weight::Semibold).color(p.strong),
+                Space::new().width(Fill),
+                txt(ts, 10.0).color(p.sub)
+            ]
+            .align_y(Center);
+            let mine = m.is_some_and(|m| m.is_sender == Some(true));
+            let image = m.is_some_and(|m| m.attachments.iter().any(|a| a.attachment_type == "img"));
+            let body = m
+                .and_then(|m| m.text.clone())
+                .filter(|t| !t.is_empty() && previews)
+                .map(|t| {
+                    match (
+                        c.chat_type == "group",
+                        m.and_then(|m| m.sender_name.clone()),
+                    ) {
+                        (true, Some(s)) if !mine => {
+                            format!("{}: {t}", s.split(' ').next().expect("sender name"))
+                        }
+                        _ => t,
+                    }
+                });
+            let count = (c.unread_count > 0).then(|| {
+                container(semi(c.unread_count.to_string(), 10.0).color(Color::WHITE))
+                    .padding([1, 5])
+                    .style(fill_box(
+                        if c.is_muted == Some(true) {
+                            p.muted
+                        } else {
+                            p.accent
+                        },
+                        9.0,
+                    ))
+            });
+            let reserve = if count.is_some() { 26.0 } else { 0.0 } + if mine { 16.0 } else { 0.0 };
+            let preview = row![]
+                .push(mine.then(|| ic(icon::CIRCLE_CHECK, 12.0).color(p.sub)))
+                .push(image.then(|| {
+                    container(
+                        row![
+                            ic(icon::IMAGE, 11.0).color(p.text),
+                            txt("Image", 11.0).color(p.text)
+                        ]
+                        .spacing(3)
+                        .align_y(Center),
+                    )
+                    .padding([1, 5])
+                    .style(fill_box(p.link_card, 4.0))
+                }))
+                .push(body.map(|b| {
+                    ell(&b, text_w - reserve, 13.0, Weight::Normal).color(if unread {
+                        p.text
+                    } else {
+                        p.sub
+                    })
+                }))
+                .push(Space::new().width(Fill))
+                .push(count)
+                .spacing(4)
+                .align_y(Center);
+            let item = row![
+                badged(p, chat_avatar(c, &me, 28.0), &c.account_id, 28.0, 12.0),
+                column![top, preview].spacing(1).width(Fill)
+            ]
+            .spacing(4)
+            .align_y(Center)
+            .padding([10, 8]);
+            col.push(
+                button(item)
+                    .padding(0)
+                    .width(Fill)
+                    .style(btn_style(
+                        [if on { p.selected } else { CLEAR }, p.hover, p.selected],
+                        [p.text; 3],
+                        8.0,
+                    ))
+                    .on_press(UiMessage::SelectChat(c.id.clone())),
+            )
+            .push(divider(p, 52.0))
+        });
+        let empty = chats.is_empty().then(|| {
+            container(txt(format!("No chats in {}", self.active_tab.label()), 13.0).color(p.sub))
+                .center_x(Fill)
+                .padding(24)
+        });
+        let list = scrollable(
+            column![pins, rows]
+                .push(empty)
+                .padding(Padding::ZERO.right(4.0)),
+        )
+        .height(Fill)
+        .style(scroll_style(p.divider, p.weak));
+        container(
+            column![header]
+                .push(filters)
+                .push(search)
+                .push(list)
+                .padding(Padding::ZERO.left(8.0).top(8.0)),
+        )
+        .width(w)
+        .height(Fill)
+        .into()
+    }
+
+    fn view_conversation(&self) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read().unwrap();
+        let cid = self
+            .selected_chat_id
+            .as_deref()
+            .expect("a chat is selected");
+        let chat = &st.chats[st.resolve_chat_idx(cid).expect("selected chat exists")];
+        let me = st.me().full_name.clone().expect("self name");
+        let msgs: Vec<&Message> = st
+            .chat_msg_indices
+            .get(cid)
+            .map(|v| v.iter().map(|&i| &st.messages[i]).collect())
+            .unwrap_or_default();
+        let mut col = Column::new()
+            .spacing(2)
+            .padding(Padding::new(16.0).top(96.0).bottom(8.0));
+        let mut prev: Option<&Message> = None;
+        for (i, m) in msgs.iter().enumerate() {
+            let day_changed = prev.is_none_or(|q| q.timestamp[..10] != m.timestamp[..10]);
+            if day_changed {
+                let pill = container(semi(day_label(&m.timestamp), 11.0).color(p.date_text))
+                    .padding([5, 10])
+                    .style(bordered_box(p.card, p.outline, 1.0, 12.0));
+                col = col.push(container(pill).center_x(Fill).padding([12, 0]));
+            }
+            let first = day_changed || prev.is_none_or(|q| q.sender_id != m.sender_id);
+            let last = msgs.get(i + 1).is_none_or(|n| {
+                n.sender_id != m.sender_id || n.timestamp[..10] != m.timestamp[..10]
+            });
+            if first && !day_changed {
+                col = col.push(Space::new().height(6));
+            }
+            col = col.push(self.view_message(&st, chat, m, first, last));
+            prev = Some(m);
+        }
+        if msgs.last().is_some_and(|m| m.is_sender == Some(true)) {
+            col = col.push(
+                container(txt("Sent", 11.0).color(p.muted))
+                    .align_right(Fill)
+                    .padding(Padding::ZERO.right(4.0).top(2.0)),
+            );
+        }
+        let list = scrollable(col)
+            .anchor_bottom()
+            .height(Fill)
+            .style(scroll_style(p.divider, p.weak));
+        let status = (chat.id != NOTE_CHAT_ID)
+            .then(|| txt(network_name(&chat.account_id), 10.0).color(p.sub));
+        let name_row = row![
+            semi(chat.title.clone(), 12.0).color(p.strong),
+            ic(icon::CHEVRON_RIGHT, 12.0).color(p.tertiary)
+        ]
+        .spacing(2)
+        .align_y(Center);
+        let pill = button(column![name_row].push(status).align_x(Center).spacing(1))
+            .padding(
+                Padding::new(6.0)
+                    .left(10.0)
+                    .top(if chat.id == NOTE_CHAT_ID { 6.0 } else { 8.0 }),
+            )
+            .style(btn_style(
+                [p.elevated, p.selected, p.selected],
+                [p.text; 3],
+                14.0,
+            ))
+            .on_press(UiMessage::ToggleRightPanel);
+        let ring = container(chat_avatar(chat, &me, 40.0))
+            .padding(1)
+            .style(fill_box(p.card, 21.0));
+        let header = stack![
+            container(pill)
+                .center_x(Fill)
+                .padding(Padding::ZERO.top(44.0)),
+            container(ring)
+                .center_x(Fill)
+                .padding(Padding::ZERO.top(8.0))
+        ];
+        let feedback = button(
+            row![
+                ic(icon::MESSAGE_SQUARE, 13.0).color(p.text),
+                med("Feedback?", 12.0).color(p.text)
+            ]
+            .spacing(5)
+            .align_y(Center),
+        )
+        .padding([5, 10])
+        .style(btn_style(
+            [p.hover, p.selected, p.selected],
+            [p.text; 3],
+            14.0,
+        ))
+        .on_press(UiMessage::OpenQuickLook(
+            "Feedback".into(),
+            "Tell us what to improve in beeper-rs.".into(),
+        ));
+        let fade = Linear::new(Radians(std::f32::consts::PI))
+            .add_stop(0.0, p.card)
+            .add_stop(0.75, p.card.scale_alpha(0.85))
+            .add_stop(1.0, p.card.scale_alpha(0.0));
+        let fade = container(Space::new())
+            .width(Fill)
+            .height(84)
+            .style(move |_: &Theme| container::Style {
+                background: Some(Background::Gradient(Gradient::Linear(fade))),
+                ..Default::default()
+            });
+        let overlay = stack![
+            fade,
+            header,
+            container(feedback).align_right(Fill).padding([12, 12])
+        ];
+        let pane = column![
+            stack![list, overlay].height(Fill),
+            self.view_composer(&st, chat)
+        ];
+        container(pane)
+            .width(Fill)
+            .height(Fill)
+            .clip(true)
+            .style(fill_box(p.card, 10.0))
+            .into()
+    }
+
+    fn view_message<'a>(
+        &self,
+        st: &BeeperStore,
+        chat: &Chat,
+        m: &Message,
+        first: bool,
+        last: bool,
+    ) -> El<'a> {
+        let p = &self.pal;
+        let mine = m.is_sender == Some(true);
+        let group = chat.chat_type == "group";
+        let (bg, fg) = if mine {
+            (p.sent, Color::WHITE)
+        } else {
+            (p.received, p.strong)
+        };
+        let text = m.text.clone().unwrap_or_default();
+        let preview = st
+            .settings
+            .link_previews
+            .then(|| {
+                text.split_whitespace()
+                    .find_map(|w| st.link_previews.get(w))
+            })
+            .flatten();
+        let mut parts = Column::new()
+            .spacing(2)
+            .align_x(if mine { Right } else { iced::Left });
+        if group && !mine && first {
+            parts = parts.push(
+                container(
+                    semi(m.sender_name.clone().expect("sender name"), 11.0)
+                        .color(hue(hash_str(&m.sender_id))),
+                )
+                .padding(Padding::ZERO.left(11.0)),
+            );
+        }
+        if let Some(q) = m
+            .linked_message_id
+            .as_ref()
+            .and_then(|r| st.msg_idx_by_id.get(r))
+            .map(|&i| &st.messages[i])
+        {
+            let quote = column![
+                semi(q.sender_name.clone().expect("sender name"), 11.0).color(p.text),
+                ell(q.text.as_deref().unwrap_or(""), 260.0, 12.0, Weight::Normal).color(p.sub)
+            ]
+            .spacing(1);
+            parts = parts.push(
+                container(quote)
+                    .padding([6, 11])
+                    .style(bordered_box(p.card, p.outline, 1.0, 14.0)),
+            );
+        }
+        if let Some(lp) = preview {
+            let host = text
+                .split_whitespace()
+                .find(|w| w.starts_with("http"))
+                .expect("preview url")
+                .split('/')
+                .nth(2)
+                .expect("url host")
+                .to_string();
+            let body = column![
+                txt(lp.site.clone(), 11.0).color(p.sub),
+                semi(lp.title.clone(), 13.0).color(p.strong),
+                txt(lp.summary.clone(), 13.0).color(p.sub),
+                row![
+                    ic(icon::LINK, 11.0).color(p.weak),
+                    txt(host, 11.0).color(p.weak)
+                ]
+                .spacing(4)
+                .align_y(Center),
+            ]
+            .spacing(6)
+            .padding([10, 11]);
+            parts = parts.push(
+                container(body)
+                    .max_width(360)
+                    .style(fill_box(p.link_card, 17.0)),
+            );
+        }
+        for a in &m.attachments {
+            let name = a.file_name.clone().expect("attachment file name");
+            let content: El<'a> = match (a.is_voice_note == Some(true), a.attachment_type.as_str())
+            {
+                (true, _) => {
+                    let bars = (0..28).fold(Row::new().spacing(2).align_y(Center), |r, k| {
+                        r.push(
+                            container(Space::new())
+                                .width(2)
+                                .height(4.0 + (hash_str(&format!("{name}{k}")) % 14) as f32)
+                                .style(fill_box(fg.scale_alpha(0.7), 1.0)),
+                        )
+                    });
+                    let play = container(ic(icon::PLAY, 14.0).color(bg))
+                        .center(30)
+                        .style(fill_box(fg, 15.0));
+                    let dur = a.duration.expect("voice note duration");
+                    let line = row![
+                        play,
+                        bars,
+                        txt(format!("0:{:02}", dur.round() as u32), 11.0)
+                            .color(fg.scale_alpha(0.7))
+                    ]
+                    .spacing(8)
+                    .align_y(Center);
+                    let transcript = a.transcript.clone().map(|t| {
+                        button(txt(t, 12.0).color(fg.scale_alpha(0.75)))
+                            .padding(0)
+                            .style(btn_style([CLEAR; 3], [fg; 3], 0.0))
+                            .on_press(UiMessage::RetranscribeVoice(m.id.clone()))
+                    });
+                    container(column![line].push(transcript).spacing(6).max_width(300))
+                        .padding([8, 11])
+                        .style(fill_box(bg, 17.0))
+                        .into()
+                }
+                (false, "img") => button(
+                    container(ic(icon::IMAGE, 28.0).color(p.sub))
+                        .center_x(240)
+                        .center_y(160)
+                        .style(fill_box(p.link_card, 17.0)),
+                )
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.text; 3], 17.0))
+                .on_press(UiMessage::OpenQuickLook(name, "Image attachment".into()))
+                .into(),
+                _ => {
+                    let size = human_size(a.file_size.expect("attachment size"));
+                    let tile = container(ic(icon::FILE_TEXT, 18.0).color(fg))
+                        .center(36)
+                        .style(fill_box(fg.scale_alpha(0.15), 8.0));
+                    let info = column![
+                        semi(name.clone(), 13.0).color(fg),
+                        txt(size.clone(), 11.0).color(fg.scale_alpha(0.7))
+                    ]
+                    .spacing(2);
+                    button(row![tile, info].spacing(10).align_y(Center))
+                        .padding([8, 11])
+                        .style(btn_style([bg, bg, bg], [fg; 3], 17.0))
+                        .on_press(UiMessage::OpenQuickLook(name, size))
+                        .into()
+                }
+            };
+            parts = parts.push(content);
+        }
+        if let Some(poll) = &m.poll {
+            let total = poll
+                .options
+                .iter()
+                .map(|o| o.voter_ids.len())
+                .sum::<usize>()
+                .max(1);
+            let opts = poll.options.iter().fold(Column::new().spacing(4), |c, o| {
+                let voted = o.voter_ids.iter().any(|v| v == "@self:beeper.com");
+                let label = row![
+                    txt(o.label.clone(), 13.0).color(fg),
+                    Space::new().width(Fill),
+                    txt(format!("{}%", o.voter_ids.len() * 100 / total), 11.0)
+                        .color(fg.scale_alpha(0.7))
+                ];
+                c.push(
+                    button(label)
+                        .padding([6, 10])
+                        .width(Fill)
+                        .style(btn_style(
+                            [
+                                if voted {
+                                    fg.scale_alpha(0.22)
+                                } else {
+                                    fg.scale_alpha(0.08)
+                                },
+                                fg.scale_alpha(0.15),
+                                fg.scale_alpha(0.22),
+                            ],
+                            [fg; 3],
+                            8.0,
+                        ))
+                        .on_press(UiMessage::VotePoll(m.id.clone(), o.id.clone())),
+                )
+            });
+            parts = parts.push(
+                container(
+                    column![semi(poll.question.clone(), 13.0).color(fg), opts]
+                        .spacing(8)
+                        .width(300),
+                )
+                .padding([10, 11])
+                .style(fill_box(bg, 17.0)),
+            );
+        }
+        if !text.is_empty() && m.poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
+            let edited = if m.edit_history.is_empty() {
+                ""
+            } else {
+                "Edited · "
+            };
+            let time = txt(
+                format!(
+                    "{edited}{}",
+                    format_short_ts(&m.timestamp, st.settings.use_twenty_four_hour_time)
+                ),
+                11.0,
+            )
+            .color(if mine { p.sent_meta } else { p.sub });
+            let spans: Vec<_> = text
+                .split_inclusive(' ')
+                .flat_map(|w| {
+                    let url = w
+                        .trim_end()
+                        .starts_with("http")
+                        .then(|| w.trim_end().to_string());
+                    let arrow = url.as_ref().map(|_| {
+                        span(icon::ARROW_UP_RIGHT.to_string())
+                            .font(iced::Font::with_name("lucide"))
+                            .size(11.0)
+                            .color(fg)
+                    });
+                    [
+                        Some(
+                            span(w.trim_end().to_string())
+                                .font(fw(Weight::Normal))
+                                .size(13.0)
+                                .color(fg)
+                                .underline(url.is_some())
+                                .link_maybe(url),
+                        ),
+                        arrow,
+                        w.ends_with(' ').then(|| span(" ").size(13.0)),
+                    ]
+                    .into_iter()
+                    .flatten()
+                })
+                .collect();
+            let body = rich_text(spans)
+                .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
+                .on_link_click(UiMessage::OpenUrl);
+            parts = parts.push(
+                container(row![body, time].spacing(8).align_y(Bottom).wrap())
+                    .padding([8, 11])
+                    .max_width(480)
+                    .style(fill_box(bg, 17.0)),
+            );
+        }
+        if self.expanded_history_msg_id.as_ref() == Some(&m.id) {
+            parts = parts.push(
+                m.edit_history
+                    .iter()
+                    .fold(Column::new().spacing(2), |c, e| {
+                        c.push(
+                            txt(
+                                format!("{} · {}", e.text, format_short_ts(&e.timestamp, false)),
+                                11.0,
+                            )
+                            .color(p.muted),
+                        )
+                    }),
+            );
+        }
+        if !m.reactions.is_empty() {
+            let mut keys: Vec<&str> = m
+                .reactions
+                .iter()
+                .map(|r| r.reaction_key.as_str())
+                .collect();
+            keys.sort_unstable();
+            keys.dedup();
+            let pills = keys.into_iter().fold(Row::new().spacing(4), |r, k| {
+                let n = m.reactions.iter().filter(|x| x.reaction_key == k).count();
+                let own = m
+                    .reactions
+                    .iter()
+                    .any(|x| x.reaction_key == k && x.participant_id.starts_with("@self_"));
+                let pill = row![
+                    txt(k.to_string(), 12.0),
+                    txt(n.to_string(), 11.0).color(p.text)
+                ]
+                .spacing(3)
+                .align_y(Center);
+                r.push(
+                    button(pill)
+                        .padding([2, 7])
+                        .style(btn_style(
+                            [
+                                if own {
+                                    p.accent.scale_alpha(0.3)
+                                } else {
+                                    p.received
+                                },
+                                p.selected,
+                                p.selected,
+                            ],
+                            [p.text; 3],
+                            11.0,
+                        ))
+                        .on_press(UiMessage::ToggleReaction(
+                            chat.id.clone(),
+                            m.id.clone(),
+                            k.to_string(),
+                        )),
+                )
+            });
+            parts = parts.push(pills);
+        }
+        let tools = (self.hovered_msg.as_ref() == Some(&m.id)).then(|| {
+            let b = |c: char, msg: UiMessage| icon_btn(p, c, 14.0, 26.0, p.weak, msg);
+            let (cid, mid) = (chat.id.clone(), m.id.clone());
+            let bar = row![
+                b(
+                    icon::SMILE,
+                    UiMessage::ToggleReaction(cid.clone(), mid.clone(), "👍".into())
+                ),
+                b(icon::REPLY, UiMessage::StartReply(mid.clone())),
+                b(icon::BOOKMARK, UiMessage::ToggleBookmark(mid.clone())),
+                b(
+                    icon::MAIL,
+                    UiMessage::MarkUnreadFromHere(cid.clone(), mid.clone())
+                )
+            ]
+            .push(
+                (!m.edit_history.is_empty())
+                    .then(|| b(icon::HISTORY, UiMessage::ToggleEditHistory(mid.clone()))),
+            )
+            .push(mine.then(|| {
+                b(
+                    icon::PENCIL,
+                    UiMessage::StartEdit(mid.clone(), text.clone()),
+                )
+            }))
+            .push(mine.then(|| {
+                b(
+                    icon::TRASH_2,
+                    UiMessage::DeleteMessage(cid.clone(), mid.clone()),
+                )
+            }));
+            container(bar)
+                .padding(2)
+                .style(shadow_box(p.elevated, p.outline, 10.0, 8.0))
+        });
+        let side = (group && !mine).then(|| -> El<'a> {
+            if last {
+                avatar(m.sender_name.as_deref().expect("sender name"), 28.0)
+            } else {
+                Space::new().width(28).into()
+            }
+        });
+        let line: El<'a> = if mine {
+            row![Space::new().width(Fill)]
+                .push(tools)
+                .push(parts)
+                .spacing(6)
+                .align_y(Center)
+                .into()
+        } else {
+            row![]
+                .push(side)
+                .push(parts)
+                .push(tools)
+                .push(Space::new().width(Fill))
+                .spacing(6)
+                .align_y(Bottom)
+                .into()
+        };
+        mouse_area(line)
+            .on_enter(UiMessage::HoverEnter(m.id.clone()))
+            .on_exit(UiMessage::HoverExit(m.id.clone()))
+            .into()
+    }
+
+    fn view_composer<'a>(&self, st: &BeeperStore, chat: &Chat) -> El<'a> {
+        let p = &self.pal;
+        let banner = match (&self.editing_message_id, &self.reply_to_message_id) {
+            (Some(_), _) => Some((icon::PENCIL, "Editing message".to_string())),
+            (None, Some(r)) => Some((
+                icon::REPLY,
+                format!(
+                    "Replying to {}",
+                    st.messages[st.msg_idx_by_id[r]]
+                        .sender_name
+                        .clone()
+                        .expect("sender name")
+                ),
+            )),
+            _ => None,
+        }
+        .map(|(c, label)| {
+            row![
+                ic(c, 12.0).color(p.accent),
+                txt(label, 12.0).color(p.sub),
+                Space::new().width(Fill),
+                icon_btn(p, icon::X, 12.0, 22.0, p.sub, UiMessage::CancelComposeMode)
+            ]
+            .spacing(6)
+            .align_y(Center)
+            .padding([4, 16])
+        });
+        let attach = self.show_attach_menu.then(|| {
+            row![
+                pill_btn(p, "Poll", UiMessage::SendQuickPoll),
+                pill_btn(p, "Voice note", UiMessage::SendQuickVoiceNote)
+            ]
+            .spacing(6)
+            .padding([4, 16])
+        });
+        let placeholder = format!(
+            "Message {} on {}",
+            chat.title,
+            network_name(&chat.account_id)
+        );
+        let input = text_input(&placeholder, &self.composer_text)
+            .id("composer-input")
+            .on_input(UiMessage::ComposerChanged)
+            .on_submit(UiMessage::SubmitComposer)
+            .size(13)
+            .font(fw(Weight::Normal))
+            .padding([9, 2])
+            .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
+        let net = svg(brand_svg(brand_key(&chat.account_id)))
+            .width(20)
+            .height(20);
+        let smile = icon_btn(
+            p,
+            icon::SMILE,
+            17.0,
+            26.0,
+            p.on_secondary,
+            UiMessage::ComposerChanged(format!("{}🙂", self.composer_text)),
+        );
+        let voice = icon_btn(
+            p,
+            icon::AUDIO_LINES,
+            17.0,
+            26.0,
+            p.on_secondary,
+            UiMessage::SendQuickVoiceNote,
+        );
+        let pill = container(
+            row![net, input, smile, voice]
+                .spacing(6)
+                .align_y(Center)
+                .padding(Padding::new(0.0).left(8.0).right(6.0)),
+        )
+        .height(36)
+        .width(Fill)
+        .style(fill_box(p.input, 18.0));
+        let plus = button(container(ic(icon::PLUS, 18.0).color(p.on_secondary)).center(36))
+            .padding(0)
+            .style(btn_style(
+                [p.input, p.selected, p.selected],
+                [p.text; 3],
+                18.0,
+            ))
+            .on_press(UiMessage::ToggleAttachMenu);
+        let ready = !self.composer_text.trim().is_empty();
+        let send = button(container(ic(icon::ARROW_UP, 18.0).color(Color::WHITE)).center(34))
+            .padding(0)
+            .style(btn_style(
+                [
+                    if ready { p.accent } else { p.send_btn },
+                    p.accent,
+                    p.accent,
+                ],
+                [p.text; 3],
+                17.0,
+            ))
+            .on_press(UiMessage::SubmitComposer);
+        column![]
+            .push(banner)
+            .push(attach)
+            .push(
+                row![plus, pill, send]
+                    .spacing(12)
+                    .align_y(Center)
+                    .padding(8),
+            )
+            .into()
+    }
+
+    fn view_info(&self) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read().unwrap();
+        let cid = self.selected_chat_id.clone().expect("a chat is selected");
+        let chat = st.chats[st.resolve_chat_idx(&cid).expect("selected chat exists")].clone();
+        let me = st.me().full_name.clone().expect("self name");
+        let action = |c: char, label: &'static str, msg: UiMessage| {
+            button(
+                column![ic(c, 16.0).color(p.text), txt(label, 11.0).color(p.sub)]
+                    .spacing(4)
+                    .align_x(Center)
+                    .width(52),
+            )
+            .padding([8, 0])
+            .style(btn_style(
+                [p.hover, p.selected, p.selected],
+                [p.text; 3],
+                10.0,
+            ))
+            .on_press(msg)
+        };
+        let actions = row![
+            action(
+                icon::PIN,
+                if chat.is_pinned == Some(true) {
+                    "Unpin"
+                } else {
+                    "Pin"
+                },
+                UiMessage::TogglePinChat(cid.clone())
+            ),
+            action(
+                icon::BELL_OFF,
+                if chat.is_muted == Some(true) {
+                    "Unmute"
+                } else {
+                    "Mute"
+                },
+                UiMessage::ToggleMuteChat(cid.clone())
+            ),
+            action(
+                icon::ARCHIVE,
+                "Archive",
+                UiMessage::ToggleArchiveChat(cid.clone())
+            ),
+            action(icon::CLOCK, "Remind", UiMessage::SetReminder(cid.clone())),
+            action(
+                icon::DOWNLOAD,
+                "Export",
+                UiMessage::ExportChatJson(cid.clone())
+            ),
+        ]
+        .spacing(4);
+        let nickname = (chat.chat_type == "single" && chat.id != NOTE_CHAT_ID).then(|| {
+            let input = text_input("Nickname", &self.nickname_edit_buffer)
+                .on_input(UiMessage::NicknameChanged)
+                .on_submit(UiMessage::SaveNickname)
+                .size(13)
+                .font(fw(Weight::Normal))
+                .padding([7, 10])
+                .style(input_style(p.input, p.strong, p.sub, p.accent, 8.0));
+            column![med("Nickname", 12.0).color(p.weak), input].spacing(6)
+        });
+        let people = chat
+            .participants
+            .items
+            .iter()
+            .fold(Column::new().spacing(8), |c, u| {
+                let name = u
+                    .custom_nickname
+                    .clone()
+                    .or_else(|| u.full_name.clone())
+                    .expect("participant name");
+                c.push(
+                    row![
+                        avatar(&name, 28.0),
+                        column![txt(name, 13.0).color(p.text)]
+                            .push(u.phone_number.clone().map(|ph| txt(ph, 11.0).color(p.sub)))
+                    ]
+                    .spacing(10)
+                    .align_y(Center),
+                )
+            });
+        let head = row![
+            semi("Chat Info", 13.0).color(p.strong),
+            Space::new().width(Fill),
+            icon_btn(p, icon::X, 14.0, 26.0, p.sub, UiMessage::ToggleRightPanel)
+        ]
+        .align_y(Center);
+        let body = column![
+            head,
+            column![
+                chat_avatar(&chat, &me, 64.0),
+                semi(chat.title.clone(), 15.0).color(p.strong),
+                txt(network_name(&chat.account_id), 12.0).color(p.sub)
+            ]
+            .spacing(6)
+            .align_x(Center)
+            .width(Fill),
+            actions,
+        ]
+        .push(nickname)
+        .push(
+            column![
+                med(format!("{} participants", chat.participants.total), 12.0).color(p.weak),
+                people
+            ]
+            .spacing(8),
+        )
+        .spacing(16)
+        .padding(16);
+        container(
+            container(scrollable(body).style(scroll_style(p.divider, p.weak)))
+                .width(300)
+                .height(Fill)
+                .style(fill_box(p.card, 10.0)),
+        )
+        .padding(Padding::new(8.0).left(0.0))
+        .into()
+    }
+
+    fn view_command_palette(&self) -> El<'_> {
+        let p = &self.pal;
+        let input = text_input("Search chats and commands", &self.command_palette_query)
+            .id("cmd-palette-input")
+            .on_input(UiMessage::CommandQueryChanged)
+            .size(14)
+            .font(fw(Weight::Normal))
+            .padding([10, 4])
+            .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
+        let q = self.command_palette_query.to_lowercase();
+        let st = self.store.read().unwrap();
+        let hits = st
+            .chats
+            .iter()
+            .filter(|c| c.title.to_lowercase().contains(&q))
+            .take(8)
+            .fold(Column::new().spacing(2), |col, c| {
+                let line = row![
+                    avatar(&c.title, 24.0),
+                    txt(c.title.clone(), 13.0).color(p.text),
+                    Space::new().width(Fill),
+                    txt(network_name(&c.account_id), 11.0).color(p.sub)
+                ]
+                .spacing(10)
+                .align_y(Center);
+                col.push(
+                    button(line)
+                        .padding([6, 10])
+                        .width(Fill)
+                        .style(ghost(p, 8.0))
+                        .on_press(UiMessage::ExecuteCommandChat(c.id.clone())),
+                )
+            });
+        let body = column![
+            row![ic(icon::SEARCH, 16.0).color(p.sub), input]
+                .spacing(8)
+                .align_y(Center)
+                .padding([0, 12]),
+            divider(p, 0.0),
+            container(hits).padding(6)
+        ];
+        container(body)
+            .width(560)
+            .style(shadow_box(p.elevated, p.outline, 12.0, 30.0))
+            .into()
+    }
+
+    fn view_quick_look<'a>(&self, title: &str, detail: &str) -> El<'a> {
+        let p = &self.pal;
+        let head = row![
+            semi(title.to_string(), 14.0).color(p.strong),
+            Space::new().width(Fill),
+            icon_btn(p, icon::X, 14.0, 26.0, p.sub, UiMessage::CloseModals)
+        ]
+        .align_y(Center);
+        container(
+            column![head, txt(detail.to_string(), 13.0).color(p.sub)]
+                .spacing(10)
+                .padding(16),
+        )
+        .width(420)
+        .style(shadow_box(p.elevated, p.outline, 12.0, 30.0))
+        .into()
+    }
+
+    pub fn view_settings(&self) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read().unwrap();
+        let me = st.me().clone();
+        let name = me.full_name.clone().expect("self name");
+        let search_input = text_input("Search Settings", &self.settings_query)
+            .on_input(UiMessage::SettingsQueryChanged)
+            .size(13)
+            .font(fw(Weight::Normal))
+            .padding([5, 2])
+            .style(input_style(CLEAR, p.strong, p.text, p.accent, 0.0));
+        let search = container(
+            row![ic(icon::SEARCH, 15.0).color(p.text), search_input]
+                .spacing(8)
+                .align_y(Center)
+                .padding([2, 10]),
+        )
+        .style(fill_box(p.search, 38.0));
+        let free = semi("Free", 11.0).color(p.text);
+        let profile = row![
+            self_avatar(&name, 28.0),
+            column![
+                bold(name.clone(), 14.0).color(p.strong),
+                txt(me.email.clone().expect("self email"), 11.0).color(p.text)
+            ]
+            .width(Fill),
+            free
+        ]
+        .spacing(10)
+        .align_y(Center)
+        .padding([2, 8]);
+        let nav = SettingsTab::ALL.iter().fold(Column::new(), |c, &tab| {
+            let (label, glyph, rgb) = tab.meta();
+            let on = tab == self.active_settings_tab && self.settings_query.is_empty();
+            let tile = container(ic(glyph, 13.0).color(Color::WHITE))
+                .center(20)
+                .style(fill_box(
+                    Color::from_rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8),
+                    6.0,
+                ));
+            let count = (tab == SettingsTab::Accounts)
+                .then(|| txt(st.accounts.len().to_string(), 13.0).color(p.sub));
+            let line = row![
+                tile,
+                txt(label, 14.0).color(p.strong),
+                Space::new().width(Fill)
+            ]
+            .push(count)
+            .spacing(8)
+            .align_y(Center)
+            .padding([12, 8]);
+            let next_on = SettingsTab::ALL
+                .get(tab as usize + 1)
+                .is_some_and(|n| *n == self.active_settings_tab);
+            c.push(
+                button(line)
+                    .padding(0)
+                    .width(Fill)
+                    .style(btn_style(
+                        [if on { p.nav_sel } else { CLEAR }, p.hover, p.nav_sel],
+                        [p.text; 3],
+                        8.0,
+                    ))
+                    .on_press(UiMessage::SelectSettingsTab(tab)),
+            )
+            .push((!on && !next_on).then(|| divider(p, 36.0)))
+        });
+        let left = column![
+            container(semi("Settings", 14.0).color(p.strong)).padding([4, 8]),
+            search,
+            profile,
+            scrollable(nav)
+                .height(Fill)
+                .style(scroll_style(p.divider, p.weak))
+        ]
+        .spacing(8)
+        .width(270)
+        .padding(Padding::new(8.0).right(0.0));
+        let content = if self.settings_query.trim().is_empty() {
+            self.settings_content(&st)
+        } else {
+            self.settings_search_results()
+        };
+        let right = container(
+            scrollable(container(content).max_width(600).padding(16).center_x(Fill))
+                .height(Fill)
+                .style(scroll_style(p.divider, p.weak)),
+        )
+        .width(Fill)
+        .height(Fill)
+        .style(fill_box(p.prefs_pane, 10.0));
+        container(row![left, container(right).padding(8)])
+            .width(Fill)
+            .height(Fill)
+            .style(fill_box(p.frame, 0.0))
+            .into()
+    }
+
+    fn settings_search_results(&self) -> El<'_> {
+        let p = &self.pal;
+        let hits = search_settings_catalog(&self.settings_query)
+            .into_iter()
+            .map(|e| {
+                let tab = SettingsTab::for_section(e.section);
+                button(
+                    column![
+                        txt(e.title, 13.0).color(p.text),
+                        txt(format!("{} · {}", e.section, e.description), 12.0).color(p.sub)
+                    ]
+                    .spacing(2),
+                )
+                .padding([10, 12])
+                .width(Fill)
+                .style(ghost(p, 6.0))
+                .on_press(UiMessage::SelectSettingsTab(tab))
+                .into()
+            });
+        group(p, Some("Results"), hits.collect())
+    }
+
+    fn settings_content(&self, st: &BeeperStore) -> El<'_> {
+        let p = &self.pal;
+        let s = &st.settings;
+        let tog = |title: &'static str, desc: Option<&'static str>, key: &'static str, on: bool| {
+            pref_row(
+                p,
+                title,
+                desc,
+                None,
+                toggle(p, on, UiMessage::ToggleSettingBool(key, !on)),
+            )
+        };
+        let groups: Vec<El<'_>> = match self.active_settings_tab {
+            SettingsTab::Accounts => {
+                let connected = st
+                    .bridge_accounts
+                    .iter()
+                    .map(|b| {
+                        pref_row(
+                            p,
+                            b.network_name.clone(),
+                            Some(&format!(
+                                "{} · {}",
+                                b.state.to_lowercase(),
+                                b.mode.as_deref().expect("bridge mode").replace('_', " ")
+                            )),
+                            Some(
+                                svg(brand_svg(brand_key(&b.account_id)))
+                                    .width(20)
+                                    .height(20)
+                                    .into(),
+                            ),
+                            txt("Connected", 12.0).color(p.success).into(),
+                        )
+                    })
+                    .collect();
+                let more = NETWORK_SPECS
+                    .iter()
+                    .filter(|n| {
+                        !st.bridge_accounts
+                            .iter()
+                            .any(|b| b.bridge_id == n.bridge_id)
+                    })
+                    .map(|n| {
+                        pref_row(
+                            p,
+                            n.display_name,
+                            None,
+                            Some(svg(brand_svg(n.bridge_id)).width(20).height(20).into()),
+                            pill_btn(
+                                p,
+                                "Connect",
+                                UiMessage::ConnectBridge(n.bridge_id.to_string()),
+                            ),
+                        )
+                    })
+                    .collect();
+                vec![
+                    group(p, Some("Connected accounts"), connected),
+                    group(p, Some("Add an account"), more),
+                ]
+            }
+            SettingsTab::General => {
+                let lang: Vec<&'static str> = ALL_LANGUAGES.iter().map(|l| l.label()).collect();
+                vec![
+                    group(p, None, vec![
+                        pref_row(p, "Incognito mode", Some("Incognito mode keeps chats unread when you open them and does not tell recipients that you read them. Reply or press Ctrl Shift U to mark a chat as read. This needs a paid subscription."), Some(plus_pill(p)), toggle(p, s.incognito_mode, UiMessage::ToggleSettingBool("incognito_mode", !s.incognito_mode))),
+                    ]),
+                    group(p, None, vec![
+                        pref_row(p, "App language", None, None, select(p, lang, s.language.label(), |l: &'static str| UiMessage::SelectLanguage(l.to_string()))),
+                    ]),
+                    group(p, None, vec![
+                        pref_row(p, "Default for remind later", None, None, select(p, &REMIND_LATER[..], REMIND_LATER[s.remind_later_default as usize], UiMessage::SelectRemindLater)),
+                        tog("Archive after setting reminder", None, "archive_after_reminder", s.archive_after_reminder),
+                    ]),
+                    group(p, None, vec![
+                        tog("Mark unread chats as read on archive", None, "mark_read_on_archive", s.mark_read_on_archive),
+                        pref_row(p, "After archive", None, None, select(p, &AFTER_ARCHIVE[..], AFTER_ARCHIVE[s.after_archive as usize], UiMessage::SelectAfterArchive)),
+                    ]),
+                    group(p, Some("Chat list"), vec![
+                        tog("Compact chat list", Some("Show more chats with smaller avatars."), "compact_chat_list", s.compact_chat_list),
+                        tog("Show message previews", None, "show_message_previews", s.show_message_previews),
+                        tog("Unread chats always on top", None, "unread_chats_always_on_top", s.unread_chats_always_on_top),
+                        tog("Show full names", None, "show_full_names_in_chats", s.show_full_names_in_chats),
+                        tog("Use 24-hour time", None, "use_twenty_four_hour_time", s.use_twenty_four_hour_time),
+                    ]),
+                    group(p, Some("Startup"), vec![tog("Launch at startup", None, "launch_at_startup", s.launch_at_startup), tog("Minimize to tray", None, "minimize_to_tray", s.minimize_to_tray)]),
+                ]
+            }
+            SettingsTab::Appearance => {
+                let themes: Vec<&'static str> =
+                    ThemeChoice::all().iter().map(|t| t.label()).collect();
+                let css = text_input(".thread { }", &s.custom_css_source)
+                    .on_input(UiMessage::CustomCssChanged)
+                    .size(12)
+                    .font(fw(Weight::Normal))
+                    .padding([8, 10])
+                    .style(input_style(p.input, p.strong, p.sub, p.accent, 6.0));
+                vec![
+                    group(
+                        p,
+                        Some("Theme"),
+                        vec![
+                            pref_row(
+                                p,
+                                "Theme",
+                                None,
+                                None,
+                                select(p, themes, s.theme.label(), |l: &'static str| {
+                                    UiMessage::SelectTheme(
+                                        ThemeChoice::all()
+                                            .into_iter()
+                                            .find(|t| t.label() == l)
+                                            .expect("known theme"),
+                                    )
+                                }),
+                            ),
+                            tog(
+                                "Reduce transparency",
+                                None,
+                                "reduce_transparency",
+                                s.reduce_transparency,
+                            ),
+                            tog(
+                                "No transparency",
+                                None,
+                                "no_transparency",
+                                s.no_transparency,
+                            ),
+                            tog(
+                                "Fix lockdown emojis",
+                                None,
+                                "fix_lockdown_emojis",
+                                s.fix_lockdown_emojis,
+                            ),
+                        ],
+                    ),
+                    group(
+                        p,
+                        Some("Conversation"),
+                        vec![
+                            tog(
+                                "Show chat header",
+                                None,
+                                "show_chat_header",
+                                s.show_chat_header,
+                            ),
+                            tog(
+                                "Show message input buttons",
+                                None,
+                                "show_message_input_buttons",
+                                s.show_message_input_buttons,
+                            ),
+                            tog("Link previews", None, "link_previews", s.link_previews),
+                            tog(
+                                "Auto-play videos",
+                                None,
+                                "auto_play_videos",
+                                s.auto_play_videos,
+                            ),
+                            tog(
+                                "Load remote content",
+                                None,
+                                "load_remote_content_automatically",
+                                s.load_remote_content_automatically,
+                            ),
+                            tog(
+                                "Show chat info by default",
+                                None,
+                                "show_right_panel_by_default",
+                                s.show_right_panel_by_default,
+                            ),
+                        ],
+                    ),
+                    group(
+                        p,
+                        Some("Custom CSS"),
+                        vec![container(css).padding(12).into()],
+                    ),
+                ]
+            }
+            SettingsTab::Notifications => vec![group(
+                p,
+                None,
+                vec![
+                    pref_row(
+                        p,
+                        "Do not disturb",
+                        Some("Mute all notifications on this device."),
+                        None,
+                        toggle(p, self.dnd_muted, UiMessage::ToggleDnd),
+                    ),
+                    tog(
+                        "Repeat message alerts",
+                        Some("Alert again when a message stays unread."),
+                        "repeat_message_alerts",
+                        s.repeat_message_alerts > 1,
+                    ),
+                ],
+            )],
+            SettingsTab::Hotkeys => vec![group(
+                p,
+                None,
+                HOTKEYS
+                    .iter()
+                    .map(|(a, k)| {
+                        pref_row(
+                            p,
+                            *a,
+                            None,
+                            None,
+                            container(med(*k, 12.0).color(p.text))
+                                .padding([3, 8])
+                                .style(bordered_box(p.hover, p.divider, 1.0, 6.0))
+                                .into(),
+                        )
+                    })
+                    .collect(),
+            )],
+            SettingsTab::Devices => {
+                let code = text_input("Recovery code", &self.recovery_code_input)
+                    .on_input(UiMessage::RecoveryInputChanged)
+                    .on_submit(UiMessage::VerifyRecoveryCode)
+                    .size(13)
+                    .font(fw(Weight::Normal))
+                    .padding([6, 10])
+                    .width(200)
+                    .style(input_style(p.input, p.strong, p.sub, p.accent, 6.0));
+                vec![
+                    group(
+                        p,
+                        Some("This device"),
+                        vec![pref_row(
+                            p,
+                            format!("{:?} · {:?}", self.os, self.display_server),
+                            Some(APP_VERSION),
+                            None,
+                            txt(
+                                if st.beeper_state.verified {
+                                    "Verified"
+                                } else {
+                                    "Not verified"
+                                },
+                                12.0,
+                            )
+                            .color(if st.beeper_state.verified {
+                                p.success
+                            } else {
+                                p.warning
+                            })
+                            .into(),
+                        )],
+                    ),
+                    group(
+                        p,
+                        Some("Encryption"),
+                        vec![
+                            pref_row(
+                                p,
+                                "Recovery code",
+                                Some("Enter your recovery code to verify this device."),
+                                None,
+                                code.into(),
+                            ),
+                            pref_row(
+                                p,
+                                "Verify with another device",
+                                None,
+                                None,
+                                pill_btn(p, "Verify", UiMessage::VerifySasNow),
+                            ),
+                        ],
+                    ),
+                ]
+            }
+            SettingsTab::Ai => vec![group(
+                p,
+                None,
+                vec![tog(
+                    "Transcribe voice notes",
+                    Some("Make voice notes searchable with on-device transcription."),
+                    "auto_transcribe_voice_notes",
+                    s.auto_transcribe_voice_notes,
+                )],
+            )],
+            SettingsTab::BeeperPlus => vec![group(
+                p,
+                None,
+                vec![pref_row(
+                    p,
+                    "Beeper Plus",
+                    Some("Incognito mode, custom themes, and more."),
+                    Some(plus_pill(p)),
+                    txt("Free plan", 12.0).color(p.sub).into(),
+                )],
+            )],
+            SettingsTab::Integrations => vec![group(
+                p,
+                Some("Desktop API"),
+                vec![
+                    tog(
+                        "Enable Desktop API",
+                        Some("Local REST and WebSocket server for scripts and assistants."),
+                        "enable_pas_api",
+                        s.enable_pas_api,
+                    ),
+                    pref_row(
+                        p,
+                        "Address",
+                        None,
+                        None,
+                        txt(format!("http://localhost:{}", s.pas_port), 12.0)
+                            .color(p.sub)
+                            .into(),
+                    ),
+                ],
+            )],
+            SettingsTab::Storage => vec![group(
+                p,
+                None,
+                vec![
+                    pref_row(
+                        p,
+                        "Media cache",
+                        Some("Remove cached media older than 30 days."),
+                        None,
+                        pill_btn(p, "Clear", UiMessage::ClearOldMedia),
+                    ),
+                    pref_row(
+                        p,
+                        "Export current chat",
+                        None,
+                        None,
+                        pill_btn(
+                            p,
+                            "Export",
+                            UiMessage::ExportChatJson(
+                                self.selected_chat_id.clone().expect("a chat is selected"),
+                            ),
+                        ),
+                    ),
+                    pref_row(
+                        p,
+                        "Data folder",
+                        Some(&st.data_dir.display().to_string()),
+                        None,
+                        Space::new().into(),
+                    ),
+                ],
+            )],
+            SettingsTab::Help => vec![group(
+                p,
+                None,
+                ["Help center", "Report a problem", "Join the community"]
+                    .into_iter()
+                    .map(|h| {
+                        pref_row(
+                            p,
+                            h,
+                            None,
+                            None,
+                            ic(icon::ARROW_UP_RIGHT, 14.0).color(p.sub).into(),
+                        )
+                    })
+                    .collect(),
+            )],
+            SettingsTab::About => vec![group(
+                p,
+                None,
+                vec![pref_row(
+                    p,
+                    "beeper-rs",
+                    Some("Not affiliated with Beeper Inc. or Automattic Inc. MIT license."),
+                    None,
+                    txt(APP_VERSION, 12.0).color(p.sub).into(),
+                )],
+            )],
+        };
+        let banner = (!self.status_banner.is_empty())
+            .then(|| txt(self.status_banner.clone(), 12.0).color(p.sub));
+        let intro = (self.active_settings_tab == SettingsTab::General).then(|| {
+            container(
+                txt(
+                    "These settings are for Beeper and are not synced to the messaging platforms.",
+                    13.0,
+                )
+                .color(p.sub),
+            )
+            .padding([4, 14])
+        });
+        column![]
+            .push(intro)
+            .push(banner)
+            .extend(groups)
+            .spacing(28)
+            .into()
+    }
+}
+
+pub fn write_rgba_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u8]) {
+    let file = std::fs::File::create(path).expect("create png");
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .expect("png header")
+        .write_image_data(rgba)
+        .expect("png data");
+}
+
+pub fn run_native_gui(store: SharedStore) -> iced::Result {
+    let app = iced::daemon(
+        move || BeeperGuiApp::boot(store.clone()),
+        BeeperGuiApp::update,
+        BeeperGuiApp::view,
+    )
+    .title(BeeperGuiApp::title)
+    .subscription(BeeperGuiApp::subscription)
+    .theme(|a: &BeeperGuiApp, _| a.iced_theme())
+    .style(|a: &BeeperGuiApp, _| iced::theme::Style {
+        background_color: a.pal.frame,
+        text_color: a.pal.text,
+    })
+    .default_font(fw(Weight::Normal));
+    ALL_FONTS.into_iter().fold(app, |app, f| app.font(f)).run()
+}

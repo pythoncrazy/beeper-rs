@@ -1,16 +1,22 @@
-use beeper_rs::{
+use beeper_api::{
     client::{extract_state_from_index_db, BeeperClient},
+    server::{build_router, serve_http, StatusCode},
+};
+use beeper_core::{
     config::{is_original_beeper_dir, CentralConfig, APP_BUNDLE_ID, DEFAULT_RECOVERY_CODE},
-    css::{fw, icon, ResolvedTheme, ALL_FONTS},
     models::*,
     platform::{
         build_tray_icon_rgba, file_url_to_path, generate_os_autostart_manifest,
         open_url_or_path_command, path_to_file_url, resolve_desktop_data_dir,
         resolve_original_beeper_data_dir, DisplayServerKind, OsKind, SystemTrayState,
     },
-    server::{build_router, serve_http, SharedStore, StatusCode},
-    store::BeeperStore,
-    ui::{search_settings_catalog, write_rgba_png, BeeperGuiApp, InboxTab, SettingsTab, UiMessage},
+    store::{BeeperStore, SharedStore},
+    theme::ResolvedTheme,
+};
+use beeper_ui::{
+    search_settings_catalog,
+    style::{fw, icon, ALL_FONTS},
+    write_rgba_png, BeeperGuiApp, InboxTab, SettingsTab, UiMessage,
 };
 use iced::font::Weight;
 use iced::{Size, Theme};
@@ -488,14 +494,24 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert!(tray_state.tooltip.contains("DND"));
 
     let mut gui = BeeperGuiApp::new(store.clone(), false);
-    assert_eq!(gui.selected_chat_id.as_deref(), Some("!note_self:beeper.com"));
+    assert_eq!(
+        gui.selected_chat_id.as_deref(),
+        Some("!note_self:beeper.com")
+    );
     gui.select_chat("!wa_eric:beeper.com");
     {
         let mut sim = simulator(gui.view_main());
-        for label in ["Inbox", "Eric Migicovsky", "Message Eric Migicovsky on WhatsApp", "Note to self", "Feedback?"] {
+        for label in [
+            "Inbox",
+            "Eric Migicovsky",
+            "Message Eric Migicovsky on WhatsApp",
+            "Note to self",
+            "Feedback?",
+        ] {
             assert!(sim.find(label).is_ok(), "main window shows {label}");
         }
-        sim.click(iced::widget::Id::new("rail-unread")).expect("unread rail button");
+        sim.click(iced::widget::Id::new("rail-unread"))
+            .expect("unread rail button");
         for m in sim.into_messages() {
             let _ = gui.update(m);
         }
@@ -503,13 +519,22 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     }
 
     let _ = gui.update(UiMessage::SelectTab(InboxTab::AllChats));
-    let _ = gui.update(UiMessage::ComposerChanged("Hello from Iced Simulator E2E!".to_string()));
+    let _ = gui.update(UiMessage::ComposerChanged(
+        "Hello from Iced Simulator E2E!".to_string(),
+    ));
     let _ = gui.update(UiMessage::SubmitComposer);
     let _ = gui.update(UiMessage::OpenSettings(SettingsTab::Appearance));
     assert!(gui.settings_window.is_some());
     {
         let mut sim = simulator(gui.view_settings());
-        for label in ["Settings", "Search Settings", "Accounts", "Beeper Plus", "Theme", "Custom CSS"] {
+        for label in [
+            "Settings",
+            "Search Settings",
+            "Accounts",
+            "Beeper Plus",
+            "Theme",
+            "Custom CSS",
+        ] {
             assert!(sim.find(label).is_ok(), "settings window shows {label}");
         }
     }
@@ -537,8 +562,16 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         .default_font(fw(Weight::Normal));
 
         let (tx, _rx) = iced_test::futures::futures::channel::mpsc::channel(64);
-        let mut emu = Emulator::new(tx, &app_prog, emulator::Mode::Immediate, Size::new(1264.0, 893.0));
-        emu.run(&app_prog, Instruction::parse("expect \"Note to self\"").unwrap());
+        let mut emu = Emulator::new(
+            tx,
+            &app_prog,
+            emulator::Mode::Immediate,
+            Size::new(1264.0, 893.0),
+        );
+        emu.run(
+            &app_prog,
+            Instruction::parse("expect \"Note to self\"").unwrap(),
+        );
         let shot = emu.screenshot(&app_prog, &Theme::Dark, 1.0);
         assert_eq!((shot.size.width, shot.size.height), (1264, 893));
         let emu_png = PathBuf::from("/tmp/beeper_rs_iced_dark.png");
@@ -589,23 +622,42 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = std::fs::remove_dir_all(&wl_data_dir);
 
     let wl_status = std::process::Command::new(bin_exe)
-        .args(["--data-dir", wl_data_dir.to_str().unwrap(), "--port", "23398"])
+        .args([
+            "--data-dir",
+            wl_data_dir.to_str().unwrap(),
+            "--port",
+            "23398",
+        ])
         .env("XDG_RUNTIME_DIR", &wl_runtime_dir)
         .env("WAYLAND_DISPLAY", wl_sock)
         .env_remove("DISPLAY")
         .env("ICED_BACKEND", "tiny-skia")
         .env("BEEPER_SCREENSHOT_EXIT", wl_png.to_str().unwrap())
-        .env("BEEPER_SCREENSHOT_SETTINGS", "/tmp/beeper_rs_wayland_settings.png")
+        .env(
+            "BEEPER_SCREENSHOT_SETTINGS",
+            "/tmp/beeper_rs_wayland_settings.png",
+        )
         .status()
         .expect("run beeper-rs GUI on headless Wayland");
 
     let _ = weston_child.kill();
     let _ = weston_child.wait();
 
-    assert!(wl_status.success(), "beeper-rs GUI on headless Wayland exited cleanly");
-    assert!(wl_png.exists(), "Wayland window screenshot PNG must be written");
+    assert!(
+        wl_status.success(),
+        "beeper-rs GUI on headless Wayland exited cleanly"
+    );
+    assert!(
+        wl_png.exists(),
+        "Wayland window screenshot PNG must be written"
+    );
     assert!(std::fs::metadata(&wl_png).unwrap().len() > 25_000);
-    assert!(std::fs::metadata("/tmp/beeper_rs_wayland_settings.png").unwrap().len() > 15_000);
+    assert!(
+        std::fs::metadata("/tmp/beeper_rs_wayland_settings.png")
+            .unwrap()
+            .len()
+            > 15_000
+    );
 
     let xvfb_dir = std::env::temp_dir().join(format!("beeper_xvfb_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&xvfb_dir);
@@ -644,7 +696,12 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = std::fs::remove_dir_all(&xvfb_data_dir);
 
     let status = std::process::Command::new(bin_exe)
-        .args(["--data-dir", xvfb_data_dir.to_str().unwrap(), "--port", "23399"])
+        .args([
+            "--data-dir",
+            xvfb_data_dir.to_str().unwrap(),
+            "--port",
+            "23399",
+        ])
         .env("DISPLAY", ":99")
         .env_remove("WAYLAND_DISPLAY")
         .env("ICED_BACKEND", "tiny-skia")
@@ -656,7 +713,10 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = xvfb_child.wait();
 
     assert!(status.success(), "beeper-rs GUI on Xvfb :99 exited cleanly");
-    assert!(xvfb_png.exists(), "Xvfb window screenshot PNG must be written");
+    assert!(
+        xvfb_png.exists(),
+        "Xvfb window screenshot PNG must be written"
+    );
     assert!(std::fs::metadata(&xvfb_png).unwrap().len() > 25_000);
 
     let _ = std::fs::remove_dir_all(&wl_runtime_dir);

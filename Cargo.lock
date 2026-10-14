@@ -123,17 +123,48 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
-name = "beeper-rs"
+name = "beeper-api"
 version = "4.3.176"
 dependencies = [
- "iced",
- "iced_test",
- "png 0.18.1",
+ "beeper-core",
  "rusqlite",
  "serde",
  "serde_json",
  "tokio",
- "wayland-client",
+]
+
+[[package]]
+name = "beeper-core"
+version = "4.3.176"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "beeper-rs"
+version = "4.3.176"
+dependencies = [
+ "beeper-api",
+ "beeper-core",
+ "beeper-ui",
+ "iced",
+ "iced_test",
+ "rusqlite",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "beeper-ui"
+version = "4.3.176"
+dependencies = [
+ "beeper-core",
+ "iced",
+ "png 0.18.1",
+ "serde_json",
  "wgpu",
 ]
 

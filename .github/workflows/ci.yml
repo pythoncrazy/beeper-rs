@@ -4,30 +4,27 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   check-and-test:
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config clang mold libsqlite3-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run Clippy lints
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Run end-to-end tests
-        run: cargo test --test e2e -- --nocapture
+      - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: v0.18.0
+      - uses: rui314/setup-mold@10ca16bf91dc22e05ebdc935cad9c75ea248f621
+        with:
+          mold-version: 3.0.0
+          make-default: false
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config clang libsqlite3-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev weston xvfb mesa-vulkan-drivers
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace -- --nocapture
