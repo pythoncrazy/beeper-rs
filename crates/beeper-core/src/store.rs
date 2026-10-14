@@ -1,7 +1,6 @@
 use crate::config::{
-    assert_not_original_beeper_dir, copy_beeper_data_to_isolated_dir, now_rfc3339_millis, now_unix_secs, CentralConfig,
-    DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN, DEFAULT_USER_ID, SEED_JSON,
-    WS_CHANNEL_CAPACITY,
+    assert_not_original_beeper_dir, now_rfc3339_millis, now_unix_secs, CentralConfig, DEFAULT_DEVICE_ID,
+    DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN, DEFAULT_USER_ID, SEED_JSON, WS_CHANNEL_CAPACITY,
 };
 use crate::models::*;
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
@@ -147,17 +146,34 @@ struct Seed {
     messages: Vec<Message>,
 }
 
-const KEY_STATE: &str = "beeperRs:state";
-const KEY_BRIDGES: &str = "beeperRs:bridges";
-const KEY_SETTINGS: &str = "beeperRs:settings";
-const KEY_SEQ: &str = "beeperRs:nextSeq";
+const SCHEMA_VERSION: i64 = 1;
+const SCHEMA: &str = "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+     CREATE TABLE chats (id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;
+     CREATE TABLE messages (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, sort_key TEXT NOT NULL, json TEXT NOT NULL) STRICT;
+     CREATE TABLE assets (upload_id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;";
+const KEY_STATE: &str = "state";
+const KEY_BRIDGES: &str = "bridges";
+const KEY_SETTINGS: &str = "settings";
+const KEY_SEQ: &str = "nextSeq";
+const KEY_SETUP: &str = "setup";
 
-#[derive(Deserialize)]
-struct DesktopState {
-    user_id: String,
-    access_token: String,
-    device_id: String,
-    homeserver: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Setup {
+    Fresh,
+    Imported,
+}
+
+impl Setup {
+    fn key(self) -> &'static str {
+        match self {
+            Setup::Fresh => "fresh",
+            Setup::Imported => "imported",
+        }
+    }
+}
+
+pub fn sort_key(seq: u64) -> String {
+    format!("{seq:012}")
 }
 
 fn demo_state() -> BeeperStateRecord {
@@ -206,7 +222,7 @@ fn message_index_text(m: &Message) -> String {
 pub struct BeeperStore {
     pub config: CentralConfig,
     pub data_dir: PathBuf,
-    pub copied_files_from_source: usize,
+    pub setup: Option<Setup>,
     db: Mutex<Connection>,
     pub beeper_state: BeeperStateRecord,
     pub setup_status: SetupStatusResponse,
@@ -239,29 +255,38 @@ impl BeeperStore {
     pub fn from_config(config: CentralConfig) -> Self {
         assert_not_original_beeper_dir(&config.data_dir);
         std::fs::create_dir_all(&config.data_dir).expect("create isolated BeeperRs data_dir");
-        let copied_files_from_source = match &config.source_beeper_dir {
-            Some(src) if !config.db_path.exists() => copy_beeper_data_to_isolated_dir(src, &config.data_dir),
-            _ => 0,
-        };
         std::fs::create_dir_all(&config.assets_dir).expect("create isolated media dir");
-        let conn = Connection::open(&config.db_path).expect("open isolated index.db");
+        let conn = Connection::open(&config.db_path).expect("open beeper-rs.db");
+        let sqlite = rusqlite::version_number();
+        assert!(
+            sqlite >= 3_037_000,
+            "beeper-rs needs SQLite 3.37 or later for STRICT tables; this system has {}",
+            rusqlite::version()
+        );
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
              PRAGMA temp_store=MEMORY;
              PRAGMA mmap_size=268435456;
-             PRAGMA cache_size=-16000;
-             CREATE TABLE IF NOT EXISTS key_values (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS beeper_rs_chats (id TEXT PRIMARY KEY, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS beeper_rs_messages (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, sort_key TEXT NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS beeper_rs_assets (upload_id TEXT PRIMARY KEY, json TEXT NOT NULL);",
+             PRAGMA cache_size=-16000;",
         )
-        .expect("init SQLite WAL and schema");
+        .expect("configure SQLite");
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).expect("read schema version");
+        match version {
+            0 => conn
+                .execute_batch(&format!("BEGIN; {SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"))
+                .expect("create beeper-rs schema"),
+            SCHEMA_VERSION => {}
+            other => panic!(
+                "{} has schema version {other}, and this beeper-rs build reads version {SCHEMA_VERSION}",
+                config.db_path.display()
+            ),
+        }
         let beeper_state = if config.demo { demo_state() } else { BeeperStateRecord::default() };
         let label = |id: &str, name: &str| Label { id: id.to_string(), name: name.to_string() };
         let mut store = Self {
             data_dir: config.data_dir.clone(),
-            copied_files_from_source,
+            setup: None,
             settings: config.settings.clone(),
             config,
             db: Mutex::new(conn),
@@ -352,21 +377,18 @@ impl BeeperStore {
             (KEY_BRIDGES, serde_json::to_string(&self.bridge_accounts)),
             (KEY_SETTINGS, serde_json::to_string(&self.settings)),
         ] {
-            self.exec("INSERT OR REPLACE INTO key_values (key, value) VALUES (?1, ?2)", params![k, v.unwrap()]);
+            self.exec("INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)", params![k, v.unwrap()]);
         }
     }
 
     fn persist_seq(&self) {
-        self.exec(
-            "INSERT OR REPLACE INTO key_values (key, value) VALUES (?1, ?2)",
-            params![KEY_SEQ, self.next_seq.to_string()],
-        );
+        self.put_kv(KEY_SEQ, &self.next_seq.to_string());
     }
 
     fn persist_chat(&self, idx: usize) {
         let c = &self.chats[idx];
         self.exec(
-            "INSERT OR REPLACE INTO beeper_rs_chats (id, json) VALUES (?1, ?2)",
+            "INSERT OR REPLACE INTO chats (id, json) VALUES (?1, ?2)",
             params![c.id, serde_json::to_string(c).unwrap()],
         );
     }
@@ -374,56 +396,41 @@ impl BeeperStore {
     fn persist_message(&self, idx: usize) {
         let m = &self.messages[idx];
         self.exec(
-            "INSERT OR REPLACE INTO beeper_rs_messages (id, chat_id, sort_key, json) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT OR REPLACE INTO messages (id, chat_id, sort_key, json) VALUES (?1, ?2, ?3, ?4)",
             params![m.id, m.chat_id, m.sort_key, serde_json::to_string(m).unwrap()],
         );
     }
 
     fn load_from_sqlite_or_seed(&mut self) {
-        let (legacy, state, desktop, bridges, settings, seq, chats, messages, assets) = {
+        let (setup, state, bridges, settings, seq, chats, messages, assets) = {
             let conn = self.db.lock().unwrap();
             let kv = |k: &str| {
-                conn.query_row("SELECT CAST(value AS TEXT) FROM key_values WHERE key = ?1", [k], |r| {
-                    r.get::<_, String>(0)
-                })
-                .optional()
-                .expect("read key_values")
+                conn.query_row("SELECT value FROM kv WHERE key = ?1", [k], |r| r.get::<_, String>(0))
+                    .optional()
+                    .expect("read kv")
             };
             let rows = |sql: &str| -> Vec<String> {
                 let mut stmt = conn.prepare(sql).expect("prepare row query");
                 stmt.query_map([], |r| r.get(0)).expect("query rows").map(|r| r.expect("read row")).collect()
             };
             (
-                kv("beeperSettings"),
+                kv(KEY_SETUP),
                 kv(KEY_STATE),
-                kv("beeperState"),
                 kv(KEY_BRIDGES),
                 kv(KEY_SETTINGS),
                 kv(KEY_SEQ),
-                rows("SELECT json FROM beeper_rs_chats"),
-                rows("SELECT json FROM beeper_rs_messages ORDER BY sort_key ASC"),
-                rows("SELECT json FROM beeper_rs_assets"),
+                rows("SELECT json FROM chats"),
+                rows("SELECT json FROM messages ORDER BY sort_key ASC"),
+                rows("SELECT json FROM assets"),
             )
         };
-        assert!(
-            legacy.is_none(),
-            "{} was written by an older beeper-rs build. Delete {} and start beeper-rs again.",
-            self.config.db_path.display(),
-            self.data_dir.display()
-        );
-        match (state, desktop) {
-            (Some(s), _) => self.beeper_state = serde_json::from_str(&s).expect("parse stored beeper-rs state"),
-            (None, Some(d)) => {
-                let d: DesktopState = serde_json::from_str(&d).expect("parse Beeper Desktop beeperState");
-                self.beeper_state = BeeperStateRecord {
-                    user_id: d.user_id,
-                    access_token: d.access_token,
-                    device_id: d.device_id,
-                    homeserver: d.homeserver,
-                    ..BeeperStateRecord::default()
-                };
-            }
-            (None, None) => {}
+        self.setup = setup.map(|s| match s.as_str() {
+            "fresh" => Setup::Fresh,
+            "imported" => Setup::Imported,
+            other => panic!("unknown setup value {other} in {}", self.config.db_path.display()),
+        });
+        if let Some(s) = state {
+            self.beeper_state = serde_json::from_str(&s).expect("parse stored state");
         }
         if self.signed_in() {
             self.valid_tokens.insert(self.beeper_state.access_token.clone());
@@ -447,6 +454,7 @@ impl BeeperStore {
         assert!(!fresh || messages.is_empty(), "stored messages without chats");
         if fresh && self.config.demo {
             self.seed_default_workspace();
+            self.finish_setup(Setup::Fresh);
         }
         for c in chats {
             self.push_chat(serde_json::from_str(&c).expect("parse stored chat"), false);
@@ -468,12 +476,48 @@ impl BeeperStore {
         self.rebuild_accounts_from_bridges();
     }
 
+    fn put_kv(&self, key: &str, value: &str) {
+        self.exec("INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)", params![key, value]);
+    }
+
+    pub fn finish_setup(&mut self, how: Setup) {
+        assert!(self.setup.is_none(), "setup already finished as {:?}", self.setup);
+        self.setup = Some(how);
+        self.put_kv(KEY_SETUP, how.key());
+    }
+
+    pub fn import_beeper(&mut self, data: crate::import::BeeperData) {
+        assert!(self.setup.is_none() && !self.signed_in(), "import into a store that is already set up");
+        assert!(self.chats.is_empty() && self.messages.is_empty(), "import into a store that has chats");
+        self.db.lock().unwrap().execute_batch("BEGIN IMMEDIATE;").expect("begin import transaction");
+        self.finish_setup(Setup::Imported);
+        if let Some((session, homeserver)) = data.session {
+            self.sign_in(session, homeserver, &data.profile);
+        }
+        let (chats, messages) = (self.chats.len(), self.messages.len());
+        for c in data.chats {
+            self.push_chat(c, false);
+        }
+        for mut m in data.messages {
+            self.next_seq += 1;
+            m.sort_key = sort_key(self.next_seq);
+            self.push_message(m, false);
+        }
+        (chats..self.chats.len()).for_each(|i| self.persist_chat(i));
+        (messages..self.messages.len()).for_each(|i| self.persist_message(i));
+        self.persist_seq();
+        self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit import transaction");
+    }
+
     pub fn signed_in(&self) -> bool {
         !self.beeper_state.access_token.is_empty()
     }
 
     pub fn sign_in(&mut self, session: MatrixSession, homeserver: String, profile: &Profile) {
         assert!(!self.signed_in(), "sign in while already signed in as {}", self.beeper_state.user_id);
+        if self.setup.is_none() {
+            self.finish_setup(Setup::Fresh);
+        }
         self.beeper_state = BeeperStateRecord {
             user_id: session.user_id,
             access_token: session.access_token,
@@ -822,7 +866,7 @@ impl BeeperStore {
             chat_id: chat_id.clone(),
             sender_id: format!("@self_{account_id}:beeper.com"),
             sender_name: self.me().full_name.clone(),
-            sort_key: format!("{:07}", self.next_seq),
+            sort_key: sort_key(self.next_seq),
             timestamp: now_rfc3339_millis(),
             text,
             message_type: Some(msg_type.to_string()),
@@ -871,7 +915,7 @@ impl BeeperStore {
         self.messages[m_idx].text = None;
         self.msg_idx_by_id.remove(message_id);
         self.chat_msg_indices.get_mut(&chat_id).expect("chat has messages").retain(|&i| i != m_idx);
-        self.exec("DELETE FROM beeper_rs_messages WHERE id = ?1", params![message_id]);
+        self.exec("DELETE FROM messages WHERE id = ?1", params![message_id]);
         self.emit_ws("message.deleted", &chat_id, Some(message_id), None, None);
         Ok(chat_id)
     }
@@ -997,7 +1041,7 @@ impl BeeperStore {
             created_epoch_secs: now_unix_secs(),
         };
         self.exec(
-            "INSERT OR REPLACE INTO beeper_rs_assets (upload_id, json) VALUES (?1, ?2)",
+            "INSERT OR REPLACE INTO assets (upload_id, json) VALUES (?1, ?2)",
             params![asset.upload_id, serde_json::to_string(&asset).unwrap()],
         );
         self.assets_by_mxc.insert(asset.mxc_url.clone(), upload_id.clone());
@@ -1023,7 +1067,7 @@ impl BeeperStore {
             let a = self.assets.remove(id).unwrap();
             self.assets_by_mxc.remove(&a.mxc_url);
             std::fs::remove_file(&a.local_file_path).expect("remove cached media file");
-            self.exec("DELETE FROM beeper_rs_assets WHERE upload_id = ?1", params![id]);
+            self.exec("DELETE FROM assets WHERE upload_id = ?1", params![id]);
         }
         old.len()
     }

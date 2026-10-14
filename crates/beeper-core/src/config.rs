@@ -29,7 +29,6 @@ pub const CSS_FIX_LOCKDOWN_EMOJIS: &str = include_str!("../assets/themes/fix-loc
 #[derive(Debug, Clone)]
 pub struct CentralConfig {
     pub data_dir: PathBuf,
-    pub source_beeper_dir: Option<PathBuf>,
     pub db_path: PathBuf,
     pub assets_dir: PathBuf,
     pub host: String,
@@ -48,10 +47,9 @@ impl CentralConfig {
         assert_not_original_beeper_dir(&data_dir);
         let settings = BeeperSettings { pas_port: port, ..BeeperSettings::default() };
         Self {
-            db_path: data_dir.join("index.db"),
+            db_path: data_dir.join("beeper-rs.db"),
             assets_dir: data_dir.join("media"),
             data_dir,
-            source_beeper_dir: None,
             host,
             port,
             profile,
@@ -60,12 +58,6 @@ impl CentralConfig {
             api_url: DEFAULT_API_URL.into(),
             homeserver: DEFAULT_HOMESERVER.into(),
         }
-    }
-
-    pub fn with_source_beeper_dir(mut self, source_dir: Option<PathBuf>) -> Self {
-        assert!(source_dir.as_ref() != Some(&self.data_dir), "source_beeper_dir must differ from data_dir");
-        self.source_beeper_dir = source_dir;
-        self
     }
 
     pub fn base_url(&self) -> String {
@@ -170,9 +162,14 @@ pub fn network_spec(bridge_id: &str) -> Option<&'static NetworkSpec> {
     NETWORK_SPECS.iter().find(|n| n.bridge_id == bridge_id)
 }
 
+const NETWORK_ALIASES: [(&str, &str); 4] =
+    [("messenger", "facebook"), ("imsg", "imessage"), ("matrix", "hungryserv"), ("beeper", "hungryserv")];
+
 pub fn account_network(account_id: &str) -> &'static NetworkSpec {
-    network_spec(account_id.strip_prefix("acc_").unwrap_or(account_id))
-        .unwrap_or_else(|| panic!("account {account_id} has no known network"))
+    let id = account_id.to_ascii_lowercase();
+    let id = ["acc_", "local-", "bridge-"].iter().fold(id.as_str(), |s, p| s.strip_prefix(p).unwrap_or(s));
+    let id = NETWORK_ALIASES.iter().find(|(alias, _)| id.starts_with(alias)).map_or(id, |(_, bridge)| bridge);
+    NETWORK_SPECS.iter().find(|n| id.starts_with(n.bridge_id)).unwrap_or(&NETWORK_SPECS[0])
 }
 
 pub fn is_original_beeper_dir(path: &Path) -> bool {
@@ -228,49 +225,6 @@ pub fn resolve_data_dir_for_os(
     dir
 }
 
-const SKIPPED_BEEPER_ENTRIES: [&str; 13] = [
-    "Cache",
-    "Code Cache",
-    "GPUCache",
-    "DawnCache",
-    "Crashpad",
-    "IndexedDB",
-    "Local Storage",
-    "Session Storage",
-    "Service Worker",
-    "blob_storage",
-    "Shared Dictionary",
-    "Network",
-    "Dictionaries",
-];
-
-pub fn copy_beeper_data_to_isolated_dir(source_dir: &Path, target_dir: &Path) -> usize {
-    assert_not_original_beeper_dir(target_dir);
-    assert_ne!(source_dir, target_dir, "source_dir and target_dir must be distinct");
-    assert!(!target_dir.starts_with(source_dir), "target_dir must not be inside source_dir");
-    std::fs::create_dir_all(target_dir).expect("create isolated target_dir");
-    let mut copied = 0;
-    for entry in std::fs::read_dir(source_dir).expect("read source_dir") {
-        let entry = entry.expect("read source_dir entry");
-        let name = entry.file_name().into_string().expect("UTF-8 file name in Beeper data dir");
-        if name.ends_with("-shm")
-            || name.ends_with(".lock")
-            || name.starts_with("Singleton")
-            || SKIPPED_BEEPER_ENTRIES.contains(&name.as_str())
-        {
-            continue;
-        }
-        let (src, dst) = (entry.path(), target_dir.join(&name));
-        if entry.file_type().expect("file type").is_dir() {
-            copied += copy_beeper_data_to_isolated_dir(&src, &dst);
-        } else {
-            std::fs::copy(&src, &dst).expect("copy file to isolated dir");
-            copied += 1;
-        }
-    }
-    copied
-}
-
 fn unix_now() -> std::time::Duration {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock before UNIX_EPOCH")
 }
@@ -290,10 +244,33 @@ pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (yoe as i64 + era * 400 + i64::from(m <= 2), m, d)
 }
 
-pub fn now_rfc3339_millis() -> String {
-    let now = unix_now();
-    let secs = now.as_secs() as i64;
+pub fn rfc3339_from_millis(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
     let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
     let sod = secs.rem_euclid(86_400);
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z", sod / 3600, sod % 3600 / 60, sod % 60, now.subsec_millis())
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z", sod / 3600, sod % 3600 / 60, sod % 60, ms.rem_euclid(1000))
+}
+
+pub fn millis_from_rfc3339(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    let num = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
+    let sep = |i: usize, c: u8| (b.get(i) == Some(&c)).then_some(());
+    sep(4, b'-')?;
+    sep(7, b'-')?;
+    sep(13, b':')?;
+    sep(16, b':')?;
+    let (y, m, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (yy, mm) = (y - i64::from(m <= 2), (m + 9) % 12);
+    let era = yy.div_euclid(400);
+    let yoe = yy - era * 400;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + (153 * mm + 2) / 5 + d - 1 - 719_468;
+    let frac = s.get(19..).filter(|f| f.starts_with('.')).map_or(Some(0), |f| {
+        let digits: String = f[1..].chars().take_while(char::is_ascii_digit).chain("000".chars()).take(3).collect();
+        digits.parse().ok()
+    })?;
+    Some(((days * 24 + num(11..13)?) * 60 + num(14..16)?) * 60_000 + num(17..19)? * 1000 + frac)
+}
+
+pub fn now_rfc3339_millis() -> String {
+    rfc3339_from_millis(unix_now().as_millis() as i64)
 }

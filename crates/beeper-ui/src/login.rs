@@ -1,14 +1,16 @@
 use crate::style::{bold, bordered_box, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, CLEAR};
 use crate::{BeeperGuiApp, El, UiMessage};
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
+use beeper_core::import::{read_beeper_data, BeeperData};
 use beeper_core::models::{MatrixSession, Profile};
-use beeper_core::store::NOTE_CHAT_ID;
+use beeper_core::store::{Setup, NOTE_CHAT_ID};
 use iced::gradient::Linear;
 use iced::widget::{
     button, column, container, mouse_area, operation, rich_text, row, span, stack, svg, text_input, Space,
 };
 use iced::{border, window, Background, Center, Color, Degrees, Fill, Gradient, Padding, Size, Task, Theme};
-use std::sync::LazyLock;
+use std::path::PathBuf;
+use std::sync::{Arc, LazyLock};
 
 const FRAME: Color = Color::from_rgb8(226, 226, 226);
 const FIELD: Color = Color::from_rgb8(239, 239, 240);
@@ -36,6 +38,7 @@ static ART: LazyLock<[svg::Handle; 4]> =
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Screen {
+    Import,
     #[default]
     Welcome,
     Email,
@@ -54,6 +57,13 @@ pub struct Login {
     lead_token: String,
     busy: bool,
     menu: bool,
+    source: Option<PathBuf>,
+}
+
+impl Login {
+    pub fn new(source: Option<PathBuf>) -> Self {
+        Login { screen: if source.is_some() { Screen::Import } else { Screen::Welcome }, source, ..Login::default() }
+    }
 }
 
 #[derive(Clone)]
@@ -61,10 +71,13 @@ pub enum Outcome {
     Requested(String),
     Lead(String, Vec<String>),
     Session(MatrixSession, Profile),
+    Imported(Arc<BeeperData>),
 }
 
 #[derive(Clone)]
 pub enum LoginMsg {
+    Import,
+    Fresh,
     Show(Screen),
     Google,
     Email(String),
@@ -88,7 +101,7 @@ fn previous(s: Screen) -> Option<Screen> {
     match s {
         Screen::Email => Some(Screen::Welcome),
         Screen::Code => Some(Screen::Email),
-        Screen::Welcome | Screen::Username => None,
+        Screen::Import | Screen::Welcome | Screen::Username => None,
     }
 }
 
@@ -160,23 +173,35 @@ impl BeeperGuiApp {
         Task::batch([open.map(UiMessage::WindowOpened), window::close(login)])
     }
 
-    fn cloud_task(
-        &mut self,
-        f: impl FnOnce(&Cloud) -> Result<Outcome, CloudError> + Send + 'static,
-    ) -> Task<UiMessage> {
+    fn background(&mut self, f: impl FnOnce(&Cloud) -> Result<Outcome, String> + Send + 'static) -> Task<UiMessage> {
         self.login.busy = true;
         self.login.error = None;
         let cloud = self.cloud.clone();
         Task::perform(
-            async move { tokio::task::spawn_blocking(move || f(&cloud)).await.expect("sign-in request thread") },
-            |r| LoginMsg::Done(r.map_err(|e| e.message)).into(),
+            async move { tokio::task::spawn_blocking(move || f(&cloud)).await.expect("login window worker thread") },
+            |r| LoginMsg::Done(r).into(),
         )
+    }
+
+    fn cloud_task(
+        &mut self,
+        f: impl FnOnce(&Cloud) -> Result<Outcome, CloudError> + Send + 'static,
+    ) -> Task<UiMessage> {
+        self.background(move |c| f(c).map_err(|e| e.message))
     }
 
     pub fn update_login(&mut self, msg: LoginMsg) -> Task<UiMessage> {
         let l = &mut self.login;
         l.menu = matches!(msg, LoginMsg::Menu) && !l.menu;
         match msg {
+            LoginMsg::Import => {
+                let dir = l.source.clone().expect("import screen has a Beeper Desktop dir");
+                return self.background(move |_| read_beeper_data(&dir).map(|d| Outcome::Imported(Arc::new(d))));
+            }
+            LoginMsg::Fresh => {
+                self.store.write().unwrap().finish_setup(Setup::Fresh);
+                self.login = Login::default();
+            }
             LoginMsg::Show(s) => {
                 l.screen = s;
                 l.error = None;
@@ -233,7 +258,7 @@ impl BeeperGuiApp {
                 return self.cloud_task(move |c| session(c, &c.register(&request, &lead, &name)?));
             }
             LoginMsg::Menu => {}
-            LoginMsg::StartOver => self.login = Login::default(),
+            LoginMsg::StartOver => self.login = Login::new(l.source.take()),
             LoginMsg::Done(r) => {
                 l.busy = false;
                 l.error = r.as_ref().err().cloned();
@@ -255,6 +280,16 @@ impl BeeperGuiApp {
                         self.store.write().unwrap().sign_in(session, homeserver, &profile);
                         return self.enter_app();
                     }
+                    Ok(Outcome::Imported(data)) => {
+                        let mut st = self.store.write().unwrap();
+                        st.import_beeper(Arc::unwrap_or_clone(data));
+                        let signed_in = st.signed_in();
+                        drop(st);
+                        self.login = Login::default();
+                        if signed_in {
+                            return self.enter_app();
+                        }
+                    }
                 }
             }
         }
@@ -269,6 +304,34 @@ impl BeeperGuiApp {
             .padding(Padding::new(0.0).left(18.0).right(18.0).bottom(if l.error.is_some() { 12.0 } else { 0.0 }));
         let link = |s: &'static str, m: UiMessage| span(s).color(LINK).link(m);
         let body: El<'_> = match l.screen {
+            Screen::Import => {
+                let dir = l.source.as_deref().expect("import screen has a Beeper Desktop dir").display().to_string();
+                let info = format!(
+                    "beeper-rs found Beeper Desktop data in\n{dir}\n\nCopy your account and chats into beeper-rs? Beeper Desktop stays unchanged."
+                );
+                column![
+                    Space::new().height(40),
+                    heading("Your Chats", 36.0),
+                    container(art(0, 300.0)).height(Fill).center_y(Fill),
+                    error,
+                    actions(
+                        vec![
+                            container(txt(info, 12.0).color(HINT).center().width(Fill))
+                                .padding(Padding::ZERO.bottom(8))
+                                .into(),
+                            pill(label("Start Fresh", None), 36.0, Some(FIELD), go(LoginMsg::Fresh)),
+                            pill(
+                                label(if l.busy { "Copying…" } else { "Copy from Beeper Desktop" }, None),
+                                36.0,
+                                None,
+                                go(LoginMsg::Import)
+                            ),
+                        ],
+                        24.0
+                    ),
+                ]
+                .into()
+            }
             Screen::Welcome => {
                 let terms = rich_text![
                     span("By continuing, you agree to our ").color(TERMS),

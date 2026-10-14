@@ -10,10 +10,14 @@ use crate::style::{
 };
 use beeper_core::cloud::Cloud;
 use beeper_core::config::{
-    account_network, civil_from_days, network_spec, now_unix_secs, APP_BUNDLE_ID, APP_VERSION, NETWORK_SPECS,
+    account_network, civil_from_days, millis_from_rfc3339, network_spec, now_unix_secs, APP_BUNDLE_ID, APP_VERSION,
+    NETWORK_SPECS,
 };
+use beeper_core::import::has_beeper_data;
 use beeper_core::models::*;
-use beeper_core::platform::{open_url_or_path_command, DisplayServerKind, OsKind, SystemTrayState};
+use beeper_core::platform::{
+    current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind, SystemTrayState,
+};
 use beeper_core::store::{BeeperStore, SettingCatalogEntry, SharedStore, NOTE_CHAT_ID, SETTINGS_CATALOG};
 use beeper_core::theme::ResolvedTheme;
 use iced::font::Weight;
@@ -247,7 +251,9 @@ fn brand_key(account_id: &str) -> &'static str {
 }
 
 pub fn format_short_ts(iso: &str, twenty_four: bool) -> String {
-    let (h, m) = (iso[11..13].parse::<u32>().expect("ISO hour"), &iso[14..16]);
+    let ms = millis_from_rfc3339(iso).unwrap_or_else(|| panic!("timestamp {iso} is not RFC 3339"));
+    let mins = ms.div_euclid(60_000).rem_euclid(1440);
+    let (h, m) = (mins / 60, format!("{:02}", mins % 60));
     if twenty_four {
         return format!("{h:02}:{m}");
     }
@@ -255,13 +261,7 @@ pub fn format_short_ts(iso: &str, twenty_four: bool) -> String {
 }
 
 fn day_num(iso: &str) -> i64 {
-    let n = |r: std::ops::Range<usize>| iso[r].parse::<i64>().expect("ISO date");
-    let (m, d) = (n(5..7), n(8..10));
-    let y = n(0..4) - i64::from(m <= 2);
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
-    era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
+    millis_from_rfc3339(iso).unwrap_or_else(|| panic!("timestamp {iso} is not RFC 3339")).div_euclid(86_400_000)
 }
 
 fn day_label(iso: &str) -> String {
@@ -332,7 +332,7 @@ fn self_avatar<'a>(name: &str, size: f32) -> El<'a> {
     let g = Linear::new(Radians(std::f32::consts::PI))
         .add_stop(0.0, Color::from_rgb8(224, 170, 140))
         .add_stop(1.0, Color::from_rgb8(186, 116, 84));
-    container(semi(initials(name)[..1].to_string(), size * 0.42).color(Color::WHITE))
+    container(semi(initials(name).chars().take(1).collect::<String>(), size * 0.42).color(Color::WHITE))
         .center(size)
         .style(move |_: &Theme| container::Style {
             background: Some(Background::Gradient(Gradient::Linear(g))),
@@ -343,7 +343,7 @@ fn self_avatar<'a>(name: &str, size: f32) -> El<'a> {
 }
 
 fn avatar<'a>(title: &str, size: f32) -> El<'a> {
-    let label = initials(title)[..1].to_string();
+    let label = initials(title).chars().take(1).collect::<String>();
     container(semi(label, size * 0.42).color(Color::WHITE))
         .center(size)
         .style(fill_box(hue(hash_str(title)), size / 2.0))
@@ -488,12 +488,17 @@ impl BeeperGuiApp {
         ensure_fonts_loaded();
         let os = OsKind::current();
         let display_server = os.detect_display_server(&std::env::vars().collect());
-        let (theme, unread, panel, first_chat, cloud) = {
+        let (theme, unread, panel, first_chat, cloud, source) = {
             let st = store.read().unwrap();
             let first = st.signed_in().then(|| NOTE_CHAT_ID.to_string());
             let s = &st.settings;
             let cloud = Arc::new(Cloud::new(&st.config.api_url, &st.config.homeserver));
-            (ResolvedTheme::compile(s), st.total_unread_chats(), s.show_right_panel_by_default, first, cloud)
+            let source = st
+                .setup
+                .is_none()
+                .then(|| current_original_beeper_data_dir(st.config.profile.as_deref()))
+                .filter(|d| has_beeper_data(d));
+            (ResolvedTheme::compile(s), st.total_unread_chats(), s.show_right_panel_by_default, first, cloud, source)
         };
         let mut app = Self {
             store,
@@ -529,7 +534,7 @@ impl BeeperGuiApp {
             main_window: None,
             settings_window: None,
             login_window: None,
-            login: Login::default(),
+            login: Login::new(source),
             cloud,
         };
         if let Some(id) = first_chat {
@@ -1405,8 +1410,11 @@ impl BeeperGuiApp {
         let group = chat.chat_type == "group";
         let (bg, fg) = if mine { (p.sent, Color::WHITE) } else { (p.received, p.strong) };
         let text = m.text.clone().unwrap_or_default();
-        let preview =
-            st.settings.link_previews.then(|| text.split_whitespace().find_map(|w| st.link_previews.get(w))).flatten();
+        let preview = st
+            .settings
+            .link_previews
+            .then(|| text.split_whitespace().find_map(|w| st.link_previews.get(w).map(|lp| (w, lp))))
+            .flatten();
         let mut parts = Column::new().spacing(2).align_x(if mine { Right } else { iced::Left });
         if group && !mine && first {
             parts = parts.push(
@@ -1422,15 +1430,8 @@ impl BeeperGuiApp {
             .spacing(1);
             parts = parts.push(container(quote).padding([6, 11]).style(bordered_box(p.card, p.outline, 1.0, 14.0)));
         }
-        if let Some(lp) = preview {
-            let host = text
-                .split_whitespace()
-                .find(|w| w.starts_with("http"))
-                .expect("preview url")
-                .split('/')
-                .nth(2)
-                .expect("url host")
-                .to_string();
+        if let Some((url, lp)) = preview {
+            let host = url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(url).to_string();
             let body = column![
                 txt(lp.site.clone(), 11.0).color(p.sub),
                 semi(lp.title.clone(), 13.0).color(p.strong),
@@ -1454,11 +1455,11 @@ impl BeeperGuiApp {
                         )
                     });
                     let play = container(ic(icon::PLAY, 14.0).color(bg)).center(30).style(fill_box(fg, 15.0));
-                    let dur = a.duration.expect("voice note duration");
-                    let line =
-                        row![play, bars, txt(format!("0:{:02}", dur.round() as u32), 11.0).color(fg.scale_alpha(0.7))]
-                            .spacing(8)
-                            .align_y(Center);
+                    let dur = a.duration.map(|d| {
+                        let s = d.round() as u32;
+                        txt(format!("{}:{:02}", s / 60, s % 60), 11.0).color(fg.scale_alpha(0.7))
+                    });
+                    let line = row![play, bars].push(dur).spacing(8).align_y(Center);
                     let transcript = a.transcript.clone().map(|t| {
                         button(txt(t, 12.0).color(fg.scale_alpha(0.75)))
                             .padding(0)
@@ -1481,7 +1482,7 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::OpenQuickLook(name, "Image attachment".into()))
                 .into(),
                 _ => {
-                    let size = human_size(a.file_size.expect("attachment size"));
+                    let size = a.file_size.map(human_size).unwrap_or_default();
                     let tile = container(ic(icon::FILE_TEXT, 18.0).color(fg))
                         .center(36)
                         .style(fill_box(fg.scale_alpha(0.15), 8.0));
@@ -1833,11 +1834,9 @@ impl BeeperGuiApp {
         let free = semi("Free", 11.0).color(p.text);
         let profile = row![
             self_avatar(&name, 28.0),
-            column![
-                bold(name.clone(), 14.0).color(p.strong),
-                txt(me.email.clone().expect("self email"), 11.0).color(p.text)
-            ]
-            .width(Fill),
+            column![bold(name.clone(), 14.0).color(p.strong),]
+                .push(me.email.clone().map(|e| txt(e, 11.0).color(p.text)))
+                .width(Fill),
             free
         ]
         .spacing(10)

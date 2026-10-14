@@ -7,9 +7,11 @@
 `beeper-rs` never modifies or locks the original Beeper Desktop directory (`BeeperTexts` or `BeeperTexts-<profile>`):
 
 - `beeper-rs` stores all database and media files in an isolated directory (`~/.config/BeeperRs` on Linux, `~/Library/Application Support/BeeperRs` on macOS, or `%APPDATA%\BeeperRs` on Windows).
-- On first startup, `beeper-rs` copies `index.db` and `media/` from the original `BeeperTexts` directory (or a directory specified with `--import-from <DIR>`) into `BeeperRs` and skips active lock and cache files.
-- `beeper-rs` reads only the Matrix session (`beeperState`) from the copied `index.db`. `beeper-rs` writes its own data to `beeperRs:*` keys and `beeper_rs_*` tables.
-- If `beeper-rs` stops with the message "written by an older beeper-rs build", delete the `BeeperRs` directory and start `beeper-rs` again.
+- `beeper-rs` keeps its data in its own database file, `BeeperRs/beeper-rs.db`. The file uses SQLite `STRICT` tables and a schema version (`PRAGMA user_version`). `beeper-rs` stops with a clear message if the file has a different schema version. `beeper-rs` needs SQLite 3.37 or later.
+- `beeper-rs` does not copy Beeper Desktop data by default. A new `BeeperRs` directory starts empty and signed out.
+- On first start, if Beeper Desktop data is available, the setup window asks "Copy from Beeper Desktop" or "Start Fresh". To copy, `beeper-rs` reads a temporary snapshot of `index.db` and `account.db` (with their WAL files). It imports the Matrix session, the chats, the participants, and the messages. The import is all-or-nothing. If it fails, the window shows the error and nothing changes.
+- `--import-from <DIR>` does the same import without the window. The data directory must be new.
+- Earlier builds used `BeeperRs/index.db`, which was a copy of the Beeper Desktop database. Current builds do not read this file. You can delete it.
 
 ## Sign-In
 
@@ -17,7 +19,7 @@
 - `beeper-rs` sends the sign-in requests to the Beeper cloud API (`https://api.beeper.com`) and then signs in to the Matrix homeserver (`https://matrix.beeper.com`) with the returned JWT. Set `BEEPER_API_URL` and `BEEPER_MATRIX_URL` to use different servers.
 - The Desktop API routes `POST /v1/app/setup/start`, `/email`, `/response`, and `/register` use the same cloud flow and return the same response shapes as Beeper Desktop.
 - "Continue with Google" is not available. Use email.
-- `beeper-rs` does not sync Matrix chats yet. After sign-in, the inbox shows only "Note to self".
+- `beeper-rs` does not sync Matrix chats yet. After sign-in, the inbox shows only "Note to self" and the chats copied from Beeper Desktop.
 - Use `--demo` to start with the bundled demo account and demo chats.
 - `CentralConfig` and `BeeperStore` enforce an assertion that aborts if the configured working directory points to `BeeperTexts`.
 
@@ -30,7 +32,7 @@
 - **Native cross-platform support**: Runs natively on Linux (Wayland and X11), macOS (AppKit / Metal), and Windows (Win32 / DirectX 12 / Vulkan) with OS-specific directory resolution, `file://` URL handling, autostart manifests, and protocol handlers.
 - **Fast compilation and linking**: Configured in `.cargo/config.toml` to use `sccache` (`rustc-wrapper = "sccache"`) across all platforms, `mold` v3 on Linux and Windows GNU targets, `rust-lld` on Windows MSVC targets, and unpacked debug info on macOS targets.
 - **Rust-native protocols and primitives**: Implements HTTP/1.1, RFC 6455 WebSockets, SHA-256, SHA-1, Base64, URL percent-encoding, RFC 3339 timestamps, CLI argument parsing, and 32x32 RGBA system tray icon rendering directly in Rust.
-- **SQLite WAL and inverted search index**: Persists state in `BeeperRs/index.db` using SQLite Write-Ahead Logging (WAL) and indexes chats, messages, and settings in an in-memory inverted index.
+- **SQLite WAL and inverted search index**: Persists state in `BeeperRs/beeper-rs.db` using SQLite Write-Ahead Logging (WAL) and indexes chats, messages, and settings in an in-memory inverted index.
 - **CSS theme compiler**: Compiles Beeper v4 CSS themes (`variables.css`, `texts.css`, `dracula.css`, `nocturne.css`, `dark-purple.css`, and `fix-lockdown-mode-emojis.css`).
 
 ## Local Testing Guide
