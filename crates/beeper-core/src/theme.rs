@@ -1,6 +1,4 @@
-use crate::config::{
-    CSS_DARK_PURPLE, CSS_DRACULA, CSS_FIX_LOCKDOWN_EMOJIS, CSS_NOCTURNE, CSS_TEXTS, CSS_VARIABLES,
-};
+use crate::config::{CSS_DARK_PURPLE, CSS_DRACULA, CSS_FIX_LOCKDOWN_EMOJIS, CSS_NOCTURNE, CSS_TEXTS, CSS_VARIABLES};
 use crate::models::{BeeperSettings, ThemeChoice};
 use std::collections::HashMap;
 
@@ -104,10 +102,7 @@ pub fn parse_css_sheet(
                         vars.insert(prop.to_string(), val.clone());
                     }
                     for sel in prelude.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                        selector_rules
-                            .entry(sel.to_string())
-                            .or_default()
-                            .insert(prop.to_string(), val.clone());
+                        selector_rules.entry(sel.to_string()).or_default().insert(prop.to_string(), val.clone());
                     }
                 }
             }
@@ -135,14 +130,9 @@ pub fn resolve_var_value(raw: &str, vars: &HashMap<String, String>, depth: u8) -
             }
         }
         let inside = &after_var[..end_idx];
-        let (var_name, default_val) = inside
-            .split_once(',')
-            .map_or((inside.trim(), None), |(n, d)| (n.trim(), Some(d.trim())));
-        let rep = vars
-            .get(var_name)
-            .map(String::as_str)
-            .or(default_val)
-            .expect("unresolved CSS var");
+        let (var_name, default_val) =
+            inside.split_once(',').map_or((inside.trim(), None), |(n, d)| (n.trim(), Some(d.trim())));
+        let rep = vars.get(var_name).map(String::as_str).or(default_val).expect("unresolved CSS var");
         return resolve_var_value(
             &format!("{}{}{}", &trimmed[..start], rep, &after_var[end_idx + 1..]),
             vars,
@@ -177,16 +167,10 @@ pub fn parse_css_color(raw: &str, vars: &HashMap<String, String>) -> [u8; 4] {
         .expect("css color")
         .trim_end_matches(')')
         .replace('/', ",");
-    let p: Vec<&str> = inner
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let p: Vec<&str> = inner.split(|c: char| c == ',' || c.is_whitespace()).filter(|s| !s.is_empty()).collect();
     let ch = |s: &str| {
         s.strip_suffix('%')
-            .map_or_else(
-                || s.parse::<f32>().unwrap(),
-                |pct| pct.parse::<f32>().unwrap() * 2.55,
-            )
+            .map_or_else(|| s.parse::<f32>().unwrap(), |pct| pct.parse::<f32>().unwrap() * 2.55)
             .clamp(0.0, 255.0) as u8
     };
     let a = if p.len() >= 4 {
@@ -223,37 +207,20 @@ impl ResolvedTheme {
         parse_css_sheet(CSS_TEXTS, is_dark, &mut vars, &mut selector_rules);
         match settings.theme {
             ThemeChoice::TextsLight | ThemeChoice::TextsDark => {}
-            ThemeChoice::Dracula => {
-                parse_css_sheet(CSS_DRACULA, true, &mut vars, &mut selector_rules)
-            }
-            ThemeChoice::Nocturne => {
-                parse_css_sheet(CSS_NOCTURNE, true, &mut vars, &mut selector_rules)
-            }
-            ThemeChoice::DarkPurple => {
-                parse_css_sheet(CSS_DARK_PURPLE, true, &mut vars, &mut selector_rules)
-            }
+            ThemeChoice::Dracula => parse_css_sheet(CSS_DRACULA, true, &mut vars, &mut selector_rules),
+            ThemeChoice::Nocturne => parse_css_sheet(CSS_NOCTURNE, true, &mut vars, &mut selector_rules),
+            ThemeChoice::DarkPurple => parse_css_sheet(CSS_DARK_PURPLE, true, &mut vars, &mut selector_rules),
             ThemeChoice::Custom => {}
         }
         if !settings.custom_css_source.trim().is_empty() {
-            parse_css_sheet(
-                &settings.custom_css_source,
-                is_dark,
-                &mut vars,
-                &mut selector_rules,
-            );
+            parse_css_sheet(&settings.custom_css_source, is_dark, &mut vars, &mut selector_rules);
         }
         if settings.fix_lockdown_emojis {
-            parse_css_sheet(
-                CSS_FIX_LOCKDOWN_EMOJIS,
-                is_dark,
-                &mut vars,
-                &mut selector_rules,
-            );
+            parse_css_sheet(CSS_FIX_LOCKDOWN_EMOJIS, is_dark, &mut vars, &mut selector_rules);
         }
-        for (flag, cls) in [
-            (settings.no_transparency, ".no-transparency"),
-            (settings.reduce_transparency, ".reduce-transparency"),
-        ] {
+        for (flag, cls) in
+            [(settings.no_transparency, ".no-transparency"), (settings.reduce_transparency, ".reduce-transparency")]
+        {
             if flag {
                 if let Some(rules) = selector_rules.get(cls).cloned() {
                     for (k, v) in rules.into_iter().filter(|(k, _)| k.starts_with("--")) {

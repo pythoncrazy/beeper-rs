@@ -1,28 +1,26 @@
 pub mod style;
 
 use crate::style::{
-    bold, bordered_box, brand_svg, btn_style, ell, ensure_fonts_loaded, fill_box, fw, hash_str,
-    hue, ic, icon, initials, input_style, med, pick_menu_style, pick_style, scroll_style, semi,
-    shadow_box, txt, Palette, ALL_FONTS, CLEAR,
+    bold, bordered_box, brand_svg, btn_style, ell, ensure_fonts_loaded, fill_box, fw, hash_str, hue, ic, icon,
+    initials, input_style, med, pick_menu_style, pick_style, scroll_style, semi, shadow_box, txt, Palette, ALL_FONTS,
+    CLEAR,
 };
 use beeper_core::config::{now_unix_secs, APP_BUNDLE_ID, APP_VERSION, NETWORK_SPECS};
 use beeper_core::models::*;
 use beeper_core::platform::{open_url_or_path_command, DisplayServerKind, OsKind, SystemTrayState};
-use beeper_core::store::{
-    BeeperStore, SettingCatalogEntry, SharedStore, NOTE_CHAT_ID, SETTINGS_CATALOG,
-};
+use beeper_core::store::{BeeperStore, SettingCatalogEntry, SharedStore, NOTE_CHAT_ID, SETTINGS_CATALOG};
 use beeper_core::theme::ResolvedTheme;
 use iced::font::Weight;
 use iced::gradient::Linear;
 use iced::keyboard::{self, key::Named, Key, Modifiers};
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{
-    button, column, container, mouse_area, operation, pick_list, rich_text, row, scrollable, span,
-    stack, svg, text_input, Column, Row, Space,
+    button, column, container, mouse_area, operation, pick_list, rich_text, row, scrollable, span, stack, svg,
+    text_input, Column, Row, Space,
 };
 use iced::{
-    mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Padding,
-    Point, Radians, Right, Size, Subscription, Task, Theme,
+    mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Padding, Point, Radians, Right,
+    Size, Subscription, Task, Theme,
 };
 
 pub type El<'a> = Element<'a, UiMessage>;
@@ -40,15 +38,7 @@ pub enum InboxTab {
 
 impl InboxTab {
     pub const fn label(self) -> &'static str {
-        [
-            "Inbox",
-            "Low Priority",
-            "Archive",
-            "Reminders",
-            "Drafts",
-            "Unread",
-            "Pinned",
-        ][self as usize]
+        ["Inbox", "Low Priority", "Archive", "Reminders", "Drafts", "Unread", "Pinned"][self as usize]
     }
 }
 
@@ -189,11 +179,7 @@ pub fn search_settings_catalog(query: &str) -> Vec<&'static SettingCatalogEntry>
     let q = query.trim().to_lowercase();
     SETTINGS_CATALOG
         .iter()
-        .filter(|e| {
-            [e.title, e.description, e.section]
-                .iter()
-                .any(|s| s.to_lowercase().contains(&q))
-        })
+        .filter(|e| [e.title, e.description, e.section].iter().any(|s| s.to_lowercase().contains(&q)))
         .collect()
 }
 
@@ -208,18 +194,8 @@ pub const ALL_LANGUAGES: [LanguageChoice; 6] = [
 
 const AFTER_ARCHIVE: [&str; 3] = ["Do nothing", "Open next chat", "Open previous chat"];
 const REMIND_LATER: [&str; 3] = ["If no reply", "Always", "Never"];
-const WEEKDAYS: [&str; 7] = [
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-];
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
+const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const HOTKEYS: [(&str, &str); 7] = [
     ("Command bar", "Ctrl K"),
     ("Open settings", "Ctrl ,"),
@@ -248,11 +224,7 @@ pub fn format_short_ts(iso: &str, twenty_four: bool) -> String {
     if twenty_four {
         return format!("{h:02}:{m}");
     }
-    format!(
-        "{}:{m} {}",
-        (h + 11) % 12 + 1,
-        ["AM", "PM"][usize::from(h >= 12)]
-    )
+    format!("{}:{m} {}", (h + 11) % 12 + 1, ["AM", "PM"][usize::from(h >= 12)])
 }
 
 fn day_num(iso: &str) -> i64 {
@@ -273,11 +245,7 @@ fn civil(days: i64) -> (i64, usize, i64) {
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (
-        yoe + era * 400 + i64::from(m <= 2),
-        m as usize,
-        doy - (153 * mp + 2) / 5 + 1,
-    )
+    (yoe + era * 400 + i64::from(m <= 2), m as usize, doy - (153 * mp + 2) / 5 + 1)
 }
 
 fn day_label(iso: &str) -> String {
@@ -289,11 +257,7 @@ fn day_label(iso: &str) -> String {
         2..=6 => wd.into(),
         _ => {
             let ((y, m, dd), ty) = (civil(d), civil(today).0);
-            let year = if y == ty {
-                String::new()
-            } else {
-                format!(", {y}")
-            };
+            let year = if y == ty { String::new() } else { format!(", {y}") };
             format!("{}, {} {dd}{year}", &wd[..3], MONTHS[m - 1])
         }
     }
@@ -324,30 +288,14 @@ fn ghost(p: &Palette, r: f32) -> impl Fn(&Theme, button::Status) -> button::Styl
     btn_style([CLEAR, p.hover, p.selected], [p.text; 3], r)
 }
 
-fn icon_btn<'a>(
-    p: &Palette,
-    c: char,
-    size: f32,
-    frame: f32,
-    color: Color,
-    msg: UiMessage,
-) -> El<'a> {
-    button(container(ic(c, size).color(color)).center(frame))
-        .padding(0)
-        .style(ghost(p, 8.0))
-        .on_press(msg)
-        .into()
+fn icon_btn<'a>(p: &Palette, c: char, size: f32, frame: f32, color: Color, msg: UiMessage) -> El<'a> {
+    button(container(ic(c, size).color(color)).center(frame)).padding(0).style(ghost(p, 8.0)).on_press(msg).into()
 }
 
 fn divider<'a>(p: &Palette, left: f32) -> El<'a> {
-    container(
-        container(Space::new())
-            .width(Fill)
-            .height(1)
-            .style(fill_box(p.divider.scale_alpha(0.4), 0.0)),
-    )
-    .padding(Padding::ZERO.left(left))
-    .into()
+    container(container(Space::new()).width(Fill).height(1).style(fill_box(p.divider.scale_alpha(0.4), 0.0)))
+        .padding(Padding::ZERO.left(left))
+        .into()
 }
 
 fn self_avatar<'a>(name: &str, size: f32) -> El<'a> {
@@ -381,38 +329,21 @@ fn chat_avatar<'a>(chat: &Chat, me: &str, size: f32) -> El<'a> {
 }
 
 fn badged<'a>(p: &Palette, inner: El<'a>, account_id: &str, size: f32, badge: f32) -> El<'a> {
-    let ring = container(
-        svg(brand_svg(brand_key(account_id)))
-            .width(badge)
-            .height(badge),
-    )
-    .padding(1.5)
-    .style(fill_box(p.frame, badge));
+    let ring = container(svg(brand_svg(brand_key(account_id))).width(badge).height(badge))
+        .padding(1.5)
+        .style(fill_box(p.frame, badge));
     let box_ = size + badge / 3.0;
-    stack![
-        inner,
-        container(ring)
-            .width(box_)
-            .height(box_)
-            .align_right(box_)
-            .align_bottom(box_)
-    ]
-    .width(box_)
-    .height(box_)
-    .into()
+    stack![inner, container(ring).width(box_).height(box_).align_right(box_).align_bottom(box_)]
+        .width(box_)
+        .height(box_)
+        .into()
 }
 
 fn toggle<'a>(p: &Palette, on: bool, msg: UiMessage) -> El<'a> {
-    let knob = container(Space::new())
-        .width(16)
-        .height(16)
-        .style(fill_box(if on { p.toggle_on } else { p.toggle_off }, 8.0));
-    let track = container(knob)
-        .width(36)
-        .height(24)
-        .padding(2)
-        .align_y(Center)
-        .align_x(if on { Right } else { iced::Left });
+    let knob =
+        container(Space::new()).width(16).height(16).style(fill_box(if on { p.toggle_on } else { p.toggle_off }, 8.0));
+    let track =
+        container(knob).width(36).height(24).padding(2).align_y(Center).align_x(if on { Right } else { iced::Left });
     button(track.style(bordered_box(CLEAR, p.toggle_off, 2.0, 12.0)))
         .padding(0)
         .style(btn_style([CLEAR; 3], [p.text; 3], 12.0))
@@ -439,39 +370,23 @@ fn select<'a, T: ToString + PartialEq + Clone + 'a>(
         .handle(pick_list::Handle::Static(chevron))
         .padding([5, 10])
         .style(pick_style(p.hover, p.selected, p.text, p.sub))
-        .menu_style(pick_menu_style(
-            p.elevated,
-            p.selected,
-            p.text,
-            p.prefs_border,
-        ))
+        .menu_style(pick_menu_style(p.elevated, p.selected, p.text, p.prefs_border))
         .into()
 }
 
 fn pill_btn<'a>(p: &Palette, label: impl ToString, msg: UiMessage) -> El<'a> {
     button(med(label.to_string(), 13.0).color(p.text))
         .padding([5, 12])
-        .style(btn_style(
-            [p.hover, p.selected, p.selected],
-            [p.text; 3],
-            6.0,
-        ))
+        .style(btn_style([p.hover, p.selected, p.selected], [p.text; 3], 6.0))
         .on_press(msg)
         .into()
 }
 
 fn plus_pill<'a>(p: &Palette) -> El<'a> {
-    container(
-        row![
-            semi("+", 12.0).color(p.text),
-            semi("Plus", 10.0).color(p.text)
-        ]
-        .spacing(2)
-        .align_y(Center),
-    )
-    .padding([2, 6])
-    .style(fill_box(p.received, 25.0))
-    .into()
+    container(row![semi("+", 12.0).color(p.text), semi("Plus", 10.0).color(p.text)].spacing(2).align_y(Center))
+        .padding([2, 6])
+        .style(fill_box(p.received, 25.0))
+        .into()
 }
 
 fn pref_row<'a>(
@@ -481,26 +396,18 @@ fn pref_row<'a>(
     extra: Option<El<'a>>,
     control: El<'a>,
 ) -> El<'a> {
-    let head = row![txt(title.to_string(), 13.0).color(p.text)]
-        .push(extra)
-        .spacing(6)
-        .align_y(Center);
-    let left = column![head]
-        .push(desc.map(|d| txt(d.to_string(), 12.0).color(p.sub)))
-        .spacing(3)
-        .width(Fill);
-    row![left, control]
-        .spacing(12)
-        .align_y(Center)
-        .padding([10, 14])
-        .into()
+    let head = row![txt(title.to_string(), 13.0).color(p.text)].push(extra).spacing(6).align_y(Center);
+    let left = column![head].push(desc.map(|d| txt(d.to_string(), 12.0).color(p.sub))).spacing(3).width(Fill);
+    row![left, control].spacing(12).align_y(Center).padding([10, 14]).into()
 }
 
 fn group<'a>(p: &Palette, title: Option<&str>, rows: Vec<El<'a>>) -> El<'a> {
-    let card = container(Column::with_children(rows))
-        .width(Fill)
-        .padding([4, 0])
-        .style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0));
+    let card = container(Column::with_children(rows)).width(Fill).padding([4, 0]).style(bordered_box(
+        p.prefs_group,
+        p.prefs_border,
+        1.0,
+        8.0,
+    ));
     column![]
         .push(title.map(|t| container(med(t.to_string(), 12.0).color(p.weak)).padding([0, 4])))
         .push(card)
@@ -626,12 +533,7 @@ impl BeeperGuiApp {
     }
 
     pub fn title(&self, id: window::Id) -> String {
-        if Some(id) == self.settings_window {
-            "Settings"
-        } else {
-            "Beeper"
-        }
-        .into()
+        if Some(id) == self.settings_window { "Settings" } else { "Beeper" }.into()
     }
 
     pub fn iced_theme(&self) -> Theme {
@@ -654,21 +556,16 @@ impl BeeperGuiApp {
 
     pub fn visible_chats(&self) -> Vec<Chat> {
         let st = self.store.read().unwrap();
-        let q_ids = (!self.search_query.trim().is_empty())
-            .then(|| st.chat_search_index.query_all_tokens(&self.search_query));
+        let q_ids =
+            (!self.search_query.trim().is_empty()).then(|| st.chat_search_index.query_all_tokens(&self.search_query));
         let mut list: Vec<Chat> = st
             .chats
             .iter()
             .enumerate()
             .filter(|(idx, c)| {
                 c.merged_into_chat_id.is_none()
-                    && self
-                        .selected_account_filter
-                        .as_ref()
-                        .is_none_or(|a| &c.account_id == a)
-                    && q_ids
-                        .as_ref()
-                        .is_none_or(|ids| ids.contains(&(*idx as u32)))
+                    && self.selected_account_filter.as_ref().is_none_or(|a| &c.account_id == a)
+                    && q_ids.as_ref().is_none_or(|ids| ids.contains(&(*idx as u32)))
                     && match self.active_tab {
                         InboxTab::AllChats => c.flags & (CHAT_ARCHIVED | CHAT_LOW_PRIORITY) == 0,
                         InboxTab::Unread => c.flags & CHAT_UNREAD != 0,
@@ -684,17 +581,14 @@ impl BeeperGuiApp {
         let unread_top = st.settings.unread_chats_always_on_top;
         list.sort_by(|a, b| {
             let u = |c: &Chat| unread_top && c.flags & CHAT_UNREAD != 0;
-            u(b).cmp(&u(a))
-                .then_with(|| b.last_activity.cmp(&a.last_activity))
+            u(b).cmp(&u(a)).then_with(|| b.last_activity.cmp(&a.last_activity))
         });
         list
     }
 
     pub fn select_chat(&mut self, chat_id: &str) {
-        if let Some(prev_id) = self
-            .selected_chat_id
-            .clone()
-            .filter(|p| p != chat_id && self.editing_message_id.is_none())
+        if let Some(prev_id) =
+            self.selected_chat_id.clone().filter(|p| p != chat_id && self.editing_message_id.is_none())
         {
             let draft = self.composer_text.trim().to_string();
             let draft = (!draft.is_empty()).then(|| ChatDraft {
@@ -703,11 +597,9 @@ impl BeeperGuiApp {
                 attachments: Vec::new(),
             });
             let mut st = self.store.write().unwrap();
-            st.patch_chat(&prev_id, true, None, None)
-                .expect("mark previous chat read");
+            st.patch_chat(&prev_id, true, None, None).expect("mark previous chat read");
             if draft.is_some() {
-                st.patch_chat(&prev_id, false, draft, None)
-                    .expect("save draft");
+                st.patch_chat(&prev_id, false, draft, None).expect("save draft");
             }
         }
         let mut st = self.store.write().unwrap();
@@ -718,11 +610,7 @@ impl BeeperGuiApp {
         chat.unread_count = 0;
         chat.is_marked_unread = Some(false);
         chat.sync_flags();
-        self.composer_text = chat
-            .draft
-            .as_ref()
-            .and_then(|d| d.text.clone())
-            .unwrap_or_default();
+        self.composer_text = chat.draft.as_ref().and_then(|d| d.text.clone()).unwrap_or_default();
         self.nickname_edit_buffer = chat
             .participants
             .items
@@ -744,13 +632,10 @@ impl BeeperGuiApp {
         }
         let mut st = self.store.write().unwrap();
         if let Some(edit_id) = self.editing_message_id.take() {
-            st.edit_message(&chat_id, &edit_id, text)
-                .expect("edit message");
+            st.edit_message(&chat_id, &edit_id, text).expect("edit message");
         } else {
-            st.send_message(&chat_id, Some(text), self.reply_to_message_id.take(), None)
-                .expect("send message");
-            st.patch_chat(&chat_id, true, None, None)
-                .expect("mark chat read");
+            st.send_message(&chat_id, Some(text), self.reply_to_message_id.take(), None).expect("send message");
+            st.patch_chat(&chat_id, true, None, None).expect("mark chat read");
         }
         self.composer_text.clear();
         drop(st);
@@ -762,11 +647,7 @@ impl BeeperGuiApp {
         if chats.is_empty() {
             return;
         }
-        let cur = self
-            .selected_chat_id
-            .as_ref()
-            .and_then(|id| chats.iter().position(|c| &c.id == id))
-            .unwrap_or(0);
+        let cur = self.selected_chat_id.as_ref().and_then(|id| chats.iter().position(|c| &c.id == id)).unwrap_or(0);
         let next = (cur as isize + delta).rem_euclid(chats.len() as isize) as usize;
         self.select_chat(&chats[next].id.clone());
     }
@@ -803,9 +684,10 @@ impl BeeperGuiApp {
                     .msg_idx_by_id
                     .get(&mid)
                     .map(|&i| {
-                        st.messages[i].reactions.iter().any(|r| {
-                            r.reaction_key == key && r.participant_id.starts_with("@self_")
-                        })
+                        st.messages[i]
+                            .reactions
+                            .iter()
+                            .any(|r| r.reaction_key == key && r.participant_id.starts_with("@self_"))
                     })
                     .unwrap_or(false);
                 if has_rx {
@@ -818,20 +700,14 @@ impl BeeperGuiApp {
                 self.store.write().unwrap().toggle_bookmark(&mid);
             }
             UiMessage::MarkUnreadFromHere(cid, mid) => {
-                self.store
-                    .write()
-                    .unwrap()
-                    .mark_unread_from_message(&cid, &mid);
+                self.store.write().unwrap().mark_unread_from_message(&cid, &mid);
                 self.refresh_theme_and_tray();
             }
             UiMessage::RetranscribeVoice(mid) => {
                 self.status_banner = self.store.write().unwrap().retranscribe_voice_note(&mid);
             }
             UiMessage::VotePoll(mid, opt_id) => {
-                self.store
-                    .write()
-                    .unwrap()
-                    .vote_poll(&mid, &opt_id, "@self:beeper.com");
+                self.store.write().unwrap().vote_poll(&mid, &opt_id, "@self:beeper.com");
             }
             UiMessage::SendQuickVoiceNote => {
                 if let Some(cid) = self.selected_chat_id.clone() {
@@ -850,24 +726,17 @@ impl BeeperGuiApp {
                         src_url: Some("mxc://beeper.com/quick_vn".to_string()),
                         transcript: None,
                     };
-                    let _ = self.store.write().unwrap().send_message(
-                        &cid,
-                        Some("Voice note".to_string()),
-                        None,
-                        Some(att),
-                    );
+                    let _ =
+                        self.store.write().unwrap().send_message(&cid, Some("Voice note".to_string()), None, Some(att));
                     self.refresh_theme_and_tray();
                 }
             }
             UiMessage::SendQuickPoll => {
                 if let Some(cid) = self.selected_chat_id.clone() {
                     let mut st = self.store.write().unwrap();
-                    if let Ok((_, mid, _)) = st.send_message(
-                        &cid,
-                        Some("Poll: Ship Beeper v4.3 today?".to_string()),
-                        None,
-                        None,
-                    ) {
+                    if let Ok((_, mid, _)) =
+                        st.send_message(&cid, Some("Poll: Ship Beeper v4.3 today?".to_string()), None, None)
+                    {
                         if let Some(&idx) = st.msg_idx_by_id.get(&mid) {
                             st.messages[idx].poll = Some(PollData {
                                 question: "Ship Beeper v4.3 today?".to_string(),
@@ -940,12 +809,7 @@ impl BeeperGuiApp {
                 if let Some(cid) = self.selected_chat_id.clone() {
                     let mut st = self.store.write().unwrap();
                     let target_uid = st.resolve_chat_idx(&cid).and_then(|idx| {
-                        st.chats[idx]
-                            .participants
-                            .items
-                            .iter()
-                            .find(|u| u.is_self != Some(true))
-                            .map(|u| u.id.clone())
+                        st.chats[idx].participants.items.iter().find(|u| u.is_self != Some(true)).map(|u| u.id.clone())
                     });
                     if let Some(uid) = target_uid {
                         let nick = (!self.nickname_edit_buffer.trim().is_empty())
@@ -976,10 +840,7 @@ impl BeeperGuiApp {
             }
             UiMessage::CycleTheme => {
                 let all = ThemeChoice::all();
-                let cur = all
-                    .iter()
-                    .position(|t| *t == self.theme.choice)
-                    .unwrap_or(0);
+                let cur = all.iter().position(|t| *t == self.theme.choice).unwrap_or(0);
                 let next = all[(cur + 1) % all.len()];
                 return self.update(UiMessage::SelectTheme(next));
             }
@@ -1030,9 +891,7 @@ impl BeeperGuiApp {
                             s.show_right_panel_by_default = val;
                             self.show_right_panel = val;
                         }
-                        "load_remote_content_automatically" => {
-                            s.load_remote_content_automatically = val
-                        }
+                        "load_remote_content_automatically" => s.load_remote_content_automatically = val,
                         "use_twenty_four_hour_time" => s.use_twenty_four_hour_time = val,
                         "no_transparency" => s.no_transparency = val,
                         "reduce_transparency" => s.reduce_transparency = val,
@@ -1045,9 +904,7 @@ impl BeeperGuiApp {
                         "launch_at_startup" => s.launch_at_startup = val,
                         "minimize_to_tray" => s.minimize_to_tray = val,
                         "enable_pas_api" => s.enable_pas_api = val,
-                        "repeat_message_alerts" => {
-                            s.repeat_message_alerts = if val { 3 } else { 1 }
-                        }
+                        "repeat_message_alerts" => s.repeat_message_alerts = if val { 3 } else { 1 },
                         other => panic!("unknown setting key {other}"),
                     }
                     st.persist_state_to_sqlite();
@@ -1060,11 +917,8 @@ impl BeeperGuiApp {
                     existing.state = "CONNECTED".to_string();
                     existing.is_running = true;
                 } else {
-                    let net_name = NETWORK_SPECS
-                        .iter()
-                        .find(|n| n.bridge_id == bid)
-                        .map(|n| n.display_name)
-                        .unwrap_or("Bridge");
+                    let net_name =
+                        NETWORK_SPECS.iter().find(|n| n.bridge_id == bid).map(|n| n.display_name).unwrap_or("Bridge");
                     st.bridge_accounts.push(BridgeAccountInfo {
                         account_id: format!("acc_{bid}"),
                         bridge_id: bid.clone(),
@@ -1097,11 +951,7 @@ impl BeeperGuiApp {
                 self.status_banner = "Device SAS E2EE verification complete".to_string();
             }
             UiMessage::ClearOldMedia => {
-                let n = self
-                    .store
-                    .write()
-                    .unwrap()
-                    .clear_cached_media_older_than_days(30);
+                let n = self.store.write().unwrap().clear_cached_media_older_than_days(30);
                 self.status_banner = format!("Cleared {n} cached media files");
             }
             UiMessage::ExportChatJson(cid) => {
@@ -1109,8 +959,7 @@ impl BeeperGuiApp {
                 let count = st.chat_msg_indices.get(&cid).map_or(0, Vec::len);
                 let out_path = st.data_dir.join("chat-export.json");
                 let payload = serde_json::json!({ "chatID": cid, "messageCount": count });
-                std::fs::write(&out_path, serde_json::to_vec_pretty(&payload).unwrap())
-                    .expect("write export json");
+                std::fs::write(&out_path, serde_json::to_vec_pretty(&payload).unwrap()).expect("write export json");
                 self.status_banner = format!("Exported {count} messages to {}", out_path.display());
             }
             UiMessage::OpenQuickLook(title, detail) => {
@@ -1123,18 +972,13 @@ impl BeeperGuiApp {
                 self.quick_look_target = None;
             }
             UiMessage::ToggleEditHistory(mid) => {
-                self.expanded_history_msg_id =
-                    (self.expanded_history_msg_id.as_ref() != Some(&mid)).then_some(mid);
+                self.expanded_history_msg_id = (self.expanded_history_msg_id.as_ref() != Some(&mid)).then_some(mid);
             }
             UiMessage::Noop => {}
             UiMessage::OpenUrl(url) => {
                 let (cmd, args) = open_url_or_path_command(self.os, &url);
                 std::thread::spawn(move || {
-                    assert!(std::process::Command::new(cmd)
-                        .args(args)
-                        .status()
-                        .expect("run URL opener")
-                        .success())
+                    assert!(std::process::Command::new(cmd).args(args).status().expect("run URL opener").success())
                 });
             }
             UiMessage::ToggleAttachMenu => self.show_attach_menu = !self.show_attach_menu,
@@ -1149,16 +993,10 @@ impl BeeperGuiApp {
             UiMessage::OpenSettings(tab) => return self.open_settings(tab),
             UiMessage::SettingsQueryChanged(q) => self.settings_query = q,
             UiMessage::SelectAfterArchive(v) => self.patch_settings(|s| {
-                s.after_archive = AFTER_ARCHIVE
-                    .iter()
-                    .position(|o| *o == v)
-                    .expect("known option") as u8
+                s.after_archive = AFTER_ARCHIVE.iter().position(|o| *o == v).expect("known option") as u8
             }),
             UiMessage::SelectRemindLater(v) => self.patch_settings(|s| {
-                s.remind_later_default = REMIND_LATER
-                    .iter()
-                    .position(|o| *o == v)
-                    .expect("known option") as u8
+                s.remind_later_default = REMIND_LATER.iter().position(|o| *o == v).expect("known option") as u8
             }),
             UiMessage::HoverEnter(id) => self.hovered_msg = Some(id),
             UiMessage::HoverExit(id) => {
@@ -1177,8 +1015,7 @@ impl BeeperGuiApp {
                 };
                 self.main_window = self.main_window.or(Some(id));
                 if std::env::var(key).is_ok() {
-                    return window::screenshot(id)
-                        .map(move |s| UiMessage::ScreenshotCaptured(id, s));
+                    return window::screenshot(id).map(move |s| UiMessage::ScreenshotCaptured(id, s));
                 }
             }
             UiMessage::WindowClosed(id) => {
@@ -1190,18 +1027,10 @@ impl BeeperGuiApp {
             }
             UiMessage::ScreenshotCaptured(id, shot) => {
                 let is_settings = Some(id) == self.settings_window;
-                let path = std::env::var(if is_settings {
-                    "BEEPER_SCREENSHOT_SETTINGS"
-                } else {
-                    "BEEPER_SCREENSHOT_EXIT"
-                })
-                .expect("screenshot path");
-                write_rgba_png(
-                    std::path::Path::new(&path),
-                    shot.size.width,
-                    shot.size.height,
-                    &shot.rgba,
-                );
+                let path =
+                    std::env::var(if is_settings { "BEEPER_SCREENSHOT_SETTINGS" } else { "BEEPER_SCREENSHOT_EXIT" })
+                        .expect("screenshot path");
+                write_rgba_png(std::path::Path::new(&path), shot.size.width, shot.size.height, &shot.rgba);
                 if !is_settings && std::env::var("BEEPER_SCREENSHOT_SETTINGS").is_ok() {
                     return self.open_settings(SettingsTab::General);
                 }
@@ -1210,12 +1039,8 @@ impl BeeperGuiApp {
             UiMessage::KeyPressed(key, mods) => {
                 let cmd = mods.command() || mods.control();
                 match key.as_ref() {
-                    Key::Character("k") if cmd => {
-                        return self.update(UiMessage::ToggleCommandPalette)
-                    }
-                    Key::Character(",") if cmd => {
-                        return self.open_settings(self.active_settings_tab)
-                    }
+                    Key::Character("k") if cmd => return self.update(UiMessage::ToggleCommandPalette),
+                    Key::Character(",") if cmd => return self.open_settings(self.active_settings_tab),
                     Key::Character("f") if cmd => return self.update(UiMessage::ToggleSearch),
                     Key::Character(".") if cmd => self.show_right_panel = !self.show_right_panel,
                     Key::Named(Named::Escape) => return self.update(UiMessage::CloseModals),
@@ -1256,9 +1081,7 @@ impl BeeperGuiApp {
         Subscription::batch([
             base,
             iced::event::listen_with(|e, _, _| match e {
-                Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                    Some(UiMessage::DragMoved(position))
-                }
+                Event::Mouse(mouse::Event::CursorMoved { position }) => Some(UiMessage::DragMoved(position)),
                 Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::DragEnd),
                 _ => None,
             }),
@@ -1278,16 +1101,10 @@ impl BeeperGuiApp {
         let grip = mouse_area(container(Space::new()).width(8).height(Fill))
             .on_press(UiMessage::DragStart)
             .interaction(mouse::Interaction::ResizingHorizontally);
-        let card = container(self.view_conversation())
-            .padding(Padding::new(8.0).left(0.0))
-            .width(Fill);
+        let card = container(self.view_conversation()).padding(Padding::new(8.0).left(0.0)).width(Fill);
         let body = row![self.view_rail(), self.view_sidebar(), grip, card]
             .push(self.show_right_panel.then(|| self.view_info()));
-        let base: El<'_> = container(body)
-            .width(Fill)
-            .height(Fill)
-            .style(fill_box(p.frame, 0.0))
-            .into();
+        let base: El<'_> = container(body).width(Fill).height(Fill).style(fill_box(p.frame, 0.0)).into();
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
             (None, true) => Some(self.view_command_palette()),
@@ -1311,11 +1128,7 @@ impl BeeperGuiApp {
         let rail_btn = |glyph: El<'static>, on: bool, msg: UiMessage| {
             button(container(glyph).center(36))
                 .padding(0)
-                .style(btn_style(
-                    [if on { p.rail_sel } else { CLEAR }, p.hover, p.rail_sel],
-                    [p.strong; 3],
-                    14.0,
-                ))
+                .style(btn_style([if on { p.rail_sel } else { CLEAR }, p.hover, p.rail_sel], [p.strong; 3], 14.0))
                 .on_press(msg)
         };
         let tab = |id: &'static str, glyph: El<'static>, t: InboxTab| -> El<'static> {
@@ -1330,50 +1143,30 @@ impl BeeperGuiApp {
         let g = |c: char| -> El<'static> { ic(c, 18.0).color(p.strong).into() };
         let scheduled: El<'static> = stack![
             container(g(icon::SEND_HORIZONTAL)).center(36),
-            container(
-                container(ic(icon::CLOCK, 8.0).color(p.strong))
-                    .center(11)
-                    .style(fill_box(p.rail, 6.0))
-            )
-            .padding(Padding::new(0.0).top(18.0).left(19.0))
+            container(container(ic(icon::CLOCK, 8.0).color(p.strong)).center(11).style(fill_box(p.rail, 6.0)))
+                .padding(Padding::new(0.0).top(18.0).left(19.0))
         ]
         .into();
-        let add_space = container(g(icon::MESSAGE_CIRCLE_PLUS))
-            .center(36)
-            .style(bordered_box(CLEAR, p.tertiary, 1.0, 12.0));
+        let add_space =
+            container(g(icon::MESSAGE_CIRCLE_PLUS)).center(36).style(bordered_box(CLEAR, p.tertiary, 1.0, 12.0));
         let st = self.store.read().unwrap();
-        let accounts = std::iter::once("hungryserv".to_string())
-            .chain(st.accounts.iter().map(|a| a.account_id.clone()));
+        let accounts =
+            std::iter::once("hungryserv".to_string()).chain(st.accounts.iter().map(|a| a.account_id.clone()));
         let accounts = accounts.fold(Column::new().spacing(8).align_x(Center), |c, acc| {
             let on = self.selected_account_filter.as_ref() == Some(&acc);
             let logo: El<'static> = svg(brand_svg(brand_key(&acc))).width(28).height(28).into();
-            c.push(rail_btn(
-                logo,
-                on,
-                UiMessage::SelectAccount((!on).then_some(acc)),
-            ))
+            c.push(rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc))))
         });
         let top = column![
             tab("rail-inbox", g(icon::INBOX), InboxTab::AllChats),
-            tab(
-                "rail-low-priority",
-                g(icon::LIST_RESTART),
-                InboxTab::LowPriority
-            ),
+            tab("rail-low-priority", g(icon::LIST_RESTART), InboxTab::LowPriority),
             tab("rail-archive", g(icon::ARCHIVE), InboxTab::Archived),
             tab("rail-reminders", g(icon::CLOCK), InboxTab::Reminders),
             tab("rail-drafts", scheduled, InboxTab::Drafts),
             tab("rail-unread", g(icon::MAIL), InboxTab::Unread),
-            button(add_space)
-                .padding(0)
-                .style(ghost(p, 12.0))
-                .on_press(UiMessage::ToggleCommandPalette),
+            button(add_space).padding(0).style(ghost(p, 12.0)).on_press(UiMessage::ToggleCommandPalette),
             accounts,
-            rail_btn(
-                g(icon::ELLIPSIS),
-                false,
-                UiMessage::OpenSettings(SettingsTab::Accounts)
-            ),
+            rail_btn(g(icon::ELLIPSIS), false, UiMessage::OpenSettings(SettingsTab::Accounts)),
         ]
         .spacing(8)
         .align_x(Center)
@@ -1384,10 +1177,7 @@ impl BeeperGuiApp {
             rail_btn(
                 g(icon::IMAGES),
                 false,
-                UiMessage::OpenQuickLook(
-                    "Media".into(),
-                    "Photos, videos, and files from all chats".into()
-                )
+                UiMessage::OpenQuickLook("Media".into(), "Photos, videos, and files from all chats".into())
             ),
             rail_btn(g(icon::COPY_PLUS), false, UiMessage::ToggleCommandPalette),
             button(self_avatar(&me, 36.0))
@@ -1398,14 +1188,8 @@ impl BeeperGuiApp {
         .spacing(8)
         .align_x(Center)
         .padding(Padding::ZERO.bottom(16.0));
-        let scroll = scrollable(top)
-            .direction(Direction::Vertical(Scrollbar::hidden()))
-            .height(Fill);
-        container(column![scroll, footer].align_x(Center))
-            .width(68)
-            .height(Fill)
-            .style(fill_box(p.rail, 0.0))
-            .into()
+        let scroll = scrollable(top).direction(Direction::Vertical(Scrollbar::hidden())).height(Fill);
+        container(column![scroll, footer].align_x(Center)).width(68).height(Fill).style(fill_box(p.rail, 0.0)).into()
     }
 
     fn view_sidebar(&self) -> El<'_> {
@@ -1418,12 +1202,9 @@ impl BeeperGuiApp {
         let previews = st.settings.show_message_previews;
         let header_icon = p.text.scale_alpha(0.8);
         let title = button(
-            row![
-                semi(self.active_tab.label(), 13.0).color(p.strong),
-                ic(icon::CHEVRONS_UP_DOWN, 13.0).color(p.weak)
-            ]
-            .spacing(4)
-            .align_y(Center),
+            row![semi(self.active_tab.label(), 13.0).color(p.strong), ic(icon::CHEVRONS_UP_DOWN, 13.0).color(p.weak)]
+                .spacing(4)
+                .align_y(Center),
         )
         .padding([4, 8])
         .style(ghost(p, 6.0))
@@ -1431,30 +1212,9 @@ impl BeeperGuiApp {
         let header = row![
             title,
             Space::new().width(Fill),
-            icon_btn(
-                p,
-                icon::LIST_FILTER,
-                16.0,
-                26.0,
-                header_icon,
-                UiMessage::ToggleFilterMenu
-            ),
-            icon_btn(
-                p,
-                icon::SEARCH,
-                16.0,
-                26.0,
-                header_icon,
-                UiMessage::ToggleSearch
-            ),
-            icon_btn(
-                p,
-                icon::SQUARE_PEN,
-                16.0,
-                26.0,
-                header_icon,
-                UiMessage::ToggleCommandPalette
-            )
+            icon_btn(p, icon::LIST_FILTER, 16.0, 26.0, header_icon, UiMessage::ToggleFilterMenu),
+            icon_btn(p, icon::SEARCH, 16.0, 26.0, header_icon, UiMessage::ToggleSearch),
+            icon_btn(p, icon::SQUARE_PEN, 16.0, 26.0, header_icon, UiMessage::ToggleCommandPalette)
         ]
         .align_y(Center)
         .height(38)
@@ -1509,9 +1269,8 @@ impl BeeperGuiApp {
         });
         let selected = self.selected_chat_id.as_deref();
         let pin_section = self.active_tab == InboxTab::AllChats && self.search_query.is_empty();
-        let (pinned, rest): (Vec<&Chat>, Vec<&Chat>) = chats
-            .iter()
-            .partition(|c| pin_section && c.flags & CHAT_PINNED != 0);
+        let (pinned, rest): (Vec<&Chat>, Vec<&Chat>) =
+            chats.iter().partition(|c| pin_section && c.flags & CHAT_PINNED != 0);
         let cols = (((w - 16.0) / 80.0).floor() as usize).max(1);
         let cell = (w - 16.0) / cols as f32;
         let pins = pinned.chunks(cols).fold(Column::new(), |col, chunk| {
@@ -1532,12 +1291,8 @@ impl BeeperGuiApp {
                         .padding([1, 5])
                         .style(fill_box(p.accent, 9.0))
                 });
-                let face = stack![
-                    chat_avatar(c, &me, 40.0),
-                    container(unread).width(44).align_right(44)
-                ]
-                .width(44)
-                .height(40);
+                let face =
+                    stack![chat_avatar(c, &me, 40.0), container(unread).width(44).align_right(44)].width(44).height(40);
                 let item = column![face, label]
                     .spacing(4)
                     .align_x(Center)
@@ -1546,11 +1301,7 @@ impl BeeperGuiApp {
                 r.push(
                     button(item)
                         .padding(0)
-                        .style(btn_style(
-                            [if on { p.selected } else { CLEAR }, p.hover, p.selected],
-                            [p.text; 3],
-                            10.0,
-                        ))
+                        .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.text; 3], 10.0))
                         .on_press(UiMessage::SelectChat(c.id.clone())),
                 )
             }))
@@ -1559,16 +1310,8 @@ impl BeeperGuiApp {
         let rows = rest.iter().fold(Column::new(), |col, c| {
             let on = selected == Some(c.id.as_str());
             let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
-            let m = st
-                .chat_msg_indices
-                .get(&c.id)
-                .and_then(|v| v.last())
-                .map(|&i| &st.messages[i]);
-            let ts = c
-                .last_activity
-                .as_deref()
-                .map(|t| list_ts(t, h24))
-                .unwrap_or_default();
+            let m = st.chat_msg_indices.get(&c.id).and_then(|v| v.last()).map(|&i| &st.messages[i]);
+            let ts = c.last_activity.as_deref().map(|t| list_ts(t, h24)).unwrap_or_default();
             let ts_w = crate::style::text_width(&ts, 10.0, Weight::Normal) + 8.0;
             let top = row![
                 ell(&c.title, text_w - ts_w, 13.0, Weight::Semibold).color(p.strong),
@@ -1578,53 +1321,33 @@ impl BeeperGuiApp {
             .align_y(Center);
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
             let image = m.is_some_and(|m| m.attachments.iter().any(|a| a.attachment_type == "img"));
-            let body = m
-                .and_then(|m| m.text.clone())
-                .filter(|t| !t.is_empty() && previews)
-                .map(|t| {
-                    match (
-                        c.chat_type == "group",
-                        m.and_then(|m| m.sender_name.clone()),
-                    ) {
-                        (true, Some(s)) if !mine => {
-                            format!("{}: {t}", s.split(' ').next().expect("sender name"))
-                        }
-                        _ => t,
+            let body = m.and_then(|m| m.text.clone()).filter(|t| !t.is_empty() && previews).map(|t| {
+                match (c.chat_type == "group", m.and_then(|m| m.sender_name.clone())) {
+                    (true, Some(s)) if !mine => {
+                        format!("{}: {t}", s.split(' ').next().expect("sender name"))
                     }
-                });
+                    _ => t,
+                }
+            });
             let count = (c.unread_count > 0).then(|| {
                 container(semi(c.unread_count.to_string(), 10.0).color(Color::WHITE))
                     .padding([1, 5])
-                    .style(fill_box(
-                        if c.is_muted == Some(true) {
-                            p.muted
-                        } else {
-                            p.accent
-                        },
-                        9.0,
-                    ))
+                    .style(fill_box(if c.is_muted == Some(true) { p.muted } else { p.accent }, 9.0))
             });
             let reserve = if count.is_some() { 26.0 } else { 0.0 } + if mine { 16.0 } else { 0.0 };
             let preview = row![]
                 .push(mine.then(|| ic(icon::CIRCLE_CHECK, 12.0).color(p.sub)))
                 .push(image.then(|| {
                     container(
-                        row![
-                            ic(icon::IMAGE, 11.0).color(p.text),
-                            txt("Image", 11.0).color(p.text)
-                        ]
-                        .spacing(3)
-                        .align_y(Center),
+                        row![ic(icon::IMAGE, 11.0).color(p.text), txt("Image", 11.0).color(p.text)]
+                            .spacing(3)
+                            .align_y(Center),
                     )
                     .padding([1, 5])
                     .style(fill_box(p.link_card, 4.0))
                 }))
                 .push(body.map(|b| {
-                    ell(&b, text_w - reserve, 13.0, Weight::Normal).color(if unread {
-                        p.text
-                    } else {
-                        p.sub
-                    })
+                    ell(&b, text_w - reserve, 13.0, Weight::Normal).color(if unread { p.text } else { p.sub })
                 }))
                 .push(Space::new().width(Fill))
                 .push(count)
@@ -1641,11 +1364,7 @@ impl BeeperGuiApp {
                 button(item)
                     .padding(0)
                     .width(Fill)
-                    .style(btn_style(
-                        [if on { p.selected } else { CLEAR }, p.hover, p.selected],
-                        [p.text; 3],
-                        8.0,
-                    ))
+                    .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.text; 3], 8.0))
                     .on_press(UiMessage::SelectChat(c.id.clone())),
             )
             .push(divider(p, 52.0))
@@ -1655,42 +1374,24 @@ impl BeeperGuiApp {
                 .center_x(Fill)
                 .padding(24)
         });
-        let list = scrollable(
-            column![pins, rows]
-                .push(empty)
-                .padding(Padding::ZERO.right(4.0)),
-        )
-        .height(Fill)
-        .style(scroll_style(p.divider, p.weak));
-        container(
-            column![header]
-                .push(filters)
-                .push(search)
-                .push(list)
-                .padding(Padding::ZERO.left(8.0).top(8.0)),
-        )
-        .width(w)
-        .height(Fill)
-        .into()
+        let list = scrollable(column![pins, rows].push(empty).padding(Padding::ZERO.right(4.0)))
+            .height(Fill)
+            .style(scroll_style(p.divider, p.weak));
+        container(column![header].push(filters).push(search).push(list).padding(Padding::ZERO.left(8.0).top(8.0)))
+            .width(w)
+            .height(Fill)
+            .into()
     }
 
     fn view_conversation(&self) -> El<'_> {
         let p = &self.pal;
         let st = self.store.read().unwrap();
-        let cid = self
-            .selected_chat_id
-            .as_deref()
-            .expect("a chat is selected");
+        let cid = self.selected_chat_id.as_deref().expect("a chat is selected");
         let chat = &st.chats[st.resolve_chat_idx(cid).expect("selected chat exists")];
         let me = st.me().full_name.clone().expect("self name");
-        let msgs: Vec<&Message> = st
-            .chat_msg_indices
-            .get(cid)
-            .map(|v| v.iter().map(|&i| &st.messages[i]).collect())
-            .unwrap_or_default();
-        let mut col = Column::new()
-            .spacing(2)
-            .padding(Padding::new(16.0).top(96.0).bottom(8.0));
+        let msgs: Vec<&Message> =
+            st.chat_msg_indices.get(cid).map(|v| v.iter().map(|&i| &st.messages[i]).collect()).unwrap_or_default();
+        let mut col = Column::new().spacing(2).padding(Padding::new(16.0).top(96.0).bottom(8.0));
         let mut prev: Option<&Message> = None;
         for (i, m) in msgs.iter().enumerate() {
             let day_changed = prev.is_none_or(|q| q.timestamp[..10] != m.timestamp[..10]);
@@ -1701,9 +1402,8 @@ impl BeeperGuiApp {
                 col = col.push(container(pill).center_x(Fill).padding([12, 0]));
             }
             let first = day_changed || prev.is_none_or(|q| q.sender_id != m.sender_id);
-            let last = msgs.get(i + 1).is_none_or(|n| {
-                n.sender_id != m.sender_id || n.timestamp[..10] != m.timestamp[..10]
-            });
+            let last =
+                msgs.get(i + 1).is_none_or(|n| n.sender_id != m.sender_id || n.timestamp[..10] != m.timestamp[..10]);
             if first && !day_changed {
                 col = col.push(Space::new().height(6));
             }
@@ -1717,140 +1417,64 @@ impl BeeperGuiApp {
                     .padding(Padding::ZERO.right(4.0).top(2.0)),
             );
         }
-        let list = scrollable(col)
-            .anchor_bottom()
-            .height(Fill)
-            .style(scroll_style(p.divider, p.weak));
-        let status = (chat.id != NOTE_CHAT_ID)
-            .then(|| txt(network_name(&chat.account_id), 10.0).color(p.sub));
-        let name_row = row![
-            semi(chat.title.clone(), 12.0).color(p.strong),
-            ic(icon::CHEVRON_RIGHT, 12.0).color(p.tertiary)
-        ]
-        .spacing(2)
-        .align_y(Center);
+        let list = scrollable(col).anchor_bottom().height(Fill).style(scroll_style(p.divider, p.weak));
+        let status = (chat.id != NOTE_CHAT_ID).then(|| txt(network_name(&chat.account_id), 10.0).color(p.sub));
+        let name_row =
+            row![semi(chat.title.clone(), 12.0).color(p.strong), ic(icon::CHEVRON_RIGHT, 12.0).color(p.tertiary)]
+                .spacing(2)
+                .align_y(Center);
         let pill = button(column![name_row].push(status).align_x(Center).spacing(1))
-            .padding(
-                Padding::new(6.0)
-                    .left(10.0)
-                    .top(if chat.id == NOTE_CHAT_ID { 6.0 } else { 8.0 }),
-            )
-            .style(btn_style(
-                [p.elevated, p.selected, p.selected],
-                [p.text; 3],
-                14.0,
-            ))
+            .padding(Padding::new(6.0).left(10.0).top(if chat.id == NOTE_CHAT_ID { 6.0 } else { 8.0 }))
+            .style(btn_style([p.elevated, p.selected, p.selected], [p.text; 3], 14.0))
             .on_press(UiMessage::ToggleRightPanel);
-        let ring = container(chat_avatar(chat, &me, 40.0))
-            .padding(1)
-            .style(fill_box(p.card, 21.0));
+        let ring = container(chat_avatar(chat, &me, 40.0)).padding(1).style(fill_box(p.card, 21.0));
         let header = stack![
-            container(pill)
-                .center_x(Fill)
-                .padding(Padding::ZERO.top(44.0)),
-            container(ring)
-                .center_x(Fill)
-                .padding(Padding::ZERO.top(8.0))
+            container(pill).center_x(Fill).padding(Padding::ZERO.top(44.0)),
+            container(ring).center_x(Fill).padding(Padding::ZERO.top(8.0))
         ];
         let feedback = button(
-            row![
-                ic(icon::MESSAGE_SQUARE, 13.0).color(p.text),
-                med("Feedback?", 12.0).color(p.text)
-            ]
-            .spacing(5)
-            .align_y(Center),
+            row![ic(icon::MESSAGE_SQUARE, 13.0).color(p.text), med("Feedback?", 12.0).color(p.text)]
+                .spacing(5)
+                .align_y(Center),
         )
         .padding([5, 10])
-        .style(btn_style(
-            [p.hover, p.selected, p.selected],
-            [p.text; 3],
-            14.0,
-        ))
-        .on_press(UiMessage::OpenQuickLook(
-            "Feedback".into(),
-            "Tell us what to improve in beeper-rs.".into(),
-        ));
+        .style(btn_style([p.hover, p.selected, p.selected], [p.text; 3], 14.0))
+        .on_press(UiMessage::OpenQuickLook("Feedback".into(), "Tell us what to improve in beeper-rs.".into()));
         let fade = Linear::new(Radians(std::f32::consts::PI))
             .add_stop(0.0, p.card)
             .add_stop(0.75, p.card.scale_alpha(0.85))
             .add_stop(1.0, p.card.scale_alpha(0.0));
-        let fade = container(Space::new())
-            .width(Fill)
-            .height(84)
-            .style(move |_: &Theme| container::Style {
-                background: Some(Background::Gradient(Gradient::Linear(fade))),
-                ..Default::default()
-            });
-        let overlay = stack![
-            fade,
-            header,
-            container(feedback).align_right(Fill).padding([12, 12])
-        ];
-        let pane = column![
-            stack![list, overlay].height(Fill),
-            self.view_composer(&st, chat)
-        ];
-        container(pane)
-            .width(Fill)
-            .height(Fill)
-            .clip(true)
-            .style(fill_box(p.card, 10.0))
-            .into()
+        let fade = container(Space::new()).width(Fill).height(84).style(move |_: &Theme| container::Style {
+            background: Some(Background::Gradient(Gradient::Linear(fade))),
+            ..Default::default()
+        });
+        let overlay = stack![fade, header, container(feedback).align_right(Fill).padding([12, 12])];
+        let pane = column![stack![list, overlay].height(Fill), self.view_composer(&st, chat)];
+        container(pane).width(Fill).height(Fill).clip(true).style(fill_box(p.card, 10.0)).into()
     }
 
-    fn view_message<'a>(
-        &self,
-        st: &BeeperStore,
-        chat: &Chat,
-        m: &Message,
-        first: bool,
-        last: bool,
-    ) -> El<'a> {
+    fn view_message<'a>(&self, st: &BeeperStore, chat: &Chat, m: &Message, first: bool, last: bool) -> El<'a> {
         let p = &self.pal;
         let mine = m.is_sender == Some(true);
         let group = chat.chat_type == "group";
-        let (bg, fg) = if mine {
-            (p.sent, Color::WHITE)
-        } else {
-            (p.received, p.strong)
-        };
+        let (bg, fg) = if mine { (p.sent, Color::WHITE) } else { (p.received, p.strong) };
         let text = m.text.clone().unwrap_or_default();
-        let preview = st
-            .settings
-            .link_previews
-            .then(|| {
-                text.split_whitespace()
-                    .find_map(|w| st.link_previews.get(w))
-            })
-            .flatten();
-        let mut parts = Column::new()
-            .spacing(2)
-            .align_x(if mine { Right } else { iced::Left });
+        let preview =
+            st.settings.link_previews.then(|| text.split_whitespace().find_map(|w| st.link_previews.get(w))).flatten();
+        let mut parts = Column::new().spacing(2).align_x(if mine { Right } else { iced::Left });
         if group && !mine && first {
             parts = parts.push(
-                container(
-                    semi(m.sender_name.clone().expect("sender name"), 11.0)
-                        .color(hue(hash_str(&m.sender_id))),
-                )
-                .padding(Padding::ZERO.left(11.0)),
+                container(semi(m.sender_name.clone().expect("sender name"), 11.0).color(hue(hash_str(&m.sender_id))))
+                    .padding(Padding::ZERO.left(11.0)),
             );
         }
-        if let Some(q) = m
-            .linked_message_id
-            .as_ref()
-            .and_then(|r| st.msg_idx_by_id.get(r))
-            .map(|&i| &st.messages[i])
-        {
+        if let Some(q) = m.linked_message_id.as_ref().and_then(|r| st.msg_idx_by_id.get(r)).map(|&i| &st.messages[i]) {
             let quote = column![
                 semi(q.sender_name.clone().expect("sender name"), 11.0).color(p.text),
                 ell(q.text.as_deref().unwrap_or(""), 260.0, 12.0, Weight::Normal).color(p.sub)
             ]
             .spacing(1);
-            parts = parts.push(
-                container(quote)
-                    .padding([6, 11])
-                    .style(bordered_box(p.card, p.outline, 1.0, 14.0)),
-            );
+            parts = parts.push(container(quote).padding([6, 11]).style(bordered_box(p.card, p.outline, 1.0, 14.0)));
         }
         if let Some(lp) = preview {
             let host = text
@@ -1865,25 +1489,15 @@ impl BeeperGuiApp {
                 txt(lp.site.clone(), 11.0).color(p.sub),
                 semi(lp.title.clone(), 13.0).color(p.strong),
                 txt(lp.summary.clone(), 13.0).color(p.sub),
-                row![
-                    ic(icon::LINK, 11.0).color(p.weak),
-                    txt(host, 11.0).color(p.weak)
-                ]
-                .spacing(4)
-                .align_y(Center),
+                row![ic(icon::LINK, 11.0).color(p.weak), txt(host, 11.0).color(p.weak)].spacing(4).align_y(Center),
             ]
             .spacing(6)
             .padding([10, 11]);
-            parts = parts.push(
-                container(body)
-                    .max_width(360)
-                    .style(fill_box(p.link_card, 17.0)),
-            );
+            parts = parts.push(container(body).max_width(360).style(fill_box(p.link_card, 17.0)));
         }
         for a in &m.attachments {
             let name = a.file_name.clone().expect("attachment file name");
-            let content: El<'a> = match (a.is_voice_note == Some(true), a.attachment_type.as_str())
-            {
+            let content: El<'a> = match (a.is_voice_note == Some(true), a.attachment_type.as_str()) {
                 (true, _) => {
                     let bars = (0..28).fold(Row::new().spacing(2).align_y(Center), |r, k| {
                         r.push(
@@ -1893,18 +1507,12 @@ impl BeeperGuiApp {
                                 .style(fill_box(fg.scale_alpha(0.7), 1.0)),
                         )
                     });
-                    let play = container(ic(icon::PLAY, 14.0).color(bg))
-                        .center(30)
-                        .style(fill_box(fg, 15.0));
+                    let play = container(ic(icon::PLAY, 14.0).color(bg)).center(30).style(fill_box(fg, 15.0));
                     let dur = a.duration.expect("voice note duration");
-                    let line = row![
-                        play,
-                        bars,
-                        txt(format!("0:{:02}", dur.round() as u32), 11.0)
-                            .color(fg.scale_alpha(0.7))
-                    ]
-                    .spacing(8)
-                    .align_y(Center);
+                    let line =
+                        row![play, bars, txt(format!("0:{:02}", dur.round() as u32), 11.0).color(fg.scale_alpha(0.7))]
+                            .spacing(8)
+                            .align_y(Center);
                     let transcript = a.transcript.clone().map(|t| {
                         button(txt(t, 12.0).color(fg.scale_alpha(0.75)))
                             .padding(0)
@@ -1931,11 +1539,9 @@ impl BeeperGuiApp {
                     let tile = container(ic(icon::FILE_TEXT, 18.0).color(fg))
                         .center(36)
                         .style(fill_box(fg.scale_alpha(0.15), 8.0));
-                    let info = column![
-                        semi(name.clone(), 13.0).color(fg),
-                        txt(size.clone(), 11.0).color(fg.scale_alpha(0.7))
-                    ]
-                    .spacing(2);
+                    let info =
+                        column![semi(name.clone(), 13.0).color(fg), txt(size.clone(), 11.0).color(fg.scale_alpha(0.7))]
+                            .spacing(2);
                     button(row![tile, info].spacing(10).align_y(Center))
                         .padding([8, 11])
                         .style(btn_style([bg, bg, bg], [fg; 3], 17.0))
@@ -1946,19 +1552,13 @@ impl BeeperGuiApp {
             parts = parts.push(content);
         }
         if let Some(poll) = &m.poll {
-            let total = poll
-                .options
-                .iter()
-                .map(|o| o.voter_ids.len())
-                .sum::<usize>()
-                .max(1);
+            let total = poll.options.iter().map(|o| o.voter_ids.len()).sum::<usize>().max(1);
             let opts = poll.options.iter().fold(Column::new().spacing(4), |c, o| {
                 let voted = o.voter_ids.iter().any(|v| v == "@self:beeper.com");
                 let label = row![
                     txt(o.label.clone(), 13.0).color(fg),
                     Space::new().width(Fill),
-                    txt(format!("{}%", o.voter_ids.len() * 100 / total), 11.0)
-                        .color(fg.scale_alpha(0.7))
+                    txt(format!("{}%", o.voter_ids.len() * 100 / total), 11.0).color(fg.scale_alpha(0.7))
                 ];
                 c.push(
                     button(label)
@@ -1966,11 +1566,7 @@ impl BeeperGuiApp {
                         .width(Fill)
                         .style(btn_style(
                             [
-                                if voted {
-                                    fg.scale_alpha(0.22)
-                                } else {
-                                    fg.scale_alpha(0.08)
-                                },
+                                if voted { fg.scale_alpha(0.22) } else { fg.scale_alpha(0.08) },
                                 fg.scale_alpha(0.15),
                                 fg.scale_alpha(0.22),
                             ],
@@ -1981,36 +1577,20 @@ impl BeeperGuiApp {
                 )
             });
             parts = parts.push(
-                container(
-                    column![semi(poll.question.clone(), 13.0).color(fg), opts]
-                        .spacing(8)
-                        .width(300),
-                )
-                .padding([10, 11])
-                .style(fill_box(bg, 17.0)),
+                container(column![semi(poll.question.clone(), 13.0).color(fg), opts].spacing(8).width(300))
+                    .padding([10, 11])
+                    .style(fill_box(bg, 17.0)),
             );
         }
         if !text.is_empty() && m.poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
-            let edited = if m.edit_history.is_empty() {
-                ""
-            } else {
-                "Edited · "
-            };
-            let time = txt(
-                format!(
-                    "{edited}{}",
-                    format_short_ts(&m.timestamp, st.settings.use_twenty_four_hour_time)
-                ),
-                11.0,
-            )
-            .color(if mine { p.sent_meta } else { p.sub });
+            let edited = if m.edit_history.is_empty() { "" } else { "Edited · " };
+            let time =
+                txt(format!("{edited}{}", format_short_ts(&m.timestamp, st.settings.use_twenty_four_hour_time)), 11.0)
+                    .color(if mine { p.sent_meta } else { p.sub });
             let spans: Vec<_> = text
                 .split_inclusive(' ')
                 .flat_map(|w| {
-                    let url = w
-                        .trim_end()
-                        .starts_with("http")
-                        .then(|| w.trim_end().to_string());
+                    let url = w.trim_end().starts_with("http").then(|| w.trim_end().to_string());
                     let arrow = url.as_ref().map(|_| {
                         span(icon::ARROW_UP_RIGHT.to_string())
                             .font(iced::Font::with_name("lucide"))
@@ -2044,61 +1624,28 @@ impl BeeperGuiApp {
             );
         }
         if self.expanded_history_msg_id.as_ref() == Some(&m.id) {
-            parts = parts.push(
-                m.edit_history
-                    .iter()
-                    .fold(Column::new().spacing(2), |c, e| {
-                        c.push(
-                            txt(
-                                format!("{} · {}", e.text, format_short_ts(&e.timestamp, false)),
-                                11.0,
-                            )
-                            .color(p.muted),
-                        )
-                    }),
-            );
+            parts = parts.push(m.edit_history.iter().fold(Column::new().spacing(2), |c, e| {
+                c.push(txt(format!("{} · {}", e.text, format_short_ts(&e.timestamp, false)), 11.0).color(p.muted))
+            }));
         }
         if !m.reactions.is_empty() {
-            let mut keys: Vec<&str> = m
-                .reactions
-                .iter()
-                .map(|r| r.reaction_key.as_str())
-                .collect();
+            let mut keys: Vec<&str> = m.reactions.iter().map(|r| r.reaction_key.as_str()).collect();
             keys.sort_unstable();
             keys.dedup();
             let pills = keys.into_iter().fold(Row::new().spacing(4), |r, k| {
                 let n = m.reactions.iter().filter(|x| x.reaction_key == k).count();
-                let own = m
-                    .reactions
-                    .iter()
-                    .any(|x| x.reaction_key == k && x.participant_id.starts_with("@self_"));
-                let pill = row![
-                    txt(k.to_string(), 12.0),
-                    txt(n.to_string(), 11.0).color(p.text)
-                ]
-                .spacing(3)
-                .align_y(Center);
+                let own = m.reactions.iter().any(|x| x.reaction_key == k && x.participant_id.starts_with("@self_"));
+                let pill =
+                    row![txt(k.to_string(), 12.0), txt(n.to_string(), 11.0).color(p.text)].spacing(3).align_y(Center);
                 r.push(
                     button(pill)
                         .padding([2, 7])
                         .style(btn_style(
-                            [
-                                if own {
-                                    p.accent.scale_alpha(0.3)
-                                } else {
-                                    p.received
-                                },
-                                p.selected,
-                                p.selected,
-                            ],
+                            [if own { p.accent.scale_alpha(0.3) } else { p.received }, p.selected, p.selected],
                             [p.text; 3],
                             11.0,
                         ))
-                        .on_press(UiMessage::ToggleReaction(
-                            chat.id.clone(),
-                            m.id.clone(),
-                            k.to_string(),
-                        )),
+                        .on_press(UiMessage::ToggleReaction(chat.id.clone(), m.id.clone(), k.to_string())),
                 )
             });
             parts = parts.push(pills);
@@ -2107,36 +1654,15 @@ impl BeeperGuiApp {
             let b = |c: char, msg: UiMessage| icon_btn(p, c, 14.0, 26.0, p.weak, msg);
             let (cid, mid) = (chat.id.clone(), m.id.clone());
             let bar = row![
-                b(
-                    icon::SMILE,
-                    UiMessage::ToggleReaction(cid.clone(), mid.clone(), "👍".into())
-                ),
+                b(icon::SMILE, UiMessage::ToggleReaction(cid.clone(), mid.clone(), "👍".into())),
                 b(icon::REPLY, UiMessage::StartReply(mid.clone())),
                 b(icon::BOOKMARK, UiMessage::ToggleBookmark(mid.clone())),
-                b(
-                    icon::MAIL,
-                    UiMessage::MarkUnreadFromHere(cid.clone(), mid.clone())
-                )
+                b(icon::MAIL, UiMessage::MarkUnreadFromHere(cid.clone(), mid.clone()))
             ]
-            .push(
-                (!m.edit_history.is_empty())
-                    .then(|| b(icon::HISTORY, UiMessage::ToggleEditHistory(mid.clone()))),
-            )
-            .push(mine.then(|| {
-                b(
-                    icon::PENCIL,
-                    UiMessage::StartEdit(mid.clone(), text.clone()),
-                )
-            }))
-            .push(mine.then(|| {
-                b(
-                    icon::TRASH_2,
-                    UiMessage::DeleteMessage(cid.clone(), mid.clone()),
-                )
-            }));
-            container(bar)
-                .padding(2)
-                .style(shadow_box(p.elevated, p.outline, 10.0, 8.0))
+            .push((!m.edit_history.is_empty()).then(|| b(icon::HISTORY, UiMessage::ToggleEditHistory(mid.clone()))))
+            .push(mine.then(|| b(icon::PENCIL, UiMessage::StartEdit(mid.clone(), text.clone()))))
+            .push(mine.then(|| b(icon::TRASH_2, UiMessage::DeleteMessage(cid.clone(), mid.clone()))));
+            container(bar).padding(2).style(shadow_box(p.elevated, p.outline, 10.0, 8.0))
         });
         let side = (group && !mine).then(|| -> El<'a> {
             if last {
@@ -2146,21 +1672,9 @@ impl BeeperGuiApp {
             }
         });
         let line: El<'a> = if mine {
-            row![Space::new().width(Fill)]
-                .push(tools)
-                .push(parts)
-                .spacing(6)
-                .align_y(Center)
-                .into()
+            row![Space::new().width(Fill)].push(tools).push(parts).spacing(6).align_y(Center).into()
         } else {
-            row![]
-                .push(side)
-                .push(parts)
-                .push(tools)
-                .push(Space::new().width(Fill))
-                .spacing(6)
-                .align_y(Bottom)
-                .into()
+            row![].push(side).push(parts).push(tools).push(Space::new().width(Fill)).spacing(6).align_y(Bottom).into()
         };
         mouse_area(line)
             .on_enter(UiMessage::HoverEnter(m.id.clone()))
@@ -2174,13 +1688,7 @@ impl BeeperGuiApp {
             (Some(_), _) => Some((icon::PENCIL, "Editing message".to_string())),
             (None, Some(r)) => Some((
                 icon::REPLY,
-                format!(
-                    "Replying to {}",
-                    st.messages[st.msg_idx_by_id[r]]
-                        .sender_name
-                        .clone()
-                        .expect("sender name")
-                ),
+                format!("Replying to {}", st.messages[st.msg_idx_by_id[r]].sender_name.clone().expect("sender name")),
             )),
             _ => None,
         }
@@ -2203,11 +1711,7 @@ impl BeeperGuiApp {
             .spacing(6)
             .padding([4, 16])
         });
-        let placeholder = format!(
-            "Message {} on {}",
-            chat.title,
-            network_name(&chat.account_id)
-        );
+        let placeholder = format!("Message {} on {}", chat.title, network_name(&chat.account_id));
         let input = text_input(&placeholder, &self.composer_text)
             .id("composer-input")
             .on_input(UiMessage::ComposerChanged)
@@ -2216,9 +1720,7 @@ impl BeeperGuiApp {
             .font(fw(Weight::Normal))
             .padding([9, 2])
             .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
-        let net = svg(brand_svg(brand_key(&chat.account_id)))
-            .width(20)
-            .height(20);
+        let net = svg(brand_svg(brand_key(&chat.account_id))).width(20).height(20);
         let smile = icon_btn(
             p,
             icon::SMILE,
@@ -2227,54 +1729,23 @@ impl BeeperGuiApp {
             p.on_secondary,
             UiMessage::ComposerChanged(format!("{}🙂", self.composer_text)),
         );
-        let voice = icon_btn(
-            p,
-            icon::AUDIO_LINES,
-            17.0,
-            26.0,
-            p.on_secondary,
-            UiMessage::SendQuickVoiceNote,
-        );
+        let voice = icon_btn(p, icon::AUDIO_LINES, 17.0, 26.0, p.on_secondary, UiMessage::SendQuickVoiceNote);
         let pill = container(
-            row![net, input, smile, voice]
-                .spacing(6)
-                .align_y(Center)
-                .padding(Padding::new(0.0).left(8.0).right(6.0)),
+            row![net, input, smile, voice].spacing(6).align_y(Center).padding(Padding::new(0.0).left(8.0).right(6.0)),
         )
         .height(36)
         .width(Fill)
         .style(fill_box(p.input, 18.0));
         let plus = button(container(ic(icon::PLUS, 18.0).color(p.on_secondary)).center(36))
             .padding(0)
-            .style(btn_style(
-                [p.input, p.selected, p.selected],
-                [p.text; 3],
-                18.0,
-            ))
+            .style(btn_style([p.input, p.selected, p.selected], [p.text; 3], 18.0))
             .on_press(UiMessage::ToggleAttachMenu);
         let ready = !self.composer_text.trim().is_empty();
         let send = button(container(ic(icon::ARROW_UP, 18.0).color(Color::WHITE)).center(34))
             .padding(0)
-            .style(btn_style(
-                [
-                    if ready { p.accent } else { p.send_btn },
-                    p.accent,
-                    p.accent,
-                ],
-                [p.text; 3],
-                17.0,
-            ))
+            .style(btn_style([if ready { p.accent } else { p.send_btn }, p.accent, p.accent], [p.text; 3], 17.0))
             .on_press(UiMessage::SubmitComposer);
-        column![]
-            .push(banner)
-            .push(attach)
-            .push(
-                row![plus, pill, send]
-                    .spacing(12)
-                    .align_y(Center)
-                    .padding(8),
-            )
-            .into()
+        column![].push(banner).push(attach).push(row![plus, pill, send].spacing(12).align_y(Center).padding(8)).into()
     }
 
     fn view_info(&self) -> El<'_> {
@@ -2285,49 +1756,26 @@ impl BeeperGuiApp {
         let me = st.me().full_name.clone().expect("self name");
         let action = |c: char, label: &'static str, msg: UiMessage| {
             button(
-                column![ic(c, 16.0).color(p.text), txt(label, 11.0).color(p.sub)]
-                    .spacing(4)
-                    .align_x(Center)
-                    .width(52),
+                column![ic(c, 16.0).color(p.text), txt(label, 11.0).color(p.sub)].spacing(4).align_x(Center).width(52),
             )
             .padding([8, 0])
-            .style(btn_style(
-                [p.hover, p.selected, p.selected],
-                [p.text; 3],
-                10.0,
-            ))
+            .style(btn_style([p.hover, p.selected, p.selected], [p.text; 3], 10.0))
             .on_press(msg)
         };
         let actions = row![
             action(
                 icon::PIN,
-                if chat.is_pinned == Some(true) {
-                    "Unpin"
-                } else {
-                    "Pin"
-                },
+                if chat.is_pinned == Some(true) { "Unpin" } else { "Pin" },
                 UiMessage::TogglePinChat(cid.clone())
             ),
             action(
                 icon::BELL_OFF,
-                if chat.is_muted == Some(true) {
-                    "Unmute"
-                } else {
-                    "Mute"
-                },
+                if chat.is_muted == Some(true) { "Unmute" } else { "Mute" },
                 UiMessage::ToggleMuteChat(cid.clone())
             ),
-            action(
-                icon::ARCHIVE,
-                "Archive",
-                UiMessage::ToggleArchiveChat(cid.clone())
-            ),
+            action(icon::ARCHIVE, "Archive", UiMessage::ToggleArchiveChat(cid.clone())),
             action(icon::CLOCK, "Remind", UiMessage::SetReminder(cid.clone())),
-            action(
-                icon::DOWNLOAD,
-                "Export",
-                UiMessage::ExportChatJson(cid.clone())
-            ),
+            action(icon::DOWNLOAD, "Export", UiMessage::ExportChatJson(cid.clone())),
         ]
         .spacing(4);
         let nickname = (chat.chat_type == "single" && chat.id != NOTE_CHAT_ID).then(|| {
@@ -2340,26 +1788,18 @@ impl BeeperGuiApp {
                 .style(input_style(p.input, p.strong, p.sub, p.accent, 8.0));
             column![med("Nickname", 12.0).color(p.weak), input].spacing(6)
         });
-        let people = chat
-            .participants
-            .items
-            .iter()
-            .fold(Column::new().spacing(8), |c, u| {
-                let name = u
-                    .custom_nickname
-                    .clone()
-                    .or_else(|| u.full_name.clone())
-                    .expect("participant name");
-                c.push(
-                    row![
-                        avatar(&name, 28.0),
-                        column![txt(name, 13.0).color(p.text)]
-                            .push(u.phone_number.clone().map(|ph| txt(ph, 11.0).color(p.sub)))
-                    ]
-                    .spacing(10)
-                    .align_y(Center),
-                )
-            });
+        let people = chat.participants.items.iter().fold(Column::new().spacing(8), |c, u| {
+            let name = u.custom_nickname.clone().or_else(|| u.full_name.clone()).expect("participant name");
+            c.push(
+                row![
+                    avatar(&name, 28.0),
+                    column![txt(name, 13.0).color(p.text)]
+                        .push(u.phone_number.clone().map(|ph| txt(ph, 11.0).color(p.sub)))
+                ]
+                .spacing(10)
+                .align_y(Center),
+            )
+        });
         let head = row![
             semi("Chat Info", 13.0).color(p.strong),
             Space::new().width(Fill),
@@ -2379,13 +1819,7 @@ impl BeeperGuiApp {
             actions,
         ]
         .push(nickname)
-        .push(
-            column![
-                med(format!("{} participants", chat.participants.total), 12.0).color(p.weak),
-                people
-            ]
-            .spacing(8),
-        )
+        .push(column![med(format!("{} participants", chat.participants.total), 12.0).color(p.weak), people].spacing(8))
         .spacing(16)
         .padding(16);
         container(
@@ -2409,12 +1843,9 @@ impl BeeperGuiApp {
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         let q = self.command_palette_query.to_lowercase();
         let st = self.store.read().unwrap();
-        let hits = st
-            .chats
-            .iter()
-            .filter(|c| c.title.to_lowercase().contains(&q))
-            .take(8)
-            .fold(Column::new().spacing(2), |col, c| {
+        let hits = st.chats.iter().filter(|c| c.title.to_lowercase().contains(&q)).take(8).fold(
+            Column::new().spacing(2),
+            |col, c| {
                 let line = row![
                     avatar(&c.title, 24.0),
                     txt(c.title.clone(), 13.0).color(p.text),
@@ -2430,19 +1861,14 @@ impl BeeperGuiApp {
                         .style(ghost(p, 8.0))
                         .on_press(UiMessage::ExecuteCommandChat(c.id.clone())),
                 )
-            });
+            },
+        );
         let body = column![
-            row![ic(icon::SEARCH, 16.0).color(p.sub), input]
-                .spacing(8)
-                .align_y(Center)
-                .padding([0, 12]),
+            row![ic(icon::SEARCH, 16.0).color(p.sub), input].spacing(8).align_y(Center).padding([0, 12]),
             divider(p, 0.0),
             container(hits).padding(6)
         ];
-        container(body)
-            .width(560)
-            .style(shadow_box(p.elevated, p.outline, 12.0, 30.0))
-            .into()
+        container(body).width(560).style(shadow_box(p.elevated, p.outline, 12.0, 30.0)).into()
     }
 
     fn view_quick_look<'a>(&self, title: &str, detail: &str) -> El<'a> {
@@ -2453,14 +1879,10 @@ impl BeeperGuiApp {
             icon_btn(p, icon::X, 14.0, 26.0, p.sub, UiMessage::CloseModals)
         ]
         .align_y(Center);
-        container(
-            column![head, txt(detail.to_string(), 13.0).color(p.sub)]
-                .spacing(10)
-                .padding(16),
-        )
-        .width(420)
-        .style(shadow_box(p.elevated, p.outline, 12.0, 30.0))
-        .into()
+        container(column![head, txt(detail.to_string(), 13.0).color(p.sub)].spacing(10).padding(16))
+            .width(420)
+            .style(shadow_box(p.elevated, p.outline, 12.0, 30.0))
+            .into()
     }
 
     pub fn view_settings(&self) -> El<'_> {
@@ -2475,10 +1897,7 @@ impl BeeperGuiApp {
             .padding([5, 2])
             .style(input_style(CLEAR, p.strong, p.text, p.accent, 0.0));
         let search = container(
-            row![ic(icon::SEARCH, 15.0).color(p.text), search_input]
-                .spacing(8)
-                .align_y(Center)
-                .padding([2, 10]),
+            row![ic(icon::SEARCH, 15.0).color(p.text), search_input].spacing(8).align_y(Center).padding([2, 10]),
         )
         .style(fill_box(p.search, 38.0));
         let free = semi("Free", 11.0).color(p.text);
@@ -2499,33 +1918,19 @@ impl BeeperGuiApp {
             let on = tab == self.active_settings_tab && self.settings_query.is_empty();
             let tile = container(ic(glyph, 13.0).color(Color::WHITE))
                 .center(20)
-                .style(fill_box(
-                    Color::from_rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8),
-                    6.0,
-                ));
-            let count = (tab == SettingsTab::Accounts)
-                .then(|| txt(st.accounts.len().to_string(), 13.0).color(p.sub));
-            let line = row![
-                tile,
-                txt(label, 14.0).color(p.strong),
-                Space::new().width(Fill)
-            ]
-            .push(count)
-            .spacing(8)
-            .align_y(Center)
-            .padding([12, 8]);
-            let next_on = SettingsTab::ALL
-                .get(tab as usize + 1)
-                .is_some_and(|n| *n == self.active_settings_tab);
+                .style(fill_box(Color::from_rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8), 6.0));
+            let count = (tab == SettingsTab::Accounts).then(|| txt(st.accounts.len().to_string(), 13.0).color(p.sub));
+            let line = row![tile, txt(label, 14.0).color(p.strong), Space::new().width(Fill)]
+                .push(count)
+                .spacing(8)
+                .align_y(Center)
+                .padding([12, 8]);
+            let next_on = SettingsTab::ALL.get(tab as usize + 1).is_some_and(|n| *n == self.active_settings_tab);
             c.push(
                 button(line)
                     .padding(0)
                     .width(Fill)
-                    .style(btn_style(
-                        [if on { p.nav_sel } else { CLEAR }, p.hover, p.nav_sel],
-                        [p.text; 3],
-                        8.0,
-                    ))
+                    .style(btn_style([if on { p.nav_sel } else { CLEAR }, p.hover, p.nav_sel], [p.text; 3], 8.0))
                     .on_press(UiMessage::SelectSettingsTab(tab)),
             )
             .push((!on && !next_on).then(|| divider(p, 36.0)))
@@ -2534,9 +1939,7 @@ impl BeeperGuiApp {
             container(semi("Settings", 14.0).color(p.strong)).padding([4, 8]),
             search,
             profile,
-            scrollable(nav)
-                .height(Fill)
-                .style(scroll_style(p.divider, p.weak))
+            scrollable(nav).height(Fill).style(scroll_style(p.divider, p.weak))
         ]
         .spacing(8)
         .width(270)
@@ -2554,32 +1957,26 @@ impl BeeperGuiApp {
         .width(Fill)
         .height(Fill)
         .style(fill_box(p.prefs_pane, 10.0));
-        container(row![left, container(right).padding(8)])
-            .width(Fill)
-            .height(Fill)
-            .style(fill_box(p.frame, 0.0))
-            .into()
+        container(row![left, container(right).padding(8)]).width(Fill).height(Fill).style(fill_box(p.frame, 0.0)).into()
     }
 
     fn settings_search_results(&self) -> El<'_> {
         let p = &self.pal;
-        let hits = search_settings_catalog(&self.settings_query)
-            .into_iter()
-            .map(|e| {
-                let tab = SettingsTab::for_section(e.section);
-                button(
-                    column![
-                        txt(e.title, 13.0).color(p.text),
-                        txt(format!("{} · {}", e.section, e.description), 12.0).color(p.sub)
-                    ]
-                    .spacing(2),
-                )
-                .padding([10, 12])
-                .width(Fill)
-                .style(ghost(p, 6.0))
-                .on_press(UiMessage::SelectSettingsTab(tab))
-                .into()
-            });
+        let hits = search_settings_catalog(&self.settings_query).into_iter().map(|e| {
+            let tab = SettingsTab::for_section(e.section);
+            button(
+                column![
+                    txt(e.title, 13.0).color(p.text),
+                    txt(format!("{} · {}", e.section, e.description), 12.0).color(p.sub)
+                ]
+                .spacing(2),
+            )
+            .padding([10, 12])
+            .width(Fill)
+            .style(ghost(p, 6.0))
+            .on_press(UiMessage::SelectSettingsTab(tab))
+            .into()
+        });
         group(p, Some("Results"), hits.collect())
     }
 
@@ -2587,13 +1984,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let s = &st.settings;
         let tog = |title: &'static str, desc: Option<&'static str>, key: &'static str, on: bool| {
-            pref_row(
-                p,
-                title,
-                desc,
-                None,
-                toggle(p, on, UiMessage::ToggleSettingBool(key, !on)),
-            )
+            pref_row(p, title, desc, None, toggle(p, on, UiMessage::ToggleSettingBool(key, !on)))
         };
         let groups: Vec<El<'_>> = match self.active_settings_tab {
             SettingsTab::Accounts => {
@@ -2609,41 +2000,25 @@ impl BeeperGuiApp {
                                 b.state.to_lowercase(),
                                 b.mode.as_deref().expect("bridge mode").replace('_', " ")
                             )),
-                            Some(
-                                svg(brand_svg(brand_key(&b.account_id)))
-                                    .width(20)
-                                    .height(20)
-                                    .into(),
-                            ),
+                            Some(svg(brand_svg(brand_key(&b.account_id))).width(20).height(20).into()),
                             txt("Connected", 12.0).color(p.success).into(),
                         )
                     })
                     .collect();
                 let more = NETWORK_SPECS
                     .iter()
-                    .filter(|n| {
-                        !st.bridge_accounts
-                            .iter()
-                            .any(|b| b.bridge_id == n.bridge_id)
-                    })
+                    .filter(|n| !st.bridge_accounts.iter().any(|b| b.bridge_id == n.bridge_id))
                     .map(|n| {
                         pref_row(
                             p,
                             n.display_name,
                             None,
                             Some(svg(brand_svg(n.bridge_id)).width(20).height(20).into()),
-                            pill_btn(
-                                p,
-                                "Connect",
-                                UiMessage::ConnectBridge(n.bridge_id.to_string()),
-                            ),
+                            pill_btn(p, "Connect", UiMessage::ConnectBridge(n.bridge_id.to_string())),
                         )
                     })
                     .collect();
-                vec![
-                    group(p, Some("Connected accounts"), connected),
-                    group(p, Some("Add an account"), more),
-                ]
+                vec![group(p, Some("Connected accounts"), connected), group(p, Some("Add an account"), more)]
             }
             SettingsTab::General => {
                 let lang: Vec<&'static str> = ALL_LANGUAGES.iter().map(|l| l.label()).collect();
@@ -2673,8 +2048,7 @@ impl BeeperGuiApp {
                 ]
             }
             SettingsTab::Appearance => {
-                let themes: Vec<&'static str> =
-                    ThemeChoice::all().iter().map(|t| t.label()).collect();
+                let themes: Vec<&'static str> = ThemeChoice::all().iter().map(|t| t.label()).collect();
                 let css = text_input(".thread { }", &s.custom_css_source)
                     .on_input(UiMessage::CustomCssChanged)
                     .size(12)
@@ -2693,43 +2067,20 @@ impl BeeperGuiApp {
                                 None,
                                 select(p, themes, s.theme.label(), |l: &'static str| {
                                     UiMessage::SelectTheme(
-                                        ThemeChoice::all()
-                                            .into_iter()
-                                            .find(|t| t.label() == l)
-                                            .expect("known theme"),
+                                        ThemeChoice::all().into_iter().find(|t| t.label() == l).expect("known theme"),
                                     )
                                 }),
                             ),
-                            tog(
-                                "Reduce transparency",
-                                None,
-                                "reduce_transparency",
-                                s.reduce_transparency,
-                            ),
-                            tog(
-                                "No transparency",
-                                None,
-                                "no_transparency",
-                                s.no_transparency,
-                            ),
-                            tog(
-                                "Fix lockdown emojis",
-                                None,
-                                "fix_lockdown_emojis",
-                                s.fix_lockdown_emojis,
-                            ),
+                            tog("Reduce transparency", None, "reduce_transparency", s.reduce_transparency),
+                            tog("No transparency", None, "no_transparency", s.no_transparency),
+                            tog("Fix lockdown emojis", None, "fix_lockdown_emojis", s.fix_lockdown_emojis),
                         ],
                     ),
                     group(
                         p,
                         Some("Conversation"),
                         vec![
-                            tog(
-                                "Show chat header",
-                                None,
-                                "show_chat_header",
-                                s.show_chat_header,
-                            ),
+                            tog("Show chat header", None, "show_chat_header", s.show_chat_header),
                             tog(
                                 "Show message input buttons",
                                 None,
@@ -2737,12 +2088,7 @@ impl BeeperGuiApp {
                                 s.show_message_input_buttons,
                             ),
                             tog("Link previews", None, "link_previews", s.link_previews),
-                            tog(
-                                "Auto-play videos",
-                                None,
-                                "auto_play_videos",
-                                s.auto_play_videos,
-                            ),
+                            tog("Auto-play videos", None, "auto_play_videos", s.auto_play_videos),
                             tog(
                                 "Load remote content",
                                 None,
@@ -2757,11 +2103,7 @@ impl BeeperGuiApp {
                             ),
                         ],
                     ),
-                    group(
-                        p,
-                        Some("Custom CSS"),
-                        vec![container(css).padding(12).into()],
-                    ),
+                    group(p, Some("Custom CSS"), vec![container(css).padding(12).into()]),
                 ]
             }
             SettingsTab::Notifications => vec![group(
@@ -2820,20 +2162,9 @@ impl BeeperGuiApp {
                             format!("{:?} · {:?}", self.os, self.display_server),
                             Some(APP_VERSION),
                             None,
-                            txt(
-                                if st.beeper_state.verified {
-                                    "Verified"
-                                } else {
-                                    "Not verified"
-                                },
-                                12.0,
-                            )
-                            .color(if st.beeper_state.verified {
-                                p.success
-                            } else {
-                                p.warning
-                            })
-                            .into(),
+                            txt(if st.beeper_state.verified { "Verified" } else { "Not verified" }, 12.0)
+                                .color(if st.beeper_state.verified { p.success } else { p.warning })
+                                .into(),
                         )],
                     ),
                     group(
@@ -2894,9 +2225,7 @@ impl BeeperGuiApp {
                         "Address",
                         None,
                         None,
-                        txt(format!("http://localhost:{}", s.pas_port), 12.0)
-                            .color(p.sub)
-                            .into(),
+                        txt(format!("http://localhost:{}", s.pas_port), 12.0).color(p.sub).into(),
                     ),
                 ],
             )],
@@ -2919,18 +2248,10 @@ impl BeeperGuiApp {
                         pill_btn(
                             p,
                             "Export",
-                            UiMessage::ExportChatJson(
-                                self.selected_chat_id.clone().expect("a chat is selected"),
-                            ),
+                            UiMessage::ExportChatJson(self.selected_chat_id.clone().expect("a chat is selected")),
                         ),
                     ),
-                    pref_row(
-                        p,
-                        "Data folder",
-                        Some(&st.data_dir.display().to_string()),
-                        None,
-                        Space::new().into(),
-                    ),
+                    pref_row(p, "Data folder", Some(&st.data_dir.display().to_string()), None, Space::new().into()),
                 ],
             )],
             SettingsTab::Help => vec![group(
@@ -2938,15 +2259,7 @@ impl BeeperGuiApp {
                 None,
                 ["Help center", "Report a problem", "Join the community"]
                     .into_iter()
-                    .map(|h| {
-                        pref_row(
-                            p,
-                            h,
-                            None,
-                            None,
-                            ic(icon::ARROW_UP_RIGHT, 14.0).color(p.sub).into(),
-                        )
-                    })
+                    .map(|h| pref_row(p, h, None, None, ic(icon::ARROW_UP_RIGHT, 14.0).color(p.sub).into()))
                     .collect(),
             )],
             SettingsTab::About => vec![group(
@@ -2961,24 +2274,14 @@ impl BeeperGuiApp {
                 )],
             )],
         };
-        let banner = (!self.status_banner.is_empty())
-            .then(|| txt(self.status_banner.clone(), 12.0).color(p.sub));
+        let banner = (!self.status_banner.is_empty()).then(|| txt(self.status_banner.clone(), 12.0).color(p.sub));
         let intro = (self.active_settings_tab == SettingsTab::General).then(|| {
             container(
-                txt(
-                    "These settings are for Beeper and are not synced to the messaging platforms.",
-                    13.0,
-                )
-                .color(p.sub),
+                txt("These settings are for Beeper and are not synced to the messaging platforms.", 13.0).color(p.sub),
             )
             .padding([4, 14])
         });
-        column![]
-            .push(intro)
-            .push(banner)
-            .extend(groups)
-            .spacing(28)
-            .into()
+        column![].push(intro).push(banner).extend(groups).spacing(28).into()
     }
 }
 
@@ -2987,25 +2290,15 @@ pub fn write_rgba_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), width, height);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
-    enc.write_header()
-        .expect("png header")
-        .write_image_data(rgba)
-        .expect("png data");
+    enc.write_header().expect("png header").write_image_data(rgba).expect("png data");
 }
 
 pub fn run_native_gui(store: SharedStore) -> iced::Result {
-    let app = iced::daemon(
-        move || BeeperGuiApp::boot(store.clone()),
-        BeeperGuiApp::update,
-        BeeperGuiApp::view,
-    )
-    .title(BeeperGuiApp::title)
-    .subscription(BeeperGuiApp::subscription)
-    .theme(|a: &BeeperGuiApp, _| a.iced_theme())
-    .style(|a: &BeeperGuiApp, _| iced::theme::Style {
-        background_color: a.pal.frame,
-        text_color: a.pal.text,
-    })
-    .default_font(fw(Weight::Normal));
+    let app = iced::daemon(move || BeeperGuiApp::boot(store.clone()), BeeperGuiApp::update, BeeperGuiApp::view)
+        .title(BeeperGuiApp::title)
+        .subscription(BeeperGuiApp::subscription)
+        .theme(|a: &BeeperGuiApp, _| a.iced_theme())
+        .style(|a: &BeeperGuiApp, _| iced::theme::Style { background_color: a.pal.frame, text_color: a.pal.text })
+        .default_font(fw(Weight::Normal));
     ALL_FONTS.into_iter().fold(app, |app, f| app.font(f)).run()
 }

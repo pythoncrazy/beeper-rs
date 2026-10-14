@@ -1,6 +1,4 @@
-use crate::models::{
-    BeeperSettings, BridgeMode, LanguageChoice, NetworkKind, NetworkSpec, ThemeChoice,
-};
+use crate::models::{BeeperSettings, BridgeMode, LanguageChoice, NetworkKind, NetworkSpec, ThemeChoice};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -24,8 +22,7 @@ pub const CSS_TEXTS: &str = include_str!("../assets/themes/texts.css");
 pub const CSS_DRACULA: &str = include_str!("../assets/themes/dracula.css");
 pub const CSS_NOCTURNE: &str = include_str!("../assets/themes/nocturne.css");
 pub const CSS_DARK_PURPLE: &str = include_str!("../assets/themes/dark-purple.css");
-pub const CSS_FIX_LOCKDOWN_EMOJIS: &str =
-    include_str!("../assets/themes/fix-lockdown-mode-emojis.css");
+pub const CSS_FIX_LOCKDOWN_EMOJIS: &str = include_str!("../assets/themes/fix-lockdown-mode-emojis.css");
 
 #[derive(Debug, Clone)]
 pub struct CentralConfig {
@@ -48,24 +45,12 @@ impl CentralConfig {
         let assets_dir = data_dir.join("media");
         let mut settings = Self::default_settings();
         settings.pas_port = port;
-        Self {
-            data_dir,
-            source_beeper_dir: None,
-            db_path,
-            assets_dir,
-            host,
-            port,
-            profile,
-            settings,
-        }
+        Self { data_dir, source_beeper_dir: None, db_path, assets_dir, host, port, profile, settings }
     }
 
     pub fn with_source_beeper_dir(mut self, source_dir: Option<PathBuf>) -> Self {
         if let Some(ref src) = source_dir {
-            assert_ne!(
-                src, &self.data_dir,
-                "source_beeper_dir must differ from isolated data_dir"
-            );
+            assert_ne!(src, &self.data_dir, "source_beeper_dir must differ from isolated data_dir");
         }
         self.source_beeper_dir = source_dir;
         self
@@ -181,24 +166,8 @@ pub const NETWORK_SPECS: [NetworkSpec; 16] = [
         [38, 165, 228],
         [true, true, false, false, true],
     ),
-    net(
-        NetworkKind::Signal,
-        "signal",
-        "signal",
-        "Signal",
-        "SG",
-        [58, 118, 240],
-        [true, true, false, true, false],
-    ),
-    net(
-        NetworkKind::Viber,
-        "viber",
-        "viber",
-        "Viber",
-        "VB",
-        [115, 96, 242],
-        [true, false, false, true, true],
-    ),
+    net(NetworkKind::Signal, "signal", "signal", "Signal", "SG", [58, 118, 240], [true, true, false, true, false]),
+    net(NetworkKind::Viber, "viber", "viber", "Viber", "VB", [115, 96, 242], [true, false, false, true, true]),
     net(
         NetworkKind::IMessage,
         "imessage",
@@ -244,24 +213,8 @@ pub const NETWORK_SPECS: [NetworkSpec; 16] = [
         [29, 155, 240],
         [true, true, false, false, false],
     ),
-    net(
-        NetworkKind::Slack,
-        "slack",
-        "slack",
-        "Slack",
-        "SL",
-        [224, 30, 90],
-        [true, true, false, false, false],
-    ),
-    net(
-        NetworkKind::Discord,
-        "discord",
-        "discord",
-        "Discord",
-        "DC",
-        [88, 101, 242],
-        [true, true, false, false, true],
-    ),
+    net(NetworkKind::Slack, "slack", "slack", "Slack", "SL", [224, 30, 90], [true, true, false, false, false]),
+    net(NetworkKind::Discord, "discord", "discord", "Discord", "DC", [88, 101, 242], [true, true, false, false, true]),
     net(
         NetworkKind::LinkedIn,
         "linkedin",
@@ -271,36 +224,14 @@ pub const NETWORK_SPECS: [NetworkSpec; 16] = [
         [10, 102, 194],
         [true, true, false, false, false],
     ),
-    net(
-        NetworkKind::Line,
-        "line",
-        "line",
-        "LINE",
-        "LN",
-        [6, 199, 85],
-        [true, false, false, true, false],
-    ),
-    net(
-        NetworkKind::Tumblr,
-        "tumblr",
-        "tumblr",
-        "Tumblr",
-        "TB",
-        [0, 25, 53],
-        [true, false, false, false, false],
-    ),
+    net(NetworkKind::Line, "line", "line", "LINE", "LN", [6, 199, 85], [true, false, false, true, false]),
+    net(NetworkKind::Tumblr, "tumblr", "tumblr", "Tumblr", "TB", [0, 25, 53], [true, false, false, false, false]),
 ];
 
 pub fn normalize_bridge_id(raw: &str) -> &'static str {
     let lower = raw.trim().to_ascii_lowercase();
-    let stripped = lower
-        .strip_prefix("sh-")
-        .or_else(|| lower.strip_prefix("mautrix-"))
-        .unwrap_or(&lower);
-    let clean = stripped
-        .strip_suffix("-go")
-        .or_else(|| stripped.strip_suffix("go"))
-        .unwrap_or(stripped);
+    let stripped = lower.strip_prefix("sh-").or_else(|| lower.strip_prefix("mautrix-")).unwrap_or(&lower);
+    let clean = stripped.strip_suffix("-go").or_else(|| stripped.strip_suffix("go")).unwrap_or(stripped);
     match clean {
         "whatsapp" | "wa" => "whatsapp",
         "facebook" | "messenger" | "fb" | "meta" => "facebook",
@@ -333,10 +264,7 @@ pub fn network_spec_by_bridge(bridge_id: &str) -> &'static NetworkSpec {
         return found;
     }
     let norm = normalize_bridge_id(bridge_id);
-    NETWORK_SPECS
-        .iter()
-        .find(|n| n.bridge_id == norm)
-        .expect("normalized bridge_id in NETWORK_SPECS")
+    NETWORK_SPECS.iter().find(|n| n.bridge_id == norm).expect("normalized bridge_id in NETWORK_SPECS")
 }
 
 pub fn is_original_beeper_dir(path: &Path) -> bool {
@@ -351,18 +279,10 @@ pub fn is_original_beeper_dir(path: &Path) -> bool {
 }
 
 pub fn assert_not_original_beeper_dir(path: &Path) {
-    assert!(
-        !is_original_beeper_dir(path),
-        "refusing to write to original BeeperTexts directory: {:?}",
-        path
-    );
+    assert!(!is_original_beeper_dir(path), "refusing to write to original BeeperTexts directory: {:?}", path);
 }
 
-fn os_base_config_dir(
-    os_name: &str,
-    env_vars: &HashMap<String, String>,
-    home_dir: &Path,
-) -> PathBuf {
+fn os_base_config_dir(os_name: &str, env_vars: &HashMap<String, String>, home_dir: &Path) -> PathBuf {
     match os_name {
         "macos" | "darwin" => home_dir.join("Library").join("Application Support"),
         "windows" | "win32" => env_vars
@@ -387,10 +307,7 @@ pub fn resolve_original_data_dir_for_os(
 ) -> PathBuf {
     if let Some(override_dir) = env_vars.get("BEEPER_ORIGINAL_DATA_DIR") {
         let trimmed = override_dir.trim();
-        assert!(
-            !trimmed.is_empty(),
-            "BEEPER_ORIGINAL_DATA_DIR must not be empty"
-        );
+        assert!(!trimmed.is_empty(), "BEEPER_ORIGINAL_DATA_DIR must not be empty");
         return PathBuf::from(trimmed);
     }
     let folder = match profile.map(str::trim).filter(|s| !s.is_empty()) {
@@ -406,15 +323,9 @@ pub fn resolve_data_dir_for_os(
     env_vars: &HashMap<String, String>,
     home_dir: &Path,
 ) -> PathBuf {
-    if let Some(override_dir) = env_vars
-        .get("BEEPER_RS_DATA_DIR")
-        .or_else(|| env_vars.get("BEEPER_USER_DATA_DIR"))
-    {
+    if let Some(override_dir) = env_vars.get("BEEPER_RS_DATA_DIR").or_else(|| env_vars.get("BEEPER_USER_DATA_DIR")) {
         let trimmed = override_dir.trim();
-        assert!(
-            !trimmed.is_empty(),
-            "BEEPER_USER_DATA_DIR must not be empty"
-        );
+        assert!(!trimmed.is_empty(), "BEEPER_USER_DATA_DIR must not be empty");
         let candidate = PathBuf::from(trimmed);
         assert_not_original_beeper_dir(&candidate);
         return candidate;
@@ -430,14 +341,8 @@ pub fn resolve_data_dir_for_os(
 
 pub fn copy_beeper_data_to_isolated_dir(source_dir: &Path, target_dir: &Path) -> usize {
     assert_not_original_beeper_dir(target_dir);
-    assert_ne!(
-        source_dir, target_dir,
-        "source_dir and target_dir must be distinct"
-    );
-    assert!(
-        !target_dir.starts_with(source_dir),
-        "target_dir must not be inside source_dir"
-    );
+    assert_ne!(source_dir, target_dir, "source_dir and target_dir must be distinct");
+    assert!(!target_dir.starts_with(source_dir), "target_dir must not be inside source_dir");
     if !source_dir.exists() {
         return 0;
     }
@@ -500,9 +405,8 @@ pub fn now_unix_secs() -> i64 {
 }
 
 pub fn now_rfc3339_millis() -> String {
-    let dur = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock before UNIX_EPOCH");
+    let dur =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock before UNIX_EPOCH");
     let total_secs = dur.as_secs() as i64;
     let millis = dur.subsec_millis();
     let days = total_secs.div_euclid(86_400);
@@ -559,21 +463,19 @@ pub fn url_decode(input: &str) -> String {
 }
 
 const SHA256_K: [u32; 64] = [
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98,
+    0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+    0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8,
+    0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819,
+    0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+    0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+    0xc67178f2,
 ];
 
 pub fn sha256(data: &[u8]) -> [u8; 32] {
-    let mut state: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
-    ];
+    let mut state: [u32; 8] =
+        [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
     let bit_len = (data.len() as u64).wrapping_mul(8);
     let mut msg = Vec::with_capacity(data.len() + 72);
     msg.extend_from_slice(data);
@@ -586,20 +488,12 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     for chunk in msg.as_chunks::<64>().0 {
         let mut w = [0u32; 64];
         for i in 0..16 {
-            w[i] = u32::from_be_bytes([
-                chunk[i * 4],
-                chunk[i * 4 + 1],
-                chunk[i * 4 + 2],
-                chunk[i * 4 + 3],
-            ]);
+            w[i] = u32::from_be_bytes([chunk[i * 4], chunk[i * 4 + 1], chunk[i * 4 + 2], chunk[i * 4 + 3]]);
         }
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
             let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(s1);
+            w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
         }
         let mut a = state[0];
         let mut b = state[1];
@@ -612,11 +506,7 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
         for i in 0..64 {
             let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
             let ch = (e & f) ^ ((!e) & g);
-            let temp1 = h
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(SHA256_K[i])
-                .wrapping_add(w[i]);
+            let temp1 = h.wrapping_add(s1).wrapping_add(ch).wrapping_add(SHA256_K[i]).wrapping_add(w[i]);
             let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
             let maj = (a & b) ^ (a & c) ^ (b & c);
             let temp2 = s0.wrapping_add(maj);
@@ -660,12 +550,7 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
     for chunk in msg.as_chunks::<64>().0 {
         let mut w = [0u32; 80];
         for i in 0..16 {
-            w[i] = u32::from_be_bytes([
-                chunk[i * 4],
-                chunk[i * 4 + 1],
-                chunk[i * 4 + 2],
-                chunk[i * 4 + 3],
-            ]);
+            w[i] = u32::from_be_bytes([chunk[i * 4], chunk[i * 4 + 1], chunk[i * 4 + 2], chunk[i * 4 + 3]]);
         }
         for i in 16..80 {
             w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
@@ -682,12 +567,7 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
                 40..=59 => ((b & c) | (b & d) | (c & d), 0x8f1bbcdcu32),
                 _ => (b ^ c ^ d, 0xca62c1d6u32),
             };
-            let temp = a
-                .rotate_left(5)
-                .wrapping_add(f)
-                .wrapping_add(e)
-                .wrapping_add(k)
-                .wrapping_add(wi);
+            let temp = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(wi);
             e = d;
             d = c;
             c = b.rotate_left(30);

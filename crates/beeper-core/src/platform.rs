@@ -1,6 +1,4 @@
-use crate::config::{
-    resolve_data_dir_for_os, resolve_original_data_dir_for_os, APP_BUNDLE_ID, TRAY_ICON_SIZE,
-};
+use crate::config::{resolve_data_dir_for_os, resolve_original_data_dir_for_os, APP_BUNDLE_ID, TRAY_ICON_SIZE};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -57,15 +55,9 @@ impl OsKind {
             Self::MacOs => DisplayServerKind::Quartz,
             Self::Windows => DisplayServerKind::Win32,
             Self::Linux => {
-                if env_vars
-                    .get("WAYLAND_DISPLAY")
-                    .is_some_and(|v| !v.trim().is_empty())
-                {
+                if env_vars.get("WAYLAND_DISPLAY").is_some_and(|v| !v.trim().is_empty()) {
                     DisplayServerKind::Wayland
-                } else if env_vars
-                    .get("DISPLAY")
-                    .is_some_and(|v| !v.trim().is_empty())
-                {
+                } else if env_vars.get("DISPLAY").is_some_and(|v| !v.trim().is_empty()) {
                     DisplayServerKind::X11
                 } else {
                     DisplayServerKind::Headless
@@ -76,11 +68,7 @@ impl OsKind {
 }
 
 pub fn resolve_home_dir(env_vars: &HashMap<String, String>) -> PathBuf {
-    if let Some(h) = env_vars
-        .get("HOME")
-        .or_else(|| env_vars.get("USERPROFILE"))
-        .filter(|v| !v.trim().is_empty())
-    {
+    if let Some(h) = env_vars.get("HOME").or_else(|| env_vars.get("USERPROFILE")).filter(|v| !v.trim().is_empty()) {
         return PathBuf::from(h);
     }
     if let (Some(drive), Some(path)) = (env_vars.get("HOMEDRIVE"), env_vars.get("HOMEPATH")) {
@@ -115,15 +103,9 @@ pub fn open_url_or_path_command(os: OsKind, target: &str) -> (String, Vec<String
     match os {
         OsKind::MacOs => ("open".to_string(), vec![target.to_string()]),
         OsKind::Linux => ("xdg-open".to_string(), vec![target.to_string()]),
-        OsKind::Windows => (
-            "cmd".to_string(),
-            vec![
-                "/C".to_string(),
-                "start".to_string(),
-                String::new(),
-                target.to_string(),
-            ],
-        ),
+        OsKind::Windows => {
+            ("cmd".to_string(), vec!["/C".to_string(), "start".to_string(), String::new(), target.to_string()])
+        }
     }
 }
 
@@ -166,11 +148,7 @@ pub struct OsAutostartManifest {
     pub desktop_entry_content: Option<String>,
 }
 
-pub fn generate_os_autostart_manifest(
-    os: OsKind,
-    home_dir: &Path,
-    bin_path: &Path,
-) -> OsAutostartManifest {
+pub fn generate_os_autostart_manifest(os: OsKind, home_dir: &Path, bin_path: &Path) -> OsAutostartManifest {
     let bin_str = bin_path.to_str().expect("valid UTF-8 binary path");
     assert!(!bin_str.is_empty(), "binary path must not be empty");
     match os {
@@ -208,11 +186,7 @@ pub fn build_tray_icon_rgba(unread_count: u32, muted: bool) -> (Vec<u8>, u32, u3
     let width = TRAY_ICON_SIZE;
     let height = TRAY_ICON_SIZE;
     let mut rgba = vec![0u8; (width * height * 4) as usize];
-    let base_color: [u8; 4] = if muted {
-        [108, 117, 125, 255]
-    } else {
-        [107, 83, 255, 255]
-    };
+    let base_color: [u8; 4] = if muted { [108, 117, 125, 255] } else { [107, 83, 255, 255] };
 
     for y in 0..height {
         for x in 0..width {
@@ -222,11 +196,7 @@ pub fn build_tray_icon_rgba(unread_count: u32, muted: bool) -> (Vec<u8>, u32, u3
             if dx * dx + dy * dy <= 169 {
                 let in_glyph = ((11..=20).contains(&x) && (y == 11 || y == 15 || y == 19))
                     || ((x == 11 || x == 20) && (11..=19).contains(&y));
-                let color = if in_glyph {
-                    [255, 255, 255, 255]
-                } else {
-                    base_color
-                };
+                let color = if in_glyph { [255, 255, 255, 255] } else { base_color };
                 rgba[idx..idx + 4].copy_from_slice(&color);
             }
             if unread_count > 0 {
@@ -261,11 +231,7 @@ impl SystemTrayState {
         let menu_items = vec![
             "Open Beeper".to_string(),
             format!("Unread Chats ({unread_count})"),
-            if muted {
-                "Unmute Notifications".to_string()
-            } else {
-                "Mute Notifications (DND)".to_string()
-            },
+            if muted { "Unmute Notifications".to_string() } else { "Mute Notifications (DND)".to_string() },
             "Quit Beeper".to_string(),
         ];
         Self {
@@ -299,10 +265,7 @@ impl SystemTrayState {
         self.icon_height = h;
         self.tooltip = Self::format_tooltip(unread_count, muted);
         self.menu_items[1] = format!("Unread Chats ({unread_count})");
-        self.menu_items[2] = if muted {
-            "Unmute Notifications".to_string()
-        } else {
-            "Mute Notifications (DND)".to_string()
-        };
+        self.menu_items[2] =
+            if muted { "Unmute Notifications".to_string() } else { "Mute Notifications (DND)".to_string() };
     }
 }
