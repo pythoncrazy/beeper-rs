@@ -13,7 +13,10 @@ use std::sync::{Arc, RwLock};
 #[derive(Parser)]
 #[command(name = "beeper-rs", version = "4.3.176")]
 struct Cli {
-    #[arg(long, env = "BEEPER_PAS_PORT", default_value_t = DEFAULT_PAS_PORT)]
+    #[arg(long, alias = "host", env = "BEEPER_PAS_HOST", default_value = DEFAULT_PAS_HOST)]
+    pas_host: String,
+
+    #[arg(long, alias = "port", env = "BEEPER_PAS_PORT", default_value_t = DEFAULT_PAS_PORT)]
     pas_port: u16,
 
     #[arg(long)]
@@ -31,7 +34,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Serve,
+    Serve {
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        port: Option<u16>,
+    },
     Info {
         #[arg(long, default_value = "http://127.0.0.1:23373")]
         base_url: String,
@@ -45,12 +53,14 @@ async fn main() {
     let data_dir = cli
         .data_dir
         .unwrap_or_else(|| current_desktop_data_dir(cli.profile.as_deref()));
-    let cfg = CentralConfig::new(
-        data_dir.clone(),
-        DEFAULT_PAS_HOST.to_string(),
-        cli.pas_port,
-        cli.profile.clone(),
-    );
+    let (host, port) = match &cli.command {
+        Some(Commands::Serve { host, port }) => (
+            host.clone().unwrap_or_else(|| cli.pas_host.clone()),
+            port.unwrap_or(cli.pas_port),
+        ),
+        _ => (cli.pas_host.clone(), cli.pas_port),
+    };
+    let cfg = CentralConfig::new(data_dir.clone(), host, port, cli.profile.clone());
 
     match cli.command {
         Some(Commands::Info { base_url }) => {
@@ -70,14 +80,14 @@ async fn main() {
             );
             return;
         }
-        Some(Commands::Serve) | None => {}
+        Some(Commands::Serve { .. }) | None => {}
     }
 
     let bind_addr = format!("{}:{}", cfg.host, cfg.port);
     let store: SharedStore = Arc::new(RwLock::new(BeeperStore::from_config(cfg)));
     let app_router = build_router(store.clone());
 
-    if cli.headless || matches!(cli.command, Some(Commands::Serve)) {
+    if cli.headless || matches!(cli.command, Some(Commands::Serve { .. })) {
         let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
         axum::serve(listener, app_router).await.unwrap();
     } else {
