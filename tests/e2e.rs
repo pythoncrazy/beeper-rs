@@ -1,6 +1,7 @@
 use beeper_api::{
     client::{extract_state_from_index_db, BeeperClient},
-    server::{build_router, serve_http, StatusCode},
+    http::StatusCode,
+    server::serve_http,
 };
 use beeper_core::{
     config::{is_original_beeper_dir, CentralConfig, APP_BUNDLE_ID, DEFAULT_RECOVERY_CODE},
@@ -37,11 +38,7 @@ async fn spawn_e2e_beeper_instance(profile_suffix: &str) -> (PathBuf, u16, Share
 
     let store: SharedStore = Arc::new(RwLock::new(BeeperStore::from_config(cfg)));
     let token = store.read().unwrap().beeper_state.access_token.clone();
-    let router = build_router(store.clone());
-
-    tokio::spawn(async move {
-        serve_http(listener, router).await;
-    });
+    tokio::spawn(serve_http(listener, store.clone()));
 
     let client = BeeperClient::new(format!("http://127.0.0.1:{port}"), token);
     (data_dir, port, store, client)
