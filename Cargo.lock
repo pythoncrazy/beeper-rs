@@ -159,6 +159,7 @@ dependencies = [
  "iced",
  "png 0.18.1",
  "serde_json",
+ "tokio",
  "wgpu",
 ]
 

@@ -178,6 +178,11 @@ impl BeeperClient {
         (status, serde_json::from_slice(&bytes).expect("parse patch response"))
     }
 
+    pub async fn focus(&self, chat_id: Option<&str>, message_id: Option<&str>, draft_text: Option<&str>) -> StatusCode {
+        let body = json!({ "chatID": chat_id, "messageID": message_id, "draftText": draft_text });
+        self.send("POST", "/v1/focus", &[], Some(&body)).await.0
+    }
+
     pub async fn list_messages(&self, chat_id: &str) -> CursorPage<Message> {
         self.json("GET", &chat_path(chat_id, "/messages"), None).await
     }

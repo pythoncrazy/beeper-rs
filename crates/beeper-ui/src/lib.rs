@@ -24,6 +24,7 @@ use iced::{
     mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Padding, Point, Radians, Right,
     Size, Subscription, Task, Theme,
 };
+use tokio::sync::broadcast;
 
 pub type El<'a> = Element<'a, UiMessage>;
 
@@ -169,6 +170,29 @@ pub enum UiMessage {
     WindowClosed(window::Id),
     ScreenshotCaptured(window::Id, window::Screenshot),
     KeyPressed(Key, Modifiers),
+    StoreChanged,
+    FocusRequested(Option<String>),
+}
+
+struct StoreFeed(SharedStore, u8);
+
+impl std::hash::Hash for StoreFeed {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.1.hash(state);
+    }
+}
+
+fn feed<T: Clone + Send + 'static>(
+    rx: broadcast::Receiver<T>,
+    f: fn(T) -> UiMessage,
+) -> impl iced::futures::Stream<Item = UiMessage> {
+    iced::futures::stream::unfold(rx, move |mut rx| async move {
+        match rx.recv().await {
+            Ok(v) => Some((f(v), rx)),
+            Err(broadcast::error::RecvError::Lagged(_)) => Some((UiMessage::StoreChanged, rx)),
+            Err(broadcast::error::RecvError::Closed) => None,
+        }
+    })
 }
 
 impl std::fmt::Debug for UiMessage {
@@ -601,7 +625,6 @@ impl BeeperGuiApp {
         let mut st = self.store.write().unwrap();
         let idx = st.resolve_chat_idx(chat_id).expect("selected chat exists");
         self.selected_chat_id = Some(chat_id.to_string());
-        st.focused_chat_id = Some(chat_id.to_string());
         let chat = st.update_chat(idx, |c| {
             c.unread_count = 0;
             c.is_marked_unread = Some(false);
@@ -927,6 +950,13 @@ impl BeeperGuiApp {
                 }
                 return iced::exit();
             }
+            UiMessage::StoreChanged => self.refresh_theme_and_tray(),
+            UiMessage::FocusRequested(chat) => {
+                if let Some(id) = chat {
+                    self.select_chat(&id);
+                }
+                return window::gain_focus(self.main_window.expect("main window is open"));
+            }
             UiMessage::KeyPressed(key, mods) => {
                 let cmd = mods.command() || mods.control();
                 match key.as_ref() {
@@ -964,7 +994,13 @@ impl BeeperGuiApp {
     }
 
     pub fn subscription(&self) -> Subscription<UiMessage> {
-        let base = iced::event::listen_with(|e, _, id| match e {
+        let changes = Subscription::run_with(StoreFeed(self.store.clone(), 0), |f| {
+            feed(f.0.read().unwrap().ws_tx.subscribe(), |_| UiMessage::StoreChanged)
+        });
+        let focus = Subscription::run_with(StoreFeed(self.store.clone(), 1), |f| {
+            feed(f.0.read().unwrap().focus_tx.subscribe(), UiMessage::FocusRequested)
+        });
+        let keys = iced::event::listen_with(|e, _, id| match e {
             Event::Window(window::Event::Closed) => Some(UiMessage::WindowClosed(id)),
             Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
                 if modifiers.command()
@@ -976,17 +1012,14 @@ impl BeeperGuiApp {
             }
             _ => None,
         });
-        if !self.dragging {
-            return base;
-        }
-        Subscription::batch([
-            base,
+        let drag = self.dragging.then(|| {
             iced::event::listen_with(|e, _, _| match e {
                 Event::Mouse(mouse::Event::CursorMoved { position }) => Some(UiMessage::DragMoved(position)),
                 Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::DragEnd),
                 _ => None,
-            }),
-        ])
+            })
+        });
+        Subscription::batch([changes, focus, keys].into_iter().chain(drag))
     }
 
     pub fn view(&self, id: window::Id) -> El<'_> {
