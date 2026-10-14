@@ -1,6 +1,10 @@
 # beeper-rs
 
-`beeper-rs` is an independent, unofficial open-source Rust desktop application, HTTP REST server, WebSocket event server, and client SDK that implements the public Beeper Desktop API protocol.
+`beeper-rs` is an independent, unofficial open-source Rust desktop application, HTTP/1.1 REST server, RFC 6455 WebSocket server, and client SDK that implements the public Beeper Desktop API protocol.
+
+## AI Notice
+
+This software project was built using **Gemini 4 Argon**.
 
 ## Legal Disclaimer and Non-Affiliation Notice
 
@@ -13,16 +17,21 @@ All references to third-party names, protocols, APIs, and trademarks in this rep
 This software is provided "AS IS", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement.
 In no event shall the authors or copyright holders be liable for any claim, damages, account suspension, data loss, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use or other dealings in the software.
 
-## Features
+## Isolated Data Directory Safety
 
-- Provides a native GUI with `eframe` and `egui`.
-- Renders a 32x32 RGBA system tray icon with unread and Do Not Disturb indicators.
-- Persists application state in `BeeperTexts/index.db` with SQLite Write-Ahead Logging (WAL).
-- Indexes chats, messages, participants, voice transcripts, and settings in an in-memory inverted index.
-- Implements the Beeper Desktop HTTP REST API (`/v1/*` and `/oauth/*`) and WebSocket endpoint (`/v1/ws`).
-- Supports OAuth2 PKCE (`S256`), email login, E2EE SAS verification, recovery keys, and bridge login sessions.
-- Compiles Beeper v4 CSS themes (`variables.css`, `texts.css`, `dracula.css`, `nocturne.css`, `dark-purple.css`, and `fix-lockdown-mode-emojis.css`).
-- Generates autostart manifests for Linux, macOS, and Windows.
+`beeper-rs` never modifies or locks the original Beeper Desktop directory (`BeeperTexts` or `BeeperTexts-<profile>`):
+
+- `beeper-rs` stores all database and media files in an isolated directory (`~/.config/BeeperRs` on Linux, `~/Library/Application Support/BeeperRs` on macOS, or `%APPDATA%\BeeperRs` on Windows).
+- On first startup, `beeper-rs` copies `index.db` and `media/` from the original `BeeperTexts` directory (or a directory specified with `--import-from <DIR>`) into `BeeperRs` and skips active lock files.
+- `CentralConfig` and `BeeperStore` enforce an assertion that aborts if the configured working directory points to `BeeperTexts`.
+
+## Rust-Native Architecture
+
+- **Minimal dependency footprint**: Depends directly on only 5 crates (`tokio`, `serde`, `serde_json`, `rusqlite`, and `eframe`).
+- **Rust-native protocols and primitives**: Implements HTTP/1.1, RFC 6455 WebSockets, SHA-256, SHA-1, Base64, URL percent-encoding, RFC 3339 timestamps, CLI argument parsing, and 32x32 RGBA system tray icon rendering directly in Rust.
+- **Native 4-pane GUI**: Uses `eframe` and `egui` with keyboard shortcuts (`Ctrl+K` command palette, `Ctrl+,` settings, `Ctrl+D` Do Not Disturb, `Space` Quick Look, and `Escape` modal dismissal).
+- **SQLite WAL and inverted search index**: Persists state in `BeeperRs/index.db` using SQLite Write-Ahead Logging (WAL) and indexes chats, messages, and settings in an in-memory inverted index.
+- **CSS theme compiler**: Compiles Beeper v4 CSS themes (`variables.css`, `texts.css`, `dracula.css`, `nocturne.css`, `dark-purple.css`, and `fix-lockdown-mode-emojis.css`).
 
 ## Local Testing Guide
 
@@ -55,8 +64,8 @@ In a second terminal, query the server with the CLI or `curl`:
 ```bash
 cargo run -- info --base-url http://127.0.0.1:23373
 curl -s http://127.0.0.1:23373/v1/info | jq
-curl -s -H "Authorization: Bearer beeper-local-dev-token" http://127.0.0.1:23373/v1/accounts | jq
-curl -s -H "Authorization: Bearer beeper-local-dev-token" http://127.0.0.1:23373/v1/chats | jq
+curl -s -H "Authorization: Bearer bp_tok_beeper_rs_default_secret" http://127.0.0.1:23373/v1/accounts | jq
+curl -s -H "Authorization: Bearer bp_tok_beeper_rs_default_secret" http://127.0.0.1:23373/v1/chats | jq
 ```
 
 ## Development Workflow
