@@ -1,11 +1,13 @@
-use beeper_rs::{
+use beeper_api::{
     client::{extract_state_from_index_db, BeeperClient},
+    server::{build_router, serve_http},
+};
+use beeper_core::{
     config::{CentralConfig, APP_NAME, APP_VERSION, DEFAULT_PAS_HOST, DEFAULT_PAS_PORT},
     platform::{current_desktop_data_dir, current_original_beeper_data_dir},
-    server::{build_router, serve_http, SharedStore},
-    store::BeeperStore,
-    ui::run_native_gui,
+    store::{BeeperStore, SharedStore},
 };
+use beeper_ui::run_native_gui;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -29,7 +31,8 @@ struct CliArgs {
 }
 
 fn parse_args() -> CliArgs {
-    let mut host = std::env::var("BEEPER_PAS_HOST").unwrap_or_else(|_| DEFAULT_PAS_HOST.to_string());
+    let mut host =
+        std::env::var("BEEPER_PAS_HOST").unwrap_or_else(|_| DEFAULT_PAS_HOST.to_string());
     let mut port = std::env::var("BEEPER_PAS_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
@@ -148,11 +151,10 @@ fn main() {
                 let listener = tokio::net::TcpListener::bind(&bind_addr)
                     .await
                     .or_else(|_| {
-                        std::net::TcpListener::bind(format!("{host}:0"))
-                            .and_then(|std_l| {
-                                std_l.set_nonblocking(true)?;
-                                tokio::net::TcpListener::from_std(std_l)
-                            })
+                        std::net::TcpListener::bind(format!("{host}:0")).and_then(|std_l| {
+                            std_l.set_nonblocking(true)?;
+                            tokio::net::TcpListener::from_std(std_l)
+                        })
                     })
                     .expect("bind local PAS port");
                 let actual_port = listener.local_addr().unwrap().port();

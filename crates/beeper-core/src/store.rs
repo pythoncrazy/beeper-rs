@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tokio::sync::broadcast;
 
+pub type SharedStore = std::sync::Arc<std::sync::RwLock<BeeperStore>>;
+
 pub fn tokenize(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -161,25 +163,124 @@ pub struct OAuthCodeEntry {
 pub const NOTE_CHAT_ID: &str = "!note_self:beeper.com";
 
 const NOTE_MESSAGES: [(&str, &str); 6] = [
-    ("2026-10-06T19:02:00.000Z", "https://arxiv.org/abs/2001.08361"),
-    ("2026-10-06T19:04:00.000Z", "Read this before the Thursday sync"),
-    ("2026-10-11T10:41:00.000Z", "https://github.com/pythoncrazy/navify"),
-    ("2026-10-12T21:15:00.000Z", "Pick up the Pebble Time 2 dev kit from the office"),
-    ("2026-10-14T03:30:00.000Z", "https://github.com/pythoncrazy/beeper-rs"),
-    ("2026-10-14T03:34:00.000Z", "Compare the inbox density with the compact chat list"),
+    (
+        "2026-10-06T19:02:00.000Z",
+        "https://arxiv.org/abs/2001.08361",
+    ),
+    (
+        "2026-10-06T19:04:00.000Z",
+        "Read this before the Thursday sync",
+    ),
+    (
+        "2026-10-11T10:41:00.000Z",
+        "https://github.com/pythoncrazy/navify",
+    ),
+    (
+        "2026-10-12T21:15:00.000Z",
+        "Pick up the Pebble Time 2 dev kit from the office",
+    ),
+    (
+        "2026-10-14T03:30:00.000Z",
+        "https://github.com/pythoncrazy/beeper-rs",
+    ),
+    (
+        "2026-10-14T03:34:00.000Z",
+        "Compare the inbox density with the compact chat list",
+    ),
 ];
 
-type SeedChat = (&'static str, &'static str, &'static str, &'static str, u32, &'static str, &'static str, &'static str);
+type SeedChat = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    u32,
+    &'static str,
+    &'static str,
+    &'static str,
+);
 
 const EXTRA_CHATS: [SeedChat; 8] = [
-    ("!wa_family:beeper.com", "acc_whatsapp", "Family", "group", 2, "2026-10-14T03:10:00.000Z", "Mom", "Dinner at 7 tonight? Bring the charger you borrowed"),
-    ("!tg_weekly:beeper.com", "acc_telegram", "This Week in Rust", "group", 0, "2026-10-13T21:00:00.000Z", "Nell", "Issue 620 is out: iced 0.14, wgpu 27, and a new borrow checker"),
-    ("!im_jordan:beeper.com", "acc_imessage", "Jordan Park", "single", 0, "2026-10-13T18:22:00.000Z", "Jordan", ""),
-    ("!sg_lena:beeper.com", "acc_signal", "Lena Fischer", "single", 1, "2026-10-12T16:40:00.000Z", "Lena", "See you at the meetup! I will save you a seat"),
-    ("!ig_kai:beeper.com", "acc_instagram", "Kai Nakamura", "single", 0, "2026-10-11T12:05:00.000Z", "Kai", "haha that reel is exactly us at the hackathon"),
-    ("!sl_design:beeper.com", "acc_slack", "#design-review", "group", 0, "2026-10-10T09:30:00.000Z", "Priya", "New icons are in Figma, please review before Friday"),
-    ("!wa_sam:beeper.com", "acc_whatsapp", "Sam Rivera", "single", 0, "2026-10-08T22:14:00.000Z", "Sam", "ok sounds good 👍"),
-    ("!tg_pebble:beeper.com", "acc_telegram", "Pebble Devs", "group", 0, "2026-10-05T15:00:00.000Z", "Katharine", "Firmware 4.4 beta is live for all testers"),
+    (
+        "!wa_family:beeper.com",
+        "acc_whatsapp",
+        "Family",
+        "group",
+        2,
+        "2026-10-14T03:10:00.000Z",
+        "Mom",
+        "Dinner at 7 tonight? Bring the charger you borrowed",
+    ),
+    (
+        "!tg_weekly:beeper.com",
+        "acc_telegram",
+        "This Week in Rust",
+        "group",
+        0,
+        "2026-10-13T21:00:00.000Z",
+        "Nell",
+        "Issue 620 is out: iced 0.14, wgpu 27, and a new borrow checker",
+    ),
+    (
+        "!im_jordan:beeper.com",
+        "acc_imessage",
+        "Jordan Park",
+        "single",
+        0,
+        "2026-10-13T18:22:00.000Z",
+        "Jordan",
+        "",
+    ),
+    (
+        "!sg_lena:beeper.com",
+        "acc_signal",
+        "Lena Fischer",
+        "single",
+        1,
+        "2026-10-12T16:40:00.000Z",
+        "Lena",
+        "See you at the meetup! I will save you a seat",
+    ),
+    (
+        "!ig_kai:beeper.com",
+        "acc_instagram",
+        "Kai Nakamura",
+        "single",
+        0,
+        "2026-10-11T12:05:00.000Z",
+        "Kai",
+        "haha that reel is exactly us at the hackathon",
+    ),
+    (
+        "!sl_design:beeper.com",
+        "acc_slack",
+        "#design-review",
+        "group",
+        0,
+        "2026-10-10T09:30:00.000Z",
+        "Priya",
+        "New icons are in Figma, please review before Friday",
+    ),
+    (
+        "!wa_sam:beeper.com",
+        "acc_whatsapp",
+        "Sam Rivera",
+        "single",
+        0,
+        "2026-10-08T22:14:00.000Z",
+        "Sam",
+        "ok sounds good 👍",
+    ),
+    (
+        "!tg_pebble:beeper.com",
+        "acc_telegram",
+        "Pebble Devs",
+        "group",
+        0,
+        "2026-10-05T15:00:00.000Z",
+        "Katharine",
+        "Firmware 4.4 beta is live for all testers",
+    ),
 ];
 
 const LINK_PREVIEWS: [(&str, &str, &str, &str); 3] = [
@@ -196,35 +297,165 @@ pub struct SettingCatalogEntry {
     pub description: &'static str,
 }
 
-const fn sc(id: &'static str, section: &'static str, title: &'static str, description: &'static str) -> SettingCatalogEntry {
-    SettingCatalogEntry { id, section, title, description }
+const fn sc(
+    id: &'static str,
+    section: &'static str,
+    title: &'static str,
+    description: &'static str,
+) -> SettingCatalogEntry {
+    SettingCatalogEntry {
+        id,
+        section,
+        title,
+        description,
+    }
 }
 
 pub const SETTINGS_CATALOG: [SettingCatalogEntry; 24] = [
-    sc("show_archived_count", "Chat List", "Show archived count", "Display total archived chats badge in the sidebar header"),
-    sc("show_starred_pin_view", "Chat List", "Show starred pin view", "Pin tab for starred and favorite conversations"),
-    sc("show_all_chats_pin_view", "Chat List", "Show all chats pin view", "Pin tab showing all unified inbox conversations"),
-    sc("show_unread_pin_view", "Chat List", "Show unread pin view", "Quick filter pin tab for unread conversations"),
-    sc("show_drafts_pin_view", "Chat List", "Show drafts pin view", "Quick filter pin tab for conversations with unsent drafts"),
-    sc("filter_pins_by_network", "Chat List", "Filter pins by network", "Scope pinned avatars to the currently selected chat network"),
-    sc("show_favorite_chats_section", "Chat List", "Show favorite chats section", "Display a dedicated Favorites group above the main chat list"),
-    sc("keep_favorites_in_inbox", "Chat List", "Keep favorites in inbox", "Keep favorited conversations visible inside the main inbox list"),
-    sc("show_message_previews", "Chat List", "Show message previews", "Show latest message snippet below each chat title in the sidebar"),
-    sc("unread_chats_always_on_top", "Chat List", "Unread chats always on top", "Sort unread threads above read threads in the chat list"),
-    sc("show_full_names_in_chats", "Conversation View", "Show full names in chats", "Display full sender names instead of first names in group chats"),
-    sc("auto_play_videos", "Conversation View", "Auto-play videos", "Automatically play inline video attachments and GIFs"),
-    sc("show_chat_header", "Conversation View", "Show chat header", "Show the top header bar with participant details in conversation view"),
-    sc("show_message_input_buttons", "Conversation View", "Show message input buttons", "Show attachment, emoji, voice note, poll, and schedule buttons in composer"),
-    sc("link_previews", "Conversation View", "Link previews", "Generate rich previews for URLs shared in messages"),
-    sc("show_right_panel_by_default", "Conversation View", "Show right panel by default", "Keep the Chat Info, Shared Media, and Bookmarks inspector open"),
-    sc("load_remote_content_automatically", "Conversation View", "Load remote content automatically", "Fetch external images and link metadata automatically"),
-    sc("use_twenty_four_hour_time", "Conversation View", "Use 24-hour time", "Format message timestamps using 24-hour military clock"),
-    sc("theme", "Appearance", "CSS Theme", "Switch between Light, Dark, Dracula, Nocturne, Dark Purple, and Custom CSS"),
-    sc("no_transparency", "Appearance", "No transparency", "Disable window vibrancy and translucent backgrounds (.no-transparency)"),
-    sc("reduce_transparency", "Appearance", "Reduce transparency", "Use solid header and sidebar surfaces (.reduce-transparency)"),
-    sc("fix_lockdown_emojis", "Appearance", "Fix Lockdown Mode Emojis", "Apply fix-lockdown-mode-emojis.css bitmap font override"),
-    sc("auto_transcribe_voice_notes", "Voice & Media", "Transcribe voice notes", "Automatically transcribe incoming and outgoing voice notes on-device"),
-    sc("repeat_message_alerts", "Notifications", "Repeat message alerts", "Repeat unread notification alerts up to 3 times"),
+    sc(
+        "show_archived_count",
+        "Chat List",
+        "Show archived count",
+        "Display total archived chats badge in the sidebar header",
+    ),
+    sc(
+        "show_starred_pin_view",
+        "Chat List",
+        "Show starred pin view",
+        "Pin tab for starred and favorite conversations",
+    ),
+    sc(
+        "show_all_chats_pin_view",
+        "Chat List",
+        "Show all chats pin view",
+        "Pin tab showing all unified inbox conversations",
+    ),
+    sc(
+        "show_unread_pin_view",
+        "Chat List",
+        "Show unread pin view",
+        "Quick filter pin tab for unread conversations",
+    ),
+    sc(
+        "show_drafts_pin_view",
+        "Chat List",
+        "Show drafts pin view",
+        "Quick filter pin tab for conversations with unsent drafts",
+    ),
+    sc(
+        "filter_pins_by_network",
+        "Chat List",
+        "Filter pins by network",
+        "Scope pinned avatars to the currently selected chat network",
+    ),
+    sc(
+        "show_favorite_chats_section",
+        "Chat List",
+        "Show favorite chats section",
+        "Display a dedicated Favorites group above the main chat list",
+    ),
+    sc(
+        "keep_favorites_in_inbox",
+        "Chat List",
+        "Keep favorites in inbox",
+        "Keep favorited conversations visible inside the main inbox list",
+    ),
+    sc(
+        "show_message_previews",
+        "Chat List",
+        "Show message previews",
+        "Show latest message snippet below each chat title in the sidebar",
+    ),
+    sc(
+        "unread_chats_always_on_top",
+        "Chat List",
+        "Unread chats always on top",
+        "Sort unread threads above read threads in the chat list",
+    ),
+    sc(
+        "show_full_names_in_chats",
+        "Conversation View",
+        "Show full names in chats",
+        "Display full sender names instead of first names in group chats",
+    ),
+    sc(
+        "auto_play_videos",
+        "Conversation View",
+        "Auto-play videos",
+        "Automatically play inline video attachments and GIFs",
+    ),
+    sc(
+        "show_chat_header",
+        "Conversation View",
+        "Show chat header",
+        "Show the top header bar with participant details in conversation view",
+    ),
+    sc(
+        "show_message_input_buttons",
+        "Conversation View",
+        "Show message input buttons",
+        "Show attachment, emoji, voice note, poll, and schedule buttons in composer",
+    ),
+    sc(
+        "link_previews",
+        "Conversation View",
+        "Link previews",
+        "Generate rich previews for URLs shared in messages",
+    ),
+    sc(
+        "show_right_panel_by_default",
+        "Conversation View",
+        "Show right panel by default",
+        "Keep the Chat Info, Shared Media, and Bookmarks inspector open",
+    ),
+    sc(
+        "load_remote_content_automatically",
+        "Conversation View",
+        "Load remote content automatically",
+        "Fetch external images and link metadata automatically",
+    ),
+    sc(
+        "use_twenty_four_hour_time",
+        "Conversation View",
+        "Use 24-hour time",
+        "Format message timestamps using 24-hour military clock",
+    ),
+    sc(
+        "theme",
+        "Appearance",
+        "CSS Theme",
+        "Switch between Light, Dark, Dracula, Nocturne, Dark Purple, and Custom CSS",
+    ),
+    sc(
+        "no_transparency",
+        "Appearance",
+        "No transparency",
+        "Disable window vibrancy and translucent backgrounds (.no-transparency)",
+    ),
+    sc(
+        "reduce_transparency",
+        "Appearance",
+        "Reduce transparency",
+        "Use solid header and sidebar surfaces (.reduce-transparency)",
+    ),
+    sc(
+        "fix_lockdown_emojis",
+        "Appearance",
+        "Fix Lockdown Mode Emojis",
+        "Apply fix-lockdown-mode-emojis.css bitmap font override",
+    ),
+    sc(
+        "auto_transcribe_voice_notes",
+        "Voice & Media",
+        "Transcribe voice notes",
+        "Automatically transcribe incoming and outgoing voice notes on-device",
+    ),
+    sc(
+        "repeat_message_alerts",
+        "Notifications",
+        "Repeat message alerts",
+        "Repeat unread notification alerts up to 3 times",
+    ),
 ];
 
 pub struct BeeperStore {
@@ -614,13 +845,24 @@ impl BeeperStore {
         }
         self.link_previews = LINK_PREVIEWS
             .iter()
-            .map(|(url, site, title, summary)| (url.to_string(), LinkPreview { site: site.to_string(), title: title.to_string(), summary: summary.to_string() }))
+            .map(|(url, site, title, summary)| {
+                (
+                    url.to_string(),
+                    LinkPreview {
+                        site: site.to_string(),
+                        title: title.to_string(),
+                        summary: summary.to_string(),
+                    },
+                )
+            })
             .collect();
         self.next_seq = 1000 + self.messages.len() as u64 + self.chats.len() as u64;
     }
 
     pub fn me(&self) -> &User {
-        &self.chats[self.chat_idx_by_id[NOTE_CHAT_ID]].participants.items[0]
+        &self.chats[self.chat_idx_by_id[NOTE_CHAT_ID]]
+            .participants
+            .items[0]
     }
 
     pub fn rebuild_accounts_from_bridges(&mut self) {
@@ -703,7 +945,19 @@ impl BeeperStore {
             custom_nickname: None,
         };
 
-        let mk_chat = |id: &str, loc: &str, acc: &str, title: &str, ctype: &str, unread: u32, desc: &str, muted: bool, pinned: bool, labels: &[&str], ts: &str, sk: &str, users: Vec<User>| Chat {
+        let mk_chat = |id: &str,
+                       loc: &str,
+                       acc: &str,
+                       title: &str,
+                       ctype: &str,
+                       unread: u32,
+                       desc: &str,
+                       muted: bool,
+                       pinned: bool,
+                       labels: &[&str],
+                       ts: &str,
+                       sk: &str,
+                       users: Vec<User>| Chat {
             id: id.to_string(),
             local_chat_id: Some(loc.to_string()),
             account_id: acc.to_string(),
@@ -725,31 +979,211 @@ impl BeeperStore {
             preview: None,
             reminder: None,
             chat_theme: None,
-            participants: ChatParticipants { has_more: false, total: users.len(), items: users },
+            participants: ChatParticipants {
+                has_more: false,
+                total: users.len(),
+                items: users,
+            },
             flags: 0,
         };
 
-        let me = User { id: DEFAULT_USER_ID.to_string(), is_self: Some(true), ..self_user(&[], 0) };
+        let me = User {
+            id: DEFAULT_USER_ID.to_string(),
+            is_self: Some(true),
+            ..self_user(&[], 0)
+        };
         let mut chats_seed = vec![
-            mk_chat(NOTE_CHAT_ID, "local_note_self", "hungryserv", "Note to self", "single", 0, "Notes, links, and reminders", false, true, &[], "2026-10-14T03:34:00.000Z", "000000", vec![me.clone()]),
-            mk_chat("!wa_eric:beeper.com", "local_wa_eric", "acc_whatsapp", "Eric Migicovsky", "single", 1, "Beeper & Pebble founder", false, true, &["lbl_favorite", "lbl_vip"], "2026-10-14T08:15:00.000Z", "000001", vec![make_user("@eric:beeper.com", "Eric Migicovsky", "eric", Some("+14155550101")), self_user(&self.accounts, 0)]),
-            mk_chat("!im_sarah:beeper.com", "local_im_sarah", "acc_imessage", "Sarah Chen", "single", 0, "iMessage on-device", true, true, &["lbl_favorite"], "2026-10-14T08:10:00.000Z", "000002", vec![make_user("@sarah:beeper.com", "Sarah Chen", "sarahc", Some("+14155550102")), self_user(&self.accounts, 1)]),
-            mk_chat("!tg_rust:beeper.com", "local_tg_rust", "acc_telegram", "Beeper Rust Core Team", "group", 2, "Architecture, E2EE & native desktop performance", false, true, &["lbl_work"], "2026-10-14T08:20:00.000Z", "000003", vec![make_user("@tulir:beeper.com", "Tulir Asokan", "tulir", None), make_user("@batuhan:beeper.com", "Batuhan", "batuhan", None), self_user(&self.accounts, 2)]),
-            mk_chat("!sg_security:beeper.com", "local_sg_security", "acc_signal", "Signal Security Ops", "single", 0, "Zero-knowledge E2EE verification channel", false, false, &[], "2026-10-14T07:45:00.000Z", "000004", vec![make_user("@secops:beeper.com", "SecOps Lead", "secops", Some("+14155550190")), self_user(&self.accounts, 3)]),
-            mk_chat("!ig_design:beeper.com", "local_ig_design", "acc_instagram", "Maya Lin", "single", 0, "Design Systems & Desktop Typography", false, true, &["lbl_favorite"], "2026-10-14T07:30:00.000Z", "000005", vec![make_user("@maya:beeper.com", "Maya Lin", "mayalin", None), self_user(&self.accounts, 4)]),
-            mk_chat("!sl_infra:beeper.com", "local_sl_infra", "acc_slack", "#desktop-release", "group", 1, "Beeper v4.3 Desktop release coordination", false, false, &["lbl_work"], "2026-10-14T07:15:00.000Z", "000006", vec![make_user("@devon:beeper.com", "Devon Brooks", "devon", None), make_user("@eric:beeper.com", "Eric Migicovsky", "eric", None), self_user(&self.accounts, 5)]),
+            mk_chat(
+                NOTE_CHAT_ID,
+                "local_note_self",
+                "hungryserv",
+                "Note to self",
+                "single",
+                0,
+                "Notes, links, and reminders",
+                false,
+                true,
+                &[],
+                "2026-10-14T03:34:00.000Z",
+                "000000",
+                vec![me.clone()],
+            ),
+            mk_chat(
+                "!wa_eric:beeper.com",
+                "local_wa_eric",
+                "acc_whatsapp",
+                "Eric Migicovsky",
+                "single",
+                1,
+                "Beeper & Pebble founder",
+                false,
+                true,
+                &["lbl_favorite", "lbl_vip"],
+                "2026-10-14T08:15:00.000Z",
+                "000001",
+                vec![
+                    make_user(
+                        "@eric:beeper.com",
+                        "Eric Migicovsky",
+                        "eric",
+                        Some("+14155550101"),
+                    ),
+                    self_user(&self.accounts, 0),
+                ],
+            ),
+            mk_chat(
+                "!im_sarah:beeper.com",
+                "local_im_sarah",
+                "acc_imessage",
+                "Sarah Chen",
+                "single",
+                0,
+                "iMessage on-device",
+                true,
+                true,
+                &["lbl_favorite"],
+                "2026-10-14T08:10:00.000Z",
+                "000002",
+                vec![
+                    make_user(
+                        "@sarah:beeper.com",
+                        "Sarah Chen",
+                        "sarahc",
+                        Some("+14155550102"),
+                    ),
+                    self_user(&self.accounts, 1),
+                ],
+            ),
+            mk_chat(
+                "!tg_rust:beeper.com",
+                "local_tg_rust",
+                "acc_telegram",
+                "Beeper Rust Core Team",
+                "group",
+                2,
+                "Architecture, E2EE & native desktop performance",
+                false,
+                true,
+                &["lbl_work"],
+                "2026-10-14T08:20:00.000Z",
+                "000003",
+                vec![
+                    make_user("@tulir:beeper.com", "Tulir Asokan", "tulir", None),
+                    make_user("@batuhan:beeper.com", "Batuhan", "batuhan", None),
+                    self_user(&self.accounts, 2),
+                ],
+            ),
+            mk_chat(
+                "!sg_security:beeper.com",
+                "local_sg_security",
+                "acc_signal",
+                "Signal Security Ops",
+                "single",
+                0,
+                "Zero-knowledge E2EE verification channel",
+                false,
+                false,
+                &[],
+                "2026-10-14T07:45:00.000Z",
+                "000004",
+                vec![
+                    make_user(
+                        "@secops:beeper.com",
+                        "SecOps Lead",
+                        "secops",
+                        Some("+14155550190"),
+                    ),
+                    self_user(&self.accounts, 3),
+                ],
+            ),
+            mk_chat(
+                "!ig_design:beeper.com",
+                "local_ig_design",
+                "acc_instagram",
+                "Maya Lin",
+                "single",
+                0,
+                "Design Systems & Desktop Typography",
+                false,
+                true,
+                &["lbl_favorite"],
+                "2026-10-14T07:30:00.000Z",
+                "000005",
+                vec![
+                    make_user("@maya:beeper.com", "Maya Lin", "mayalin", None),
+                    self_user(&self.accounts, 4),
+                ],
+            ),
+            mk_chat(
+                "!sl_infra:beeper.com",
+                "local_sl_infra",
+                "acc_slack",
+                "#desktop-release",
+                "group",
+                1,
+                "Beeper v4.3 Desktop release coordination",
+                false,
+                false,
+                &["lbl_work"],
+                "2026-10-14T07:15:00.000Z",
+                "000006",
+                vec![
+                    make_user("@devon:beeper.com", "Devon Brooks", "devon", None),
+                    make_user("@eric:beeper.com", "Eric Migicovsky", "eric", None),
+                    self_user(&self.accounts, 5),
+                ],
+            ),
         ];
         for (i, (cid, acc, title, ctype, unread, ts, sender, _)) in EXTRA_CHATS.iter().enumerate() {
-            let peer = make_user(&format!("@{}:beeper.com", sender.to_lowercase()), sender, &sender.to_lowercase(), None);
-            chats_seed.push(mk_chat(cid, &format!("local_x{i}"), acc, title, ctype, *unread, title, false, false, &[], ts, &format!("00010{i}"), vec![peer, self_user(&self.accounts, 0)]));
+            let peer = make_user(
+                &format!("@{}:beeper.com", sender.to_lowercase()),
+                sender,
+                &sender.to_lowercase(),
+                None,
+            );
+            chats_seed.push(mk_chat(
+                cid,
+                &format!("local_x{i}"),
+                acc,
+                title,
+                ctype,
+                *unread,
+                title,
+                false,
+                false,
+                &[],
+                ts,
+                &format!("00010{i}"),
+                vec![peer, self_user(&self.accounts, 0)],
+            ));
         }
 
-        self.db.lock().unwrap().execute_batch("BEGIN IMMEDIATE;").expect("begin seed transaction");
+        self.db
+            .lock()
+            .unwrap()
+            .execute_batch("BEGIN IMMEDIATE;")
+            .expect("begin seed transaction");
         for c in chats_seed {
             self.index_and_push_chat(c, true);
         }
 
-        let mk_msg = |id: &str, acc: &str, cid: &str, sid: &str, sname: &str, sk: &str, ts: &str, text: &str, mtype: &str, is_self: bool, unread: bool, bmark: bool, reply: Option<&str>, atts: Vec<Attachment>, rxs: Vec<Reaction>, poll: Option<PollData>, edits: Vec<EditHistoryEntry>| Message {
+        let mk_msg = |id: &str,
+                      acc: &str,
+                      cid: &str,
+                      sid: &str,
+                      sname: &str,
+                      sk: &str,
+                      ts: &str,
+                      text: &str,
+                      mtype: &str,
+                      is_self: bool,
+                      unread: bool,
+                      bmark: bool,
+                      reply: Option<&str>,
+                      atts: Vec<Attachment>,
+                      rxs: Vec<Reaction>,
+                      poll: Option<PollData>,
+                      edits: Vec<EditHistoryEntry>| Message {
             id: id.to_string(),
             account_id: acc.to_string(),
             chat_id: cid.to_string(),
@@ -813,12 +1247,64 @@ impl BeeperStore {
         let mut messages_seed: Vec<Message> = NOTE_MESSAGES
             .iter()
             .enumerate()
-            .map(|(i, (ts, text))| mk_msg(&format!("msg_note_{i}"), "hungryserv", NOTE_CHAT_ID, DEFAULT_USER_ID, "Alex", &format!("00009{i:02}"), ts, text, "TEXT", true, false, false, None, Vec::new(), Vec::new(), None, Vec::new()))
+            .map(|(i, (ts, text))| {
+                mk_msg(
+                    &format!("msg_note_{i}"),
+                    "hungryserv",
+                    NOTE_CHAT_ID,
+                    DEFAULT_USER_ID,
+                    "Alex",
+                    &format!("00009{i:02}"),
+                    ts,
+                    text,
+                    "TEXT",
+                    true,
+                    false,
+                    false,
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    Vec::new(),
+                )
+            })
             .collect();
         for (i, (cid, acc, _, _, unread, ts, sender, text)) in EXTRA_CHATS.iter().enumerate() {
-            let img = text.is_empty().then(|| Attachment { attachment_type: "img".to_string(), id: Some(format!("att_x{i}")), duration: None, file_name: Some("IMG_2041.jpg".to_string()), file_size: Some(812_004), is_gif: Some(false), is_sticker: Some(false), is_voice_note: Some(false), mime_type: Some("image/jpeg".to_string()), poster_img: None, size: None, src_url: Some(format!("mxc://beeper.com/x{i}")), transcript: None });
+            let img = text.is_empty().then(|| Attachment {
+                attachment_type: "img".to_string(),
+                id: Some(format!("att_x{i}")),
+                duration: None,
+                file_name: Some("IMG_2041.jpg".to_string()),
+                file_size: Some(812_004),
+                is_gif: Some(false),
+                is_sticker: Some(false),
+                is_voice_note: Some(false),
+                mime_type: Some("image/jpeg".to_string()),
+                poster_img: None,
+                size: None,
+                src_url: Some(format!("mxc://beeper.com/x{i}")),
+                transcript: None,
+            });
             let mtype = if img.is_some() { "IMAGE" } else { "TEXT" };
-            messages_seed.push(mk_msg(&format!("msg_x{i}"), acc, cid, &format!("@{}:beeper.com", sender.to_lowercase()), sender, &format!("00020{i:02}"), ts, text, mtype, false, *unread > 0, false, None, img.into_iter().collect(), Vec::new(), None, Vec::new()));
+            messages_seed.push(mk_msg(
+                &format!("msg_x{i}"),
+                acc,
+                cid,
+                &format!("@{}:beeper.com", sender.to_lowercase()),
+                sender,
+                &format!("00020{i:02}"),
+                ts,
+                text,
+                mtype,
+                false,
+                *unread > 0,
+                false,
+                None,
+                img.into_iter().collect(),
+                Vec::new(),
+                None,
+                Vec::new(),
+            ));
         }
         messages_seed.extend([
             mk_msg("msg_1000a", "acc_whatsapp", "!wa_eric:beeper.com", "@eric:beeper.com", "Eric Migicovsky", "0000997", "2026-10-14T08:11:00.000Z", "Hey Alex! How is the native Rust Beeper Desktop client coming along?", "TEXT", false, false, false, None, Vec::new(), Vec::new(), None, Vec::new()),
@@ -846,7 +1332,11 @@ impl BeeperStore {
             self.index_and_push_message(m, true);
         }
         self.persist_state_to_sqlite();
-        self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit seed transaction");
+        self.db
+            .lock()
+            .unwrap()
+            .execute_batch("COMMIT;")
+            .expect("commit seed transaction");
     }
 
     fn chat_index_text(c: &Chat) -> String {

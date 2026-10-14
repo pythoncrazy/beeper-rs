@@ -290,11 +290,6 @@ impl SystemTrayState {
         }
     }
 
-    pub fn to_window_icon(&self) -> iced::window::Icon {
-        iced::window::icon::from_rgba(self.icon_rgba.clone(), self.icon_width, self.icon_height)
-            .expect("valid RGBA window icon")
-    }
-
     pub fn update(&mut self, unread_count: u32, muted: bool) {
         self.unread_count = unread_count;
         self.muted = muted;

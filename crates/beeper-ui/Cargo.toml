@@ -1,0 +1,22 @@
+[package]
+name = "beeper-ui"
+description = "Native iced desktop interface for beeper-rs with the Beeper Desktop layout."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+beeper-core.workspace = true
+serde_json.workspace = true
+png = "0.18"
+iced = { version = "0.14.0", default-features = false, features = ["svg", "advanced", "wgpu-bare", "tiny-skia", "tokio", "image-without-codecs", "lazy", "x11", "wayland", "web-colors", "thread-pool", "crisp"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { version = "27.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { version = "27.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "metal"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { version = "27.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "dx12"] }
