@@ -540,18 +540,17 @@ impl BeeperGuiApp {
         self.tray.update(unread, self.dnd_muted);
     }
 
-    pub fn visible_chats(&self) -> Vec<Chat> {
-        let st = self.store.read().unwrap();
+    pub fn visible_chats<'a>(&self, st: &'a BeeperStore) -> Vec<&'a Chat> {
         let q_ids =
             (!self.search_query.trim().is_empty()).then(|| st.chat_search_index.query_all_tokens(&self.search_query));
-        let mut list: Vec<Chat> = st
+        let mut list: Vec<&Chat> = st
             .chats
             .iter()
             .enumerate()
             .filter(|(idx, c)| {
                 c.merged_into_chat_id.is_none()
                     && self.selected_account_filter.as_ref().is_none_or(|a| &c.account_id == a)
-                    && q_ids.as_ref().is_none_or(|ids| ids.contains(&(*idx as u32)))
+                    && q_ids.as_ref().is_none_or(|ids| ids.binary_search(&(*idx as u32)).is_ok())
                     && match self.active_tab {
                         InboxTab::AllChats => c.flags & (CHAT_ARCHIVED | CHAT_LOW_PRIORITY) == 0,
                         InboxTab::Unread => c.flags & CHAT_UNREAD != 0,
@@ -562,7 +561,7 @@ impl BeeperGuiApp {
                         InboxTab::Reminders => c.reminder.is_some(),
                     }
             })
-            .map(|(_, c)| c.clone())
+            .map(|(_, c)| c)
             .collect();
         let unread_top = st.settings.unread_chats_always_on_top;
         list.sort_by(|a, b| {
@@ -629,13 +628,16 @@ impl BeeperGuiApp {
     }
 
     pub fn step_chat(&mut self, delta: isize) {
-        let chats = self.visible_chats();
-        if chats.is_empty() {
-            return;
-        }
-        let cur = self.selected_chat_id.as_ref().and_then(|id| chats.iter().position(|c| &c.id == id)).unwrap_or(0);
-        let next = (cur as isize + delta).rem_euclid(chats.len() as isize) as usize;
-        self.select_chat(&chats[next].id.clone());
+        let next = {
+            let st = self.store.read().unwrap();
+            let chats = self.visible_chats(&st);
+            if chats.is_empty() {
+                return;
+            }
+            let cur = self.selected_chat_id.as_ref().and_then(|id| chats.iter().position(|c| &c.id == id));
+            chats[(cur.unwrap_or(0) as isize + delta).rem_euclid(chats.len() as isize) as usize].id.clone()
+        };
+        self.select_chat(&next);
     }
 
     pub fn update(&mut self, msg: UiMessage) -> Task<UiMessage> {
@@ -1116,8 +1118,8 @@ impl BeeperGuiApp {
     fn view_sidebar(&self) -> El<'_> {
         let p = &self.pal;
         let w = self.sidebar_width;
-        let chats = self.visible_chats();
         let st = self.store.read().unwrap();
+        let chats = self.visible_chats(&st);
         let me = st.me().full_name.clone().expect("self name");
         let h24 = st.settings.use_twenty_four_hour_time;
         let previews = st.settings.show_message_previews;
@@ -1191,7 +1193,7 @@ impl BeeperGuiApp {
         let selected = self.selected_chat_id.as_deref();
         let pin_section = self.active_tab == InboxTab::AllChats && self.search_query.is_empty();
         let (pinned, rest): (Vec<&Chat>, Vec<&Chat>) =
-            chats.iter().partition(|c| pin_section && c.flags & CHAT_PINNED != 0);
+            chats.iter().copied().partition(|c| pin_section && c.flags & CHAT_PINNED != 0);
         let cols = (((w - 16.0) / 80.0).floor() as usize).max(1);
         let cell = (w - 16.0) / cols as f32;
         let pins = pinned.chunks(cols).fold(Column::new(), |col, chunk| {
