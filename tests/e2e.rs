@@ -289,6 +289,19 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert_eq!(st3, StatusCode::OK);
     assert!(cleared_chat.get("draft").is_none() || cleared_chat["draft"].is_null());
 
+    let mut focus_rx = store.read().unwrap().focus_tx.subscribe();
+    assert_eq!(client.focus(Some("!wa_eric:beeper.com"), None, Some("Focus draft")).await, StatusCode::OK);
+    assert_eq!(focus_rx.recv().await.unwrap().as_deref(), Some("!wa_eric:beeper.com"));
+    let eric_idx = store.read().unwrap().chat_idx_by_id["!wa_eric:beeper.com"];
+    let focus_draft = store.read().unwrap().chats[eric_idx].draft.clone().unwrap().text;
+    assert_eq!(focus_draft.as_deref(), Some("Focus draft"));
+    assert_eq!(client.patch_chat_draft("!wa_eric:beeper.com", None).await.0, StatusCode::OK);
+    assert_eq!(client.focus(None, None, None).await, StatusCode::OK);
+    assert_eq!(focus_rx.recv().await.unwrap(), None);
+    assert_eq!(client.focus(Some("!missing:beeper.com"), None, None).await, StatusCode::NOT_FOUND);
+    assert_eq!(client.focus(None, Some("msg_missing"), None).await, StatusCode::NOT_FOUND);
+    assert_eq!(client.focus(None, None, Some("No chat")).await, StatusCode::BAD_REQUEST);
+
     let merged_resp = client
         .merge_chats(
             "Unified Eric + Sarah",
@@ -301,6 +314,8 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let send_resp = client.send_message(&merged_chat_id, Some("Routed message via merged chat"), None, None).await;
     assert_eq!(send_resp["chatID"], "!im_sarah:beeper.com");
     let sent_msg_id = send_resp["pendingMessageID"].as_str().unwrap().to_string();
+    assert_eq!(client.focus(None, Some(&sent_msg_id), None).await, StatusCode::OK);
+    assert_eq!(focus_rx.recv().await.unwrap().as_deref(), Some("!im_sarah:beeper.com"));
 
     let ws_ev = timeout(Duration::from_secs(2), ws_rx.recv()).await.unwrap().unwrap();
     assert!(!ws_ev.event_type.is_empty());

@@ -961,23 +961,23 @@ fn serve_asset(st: &BeeperStore, r: &Req) -> Reply {
 }
 
 fn focus(st: &mut BeeperStore, r: &Req) -> Reply {
-    if let Some(id) = r.str("chatID") {
-        let idx = st.resolve_chat_idx(id).ok_or_else(|| missing("chat_not_found"))?;
-        st.focused_chat_id = Some(st.chats[idx].id.clone());
-        let (text, path) = (r.owned("draftText"), r.owned("draftAttachmentPath"));
-        if text.is_some() || path.is_some() {
-            let attachments = path.into_iter().map(|p| ChatDraftAttachment {
-                upload_id: p.clone(),
-                file_name: Some(p),
-                mime_type: None,
-            });
-            let draft = ChatDraft { text, attachments: attachments.collect(), reply_to_message_id: None };
-            st.update_chat(idx, |c| c.draft = Some(draft));
+    let idx = match (r.str("chatID"), r.str("messageID")) {
+        (Some(id), _) => Some(st.resolve_chat_idx(id).ok_or_else(|| missing("chat_not_found"))?),
+        (None, Some(mid)) => {
+            let &m_idx = st.msg_idx_by_id.get(mid).ok_or_else(|| missing("message_not_found"))?;
+            Some(st.chat_idx_by_id[&st.messages[m_idx].chat_id])
         }
+        (None, None) => None,
+    };
+    let (text, path) = (r.owned("draftText"), r.owned("draftAttachmentPath"));
+    if text.is_some() || path.is_some() {
+        let idx = idx.ok_or_else(|| bad("draft needs chatID"))?;
+        let attachments =
+            path.into_iter().map(|p| ChatDraftAttachment { upload_id: p.clone(), file_name: Some(p), mime_type: None });
+        let draft = ChatDraft { text, attachments: attachments.collect(), reply_to_message_id: None };
+        st.update_chat(idx, |c| c.draft = Some(draft));
     }
-    if let Some(mid) = r.owned("messageID") {
-        st.focused_message_id = Some(mid);
-    }
+    st.focus_tx.send(idx.map(|i| st.chats[i].id.clone())).ok();
     ok(&json!({ "success": true }))
 }
 

@@ -216,9 +216,8 @@ pub struct BeeperStore {
     pub oauth_codes: HashMap<String, OAuthCodeEntry>,
     pub valid_tokens: BTreeSet<String>,
     pub settings: BeeperSettings,
-    pub focused_chat_id: Option<String>,
-    pub focused_message_id: Option<String>,
     pub ws_tx: broadcast::Sender<WsEvent>,
+    pub focus_tx: broadcast::Sender<Option<String>>,
     pub link_previews: HashMap<String, LinkPreview>,
     next_seq: u64,
 }
@@ -279,9 +278,8 @@ impl BeeperStore {
                 .collect(),
             oauth_clients: HashMap::new(),
             oauth_codes: HashMap::new(),
-            focused_chat_id: None,
-            focused_message_id: None,
             ws_tx: broadcast::channel(WS_CHANNEL_CAPACITY).0,
+            focus_tx: broadcast::channel(WS_CHANNEL_CAPACITY).0,
             next_seq: 1000,
         };
         store.load_from_sqlite_or_seed();
