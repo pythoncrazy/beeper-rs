@@ -1,0 +1,34 @@
+[package]
+name = "beeper-rs"
+version = "4.3.176"
+edition = "2021"
+license = "Unlicense OR MIT OR Apache-2.0"
+repository = "https://github.com/pythoncrazy/beeper-rs"
+description = "Native Rust desktop client, HTTP REST server, WebSocket server, and SDK for Beeper Desktop."
+
+[lib]
+name = "beeper_rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "beeper-rs"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["ws", "multipart", "macros"] }
+tokio = { version = "1.40", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+egui = "0.29"
+tray-icon = "0.19"
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+ clap = { version = "4.5", features = ["derive", "env"] }
+urlencoding = "2.1"
