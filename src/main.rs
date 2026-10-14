@@ -1,6 +1,6 @@
 use beeper_api::{
     client::{extract_state_from_index_db, BeeperClient},
-    server::{build_router, serve_http},
+    server::serve_http,
 };
 use beeper_core::{
     config::{CentralConfig, APP_NAME, APP_VERSION, DEFAULT_PAS_HOST, DEFAULT_PAS_PORT},
@@ -108,12 +108,11 @@ fn main() {
     let host = cfg.host.clone();
     let bind_addr = format!("{}:{}", cfg.host, cfg.port);
     let store: SharedStore = Arc::new(RwLock::new(BeeperStore::from_config(cfg)));
-    let app_router = build_router(store.clone());
 
     if cli.headless || matches!(cli.command, Command::Serve) {
         rt.block_on(async move {
             let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
-            serve_http(listener, app_router).await;
+            serve_http(listener, store).await;
         });
     } else {
         let store_for_server = store.clone();
@@ -134,7 +133,7 @@ fn main() {
                     st.config.port = actual_port;
                     st.settings.pas_port = actual_port;
                 }
-                serve_http(listener, app_router).await;
+                serve_http(listener, store_for_server).await;
             });
         });
         drop(run_native_gui(store));
