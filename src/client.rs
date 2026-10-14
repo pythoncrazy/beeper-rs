@@ -1,3 +1,4 @@
+use crate::config::url_encode;
 use crate::models::*;
 use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -354,7 +355,7 @@ impl BeeperClient {
             .patch(format!(
                 "{}/v1/chats/{}",
                 self.base_url,
-                urlencoding::encode(chat_id)
+                url_encode(chat_id)
             ))
             .bearer_auth(&self.access_token)
             .json(&payload)
@@ -371,7 +372,7 @@ impl BeeperClient {
             .get(format!(
                 "{}/v1/chats/{}/messages",
                 self.base_url,
-                urlencoding::encode(chat_id)
+                url_encode(chat_id)
             ))
             .bearer_auth(&self.access_token)
             .send()
@@ -403,7 +404,7 @@ impl BeeperClient {
             .post(format!(
                 "{}/v1/chats/{}/messages",
                 self.base_url,
-                urlencoding::encode(chat_id)
+                url_encode(chat_id)
             ))
             .bearer_auth(&self.access_token)
             .json(&body)
@@ -420,8 +421,8 @@ impl BeeperClient {
             .put(format!(
                 "{}/v1/chats/{}/messages/{}",
                 self.base_url,
-                urlencoding::encode(chat_id),
-                urlencoding::encode(message_id)
+                url_encode(chat_id),
+                url_encode(message_id)
             ))
             .bearer_auth(&self.access_token)
             .json(&json!({ "text": text }))
@@ -438,8 +439,8 @@ impl BeeperClient {
             .delete(format!(
                 "{}/v1/chats/{}/messages/{}",
                 self.base_url,
-                urlencoding::encode(chat_id),
-                urlencoding::encode(message_id)
+                url_encode(chat_id),
+                url_encode(message_id)
             ))
             .bearer_auth(&self.access_token)
             .send()
@@ -455,8 +456,8 @@ impl BeeperClient {
             .post(format!(
                 "{}/v1/chats/{}/messages/{}/reactions",
                 self.base_url,
-                urlencoding::encode(chat_id),
-                urlencoding::encode(message_id)
+                url_encode(chat_id),
+                url_encode(message_id)
             ))
             .bearer_auth(&self.access_token)
             .json(&json!({ "reactionKey": reaction_key }))
@@ -478,9 +479,9 @@ impl BeeperClient {
             .delete(format!(
                 "{}/v1/chats/{}/messages/{}/reactions/{}",
                 self.base_url,
-                urlencoding::encode(chat_id),
-                urlencoding::encode(message_id),
-                urlencoding::encode(reaction_key)
+                url_encode(chat_id),
+                url_encode(message_id),
+                url_encode(reaction_key)
             ))
             .bearer_auth(&self.access_token)
             .send()

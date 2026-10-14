@@ -1,13 +1,15 @@
 use crate::config::{
-    network_spec_by_bridge, APP_BUNDLE_ID, APP_NAME, APP_VERSION, NETWORK_SPECS, OPENAPI_SPEC_JSON,
+    network_spec_by_bridge, now_rfc3339_millis, url_decode, APP_BUNDLE_ID, APP_NAME, APP_VERSION,
+    NETWORK_SPECS, OPENAPI_SPEC_JSON,
 };
 use crate::models::*;
 use crate::platform::OsKind;
 use crate::store::*;
 use axum::{
+    body::Bytes,
     extract::{
         ws::{Message as AxumWsMsg, WebSocket, WebSocketUpgrade},
-        Multipart, Path as AxumPath, Query, State,
+        Path as AxumPath, Query, State,
     },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
@@ -307,10 +309,7 @@ async fn oauth_token(
             .split('&')
             .filter_map(|pair| {
                 let (k, v) = pair.split_once('=')?;
-                Some((
-                    urlencoding::decode(k).unwrap().into_owned(),
-                    urlencoding::decode(v).unwrap().into_owned(),
-                ))
+                Some((url_decode(k), url_decode(v)))
             })
             .collect()
     };
@@ -499,7 +498,7 @@ async fn post_verifications_start(State(store): State<SharedStore>) -> Json<Valu
         direction: "outgoing".to_string(),
         methods: vec!["sas".to_string(), "qr_code".to_string()],
         state: "ready".to_string(),
-        updated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        updated_at: now_rfc3339_millis(),
         sas: None,
         qr: Some(VerificationQr {
             data: Some(format!("BEEPER_QR_VERIFY:{vid}")),
@@ -533,7 +532,7 @@ async fn post_verification_accept(
     let mut st = store.write().unwrap();
     let v = st.verifications.get_mut(&id).expect("verification exists");
     v.state = "ready".to_string();
-    v.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    v.updated_at = now_rfc3339_millis();
     let v_clone = v.clone();
     st.setup_status.session.verification = Some(v_clone.clone());
     Json(json!({ "session": st.setup_status.session, "verification": v_clone }))
@@ -546,7 +545,7 @@ async fn post_verification_cancel(
     let mut st = store.write().unwrap();
     let v = st.verifications.get_mut(&id).expect("verification exists");
     v.state = "cancelled".to_string();
-    v.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    v.updated_at = now_rfc3339_millis();
     let v_clone = v.clone();
     st.setup_status.session.verification = None;
     Json(json!({ "session": st.setup_status.session, "verification": v_clone }))
@@ -559,7 +558,7 @@ async fn post_verification_sas_start(
     let mut st = store.write().unwrap();
     let v = st.verifications.get_mut(&id).expect("verification exists");
     v.state = "sas_started".to_string();
-    v.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    v.updated_at = now_rfc3339_millis();
     v.sas = Some(VerificationSas {
         decimals: Some("4821 9034 1172".to_string()),
         emojis: [
@@ -600,7 +599,7 @@ async fn post_verification_sas_confirm(
     let mut st = store.write().unwrap();
     let v = st.verifications.get_mut(&id).expect("verification exists");
     v.state = "verified".to_string();
-    v.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    v.updated_at = now_rfc3339_millis();
     let v_clone = v.clone();
     finalize_verification(&mut st, v_clone)
 }
@@ -618,7 +617,7 @@ async fn post_verification_qr_scan(
         direction: "outgoing".to_string(),
         methods: vec!["qr_code".to_string()],
         state: "verified".to_string(),
-        updated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        updated_at: now_rfc3339_millis(),
         sas: None,
         qr: Some(VerificationQr {
             data: Some(qr_data.to_string()),
@@ -636,7 +635,7 @@ async fn post_verification_qr_confirm(
     let mut st = store.write().unwrap();
     let v = st.verifications.get_mut(&id).expect("verification exists");
     v.state = "verified".to_string();
-    v.updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    v.updated_at = now_rfc3339_millis();
     let v_clone = v.clone();
     finalize_verification(&mut st, v_clone)
 }
@@ -1256,7 +1255,7 @@ async fn archive_chat_handler(
         event_type: "chat.upserted".to_string(),
         chat_id: Some(c.id.clone()),
         message_id: None,
-        timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        timestamp: now_rfc3339_millis(),
         chat: Some(c),
         message: None,
     });
@@ -1511,7 +1510,7 @@ async fn delete_reaction_handler(
     AxumPath((chat_id, message_id, reaction_key)): AxumPath<(String, String, String)>,
 ) -> Response {
     let mut st = store.write().unwrap();
-    let decoded_key = urlencoding::decode(&reaction_key).unwrap().into_owned();
+    let decoded_key = url_decode(&reaction_key);
     let cid = st
         .remove_reaction(&chat_id, &message_id, &decoded_key)
         .expect("remove reaction");
@@ -1626,26 +1625,44 @@ fn asset_json_response(asset: StoredAsset) -> Response {
 
 async fn upload_asset_multipart(
     State(store): State<SharedStore>,
-    mut multipart: Multipart,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Response {
-    let mut file_bytes: Vec<u8> = Vec::new();
+    let ct = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream");
     let mut file_name = "upload.bin".to_string();
     let mut mime_type = "application/octet-stream".to_string();
+    let mut file_bytes: Vec<u8> = body.to_vec();
 
-    while let Ok(Some(field)) = multipart.next_field().await {
-        match field.name().unwrap_or("") {
-            "file" => {
-                if let Some(fname) = field.file_name() {
-                    file_name = fname.to_string();
+    if let Some((_, boundary)) = ct.split_once("boundary=") {
+        let delim = format!("--{}", boundary.trim().trim_matches('"'));
+        if let Ok(raw_str) = std::str::from_utf8(&body) {
+            for part in raw_str.split(&delim) {
+                if let Some((part_hdrs, part_body)) = part.split_once("\r\n\r\n") {
+                    let clean_body = part_body
+                        .trim_end_matches("--\r\n")
+                        .trim_end_matches("\r\n");
+                    if part_hdrs.contains("name=\"file\"") {
+                        if let Some((_, fn_part)) = part_hdrs.split_once("filename=\"") {
+                            if let Some((fname, _)) = fn_part.split_once('"') {
+                                file_name = fname.to_string();
+                            }
+                        }
+                        if let Some((_, ct_part)) = part_hdrs.split_once("Content-Type:") {
+                            if let Some(ct_line) = ct_part.lines().next() {
+                                mime_type = ct_line.trim().to_string();
+                            }
+                        }
+                        file_bytes = clean_body.as_bytes().to_vec();
+                    } else if part_hdrs.contains("name=\"fileName\"") {
+                        file_name = clean_body.to_string();
+                    } else if part_hdrs.contains("name=\"mimeType\"") {
+                        mime_type = clean_body.to_string();
+                    }
                 }
-                if let Some(ct) = field.content_type() {
-                    mime_type = ct.to_string();
-                }
-                file_bytes = field.bytes().await.unwrap().to_vec();
             }
-            "fileName" => file_name = field.text().await.unwrap(),
-            "mimeType" => mime_type = field.text().await.unwrap(),
-            _ => {}
         }
     }
     let asset = store
