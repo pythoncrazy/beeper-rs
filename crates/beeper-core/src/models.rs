@@ -416,13 +416,11 @@ impl Message {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CursorPage<T> {
     pub items: Vec<T>,
-    #[serde(rename = "hasMore")]
     pub has_more: bool,
-    #[serde(rename = "oldestCursor")]
     pub oldest_cursor: Option<String>,
-    #[serde(rename = "newestCursor")]
     pub newest_cursor: Option<String>,
 }
 
@@ -472,21 +470,16 @@ pub struct VerificationState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SetupE2ee {
     pub state: String,
-    #[serde(rename = "crossSigning")]
     pub cross_signing: bool,
-    #[serde(rename = "firstSyncDone")]
     pub first_sync_done: bool,
-    #[serde(rename = "hasBackedUpCode")]
     pub has_backed_up_code: bool,
     pub initialized: bool,
-    #[serde(rename = "keyBackup")]
     pub key_backup: bool,
-    #[serde(rename = "secretStorage")]
     pub secret_storage: bool,
     pub verified: bool,
-    #[serde(rename = "verificationMethods")]
     pub verification_methods: Vec<String>,
     pub secrets: HashMap<String, bool>,
 }
@@ -545,12 +538,11 @@ pub struct BridgeAccountInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BridgeSummary {
     #[serde(rename = "bridgeID")]
     pub bridge_id: String,
-    #[serde(rename = "bridgeType")]
     pub bridge_type: String,
-    #[serde(rename = "isRunning")]
     pub is_running: bool,
     pub logins: Vec<BridgeAccountInfo>,
 }
