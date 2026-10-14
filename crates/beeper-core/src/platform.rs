@@ -36,20 +36,6 @@ impl OsKind {
         }
     }
 
-    pub fn primary_mod_label(&self) -> &'static str {
-        match self {
-            Self::MacOs => "⌘",
-            Self::Windows | Self::Linux => "Ctrl",
-        }
-    }
-
-    pub fn alt_mod_label(&self) -> &'static str {
-        match self {
-            Self::MacOs => "⌥",
-            Self::Windows | Self::Linux => "Alt",
-        }
-    }
-
     pub fn detect_display_server(&self, env_vars: &HashMap<String, String>) -> DisplayServerKind {
         match self {
             Self::MacOs => DisplayServerKind::Quartz,
