@@ -1,0 +1,2960 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Beeper Desktop API",
+    "version": "0.2.0",
+    "description": "HTTP API for interacting with Beeper Desktop. Allows access to your chats from across all the chat networks. This API provides read and write access to messages, chats, and accounts through OAuth2 or Bearer token authentication. A live WebSocket endpoint is available at /v1/ws. Clients authenticate with the same access token and send subscriptions.set with chatIDs (use [\"*\"] for all chats). Server events are flat, typed messages: chat.upserted, chat.deleted, message.upserted, and message.deleted.",
+    "termsOfService": "https://www.beeper.com/terms",
+    "contact": {
+      "name": "Beeper",
+      "email": "help@beeper.com",
+      "url": "https://www.beeper.com"
+    },
+    "license": { "name": "MIT", "url": "https://opensource.org/licenses/MIT" }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:23373",
+      "description": "Beeper Desktop API server"
+    }
+  ],
+  "security": [{ "bearerAuth": [] }],
+  "tags": [
+    {
+      "name": "Accounts",
+      "description": "Manage connected messaging accounts"
+    },
+    { "name": "App", "description": "Control the Beeper Desktop application" },
+    { "name": "Messages", "description": "Send and search messages" },
+    { "name": "Chats", "description": "Manage chats and conversations" },
+    { "name": "Reminders", "description": "Set reminders for chats" },
+    {
+      "name": "OAuth",
+      "description": "OAuth2 authentication and token management"
+    }
+  ],
+  "externalDocs": {
+    "description": "Beeper Desktop API Documentation",
+    "url": "https://developers.beeper.com/desktop-api"
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "Invalid request parameters",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "UnauthorizedError": {
+        "description": "Access token is missing or invalid",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "ForbiddenError": {
+        "description": "Access token does not have the required scope",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "UnprocessableEntity": {
+        "description": "Unprocessable entity - validation error",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "Too many requests - rate limit exceeded",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "InternalServerError": {
+        "description": "Internal server error",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      }
+    },
+    "headers": {
+      "X-Beeper-Desktop-Version": {
+        "description": "Beeper Desktop application version providing this response.",
+        "schema": { "type": "string", "example": "4.0.0" }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Bearer token authentication. Access token obtained via OAuth2 PKCE flow or created in-app. Required for all API operations."
+      },
+      "oauth2": {
+        "type": "oauth2",
+        "description": "OAuth2 Authorization Code flow with PKCE for obtaining bearer access tokens. Used by MCP servers to authenticate clients.",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "http://localhost:23373/oauth/authorize",
+            "tokenUrl": "http://localhost:23373/oauth/token",
+            "scopes": {
+              "read": "Read access to messages, chats, and accounts",
+              "write": "Write access to send messages, edit messages, react to messages, archive chats, and set reminders"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "message": { "type": "string", "description": "Error message" },
+          "code": {
+            "type": "string",
+            "description": "Machine-readable error code"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "issues": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "description": "Validation issue code",
+                          "example": "invalid_type"
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "Human-readable description of the validation issue"
+                        },
+                        "path": {
+                          "type": "array",
+                          "items": {
+                            "anyOf": [
+                              { "type": "string" },
+                              { "type": "number" }
+                            ]
+                          },
+                          "description": "Path pointing to the invalid field within the payload",
+                          "example": ["body", "chatID"]
+                        }
+                      },
+                      "required": ["code", "message", "path"]
+                    },
+                    "description": "List of validation issues"
+                  }
+                },
+                "required": ["issues"],
+                "description": "Validation error details"
+              },
+              {
+                "type": "object",
+                "additionalProperties": {
+                  "nullable": true,
+                  "x-stainless-any": true
+                },
+                "description": "Additional error context"
+              },
+              {
+                "nullable": true,
+                "description": "Arbitrary details payload supplied by the server",
+                "x-stainless-any": true
+              },
+              { "nullable": true }
+            ],
+            "description": "Additional error details for debugging"
+          }
+        },
+        "required": ["message", "code"]
+      },
+      "ChatID": {
+        "type": "string",
+        "description": "Unique identifier of the chat.",
+        "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+      },
+      "AccountID": {
+        "type": "string",
+        "description": "Account ID this resource belongs to."
+      },
+      "Cursor": {
+        "type": "string",
+        "description": "Opaque pagination cursor; do not inspect. Use together with 'direction'.",
+        "example": "1725489123456|c29tZUltc2dQYWdl",
+        "x-stainless-pagination-property": { "purpose": "next_cursor_param" }
+      },
+      "Direction": {
+        "type": "string",
+        "enum": ["after", "before"],
+        "description": "Pagination direction used with 'cursor': 'before' fetches older results, 'after' fetches newer results. Defaults to 'before' when only 'cursor' is provided.",
+        "example": "before"
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable Beeper user ID. Use as the primary key when referencing a person."
+          },
+          "username": {
+            "type": "string",
+            "description": "Human-readable handle if available (e.g., '@alice'). May be network-specific and not globally unique."
+          },
+          "phoneNumber": {
+            "type": "string",
+            "description": "User's phone number in E.164 format (e.g., '+14155552671'). Omit if unknown."
+          },
+          "email": {
+            "type": "string",
+            "description": "Email address if known. Not guaranteed verified."
+          },
+          "fullName": {
+            "type": "string",
+            "description": "Display name as shown in clients (e.g., 'Alice Example'). May include emojis."
+          },
+          "imgURL": {
+            "type": "string",
+            "description": "Avatar image URL if available. May be temporary or local-only to this device; download promptly if durable access is needed."
+          },
+          "cannotMessage": {
+            "type": "boolean",
+            "description": "True if Beeper cannot initiate messages to this user (e.g., blocked, network restriction, or no DM path). The user may still message you."
+          },
+          "isSelf": {
+            "type": "boolean",
+            "description": "True if this user represents the authenticated account's own identity."
+          }
+        },
+        "required": ["id"],
+        "description": "User the account belongs to."
+      },
+      "Account": {
+        "type": "object",
+        "properties": {
+          "accountID": {
+            "type": "string",
+            "description": "Chat account added to Beeper. Use this to route account-scoped actions."
+          },
+          "user": { "$ref": "#/components/schemas/User" }
+        },
+        "required": ["accountID", "user"],
+        "description": "A chat account added to Beeper"
+      },
+      "GetAccountsOutput": {
+        "type": "array",
+        "items": { "$ref": "#/components/schemas/Account" },
+        "description": "Connected accounts the user can act through. Includes accountID and user identity.",
+        "example": [
+          {
+            "accountID": "local-whatsapp_ba_EvYDBBsZbRQAy3UOSWqG0LuTVkc",
+            "user": {
+              "id": "ba_EvYDBBsZbRQAy3UOSWqG0LuTVkc",
+              "phoneNumber": "+15551234567",
+              "fullName": "Batuhan İçöz",
+              "imgURL": "file:///Users/batuhan/Library/Application%20Support/BeeperTexts/local-whatsapp/attachments/113988c2e1d3d59d0171dcd034ca481eb040a3f9c0435c158e584adb4b59dd59",
+              "isSelf": true
+            }
+          },
+          {
+            "accountID": "local-telegram_ba_QFrb5lrLPhO3OT5MFBeTWv0x4BI",
+            "user": {
+              "id": "ba_QFrb5lrLPhO3OT5MFBeTWv0x4BI",
+              "username": "batuhan",
+              "phoneNumber": "+15559876543",
+              "fullName": "Batuhan İçöz",
+              "imgURL": "file:///Users/batuhan/Library/Application%20Support/BeeperTexts/local-telegram/attachments/e692d0072966c9153e2eb104aca3b8e5c96d869a458d16180a2d62898a935a84",
+              "isSelf": true
+            }
+          },
+          {
+            "accountID": "local-twitter_ba_gUU1IHNGo_CsTZLp0vDFUYk9EuE",
+            "user": {
+              "id": "ba_gUU1IHNGo_CsTZLp0vDFUYk9EuE",
+              "username": "batuhan",
+              "fullName": "Batuhan İçöz",
+              "imgURL": "file:///Users/batuhan/Library/Application%20Support/BeeperTexts/local-twitter/attachments/d68c58266f4529493f2e34079dfa15648abd9ffff3a40ea8bc99ac283353eb53",
+              "isSelf": true
+            }
+          }
+        ]
+      },
+      "Attachment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Attachment identifier (typically an mxc:// URL). Use with /v1/assets/download to get a local file path."
+          },
+          "type": {
+            "type": "string",
+            "enum": ["unknown", "img", "video", "audio"],
+            "description": "Attachment type."
+          },
+          "srcURL": {
+            "type": "string",
+            "description": "Public URL or local file path to fetch the asset. May be temporary or local-only to this device; download promptly if durable access is needed."
+          },
+          "mimeType": {
+            "type": "string",
+            "description": "MIME type if known (e.g., 'image/png')."
+          },
+          "fileName": {
+            "type": "string",
+            "description": "Original filename if available."
+          },
+          "fileSize": {
+            "type": "number",
+            "description": "File size in bytes if known."
+          },
+          "isGif": {
+            "type": "boolean",
+            "description": "True if the attachment is a GIF."
+          },
+          "isSticker": {
+            "type": "boolean",
+            "description": "True if the attachment is a sticker."
+          },
+          "isVoiceNote": {
+            "type": "boolean",
+            "description": "True if the attachment is a voice note."
+          },
+          "duration": {
+            "type": "number",
+            "description": "Duration in seconds (audio/video)."
+          },
+          "posterImg": {
+            "type": "string",
+            "description": "Preview image URL for video attachments (poster frame). May be temporary or local-only to this device; download promptly if durable access is needed."
+          },
+          "size": {
+            "type": "object",
+            "properties": {
+              "width": { "type": "number" },
+              "height": { "type": "number" }
+            },
+            "description": "Pixel dimensions of the attachment: width/height in px."
+          }
+        },
+        "required": ["type"]
+      },
+      "Reaction": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Reaction ID, typically ${participantID}${reactionKey} if multiple reactions allowed, or just participantID otherwise."
+          },
+          "reactionKey": {
+            "type": "string",
+            "description": "The reaction key: an emoji (😄), a network-specific key, or a shortcode like \"smiling-face\"."
+          },
+          "imgURL": {
+            "type": "string",
+            "description": "URL to the reaction's image. May be temporary or local-only to this device; download promptly if durable access is needed."
+          },
+          "participantID": {
+            "type": "string",
+            "description": "User ID of the participant who reacted."
+          },
+          "emoji": {
+            "type": "boolean",
+            "description": "True if the reactionKey is an emoji."
+          }
+        },
+        "required": ["id", "reactionKey", "participantID"]
+      },
+      "Message": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Message ID.",
+            "example": "1343993"
+          },
+          "chatID": {
+            "type": "string",
+            "description": "Unique identifier of the chat.",
+            "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+          },
+          "accountID": {
+            "type": "string",
+            "description": "Beeper account ID the message belongs to."
+          },
+          "senderID": {
+            "type": "string",
+            "description": "Sender user ID.",
+            "example": "@kishanbagaria:local-whatsapp.localhost"
+          },
+          "senderName": {
+            "type": "string",
+            "description": "Resolved sender display name (impersonator/full name/username/participant name)."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Message timestamp.",
+            "example": "2025-08-31T23:30:12.520Z"
+          },
+          "sortKey": {
+            "type": "string",
+            "description": "A unique, sortable key used to sort messages.",
+            "example": "821744079"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "TEXT",
+              "NOTICE",
+              "IMAGE",
+              "VIDEO",
+              "VOICE",
+              "AUDIO",
+              "FILE",
+              "STICKER",
+              "LOCATION",
+              "REACTION"
+            ],
+            "description": "Message content type. Useful for distinguishing reactions, media messages, and state events from regular text messages."
+          },
+          "text": {
+            "type": "string",
+            "description": "Plain-text body if present. May include a JSON fallback with text entities for rich messages."
+          },
+          "isSender": {
+            "type": "boolean",
+            "description": "True if the authenticated user sent the message."
+          },
+          "attachments": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Attachment" },
+            "description": "Attachments included with this message, if any."
+          },
+          "isUnread": {
+            "type": "boolean",
+            "description": "True if the message is unread for the authenticated user. May be omitted."
+          },
+          "linkedMessageID": {
+            "type": "string",
+            "description": "ID of the message this is a reply to, if any."
+          },
+          "reactions": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Reaction" },
+            "description": "Reactions to the message, if any."
+          }
+        },
+        "required": [
+          "id",
+          "chatID",
+          "accountID",
+          "senderID",
+          "timestamp",
+          "sortKey"
+        ],
+        "example": {
+          "id": "1343993",
+          "sortKey": "aaaa1",
+          "chatID": "!signal_adamvy:local-signal.localhost",
+          "accountID": "local-signal_ba_7N74FrU29pxij_TnqfxeUHj53FY",
+          "senderID": "@adamvy:local-signal.localhost",
+          "senderName": "Adam Van Ymeren",
+          "timestamp": "2025-08-28T11:04:29.621Z",
+          "text": "Hey, can we reschedule our meeting to 3pm?",
+          "isSender": false,
+          "isUnread": false
+        }
+      },
+      "Chat": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique identifier of the chat across Beeper.",
+            "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+          },
+          "localChatID": {
+            "type": "string",
+            "nullable": true,
+            "description": "Local chat ID specific to this Beeper Desktop installation."
+          },
+          "accountID": {
+            "type": "string",
+            "description": "Account ID this chat belongs to."
+          },
+          "title": {
+            "type": "string",
+            "description": "Display title of the chat as computed by the client/server."
+          },
+          "type": {
+            "type": "string",
+            "enum": ["single", "group"],
+            "description": "Chat type: 'single' for direct messages, 'group' for group chats."
+          },
+          "participants": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/User" },
+                    {
+                      "description": "A person on or reachable through Beeper. Values are best-effort and can vary by network."
+                    }
+                  ]
+                },
+                "description": "Participants returned for this chat (limited by the request; may be a subset)."
+              },
+              "hasMore": {
+                "type": "boolean",
+                "description": "True if there are more participants than included in items."
+              },
+              "total": {
+                "type": "integer",
+                "description": "Total number of participants in the chat."
+              }
+            },
+            "required": ["items", "hasMore", "total"],
+            "description": "Chat participants information."
+          },
+          "lastActivity": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp of last activity.",
+            "example": "2025-08-31T23:30:12.520Z"
+          },
+          "unreadCount": {
+            "type": "integer",
+            "description": "Number of unread messages.",
+            "example": 3
+          },
+          "lastReadMessageSortKey": {
+            "type": "string",
+            "description": "Last read message sortKey."
+          },
+          "isArchived": {
+            "type": "boolean",
+            "description": "True if chat is archived."
+          },
+          "isMuted": {
+            "type": "boolean",
+            "description": "True if chat notifications are muted."
+          },
+          "isPinned": {
+            "type": "boolean",
+            "description": "True if chat is pinned."
+          }
+        },
+        "required": [
+          "id",
+          "accountID",
+          "title",
+          "type",
+          "participants",
+          "unreadCount"
+        ],
+        "example": {
+          "id": "!instagram_mattwondra:local-instagram.localhost",
+          "localChatID": "1229391",
+          "accountID": "local-instagram_ba_eRfQMmnSNy_p7Ih7HL7RduRpKFU",
+          "title": "Matt Wondra",
+          "type": "single",
+          "participants": {
+            "items": [
+              {
+                "id": "@mattwondra:local-instagram.localhost",
+                "username": "mattwondra",
+                "fullName": "Matt Wondra",
+                "cannotMessage": false,
+                "isSelf": false
+              },
+              {
+                "id": "@batuhan:local-instagram.localhost",
+                "username": "batuhan",
+                "fullName": "Batuhan İçöz",
+                "cannotMessage": false,
+                "isSelf": true
+              }
+            ],
+            "hasMore": false,
+            "total": 2
+          },
+          "lastActivity": "2025-08-31T19:41:41.000Z",
+          "unreadCount": 0,
+          "lastReadMessageSortKey": "449706228480",
+          "isArchived": false,
+          "isMuted": false,
+          "isPinned": false
+        }
+      },
+      "SearchMessagesOutput": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Message" },
+            "description": "Messages matching the query and filters.",
+            "x-stainless-pagination-property": { "purpose": "items" }
+          },
+          "chats": {
+            "type": "object",
+            "additionalProperties": { "$ref": "#/components/schemas/Chat" },
+            "description": "Map of chatID -> chat details for chats referenced in items."
+          },
+          "hasMore": {
+            "type": "boolean",
+            "description": "True if additional results can be fetched using the provided cursors.",
+            "x-stainless-pagination-property": { "purpose": "has_next_page" }
+          },
+          "oldestCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Cursor for fetching older results (use with direction='before'). Opaque string; do not inspect.",
+            "example": "1725489123456|c29tZUltc2dQYWdl",
+            "x-stainless-pagination-property": {
+              "purpose": "next_cursor_field"
+            }
+          },
+          "newestCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Cursor for fetching newer results (use with direction='after'). Opaque string; do not inspect.",
+            "example": "1725489123456|c29tZUltc2dQYWdl",
+            "x-stainless-pagination-property": {
+              "purpose": "previous_cursor_field"
+            }
+          }
+        },
+        "required": [
+          "items",
+          "chats",
+          "hasMore",
+          "oldestCursor",
+          "newestCursor"
+        ],
+        "example": {
+          "items": [
+            {
+              "id": "1343993",
+              "chatID": "!signal_adamvy:local-signal.localhost",
+              "accountID": "local-signal_ba_7N74FrU29pxij_TnqfxeUHj53FY",
+              "senderID": "@adamvy:local-signal.localhost",
+              "senderName": "Adam Van Ymeren",
+              "timestamp": "2025-08-28T11:04:29.621Z",
+              "sortKey": "aaaa1",
+              "text": "Hey, can we reschedule our meeting to 3pm?",
+              "isSender": false,
+              "isUnread": false
+            },
+            {
+              "id": "1343994",
+              "chatID": "!telegram_nick:local-telegram.localhost",
+              "accountID": "local-telegram_ba_QFrb5lrLPhO3OT5MFBeTWv0x4BI",
+              "senderID": "@nick:local-telegram.localhost",
+              "senderName": "Nick Mills-Barrett",
+              "timestamp": "2025-08-28T14:22:15.432Z",
+              "sortKey": "aaaa2",
+              "text": "The deployment is complete, everything looks good",
+              "isSender": false,
+              "isUnread": true
+            }
+          ],
+          "chats": {
+            "!signal_adamvy:local-signal.localhost": {
+              "id": "!signal_adamvy:local-signal.localhost",
+              "localChatID": "1229720",
+              "accountID": "local-signal_ba_7N74FrU29pxij_TnqfxeUHj53FY",
+              "title": "Adam Van Ymeren",
+              "type": "single",
+              "participants": {
+                "items": [
+                  {
+                    "id": "@adamvy:local-signal.localhost",
+                    "fullName": "Adam Van Ymeren",
+                    "cannotMessage": false,
+                    "isSelf": false
+                  },
+                  {
+                    "id": "@batuhan:local-signal.localhost",
+                    "fullName": "Batuhan İçöz",
+                    "cannotMessage": false,
+                    "isSelf": true
+                  }
+                ],
+                "hasMore": false,
+                "total": 2
+              },
+              "lastActivity": "2025-08-31T17:38:20.393Z",
+              "unreadCount": 0,
+              "isArchived": false,
+              "isMuted": false,
+              "isPinned": true
+            },
+            "!telegram_nick:local-telegram.localhost": {
+              "id": "!telegram_nick:local-telegram.localhost",
+              "localChatID": "1229721",
+              "accountID": "local-telegram_ba_QFrb5lrLPhO3OT5MFBeTWv0x4BI",
+              "title": "Nick Mills-Barrett",
+              "type": "single",
+              "participants": {
+                "items": [
+                  {
+                    "id": "@nick:local-telegram.localhost",
+                    "username": "nick",
+                    "fullName": "Nick Mills-Barrett",
+                    "cannotMessage": false,
+                    "isSelf": false
+                  },
+                  {
+                    "id": "@batuhan:local-telegram.localhost",
+                    "username": "batuhan",
+                    "fullName": "Batuhan İçöz",
+                    "cannotMessage": false,
+                    "isSelf": true
+                  }
+                ],
+                "hasMore": false,
+                "total": 2
+              },
+              "lastActivity": "2025-08-31T16:45:10.123Z",
+              "unreadCount": 2,
+              "isArchived": false,
+              "isMuted": true,
+              "isPinned": false
+            }
+          },
+          "hasMore": true,
+          "oldestCursor": "1756379069621",
+          "newestCursor": null
+        }
+      },
+      "SearchChatsOutput": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Chat" },
+            "description": "Chats matching the filters.",
+            "x-stainless-pagination-property": { "purpose": "items" }
+          },
+          "hasMore": {
+            "type": "boolean",
+            "description": "True if additional results can be fetched using the provided cursors.",
+            "x-stainless-pagination-property": { "purpose": "has_next_page" }
+          },
+          "oldestCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Cursor for fetching older results (use with direction='before'). Opaque string; do not inspect.",
+            "x-stainless-pagination-property": {
+              "purpose": "next_cursor_field"
+            }
+          },
+          "newestCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Cursor for fetching newer results (use with direction='after'). Opaque string; do not inspect.",
+            "x-stainless-pagination-property": {
+              "purpose": "previous_cursor_field"
+            }
+          }
+        },
+        "required": ["items", "hasMore", "oldestCursor", "newestCursor"],
+        "example": {
+          "items": [
+            {
+              "id": "!KPFTtZYWuERwib8T702N9IfqiCc:ba_EvYDBBsZbRQAy3UOSWqG0LuTVkc.local-whatsapp.localhost",
+              "localChatID": "1229391",
+              "accountID": "local-whatsapp_ba_EvYDBBsZbRQAy3UOSWqG0LuTVkc",
+              "title": "Kishan Bagaria",
+              "type": "single",
+              "participants": {
+                "items": [
+                  {
+                    "id": "@kishanbagaria:local-whatsapp.localhost",
+                    "phoneNumber": "+15551112222",
+                    "fullName": "Kishan Bagaria",
+                    "cannotMessage": false,
+                    "isSelf": false
+                  }
+                ],
+                "hasMore": false,
+                "total": 2
+              },
+              "lastActivity": "2025-08-31T19:41:41.000Z",
+              "unreadCount": 3,
+              "lastReadMessageSortKey": "449706228480",
+              "isArchived": false,
+              "isMuted": false,
+              "isPinned": true
+            },
+            {
+              "id": "!nZeX7dh67_RaPnmWGJIjUkV2svE:ba_sXf0adnbr287.local-telegram.localhost",
+              "localChatID": "1229078",
+              "accountID": "local-telegram_ba_sXf0adnbr287_pRup35Tgl-lsIg",
+              "title": "Brad Murray",
+              "type": "single",
+              "participants": {
+                "items": [
+                  {
+                    "id": "@bradmurray:local-telegram.localhost",
+                    "phoneNumber": "+15553334444",
+                    "fullName": "Brad Murray",
+                    "cannotMessage": false,
+                    "isSelf": false
+                  }
+                ],
+                "hasMore": false,
+                "total": 2
+              },
+              "lastActivity": "2025-08-31T18:05:20.648Z",
+              "unreadCount": 0,
+              "lastReadMessageSortKey": "449706782720",
+              "isArchived": true,
+              "isMuted": false,
+              "isPinned": false
+            },
+            {
+              "id": "!twitter_dm_photomatt:local-twitter.localhost",
+              "localChatID": "1228956",
+              "accountID": "local-twitter_ba_gUU1IHNGo_CsTZLp0vDFUYk9EuE",
+              "title": "Matt Mullenweg",
+              "type": "single",
+              "participants": {
+                "items": [
+                  {
+                    "id": "@photomatt:local-twitter.localhost",
+                    "username": "photomatt",
+                    "fullName": "Matt Mullenweg",
+                    "cannotMessage": false,
+                    "isSelf": false
+                  }
+                ],
+                "hasMore": false,
+                "total": 2
+              },
+              "lastActivity": "2025-08-31T12:30:15.123Z",
+              "unreadCount": 1,
+              "lastReadMessageSortKey": "449705982340",
+              "isArchived": false,
+              "isMuted": true,
+              "isPinned": false
+            }
+          ],
+          "hasMore": true,
+          "oldestCursor": "eyJ0cyI6MTc1NjY2NzEyMDY0OCwiaWQiOiIhS1BGVHRaWVd1RVJ3aWI4VDcwMjlOSWZxaUNjOmJhX0V2WURCQnNamlFSd0F5M1VPU1dxRzBMdVRWa2MiLCJzY29yZSI6MTJ9",
+          "newestCursor": "eyJ0cyI6MTc1NjY2OTMwMTAwMCwiaWQiOiIhblplWDdkZDY3X1JhUG5tV0dKSWpVa1Yyc3ZFOmJhX3NYZjBhZG5icjI4Ny5sb2NhbC10ZWxlZ3JhbS5sb2NhbGhvc3QiLCJzY29yZSI6MTAuNX0="
+        }
+      },
+      "SearchContactsOutput": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                { "$ref": "#/components/schemas/User" },
+                {
+                  "description": "A person on or reachable through Beeper. Values are best-effort and can vary by network."
+                }
+              ]
+            }
+          }
+        },
+        "required": ["items"]
+      },
+      "ListContactsOutput": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                { "$ref": "#/components/schemas/User" },
+                {
+                  "description": "A person on or reachable through Beeper. Values are best-effort and can vary by network."
+                }
+              ]
+            },
+            "description": "Merged contacts for the selected account.",
+            "x-stainless-pagination-property": { "purpose": "items" }
+          },
+          "hasMore": {
+            "type": "boolean",
+            "description": "True if additional results can be fetched using cursors.",
+            "x-stainless-pagination-property": { "purpose": "has_next_page" }
+          },
+          "oldestCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Cursor for fetching older results (use with direction='before'). Opaque string; do not inspect.",
+            "x-stainless-pagination-property": {
+              "purpose": "next_cursor_field"
+            }
+          },
+          "newestCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Cursor for fetching newer results (use with direction='after'). Opaque string; do not inspect.",
+            "x-stainless-pagination-property": {
+              "purpose": "previous_cursor_field"
+            }
+          }
+        },
+        "required": ["items", "hasMore", "oldestCursor", "newestCursor"]
+      },
+      "UnifiedSearchOutput": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "object",
+            "properties": {
+              "chats": {
+                "type": "array",
+                "items": { "$ref": "#/components/schemas/Chat" },
+                "description": "Top chat results."
+              },
+              "in_groups": {
+                "type": "array",
+                "items": { "$ref": "#/components/schemas/Chat" },
+                "description": "Top group results by participant matches."
+              },
+              "messages": {
+                "$ref": "#/components/schemas/SearchMessagesOutput"
+              }
+            },
+            "required": ["chats", "in_groups", "messages"]
+          }
+        },
+        "required": ["results"]
+      },
+      "FocusAppOutput": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "Whether the app was successfully opened/focused."
+          }
+        },
+        "required": ["success"],
+        "description": "Response indicating successful app focus action."
+      },
+      "FocusAppInput": {
+        "type": "object",
+        "properties": {
+          "chatID": {
+            "type": "string",
+            "description": "Optional Beeper chat ID (or local chat ID) to focus after opening the app. If omitted, only opens/focuses the app.",
+            "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+          },
+          "messageID": {
+            "type": "string",
+            "description": "Optional message ID. Jumps to that message in the chat when opening."
+          },
+          "draftText": {
+            "type": "string",
+            "description": "Optional draft text to populate in the message input field."
+          },
+          "draftAttachmentPath": {
+            "type": "string",
+            "description": "Optional draft attachment path to populate in the message input field."
+          }
+        },
+        "description": "Focus Beeper Desktop and optionally navigate to a specific chat, message, or pre-fill draft text and attachment."
+      },
+      "ListChatsOutput": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                { "$ref": "#/components/schemas/Chat" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "preview": {
+                      "allOf": [
+                        { "$ref": "#/components/schemas/Message" },
+                        {
+                          "description": "Last message preview for this chat, if available."
+                        }
+                      ]
+                    }
+                  }
+                }
+              ],
+              "example": {
+                "id": "!instagram_mattwondra:local-instagram.localhost",
+                "localChatID": "1229391",
+                "accountID": "local-instagram_ba_eRfQMmnSNy_p7Ih7HL7RduRpKFU",
+                "title": "Matt Wondra",
+                "type": "single",
+                "participants": {
+                  "items": [
+                    {
+                      "id": "@mattwondra:local-instagram.localhost",
+                      "username": "mattwondra",
+                      "fullName": "Matt Wondra",
+                      "cannotMessage": false,
+                      "isSelf": false
+                    },
+                    {
+                      "id": "@batuhan:local-instagram.localhost",
+                      "username": "batuhan",
+                      "fullName": "Batuhan İçöz",
+                      "cannotMessage": false,
+                      "isSelf": true
+                    }
+                  ],
+                  "hasMore": false,
+                  "total": 2
+                },
+                "lastActivity": "2025-08-31T19:41:41.000Z",
+                "unreadCount": 0,
+                "lastReadMessageSortKey": "449706228480",
+                "isArchived": false,
+                "isMuted": false,
+                "isPinned": false
+              }
+            },
+            "description": "Chats ordered by last activity timestamp (most recent first).",
+            "x-stainless-pagination-property": { "purpose": "items" }
+          },
+          "hasMore": {
+            "type": "boolean",
+            "description": "True if additional results can be fetched using the provided cursors.",
+            "x-stainless-pagination-property": { "purpose": "has_next_page" }
+          },
+          "oldestCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Cursor for fetching older results (use with direction='before'). Opaque string; do not inspect.",
+            "example": "1725489123456",
+            "x-stainless-pagination-property": {
+              "purpose": "next_cursor_field"
+            }
+          },
+          "newestCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Cursor for fetching newer results (use with direction='after'). Opaque string; do not inspect.",
+            "example": "1725489123456",
+            "x-stainless-pagination-property": {
+              "purpose": "previous_cursor_field"
+            }
+          }
+        },
+        "required": ["items", "hasMore", "oldestCursor", "newestCursor"]
+      },
+      "CreateChatOutput": {
+        "type": "object",
+        "properties": {
+          "chatID": {
+            "type": "string",
+            "description": "Newly created chat ID.",
+            "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["existing", "created"],
+            "description": "Only returned in start mode. 'existing' means an existing chat was reused; 'created' means a new chat was created."
+          }
+        },
+        "required": ["chatID"]
+      },
+      "CreateChatInput": {
+        "type": "object",
+        "properties": {
+          "accountID": {
+            "type": "string",
+            "description": "Account to create or start the chat on."
+          },
+          "mode": {
+            "type": "string",
+            "enum": ["create", "start"],
+            "description": "Operation mode. Defaults to 'create' when omitted."
+          },
+          "type": {
+            "type": "string",
+            "enum": ["single", "group"],
+            "description": "Required when mode='create'. 'single' requires exactly one participantID; 'group' supports multiple participants and optional title."
+          },
+          "participantIDs": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "Required when mode='create'. User IDs to include in the new chat."
+          },
+          "title": {
+            "type": "string",
+            "description": "Optional title for group chats when mode='create'; ignored for single chats on most platforms."
+          },
+          "user": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Known user ID when available."
+              },
+              "username": {
+                "type": "string",
+                "description": "Username/handle candidate."
+              },
+              "phoneNumber": {
+                "type": "string",
+                "description": "Phone number candidate (E.164 preferred)."
+              },
+              "email": { "type": "string", "description": "Email candidate." },
+              "fullName": {
+                "type": "string",
+                "description": "Display name hint used for ranking only."
+              }
+            },
+            "description": "Required when mode='start'. Merged user-like contact payload used to resolve the best identifier."
+          },
+          "messageText": {
+            "type": "string",
+            "description": "Optional first message content if the platform requires it to create the chat."
+          },
+          "allowInvite": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether invite-based DM creation is allowed when required by the platform. Used for mode='start'."
+          }
+        },
+        "required": ["accountID"]
+      },
+      "ListMessagesOutput": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Message" },
+            "description": "Messages from the chat, sorted by timestamp. Use message.sortKey as the cursor for pagination and treat it as an opaque value.",
+            "x-stainless-pagination-property": { "purpose": "items" }
+          },
+          "hasMore": {
+            "type": "boolean",
+            "description": "True if additional results can be fetched.",
+            "x-stainless-pagination-property": { "purpose": "has_next_page" }
+          }
+        },
+        "required": ["items", "hasMore"]
+      },
+      "SendMessageOutput": {
+        "type": "object",
+        "properties": {
+          "chatID": {
+            "type": "string",
+            "description": "Unique identifier of the chat.",
+            "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+          },
+          "pendingMessageID": {
+            "type": "string",
+            "description": "Pending message ID"
+          }
+        },
+        "required": ["chatID", "pendingMessageID"],
+        "example": {
+          "chatID": "!signal_adamvy:local-signal.localhost",
+          "pendingMessageID": "m1694783291234567"
+        }
+      },
+      "MessageAttachmentType": {
+        "type": "string",
+        "enum": ["gif", "voiceNote", "sticker"],
+        "description": "Special attachment type (gif, voiceNote, sticker). If omitted, auto-detected from mimeType"
+      },
+      "MessageAttachmentInput": {
+        "type": "object",
+        "properties": {
+          "uploadID": {
+            "type": "string",
+            "description": "Upload ID from uploadAsset endpoint. Required to reference uploaded files."
+          },
+          "mimeType": {
+            "type": "string",
+            "description": "MIME type (optional override of cached value)"
+          },
+          "fileName": {
+            "type": "string",
+            "description": "Filename (optional override of cached value)"
+          },
+          "size": {
+            "type": "object",
+            "properties": {
+              "width": { "type": "number" },
+              "height": { "type": "number" }
+            },
+            "required": ["width", "height"],
+            "description": "Dimensions (optional override of cached value)"
+          },
+          "duration": {
+            "type": "number",
+            "description": "Duration in seconds (optional override of cached value)"
+          },
+          "type": { "$ref": "#/components/schemas/MessageAttachmentType" }
+        },
+        "required": ["uploadID"],
+        "description": "Single attachment to send with the message"
+      },
+      "EditMessageOutput": {
+        "type": "object",
+        "properties": {
+          "chatID": {
+            "type": "string",
+            "description": "Unique identifier of the chat.",
+            "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+          },
+          "messageID": {
+            "type": "string",
+            "description": "Message ID.",
+            "example": "1343993"
+          },
+          "success": {
+            "type": "boolean",
+            "description": "Whether the message was successfully edited"
+          }
+        },
+        "required": ["chatID", "messageID", "success"],
+        "example": {
+          "chatID": "!signal_adamvy:local-signal.localhost",
+          "messageID": "1343993",
+          "success": true
+        }
+      },
+      "AddReactionOutput": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [true],
+            "description": "Whether the reaction was successfully added",
+            "x-stainless-const": true
+          },
+          "chatID": {
+            "type": "string",
+            "description": "Unique identifier of the chat.",
+            "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+          },
+          "messageID": {
+            "type": "string",
+            "description": "Message ID.",
+            "example": "1343993"
+          },
+          "reactionKey": {
+            "type": "string",
+            "description": "Reaction key that was added"
+          },
+          "transactionID": {
+            "type": "string",
+            "description": "Transaction ID used for the reaction event"
+          }
+        },
+        "required": [
+          "success",
+          "chatID",
+          "messageID",
+          "reactionKey",
+          "transactionID"
+        ],
+        "example": {
+          "success": true,
+          "chatID": "!signal_adamvy:local-signal.localhost",
+          "messageID": "1343993",
+          "reactionKey": "❤️",
+          "transactionID": "txn_123"
+        }
+      },
+      "RemoveReactionOutput": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [true],
+            "description": "Whether the reaction was successfully removed",
+            "x-stainless-const": true
+          },
+          "chatID": {
+            "type": "string",
+            "description": "Unique identifier of the chat.",
+            "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+          },
+          "messageID": {
+            "type": "string",
+            "description": "Message ID.",
+            "example": "1343993"
+          },
+          "reactionKey": {
+            "type": "string",
+            "description": "Reaction key that was removed"
+          }
+        },
+        "required": ["success", "chatID", "messageID", "reactionKey"],
+        "example": {
+          "success": true,
+          "chatID": "!signal_adamvy:local-signal.localhost",
+          "messageID": "1343993",
+          "reactionKey": "❤️"
+        }
+      },
+      "DownloadAssetOutput": {
+        "type": "object",
+        "properties": {
+          "srcURL": {
+            "type": "string",
+            "description": "Local file URL to the downloaded asset."
+          },
+          "error": {
+            "type": "string",
+            "description": "Error message if the download failed."
+          }
+        }
+      },
+      "DownloadAssetInput": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Matrix content URL (mxc:// or localmxc://) for the asset to download."
+          }
+        },
+        "required": ["url"],
+        "example": { "url": "mxc://example.org/Q4x9CqGz1pB3Oa6XgJ" }
+      },
+      "UploadAssetOutput": {
+        "type": "object",
+        "properties": {
+          "uploadID": {
+            "type": "string",
+            "description": "Unique upload ID for this asset"
+          },
+          "srcURL": {
+            "type": "string",
+            "description": "Local file URL (file://) for the uploaded asset"
+          },
+          "fileName": { "type": "string", "description": "Resolved filename" },
+          "mimeType": {
+            "type": "string",
+            "description": "Detected or provided MIME type"
+          },
+          "fileSize": { "type": "number", "description": "File size in bytes" },
+          "width": {
+            "type": "number",
+            "description": "Width in pixels (images/videos)"
+          },
+          "height": {
+            "type": "number",
+            "description": "Height in pixels (images/videos)"
+          },
+          "duration": {
+            "type": "number",
+            "description": "Duration in seconds (audio/videos)"
+          },
+          "error": {
+            "type": "string",
+            "description": "Error message if upload failed"
+          }
+        }
+      },
+      "UploadAssetMultipart": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "The file to upload (max 500 MB).",
+            "format": "binary"
+          },
+          "fileName": {
+            "type": "string",
+            "description": "Original filename. Defaults to the uploaded file name if omitted"
+          },
+          "mimeType": {
+            "type": "string",
+            "description": "MIME type. Auto-detected from magic bytes if omitted"
+          }
+        },
+        "required": ["file"]
+      },
+      "UploadAssetInput": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 750000000,
+            "description": "Base64-encoded file content (max ~500MB decoded)"
+          },
+          "fileName": {
+            "type": "string",
+            "description": "Original filename. Generated if omitted"
+          },
+          "mimeType": {
+            "type": "string",
+            "description": "MIME type. Auto-detected from magic bytes if omitted"
+          }
+        },
+        "required": ["content"]
+      },
+      "ConnectInfoOutput": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "description": "App name" },
+              "version": { "type": "string", "description": "App version" },
+              "bundle_id": {
+                "type": "string",
+                "description": "App bundle identifier"
+              }
+            },
+            "required": ["name", "version", "bundle_id"]
+          },
+          "platform": {
+            "type": "object",
+            "properties": {
+              "os": {
+                "type": "string",
+                "description": "Operating system identifier"
+              },
+              "arch": { "type": "string", "description": "CPU architecture" },
+              "release": {
+                "type": "string",
+                "description": "Runtime release version"
+              }
+            },
+            "required": ["os", "arch"]
+          },
+          "server": {
+            "type": "object",
+            "properties": {
+              "status": { "type": "string", "description": "Server status" },
+              "base_url": {
+                "type": "string",
+                "description": "Base URL of the Connect server"
+              },
+              "port": { "type": "integer", "description": "Listening port" },
+              "hostname": { "type": "string", "description": "Listening host" },
+              "remote_access": {
+                "type": "boolean",
+                "description": "Whether remote access is enabled"
+              },
+              "mcp_enabled": {
+                "type": "boolean",
+                "description": "Whether MCP endpoint is enabled"
+              }
+            },
+            "required": [
+              "status",
+              "base_url",
+              "port",
+              "hostname",
+              "remote_access",
+              "mcp_enabled"
+            ]
+          },
+          "endpoints": {
+            "type": "object",
+            "properties": {
+              "oauth": {
+                "type": "object",
+                "properties": {
+                  "authorization_endpoint": {
+                    "type": "string",
+                    "description": "OAuth authorization endpoint"
+                  },
+                  "token_endpoint": {
+                    "type": "string",
+                    "description": "OAuth token endpoint"
+                  },
+                  "introspection_endpoint": {
+                    "type": "string",
+                    "description": "OAuth introspection endpoint"
+                  },
+                  "userinfo_endpoint": {
+                    "type": "string",
+                    "description": "OAuth userinfo endpoint"
+                  },
+                  "revocation_endpoint": {
+                    "type": "string",
+                    "description": "OAuth token revocation endpoint"
+                  },
+                  "registration_endpoint": {
+                    "type": "string",
+                    "description": "OAuth dynamic client registration endpoint"
+                  }
+                },
+                "required": [
+                  "authorization_endpoint",
+                  "token_endpoint",
+                  "introspection_endpoint",
+                  "userinfo_endpoint",
+                  "revocation_endpoint",
+                  "registration_endpoint"
+                ]
+              },
+              "spec": {
+                "type": "string",
+                "description": "OpenAPI spec endpoint"
+              },
+              "mcp": { "type": "string", "description": "MCP endpoint" },
+              "ws_events": {
+                "type": "string",
+                "description": "WebSocket events endpoint"
+              }
+            },
+            "required": ["oauth", "spec", "mcp", "ws_events"]
+          }
+        },
+        "required": ["app", "platform", "server", "endpoints"]
+      }
+    },
+    "parameters": {
+      "ChatID": {
+        "schema": { "$ref": "#/components/schemas/ChatID" },
+        "required": true,
+        "description": "Unique identifier of the chat.",
+        "name": "chatID",
+        "in": "path"
+      },
+      "AccountID": {
+        "schema": { "$ref": "#/components/schemas/AccountID" },
+        "required": true,
+        "description": "Account ID this resource belongs to.",
+        "name": "accountID",
+        "in": "path",
+        "examples": {
+          "AccountIDExample": {
+            "value": "local-whatsapp_ba_EvYDBBsZbRQAy3UOSWqG0LuTVkc",
+            "summary": "Sample account ID"
+          }
+        }
+      },
+      "Cursor": {
+        "schema": { "$ref": "#/components/schemas/Cursor" },
+        "required": false,
+        "description": "Opaque pagination cursor; do not inspect. Use together with 'direction'.",
+        "name": "cursor",
+        "in": "query"
+      },
+      "Direction": {
+        "schema": { "$ref": "#/components/schemas/Direction" },
+        "required": false,
+        "description": "Pagination direction used with 'cursor': 'before' fetches older results, 'after' fetches newer results. Defaults to 'before' when only 'cursor' is provided.",
+        "name": "direction",
+        "in": "query"
+      }
+    }
+  },
+  "paths": {
+    "/v1/accounts": {
+      "get": {
+        "summary": "List connected accounts",
+        "description": "Lists chat accounts across networks (WhatsApp, Telegram, Twitter/X, etc.) actively connected to this Beeper Desktop instance",
+        "tags": ["Accounts"],
+        "operationId": "getAccounts",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GetAccountsOutput" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/messages/search": {
+      "get": {
+        "summary": "Search messages",
+        "description": "Search messages across chats using Beeper's message index",
+        "tags": ["Messages"],
+        "operationId": "searchMessages",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 0,
+              "description": "Literal word search (non-semantic). Finds messages containing these EXACT words in any order. Use single words users actually type, not concepts or phrases. Example: use \"dinner\" not \"dinner plans\", use \"sick\" not \"health issues\". If omitted, returns results filtered only by other parameters.",
+              "example": "dinner"
+            },
+            "required": false,
+            "description": "Literal word search (non-semantic). Finds messages containing these EXACT words in any order. Use single words users actually type, not concepts or phrases. Example: use \"dinner\" not \"dinner plans\", use \"sick\" not \"health issues\". If omitted, returns results filtered only by other parameters.",
+            "name": "query",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque pagination cursor; do not inspect. Use together with 'direction'.",
+              "example": "1725489123456|c29tZUltc2dQYWdl",
+              "x-stainless-pagination-property": {
+                "purpose": "next_cursor_param"
+              }
+            },
+            "required": false,
+            "description": "Opaque pagination cursor; do not inspect. Use together with 'direction'.",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": ["after", "before"],
+              "description": "Pagination direction used with 'cursor': 'before' fetches older results, 'after' fetches newer results. Defaults to 'before' when only 'cursor' is provided.",
+              "example": "before"
+            },
+            "required": false,
+            "description": "Pagination direction used with 'cursor': 'before' fetches older results, 'after' fetches newer results. Defaults to 'before' when only 'cursor' is provided.",
+            "name": "direction",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Limit search to specific chat IDs.",
+              "example": ["!NCdzlIaMjZUmvmvyHU:beeper.com", "1231073"]
+            },
+            "required": false,
+            "description": "Limit search to specific chat IDs.",
+            "name": "chatIDs",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "description": "Account ID this resource belongs to."
+              },
+              "description": "Limit search to specific account IDs.",
+              "example": [
+                "local-whatsapp_ba_EvYDBBsZbRQAy3UOSWqG0LuTVkc",
+                "local-instagram_ba_eRfQMmnSNy_p7Ih7HL7RduRpKFU"
+              ]
+            },
+            "required": false,
+            "description": "Limit search to specific account IDs.",
+            "name": "accountIDs",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": ["group", "single"],
+              "description": "Filter by chat type: 'group' for group chats, 'single' for 1:1 chats."
+            },
+            "required": false,
+            "description": "Filter by chat type: 'group' for group chats, 'single' for 1:1 chats.",
+            "name": "chatType",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["any", "video", "image", "link", "file"]
+              },
+              "description": "Filter messages by media types. Use ['any'] for any media type, or specify exact types like ['video', 'image']. Omit for no media filtering."
+            },
+            "required": false,
+            "description": "Filter messages by media types. Use ['any'] for any media type, or specify exact types like ['video', 'image']. Omit for no media filtering.",
+            "name": "mediaTypes",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                { "type": "string", "enum": ["me"] },
+                { "type": "string", "enum": ["others"] },
+                { "type": "string" }
+              ],
+              "description": "Filter by sender: 'me' (messages sent by the authenticated user), 'others' (messages sent by others), or a specific user ID string (user.id)."
+            },
+            "required": false,
+            "description": "Filter by sender: 'me' (messages sent by the authenticated user), 'others' (messages sent by others), or a specific user ID string (user.id).",
+            "name": "sender",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Only include messages with timestamp strictly after this ISO 8601 datetime (e.g., '2024-07-01T00:00:00Z' or '2024-07-01T00:00:00+02:00').",
+              "example": "2025-08-01T00:00:00Z"
+            },
+            "required": false,
+            "description": "Only include messages with timestamp strictly after this ISO 8601 datetime (e.g., '2024-07-01T00:00:00Z' or '2024-07-01T00:00:00+02:00').",
+            "name": "dateAfter",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Only include messages with timestamp strictly before this ISO 8601 datetime (e.g., '2024-07-31T23:59:59Z' or '2024-07-31T23:59:59+02:00').",
+              "example": "2025-08-31T23:59:59Z"
+            },
+            "required": false,
+            "description": "Only include messages with timestamp strictly before this ISO 8601 datetime (e.g., '2024-07-31T23:59:59Z' or '2024-07-31T23:59:59+02:00').",
+            "name": "dateBefore",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 20,
+              "default": 20,
+              "description": "Maximum number of messages to return.",
+              "example": 20
+            },
+            "required": false,
+            "description": "Maximum number of messages to return.",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean",
+              "nullable": true,
+              "default": true,
+              "description": "Exclude messages marked Low Priority by the user. Default: true. Set to false to include all."
+            },
+            "required": false,
+            "description": "Exclude messages marked Low Priority by the user. Default: true. Set to false to include all.",
+            "name": "excludeLowPriority",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean",
+              "nullable": true,
+              "default": true,
+              "description": "Include messages in chats marked as Muted by the user, which are usually less important. Default: true. Set to false if the user wants a more refined search."
+            },
+            "required": false,
+            "description": "Include messages in chats marked as Muted by the user, which are usually less important. Default: true. Set to false if the user wants a more refined search.",
+            "name": "includeMuted",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchMessagesOutput"
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/chats/search": {
+      "get": {
+        "summary": "Search chats",
+        "description": "Search chats by title/network or participants using Beeper Desktop's renderer algorithm.",
+        "tags": ["Chats"],
+        "operationId": "searchChats",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque pagination cursor; do not inspect. Use together with 'direction'.",
+              "example": "1725489123456|c29tZUltc2dQYWdl",
+              "x-stainless-pagination-property": {
+                "purpose": "next_cursor_param"
+              }
+            },
+            "required": false,
+            "description": "Opaque pagination cursor; do not inspect. Use together with 'direction'.",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": ["after", "before"],
+              "description": "Pagination direction used with 'cursor': 'before' fetches older results, 'after' fetches newer results. Defaults to 'before' when only 'cursor' is provided.",
+              "example": "before"
+            },
+            "required": false,
+            "description": "Pagination direction used with 'cursor': 'before' fetches older results, 'after' fetches newer results. Defaults to 'before' when only 'cursor' is provided.",
+            "name": "direction",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": ["primary", "low-priority", "archive"],
+              "description": "Filter by inbox type: \"primary\" (non-archived, non-low-priority), \"low-priority\", or \"archive\". If not specified, shows all chats."
+            },
+            "required": false,
+            "description": "Filter by inbox type: \"primary\" (non-archived, non-low-priority), \"low-priority\", or \"archive\". If not specified, shows all chats.",
+            "name": "inbox",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean",
+              "nullable": true,
+              "description": "Set to true to only retrieve chats that have unread messages"
+            },
+            "required": false,
+            "description": "Set to true to only retrieve chats that have unread messages",
+            "name": "unreadOnly",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50,
+              "description": "Set the maximum number of chats to retrieve. Valid range: 1-200, default is 50"
+            },
+            "required": false,
+            "description": "Set the maximum number of chats to retrieve. Valid range: 1-200, default is 50",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                { "type": "string", "enum": ["single", "group"] },
+                { "type": "string", "enum": ["any"] }
+              ],
+              "default": "any",
+              "description": "Specify the type of chats to retrieve: use \"single\" for direct messages, \"group\" for group chats, or \"any\" to get all types"
+            },
+            "required": false,
+            "description": "Specify the type of chats to retrieve: use \"single\" for direct messages, \"group\" for group chats, or \"any\" to get all types",
+            "name": "type",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Literal token search (non-semantic). Use single words users type (e.g., \"dinner\"). When multiple words provided, ALL must match. Case-insensitive."
+            },
+            "required": false,
+            "description": "Literal token search (non-semantic). Use single words users type (e.g., \"dinner\"). When multiple words provided, ALL must match. Case-insensitive.",
+            "name": "query",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": ["titles", "participants"],
+              "default": "titles",
+              "description": "Search scope: 'titles' matches title + network; 'participants' matches participant names."
+            },
+            "required": false,
+            "description": "Search scope: 'titles' matches title + network; 'participants' matches participant names.",
+            "name": "scope",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Provide an ISO datetime string to only retrieve chats with last activity before this time"
+            },
+            "required": false,
+            "description": "Provide an ISO datetime string to only retrieve chats with last activity before this time",
+            "name": "lastActivityBefore",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Provide an ISO datetime string to only retrieve chats with last activity after this time"
+            },
+            "required": false,
+            "description": "Provide an ISO datetime string to only retrieve chats with last activity after this time",
+            "name": "lastActivityAfter",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "description": "Account ID this resource belongs to."
+              },
+              "description": "Provide an array of account IDs to filter chats from specific messaging accounts only",
+              "example": [
+                "local-whatsapp_ba_EvYDBBsZbRQAy3UOSWqG0LuTVkc",
+                "local-telegram_ba_QFrb5lrLPhO3OT5MFBeTWv0x4BI"
+              ]
+            },
+            "required": false,
+            "description": "Provide an array of account IDs to filter chats from specific messaging accounts only",
+            "name": "accountIDs",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean",
+              "nullable": true,
+              "default": true,
+              "description": "Include chats marked as Muted by the user, which are usually less important. Default: true. Set to false if the user wants a more refined search."
+            },
+            "required": false,
+            "description": "Include chats marked as Muted by the user, which are usually less important. Default: true. Set to false if the user wants a more refined search.",
+            "name": "includeMuted",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SearchChatsOutput" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/accounts/{accountID}/contacts": {
+      "get": {
+        "summary": "Search contacts",
+        "description": "Search contacts on a specific account using merged account contacts, network search, and exact identifier lookup.",
+        "tags": ["Contacts"],
+        "operationId": "searchContacts",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Account ID this resource belongs to."
+            },
+            "required": true,
+            "description": "Account ID this resource belongs to.",
+            "name": "accountID",
+            "in": "path",
+            "examples": {
+              "AccountIDExample": {
+                "value": "local-whatsapp_ba_EvYDBBsZbRQAy3UOSWqG0LuTVkc",
+                "summary": "Sample account ID"
+              }
+            }
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Text to search users by. Network-specific behavior."
+            },
+            "required": true,
+            "description": "Text to search users by. Network-specific behavior.",
+            "name": "query",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchContactsOutput"
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/accounts/{accountID}/contacts/list": {
+      "get": {
+        "summary": "List contacts",
+        "description": "List merged contacts for a specific account with cursor-based pagination.",
+        "tags": ["Contacts"],
+        "operationId": "listContacts",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Account ID this resource belongs to."
+            },
+            "required": true,
+            "description": "Account ID this resource belongs to.",
+            "name": "accountID",
+            "in": "path",
+            "examples": {
+              "AccountIDExample": {
+                "value": "local-whatsapp_ba_EvYDBBsZbRQAy3UOSWqG0LuTVkc",
+                "summary": "Sample account ID"
+              }
+            }
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque pagination cursor; do not inspect. Use together with 'direction'.",
+              "example": "1725489123456|c29tZUltc2dQYWdl",
+              "x-stainless-pagination-property": {
+                "purpose": "next_cursor_param"
+              }
+            },
+            "required": false,
+            "description": "Opaque pagination cursor; do not inspect. Use together with 'direction'.",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": ["after", "before"],
+              "description": "Pagination direction used with 'cursor': 'before' fetches older results, 'after' fetches newer results. Defaults to 'before' when only 'cursor' is provided.",
+              "example": "before"
+            },
+            "required": false,
+            "description": "Pagination direction used with 'cursor': 'before' fetches older results, 'after' fetches newer results. Defaults to 'before' when only 'cursor' is provided.",
+            "name": "direction",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50,
+              "description": "Maximum contacts to return per page."
+            },
+            "required": false,
+            "description": "Maximum contacts to return per page.",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Optional search query for blended contact lookup."
+            },
+            "required": false,
+            "description": "Optional search query for blended contact lookup.",
+            "name": "query",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ListContactsOutput" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/search": {
+      "get": {
+        "summary": "Search",
+        "description": "Returns matching chats, participant name matches in groups, and the first page of messages in one call. Paginate messages via search-messages. Paginate chats via search-chats.",
+        "tags": ["App"],
+        "operationId": "search",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "User-typed search text. Literal word matching (non-semantic)."
+            },
+            "required": true,
+            "description": "User-typed search text. Literal word matching (non-semantic).",
+            "name": "query",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UnifiedSearchOutput" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/focus": {
+      "post": {
+        "summary": "Focus Beeper Desktop app",
+        "description": "Focus Beeper Desktop and optionally navigate to a specific chat, message, or pre-fill draft text and attachment.",
+        "tags": ["App"],
+        "operationId": "focusApp",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/FocusAppInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FocusAppOutput" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/chats": {
+      "get": {
+        "summary": "List chats",
+        "description": "List all chats sorted by last activity (most recent first). Combines all accounts into a single paginated list.",
+        "tags": ["Chats"],
+        "operationId": "listChats",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque pagination cursor; do not inspect. Use together with 'direction'.",
+              "example": "1725489123456|c29tZUltc2dQYWdl",
+              "x-stainless-pagination-property": {
+                "purpose": "next_cursor_param"
+              }
+            },
+            "required": false,
+            "description": "Opaque pagination cursor; do not inspect. Use together with 'direction'.",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": ["after", "before"],
+              "description": "Pagination direction used with 'cursor': 'before' fetches older results, 'after' fetches newer results. Defaults to 'before' when only 'cursor' is provided.",
+              "example": "before"
+            },
+            "required": false,
+            "description": "Pagination direction used with 'cursor': 'before' fetches older results, 'after' fetches newer results. Defaults to 'before' when only 'cursor' is provided.",
+            "name": "direction",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "description": "Account ID this resource belongs to."
+              },
+              "description": "Limit to specific account IDs. If omitted, fetches from all accounts.",
+              "example": [
+                "local-whatsapp_ba_EvYDBBsZbRQAy3UOSWqG0LuTVkc",
+                "local-instagram_ba_eRfQMmnSNy_p7Ih7HL7RduRpKFU"
+              ]
+            },
+            "required": false,
+            "description": "Limit to specific account IDs. If omitted, fetches from all accounts.",
+            "name": "accountIDs",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ListChatsOutput" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      },
+      "post": {
+        "summary": "Create or start a chat",
+        "description": "Create a single/group chat (mode='create') or start a direct chat from merged user data (mode='start').",
+        "tags": ["Chats"],
+        "operationId": "createChat",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateChatInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CreateChatOutput" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/chats/{chatID}": {
+      "get": {
+        "summary": "Retrieve chat details",
+        "description": "Retrieve chat details including metadata, participants, and latest message",
+        "tags": ["Chats"],
+        "operationId": "getChat",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Unique identifier of the chat.",
+              "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+            },
+            "required": true,
+            "description": "Unique identifier of the chat.",
+            "name": "chatID",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "nullable": true,
+              "minimum": -1,
+              "maximum": 500,
+              "default": -1,
+              "description": "Maximum number of participants to return. Use -1 for all; otherwise 0–500. Defaults to all (-1).",
+              "example": 50
+            },
+            "required": false,
+            "description": "Maximum number of participants to return. Use -1 for all; otherwise 0–500. Defaults to all (-1).",
+            "name": "maxParticipantCount",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Chat" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/chats/{chatID}/archive": {
+      "post": {
+        "summary": "Archive or unarchive a chat",
+        "description": "Archive or unarchive a chat. Set archived=true to move to archive, archived=false to move back to inbox",
+        "tags": ["Chats"],
+        "operationId": "archiveChat",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Unique identifier of the chat.",
+              "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+            },
+            "required": true,
+            "description": "Unique identifier of the chat.",
+            "name": "chatID",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "archived": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "True to archive, false to unarchive"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": { "description": "Request executed successfully" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/chats/{chatID}/reminders": {
+      "post": {
+        "summary": "Create a chat reminder",
+        "description": "Set a reminder for a chat at a specific time",
+        "tags": ["Chats"],
+        "operationId": "setChatReminder",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Unique identifier of the chat.",
+              "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+            },
+            "required": true,
+            "description": "Unique identifier of the chat.",
+            "name": "chatID",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reminder": {
+                    "type": "object",
+                    "properties": {
+                      "remindAtMs": {
+                        "type": "number",
+                        "description": "Unix timestamp in milliseconds when reminder should trigger"
+                      },
+                      "dismissOnIncomingMessage": {
+                        "type": "boolean",
+                        "description": "Cancel reminder if someone messages in the chat"
+                      }
+                    },
+                    "required": ["remindAtMs"],
+                    "description": "Reminder configuration"
+                  }
+                },
+                "required": ["reminder"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": { "description": "Request executed successfully" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      },
+      "delete": {
+        "summary": "Delete a chat reminder",
+        "description": "Clear an existing reminder from a chat",
+        "tags": ["Chats"],
+        "operationId": "clearChatReminder",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Unique identifier of the chat.",
+              "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+            },
+            "required": true,
+            "description": "Unique identifier of the chat.",
+            "name": "chatID",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": { "description": "Request executed successfully" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/chats/{chatID}/messages": {
+      "get": {
+        "summary": "List messages",
+        "description": "List all messages in a chat with cursor-based pagination. Sorted by timestamp.",
+        "tags": ["Messages"],
+        "operationId": "listMessages",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Unique identifier of the chat.",
+              "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+            },
+            "required": true,
+            "description": "Unique identifier of the chat.",
+            "name": "chatID",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Opaque pagination cursor; do not inspect. Use together with 'direction'.",
+              "example": "1725489123456|c29tZUltc2dQYWdl",
+              "x-stainless-pagination-property": {
+                "purpose": "next_cursor_param"
+              }
+            },
+            "required": false,
+            "description": "Opaque pagination cursor; do not inspect. Use together with 'direction'.",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": ["after", "before"],
+              "description": "Pagination direction used with 'cursor': 'before' fetches older results, 'after' fetches newer results. Defaults to 'before' when only 'cursor' is provided.",
+              "example": "before"
+            },
+            "required": false,
+            "description": "Pagination direction used with 'cursor': 'before' fetches older results, 'after' fetches newer results. Defaults to 'before' when only 'cursor' is provided.",
+            "name": "direction",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ListMessagesOutput" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      },
+      "post": {
+        "summary": "Send a message",
+        "description": "Send a text message to a specific chat. Supports replying to existing messages. Returns a pending message ID.",
+        "tags": ["Messages"],
+        "operationId": "sendMessage",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Unique identifier of the chat.",
+              "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+            },
+            "required": true,
+            "description": "Unique identifier of the chat.",
+            "name": "chatID",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "description": "Text content of the message you want to send. You may use markdown."
+                  },
+                  "replyToMessageID": {
+                    "type": "string",
+                    "description": "Provide a message ID to send this as a reply to an existing message"
+                  },
+                  "attachment": {
+                    "$ref": "#/components/schemas/MessageAttachmentInput"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SendMessageOutput" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/chats/{chatID}/messages/{messageID}": {
+      "put": {
+        "summary": "Edit a message",
+        "description": "Edit the text content of an existing message. Messages with attachments cannot be edited.",
+        "tags": ["Messages"],
+        "operationId": "editMessage",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Unique identifier of the chat.",
+              "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+            },
+            "required": true,
+            "description": "Unique identifier of the chat.",
+            "name": "chatID",
+            "in": "path"
+          },
+          {
+            "schema": { "type": "string" },
+            "required": true,
+            "description": "ID of the message to edit",
+            "name": "messageID",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "New text content for the message"
+                  }
+                },
+                "required": ["text"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/EditMessageOutput" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/chats/{chatID}/messages/{messageID}/reactions": {
+      "post": {
+        "summary": "Add a reaction",
+        "description": "Add a reaction to an existing message.",
+        "tags": ["Messages"],
+        "operationId": "addReaction",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Unique identifier of the chat.",
+              "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+            },
+            "required": true,
+            "description": "Unique identifier of the chat.",
+            "name": "chatID",
+            "in": "path"
+          },
+          {
+            "schema": { "type": "string" },
+            "required": true,
+            "description": "ID of the message to add a reaction to",
+            "name": "messageID",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reactionKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Reaction key to add (emoji, shortcode, or custom emoji key)"
+                  },
+                  "transactionID": {
+                    "type": "string",
+                    "description": "Optional transaction ID for deduplication and local echo tracking"
+                  }
+                },
+                "required": ["reactionKey"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AddReactionOutput" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      },
+      "delete": {
+        "summary": "Remove a reaction",
+        "description": "Remove the authenticated user's reaction from an existing message.",
+        "tags": ["Messages"],
+        "operationId": "removeReaction",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Unique identifier of the chat.",
+              "example": "!NCdzlIaMjZUmvmvyHU:beeper.com"
+            },
+            "required": true,
+            "description": "Unique identifier of the chat.",
+            "name": "chatID",
+            "in": "path"
+          },
+          {
+            "schema": { "type": "string" },
+            "required": true,
+            "description": "ID of the message to remove a reaction from",
+            "name": "messageID",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Reaction key to remove"
+            },
+            "required": true,
+            "description": "Reaction key to remove",
+            "name": "reactionKey",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoveReactionOutput"
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/assets/download": {
+      "post": {
+        "summary": "Download an asset",
+        "description": "Download a Matrix asset using its mxc:// or localmxc:// URL to the device running Beeper Desktop and return the local file URL.",
+        "tags": ["App"],
+        "operationId": "downloadAsset",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DownloadAssetInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DownloadAssetOutput" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/assets/serve": {
+      "get": {
+        "summary": "Serve an asset",
+        "description": "Stream a file given an mxc://, localmxc://, or file:// URL. Downloads first if not cached. Supports Range requests for seeking in large files.",
+        "tags": ["App"],
+        "operationId": "serveAsset",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Asset URL to serve. Accepts mxc://, localmxc://, or file:// URLs."
+            },
+            "required": true,
+            "description": "Asset URL to serve. Accepts mxc://, localmxc://, or file:// URLs.",
+            "name": "url",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "204": { "description": "Request executed successfully" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/assets/upload": {
+      "post": {
+        "summary": "Upload an asset",
+        "description": "Upload a file to a temporary location using multipart/form-data. Returns an uploadID that can be referenced when sending messages with attachments.",
+        "tags": ["App"],
+        "operationId": "uploadAsset",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": { "$ref": "#/components/schemas/UploadAssetMultipart" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UploadAssetOutput" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/assets/upload/base64": {
+      "post": {
+        "summary": "Upload an asset (base64)",
+        "description": "Upload a file using a JSON body with base64-encoded content. Returns an uploadID that can be referenced when sending messages with attachments. Alternative to the multipart upload endpoint.",
+        "tags": ["App"],
+        "operationId": "uploadAssetBase64",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UploadAssetInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request executed successfully",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UploadAssetOutput" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/UnauthorizedError" },
+          "403": { "$ref": "#/components/responses/ForbiddenError" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "422": { "$ref": "#/components/responses/UnprocessableEntity" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/v1/info": {
+      "get": {
+        "summary": "Get Connect server info",
+        "description": "Returns app, platform, server, and endpoint discovery metadata for this Beeper Desktop instance.",
+        "tags": ["App"],
+        "operationId": "get_connect_info",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Connect server info",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ConnectInfoOutput" }
+              }
+            }
+          },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    }
+  }
+}
