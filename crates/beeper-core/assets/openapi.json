@@ -14,7 +14,7 @@
   },
   "servers": [
     {
-      "url": "http://localhost:23373",
+      "url": "http://localhost:23374",
       "description": "Beeper Desktop API server"
     }
   ],
@@ -113,8 +113,8 @@
         "description": "OAuth2 Authorization Code flow with PKCE for obtaining bearer access tokens. Used by MCP servers to authenticate clients.",
         "flows": {
           "authorizationCode": {
-            "authorizationUrl": "http://localhost:23373/oauth/authorize",
-            "tokenUrl": "http://localhost:23373/oauth/token",
+            "authorizationUrl": "http://localhost:23374/oauth/authorize",
+            "tokenUrl": "http://localhost:23374/oauth/token",
             "scopes": {
               "read": "Read access to messages, chats, and accounts",
               "write": "Write access to send messages, edit messages, react to messages, archive chats, and set reminders"

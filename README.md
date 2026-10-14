@@ -45,7 +45,7 @@ cargo test --test e2e -- --nocapture
 
 ### 2. Run the Native Desktop GUI and Local Server
 
-Run the following command on your host machine to launch the 4-pane desktop GUI and local API server on `127.0.0.1:23373`:
+Run the following command on your host machine to launch the desktop GUI. The GUI starts the local API server on `127.0.0.1:23374` only when **Settings > Enable Desktop API** is on (default: off). Restart `beeper-rs` after you change this setting:
 
 ```bash
 cargo run --release
@@ -56,16 +56,16 @@ cargo run --release
 Start the headless server in one terminal:
 
 ```bash
-cargo run -- serve --demo --host 127.0.0.1 --port 23373
+cargo run -- serve --demo --host 127.0.0.1 --port 23374
 ```
 
 In a second terminal, query the server with the CLI or `curl`:
 
 ```bash
-cargo run -- info --host 127.0.0.1 --port 23373
-curl -s http://127.0.0.1:23373/v1/info | jq
-curl -s -H "Authorization: Bearer bp_tok_beeper_rs_default_secret" http://127.0.0.1:23373/v1/accounts | jq
-curl -s -H "Authorization: Bearer bp_tok_beeper_rs_default_secret" http://127.0.0.1:23373/v1/chats | jq
+cargo run -- info --host 127.0.0.1 --port 23374
+curl -s http://127.0.0.1:23374/v1/info | jq
+curl -s -H "Authorization: Bearer bp_tok_beeper_rs_default_secret" http://127.0.0.1:23374/v1/accounts | jq
+curl -s -H "Authorization: Bearer bp_tok_beeper_rs_default_secret" http://127.0.0.1:23374/v1/chats | jq
 ```
 
 ## Development Workflow
