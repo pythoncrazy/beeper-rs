@@ -5,7 +5,9 @@ use crate::style::{
     initials, input_style, med, pick_menu_style, pick_style, scroll_style, semi, shadow_box, txt, Palette, ALL_FONTS,
     CLEAR,
 };
-use beeper_core::config::{account_network, network_spec, now_unix_secs, APP_BUNDLE_ID, APP_VERSION, NETWORK_SPECS};
+use beeper_core::config::{
+    account_network, civil_from_days, network_spec, now_unix_secs, APP_BUNDLE_ID, APP_VERSION, NETWORK_SPECS,
+};
 use beeper_core::models::*;
 use beeper_core::platform::{open_url_or_path_command, DisplayServerKind, OsKind, SystemTrayState};
 use beeper_core::store::{BeeperStore, SettingCatalogEntry, SharedStore, NOTE_CHAT_ID, SETTINGS_CATALOG};
@@ -232,17 +234,6 @@ fn day_num(iso: &str) -> i64 {
     era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
 }
 
-fn civil(days: i64) -> (i64, usize, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (yoe + era * 400 + i64::from(m <= 2), m as usize, doy - (153 * mp + 2) / 5 + 1)
-}
-
 fn day_label(iso: &str) -> String {
     let (d, today) = (day_num(iso), now_unix_secs().div_euclid(86_400));
     let wd = WEEKDAYS[(d + 4).rem_euclid(7) as usize];
@@ -251,9 +242,9 @@ fn day_label(iso: &str) -> String {
         1 => "Yesterday".into(),
         2..=6 => wd.into(),
         _ => {
-            let ((y, m, dd), ty) = (civil(d), civil(today).0);
+            let ((y, m, dd), ty) = (civil_from_days(d), civil_from_days(today).0);
             let year = if y == ty { String::new() } else { format!(", {y}") };
-            format!("{}, {} {dd}{year}", &wd[..3], MONTHS[m - 1])
+            format!("{}, {} {dd}{year}", &wd[..3], MONTHS[m as usize - 1])
         }
     }
 }
@@ -265,7 +256,7 @@ fn list_ts(iso: &str, h24: bool) -> String {
         1 => "Yesterday".into(),
         2..=6 => WEEKDAYS[(d + 4).rem_euclid(7) as usize][..3].into(),
         _ => {
-            let (y, m, dd) = civil(d);
+            let (y, m, dd) = civil_from_days(d);
             format!("{m}/{dd}/{:02}", y % 100)
         }
     }
@@ -601,10 +592,10 @@ impl BeeperGuiApp {
         let idx = st.resolve_chat_idx(chat_id).expect("selected chat exists");
         self.selected_chat_id = Some(chat_id.to_string());
         st.focused_chat_id = Some(chat_id.to_string());
-        let chat = &mut st.chats[idx];
-        chat.unread_count = 0;
-        chat.is_marked_unread = Some(false);
-        chat.sync_flags();
+        let chat = st.update_chat(idx, |c| {
+            c.unread_count = 0;
+            c.is_marked_unread = Some(false);
+        });
         self.composer_text = chat.draft.as_ref().and_then(|d| d.text.clone()).unwrap_or_default();
         self.nickname_edit_buffer = chat
             .participants
@@ -671,24 +662,15 @@ impl BeeperGuiApp {
                 return operation::focus("composer-input");
             }
             UiMessage::DeleteMessage(cid, mid) => {
-                let _ = self.store.write().unwrap().delete_message(&cid, &mid);
+                self.store.write().unwrap().delete_message(&cid, &mid).expect("delete message");
             }
             UiMessage::ToggleReaction(cid, mid, key) => {
                 let mut st = self.store.write().unwrap();
-                let has_rx = st
-                    .msg_idx_by_id
-                    .get(&mid)
-                    .map(|&i| {
-                        st.messages[i]
-                            .reactions
-                            .iter()
-                            .any(|r| r.reaction_key == key && r.participant_id.starts_with("@self_"))
-                    })
-                    .unwrap_or(false);
-                if has_rx {
-                    let _ = st.remove_reaction(&cid, &mid, &key);
+                let mine = |r: &Reaction| r.reaction_key == key && r.participant_id.starts_with("@self_");
+                if st.messages[st.msg_idx_by_id[&mid]].reactions.iter().any(mine) {
+                    st.remove_reaction(&cid, &mid, &key).expect("remove reaction");
                 } else {
-                    let _ = st.add_reaction(&cid, &mid, &key, None);
+                    st.add_reaction(&cid, &mid, &key, None).expect("add reaction");
                 }
             }
             UiMessage::ToggleBookmark(mid) => {
@@ -705,7 +687,8 @@ impl BeeperGuiApp {
                 self.store.write().unwrap().vote_poll(&mid, &opt_id, "@self:beeper.com");
             }
             UiMessage::SendQuickVoiceNote => {
-                if let Some(cid) = self.selected_chat_id.clone() {
+                let cid = self.selected_chat_id.clone().expect("a chat is selected");
+                {
                     let att = Attachment {
                         attachment_type: "audio".to_string(),
                         id: Some("att_vn_quick".to_string()),
@@ -721,96 +704,57 @@ impl BeeperGuiApp {
                         src_url: Some("mxc://beeper.com/quick_vn".to_string()),
                         transcript: None,
                     };
-                    let _ =
-                        self.store.write().unwrap().send_message(&cid, Some("Voice note".to_string()), None, Some(att));
-                    self.refresh_theme_and_tray();
+                    let text = Some("Voice note".to_string());
+                    self.store.write().unwrap().send_message(&cid, text, None, Some(att)).expect("send voice note");
                 }
+                self.refresh_theme_and_tray();
             }
             UiMessage::SendQuickPoll => {
-                if let Some(cid) = self.selected_chat_id.clone() {
+                let cid = self.selected_chat_id.clone().expect("a chat is selected");
+                {
                     let mut st = self.store.write().unwrap();
-                    if let Ok((_, mid, _)) =
-                        st.send_message(&cid, Some("Poll: Ship Beeper v4.3 today?".to_string()), None, None)
-                    {
-                        if let Some(&idx) = st.msg_idx_by_id.get(&mid) {
-                            st.messages[idx].poll = Some(PollData {
-                                question: "Ship Beeper v4.3 today?".to_string(),
-                                allow_multiple: false,
-                                options: vec![
-                                    PollOption {
-                                        id: "p_yes".to_string(),
-                                        label: "Yes, ship it".to_string(),
-                                        voter_ids: vec!["@self:beeper.com".to_string()],
-                                    },
-                                    PollOption {
-                                        id: "p_no".to_string(),
-                                        label: "Wait for QA".to_string(),
-                                        voter_ids: Vec::new(),
-                                    },
-                                ],
-                            });
-                        }
-                    }
-                    drop(st);
-                    self.refresh_theme_and_tray();
+                    let question = "Ship Beeper v4.3 today?".to_string();
+                    let (_, mid, _) =
+                        st.send_message(&cid, Some(format!("Poll: {question}")), None, None).expect("send poll");
+                    let option = |id: &str, label: &str, voter_ids: Vec<String>| PollOption {
+                        id: id.into(),
+                        label: label.into(),
+                        voter_ids,
+                    };
+                    let options = vec![
+                        option("p_yes", "Yes, ship it", vec!["@self:beeper.com".into()]),
+                        option("p_no", "Wait for QA", Vec::new()),
+                    ];
+                    let idx = st.msg_idx_by_id[&mid];
+                    st.update_message(idx, |m| m.poll = Some(PollData { question, allow_multiple: false, options }));
                 }
+                self.refresh_theme_and_tray();
             }
             UiMessage::SetReminder(cid) => {
-                let mut st = self.store.write().unwrap();
-                if let Some(idx) = st.resolve_chat_idx(&cid) {
-                    st.chats[idx].reminder = Some(ChatReminder {
-                        remind_at: "2026-10-15T09:00:00.000Z".to_string(),
-                        dismiss_on_incoming_message: true,
-                    });
-                }
+                let reminder =
+                    ChatReminder { remind_at: "2026-10-15T09:00:00.000Z".into(), dismiss_on_incoming_message: true };
+                self.update_chat(&cid, |c| c.reminder = Some(reminder));
                 self.status_banner = "Reminder scheduled for tomorrow 09:00".to_string();
             }
-            UiMessage::TogglePinChat(cid) => {
-                let mut st = self.store.write().unwrap();
-                if let Some(idx) = st.resolve_chat_idx(&cid) {
-                    let next = !(st.chats[idx].is_pinned == Some(true));
-                    st.chats[idx].is_pinned = Some(next);
-                    st.chats[idx].sync_flags();
-                }
-            }
-            UiMessage::ToggleMuteChat(cid) => {
-                let mut st = self.store.write().unwrap();
-                if let Some(idx) = st.resolve_chat_idx(&cid) {
-                    let next = !(st.chats[idx].is_muted == Some(true));
-                    st.chats[idx].is_muted = Some(next);
-                    st.chats[idx].sync_flags();
-                }
-            }
+            UiMessage::TogglePinChat(cid) => self.update_chat(&cid, |c| c.is_pinned = Some(c.is_pinned != Some(true))),
+            UiMessage::ToggleMuteChat(cid) => self.update_chat(&cid, |c| c.is_muted = Some(c.is_muted != Some(true))),
             UiMessage::ToggleArchiveChat(cid) => {
-                let mut st = self.store.write().unwrap();
-                if let Some(idx) = st.resolve_chat_idx(&cid) {
-                    let next = !(st.chats[idx].is_archived == Some(true));
-                    st.chats[idx].is_archived = Some(next);
-                    st.chats[idx].sync_flags();
-                }
-                drop(st);
+                self.update_chat(&cid, |c| c.is_archived = Some(c.is_archived != Some(true)));
                 self.refresh_theme_and_tray();
             }
             UiMessage::NotifyAnyway(cid) => {
-                let mut st = self.store.write().unwrap();
-                if let Some(idx) = st.resolve_chat_idx(&cid) {
-                    st.chats[idx].is_muted = Some(false);
-                    st.chats[idx].sync_flags();
-                }
+                self.update_chat(&cid, |c| c.is_muted = Some(false));
                 self.status_banner = "Notifications unmuted for conversation".to_string();
             }
             UiMessage::NicknameChanged(v) => self.nickname_edit_buffer = v,
             UiMessage::SaveNickname => {
-                if let Some(cid) = self.selected_chat_id.clone() {
-                    let mut st = self.store.write().unwrap();
-                    let target_uid = st.resolve_chat_idx(&cid).and_then(|idx| {
-                        st.chats[idx].participants.items.iter().find(|u| u.is_self != Some(true)).map(|u| u.id.clone())
-                    });
-                    if let Some(uid) = target_uid {
-                        let nick = (!self.nickname_edit_buffer.trim().is_empty())
-                            .then(|| self.nickname_edit_buffer.trim().to_string());
-                        st.set_user_nickname(&cid, &uid, nick);
-                    }
+                let cid = self.selected_chat_id.clone().expect("a chat is selected");
+                let mut st = self.store.write().unwrap();
+                let idx = st.resolve_chat_idx(&cid).expect("selected chat exists");
+                let other = st.chats[idx].participants.items.iter().find(|u| u.is_self != Some(true));
+                if let Some(uid) = other.map(|u| u.id.clone()) {
+                    let nick = Some(self.nickname_edit_buffer.trim().to_string()).filter(|n| !n.is_empty());
+                    st.set_user_nickname(&cid, &uid, nick);
                 }
             }
             UiMessage::SearchChanged(q) => self.search_query = q,
@@ -835,76 +779,53 @@ impl BeeperGuiApp {
             }
             UiMessage::CycleTheme => {
                 let all = ThemeChoice::all();
-                let cur = all.iter().position(|t| *t == self.theme.choice).unwrap_or(0);
+                let cur = all.iter().position(|t| *t == self.theme.choice).expect("current theme is listed");
                 let next = all[(cur + 1) % all.len()];
                 return self.update(UiMessage::SelectTheme(next));
             }
-            UiMessage::SelectTheme(choice) => {
-                {
-                    let mut st = self.store.write().unwrap();
-                    st.settings.theme = choice;
-                    st.persist_state_to_sqlite();
-                }
-                self.refresh_theme_and_tray();
-            }
+            UiMessage::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
             UiMessage::SelectLanguage(label) => {
-                if let Some(&lang) = ALL_LANGUAGES.iter().find(|l| l.label() == label) {
-                    let mut st = self.store.write().unwrap();
-                    st.settings.language = lang;
-                    st.persist_state_to_sqlite();
-                }
+                let lang = *ALL_LANGUAGES.iter().find(|l| l.label() == label).expect("known language");
+                self.patch_settings(|s| s.language = lang);
             }
-            UiMessage::CustomCssChanged(css) => {
-                {
-                    let mut st = self.store.write().unwrap();
-                    st.settings.custom_css_source = css;
-                    st.persist_state_to_sqlite();
-                }
-                self.refresh_theme_and_tray();
-            }
+            UiMessage::CustomCssChanged(css) => self.patch_settings(|s| s.custom_css_source = css),
             UiMessage::ToggleSettingBool(key, val) => {
-                {
-                    let mut st = self.store.write().unwrap();
-                    let s = &mut st.settings;
-                    match key {
-                        "show_archived_count" => s.show_archived_count = val,
-                        "show_starred_pin_view" => s.show_starred_pin_view = val,
-                        "show_all_chats_pin_view" => s.show_all_chats_pin_view = val,
-                        "show_unread_pin_view" => s.show_unread_pin_view = val,
-                        "show_drafts_pin_view" => s.show_drafts_pin_view = val,
-                        "filter_pins_by_network" => s.filter_pins_by_network = val,
-                        "show_favorite_chats_section" => s.show_favorite_chats_section = val,
-                        "keep_favorites_in_inbox" => s.keep_favorites_in_inbox = val,
-                        "show_message_previews" => s.show_message_previews = val,
-                        "unread_chats_always_on_top" => s.unread_chats_always_on_top = val,
-                        "show_full_names_in_chats" => s.show_full_names_in_chats = val,
-                        "auto_play_videos" => s.auto_play_videos = val,
-                        "show_chat_header" => s.show_chat_header = val,
-                        "show_message_input_buttons" => s.show_message_input_buttons = val,
-                        "link_previews" => s.link_previews = val,
-                        "show_right_panel_by_default" => {
-                            s.show_right_panel_by_default = val;
-                            self.show_right_panel = val;
-                        }
-                        "load_remote_content_automatically" => s.load_remote_content_automatically = val,
-                        "use_twenty_four_hour_time" => s.use_twenty_four_hour_time = val,
-                        "no_transparency" => s.no_transparency = val,
-                        "reduce_transparency" => s.reduce_transparency = val,
-                        "fix_lockdown_emojis" => s.fix_lockdown_emojis = val,
-                        "auto_transcribe_voice_notes" => s.auto_transcribe_voice_notes = val,
-                        "incognito_mode" => s.incognito_mode = val,
-                        "archive_after_reminder" => s.archive_after_reminder = val,
-                        "mark_read_on_archive" => s.mark_read_on_archive = val,
-                        "compact_chat_list" => s.compact_chat_list = val,
-                        "launch_at_startup" => s.launch_at_startup = val,
-                        "minimize_to_tray" => s.minimize_to_tray = val,
-                        "enable_pas_api" => s.enable_pas_api = val,
-                        "repeat_message_alerts" => s.repeat_message_alerts = if val { 3 } else { 1 },
-                        other => panic!("unknown setting key {other}"),
-                    }
-                    st.persist_state_to_sqlite();
+                if key == "show_right_panel_by_default" {
+                    self.show_right_panel = val;
                 }
-                self.refresh_theme_and_tray();
+                self.patch_settings(|s| match key {
+                    "show_archived_count" => s.show_archived_count = val,
+                    "show_starred_pin_view" => s.show_starred_pin_view = val,
+                    "show_all_chats_pin_view" => s.show_all_chats_pin_view = val,
+                    "show_unread_pin_view" => s.show_unread_pin_view = val,
+                    "show_drafts_pin_view" => s.show_drafts_pin_view = val,
+                    "filter_pins_by_network" => s.filter_pins_by_network = val,
+                    "show_favorite_chats_section" => s.show_favorite_chats_section = val,
+                    "keep_favorites_in_inbox" => s.keep_favorites_in_inbox = val,
+                    "show_message_previews" => s.show_message_previews = val,
+                    "unread_chats_always_on_top" => s.unread_chats_always_on_top = val,
+                    "show_full_names_in_chats" => s.show_full_names_in_chats = val,
+                    "auto_play_videos" => s.auto_play_videos = val,
+                    "show_chat_header" => s.show_chat_header = val,
+                    "show_message_input_buttons" => s.show_message_input_buttons = val,
+                    "link_previews" => s.link_previews = val,
+                    "show_right_panel_by_default" => s.show_right_panel_by_default = val,
+                    "load_remote_content_automatically" => s.load_remote_content_automatically = val,
+                    "use_twenty_four_hour_time" => s.use_twenty_four_hour_time = val,
+                    "no_transparency" => s.no_transparency = val,
+                    "reduce_transparency" => s.reduce_transparency = val,
+                    "fix_lockdown_emojis" => s.fix_lockdown_emojis = val,
+                    "auto_transcribe_voice_notes" => s.auto_transcribe_voice_notes = val,
+                    "incognito_mode" => s.incognito_mode = val,
+                    "archive_after_reminder" => s.archive_after_reminder = val,
+                    "mark_read_on_archive" => s.mark_read_on_archive = val,
+                    "compact_chat_list" => s.compact_chat_list = val,
+                    "launch_at_startup" => s.launch_at_startup = val,
+                    "minimize_to_tray" => s.minimize_to_tray = val,
+                    "enable_pas_api" => s.enable_pas_api = val,
+                    "repeat_message_alerts" => s.repeat_message_alerts = if val { 3 } else { 1 },
+                    other => panic!("unknown setting key {other}"),
+                });
             }
             UiMessage::ConnectBridge(bid) => {
                 let mut st = self.store.write().unwrap();
@@ -1045,6 +966,12 @@ impl BeeperGuiApp {
             }
         }
         Task::none()
+    }
+
+    fn update_chat(&self, chat_id: &str, f: impl FnOnce(&mut Chat)) {
+        let mut st = self.store.write().unwrap();
+        let idx = st.resolve_chat_idx(chat_id).expect("chat exists");
+        st.update_chat(idx, f);
     }
 
     fn patch_settings(&mut self, f: impl FnOnce(&mut BeeperSettings)) {
