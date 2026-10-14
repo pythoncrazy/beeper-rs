@@ -14,6 +14,7 @@ const HELP: &str = "Usage: beeper-rs [OPTIONS] [COMMAND]
 
 Commands:
   serve         Run only the Desktop API server (same as --headless)
+                The GUI starts the Desktop API only when Settings > Enable Desktop API is on
   info          Print /v1/info from the server at --host and --port
   auth-extract  Print beeperState and bridgeAccounts from index.db
 
@@ -85,11 +86,16 @@ fn main() {
         cfg.homeserver = url;
     }
     let store: SharedStore = Arc::new(RwLock::new(BeeperStore::from_config(cfg)));
-    let listener = rt.block_on(tokio::net::TcpListener::bind((host.as_str(), port))).expect("bind local PAS port");
-    if let Command::Serve = command {
-        return rt.block_on(serve_http(listener, store));
+    let serve = matches!(command, Command::Serve);
+    if serve || store.read().unwrap().settings.enable_pas_api {
+        let listener = rt.block_on(tokio::net::TcpListener::bind((host.as_str(), port))).unwrap_or_else(|e| {
+            panic!("bind the Desktop API to {host}:{port}: {e}. Another app uses this port. Use --port <PORT>.")
+        });
+        let server_store = store.clone();
+        if serve {
+            return rt.block_on(serve_http(listener, server_store));
+        }
+        std::thread::spawn(move || rt.block_on(serve_http(listener, server_store)));
     }
-    let server_store = store.clone();
-    std::thread::spawn(move || rt.block_on(serve_http(listener, server_store)));
     beeper_ui::run_native_gui(store).expect("run native GUI");
 }

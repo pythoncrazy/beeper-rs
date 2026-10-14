@@ -2140,7 +2140,7 @@ impl BeeperGuiApp {
                 vec![
                     tog!(
                         "Enable Desktop API",
-                        Some("Local REST and WebSocket server for scripts and assistants."),
+                        Some("Local REST and WebSocket server for scripts and assistants. Restart Beeper to apply."),
                         enable_pas_api
                     ),
                     pref_row(

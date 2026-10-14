@@ -6,7 +6,7 @@ pub const APP_BUNDLE_ID: &str = "com.automattic.beeper.desktop";
 pub const APP_NAME: &str = "Beeper";
 pub const APP_VERSION: &str = "4.3.176";
 pub const DEFAULT_PAS_HOST: &str = "127.0.0.1";
-pub const DEFAULT_PAS_PORT: u16 = 23373;
+pub const DEFAULT_PAS_PORT: u16 = 23374;
 pub const DEFAULT_HOMESERVER: &str = "https://matrix.beeper.com";
 pub const DEFAULT_API_URL: &str = "https://api.beeper.com";
 pub const DEFAULT_USER_ID: &str = "@alex:beeper.com";
@@ -104,7 +104,7 @@ impl Default for BeeperSettings {
             language: LanguageChoice::English,
             repeat_message_alerts: 0,
             auto_transcribe_voice_notes: true,
-            enable_pas_api: true,
+            enable_pas_api: false,
             pas_port: DEFAULT_PAS_PORT,
             launch_at_startup: false,
             minimize_to_tray: true,
