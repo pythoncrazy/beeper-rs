@@ -1,163 +1,669 @@
 use crate::config::{
-    network_spec_by_bridge, now_rfc3339_millis, url_decode, APP_BUNDLE_ID, APP_NAME, APP_VERSION,
-    NETWORK_SPECS, OPENAPI_SPEC_JSON,
+    base64_decode_standard, base64_encode_standard, base64_encode_url_nopad,
+    network_spec_by_bridge, now_rfc3339_millis, sha1, sha256, url_decode, APP_BUNDLE_ID, APP_NAME,
+    APP_VERSION, NETWORK_SPECS, OPENAPI_SPEC_JSON,
 };
 use crate::models::*;
 use crate::platform::OsKind;
 use crate::store::*;
-use axum::{
-    body::Bytes,
-    extract::{
-        ws::{Message as AxumWsMsg, WebSocket, WebSocketUpgrade},
-        Path as AxumPath, Query, State,
-    },
-    http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Redirect, Response},
-    routing::{delete, get, post},
-    Json, Router,
-};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{
+    tcp::{OwnedReadHalf, OwnedWriteHalf},
+    TcpListener, TcpStream,
+};
 
 pub type SharedStore = Arc<RwLock<BeeperStore>>;
+pub type Bytes = Vec<u8>;
+
+pub struct State<T>(pub T);
+pub struct AxumPath<T>(pub T);
+pub struct Query<T>(pub T);
+pub struct Json<T>(pub T);
+
+impl<T> std::ops::Deref for Json<T> {
+    type Target = T;
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusCode(pub u16);
+
+impl StatusCode {
+    pub const OK: Self = Self(200);
+    pub const CREATED: Self = Self(201);
+    pub const NO_CONTENT: Self = Self(204);
+    pub const PARTIAL_CONTENT: Self = Self(206);
+    pub const FOUND: Self = Self(302);
+    pub const BAD_REQUEST: Self = Self(400);
+    pub const NOT_FOUND: Self = Self(404);
+    pub const CONFLICT: Self = Self(409);
+
+    #[inline]
+    pub fn as_u16(self) -> u16 {
+        self.0
+    }
+
+    #[inline]
+    pub fn reason_phrase(self) -> &'static str {
+        match self.0 {
+            101 => "Switching Protocols",
+            200 => "OK",
+            201 => "Created",
+            204 => "No Content",
+            206 => "Partial Content",
+            302 => "Found",
+            400 => "Bad Request",
+            404 => "Not Found",
+            409 => "Conflict",
+            _ => "OK",
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct HeaderMap(pub HashMap<String, String>);
+
+pub struct HeaderValue<'a>(&'a str);
+
+impl<'a> HeaderValue<'a> {
+    #[inline]
+    pub fn to_str(&self) -> Result<&'a str, std::str::Utf8Error> {
+        Ok(self.0)
+    }
+}
+
+impl HeaderMap {
+    #[inline]
+    pub fn get(&self, key: &str) -> Option<HeaderValue<'_>> {
+        self.0
+            .get(&key.to_ascii_lowercase())
+            .map(|s| HeaderValue(s.as_str()))
+    }
+}
+
+pub struct Response {
+    pub status: StatusCode,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+pub trait IntoResponse {
+    fn into_response(self) -> Response;
+}
+
+impl IntoResponse for Response {
+    #[inline]
+    fn into_response(self) -> Response {
+        self
+    }
+}
+
+impl IntoResponse for StatusCode {
+    #[inline]
+    fn into_response(self) -> Response {
+        Response {
+            status: self,
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+}
+
+impl<T: Serialize> IntoResponse for Json<T> {
+    #[inline]
+    fn into_response(self) -> Response {
+        Response {
+            status: StatusCode::OK,
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body: serde_json::to_vec(&self.0).expect("serialize JSON response"),
+        }
+    }
+}
+
+impl<T: Serialize> IntoResponse for (StatusCode, Json<T>) {
+    #[inline]
+    fn into_response(self) -> Response {
+        Response {
+            status: self.0,
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body: serde_json::to_vec(&(self.1).0).expect("serialize JSON response"),
+        }
+    }
+}
+
+impl<const N: usize> IntoResponse for (StatusCode, [(&str, &str); N], Vec<u8>) {
+    #[inline]
+    fn into_response(self) -> Response {
+        Response {
+            status: self.0,
+            headers: self
+                .1
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            body: self.2,
+        }
+    }
+}
+
+impl<const N: usize> IntoResponse for (StatusCode, [(&str, &str); N], &str) {
+    #[inline]
+    fn into_response(self) -> Response {
+        Response {
+            status: self.0,
+            headers: self
+                .1
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            body: self.2.as_bytes().to_vec(),
+        }
+    }
+}
+
+pub struct Redirect;
+
+impl Redirect {
+    #[inline]
+    pub fn to(uri: &str) -> Response {
+        Response {
+            status: StatusCode::FOUND,
+            headers: vec![("location".to_string(), uri.to_string())],
+            body: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Router {
+    pub store: SharedStore,
+}
 
 pub fn build_router(store: SharedStore) -> Router {
-    Router::new()
-        .route("/v1/info", get(get_info))
-        .route("/v1/openapi.json", get(get_openapi_spec))
-        .route("/oauth/register", post(oauth_register))
-        .route("/oauth/authorize", get(oauth_authorize))
-        .route("/oauth/token", post(oauth_token))
-        .route("/v1/app/setup", get(get_setup_status))
-        .route("/v1/app/setup/start", post(post_setup_start))
-        .route("/v1/app/setup/email", post(post_setup_email))
-        .route("/v1/app/setup/response", post(post_setup_response))
-        .route("/v1/app/setup/register", post(post_setup_register))
-        .route(
-            "/v1/app/setup/verification/recovery-key",
-            post(post_recovery_key_verify),
-        )
-        .route(
-            "/v1/app/setup/verification/recovery-key/reset",
-            post(post_recovery_key_reset),
-        )
-        .route(
-            "/v1/app/setup/verification/recovery-key/reset/confirm",
-            post(post_recovery_key_reset_confirm),
-        )
-        .route(
-            "/v1/app/setup/verifications",
-            get(get_verifications).post(post_verifications_start),
-        )
-        .route(
-            "/v1/app/setup/verifications/qr/scan",
-            post(post_verification_qr_scan),
-        )
-        .route(
-            "/v1/app/setup/verifications/:id",
-            get(get_verification_by_id),
-        )
-        .route(
-            "/v1/app/setup/verifications/:id/accept",
-            post(post_verification_accept),
-        )
-        .route(
-            "/v1/app/setup/verifications/:id/cancel",
-            post(post_verification_cancel),
-        )
-        .route(
-            "/v1/app/setup/verifications/:id/sas/start",
-            post(post_verification_sas_start),
-        )
-        .route(
-            "/v1/app/setup/verifications/:id/sas/confirm",
-            post(post_verification_sas_confirm),
-        )
-        .route(
-            "/v1/app/setup/verifications/:id/qr/confirm-scanned",
-            post(post_verification_qr_confirm),
-        )
-        .route("/v1/accounts", get(get_accounts))
-        .route("/v1/accounts/:account_id", get(get_account_by_id))
-        .route("/v1/accounts/:account_id/contacts", get(search_contacts))
-        .route("/v1/accounts/:account_id/contacts/list", get(list_contacts))
-        .route("/v1/bridges", get(get_bridges))
-        .route("/v1/bridges/:bridge_id", get(get_bridge_by_id))
-        .route(
-            "/v1/bridges/:bridge_id/capabilities",
-            get(get_bridge_capabilities),
-        )
-        .route(
-            "/v1/bridges/:bridge_id/login-flows",
-            get(get_bridge_login_flows),
-        )
-        .route("/v1/bridges/:bridge_id/logins", get(get_bridge_logins))
-        .route(
-            "/v1/bridges/:bridge_id/logins/:login_id",
-            delete(delete_bridge_login),
-        )
-        .route(
-            "/v1/bridges/:bridge_id/login-sessions",
-            post(post_bridge_login_session),
-        )
-        .route(
-            "/v1/bridges/:bridge_id/login-sessions/:session_id",
-            get(get_bridge_login_session).delete(delete_bridge_login_session),
-        )
-        .route(
-            "/v1/bridges/:bridge_id/login-sessions/:session_id/steps/:step_id",
-            post(post_bridge_login_step),
-        )
-        .route("/v1/labels", get(get_labels))
-        .route("/v1/chats", get(list_chats).post(create_chat))
-        .route("/v1/chats/start", post(start_chat))
-        .route("/v1/chats/search", get(search_chats))
-        .route(
-            "/v1/chats/:chat_id",
-            get(retrieve_chat).patch(patch_chat_handler),
-        )
-        .route("/v1/chats/:chat_id/archive", post(archive_chat_handler))
-        .route("/v1/chats/:chat_id/read", post(read_chat_handler))
-        .route("/v1/chats/:chat_id/unread", post(unread_chat_handler))
-        .route(
-            "/v1/chats/:chat_id/notify-anyway",
-            post(notify_anyway_handler),
-        )
-        .route(
-            "/v1/chats/:chat_id/reminders",
-            post(create_reminder_handler).delete(delete_reminder_handler),
-        )
-        .route(
-            "/v1/chats/:chat_id/messages",
-            get(list_messages).post(send_message_handler),
-        )
-        .route(
-            "/v1/chats/:chat_id/messages/:message_id",
-            get(get_message_handler)
-                .put(edit_message_handler)
-                .delete(delete_message_handler),
-        )
-        .route(
-            "/v1/chats/:chat_id/messages/:message_id/reactions",
-            post(add_reaction_handler),
-        )
-        .route(
-            "/v1/chats/:chat_id/messages/:message_id/reactions/:reaction_key",
-            delete(delete_reaction_handler),
-        )
-        .route("/v1/messages/search", get(search_messages_handler))
-        .route("/v1/assets/upload", post(upload_asset_multipart))
-        .route("/v1/assets/upload/base64", post(upload_asset_base64))
-        .route("/v1/assets/download", post(download_asset_handler))
-        .route("/v1/assets/serve", get(serve_asset_handler))
-        .route("/v1/search", get(unified_search_handler))
-        .route("/v1/focus", post(focus_app_handler))
-        .route("/v1/ws", get(ws_upgrade_handler))
-        .with_state(store)
+    Router { store }
+}
+
+#[inline]
+fn parse_json_body(body: &[u8]) -> Json<Value> {
+    let val = if body.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_slice(body).expect("valid JSON request body")
+    };
+    Json(val)
+}
+
+#[inline]
+fn parse_opt_json_body(body: &[u8]) -> Option<Json<Value>> {
+    if body.is_empty() {
+        None
+    } else {
+        serde_json::from_slice(body).ok().map(Json)
+    }
+}
+
+impl Router {
+    pub async fn dispatch(
+        &self,
+        method: &str,
+        path: &str,
+        query: HashMap<String, String>,
+        headers: HeaderMap,
+        body: Vec<u8>,
+    ) -> Response {
+        let store = self.store.clone();
+        let segs: Vec<&str> = path
+            .trim_matches('/')
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect();
+        match (method, segs.as_slice()) {
+            ("GET", ["v1", "info"]) => get_info(State(store)).await.into_response(),
+            ("GET", ["v1", "openapi.json"]) => get_openapi_spec().await.into_response(),
+            ("POST", ["oauth", "register"]) => oauth_register(State(store), parse_json_body(&body))
+                .await
+                .into_response(),
+            ("GET", ["oauth", "authorize"]) => oauth_authorize(State(store), headers, Query(query))
+                .await
+                .into_response(),
+            ("POST", ["oauth", "token"]) => oauth_token(State(store), headers, body)
+                .await
+                .into_response(),
+            ("GET", ["v1", "app", "setup"]) => get_setup_status(State(store)).await.into_response(),
+            ("POST", ["v1", "app", "setup", "start"]) => {
+                post_setup_start(State(store), parse_json_body(&body))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "app", "setup", "email"]) => {
+                post_setup_email(State(store), parse_json_body(&body))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "app", "setup", "response"]) => {
+                post_setup_response(State(store), parse_json_body(&body))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "app", "setup", "register"]) => {
+                post_setup_register(State(store), parse_json_body(&body))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "app", "setup", "verification", "recovery-key"]) => {
+                post_recovery_key_verify(State(store), parse_json_body(&body))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "app", "setup", "verification", "recovery-key", "reset"]) => {
+                post_recovery_key_reset(State(store)).await.into_response()
+            }
+            (
+                "POST",
+                ["v1", "app", "setup", "verification", "recovery-key", "reset", "confirm"],
+            ) => post_recovery_key_reset_confirm(State(store), parse_json_body(&body))
+                .await
+                .into_response(),
+            ("GET", ["v1", "app", "setup", "verifications"]) => {
+                get_verifications(State(store)).await.into_response()
+            }
+            ("POST", ["v1", "app", "setup", "verifications"]) => {
+                post_verifications_start(State(store)).await.into_response()
+            }
+            ("POST", ["v1", "app", "setup", "verifications", "qr", "scan"]) => {
+                post_verification_qr_scan(State(store), parse_json_body(&body))
+                    .await
+                    .into_response()
+            }
+            ("GET", ["v1", "app", "setup", "verifications", id]) => {
+                get_verification_by_id(State(store), AxumPath(url_decode(id)))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "app", "setup", "verifications", id, "accept"]) => {
+                post_verification_accept(State(store), AxumPath(url_decode(id)))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "app", "setup", "verifications", id, "cancel"]) => {
+                post_verification_cancel(State(store), AxumPath(url_decode(id)))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "app", "setup", "verifications", id, "sas", "start"]) => {
+                post_verification_sas_start(State(store), AxumPath(url_decode(id)))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "app", "setup", "verifications", id, "sas", "confirm"]) => {
+                post_verification_sas_confirm(State(store), AxumPath(url_decode(id)))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "app", "setup", "verifications", id, "qr", "confirm-scanned"]) => {
+                post_verification_qr_confirm(State(store), AxumPath(url_decode(id)))
+                    .await
+                    .into_response()
+            }
+            ("GET", ["v1", "accounts"]) => get_accounts(State(store)).await.into_response(),
+            ("GET", ["v1", "accounts", account_id]) => {
+                get_account_by_id(State(store), AxumPath(url_decode(account_id)))
+                    .await
+                    .into_response()
+            }
+            ("GET", ["v1", "accounts", account_id, "contacts"]) => {
+                search_contacts(State(store), AxumPath(url_decode(account_id)), Query(query))
+                    .await
+                    .into_response()
+            }
+            ("GET", ["v1", "accounts", account_id, "contacts", "list"]) => {
+                list_contacts(State(store), AxumPath(url_decode(account_id)))
+                    .await
+                    .into_response()
+            }
+            ("GET", ["v1", "bridges"]) => get_bridges(State(store)).await.into_response(),
+            ("GET", ["v1", "bridges", bridge_id]) => {
+                get_bridge_by_id(State(store), AxumPath(url_decode(bridge_id)))
+                    .await
+                    .into_response()
+            }
+            ("GET", ["v1", "bridges", bridge_id, "capabilities"]) => {
+                get_bridge_capabilities(AxumPath(url_decode(bridge_id)))
+                    .await
+                    .into_response()
+            }
+            ("GET", ["v1", "bridges", bridge_id, "login-flows"]) => {
+                get_bridge_login_flows(AxumPath(url_decode(bridge_id)))
+                    .await
+                    .into_response()
+            }
+            ("GET", ["v1", "bridges", bridge_id, "logins"]) => {
+                get_bridge_logins(State(store), AxumPath(url_decode(bridge_id)))
+                    .await
+                    .into_response()
+            }
+            ("DELETE", ["v1", "bridges", bridge_id, "logins", login_id]) => delete_bridge_login(
+                State(store),
+                AxumPath((url_decode(bridge_id), url_decode(login_id))),
+            )
+            .await
+            .into_response(),
+            ("POST", ["v1", "bridges", bridge_id, "login-sessions"]) => post_bridge_login_session(
+                State(store),
+                AxumPath(url_decode(bridge_id)),
+                parse_json_body(&body),
+            )
+            .await
+            .into_response(),
+            ("GET", ["v1", "bridges", bridge_id, "login-sessions", session_id]) => {
+                get_bridge_login_session(
+                    State(store),
+                    AxumPath((url_decode(bridge_id), url_decode(session_id))),
+                )
+                .await
+                .into_response()
+            }
+            ("DELETE", ["v1", "bridges", bridge_id, "login-sessions", session_id]) => {
+                delete_bridge_login_session(
+                    State(store),
+                    AxumPath((url_decode(bridge_id), url_decode(session_id))),
+                )
+                .await
+                .into_response()
+            }
+            (
+                "POST",
+                ["v1", "bridges", bridge_id, "login-sessions", session_id, "steps", step_id],
+            ) => post_bridge_login_step(
+                State(store),
+                AxumPath((
+                    url_decode(bridge_id),
+                    url_decode(session_id),
+                    url_decode(step_id),
+                )),
+                parse_json_body(&body),
+            )
+            .await
+            .into_response(),
+            ("GET", ["v1", "labels"]) => get_labels(State(store)).await.into_response(),
+            ("GET", ["v1", "chats"]) => {
+                list_chats(State(store), Query(query)).await.into_response()
+            }
+            ("POST", ["v1", "chats"]) => create_chat(State(store), parse_json_body(&body))
+                .await
+                .into_response(),
+            ("POST", ["v1", "chats", "start"]) => start_chat(State(store), parse_json_body(&body))
+                .await
+                .into_response(),
+            ("GET", ["v1", "chats", "search"]) => search_chats(State(store), Query(query))
+                .await
+                .into_response(),
+            ("GET", ["v1", "chats", chat_id]) => {
+                retrieve_chat(State(store), AxumPath(url_decode(chat_id)))
+                    .await
+                    .into_response()
+            }
+            ("PATCH", ["v1", "chats", chat_id]) => patch_chat_handler(
+                State(store),
+                AxumPath(url_decode(chat_id)),
+                parse_json_body(&body),
+            )
+            .await
+            .into_response(),
+            ("POST", ["v1", "chats", chat_id, "archive"]) => archive_chat_handler(
+                State(store),
+                AxumPath(url_decode(chat_id)),
+                parse_opt_json_body(&body),
+            )
+            .await
+            .into_response(),
+            ("POST", ["v1", "chats", chat_id, "read"]) => {
+                read_chat_handler(State(store), AxumPath(url_decode(chat_id)))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "chats", chat_id, "unread"]) => {
+                unread_chat_handler(State(store), AxumPath(url_decode(chat_id)))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "chats", chat_id, "notify-anyway"]) => {
+                notify_anyway_handler(State(store), AxumPath(url_decode(chat_id)))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "chats", chat_id, "reminders"]) => create_reminder_handler(
+                State(store),
+                AxumPath(url_decode(chat_id)),
+                parse_json_body(&body),
+            )
+            .await
+            .into_response(),
+            ("DELETE", ["v1", "chats", chat_id, "reminders"]) => {
+                delete_reminder_handler(State(store), AxumPath(url_decode(chat_id)))
+                    .await
+                    .into_response()
+            }
+            ("GET", ["v1", "chats", chat_id, "messages"]) => {
+                list_messages(State(store), AxumPath(url_decode(chat_id)), Query(query))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "chats", chat_id, "messages"]) => send_message_handler(
+                State(store),
+                AxumPath(url_decode(chat_id)),
+                parse_json_body(&body),
+            )
+            .await
+            .into_response(),
+            ("GET", ["v1", "chats", chat_id, "messages", message_id]) => get_message_handler(
+                State(store),
+                AxumPath((url_decode(chat_id), url_decode(message_id))),
+            )
+            .await
+            .into_response(),
+            ("PUT", ["v1", "chats", chat_id, "messages", message_id]) => edit_message_handler(
+                State(store),
+                AxumPath((url_decode(chat_id), url_decode(message_id))),
+                parse_json_body(&body),
+            )
+            .await
+            .into_response(),
+            ("DELETE", ["v1", "chats", chat_id, "messages", message_id]) => delete_message_handler(
+                State(store),
+                AxumPath((url_decode(chat_id), url_decode(message_id))),
+            )
+            .await
+            .into_response(),
+            ("POST", ["v1", "chats", chat_id, "messages", message_id, "reactions"]) => {
+                add_reaction_handler(
+                    State(store),
+                    AxumPath((url_decode(chat_id), url_decode(message_id))),
+                    parse_json_body(&body),
+                )
+                .await
+                .into_response()
+            }
+            (
+                "DELETE",
+                ["v1", "chats", chat_id, "messages", message_id, "reactions", reaction_key],
+            ) => delete_reaction_handler(
+                State(store),
+                AxumPath((
+                    url_decode(chat_id),
+                    url_decode(message_id),
+                    url_decode(reaction_key),
+                )),
+            )
+            .await
+            .into_response(),
+            ("GET", ["v1", "messages", "search"]) => {
+                search_messages_handler(State(store), Query(query))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "assets", "upload"]) => {
+                upload_asset_multipart(State(store), headers, body)
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "assets", "upload", "base64"]) => {
+                upload_asset_base64(State(store), parse_json_body(&body))
+                    .await
+                    .into_response()
+            }
+            ("POST", ["v1", "assets", "download"]) => {
+                download_asset_handler(State(store), parse_json_body(&body))
+                    .await
+                    .into_response()
+            }
+            ("GET", ["v1", "assets", "serve"]) => {
+                serve_asset_handler(State(store), headers, Query(query))
+                    .await
+                    .into_response()
+            }
+            ("GET", ["v1", "search"]) => unified_search_handler(State(store), Query(query))
+                .await
+                .into_response(),
+            ("POST", ["v1", "focus"]) => focus_app_handler(State(store), parse_json_body(&body))
+                .await
+                .into_response(),
+            _ => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
+        }
+    }
+}
+
+pub async fn serve_http(listener: TcpListener, router: Router) {
+    while let Ok((stream, _)) = listener.accept().await {
+        let router_clone = router.clone();
+        tokio::spawn(async move {
+            handle_http_connection(stream, router_clone).await;
+        });
+    }
+}
+
+async fn handle_http_connection(mut stream: TcpStream, router: Router) {
+    let mut buf = Vec::with_capacity(8192);
+    let mut tmp = [0u8; 4096];
+    loop {
+        let header_end = loop {
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos + 4;
+            }
+            match stream.read(&mut tmp).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            }
+        };
+
+        let header_str =
+            std::str::from_utf8(&buf[..header_end - 4]).expect("valid HTTP header utf8");
+        let mut lines = header_str.split("\r\n");
+        let req_line = match lines.next() {
+            Some(l) if !l.is_empty() => l,
+            _ => return,
+        };
+        let mut req_parts = req_line.split_whitespace();
+        let method = req_parts.next().unwrap_or("GET").to_string();
+        let target = req_parts.next().unwrap_or("/").to_string();
+
+        let mut headers = HashMap::new();
+        for line in lines {
+            if let Some((k, v)) = line.split_once(':') {
+                headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
+            }
+        }
+        let content_len: usize = headers
+            .get("content-length")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+
+        while buf.len() - header_end < content_len {
+            match stream.read(&mut tmp).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            }
+        }
+
+        let body = buf[header_end..header_end + content_len].to_vec();
+        buf.drain(..header_end + content_len);
+
+        let (raw_path, raw_query) = match target.split_once('?') {
+            Some((p, q)) => (p, q),
+            None => (target.as_str(), ""),
+        };
+        let mut query = HashMap::new();
+        if !raw_query.is_empty() {
+            for pair in raw_query.split('&') {
+                if let Some((k, v)) = pair.split_once('=') {
+                    query.insert(url_decode(k), url_decode(v));
+                }
+            }
+        }
+
+        let is_ws = raw_path == "/v1/ws"
+            && headers
+                .get("upgrade")
+                .map(|u| u.eq_ignore_ascii_case("websocket"))
+                .unwrap_or(false);
+        if is_ws {
+            let ws_key = headers
+                .get("sec-websocket-key")
+                .expect("missing Sec-WebSocket-Key");
+            let mut key_concat = String::with_capacity(ws_key.len() + 36);
+            key_concat.push_str(ws_key);
+            key_concat.push_str("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+            let accept = base64_encode_standard(&sha1(key_concat.as_bytes()));
+            let handshake = format!(
+                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+            );
+            if stream.write_all(handshake.as_bytes()).await.is_err() {
+                return;
+            }
+            let rx = router.store.read().unwrap().ws_tx.subscribe();
+            let (reader, writer) = stream.into_split();
+            handle_ws_client(reader, writer, rx).await;
+            return;
+        }
+
+        let should_close = headers
+            .get("connection")
+            .map(|c| c.eq_ignore_ascii_case("close"))
+            .unwrap_or(false);
+
+        let resp = router
+            .dispatch(&method, raw_path, query, HeaderMap(headers), body)
+            .await;
+        let mut head = format!(
+            "HTTP/1.1 {} {}\r\nContent-Length: {}\r\n",
+            resp.status.0,
+            resp.status.reason_phrase(),
+            resp.body.len()
+        );
+        for (k, v) in &resp.headers {
+            head.push_str(k);
+            head.push_str(": ");
+            head.push_str(v);
+            head.push_str("\r\n");
+        }
+        head.push_str("\r\n");
+        if stream.write_all(head.as_bytes()).await.is_err() {
+            return;
+        }
+        if !resp.body.is_empty() && stream.write_all(&resp.body).await.is_err() {
+            return;
+        }
+        if should_close {
+            return;
+        }
+    }
 }
 
 async fn get_info(State(store): State<SharedStore>) -> Json<InfoResponse> {
@@ -294,7 +800,7 @@ async fn oauth_authorize(
 async fn oauth_token(
     State(store): State<SharedStore>,
     headers: HeaderMap,
-    body_bytes: axum::body::Bytes,
+    body_bytes: Bytes,
 ) -> Response {
     let mut st = store.write().unwrap();
     let content_type = headers
@@ -325,9 +831,7 @@ async fn oauth_token(
         "only S256 PKCE supported"
     );
 
-    let mut hasher = Sha256::new();
-    hasher.update(verifier.as_bytes());
-    let computed_challenge = URL_SAFE_NO_PAD.encode(hasher.finalize());
+    let computed_challenge = base64_encode_url_nopad(&sha256(verifier.as_bytes()));
     assert_eq!(
         computed_challenge, entry.code_challenge,
         "PKCE challenge mismatch"
@@ -1687,9 +2191,7 @@ async fn upload_asset_base64(
         .and_then(Value::as_str)
         .unwrap_or("application/octet-stream")
         .to_string();
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(content_b64)
-        .expect("valid base64");
+    let bytes = base64_decode_standard(content_b64);
     let asset = store
         .write()
         .unwrap()
@@ -1847,25 +2349,90 @@ async fn focus_app_handler(
     Json(json!({ "success": true }))
 }
 
-async fn ws_upgrade_handler(ws: WebSocketUpgrade, State(store): State<SharedStore>) -> Response {
-    let rx = store.read().unwrap().ws_tx.subscribe();
-    ws.on_upgrade(move |socket| handle_ws_client(socket, rx))
+pub async fn read_ws_frame<R: AsyncReadExt + Unpin>(reader: &mut R) -> Option<(u8, Vec<u8>)> {
+    let mut hdr = [0u8; 2];
+    reader.read_exact(&mut hdr).await.ok()?;
+    let opcode = hdr[0] & 0x0F;
+    let masked = (hdr[1] & 0x80) != 0;
+    let mut len = (hdr[1] & 0x7F) as usize;
+    if len == 126 {
+        let mut ext = [0u8; 2];
+        reader.read_exact(&mut ext).await.ok()?;
+        len = u16::from_be_bytes(ext) as usize;
+    } else if len == 127 {
+        let mut ext = [0u8; 8];
+        reader.read_exact(&mut ext).await.ok()?;
+        len = u64::from_be_bytes(ext) as usize;
+    }
+    let mut mask = [0u8; 4];
+    if masked {
+        reader.read_exact(&mut mask).await.ok()?;
+    }
+    let mut payload = vec![0u8; len];
+    reader.read_exact(&mut payload).await.ok()?;
+    if masked {
+        for (i, b) in payload.iter_mut().enumerate() {
+            *b ^= mask[i & 3];
+        }
+    }
+    Some((opcode, payload))
 }
 
-async fn handle_ws_client(socket: WebSocket, mut rx: tokio::sync::broadcast::Receiver<WsEvent>) {
-    let (mut sender, mut receiver) = socket.split();
+pub async fn write_ws_frame<W: AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    payload: &[u8],
+    masked: bool,
+) -> std::io::Result<()> {
+    let mut frame = Vec::with_capacity(14 + payload.len());
+    frame.push(0x81);
+    let mask_bit = if masked { 0x80 } else { 0x00 };
+    if payload.len() < 126 {
+        frame.push(mask_bit | (payload.len() as u8));
+    } else if payload.len() <= 65535 {
+        frame.push(mask_bit | 126);
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    } else {
+        frame.push(mask_bit | 127);
+        frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+    }
+    if masked {
+        let mask_key = [0x37u8, 0xFA, 0x21, 0x3D];
+        frame.extend_from_slice(&mask_key);
+        for (i, &b) in payload.iter().enumerate() {
+            frame.push(b ^ mask_key[i & 3]);
+        }
+    } else {
+        frame.extend_from_slice(payload);
+    }
+    writer.write_all(&frame).await
+}
+
+async fn handle_ws_client(
+    mut reader: OwnedReadHalf,
+    mut writer: OwnedWriteHalf,
+    mut rx: tokio::sync::broadcast::Receiver<WsEvent>,
+) {
     let subscribed_chats: Arc<RwLock<HashSet<String>>> =
         Arc::new(RwLock::new(HashSet::from(["*".to_string()])));
     let sub_clone = subscribed_chats.clone();
 
     let recv_task = tokio::spawn(async move {
-        while let Some(Ok(AxumWsMsg::Text(txt))) = receiver.next().await {
-            if let Ok(parsed) = serde_json::from_str::<Value>(&txt) {
-                if parsed.get("type").and_then(Value::as_str) == Some("subscriptions.set") {
-                    if let Some(arr) = parsed.get("chatIDs").and_then(Value::as_array) {
-                        let mut set = sub_clone.write().unwrap();
-                        set.clear();
-                        set.extend(arr.iter().filter_map(|v| v.as_str().map(str::to_string)));
+        while let Some((opcode, payload)) = read_ws_frame(&mut reader).await {
+            if opcode == 0x08 {
+                break;
+            }
+            if opcode == 0x01 {
+                if let Ok(txt) = std::str::from_utf8(&payload) {
+                    if let Ok(parsed) = serde_json::from_str::<Value>(txt) {
+                        if parsed.get("type").and_then(Value::as_str) == Some("subscriptions.set") {
+                            if let Some(arr) = parsed.get("chatIDs").and_then(Value::as_array) {
+                                let mut set = sub_clone.write().unwrap();
+                                set.clear();
+                                set.extend(
+                                    arr.iter().filter_map(|v| v.as_str().map(str::to_string)),
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -1884,7 +2451,10 @@ async fn handle_ws_client(socket: WebSocket, mut rx: tokio::sync::broadcast::Rec
         };
         if should_send {
             let payload = serde_json::to_string(&event).unwrap();
-            if sender.send(AxumWsMsg::Text(payload)).await.is_err() {
+            if write_ws_frame(&mut writer, payload.as_bytes(), false)
+                .await
+                .is_err()
+            {
                 break;
             }
         }

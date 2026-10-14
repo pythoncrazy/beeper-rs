@@ -1,4 +1,6 @@
-use crate::config::{resolve_data_dir_for_os, APP_BUNDLE_ID, TRAY_ICON_SIZE};
+use crate::config::{
+    resolve_data_dir_for_os, resolve_original_data_dir_for_os, APP_BUNDLE_ID, TRAY_ICON_SIZE,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -40,6 +42,25 @@ impl OsKind {
             Self::Windows | Self::Linux => "Alt",
         }
     }
+}
+
+pub fn resolve_original_beeper_data_dir(
+    os: OsKind,
+    profile: Option<&str>,
+    env_vars: &HashMap<String, String>,
+    home_dir: &Path,
+) -> PathBuf {
+    resolve_original_data_dir_for_os(os.node_platform_str(), profile, env_vars, home_dir)
+}
+
+pub fn current_original_beeper_data_dir(profile: Option<&str>) -> PathBuf {
+    let env_map: HashMap<String, String> = std::env::vars().collect();
+    let home = env_map
+        .get("HOME")
+        .or_else(|| env_map.get("USERPROFILE"))
+        .map(PathBuf::from)
+        .expect("HOME or USERPROFILE must be set");
+    resolve_original_beeper_data_dir(OsKind::current(), profile, &env_map, &home)
 }
 
 pub fn resolve_desktop_data_dir(

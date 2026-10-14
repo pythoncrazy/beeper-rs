@@ -1,6 +1,7 @@
 use crate::config::{
-    now_rfc3339_millis, now_unix_secs, CentralConfig, DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER,
-    DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN, DEFAULT_USER_ID, SEEDED_BRIDGES, WS_CHANNEL_CAPACITY,
+    assert_not_original_beeper_dir, copy_beeper_data_to_isolated_dir, now_rfc3339_millis,
+    now_unix_secs, CentralConfig, DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE,
+    DEFAULT_TOKEN, DEFAULT_USER_ID, SEEDED_BRIDGES, WS_CHANNEL_CAPACITY,
 };
 use crate::models::*;
 use rusqlite::{params, Connection};
@@ -30,6 +31,7 @@ pub fn tokenize(text: &str) -> Vec<String> {
     out
 }
 
+#[inline]
 pub fn intersect_sorted(a: &[u32], b: &[u32]) -> Vec<u32> {
     let mut res = Vec::with_capacity(a.len().min(b.len()));
     let (mut i, mut j) = (0, 0);
@@ -47,6 +49,7 @@ pub fn intersect_sorted(a: &[u32], b: &[u32]) -> Vec<u32> {
     res
 }
 
+#[inline]
 pub fn union_sorted(a: &[u32], b: &[u32]) -> Vec<u32> {
     let mut res = Vec::with_capacity(a.len() + b.len());
     let (mut i, mut j) = (0, 0);
@@ -316,6 +319,7 @@ pub struct BeeperStore {
     pub data_dir: PathBuf,
     pub db_path: PathBuf,
     pub assets_dir: PathBuf,
+    pub copied_files_from_source: usize,
     pub db: Mutex<Connection>,
     pub beeper_state: BeeperStateRecord,
     pub setup_status: SetupStatusResponse,
@@ -347,16 +351,24 @@ pub struct BeeperStore {
 
 impl BeeperStore {
     pub fn open_or_create(data_dir: PathBuf, pas_port: u16) -> Self {
-        let config = CentralConfig::new(data_dir.clone(), "127.0.0.1".to_string(), pas_port, None);
+        let config = CentralConfig::new(data_dir, "127.0.0.1".to_string(), pas_port, None);
         Self::from_config(config)
     }
 
     pub fn from_config(config: CentralConfig) -> Self {
-        std::fs::create_dir_all(&config.data_dir).expect("create BeeperTexts data_dir");
-        std::fs::create_dir_all(&config.assets_dir).expect("create BeeperTexts/media");
+        assert_not_original_beeper_dir(&config.data_dir);
+        std::fs::create_dir_all(&config.data_dir).expect("create isolated BeeperRs data_dir");
+        let mut copied_files_from_source = 0;
+        if !config.db_path.exists() {
+            if let Some(ref src_dir) = config.source_beeper_dir {
+                copied_files_from_source =
+                    copy_beeper_data_to_isolated_dir(src_dir, &config.data_dir);
+            }
+        }
+        std::fs::create_dir_all(&config.assets_dir).expect("create isolated media dir");
         let (ws_tx, _) = broadcast::channel(WS_CHANNEL_CAPACITY);
 
-        let conn = Connection::open(&config.db_path).expect("open BeeperTexts/index.db");
+        let conn = Connection::open(&config.db_path).expect("open isolated index.db");
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
@@ -407,6 +419,7 @@ impl BeeperStore {
             data_dir: config.data_dir.clone(),
             db_path: config.db_path.clone(),
             assets_dir: config.assets_dir.clone(),
+            copied_files_from_source,
             settings: config.settings.clone(),
             config,
             db: Mutex::new(conn),
@@ -585,7 +598,7 @@ impl BeeperStore {
     }
 
     fn load_from_sqlite_or_seed(&mut self) {
-        let (raw_state, raw_bridges, raw_settings, loaded_chats, loaded_msgs) = {
+        let (raw_state, raw_bridges, raw_settings, loaded_chats, loaded_msgs, loaded_assets) = {
             let conn = self.db.lock().unwrap();
             let raw_state = conn
                 .query_row::<String, _, _>(
@@ -625,12 +638,20 @@ impl BeeperStore {
                     .map(|r| serde_json::from_str(&r.unwrap()).unwrap())
                     .collect()
             };
+            let loaded_assets: Vec<StoredAsset> = conn
+                .prepare("SELECT json FROM assets")
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(|r| serde_json::from_str(&r.unwrap()).unwrap())
+                .collect();
             (
                 raw_state,
                 raw_bridges,
                 raw_settings,
                 loaded_chats,
                 loaded_msgs,
+                loaded_assets,
             )
         };
 
@@ -647,6 +668,17 @@ impl BeeperStore {
             let pas_port = self.settings.pas_port;
             self.settings = serde_json::from_str(&st).expect("parse stored beeperSettings");
             self.settings.pas_port = pas_port;
+        }
+        for mut asset in loaded_assets {
+            if let Some(fname) = std::path::Path::new(&asset.local_file_path).file_name() {
+                let isolated_media_path = self.assets_dir.join(fname);
+                if isolated_media_path.exists() {
+                    asset.local_file_path = isolated_media_path.to_string_lossy().to_string();
+                }
+            }
+            self.assets_by_mxc
+                .insert(asset.mxc_url.clone(), asset.upload_id.clone());
+            self.assets.insert(asset.upload_id.clone(), asset);
         }
 
         if loaded_chats.is_empty() {
@@ -691,27 +723,46 @@ impl BeeperStore {
     }
 
     fn seed_default_workspace(&mut self) {
-        self.bridge_accounts = SEEDED_BRIDGES
-            .iter()
-            .map(|(bid, btype, name, mode)| BridgeAccountInfo {
-                account_id: format!("acc_{bid}"),
-                bridge_id: (*bid).to_string(),
-                bridge_type: (*btype).to_string(),
-                is_running: true,
-                login_id: Some(format!("login_{bid}_01")),
-                mode: Some(
-                    if *mode == BridgeMode::OnDevice {
-                        "on_device"
-                    } else {
-                        "cloud"
-                    }
-                    .to_string(),
-                ),
-                network_name: (*name).to_string(),
-                state: "CONNECTED".to_string(),
-            })
-            .collect();
+        if self.bridge_accounts.is_empty() {
+            self.bridge_accounts = SEEDED_BRIDGES
+                .iter()
+                .map(|(bid, btype, name, mode)| BridgeAccountInfo {
+                    account_id: format!("acc_{bid}"),
+                    bridge_id: (*bid).to_string(),
+                    bridge_type: (*btype).to_string(),
+                    is_running: true,
+                    login_id: Some(format!("login_{bid}_01")),
+                    mode: Some(
+                        if *mode == BridgeMode::OnDevice {
+                            "on_device"
+                        } else {
+                            "cloud"
+                        }
+                        .to_string(),
+                    ),
+                    network_name: (*name).to_string(),
+                    state: "CONNECTED".to_string(),
+                })
+                .collect();
+        }
         self.rebuild_accounts_from_bridges();
+        let self_user = |accounts: &[Account], idx: usize| -> User {
+            accounts
+                .get(idx)
+                .or_else(|| accounts.first())
+                .map(|a| a.user.clone())
+                .unwrap_or_else(|| User {
+                    id: "@self:beeper.com".to_string(),
+                    full_name: Some("Alex".to_string()),
+                    username: Some("alex".to_string()),
+                    email: Some("alex@beeper.com".to_string()),
+                    phone_number: None,
+                    img_url: None,
+                    is_self: Some(true),
+                    cannot_message: Some(false),
+                    custom_nickname: None,
+                })
+        };
 
         let make_user = |id: &str, name: &str, uname: &str, phone: Option<&str>| User {
             id: id.to_string(),
@@ -758,7 +809,7 @@ impl BeeperStore {
                             "eric",
                             Some("+14155550101"),
                         ),
-                        self.accounts[0].user.clone(),
+                        self_user(&self.accounts, 0),
                     ],
                 },
                 flags: 0,
@@ -795,7 +846,7 @@ impl BeeperStore {
                             "sarahc",
                             Some("+14155550102"),
                         ),
-                        self.accounts[1].user.clone(),
+                        self_user(&self.accounts, 1),
                     ],
                 },
                 flags: 0,
@@ -828,7 +879,7 @@ impl BeeperStore {
                     items: vec![
                         make_user("@tulir:beeper.com", "Tulir Asokan", "tulir", None),
                         make_user("@batuhan:beeper.com", "Batuhan", "batuhan", None),
-                        self.accounts[2].user.clone(),
+                        self_user(&self.accounts, 2),
                     ],
                 },
                 flags: 0,
@@ -865,13 +916,18 @@ impl BeeperStore {
                             "secops",
                             Some("+14155550190"),
                         ),
-                        self.accounts[3].user.clone(),
+                        self_user(&self.accounts, 3),
                     ],
                 },
                 flags: 0,
             },
         ];
 
+        self.db
+            .lock()
+            .unwrap()
+            .execute_batch("BEGIN IMMEDIATE;")
+            .expect("begin seed transaction");
         for c in chats_seed {
             self.index_and_push_chat(c, true);
         }
@@ -1012,6 +1068,11 @@ impl BeeperStore {
             self.index_and_push_message(m, true);
         }
         self.persist_state_to_sqlite();
+        self.db
+            .lock()
+            .unwrap()
+            .execute_batch("COMMIT;")
+            .expect("commit seed transaction");
     }
 
     fn chat_index_text(c: &Chat) -> String {

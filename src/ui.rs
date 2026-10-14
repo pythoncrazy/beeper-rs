@@ -213,6 +213,14 @@ impl BeeperGuiApp {
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Comma)) {
             self.show_settings_modal = !self.show_settings_modal;
         }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::D)) {
+            self.tray.update(self.tray.unread_count, !self.tray.muted);
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.show_command_palette = false;
+            self.show_settings_modal = false;
+            self.show_quick_look_modal = false;
+        }
         if ctx.input(|i| i.key_pressed(egui::Key::Space)) && !ctx.wants_keyboard_input() {
             if let Some(ref mid) = self.selected_message_id {
                 let st = self.store.read().unwrap();
@@ -889,6 +897,14 @@ impl BeeperGuiApp {
                         }
                         SettingsSection::StorageAndSystem => {
                             let (db_bytes, media_bytes) = st.calculate_storage_bytes();
+                            ui.label(format!(
+                                "Isolated data directory: {}",
+                                st.data_dir.display()
+                            ));
+                            ui.label(format!(
+                                "Imported files from original Beeper: {}",
+                                st.copied_files_from_source
+                            ));
                             ui.label(format!("SQLite index.db size: {db_bytes} bytes"));
                             ui.label(format!("Cached media size: {media_bytes} bytes"));
                             if ui.button("Clear All Cached Media").clicked() {

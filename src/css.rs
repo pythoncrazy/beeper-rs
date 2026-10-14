@@ -2,6 +2,7 @@ use crate::config::{
     CSS_DARK_PURPLE, CSS_DRACULA, CSS_FIX_LOCKDOWN_EMOJIS, CSS_NOCTURNE, CSS_TEXTS, CSS_VARIABLES,
 };
 use crate::models::{BeeperSettings, ThemeChoice};
+use eframe::egui;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
