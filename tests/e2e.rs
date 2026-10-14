@@ -230,7 +230,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let orig_conn = Connection::open(orig_dir.join("index.db")).unwrap();
         orig_conn
             .execute_batch(
-                "CREATE TABLE key_values (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                "CREATE TABLE key_values ('key' VARCHAR NOT NULL, 'value' JSON NOT NULL, PRIMARY KEY(key));
                  CREATE TABLE messages (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, body TEXT);",
             )
             .unwrap();

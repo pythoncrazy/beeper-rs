@@ -27,7 +27,7 @@ pub fn extract_state_from_index_db(data_dir: &Path) -> (Value, Value) {
     let conn = Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .expect("open index.db readonly");
     let kv = |k: &str| {
-        conn.query_row("SELECT value FROM key_values WHERE key = ?1", [k], |r| r.get::<_, String>(0))
+        conn.query_row("SELECT CAST(value AS TEXT) FROM key_values WHERE key = ?1", [k], |r| r.get::<_, String>(0))
             .optional()
             .expect("read key_values")
             .map(|v| serde_json::from_str::<Value>(&v).expect("key_values holds JSON"))

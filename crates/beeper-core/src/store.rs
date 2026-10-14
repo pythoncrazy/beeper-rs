@@ -383,9 +383,11 @@ impl BeeperStore {
         let (legacy, state, desktop, bridges, settings, seq, chats, messages, assets) = {
             let conn = self.db.lock().unwrap();
             let kv = |k: &str| {
-                conn.query_row("SELECT value FROM key_values WHERE key = ?1", [k], |r| r.get::<_, String>(0))
-                    .optional()
-                    .expect("read key_values")
+                conn.query_row("SELECT CAST(value AS TEXT) FROM key_values WHERE key = ?1", [k], |r| {
+                    r.get::<_, String>(0)
+                })
+                .optional()
+                .expect("read key_values")
             };
             let rows = |sql: &str| -> Vec<String> {
                 let mut stmt = conn.prepare(sql).expect("prepare row query");
