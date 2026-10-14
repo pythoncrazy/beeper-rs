@@ -14,7 +14,9 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 pub fn extract_state_from_index_db(data_dir: &Path) -> (BeeperStateRecord, Vec<BridgeAccountInfo>) {
     let working_dir = if is_original_beeper_dir(data_dir) {
         let isolated = std::env::temp_dir().join(format!("beeper_rs_isolated_extract_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&isolated);
+        if isolated.exists() {
+            std::fs::remove_dir_all(&isolated).expect("remove stale isolated extract dir");
+        }
         copy_beeper_data_to_isolated_dir(data_dir, &isolated);
         isolated
     } else {

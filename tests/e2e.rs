@@ -28,9 +28,26 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tokio::time::{timeout, Duration};
 
+fn temp_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("{name}_{}", std::process::id()));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("remove stale test dir");
+    }
+    dir
+}
+
+async fn wait_for(path: &std::path::Path) {
+    for _ in 0..50 {
+        if path.exists() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("{} did not appear", path.display());
+}
+
 async fn spawn_e2e_beeper_instance(profile_suffix: &str) -> (PathBuf, u16, SharedStore, BeeperClient) {
-    let data_dir = std::env::temp_dir().join(format!("BeeperRs_e2e_{}_{}", profile_suffix, std::process::id()));
-    let _ = std::fs::remove_dir_all(&data_dir);
+    let data_dir = temp_dir(&format!("BeeperRs_e2e_{profile_suffix}"));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -140,10 +157,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert_eq!(win_cmd, "cmd");
     assert_eq!(win_args[1], "start");
 
-    let orig_dir = std::env::temp_dir().join(format!("BeeperTexts-orig_{}", std::process::id()));
-    let isolated_copy_dir = std::env::temp_dir().join(format!("BeeperRs-isolated_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&orig_dir);
-    let _ = std::fs::remove_dir_all(&isolated_copy_dir);
+    let (orig_dir, isolated_copy_dir) = (temp_dir("BeeperTexts-orig"), temp_dir("BeeperRs-isolated"));
     std::fs::create_dir_all(orig_dir.join("media")).unwrap();
     std::fs::create_dir_all(orig_dir.join("GPUCache")).unwrap();
     std::fs::write(orig_dir.join("SingletonLock"), b"locked_by_electron").unwrap();
@@ -194,8 +208,8 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         .unwrap();
     let orig_db_after = std::fs::read(orig_dir.join("index.db")).unwrap();
     assert_eq!(orig_db_snapshot, orig_db_after, "original BeeperTexts/index.db must never be modified");
-    let _ = std::fs::remove_dir_all(&orig_dir);
-    let _ = std::fs::remove_dir_all(&isolated_copy_dir);
+    std::fs::remove_dir_all(&orig_dir).unwrap();
+    std::fs::remove_dir_all(&isolated_copy_dir).unwrap();
 
     let mac_manifest = generate_os_autostart_manifest(
         OsKind::MacOs,
@@ -413,102 +427,71 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     .unwrap();
 
     let bin_exe = env!("CARGO_BIN_EXE_beeper-rs");
+    let (wl_png, wl_settings_png, x_png) =
+        ("/tmp/beeper_rs_wayland_window.png", "/tmp/beeper_rs_wayland_settings.png", "/tmp/beeper_rs_xvfb_window.png");
+    for png in [wl_png, wl_settings_png, x_png].into_iter().filter(|p| std::path::Path::new(p).exists()) {
+        std::fs::remove_file(png).unwrap();
+    }
+    let run_gui = |port: &str, hide: &str, envs: &[(&str, &str)]| {
+        let data = temp_dir(&format!("BeeperRs_gui_{port}"));
+        let status = std::process::Command::new(bin_exe)
+            .args(["--data-dir", data.to_str().unwrap(), "--port", port])
+            .env_remove(hide)
+            .env("ICED_BACKEND", "tiny-skia")
+            .envs(envs.iter().copied())
+            .status()
+            .expect("run beeper-rs GUI");
+        std::fs::remove_dir_all(&data).expect("remove GUI data dir");
+        status
+    };
+    let spawn_quiet = |cmd: &str, args: &[&str], envs: &[(&str, &str)]| {
+        let mut c = std::process::Command::new(cmd);
+        c.args(args).envs(envs.iter().copied()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        c.spawn().unwrap_or_else(|e| panic!("spawn {cmd}: {e}"))
+    };
+    let stop = |mut child: std::process::Child| {
+        child.kill().expect("stop display server");
+        child.wait().expect("reap display server");
+    };
 
-    let wl_runtime_dir = std::env::temp_dir().join(format!("beeper_wl_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&wl_runtime_dir);
-    std::fs::create_dir_all(&wl_runtime_dir).unwrap();
+    let wl_runtime = temp_dir("beeper_wl");
+    std::fs::create_dir_all(&wl_runtime).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&wl_runtime_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&wl_runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
-    let wl_sock = "beeper-wl-e2e";
-    let wl_png = PathBuf::from("/tmp/beeper_rs_wayland_window.png");
-    let _ = std::fs::remove_file(&wl_png);
-
-    let mut weston_child = std::process::Command::new("weston")
-        .args(["--backend=headless", &format!("--socket={wl_sock}"), "--width=1440", "--height=900", "--no-config"])
-        .env("XDG_RUNTIME_DIR", &wl_runtime_dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn headless weston Wayland compositor");
-
-    let wl_sock_path = wl_runtime_dir.join(wl_sock);
-    for _ in 0..50 {
-        if wl_sock_path.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(wl_sock_path.exists(), "headless Wayland socket must exist");
-
-    let wl_data_dir = std::env::temp_dir().join(format!("BeeperRs_wl_data_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&wl_data_dir);
-
-    let wl_status = std::process::Command::new(bin_exe)
-        .args(["--data-dir", wl_data_dir.to_str().unwrap(), "--port", "23398"])
-        .env("XDG_RUNTIME_DIR", &wl_runtime_dir)
-        .env("WAYLAND_DISPLAY", wl_sock)
-        .env_remove("DISPLAY")
-        .env("ICED_BACKEND", "tiny-skia")
-        .env("BEEPER_SCREENSHOT_EXIT", wl_png.to_str().unwrap())
-        .env("BEEPER_SCREENSHOT_SETTINGS", "/tmp/beeper_rs_wayland_settings.png")
-        .status()
-        .expect("run beeper-rs GUI on headless Wayland");
-
-    let _ = weston_child.kill();
-    let _ = weston_child.wait();
-
+    let xdg = ("XDG_RUNTIME_DIR", wl_runtime.to_str().unwrap());
+    let weston_args = ["--backend=headless", "--socket=beeper-wl-e2e", "--width=1440", "--height=900", "--no-config"];
+    let weston = spawn_quiet("weston", &weston_args, &[xdg]);
+    wait_for(&wl_runtime.join("beeper-wl-e2e")).await;
+    let wl_status = run_gui(
+        "23398",
+        "DISPLAY",
+        &[
+            xdg,
+            ("WAYLAND_DISPLAY", "beeper-wl-e2e"),
+            ("BEEPER_SCREENSHOT_EXIT", wl_png),
+            ("BEEPER_SCREENSHOT_SETTINGS", wl_settings_png),
+        ],
+    );
+    stop(weston);
     assert!(wl_status.success(), "beeper-rs GUI on headless Wayland exited cleanly");
-    assert!(wl_png.exists(), "Wayland window screenshot PNG must be written");
-    assert!(std::fs::metadata(&wl_png).unwrap().len() > 25_000);
-    assert!(std::fs::metadata("/tmp/beeper_rs_wayland_settings.png").unwrap().len() > 15_000);
 
-    let xvfb_dir = std::env::temp_dir().join(format!("beeper_xvfb_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&xvfb_dir);
-    std::fs::create_dir_all(&xvfb_dir).unwrap();
-    let xvfb_png = PathBuf::from("/tmp/beeper_rs_xvfb_window.png");
-    let _ = std::fs::remove_file(&xvfb_png);
+    let fb_dir = temp_dir("beeper_xvfb");
+    std::fs::create_dir_all(&fb_dir).unwrap();
+    let xvfb_args =
+        [":99", "-screen", "0", "1440x900x24", "-ac", "-nolisten", "tcp", "-fbdir", fb_dir.to_str().unwrap()];
+    let xvfb = spawn_quiet("Xvfb", &xvfb_args, &[]);
+    wait_for(&fb_dir.join("Xvfb_screen0")).await;
+    let x_status = run_gui("23399", "WAYLAND_DISPLAY", &[("DISPLAY", ":99"), ("BEEPER_SCREENSHOT_EXIT", x_png)]);
+    stop(xvfb);
+    assert!(x_status.success(), "beeper-rs GUI on Xvfb :99 exited cleanly");
 
-    let mut xvfb_child = std::process::Command::new("Xvfb")
-        .args([":99", "-screen", "0", "1440x900x24", "-ac", "-nolisten", "tcp", "-fbdir", xvfb_dir.to_str().unwrap()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn headless Xvfb :99 server");
-
-    let fb_file = xvfb_dir.join("Xvfb_screen0");
-    for _ in 0..50 {
-        if fb_file.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    for (png, min) in [(wl_png, 25_000), (wl_settings_png, 15_000), (x_png, 25_000)] {
+        assert!(std::fs::metadata(png).expect("screenshot PNG is written").len() > min, "{png} is too small");
     }
-    assert!(fb_file.exists(), "Xvfb_screen0 framebuffer file must exist");
-
-    let xvfb_data_dir = std::env::temp_dir().join(format!("BeeperRs_xvfb_data_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&xvfb_data_dir);
-
-    let status = std::process::Command::new(bin_exe)
-        .args(["--data-dir", xvfb_data_dir.to_str().unwrap(), "--port", "23399"])
-        .env("DISPLAY", ":99")
-        .env_remove("WAYLAND_DISPLAY")
-        .env("ICED_BACKEND", "tiny-skia")
-        .env("BEEPER_SCREENSHOT_EXIT", xvfb_png.to_str().unwrap())
-        .status()
-        .expect("run beeper-rs GUI on Xvfb :99");
-
-    let _ = xvfb_child.kill();
-    let _ = xvfb_child.wait();
-
-    assert!(status.success(), "beeper-rs GUI on Xvfb :99 exited cleanly");
-    assert!(xvfb_png.exists(), "Xvfb window screenshot PNG must be written");
-    assert!(std::fs::metadata(&xvfb_png).unwrap().len() > 25_000);
-
-    let _ = std::fs::remove_dir_all(&wl_runtime_dir);
-    let _ = std::fs::remove_dir_all(&wl_data_dir);
-    let _ = std::fs::remove_dir_all(&xvfb_dir);
-    let _ = std::fs::remove_dir_all(&xvfb_data_dir);
-    let _ = std::fs::remove_dir_all(&data_dir);
+    for dir in [wl_runtime, fb_dir, data_dir] {
+        std::fs::remove_dir_all(dir).expect("remove test dir");
+    }
 }
