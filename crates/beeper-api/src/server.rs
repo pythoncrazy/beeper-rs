@@ -2,6 +2,7 @@ use crate::codec::{
     base64_decode, base64_encode_standard, base64_encode_url_nopad, sha1, sha256, url_decode, url_encode,
 };
 use crate::http::{parse_query, read_message, read_ws_frame, write_ws_frame, HttpMessage, StatusCode};
+use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{
     network_spec, now_rfc3339_millis, APP_BUNDLE_ID, APP_NAME, APP_VERSION, NETWORK_SPECS, OPENAPI_SPEC_JSON,
 };
@@ -105,20 +106,27 @@ fn parse_body(msg: &HttpMessage) -> Option<Value> {
 }
 
 pub async fn serve_http(listener: TcpListener, store: SharedStore) {
+    let cloud = {
+        let cfg = &store.read().unwrap().config;
+        Arc::new(Cloud::new(&cfg.api_url, &cfg.homeserver))
+    };
     loop {
         let (stream, _) = listener.accept().await.expect("accept TCP connection");
-        tokio::spawn(handle_connection(stream, store.clone()));
+        tokio::spawn(handle_connection(stream, store.clone(), cloud.clone()));
     }
 }
 
-async fn handle_connection(mut stream: TcpStream, store: SharedStore) {
+async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc<Cloud>) {
     let mut buf = Vec::new();
     while let Some(msg) = read_message(&mut stream, &mut buf).await {
         if msg.start_line.starts_with("GET /v1/ws ") && msg.header_is("upgrade", "websocket") {
             return serve_ws(stream, buf, msg, store).await;
         }
         let close = msg.header_is("connection", "close");
-        let resp = respond(&store, msg).unwrap_or_else(|e| e);
+        let (store, cloud) = (store.clone(), cloud.clone());
+        let resp = tokio::task::spawn_blocking(move || respond(&store, &cloud, msg).unwrap_or_else(|e| e))
+            .await
+            .expect("request handler panicked");
         let mut head = format!("HTTP/1.1 {} \r\ncontent-length: {}\r\n", resp.status.0, resp.body.len());
         resp.headers.iter().for_each(|(k, v)| write!(head, "{k}: {v}\r\n").unwrap());
         head.push_str("\r\n");
@@ -128,7 +136,7 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore) {
     }
 }
 
-fn respond(store: &SharedStore, msg: HttpMessage) -> Reply {
+fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     let mut parts = msg.start_line.split(' ');
     let (Some(method), Some(target)) = (parts.next(), parts.next()) else { return Err(bad("malformed request line")) };
     let method = method.to_string();
@@ -143,6 +151,11 @@ fn respond(store: &SharedStore, msg: HttpMessage) -> Reply {
     let body = parse_body(&msg).ok_or_else(|| bad("malformed request body"))?;
     let req = Req { query, msg, body };
     let segs: Vec<&str> = segs.iter().map(String::as_str).collect();
+    if let ("POST", ["v1", "app", "setup", step @ ("start" | "email" | "response" | "register")]) =
+        (method.as_str(), &segs[..])
+    {
+        return sign_in_step(store, cloud, step, &req);
+    }
     dispatch(&mut store.write().unwrap(), &method, &segs, &req)
 }
 
@@ -278,7 +291,7 @@ fn oauth_token(st: &mut BeeperStore, r: &Req) -> Reply {
 
 fn refresh_setup(st: &mut BeeperStore) {
     st.persist_state_to_sqlite();
-    st.setup_status = BeeperStore::build_setup_from_state(&st.beeper_state, None);
+    st.setup_status = BeeperStore::build_setup_from_state(&st.beeper_state);
 }
 
 fn verified(st: &mut BeeperStore, v: Option<VerificationState>) -> Reply {
@@ -301,42 +314,66 @@ fn new_verification(id: String, methods: &[&str], state: &str, qr: String) -> Ve
     }
 }
 
-fn setup(st: &mut BeeperStore, path: &[&str], r: &Req) -> Reply {
-    let flow = |state: &str, email, login_token, env: &str| {
-        Some(SetupFlowStep { state: state.into(), email, login_token: Some(login_token), env: Some(env.into()) })
+fn sign_in_step(store: &SharedStore, cloud: &Cloud, step: &str, r: &Req) -> Reply {
+    let already = || error(StatusCode::CONFLICT, "already_logged_in");
+    if store.read().unwrap().signed_in() {
+        return Err(already());
+    }
+    let upstream = |e: CloudError| match e.status {
+        401 => error(StatusCode::UNAUTHORIZED, "invalid_sign_in_code"),
+        _ => error(StatusCode::BAD_GATEWAY, &e.message),
     };
-    let env = r.str("env").unwrap_or("PRODUCTION");
+    let jwt = match step {
+        "start" => {
+            let (request, methods) = cloud.start_login().map_err(upstream)?;
+            if !methods.iter().any(|m| m == "email") {
+                return Err(error(StatusCode::CONFLICT, "email_sign_in_not_supported"));
+            }
+            return ok(&json!({ "setupRequestID": request, "signInMethods": methods }));
+        }
+        "email" => {
+            cloud.send_login_email(r.need("setupRequestID")?, r.need("email")?).map_err(upstream)?;
+            return empty(StatusCode::NO_CONTENT, Vec::new());
+        }
+        "response" => match cloud.send_login_code(r.need("setupRequestID")?, r.need("response")?).map_err(upstream)? {
+            CodeResult::Token(jwt) => jwt,
+            CodeResult::Registration { lead_token, username_suggestions } => {
+                return ok(&json!({
+                    "registrationRequired": true,
+                    "setupRequestID": r.need("setupRequestID")?,
+                    "leadToken": lead_token,
+                    "usernameSuggestions": username_suggestions,
+                    "copy": {
+                        "title": "Choose your username",
+                        "usernamePlaceholder": "Username",
+                        "submit": "Continue",
+                        "terms": "By continuing, you agree to the Terms of Use and acknowledge the Privacy Policy."
+                    }
+                }));
+            }
+        },
+        "register" => {
+            if r.body["acceptTerms"] != true {
+                return Err(bad("acceptTerms must be true"));
+            }
+            let (request, lead) = (r.need("setupRequestID")?, r.need("leadToken")?);
+            cloud.register(request, lead, r.need("username")?).map_err(upstream)?
+        }
+        other => unreachable!("sign-in step {other}"),
+    };
+    let (session, profile) = cloud.finish(&jwt).map_err(upstream)?;
+    let mut st = store.write().unwrap();
+    if st.signed_in() {
+        return Err(already());
+    }
+    st.sign_in(session, cloud.homeserver.clone(), &profile);
+    let s = &st.beeper_state;
+    let matrix = json!({ "userID": s.user_id, "deviceID": s.device_id, "accessToken": s.access_token, "homeserver": s.homeserver });
+    ok(&json!({ "matrix": matrix, "session": st.setup_status.session }))
+}
+
+fn setup(st: &mut BeeperStore, path: &[&str], r: &Req) -> Reply {
     match path {
-        ["start"] => {
-            if r.body["reset"].as_bool().unwrap_or(false) {
-                st.setup_status.session.state = "signing_in".into();
-                st.setup_status.setup_flow = flow("email_required", None, format!("lt_{env}_01"), env);
-            }
-            ok(&st.setup_status)
-        }
-        ["email"] => {
-            let email = r.need("email")?.to_string();
-            let token = st.next_id("login_tok");
-            st.setup_status.session.state = "signing_in".into();
-            st.setup_status.setup_flow = flow("email_code_required", Some(email), token, env);
-            ok(&st.setup_status)
-        }
-        ["response"] => {
-            if r.need("code")? == "NEW_USER" {
-                let token = r.need("loginToken")?.to_string();
-                st.setup_status.setup_flow = flow("registration_required", r.owned("email"), token, env);
-            } else {
-                st.beeper_state.verified = false;
-                refresh_setup(st);
-            }
-            ok(&st.setup_status)
-        }
-        ["register"] => {
-            st.beeper_state.user_id = format!("@{}:beeper.com", r.need("username")?);
-            st.beeper_state.verified = true;
-            refresh_setup(st);
-            ok(&st.setup_status)
-        }
         ["verification", "recovery-key"] | ["verification", "recovery-key", "reset", "confirm"] => {
             st.beeper_state.secrets.recovery_code = r.need("recoveryKey")?.into();
             st.beeper_state.has_backed_up_code = true;

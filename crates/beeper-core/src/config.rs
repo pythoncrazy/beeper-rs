@@ -8,6 +8,7 @@ pub const APP_VERSION: &str = "4.3.176";
 pub const DEFAULT_PAS_HOST: &str = "127.0.0.1";
 pub const DEFAULT_PAS_PORT: u16 = 23373;
 pub const DEFAULT_HOMESERVER: &str = "https://matrix.beeper.com";
+pub const DEFAULT_API_URL: &str = "https://api.beeper.com";
 pub const DEFAULT_USER_ID: &str = "@alex:beeper.com";
 pub const DEFAULT_DEVICE_ID: &str = "BEEPER_RS_DEV01";
 pub const DEFAULT_TOKEN: &str = "bp_tok_beeper_rs_default_secret";
@@ -35,6 +36,9 @@ pub struct CentralConfig {
     pub port: u16,
     pub profile: Option<String>,
     pub settings: BeeperSettings,
+    pub demo: bool,
+    pub api_url: String,
+    pub homeserver: String,
 }
 
 impl CentralConfig {
@@ -52,6 +56,9 @@ impl CentralConfig {
             port,
             profile,
             settings,
+            demo: false,
+            api_url: DEFAULT_API_URL.into(),
+            homeserver: DEFAULT_HOMESERVER.into(),
         }
     }
 

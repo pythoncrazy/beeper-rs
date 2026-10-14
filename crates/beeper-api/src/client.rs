@@ -2,7 +2,7 @@ use crate::codec::{base64_encode_standard, base64_encode_url_nopad, sha256, url_
 use crate::http::{query_string, read_message, read_ws_frame, write_ws_frame, StatusCode};
 use beeper_core::config::{copy_beeper_data_to_isolated_dir, is_original_beeper_dir};
 use beeper_core::models::*;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::fmt::Write;
@@ -11,7 +11,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
-pub fn extract_state_from_index_db(data_dir: &Path) -> (BeeperStateRecord, Vec<BridgeAccountInfo>) {
+pub fn extract_state_from_index_db(data_dir: &Path) -> (Value, Value) {
     let working_dir = if is_original_beeper_dir(data_dir) {
         let isolated = std::env::temp_dir().join(format!("beeper_rs_isolated_extract_{}", std::process::id()));
         if isolated.exists() {
@@ -22,23 +22,19 @@ pub fn extract_state_from_index_db(data_dir: &Path) -> (BeeperStateRecord, Vec<B
     } else {
         data_dir.to_path_buf()
     };
-
     let db_path = working_dir.join("index.db");
-    assert!(db_path.exists(), "isolated index.db does not exist at {:?}", db_path);
+    assert!(db_path.exists(), "index.db does not exist at {}", db_path.display());
     let conn = Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .expect("open isolated index.db readonly");
-
-    let state_raw: String = conn
-        .query_row("SELECT value FROM key_values WHERE key = 'beeperState'", [], |r| r.get(0))
-        .expect("query beeperState from index.db");
-    let state = serde_json::from_str(&state_raw).expect("parse beeperState");
-
-    let bridges_raw: String = conn
-        .query_row("SELECT value FROM key_values WHERE key = 'bridgeAccounts'", [], |r| r.get(0))
-        .expect("query bridgeAccounts from index.db");
-    let bridges = serde_json::from_str(&bridges_raw).expect("parse bridgeAccounts");
-
-    (state, bridges)
+        .expect("open index.db readonly");
+    let kv = |k: &str| {
+        conn.query_row("SELECT value FROM key_values WHERE key = ?1", [k], |r| r.get::<_, String>(0))
+            .optional()
+            .expect("read key_values")
+            .map(|v| serde_json::from_str::<Value>(&v).expect("key_values holds JSON"))
+    };
+    let state = kv("beeperState")
+        .unwrap_or_else(|| panic!("{} has no beeperState: Beeper is not signed in", db_path.display()));
+    (state, kv("bridgeAccounts").unwrap_or(Value::Null))
 }
 
 #[derive(Clone)]
@@ -129,12 +125,9 @@ impl BeeperClient {
         self.access_token.clone()
     }
 
-    pub async fn setup_email_login(&self, email: &str, code: &str) -> SetupStatusResponse {
-        let _: SetupStatusResponse = self.json("POST", "/v1/app/setup/start", Some(json!({ "reset": true }))).await;
-        let step: SetupStatusResponse = self.json("POST", "/v1/app/setup/email", Some(json!({ "email": email }))).await;
-        let token = step.setup_flow.and_then(|f| f.login_token).expect("login_token from email step");
-        let body = json!({ "code": code, "email": email, "loginToken": token });
-        self.json("POST", "/v1/app/setup/response", Some(body)).await
+    pub async fn setup_step(&self, step: &str, body: Value) -> (StatusCode, Value) {
+        let (status, bytes) = self.send("POST", &format!("/v1/app/setup/{step}"), &[], Some(&body)).await;
+        (status, if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).expect("setup step JSON") })
     }
 
     pub async fn verify_recovery_key(&self, recovery_key: &str) -> Value {

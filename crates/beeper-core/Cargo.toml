@@ -1,12 +1,13 @@
 [package]
 name = "beeper-core"
-description = "Data models, configuration, SQLite store, search index, platform helpers, and CSS theme compiler for beeper-rs."
+description = "Beeper cloud sign-in client, data models, configuration, SQLite store, search index, platform helpers, and CSS theme compiler for beeper-rs."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "json"] }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

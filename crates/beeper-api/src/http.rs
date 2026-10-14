@@ -12,9 +12,11 @@ impl StatusCode {
     pub const PARTIAL_CONTENT: Self = Self(206);
     pub const FOUND: Self = Self(302);
     pub const BAD_REQUEST: Self = Self(400);
+    pub const UNAUTHORIZED: Self = Self(401);
     pub const NOT_FOUND: Self = Self(404);
     pub const CONFLICT: Self = Self(409);
     pub const RANGE_NOT_SATISFIABLE: Self = Self(416);
+    pub const BAD_GATEWAY: Self = Self(502);
 }
 
 pub struct HttpMessage {

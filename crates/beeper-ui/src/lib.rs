@@ -1,10 +1,14 @@
+pub mod login;
 pub mod style;
+
+use crate::login::{Login, LoginMsg};
 
 use crate::style::{
     bold, bordered_box, brand_svg, btn_style, ell, ensure_fonts_loaded, fill_box, fw, hash_str, hue, ic, icon,
     initials, input_style, med, pick_menu_style, pick_style, scroll_style, semi, shadow_box, txt, Palette, ALL_FONTS,
     CLEAR,
 };
+use beeper_core::cloud::Cloud;
 use beeper_core::config::{
     account_network, civil_from_days, network_spec, now_unix_secs, APP_BUNDLE_ID, APP_VERSION, NETWORK_SPECS,
 };
@@ -24,6 +28,7 @@ use iced::{
     mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Padding, Point, Radians, Right,
     Size, Subscription, Task, Theme,
 };
+use std::sync::Arc;
 use tokio::sync::broadcast;
 
 pub type El<'a> = Element<'a, UiMessage>;
@@ -172,6 +177,7 @@ pub enum UiMessage {
     KeyPressed(Key, Modifiers),
     StoreChanged,
     FocusRequested(Option<String>),
+    Login(LoginMsg),
 }
 
 struct StoreFeed(SharedStore, u8);
@@ -472,6 +478,9 @@ pub struct BeeperGuiApp {
     pub dragging: bool,
     pub main_window: Option<window::Id>,
     pub settings_window: Option<window::Id>,
+    pub login_window: Option<window::Id>,
+    pub login: Login,
+    pub cloud: Arc<Cloud>,
 }
 
 impl BeeperGuiApp {
@@ -479,15 +488,12 @@ impl BeeperGuiApp {
         ensure_fonts_loaded();
         let os = OsKind::current();
         let display_server = os.detect_display_server(&std::env::vars().collect());
-        let (theme, unread, panel, first_chat) = {
+        let (theme, unread, panel, first_chat, cloud) = {
             let st = store.read().unwrap();
-            let first = if st.chat_idx_by_id.contains_key(NOTE_CHAT_ID) {
-                NOTE_CHAT_ID.to_string()
-            } else {
-                st.chats[0].id.clone()
-            };
+            let first = st.signed_in().then(|| NOTE_CHAT_ID.to_string());
             let s = &st.settings;
-            (ResolvedTheme::compile(s), st.total_unread_chats(), s.show_right_panel_by_default, first)
+            let cloud = Arc::new(Cloud::new(&st.config.api_url, &st.config.homeserver));
+            (ResolvedTheme::compile(s), st.total_unread_chats(), s.show_right_panel_by_default, first, cloud)
         };
         let mut app = Self {
             store,
@@ -522,14 +528,23 @@ impl BeeperGuiApp {
             dragging: false,
             main_window: None,
             settings_window: None,
+            login_window: None,
+            login: Login::default(),
+            cloud,
         };
-        app.select_chat(&first_chat);
+        if let Some(id) = first_chat {
+            app.select_chat(&id);
+        }
         app
     }
 
     pub fn boot(store: SharedStore) -> (Self, Task<UiMessage>) {
-        let app = Self::new(store, true);
-        let (_, open) = window::open(Self::window_settings(Size::new(1264.0, 893.0)));
+        let mut app = Self::new(store, true);
+        let signed_in = app.selected_chat_id.is_some();
+        let settings =
+            if signed_in { Self::window_settings(Size::new(1264.0, 893.0)) } else { Self::login_window_settings() };
+        let (id, open) = window::open(settings);
+        *(if signed_in { &mut app.main_window } else { &mut app.login_window }) = Some(id);
         (app, open.map(UiMessage::WindowOpened))
     }
 
@@ -853,14 +868,14 @@ impl BeeperGuiApp {
                 st.beeper_state.verified = true;
                 st.beeper_state.cross_signing = true;
                 st.beeper_state.key_backup = true;
-                st.setup_status = BeeperStore::build_setup_from_state(&st.beeper_state, None);
+                st.setup_status = BeeperStore::build_setup_from_state(&st.beeper_state);
                 st.persist_state_to_sqlite();
                 self.status_banner = "E2EE Recovery Key verified".to_string();
             }
             UiMessage::VerifySasNow => {
                 let mut st = self.store.write().unwrap();
                 st.beeper_state.verified = true;
-                st.setup_status = BeeperStore::build_setup_from_state(&st.beeper_state, None);
+                st.setup_status = BeeperStore::build_setup_from_state(&st.beeper_state);
                 st.persist_state_to_sqlite();
                 self.status_banner = "Device SAS E2EE verification complete".to_string();
             }
@@ -927,7 +942,6 @@ impl BeeperGuiApp {
                 } else {
                     "BEEPER_SCREENSHOT_EXIT"
                 };
-                self.main_window = self.main_window.or(Some(id));
                 if std::env::var(key).is_ok() {
                     return window::screenshot(id).map(move |s| UiMessage::ScreenshotCaptured(id, s));
                 }
@@ -935,7 +949,7 @@ impl BeeperGuiApp {
             UiMessage::WindowClosed(id) => {
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
-                } else {
+                } else if [self.main_window, self.login_window].contains(&Some(id)) {
                     return iced::exit();
                 }
             }
@@ -950,13 +964,17 @@ impl BeeperGuiApp {
                 }
                 return iced::exit();
             }
+            UiMessage::StoreChanged if self.login_window.is_some() && self.store.read().unwrap().signed_in() => {
+                return self.enter_app();
+            }
             UiMessage::StoreChanged => self.refresh_theme_and_tray(),
             UiMessage::FocusRequested(chat) => {
                 if let Some(id) = chat {
                     self.select_chat(&id);
                 }
-                return window::gain_focus(self.main_window.expect("main window is open"));
+                return window::gain_focus(self.main_window.or(self.login_window).expect("a window is open"));
             }
+            UiMessage::Login(m) => return self.update_login(m),
             UiMessage::KeyPressed(key, mods) => {
                 let cmd = mods.command() || mods.control();
                 match key.as_ref() {
@@ -1025,6 +1043,8 @@ impl BeeperGuiApp {
     pub fn view(&self, id: window::Id) -> El<'_> {
         if Some(id) == self.settings_window {
             self.view_settings()
+        } else if Some(id) == self.login_window {
+            self.view_login()
         } else {
             self.view_main()
         }
