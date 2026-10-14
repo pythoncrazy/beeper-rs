@@ -5,7 +5,7 @@ use crate::style::{
     initials, input_style, med, pick_menu_style, pick_style, scroll_style, semi, shadow_box, txt, Palette, ALL_FONTS,
     CLEAR,
 };
-use beeper_core::config::{now_unix_secs, APP_BUNDLE_ID, APP_VERSION, NETWORK_SPECS};
+use beeper_core::config::{account_network, network_spec, now_unix_secs, APP_BUNDLE_ID, APP_VERSION, NETWORK_SPECS};
 use beeper_core::models::*;
 use beeper_core::platform::{open_url_or_path_command, DisplayServerKind, OsKind, SystemTrayState};
 use beeper_core::store::{BeeperStore, SettingCatalogEntry, SharedStore, NOTE_CHAT_ID, SETTINGS_CATALOG};
@@ -206,17 +206,12 @@ const HOTKEYS: [(&str, &str); 7] = [
     ("Close popups", "Esc"),
 ];
 
-pub fn network_of(account_id: &str) -> Option<&'static NetworkSpec> {
-    let id = account_id.trim_start_matches("acc_");
-    NETWORK_SPECS.iter().find(|s| s.bridge_id == id)
-}
-
 fn network_name(account_id: &str) -> &'static str {
-    network_of(account_id).map_or("Beeper", |s| s.display_name)
+    account_network(account_id).display_name
 }
 
 fn brand_key(account_id: &str) -> &'static str {
-    network_of(account_id).map_or("beeper", |s| s.bridge_id)
+    account_network(account_id).bridge_id
 }
 
 pub fn format_short_ts(iso: &str, twenty_four: bool) -> String {
@@ -917,16 +912,15 @@ impl BeeperGuiApp {
                     existing.state = "CONNECTED".to_string();
                     existing.is_running = true;
                 } else {
-                    let net_name =
-                        NETWORK_SPECS.iter().find(|n| n.bridge_id == bid).map(|n| n.display_name).unwrap_or("Bridge");
+                    let spec = network_spec(&bid).expect("connect a known network");
                     st.bridge_accounts.push(BridgeAccountInfo {
                         account_id: format!("acc_{bid}"),
-                        bridge_id: bid.clone(),
-                        bridge_type: bid,
+                        bridge_id: bid,
+                        bridge_type: spec.bridge_type.to_string(),
                         is_running: true,
-                        login_id: Some("login_ui_01".to_string()),
-                        mode: Some("cloud".to_string()),
-                        network_name: net_name.to_string(),
+                        login_id: "login_ui_01".to_string(),
+                        mode: BridgeMode::Cloud,
+                        network_name: spec.display_name.to_string(),
                         state: "CONNECTED".to_string(),
                     });
                 }
@@ -1998,7 +1992,10 @@ impl BeeperGuiApp {
                             Some(&format!(
                                 "{} · {}",
                                 b.state.to_lowercase(),
-                                b.mode.as_deref().expect("bridge mode").replace('_', " ")
+                                match b.mode {
+                                    BridgeMode::OnDevice => "on device",
+                                    BridgeMode::Cloud => "cloud",
+                                }
                             )),
                             Some(svg(brand_svg(brand_key(&b.account_id))).width(20).height(20).into()),
                             txt("Connected", 12.0).color(p.success).into(),

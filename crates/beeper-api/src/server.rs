@@ -1,7 +1,6 @@
 use beeper_core::config::{
-    base64_decode_standard, base64_encode_standard, base64_encode_url_nopad, network_spec_by_bridge,
-    now_rfc3339_millis, sha1, sha256, url_decode, APP_BUNDLE_ID, APP_NAME, APP_VERSION, NETWORK_SPECS,
-    OPENAPI_SPEC_JSON,
+    base64_decode_standard, base64_encode_standard, base64_encode_url_nopad, network_spec, now_rfc3339_millis, sha1,
+    sha256, url_decode, APP_BUNDLE_ID, APP_NAME, APP_VERSION, NETWORK_SPECS, OPENAPI_SPEC_JSON,
 };
 use beeper_core::models::*;
 use beeper_core::platform::OsKind;
@@ -984,7 +983,7 @@ async fn get_bridge_by_id(
     AxumPath(bridge_id): AxumPath<String>,
 ) -> Json<BridgeSummary> {
     let st = store.read().unwrap();
-    let spec = network_spec_by_bridge(&bridge_id);
+    let spec = network_spec(&bridge_id).expect("known bridge");
     let logins: Vec<BridgeAccountInfo> =
         st.bridge_accounts.iter().filter(|b| b.bridge_id == bridge_id).cloned().collect();
     Json(BridgeSummary {
@@ -996,7 +995,7 @@ async fn get_bridge_by_id(
 }
 
 async fn get_bridge_capabilities(AxumPath(bridge_id): AxumPath<String>) -> Json<Value> {
-    let spec = network_spec_by_bridge(&bridge_id);
+    let spec = network_spec(&bridge_id).expect("known bridge");
     Json(json!({
         "bridgeID": spec.bridge_id,
         "bridgeType": spec.bridge_type,
@@ -1017,7 +1016,7 @@ async fn get_bridge_capabilities(AxumPath(bridge_id): AxumPath<String>) -> Json<
 }
 
 async fn get_bridge_login_flows(AxumPath(bridge_id): AxumPath<String>) -> Json<Value> {
-    let spec = network_spec_by_bridge(&bridge_id);
+    let spec = network_spec(&bridge_id).expect("known bridge");
     let mut flows = vec![
         BridgeLoginFlow {
             id: "qr_login".to_string(),
@@ -1047,7 +1046,7 @@ async fn get_bridge_login_flows(AxumPath(bridge_id): AxumPath<String>) -> Json<V
 
 async fn get_bridge_logins(State(store): State<SharedStore>, AxumPath(bridge_id): AxumPath<String>) -> Json<Value> {
     let st = store.read().unwrap();
-    let spec = network_spec_by_bridge(&bridge_id);
+    let spec = network_spec(&bridge_id).expect("known bridge");
     let logins: Vec<BridgeAccountInfo> =
         st.bridge_accounts.iter().filter(|b| b.bridge_id == bridge_id).cloned().collect();
     Json(json!({ "bridgeID": spec.bridge_id, "bridgeType": spec.bridge_type, "logins": logins }))
@@ -1058,8 +1057,8 @@ async fn delete_bridge_login(
     AxumPath((bridge_id, login_id)): AxumPath<(String, String)>,
 ) -> Json<Value> {
     let mut st = store.write().unwrap();
-    let spec = network_spec_by_bridge(&bridge_id);
-    st.bridge_accounts.retain(|b| !(b.bridge_id == bridge_id && b.login_id.as_deref() == Some(login_id.as_str())));
+    let spec = network_spec(&bridge_id).expect("known bridge");
+    st.bridge_accounts.retain(|b| !(b.bridge_id == bridge_id && b.login_id == login_id));
     st.persist_state_to_sqlite();
     let remaining: Vec<BridgeAccountInfo> =
         st.bridge_accounts.iter().filter(|b| b.bridge_id == bridge_id).cloned().collect();
@@ -1079,7 +1078,7 @@ async fn post_bridge_login_session(
     Json(body): Json<Value>,
 ) -> Json<BridgeLoginSession> {
     let mut st = store.write().unwrap();
-    let spec = network_spec_by_bridge(&bridge_id);
+    let spec = network_spec(&bridge_id).expect("known bridge");
     let flow_id = body.get("flowID").and_then(Value::as_str).unwrap_or("user_input_login").to_string();
     let session_id = st.next_id("lsess");
 
@@ -1163,9 +1162,9 @@ async fn post_bridge_login_step(
     Json(body): Json<Value>,
 ) -> Json<BridgeLoginSession> {
     let mut st = store.write().unwrap();
-    let spec = network_spec_by_bridge(&bridge_id);
+    let spec = network_spec(&bridge_id).expect("known bridge");
     let login_id = st.next_id(&format!("login_{bridge_id}"));
-    let mode = if body.get("mode").and_then(Value::as_str) == Some("cloud") { "cloud" } else { "on_device" };
+    let mode: BridgeMode = serde_json::from_value(body["mode"].clone()).expect("login step mode");
 
     st.bridge_accounts.retain(|b| b.bridge_id != bridge_id);
     st.bridge_accounts.push(BridgeAccountInfo {
@@ -1173,8 +1172,8 @@ async fn post_bridge_login_step(
         bridge_id: spec.bridge_id.to_string(),
         bridge_type: spec.bridge_type.to_string(),
         is_running: true,
-        login_id: Some(login_id.clone()),
-        mode: Some(mode.to_string()),
+        login_id: login_id.clone(),
+        mode,
         network_name: spec.display_name.to_string(),
         state: "CONNECTED".to_string(),
     });
@@ -1226,8 +1225,10 @@ async fn create_chat(State(store): State<SharedStore>, Json(body): Json<Value>) 
             .collect();
         let default_chat_id = merge_obj.get("defaultChatID").and_then(Value::as_str).map(str::to_string);
         let title = body.get("title").and_then(Value::as_str).map(str::to_string);
+        let lead = default_chat_id.as_deref().unwrap_or(&chat_ids[0]);
+        let account = st.chats[st.resolve_chat_idx(lead).expect("merge member chat exists")].account_id.clone();
         let (chat, status) =
-            st.create_or_start_chat("acc_merged", "merged", title, Vec::new(), None, Some(chat_ids), default_chat_id);
+            st.create_or_start_chat(&account, "merged", title, Vec::new(), None, Some(chat_ids), default_chat_id);
         return Json(json!({ "chatID": chat.id, "status": status }));
     }
 
@@ -1358,17 +1359,7 @@ async fn archive_chat_handler(
     let mut st = store.write().unwrap();
     let idx = st.resolve_chat_idx(&chat_id).expect("chat exists");
     let archived = body.and_then(|b| b.get("archived").and_then(Value::as_bool)).unwrap_or(true);
-    st.chats[idx].is_archived = Some(archived);
-    st.chats[idx].sync_flags();
-    let c = st.chats[idx].clone();
-    st.emit_ws(WsEvent {
-        event_type: "chat.upserted".to_string(),
-        chat_id: Some(c.id.clone()),
-        message_id: None,
-        timestamp: now_rfc3339_millis(),
-        chat: Some(c),
-        message: None,
-    });
+    st.update_chat(idx, |c| c.is_archived = Some(archived));
     StatusCode::NO_CONTENT.into_response()
 }
 

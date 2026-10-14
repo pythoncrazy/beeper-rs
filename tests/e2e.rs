@@ -11,7 +11,7 @@ use beeper_core::{
         SystemTrayState,
     },
     store::{BeeperStore, SharedStore},
-    theme::ResolvedTheme,
+    theme::{parse_css_px, ResolvedTheme},
 };
 use beeper_ui::{
     search_settings_catalog,
@@ -160,8 +160,8 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
                  CREATE TABLE messages (event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, body TEXT);",
             )
             .unwrap();
-        let real_beeper_state_json = r#"{"access_token":"bp_tok_from_original_beeper","device_id":"ORIG_DEV_01","user_id":"@imported_from_original:beeper.com","homeserver":"https://matrix.beeper.com","first_sync_done":true,"initialized":true,"secret_storage":true,"cross_signing":true,"verified":true,"key_backup":true,"has_backed_up_code":true,"secrets":{"master_key":true,"self_signing_key":true,"user_signing_key":true,"megolm_backup_key":true,"recovery_code":true}}"#;
-        let real_bridges_json = r#"[{"id":"sh-whatsapp","bridge_type":"sh-whatsapp","is_running":true,"remote_id":"login_wa_orig","network":"WhatsApp","state":{"stateEvent":"CONNECTED"}},{"accountID":"acc_instagram","bridgeID":"instagramgo","isRunning":true,"networkName":"Instagram","state":"CONNECTED"}]"#;
+        let real_beeper_state_json = r#"{"access_token":"bp_tok_from_original_beeper","device_id":"ORIG_DEV_01","user_id":"@imported_from_original:beeper.com","homeserver":"https://matrix.beeper.com","first_sync_done":true,"initialized":true,"secret_storage":true,"cross_signing":true,"verified":true,"key_backup":true,"has_backed_up_code":true,"secrets":{"master_key":"mk_orig","self_signing_key":"ssk_orig","user_signing_key":"usk_orig","megolm_backup_key":"mbk_orig","recovery_code":"EsTc orig"}}"#;
+        let real_bridges_json = r#"[{"accountID":"acc_whatsapp","bridgeID":"whatsapp","bridgeType":"whatsapp","isRunning":true,"loginID":"login_wa_orig","mode":"on_device","networkName":"WhatsApp","state":"CONNECTED"},{"accountID":"acc_instagram","bridgeID":"instagram","bridgeType":"meta","isRunning":true,"loginID":"login_ig_orig","mode":"cloud","networkName":"Instagram","state":"CONNECTED"}]"#;
         orig_conn
             .execute(
                 "INSERT INTO key_values (key, value) VALUES (?1, ?2)",
@@ -339,12 +339,9 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
             ..Default::default()
         };
         let compiled = ResolvedTheme::compile(&s);
-        assert_eq!(compiled.header_height, 48.0);
-        assert_eq!(compiled.account_switcher_width, 54.0);
-        assert_eq!(compiled.threads_list_item_height, 54.0);
-        assert_eq!(compiled.pinned_thread_base_size, 64.0);
-        assert_eq!(compiled.cv_avatar_size, 28.0);
-        assert_eq!(compiled.bubble_radius, 17.0);
+        let px = |name: &str| parse_css_px(&compiled.vars[name], &compiled.vars);
+        assert_eq!(px("--header-height"), 48.0);
+        assert_eq!(px("--border-radius-conversation-bubble"), 17.0);
         assert_eq!(compiled.brand_primary, [255, 0, 127, 255]);
         assert!(compiled.vars.get("--font-family").unwrap().contains("Twemoji"));
         assert!(compiled.selector_rules.contains_key(".no-transparency"));

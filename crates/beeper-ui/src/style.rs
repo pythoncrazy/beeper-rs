@@ -1,3 +1,4 @@
+use beeper_core::config::NETWORK_SPECS;
 use beeper_core::models::ThemeChoice;
 use beeper_core::theme::ResolvedTheme;
 use iced::advanced::graphics::text::{cosmic_text, font_system, to_attributes};
@@ -257,11 +258,12 @@ const BRANDS: [(&str, &str, &str, &str); 17] = [
     ("linkedin", "#0a66c2", "#fff", include_str!("../assets/brands/linkedin.svg")),
     ("line", "#06c755", "#fff", include_str!("../assets/brands/line.svg")),
     ("tumblr", "#36465d", "#fff", include_str!("../assets/brands/tumblr.svg")),
-    ("bluesky", "#1185fe", "#fff", include_str!("../assets/brands/bluesky.svg")),
-    ("beeper", "#3844ff", "#fff", include_str!("../assets/brands/matrix.svg")),
+    ("gvoice", "#0f9d58", "#fff", include_str!("../assets/brands/googlemessages.svg")),
+    ("hungryserv", "#3844ff", "#fff", include_str!("../assets/brands/matrix.svg")),
 ];
 
 static BRAND_SVGS: LazyLock<HashMap<&'static str, svg::Handle>> = LazyLock::new(|| {
+    assert!(NETWORK_SPECS.iter().all(|n| BRANDS.iter().any(|b| b.0 == n.bridge_id)), "every network has a logo");
     BRANDS
         .iter()
         .map(|(id, bg, fg, src)| {
@@ -278,7 +280,7 @@ static BRAND_SVGS: LazyLock<HashMap<&'static str, svg::Handle>> = LazyLock::new(
 });
 
 pub fn brand_svg(bridge_id: &str) -> svg::Handle {
-    BRAND_SVGS.get(bridge_id).unwrap_or(&BRAND_SVGS["beeper"]).clone()
+    BRAND_SVGS[bridge_id].clone()
 }
 
 pub fn fill_box(bg: Color, r: f32) -> impl Fn(&Theme) -> container::Style + Copy {

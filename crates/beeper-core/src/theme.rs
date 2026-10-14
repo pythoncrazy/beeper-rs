@@ -10,32 +10,12 @@ pub struct ResolvedTheme {
     pub selector_rules: HashMap<String, HashMap<String, String>>,
     pub bg_window: [u8; 4],
     pub bg_sidebar: [u8; 4],
-    pub bg_right_sidebar: [u8; 4],
-    pub bg_header: [u8; 4],
-    pub bg_popover: [u8; 4],
-    pub bg_tooltip: [u8; 4],
     pub text_primary: [u8; 4],
     pub text_secondary: [u8; 4],
     pub text_muted: [u8; 4],
     pub brand_primary: [u8; 4],
-    pub brand_blue: [u8; 4],
-    pub brand_green: [u8; 4],
-    pub brand_red: [u8; 4],
-    pub brand_yellow: [u8; 4],
     pub bubble_self: [u8; 4],
     pub bubble_other: [u8; 4],
-    pub bubble_self_text: [u8; 4],
-    pub bubble_other_text: [u8; 4],
-    pub divider: [u8; 4],
-    pub active_thread_bg: [u8; 4],
-    pub header_height: f32,
-    pub account_switcher_width: f32,
-    pub min_sidebar_width: f32,
-    pub max_sidebar_width: f32,
-    pub threads_list_item_height: f32,
-    pub pinned_thread_base_size: f32,
-    pub cv_avatar_size: f32,
-    pub bubble_radius: f32,
 }
 
 pub fn strip_css_comments(input: &str) -> String {
@@ -222,56 +202,23 @@ impl ResolvedTheme {
             [(settings.no_transparency, ".no-transparency"), (settings.reduce_transparency, ".reduce-transparency")]
         {
             if flag {
-                if let Some(rules) = selector_rules.get(cls).cloned() {
-                    for (k, v) in rules.into_iter().filter(|(k, _)| k.starts_with("--")) {
-                        vars.insert(k, v);
-                    }
-                }
+                let rules = selector_rules[cls].clone();
+                vars.extend(rules.into_iter().filter(|(k, _)| k.starts_with("--")));
             }
         }
-        let get_c = |name: &str| parse_css_color(vars.get(name).unwrap(), &vars);
-        let get_px = |name: &str| parse_css_px(vars.get(name).unwrap(), &vars);
-        let mut bg_window = get_c("--color-background-app");
-        let mut bg_sidebar = get_c("--color-background-sidebar-opaque");
-        if matches!(settings.theme, ThemeChoice::Nocturne) {
-            if let Some(base) = vars.get("--glass-bg-base") {
-                bg_window = parse_css_color(base, &vars);
-            }
-            if let Some(deep) = vars.get("--glass-bg-deep") {
-                bg_sidebar = parse_css_color(deep, &vars);
-            }
-        }
+        let get_c = |name: &str| parse_css_color(&vars[name], &vars);
+        let nocturne = settings.theme == ThemeChoice::Nocturne;
         Self {
             choice: settings.theme,
             is_dark,
-            bg_window,
-            bg_sidebar,
-            bg_right_sidebar: get_c("--right-pane-bg"),
-            bg_header: get_c("--color-background-header-right-opaque"),
-            bg_popover: get_c("--color-background-menu-opaque"),
-            bg_tooltip: get_c("--color-background-elevated"),
+            bg_window: get_c(if nocturne { "--glass-bg-base" } else { "--color-background-app" }),
+            bg_sidebar: get_c(if nocturne { "--glass-bg-deep" } else { "--color-background-sidebar-opaque" }),
             text_primary: get_c("--color-text-neutrals"),
             text_secondary: get_c("--color-text-neutrals-weak"),
             text_muted: get_c("--color-text-neutrals-subtle"),
             brand_primary: get_c("--color-primary"),
-            brand_blue: get_c("--color-base-system-blue-90"),
-            brand_green: get_c("--sms-sent-bg"),
-            brand_red: get_c("--error-color"),
-            brand_yellow: get_c("--warning-color"),
             bubble_self: get_c("--color-background-message-bubble-sent"),
             bubble_other: get_c("--color-background-message-bubble-received"),
-            bubble_self_text: get_c("--color-text-on-accent"),
-            bubble_other_text: get_c("--color-text-neutrals"),
-            divider: get_c("--color-border-neutrals"),
-            active_thread_bg: get_c("--color-background-sidebar-thread-selected"),
-            header_height: get_px("--header-height"),
-            account_switcher_width: get_px("--account-switcher-width"),
-            min_sidebar_width: get_px("--min-sidebar-width"),
-            max_sidebar_width: get_px("--max-sidebar-width"),
-            threads_list_item_height: get_px("--threads-list-item-height"),
-            pinned_thread_base_size: get_px("--pinned-thread-base-size"),
-            cv_avatar_size: get_px("--cv-avatar-size"),
-            bubble_radius: get_px("--border-radius-conversation-bubble"),
             vars,
             selector_rules,
         }
