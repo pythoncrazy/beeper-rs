@@ -25,7 +25,7 @@
 
 ## Cross-Platform and Rust-Native Architecture
 
-- **Cargo workspace**: `crates/beeper-core` contains the Beeper cloud sign-in client, data models, configuration, SQLite store, search index, platform helpers, and CSS theme compiler. `crates/beeper-api` contains the Beeper Desktop API server and client. `crates/beeper-ui` contains the iced interface, fonts, icons, and network logos. The root `beeper-rs` crate contains the binary and the end-to-end tests.
+- **Cargo workspace**: `crates/beeper-core` contains the Beeper cloud sign-in client, data models, configuration, SQLite store, search index, and platform helpers. `crates/beeper-api` contains the Beeper Desktop API server and client. `crates/beeper-ui` contains the iced interface, fonts, icons, and network logos. The root `beeper-rs` crate contains the binary and the end-to-end tests.
 - **Native Iced 0.14 GUI**: Uses `iced` (`0.14.0`) with `wgpu` (`27.0.1`) GPU acceleration and `tiny-skia` software fallback, adapted from the `navify` architecture (`https://github.com/pythoncrazy/navify`).
 - **Bundled typography, icons, and network logos**: Embeds `Inter` (`Regular`, `Medium`, `SemiBold`, `Bold`), a `Lucide` icon subset, and CC0 `Simple Icons` network logos directly in the binary.
 - **Beeper Desktop 4.3 layout**: Renders the `68px` account rail, the compact Inbox sidebar (`190px` default, drag-resizable) with pinned chats, the rounded conversation card with a floating chat header, date dividers, link previews, quoted replies, voice notes, files, polls, and reactions, the Beeper composer, the Chat Info panel, and a separate Settings window with the Beeper preference groups.
@@ -33,7 +33,8 @@
 - **Fast compilation and linking**: Configured in `.cargo/config.toml` to use `sccache` (`rustc-wrapper = "sccache"`) across all platforms, `mold` v3 on Linux and Windows GNU targets, `rust-lld` on Windows MSVC targets, and unpacked debug info on macOS targets.
 - **Rust-native protocols and primitives**: Implements HTTP/1.1, RFC 6455 WebSockets, SHA-256, SHA-1, Base64, URL percent-encoding, RFC 3339 timestamps, CLI argument parsing, and 32x32 RGBA system tray icon rendering directly in Rust.
 - **SQLite WAL and inverted search index**: Persists state in `beeper-rs/beeper-rs.db` using SQLite Write-Ahead Logging (WAL) and indexes chats, messages, and settings in an in-memory inverted index.
-- **CSS theme compiler**: Compiles Beeper v4 CSS themes (`variables.css`, `texts.css`, `dracula.css`, `nocturne.css`, `dark-purple.css`, and `fix-lockdown-mode-emojis.css`).
+- **System colour scheme**: Settings > Appearance > Theme has the Light, Dark, and System choices. System is the default and follows the light or dark mode of the device live (the XDG desktop portal on Linux, the native setting on macOS and Windows).
+- **System window frame**: The windows use the native title bar and border. On a Wayland compositor that has no server-side decorations (for example GNOME), beeper-rs uses XWayland to get the system frame.
 
 ## Local Testing Guide
 

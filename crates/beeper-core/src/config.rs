@@ -21,12 +21,6 @@ const LEGACY_DATA_FILES: [&str; 4] = ["beeper-rs.db", "beeper-rs.db-wal", "beepe
 pub const ORIGINAL_BEEPER_FOLDER_PREFIX: &str = "BeeperTexts";
 pub const OPENAPI_SPEC_JSON: &str = include_str!("../assets/openapi.json");
 pub const SEED_JSON: &str = include_str!("../assets/seed.json");
-pub const CSS_VARIABLES: &str = include_str!("../assets/themes/variables.css");
-pub const CSS_TEXTS: &str = include_str!("../assets/themes/texts.css");
-pub const CSS_DRACULA: &str = include_str!("../assets/themes/dracula.css");
-pub const CSS_NOCTURNE: &str = include_str!("../assets/themes/nocturne.css");
-pub const CSS_DARK_PURPLE: &str = include_str!("../assets/themes/dark-purple.css");
-pub const CSS_FIX_LOCKDOWN_EMOJIS: &str = include_str!("../assets/themes/fix-lockdown-mode-emojis.css");
 
 #[derive(Debug, Clone)]
 pub struct CentralConfig {
@@ -88,7 +82,7 @@ impl Default for BeeperSettings {
             show_right_panel_by_default: false,
             load_remote_content_automatically: true,
             use_twenty_four_hour_time: true,
-            theme: ThemeChoice::TextsDark,
+            theme: ThemeChoice::System,
             no_transparency: false,
             reduce_transparency: false,
             fix_lockdown_emojis: false,
