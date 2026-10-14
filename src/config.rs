@@ -340,10 +340,52 @@ pub const NETWORK_SPECS: [NetworkSpec; 16] = [
     },
 ];
 
+pub fn normalize_bridge_id(raw: &str) -> &'static str {
+    let lower = raw.trim().to_ascii_lowercase();
+    let stripped = lower
+        .strip_prefix("sh-")
+        .or_else(|| lower.strip_prefix("mautrix-"))
+        .unwrap_or(&lower);
+    let clean = stripped
+        .strip_suffix("-go")
+        .or_else(|| stripped.strip_suffix("go"))
+        .unwrap_or(stripped);
+    match clean {
+        "whatsapp" | "wa" => "whatsapp",
+        "facebook" | "messenger" | "fb" | "meta" => "facebook",
+        "instagram" | "ig" => "instagram",
+        "telegram" | "tg" => "telegram",
+        "signal" | "sig" => "signal",
+        "viber" => "viber",
+        "imessage" | "imessagecloud" | "imessage-cloud" | "apple" => "imessage",
+        "gmessages" | "googlemessages" | "androidsms" | "sms" | "rcs" => "gmessages",
+        "gvoice" | "googlevoice" => "gvoice",
+        "googlechat" | "gchat" => "googlechat",
+        "twitter" | "x" | "bluesky" | "bsky" => "twitter",
+        "slack" => "slack",
+        "discord" => "discord",
+        "linkedin" => "linkedin",
+        "line" => "line",
+        "tumblr" | "hungryserv" | "matrix" | "beeper" => "tumblr",
+        _ => {
+            if let Some(spec) = NETWORK_SPECS.iter().find(|n| lower.contains(n.bridge_id)) {
+                spec.bridge_id
+            } else {
+                "whatsapp"
+            }
+        }
+    }
+}
+
 pub fn network_spec_by_bridge(bridge_id: &str) -> &'static NetworkSpec {
-    let found = NETWORK_SPECS.iter().find(|n| n.bridge_id == bridge_id);
-    assert!(found.is_some(), "unknown bridge_id: {bridge_id}");
-    found.unwrap()
+    if let Some(found) = NETWORK_SPECS.iter().find(|n| n.bridge_id == bridge_id) {
+        return found;
+    }
+    let norm = normalize_bridge_id(bridge_id);
+    NETWORK_SPECS
+        .iter()
+        .find(|n| n.bridge_id == norm)
+        .expect("normalized bridge_id in NETWORK_SPECS")
 }
 
 pub fn is_original_beeper_dir(path: &Path) -> bool {
@@ -374,6 +416,7 @@ fn os_base_config_dir(
         "macos" | "darwin" => home_dir.join("Library").join("Application Support"),
         "windows" | "win32" => env_vars
             .get("APPDATA")
+            .filter(|v| !v.trim().is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| home_dir.join("AppData").join("Roaming")),
         "linux" => env_vars
@@ -457,6 +500,22 @@ pub fn copy_beeper_data_to_isolated_dir(source_dir: &Path, target_dir: &Path) ->
         if name_str.ends_with("-shm")
             || name_str.ends_with(".lock")
             || name_str.starts_with("Singleton")
+            || matches!(
+                name_str.as_ref(),
+                "Cache"
+                    | "Code Cache"
+                    | "GPUCache"
+                    | "DawnCache"
+                    | "Crashpad"
+                    | "IndexedDB"
+                    | "Local Storage"
+                    | "Session Storage"
+                    | "Service Worker"
+                    | "blob_storage"
+                    | "Shared Dictionary"
+                    | "Network"
+                    | "Dictionaries"
+            )
         {
             continue;
         }

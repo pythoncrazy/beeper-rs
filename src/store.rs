@@ -376,9 +376,9 @@ impl BeeperStore {
              PRAGMA mmap_size=268435456;
              PRAGMA cache_size=-16000;
              CREATE TABLE IF NOT EXISTS key_values (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, sort_key TEXT NOT NULL, json TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS assets (upload_id TEXT PRIMARY KEY, json TEXT NOT NULL);",
+             CREATE TABLE IF NOT EXISTS beeper_rs_chats (id TEXT PRIMARY KEY, json TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS beeper_rs_messages (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, sort_key TEXT NOT NULL, json TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS beeper_rs_assets (upload_id TEXT PRIMARY KEY, json TEXT NOT NULL);",
         )
         .expect("init SQLite WAL and schema");
 
@@ -568,7 +568,7 @@ impl BeeperStore {
 
     fn persist_chat_row(&self, chat: &Chat) {
         let conn = self.db.lock().unwrap();
-        conn.prepare_cached("INSERT OR REPLACE INTO chats (id, json) VALUES (?1, ?2)")
+        conn.prepare_cached("INSERT OR REPLACE INTO beeper_rs_chats (id, json) VALUES (?1, ?2)")
             .unwrap()
             .execute(params![chat.id, serde_json::to_string(chat).unwrap()])
             .expect("persist chat row");
@@ -577,7 +577,7 @@ impl BeeperStore {
     fn persist_message_row(&self, msg: &Message) {
         let conn = self.db.lock().unwrap();
         conn.prepare_cached(
-            "INSERT OR REPLACE INTO messages (id, chat_id, sort_key, json) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT OR REPLACE INTO beeper_rs_messages (id, chat_id, sort_key, json) VALUES (?1, ?2, ?3, ?4)",
         )
         .unwrap()
         .execute(params![
@@ -591,7 +591,7 @@ impl BeeperStore {
 
     fn delete_message_row(&self, msg_id: &str) {
         let conn = self.db.lock().unwrap();
-        conn.prepare_cached("DELETE FROM messages WHERE id = ?1")
+        conn.prepare_cached("DELETE FROM beeper_rs_messages WHERE id = ?1")
             .unwrap()
             .execute(params![msg_id])
             .expect("delete message row");
@@ -622,28 +622,28 @@ impl BeeperStore {
                 )
                 .ok();
             let loaded_chats: Vec<Chat> = conn
-                .prepare("SELECT json FROM chats")
+                .prepare("SELECT json FROM beeper_rs_chats")
                 .unwrap()
                 .query_map([], |r| r.get::<_, String>(0))
                 .unwrap()
-                .map(|r| serde_json::from_str(&r.unwrap()).unwrap())
+                .filter_map(|r| serde_json::from_str(&r.ok()?).ok())
                 .collect();
             let loaded_msgs: Vec<Message> = if loaded_chats.is_empty() {
                 Vec::new()
             } else {
-                conn.prepare("SELECT json FROM messages ORDER BY sort_key ASC")
+                conn.prepare("SELECT json FROM beeper_rs_messages ORDER BY sort_key ASC")
                     .unwrap()
                     .query_map([], |r| r.get::<_, String>(0))
                     .unwrap()
-                    .map(|r| serde_json::from_str(&r.unwrap()).unwrap())
+                    .filter_map(|r| serde_json::from_str(&r.ok()?).ok())
                     .collect()
             };
             let loaded_assets: Vec<StoredAsset> = conn
-                .prepare("SELECT json FROM assets")
+                .prepare("SELECT json FROM beeper_rs_assets")
                 .unwrap()
                 .query_map([], |r| r.get::<_, String>(0))
                 .unwrap()
-                .map(|r| serde_json::from_str(&r.unwrap()).unwrap())
+                .filter_map(|r| serde_json::from_str(&r.ok()?).ok())
                 .collect();
             (
                 raw_state,
@@ -656,18 +656,20 @@ impl BeeperStore {
         };
 
         if let Some(s) = raw_state {
-            self.beeper_state = serde_json::from_str(&s).expect("parse stored beeperState");
+            self.beeper_state = BeeperStateRecord::from_json_str(&s);
             self.valid_tokens
                 .insert(self.beeper_state.access_token.clone());
             self.setup_status = Self::build_setup_from_state(&self.beeper_state, None);
         }
         if let Some(b) = raw_bridges {
-            self.bridge_accounts = serde_json::from_str(&b).expect("parse stored bridgeAccounts");
+            self.bridge_accounts = BridgeAccountInfo::vec_from_json_str(&b);
         }
         if let Some(st) = raw_settings {
-            let pas_port = self.settings.pas_port;
-            self.settings = serde_json::from_str(&st).expect("parse stored beeperSettings");
-            self.settings.pas_port = pas_port;
+            if let Ok(parsed) = serde_json::from_str::<BeeperSettings>(&st) {
+                let pas_port = self.settings.pas_port;
+                self.settings = parsed;
+                self.settings.pas_port = pas_port;
+            }
         }
         for mut asset in loaded_assets {
             if let Some(fname) = std::path::Path::new(&asset.local_file_path).file_name() {
@@ -723,27 +725,26 @@ impl BeeperStore {
     }
 
     fn seed_default_workspace(&mut self) {
-        if self.bridge_accounts.is_empty() {
-            self.bridge_accounts = SEEDED_BRIDGES
-                .iter()
-                .map(|(bid, btype, name, mode)| BridgeAccountInfo {
+        for (bid, btype, name, mode) in SEEDED_BRIDGES {
+            if !self.bridge_accounts.iter().any(|b| b.bridge_id == bid) {
+                self.bridge_accounts.push(BridgeAccountInfo {
                     account_id: format!("acc_{bid}"),
-                    bridge_id: (*bid).to_string(),
-                    bridge_type: (*btype).to_string(),
+                    bridge_id: bid.to_string(),
+                    bridge_type: btype.to_string(),
                     is_running: true,
                     login_id: Some(format!("login_{bid}_01")),
                     mode: Some(
-                        if *mode == BridgeMode::OnDevice {
+                        if mode == BridgeMode::OnDevice {
                             "on_device"
                         } else {
                             "cloud"
                         }
                         .to_string(),
                     ),
-                    network_name: (*name).to_string(),
+                    network_name: name.to_string(),
                     state: "CONNECTED".to_string(),
-                })
-                .collect();
+                });
+            }
         }
         self.rebuild_accounts_from_bridges();
         let self_user = |accounts: &[Account], idx: usize| -> User {
@@ -1811,7 +1812,9 @@ impl BeeperStore {
         self.db
             .lock()
             .unwrap()
-            .prepare_cached("INSERT OR REPLACE INTO assets (upload_id, json) VALUES (?1, ?2)")
+            .prepare_cached(
+                "INSERT OR REPLACE INTO beeper_rs_assets (upload_id, json) VALUES (?1, ?2)",
+            )
             .unwrap()
             .execute(params![
                 asset.upload_id,
@@ -1831,8 +1834,7 @@ impl BeeperStore {
         if let Some(a) = self.assets.get(url) {
             return Some((PathBuf::from(&a.local_file_path), a.mime_type.clone()));
         }
-        if let Some(stripped) = url.strip_prefix("file://") {
-            let p = PathBuf::from(stripped);
+        if let Some(p) = crate::platform::file_url_to_path(url) {
             if p.exists() {
                 return Some((p, "application/octet-stream".to_string()));
             }
@@ -1868,7 +1870,10 @@ impl BeeperStore {
             if let Some(a) = self.assets.remove(id) {
                 self.assets_by_mxc.remove(&a.mxc_url);
                 let _ = std::fs::remove_file(&a.local_file_path);
-                let _ = conn.execute("DELETE FROM assets WHERE upload_id = ?1", params![id]);
+                let _ = conn.execute(
+                    "DELETE FROM beeper_rs_assets WHERE upload_id = ?1",
+                    params![id],
+                );
             }
         }
         to_remove.len()

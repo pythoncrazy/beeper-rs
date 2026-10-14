@@ -121,7 +121,12 @@ impl BeeperGuiApp {
             .filter_map(|i| st.chats.get(i).cloned())
             .filter(|c| {
                 if let Some(ref bridge_id) = self.active_network {
-                    if c.account_id != format!("acc_{bridge_id}") {
+                    let matches_bridge = c.account_id == format!("acc_{bridge_id}")
+                        || st
+                            .accounts
+                            .iter()
+                            .any(|a| a.account_id == c.account_id && a.bridge_id == *bridge_id);
+                    if !matches_bridge {
                         return false;
                     }
                 }
@@ -393,7 +398,10 @@ impl BeeperGuiApp {
                             }
                             if settings.filter_pins_by_network {
                                 if let Some(ref net) = self.active_network {
-                                    return c.account_id == format!("acc_{net}");
+                                    return c.account_id == format!("acc_{net}")
+                                        || st.accounts.iter().any(|a| {
+                                            a.account_id == c.account_id && a.bridge_id == *net
+                                        });
                                 }
                             }
                             true

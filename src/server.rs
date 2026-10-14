@@ -2209,7 +2209,7 @@ async fn download_asset_handler(
         .unwrap()
         .resolve_asset_path(url)
         .expect("asset exists");
-    Json(json!({ "srcURL": format!("file://{}", path.to_string_lossy()) })).into_response()
+    Json(json!({ "srcURL": crate::platform::path_to_file_url(&path) })).into_response()
 }
 
 async fn serve_asset_handler(
