@@ -109,9 +109,7 @@ impl BeeperStateRecord {
                 if let Some(val) = v.get(*k) {
                     match val {
                         serde_json::Value::Bool(b) => return *b,
-                        serde_json::Value::String(s) => {
-                            return !s.is_empty() && s != "false" && s != "0"
-                        }
+                        serde_json::Value::String(s) => return !s.is_empty() && s != "false" && s != "0",
                         serde_json::Value::Number(n) => return n.as_i64().unwrap_or(0) != 0,
                         _ => {}
                     }
@@ -127,9 +125,7 @@ impl BeeperStateRecord {
                         match val {
                             serde_json::Value::String(s) => return s.clone(),
                             serde_json::Value::Bool(true) => return fallback_when_true.to_string(),
-                            serde_json::Value::Bool(false) | serde_json::Value::Null => {
-                                return String::new()
-                            }
+                            serde_json::Value::Bool(false) | serde_json::Value::Null => return String::new(),
                             other => return other.to_string(),
                         }
                     }
@@ -139,10 +135,7 @@ impl BeeperStateRecord {
         };
 
         Self {
-            access_token: str_field(
-                &["access_token", "accessToken", "token"],
-                crate::config::DEFAULT_TOKEN,
-            ),
+            access_token: str_field(&["access_token", "accessToken", "token"], crate::config::DEFAULT_TOKEN),
             device_id: str_field(&["device_id", "deviceID"], crate::config::DEFAULT_DEVICE_ID),
             user_id: str_field(&["user_id", "userID"], crate::config::DEFAULT_USER_ID),
             homeserver: str_field(
@@ -158,22 +151,13 @@ impl BeeperStateRecord {
             has_backed_up_code: bool_field(&["has_backed_up_code", "hasBackedUpCode"], true),
             secrets: BeeperStateSecrets {
                 master_key: sec_field(&["master_key", "masterKey"], "mk_ed25519_beeper_rs_master"),
-                self_signing_key: sec_field(
-                    &["self_signing_key", "selfSigningKey"],
-                    "ssk_ed25519_beeper_rs_self",
-                ),
-                user_signing_key: sec_field(
-                    &["user_signing_key", "userSigningKey"],
-                    "usk_ed25519_beeper_rs_user",
-                ),
+                self_signing_key: sec_field(&["self_signing_key", "selfSigningKey"], "ssk_ed25519_beeper_rs_self"),
+                user_signing_key: sec_field(&["user_signing_key", "userSigningKey"], "usk_ed25519_beeper_rs_user"),
                 megolm_backup_key: sec_field(
                     &["megolm_backup_key", "megolmBackupKey"],
                     "mbk_curve25519_beeper_rs_backup",
                 ),
-                recovery_code: sec_field(
-                    &["recovery_code", "recoveryCode"],
-                    crate::config::DEFAULT_RECOVERY_CODE,
-                ),
+                recovery_code: sec_field(&["recovery_code", "recoveryCode"], crate::config::DEFAULT_RECOVERY_CODE),
             },
         }
     }
@@ -357,10 +341,7 @@ pub struct Chat {
     pub label_ids: Vec<String>,
     #[serde(rename = "lastActivity", skip_serializing_if = "Option::is_none")]
     pub last_activity: Option<String>,
-    #[serde(
-        rename = "lastReadMessageSortKey",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "lastReadMessageSortKey", skip_serializing_if = "Option::is_none")]
     pub last_read_message_sort_key: Option<String>,
     #[serde(rename = "localChatID", skip_serializing_if = "Option::is_none")]
     pub local_chat_id: Option<String>,
@@ -534,11 +515,7 @@ impl Message {
         if self.is_bookmarked == Some(true) {
             f |= MSG_BOOKMARKED;
         }
-        if self
-            .attachments
-            .iter()
-            .any(|a| a.is_voice_note == Some(true))
-        {
+        if self.attachments.iter().any(|a| a.is_voice_note == Some(true)) {
             f |= MSG_VOICE_NOTE;
         }
         if !self.edit_history.is_empty() {
@@ -712,8 +689,8 @@ impl BridgeAccountInfo {
 
         let account_id = str_opt(&["accountID", "account_id", "id", "remote_id"])
             .unwrap_or_else(|| format!("acc_{}", spec.bridge_id));
-        let bridge_type = str_opt(&["bridgeType", "bridge_type", "type"])
-            .unwrap_or_else(|| spec.bridge_type.to_string());
+        let bridge_type =
+            str_opt(&["bridgeType", "bridge_type", "type"]).unwrap_or_else(|| spec.bridge_type.to_string());
         let is_running = v
             .get("isRunning")
             .or_else(|| v.get("is_running"))
@@ -721,16 +698,8 @@ impl BridgeAccountInfo {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
         let login_id = str_opt(&["loginID", "login_id", "remote_id", "userLoginID"]);
-        let mode = str_opt(&["mode"]).or_else(|| {
-            Some(
-                if spec.supports_on_device {
-                    "on_device"
-                } else {
-                    "cloud"
-                }
-                .to_string(),
-            )
-        });
+        let mode = str_opt(&["mode"])
+            .or_else(|| Some(if spec.supports_on_device { "on_device" } else { "cloud" }.to_string()));
         let network_name = str_opt(&["networkName", "network_name", "name", "displayName"])
             .unwrap_or_else(|| spec.display_name.to_string());
         let state = match v
@@ -768,17 +737,12 @@ impl BridgeAccountInfo {
         match v {
             serde_json::Value::Array(arr) => arr.iter().map(Self::from_json_value).collect(),
             serde_json::Value::Object(map) => {
-                if let Some(arr) = map
-                    .get("accounts")
-                    .or_else(|| map.get("bridges"))
-                    .and_then(serde_json::Value::as_array)
+                if let Some(arr) =
+                    map.get("accounts").or_else(|| map.get("bridges")).and_then(serde_json::Value::as_array)
                 {
                     arr.iter().map(Self::from_json_value).collect()
                 } else {
-                    map.values()
-                        .filter(|val| val.is_object())
-                        .map(Self::from_json_value)
-                        .collect()
+                    map.values().filter(|val| val.is_object()).map(Self::from_json_value).collect()
                 }
             }
             _ => Vec::new(),
@@ -904,14 +868,7 @@ pub enum ThemeChoice {
 
 impl ThemeChoice {
     pub const fn all() -> [Self; 6] {
-        [
-            Self::TextsLight,
-            Self::TextsDark,
-            Self::Dracula,
-            Self::Nocturne,
-            Self::DarkPurple,
-            Self::Custom,
-        ]
+        [Self::TextsLight, Self::TextsDark, Self::Dracula, Self::Nocturne, Self::DarkPurple, Self::Custom]
     }
 
     pub const fn label(&self) -> &'static str {

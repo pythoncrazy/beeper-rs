@@ -31,12 +31,9 @@ struct CliArgs {
 }
 
 fn parse_args() -> CliArgs {
-    let mut host =
-        std::env::var("BEEPER_PAS_HOST").unwrap_or_else(|_| DEFAULT_PAS_HOST.to_string());
-    let mut port = std::env::var("BEEPER_PAS_PORT")
-        .ok()
-        .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_PAS_PORT);
+    let mut host = std::env::var("BEEPER_PAS_HOST").unwrap_or_else(|_| DEFAULT_PAS_HOST.to_string());
+    let mut port =
+        std::env::var("BEEPER_PAS_PORT").ok().and_then(|v| v.parse::<u16>().ok()).unwrap_or(DEFAULT_PAS_PORT);
     let mut profile: Option<String> = None;
     let mut data_dir: Option<PathBuf> = None;
     let mut import_from: Option<PathBuf> = None;
@@ -53,23 +50,11 @@ fn parse_args() -> CliArgs {
             "--headless" => headless = true,
             "--host" | "--pas-host" => host = args.next().expect("missing value for --host"),
             "--port" | "--pas-port" => {
-                port = args
-                    .next()
-                    .expect("missing value for --port")
-                    .parse::<u16>()
-                    .expect("invalid port number")
+                port = args.next().expect("missing value for --port").parse::<u16>().expect("invalid port number")
             }
             "--profile" => profile = Some(args.next().expect("missing value for --profile")),
-            "--data-dir" => {
-                data_dir = Some(PathBuf::from(
-                    args.next().expect("missing value for --data-dir"),
-                ))
-            }
-            "--import-from" => {
-                import_from = Some(PathBuf::from(
-                    args.next().expect("missing value for --import-from"),
-                ))
-            }
+            "--data-dir" => data_dir = Some(PathBuf::from(args.next().expect("missing value for --data-dir"))),
+            "--import-from" => import_from = Some(PathBuf::from(args.next().expect("missing value for --import-from"))),
             "--base-url" => base_url = args.next().expect("missing value for --base-url"),
             "--version" | "-V" => {
                 println!("{APP_NAME} {APP_VERSION}");
@@ -85,33 +70,17 @@ fn parse_args() -> CliArgs {
         }
     }
 
-    CliArgs {
-        host,
-        port,
-        profile,
-        data_dir,
-        import_from,
-        headless,
-        base_url,
-        command,
-    }
+    CliArgs { host, port, profile, data_dir, import_from, headless, base_url, command }
 }
 
 fn main() {
     let cli = parse_args();
-    let data_dir = cli
-        .data_dir
-        .unwrap_or_else(|| current_desktop_data_dir(cli.profile.as_deref()));
-    let source_beeper_dir = cli
-        .import_from
-        .or_else(|| Some(current_original_beeper_data_dir(cli.profile.as_deref())));
-    let cfg = CentralConfig::new(data_dir.clone(), cli.host, cli.port, cli.profile)
-        .with_source_beeper_dir(source_beeper_dir);
+    let data_dir = cli.data_dir.unwrap_or_else(|| current_desktop_data_dir(cli.profile.as_deref()));
+    let source_beeper_dir = cli.import_from.or_else(|| Some(current_original_beeper_data_dir(cli.profile.as_deref())));
+    let cfg =
+        CentralConfig::new(data_dir.clone(), cli.host, cli.port, cli.profile).with_source_beeper_dir(source_beeper_dir);
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("build tokio runtime");
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("build tokio runtime");
 
     match cli.command {
         Command::Info => {

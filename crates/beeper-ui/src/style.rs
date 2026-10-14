@@ -122,13 +122,7 @@ pub const FONT_MEDIUM: &[u8] = include_bytes!("../assets/fonts/Inter-Medium.ttf"
 pub const FONT_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
 pub const FONT_BOLD: &[u8] = include_bytes!("../assets/fonts/Inter-Bold.ttf");
 pub const FONT_LUCIDE: &[u8] = include_bytes!("../assets/fonts/lucide.ttf");
-pub const ALL_FONTS: [&[u8]; 5] = [
-    FONT_REGULAR,
-    FONT_MEDIUM,
-    FONT_SEMIBOLD,
-    FONT_BOLD,
-    FONT_LUCIDE,
-];
+pub const ALL_FONTS: [&[u8]; 5] = [FONT_REGULAR, FONT_MEDIUM, FONT_SEMIBOLD, FONT_BOLD, FONT_LUCIDE];
 pub const CLEAR: Color = Color::TRANSPARENT;
 
 static LOAD_FONTS: Once = Once::new();
@@ -143,24 +137,14 @@ pub fn ensure_fonts_loaded() {
 }
 
 pub const fn fw(weight: Weight) -> Font {
-    Font {
-        family: Family::Name("Inter"),
-        weight,
-        ..Font::DEFAULT
-    }
+    Font { family: Family::Name("Inter"), weight, ..Font::DEFAULT }
 }
 
 fn glyphs(s: &str, size: f32, w: Weight) -> (f32, Vec<(usize, f32)>) {
     ensure_fonts_loaded();
     let mut fs = font_system().write().expect("font system");
     let mut buf = cosmic_text::Buffer::new(fs.raw(), cosmic_text::Metrics::new(size, size * 1.2));
-    buf.set_text(
-        fs.raw(),
-        s,
-        &to_attributes(fw(w)),
-        cosmic_text::Shaping::Advanced,
-        None,
-    );
+    buf.set_text(fs.raw(), s, &to_attributes(fw(w)), cosmic_text::Shaping::Advanced, None);
     let mut out = Vec::new();
     let mut total = 0.0;
     for g in buf.layout_runs().flat_map(|r| r.glyphs.iter()) {
@@ -179,35 +163,30 @@ pub fn ell<'a>(s: &str, max: f32, size: f32, w: Weight) -> text::Text<'a> {
     thread_local!(static CACHE: RefCell<HashMap<Key, Rc<str>>> = RefCell::default());
     let s = s.lines().next().unwrap_or("");
     let key = (s.to_owned(), max.max(0.0).to_bits(), size.to_bits(), w);
-    let out = CACHE
-        .with(|c| c.borrow().get(&key).cloned())
-        .unwrap_or_else(|| {
-            let (total, gs) = glyphs(s, size, w);
-            let res: Rc<str> = if total <= max {
-                s.into()
-            } else {
-                let cut = max - text_width("…", size, w);
-                let idx = gs.partition_point(|g| g.1 <= cut);
-                let end = gs.get(idx.wrapping_sub(1)).map_or(0, |g| g.0);
-                format!("{}…", s[..end].trim_end()).into()
-            };
-            CACHE.with(|c| {
-                let mut m = c.borrow_mut();
-                if m.len() > 4096 {
-                    m.clear();
-                }
-                m.insert(key, res.clone());
-            });
-            res
+    let out = CACHE.with(|c| c.borrow().get(&key).cloned()).unwrap_or_else(|| {
+        let (total, gs) = glyphs(s, size, w);
+        let res: Rc<str> = if total <= max {
+            s.into()
+        } else {
+            let cut = max - text_width("…", size, w);
+            let idx = gs.partition_point(|g| g.1 <= cut);
+            let end = gs.get(idx.wrapping_sub(1)).map_or(0, |g| g.0);
+            format!("{}…", s[..end].trim_end()).into()
+        };
+        CACHE.with(|c| {
+            let mut m = c.borrow_mut();
+            if m.len() > 4096 {
+                m.clear();
+            }
+            m.insert(key, res.clone());
         });
+        res
+    });
     t(out.to_string(), size, w).wrapping(text::Wrapping::None)
 }
 
 pub fn t<'a>(s: impl text::IntoFragment<'a>, size: f32, w: Weight) -> text::Text<'a> {
-    text(s)
-        .size(size)
-        .font(fw(w))
-        .line_height(text::LineHeight::Absolute((size * 1.24).round().into()))
+    text(s).size(size).font(fw(w)).line_height(text::LineHeight::Absolute((size * 1.24).round().into()))
 }
 
 pub fn txt<'a>(s: impl text::IntoFragment<'a>, size: f32) -> text::Text<'a> {
@@ -227,10 +206,7 @@ pub fn bold<'a>(s: impl text::IntoFragment<'a>, size: f32) -> text::Text<'a> {
 }
 
 pub fn ic(c: char, size: f32) -> text::Text<'static> {
-    text(c)
-        .font(Font::with_name("lucide"))
-        .size(size)
-        .line_height(1.0)
+    text(c).font(Font::with_name("lucide")).size(size).line_height(1.0)
 }
 
 pub fn hue(n: usize) -> Color {
@@ -251,135 +227,38 @@ pub fn hue(n: usize) -> Color {
 }
 
 pub fn hash_str(s: &str) -> usize {
-    s.bytes().fold(5381usize, |acc, b| {
-        acc.wrapping_mul(33).wrapping_add(b as usize)
-    })
+    s.bytes().fold(5381usize, |acc, b| acc.wrapping_mul(33).wrapping_add(b as usize))
 }
 
 pub fn initials(title: &str) -> String {
-    let mut chars = title
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .filter_map(|w| w.chars().next());
+    let mut chars =
+        title.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).filter_map(|w| w.chars().next());
     let first = chars.next().unwrap_or('B').to_ascii_uppercase();
-    chars.next().map_or_else(
-        || first.to_string(),
-        |s| format!("{}{}", first, s.to_ascii_uppercase()),
-    )
+    chars.next().map_or_else(|| first.to_string(), |s| format!("{}{}", first, s.to_ascii_uppercase()))
 }
 
 pub fn mix(a: Color, b: Color, k: f32) -> Color {
-    Color::from_rgba(
-        a.r + (b.r - a.r) * k,
-        a.g + (b.g - a.g) * k,
-        a.b + (b.b - a.b) * k,
-        a.a + (b.a - a.a) * k,
-    )
+    Color::from_rgba(a.r + (b.r - a.r) * k, a.g + (b.g - a.g) * k, a.b + (b.b - a.b) * k, a.a + (b.a - a.a) * k)
 }
 
 const BRANDS: [(&str, &str, &str, &str); 17] = [
-    (
-        "whatsapp",
-        "#25d366",
-        "#fff",
-        include_str!("../assets/brands/whatsapp.svg"),
-    ),
-    (
-        "facebook",
-        "url(#g)",
-        "#fff",
-        include_str!("../assets/brands/messenger.svg"),
-    ),
-    (
-        "instagram",
-        "url(#g)",
-        "#fff",
-        include_str!("../assets/brands/instagram.svg"),
-    ),
-    (
-        "telegram",
-        "#2aabee",
-        "#fff",
-        include_str!("../assets/brands/telegram.svg"),
-    ),
-    (
-        "signal",
-        "#3b45fd",
-        "#fff",
-        include_str!("../assets/brands/signal.svg"),
-    ),
-    (
-        "viber",
-        "#7360f2",
-        "#fff",
-        include_str!("../assets/brands/viber.svg"),
-    ),
-    (
-        "imessage",
-        "#34c759",
-        "#fff",
-        include_str!("../assets/brands/imessage.svg"),
-    ),
-    (
-        "gmessages",
-        "#1a73e8",
-        "#fff",
-        include_str!("../assets/brands/googlemessages.svg"),
-    ),
-    (
-        "googlechat",
-        "#00ac47",
-        "#fff",
-        include_str!("../assets/brands/googlechat.svg"),
-    ),
-    (
-        "twitter",
-        "#000",
-        "#fff",
-        include_str!("../assets/brands/x.svg"),
-    ),
-    (
-        "slack",
-        "#fff",
-        "#4a154b",
-        include_str!("../assets/brands/slack.svg"),
-    ),
-    (
-        "discord",
-        "#5865f2",
-        "#fff",
-        include_str!("../assets/brands/discord.svg"),
-    ),
-    (
-        "linkedin",
-        "#0a66c2",
-        "#fff",
-        include_str!("../assets/brands/linkedin.svg"),
-    ),
-    (
-        "line",
-        "#06c755",
-        "#fff",
-        include_str!("../assets/brands/line.svg"),
-    ),
-    (
-        "tumblr",
-        "#36465d",
-        "#fff",
-        include_str!("../assets/brands/tumblr.svg"),
-    ),
-    (
-        "bluesky",
-        "#1185fe",
-        "#fff",
-        include_str!("../assets/brands/bluesky.svg"),
-    ),
-    (
-        "beeper",
-        "#3844ff",
-        "#fff",
-        include_str!("../assets/brands/matrix.svg"),
-    ),
+    ("whatsapp", "#25d366", "#fff", include_str!("../assets/brands/whatsapp.svg")),
+    ("facebook", "url(#g)", "#fff", include_str!("../assets/brands/messenger.svg")),
+    ("instagram", "url(#g)", "#fff", include_str!("../assets/brands/instagram.svg")),
+    ("telegram", "#2aabee", "#fff", include_str!("../assets/brands/telegram.svg")),
+    ("signal", "#3b45fd", "#fff", include_str!("../assets/brands/signal.svg")),
+    ("viber", "#7360f2", "#fff", include_str!("../assets/brands/viber.svg")),
+    ("imessage", "#34c759", "#fff", include_str!("../assets/brands/imessage.svg")),
+    ("gmessages", "#1a73e8", "#fff", include_str!("../assets/brands/googlemessages.svg")),
+    ("googlechat", "#00ac47", "#fff", include_str!("../assets/brands/googlechat.svg")),
+    ("twitter", "#000", "#fff", include_str!("../assets/brands/x.svg")),
+    ("slack", "#fff", "#4a154b", include_str!("../assets/brands/slack.svg")),
+    ("discord", "#5865f2", "#fff", include_str!("../assets/brands/discord.svg")),
+    ("linkedin", "#0a66c2", "#fff", include_str!("../assets/brands/linkedin.svg")),
+    ("line", "#06c755", "#fff", include_str!("../assets/brands/line.svg")),
+    ("tumblr", "#36465d", "#fff", include_str!("../assets/brands/tumblr.svg")),
+    ("bluesky", "#1185fe", "#fff", include_str!("../assets/brands/bluesky.svg")),
+    ("beeper", "#3844ff", "#fff", include_str!("../assets/brands/matrix.svg")),
 ];
 
 static BRAND_SVGS: LazyLock<HashMap<&'static str, svg::Handle>> = LazyLock::new(|| {
@@ -399,50 +278,25 @@ static BRAND_SVGS: LazyLock<HashMap<&'static str, svg::Handle>> = LazyLock::new(
 });
 
 pub fn brand_svg(bridge_id: &str) -> svg::Handle {
-    BRAND_SVGS
-        .get(bridge_id)
-        .unwrap_or(&BRAND_SVGS["beeper"])
-        .clone()
+    BRAND_SVGS.get(bridge_id).unwrap_or(&BRAND_SVGS["beeper"]).clone()
 }
 
 pub fn fill_box(bg: Color, r: f32) -> impl Fn(&Theme) -> container::Style + Copy {
+    move |_| container::Style { background: Some(bg.into()), border: border::rounded(r), ..Default::default() }
+}
+
+pub fn bordered_box(bg: Color, border_col: Color, width: f32, r: f32) -> impl Fn(&Theme) -> container::Style + Copy {
     move |_| container::Style {
         background: Some(bg.into()),
-        border: border::rounded(r),
+        border: Border { color: border_col, width, radius: r.into() },
         ..Default::default()
     }
 }
 
-pub fn bordered_box(
-    bg: Color,
-    border_col: Color,
-    width: f32,
-    r: f32,
-) -> impl Fn(&Theme) -> container::Style + Copy {
+pub fn shadow_box(bg: Color, border_col: Color, r: f32, blur: f32) -> impl Fn(&Theme) -> container::Style + Copy {
     move |_| container::Style {
         background: Some(bg.into()),
-        border: Border {
-            color: border_col,
-            width,
-            radius: r.into(),
-        },
-        ..Default::default()
-    }
-}
-
-pub fn shadow_box(
-    bg: Color,
-    border_col: Color,
-    r: f32,
-    blur: f32,
-) -> impl Fn(&Theme) -> container::Style + Copy {
-    move |_| container::Style {
-        background: Some(bg.into()),
-        border: Border {
-            color: border_col,
-            width: 1.0,
-            radius: r.into(),
-        },
+        border: Border { color: border_col, width: 1.0, radius: r.into() },
         shadow: Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
             offset: Vector::new(0.0, 4.0),
@@ -453,11 +307,7 @@ pub fn shadow_box(
     }
 }
 
-pub fn btn_style(
-    bgs: [Color; 3],
-    fgs: [Color; 3],
-    r: f32,
-) -> impl Fn(&Theme, button::Status) -> button::Style + Copy {
+pub fn btn_style(bgs: [Color; 3], fgs: [Color; 3], r: f32) -> impl Fn(&Theme, button::Status) -> button::Style + Copy {
     use button::Status::*;
     move |_, s| {
         let k = usize::from(matches!(s, Hovered)) + 2 * usize::from(matches!(s, Pressed));
@@ -480,11 +330,7 @@ pub fn input_style(
 ) -> impl Fn(&Theme, text_input::Status) -> text_input::Style + Copy {
     move |_, _| text_input::Style {
         background: bg.into(),
-        border: Border {
-            color: CLEAR,
-            width: 0.0,
-            radius: r.into(),
-        },
+        border: Border { color: CLEAR, width: 0.0, radius: r.into() },
         icon: placeholder_col,
         placeholder: placeholder_col,
         value: text_col,
@@ -502,20 +348,13 @@ pub fn pick_style(
         text_color: text_col,
         placeholder_color: sub_col,
         handle_color: sub_col,
-        background: (if matches!(
-            status,
-            pick_list::Status::Hovered | pick_list::Status::Opened { .. }
-        ) {
+        background: (if matches!(status, pick_list::Status::Hovered | pick_list::Status::Opened { .. }) {
             hover_bg
         } else {
             bg
         })
         .into(),
-        border: Border {
-            color: CLEAR,
-            width: 0.0,
-            radius: 6.0.into(),
-        },
+        border: Border { color: CLEAR, width: 0.0, radius: 6.0.into() },
     }
 }
 
@@ -527,11 +366,7 @@ pub fn pick_menu_style(
 ) -> impl Fn(&Theme) -> menu::Style + Copy {
     move |_| menu::Style {
         background: bg.into(),
-        border: Border {
-            color: border_col,
-            width: 1.0,
-            radius: 8.0.into(),
-        },
+        border: Border { color: border_col, width: 1.0, radius: 8.0.into() },
         text_color: text_col,
         selected_text_color: text_col,
         selected_background: hover_bg.into(),
@@ -550,18 +385,12 @@ pub fn scroll_style(
     let rail = |c: Color| scrollable::Rail {
         background: None,
         border: Border::default(),
-        scroller: scrollable::Scroller {
-            background: c.into(),
-            border: border::rounded(4),
-        },
+        scroller: scrollable::Scroller { background: c.into(), border: border::rounded(4) },
     };
     move |_, status| {
         let col = match status {
             scrollable::Status::Active { .. } => CLEAR,
-            scrollable::Status::Hovered {
-                is_vertical_scrollbar_hovered: true,
-                ..
-            }
+            scrollable::Status::Hovered { is_vertical_scrollbar_hovered: true, .. }
             | scrollable::Status::Dragged { .. } => thumb_hover,
             scrollable::Status::Hovered { .. } => thumb,
         };
@@ -619,11 +448,7 @@ pub struct Palette {
 }
 
 const fn hex(v: u32) -> Color {
-    Color::from_rgb(
-        ((v >> 16) & 255) as f32 / 255.0,
-        ((v >> 8) & 255) as f32 / 255.0,
-        (v & 255) as f32 / 255.0,
-    )
+    Color::from_rgb(((v >> 16) & 255) as f32 / 255.0, ((v >> 8) & 255) as f32 / 255.0, (v & 255) as f32 / 255.0)
 }
 
 const fn hexa(v: u32, a: f32) -> Color {

@@ -1,7 +1,7 @@
 use crate::config::{
-    assert_not_original_beeper_dir, copy_beeper_data_to_isolated_dir, now_rfc3339_millis,
-    now_unix_secs, CentralConfig, DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE,
-    DEFAULT_TOKEN, DEFAULT_USER_ID, SEEDED_BRIDGES, WS_CHANNEL_CAPACITY,
+    assert_not_original_beeper_dir, copy_beeper_data_to_isolated_dir, now_rfc3339_millis, now_unix_secs, CentralConfig,
+    DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN, DEFAULT_USER_ID, SEEDED_BRIDGES,
+    WS_CHANNEL_CAPACITY,
 };
 use crate::models::*;
 use rusqlite::{params, Connection};
@@ -108,11 +108,7 @@ impl InvertedIndex {
             let mut term_vec = Vec::new();
             for (term, ids) in &self.postings {
                 if term.starts_with(q) {
-                    term_vec = if term_vec.is_empty() {
-                        ids.clone()
-                    } else {
-                        union_sorted(&term_vec, ids)
-                    };
+                    term_vec = if term_vec.is_empty() { ids.clone() } else { union_sorted(&term_vec, ids) };
                 }
             }
             if term_vec.is_empty() {
@@ -163,42 +159,15 @@ pub struct OAuthCodeEntry {
 pub const NOTE_CHAT_ID: &str = "!note_self:beeper.com";
 
 const NOTE_MESSAGES: [(&str, &str); 6] = [
-    (
-        "2026-10-06T19:02:00.000Z",
-        "https://arxiv.org/abs/2001.08361",
-    ),
-    (
-        "2026-10-06T19:04:00.000Z",
-        "Read this before the Thursday sync",
-    ),
-    (
-        "2026-10-11T10:41:00.000Z",
-        "https://github.com/pythoncrazy/navify",
-    ),
-    (
-        "2026-10-12T21:15:00.000Z",
-        "Pick up the Pebble Time 2 dev kit from the office",
-    ),
-    (
-        "2026-10-14T03:30:00.000Z",
-        "https://github.com/pythoncrazy/beeper-rs",
-    ),
-    (
-        "2026-10-14T03:34:00.000Z",
-        "Compare the inbox density with the compact chat list",
-    ),
+    ("2026-10-06T19:02:00.000Z", "https://arxiv.org/abs/2001.08361"),
+    ("2026-10-06T19:04:00.000Z", "Read this before the Thursday sync"),
+    ("2026-10-11T10:41:00.000Z", "https://github.com/pythoncrazy/navify"),
+    ("2026-10-12T21:15:00.000Z", "Pick up the Pebble Time 2 dev kit from the office"),
+    ("2026-10-14T03:30:00.000Z", "https://github.com/pythoncrazy/beeper-rs"),
+    ("2026-10-14T03:34:00.000Z", "Compare the inbox density with the compact chat list"),
 ];
 
-type SeedChat = (
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-    u32,
-    &'static str,
-    &'static str,
-    &'static str,
-);
+type SeedChat = (&'static str, &'static str, &'static str, &'static str, u32, &'static str, &'static str, &'static str);
 
 const EXTRA_CHATS: [SeedChat; 8] = [
     (
@@ -221,16 +190,7 @@ const EXTRA_CHATS: [SeedChat; 8] = [
         "Nell",
         "Issue 620 is out: iced 0.14, wgpu 27, and a new borrow checker",
     ),
-    (
-        "!im_jordan:beeper.com",
-        "acc_imessage",
-        "Jordan Park",
-        "single",
-        0,
-        "2026-10-13T18:22:00.000Z",
-        "Jordan",
-        "",
-    ),
+    ("!im_jordan:beeper.com", "acc_imessage", "Jordan Park", "single", 0, "2026-10-13T18:22:00.000Z", "Jordan", ""),
     (
         "!sg_lena:beeper.com",
         "acc_signal",
@@ -303,12 +263,7 @@ const fn sc(
     title: &'static str,
     description: &'static str,
 ) -> SettingCatalogEntry {
-    SettingCatalogEntry {
-        id,
-        section,
-        title,
-        description,
-    }
+    SettingCatalogEntry { id, section, title, description }
 }
 
 pub const SETTINGS_CATALOG: [SettingCatalogEntry; 24] = [
@@ -318,24 +273,14 @@ pub const SETTINGS_CATALOG: [SettingCatalogEntry; 24] = [
         "Show archived count",
         "Display total archived chats badge in the sidebar header",
     ),
-    sc(
-        "show_starred_pin_view",
-        "Chat List",
-        "Show starred pin view",
-        "Pin tab for starred and favorite conversations",
-    ),
+    sc("show_starred_pin_view", "Chat List", "Show starred pin view", "Pin tab for starred and favorite conversations"),
     sc(
         "show_all_chats_pin_view",
         "Chat List",
         "Show all chats pin view",
         "Pin tab showing all unified inbox conversations",
     ),
-    sc(
-        "show_unread_pin_view",
-        "Chat List",
-        "Show unread pin view",
-        "Quick filter pin tab for unread conversations",
-    ),
+    sc("show_unread_pin_view", "Chat List", "Show unread pin view", "Quick filter pin tab for unread conversations"),
     sc(
         "show_drafts_pin_view",
         "Chat List",
@@ -396,12 +341,7 @@ pub const SETTINGS_CATALOG: [SettingCatalogEntry; 24] = [
         "Show message input buttons",
         "Show attachment, emoji, voice note, poll, and schedule buttons in composer",
     ),
-    sc(
-        "link_previews",
-        "Conversation View",
-        "Link previews",
-        "Generate rich previews for URLs shared in messages",
-    ),
+    sc("link_previews", "Conversation View", "Link previews", "Generate rich previews for URLs shared in messages"),
     sc(
         "show_right_panel_by_default",
         "Conversation View",
@@ -506,8 +446,7 @@ impl BeeperStore {
         let mut copied_files_from_source = 0;
         if !config.db_path.exists() {
             if let Some(ref src_dir) = config.source_beeper_dir {
-                copied_files_from_source =
-                    copy_beeper_data_to_isolated_dir(src_dir, &config.data_dir);
+                copied_files_from_source = copy_beeper_data_to_isolated_dir(src_dir, &config.data_dir);
             }
         }
         std::fs::create_dir_all(&config.assets_dir).expect("create isolated media dir");
@@ -529,10 +468,8 @@ impl BeeperStore {
 
         let mut settings_search_index = InvertedIndex::default();
         for (i, entry) in SETTINGS_CATALOG.iter().enumerate() {
-            settings_search_index.insert_doc(
-                i as u32,
-                &format!("{} {} {}", entry.section, entry.title, entry.description),
-            );
+            settings_search_index
+                .insert_doc(i as u32, &format!("{} {} {}", entry.section, entry.title, entry.description));
         }
 
         let default_state = BeeperStateRecord {
@@ -575,18 +512,9 @@ impl BeeperStore {
             bridge_sessions: HashMap::new(),
             accounts: Vec::new(),
             labels: vec![
-                Label {
-                    id: "lbl_favorite".to_string(),
-                    name: "Favorites".to_string(),
-                },
-                Label {
-                    id: "lbl_work".to_string(),
-                    name: "Work".to_string(),
-                },
-                Label {
-                    id: "lbl_vip".to_string(),
-                    name: "VIP".to_string(),
-                },
+                Label { id: "lbl_favorite".to_string(), name: "Favorites".to_string() },
+                Label { id: "lbl_work".to_string(), name: "Work".to_string() },
+                Label { id: "lbl_vip".to_string(), name: "VIP".to_string() },
             ],
             chats: Vec::new(),
             chat_idx_by_id: HashMap::new(),
@@ -613,31 +541,13 @@ impl BeeperStore {
         store
     }
 
-    pub fn build_setup_from_state(
-        state: &BeeperStateRecord,
-        flow: Option<SetupFlowStep>,
-    ) -> SetupStatusResponse {
+    pub fn build_setup_from_state(state: &BeeperStateRecord, flow: Option<SetupFlowStep>) -> SetupStatusResponse {
         let mut secrets = HashMap::new();
-        secrets.insert(
-            "masterKey".to_string(),
-            !state.secrets.master_key.is_empty(),
-        );
-        secrets.insert(
-            "selfSigningKey".to_string(),
-            !state.secrets.self_signing_key.is_empty(),
-        );
-        secrets.insert(
-            "userSigningKey".to_string(),
-            !state.secrets.user_signing_key.is_empty(),
-        );
-        secrets.insert(
-            "megolmBackupKey".to_string(),
-            !state.secrets.megolm_backup_key.is_empty(),
-        );
-        secrets.insert(
-            "recoveryCode".to_string(),
-            !state.secrets.recovery_code.is_empty(),
-        );
+        secrets.insert("masterKey".to_string(), !state.secrets.master_key.is_empty());
+        secrets.insert("selfSigningKey".to_string(), !state.secrets.self_signing_key.is_empty());
+        secrets.insert("userSigningKey".to_string(), !state.secrets.user_signing_key.is_empty());
+        secrets.insert("megolmBackupKey".to_string(), !state.secrets.megolm_backup_key.is_empty());
+        secrets.insert("recoveryCode".to_string(), !state.secrets.recovery_code.is_empty());
 
         let session_state = if state.access_token.is_empty() {
             "signed_out"
@@ -695,18 +605,9 @@ impl BeeperStore {
             .prepare_cached("INSERT OR REPLACE INTO key_values (key, value) VALUES (?1, ?2)")
             .expect("prepare key_values statement");
         for (k, v) in [
-            (
-                "beeperState",
-                serde_json::to_string(&self.beeper_state).unwrap(),
-            ),
-            (
-                "bridgeAccounts",
-                serde_json::to_string(&self.bridge_accounts).unwrap(),
-            ),
-            (
-                "beeperSettings",
-                serde_json::to_string(&self.settings).unwrap(),
-            ),
+            ("beeperState", serde_json::to_string(&self.beeper_state).unwrap()),
+            ("bridgeAccounts", serde_json::to_string(&self.bridge_accounts).unwrap()),
+            ("beeperSettings", serde_json::to_string(&self.settings).unwrap()),
         ] {
             stmt.execute(params![k, v]).expect("write key_values");
         }
@@ -726,12 +627,7 @@ impl BeeperStore {
             "INSERT OR REPLACE INTO beeper_rs_messages (id, chat_id, sort_key, json) VALUES (?1, ?2, ?3, ?4)",
         )
         .unwrap()
-        .execute(params![
-            msg.id,
-            msg.chat_id,
-            msg.sort_key,
-            serde_json::to_string(msg).unwrap()
-        ])
+        .execute(params![msg.id, msg.chat_id, msg.sort_key, serde_json::to_string(msg).unwrap()])
         .expect("persist message row");
     }
 
@@ -747,25 +643,17 @@ impl BeeperStore {
         let (raw_state, raw_bridges, raw_settings, loaded_chats, loaded_msgs, loaded_assets) = {
             let conn = self.db.lock().unwrap();
             let raw_state = conn
-                .query_row::<String, _, _>(
-                    "SELECT value FROM key_values WHERE key = 'beeperState'",
-                    [],
-                    |r| r.get(0),
-                )
+                .query_row::<String, _, _>("SELECT value FROM key_values WHERE key = 'beeperState'", [], |r| r.get(0))
                 .ok();
             let raw_bridges = conn
-                .query_row::<String, _, _>(
-                    "SELECT value FROM key_values WHERE key = 'bridgeAccounts'",
-                    [],
-                    |r| r.get(0),
-                )
+                .query_row::<String, _, _>("SELECT value FROM key_values WHERE key = 'bridgeAccounts'", [], |r| {
+                    r.get(0)
+                })
                 .ok();
             let raw_settings = conn
-                .query_row::<String, _, _>(
-                    "SELECT value FROM key_values WHERE key = 'beeperSettings'",
-                    [],
-                    |r| r.get(0),
-                )
+                .query_row::<String, _, _>("SELECT value FROM key_values WHERE key = 'beeperSettings'", [], |r| {
+                    r.get(0)
+                })
                 .ok();
             let loaded_chats: Vec<Chat> = conn
                 .prepare("SELECT json FROM beeper_rs_chats")
@@ -791,20 +679,12 @@ impl BeeperStore {
                 .unwrap()
                 .filter_map(|r| serde_json::from_str(&r.ok()?).ok())
                 .collect();
-            (
-                raw_state,
-                raw_bridges,
-                raw_settings,
-                loaded_chats,
-                loaded_msgs,
-                loaded_assets,
-            )
+            (raw_state, raw_bridges, raw_settings, loaded_chats, loaded_msgs, loaded_assets)
         };
 
         if let Some(s) = raw_state {
             self.beeper_state = BeeperStateRecord::from_json_str(&s);
-            self.valid_tokens
-                .insert(self.beeper_state.access_token.clone());
+            self.valid_tokens.insert(self.beeper_state.access_token.clone());
             self.setup_status = Self::build_setup_from_state(&self.beeper_state, None);
         }
         if let Some(b) = raw_bridges {
@@ -824,8 +704,7 @@ impl BeeperStore {
                     asset.local_file_path = isolated_media_path.to_string_lossy().to_string();
                 }
             }
-            self.assets_by_mxc
-                .insert(asset.mxc_url.clone(), asset.upload_id.clone());
+            self.assets_by_mxc.insert(asset.mxc_url.clone(), asset.upload_id.clone());
             self.assets.insert(asset.upload_id.clone(), asset);
         }
 
@@ -848,11 +727,7 @@ impl BeeperStore {
             .map(|(url, site, title, summary)| {
                 (
                     url.to_string(),
-                    LinkPreview {
-                        site: site.to_string(),
-                        title: title.to_string(),
-                        summary: summary.to_string(),
-                    },
+                    LinkPreview { site: site.to_string(), title: title.to_string(), summary: summary.to_string() },
                 )
             })
             .collect();
@@ -860,9 +735,7 @@ impl BeeperStore {
     }
 
     pub fn me(&self) -> &User {
-        &self.chats[self.chat_idx_by_id[NOTE_CHAT_ID]]
-            .participants
-            .items[0]
+        &self.chats[self.chat_idx_by_id[NOTE_CHAT_ID]].participants.items[0]
     }
 
     pub fn rebuild_accounts_from_bridges(&mut self) {
@@ -901,14 +774,7 @@ impl BeeperStore {
                     bridge_type: btype.to_string(),
                     is_running: true,
                     login_id: Some(format!("login_{bid}_01")),
-                    mode: Some(
-                        if mode == BridgeMode::OnDevice {
-                            "on_device"
-                        } else {
-                            "cloud"
-                        }
-                        .to_string(),
-                    ),
+                    mode: Some(if mode == BridgeMode::OnDevice { "on_device" } else { "cloud" }.to_string()),
                     network_name: name.to_string(),
                     state: "CONNECTED".to_string(),
                 });
@@ -916,21 +782,17 @@ impl BeeperStore {
         }
         self.rebuild_accounts_from_bridges();
         let self_user = |accounts: &[Account], idx: usize| -> User {
-            accounts
-                .get(idx)
-                .or_else(|| accounts.first())
-                .map(|a| a.user.clone())
-                .unwrap_or_else(|| User {
-                    id: "@self:beeper.com".to_string(),
-                    full_name: Some("Alex".to_string()),
-                    username: Some("alex".to_string()),
-                    email: Some("alex@beeper.com".to_string()),
-                    phone_number: None,
-                    img_url: None,
-                    is_self: Some(true),
-                    cannot_message: Some(false),
-                    custom_nickname: None,
-                })
+            accounts.get(idx).or_else(|| accounts.first()).map(|a| a.user.clone()).unwrap_or_else(|| User {
+                id: "@self:beeper.com".to_string(),
+                full_name: Some("Alex".to_string()),
+                username: Some("alex".to_string()),
+                email: Some("alex@beeper.com".to_string()),
+                phone_number: None,
+                img_url: None,
+                is_self: Some(true),
+                cannot_message: Some(false),
+                custom_nickname: None,
+            })
         };
 
         let make_user = |id: &str, name: &str, uname: &str, phone: Option<&str>| User {
@@ -979,19 +841,11 @@ impl BeeperStore {
             preview: None,
             reminder: None,
             chat_theme: None,
-            participants: ChatParticipants {
-                has_more: false,
-                total: users.len(),
-                items: users,
-            },
+            participants: ChatParticipants { has_more: false, total: users.len(), items: users },
             flags: 0,
         };
 
-        let me = User {
-            id: DEFAULT_USER_ID.to_string(),
-            is_self: Some(true),
-            ..self_user(&[], 0)
-        };
+        let me = User { id: DEFAULT_USER_ID.to_string(), is_self: Some(true), ..self_user(&[], 0) };
         let mut chats_seed = vec![
             mk_chat(
                 NOTE_CHAT_ID,
@@ -1022,12 +876,7 @@ impl BeeperStore {
                 "2026-10-14T08:15:00.000Z",
                 "000001",
                 vec![
-                    make_user(
-                        "@eric:beeper.com",
-                        "Eric Migicovsky",
-                        "eric",
-                        Some("+14155550101"),
-                    ),
+                    make_user("@eric:beeper.com", "Eric Migicovsky", "eric", Some("+14155550101")),
                     self_user(&self.accounts, 0),
                 ],
             ),
@@ -1045,12 +894,7 @@ impl BeeperStore {
                 "2026-10-14T08:10:00.000Z",
                 "000002",
                 vec![
-                    make_user(
-                        "@sarah:beeper.com",
-                        "Sarah Chen",
-                        "sarahc",
-                        Some("+14155550102"),
-                    ),
+                    make_user("@sarah:beeper.com", "Sarah Chen", "sarahc", Some("+14155550102")),
                     self_user(&self.accounts, 1),
                 ],
             ),
@@ -1087,12 +931,7 @@ impl BeeperStore {
                 "2026-10-14T07:45:00.000Z",
                 "000004",
                 vec![
-                    make_user(
-                        "@secops:beeper.com",
-                        "SecOps Lead",
-                        "secops",
-                        Some("+14155550190"),
-                    ),
+                    make_user("@secops:beeper.com", "SecOps Lead", "secops", Some("+14155550190")),
                     self_user(&self.accounts, 3),
                 ],
             ),
@@ -1109,10 +948,7 @@ impl BeeperStore {
                 &["lbl_favorite"],
                 "2026-10-14T07:30:00.000Z",
                 "000005",
-                vec![
-                    make_user("@maya:beeper.com", "Maya Lin", "mayalin", None),
-                    self_user(&self.accounts, 4),
-                ],
+                vec![make_user("@maya:beeper.com", "Maya Lin", "mayalin", None), self_user(&self.accounts, 4)],
             ),
             mk_chat(
                 "!sl_infra:beeper.com",
@@ -1135,12 +971,8 @@ impl BeeperStore {
             ),
         ];
         for (i, (cid, acc, title, ctype, unread, ts, sender, _)) in EXTRA_CHATS.iter().enumerate() {
-            let peer = make_user(
-                &format!("@{}:beeper.com", sender.to_lowercase()),
-                sender,
-                &sender.to_lowercase(),
-                None,
-            );
+            let peer =
+                make_user(&format!("@{}:beeper.com", sender.to_lowercase()), sender, &sender.to_lowercase(), None);
             chats_seed.push(mk_chat(
                 cid,
                 &format!("local_x{i}"),
@@ -1158,11 +990,7 @@ impl BeeperStore {
             ));
         }
 
-        self.db
-            .lock()
-            .unwrap()
-            .execute_batch("BEGIN IMMEDIATE;")
-            .expect("begin seed transaction");
+        self.db.lock().unwrap().execute_batch("BEGIN IMMEDIATE;").expect("begin seed transaction");
         for c in chats_seed {
             self.index_and_push_chat(c, true);
         }
@@ -1332,25 +1160,14 @@ impl BeeperStore {
             self.index_and_push_message(m, true);
         }
         self.persist_state_to_sqlite();
-        self.db
-            .lock()
-            .unwrap()
-            .execute_batch("COMMIT;")
-            .expect("commit seed transaction");
+        self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit seed transaction");
     }
 
     fn chat_index_text(c: &Chat) -> String {
         let mut s = format!("{} {}", c.title, c.description.as_deref().unwrap_or(""));
         for p in &c.participants.items {
-            for field in [
-                &p.full_name,
-                &p.custom_nickname,
-                &p.username,
-                &p.phone_number,
-                &p.email,
-            ]
-            .into_iter()
-            .flatten()
+            for field in
+                [&p.full_name, &p.custom_nickname, &p.username, &p.phone_number, &p.email].into_iter().flatten()
             {
                 s.push(' ');
                 s.push_str(field);
@@ -1360,11 +1177,7 @@ impl BeeperStore {
     }
 
     fn message_index_text(m: &Message) -> String {
-        let mut s = format!(
-            "{} {}",
-            m.text.as_deref().unwrap_or(""),
-            m.sender_name.as_deref().unwrap_or("")
-        );
+        let mut s = format!("{} {}", m.text.as_deref().unwrap_or(""), m.sender_name.as_deref().unwrap_or(""));
         for a in &m.attachments {
             for field in [&a.file_name, &a.transcript].into_iter().flatten() {
                 s.push(' ');
@@ -1378,10 +1191,8 @@ impl BeeperStore {
         chat.sync_flags();
         if let Some(&existing_idx) = self.chat_idx_by_id.get(&chat.id) {
             let old_text = Self::chat_index_text(&self.chats[existing_idx]);
-            self.chat_search_index
-                .remove_doc(existing_idx as u32, &old_text);
-            self.chat_search_index
-                .insert_doc(existing_idx as u32, &Self::chat_index_text(&chat));
+            self.chat_search_index.remove_doc(existing_idx as u32, &old_text);
+            self.chat_search_index.insert_doc(existing_idx as u32, &Self::chat_index_text(&chat));
             if let Some(ref loc) = chat.local_chat_id {
                 self.local_chat_idx_by_id.insert(loc.clone(), existing_idx);
             }
@@ -1392,8 +1203,7 @@ impl BeeperStore {
             return existing_idx;
         }
         let idx = self.chats.len();
-        self.chat_search_index
-            .insert_doc(idx as u32, &Self::chat_index_text(&chat));
+        self.chat_search_index.insert_doc(idx as u32, &Self::chat_index_text(&chat));
         self.chat_idx_by_id.insert(chat.id.clone(), idx);
         if let Some(ref loc) = chat.local_chat_id {
             self.local_chat_idx_by_id.insert(loc.clone(), idx);
@@ -1411,13 +1221,9 @@ impl BeeperStore {
             return existing_idx;
         }
         let idx = self.messages.len();
-        self.msg_search_index
-            .insert_doc(idx as u32, &Self::message_index_text(&msg));
+        self.msg_search_index.insert_doc(idx as u32, &Self::message_index_text(&msg));
         self.msg_idx_by_id.insert(msg.id.clone(), idx);
-        self.chat_msg_indices
-            .entry(msg.chat_id.clone())
-            .or_default()
-            .push(idx);
+        self.chat_msg_indices.entry(msg.chat_id.clone()).or_default().push(idx);
 
         if let Some(&c_idx) = self.chat_idx_by_id.get(&msg.chat_id) {
             self.chats[c_idx].last_activity = Some(msg.timestamp.clone());
@@ -1448,18 +1254,14 @@ impl BeeperStore {
     }
 
     pub fn resolve_canonical_chat_id(&self, chat_or_local_id: &str) -> Option<String> {
-        self.resolve_chat_idx(chat_or_local_id)
-            .map(|idx| self.chats[idx].id.clone())
+        self.resolve_chat_idx(chat_or_local_id).map(|idx| self.chats[idx].id.clone())
     }
 
     pub fn resolve_send_target_chat_id(&self, chat_or_local_id: &str) -> Option<String> {
         let idx = self.resolve_chat_idx(chat_or_local_id)?;
         let chat = &self.chats[idx];
         if let Some(ref merge) = chat.merge {
-            assert!(
-                !merge.chat_ids.is_empty(),
-                "merged chat must have member chatIDs"
-            );
+            assert!(!merge.chat_ids.is_empty(), "merged chat must have member chatIDs");
             if let Some(ref def_id) = merge.default_chat_id {
                 return self.resolve_canonical_chat_id(def_id);
             }
@@ -1500,13 +1302,7 @@ impl BeeperStore {
             .iter()
             .map(|pid| User {
                 id: pid.clone(),
-                full_name: Some(
-                    pid.trim_start_matches('@')
-                        .split(':')
-                        .next()
-                        .unwrap_or(pid)
-                        .to_string(),
-                ),
+                full_name: Some(pid.trim_start_matches('@').split(':').next().unwrap_or(pid).to_string()),
                 username: Some(pid.clone()),
                 email: None,
                 phone_number: None,
@@ -1518,21 +1314,14 @@ impl BeeperStore {
             .collect();
         let merge_info = merge_chat_ids.map(|ids| {
             assert!(!ids.is_empty(), "merge chatIDs cannot be empty");
-            ChatMergeInfo {
-                chat_ids: ids,
-                default_chat_id,
-            }
+            ChatMergeInfo { chat_ids: ids, default_chat_id }
         });
 
         let computed_title = title.unwrap_or_else(|| {
             if items.is_empty() {
                 "Merged Chat".to_string()
             } else {
-                items
-                    .iter()
-                    .filter_map(|u| u.full_name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                items.iter().filter_map(|u| u.full_name.clone()).collect::<Vec<_>>().join(", ")
             }
         });
 
@@ -1558,11 +1347,7 @@ impl BeeperStore {
             preview: None,
             reminder: None,
             chat_theme: None,
-            participants: ChatParticipants {
-                has_more: false,
-                total: items.len(),
-                items,
-            },
+            participants: ChatParticipants { has_more: false, total: items.len(), items },
             flags: 0,
         };
         chat.sync_flags();
@@ -1601,26 +1386,17 @@ impl BeeperStore {
         new_draft: Option<ChatDraft>,
         new_merge: Option<Option<ChatMergeInfo>>,
     ) -> Result<Chat, &'static str> {
-        let idx = self
-            .resolve_chat_idx(chat_or_local_id)
-            .ok_or("chat_not_found")?;
+        let idx = self.resolve_chat_idx(chat_or_local_id).ok_or("chat_not_found")?;
         if clear_draft {
             self.chats[idx].draft = None;
         } else if let Some(draft) = new_draft {
-            let draft_has_content = draft
-                .text
-                .as_deref()
-                .map(|s| !s.is_empty())
-                .unwrap_or(false)
-                || !draft.attachments.is_empty();
+            let draft_has_content =
+                draft.text.as_deref().map(|s| !s.is_empty()).unwrap_or(false) || !draft.attachments.is_empty();
             if draft_has_content {
                 let existing_non_empty = self.chats[idx]
                     .draft
                     .as_ref()
-                    .map(|d| {
-                        d.text.as_deref().map(|s| !s.is_empty()).unwrap_or(false)
-                            || !d.attachments.is_empty()
-                    })
+                    .map(|d| d.text.as_deref().map(|s| !s.is_empty()).unwrap_or(false) || !d.attachments.is_empty())
                     .unwrap_or(false);
                 if existing_non_empty {
                     return Err("existing_draft_not_empty");
@@ -1675,9 +1451,7 @@ impl BeeperStore {
         reply_to_message_id: Option<String>,
         attachment: Option<Attachment>,
     ) -> Result<(String, String, Message), &'static str> {
-        let target_chat_id = self
-            .resolve_send_target_chat_id(chat_or_local_id)
-            .ok_or("chat_not_found")?;
+        let target_chat_id = self.resolve_send_target_chat_id(chat_or_local_id).ok_or("chat_not_found")?;
         let c_idx = self.resolve_chat_idx(&target_chat_id).unwrap();
         let account_id = self.chats[c_idx].account_id.clone();
         let msg_id = self.next_id("msg");
@@ -1754,33 +1528,19 @@ impl BeeperStore {
         message_id: &str,
         new_text: String,
     ) -> Result<(String, Message), &'static str> {
-        let canonical_chat_id = self
-            .resolve_canonical_chat_id(chat_or_local_id)
-            .ok_or("chat_not_found")?;
-        let &m_idx = self
-            .msg_idx_by_id
-            .get(message_id)
-            .ok_or("message_not_found")?;
+        let canonical_chat_id = self.resolve_canonical_chat_id(chat_or_local_id).ok_or("chat_not_found")?;
+        let &m_idx = self.msg_idx_by_id.get(message_id).ok_or("message_not_found")?;
         assert_eq!(self.messages[m_idx].chat_id, canonical_chat_id);
 
-        self.msg_search_index.remove_doc(
-            m_idx as u32,
-            &Self::message_index_text(&self.messages[m_idx]),
-        );
+        self.msg_search_index.remove_doc(m_idx as u32, &Self::message_index_text(&self.messages[m_idx]));
 
         let now = now_rfc3339_millis();
         if let Some(prev_text) = self.messages[m_idx].text.take() {
-            self.messages[m_idx].edit_history.push(EditHistoryEntry {
-                text: prev_text,
-                timestamp: now.clone(),
-            });
+            self.messages[m_idx].edit_history.push(EditHistoryEntry { text: prev_text, timestamp: now.clone() });
         }
         self.messages[m_idx].text = Some(new_text);
         self.messages[m_idx].sync_flags();
-        self.msg_search_index.insert_doc(
-            m_idx as u32,
-            &Self::message_index_text(&self.messages[m_idx]),
-        );
+        self.msg_search_index.insert_doc(m_idx as u32, &Self::message_index_text(&self.messages[m_idx]));
 
         let updated = self.messages[m_idx].clone();
         self.persist_message_row(&updated);
@@ -1804,24 +1564,12 @@ impl BeeperStore {
         Ok((canonical_chat_id, updated))
     }
 
-    pub fn delete_message(
-        &mut self,
-        chat_or_local_id: &str,
-        message_id: &str,
-    ) -> Result<String, &'static str> {
-        let canonical_chat_id = self
-            .resolve_canonical_chat_id(chat_or_local_id)
-            .ok_or("chat_not_found")?;
-        let &m_idx = self
-            .msg_idx_by_id
-            .get(message_id)
-            .ok_or("message_not_found")?;
+    pub fn delete_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, &'static str> {
+        let canonical_chat_id = self.resolve_canonical_chat_id(chat_or_local_id).ok_or("chat_not_found")?;
+        let &m_idx = self.msg_idx_by_id.get(message_id).ok_or("message_not_found")?;
         assert_eq!(self.messages[m_idx].chat_id, canonical_chat_id);
 
-        self.msg_search_index.remove_doc(
-            m_idx as u32,
-            &Self::message_index_text(&self.messages[m_idx]),
-        );
+        self.msg_search_index.remove_doc(m_idx as u32, &Self::message_index_text(&self.messages[m_idx]));
         self.messages[m_idx].flags |= MSG_DELETED;
         self.messages[m_idx].text = None;
         self.msg_idx_by_id.remove(message_id);
@@ -1848,19 +1596,12 @@ impl BeeperStore {
         reaction_key: &str,
         transaction_id: Option<String>,
     ) -> Result<(String, String), &'static str> {
-        let canonical_chat_id = self
-            .resolve_canonical_chat_id(chat_or_local_id)
-            .ok_or("chat_not_found")?;
-        let &m_idx = self
-            .msg_idx_by_id
-            .get(message_id)
-            .ok_or("message_not_found")?;
+        let canonical_chat_id = self.resolve_canonical_chat_id(chat_or_local_id).ok_or("chat_not_found")?;
+        let &m_idx = self.msg_idx_by_id.get(message_id).ok_or("message_not_found")?;
         let tx_id = transaction_id.unwrap_or_else(|| self.next_id("tx_rx"));
         let rx_id = self.next_id("rx");
         let self_pid = format!("@self_{}:beeper.com", self.messages[m_idx].account_id);
-        self.messages[m_idx]
-            .reactions
-            .retain(|r| !(r.participant_id == self_pid && r.reaction_key == reaction_key));
+        self.messages[m_idx].reactions.retain(|r| !(r.participant_id == self_pid && r.reaction_key == reaction_key));
         self.messages[m_idx].reactions.push(Reaction {
             id: rx_id,
             participant_id: self_pid,
@@ -1887,16 +1628,9 @@ impl BeeperStore {
         message_id: &str,
         reaction_key: &str,
     ) -> Result<String, &'static str> {
-        let canonical_chat_id = self
-            .resolve_canonical_chat_id(chat_or_local_id)
-            .ok_or("chat_not_found")?;
-        let &m_idx = self
-            .msg_idx_by_id
-            .get(message_id)
-            .ok_or("message_not_found")?;
-        self.messages[m_idx]
-            .reactions
-            .retain(|r| r.reaction_key != reaction_key);
+        let canonical_chat_id = self.resolve_canonical_chat_id(chat_or_local_id).ok_or("chat_not_found")?;
+        let &m_idx = self.msg_idx_by_id.get(message_id).ok_or("message_not_found")?;
+        self.messages[m_idx].reactions.retain(|r| r.reaction_key != reaction_key);
         let updated = self.messages[m_idx].clone();
         self.persist_message_row(&updated);
         self.emit_ws(WsEvent {
@@ -1922,10 +1656,7 @@ impl BeeperStore {
 
     pub fn retranscribe_voice_note(&mut self, message_id: &str) -> String {
         let &m_idx = self.msg_idx_by_id.get(message_id).expect("message exists");
-        self.msg_search_index.remove_doc(
-            m_idx as u32,
-            &Self::message_index_text(&self.messages[m_idx]),
-        );
+        self.msg_search_index.remove_doc(m_idx as u32, &Self::message_index_text(&self.messages[m_idx]));
 
         let mut new_transcript = String::new();
         for att in &mut self.messages[m_idx].attachments {
@@ -1933,22 +1664,14 @@ impl BeeperStore {
                 let updated_tr = format!(
                     "[Re-transcribed ({})]: {}",
                     self.settings.language.label(),
-                    att.transcript
-                        .as_deref()
-                        .unwrap_or("Voice note audio clear.")
+                    att.transcript.as_deref().unwrap_or("Voice note audio clear.")
                 );
                 att.transcript = Some(updated_tr.clone());
                 new_transcript = updated_tr;
             }
         }
-        assert!(
-            !new_transcript.is_empty(),
-            "message had no voice note attachment"
-        );
-        self.msg_search_index.insert_doc(
-            m_idx as u32,
-            &Self::message_index_text(&self.messages[m_idx]),
-        );
+        assert!(!new_transcript.is_empty(), "message had no voice note attachment");
+        self.msg_search_index.insert_doc(m_idx as u32, &Self::message_index_text(&self.messages[m_idx]));
         let updated = self.messages[m_idx].clone();
         self.persist_message_row(&updated);
         new_transcript
@@ -1956,10 +1679,7 @@ impl BeeperStore {
 
     pub fn vote_poll(&mut self, message_id: &str, option_id: &str, voter_id: &str) {
         let &m_idx = self.msg_idx_by_id.get(message_id).expect("message exists");
-        let poll = self.messages[m_idx]
-            .poll
-            .as_mut()
-            .expect("message has poll");
+        let poll = self.messages[m_idx].poll.as_mut().expect("message has poll");
         if !poll.allow_multiple {
             for opt in &mut poll.options {
                 if opt.id != option_id {
@@ -1967,11 +1687,7 @@ impl BeeperStore {
                 }
             }
         }
-        let target = poll
-            .options
-            .iter_mut()
-            .find(|o| o.id == option_id)
-            .expect("poll option exists");
+        let target = poll.options.iter_mut().find(|o| o.id == option_id).expect("poll option exists");
         if target.voter_ids.contains(&voter_id.to_string()) {
             target.voter_ids.retain(|v| v != voter_id);
         } else {
@@ -1982,9 +1698,7 @@ impl BeeperStore {
     }
 
     pub fn mark_unread_from_message(&mut self, chat_or_local_id: &str, message_id: &str) {
-        let c_idx = self
-            .resolve_chat_idx(chat_or_local_id)
-            .expect("chat exists");
+        let c_idx = self.resolve_chat_idx(chat_or_local_id).expect("chat exists");
         let chat_id = self.chats[c_idx].id.clone();
         let &target_m_idx = self.msg_idx_by_id.get(message_id).expect("message exists");
         let target_sort_key = self.messages[target_m_idx].sort_key.clone();
@@ -2006,17 +1720,9 @@ impl BeeperStore {
         self.persist_chat_row(&c_clone);
     }
 
-    pub fn set_user_nickname(
-        &mut self,
-        chat_or_local_id: &str,
-        user_id: &str,
-        nickname: Option<String>,
-    ) {
-        let c_idx = self
-            .resolve_chat_idx(chat_or_local_id)
-            .expect("chat exists");
-        self.chat_search_index
-            .remove_doc(c_idx as u32, &Self::chat_index_text(&self.chats[c_idx]));
+    pub fn set_user_nickname(&mut self, chat_or_local_id: &str, user_id: &str, nickname: Option<String>) {
+        let c_idx = self.resolve_chat_idx(chat_or_local_id).expect("chat exists");
+        self.chat_search_index.remove_doc(c_idx as u32, &Self::chat_index_text(&self.chats[c_idx]));
 
         for p in &mut self.chats[c_idx].participants.items {
             if p.id == user_id {
@@ -2028,36 +1734,21 @@ impl BeeperStore {
                 self.chats[c_idx].title = nick.clone();
             }
         }
-        self.chat_search_index
-            .insert_doc(c_idx as u32, &Self::chat_index_text(&self.chats[c_idx]));
+        self.chat_search_index.insert_doc(c_idx as u32, &Self::chat_index_text(&self.chats[c_idx]));
         let c_clone = self.chats[c_idx].clone();
         self.persist_chat_row(&c_clone);
     }
 
     pub fn total_unread_chats(&self) -> u32 {
-        self.chats
-            .iter()
-            .filter(|c| (c.flags & CHAT_ARCHIVED) == 0 && (c.flags & CHAT_UNREAD) != 0)
-            .count() as u32
+        self.chats.iter().filter(|c| (c.flags & CHAT_ARCHIVED) == 0 && (c.flags & CHAT_UNREAD) != 0).count() as u32
     }
 
-    pub fn store_uploaded_asset(
-        &mut self,
-        file_name: String,
-        mime_type: String,
-        bytes: &[u8],
-    ) -> StoredAsset {
+    pub fn store_uploaded_asset(&mut self, file_name: String, mime_type: String, bytes: &[u8]) -> StoredAsset {
         assert!(!bytes.is_empty(), "uploaded asset bytes cannot be empty");
         let upload_id = self.next_id("upl");
         let safe_name: String = file_name
             .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
+            .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
             .collect();
         let file_path = self.assets_dir.join(format!("{upload_id}_{safe_name}"));
         std::fs::write(&file_path, bytes).expect("write uploaded asset to disk");
@@ -2078,14 +1769,9 @@ impl BeeperStore {
         self.db
             .lock()
             .unwrap()
-            .prepare_cached(
-                "INSERT OR REPLACE INTO beeper_rs_assets (upload_id, json) VALUES (?1, ?2)",
-            )
+            .prepare_cached("INSERT OR REPLACE INTO beeper_rs_assets (upload_id, json) VALUES (?1, ?2)")
             .unwrap()
-            .execute(params![
-                asset.upload_id,
-                serde_json::to_string(&asset).unwrap()
-            ])
+            .execute(params![asset.upload_id, serde_json::to_string(&asset).unwrap()])
             .expect("persist asset");
         self.assets_by_mxc.insert(mxc_url, upload_id.clone());
         self.assets.insert(upload_id, asset.clone());
@@ -2109,9 +1795,7 @@ impl BeeperStore {
     }
 
     pub fn calculate_storage_bytes(&self) -> (u64, u64) {
-        let db_bytes = std::fs::metadata(&self.db_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let db_bytes = std::fs::metadata(&self.db_path).map(|m| m.len()).unwrap_or(0);
         let mut media_bytes = 0u64;
         if let Ok(entries) = std::fs::read_dir(&self.assets_dir) {
             for entry in entries.flatten() {
@@ -2125,21 +1809,14 @@ impl BeeperStore {
 
     pub fn clear_cached_media_older_than_days(&mut self, days: i64) -> usize {
         let cutoff = now_unix_secs() - (days * 86_400);
-        let to_remove: Vec<String> = self
-            .assets
-            .iter()
-            .filter(|(_, a)| a.created_epoch_secs <= cutoff)
-            .map(|(k, _)| k.clone())
-            .collect();
+        let to_remove: Vec<String> =
+            self.assets.iter().filter(|(_, a)| a.created_epoch_secs <= cutoff).map(|(k, _)| k.clone()).collect();
         let conn = self.db.lock().unwrap();
         for id in &to_remove {
             if let Some(a) = self.assets.remove(id) {
                 self.assets_by_mxc.remove(&a.mxc_url);
                 let _ = std::fs::remove_file(&a.local_file_path);
-                let _ = conn.execute(
-                    "DELETE FROM beeper_rs_assets WHERE upload_id = ?1",
-                    params![id],
-                );
+                let _ = conn.execute("DELETE FROM beeper_rs_assets WHERE upload_id = ?1", params![id]);
             }
         }
         to_remove.len()
