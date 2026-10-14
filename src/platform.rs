@@ -155,7 +155,7 @@ pub struct SystemTrayState {
     pub icon_width: u32,
     pub icon_height: u32,
     pub menu_items: Vec<String>,
-    native_tray: Option<tray_icon::TrayIcon>,
+    pub native_enabled: bool,
 }
 
 impl SystemTrayState {
@@ -172,11 +172,6 @@ impl SystemTrayState {
             },
             "Quit Beeper".to_string(),
         ];
-        let native_tray = if try_native {
-            Self::init_native_tray(&icon_rgba, icon_width, icon_height, &tooltip)
-        } else {
-            None
-        };
         Self {
             unread_count,
             muted,
@@ -186,7 +181,7 @@ impl SystemTrayState {
             icon_width,
             icon_height,
             menu_items,
-            native_tray,
+            native_enabled: try_native,
         }
     }
 
@@ -199,28 +194,12 @@ impl SystemTrayState {
         }
     }
 
-    fn init_native_tray(
-        rgba: &[u8],
-        width: u32,
-        height: u32,
-        tooltip: &str,
-    ) -> Option<tray_icon::TrayIcon> {
-        let icon =
-            tray_icon::Icon::from_rgba(rgba.to_vec(), width, height).expect("valid tray icon RGBA");
-        let menu = tray_icon::menu::Menu::new();
-        let _ = menu.append(&tray_icon::menu::MenuItem::new("Open Beeper", true, None));
-        let _ = menu.append(&tray_icon::menu::MenuItem::new(
-            "Toggle Do Not Disturb",
-            true,
-            None,
-        ));
-        let _ = menu.append(&tray_icon::menu::MenuItem::new("Quit Beeper", true, None));
-        tray_icon::TrayIconBuilder::new()
-            .with_tooltip(tooltip)
-            .with_icon(icon)
-            .with_menu(Box::new(menu))
-            .build()
-            .ok()
+    pub fn to_icon_data(&self) -> eframe::egui::IconData {
+        eframe::egui::IconData {
+            rgba: self.icon_rgba.clone(),
+            width: self.icon_width,
+            height: self.icon_height,
+        }
     }
 
     pub fn update(&mut self, unread_count: u32, muted: bool) {
@@ -237,11 +216,5 @@ impl SystemTrayState {
         } else {
             "Mute Notifications (DND)".to_string()
         };
-        if let Some(ref tray) = self.native_tray {
-            let icon =
-                tray_icon::Icon::from_rgba(self.icon_rgba.clone(), w, h).expect("valid tray icon");
-            let _ = tray.set_icon(Some(icon));
-            let _ = tray.set_tooltip(Some(&self.tooltip));
-        }
     }
 }
