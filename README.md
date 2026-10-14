@@ -1,6 +1,17 @@
 # beeper-rs
 
-`beeper-rs` is a native Rust desktop application, HTTP REST server, WebSocket event server, and client SDK for Beeper Desktop.
+`beeper-rs` is an independent, unofficial open-source Rust desktop application, HTTP REST server, WebSocket event server, and client SDK that implements the public Beeper Desktop API protocol.
+
+## Legal Disclaimer and Non-Affiliation Notice
+
+`beeper-rs` is an independent open-source software project.
+This project is **not** affiliated with, endorsed by, sponsored by, approved by, or associated with **Beeper Inc.**, **Automattic Inc.**, **Texts.com**, or any of their subsidiaries or affiliates.
+
+"Beeper", "Texts", "Automattic", "iMessage", "WhatsApp", "Signal", "Telegram", "Slack", "Discord", "Instagram", "Messenger", "LinkedIn", "Google Messages", "Google Voice", "Matrix", "Bluesky", and all other third-party product names, trademarks, service marks, and trade names referenced in this repository are the property of their respective owners.
+All references to third-party names, protocols, APIs, and trademarks in this repository are strictly for interoperability and identification purposes (nominative fair use) and do not imply any endorsement, sponsorship, or official status.
+
+This software is provided "AS IS", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement.
+In no event shall the authors or copyright holders be liable for any claim, damages, account suspension, data loss, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use or other dealings in the software.
 
 ## Features
 
@@ -13,30 +24,39 @@
 - Compiles Beeper v4 CSS themes (`variables.css`, `texts.css`, `dracula.css`, `nocturne.css`, `dark-purple.css`, and `fix-lockdown-mode-emojis.css`).
 - Generates autostart manifests for Linux, macOS, and Windows.
 
-## Build and Run
+## Local Testing Guide
 
-Run the following command to build the project:
+### 1. Run the Automated End-to-End Test Suite
 
-```bash
-cargo build --release
-```
-
-Run the following command to start the server and GUI:
+Run the following command to execute the end-to-end test suite:
 
 ```bash
-cargo run --
+cargo test --test e2e -- --nocapture
 ```
 
-Run the following command to start the headless API server:
+### 2. Run the Native Desktop GUI and Local Server
+
+Run the following command on your host machine to launch the 4-pane desktop GUI and local API server on `127.0.0.1:23373`:
+
+```bash
+cargo run --release
+```
+
+### 3. Run the Headless API Server and Query Endpoints
+
+Start the headless server in one terminal:
 
 ```bash
 cargo run -- serve --host 127.0.0.1 --port 23373
 ```
 
-Run the following command to run the end-to-end test suite:
+In a second terminal, query the server with the CLI or `curl`:
 
 ```bash
-cargo test --test e2e
+cargo run -- info --base-url http://127.0.0.1:23373
+curl -s http://127.0.0.1:23373/v1/info | jq
+curl -s -H "Authorization: Bearer beeper-local-dev-token" http://127.0.0.1:23373/v1/accounts | jq
+curl -s -H "Authorization: Bearer beeper-local-dev-token" http://127.0.0.1:23373/v1/chats | jq
 ```
 
 ## Development Workflow
