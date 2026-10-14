@@ -102,47 +102,41 @@ const LINK_PREVIEWS: [(&str, &str, &str, &str); 3] = [
 
 #[derive(Debug, Clone)]
 pub struct SettingCatalogEntry {
-    pub id: &'static str,
     pub section: &'static str,
     pub title: &'static str,
     pub description: &'static str,
 }
 
-const fn sc(
-    id: &'static str,
-    section: &'static str,
-    title: &'static str,
-    description: &'static str,
-) -> SettingCatalogEntry {
-    SettingCatalogEntry { id, section, title, description }
+const fn sc(section: &'static str, title: &'static str, description: &'static str) -> SettingCatalogEntry {
+    SettingCatalogEntry { section, title, description }
 }
 
 #[rustfmt::skip]
 pub const SETTINGS_CATALOG: [SettingCatalogEntry; 24] = [
-    sc("show_archived_count", "Chat List", "Show archived count", "Display total archived chats badge in the sidebar header"),
-    sc("show_starred_pin_view", "Chat List", "Show starred pin view", "Pin tab for starred and favorite conversations"),
-    sc("show_all_chats_pin_view", "Chat List", "Show all chats pin view", "Pin tab showing all unified inbox conversations"),
-    sc("show_unread_pin_view", "Chat List", "Show unread pin view", "Quick filter pin tab for unread conversations"),
-    sc("show_drafts_pin_view", "Chat List", "Show drafts pin view", "Quick filter pin tab for conversations with unsent drafts"),
-    sc("filter_pins_by_network", "Chat List", "Filter pins by network", "Scope pinned avatars to the currently selected chat network"),
-    sc("show_favorite_chats_section", "Chat List", "Show favorite chats section", "Display a dedicated Favorites group above the main chat list"),
-    sc("keep_favorites_in_inbox", "Chat List", "Keep favorites in inbox", "Keep favorited conversations visible inside the main inbox list"),
-    sc("show_message_previews", "Chat List", "Show message previews", "Show latest message snippet below each chat title in the sidebar"),
-    sc("unread_chats_always_on_top", "Chat List", "Unread chats always on top", "Sort unread threads above read threads in the chat list"),
-    sc("show_full_names_in_chats", "Conversation View", "Show full names in chats", "Display full sender names instead of first names in group chats"),
-    sc("auto_play_videos", "Conversation View", "Auto-play videos", "Automatically play inline video attachments and GIFs"),
-    sc("show_chat_header", "Conversation View", "Show chat header", "Show the top header bar with participant details in conversation view"),
-    sc("show_message_input_buttons", "Conversation View", "Show message input buttons", "Show attachment, emoji, voice note, poll, and schedule buttons in composer"),
-    sc("link_previews", "Conversation View", "Link previews", "Generate rich previews for URLs shared in messages"),
-    sc("show_right_panel_by_default", "Conversation View", "Show right panel by default", "Keep the Chat Info, Shared Media, and Bookmarks inspector open"),
-    sc("load_remote_content_automatically", "Conversation View", "Load remote content automatically", "Fetch external images and link metadata automatically"),
-    sc("use_twenty_four_hour_time", "Conversation View", "Use 24-hour time", "Format message timestamps using 24-hour military clock"),
-    sc("theme", "Appearance", "CSS Theme", "Switch between Light, Dark, Dracula, Nocturne, Dark Purple, and Custom CSS"),
-    sc("no_transparency", "Appearance", "No transparency", "Disable window vibrancy and translucent backgrounds (.no-transparency)"),
-    sc("reduce_transparency", "Appearance", "Reduce transparency", "Use solid header and sidebar surfaces (.reduce-transparency)"),
-    sc("fix_lockdown_emojis", "Appearance", "Fix Lockdown Mode Emojis", "Apply fix-lockdown-mode-emojis.css bitmap font override"),
-    sc("auto_transcribe_voice_notes", "Voice & Media", "Transcribe voice notes", "Automatically transcribe incoming and outgoing voice notes on-device"),
-    sc("repeat_message_alerts", "Notifications", "Repeat message alerts", "Repeat unread notification alerts up to 3 times"),
+    sc("Chat List", "Show archived count", "Display total archived chats badge in the sidebar header"),
+    sc("Chat List", "Show starred pin view", "Pin tab for starred and favorite conversations"),
+    sc("Chat List", "Show all chats pin view", "Pin tab showing all unified inbox conversations"),
+    sc("Chat List", "Show unread pin view", "Quick filter pin tab for unread conversations"),
+    sc("Chat List", "Show drafts pin view", "Quick filter pin tab for conversations with unsent drafts"),
+    sc("Chat List", "Filter pins by network", "Scope pinned avatars to the currently selected chat network"),
+    sc("Chat List", "Show favorite chats section", "Display a dedicated Favorites group above the main chat list"),
+    sc("Chat List", "Keep favorites in inbox", "Keep favorited conversations visible inside the main inbox list"),
+    sc("Chat List", "Show message previews", "Show latest message snippet below each chat title in the sidebar"),
+    sc("Chat List", "Unread chats always on top", "Sort unread threads above read threads in the chat list"),
+    sc("Conversation View", "Show full names in chats", "Display full sender names instead of first names in group chats"),
+    sc("Conversation View", "Auto-play videos", "Automatically play inline video attachments and GIFs"),
+    sc("Conversation View", "Show chat header", "Show the top header bar with participant details in conversation view"),
+    sc("Conversation View", "Show message input buttons", "Show attachment, emoji, voice note, poll, and schedule buttons in composer"),
+    sc("Conversation View", "Link previews", "Generate rich previews for URLs shared in messages"),
+    sc("Conversation View", "Show right panel by default", "Keep the Chat Info, Shared Media, and Bookmarks inspector open"),
+    sc("Conversation View", "Load remote content automatically", "Fetch external images and link metadata automatically"),
+    sc("Conversation View", "Use 24-hour time", "Format message timestamps using 24-hour military clock"),
+    sc("Appearance", "CSS Theme", "Switch between Light, Dark, Dracula, Nocturne, Dark Purple, and Custom CSS"),
+    sc("Appearance", "No transparency", "Disable window vibrancy and translucent backgrounds (.no-transparency)"),
+    sc("Appearance", "Reduce transparency", "Use solid header and sidebar surfaces (.reduce-transparency)"),
+    sc("Appearance", "Fix Lockdown Mode Emojis", "Apply fix-lockdown-mode-emojis.css bitmap font override"),
+    sc("Voice & Media", "Transcribe voice notes", "Automatically transcribe incoming and outgoing voice notes on-device"),
+    sc("Notifications", "Repeat message alerts", "Repeat unread notification alerts up to 3 times"),
 ];
 
 #[derive(Deserialize)]
@@ -502,12 +496,8 @@ impl BeeperStore {
     pub fn update_chat(&mut self, idx: usize, f: impl FnOnce(&mut Chat)) -> Chat {
         let old = chat_index_text(&self.chats[idx]);
         f(&mut self.chats[idx]);
-        self.finish_chat_update(idx, &old)
-    }
-
-    fn finish_chat_update(&mut self, idx: usize, old_text: &str) -> Chat {
         self.chats[idx].sync_flags();
-        self.chat_search_index.remove_doc(idx as u32, old_text);
+        self.chat_search_index.remove_doc(idx as u32, &old);
         self.chat_search_index.insert_doc(idx as u32, &chat_index_text(&self.chats[idx]));
         self.persist_chat(idx);
         let chat = self.chats[idx].clone();
@@ -518,12 +508,8 @@ impl BeeperStore {
     pub fn update_message(&mut self, idx: usize, f: impl FnOnce(&mut Message)) -> Message {
         let old = message_index_text(&self.messages[idx]);
         f(&mut self.messages[idx]);
-        self.finish_message_update(idx, &old)
-    }
-
-    fn finish_message_update(&mut self, idx: usize, old_text: &str) -> Message {
         self.messages[idx].sync_flags();
-        self.msg_search_index.remove_doc(idx as u32, old_text);
+        self.msg_search_index.remove_doc(idx as u32, &old);
         self.msg_search_index.insert_doc(idx as u32, &message_index_text(&self.messages[idx]));
         self.persist_message(idx);
         let msg = self.messages[idx].clone();
