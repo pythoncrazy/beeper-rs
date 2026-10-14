@@ -130,6 +130,7 @@ async fn main() {
         Command::Serve | Command::Gui => {}
     }
 
+    let host = cfg.host.clone();
     let bind_addr = format!("{}:{}", cfg.host, cfg.port);
     let store: SharedStore = Arc::new(RwLock::new(BeeperStore::from_config(cfg)));
     let app_router = build_router(store.clone());
@@ -138,8 +139,20 @@ async fn main() {
         let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
         serve_http(listener, app_router).await;
     } else {
+        let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
+            Ok(l) => l,
+            Err(_) => {
+                let fallback = tokio::net::TcpListener::bind(format!("{host}:0"))
+                    .await
+                    .expect("bind local ephemeral port");
+                let actual_port = fallback.local_addr().unwrap().port();
+                let mut st = store.write().unwrap();
+                st.config.port = actual_port;
+                st.settings.pas_port = actual_port;
+                fallback
+            }
+        };
         tokio::spawn(async move {
-            let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
             serve_http(listener, app_router).await;
         });
         let (icon_rgba, icon_w, icon_h) = {

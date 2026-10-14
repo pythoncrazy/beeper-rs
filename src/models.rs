@@ -69,7 +69,7 @@ pub struct BeeperStateSecrets {
     pub recovery_code: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BeeperStateRecord {
     pub access_token: String,
     pub device_id: String,
@@ -83,6 +83,110 @@ pub struct BeeperStateRecord {
     pub key_backup: bool,
     pub has_backed_up_code: bool,
     pub secrets: BeeperStateSecrets,
+}
+
+impl BeeperStateRecord {
+    pub fn from_json_str(raw: &str) -> Self {
+        let v = serde_json::from_str::<serde_json::Value>(raw).unwrap_or(serde_json::Value::Null);
+        Self::from_json_value(&v)
+    }
+
+    pub fn from_json_value(v: &serde_json::Value) -> Self {
+        let str_field = |keys: &[&str], fallback: &str| -> String {
+            for k in keys {
+                if let Some(val) = v.get(*k) {
+                    match val {
+                        serde_json::Value::String(s) if !s.is_empty() => return s.clone(),
+                        serde_json::Value::Number(n) => return n.to_string(),
+                        _ => {}
+                    }
+                }
+            }
+            fallback.to_string()
+        };
+        let bool_field = |keys: &[&str], fallback: bool| -> bool {
+            for k in keys {
+                if let Some(val) = v.get(*k) {
+                    match val {
+                        serde_json::Value::Bool(b) => return *b,
+                        serde_json::Value::String(s) => {
+                            return !s.is_empty() && s != "false" && s != "0"
+                        }
+                        serde_json::Value::Number(n) => return n.as_i64().unwrap_or(0) != 0,
+                        _ => {}
+                    }
+                }
+            }
+            fallback
+        };
+        let sec_obj = v.get("secrets");
+        let sec_field = |keys: &[&str], fallback_when_true: &str| -> String {
+            if let Some(sec) = sec_obj {
+                for k in keys {
+                    if let Some(val) = sec.get(*k) {
+                        match val {
+                            serde_json::Value::String(s) => return s.clone(),
+                            serde_json::Value::Bool(true) => return fallback_when_true.to_string(),
+                            serde_json::Value::Bool(false) | serde_json::Value::Null => {
+                                return String::new()
+                            }
+                            other => return other.to_string(),
+                        }
+                    }
+                }
+            }
+            fallback_when_true.to_string()
+        };
+
+        Self {
+            access_token: str_field(
+                &["access_token", "accessToken", "token"],
+                crate::config::DEFAULT_TOKEN,
+            ),
+            device_id: str_field(&["device_id", "deviceID"], crate::config::DEFAULT_DEVICE_ID),
+            user_id: str_field(&["user_id", "userID"], crate::config::DEFAULT_USER_ID),
+            homeserver: str_field(
+                &["homeserver", "homeServer", "base_url", "baseUrl"],
+                crate::config::DEFAULT_HOMESERVER,
+            ),
+            first_sync_done: bool_field(&["first_sync_done", "firstSyncDone"], true),
+            initialized: bool_field(&["initialized"], true),
+            secret_storage: bool_field(&["secret_storage", "secretStorage"], true),
+            cross_signing: bool_field(&["cross_signing", "crossSigning"], true),
+            verified: bool_field(&["verified"], true),
+            key_backup: bool_field(&["key_backup", "keyBackup"], true),
+            has_backed_up_code: bool_field(&["has_backed_up_code", "hasBackedUpCode"], true),
+            secrets: BeeperStateSecrets {
+                master_key: sec_field(&["master_key", "masterKey"], "mk_ed25519_beeper_rs_master"),
+                self_signing_key: sec_field(
+                    &["self_signing_key", "selfSigningKey"],
+                    "ssk_ed25519_beeper_rs_self",
+                ),
+                user_signing_key: sec_field(
+                    &["user_signing_key", "userSigningKey"],
+                    "usk_ed25519_beeper_rs_user",
+                ),
+                megolm_backup_key: sec_field(
+                    &["megolm_backup_key", "megolmBackupKey"],
+                    "mbk_curve25519_beeper_rs_backup",
+                ),
+                recovery_code: sec_field(
+                    &["recovery_code", "recoveryCode"],
+                    crate::config::DEFAULT_RECOVERY_CODE,
+                ),
+            },
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BeeperStateRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        Ok(Self::from_json_value(&v))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -550,7 +654,7 @@ pub struct SetupStatusResponse {
     pub setup_flow: Option<SetupFlowStep>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BridgeAccountInfo {
     #[serde(rename = "accountID")]
     pub account_id: String,
@@ -567,6 +671,122 @@ pub struct BridgeAccountInfo {
     #[serde(rename = "networkName")]
     pub network_name: String,
     pub state: String,
+}
+
+impl BridgeAccountInfo {
+    pub fn from_json_value(v: &serde_json::Value) -> Self {
+        let str_opt = |keys: &[&str]| -> Option<String> {
+            for k in keys {
+                if let Some(val) = v.get(*k) {
+                    match val {
+                        serde_json::Value::String(s) if !s.is_empty() => return Some(s.clone()),
+                        serde_json::Value::Number(n) => return Some(n.to_string()),
+                        _ => {}
+                    }
+                }
+            }
+            None
+        };
+        let raw_bridge = str_opt(&[
+            "bridgeID",
+            "bridge_id",
+            "bridge",
+            "network",
+            "bridgeType",
+            "bridge_type",
+            "type",
+            "accountID",
+            "account_id",
+            "id",
+        ])
+        .unwrap_or_else(|| "whatsapp".to_string());
+        let norm_bridge = crate::config::normalize_bridge_id(&raw_bridge);
+        let spec = crate::config::network_spec_by_bridge(norm_bridge);
+
+        let account_id = str_opt(&["accountID", "account_id", "id", "remote_id"])
+            .unwrap_or_else(|| format!("acc_{}", spec.bridge_id));
+        let bridge_type = str_opt(&["bridgeType", "bridge_type", "type"])
+            .unwrap_or_else(|| spec.bridge_type.to_string());
+        let is_running = v
+            .get("isRunning")
+            .or_else(|| v.get("is_running"))
+            .or_else(|| v.get("running"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        let login_id = str_opt(&["loginID", "login_id", "remote_id", "userLoginID"]);
+        let mode = str_opt(&["mode"]).or_else(|| {
+            Some(
+                if spec.supports_on_device {
+                    "on_device"
+                } else {
+                    "cloud"
+                }
+                .to_string(),
+            )
+        });
+        let network_name = str_opt(&["networkName", "network_name", "name", "displayName"])
+            .unwrap_or_else(|| spec.display_name.to_string());
+        let state = match v
+            .get("state")
+            .or_else(|| v.get("stateEvent"))
+            .or_else(|| v.get("state_event"))
+            .or_else(|| v.get("status"))
+        {
+            Some(serde_json::Value::String(s)) if !s.is_empty() => s.clone(),
+            Some(serde_json::Value::Object(map)) => map
+                .get("stateEvent")
+                .or_else(|| map.get("state_event"))
+                .or_else(|| map.get("state"))
+                .or_else(|| map.get("status"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("CONNECTED")
+                .to_string(),
+            _ => "CONNECTED".to_string(),
+        };
+
+        Self {
+            account_id,
+            bridge_id: spec.bridge_id.to_string(),
+            bridge_type,
+            is_running,
+            login_id,
+            mode,
+            network_name,
+            state,
+        }
+    }
+
+    pub fn vec_from_json_str(raw: &str) -> Vec<Self> {
+        let v = serde_json::from_str::<serde_json::Value>(raw).unwrap_or(serde_json::Value::Null);
+        match v {
+            serde_json::Value::Array(arr) => arr.iter().map(Self::from_json_value).collect(),
+            serde_json::Value::Object(map) => {
+                if let Some(arr) = map
+                    .get("accounts")
+                    .or_else(|| map.get("bridges"))
+                    .and_then(serde_json::Value::as_array)
+                {
+                    arr.iter().map(Self::from_json_value).collect()
+                } else {
+                    map.values()
+                        .filter(|val| val.is_object())
+                        .map(Self::from_json_value)
+                        .collect()
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BridgeAccountInfo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        Ok(Self::from_json_value(&v))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -699,6 +919,7 @@ impl LanguageChoice {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BeeperSettings {
     pub show_archived_count: bool,
     pub show_starred_pin_view: bool,

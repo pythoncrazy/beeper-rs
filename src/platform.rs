@@ -11,6 +11,15 @@ pub enum OsKind {
     Linux,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayServerKind {
+    Wayland,
+    X11,
+    Quartz,
+    Win32,
+    Headless,
+}
+
 impl OsKind {
     pub fn current() -> Self {
         match std::env::consts::OS {
@@ -42,6 +51,80 @@ impl OsKind {
             Self::Windows | Self::Linux => "Alt",
         }
     }
+
+    pub fn detect_display_server(&self, env_vars: &HashMap<String, String>) -> DisplayServerKind {
+        match self {
+            Self::MacOs => DisplayServerKind::Quartz,
+            Self::Windows => DisplayServerKind::Win32,
+            Self::Linux => {
+                if env_vars
+                    .get("WAYLAND_DISPLAY")
+                    .is_some_and(|v| !v.trim().is_empty())
+                {
+                    DisplayServerKind::Wayland
+                } else if env_vars
+                    .get("DISPLAY")
+                    .is_some_and(|v| !v.trim().is_empty())
+                {
+                    DisplayServerKind::X11
+                } else {
+                    DisplayServerKind::Headless
+                }
+            }
+        }
+    }
+}
+
+pub fn resolve_home_dir(env_vars: &HashMap<String, String>) -> PathBuf {
+    if let Some(h) = env_vars
+        .get("HOME")
+        .or_else(|| env_vars.get("USERPROFILE"))
+        .filter(|v| !v.trim().is_empty())
+    {
+        return PathBuf::from(h);
+    }
+    if let (Some(drive), Some(path)) = (env_vars.get("HOMEDRIVE"), env_vars.get("HOMEPATH")) {
+        let combined = format!("{drive}{path}");
+        if !combined.trim().is_empty() {
+            return PathBuf::from(combined);
+        }
+    }
+    std::env::temp_dir()
+}
+
+pub fn path_to_file_url(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    if raw.starts_with('/') {
+        format!("file://{raw}")
+    } else {
+        format!("file:///{}", raw.replace('\\', "/"))
+    }
+}
+
+pub fn file_url_to_path(url: &str) -> Option<PathBuf> {
+    let stripped = url.strip_prefix("file://")?;
+    let bytes = stripped.as_bytes();
+    if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
+        return Some(PathBuf::from(&stripped[1..]));
+    }
+    Some(PathBuf::from(stripped))
+}
+
+pub fn open_url_or_path_command(os: OsKind, target: &str) -> (String, Vec<String>) {
+    assert!(!target.trim().is_empty(), "target must not be empty");
+    match os {
+        OsKind::MacOs => ("open".to_string(), vec![target.to_string()]),
+        OsKind::Linux => ("xdg-open".to_string(), vec![target.to_string()]),
+        OsKind::Windows => (
+            "cmd".to_string(),
+            vec![
+                "/C".to_string(),
+                "start".to_string(),
+                String::new(),
+                target.to_string(),
+            ],
+        ),
+    }
 }
 
 pub fn resolve_original_beeper_data_dir(
@@ -55,11 +138,7 @@ pub fn resolve_original_beeper_data_dir(
 
 pub fn current_original_beeper_data_dir(profile: Option<&str>) -> PathBuf {
     let env_map: HashMap<String, String> = std::env::vars().collect();
-    let home = env_map
-        .get("HOME")
-        .or_else(|| env_map.get("USERPROFILE"))
-        .map(PathBuf::from)
-        .expect("HOME or USERPROFILE must be set");
+    let home = resolve_home_dir(&env_map);
     resolve_original_beeper_data_dir(OsKind::current(), profile, &env_map, &home)
 }
 
@@ -74,11 +153,7 @@ pub fn resolve_desktop_data_dir(
 
 pub fn current_desktop_data_dir(profile: Option<&str>) -> PathBuf {
     let env_map: HashMap<String, String> = std::env::vars().collect();
-    let home = env_map
-        .get("HOME")
-        .or_else(|| env_map.get("USERPROFILE"))
-        .map(PathBuf::from)
-        .expect("HOME or USERPROFILE must be set");
+    let home = resolve_home_dir(&env_map);
     resolve_desktop_data_dir(OsKind::current(), profile, &env_map, &home)
 }
 

@@ -38,8 +38,7 @@ pub fn extract_state_from_index_db(data_dir: &Path) -> (BeeperStateRecord, Vec<B
             |r| r.get(0),
         )
         .expect("query beeperState from index.db");
-    let state: BeeperStateRecord =
-        serde_json::from_str(&state_raw).expect("parse beeperState JSON");
+    let state = BeeperStateRecord::from_json_str(&state_raw);
 
     let bridges_raw: String = conn
         .query_row(
@@ -48,8 +47,7 @@ pub fn extract_state_from_index_db(data_dir: &Path) -> (BeeperStateRecord, Vec<B
             |r| r.get(0),
         )
         .expect("query bridgeAccounts from index.db");
-    let bridges: Vec<BridgeAccountInfo> =
-        serde_json::from_str(&bridges_raw).expect("parse bridgeAccounts JSON");
+    let bridges = BridgeAccountInfo::vec_from_json_str(&bridges_raw);
 
     (state, bridges)
 }
