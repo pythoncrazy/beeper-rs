@@ -92,7 +92,7 @@ impl CentralConfig {
             show_chat_header: true,
             show_message_input_buttons: true,
             link_previews: true,
-            show_right_panel_by_default: true,
+            show_right_panel_by_default: false,
             load_remote_content_automatically: true,
             use_twenty_four_hour_time: true,
             theme: ThemeChoice::TextsDark,
@@ -109,6 +109,12 @@ impl CentralConfig {
             pas_port: DEFAULT_PAS_PORT,
             launch_at_startup: false,
             minimize_to_tray: true,
+            incognito_mode: false,
+            archive_after_reminder: true,
+            mark_read_on_archive: true,
+            after_archive: 0,
+            remind_later_default: 0,
+            compact_chat_list: true,
         }
     }
 }

@@ -5,95 +5,126 @@ use crate::models::{BeeperSettings, ThemeChoice};
 use iced::advanced::graphics::text::{cosmic_text, font_system, to_attributes};
 use iced::font::{Family, Font, Weight};
 use iced::overlay::menu;
-use iced::widget::{button, container, pick_list, scrollable, text, text_input, toggler};
+use iced::widget::{button, container, pick_list, scrollable, svg, text, text_input};
 use iced::{border, Border, Color, Shadow, Theme, Vector};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Once;
+use std::sync::{LazyLock, Once};
 
 pub mod icon {
+    pub const INBOX: char = '\u{e0f7}';
+    pub const LIST_RESTART: char = '\u{e452}';
+    pub const ARCHIVE: char = '\u{e041}';
+    pub const CLOCK: char = '\u{e087}';
+    pub const SEND_HORIZONTAL: char = '\u{e4f2}';
+    pub const MAIL: char = '\u{e10f}';
+    pub const MESSAGE_CIRCLE_PLUS: char = '\u{e567}';
+    pub const IMAGES: char = '\u{e5c4}';
+    pub const COPY_PLUS: char = '\u{e3fd}';
+    pub const SQUARE_PLUS: char = '\u{e173}';
+    pub const ELLIPSIS: char = '\u{e0b6}';
+    pub const CHEVRONS_UP_DOWN: char = '\u{e211}';
+    pub const LIST_FILTER: char = '\u{e460}';
+    pub const SEARCH: char = '\u{e151}';
+    pub const SQUARE_PEN: char = '\u{e172}';
+    pub const BELL_OFF: char = '\u{e05a}';
+    pub const BELL: char = '\u{e059}';
+    pub const CIRCLE_CHECK: char = '\u{e226}';
+    pub const CIRCLE_DASHED: char = '\u{e4b0}';
+    pub const CHECK_CHECK: char = '\u{e38e}';
+    pub const CHECK: char = '\u{e06c}';
+    pub const IMAGE: char = '\u{e0f6}';
+    pub const CHEVRON_RIGHT: char = '\u{e06f}';
+    pub const CHEVRON_DOWN: char = '\u{e06d}';
+    pub const CHEVRON_LEFT: char = '\u{e06e}';
+    pub const LINK: char = '\u{e102}';
+    pub const ARROW_UP_RIGHT: char = '\u{e04d}';
+    pub const PLUS: char = '\u{e13d}';
+    pub const SMILE: char = '\u{e164}';
+    pub const AUDIO_LINES: char = '\u{e55a}';
+    pub const ARROW_UP: char = '\u{e04a}';
+    pub const AT_SIGN: char = '\u{e04e}';
+    pub const SETTINGS: char = '\u{e154}';
+    pub const PAINTBRUSH: char = '\u{e2e7}';
+    pub const KEYBOARD: char = '\u{e284}';
+    pub const SMARTPHONE: char = '\u{e163}';
+    pub const SPARKLES: char = '\u{e412}';
+    pub const PUZZLE: char = '\u{e29c}';
+    pub const DATABASE: char = '\u{e0ad}';
+    pub const CIRCLE_HELP: char = '\u{e082}';
+    pub const INFO: char = '\u{e0f9}';
+    pub const X: char = '\u{e1b2}';
+    pub const MINUS: char = '\u{e11c}';
+    pub const PIN: char = '\u{e259}';
+    pub const STAR: char = '\u{e176}';
+    pub const PENCIL: char = '\u{e1f9}';
+    pub const TRASH_2: char = '\u{e18e}';
+    pub const REPLY: char = '\u{e22a}';
+    pub const FORWARD: char = '\u{e229}';
+    pub const FILE_TEXT: char = '\u{e0cc}';
+    pub const FOLDER: char = '\u{e0d7}';
     pub const PLAY: char = '\u{e13c}';
     pub const PAUSE: char = '\u{e12e}';
-    pub const NEXT: char = '\u{e160}';
-    pub const PREV: char = '\u{e15f}';
-    pub const SHUFFLE: char = '\u{e15e}';
-    pub const REPEAT: char = '\u{e146}';
-    pub const REPEAT1: char = '\u{e1fd}';
-    pub const HEART: char = '\u{e0f2}';
-    pub const HOME: char = '\u{e0f5}';
-    pub const SEARCH: char = '\u{e151}';
-    pub const LIBRARY: char = '\u{e100}';
-    pub const LIST_MUSIC: char = '\u{e2e0}';
-    pub const LINES: char = '\u{e55a}';
-    pub const LYRICS: char = '\u{e349}';
-    pub const VOL1: char = '\u{e1aa}';
-    pub const VOL2: char = '\u{e1ab}';
-    pub const MUTE: char = '\u{e1ac}';
-    pub const PLUS: char = '\u{e13d}';
-    pub const DOWN: char = '\u{e0b2}';
-    pub const SETTINGS: char = '\u{e154}';
-    pub const MUSIC: char = '\u{e122}';
-    pub const DISC: char = '\u{e494}';
-    pub const ALBUM: char = '\u{e03b}';
-    pub const RADIO: char = '\u{e142}';
-    pub const CHEV_DOWN: char = '\u{e06d}';
-    pub const CHEV_UP: char = '\u{e070}';
-    pub const LEFT: char = '\u{e06e}';
-    pub const RIGHT: char = '\u{e06f}';
-    pub const X: char = '\u{e1b2}';
-    pub const CHECK: char = '\u{e06c}';
-    pub const MORE: char = '\u{e0b6}';
-    pub const BACK: char = '\u{e06e}';
-    pub const FWD: char = '\u{e06f}';
-    pub const CLOCK: char = '\u{e087}';
-    pub const LISTPLUS: char = '\u{e23f}';
-    pub const SERVER: char = '\u{e153}';
+    pub const MIC: char = '\u{e118}';
+    pub const CHART_BAR_BIG: char = '\u{e4a7}';
+    pub const CHART_NO_AXES_COLUMN: char = '\u{e068}';
+    pub const REFRESH_CW: char = '\u{e145}';
+    pub const HISTORY: char = '\u{e1f5}';
     pub const USER: char = '\u{e19f}';
     pub const USERS: char = '\u{e1a4}';
-    pub const LOGOUT: char = '\u{e10e}';
-    pub const STAR: char = '\u{e176}';
-    pub const FOLDER: char = '\u{e0d7}';
-    pub const CPLAY: char = '\u{e080}';
-    pub const CPAUSE: char = '\u{e07f}';
-    pub const REFRESH: char = '\u{e145}';
-    pub const PENCIL: char = '\u{e1f9}';
-    pub const TRASH: char = '\u{e18e}';
-    pub const INFO: char = '\u{e0f9}';
-    pub const SPIN: char = '\u{e10a}';
-    pub const OFFLINE: char = '\u{e1af}';
-    pub const ALERT: char = '\u{e077}';
-    pub const HISTORY: char = '\u{e1f5}';
-    pub const LIB_OPEN: char = '\u{e54e}';
-    pub const PL: char = '\u{e12a}';
-    pub const PR: char = '\u{e431}';
-    pub const SLIDERS: char = '\u{e55a}';
-    pub const QUEUE: char = '\u{e2e0}';
-    pub const IMAGE: char = '\u{e0ff}';
-    pub const LIST: char = '\u{e106}';
-    pub const GRID: char = '\u{e0ff}';
-    pub const ADD: char = '\u{e081}';
-    pub const FULL: char = '\u{e112}';
-    pub const RESTORE: char = '\u{e11a}';
-    pub const DEVICE: char = '\u{e210}';
+    pub const LOG_OUT: char = '\u{e10e}';
+    pub const SHIELD: char = '\u{e158}';
+    pub const SUN: char = '\u{e178}';
+    pub const MOON: char = '\u{e11e}';
+    pub const PALETTE: char = '\u{e1dd}';
+    pub const VOLUME_2: char = '\u{e1ab}';
+    pub const VOLUME_X: char = '\u{e1ac}';
+    pub const EYE: char = '\u{e0ba}';
+    pub const EYE_OFF: char = '\u{e0bb}';
+    pub const BOOKMARK: char = '\u{e060}';
+    pub const LOCK: char = '\u{e10b}';
+    pub const KEY_ROUND: char = '\u{e4a3}';
+    pub const COPY: char = '\u{e09e}';
+    pub const DOWNLOAD: char = '\u{e0b2}';
+    pub const UPLOAD: char = '\u{e19e}';
+    pub const PAPERCLIP: char = '\u{e12d}';
+    pub const STICKER: char = '\u{e302}';
+    pub const MESSAGE_CIRCLE: char = '\u{e116}';
+    pub const MESSAGE_SQUARE: char = '\u{e117}';
+    pub const PHONE: char = '\u{e133}';
+    pub const VIDEO: char = '\u{e1a5}';
+    pub const SLIDERS_HORIZONTAL: char = '\u{e29a}';
+    pub const CIRCLE_ALERT: char = '\u{e077}';
+    pub const LOADER_CIRCLE: char = '\u{e10a}';
+    pub const WIFI_OFF: char = '\u{e1af}';
+    pub const SERVER: char = '\u{e153}';
+    pub const GLOBE: char = '\u{e0e8}';
+    pub const LANGUAGES: char = '\u{e0fe}';
+    pub const ZAP: char = '\u{e1b4}';
+    pub const MOON_STAR: char = '\u{e410}';
+    pub const BELL_RING: char = '\u{e224}';
+    pub const LAYOUT_GRID: char = '\u{e0ff}';
+    pub const PANEL_RIGHT: char = '\u{e431}';
+    pub const HASH: char = '\u{e0ef}';
+    pub const TAG: char = '\u{e17f}';
+    pub const BAN: char = '\u{e051}';
+    pub const SQUARE_CHECK: char = '\u{e559}';
+    pub const SQUARE: char = '\u{e167}';
+    pub const CIRCLE: char = '\u{e076}';
+    pub const MAIL_OPEN: char = '\u{e363}';
+    pub const CLOCK_ALERT: char = '\u{e62a}';
+    pub const ALARM_CLOCK: char = '\u{e03a}';
+    pub const CALENDAR_CLOCK: char = '\u{e304}';
+    pub const SEND: char = '\u{e152}';
 }
 
-pub mod fill {
-    pub const PLAY: char = '\u{e3d0}';
-    pub const PAUSE: char = '\u{e39e}';
-    pub const HEART: char = '\u{e2a8}';
-    pub const HOME: char = '\u{e2c2}';
-    pub const LIBRARY: char = '\u{e0ce}';
-    pub const STAR: char = '\u{e46a}';
-    pub const SAVED: char = '\u{e184}';
-}
-
-pub const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/Figtree-Regular.ttf");
-pub const FONT_MEDIUM: &[u8] = include_bytes!("../assets/fonts/Figtree-Medium.ttf");
-pub const FONT_BOLD: &[u8] = include_bytes!("../assets/fonts/Figtree-Bold.ttf");
-pub const FONT_BLACK: &[u8] = include_bytes!("../assets/fonts/Figtree-Black.ttf");
+pub const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+pub const FONT_MEDIUM: &[u8] = include_bytes!("../assets/fonts/Inter-Medium.ttf");
+pub const FONT_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
+pub const FONT_BOLD: &[u8] = include_bytes!("../assets/fonts/Inter-Bold.ttf");
 pub const FONT_LUCIDE: &[u8] = include_bytes!("../assets/fonts/lucide.ttf");
-pub const FONT_PHOSPHOR: &[u8] = include_bytes!("../assets/fonts/phosphor-fill.ttf");
+pub const ALL_FONTS: [&[u8]; 5] = [FONT_REGULAR, FONT_MEDIUM, FONT_SEMIBOLD, FONT_BOLD, FONT_LUCIDE];
 pub const CLEAR: Color = Color::TRANSPARENT;
 
 static LOAD_FONTS: Once = Once::new();
@@ -101,25 +132,14 @@ static LOAD_FONTS: Once = Once::new();
 pub fn ensure_fonts_loaded() {
     LOAD_FONTS.call_once(|| {
         let mut fs = font_system().write().expect("font system");
-        for bytes in [
-            FONT_REGULAR,
-            FONT_MEDIUM,
-            FONT_BOLD,
-            FONT_BLACK,
-            FONT_LUCIDE,
-            FONT_PHOSPHOR,
-        ] {
+        for bytes in ALL_FONTS {
             fs.load_font(bytes.into());
         }
     });
 }
 
 pub const fn fw(weight: Weight) -> Font {
-    Font {
-        family: Family::Name("Figtree"),
-        weight,
-        ..Font::DEFAULT
-    }
+    Font { family: Family::Name("Inter"), weight, ..Font::DEFAULT }
 }
 
 fn glyphs(s: &str, size: f32, w: Weight) -> (f32, Vec<(usize, f32)>) {
@@ -150,10 +170,10 @@ pub fn ell<'a>(s: &str, max: f32, size: f32, w: Weight) -> text::Text<'a> {
         let res: Rc<str> = if total <= max {
             s.into()
         } else {
-            let cut = max - text_width("...", size, w);
+            let cut = max - text_width("…", size, w);
             let idx = gs.partition_point(|g| g.1 <= cut);
             let end = gs.get(idx.wrapping_sub(1)).map_or(0, |g| g.0);
-            format!("{}...", s[..end].trim_end()).into()
+            format!("{}…", s[..end].trim_end()).into()
         };
         CACHE.with(|c| {
             let mut m = c.borrow_mut();
@@ -164,45 +184,45 @@ pub fn ell<'a>(s: &str, max: f32, size: f32, w: Weight) -> text::Text<'a> {
         });
         res
     });
-    text(out.to_string()).size(size).font(fw(w)).wrapping(text::Wrapping::None)
+    t(out.to_string(), size, w).wrapping(text::Wrapping::None)
+}
+
+pub fn t<'a>(s: impl text::IntoFragment<'a>, size: f32, w: Weight) -> text::Text<'a> {
+    text(s).size(size).font(fw(w)).line_height(text::LineHeight::Absolute((size * 1.24).round().into()))
 }
 
 pub fn txt<'a>(s: impl text::IntoFragment<'a>, size: f32) -> text::Text<'a> {
-    text(s).size(size).font(fw(Weight::Normal))
+    t(s, size, Weight::Normal)
 }
 
 pub fn med<'a>(s: impl text::IntoFragment<'a>, size: f32) -> text::Text<'a> {
-    text(s).size(size).font(fw(Weight::Medium))
+    t(s, size, Weight::Medium)
+}
+
+pub fn semi<'a>(s: impl text::IntoFragment<'a>, size: f32) -> text::Text<'a> {
+    t(s, size, Weight::Semibold)
 }
 
 pub fn bold<'a>(s: impl text::IntoFragment<'a>, size: f32) -> text::Text<'a> {
-    text(s).size(size).font(fw(Weight::Bold))
-}
-
-pub fn black<'a>(s: impl text::IntoFragment<'a>, size: f32) -> text::Text<'a> {
-    text(s).size(size).font(fw(Weight::Black))
+    t(s, size, Weight::Bold)
 }
 
 pub fn ic(c: char, size: f32) -> text::Text<'static> {
     text(c).font(Font::with_name("lucide")).size(size).line_height(1.0)
 }
 
-pub fn filled_ic(c: char, size: f32) -> text::Text<'static> {
-    text(c).font(Font::with_name("Phosphor-Fill")).size(size).line_height(1.0)
-}
-
 pub fn hue(n: usize) -> Color {
     const HUES: [[u8; 3]; 10] = [
-        [29, 185, 84],
-        [45, 70, 185],
-        [140, 25, 50],
-        [232, 17, 91],
-        [20, 138, 8],
-        [186, 93, 7],
-        [80, 155, 245],
-        [175, 40, 150],
-        [71, 125, 149],
-        [225, 51, 0],
+        [217, 119, 87],
+        [88, 101, 242],
+        [214, 54, 201],
+        [31, 185, 61],
+        [234, 169, 0],
+        [22, 178, 238],
+        [245, 77, 11],
+        [116, 89, 255],
+        [32, 180, 161],
+        [37, 97, 251],
     ];
     let [r, g, b] = HUES[n % HUES.len()];
     Color::from_rgb8(r, g, b)
@@ -213,62 +233,68 @@ pub fn hash_str(s: &str) -> usize {
 }
 
 pub fn initials(title: &str) -> String {
-    let mut chars = title
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .filter_map(|w| w.chars().next());
+    let mut chars = title.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).filter_map(|w| w.chars().next());
     let first = chars.next().unwrap_or('B').to_ascii_uppercase();
     chars.next().map_or_else(|| first.to_string(), |s| format!("{}{}", first, s.to_ascii_uppercase()))
 }
 
+pub fn mix(a: Color, b: Color, k: f32) -> Color {
+    Color::from_rgba(a.r + (b.r - a.r) * k, a.g + (b.g - a.g) * k, a.b + (b.b - a.b) * k, a.a + (b.a - a.a) * k)
+}
+
+const BRANDS: [(&str, &str, &str, &str); 17] = [
+    ("whatsapp", "#25d366", "#fff", include_str!("../assets/brands/whatsapp.svg")),
+    ("facebook", "url(#g)", "#fff", include_str!("../assets/brands/messenger.svg")),
+    ("instagram", "url(#g)", "#fff", include_str!("../assets/brands/instagram.svg")),
+    ("telegram", "#2aabee", "#fff", include_str!("../assets/brands/telegram.svg")),
+    ("signal", "#3b45fd", "#fff", include_str!("../assets/brands/signal.svg")),
+    ("viber", "#7360f2", "#fff", include_str!("../assets/brands/viber.svg")),
+    ("imessage", "#34c759", "#fff", include_str!("../assets/brands/imessage.svg")),
+    ("gmessages", "#1a73e8", "#fff", include_str!("../assets/brands/googlemessages.svg")),
+    ("googlechat", "#00ac47", "#fff", include_str!("../assets/brands/googlechat.svg")),
+    ("twitter", "#000", "#fff", include_str!("../assets/brands/x.svg")),
+    ("slack", "#fff", "#4a154b", include_str!("../assets/brands/slack.svg")),
+    ("discord", "#5865f2", "#fff", include_str!("../assets/brands/discord.svg")),
+    ("linkedin", "#0a66c2", "#fff", include_str!("../assets/brands/linkedin.svg")),
+    ("line", "#06c755", "#fff", include_str!("../assets/brands/line.svg")),
+    ("tumblr", "#36465d", "#fff", include_str!("../assets/brands/tumblr.svg")),
+    ("bluesky", "#1185fe", "#fff", include_str!("../assets/brands/bluesky.svg")),
+    ("beeper", "#3844ff", "#fff", include_str!("../assets/brands/matrix.svg")),
+];
+
+static BRAND_SVGS: LazyLock<HashMap<&'static str, svg::Handle>> = LazyLock::new(|| {
+    BRANDS
+        .iter()
+        .map(|(id, bg, fg, src)| {
+            let d = src.split(" d=\"").nth(1).and_then(|s| s.split('"').next()).expect("simple-icons path");
+            let grad = if *id == "instagram" {
+                "<linearGradient id='g' x1='0' y1='1' x2='1' y2='0'><stop offset='0' stop-color='#fdd060'/><stop offset='.45' stop-color='#f0285a'/><stop offset='1' stop-color='#8a3ad9'/></linearGradient>"
+            } else {
+                "<linearGradient id='g' x1='0' y1='1' x2='1' y2='0'><stop offset='0' stop-color='#0a7cff'/><stop offset='.6' stop-color='#a033ff'/><stop offset='1' stop-color='#ff5280'/></linearGradient>"
+            };
+            let doc = format!("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'><defs>{grad}</defs><rect width='28' height='28' rx='8' fill='{bg}'/><g transform='translate(6.5 6.5) scale(.625)'><path fill='{fg}' d='{d}'/></g></svg>");
+            (*id, svg::Handle::from_memory(doc.into_bytes()))
+        })
+        .collect()
+});
+
+pub fn brand_svg(bridge_id: &str) -> svg::Handle {
+    BRAND_SVGS.get(bridge_id).unwrap_or(&BRAND_SVGS["beeper"]).clone()
+}
+
 pub fn fill_box(bg: Color, r: f32) -> impl Fn(&Theme) -> container::Style + Copy {
-    move |_| container::Style {
-        background: Some(bg.into()),
-        border: border::rounded(r),
-        ..Default::default()
-    }
-}
-
-pub fn bubble_box(bg: Color, is_sender: bool) -> impl Fn(&Theme) -> container::Style + Copy {
-    move |_| {
-        let radius = if is_sender {
-            border::Radius { top_left: 16.0, top_right: 16.0, bottom_right: 6.0, bottom_left: 16.0 }
-        } else {
-            border::Radius { top_left: 16.0, top_right: 16.0, bottom_right: 16.0, bottom_left: 6.0 }
-        };
-        container::Style {
-            background: Some(bg.into()),
-            border: Border { color: CLEAR, width: 0.0, radius },
-            ..Default::default()
-        }
-    }
-}
-
-pub fn composer_box(bg: Color, border_col: Color) -> impl Fn(&Theme) -> container::Style + Copy {
-    move |_| container::Style {
-        background: Some(bg.into()),
-        border: Border {
-            color: border_col,
-            width: 1.0,
-            radius: border::Radius { top_left: 16.0, top_right: 16.0, bottom_right: 8.0, bottom_left: 16.0 },
-        },
-        ..Default::default()
-    }
+    move |_| container::Style { background: Some(bg.into()), border: border::rounded(r), ..Default::default() }
 }
 
 pub fn bordered_box(bg: Color, border_col: Color, width: f32, r: f32) -> impl Fn(&Theme) -> container::Style + Copy {
-    move |_| container::Style {
-        background: Some(bg.into()),
-        border: Border { color: border_col, width, radius: r.into() },
-        ..Default::default()
-    }
+    move |_| container::Style { background: Some(bg.into()), border: Border { color: border_col, width, radius: r.into() }, ..Default::default() }
 }
 
-pub fn elevated_card(bg: Color, border_col: Color, r: f32) -> impl Fn(&Theme) -> container::Style + Copy {
+pub fn shadow_box(bg: Color, border_col: Color, r: f32, blur: f32) -> impl Fn(&Theme) -> container::Style + Copy {
     move |_| container::Style {
         background: Some(bg.into()),
         border: Border { color: border_col, width: 1.0, radius: r.into() },
-        shadow: Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.35), offset: Vector::new(0.0, 8.0), blur_radius: 24.0 },
+        shadow: Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.3), offset: Vector::new(0.0, 4.0), blur_radius: blur },
         text_color: None,
         snap: false,
     }
@@ -279,64 +305,28 @@ pub fn btn_style(bgs: [Color; 3], fgs: [Color; 3], r: f32) -> impl Fn(&Theme, bu
     move |_, s| {
         let k = usize::from(matches!(s, Hovered)) + 2 * usize::from(matches!(s, Pressed));
         let a = if matches!(s, Disabled) { 0.45 } else { 1.0 };
-        button::Style {
-            background: Some(bgs[k].scale_alpha(a).into()),
-            text_color: fgs[k].scale_alpha(a),
-            border: border::rounded(r),
-            ..Default::default()
-        }
+        button::Style { background: Some(bgs[k].scale_alpha(a).into()), text_color: fgs[k].scale_alpha(a), border: border::rounded(r), ..Default::default() }
     }
 }
 
-pub fn btn_bordered_style(bgs: [Color; 3], fgs: [Color; 3], border_col: Color, r: f32) -> impl Fn(&Theme, button::Status) -> button::Style + Copy {
-    use button::Status::*;
-    move |_, s| {
-        let k = usize::from(matches!(s, Hovered)) + 2 * usize::from(matches!(s, Pressed));
-        button::Style {
-            background: Some(bgs[k].into()),
-            text_color: fgs[k],
-            border: Border { color: border_col, width: 1.0, radius: r.into() },
-            ..Default::default()
-        }
+pub fn input_style(bg: Color, text_col: Color, placeholder_col: Color, accent_col: Color, r: f32) -> impl Fn(&Theme, text_input::Status) -> text_input::Style + Copy {
+    move |_, _| text_input::Style {
+        background: bg.into(),
+        border: Border { color: CLEAR, width: 0.0, radius: r.into() },
+        icon: placeholder_col,
+        placeholder: placeholder_col,
+        value: text_col,
+        selection: accent_col.scale_alpha(0.45),
     }
 }
 
-pub fn input_style(bgs: [Color; 2], borders: [Color; 2], text_col: Color, placeholder_col: Color, accent_col: Color, widths: [f32; 2], r: f32) -> impl Fn(&Theme, text_input::Status) -> text_input::Style + Copy {
-    move |_, s| {
-        let k = usize::from(matches!(s, text_input::Status::Focused { .. }));
-        text_input::Style {
-            background: bgs[k].into(),
-            border: Border { color: borders[k], width: widths[k], radius: r.into() },
-            icon: placeholder_col,
-            placeholder: placeholder_col,
-            value: text_col,
-            selection: accent_col,
-        }
-    }
-}
-
-pub fn tog_style(active_bg: Color, inactive_bg: Color, fg: Color) -> impl Fn(&Theme, toggler::Status) -> toggler::Style + Copy {
-    move |t, status| {
-        let is_on = matches!(status, toggler::Status::Active { is_toggled: true } | toggler::Status::Hovered { is_toggled: true } | toggler::Status::Disabled { is_toggled: true });
-        let mut st = toggler::default(t, status);
-        st.background = (if is_on { active_bg } else { inactive_bg }).into();
-        st.foreground = fg.into();
-        st.border_radius = Some(10.0.into());
-        st.padding_ratio = 0.12;
-        st
-    }
-}
-
-pub fn pick_style(bg: Color, hover_bg: Color, text_col: Color, sub_col: Color, border_col: Color) -> impl Fn(&Theme, pick_list::Status) -> pick_list::Style + Copy {
-    move |_, status| {
-        let cur_bg = if matches!(status, pick_list::Status::Hovered | pick_list::Status::Opened { .. }) { hover_bg } else { bg };
-        pick_list::Style {
-            text_color: text_col,
-            placeholder_color: sub_col,
-            handle_color: sub_col,
-            background: cur_bg.into(),
-            border: Border { color: border_col, width: 1.0, radius: 6.0.into() },
-        }
+pub fn pick_style(bg: Color, hover_bg: Color, text_col: Color, sub_col: Color) -> impl Fn(&Theme, pick_list::Status) -> pick_list::Style + Copy {
+    move |_, status| pick_list::Style {
+        text_color: text_col,
+        placeholder_color: sub_col,
+        handle_color: sub_col,
+        background: (if matches!(status, pick_list::Status::Hovered | pick_list::Status::Opened { .. }) { hover_bg } else { bg }).into(),
+        border: Border { color: CLEAR, width: 0.0, radius: 6.0.into() },
     }
 }
 
@@ -345,18 +335,14 @@ pub fn pick_menu_style(bg: Color, hover_bg: Color, text_col: Color, border_col: 
         background: bg.into(),
         border: Border { color: border_col, width: 1.0, radius: 8.0.into() },
         text_color: text_col,
-        selected_text_color: Color::WHITE,
+        selected_text_color: text_col,
         selected_background: hover_bg.into(),
         shadow: Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.35), offset: Vector::new(0.0, 4.0), blur_radius: 14.0 },
     }
 }
 
 pub fn scroll_style(thumb: Color, thumb_hover: Color) -> impl Fn(&Theme, scrollable::Status) -> scrollable::Style + Copy {
-    let rail = |c: Color| scrollable::Rail {
-        background: None,
-        border: Border::default(),
-        scroller: scrollable::Scroller { background: c.into(), border: border::rounded(3) },
-    };
+    let rail = |c: Color| scrollable::Rail { background: None, border: Border::default(), scroller: scrollable::Scroller { background: c.into(), border: border::rounded(4) } };
     move |_, status| {
         let col = match status {
             scrollable::Status::Active { .. } => CLEAR,
@@ -372,6 +358,127 @@ pub fn scroll_style(thumb: Color, thumb_hover: Color) -> impl Fn(&Theme, scrolla
         }
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct Palette {
+    pub frame: Color,
+    pub rail: Color,
+    pub rail_sel: Color,
+    pub card: Color,
+    pub selected: Color,
+    pub hover: Color,
+    pub text: Color,
+    pub strong: Color,
+    pub sub: Color,
+    pub weak: Color,
+    pub muted: Color,
+    pub tertiary: Color,
+    pub divider: Color,
+    pub elevated: Color,
+    pub input: Color,
+    pub send_btn: Color,
+    pub sent: Color,
+    pub sent_meta: Color,
+    pub received: Color,
+    pub link_card: Color,
+    pub outline: Color,
+    pub date_text: Color,
+    pub accent: Color,
+    pub toggle_on: Color,
+    pub toggle_off: Color,
+    pub prefs_pane: Color,
+    pub prefs_group: Color,
+    pub prefs_border: Color,
+    pub nav_sel: Color,
+    pub search: Color,
+    pub on_secondary: Color,
+    pub danger: Color,
+    pub success: Color,
+    pub warning: Color,
+}
+
+const fn hex(v: u32) -> Color {
+    Color::from_rgb(((v >> 16) & 255) as f32 / 255.0, ((v >> 8) & 255) as f32 / 255.0, (v & 255) as f32 / 255.0)
+}
+
+const fn hexa(v: u32, a: f32) -> Color {
+    let c = hex(v);
+    Color { a, ..c }
+}
+
+pub const BEEPER_DARK: Palette = Palette {
+    frame: hex(0x282828),
+    rail: hex(0x3d3d3d),
+    rail_sel: hex(0x505050),
+    card: hex(0x000000),
+    selected: hex(0x3e3e3e),
+    hover: hexa(0xf6f6f6, 0.05),
+    text: hex(0xededed),
+    strong: hex(0xf6f6f6),
+    sub: hexa(0xebebf5, 0.62),
+    weak: hex(0xadadad),
+    muted: hex(0x808080),
+    tertiary: hexa(0xebebf5, 0.27),
+    divider: hexa(0xf6f6f6, 0.2),
+    elevated: hex(0x282828),
+    input: hex(0x222223),
+    send_btn: hex(0x4d4d4d),
+    sent: hex(0x2a61fb),
+    sent_meta: hexa(0xffffff, 0.6),
+    received: hex(0x232326),
+    link_card: hex(0x2c2c2c),
+    outline: hex(0x28282a),
+    date_text: hex(0x9a9aa1),
+    accent: hex(0x2561fb),
+    toggle_on: hex(0x0d4ffb),
+    toggle_off: hexa(0xffffff, 0.3),
+    prefs_pane: hex(0x1c1c1c),
+    prefs_group: hex(0x222222),
+    prefs_border: hex(0x2a2a2c),
+    nav_sel: hex(0x3c3c3c),
+    search: hex(0x323232),
+    on_secondary: hex(0x9b9ba2),
+    danger: hex(0xff383c),
+    success: hex(0x34c759),
+    warning: hex(0xf54c03),
+};
+
+pub const BEEPER_LIGHT: Palette = Palette {
+    frame: hex(0xf0f0f0),
+    rail: hex(0xe1e1e1),
+    rail_sel: hex(0xcfcfcf),
+    card: hex(0xffffff),
+    selected: hex(0xe0e0e0),
+    hover: hexa(0x000000, 0.04),
+    text: hex(0x1c1c1e),
+    strong: hex(0x000000),
+    sub: hexa(0x3c3c43, 0.62),
+    weak: hex(0x5e5e63),
+    muted: hex(0x8e8e93),
+    tertiary: hexa(0x3c3c43, 0.3),
+    divider: hexa(0x000000, 0.12),
+    elevated: hex(0xffffff),
+    input: hex(0xf0f0f2),
+    send_btn: hex(0xd5d5d8),
+    sent: hex(0x0d4ffb),
+    sent_meta: hexa(0xffffff, 0.7),
+    received: hex(0xe9e9eb),
+    link_card: hex(0xefeff1),
+    outline: hex(0xe2e2e4),
+    date_text: hex(0x6c6c72),
+    accent: hex(0x0d4ffb),
+    toggle_on: hex(0x0d4ffb),
+    toggle_off: hexa(0x000000, 0.25),
+    prefs_pane: hex(0xf7f7f7),
+    prefs_group: hex(0xffffff),
+    prefs_border: hex(0xe5e5ea),
+    nav_sel: hex(0xdedede),
+    search: hex(0xe6e6e6),
+    on_secondary: hex(0x6c6c72),
+    danger: hex(0xff383c),
+    success: hex(0x34c759),
+    warning: hex(0xf54c03),
+};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedTheme {
@@ -631,49 +738,40 @@ impl ResolvedTheme {
         }
     }
 
-    pub fn app_bg(&self) -> Color { to_iced_color_opaque(self.bg_window) }
-    pub fn rail_bg(&self) -> Color {
-        if self.is_dark {
-            let [r, g, b, _] = self.bg_window;
-            Color::from_rgb8(r.saturating_sub(4), g.saturating_sub(4), b.saturating_sub(4))
-        } else {
-            Color::from_rgb8(236, 236, 239)
+    pub fn pal(&self) -> Palette {
+        let c = |v: [u8; 4]| Color::from_rgba8(v[0], v[1], v[2], v[3] as f32 / 255.0);
+        match self.choice {
+            ThemeChoice::TextsDark => BEEPER_DARK,
+            ThemeChoice::TextsLight => BEEPER_LIGHT,
+            _ => {
+                let frame = c(self.bg_sidebar);
+                let card = c(self.bg_window);
+                let text = c(self.text_primary);
+                Palette {
+                    frame,
+                    rail: mix(frame, text, 0.1),
+                    rail_sel: mix(frame, text, 0.2),
+                    card,
+                    selected: mix(frame, text, 0.1),
+                    elevated: mix(card, text, 0.12),
+                    input: mix(card, text, 0.1),
+                    link_card: mix(card, text, 0.14),
+                    received: c(self.bubble_other),
+                    sent: c(self.bubble_self),
+                    accent: c(self.brand_primary),
+                    toggle_on: c(self.brand_primary),
+                    text,
+                    strong: text,
+                    sub: c(self.text_secondary),
+                    weak: c(self.text_secondary),
+                    muted: c(self.text_muted),
+                    prefs_pane: mix(frame, card, 0.5),
+                    prefs_group: mix(card, text, 0.08),
+                    nav_sel: mix(frame, text, 0.12),
+                    search: mix(frame, text, 0.06),
+                    ..BEEPER_DARK
+                }
+            }
         }
-    }
-    pub fn sidebar_bg(&self) -> Color { to_iced_color_opaque(self.bg_sidebar) }
-    pub fn elevated_bg(&self) -> Color { to_iced_color_opaque(self.bg_tooltip) }
-    pub fn elevated_hover_bg(&self) -> Color {
-        let [r, g, b, _] = self.bg_tooltip;
-        if self.is_dark {
-            Color::from_rgb8(r.saturating_add(14), g.saturating_add(14), b.saturating_add(14))
-        } else {
-            Color::from_rgb8(r.saturating_sub(12), g.saturating_sub(12), b.saturating_sub(12))
-        }
-    }
-    pub fn header_bg(&self) -> Color { to_iced_color_opaque(self.bg_header) }
-    pub fn menu_bg(&self) -> Color { to_iced_color_opaque(self.bg_popover) }
-    pub fn input_bg(&self) -> Color {
-        self.vars.get("--color-background-input").map_or_else(|| self.elevated_bg(), |r| to_iced_color_opaque(parse_css_color(r, &self.vars)))
-    }
-    pub fn text_color(&self) -> Color { to_iced_color_opaque(self.text_primary) }
-    pub fn sub_color(&self) -> Color { to_iced_color_opaque(self.text_secondary) }
-    pub fn muted_color(&self) -> Color { to_iced_color_opaque(self.text_muted) }
-    pub fn accent_color(&self) -> Color { to_iced_color_opaque(self.brand_primary) }
-    pub fn on_accent_color(&self) -> Color { to_iced_color_opaque(self.bubble_self_text) }
-    pub fn bubble_sent_color(&self) -> Color { to_iced_color_opaque(self.bubble_self) }
-    pub fn bubble_recv_color(&self) -> Color { to_iced_color_opaque(self.bubble_other) }
-    pub fn border_color(&self) -> Color { to_iced_color_opaque(self.divider) }
-    pub fn border_weak_color(&self) -> Color { to_iced_color_opaque(self.divider).scale_alpha(0.55) }
-    pub fn hover_overlay(&self) -> Color {
-        if self.is_dark { Color::from_rgba(1.0, 1.0, 1.0, 0.07) } else { Color::from_rgba(0.0, 0.0, 0.0, 0.06) }
-    }
-    pub fn active_overlay(&self) -> Color {
-        if self.is_dark { Color::from_rgba(1.0, 1.0, 1.0, 0.12) } else { Color::from_rgba(0.0, 0.0, 0.0, 0.10) }
-    }
-    pub fn danger_color(&self) -> Color { to_iced_color_opaque(self.brand_red) }
-    pub fn success_color(&self) -> Color { to_iced_color_opaque(self.brand_green) }
-    pub fn warning_color(&self) -> Color { to_iced_color_opaque(self.brand_yellow) }
-    pub fn audio_bar_bg(&self) -> Color {
-        self.vars.get("--audio-bar-bg").map_or_else(|| self.elevated_bg(), |r| to_iced_color_opaque(parse_css_color(r, &self.vars)))
     }
 }
