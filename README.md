@@ -6,12 +6,12 @@
 
 `beeper-rs` never modifies or locks the original Beeper Desktop directory (`BeeperTexts` or `BeeperTexts-<profile>`):
 
-- `beeper-rs` stores all database and media files in an isolated directory (`~/.config/BeeperRs` on Linux, `~/Library/Application Support/BeeperRs` on macOS, or `%APPDATA%\BeeperRs` on Windows).
-- `beeper-rs` keeps its data in its own database file, `BeeperRs/beeper-rs.db`. The file uses SQLite `STRICT` tables and a schema version (`PRAGMA user_version`). `beeper-rs` stops with a clear message if the file has a different schema version. `beeper-rs` needs SQLite 3.37 or later.
-- `beeper-rs` does not copy Beeper Desktop data by default. A new `BeeperRs` directory starts empty and signed out.
+- `beeper-rs` stores all database and media files in an isolated directory (`~/.config/beeper-rs` on Linux, `~/Library/Application Support/beeper-rs` on macOS, or `%APPDATA%\beeper-rs` on Windows).
+- `beeper-rs` keeps its data in its own database file, `beeper-rs/beeper-rs.db`. The file uses SQLite `STRICT` tables and a schema version (`PRAGMA user_version`). `beeper-rs` stops with a clear message if the file has a different schema version. `beeper-rs` needs SQLite 3.37 or later.
+- `beeper-rs` does not copy Beeper Desktop data by default. A new `beeper-rs` directory starts empty and signed out.
 - On first start, if Beeper Desktop data is available, the setup window asks "Copy from Beeper Desktop" or "Start Fresh". To copy, `beeper-rs` reads a temporary snapshot of `index.db` and `account.db` (with their WAL files). It imports the Matrix session, the chats, the participants, and the messages. The import is all-or-nothing. If it fails, the window shows the error and nothing changes.
 - `--import-from <DIR>` does the same import without the window. The data directory must be new.
-- Earlier builds used `BeeperRs/index.db`, which was a copy of the Beeper Desktop database. Current builds do not read this file. You can delete it.
+- Earlier builds used a `BeeperRs` directory. On start, `beeper-rs` moves `beeper-rs.db` and `media/` from `BeeperRs` to `beeper-rs` and deletes `BeeperRs`, which also removes the old copy of the Beeper Desktop database.
 
 ## Sign-In
 
@@ -32,7 +32,7 @@
 - **Native cross-platform support**: Runs natively on Linux (Wayland and X11), macOS (AppKit / Metal), and Windows (Win32 / DirectX 12 / Vulkan) with OS-specific directory resolution, `file://` URL handling, autostart manifests, and protocol handlers.
 - **Fast compilation and linking**: Configured in `.cargo/config.toml` to use `sccache` (`rustc-wrapper = "sccache"`) across all platforms, `mold` v3 on Linux and Windows GNU targets, `rust-lld` on Windows MSVC targets, and unpacked debug info on macOS targets.
 - **Rust-native protocols and primitives**: Implements HTTP/1.1, RFC 6455 WebSockets, SHA-256, SHA-1, Base64, URL percent-encoding, RFC 3339 timestamps, CLI argument parsing, and 32x32 RGBA system tray icon rendering directly in Rust.
-- **SQLite WAL and inverted search index**: Persists state in `BeeperRs/beeper-rs.db` using SQLite Write-Ahead Logging (WAL) and indexes chats, messages, and settings in an in-memory inverted index.
+- **SQLite WAL and inverted search index**: Persists state in `beeper-rs/beeper-rs.db` using SQLite Write-Ahead Logging (WAL) and indexes chats, messages, and settings in an in-memory inverted index.
 - **CSS theme compiler**: Compiles Beeper v4 CSS themes (`variables.css`, `texts.css`, `dracula.css`, `nocturne.css`, `dark-purple.css`, and `fix-lockdown-mode-emojis.css`).
 
 ## Local Testing Guide

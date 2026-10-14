@@ -160,11 +160,11 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let home = PathBuf::from("/Users/alex");
     assert_eq!(
         resolve_desktop_data_dir(OsKind::MacOs, None, &env_vars, &home),
-        PathBuf::from("/Users/alex/Library/Application Support/BeeperRs")
+        PathBuf::from("/Users/alex/Library/Application Support/beeper-rs")
     );
     assert_eq!(
         resolve_desktop_data_dir(OsKind::MacOs, Some("dev"), &env_vars, &home),
-        PathBuf::from("/Users/alex/Library/Application Support/BeeperRs-dev")
+        PathBuf::from("/Users/alex/Library/Application Support/beeper-rs-dev")
     );
     assert_eq!(
         resolve_original_beeper_data_dir(OsKind::MacOs, None, &env_vars, &home),
@@ -172,7 +172,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     );
     assert!(is_original_beeper_dir(&PathBuf::from("/Users/alex/Library/Application Support/BeeperTexts")));
     assert!(is_original_beeper_dir(&PathBuf::from("/Users/alex/Library/Application Support/BeeperTexts-dev")));
-    assert!(!is_original_beeper_dir(&PathBuf::from("/Users/alex/Library/Application Support/BeeperRs")));
+    assert!(!is_original_beeper_dir(&PathBuf::from("/Users/alex/Library/Application Support/beeper-rs")));
     let blocked_orig = std::panic::catch_unwind(|| {
         CentralConfig::new(
             PathBuf::from("/Users/alex/Library/Application Support/BeeperTexts"),
@@ -186,7 +186,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     env_vars.insert("APPDATA".to_string(), "C:\\Users\\alex\\AppData\\Roaming".to_string());
     assert_eq!(
         resolve_desktop_data_dir(OsKind::Windows, None, &env_vars, &home),
-        PathBuf::from("C:\\Users\\alex\\AppData\\Roaming/BeeperRs")
+        PathBuf::from("C:\\Users\\alex\\AppData\\Roaming/beeper-rs")
     );
     assert_eq!(
         resolve_original_beeper_data_dir(OsKind::Windows, None, &env_vars, &home),
@@ -195,7 +195,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     env_vars.insert("XDG_CONFIG_HOME".to_string(), "/home/alex/.config".to_string());
     assert_eq!(
         resolve_desktop_data_dir(OsKind::Linux, Some("nightly"), &env_vars, &home),
-        PathBuf::from("/home/alex/.config/BeeperRs-nightly")
+        PathBuf::from("/home/alex/.config/beeper-rs-nightly")
     );
     assert_eq!(
         resolve_original_beeper_data_dir(OsKind::Linux, Some("nightly"), &env_vars, &home),
@@ -432,6 +432,35 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     std::fs::remove_dir_all(&orig_dir).unwrap();
     std::fs::remove_dir_all(&rs_dir).unwrap();
     std::fs::remove_dir_all(&fresh_dir).unwrap();
+
+    let root = temp_dir("legacy-root");
+    let (legacy, current) = (root.join("BeeperRs-dev"), root.join("beeper-rs-dev"));
+    let asset_url = {
+        let mut old = BeeperStore::from_config(CentralConfig::new(legacy.clone(), "127.0.0.1".into(), 23379, None));
+        old.finish_setup(Setup::Fresh);
+        old.store_uploaded_asset("a b.txt".into(), "text/plain".into(), b"kept").mxc_url
+    };
+    std::fs::write(legacy.join("index.db"), b"stale copy of Beeper Desktop").unwrap();
+    {
+        let db = Connection::open(legacy.join("beeper-rs.db")).unwrap();
+        let old_path = legacy.join("media").join("x").display().to_string();
+        db.execute(
+            "UPDATE assets SET json = json_set(json_remove(json, '$.disk_name'), '$.local_file_path',
+                 replace(?1, 'x', upload_id || '_a_b.txt'))",
+            [old_path],
+        )
+        .unwrap();
+        db.execute_batch("PRAGMA user_version = 1;").unwrap();
+    }
+    beeper_core::config::migrate_legacy_data_dir(&current, Some("dev"));
+    assert!(!legacy.exists() && !current.join("index.db").exists(), "the old folder and the stale copy are gone");
+    let moved = BeeperStore::from_config(CentralConfig::new(current.clone(), "127.0.0.1".into(), 23379, None));
+    assert_eq!(moved.setup, Some(Setup::Fresh), "the beeper-rs database moves to the new folder");
+    let (path, _) = moved.resolve_asset_path(&asset_url).expect("the uploaded asset is still known");
+    assert_eq!(std::fs::read(path).unwrap(), b"kept");
+    drop(moved);
+    beeper_core::config::migrate_legacy_data_dir(&current, Some("dev"));
+    std::fs::remove_dir_all(&root).unwrap();
 
     let mac_manifest = generate_os_autostart_manifest(
         OsKind::MacOs,
