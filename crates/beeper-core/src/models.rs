@@ -60,7 +60,7 @@ pub struct NetworkSpec {
     pub supports_edit_history: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BeeperStateSecrets {
     pub master_key: String,
@@ -70,7 +70,7 @@ pub struct BeeperStateSecrets {
     pub recovery_code: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BeeperStateRecord {
     pub access_token: String,
     pub device_id: String,
@@ -84,6 +84,20 @@ pub struct BeeperStateRecord {
     pub key_backup: bool,
     pub has_backed_up_code: bool,
     pub secrets: BeeperStateSecrets,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MatrixSession {
+    pub user_id: String,
+    pub access_token: String,
+    pub device_id: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Profile {
+    pub full_name: Option<String>,
+    pub username: Option<String>,
+    pub email: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -504,21 +518,8 @@ pub struct SetupSession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SetupFlowStep {
-    pub state: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub email: Option<String>,
-    #[serde(rename = "loginToken", skip_serializing_if = "Option::is_none")]
-    pub login_token: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub env: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetupStatusResponse {
     pub session: SetupSession,
-    #[serde(rename = "setupFlow", skip_serializing_if = "Option::is_none")]
-    pub setup_flow: Option<SetupFlowStep>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

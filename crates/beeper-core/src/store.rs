@@ -147,7 +147,20 @@ struct Seed {
     messages: Vec<Message>,
 }
 
-fn default_state() -> BeeperStateRecord {
+const KEY_STATE: &str = "beeperRs:state";
+const KEY_BRIDGES: &str = "beeperRs:bridges";
+const KEY_SETTINGS: &str = "beeperRs:settings";
+const KEY_SEQ: &str = "beeperRs:nextSeq";
+
+#[derive(Deserialize)]
+struct DesktopState {
+    user_id: String,
+    access_token: String,
+    device_id: String,
+    homeserver: String,
+}
+
+fn demo_state() -> BeeperStateRecord {
     BeeperStateRecord {
         access_token: DEFAULT_TOKEN.to_string(),
         device_id: DEFAULT_DEVICE_ID.to_string(),
@@ -244,7 +257,7 @@ impl BeeperStore {
              CREATE TABLE IF NOT EXISTS beeper_rs_assets (upload_id TEXT PRIMARY KEY, json TEXT NOT NULL);",
         )
         .expect("init SQLite WAL and schema");
-        let beeper_state = default_state();
+        let beeper_state = if config.demo { demo_state() } else { BeeperStateRecord::default() };
         let label = |id: &str, name: &str| Label { id: id.to_string(), name: name.to_string() };
         let mut store = Self {
             data_dir: config.data_dir.clone(),
@@ -252,8 +265,8 @@ impl BeeperStore {
             settings: config.settings.clone(),
             config,
             db: Mutex::new(conn),
-            setup_status: Self::build_setup_from_state(&beeper_state, None),
-            valid_tokens: BTreeSet::from([beeper_state.access_token.clone()]),
+            setup_status: Self::build_setup_from_state(&beeper_state),
+            valid_tokens: BTreeSet::new(),
             beeper_state,
             verifications: HashMap::new(),
             bridge_accounts: Vec::new(),
@@ -286,7 +299,7 @@ impl BeeperStore {
         store
     }
 
-    pub fn build_setup_from_state(state: &BeeperStateRecord, flow: Option<SetupFlowStep>) -> SetupStatusResponse {
+    pub fn build_setup_from_state(state: &BeeperStateRecord) -> SetupStatusResponse {
         let s = &state.secrets;
         let secrets = [
             ("masterKey", &s.master_key),
@@ -326,7 +339,6 @@ impl BeeperStore {
                 }),
                 verification: None,
             },
-            setup_flow: flow,
         }
     }
 
@@ -336,12 +348,19 @@ impl BeeperStore {
 
     pub fn persist_state_to_sqlite(&self) {
         for (k, v) in [
-            ("beeperState", serde_json::to_string(&self.beeper_state)),
-            ("bridgeAccounts", serde_json::to_string(&self.bridge_accounts)),
-            ("beeperSettings", serde_json::to_string(&self.settings)),
+            (KEY_STATE, serde_json::to_string(&self.beeper_state)),
+            (KEY_BRIDGES, serde_json::to_string(&self.bridge_accounts)),
+            (KEY_SETTINGS, serde_json::to_string(&self.settings)),
         ] {
             self.exec("INSERT OR REPLACE INTO key_values (key, value) VALUES (?1, ?2)", params![k, v.unwrap()]);
         }
+    }
+
+    fn persist_seq(&self) {
+        self.exec(
+            "INSERT OR REPLACE INTO key_values (key, value) VALUES (?1, ?2)",
+            params![KEY_SEQ, self.next_seq.to_string()],
+        );
     }
 
     fn persist_chat(&self, idx: usize) {
@@ -361,7 +380,7 @@ impl BeeperStore {
     }
 
     fn load_from_sqlite_or_seed(&mut self) {
-        let (state, bridges, settings, seq, chats, messages, assets) = {
+        let (legacy, state, desktop, bridges, settings, seq, chats, messages, assets) = {
             let conn = self.db.lock().unwrap();
             let kv = |k: &str| {
                 conn.query_row("SELECT value FROM key_values WHERE key = ?1", [k], |r| r.get::<_, String>(0))
@@ -373,27 +392,48 @@ impl BeeperStore {
                 stmt.query_map([], |r| r.get(0)).expect("query rows").map(|r| r.expect("read row")).collect()
             };
             (
-                kv("beeperState"),
-                kv("bridgeAccounts"),
                 kv("beeperSettings"),
-                kv("nextSeq"),
+                kv(KEY_STATE),
+                kv("beeperState"),
+                kv(KEY_BRIDGES),
+                kv(KEY_SETTINGS),
+                kv(KEY_SEQ),
                 rows("SELECT json FROM beeper_rs_chats"),
                 rows("SELECT json FROM beeper_rs_messages ORDER BY sort_key ASC"),
                 rows("SELECT json FROM beeper_rs_assets"),
             )
         };
-        if let Some(s) = state {
-            self.beeper_state = serde_json::from_str(&s).expect("parse stored beeperState");
-            self.valid_tokens.insert(self.beeper_state.access_token.clone());
-            self.setup_status = Self::build_setup_from_state(&self.beeper_state, None);
+        assert!(
+            legacy.is_none(),
+            "{} was written by an older beeper-rs build. Delete {} and start beeper-rs again.",
+            self.config.db_path.display(),
+            self.data_dir.display()
+        );
+        match (state, desktop) {
+            (Some(s), _) => self.beeper_state = serde_json::from_str(&s).expect("parse stored beeper-rs state"),
+            (None, Some(d)) => {
+                let d: DesktopState = serde_json::from_str(&d).expect("parse Beeper Desktop beeperState");
+                self.beeper_state = BeeperStateRecord {
+                    user_id: d.user_id,
+                    access_token: d.access_token,
+                    device_id: d.device_id,
+                    homeserver: d.homeserver,
+                    ..BeeperStateRecord::default()
+                };
+            }
+            (None, None) => {}
         }
+        if self.signed_in() {
+            self.valid_tokens.insert(self.beeper_state.access_token.clone());
+        }
+        self.setup_status = Self::build_setup_from_state(&self.beeper_state);
         if let Some(b) = bridges {
-            self.bridge_accounts = serde_json::from_str(&b).expect("parse stored bridgeAccounts");
+            self.bridge_accounts = serde_json::from_str(&b).expect("parse stored bridge accounts");
         }
         if let Some(s) = settings {
             self.settings = BeeperSettings {
                 pas_port: self.settings.pas_port,
-                ..serde_json::from_str(&s).expect("parse stored beeperSettings")
+                ..serde_json::from_str(&s).expect("parse stored settings")
             };
         }
         for a in assets {
@@ -401,27 +441,101 @@ impl BeeperStore {
             self.assets_by_mxc.insert(asset.mxc_url.clone(), asset.upload_id.clone());
             self.assets.insert(asset.upload_id.clone(), asset);
         }
-        let seeded = chats.is_empty();
-        if seeded {
-            assert!(messages.is_empty(), "stored messages without chats");
+        let fresh = chats.is_empty();
+        assert!(!fresh || messages.is_empty(), "stored messages without chats");
+        if fresh && self.config.demo {
             self.seed_default_workspace();
-        } else {
-            for c in chats {
-                self.push_chat(serde_json::from_str(&c).expect("parse stored chat"), false);
-            }
-            for m in messages {
-                self.push_message(serde_json::from_str(&m).expect("parse stored message"), false);
-            }
         }
-        assert!(self.chat_idx_by_id.contains_key(NOTE_CHAT_ID), "store has no Note to self chat");
-        self.rebuild_accounts_from_bridges();
+        for c in chats {
+            self.push_chat(serde_json::from_str(&c).expect("parse stored chat"), false);
+        }
+        for m in messages {
+            self.push_message(serde_json::from_str(&m).expect("parse stored message"), false);
+        }
         self.next_seq = match seq {
             Some(s) => s.parse().expect("parse stored nextSeq"),
             None => {
-                assert!(seeded, "stored chats without a stored nextSeq");
+                assert!(fresh, "stored chats without a stored nextSeq");
                 1000 + self.messages.len() as u64 + self.chats.len() as u64
             }
         };
+        self.persist_seq();
+        if self.signed_in() {
+            self.ensure_note_chat(&Profile::default());
+        }
+        self.rebuild_accounts_from_bridges();
+    }
+
+    pub fn signed_in(&self) -> bool {
+        !self.beeper_state.access_token.is_empty()
+    }
+
+    pub fn sign_in(&mut self, session: MatrixSession, homeserver: String, profile: &Profile) {
+        assert!(!self.signed_in(), "sign in while already signed in as {}", self.beeper_state.user_id);
+        self.beeper_state = BeeperStateRecord {
+            user_id: session.user_id,
+            access_token: session.access_token,
+            device_id: session.device_id,
+            homeserver,
+            ..BeeperStateRecord::default()
+        };
+        self.valid_tokens.insert(self.beeper_state.access_token.clone());
+        self.setup_status = Self::build_setup_from_state(&self.beeper_state);
+        self.persist_state_to_sqlite();
+        self.ensure_note_chat(profile);
+        self.rebuild_accounts_from_bridges();
+        self.emit_ws(
+            "chat.upserted",
+            NOTE_CHAT_ID,
+            None,
+            Some(self.chats[self.chat_idx_by_id[NOTE_CHAT_ID]].clone()),
+            None,
+        );
+    }
+
+    fn ensure_note_chat(&mut self, profile: &Profile) {
+        if self.chat_idx_by_id.contains_key(NOTE_CHAT_ID) {
+            return;
+        }
+        let user_id = self.beeper_state.user_id.clone();
+        let local = user_id.trim_start_matches('@').split(':').next().expect("Matrix user ID").to_string();
+        let me = User {
+            id: user_id,
+            full_name: Some(profile.full_name.clone().unwrap_or_else(|| local.clone())),
+            username: Some(profile.username.clone().unwrap_or(local)),
+            email: profile.email.clone(),
+            phone_number: None,
+            img_url: None,
+            is_self: Some(true),
+            cannot_message: Some(false),
+            custom_nickname: None,
+        };
+        let chat = Chat {
+            id: NOTE_CHAT_ID.into(),
+            account_id: "hungryserv".into(),
+            participants: ChatParticipants { has_more: false, items: vec![me], total: 1 },
+            title: "Note to self".into(),
+            chat_type: "single".into(),
+            unread_count: 0,
+            description: None,
+            draft: None,
+            is_archived: Some(false),
+            is_marked_unread: Some(false),
+            is_muted: Some(false),
+            is_pinned: Some(true),
+            is_low_priority: Some(false),
+            label_ids: Vec::new(),
+            last_activity: Some(now_rfc3339_millis()),
+            last_read_message_sort_key: None,
+            local_chat_id: Some("local_note_self".into()),
+            merge: None,
+            merged_into_chat_id: None,
+            preview: None,
+            reminder: None,
+            chat_theme: None,
+            flags: 0,
+        };
+        self.push_chat(chat, true);
     }
 
     fn seed_default_workspace(&mut self) {
@@ -447,13 +561,12 @@ impl BeeperStore {
     }
 
     pub fn rebuild_accounts_from_bridges(&mut self) {
-        let me = self.me().clone();
         self.accounts = self
             .bridge_accounts
             .iter()
             .map(|b| Account {
                 account_id: b.account_id.clone(),
-                user: User { id: format!("@self_{}:beeper.com", b.bridge_id), ..me.clone() },
+                user: User { id: format!("@self_{}:beeper.com", b.bridge_id), ..self.me().clone() },
             })
             .collect();
     }
@@ -522,10 +635,7 @@ impl BeeperStore {
 
     pub fn next_id(&mut self, prefix: &str) -> String {
         self.next_seq += 1;
-        self.exec(
-            "INSERT OR REPLACE INTO key_values (key, value) VALUES ('nextSeq', ?1)",
-            params![self.next_seq.to_string()],
-        );
+        self.persist_seq();
         format!("{prefix}_{}", self.next_seq)
     }
 

@@ -23,7 +23,12 @@ Options:
   --profile <PROFILE>
   --data-dir <DIR>
   --import-from <DIR>
-  --headless";
+  --demo        Start with demo chats instead of a signed-out account
+  --headless
+
+Environment:
+  BEEPER_API_URL      Beeper cloud API (default https://api.beeper.com)
+  BEEPER_MATRIX_URL   Matrix homeserver (default https://matrix.beeper.com)";
 
 enum Command {
     Gui,
@@ -36,7 +41,7 @@ fn main() {
     let mut host = std::env::var("BEEPER_PAS_HOST").unwrap_or_else(|_| DEFAULT_PAS_HOST.to_string());
     let mut port: u16 =
         std::env::var("BEEPER_PAS_PORT").map_or(DEFAULT_PAS_PORT, |v| v.parse().expect("BEEPER_PAS_PORT is a port"));
-    let (mut profile, mut data_dir, mut import_from, mut command) = (None, None, None, Command::Gui);
+    let (mut profile, mut data_dir, mut import_from, mut command, mut demo) = (None, None, None, Command::Gui, false);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| panic!("missing value for {arg}"));
@@ -49,6 +54,7 @@ fn main() {
             "--profile" => profile = Some(value()),
             "--data-dir" => data_dir = Some(PathBuf::from(value())),
             "--import-from" => import_from = Some(PathBuf::from(value())),
+            "--demo" => demo = true,
             "--version" | "-V" => return println!("{APP_NAME} {APP_VERSION}"),
             "--help" | "-h" => return println!("{HELP}"),
             other => panic!("unexpected argument: {other}"),
@@ -70,7 +76,14 @@ fn main() {
     }
     let source =
         import_from.or_else(|| Some(current_original_beeper_data_dir(profile.as_deref())).filter(|d| d.exists()));
-    let cfg = CentralConfig::new(data_dir, host.clone(), port, profile).with_source_beeper_dir(source);
+    let mut cfg = CentralConfig::new(data_dir, host.clone(), port, profile).with_source_beeper_dir(source);
+    cfg.demo = demo;
+    if let Ok(url) = std::env::var("BEEPER_API_URL") {
+        cfg.api_url = url;
+    }
+    if let Ok(url) = std::env::var("BEEPER_MATRIX_URL") {
+        cfg.homeserver = url;
+    }
     let store: SharedStore = Arc::new(RwLock::new(BeeperStore::from_config(cfg)));
     let listener = rt.block_on(tokio::net::TcpListener::bind((host.as_str(), port))).expect("bind local PAS port");
     if let Command::Serve = command {

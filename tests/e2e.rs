@@ -1,6 +1,6 @@
 use beeper_api::{
     client::{extract_state_from_index_db, BeeperClient},
-    http::StatusCode,
+    http::{read_message, StatusCode},
     server::serve_http,
 };
 use beeper_core::{
@@ -11,10 +11,11 @@ use beeper_core::{
         path_to_file_url, resolve_desktop_data_dir, resolve_original_beeper_data_dir, DisplayServerKind, OsKind,
         SystemTrayState,
     },
-    store::{BeeperStore, SharedStore},
+    store::{BeeperStore, SharedStore, NOTE_CHAT_ID},
     theme::{parse_css_px, ResolvedTheme},
 };
 use beeper_ui::{
+    login::{LoginMsg, Outcome, Screen},
     search_settings_catalog,
     style::{fw, icon, ALL_FONTS},
     write_rgba_png, BeeperGuiApp, InboxTab, SettingsTab, UiMessage,
@@ -23,9 +24,11 @@ use iced::font::Weight;
 use iced::{Size, Theme};
 use iced_test::{emulator, simulator, Emulator, Instruction};
 use rusqlite::{params, Connection};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use tokio::io::AsyncWriteExt;
 use tokio::time::{timeout, Duration};
 
 fn temp_dir(name: &str) -> PathBuf {
@@ -46,12 +49,72 @@ async fn wait_for(path: &std::path::Path) {
     panic!("{} did not appear", path.display());
 }
 
-async fn spawn_e2e_beeper_instance(profile_suffix: &str) -> (PathBuf, u16, SharedStore, BeeperClient) {
+async fn fake_beeper_cloud() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                while let Some(m) = read_message(&mut stream, &mut buf).await {
+                    let path = m.start_line.split(' ').nth(1).unwrap().to_string();
+                    let b: Value = serde_json::from_slice(&m.body).unwrap_or(Value::Null);
+                    let auth = m.header("authorization").unwrap_or("");
+                    let guest = auth == "Bearer BEEPER-PRIVATE-API-PLEASE-DONT-USE";
+                    let (code, reply) = match (path.as_str(), b["response"].as_str()) {
+                        ("/user/login", _) if guest => (201, json!({ "request": "req_1", "type": ["email"] })),
+                        ("/user/login/email", _) if guest && b["request"] == "req_1" && b["supportsOTP"] == true => {
+                            (200, json!({}))
+                        }
+                        ("/user/login/response", Some("123456")) if guest => (200, json!({ "token": "jwt_alex" })),
+                        ("/user/login/response", Some("654321")) if guest => {
+                            (200, json!({ "leadToken": "lead_1", "usernameSuggestions": ["newbie"] }))
+                        }
+                        ("/user/login/response", _) => (401, json!({ "error": "Invalid code" })),
+                        ("/user/register", _)
+                            if guest && b["leadToken"] == "lead_1" && b["userLoginRequestId"] == "req_1" =>
+                        {
+                            (200, json!({ "token": format!("jwt_{}", b["username"].as_str().unwrap()) }))
+                        }
+                        ("/_matrix/client/v3/login", _) if b["type"] == "org.matrix.login.jwt" => {
+                            let user = b["token"].as_str().unwrap().trim_start_matches("jwt_");
+                            let id = format!("@{user}:beeper.com");
+                            (200, json!({ "user_id": id, "access_token": format!("syt_{user}"), "device_id": "RSDEV" }))
+                        }
+                        ("/whoami", _) if auth.starts_with("Bearer syt_") => {
+                            let user = auth.trim_start_matches("Bearer syt_");
+                            let info = json!({ "fullName": format!("{user} Real"), "username": user, "email": format!("{user}@example.com") });
+                            (200, json!({ "userInfo": info }))
+                        }
+                        _ => (404, json!({ "error": format!("unexpected {path}") })),
+                    };
+                    let body = reply.to_string();
+                    let head = format!(
+                        "HTTP/1.1 {code} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+                        body.len()
+                    );
+                    stream.write_all(format!("{head}{body}").as_bytes()).await.unwrap();
+                }
+            });
+        }
+    });
+    url
+}
+
+async fn spawn_e2e_beeper_instance(
+    profile_suffix: &str,
+    cloud: Option<&str>,
+) -> (PathBuf, u16, SharedStore, BeeperClient) {
     let data_dir = temp_dir(&format!("BeeperRs_e2e_{profile_suffix}"));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let cfg = CentralConfig::new(data_dir.clone(), "127.0.0.1".to_string(), port, None);
+    let mut cfg = CentralConfig::new(data_dir.clone(), "127.0.0.1".to_string(), port, None);
+    cfg.demo = cloud.is_none();
+    if let Some(url) = cloud {
+        (cfg.api_url, cfg.homeserver) = (url.to_string(), url.to_string());
+    }
 
     let store: SharedStore = Arc::new(RwLock::new(BeeperStore::from_config(cfg)));
     let token = store.read().unwrap().beeper_state.access_token.clone();
@@ -172,7 +235,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
             )
             .unwrap();
         let real_beeper_state_json = r#"{"access_token":"bp_tok_from_original_beeper","device_id":"ORIG_DEV_01","user_id":"@imported_from_original:beeper.com","homeserver":"https://matrix.beeper.com","first_sync_done":true,"initialized":true,"secret_storage":true,"cross_signing":true,"verified":true,"key_backup":true,"has_backed_up_code":true,"secrets":{"master_key":"mk_orig","self_signing_key":"ssk_orig","user_signing_key":"usk_orig","megolm_backup_key":"mbk_orig","recovery_code":"EsTc orig"}}"#;
-        let real_bridges_json = r#"[{"accountID":"acc_whatsapp","bridgeID":"whatsapp","bridgeType":"whatsapp","isRunning":true,"loginID":"login_wa_orig","mode":"on_device","networkName":"WhatsApp","state":"CONNECTED"},{"accountID":"acc_instagram","bridgeID":"instagram","bridgeType":"meta","isRunning":true,"loginID":"login_ig_orig","mode":"cloud","networkName":"Instagram","state":"CONNECTED"}]"#;
+        let real_bridges_json = r#"[{"bridgeID":"whatsapp","accountID":"wa_1","displayName":"WhatsApp","bridge":{"provider":"cloud","type":"whatsapp","state":"RUNNING"},"network":"WhatsApp","profile":{},"state":{"state":"CONNECTED"}},{"bridgeID":"local-signal","accountID":"sig_1","displayName":"Signal","bridge":{"provider":"local","type":"signal","state":"RUNNING"},"network":"Signal","profile":{},"state":{"state":"CONNECTED"}}]"#;
         orig_conn
             .execute(
                 "INSERT INTO key_values (key, value) VALUES (?1, ?2)",
@@ -189,11 +252,8 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let orig_db_snapshot = std::fs::read(orig_dir.join("index.db")).unwrap();
 
     let (ext_orig_state, ext_orig_bridges) = extract_state_from_index_db(&orig_dir);
-    assert_eq!(ext_orig_state.user_id, "@imported_from_original:beeper.com");
-    assert!(!ext_orig_state.secrets.master_key.is_empty());
-    assert_eq!(ext_orig_bridges.len(), 2);
-    assert_eq!(ext_orig_bridges[0].bridge_id, "whatsapp");
-    assert_eq!(ext_orig_bridges[1].bridge_id, "instagram");
+    assert_eq!(ext_orig_state["user_id"], "@imported_from_original:beeper.com");
+    assert_eq!(ext_orig_bridges[1]["bridgeID"], "local-signal");
 
     let isolated_cfg = CentralConfig::new(isolated_copy_dir.clone(), "127.0.0.1".to_string(), 23379, None)
         .with_source_beeper_dir(Some(orig_dir.clone()));
@@ -203,23 +263,23 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert!(!isolated_copy_dir.join("GPUCache").exists());
     assert!(isolated_copy_dir.join("media").join("orig_sample.bin").exists());
     assert_eq!(isolated_store.beeper_state.user_id, "@imported_from_original:beeper.com");
-    let (_, sent_id, _) = isolated_store
-        .send_message("!wa_eric:beeper.com", Some("Mutating isolated copy only".to_string()), None, None)
-        .unwrap();
+    assert_eq!(isolated_store.beeper_state.access_token, "bp_tok_from_original_beeper");
+    assert!(isolated_store.valid_tokens.contains("bp_tok_from_original_beeper"));
+    assert!(isolated_store.bridge_accounts.is_empty(), "Beeper bridgeAccounts are not imported");
+    assert_eq!(isolated_store.chats.len(), 1, "an imported account starts with only Note to self");
+    let (_, sent_id, _) =
+        isolated_store.send_message(NOTE_CHAT_ID, Some("Mutating isolated copy only".to_string()), None, None).unwrap();
     let orig_db_after = std::fs::read(orig_dir.join("index.db")).unwrap();
     assert_eq!(orig_db_snapshot, orig_db_after, "original BeeperTexts/index.db must never be modified");
-    let first = isolated_store.messages[0].clone();
-    isolated_store.delete_message(&first.chat_id, &first.id).unwrap();
+    isolated_store.delete_message(NOTE_CHAT_ID, &sent_id).unwrap();
     drop(isolated_store);
     let mut reopened =
         BeeperStore::from_config(CentralConfig::new(isolated_copy_dir.clone(), "127.0.0.1".into(), 23379, None));
     let (_, after_restart_id, _) =
-        reopened.send_message("!wa_eric:beeper.com", Some("After restart".to_string()), None, None).unwrap();
+        reopened.send_message(NOTE_CHAT_ID, Some("After restart".to_string()), None, None).unwrap();
     assert_ne!(sent_id, after_restart_id, "message IDs stay unique across restarts");
-    let eric_keys: Vec<&str> = reopened.chat_msg_indices["!wa_eric:beeper.com"]
-        .iter()
-        .map(|&i| reopened.messages[i].sort_key.as_str())
-        .collect();
+    let eric_keys: Vec<&str> =
+        reopened.chat_msg_indices[NOTE_CHAT_ID].iter().map(|&i| reopened.messages[i].sort_key.as_str()).collect();
     assert!(eric_keys.windows(2).all(|w| w[0] < w[1]), "new messages sort after stored ones: {eric_keys:?}");
     drop(reopened);
     std::fs::remove_dir_all(&orig_dir).unwrap();
@@ -244,12 +304,9 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     );
     assert!(win_manifest.content.contains("beeper-rs.exe"));
 
-    let (data_dir, port, store, mut client) = spawn_e2e_beeper_instance("master").await;
-
-    let (extracted_state, extracted_bridges) = extract_state_from_index_db(&data_dir);
-    assert_eq!(extracted_state.user_id, "@alex:beeper.com");
-    assert!(extracted_state.verified);
-    assert_eq!(extracted_bridges.len(), 6);
+    let (data_dir, port, store, mut client) = spawn_e2e_beeper_instance("master", None).await;
+    assert_eq!(store.read().unwrap().beeper_state.user_id, "@alex:beeper.com");
+    assert_eq!(store.read().unwrap().bridge_accounts.len(), 6);
 
     let info = client.info().await;
     assert_eq!(info.app.bundle_id, APP_BUNDLE_ID);
@@ -259,9 +316,76 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let oauth_token = client.oauth_pkce_login("Beeper Raycast E2E", "super_secret_pkce_verifier_2026_beeper_rs").await;
     assert!(oauth_token.starts_with("bp_oauth_tok_"));
 
-    let email_setup = client.setup_email_login("alex@beeper.com", "849201").await;
-    assert_eq!(email_setup.session.state, "needs_verification");
-    assert!(!email_setup.session.e2ee.verified);
+    assert_eq!(client.setup_step("start", json!({})).await.0, StatusCode::CONFLICT, "demo account is signed in");
+    let cloud = fake_beeper_cloud().await;
+    for (name, code, user) in [("login", "123456", "alex"), ("register", "654321", "newbie")] {
+        let (dir, _, st, c) = spawn_e2e_beeper_instance(name, Some(&cloud)).await;
+        assert!(!st.read().unwrap().signed_in() && st.read().unwrap().chats.is_empty(), "fresh install is signed out");
+        let (status, start) = c.setup_step("start", json!({})).await;
+        assert_eq!((status, &start["signInMethods"]), (StatusCode::OK, &json!(["email"])));
+        let id = start["setupRequestID"].clone();
+        let email = json!({ "setupRequestID": id, "email": format!("{user}@example.com") });
+        assert_eq!(c.setup_step("email", email).await.0, StatusCode::NO_CONTENT);
+        let (bad, err) = c.setup_step("response", json!({ "setupRequestID": id, "response": "000000" })).await;
+        assert_eq!((bad, err["error"].as_str()), (StatusCode::UNAUTHORIZED, Some("invalid_sign_in_code")));
+        let (_, mut done) = c.setup_step("response", json!({ "setupRequestID": id, "response": code })).await;
+        if name == "register" {
+            assert_eq!(
+                (done["registrationRequired"].as_bool(), &done["usernameSuggestions"][0]),
+                (Some(true), &json!(user))
+            );
+            let body =
+                json!({ "setupRequestID": id, "leadToken": done["leadToken"], "username": user, "acceptTerms": true });
+            done = c.setup_step("register", body).await.1;
+        }
+        assert_eq!(done["matrix"]["userID"], format!("@{user}:beeper.com"));
+        assert_eq!(done["matrix"]["accessToken"], format!("syt_{user}"));
+        assert_eq!(c.setup_step("start", json!({})).await.0, StatusCode::CONFLICT);
+        assert_eq!(st.read().unwrap().me().full_name.as_deref(), Some(format!("{user} Real").as_str()));
+        drop((st, c));
+        let mut cfg = CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23380, None);
+        cfg.api_url.clone_from(&cloud);
+        let again = BeeperStore::from_config(cfg);
+        assert_eq!(again.beeper_state.access_token, format!("syt_{user}"), "sign-in survives a restart");
+        assert!(again.valid_tokens.contains(&format!("syt_{user}")) && again.chats.len() == 1);
+        drop(again);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    let (login_dir, _, login_store, _) = spawn_e2e_beeper_instance("gui_login", Some(&cloud)).await;
+    let mut login = BeeperGuiApp::new(login_store.clone(), false);
+    assert!(login.selected_chat_id.is_none());
+    login.login_window = Some(iced::window::Id::unique());
+    let shows = |app: &BeeperGuiApp, labels: &[&str]| {
+        let mut sim = simulator(app.view_login());
+        for label in labels {
+            assert!(sim.find(*label).is_ok(), "login window shows {label}");
+        }
+    };
+    shows(&login, &["Continue with Google", "Continue with Email"]);
+    let _ = login.update(UiMessage::Login(LoginMsg::Show(Screen::Email)));
+    let _ = login.update(UiMessage::Login(LoginMsg::SubmitEmail));
+    shows(&login, &["Enter your Email", "Next", "Please enter your email."]);
+    let _ = login.update(UiMessage::Login(LoginMsg::Email("alex@example.com".into())));
+    let _ = login.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Requested("req_1".into())))));
+    assert_eq!(login.login.screen, Screen::Code);
+    shows(&login, &["Enter Code", "Check alex@example.com\nfor your login code", "Open Email"]);
+    let _ = login.update(UiMessage::Login(LoginMsg::Code("12 34 56".into())));
+    assert_eq!(login.login.code, "123456");
+    let _ = login.update(UiMessage::Login(LoginMsg::Done(Err("Invalid code".into()))));
+    shows(&login, &["Invalid code"]);
+    let gui_cloud = cloud.clone();
+    let (session, profile) = tokio::task::spawn_blocking(move || {
+        beeper_core::cloud::Cloud::new(&gui_cloud, &gui_cloud).finish("jwt_alex").expect("fake cloud sign-in")
+    })
+    .await
+    .unwrap();
+    let _ = login.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Session(session, profile)))));
+    assert!(login.login_window.is_none() && login.main_window.is_some());
+    assert_eq!(login.selected_chat_id.as_deref(), Some(NOTE_CHAT_ID));
+    assert!(simulator(login.view_main()).find("Note to self").is_ok());
+    drop((login, login_store));
+    std::fs::remove_dir_all(login_dir).unwrap();
 
     let sas_verified = client.verify_device_sas().await;
     assert_eq!(sas_verified["session"]["state"], "ready");
@@ -465,6 +589,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let data = temp_dir(&format!("BeeperRs_gui_{port}"));
         let status = std::process::Command::new(bin_exe)
             .args(["--data-dir", data.to_str().unwrap(), "--port", port])
+            .args(envs.iter().any(|e| e.0 == "WAYLAND_DISPLAY").then_some("--demo"))
             .env_remove(hide)
             .env("ICED_BACKEND", "tiny-skia")
             .envs(envs.iter().copied())
@@ -517,7 +642,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     stop(xvfb);
     assert!(x_status.success(), "beeper-rs GUI on Xvfb :99 exited cleanly");
 
-    for (png, min) in [(wl_png, 25_000), (wl_settings_png, 15_000), (x_png, 25_000)] {
+    for (png, min) in [(wl_png, 25_000), (wl_settings_png, 15_000), (x_png, 15_000)] {
         assert!(std::fs::metadata(png).expect("screenshot PNG is written").len() > min, "{png} is too small");
     }
     for dir in [wl_runtime, fb_dir, data_dir] {
