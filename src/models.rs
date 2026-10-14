@@ -895,6 +895,30 @@ pub enum ThemeChoice {
     Custom,
 }
 
+impl ThemeChoice {
+    pub const fn all() -> [Self; 6] {
+        [
+            Self::TextsLight,
+            Self::TextsDark,
+            Self::Dracula,
+            Self::Nocturne,
+            Self::DarkPurple,
+            Self::Custom,
+        ]
+    }
+
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::TextsLight => "Texts Light",
+            Self::TextsDark => "Texts Dark",
+            Self::Dracula => "Dracula",
+            Self::Nocturne => "Nocturne",
+            Self::DarkPurple => "Dark Purple",
+            Self::Custom => "Custom CSS",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LanguageChoice {
     English,

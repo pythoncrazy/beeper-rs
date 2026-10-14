@@ -1,12 +1,10 @@
 use beeper_rs::{
     client::{extract_state_from_index_db, BeeperClient},
-    config::{
-        CentralConfig, APP_BUNDLE_ID, APP_NAME, APP_VERSION, DEFAULT_PAS_HOST, DEFAULT_PAS_PORT,
-    },
-    platform::{build_tray_icon_rgba, current_desktop_data_dir, current_original_beeper_data_dir},
+    config::{CentralConfig, APP_NAME, APP_VERSION, DEFAULT_PAS_HOST, DEFAULT_PAS_PORT},
+    platform::{current_desktop_data_dir, current_original_beeper_data_dir},
     server::{build_router, serve_http, SharedStore},
     store::BeeperStore,
-    ui::BeeperGuiApp,
+    ui::run_native_gui,
 };
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -31,8 +29,7 @@ struct CliArgs {
 }
 
 fn parse_args() -> CliArgs {
-    let mut host =
-        std::env::var("BEEPER_PAS_HOST").unwrap_or_else(|_| DEFAULT_PAS_HOST.to_string());
+    let mut host = std::env::var("BEEPER_PAS_HOST").unwrap_or_else(|_| DEFAULT_PAS_HOST.to_string());
     let mut port = std::env::var("BEEPER_PAS_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
@@ -97,8 +94,7 @@ fn parse_args() -> CliArgs {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let cli = parse_args();
     let data_dir = cli
         .data_dir
@@ -109,9 +105,14 @@ async fn main() {
     let cfg = CentralConfig::new(data_dir.clone(), cli.host, cli.port, cli.profile)
         .with_source_beeper_dir(source_beeper_dir);
 
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+
     match cli.command {
         Command::Info => {
-            let info = BeeperClient::new(cli.base_url, "").info().await;
+            let info = rt.block_on(BeeperClient::new(cli.base_url, "").info());
             println!("{}", serde_json::to_string_pretty(&info).unwrap());
             return;
         }
@@ -136,46 +137,33 @@ async fn main() {
     let app_router = build_router(store.clone());
 
     if cli.headless || matches!(cli.command, Command::Serve) {
-        let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
-        serve_http(listener, app_router).await;
-    } else {
-        let listener = match tokio::net::TcpListener::bind(&bind_addr).await {
-            Ok(l) => l,
-            Err(_) => {
-                let fallback = tokio::net::TcpListener::bind(format!("{host}:0"))
-                    .await
-                    .expect("bind local ephemeral port");
-                let actual_port = fallback.local_addr().unwrap().port();
-                let mut st = store.write().unwrap();
-                st.config.port = actual_port;
-                st.settings.pas_port = actual_port;
-                fallback
-            }
-        };
-        tokio::spawn(async move {
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
             serve_http(listener, app_router).await;
         });
-        let (icon_rgba, icon_w, icon_h) = {
-            let st = store.read().unwrap();
-            build_tray_icon_rgba(st.total_unread_chats(), false)
-        };
-        let native_options = eframe::NativeOptions {
-            viewport: eframe::egui::ViewportBuilder::default()
-                .with_title(APP_NAME)
-                .with_inner_size([1240.0, 820.0])
-                .with_min_inner_size([720.0, 480.0])
-                .with_icon(eframe::egui::IconData {
-                    rgba: icon_rgba,
-                    width: icon_w,
-                    height: icon_h,
-                }),
-            ..Default::default()
-        };
-        eframe::run_native(
-            APP_BUNDLE_ID,
-            native_options,
-            Box::new(move |_cc| Ok(Box::new(BeeperGuiApp::new(store, true)))),
-        )
-        .unwrap();
+    } else {
+        let store_for_server = store.clone();
+        std::thread::spawn(move || {
+            rt.block_on(async move {
+                let listener = tokio::net::TcpListener::bind(&bind_addr)
+                    .await
+                    .or_else(|_| {
+                        std::net::TcpListener::bind(format!("{host}:0"))
+                            .and_then(|std_l| {
+                                std_l.set_nonblocking(true)?;
+                                tokio::net::TcpListener::from_std(std_l)
+                            })
+                    })
+                    .expect("bind local PAS port");
+                let actual_port = listener.local_addr().unwrap().port();
+                {
+                    let mut st = store_for_server.write().unwrap();
+                    st.config.port = actual_port;
+                    st.settings.pas_port = actual_port;
+                }
+                serve_http(listener, app_router).await;
+            });
+        });
+        drop(run_native_gui(store));
     }
 }

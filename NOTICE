@@ -20,7 +20,7 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMA
 ## 4. Third-Party Open-Source Assets
 
 This repository distributes original software under the MIT License.
-This repository also includes third-party open-source assets under their respective licenses:
+This repository also includes third-party open-source assets and font files under their respective licenses:
 
 ### A. Beeper Desktop API Specification (`assets/openapi.json`)
 
@@ -41,3 +41,12 @@ Source repository: `https://github.com/beeper/themes`
 License: Apache License, Version 2.0 (`http://www.apache.org/licenses/LICENSE-2.0`)
 
 The files in `assets/themes/` come from the `beeper/themes` repository and are licensed under the Apache License, Version 2.0.
+
+### C. Bundled Font Assets (`assets/fonts/*.ttf`) and Iced UI Framework
+
+Source repository: `https://github.com/pythoncrazy/navify`
+
+- **Figtree (`Figtree-Regular.ttf`, `Figtree-Medium.ttf`, `Figtree-Bold.ttf`, `Figtree-Black.ttf`)**: Copyright Erik Kennedy (`https://github.com/erikdkennedy/figtree`), licensed under the SIL Open Font License, Version 1.1 (`https://scripts.sil.org/OFL`).
+- **Lucide (`lucide.ttf`)**: Copyright Lucide Contributors (`https://lucide.dev`), licensed under the ISC License.
+- **Phosphor Icons (`Phosphor-Fill.ttf`)**: Copyright Phosphor Icons (`https://phosphoricons.com`), licensed under the MIT License.
+- **Iced (`iced`, `iced_test`)**: Copyright Héctor Ramón (`https://github.com/iced-rs/iced`), licensed under the MIT License.
