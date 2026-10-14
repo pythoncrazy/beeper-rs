@@ -134,24 +134,27 @@ const T: bool = true;
 const F: bool = false;
 
 #[rustfmt::skip]
-pub const NETWORK_SPECS: [NetworkSpec; 17] = [
+pub const NETWORK_SPECS: [NetworkSpec; 20] = [
     net(Beeper, "hungryserv", "hungryserv", "Beeper", [37, 97, 251], [F, T, F, T, T]),
     net(WhatsApp, "whatsapp", "whatsapp", "WhatsApp", [37, 211, 102], [T, T, F, T, T]),
-    net(Messenger, "facebook", "meta", "FB Messenger", [0, 132, 255], [T, T, F, T, T]),
-    net(Instagram, "instagram", "meta", "Instagram", [225, 48, 108], [T, T, F, T, T]),
+    net(TwitterX, "twitter", "twitter", "X", [29, 155, 240], [T, T, F, F, F]),
     net(Telegram, "telegram", "telegram", "Telegram", [38, 165, 228], [T, T, F, F, T]),
-    net(Signal, "signal", "signal", "Signal", [58, 118, 240], [T, T, F, T, F]),
-    net(Viber, "viber", "viber", "Viber", [115, 96, 242], [T, F, F, T, T]),
-    net(IMessage, "imessage", "imessage", "iMessage", [52, 199, 89], [T, T, T, T, F]),
-    net(GoogleMessages, "gmessages", "gmessages", "Google Messages", [26, 115, 232], [T, T, T, T, F]),
-    net(GoogleVoice, "gvoice", "gvoice", "Google Voice", [15, 157, 88], [F, T, T, F, F]),
-    net(GoogleChat, "googlechat", "googlechat", "Google Chat", [0, 172, 71], [F, T, F, F, F]),
-    net(TwitterX, "twitter", "twitter", "Twitter / X", [29, 155, 240], [T, T, F, F, F]),
     net(Slack, "slack", "slack", "Slack", [224, 30, 90], [T, T, F, F, F]),
     net(Discord, "discord", "discord", "Discord", [88, 101, 242], [T, T, F, F, T]),
+    net(Messenger, "facebook", "meta", "Facebook", [0, 132, 255], [T, T, F, T, T]),
+    net(Instagram, "instagram", "meta", "Instagram", [225, 48, 108], [T, T, F, T, T]),
     net(LinkedIn, "linkedin", "linkedin", "LinkedIn", [10, 102, 194], [T, T, F, F, F]),
+    net(GoogleMessages, "gmessages", "gmessages", "Google Messages", [26, 115, 232], [T, T, T, T, F]),
+    net(Signal, "signal", "signal", "Signal", [58, 118, 240], [T, T, F, T, F]),
+    net(GoogleChat, "googlechat", "googlechat", "Google Chat", [0, 172, 71], [F, T, F, F, F]),
     net(Line, "line", "line", "LINE", [6, 199, 85], [T, F, F, T, F]),
+    net(GoogleVoice, "gvoice", "gvoice", "Google Voice", [15, 157, 88], [F, T, T, F, F]),
     net(Tumblr, "tumblr", "tumblr", "Tumblr", [0, 25, 53], [T, F, F, F, F]),
+    net(Viber, "viber", "viber", "Viber", [115, 96, 242], [T, F, F, T, T]),
+    net(Snapchat, "snapchat", "snapchat", "Snapchat", [255, 252, 0], [F, T, F, F, F]),
+    net(WeChat, "wechat", "wechat", "WeChat", [7, 193, 96], [T, T, F, F, F]),
+    net(IMessage, "imessage", "imessage", "iMessage", [52, 199, 89], [T, T, T, T, F]),
+    net(Bluesky, "bluesky", "bluesky", "Bluesky", [0, 133, 255], [T, F, F, F, F]),
 ];
 
 pub fn network_spec(bridge_id: &str) -> Option<&'static NetworkSpec> {

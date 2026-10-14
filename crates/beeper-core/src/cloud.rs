@@ -1,4 +1,5 @@
-use crate::models::{MatrixSession, Profile};
+use crate::config::account_network;
+use crate::models::{BridgeAccountInfo, BridgeMode, MatrixSession, Profile};
 use serde_json::{json, Value};
 use std::time::Duration;
 use ureq::tls::{RootCerts, TlsConfig};
@@ -28,6 +29,34 @@ pub struct Cloud {
 
 fn field(v: &Value, k: &str) -> Option<String> {
     v[k].as_str().map(str::to_string)
+}
+
+pub fn cloud_accounts(bridges: &Value) -> Result<Vec<BridgeAccountInfo>, CloudError> {
+    let bad = |what: &str| fail(502, format!("Bad whoami response: {what}"));
+    let bridges = bridges.as_object().ok_or_else(|| bad("user.bridges is not an object"))?;
+    let cloud = bridges.iter().filter(|(id, b)| !id.starts_with("local-") && b["bridgeState"]["isSelfHosted"] != true);
+    let mut out = Vec::new();
+    for (id, b) in cloud {
+        let state = &b["bridgeState"];
+        let remotes = b["remoteState"].as_object().into_iter().flatten();
+        let remotes: Vec<_> = remotes.filter(|(_, r)| r["state_event"] != "UNCONFIGURED").collect();
+        if remotes.len() > 1 && id != "slackgo" {
+            return Err(bad(&format!("{id} has {} cloud logins", remotes.len())));
+        }
+        for (remote, r) in remotes {
+            out.push(BridgeAccountInfo {
+                account_id: if id == "slackgo" { format!("{id}.{remote}") } else { id.clone() },
+                bridge_id: id.clone(),
+                bridge_type: field(state, "bridgeType").ok_or_else(|| bad(&format!("{id} has no bridgeType")))?,
+                is_running: state["stateEvent"] == "RUNNING",
+                login_id: remote.clone(),
+                mode: BridgeMode::Cloud,
+                network_name: account_network(id).display_name.into(),
+                state: field(r, "state_event").ok_or_else(|| bad(&format!("{id} login has no state_event")))?,
+            });
+        }
+    }
+    Ok(out)
 }
 
 fn strings(v: &Value) -> Vec<String> {
@@ -116,19 +145,20 @@ impl Cloud {
         serde_json::from_value(v).map_err(|e| fail(502, format!("Bad Matrix login response: {e}")))
     }
 
-    pub fn whoami(&self, access_token: &str) -> Result<Profile, CloudError> {
+    pub fn whoami(&self, access_token: &str) -> Result<(Profile, Vec<BridgeAccountInfo>), CloudError> {
         let v = self.call(&format!("{}/whoami", self.api_url), Some(access_token), None)?;
         let info = &v["userInfo"];
-        Ok(Profile {
+        let profile = Profile {
             full_name: field(info, "fullName"),
             username: field(info, "username"),
             email: field(info, "email"),
-        })
+        };
+        Ok((profile, cloud_accounts(&v["user"]["bridges"])?))
     }
 
-    pub fn finish(&self, jwt: &str) -> Result<(MatrixSession, Profile), CloudError> {
+    pub fn finish(&self, jwt: &str) -> Result<(MatrixSession, Profile, Vec<BridgeAccountInfo>), CloudError> {
         let session = self.matrix_login(jwt)?;
-        let profile = self.whoami(&session.access_token)?;
-        Ok((session, profile))
+        let (profile, accounts) = self.whoami(&session.access_token)?;
+        Ok((session, profile, accounts))
     }
 }

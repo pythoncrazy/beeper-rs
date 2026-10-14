@@ -85,7 +85,22 @@ async fn fake_beeper_cloud() -> String {
                         ("/whoami", _) if auth.starts_with("Bearer syt_") => {
                             let user = auth.trim_start_matches("Bearer syt_");
                             let info = json!({ "fullName": format!("{user} Real"), "username": user, "email": format!("{user}@example.com") });
-                            (200, json!({ "userInfo": info }))
+                            let bridges = json!({
+                                "whatsapp": { "bridgeState": { "bridgeType": "whatsapp", "stateEvent": "RUNNING" }, "remoteState": {
+                                    "wa1": { "state_event": "CONNECTED", "remote_id": "wa1" } } },
+                                "slackgo": { "bridgeState": { "bridgeType": "slackgo", "stateEvent": "RUNNING" }, "remoteState": {
+                                    "T1-U1": { "state_event": "CONNECTED" }, "T2-U2": { "state_event": "TRANSIENT_DISCONNECT" } } },
+                                "discordgo": { "bridgeState": { "bridgeType": "discordgo", "stateEvent": "STOPPED" }, "remoteState": {
+                                    "d1": { "state_event": "BAD_CREDENTIALS" } } },
+                                "telegram": { "bridgeState": { "bridgeType": "telegram", "stateEvent": "RUNNING" }, "remoteState": {
+                                    "t1": { "state_event": "UNCONFIGURED" } } },
+                                "signal": { "bridgeState": { "bridgeType": "signal", "stateEvent": "RUNNING" } },
+                                "local-whatsapp": { "bridgeState": { "bridgeType": "whatsapp", "stateEvent": "RUNNING" }, "remoteState": {
+                                    "lw": { "state_event": "CONNECTED" } } },
+                                "sh-gmessages": { "bridgeState": { "bridgeType": "gmessages", "isSelfHosted": true }, "remoteState": {
+                                    "g1": { "state_event": "CONNECTED" } } }
+                            });
+                            (200, json!({ "userInfo": info, "user": { "bridges": bridges, "hungryserv": {} } }))
                         }
                         _ => (404, json!({ "error": format!("unexpected {path}") })),
                     };
@@ -366,7 +381,22 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let data = read_beeper_data(&orig_dir).expect("read the Beeper Desktop fixture");
     let _ = gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Imported(Arc::new(data))))));
     assert_eq!(before, originals(&orig_dir), "Beeper Desktop files must never be modified");
-    assert!(gui.login_window.is_none() && gui.main_window.is_some(), "an imported session opens the app");
+    assert_eq!(gui.login.screen, Screen::Accounts, "an imported session shows the chat accounts");
+    let _ = gui.update(UiMessage::CloudAccounts(Err("offline".into())));
+    assert_eq!(gui.status_banner, "Could not load your chat accounts: offline");
+    let bridges = json!({ "signal": { "bridgeState": { "bridgeType": "signal" }, "remoteState": { "s1": { "state_event": "CONNECTED" } } } });
+    let cloud = beeper_core::cloud::cloud_accounts(&bridges).expect("parse the cloud bridges");
+    let _ = gui.update(UiMessage::CloudAccounts(Ok(cloud)));
+    assert_eq!(shared.read().unwrap().accounts.iter().map(|a| a.account_id.as_str()).collect::<Vec<_>>(), ["signal"]);
+    for bad in [
+        json!([]),
+        json!({ "whatsapp": { "bridgeState": {}, "remoteState": { "w": { "state_event": "CONNECTED" } } } }),
+        json!({ "whatsapp": { "bridgeState": { "bridgeType": "whatsapp" }, "remoteState": { "a": { "state_event": "CONNECTED" }, "b": { "state_event": "CONNECTED" } } } }),
+    ] {
+        assert_eq!(beeper_core::cloud::cloud_accounts(&bad).unwrap_err().status, 502, "{bad} is rejected");
+    }
+    let _ = gui.update(UiMessage::Login(LoginMsg::Continue));
+    assert!(gui.login_window.is_none() && gui.main_window.is_some(), "Continue opens the app");
     let chats: Vec<(String, String)> = {
         let st = shared.read().unwrap();
         assert_eq!(st.setup, Some(Setup::Imported));
@@ -551,12 +581,38 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = login.update(UiMessage::Login(LoginMsg::Done(Err("Invalid code".into()))));
     shows(&login, &["Invalid code"]);
     let gui_cloud = cloud.clone();
-    let (session, profile) = tokio::task::spawn_blocking(move || {
+    let (session, profile, accounts) = tokio::task::spawn_blocking(move || {
         beeper_core::cloud::Cloud::new(&gui_cloud, &gui_cloud).finish("jwt_alex").expect("fake cloud sign-in")
     })
     .await
     .unwrap();
-    let _ = login.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Session(session, profile)))));
+    let mut ids: Vec<(&str, &str)> = accounts.iter().map(|a| (a.account_id.as_str(), a.state.as_str())).collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        [
+            ("discordgo", "BAD_CREDENTIALS"),
+            ("slackgo.T1-U1", "CONNECTED"),
+            ("slackgo.T2-U2", "TRANSIENT_DISCONNECT"),
+            ("whatsapp", "CONNECTED")
+        ]
+    );
+    assert!(accounts.iter().all(|a| a.mode == BridgeMode::Cloud && a.network_name != "Beeper"));
+    let _ = login.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Session(session, profile, accounts)))));
+    assert_eq!(login.login.screen, Screen::Accounts);
+    assert_eq!(login_store.read().unwrap().accounts.len(), 4);
+    let _ = login.update(UiMessage::StoreChanged);
+    assert!(login.login_window.is_some(), "the onboarding stays open until Continue");
+    shows(
+        &login,
+        &["Connect Chat Accounts", "WhatsApp", "Discord", "Bluesky", "6 free accounts remaining.", "Continue"],
+    );
+    let _ = login.update(UiMessage::Login(LoginMsg::Query("sig".into())));
+    shows(&login, &["Signal"]);
+    assert!(simulator(login.view_login()).find("WhatsApp").is_err(), "search filters the networks");
+    let _ = login.update(UiMessage::Login(LoginMsg::Query("zzz".into())));
+    shows(&login, &["No networks found"]);
+    let _ = login.update(UiMessage::Login(LoginMsg::Continue));
     assert!(login.login_window.is_none() && login.main_window.is_some());
     assert_eq!(login.selected_chat_id.as_deref(), Some(NOTE_CHAT_ID));
     assert!(simulator(login.view_main()).find("Note to self").is_ok());

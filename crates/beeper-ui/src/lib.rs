@@ -10,8 +10,7 @@ use crate::style::{
 };
 use beeper_core::cloud::Cloud;
 use beeper_core::config::{
-    account_network, civil_from_days, millis_from_rfc3339, network_spec, now_unix_secs, APP_BUNDLE_ID, APP_VERSION,
-    NETWORK_SPECS,
+    account_network, civil_from_days, millis_from_rfc3339, now_unix_secs, APP_BUNDLE_ID, APP_VERSION,
 };
 use beeper_core::import::has_beeper_data;
 use beeper_core::models::*;
@@ -161,7 +160,7 @@ pub enum UiMessage {
     SelectRemindLater(&'static str),
     CustomCssChanged(String),
     ToggleSetting(fn(&mut BeeperSettings)),
-    ConnectBridge(String),
+    CloudAccounts(Result<Vec<BridgeAccountInfo>, String>),
     RecoveryInputChanged(String),
     VerifyRecoveryCode,
     VerifySasNow,
@@ -590,7 +589,9 @@ impl BeeperGuiApp {
             if signed_in { Self::window_settings(Size::new(1264.0, 893.0)) } else { Self::login_window_settings() };
         let (id, open) = window::open(settings);
         *(if signed_in { &mut app.main_window } else { &mut app.login_window }) = Some(id);
-        (app, Task::batch([open.map(UiMessage::WindowOpened), iced::system::theme().map(UiMessage::SystemTheme)]))
+        let cloud = (signed_in && !app.store.read().unwrap().config.demo).then(|| app.refresh_cloud_accounts());
+        let tasks = [open.map(UiMessage::WindowOpened), iced::system::theme().map(UiMessage::SystemTheme)];
+        (app, Task::batch(tasks.into_iter().chain(cloud)))
     }
 
     fn window_settings(size: Size) -> window::Settings {
@@ -893,27 +894,8 @@ impl BeeperGuiApp {
             }
             UiMessage::CustomCssChanged(css) => self.patch_settings(|s| s.custom_css_source = css),
             UiMessage::ToggleSetting(flip) => self.patch_settings(flip),
-            UiMessage::ConnectBridge(bid) => {
-                let mut st = self.store.write().unwrap();
-                if let Some(existing) = st.bridge_accounts.iter_mut().find(|b| b.bridge_id == bid) {
-                    existing.state = "CONNECTED".to_string();
-                    existing.is_running = true;
-                } else {
-                    let spec = network_spec(&bid).expect("connect a known network");
-                    st.bridge_accounts.push(BridgeAccountInfo {
-                        account_id: format!("acc_{bid}"),
-                        bridge_id: bid,
-                        bridge_type: spec.bridge_type.to_string(),
-                        is_running: true,
-                        login_id: "login_ui_01".to_string(),
-                        mode: BridgeMode::Cloud,
-                        network_name: spec.display_name.to_string(),
-                        state: "CONNECTED".to_string(),
-                    });
-                }
-                st.rebuild_accounts_from_bridges();
-                st.persist_state_to_sqlite();
-            }
+            UiMessage::CloudAccounts(Ok(accounts)) => self.store.write().unwrap().set_cloud_accounts(accounts),
+            UiMessage::CloudAccounts(Err(e)) => self.status_banner = format!("Could not load your chat accounts: {e}"),
             UiMessage::RecoveryInputChanged(v) => self.recovery_code_input = v,
             UiMessage::VerifyRecoveryCode => {
                 let mut st = self.store.write().unwrap();
@@ -1016,8 +998,12 @@ impl BeeperGuiApp {
                 }
                 return iced::exit();
             }
-            UiMessage::StoreChanged if self.login_window.is_some() && self.store.read().unwrap().signed_in() => {
-                return self.enter_app();
+            UiMessage::StoreChanged
+                if self.login_window.is_some()
+                    && self.login.screen != login::Screen::Accounts
+                    && self.store.read().unwrap().signed_in() =>
+            {
+                self.login.screen = login::Screen::Accounts;
             }
             UiMessage::StoreChanged => self.refresh_theme_and_tray(),
             UiMessage::FocusRequested(chat) => {
@@ -1987,20 +1973,8 @@ impl BeeperGuiApp {
                         )
                     })
                     .collect();
-                let more = NETWORK_SPECS
-                    .iter()
-                    .filter(|n| !st.bridge_accounts.iter().any(|b| b.bridge_id == n.bridge_id))
-                    .map(|n| {
-                        pref_row(
-                            p,
-                            n.display_name,
-                            None,
-                            Some(svg(brand_svg(n.bridge_id)).width(20).height(20).into()),
-                            pill_btn(p, "Connect", UiMessage::ConnectBridge(n.bridge_id.to_string())),
-                        )
-                    })
-                    .collect();
-                vec![group(p, Some("Connected accounts"), connected), group(p, Some("Add an account"), more)]
+                let more = vec![login::network_grid(&st.bridge_accounts, "", p.strong)];
+                vec![group(p, Some("Connected accounts"), connected), group(p, Some("Add an Account"), more)]
             }
             SettingsTab::General => {
                 let lang: Vec<&'static str> = ALL_LANGUAGES.iter().map(|l| l.label()).collect();

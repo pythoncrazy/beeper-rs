@@ -42,7 +42,7 @@ fn main() {
         let _ = app.update(UiMessage::OpenSettings(tab));
         shot(&out, &format!("settings_{tab:?}").to_lowercase(), (800.0, 740.0), &theme, app.view_settings());
     }
-    for screen in [Screen::Welcome, Screen::Email, Screen::Code, Screen::Username] {
+    for screen in [Screen::Welcome, Screen::Email, Screen::Code, Screen::Username, Screen::Accounts] {
         app.login = Login::default();
         let _ = app.update(UiMessage::Login(LoginMsg::Show(screen)));
         shot(&out, &format!("login_{screen:?}").to_lowercase(), (330.0, 620.0), &theme, app.view_login());
