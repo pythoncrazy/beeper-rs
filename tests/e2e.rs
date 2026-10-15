@@ -103,6 +103,11 @@ async fn fake_beeper_cloud() -> String {
                             });
                             (200, json!({ "userInfo": info, "user": { "bridges": bridges, "hungryserv": {} } }))
                         }
+                        ("/_matrix/client/v1/media/thumbnail/beeper.com/a?width=96&height=96&method=crop", _)
+                            if auth == "Bearer syt_alex" =>
+                        {
+                            (200, json!("avatar"))
+                        }
                         _ => (404, json!({ "error": format!("unexpected {path}") })),
                     };
                     let body = reply.to_string();
@@ -528,6 +533,22 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
 
     assert_eq!(client.setup_step("start", json!({})).await.0, StatusCode::CONFLICT, "demo account is signed in");
     let cloud = fake_beeper_cloud().await;
+    let avatars = std::sync::Arc::new(beeper_core::cloud::Cloud::new(&cloud, &cloud));
+    let photo = temp_dir("BeeperRs_avatar.png");
+    std::fs::write(&photo, b"png").unwrap();
+    let file = path_to_file_url(&photo);
+    let cases: [(&str, Result<&[u8], u16>); 4] = [
+        (&file, Ok(b"png")),
+        ("mxc://beeper.com/a", Ok(b"\"avatar\"")),
+        ("mxc://beeper.com/gone", Err(404)),
+        ("https://example.com/a.png", Err(400)),
+    ];
+    for (url, want) in cases {
+        let (c, u) = (avatars.clone(), url.to_string());
+        let got = tokio::task::spawn_blocking(move || c.avatar("syt_alex", &u).map_err(|e| e.status)).await.unwrap();
+        assert_eq!(got.as_deref().map_err(|s| *s), want, "{url}");
+    }
+    std::fs::remove_file(photo).unwrap();
     for (name, code, user) in [("login", "123456", "alex"), ("register", "654321", "newbie")] {
         let (dir, _, st, c) = spawn_e2e_beeper_instance(name, Some(&cloud)).await;
         assert!(!st.read().unwrap().signed_in() && st.read().unwrap().chats.is_empty(), "fresh install is signed out");
