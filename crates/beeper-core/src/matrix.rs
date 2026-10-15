@@ -168,7 +168,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
     let id = s(&e["event_id"]).expect("event ID");
     let kind = s(&e["type"]).expect("event type");
     let (text, attachments, message_type) = match (kind.as_str(), c["msgtype"].as_str()) {
-        ("m.reaction", _) => (Some(format!("{} a message", reaction_verb(&s(&rel["key"])?))), Vec::new(), "REACTION"),
+        ("m.reaction", _) => (None, Vec::new(), "REACTION"),
         ("m.room.redaction", _) => return Some(Op::Redact(s(&e["redacts"]).or(s(&c["redacts"]))?)),
         ("m.room.message", _) if rel["rel_type"] == "m.replace" => {
             return Some(Op::Edit(s(&rel["event_id"])?, s(&c["m.new_content"]["body"])?));
@@ -230,6 +230,22 @@ fn link(p: &Value) -> Option<MessageLink> {
         title: s(&p["og:title"])?,
         summary: s(&p["og:description"]),
     })
+}
+
+fn reaction_text(key: &str, target: Option<&Message>, who: Option<&str>) -> String {
+    let whose = if target.is_some_and(|t| t.is_sender == Some(true)) { "your" } else { "a" };
+    let object = match target.map(|t| (t.text.as_deref().filter(|x| !x.is_empty()), t.attachments.first())) {
+        Some((Some(text), _)) => format!("\"{text}\""),
+        Some((None, Some(a))) => match a.attachment_type.as_str() {
+            "img" => format!("{whose} photo"),
+            "audio" => format!("{whose} voice note"),
+            "unknown" => format!("{whose} file"),
+            other => format!("{whose} {other}"),
+        },
+        _ => "a message".into(),
+    };
+    let verb = reaction_verb(key);
+    who.map_or_else(|| format!("{verb} {object}"), |w| format!("{w} {verb} {object}"))
 }
 
 fn reaction_verb(key: &str) -> String {
@@ -299,9 +315,14 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     for op in ops {
         match op {
             Op::Upsert(m) => st.upsert_message(*m),
-            Op::React(target, r, preview) => {
-                let target_mine =
-                    st.msg_idx_by_id.get(&target).is_some_and(|&i| st.messages[i].is_sender == Some(true));
+            Op::React(target, r, mut preview) => {
+                let target_msg = st.msg_idx_by_id.get(&target).map(|&i| &st.messages[i]);
+                let target_mine = target_msg.is_some_and(|m| m.is_sender == Some(true));
+                let who = match preview.is_sender == Some(true) {
+                    true => Some("You"),
+                    false => group.then(|| preview.sender_name.as_deref().expect("sender name")),
+                };
+                preview.text = Some(reaction_text(&r.reaction_key, target_msg, who));
                 if let Some(&i) = st.msg_idx_by_id.get(&target) {
                     st.update_message(i, |m| {
                         m.reactions.retain(|x| x.id != r.id);

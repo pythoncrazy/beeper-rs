@@ -1390,9 +1390,7 @@ impl BeeperGuiApp {
                     .and_then(|m| m.sender_name.clone())
                     .map(|s| s.split(' ').next().expect("sender name").to_string());
                 match (c.chat_type == "group", first) {
-                    _ if reaction.is_some() && mine => format!("You {t}"),
-                    (true, Some(s)) if reaction.is_some() => format!("{s} {t}"),
-                    (true, Some(s)) if !mine => format!("{s}: {t}"),
+                    (true, Some(s)) if !mine && reaction.is_none() => format!("{s}: {t}"),
                     _ => t,
                 }
             });
