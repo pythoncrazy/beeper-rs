@@ -10,26 +10,29 @@ use std::rc::Rc;
 use std::sync::{LazyLock, Once};
 
 pub mod icon {
-    pub const INBOX: char = '\u{e0f7}';
-    pub const LIST_RESTART: char = '\u{e452}';
-    pub const ARCHIVE: char = '\u{e041}';
-    pub const CLOCK: char = '\u{e087}';
-    pub const SEND_HORIZONTAL: char = '\u{e4f2}';
-    pub const MAIL: char = '\u{e10f}';
-    pub const MESSAGE_CIRCLE_PLUS: char = '\u{e567}';
-    pub const IMAGES: char = '\u{e5c4}';
-    pub const COPY_PLUS: char = '\u{e3fd}';
-    pub const ELLIPSIS: char = '\u{e0b6}';
-    pub const CHEVRONS_UP_DOWN: char = '\u{e211}';
-    pub const LIST_FILTER: char = '\u{e460}';
-    pub const SEARCH: char = '\u{e151}';
-    pub const SQUARE_PEN: char = '\u{e172}';
-    pub const BELL_OFF: char = '\u{e05a}';
+    pub const INBOX: char = '\u{f000}';
+    pub const LOW_PRIORITY_SPACE: char = '\u{f001}';
+    pub const ARCHIVE: char = '\u{f002}';
+    pub const SCHEDULE: char = '\u{f003}';
+    pub const SCHEDULE_SEND: char = '\u{f004}';
+    pub const EMAIL: char = '\u{f005}';
+    pub const MAPS_UGC: char = '\u{f006}';
+    pub const PHOTO_LIBRARY: char = '\u{f007}';
+    pub const LIBRARY_ADD: char = '\u{f008}';
+    pub const MORE_HORIZ: char = '\u{f009}';
+    pub const UNFOLD_MORE: char = '\u{f00a}';
+    pub const FILTER_LIST: char = '\u{f00b}';
+    pub const SEARCH: char = '\u{f00c}';
+    pub const EDIT_SQUARE: char = '\u{f00d}';
+    pub const NOTIFICATIONS_OFF: char = '\u{f00e}';
+    pub const IMAGE: char = '\u{f00f}';
+    pub const CHEVRON_RIGHT: char = '\u{f010}';
+    pub const EXPAND_MORE: char = '\u{f011}';
+    pub const CLOSE: char = '\u{f012}';
+    pub const KEEP: char = '\u{f013}';
+    pub const DOWNLOAD: char = '\u{f014}';
     pub const BELL: char = '\u{e059}';
     pub const CIRCLE_CHECK: char = '\u{e226}';
-    pub const IMAGE: char = '\u{e0f6}';
-    pub const CHEVRON_RIGHT: char = '\u{e06f}';
-    pub const CHEVRON_DOWN: char = '\u{e06d}';
     pub const LINK: char = '\u{e102}';
     pub const ARROW_UP_RIGHT: char = '\u{e04d}';
     pub const PLUS: char = '\u{e13d}';
@@ -46,8 +49,6 @@ pub mod icon {
     pub const DATABASE: char = '\u{e0ad}';
     pub const CIRCLE_HELP: char = '\u{e082}';
     pub const INFO: char = '\u{e0f9}';
-    pub const X: char = '\u{e1b2}';
-    pub const PIN: char = '\u{e259}';
     pub const PENCIL: char = '\u{e1f9}';
     pub const TRASH_2: char = '\u{e18e}';
     pub const REPLY: char = '\u{e22a}';
@@ -55,7 +56,6 @@ pub mod icon {
     pub const PLAY: char = '\u{e13c}';
     pub const HISTORY: char = '\u{e1f5}';
     pub const BOOKMARK: char = '\u{e060}';
-    pub const DOWNLOAD: char = '\u{e0b2}';
     pub const MESSAGE_SQUARE: char = '\u{e117}';
 }
 
@@ -63,8 +63,8 @@ pub const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.tt
 pub const FONT_MEDIUM: &[u8] = include_bytes!("../assets/fonts/Inter-Medium.ttf");
 pub const FONT_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
 pub const FONT_BOLD: &[u8] = include_bytes!("../assets/fonts/Inter-Bold.ttf");
-pub const FONT_LUCIDE: &[u8] = include_bytes!("../assets/fonts/lucide.ttf");
-pub const ALL_FONTS: [&[u8]; 5] = [FONT_REGULAR, FONT_MEDIUM, FONT_SEMIBOLD, FONT_BOLD, FONT_LUCIDE];
+pub const FONT_ICONS: &[u8] = include_bytes!("../assets/fonts/icons.ttf");
+pub const ALL_FONTS: [&[u8]; 5] = [FONT_REGULAR, FONT_MEDIUM, FONT_SEMIBOLD, FONT_BOLD, FONT_ICONS];
 pub const CLEAR: Color = Color::TRANSPARENT;
 
 static LOAD_FONTS: Once = Once::new();
@@ -148,7 +148,7 @@ pub fn bold<'a>(s: impl text::IntoFragment<'a>, size: f32) -> text::Text<'a> {
 }
 
 pub fn ic(c: char, size: f32) -> text::Text<'static> {
-    text(c).font(Font::with_name("lucide")).size(size).line_height(1.0)
+    text(c).font(Font::with_name("icons")).size(size).line_height(1.0)
 }
 
 pub fn hue(n: usize) -> Color {

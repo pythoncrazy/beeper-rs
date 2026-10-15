@@ -152,22 +152,23 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         }
         let raw = w.raw();
         let db = raw.db();
-        let face = db.faces().find(|f| f.families.iter().any(|(n, _)| n == "lucide")).expect("lucide font face");
-        let font = raw.get_font(face.id, face.weight).expect("lucide font");
+        let face = db.faces().find(|f| f.families.iter().any(|(n, _)| n == "icons")).expect("icons font face");
+        let font = raw.get_font(face.id, face.weight).expect("icons font");
         let cmap = font.as_swash().charmap();
         for ch in [
             icon::INBOX,
-            icon::LIST_RESTART,
-            icon::SEND_HORIZONTAL,
-            icon::MESSAGE_CIRCLE_PLUS,
-            icon::CHEVRONS_UP_DOWN,
-            icon::SQUARE_PEN,
+            icon::LOW_PRIORITY_SPACE,
+            icon::SCHEDULE_SEND,
+            icon::MAPS_UGC,
+            icon::UNFOLD_MORE,
+            icon::EDIT_SQUARE,
+            icon::DOWNLOAD,
             icon::AUDIO_LINES,
             icon::PAINTBRUSH,
             icon::PUZZLE,
-            icon::X,
+            icon::CLOSE,
         ] {
-            assert_ne!(cmap.map(ch as u32), 0, "missing lucide glyph for {ch:?}");
+            assert_ne!(cmap.map(ch as u32), 0, "missing icon glyph for {ch:?}");
         }
     }
 
