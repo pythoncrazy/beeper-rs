@@ -386,8 +386,10 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert_eq!(gui.login.screen, Screen::Accounts, "an imported session shows the chat accounts");
     let _ = gui.update(UiMessage::CloudAccounts(Err("offline".into())));
     assert_eq!(gui.status_banner, "Could not load your chat accounts: offline");
-    let bridges = json!({ "signal": { "bridgeState": { "bridgeType": "signal" }, "remoteState": { "s1": { "state_event": "CONNECTED" } } } });
+    let bridges = json!({ "signal": { "bridgeState": { "bridgeType": "signal" }, "remoteState": { "s1": { "state_event": "CONNECTED",
+        "remote_profile": { "username": "alex", "phone": "+1 415-555-0142", "avatar": "mxc://beeper.com/a" } } } } });
     let cloud = beeper_core::cloud::cloud_accounts(&bridges).expect("parse the cloud bridges");
+    assert_eq!(cloud[0].display_text().as_deref(), Some("+1 415-555-0142"), "the phone comes before the username");
     let _ = gui.update(UiMessage::CloudAccounts(Ok(cloud)));
     assert_eq!(shared.read().unwrap().accounts.iter().map(|a| a.account_id.as_str()).collect::<Vec<_>>(), ["signal"]);
     for bad in [
@@ -818,6 +820,20 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
             assert_eq!(sim.find(label).is_ok(), tab == page, "{label} is on {tab:?}");
         }
     }
+    let _ = gui.update(UiMessage::SelectSettingsTab(SettingsTab::Accounts));
+    {
+        let n = beeper_ui::login::FREE_ACCOUNTS - store.read().unwrap().bridge_accounts.len();
+        let mut sim = simulator(gui.view_settings());
+        for label in ["Beeper", "+1 415-555-0142", "Beeper · alex@beeper.com", &format!("{n} Free Accounts Remaining")]
+        {
+            assert!(sim.find(label).is_ok(), "the accounts page shows {label}");
+        }
+        assert!(sim.find("Facebook").is_err(), "the network grid starts hidden");
+        let _ = sim.click("Add an Account");
+        assert!(matches!(sim.into_messages().last(), Some(UiMessage::ToggleAddAccount)));
+    }
+    let _ = gui.update(UiMessage::ToggleAddAccount);
+    assert!(simulator(gui.view_settings()).find("Facebook").is_ok(), "Add an Account shows the network grid");
     let _ = gui.update(UiMessage::SetPref("timeFormat", 0));
     let _ = gui.update(UiMessage::SetPref("showMessagePreviews", 1));
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));

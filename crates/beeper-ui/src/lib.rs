@@ -147,6 +147,7 @@ pub enum UiMessage {
     CommandQueryChanged(String),
     ExecuteCommandChat(String),
     OpenSettings(SettingsTab),
+    ToggleAddAccount,
     SelectSettingsTab(SettingsTab),
     SettingsQueryChanged(String),
     ToggleRightPanel,
@@ -511,6 +512,7 @@ pub struct BeeperGuiApp {
     pub show_command_palette: bool,
     pub active_settings_tab: SettingsTab,
     pub settings_query: String,
+    pub adding_account: bool,
     pub show_right_panel: bool,
     pub quick_look_target: Option<(String, String)>,
     pub expanded_history_msg_id: Option<String>,
@@ -568,6 +570,7 @@ impl BeeperGuiApp {
             show_command_palette: false,
             active_settings_tab: SettingsTab::General,
             settings_query: String::new(),
+            adding_account: false,
             show_right_panel: panel,
             quick_look_target: None,
             expanded_history_msg_id: None,
@@ -961,6 +964,7 @@ impl BeeperGuiApp {
             }
             UiMessage::ToggleFilterMenu => self.show_filter_menu = !self.show_filter_menu,
             UiMessage::OpenSettings(tab) => return self.open_settings(tab),
+            UiMessage::ToggleAddAccount => self.adding_account ^= true,
             UiMessage::SettingsQueryChanged(q) => self.settings_query = q,
             UiMessage::SetPref(key, v) => self.patch_settings(|s| s.set_pref(key, v)),
             UiMessage::Zoom(step) => self.patch_settings(|s| {
@@ -1940,28 +1944,50 @@ impl BeeperGuiApp {
         let s = &st.settings;
         let groups: Vec<El<'_>> = match self.active_settings_tab {
             SettingsTab::Accounts => {
-                let connected = st
-                    .bridge_accounts
-                    .iter()
-                    .map(|b| {
-                        pref_row(
-                            p,
-                            b.network_name.clone(),
-                            Some(&format!(
-                                "{} · {}",
-                                b.state.to_lowercase(),
-                                match b.mode {
-                                    BridgeMode::OnDevice => "on device",
-                                    BridgeMode::Cloud => "cloud",
-                                }
-                            )),
-                            Some(svg(brand_svg(brand_key(&b.account_id))).width(20).height(20).into()),
-                            txt("Connected", 12.0).color(p.success).into(),
-                        )
-                    })
-                    .collect();
-                let more = vec![login::network_grid(&st.bridge_accounts, "", p.strong)];
-                vec![group(p, Some("Connected accounts"), connected), group(p, Some("Add an Account"), more)]
+                let account = |logo: &str, name: String, cloud: bool, sub: Option<String>| -> El<'_> {
+                    let title = row![bold(name, 14.0).color(p.strong)]
+                        .push(cloud.then(|| ic(icon::CLOUD, 13.0).color(p.sub)))
+                        .spacing(6)
+                        .align_y(Center);
+                    row![
+                        svg(brand_svg(brand_key(logo))).width(28).height(28),
+                        column![title].push(sub.map(|s| txt(s, 12.0).color(p.sub))).spacing(2).width(Fill),
+                        ic(icon::CHEVRON_RIGHT, 18.0).color(p.sub)
+                    ]
+                    .spacing(12)
+                    .align_y(Center)
+                    .padding([10, 14])
+                    .into()
+                };
+                let rows = std::iter::once(account("hungryserv", "Beeper".into(), false, st.me().username.clone()))
+                    .chain(st.bridge_accounts.iter().map(|b| {
+                        account(&b.account_id, b.network_name.clone(), b.mode == BridgeMode::Cloud, b.display_text())
+                    }));
+                let head = row![
+                    med("Accounts", 12.0).color(p.weak),
+                    Space::new().width(Fill),
+                    icon_btn(p, icon::CIRCLE_PLUS, 16.0, 22.0, p.accent, UiMessage::ToggleAddAccount)
+                ]
+                .align_y(Center)
+                .padding([0, 4]);
+                let remaining = login::FREE_ACCOUNTS.saturating_sub(st.bridge_accounts.len());
+                let foot = column![
+                    button(med("Add an Account", 13.0).color(p.accent))
+                        .padding(0)
+                        .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                        .on_press(UiMessage::ToggleAddAccount),
+                    txt(format!("{remaining} Free Accounts Remaining"), 12.0).color(p.sub)
+                ]
+                .spacing(6)
+                .align_x(Center)
+                .width(Fill);
+                vec![column![head, group(p, None, rows.collect())].spacing(8).into(), foot.into()]
+                    .into_iter()
+                    .chain(
+                        self.adding_account
+                            .then(|| group(p, None, vec![login::network_grid(&st.bridge_accounts, "", p.strong)])),
+                    )
+                    .collect()
             }
             SettingsTab::General => self.pref_items(prefs::GENERAL, s),
             SettingsTab::Appearance => self.pref_items(prefs::APPEARANCE, s),

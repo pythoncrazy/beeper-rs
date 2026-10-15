@@ -1,11 +1,11 @@
 {
 "bridges": [
-{"accountID":"acc_whatsapp","bridgeID":"whatsapp","bridgeType":"whatsapp","isRunning":true,"loginID":"login_whatsapp_01","mode":"on_device","networkName":"WhatsApp","state":"CONNECTED"},
-{"accountID":"acc_imessage","bridgeID":"imessage","bridgeType":"imessage","isRunning":true,"loginID":"login_imessage_01","mode":"on_device","networkName":"iMessage","state":"CONNECTED"},
-{"accountID":"acc_telegram","bridgeID":"telegram","bridgeType":"telegram","isRunning":true,"loginID":"login_telegram_01","mode":"cloud","networkName":"Telegram","state":"CONNECTED"},
-{"accountID":"acc_signal","bridgeID":"signal","bridgeType":"signal","isRunning":true,"loginID":"login_signal_01","mode":"on_device","networkName":"Signal","state":"CONNECTED"},
-{"accountID":"acc_instagram","bridgeID":"instagram","bridgeType":"meta","isRunning":true,"loginID":"login_instagram_01","mode":"cloud","networkName":"Instagram","state":"CONNECTED"},
-{"accountID":"acc_slack","bridgeID":"slack","bridgeType":"slack","isRunning":true,"loginID":"login_slack_01","mode":"cloud","networkName":"Slack","state":"CONNECTED"}
+{"accountID":"acc_whatsapp","bridgeID":"whatsapp","bridgeType":"whatsapp","isRunning":true,"loginID":"login_whatsapp_01","mode":"on_device","networkName":"WhatsApp","state":"CONNECTED","remoteName":"+1 415-555-0142"},
+{"accountID":"acc_imessage","bridgeID":"imessage","bridgeType":"imessage","isRunning":true,"loginID":"login_imessage_01","mode":"on_device","networkName":"iMessage","state":"CONNECTED","remoteName":"alex@icloud.com"},
+{"accountID":"acc_telegram","bridgeID":"telegram","bridgeType":"telegram","isRunning":true,"loginID":"login_telegram_01","mode":"cloud","networkName":"Telegram","state":"CONNECTED","remoteName":"@alexr"},
+{"accountID":"acc_signal","bridgeID":"signal","bridgeType":"signal","isRunning":true,"loginID":"login_signal_01","mode":"on_device","networkName":"Signal","state":"CONNECTED","remoteName":"+1 415-555-0142"},
+{"accountID":"acc_instagram","bridgeID":"instagram","bridgeType":"meta","isRunning":true,"loginID":"login_instagram_01","mode":"cloud","networkName":"Instagram","state":"CONNECTED","remoteName":"@alex.rivera"},
+{"accountID":"acc_slack","bridgeID":"slack","bridgeType":"slack","isRunning":true,"loginID":"login_slack_01","mode":"cloud","networkName":"Slack","state":"CONNECTED","remoteName":"Beeper · alex@beeper.com"}
 ],
 "chats": [
 {"accountID":"hungryserv","description":"Notes, links, and reminders","id":"!note_self:beeper.com","isArchived":false,"isLowPriority":false,"isMarkedUnread":false,"isMuted":false,"isPinned":true,"lastActivity":"2026-10-14T03:34:00.000Z","lastReadMessageSortKey":"000000000000","localChatID":"local_note_self","participants":{"hasMore":false,"items":[{"cannotMessage":false,"email":"alex@beeper.com","fullName":"Alex","id":"@alex:beeper.com","isSelf":true,"username":"alex"}],"total":1},"title":"Note to self","type":"single","unreadCount":0},

@@ -53,6 +53,12 @@ pub fn cloud_accounts(bridges: &Value) -> Result<Vec<BridgeAccountInfo>, CloudEr
                 mode: BridgeMode::Cloud,
                 network_name: account_network(id).display_name.into(),
                 state: field(r, "state_event").ok_or_else(|| bad(&format!("{id} login has no state_event")))?,
+                remote_name: field(r, "remote_name"),
+                remote_profile: r
+                    .get("remote_profile")
+                    .map(|p| serde_json::from_value(p.clone()))
+                    .transpose()
+                    .map_err(|e| bad(&format!("{id} remote_profile: {e}")))?,
             });
         }
     }
