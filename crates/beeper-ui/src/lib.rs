@@ -23,15 +23,18 @@ use iced::gradient::Linear;
 use iced::keyboard::{self, key::Named, Key, Modifiers};
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{
-    button, column, container, mouse_area, operation, pick_list, rich_text, row, scrollable, slider, span, stack, svg,
-    text_input, Column, Row, Space,
+    button, column, container, image, mouse_area, operation, pick_list, rich_text, row, scrollable, slider, span,
+    stack, svg, text_input, Column, Row, Space,
 };
 use iced::{
     border, mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Padding, Point, Radians,
     Right, Size, Subscription, Task, Theme,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Semaphore};
+
+static AVATAR_SLOTS: Semaphore = Semaphore::const_new(8);
 
 pub type El<'a> = Element<'a, UiMessage>;
 
@@ -159,6 +162,7 @@ pub enum UiMessage {
     Zoom(i8),
     ToggleSetting(fn(&mut BeeperSettings)),
     CloudAccounts(Result<Vec<BridgeAccountInfo>, String>),
+    AvatarLoaded(String, Result<image::Handle, String>),
     RecoveryInputChanged(String),
     VerifyRecoveryCode,
     VerifySasNow,
@@ -337,12 +341,21 @@ fn avatar<'a>(title: &str, size: f32) -> El<'a> {
         .into()
 }
 
-fn chat_avatar<'a>(chat: &Chat, me: &str, size: f32) -> El<'a> {
-    if chat.id == NOTE_CHAT_ID {
-        self_avatar(me, size)
-    } else {
-        avatar(&chat.title, size)
+fn round_avatar(bytes: &[u8]) -> Result<image::Handle, String> {
+    const S: u32 = 96;
+    let img = ::image::load_from_memory(bytes).map_err(|e| format!("Could not decode the image: {e}"))?;
+    let mut px = img.resize_to_fill(S, S, ::image::imageops::FilterType::Triangle).into_rgba8();
+    let r = S as f32 / 2.0;
+    for (x, y, p) in px.enumerate_pixels_mut() {
+        let d = (x as f32 + 0.5 - r).hypot(y as f32 + 0.5 - r);
+        p[3] = (f32::from(p[3]) * (r - d + 0.5).clamp(0.0, 1.0)) as u8;
     }
+    Ok(image::Handle::from_rgba(S, S, px.into_raw()))
+}
+
+fn dm_avatar_url(chat: &Chat) -> Option<&str> {
+    let other = chat.participants.items.iter().find(|u| u.is_self != Some(true));
+    (chat.chat_type == "single").then_some(other?.img_url.as_deref()?)
 }
 
 fn badged<'a>(p: &Palette, inner: El<'a>, account_id: &str, size: f32, badge: f32) -> El<'a> {
@@ -526,6 +539,7 @@ pub struct BeeperGuiApp {
     pub login_window: Option<window::Id>,
     pub login: Login,
     pub cloud: Arc<Cloud>,
+    pub avatars: HashMap<String, Option<image::Handle>>,
 }
 
 impl BeeperGuiApp {
@@ -584,6 +598,7 @@ impl BeeperGuiApp {
             login_window: None,
             login: Login::new(source),
             cloud,
+            avatars: HashMap::new(),
         };
         if let Some(id) = first_chat {
             app.select_chat(&id);
@@ -599,8 +614,36 @@ impl BeeperGuiApp {
         let (id, open) = window::open(settings);
         *(if signed_in { &mut app.main_window } else { &mut app.login_window }) = Some(id);
         let cloud = (signed_in && !app.store.read().unwrap().config.demo).then(|| app.refresh_cloud_accounts());
-        let tasks = [open.map(UiMessage::WindowOpened), iced::system::theme().map(UiMessage::SystemTheme)];
+        let tasks =
+            [open.map(UiMessage::WindowOpened), iced::system::theme().map(UiMessage::SystemTheme), app.load_avatars()];
         (app, Task::batch(tasks.into_iter().chain(cloud)))
+    }
+
+    fn load_avatars(&mut self) -> Task<UiMessage> {
+        let st = self.store.read().unwrap();
+        let token = st.beeper_state.access_token.clone();
+        let mut urls: Vec<String> = st.chats.iter().filter_map(dm_avatar_url).map(str::to_string).collect();
+        drop(st);
+        urls.retain(|u| self.avatars.insert(u.clone(), None).is_none());
+        Task::batch(urls.into_iter().map(|url| {
+            let (cloud, token, u) = (self.cloud.clone(), token.clone(), url.clone());
+            Task::perform(
+                async move {
+                    let _slot = AVATAR_SLOTS.acquire().await.expect("the avatar semaphore stays open");
+                    let load = move || round_avatar(&cloud.avatar(&token, &u).map_err(|e| e.message)?);
+                    tokio::task::spawn_blocking(load).await.expect("avatar worker thread")
+                },
+                move |r| UiMessage::AvatarLoaded(url, r),
+            )
+        }))
+    }
+
+    fn chat_avatar<'a>(&self, chat: &Chat, me: &str, size: f32) -> El<'a> {
+        match dm_avatar_url(chat).and_then(|u| self.avatars.get(u)?.clone()) {
+            Some(h) => image(h).width(size).height(size).into(),
+            None if chat.id == NOTE_CHAT_ID => self_avatar(me, size),
+            None => avatar(&chat.title, size),
+        }
     }
 
     fn window_settings(size: Size) -> window::Settings {
@@ -906,6 +949,12 @@ impl BeeperGuiApp {
             UiMessage::ToggleSetting(flip) => self.patch_settings(flip),
             UiMessage::CloudAccounts(Ok(accounts)) => self.store.write().unwrap().set_cloud_accounts(accounts),
             UiMessage::CloudAccounts(Err(e)) => self.status_banner = format!("Could not load your chat accounts: {e}"),
+            UiMessage::AvatarLoaded(url, Ok(h)) => {
+                self.avatars.insert(url, Some(h));
+            }
+            UiMessage::AvatarLoaded(url, Err(e)) => {
+                self.status_banner = format!("Could not load the avatar {url}: {e}")
+            }
             UiMessage::RecoveryInputChanged(v) => self.recovery_code_input = v,
             UiMessage::VerifyRecoveryCode => {
                 let mut st = self.store.write().unwrap();
@@ -1018,7 +1067,10 @@ impl BeeperGuiApp {
             {
                 self.login.screen = login::Screen::Accounts;
             }
-            UiMessage::StoreChanged => self.refresh_theme_and_tray(),
+            UiMessage::StoreChanged => {
+                self.refresh_theme_and_tray();
+                return self.load_avatars();
+            }
             UiMessage::FocusRequested(chat) => {
                 if let Some(id) = chat {
                     self.select_chat(&id);
@@ -1284,8 +1336,9 @@ impl BeeperGuiApp {
                 .spacing(3)
                 .align_y(Center);
                 let unread = (c.unread_count > 0).then(|| count_badge(c.unread_count, p.accent));
-                let face =
-                    stack![chat_avatar(c, me, 40.0), container(unread).width(44).align_right(44)].width(44).height(40);
+                let face = stack![self.chat_avatar(c, me, 40.0), container(unread).width(44).align_right(44)]
+                    .width(44)
+                    .height(40);
                 let item = column![face, label]
                     .spacing(4)
                     .align_x(Center)
@@ -1344,7 +1397,7 @@ impl BeeperGuiApp {
                 .spacing(4)
                 .align_y(Center);
             let item = row![
-                badged(p, chat_avatar(c, me, 28.0), &c.account_id, 28.0, 12.0),
+                badged(p, self.chat_avatar(c, me, 28.0), &c.account_id, 28.0, 12.0),
                 column![top, preview].spacing(1).width(Fill)
             ]
             .spacing(4)
@@ -1417,7 +1470,7 @@ impl BeeperGuiApp {
             .padding(Padding::new(6.0).left(10.0).top(if chat.id == NOTE_CHAT_ID { 6.0 } else { 8.0 }))
             .style(btn_style([p.elevated, p.selected, p.selected], [p.text; 3], 14.0))
             .on_press(UiMessage::ToggleRightPanel);
-        let ring = container(chat_avatar(chat, me, 40.0)).padding(1).style(fill_box(p.card, 21.0));
+        let ring = container(self.chat_avatar(chat, me, 40.0)).padding(1).style(fill_box(p.card, 21.0));
         let header = stack![
             container(pill).center_x(Fill).padding(Padding::ZERO.top(44.0)),
             container(ring).center_x(Fill).padding(Padding::ZERO.top(8.0))
@@ -1783,7 +1836,7 @@ impl BeeperGuiApp {
         let body = column![
             closable_head(p, "Chat Info", 13.0, UiMessage::ToggleRightPanel),
             column![
-                chat_avatar(chat, me, 64.0),
+                self.chat_avatar(chat, me, 64.0),
                 semi(chat.title.clone(), 15.0).color(p.strong),
                 txt(network_name(&chat.account_id), 12.0).color(p.sub)
             ]
