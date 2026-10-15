@@ -1439,7 +1439,7 @@ impl BeeperGuiApp {
             ..Default::default()
         });
         let overlay = stack![fade, header, container(feedback).align_right(Fill).padding([12, 12])];
-        let pane = column![stack![list, overlay].height(Fill), self.view_composer(&st, chat)];
+        let pane = column![stack![list, overlay].width(Fill).height(Fill), self.view_composer(&st, chat)];
         container(pane).width(Fill).height(Fill).clip(true).style(fill_box(p.card, 10.0)).into()
     }
 
