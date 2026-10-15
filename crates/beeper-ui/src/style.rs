@@ -32,6 +32,8 @@ pub mod icon {
     pub const KEEP: char = '\u{f013}';
     pub const DOWNLOAD: char = '\u{f014}';
     pub const BELL: char = '\u{e059}';
+    pub const CLOUD: char = '\u{e088}';
+    pub const CIRCLE_PLUS: char = '\u{e081}';
     pub const CIRCLE_CHECK: char = '\u{e226}';
     pub const LINK: char = '\u{e102}';
     pub const ARROW_UP_RIGHT: char = '\u{e04d}';

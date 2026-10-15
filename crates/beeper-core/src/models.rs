@@ -539,6 +539,31 @@ pub struct BridgeAccountInfo {
     pub mode: BridgeMode,
     pub network_name: String,
     pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_profile: Option<RemoteProfile>,
+}
+
+impl BridgeAccountInfo {
+    pub fn display_text(&self) -> Option<String> {
+        self.remote_name.clone().or_else(|| {
+            let p = self.remote_profile.as_ref()?;
+            p.email.clone().or(p.phone.clone()).or(p.username.as_ref().map(|u| format!("@{u}"))).or(p.name.clone())
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteProfile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phone: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
