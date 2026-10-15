@@ -15,7 +15,7 @@ beeper-ui = { path = "crates/beeper-ui" }
 tokio = { version = "1.40", default-features = false, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-rusqlite = { version = "0.32", default-features = false }
+rusqlite = { version = "0.32", default-features = false, features = ["bundled"] }
 
 [package]
 name = "beeper-rs"
