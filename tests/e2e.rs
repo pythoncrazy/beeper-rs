@@ -39,6 +39,7 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
+#[cfg(target_os = "linux")]
 async fn wait_for(path: &std::path::Path) {
     for _ in 0..50 {
         if path.exists() {
