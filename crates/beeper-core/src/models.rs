@@ -10,6 +10,7 @@ pub const CHAT_MARKED_UNREAD: u16 = 1 << 5;
 pub const CHAT_NOTIFY_ANYWAY: u16 = 1 << 6;
 pub const CHAT_MERGED_PARENT: u16 = 1 << 7;
 pub const CHAT_HIDDEN: u16 = 1 << 8;
+pub const CHAT_REQUEST: u16 = 1 << 9;
 
 pub const MSG_SENDER_SELF: u16 = 1 << 0;
 pub const MSG_UNREAD: u16 = 1 << 1;
@@ -284,6 +285,8 @@ pub struct Chat {
     pub chat_theme: Option<ChatThemeCustom>,
     #[serde(rename = "isHiddenFromInbox", skip_serializing_if = "Option::is_none")]
     pub is_hidden_from_inbox: Option<bool>,
+    #[serde(rename = "isRequest", skip_serializing_if = "Option::is_none")]
+    pub is_request: Option<bool>,
     #[serde(rename = "networkName", skip_serializing_if = "Option::is_none")]
     pub network_name: Option<String>,
     #[serde(skip)]
@@ -306,6 +309,7 @@ impl Chat {
             (marked, CHAT_MARKED_UNREAD),
             (self.merge.is_some(), CHAT_MERGED_PARENT),
             (self.is_hidden_from_inbox == Some(true), CHAT_HIDDEN),
+            (self.is_request == Some(true), CHAT_REQUEST),
         ]) | (self.flags & CHAT_NOTIFY_ANYWAY);
     }
 }

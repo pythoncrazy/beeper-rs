@@ -577,6 +577,7 @@ impl BeeperStore {
             reminder: None,
             chat_theme: None,
             is_hidden_from_inbox: None,
+            is_request: None,
             network_name: None,
             flags: 0,
         };
@@ -831,6 +832,7 @@ impl BeeperStore {
             reminder: None,
             chat_theme: None,
             is_hidden_from_inbox: None,
+            is_request: None,
             network_name: None,
             participants: ChatParticipants { has_more: false, total: items.len(), items },
             flags: 0,
