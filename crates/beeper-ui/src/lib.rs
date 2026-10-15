@@ -4,7 +4,7 @@ pub mod style;
 use crate::login::{Login, LoginMsg};
 
 use crate::style::{
-    bold, bordered_box, brand_svg, btn_style, ell, ensure_fonts_loaded, fill_box, fw, hash_str, hue, ic, icon,
+    bold, bordered_box, brand_svg, btn_style, clamp, ell, ensure_fonts_loaded, fill_box, fw, hash_str, hue, ic, icon,
     initials, input_style, med, pick_menu_style, pick_style, scroll_style, semi, shadow_box, txt, Palette, ALL_FONTS,
     CLEAR,
 };
@@ -1555,8 +1555,8 @@ impl BeeperGuiApp {
             let host = url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(url).to_string();
             let body = column![]
                 .push(site.map(|s| txt(s.to_string(), 11.0).color(p.sub)))
-                .push(semi(title.to_string(), 13.0).color(p.strong))
-                .push(summary.map(|s| txt(s.to_string(), 13.0).color(p.sub)))
+                .push(clamp(title, 338.0, 3, 13.0, Weight::Semibold).color(p.strong))
+                .push(summary.map(|s| clamp(s, 338.0, 3, 13.0, Weight::Normal).color(p.sub)))
                 .push(
                     row![ic(icon::LINK, 11.0).color(p.weak), txt(host, 11.0).color(p.weak)].spacing(4).align_y(Center),
                 )
@@ -1680,6 +1680,7 @@ impl BeeperGuiApp {
                 .collect();
             let body = rich_text(spans)
                 .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
                 .on_link_click(UiMessage::OpenUrl);
             parts = parts.push(
                 container(row![body, time].spacing(8).align_y(Bottom).wrap())
