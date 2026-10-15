@@ -9,9 +9,7 @@ use crate::style::{
     CLEAR,
 };
 use beeper_core::cloud::Cloud;
-use beeper_core::config::{
-    account_network, civil_from_days, millis_from_rfc3339, now_unix_secs, APP_BUNDLE_ID, APP_VERSION,
-};
+use beeper_core::config::{account_network, civil_from_days, millis_from_rfc3339, now_unix_secs, APP_VERSION};
 use beeper_core::import::has_beeper_data;
 use beeper_core::models::*;
 use beeper_core::platform::{
@@ -604,7 +602,7 @@ impl BeeperGuiApp {
             }),
             #[cfg(target_os = "linux")]
             platform_specific: window::settings::PlatformSpecific {
-                application_id: APP_BUNDLE_ID.into(),
+                application_id: beeper_core::config::APP_BUNDLE_ID.into(),
                 ..Default::default()
             },
             ..Default::default()
