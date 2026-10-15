@@ -31,13 +31,22 @@
 - **Bundled typography, icons, and network logos**: Embeds `Inter` (`Regular`, `Medium`, `SemiBold`, `Bold`), a `Lucide` icon subset, and CC0 `Simple Icons` network logos directly in the binary.
 - **Beeper Desktop 4.3 layout**: Renders the `68px` account rail, the compact Inbox sidebar (`190px` default, drag-resizable) with pinned chats, the rounded conversation card with a floating chat header, date dividers, link previews, quoted replies, voice notes, files, polls, and reactions, the Beeper composer, the Chat Info panel, and a separate Settings window with the Beeper preference groups.
 - **Native cross-platform support**: Runs natively on Linux (Wayland and X11), macOS (AppKit / Metal), and Windows (Win32 / DirectX 12 / Vulkan) with OS-specific directory resolution, `file://` URL handling, autostart manifests, and protocol handlers.
-- **Fast compilation and linking**: Configured in `.cargo/config.toml` to use `sccache` (`rustc-wrapper = "sccache"`) across all platforms, `mold` v3 on Linux and Windows GNU targets, `rust-lld` on Windows MSVC targets, and unpacked debug info on macOS targets.
+- **Fast compilation and linking**: `.cargo/config.toml` sets `sccache` as the `rustc` wrapper on all platforms, `mold` as the linker on Linux, and `rust-lld` as the linker on Windows MSVC targets. CI uses the same tools and keeps the `sccache` cache in the GitHub Actions cache.
 - **Rust-native protocols and primitives**: Implements HTTP/1.1, RFC 6455 WebSockets, SHA-256, SHA-1, Base64, URL percent-encoding, RFC 3339 timestamps, CLI argument parsing, and 32x32 RGBA system tray icon rendering directly in Rust.
 - **SQLite WAL and inverted search index**: Persists state in `beeper-rs/beeper-rs.db` using SQLite Write-Ahead Logging (WAL) and indexes chats, messages, and settings in an in-memory inverted index.
 - **System colour scheme**: Settings > Appearance > Theme has the Light, Dark, and System choices. System is the default and follows the light or dark mode of the device live (the XDG desktop portal on Linux, the native setting on macOS and Windows).
 - **System window frame**: The windows use the native title bar and border. On a Wayland compositor that has no server-side decorations (for example GNOME), beeper-rs uses XWayland to get the system frame.
 
 ## Local Testing Guide
+
+### Build Tools
+
+Install `sccache` on all platforms and `mold` on Linux before you build. For example, on Ubuntu:
+
+```bash
+sudo apt-get install -y mold pkg-config libxkbcommon-dev libwayland-dev
+cargo install --locked sccache
+```
 
 ### 1. Run the Automated End-to-End Test Suite
 
