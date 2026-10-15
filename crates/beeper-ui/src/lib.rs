@@ -435,6 +435,12 @@ fn badge<'a>(p: &Palette, b: prefs::Badge) -> El<'a> {
 
 const THEME_WINDOW: &str = r##"<rect x="10" y="7" width="76" height="47" rx="4" fill="WIN"/><circle cx="15" cy="12" r="1.4" fill="#ff5f57"/><circle cx="19.5" cy="12" r="1.4" fill="#febc2e"/><circle cx="24" cy="12" r="1.4" fill="#28c840"/><rect x="36" y="16" width="24" height="3" rx="1.5" fill="LINE"/><rect x="14" y="23" width="68" height="2" rx="1" fill="LINE"/><rect x="14" y="28" width="68" height="11" rx="2.5" fill="#0d4ffb"/><circle cx="19.5" cy="33.5" r="3" fill="#fff"/><rect x="25" y="31" width="28" height="1.8" rx=".9" fill="#fff"/><rect x="25" y="34.6" width="48" height="1.5" rx=".75" fill="#bcd2ff"/><rect x="14" y="43" width="68" height="2" rx="1" fill="LINE"/><rect x="14" y="48" width="48" height="2" rx="1" fill="LINE"/>"##;
 
+static DASHED_RING: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
+    ["#000", "#fff"].map(|c| {
+        svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect x="1" y="1" width="30" height="30" rx="7" fill="none" stroke="{c}" stroke-opacity=".15" stroke-width="2" stroke-dasharray="4 3"/></svg>"#).into_bytes())
+    })
+});
+
 static THEME_ART: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock::new(|| {
     let light = THEME_WINDOW.replace("WIN", "#f5f5f7").replace("LINE", "#d9d9de");
     let dark = THEME_WINDOW.replace("WIN", "#1f1f23").replace("LINE", "#3a3a41");
@@ -1198,7 +1204,8 @@ impl BeeperGuiApp {
             .into()
         };
         let g = |c: char| -> El<'static> { ic(c, 18.0).color(p.strong).into() };
-        let add_space = container(g(icon::MAPS_UGC)).center(36).style(bordered_box(CLEAR, p.tertiary, 1.0, 12.0));
+        let ring = svg(DASHED_RING[usize::from(self.dark)].clone()).width(32).height(32);
+        let add_space = stack![ring, container(ic(icon::MAPS_UGC, 20.0).color(p.strong)).center(32)];
         let st = self.store.read().unwrap();
         let accounts =
             std::iter::once("hungryserv".to_string()).chain(st.accounts.iter().map(|a| a.account_id.clone()));
