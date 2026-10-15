@@ -467,6 +467,7 @@ pub async fn verify(store: SharedStore, confirm: oneshot::Receiver<bool>) -> Res
 }
 
 pub async fn run(store: SharedStore) {
+    rustls::crypto::ring::default_provider().install_default().expect("a rustls crypto provider is already installed");
     let mut rx = store.read().unwrap().ws_tx.subscribe();
     while !store.read().unwrap().signed_in() {
         rx.recv().await.ok();
