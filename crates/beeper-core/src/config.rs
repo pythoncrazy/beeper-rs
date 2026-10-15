@@ -1,4 +1,4 @@
-use crate::models::{BeeperSettings, LanguageChoice, NetworkKind, NetworkSpec, ThemeChoice};
+use crate::models::{BeeperSettings, NetworkKind, NetworkSpec, ThemeChoice};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -64,44 +64,11 @@ impl CentralConfig {
 impl Default for BeeperSettings {
     fn default() -> Self {
         Self {
-            show_archived_count: true,
-            show_starred_pin_view: true,
-            show_all_chats_pin_view: true,
-            show_unread_pin_view: true,
-            show_drafts_pin_view: true,
-            filter_pins_by_network: true,
-            show_favorite_chats_section: false,
-            keep_favorites_in_inbox: false,
-            show_message_previews: true,
-            unread_chats_always_on_top: false,
-            show_full_names_in_chats: true,
-            auto_play_videos: true,
-            show_chat_header: true,
-            show_message_input_buttons: true,
-            link_previews: true,
-            show_right_panel_by_default: false,
-            load_remote_content_automatically: true,
-            use_twenty_four_hour_time: true,
             theme: ThemeChoice::System,
-            no_transparency: false,
-            reduce_transparency: false,
-            fix_lockdown_emojis: false,
             zoom_percent: 100,
-            custom_css_path: None,
-            custom_css_source: String::new(),
-            language: LanguageChoice::English,
-            repeat_message_alerts: 0,
-            auto_transcribe_voice_notes: true,
             enable_pas_api: false,
             pas_port: DEFAULT_PAS_PORT,
-            launch_at_startup: false,
-            minimize_to_tray: true,
-            incognito_mode: false,
-            archive_after_reminder: true,
-            mark_read_on_archive: true,
-            after_archive: 0,
-            remind_later_default: 0,
-            compact_chat_list: true,
+            prefs: Default::default(),
         }
     }
 }

@@ -706,8 +706,12 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let unified = client.unified_search("rust").await;
     assert!(!unified["results"]["in_groups"].as_array().unwrap().is_empty());
 
-    let settings_hits = search_settings_catalog("transparency");
-    assert_eq!(settings_hits.len(), 2);
+    let settings_hits = search_settings_catalog("notifications");
+    assert!(
+        settings_hits.len() > 5
+            && settings_hits.iter().all(|(page, _)| *page == "Notifications" || page.contains("otif"))
+    );
+    assert_eq!(search_settings_catalog("emoji autocomplete")[0].1.key, "emojiAutocomplete");
 
     let del_resp = client.delete_message("!im_sarah:beeper.com", &sent_msg_id).await;
     assert_eq!(del_resp["success"], true);
@@ -768,15 +772,53 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert!(gui.settings_window.is_some());
     {
         let mut sim = simulator(gui.view_settings());
-        for label in ["Settings", "Search Settings", "Accounts", "Beeper Plus", "Theme", "Custom CSS"] {
+        for label in
+            ["Settings", "Search Settings", "Accounts", "Beeper Plus", "Chat List", "Show message previews", "Theme"]
+        {
             assert!(sim.find(label).is_ok(), "settings window shows {label}");
         }
-        sim.click("Dark").expect("dark theme card");
-        for m in sim.into_messages() {
-            let _ = gui.update(m);
+        assert!(["Light", "Dark", "System"].iter().all(|t| sim.find(*t).is_ok()), "the theme cards are shown");
+    }
+    let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::Dark));
+    assert!(gui.dark);
+    {
+        let st = store.read().unwrap();
+        assert!(st.settings.on("showMessagePreviews") && st.settings.pref("timeFormat") == 0);
+    }
+    let _ = gui.update(UiMessage::SetPref("timeFormat", 1));
+    let _ = gui.update(UiMessage::SetPref("showMessagePreviews", 0));
+    for (step, zoom) in [(1, 1.1), (1, 1.25), (-1, 1.1), (0, 1.0), (-1, 0.9)] {
+        let _ = gui.update(UiMessage::Zoom(step));
+        assert_eq!(gui.zoom, zoom);
+    }
+    let _ = gui.update(UiMessage::Zoom(0));
+    {
+        let st = store.read().unwrap();
+        assert!(!st.settings.on("showMessagePreviews") && st.settings.pref("timeFormat") == 1);
+        let stored: BeeperSettings = serde_json::from_value(serde_json::to_value(&st.settings).unwrap()).unwrap();
+        assert_eq!(stored.prefs, st.settings.prefs, "prefs survive a round trip");
+        let mut bad = st.settings.clone();
+        for (key, v) in [("timeFormat", 2), ("showSidebar", 2), ("noSuchPref", 0)] {
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| bad.set_pref(key, v)));
+            assert!(r.is_err(), "{key} = {v} is rejected");
         }
     }
-    assert!(gui.dark);
+    for page in [SettingsTab::General, SettingsTab::Notifications] {
+        let _ = gui.update(UiMessage::SelectSettingsTab(page));
+        let mut sim = simulator(gui.view_settings());
+        for label in
+            ["App language", "Time Format", "Share Analytics", "Delay notifications for", "Sound effect volume"]
+        {
+            let tab = if label.starts_with("Delay") || label.starts_with("Sound") {
+                SettingsTab::Notifications
+            } else {
+                SettingsTab::General
+            };
+            assert_eq!(sim.find(label).is_ok(), tab == page, "{label} is on {tab:?}");
+        }
+    }
+    let _ = gui.update(UiMessage::SetPref("timeFormat", 0));
+    let _ = gui.update(UiMessage::SetPref("showMessagePreviews", 1));
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));
     for (mode, dark) in [(iced::theme::Mode::Dark, true), (iced::theme::Mode::Light, false)] {
         let _ = gui.update(UiMessage::SystemTheme(mode));

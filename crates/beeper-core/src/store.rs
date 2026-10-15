@@ -1,6 +1,7 @@
 use crate::config::{
-    assert_not_original_beeper_dir, now_rfc3339_millis, now_unix_secs, CentralConfig, DEFAULT_DEVICE_ID,
-    DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN, DEFAULT_USER_ID, SEED_JSON, WS_CHANNEL_CAPACITY,
+    assert_not_original_beeper_dir, millis_from_rfc3339, now_rfc3339_millis, now_unix_secs, CentralConfig,
+    DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN, DEFAULT_USER_ID, SEED_JSON,
+    WS_CHANNEL_CAPACITY,
 };
 use crate::models::*;
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
@@ -97,45 +98,6 @@ const LINK_PREVIEWS: [(&str, &str, &str, &str); 3] = [
     ("https://arxiv.org/abs/2001.08361", "arXiv.org", "Scaling Laws for Neural Language Models", "We study empirical scaling laws for language model performance on the cross-entropy loss. The loss scales as a power-law with model size, dataset size, and the amount of compute used for training."),
     ("https://github.com/pythoncrazy/navify", "GitHub", "pythoncrazy/navify", "A fast, native Navidrome client written in Rust with iced. Low memory use, instant startup, and a polished desktop interface."),
     ("https://github.com/pythoncrazy/beeper-rs", "GitHub", "pythoncrazy/beeper-rs", "Ultra-fast, cross-platform, Rust-native drop-in replacement for Beeper Desktop with a compatible Desktop API server."),
-];
-
-#[derive(Debug, Clone)]
-pub struct SettingCatalogEntry {
-    pub section: &'static str,
-    pub title: &'static str,
-    pub description: &'static str,
-}
-
-const fn sc(section: &'static str, title: &'static str, description: &'static str) -> SettingCatalogEntry {
-    SettingCatalogEntry { section, title, description }
-}
-
-#[rustfmt::skip]
-pub const SETTINGS_CATALOG: [SettingCatalogEntry; 24] = [
-    sc("Chat List", "Show archived count", "Display total archived chats badge in the sidebar header"),
-    sc("Chat List", "Show starred pin view", "Pin tab for starred and favorite conversations"),
-    sc("Chat List", "Show all chats pin view", "Pin tab showing all unified inbox conversations"),
-    sc("Chat List", "Show unread pin view", "Quick filter pin tab for unread conversations"),
-    sc("Chat List", "Show drafts pin view", "Quick filter pin tab for conversations with unsent drafts"),
-    sc("Chat List", "Filter pins by network", "Scope pinned avatars to the currently selected chat network"),
-    sc("Chat List", "Show favorite chats section", "Display a dedicated Favorites group above the main chat list"),
-    sc("Chat List", "Keep favorites in inbox", "Keep favorited conversations visible inside the main inbox list"),
-    sc("Chat List", "Show message previews", "Show latest message snippet below each chat title in the sidebar"),
-    sc("Chat List", "Unread chats always on top", "Sort unread threads above read threads in the chat list"),
-    sc("Conversation View", "Show full names in chats", "Display full sender names instead of first names in group chats"),
-    sc("Conversation View", "Auto-play videos", "Automatically play inline video attachments and GIFs"),
-    sc("Conversation View", "Show chat header", "Show the top header bar with participant details in conversation view"),
-    sc("Conversation View", "Show message input buttons", "Show attachment, emoji, voice note, poll, and schedule buttons in composer"),
-    sc("Conversation View", "Link previews", "Generate rich previews for URLs shared in messages"),
-    sc("Conversation View", "Show right panel by default", "Keep the Chat Info, Shared Media, and Bookmarks inspector open"),
-    sc("Conversation View", "Load remote content automatically", "Fetch external images and link metadata automatically"),
-    sc("Conversation View", "Use 24-hour time", "Format message timestamps using 24-hour military clock"),
-    sc("Appearance", "CSS Theme", "Switch between Light, Dark, Dracula, Nocturne, Dark Purple, and Custom CSS"),
-    sc("Appearance", "No transparency", "Disable window vibrancy and translucent backgrounds (.no-transparency)"),
-    sc("Appearance", "Reduce transparency", "Use solid header and sidebar surfaces (.reduce-transparency)"),
-    sc("Appearance", "Fix Lockdown Mode Emojis", "Apply fix-lockdown-mode-emojis.css bitmap font override"),
-    sc("Voice & Media", "Transcribe voice notes", "Automatically transcribe incoming and outgoing voice notes on-device"),
-    sc("Notifications", "Repeat message alerts", "Repeat unread notification alerts up to 3 times"),
 ];
 
 #[derive(Deserialize)]
@@ -453,6 +415,7 @@ impl BeeperStore {
                 pas_port: self.settings.pas_port,
                 ..serde_json::from_str(&s).expect("parse stored settings")
             };
+            self.settings.assert_valid();
         }
         for a in assets {
             let asset: StoredAsset = serde_json::from_str(&a).expect("parse stored asset");
@@ -869,15 +832,7 @@ impl BeeperStore {
         let mut attachment = attachment;
         let msg_type = match attachment.as_mut() {
             None => "TEXT",
-            Some(att) if att.is_voice_note == Some(true) => {
-                if self.settings.auto_transcribe_voice_notes && att.transcript.is_none() {
-                    att.transcript = Some(format!(
-                        "[On-device transcript for {}]",
-                        att.file_name.as_deref().expect("voice note file name")
-                    ));
-                }
-                "VOICE"
-            }
+            Some(att) if att.is_voice_note == Some(true) => "VOICE",
             Some(att) if att.attachment_type == "img" => "IMAGE",
             Some(att) if att.attachment_type == "video" => "VIDEO",
             Some(_) => "FILE",
@@ -985,7 +940,7 @@ impl BeeperStore {
 
     pub fn retranscribe_voice_note(&mut self, message_id: &str) -> String {
         let m_idx = self.msg_idx_by_id[message_id];
-        let label = self.settings.language.label();
+        let label = crate::prefs::LANGUAGES[self.settings.pref("appLanguage") as usize];
         let msg = self.update_message(m_idx, |m| {
             let att =
                 m.attachments.iter_mut().find(|a| a.is_voice_note == Some(true)).expect("message has a voice note");
@@ -1037,6 +992,22 @@ impl BeeperStore {
                 c.title = nick.clone();
             }
         });
+    }
+
+    pub fn stale_inbox_chats(&self) -> Vec<usize> {
+        let only_read = self.settings.pref("archiveScope") == 1;
+        let days = crate::prefs::ARCHIVE_AGE_DAYS[self.settings.pref("archiveAge") as usize];
+        let cutoff = (now_unix_secs() - days * 86_400) * 1000;
+        let ms = |c: &Chat| c.last_activity.as_deref().map(|t| millis_from_rfc3339(t).expect("RFC 3339 activity"));
+        (0..self.chats.len())
+            .filter(|&i| {
+                let c = &self.chats[i];
+                c.merged_into_chat_id.is_none()
+                    && c.flags & (CHAT_ARCHIVED | CHAT_PINNED) == 0
+                    && !(only_read && c.flags & CHAT_UNREAD != 0)
+                    && ms(c).is_some_and(|t| t < cutoff)
+            })
+            .collect()
     }
 
     pub fn total_unread_chats(&self) -> u32 {
