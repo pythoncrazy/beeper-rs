@@ -361,12 +361,12 @@ fn sign_in_step(store: &SharedStore, cloud: &Cloud, step: &str, r: &Req) -> Repl
         }
         other => unreachable!("sign-in step {other}"),
     };
-    let (session, profile) = cloud.finish(&jwt).map_err(upstream)?;
+    let (session, profile, accounts) = cloud.finish(&jwt).map_err(upstream)?;
     let mut st = store.write().unwrap();
     if st.signed_in() {
         return Err(already());
     }
-    st.sign_in(session, cloud.homeserver.clone(), &profile);
+    st.sign_in(session, cloud.homeserver.clone(), &profile, accounts);
     let s = &st.beeper_state;
     let matrix = json!({ "userID": s.user_id, "deviceID": s.device_id, "accessToken": s.access_token, "homeserver": s.homeserver });
     ok(&json!({ "matrix": matrix, "session": st.setup_status.session }))

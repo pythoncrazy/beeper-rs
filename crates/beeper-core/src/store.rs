@@ -501,7 +501,7 @@ impl BeeperStore {
         self.db.lock().unwrap().execute_batch("BEGIN IMMEDIATE;").expect("begin import transaction");
         self.finish_setup(Setup::Imported);
         if let Some((session, homeserver)) = data.session {
-            self.sign_in(session, homeserver, &data.profile);
+            self.sign_in(session, homeserver, &data.profile, Vec::new());
         }
         let (chats, messages) = (self.chats.len(), self.messages.len());
         for c in data.chats {
@@ -522,7 +522,20 @@ impl BeeperStore {
         !self.beeper_state.access_token.is_empty()
     }
 
-    pub fn sign_in(&mut self, session: MatrixSession, homeserver: String, profile: &Profile) {
+    pub fn set_cloud_accounts(&mut self, accounts: Vec<BridgeAccountInfo>) {
+        assert!(self.signed_in(), "cloud accounts need a signed-in session");
+        self.bridge_accounts = accounts;
+        self.rebuild_accounts_from_bridges();
+        self.persist_state_to_sqlite();
+    }
+
+    pub fn sign_in(
+        &mut self,
+        session: MatrixSession,
+        homeserver: String,
+        profile: &Profile,
+        accounts: Vec<BridgeAccountInfo>,
+    ) {
         assert!(!self.signed_in(), "sign in while already signed in as {}", self.beeper_state.user_id);
         if self.setup.is_none() {
             self.finish_setup(Setup::Fresh);
@@ -538,7 +551,7 @@ impl BeeperStore {
         self.setup_status = Self::build_setup_from_state(&self.beeper_state);
         self.persist_state_to_sqlite();
         self.ensure_note_chat(profile);
-        self.rebuild_accounts_from_bridges();
+        self.set_cloud_accounts(accounts);
         self.emit_ws(
             "chat.upserted",
             NOTE_CHAT_ID,

@@ -36,6 +36,9 @@ pub enum NetworkKind {
     LinkedIn,
     Line,
     Tumblr,
+    Snapchat,
+    WeChat,
+    Bluesky,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

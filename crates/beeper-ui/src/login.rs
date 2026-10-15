@@ -1,12 +1,16 @@
-use crate::style::{bold, bordered_box, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, CLEAR};
+use crate::style::{
+    bold, bordered_box, brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, CLEAR,
+};
 use crate::{BeeperGuiApp, El, UiMessage};
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
+use beeper_core::config::{account_network, NETWORK_SPECS};
 use beeper_core::import::{read_beeper_data, BeeperData};
-use beeper_core::models::{MatrixSession, Profile};
+use beeper_core::models::{BridgeAccountInfo, MatrixSession, Profile};
 use beeper_core::store::{Setup, NOTE_CHAT_ID};
 use iced::gradient::Linear;
 use iced::widget::{
-    button, column, container, mouse_area, operation, rich_text, row, span, stack, svg, text_input, Space,
+    button, column, container, mouse_area, operation, rich_text, row, scrollable, span, stack, svg, text_input,
+    tooltip, Space,
 };
 use iced::{border, window, Background, Center, Color, Degrees, Fill, Gradient, Padding, Size, Task, Theme};
 use std::path::PathBuf;
@@ -44,6 +48,7 @@ pub enum Screen {
     Email,
     Code,
     Username,
+    Accounts,
 }
 
 #[derive(Default)]
@@ -57,6 +62,7 @@ pub struct Login {
     lead_token: String,
     busy: bool,
     menu: bool,
+    query: String,
     source: Option<PathBuf>,
 }
 
@@ -70,7 +76,7 @@ impl Login {
 pub enum Outcome {
     Requested(String),
     Lead(String, Vec<String>),
-    Session(MatrixSession, Profile),
+    Session(MatrixSession, Profile, Vec<BridgeAccountInfo>),
     Imported(Arc<BeeperData>),
 }
 
@@ -88,6 +94,8 @@ pub enum LoginMsg {
     SubmitUsername,
     Menu,
     StartOver,
+    Query(String),
+    Continue,
     Done(Result<Outcome, String>),
 }
 
@@ -101,12 +109,81 @@ fn previous(s: Screen) -> Option<Screen> {
     match s {
         Screen::Email => Some(Screen::Welcome),
         Screen::Code => Some(Screen::Email),
-        Screen::Import | Screen::Welcome | Screen::Username => None,
+        Screen::Import | Screen::Welcome | Screen::Username | Screen::Accounts => None,
     }
 }
 
 fn session(cloud: &Cloud, jwt: &str) -> Result<Outcome, CloudError> {
-    cloud.finish(jwt).map(|(s, p)| Outcome::Session(s, p))
+    cloud.finish(jwt).map(|(s, p, a)| Outcome::Session(s, p, a))
+}
+
+pub const FREE_ACCOUNTS: usize = 10;
+
+pub fn network_grid(accounts: &[BridgeAccountInfo], query: &str, ink: Color) -> El<'static> {
+    let q = query.trim().to_lowercase();
+    let tiles: Vec<El<'static>> = NETWORK_SPECS[1..]
+        .iter()
+        .filter(|n| cfg!(target_os = "macos") || n.bridge_id != "imessage")
+        .filter(|n| n.display_name.to_lowercase().contains(&q) || n.bridge_id.contains(&q))
+        .map(|n| {
+            let count = accounts.iter().filter(|a| account_network(&a.bridge_id).bridge_id == n.bridge_id).count();
+            let dot = |_| {
+                container(Space::new())
+                    .width(12)
+                    .height(12)
+                    .style(fill_box(Color::from_rgb8(n.brand_rgb[0], n.brand_rgb[1], n.brand_rgb[2]), 6.0))
+                    .into()
+            };
+            let chip = (count > 0).then(|| {
+                container(row((0..count.min(4)).map(dot)).spacing(2)).padding(2).style(fill_box(FIELD, 999.0))
+            });
+            let tile = column![
+                svg(brand_svg(n.bridge_id)).width(36).height(36),
+                semi(n.display_name, 11.0).color(ink).center().width(Fill)
+            ]
+            .push(chip)
+            .spacing(10)
+            .align_x(Center)
+            .padding(8);
+            let tip = match count {
+                0 => format!("Connect {} in the Beeper mobile app", n.display_name),
+                1 => "1 active account".to_string(),
+                c => format!("{c} active accounts"),
+            };
+            let tip = container(txt(tip, 13.0).color(INK)).padding([6, 12]).style(shadow_box(
+                Color::WHITE,
+                FIELD,
+                16.0,
+                10.0,
+            ));
+            tooltip(tile, tip, tooltip::Position::Bottom).into()
+        })
+        .collect();
+    if tiles.is_empty() {
+        return container(txt("No networks found", 13.0).color(HINT)).center_x(Fill).padding(24).into();
+    }
+    let mut rows = Vec::new();
+    let mut tiles = tiles.into_iter().peekable();
+    while tiles.peek().is_some() {
+        let cells: Vec<El<'static>> = tiles.by_ref().take(4).map(|t| container(t).width(Fill).into()).collect();
+        let pad = (cells.len()..4).map(|_| Space::new().width(Fill).into());
+        rows.push(row(cells.into_iter().chain(pad)).into());
+    }
+    column(rows).spacing(24).padding(8).into()
+}
+
+fn card_style(_: &Theme) -> container::Style {
+    let shadow = iced::Shadow {
+        color: Color::from_rgba(0.0, 0.0, 0.0, 0.03),
+        offset: iced::Vector::new(0.0, 2.0),
+        blur_radius: 4.0,
+    };
+    container::Style {
+        background: Some(Color::WHITE.into()),
+        border: border::rounded(12),
+        shadow,
+        ..Default::default()
+    }
 }
 
 fn brand_gradient() -> Background {
@@ -163,6 +240,14 @@ fn field<'a>(id: &'static str, hint: &'a str, value: &'a str, on: fn(String) -> 
 impl BeeperGuiApp {
     pub fn login_window_settings() -> window::Settings {
         window::Settings { resizable: false, min_size: None, ..Self::window_settings(Size::new(330.0, 620.0)) }
+    }
+
+    pub fn refresh_cloud_accounts(&self) -> Task<UiMessage> {
+        let (cloud, token) = (self.cloud.clone(), self.store.read().unwrap().beeper_state.access_token.clone());
+        Task::perform(
+            async move { tokio::task::spawn_blocking(move || cloud.whoami(&token)).await.expect("whoami worker thread") },
+            |r| UiMessage::CloudAccounts(r.map(|(_, a)| a).map_err(|e| e.message)),
+        )
     }
 
     pub fn enter_app(&mut self) -> Task<UiMessage> {
@@ -259,6 +344,11 @@ impl BeeperGuiApp {
             }
             LoginMsg::Menu => {}
             LoginMsg::StartOver => self.login = Login::new(l.source.take()),
+            LoginMsg::Query(q) => l.query = q,
+            LoginMsg::Continue => {
+                self.login = Login::default();
+                return self.enter_app();
+            }
             LoginMsg::Done(r) => {
                 l.busy = false;
                 l.error = r.as_ref().err().cloned();
@@ -275,10 +365,10 @@ impl BeeperGuiApp {
                         l.screen = Screen::Username;
                         return operation::focus(USERNAME_INPUT);
                     }
-                    Ok(Outcome::Session(session, profile)) => {
+                    Ok(Outcome::Session(session, profile, accounts)) => {
                         let homeserver = self.cloud.homeserver.clone();
-                        self.store.write().unwrap().sign_in(session, homeserver, &profile);
-                        return self.enter_app();
+                        self.store.write().unwrap().sign_in(session, homeserver, &profile, accounts);
+                        l.screen = Screen::Accounts;
                     }
                     Ok(Outcome::Imported(data)) => {
                         let mut st = self.store.write().unwrap();
@@ -287,7 +377,8 @@ impl BeeperGuiApp {
                         drop(st);
                         self.login = Login::default();
                         if signed_in {
-                            return self.enter_app();
+                            self.login.screen = Screen::Accounts;
+                            return self.refresh_cloud_accounts();
                         }
                     }
                 }
@@ -442,6 +533,35 @@ impl BeeperGuiApp {
                 ]
                 .into()
             }
+            Screen::Accounts => {
+                let accounts = self.store.read().unwrap().bridge_accounts.clone();
+                let search = row![
+                    ic(icon::SEARCH, 16.0).color(HINT),
+                    text_input("Search...", &l.query)
+                        .on_input(|v| LoginMsg::Query(v).into())
+                        .size(14)
+                        .padding([10, 0])
+                        .style(input_style(CLEAR, INK, HINT, CLEAR, 0.0)),
+                ]
+                .spacing(10)
+                .align_y(Center)
+                .padding([0, 16]);
+                let divider = container(Space::new()).width(Fill).height(1).style(fill_box(FIELD, 0.0));
+                let grid = scrollable(network_grid(&accounts, &l.query, Color::BLACK)).height(Fill);
+                let go_on = container(pill(label("Continue", None), 30.0, None, Some(LoginMsg::Continue.into())))
+                    .padding(Padding::new(12.0).top(8.0));
+                let remaining = FREE_ACCOUNTS.saturating_sub(accounts.len());
+                let foot =
+                    txt(format!("{remaining} free accounts remaining."), 12.0).color(Color::from_rgb8(128, 128, 128));
+                column![
+                    container(bold("Connect Chat Accounts", 26.0).color(HEADING)).center_x(Fill).center_y(48),
+                    Space::new().height(8),
+                    container(column![search, divider, grid, go_on]).height(Fill).style(card_style),
+                    container(foot).center_x(Fill).center_y(31),
+                ]
+                .padding([0, 8])
+                .into()
+            }
             Screen::Username => column![
                 Space::new().height(34),
                 heading("Pick a Username", 28.0),
@@ -462,18 +582,25 @@ impl BeeperGuiApp {
             .style(btn_style([CLEAR, FIELD, FIELD], [INK; 3], 6.0))
             .on_press(LoginMsg::Menu.into());
         let controls = container(chevron).align_right(Fill).height(36).padding(Padding::ZERO.top(2).right(2));
-        let card = container(column![controls, body]).width(Fill).height(Fill).style(fill_box(Color::WHITE, 8.0));
-        let item = |s: &'static str, m: LoginMsg| -> El<'static> {
+        let onboarding = l.screen == Screen::Accounts;
+        let page = container(column![controls, body]).width(Fill).height(Fill);
+        let page = if onboarding { page } else { page.style(fill_box(Color::WHITE, 8.0)) };
+        let item = |s: &'static str, m: UiMessage| -> El<'static> {
             button(txt(s, 13.0).color(INK))
                 .width(Fill)
                 .padding([6, 10])
                 .style(btn_style([CLEAR, FIELD, FIELD], [INK; 3], 6.0))
-                .on_press(m.into())
+                .on_press(m)
                 .into()
         };
         let menu = l.menu.then(|| {
-            let back = previous(l.screen).map(|s| item("Go Back", LoginMsg::Show(s)));
-            let items = column![].push(back).push(item("Start Over", LoginMsg::StartOver)).padding(4).width(160);
+            let back = previous(l.screen).map(|s| item("Go Back", LoginMsg::Show(s).into()));
+            let last = if onboarding {
+                item("Report a Problem", UiMessage::OpenUrl("https://github.com/pythoncrazy/beeper-rs/issues".into()))
+            } else {
+                item("Start Over", LoginMsg::StartOver.into())
+            };
+            let items = column![].push(back).push(last).padding(4).width(160);
             mouse_area(
                 container(container(items).style(shadow_box(Color::WHITE, FIELD, 8.0, 14.0)))
                     .align_right(Fill)
@@ -482,6 +609,7 @@ impl BeeperGuiApp {
             )
             .on_press(LoginMsg::Menu.into())
         });
-        container(stack![card].push(menu)).padding(8).style(fill_box(FRAME, 0.0)).into()
+        let (pad, frame) = if onboarding { (0, FIELD) } else { (8, FRAME) };
+        container(stack![page].push(menu)).padding(pad).style(fill_box(frame, 0.0)).into()
     }
 }
