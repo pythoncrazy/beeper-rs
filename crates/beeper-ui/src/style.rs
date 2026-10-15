@@ -84,38 +84,59 @@ pub const fn fw(weight: Weight) -> Font {
     Font { family: Family::Name("Inter"), weight, ..Font::DEFAULT }
 }
 
-fn glyphs(s: &str, size: f32, w: Weight) -> (f32, Vec<(usize, f32)>) {
+fn shape<T>(s: &str, size: f32, w: Weight, width: Option<f32>, f: impl FnOnce(&cosmic_text::Buffer) -> T) -> T {
     ensure_fonts_loaded();
     let mut fs = font_system().write().expect("font system");
     let mut buf = cosmic_text::Buffer::new(fs.raw(), cosmic_text::Metrics::new(size, size * 1.2));
+    buf.set_size(fs.raw(), width, None);
     buf.set_text(fs.raw(), s, &to_attributes(fw(w)), cosmic_text::Shaping::Advanced, None);
-    let mut out = Vec::new();
-    let mut total = 0.0;
-    for g in buf.layout_runs().flat_map(|r| r.glyphs.iter()) {
-        total += g.w;
-        out.push((g.end, total));
-    }
-    (total, out)
+    f(&buf)
+}
+
+fn glyphs(s: &str, size: f32, w: Weight) -> (f32, Vec<(usize, f32)>) {
+    shape(s, size, w, None, |buf| {
+        let mut out = Vec::new();
+        let mut total = 0.0;
+        for g in buf.layout_runs().flat_map(|r| r.glyphs.iter()) {
+            total += g.w;
+            out.push((g.end, total));
+        }
+        (total, out)
+    })
 }
 
 pub fn text_width(s: &str, size: f32, w: Weight) -> f32 {
     glyphs(s, size, w).0
 }
 
+fn ell_line(s: &str, max: f32, size: f32, w: Weight) -> String {
+    let (total, gs) = glyphs(s, size, w);
+    if total <= max {
+        return s.into();
+    }
+    let cut = max - text_width("…", size, w);
+    let end = gs.get(gs.partition_point(|g| g.1 <= cut).wrapping_sub(1)).map_or(0, |g| g.0);
+    format!("{}…", s[..end].trim_end())
+}
+
 pub fn ell<'a>(s: &str, max: f32, size: f32, w: Weight) -> text::Text<'a> {
-    type Key = (String, u32, u32, Weight);
+    clamp(s, max, 1, size, w)
+}
+
+/// Collapses whitespace like CSS and keeps at most `lines` lines of `max` width, with "…" at the end of the last line.
+pub fn clamp<'a>(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> text::Text<'a> {
+    type Key = (String, u32, u32, Weight, usize);
     thread_local!(static CACHE: RefCell<HashMap<Key, Rc<str>>> = RefCell::default());
-    let s = s.lines().next().unwrap_or("");
-    let key = (s.to_owned(), max.max(0.0).to_bits(), size.to_bits(), w);
+    assert!(lines > 0, "clamp to zero lines");
+    let key = (s.to_owned(), max.max(0.0).to_bits(), size.to_bits(), w, lines);
     let out = CACHE.with(|c| c.borrow().get(&key).cloned()).unwrap_or_else(|| {
-        let (total, gs) = glyphs(s, size, w);
-        let res: Rc<str> = if total <= max {
-            s.into()
-        } else {
-            let cut = max - text_width("…", size, w);
-            let idx = gs.partition_point(|g| g.1 <= cut);
-            let end = gs.get(idx.wrapping_sub(1)).map_or(0, |g| g.0);
-            format!("{}…", s[..end].trim_end()).into()
+        let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let starts: Vec<usize> = shape(&s, size, w, Some(max.max(0.0)), |buf| {
+            buf.layout_runs().map(|r| r.glyphs.first().map_or(0, |g| g.start)).collect()
+        });
+        let res: Rc<str> = match starts.get(lines - 1) {
+            Some(&k) if starts.len() > lines => format!("{}{}", &s[..k], ell_line(&s[k..], max, size, w)).into(),
+            _ => s.into(),
         };
         CACHE.with(|c| {
             let mut m = c.borrow_mut();
@@ -126,7 +147,7 @@ pub fn ell<'a>(s: &str, max: f32, size: f32, w: Weight) -> text::Text<'a> {
         });
         res
     });
-    t(out.to_string(), size, w).wrapping(text::Wrapping::None)
+    t(out.to_string(), size, w).wrapping(if lines == 1 { text::Wrapping::None } else { text::Wrapping::WordOrGlyph })
 }
 
 pub fn t<'a>(s: impl text::IntoFragment<'a>, size: f32, w: Weight) -> text::Text<'a> {
