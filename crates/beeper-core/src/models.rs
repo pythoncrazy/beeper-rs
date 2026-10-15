@@ -9,6 +9,7 @@ pub const CHAT_LOW_PRIORITY: u16 = 1 << 4;
 pub const CHAT_MARKED_UNREAD: u16 = 1 << 5;
 pub const CHAT_NOTIFY_ANYWAY: u16 = 1 << 6;
 pub const CHAT_MERGED_PARENT: u16 = 1 << 7;
+pub const CHAT_HIDDEN: u16 = 1 << 8;
 
 pub const MSG_SENDER_SELF: u16 = 1 << 0;
 pub const MSG_UNREAD: u16 = 1 << 1;
@@ -281,6 +282,10 @@ pub struct Chat {
     pub reminder: Option<ChatReminder>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_theme: Option<ChatThemeCustom>,
+    #[serde(rename = "isHiddenFromInbox", skip_serializing_if = "Option::is_none")]
+    pub is_hidden_from_inbox: Option<bool>,
+    #[serde(rename = "networkName", skip_serializing_if = "Option::is_none")]
+    pub network_name: Option<String>,
     #[serde(skip)]
     pub flags: u16,
 }
@@ -300,6 +305,7 @@ impl Chat {
             (self.is_low_priority == Some(true), CHAT_LOW_PRIORITY),
             (marked, CHAT_MARKED_UNREAD),
             (self.merge.is_some(), CHAT_MERGED_PARENT),
+            (self.is_hidden_from_inbox == Some(true), CHAT_HIDDEN),
         ]) | (self.flags & CHAT_NOTIFY_ANYWAY);
     }
 }
@@ -416,8 +422,18 @@ pub struct Message {
     pub poll: Option<PollData>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub edit_history: Vec<EditHistoryEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub links: Vec<MessageLink>,
     #[serde(skip)]
     pub flags: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageLink {
+    pub url: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 impl Message {

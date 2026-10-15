@@ -181,6 +181,8 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>) -> Resul
                 preview: None,
                 reminder: None,
                 chat_theme: None,
+                is_hidden_from_inbox: None,
+                network_name: None,
                 flags: 0,
                 id,
             })
@@ -297,6 +299,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             message_type: Some(message_type.into()),
             poll: None,
             edit_history: Vec::new(),
+            links: Vec::new(),
             flags: 0,
             id,
         });

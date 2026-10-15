@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 use beeper_api::{client::BeeperClient, server::serve_http};
 use beeper_core::{
     config::{migrate_legacy_data_dir, CentralConfig, APP_NAME, APP_VERSION, DEFAULT_PAS_HOST, DEFAULT_PAS_PORT},
@@ -112,6 +113,9 @@ fn main() {
         store.import_beeper(read_beeper_data(&dir).unwrap_or_else(|e| panic!("{e}")));
     }
     let store: SharedStore = Arc::new(RwLock::new(store));
+    if !store.read().unwrap().config.demo {
+        rt.spawn(beeper_core::matrix::run(store.clone()));
+    }
     let serve = matches!(command, Command::Serve);
     if serve || store.read().unwrap().settings.enable_pas_api {
         let listener = rt.block_on(tokio::net::TcpListener::bind((host.as_str(), port))).unwrap_or_else(|e| {
