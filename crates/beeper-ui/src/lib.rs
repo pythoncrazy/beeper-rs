@@ -711,7 +711,10 @@ impl BeeperGuiApp {
                     && self.selected_account_filter.as_ref().is_none_or(|a| &c.account_id == a)
                     && q_ids.as_ref().is_none_or(|ids| ids.binary_search(&(*idx as u32)).is_ok())
                     && match self.active_tab {
-                        InboxTab::AllChats => c.flags & (CHAT_ARCHIVED | CHAT_LOW_PRIORITY) == 0,
+                        InboxTab::AllChats => {
+                            let hidden = if self.selected_account_filter.is_some() { 0 } else { CHAT_HIDDEN };
+                            c.flags & (CHAT_ARCHIVED | CHAT_LOW_PRIORITY | hidden) == 0
+                        }
                         InboxTab::Unread => c.flags & CHAT_UNREAD != 0,
                         InboxTab::Pinned => c.flags & CHAT_PINNED != 0,
                         InboxTab::Drafts => c.draft.is_some(),
@@ -1364,10 +1367,18 @@ impl BeeperGuiApp {
             let on = selected == Some(c.id.as_str());
             let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
             let m = st.chat_msg_indices.get(&c.id).and_then(|v| v.last()).map(|&i| &st.messages[i]);
+            let reaction = c
+                .preview
+                .as_ref()
+                .filter(|p| p.message_type.as_deref() == Some("REACTION") && m.is_none_or(|m| m.sort_key < p.sort_key));
+            let m = reaction.or(m);
             let ts = c.last_activity.as_deref().map(|t| list_ts(t, h24)).unwrap_or_default();
             let ts_w = crate::style::text_width(&ts, 10.0, Weight::Normal) + 8.0;
+            let sub = c.network_name.as_ref().map(|n| format!(" • {n}")).unwrap_or_default();
+            let sub_w = crate::style::text_width(&sub, 13.0, Weight::Normal).min((text_w - ts_w) / 2.0);
             let top = row![
-                ell(&c.title, text_w - ts_w, 13.0, Weight::Semibold).color(p.strong),
+                ell(&c.title, text_w - ts_w - sub_w, 13.0, Weight::Semibold).color(p.strong),
+                ell(&sub, sub_w, 13.0, Weight::Normal).color(p.sub),
                 Space::new().width(Fill),
                 txt(ts, 10.0).color(p.sub)
             ]
@@ -1375,10 +1386,13 @@ impl BeeperGuiApp {
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
             let image = m.is_some_and(|m| m.attachments.iter().any(|a| a.attachment_type == "img"));
             let body = m.and_then(|m| m.text.clone()).filter(|t| !t.is_empty() && previews).map(|t| {
-                match (c.chat_type == "group", m.and_then(|m| m.sender_name.clone())) {
-                    (true, Some(s)) if !mine => {
-                        format!("{}: {t}", s.split(' ').next().expect("sender name"))
-                    }
+                let first = m
+                    .and_then(|m| m.sender_name.clone())
+                    .map(|s| s.split(' ').next().expect("sender name").to_string());
+                match (c.chat_type == "group", first) {
+                    _ if reaction.is_some() && mine => format!("You {t}"),
+                    (true, Some(s)) if reaction.is_some() => format!("{s} {t}"),
+                    (true, Some(s)) if !mine => format!("{s}: {t}"),
                     _ => t,
                 }
             });
@@ -1512,7 +1526,15 @@ impl BeeperGuiApp {
         let preview = st
             .settings
             .on("loadEmbeds")
-            .then(|| text.split_whitespace().find_map(|w| st.link_previews.get(w).map(|lp| (w, lp))))
+            .then(|| {
+                let link = m.links.first().map(|l| (l.url.as_str(), None, l.title.as_str(), l.summary.as_deref()));
+                link.or_else(|| {
+                    text.split_whitespace().find_map(|w| {
+                        let lp = st.link_previews.get(w)?;
+                        Some((w, Some(lp.site.as_str()), lp.title.as_str(), Some(lp.summary.as_str())))
+                    })
+                })
+            })
             .flatten();
         let mut parts = Column::new().spacing(2).align_x(if mine { Right } else { iced::Left });
         if group && !mine && first {
@@ -1529,16 +1551,17 @@ impl BeeperGuiApp {
             .spacing(1);
             parts = parts.push(container(quote).padding([6, 11]).style(bordered_box(p.card, p.outline, 1.0, 14.0)));
         }
-        if let Some((url, lp)) = preview {
+        if let Some((url, site, title, summary)) = preview {
             let host = url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(url).to_string();
-            let body = column![
-                txt(lp.site.clone(), 11.0).color(p.sub),
-                semi(lp.title.clone(), 13.0).color(p.strong),
-                txt(lp.summary.clone(), 13.0).color(p.sub),
-                row![ic(icon::LINK, 11.0).color(p.weak), txt(host, 11.0).color(p.weak)].spacing(4).align_y(Center),
-            ]
-            .spacing(6)
-            .padding([10, 11]);
+            let body = column![]
+                .push(site.map(|s| txt(s.to_string(), 11.0).color(p.sub)))
+                .push(semi(title.to_string(), 13.0).color(p.strong))
+                .push(summary.map(|s| txt(s.to_string(), 13.0).color(p.sub)))
+                .push(
+                    row![ic(icon::LINK, 11.0).color(p.weak), txt(host, 11.0).color(p.weak)].spacing(4).align_y(Center),
+                )
+                .spacing(6)
+                .padding([10, 11]);
             parts = parts.push(container(body).max_width(360).style(fill_box(p.link_card, 17.0)));
         }
         for a in &m.attachments {
