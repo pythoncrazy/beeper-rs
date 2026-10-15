@@ -32,7 +32,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::time::{timeout, Duration};
 
 fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("{name}_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(name);
     if dir.exists() {
         std::fs::remove_dir_all(&dir).expect("remove stale test dir");
     }
@@ -511,7 +511,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     );
     assert!(win_manifest.content.contains("beeper-rs.exe"));
 
-    let (data_dir, port, store, mut client) = spawn_e2e_beeper_instance("master", None).await;
+    let (_, port, store, mut client) = spawn_e2e_beeper_instance("master", None).await;
     assert_eq!(store.read().unwrap().beeper_state.user_id, "@alex:beeper.com");
     assert_eq!(store.read().unwrap().bridge_accounts.len(), 6);
 
@@ -556,10 +556,9 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert_eq!(again.beeper_state.access_token, format!("syt_{user}"), "sign-in survives a restart");
         assert!(again.valid_tokens.contains(&format!("syt_{user}")) && again.chats.len() == 1);
         drop(again);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
-    let (login_dir, _, login_store, _) = spawn_e2e_beeper_instance("gui_login", Some(&cloud)).await;
+    let (_, _, login_store, _) = spawn_e2e_beeper_instance("gui_login", Some(&cloud)).await;
     let mut login = BeeperGuiApp::new(login_store.clone(), false);
     assert!(login.selected_chat_id.is_none());
     login.login_window = Some(iced::window::Id::unique());
@@ -618,7 +617,6 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert_eq!(login.selected_chat_id.as_deref(), Some(NOTE_CHAT_ID));
     assert!(simulator(login.view_main()).find("Note to self").is_ok());
     drop((login, login_store));
-    std::fs::remove_dir_all(login_dir).unwrap();
 
     let sas_verified = client.verify_device_sas().await;
     assert_eq!(sas_verified["session"]["state"], "ready");
@@ -894,5 +892,4 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
             std::fs::remove_dir_all(dir).expect("remove test dir");
         }
     }
-    std::fs::remove_dir_all(data_dir).expect("remove test dir");
 }
