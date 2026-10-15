@@ -427,7 +427,7 @@ pub const BEEPER_DARK: Palette = Palette {
     date_text: hex(0x9a9aa1),
     accent: hex(0x2561fb),
     toggle_on: hex(0x0d4ffb),
-    toggle_off: hexa(0xffffff, 0.3),
+    toggle_off: hex(0x444444),
     prefs_pane: hex(0x1c1c1c),
     prefs_group: hex(0x222222),
     prefs_border: hex(0x2a2a2c),

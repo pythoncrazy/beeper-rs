@@ -666,68 +666,36 @@ impl ThemeChoice {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LanguageChoice {
-    English,
-    Spanish,
-    French,
-    Italian,
-    Portuguese,
-    German,
-}
-
-impl LanguageChoice {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::English => "English",
-            Self::Spanish => "Español",
-            Self::French => "Français",
-            Self::Italian => "Italiano",
-            Self::Portuguese => "Português",
-            Self::German => "Deutsch",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BeeperSettings {
-    pub show_archived_count: bool,
-    pub show_starred_pin_view: bool,
-    pub show_all_chats_pin_view: bool,
-    pub show_unread_pin_view: bool,
-    pub show_drafts_pin_view: bool,
-    pub filter_pins_by_network: bool,
-    pub show_favorite_chats_section: bool,
-    pub keep_favorites_in_inbox: bool,
-    pub show_message_previews: bool,
-    pub unread_chats_always_on_top: bool,
-    pub show_full_names_in_chats: bool,
-    pub auto_play_videos: bool,
-    pub show_chat_header: bool,
-    pub show_message_input_buttons: bool,
-    pub link_previews: bool,
-    pub show_right_panel_by_default: bool,
-    pub load_remote_content_automatically: bool,
-    pub use_twenty_four_hour_time: bool,
     pub theme: ThemeChoice,
-    pub no_transparency: bool,
-    pub reduce_transparency: bool,
-    pub fix_lockdown_emojis: bool,
     pub zoom_percent: u16,
-    pub custom_css_path: Option<String>,
-    pub custom_css_source: String,
-    pub language: LanguageChoice,
-    pub repeat_message_alerts: u8,
-    pub auto_transcribe_voice_notes: bool,
     pub enable_pas_api: bool,
     pub pas_port: u16,
-    pub launch_at_startup: bool,
-    pub minimize_to_tray: bool,
-    pub incognito_mode: bool,
-    pub archive_after_reminder: bool,
-    pub mark_read_on_archive: bool,
-    pub after_archive: u8,
-    pub remind_later_default: u8,
-    pub compact_chat_list: bool,
+    pub prefs: std::collections::BTreeMap<String, u8>,
+}
+
+impl BeeperSettings {
+    pub fn pref(&self, key: &str) -> u8 {
+        let p = crate::prefs::find(key);
+        self.prefs.get(key).copied().unwrap_or(p.default_value())
+    }
+
+    pub fn on(&self, key: &str) -> bool {
+        assert!(matches!(crate::prefs::find(key).control, crate::prefs::Control::Toggle(_)), "{key} is a toggle");
+        self.pref(key) == 1
+    }
+
+    pub fn set_pref(&mut self, key: &str, value: u8) {
+        assert!(value <= crate::prefs::find(key).max_value(), "{key} = {value} is out of range");
+        self.prefs.insert(key.to_string(), value);
+    }
+
+    pub fn assert_valid(&self) {
+        for (k, v) in &self.prefs {
+            self.clone().set_pref(k, *v);
+        }
+        assert!((50..=300).contains(&self.zoom_percent), "zoom {}% is out of range", self.zoom_percent);
+    }
 }

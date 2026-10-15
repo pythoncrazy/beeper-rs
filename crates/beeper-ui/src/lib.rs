@@ -16,18 +16,19 @@ use beeper_core::platform::{
     build_tray_icon_rgba, current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind,
     SystemTrayState,
 };
-use beeper_core::store::{BeeperStore, SettingCatalogEntry, SharedStore, NOTE_CHAT_ID, SETTINGS_CATALOG};
+use beeper_core::prefs;
+use beeper_core::store::{BeeperStore, SharedStore, NOTE_CHAT_ID};
 use iced::font::Weight;
 use iced::gradient::Linear;
 use iced::keyboard::{self, key::Named, Key, Modifiers};
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{
-    button, column, container, mouse_area, operation, pick_list, rich_text, row, scrollable, span, stack, svg,
+    button, column, container, mouse_area, operation, pick_list, rich_text, row, scrollable, slider, span, stack, svg,
     text_input, Column, Row, Space,
 };
 use iced::{
-    mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Padding, Point, Radians, Right,
-    Size, Subscription, Task, Theme,
+    border, mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Padding, Point, Radians,
+    Right, Size, Subscription, Task, Theme,
 };
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -102,10 +103,9 @@ impl SettingsTab {
 
     fn for_section(section: &str) -> Self {
         match section {
-            "Chat List" => Self::General,
-            "Appearance" | "Conversation View" => Self::Appearance,
+            "General" => Self::General,
+            "Appearance" => Self::Appearance,
             "Notifications" => Self::Notifications,
-            "Voice & Media" => Self::Ai,
             other => panic!("settings section {other} has no tab"),
         }
     }
@@ -135,6 +135,7 @@ pub enum UiMessage {
     TogglePinChat(String),
     ToggleMuteChat(String),
     ToggleArchiveChat(String),
+    ArchiveStale,
     NotifyAnyway(String),
     NicknameChanged(String),
     SaveNickname,
@@ -153,10 +154,8 @@ pub enum UiMessage {
     CycleTheme,
     SelectTheme(ThemeChoice),
     SystemTheme(iced::theme::Mode),
-    SelectLanguage(String),
-    SelectAfterArchive(&'static str),
-    SelectRemindLater(&'static str),
-    CustomCssChanged(String),
+    SetPref(&'static str, u8),
+    Zoom(i8),
     ToggleSetting(fn(&mut BeeperSettings)),
     CloudAccounts(Result<Vec<BridgeAccountInfo>, String>),
     RecoveryInputChanged(String),
@@ -209,25 +208,14 @@ impl std::fmt::Debug for UiMessage {
     }
 }
 
-pub fn search_settings_catalog(query: &str) -> Vec<&'static SettingCatalogEntry> {
+pub fn search_settings_catalog(query: &str) -> Vec<(&'static str, &'static prefs::Pref)> {
     let q = query.trim().to_lowercase();
-    SETTINGS_CATALOG
-        .iter()
-        .filter(|e| [e.title, e.description, e.section].iter().any(|s| s.to_lowercase().contains(&q)))
+    prefs::all()
+        .filter(|(page, r)| [r.label, r.desc.unwrap_or(""), page].iter().any(|s| s.to_lowercase().contains(&q)))
         .collect()
 }
 
-pub const ALL_LANGUAGES: [LanguageChoice; 6] = [
-    LanguageChoice::English,
-    LanguageChoice::Spanish,
-    LanguageChoice::French,
-    LanguageChoice::Italian,
-    LanguageChoice::Portuguese,
-    LanguageChoice::German,
-];
-
-const AFTER_ARCHIVE: [&str; 3] = ["Do nothing", "Open next chat", "Open previous chat"];
-const REMIND_LATER: [&str; 3] = ["If no reply", "Always", "Never"];
+const ZOOM_STEPS: [u16; 13] = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300];
 const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const HOTKEYS: [(&str, &str); 7] = [
@@ -367,15 +355,28 @@ fn badged<'a>(p: &Palette, inner: El<'a>, account_id: &str, size: f32, badge: f3
         .into()
 }
 
-fn toggle<'a>(p: &Palette, on: bool, msg: UiMessage) -> El<'a> {
+fn slider_style(p: &Palette) -> impl Fn(&Theme, slider::Status) -> slider::Style + use<> {
+    let (on, off) = (p.accent, p.toggle_off);
+    move |_, _| slider::Style {
+        rail: slider::Rail { backgrounds: (on.into(), off.into()), width: 4.0, border: border::rounded(2) },
+        handle: slider::Handle {
+            shape: slider::HandleShape::Circle { radius: 8.0 },
+            background: Color::WHITE.into(),
+            border_width: 1.0,
+            border_color: off,
+        },
+    }
+}
+
+fn toggle<'a>(p: &Palette, on: bool, msg: Option<UiMessage>) -> El<'a> {
     let knob =
-        container(Space::new()).width(16).height(16).style(fill_box(if on { p.toggle_on } else { p.toggle_off }, 8.0));
+        container(Space::new()).width(14).height(14).style(fill_box(if on { p.toggle_on } else { p.toggle_off }, 7.0));
     let track =
-        container(knob).width(36).height(24).padding(2).align_y(Center).align_x(if on { Right } else { iced::Left });
+        container(knob).width(36).height(24).padding(5).align_y(Center).align_x(if on { Right } else { iced::Left });
     button(track.style(bordered_box(CLEAR, p.toggle_off, 2.0, 12.0)))
         .padding(0)
         .style(btn_style([CLEAR; 3], [p.text; 3], 12.0))
-        .on_press(msg)
+        .on_press_maybe(msg)
         .into()
 }
 
@@ -403,18 +404,19 @@ fn select<'a, T: ToString + PartialEq + Clone + 'a>(
 }
 
 fn pill_btn<'a>(p: &Palette, label: impl ToString, msg: UiMessage) -> El<'a> {
-    button(med(label.to_string(), 13.0).color(p.text))
+    button(med(label.to_string(), 13.0).color(p.text).wrapping(iced::widget::text::Wrapping::None))
         .padding([5, 12])
         .style(btn_style([p.hover, p.selected, p.selected], [p.text; 3], 6.0))
         .on_press(msg)
         .into()
 }
 
-fn plus_pill<'a>(p: &Palette) -> El<'a> {
-    container(row![semi("+", 12.0).color(p.text), semi("Plus", 10.0).color(p.text)].spacing(2).align_y(Center))
-        .padding([2, 6])
-        .style(fill_box(p.received, 25.0))
-        .into()
+fn badge<'a>(p: &Palette, b: prefs::Badge) -> El<'a> {
+    let label = match b {
+        prefs::Badge::Plus => "+ Plus",
+        prefs::Badge::Labs => "🧪 Labs",
+    };
+    container(semi(label, 11.0).color(p.strong)).padding([2, 7]).style(fill_box(p.outline, 9.0)).into()
 }
 
 const THEME_WINDOW: &str = r##"<rect x="10" y="7" width="76" height="47" rx="4" fill="WIN"/><circle cx="15" cy="12" r="1.4" fill="#ff5f57"/><circle cx="19.5" cy="12" r="1.4" fill="#febc2e"/><circle cx="24" cy="12" r="1.4" fill="#28c840"/><rect x="36" y="16" width="24" height="3" rx="1.5" fill="LINE"/><rect x="14" y="23" width="68" height="2" rx="1" fill="LINE"/><rect x="14" y="28" width="68" height="11" rx="2.5" fill="#0d4ffb"/><circle cx="19.5" cy="33.5" r="3" fill="#fff"/><rect x="25" y="31" width="28" height="1.8" rx=".9" fill="#fff"/><rect x="25" y="34.6" width="48" height="1.5" rx=".75" fill="#bcd2ff"/><rect x="14" y="43" width="68" height="2" rx="1" fill="LINE"/><rect x="14" y="48" width="48" height="2" rx="1" fill="LINE"/>"##;
@@ -461,17 +463,21 @@ fn pref_row<'a>(
     extra: Option<El<'a>>,
     control: El<'a>,
 ) -> El<'a> {
-    let head = row![txt(title.to_string(), 13.0).color(p.text)].push(extra).spacing(6).align_y(Center);
-    let left = column![head].push(desc.map(|d| txt(d.to_string(), 12.0).color(p.sub))).spacing(3).width(Fill);
-    row![left, control].spacing(12).align_y(Center).padding([10, 14]).into()
+    let head =
+        row![txt(title.to_string(), 13.0).color(p.text)].push(extra).push(Space::new().width(Fill)).push(control);
+    column![head.spacing(6).align_y(Center)]
+        .push(desc.map(|d| txt(d.to_string(), 13.0).color(p.sub)))
+        .spacing(8)
+        .padding([13, 14])
+        .into()
 }
 
 fn group<'a>(p: &Palette, title: Option<&str>, rows: Vec<El<'a>>) -> El<'a> {
-    let card = container(Column::with_children(rows)).width(Fill).padding([4, 0]).style(bordered_box(
+    let card = container(Column::with_children(rows)).width(Fill).style(bordered_box(
         p.prefs_group,
         p.prefs_border,
         1.0,
-        8.0,
+        12.0,
     ));
     column![]
         .push(title.map(|t| container(med(t.to_string(), 12.0).color(p.weak)).padding([0, 4])))
@@ -487,6 +493,7 @@ pub struct BeeperGuiApp {
     pub tray: SystemTrayState,
     pub system_dark: bool,
     pub dark: bool,
+    pub zoom: f32,
     pub pal: Palette,
     pub active_tab: InboxTab,
     pub selected_account_filter: Option<String>,
@@ -534,7 +541,7 @@ impl BeeperGuiApp {
                 .is_none()
                 .then(|| current_original_beeper_data_dir(st.config.profile.as_deref()))
                 .filter(|d| has_beeper_data(d));
-            (s.theme.is_dark(false), st.total_unread_chats(), s.show_right_panel_by_default, first, cloud, source)
+            (s.theme.is_dark(false), st.total_unread_chats(), false, first, cloud, source)
         };
         let mut app = Self {
             store,
@@ -544,6 +551,7 @@ impl BeeperGuiApp {
             pal: crate::style::palette(theme),
             system_dark: false,
             dark: theme,
+            zoom: 1.0,
             active_tab: InboxTab::AllChats,
             selected_account_filter: None,
             selected_chat_id: None,
@@ -635,6 +643,7 @@ impl BeeperGuiApp {
         let st = self.store.read().unwrap();
         self.dark = st.settings.theme.is_dark(self.system_dark);
         self.pal = crate::style::palette(self.dark);
+        self.zoom = f32::from(st.settings.zoom_percent) / 100.0;
         self.tray.update(st.total_unread_chats(), self.dnd_muted);
     }
 
@@ -661,11 +670,7 @@ impl BeeperGuiApp {
             })
             .map(|(_, c)| c)
             .collect();
-        let unread_top = st.settings.unread_chats_always_on_top;
-        list.sort_by(|a, b| {
-            let u = |c: &Chat| unread_top && c.flags & CHAT_UNREAD != 0;
-            u(b).cmp(&u(a)).then_with(|| b.last_activity.cmp(&a.last_activity))
-        });
+        list.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
         list
     }
 
@@ -837,6 +842,15 @@ impl BeeperGuiApp {
             }
             UiMessage::TogglePinChat(cid) => self.update_chat(&cid, |c| c.is_pinned = Some(c.is_pinned != Some(true))),
             UiMessage::ToggleMuteChat(cid) => self.update_chat(&cid, |c| c.is_muted = Some(c.is_muted != Some(true))),
+            UiMessage::ArchiveStale => {
+                {
+                    let mut st = self.store.write().unwrap();
+                    for idx in st.stale_inbox_chats() {
+                        st.update_chat(idx, |c| c.is_archived = Some(true));
+                    }
+                }
+                self.refresh_theme_and_tray();
+            }
             UiMessage::ToggleArchiveChat(cid) => {
                 self.update_chat(&cid, |c| c.is_archived = Some(c.is_archived != Some(true)));
                 self.refresh_theme_and_tray();
@@ -886,11 +900,6 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
             }
             UiMessage::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
-            UiMessage::SelectLanguage(label) => {
-                let lang = *ALL_LANGUAGES.iter().find(|l| l.label() == label).expect("known language");
-                self.patch_settings(|s| s.language = lang);
-            }
-            UiMessage::CustomCssChanged(css) => self.patch_settings(|s| s.custom_css_source = css),
             UiMessage::ToggleSetting(flip) => self.patch_settings(flip),
             UiMessage::CloudAccounts(Ok(accounts)) => self.store.write().unwrap().set_cloud_accounts(accounts),
             UiMessage::CloudAccounts(Err(e)) => self.status_banner = format!("Could not load your chat accounts: {e}"),
@@ -953,11 +962,13 @@ impl BeeperGuiApp {
             UiMessage::ToggleFilterMenu => self.show_filter_menu = !self.show_filter_menu,
             UiMessage::OpenSettings(tab) => return self.open_settings(tab),
             UiMessage::SettingsQueryChanged(q) => self.settings_query = q,
-            UiMessage::SelectAfterArchive(v) => self.patch_settings(|s| {
-                s.after_archive = AFTER_ARCHIVE.iter().position(|o| *o == v).expect("known option") as u8
-            }),
-            UiMessage::SelectRemindLater(v) => self.patch_settings(|s| {
-                s.remind_later_default = REMIND_LATER.iter().position(|o| *o == v).expect("known option") as u8
+            UiMessage::SetPref(key, v) => self.patch_settings(|s| s.set_pref(key, v)),
+            UiMessage::Zoom(step) => self.patch_settings(|s| {
+                let at = ZOOM_STEPS.iter().position(|z| *z >= s.zoom_percent).expect("zoom is in the steps");
+                s.zoom_percent = match step {
+                    0 => 100,
+                    _ => ZOOM_STEPS[at.saturating_add_signed(step as isize).min(ZOOM_STEPS.len() - 1)],
+                };
             }),
             UiMessage::HoverEnter(id) => self.hovered_msg = Some(id),
             UiMessage::HoverExit(id) => {
@@ -1018,6 +1029,9 @@ impl BeeperGuiApp {
                     Key::Character(",") if cmd => return self.open_settings(self.active_settings_tab),
                     Key::Character("f") if cmd => return self.update(UiMessage::ToggleSearch),
                     Key::Character(".") if cmd => self.show_right_panel = !self.show_right_panel,
+                    Key::Character("=" | "+") if cmd => return self.update(UiMessage::Zoom(1)),
+                    Key::Character("-") if cmd => return self.update(UiMessage::Zoom(-1)),
+                    Key::Character("0") if cmd => return self.update(UiMessage::Zoom(0)),
                     Key::Named(Named::Escape) => return self.update(UiMessage::CloseModals),
                     Key::Named(Named::ArrowDown) if mods.alt() => self.step_chat(1),
                     Key::Named(Named::ArrowUp) if mods.alt() => self.step_chat(-1),
@@ -1037,11 +1051,7 @@ impl BeeperGuiApp {
     fn patch_settings(&mut self, f: impl FnOnce(&mut BeeperSettings)) {
         {
             let mut st = self.store.write().unwrap();
-            let panel = st.settings.show_right_panel_by_default;
             f(&mut st.settings);
-            if st.settings.show_right_panel_by_default != panel {
-                self.show_right_panel = !panel;
-            }
             st.persist_state_to_sqlite();
         }
         self.refresh_theme_and_tray();
@@ -1189,8 +1199,8 @@ impl BeeperGuiApp {
         let st = self.store.read().unwrap();
         let chats = self.visible_chats(&st);
         let me = st.me().full_name.as_deref().expect("self name");
-        let h24 = st.settings.use_twenty_four_hour_time;
-        let previews = st.settings.show_message_previews;
+        let h24 = st.settings.pref("timeFormat") == 1;
+        let previews = st.settings.on("showMessagePreviews");
         let header_icon = p.text.scale_alpha(0.8);
         let title = button(
             row![semi(self.active_tab.label(), 13.0).color(p.strong), ic(icon::CHEVRONS_UP_DOWN, 13.0).color(p.weak)]
@@ -1444,7 +1454,7 @@ impl BeeperGuiApp {
         let text = m.text.clone().unwrap_or_default();
         let preview = st
             .settings
-            .link_previews
+            .on("loadEmbeds")
             .then(|| text.split_whitespace().find_map(|w| st.link_previews.get(w).map(|lp| (w, lp))))
             .flatten();
         let mut parts = Column::new().spacing(2).align_x(if mine { Right } else { iced::Left });
@@ -1564,7 +1574,7 @@ impl BeeperGuiApp {
         if !text.is_empty() && m.poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
             let edited = if m.edit_history.is_empty() { "" } else { "Edited · " };
             let time =
-                txt(format!("{edited}{}", format_short_ts(&m.timestamp, st.settings.use_twenty_four_hour_time)), 11.0)
+                txt(format!("{edited}{}", format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1)), 11.0)
                     .color(if mine { p.sent_meta } else { p.sub });
             let spans: Vec<_> = text
                 .split_inclusive(' ')
@@ -1923,20 +1933,14 @@ impl BeeperGuiApp {
 
     fn settings_search_results(&self) -> El<'_> {
         let p = &self.pal;
-        let hits = search_settings_catalog(&self.settings_query).into_iter().map(|e| {
-            let tab = SettingsTab::for_section(e.section);
-            button(
-                column![
-                    txt(e.title, 13.0).color(p.text),
-                    txt(format!("{} · {}", e.section, e.description), 12.0).color(p.sub)
-                ]
-                .spacing(2),
-            )
-            .padding([10, 12])
-            .width(Fill)
-            .style(ghost(p, 6.0))
-            .on_press(UiMessage::SelectSettingsTab(tab))
-            .into()
+        let hits = search_settings_catalog(&self.settings_query).into_iter().map(|(page, r)| {
+            let tab = SettingsTab::for_section(page);
+            button(column![txt(r.label, 13.0).color(p.text), txt(page, 12.0).color(p.sub)].spacing(2))
+                .padding([10, 12])
+                .width(Fill)
+                .style(ghost(p, 6.0))
+                .on_press(UiMessage::SelectSettingsTab(tab))
+                .into()
         });
         group(p, Some("Results"), hits.collect())
     }
@@ -1944,11 +1948,6 @@ impl BeeperGuiApp {
     fn settings_content(&self, st: &BeeperStore) -> El<'_> {
         let p = &self.pal;
         let s = &st.settings;
-        macro_rules! tog {
-            ($title:expr, $desc:expr, $field:ident) => {
-                pref_row(p, $title, $desc, None, toggle(p, s.$field, UiMessage::ToggleSetting(|x| x.$field ^= true)))
-            };
-        }
         let groups: Vec<El<'_>> = match self.active_settings_tab {
             SettingsTab::Accounts => {
                 let connected = st
@@ -1974,91 +1973,9 @@ impl BeeperGuiApp {
                 let more = vec![login::network_grid(&st.bridge_accounts, "", p.strong)];
                 vec![group(p, Some("Connected accounts"), connected), group(p, Some("Add an Account"), more)]
             }
-            SettingsTab::General => {
-                let lang: Vec<&'static str> = ALL_LANGUAGES.iter().map(|l| l.label()).collect();
-                vec![
-                    group(p, None, vec![
-                        pref_row(p, "Incognito mode", Some("Incognito mode keeps chats unread when you open them and does not tell recipients that you read them. Reply or press Ctrl Shift U to mark a chat as read. This needs a paid subscription."), Some(plus_pill(p)), toggle(p, s.incognito_mode, UiMessage::ToggleSetting(|x| x.incognito_mode ^= true))),
-                    ]),
-                    group(p, None, vec![
-                        pref_row(p, "App language", None, None, select(p, lang, s.language.label(), |l: &'static str| UiMessage::SelectLanguage(l.to_string()))),
-                    ]),
-                    group(p, None, vec![
-                        pref_row(p, "Default for remind later", None, None, select(p, &REMIND_LATER[..], REMIND_LATER[s.remind_later_default as usize], UiMessage::SelectRemindLater)),
-                        tog!("Archive after setting reminder", None, archive_after_reminder),
-                    ]),
-                    group(p, None, vec![
-                        tog!("Mark unread chats as read on archive", None, mark_read_on_archive),
-                        pref_row(p, "After archive", None, None, select(p, &AFTER_ARCHIVE[..], AFTER_ARCHIVE[s.after_archive as usize], UiMessage::SelectAfterArchive)),
-                    ]),
-                    group(p, Some("Chat list"), vec![
-                        tog!("Compact chat list", Some("Show more chats with smaller avatars."), compact_chat_list),
-                        tog!("Show message previews", None, show_message_previews),
-                        tog!("Unread chats always on top", None, unread_chats_always_on_top),
-                        tog!("Show full names", None, show_full_names_in_chats),
-                        tog!("Use 24-hour time", None, use_twenty_four_hour_time),
-                    ]),
-                    group(p, Some("Startup"), vec![tog!("Launch at startup", None, launch_at_startup), tog!("Minimize to tray", None, minimize_to_tray)]),
-                ]
-            }
-            SettingsTab::Appearance => {
-                let css = text_input(".thread { }", &s.custom_css_source)
-                    .on_input(UiMessage::CustomCssChanged)
-                    .size(12)
-                    .padding([8, 10])
-                    .style(input_style(p.input, p.strong, p.sub, p.accent, 6.0));
-                vec![
-                    group(
-                        p,
-                        Some("Theme"),
-                        vec![
-                            theme_cards(p, s.theme),
-                            tog!("Reduce transparency", None, reduce_transparency),
-                            tog!("No transparency", None, no_transparency),
-                            tog!("Fix lockdown emojis", None, fix_lockdown_emojis),
-                        ],
-                    ),
-                    group(
-                        p,
-                        Some("Conversation"),
-                        vec![
-                            tog!("Show chat header", None, show_chat_header),
-                            tog!("Show message input buttons", None, show_message_input_buttons),
-                            tog!("Link previews", None, link_previews),
-                            tog!("Auto-play videos", None, auto_play_videos),
-                            tog!("Load remote content", None, load_remote_content_automatically),
-                            tog!("Show chat info by default", None, show_right_panel_by_default),
-                        ],
-                    ),
-                    group(p, Some("Custom CSS"), vec![container(css).padding(12).into()]),
-                ]
-            }
-            SettingsTab::Notifications => vec![group(
-                p,
-                None,
-                vec![
-                    pref_row(
-                        p,
-                        "Do not disturb",
-                        Some("Mute all notifications on this device."),
-                        None,
-                        toggle(p, self.dnd_muted, UiMessage::ToggleDnd),
-                    ),
-                    pref_row(
-                        p,
-                        "Repeat message alerts",
-                        Some("Alert again when a message stays unread."),
-                        None,
-                        toggle(
-                            p,
-                            s.repeat_message_alerts > 1,
-                            UiMessage::ToggleSetting(|x| {
-                                x.repeat_message_alerts = if x.repeat_message_alerts > 1 { 1 } else { 3 }
-                            }),
-                        ),
-                    ),
-                ],
-            )],
+            SettingsTab::General => self.pref_items(prefs::GENERAL, s),
+            SettingsTab::Appearance => self.pref_items(prefs::APPEARANCE, s),
+            SettingsTab::Notifications => self.pref_items(prefs::NOTIFICATIONS, s),
             SettingsTab::Hotkeys => vec![group(
                 p,
                 None,
@@ -2122,15 +2039,7 @@ impl BeeperGuiApp {
                     ),
                 ]
             }
-            SettingsTab::Ai => vec![group(
-                p,
-                None,
-                vec![tog!(
-                    "Transcribe voice notes",
-                    Some("Make voice notes searchable with on-device transcription."),
-                    auto_transcribe_voice_notes
-                )],
-            )],
+            SettingsTab::Ai => Vec::new(),
             SettingsTab::BeeperPlus => vec![group(
                 p,
                 None,
@@ -2138,7 +2047,7 @@ impl BeeperGuiApp {
                     p,
                     "Beeper Plus",
                     Some("Incognito mode, custom themes, and more."),
-                    Some(plus_pill(p)),
+                    Some(badge(p, prefs::Badge::Plus)),
                     txt("Free plan", 12.0).color(p.sub).into(),
                 )],
             )],
@@ -2146,10 +2055,12 @@ impl BeeperGuiApp {
                 p,
                 Some("Desktop API"),
                 vec![
-                    tog!(
+                    pref_row(
+                        p,
                         "Enable Desktop API",
                         Some("Local REST and WebSocket server for scripts and assistants. Restart Beeper to apply."),
-                        enable_pas_api
+                        None,
+                        toggle(p, s.enable_pas_api, Some(UiMessage::ToggleSetting(|x| x.enable_pas_api ^= true))),
                     ),
                     pref_row(
                         p,
@@ -2206,13 +2117,76 @@ impl BeeperGuiApp {
             )],
         };
         let banner = (!self.status_banner.is_empty()).then(|| txt(self.status_banner.clone(), 12.0).color(p.sub));
-        let intro = (self.active_settings_tab == SettingsTab::General).then(|| {
-            container(
-                txt("These settings are for Beeper and are not synced to the messaging platforms.", 13.0).color(p.sub),
-            )
-            .padding([4, 14])
-        });
-        column![].push(intro).push(banner).extend(groups).spacing(28).into()
+        column![].push(banner).extend(groups).spacing(28).into()
+    }
+
+    fn pref_items(&self, items: &'static [prefs::Item], s: &BeeperSettings) -> Vec<El<'_>> {
+        let p = &self.pal;
+        let mut heading = None;
+        let mut out = Vec::new();
+        for item in items {
+            match *item {
+                prefs::Item::Heading(h) => heading = Some(h),
+                prefs::Item::Subtitle(t) => out.push(match heading.take() {
+                    Some(h) => group(p, Some(h), vec![container(txt(t, 13.0).color(p.sub)).padding([13, 14]).into()]),
+                    None => container(txt(t, 13.0).color(p.sub)).padding([0, 14]).into(),
+                }),
+                prefs::Item::Group(rows) => {
+                    out.push(group(p, heading.take(), rows.iter().map(|r| self.pref_control(r, s)).collect()))
+                }
+                prefs::Item::Theme => out.push(group(p, heading.take(), vec![theme_cards(p, s.theme)])),
+            }
+        }
+        out
+    }
+
+    fn pref_select(&self, r: &'static prefs::Pref, s: &BeeperSettings) -> El<'_> {
+        let prefs::Control::Select(options, _) = r.control else { panic!("{} is not a select", r.key) };
+        let key = r.key;
+        select(&self.pal, options, options[s.pref(key) as usize], move |o| {
+            UiMessage::SetPref(key, options.iter().position(|x| *x == o).expect("listed option") as u8)
+        })
+    }
+
+    fn pref_control(&self, r: &'static prefs::Pref, s: &BeeperSettings) -> El<'_> {
+        let p = &self.pal;
+        let locked = r.badge == Some(prefs::Badge::Plus);
+        let control = match r.control {
+            prefs::Control::Toggle(_) => {
+                let v = s.pref(r.key);
+                toggle(p, v == 1, (!locked).then_some(UiMessage::SetPref(r.key, 1 - v)))
+            }
+            prefs::Control::Select(..) => self.pref_select(r, s),
+            prefs::Control::Slider(_) => {
+                let key = r.key;
+                slider(0..=100u8, s.pref(key), move |x| UiMessage::SetPref(key, x))
+                    .width(200)
+                    .style(slider_style(p))
+                    .into()
+            }
+            prefs::Control::Archive(scope, age) => {
+                let n = self.store.read().unwrap().stale_inbox_chats().len();
+                let left = row![
+                    txt(scope.label, 13.0).color(p.text),
+                    self.pref_select(scope, s),
+                    txt(age.label, 13.0).color(p.text),
+                    self.pref_select(age, s),
+                ]
+                .spacing(8)
+                .align_y(Center)
+                .wrap()
+                .vertical_spacing(8);
+                return row![
+                    container(left).width(Fill),
+                    pill_btn(p, format!("Archive {n} chats"), UiMessage::ArchiveStale)
+                ]
+                .spacing(8)
+                .align_y(Center)
+                .padding([13, 14])
+                .into();
+            }
+        };
+        pref_row(p, r.label, r.desc, r.badge.map(|b| badge(p, b)), control)
     }
 }
 
@@ -2229,6 +2203,7 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         .title(BeeperGuiApp::title)
         .subscription(BeeperGuiApp::subscription)
         .theme(|a: &BeeperGuiApp, _| a.iced_theme())
+        .scale_factor(|a: &BeeperGuiApp, _| a.zoom)
         .style(|a: &BeeperGuiApp, _| iced::theme::Style { background_color: a.pal.frame, text_color: a.pal.text })
         .default_font(fw(Weight::Normal));
     ALL_FONTS.into_iter().fold(app, |app, f| app.font(f)).run()
