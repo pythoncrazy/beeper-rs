@@ -156,7 +156,35 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     {
         return sign_in_step(store, cloud, step, &req);
     }
+    if let ("POST", ["v1", "app", "setup", "verifications", rest @ ..]) = (method.as_str(), &segs[..]) {
+        if store.read().unwrap().matrix.is_some() {
+            return matrix_verification(store, rest);
+        }
+    }
     dispatch(&mut store.write().unwrap(), &method, &segs, &req)
+}
+
+fn matrix_verification(store: &SharedStore, rest: &[&str]) -> Reply {
+    let mut st = store.write().unwrap();
+    match rest {
+        [] => {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            st.sas_confirm = Some(tx);
+            let s = store.clone();
+            tokio::runtime::Handle::current().spawn(async move {
+                if let Err(e) = beeper_core::matrix::verify(s.clone(), rx).await {
+                    s.write().unwrap().matrix_error = Some(e);
+                }
+            });
+        }
+        [_, "sas", "confirm"] | [_, "cancel"] => {
+            let tx = st.sas_confirm.take().ok_or_else(|| missing("verification_not_found"))?;
+            tx.send(rest[1] == "sas").ok();
+        }
+        [_, "accept"] | [_, "sas", "start"] => {}
+        _ => return Err(missing("not_found")),
+    }
+    ok(&json!({ "session": st.setup_status.session, "verification": st.setup_status.session.verification }))
 }
 
 fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {

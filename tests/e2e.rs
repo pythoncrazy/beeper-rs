@@ -194,6 +194,8 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert!(is_original_beeper_dir(&PathBuf::from("/Users/alex/Library/Application Support/BeeperTexts")));
     assert!(is_original_beeper_dir(&PathBuf::from("/Users/alex/Library/Application Support/BeeperTexts-dev")));
     assert!(!is_original_beeper_dir(&PathBuf::from("/Users/alex/Library/Application Support/beeper-rs")));
+    let keys: Vec<String> = [-12, -5, 0, 7, 1_000_000].map(beeper_core::store::sort_key).into();
+    assert!(keys.is_sorted(), "sort keys keep numeric order: {keys:?}");
     let blocked_orig = std::panic::catch_unwind(|| {
         CentralConfig::new(
             PathBuf::from("/Users/alex/Library/Application Support/BeeperTexts"),

@@ -134,8 +134,14 @@ impl Setup {
     }
 }
 
-pub fn sort_key(seq: u64) -> String {
-    format!("{seq:012}")
+pub fn sort_key(seq: i64) -> String {
+    const SPAN: i64 = 1_000_000_000_000;
+    assert!(seq.abs() < SPAN, "sort key {seq} does not fit in 12 digits");
+    if seq < 0 {
+        format!("-{:012}", SPAN + seq)
+    } else {
+        format!("{seq:012}")
+    }
 }
 
 fn demo_state() -> BeeperStateRecord {
@@ -210,7 +216,10 @@ pub struct BeeperStore {
     pub ws_tx: broadcast::Sender<WsEvent>,
     pub focus_tx: broadcast::Sender<Option<String>>,
     pub link_previews: HashMap<String, LinkPreview>,
-    next_seq: u64,
+    pub matrix: Option<matrix_sdk::Client>,
+    pub matrix_error: Option<String>,
+    pub sas_confirm: Option<tokio::sync::oneshot::Sender<bool>>,
+    next_seq: i64,
 }
 
 impl BeeperStore {
@@ -289,6 +298,9 @@ impl BeeperStore {
             oauth_codes: HashMap::new(),
             ws_tx: broadcast::channel(WS_CHANNEL_CAPACITY).0,
             focus_tx: broadcast::channel(WS_CHANNEL_CAPACITY).0,
+            matrix: None,
+            matrix_error: None,
+            sas_confirm: None,
             next_seq: 1000,
         };
         store.load_from_sqlite_or_seed();
@@ -438,7 +450,7 @@ impl BeeperStore {
             Some(s) => s.parse().expect("parse stored nextSeq"),
             None => {
                 assert!(fresh, "stored chats without a stored nextSeq");
-                1000 + self.messages.len() as u64 + self.chats.len() as u64
+                1000 + self.messages.len() as i64 + self.chats.len() as i64
             }
         };
         self.persist_seq();
@@ -564,6 +576,8 @@ impl BeeperStore {
             preview: None,
             reminder: None,
             chat_theme: None,
+            is_hidden_from_inbox: None,
+            network_name: None,
             flags: 0,
         };
         self.push_chat(chat, true);
@@ -622,17 +636,59 @@ impl BeeperStore {
         let idx = self.messages.len();
         assert!(self.msg_idx_by_id.insert(msg.id.clone(), idx).is_none(), "duplicate message {}", msg.id);
         self.msg_search_index.insert_doc(idx as u32, &message_index_text(&msg));
-        self.chat_msg_indices.entry(msg.chat_id.clone()).or_default().push(idx);
+        let list = self.chat_msg_indices.entry(msg.chat_id.clone()).or_default();
+        let pos = list.partition_point(|&i| self.messages[i].sort_key <= msg.sort_key);
+        list.insert(pos, idx);
         let c_idx = self.chat_idx_by_id[&msg.chat_id];
         let chat = &mut self.chats[c_idx];
-        chat.last_activity = Some(msg.timestamp.clone());
-        chat.preview = Some(msg.clone());
+        if chat.preview.as_ref().is_none_or(|p| p.sort_key <= msg.sort_key) {
+            chat.last_activity = Some(msg.timestamp.clone());
+            chat.preview = Some(msg.clone());
+        }
         self.messages.push(msg);
         if persist {
             self.persist_chat(c_idx);
             self.persist_message(idx);
         }
         idx
+    }
+
+    pub fn upsert_chat(&mut self, chat: Chat) {
+        let Some(&idx) = self.chat_idx_by_id.get(&chat.id) else {
+            let idx = self.push_chat(chat, true);
+            let c = self.chats[idx].clone();
+            return self.emit_ws("chat.upserted", &c.id, None, Some(c.clone()), None);
+        };
+        self.update_chat(idx, |c| {
+            *c = Chat {
+                draft: c.draft.take(),
+                label_ids: std::mem::take(&mut c.label_ids),
+                last_activity: c.last_activity.take().or(chat.last_activity.clone()),
+                local_chat_id: c.local_chat_id.take(),
+                merge: c.merge.take(),
+                merged_into_chat_id: c.merged_into_chat_id.take(),
+                preview: c.preview.take(),
+                reminder: c.reminder.take(),
+                chat_theme: c.chat_theme.take(),
+                ..chat
+            }
+        });
+    }
+
+    pub fn upsert_message(&mut self, msg: Message) {
+        let Some(&idx) = self.msg_idx_by_id.get(&msg.id) else {
+            let idx = self.push_message(msg, true);
+            let m = self.messages[idx].clone();
+            return self.emit_ws("message.upserted", &m.chat_id, Some(&m.id), None, Some(m.clone()));
+        };
+        self.update_message(idx, |m| {
+            *m = Message {
+                reactions: std::mem::take(&mut m.reactions),
+                edit_history: std::mem::take(&mut m.edit_history),
+                is_bookmarked: m.is_bookmarked,
+                ..msg
+            }
+        });
     }
 
     pub fn update_chat(&mut self, idx: usize, f: impl FnOnce(&mut Chat)) -> Chat {
@@ -774,6 +830,8 @@ impl BeeperStore {
             preview: None,
             reminder: None,
             chat_theme: None,
+            is_hidden_from_inbox: None,
+            network_name: None,
             participants: ChatParticipants { has_more: false, total: items.len(), items },
             flags: 0,
         };
@@ -855,6 +913,7 @@ impl BeeperStore {
             reactions: Vec::new(),
             poll: None,
             edit_history: Vec::new(),
+            links: Vec::new(),
             flags: 0,
         };
         let m_idx = self.push_message(msg, true);
