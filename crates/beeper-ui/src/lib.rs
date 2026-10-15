@@ -302,7 +302,7 @@ fn closable_head<'a>(p: &Palette, title: &str, size: f32, msg: UiMessage) -> El<
     row![
         semi(title.to_string(), size).color(p.strong),
         Space::new().width(Fill),
-        icon_btn(p, icon::X, 14.0, 26.0, p.sub, msg)
+        icon_btn(p, icon::CLOSE, 14.0, 26.0, p.sub, msg)
     ]
     .align_y(Center)
     .into()
@@ -387,8 +387,8 @@ fn select<'a, T: ToString + PartialEq + Clone + 'a>(
     f: impl Fn(T) -> UiMessage + 'a,
 ) -> El<'a> {
     let chevron = pick_list::Icon {
-        font: iced::Font::with_name("lucide"),
-        code_point: icon::CHEVRON_DOWN,
+        font: iced::Font::with_name("icons"),
+        code_point: icon::EXPAND_MORE,
         size: Some(14.0.into()),
         line_height: iced::widget::text::LineHeight::Relative(1.0),
         shaping: iced::widget::text::Shaping::Basic,
@@ -1142,14 +1142,7 @@ impl BeeperGuiApp {
             .into()
         };
         let g = |c: char| -> El<'static> { ic(c, 18.0).color(p.strong).into() };
-        let scheduled: El<'static> = stack![
-            container(g(icon::SEND_HORIZONTAL)).center(36),
-            container(container(ic(icon::CLOCK, 8.0).color(p.strong)).center(11).style(fill_box(p.rail, 6.0)))
-                .padding(Padding::new(0.0).top(18.0).left(19.0))
-        ]
-        .into();
-        let add_space =
-            container(g(icon::MESSAGE_CIRCLE_PLUS)).center(36).style(bordered_box(CLEAR, p.tertiary, 1.0, 12.0));
+        let add_space = container(g(icon::MAPS_UGC)).center(36).style(bordered_box(CLEAR, p.tertiary, 1.0, 12.0));
         let st = self.store.read().unwrap();
         let accounts =
             std::iter::once("hungryserv".to_string()).chain(st.accounts.iter().map(|a| a.account_id.clone()));
@@ -1160,14 +1153,14 @@ impl BeeperGuiApp {
         });
         let top = column![
             tab("rail-inbox", g(icon::INBOX), InboxTab::AllChats),
-            tab("rail-low-priority", g(icon::LIST_RESTART), InboxTab::LowPriority),
+            tab("rail-low-priority", g(icon::LOW_PRIORITY_SPACE), InboxTab::LowPriority),
             tab("rail-archive", g(icon::ARCHIVE), InboxTab::Archived),
-            tab("rail-reminders", g(icon::CLOCK), InboxTab::Reminders),
-            tab("rail-drafts", scheduled, InboxTab::Drafts),
-            tab("rail-unread", g(icon::MAIL), InboxTab::Unread),
+            tab("rail-reminders", g(icon::SCHEDULE), InboxTab::Reminders),
+            tab("rail-drafts", g(icon::SCHEDULE_SEND), InboxTab::Drafts),
+            tab("rail-unread", g(icon::EMAIL), InboxTab::Unread),
             button(add_space).padding(0).style(ghost(p, 12.0)).on_press(UiMessage::ToggleCommandPalette),
             accounts,
-            rail_btn(g(icon::ELLIPSIS), false, UiMessage::OpenSettings(SettingsTab::Accounts)),
+            rail_btn(g(icon::MORE_HORIZ), false, UiMessage::OpenSettings(SettingsTab::Accounts)),
         ]
         .spacing(8)
         .align_x(Center)
@@ -1176,11 +1169,11 @@ impl BeeperGuiApp {
         let me = st.me().full_name.as_deref().expect("self name");
         let footer = column![
             rail_btn(
-                g(icon::IMAGES),
+                g(icon::PHOTO_LIBRARY),
                 false,
                 UiMessage::OpenQuickLook("Media".into(), "Photos, videos, and files from all chats".into())
             ),
-            rail_btn(g(icon::COPY_PLUS), false, UiMessage::ToggleCommandPalette),
+            rail_btn(g(icon::LIBRARY_ADD), false, UiMessage::ToggleCommandPalette),
             button(self_avatar(me, 36.0))
                 .padding(0)
                 .style(btn_style([CLEAR; 3], [p.text; 3], 18.0))
@@ -1203,7 +1196,7 @@ impl BeeperGuiApp {
         let previews = st.settings.on("showMessagePreviews");
         let header_icon = p.text.scale_alpha(0.8);
         let title = button(
-            row![semi(self.active_tab.label(), 13.0).color(p.strong), ic(icon::CHEVRONS_UP_DOWN, 13.0).color(p.weak)]
+            row![semi(self.active_tab.label(), 13.0).color(p.strong), ic(icon::UNFOLD_MORE, 13.0).color(p.weak)]
                 .spacing(4)
                 .align_y(Center),
         )
@@ -1213,9 +1206,9 @@ impl BeeperGuiApp {
         let header = row![
             title,
             Space::new().width(Fill),
-            icon_btn(p, icon::LIST_FILTER, 16.0, 26.0, header_icon, UiMessage::ToggleFilterMenu),
+            icon_btn(p, icon::FILTER_LIST, 16.0, 26.0, header_icon, UiMessage::ToggleFilterMenu),
             icon_btn(p, icon::SEARCH, 16.0, 26.0, header_icon, UiMessage::ToggleSearch),
-            icon_btn(p, icon::SQUARE_PEN, 16.0, 26.0, header_icon, UiMessage::ToggleCommandPalette)
+            icon_btn(p, icon::EDIT_SQUARE, 16.0, 26.0, header_icon, UiMessage::ToggleCommandPalette)
         ]
         .align_y(Center)
         .height(38)
@@ -1257,7 +1250,7 @@ impl BeeperGuiApp {
                     row![
                         ic(icon::SEARCH, 14.0).color(p.sub),
                         input,
-                        icon_btn(p, icon::X, 12.0, 20.0, p.sub, UiMessage::ToggleSearch)
+                        icon_btn(p, icon::CLOSE, 12.0, 20.0, p.sub, UiMessage::ToggleSearch)
                     ]
                     .spacing(4)
                     .align_y(Center)
@@ -1283,7 +1276,7 @@ impl BeeperGuiApp {
                     Weight::Medium
                 )
                 .color(p.text)]
-                .push((c.is_muted == Some(true)).then(|| ic(icon::BELL_OFF, 10.0).color(p.sub)))
+                .push((c.is_muted == Some(true)).then(|| ic(icon::NOTIFICATIONS_OFF, 10.0).color(p.sub)))
                 .spacing(3)
                 .align_y(Center);
                 let unread = (c.unread_count > 0).then(|| count_badge(c.unread_count, p.accent));
@@ -1581,10 +1574,7 @@ impl BeeperGuiApp {
                 .flat_map(|w| {
                     let url = w.trim_end().starts_with("http").then(|| w.trim_end().to_string());
                     let arrow = url.as_ref().map(|_| {
-                        span(icon::ARROW_UP_RIGHT.to_string())
-                            .font(iced::Font::with_name("lucide"))
-                            .size(11.0)
-                            .color(fg)
+                        span(icon::ARROW_UP_RIGHT.to_string()).font(iced::Font::with_name("icons")).size(11.0).color(fg)
                     });
                     [
                         Some(
@@ -1645,7 +1635,7 @@ impl BeeperGuiApp {
                 b(icon::SMILE, UiMessage::ToggleReaction(cid.clone(), mid.clone(), "👍".into())),
                 b(icon::REPLY, UiMessage::StartReply(mid.clone())),
                 b(icon::BOOKMARK, UiMessage::ToggleBookmark(mid.clone())),
-                b(icon::MAIL, UiMessage::MarkUnreadFromHere(cid.clone(), mid.clone()))
+                b(icon::EMAIL, UiMessage::MarkUnreadFromHere(cid.clone(), mid.clone()))
             ]
             .push((!m.edit_history.is_empty()).then(|| b(icon::HISTORY, UiMessage::ToggleEditHistory(mid.clone()))))
             .push(mine.then(|| b(icon::PENCIL, UiMessage::StartEdit(mid.clone(), text.clone()))))
@@ -1685,7 +1675,7 @@ impl BeeperGuiApp {
                 ic(c, 12.0).color(p.accent),
                 txt(label, 12.0).color(p.sub),
                 Space::new().width(Fill),
-                icon_btn(p, icon::X, 12.0, 22.0, p.sub, UiMessage::CancelComposeMode)
+                icon_btn(p, icon::CLOSE, 12.0, 22.0, p.sub, UiMessage::CancelComposeMode)
             ]
             .spacing(6)
             .align_y(Center)
@@ -1751,17 +1741,17 @@ impl BeeperGuiApp {
         };
         let actions = row![
             action(
-                icon::PIN,
+                icon::KEEP,
                 if chat.is_pinned == Some(true) { "Unpin" } else { "Pin" },
                 UiMessage::TogglePinChat(cid.clone())
             ),
             action(
-                icon::BELL_OFF,
+                icon::NOTIFICATIONS_OFF,
                 if chat.is_muted == Some(true) { "Unmute" } else { "Mute" },
                 UiMessage::ToggleMuteChat(cid.clone())
             ),
             action(icon::ARCHIVE, "Archive", UiMessage::ToggleArchiveChat(cid.clone())),
-            action(icon::CLOCK, "Remind", UiMessage::SetReminder(cid.clone())),
+            action(icon::SCHEDULE, "Remind", UiMessage::SetReminder(cid.clone())),
             action(icon::DOWNLOAD, "Export", UiMessage::ExportChatJson(cid.clone())),
         ]
         .spacing(4);

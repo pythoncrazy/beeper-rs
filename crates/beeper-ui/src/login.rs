@@ -437,7 +437,7 @@ impl BeeperGuiApp {
                 .width(Fill)
                 .center();
                 let google = svg(ART[3].clone()).width(18).height(18);
-                let mail = ic(icon::MAIL, 16.0).color(Color::WHITE);
+                let mail = ic(icon::EMAIL, 16.0).color(Color::WHITE);
                 column![
                     container(art(0, 372.0)).height(Fill).center_y(Fill),
                     error,
@@ -577,7 +577,7 @@ impl BeeperGuiApp {
             ]
             .into(),
         };
-        let chevron = button(container(ic(icon::CHEVRON_DOWN, 16.0).color(INK)).center(28))
+        let chevron = button(container(ic(icon::EXPAND_MORE, 16.0).color(INK)).center(28))
             .padding(0)
             .style(btn_style([CLEAR, FIELD, FIELD], [INK; 3], 6.0))
             .on_press(LoginMsg::Menu.into());
