@@ -30,9 +30,11 @@ fn main() {
     let out = PathBuf::from(args.next().unwrap_or_else(|| "/tmp/beeper-rs-shots".into()));
     let dark = args.next().as_deref() == Some("dark");
     std::fs::create_dir_all(&out).expect("create shot dir");
-    let data = std::env::temp_dir().join(format!("beeper-rs-shots-{}", std::process::id()));
+    let real = args.next().map(PathBuf::from);
+    let data =
+        real.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("beeper-rs-shots-{}", std::process::id())));
     let mut cfg = CentralConfig::new(data.clone(), "127.0.0.1".into(), 23390, None);
-    cfg.demo = true;
+    cfg.demo = real.is_none();
     let store = Arc::new(RwLock::new(BeeperStore::from_config(cfg)));
     let mut app = BeeperGuiApp::new(store, false);
     let (choice, theme) = if dark { (ThemeChoice::Dark, Theme::Dark) } else { (ThemeChoice::Light, Theme::Light) };
@@ -47,5 +49,7 @@ fn main() {
         let _ = app.update(UiMessage::Login(LoginMsg::Show(screen)));
         shot(&out, &format!("login_{screen:?}").to_lowercase(), (330.0, 620.0), &theme, app.view_login());
     }
-    std::fs::remove_dir_all(data).expect("remove shot data dir");
+    if real.is_none() {
+        std::fs::remove_dir_all(data).expect("remove shot data dir");
+    }
 }
