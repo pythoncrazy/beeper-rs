@@ -232,6 +232,9 @@ pub enum UiMessage {
     SelectTheme(ThemeChoice),
     SystemTheme(iced::theme::Mode),
     SetPref(&'static str, u8),
+    ToggleHotkey(&'static str),
+    RevertHotkeys,
+    HotkeyQuery(String),
     Zoom(i8),
     ToggleSetting(fn(&mut BeeperSettings)),
     CloudAccounts(Result<Vec<BridgeAccountInfo>, String>),
@@ -319,17 +322,6 @@ const MONTHS: [&str; 12] = [
     "November",
     "December",
 ];
-const HOTKEYS: [(&str, &str); 8] = [
-    ("Command bar", "Ctrl K"),
-    ("Open settings", "Ctrl ,"),
-    ("Search chats", "Ctrl F"),
-    ("Filter: Unread", "Ctrl Shift Y"),
-    ("Toggle chat info", "Ctrl ."),
-    ("Next chat", "Alt ↓"),
-    ("Previous chat", "Alt ↑"),
-    ("Close popups", "Esc"),
-];
-
 fn network_name(account_id: &str) -> &'static str {
     account_network(account_id).display_name
 }
@@ -600,17 +592,17 @@ fn select<'a, T: ToString + PartialEq + Clone + 'a>(
 
 fn pill_btn<'a>(p: &Palette, label: impl ToString, msg: UiMessage) -> El<'a> {
     let label = txt(label.to_string(), 13.0).line_height(1.0).wrapping(iced::widget::text::Wrapping::None);
+    button(label).padding([4, 6]).style(pill_style(p)).on_press(msg).into()
+}
+
+fn pill_style(p: &Palette) -> impl Fn(&Theme, button::Status) -> button::Style + use<> {
     let (bg, fg, edge) = (p.button, p.strong, p.button_border);
-    button(label)
-        .padding([4, 6])
-        .style(move |_, _| button::Style {
-            background: Some(bg.into()),
-            text_color: fg,
-            border: iced::Border { color: edge, width: 1.0, radius: 6.0.into() },
-            ..Default::default()
-        })
-        .on_press(msg)
-        .into()
+    move |_, _| button::Style {
+        background: Some(bg.into()),
+        text_color: fg,
+        border: iced::Border { color: edge, width: 1.0, radius: 6.0.into() },
+        ..Default::default()
+    }
 }
 
 fn badge<'a>(p: &Palette, b: prefs::Badge) -> El<'a> {
@@ -752,6 +744,7 @@ pub struct BeeperGuiApp {
     pub selected_account_filter: Option<String>,
     pub selected_chat_id: Option<String>,
     pub search_query: String,
+    pub hotkey_query: String,
     pub show_search: bool,
     pub show_filter_menu: bool,
     pub filters: u8,
@@ -817,6 +810,7 @@ impl BeeperGuiApp {
             selected_account_filter: None,
             selected_chat_id: None,
             search_query: String::new(),
+            hotkey_query: String::new(),
             show_search: false,
             show_filter_menu: false,
             filters: 0,
@@ -1109,6 +1103,36 @@ impl BeeperGuiApp {
         }
     }
 
+    fn run_hotkey(&mut self, name: &str) -> Task<UiMessage> {
+        let chat = |f: fn(String) -> UiMessage| self.selected_chat_id.clone().map(f);
+        let msg = match name {
+            "Search" => Some(UiMessage::ToggleCommandPalette),
+            "Settings" => Some(UiMessage::OpenSettings(self.active_settings_tab)),
+            "Toggle Chat Info" => Some(UiMessage::ToggleRightPanel),
+            "Chat: Toggle Mute" => chat(UiMessage::ToggleMuteChat),
+            "Chat: Toggle Pin" => chat(UiMessage::TogglePinChat),
+            "Chat: Toggle Archive" => chat(UiMessage::ToggleArchiveChat),
+            "Zoom In" => Some(UiMessage::Zoom(1)),
+            "Zoom Out" => Some(UiMessage::Zoom(-1)),
+            "Reset Zoom" => Some(UiMessage::Zoom(0)),
+            "Quit App" => return iced::exit(),
+            "Filter: Unread" => {
+                self.filters ^= 1;
+                None
+            }
+            "Select Next Chat" => {
+                self.step_chat(1);
+                None
+            }
+            "Select Previous Chat" => {
+                self.step_chat(-1);
+                None
+            }
+            _ => unreachable!("{name} has no action"),
+        };
+        msg.map_or_else(Task::none, |m| self.update(m))
+    }
+
     pub fn step_chat(&mut self, delta: isize) {
         let next = {
             let st = self.store.read().unwrap();
@@ -1392,6 +1416,15 @@ impl BeeperGuiApp {
             UiMessage::ToggleAddAccount => self.adding_account ^= true,
             UiMessage::SettingsQueryChanged(q) => self.settings_query = q,
             UiMessage::SetPref(key, v) => self.patch_settings(|s| s.set_pref(key, v)),
+            UiMessage::ToggleHotkey(name) => self.patch_settings(|s| {
+                if s.hotkey_on(name) {
+                    s.hotkeys_off.insert(name.to_string());
+                } else {
+                    s.hotkeys_off.remove(name);
+                }
+            }),
+            UiMessage::RevertHotkeys => self.patch_settings(|s| s.hotkeys_off.clear()),
+            UiMessage::HotkeyQuery(q) => self.hotkey_query = q,
             UiMessage::Zoom(step) => self.patch_settings(|s| {
                 let at = ZOOM_STEPS.iter().position(|z| *z >= s.zoom_percent).expect("zoom is in the steps");
                 s.zoom_percent = match step {
@@ -1458,20 +1491,29 @@ impl BeeperGuiApp {
             }
             UiMessage::Login(m) => return self.update_login(m),
             UiMessage::KeyPressed(key, mods) => {
-                let cmd = mods.command() || mods.control();
-                match key.as_ref() {
-                    Key::Character("k") if cmd => return self.update(UiMessage::ToggleCommandPalette),
-                    Key::Character(",") if cmd => return self.open_settings(self.active_settings_tab),
-                    Key::Character("f") if cmd => return self.update(UiMessage::ToggleSearch),
-                    Key::Character("y" | "Y") if cmd && mods.shift() => self.filters ^= 1,
-                    Key::Character(".") if cmd => self.show_right_panel = !self.show_right_panel,
-                    Key::Character("=" | "+") if cmd => return self.update(UiMessage::Zoom(1)),
-                    Key::Character("-") if cmd => return self.update(UiMessage::Zoom(-1)),
-                    Key::Character("0") if cmd => return self.update(UiMessage::Zoom(0)),
+                let (shift, alt) = (mods.shift(), mods.alt());
+                let hotkey = match key.as_ref() {
                     Key::Named(Named::Escape) => return self.update(UiMessage::CloseModals),
-                    Key::Named(Named::ArrowDown) if mods.alt() => self.step_chat(1),
-                    Key::Named(Named::ArrowUp) if mods.alt() => self.step_chat(-1),
-                    _ => {}
+                    _ if !(mods.command() || mods.control()) => None,
+                    Key::Character("k") => Some("Search"),
+                    Key::Character(",") => Some("Settings"),
+                    Key::Character("Y" | "y") if shift => Some("Filter: Unread"),
+                    Key::Character("I" | "i") if shift => Some("Toggle Chat Info"),
+                    Key::Character("M" | "m") if shift => Some("Chat: Toggle Mute"),
+                    Key::Character("p") => Some("Chat: Toggle Pin"),
+                    Key::Character("e") => Some("Chat: Toggle Archive"),
+                    Key::Character("q") => Some("Quit App"),
+                    Key::Character("=" | "+") => Some("Zoom In"),
+                    Key::Character("-") => Some("Zoom Out"),
+                    Key::Character("0") => Some("Reset Zoom"),
+                    Key::Character("]") => Some("Select Next Chat"),
+                    Key::Named(Named::ArrowDown) if alt => Some("Select Next Chat"),
+                    Key::Character("[") => Some("Select Previous Chat"),
+                    Key::Named(Named::ArrowUp) if alt => Some("Select Previous Chat"),
+                    _ => None,
+                };
+                if let Some(h) = hotkey.filter(|h| self.store.read().unwrap().settings.hotkey_on(h)) {
+                    return self.run_hotkey(h);
                 }
             }
         }
@@ -2879,25 +2921,7 @@ impl BeeperGuiApp {
             SettingsTab::General => self.pref_items(prefs::GENERAL, s),
             SettingsTab::Appearance => self.pref_items(prefs::APPEARANCE, s),
             SettingsTab::Notifications => self.pref_items(prefs::NOTIFICATIONS, s),
-            SettingsTab::Hotkeys => vec![group(
-                p,
-                None,
-                HOTKEYS
-                    .iter()
-                    .map(|(a, k)| {
-                        pref_row(
-                            p,
-                            *a,
-                            None,
-                            None,
-                            container(med(*k, 12.0).color(p.text))
-                                .padding([3, 8])
-                                .style(bordered_box(p.hover, p.divider, 1.0, 6.0))
-                                .into(),
-                        )
-                    })
-                    .collect(),
-            )],
+            SettingsTab::Hotkeys => vec![self.hotkeys_page(s)],
             SettingsTab::Devices => {
                 let code = text_input("Recovery code", &self.recovery_code_input)
                     .on_input(UiMessage::RecoveryInputChanged)
@@ -3034,6 +3058,57 @@ impl BeeperGuiApp {
         };
         let banner = (!self.status_banner.is_empty()).then(|| txt(self.status_banner.clone(), 12.0).color(p.sub));
         column![].push(banner).extend(groups).spacing(28).into()
+    }
+
+    fn hotkeys_page(&self, s: &BeeperSettings) -> El<'_> {
+        let p = &self.pal;
+        let (edge, text, muted, accent) = (p.neutral_border, p.text, p.muted, p.accent);
+        let search = text_input("Search hotkeys...", &self.hotkey_query)
+            .on_input(UiMessage::HotkeyQuery)
+            .size(13)
+            .line_height(Pixels(15.0))
+            .padding([4, 7])
+            .width(219)
+            .style(move |_, _| text_input::Style {
+                background: CLEAR.into(),
+                border: iced::Border { color: edge, width: 1.0, radius: 6.0.into() },
+                icon: muted,
+                placeholder: muted,
+                value: text,
+                selection: accent.scale_alpha(0.45),
+            });
+        let revert = button(txt("Revert all", 13.0).line_height(Pixels(15.0)).width(Fill).align_x(Center))
+            .width(100)
+            .padding([4, 6])
+            .style(pill_style(p))
+            .on_press(UiMessage::RevertHotkeys);
+        let q = self.hotkey_query.to_lowercase();
+        let hotkey = |&(name, keys): &(&'static str, &'static str)| -> El<'_> {
+            let on = s.hotkey_on(name);
+            let recorder = on.then(|| {
+                container(txt(keys, 13.0).line_height(Pixels(18.0)).color(p.text))
+                    .center_x(160)
+                    .center_y(20)
+                    .style(bordered_box(CLEAR, edge, 1.0, 4.0))
+            });
+            row![txt(name, 13.0).color(p.text).width(Fill)]
+                .push(recorder)
+                .push(toggle(p, on, Some(UiMessage::ToggleHotkey(name))))
+                .spacing(6)
+                .align_y(Center)
+                .padding([8, 0])
+                .into()
+        };
+        let groups = prefs::HOTKEYS.iter().filter_map(|(group, keys)| {
+            let rows: Vec<El<'_>> = keys.iter().filter(|(n, _)| n.to_lowercase().contains(&q)).map(hotkey).collect();
+            let head = txt(*group, 13.0).line_height(Pixels(16.0)).color(p.muted);
+            (!rows.is_empty())
+                .then(|| column![container(head).padding(Padding::ZERO.top(24.0).bottom(12.0))].extend(rows).into())
+        });
+        let head = row![search, Space::new().width(Fill), revert].align_y(Center).padding(Padding::ZERO.bottom(10.0));
+        let line = container(Space::new()).width(Fill).height(1).style(fill_box(edge, 0.0));
+        let card = column![head, line, Space::new().height(6)].extend(groups);
+        container(card).width(Fill).padding(14).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0)).into()
     }
 
     fn pref_items(&self, items: &'static [prefs::Item], s: &BeeperSettings) -> Vec<El<'_>> {

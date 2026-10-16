@@ -729,6 +729,7 @@ pub struct BeeperSettings {
     pub enable_pas_api: bool,
     pub pas_port: u16,
     pub prefs: std::collections::BTreeMap<String, u8>,
+    pub hotkeys_off: std::collections::BTreeSet<String>,
 }
 
 impl BeeperSettings {
@@ -742,6 +743,11 @@ impl BeeperSettings {
         self.pref(key) == 1
     }
 
+    pub fn hotkey_on(&self, name: &str) -> bool {
+        crate::prefs::assert_hotkey(name);
+        !self.hotkeys_off.contains(name)
+    }
+
     pub fn set_pref(&mut self, key: &str, value: u8) {
         assert!(value <= crate::prefs::find(key).max_value(), "{key} = {value} is out of range");
         self.prefs.insert(key.to_string(), value);
@@ -751,6 +757,7 @@ impl BeeperSettings {
         for (k, v) in &self.prefs {
             self.clone().set_pref(k, *v);
         }
+        self.hotkeys_off.iter().for_each(|h| crate::prefs::assert_hotkey(h));
         assert!((50..=300).contains(&self.zoom_percent), "zoom {}% is out of range", self.zoom_percent);
     }
 }
