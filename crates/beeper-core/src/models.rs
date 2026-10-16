@@ -416,6 +416,8 @@ pub struct Message {
     pub is_unread: Option<bool>,
     #[serde(rename = "isBookmarked", skip_serializing_if = "Option::is_none")]
     pub is_bookmarked: Option<bool>,
+    #[serde(rename = "isDeleted", skip_serializing_if = "Option::is_none")]
+    pub is_deleted: Option<bool>,
     #[serde(rename = "linkedMessageID", skip_serializing_if = "Option::is_none")]
     pub linked_message_id: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -455,7 +457,8 @@ impl Message {
             (self.is_bookmarked == Some(true), MSG_BOOKMARKED),
             (self.attachments.iter().any(|a| a.is_voice_note == Some(true)), MSG_VOICE_NOTE),
             (!self.edit_history.is_empty(), MSG_EDITED),
-        ]) | (self.flags & MSG_DELETED);
+            (self.is_deleted == Some(true), MSG_DELETED),
+        ]);
     }
 }
 

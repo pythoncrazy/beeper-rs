@@ -276,10 +276,10 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
     let accounts: HashMap<&str, &str> = chats.iter().map(|c| (c.id.as_str(), c.account_id.as_str())).collect();
     let mut stmt = db
         .prepare(
-            "SELECT messageID, threadID, timestamp, CAST(message AS TEXT), NULL FROM messages
+            "SELECT messageID, threadID, timestamp, CAST(message AS TEXT), NULL, 0 FROM messages
              UNION ALL
-             SELECT eventID, roomID, timestamp, CAST(message AS TEXT), hsOrder FROM mx_room_messages
-             WHERE type NOT IN ('REACTION', 'MEMBERSHIP', 'HIDDEN') AND isDeleted = 0
+             SELECT eventID, roomID, timestamp, CAST(message AS TEXT), hsOrder, isDeleted FROM mx_room_messages
+             WHERE type NOT IN ('REACTION', 'MEMBERSHIP', 'HIDDEN')
              ORDER BY 3",
         )
         .map_err(|e| e.to_string())?;
@@ -291,6 +291,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                 r.get::<_, i64>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, Option<i64>>(4)?,
+                r.get::<_, bool>(5)?,
             ))
         })
         .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
@@ -315,12 +316,13 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
     .map_err(|e| e.to_string())?;
     let mut seen = HashSet::new();
     let mut out = Vec::with_capacity(rows.len());
-    for (id, chat_id, ts, json, order) in rows {
+    for (id, chat_id, ts, json, order, deleted) in rows {
         let Some(&account_id) = accounts.get(chat_id.as_str()) else { continue };
         let m: Value = serde_json::from_str(&json).map_err(|e| format!("message {id}: {e}"))?;
-        if flag(&m, "isHidden") || flag(&m, "isDeleted") || !seen.insert(id.clone()) {
+        if flag(&m, "isHidden") || !seen.insert(id.clone()) {
             continue;
         }
+        let deleted = deleted || flag(&m, "isDeleted");
         let sender_id =
             m.get("senderID").map_or_else(String::new, |s| s.as_str().map_or_else(|| s.to_string(), str::to_string));
         let sender_name = m
@@ -329,10 +331,13 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             .map(str::to_string)
             .or_else(|| names.get(&(chat_id.as_str(), sender_id.as_str())).map(|n| n.to_string()))
             .unwrap_or_else(|| sender_id.clone());
-        let attachments: Vec<Attachment> = m
-            .get("attachments")
-            .and_then(Value::as_array)
-            .map_or_else(Vec::new, |a| a.iter().map(read_attachment).collect());
+        let attachments: Vec<Attachment> = match deleted {
+            true => Vec::new(),
+            false => m
+                .get("attachments")
+                .and_then(Value::as_array)
+                .map_or_else(Vec::new, |a| a.iter().map(read_attachment).collect()),
+        };
         let mut listed = m.get("reactions").and_then(Value::as_array).map_or_else(Vec::new, |rs| {
             rs.iter()
                 .filter_map(|r| {
@@ -347,6 +352,9 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                 .collect()
         });
         listed.extend(reactions.remove(&id).into_iter().flatten());
+        if deleted {
+            listed.clear();
+        }
         let message_type = match attachments.first() {
             Some(a) if a.is_voice_note == Some(true) => "VOICE",
             Some(a) if a.attachment_type == "img" => "IMAGE",
@@ -366,10 +374,11 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             is_sender: Some(flag(&m, "isSender")),
             is_unread: Some(false),
             is_bookmarked: Some(false),
+            is_deleted: deleted.then_some(true),
             linked_message_id: str_field(&m, "linkedMessageID"),
             reactions: listed,
-            text: str_field(&m, "text"),
-            html: m.get("extra").and_then(|e| str_field(e, "sanitizedFormattedBody")),
+            text: str_field(&m, "text").filter(|_| !deleted),
+            html: m.get("extra").and_then(|e| str_field(e, "sanitizedFormattedBody")).filter(|_| !deleted),
             message_type: Some(message_type.into()),
             poll: None,
             edit_history: Vec::new(),
