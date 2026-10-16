@@ -72,7 +72,8 @@ pub const FONT_MEDIUM: &[u8] = include_bytes!("../assets/fonts/Inter-Medium.ttf"
 pub const FONT_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
 pub const FONT_BOLD: &[u8] = include_bytes!("../assets/fonts/Inter-Bold.ttf");
 pub const FONT_ICONS: &[u8] = include_bytes!("../assets/fonts/icons.ttf");
-pub const ALL_FONTS: [&[u8]; 5] = [FONT_REGULAR, FONT_MEDIUM, FONT_SEMIBOLD, FONT_BOLD, FONT_ICONS];
+pub const FONT_EMOJI: &[u8] = include_bytes!("../assets/fonts/Twemoji.Mozilla.ttf");
+pub const ALL_FONTS: [&[u8]; 6] = [FONT_REGULAR, FONT_MEDIUM, FONT_SEMIBOLD, FONT_BOLD, FONT_ICONS, FONT_EMOJI];
 pub const CLEAR: Color = Color::TRANSPARENT;
 
 static LOAD_FONTS: Once = Once::new();
