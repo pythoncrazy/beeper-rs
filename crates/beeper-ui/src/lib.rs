@@ -229,12 +229,13 @@ pub enum UiMessage {
     AvatarLoaded(String, Result<image::Handle, String>),
     RecoveryInputChanged(String),
     VerifyRecoveryCode,
-    Recovered(Result<(), String>),
+    Verified(Result<(), String>),
     DevicesLoaded(Result<Vec<DeviceInfo>, String>),
     AskLogout(bool),
     Logout,
     LoggedOut(Result<(), String>),
     VerifySasNow,
+    SasMatch(bool),
     ClearOldMedia,
     ExportChatJson(String),
     OpenQuickLook(String, String),
@@ -1194,16 +1195,18 @@ impl BeeperGuiApp {
             UiMessage::RecoveryInputChanged(v) => self.recovery_code_input = v,
             UiMessage::VerifyRecoveryCode => {
                 let key = std::mem::take(&mut self.recovery_code_input);
-                return Task::perform(beeper_core::matrix::recover(self.store.clone(), key), UiMessage::Recovered);
+                return Task::perform(beeper_core::matrix::recover(self.store.clone(), key), UiMessage::Verified);
             }
-            UiMessage::Recovered(Ok(())) => self.status_banner = "This device is verified.".into(),
-            UiMessage::Recovered(Err(e)) => self.status_banner = format!("Could not use the recovery code: {e}"),
+            UiMessage::Verified(Ok(())) => self.status_banner = "This device is verified.".into(),
+            UiMessage::Verified(Err(e)) => self.status_banner = format!("Could not verify this device: {e}"),
             UiMessage::VerifySasNow => {
-                let mut st = self.store.write().unwrap();
-                st.beeper_state.verified = true;
-                st.setup_status = BeeperStore::build_setup_from_state(&st.beeper_state);
-                st.persist_state_to_sqlite();
-                self.status_banner = "Device SAS E2EE verification complete".to_string();
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                self.store.write().unwrap().sas_confirm = Some(tx);
+                return Task::perform(beeper_core::matrix::verify(self.store.clone(), rx), UiMessage::Verified);
+            }
+            UiMessage::SasMatch(same) => {
+                let tx = self.store.write().unwrap().sas_confirm.take().expect("emojis are shown once");
+                tx.send(same).ok();
             }
             UiMessage::ClearOldMedia => {
                 let n = self.store.write().unwrap().clear_cached_media_older_than_days(30);
@@ -2362,6 +2365,34 @@ impl BeeperGuiApp {
         stack![base.style(fill_box(p.frame, 0.0))].push(self.confirm_logout.then(|| self.view_logout_confirm())).into()
     }
 
+    fn sas_row<'a>(&self, st: &BeeperStore) -> El<'a> {
+        let p = &self.pal;
+        let v = st.setup_status.session.verification.as_ref();
+        let (desc, control): (Option<&str>, El<'a>) =
+            match (v.map(|v| v.state.as_str()), v.and_then(|v| v.sas.as_ref())) {
+                (Some("requested"), _) => (Some("Accept the request on your other device."), Space::new().into()),
+                (Some("sas_started"), Some(sas)) => {
+                    let emojis = sas.emojis.iter().map(|e| {
+                        column![txt(e.emoji.clone(), 24.0), txt(e.description.clone(), 11.0).color(p.sub)]
+                            .spacing(4)
+                            .align_x(Center)
+                            .width(Fill)
+                            .into()
+                    });
+                    let buttons = row![
+                        pill_btn(p, "They don't match", UiMessage::SasMatch(false)),
+                        pill_btn(p, "They match", UiMessage::SasMatch(true))
+                    ]
+                    .spacing(8);
+                    let title = txt("Compare the emojis on both devices", 13.0).color(p.text);
+                    let buttons = row![Space::new().width(Fill), buttons];
+                    return column![title, Row::with_children(emojis), buttons].spacing(12).padding([13, 14]).into();
+                }
+                _ => (None, pill_btn(p, "Verify", UiMessage::VerifySasNow)),
+            };
+        pref_row(p, "Verify with another device", desc, None, control)
+    }
+
     fn device_list<'a>(&self, title: &'a str, list: &[&DeviceInfo]) -> El<'a> {
         let p = &self.pal;
         let rows = list.iter().enumerate().flat_map(|(i, d)| {
@@ -2528,13 +2559,7 @@ impl BeeperGuiApp {
                             None,
                             code.into(),
                         ),
-                        pref_row(
-                            p,
-                            "Verify with another device",
-                            None,
-                            None,
-                            pill_btn(p, "Verify", UiMessage::VerifySasNow),
-                        ),
+                        self.sas_row(st),
                     ],
                 );
                 let mut out = match &self.devices {
