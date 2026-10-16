@@ -475,22 +475,26 @@ impl BeeperStore {
         assert!(self.chats.is_empty() && self.messages.is_empty(), "import into a store that has chats");
         self.db.lock().unwrap().execute_batch("BEGIN IMMEDIATE;").expect("begin import transaction");
         self.finish_setup(Setup::Imported);
-        if let Some((session, homeserver)) = data.session {
-            self.sign_in(session, homeserver, &data.profile, Vec::new());
-        }
         let (chats, messages) = (self.chats.len(), self.messages.len());
         for c in data.chats {
             self.push_chat(c, false);
         }
         for mut m in data.messages {
-            self.next_seq += 1;
-            m.sort_key = sort_key(self.next_seq);
+            if m.sort_key.is_empty() {
+                self.next_seq += 1;
+                m.sort_key = sort_key(self.next_seq);
+            }
+            self.next_seq = self.next_seq.max(m.sort_key.parse().expect("sort keys are numbers"));
             self.push_message(m, false);
         }
         (chats..self.chats.len()).for_each(|i| self.persist_chat(i));
         (messages..self.messages.len()).for_each(|i| self.persist_message(i));
         self.persist_seq();
         self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit import transaction");
+    }
+
+    pub fn matrix_dir(&self) -> PathBuf {
+        self.data_dir.join("matrix")
     }
 
     pub fn signed_in(&self) -> bool {

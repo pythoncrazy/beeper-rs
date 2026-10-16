@@ -408,13 +408,19 @@ dependencies = [
 name = "beeper-core"
 version = "4.3.176"
 dependencies = [
+ "aes",
+ "cbc",
  "futures-util",
+ "hkdf",
+ "hmac",
  "matrix-sdk",
+ "matrix-sdk-crypto",
  "reqwest",
  "rusqlite",
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tokio",
 ]
 
