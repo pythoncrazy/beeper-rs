@@ -473,6 +473,7 @@ pub enum Outgoing {
     Edit { target: String, text: String },
     Redact { target: String },
     React { txn: String, target: String, key: String },
+    Image { txn: String, png: Vec<u8>, size: (u32, u32), caption: Option<String>, reply_to: Option<String> },
 }
 
 pub async fn flush(store: SharedStore) -> Result<(), String> {
@@ -532,6 +533,33 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
         Outgoing::React { txn, target, key } => {
             let content = ReactionEventContent::new(Annotation::new(event(target)?, key));
             sent(txn.clone(), room.send(content).with_transaction_id(txn.into()).await.map_err(e)?.response.event_id);
+        }
+        Outgoing::Image { txn, png, size: (w, h), caption, reply_to } => {
+            use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseImageInfo};
+            use matrix_sdk::room::reply::{EnforceThread, Reply};
+            let reply = reply_to
+                .map(|r| {
+                    event(r).map(|event_id| Reply {
+                        event_id,
+                        enforce_thread: EnforceThread::MaybeThreaded,
+                        add_mentions: matrix_sdk::ruma::events::room::message::AddMentions::Yes,
+                    })
+                })
+                .transpose()?;
+            let bytes = matrix_sdk::ruma::UInt::try_from(png.len()).expect("the image size fits");
+            let info = BaseImageInfo {
+                width: Some(w.into()),
+                height: Some(h.into()),
+                size: Some(bytes),
+                ..Default::default()
+            };
+            let caption = caption.map(matrix_sdk::ruma::events::room::message::TextMessageEventContent::plain);
+            let config = AttachmentConfig::new()
+                .txn_id(txn.clone().into())
+                .info(AttachmentInfo::Image(info))
+                .caption(caption)
+                .reply(reply);
+            sent(txn, room.send_attachment("image.png", &mime::IMAGE_PNG, png, config).await.map_err(e)?.event_id);
         }
     }
     Ok(())
