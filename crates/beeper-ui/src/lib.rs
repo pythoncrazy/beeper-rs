@@ -1548,7 +1548,14 @@ impl BeeperGuiApp {
             .align_y(Center);
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
             let image = m.is_some_and(|m| m.attachments.iter().any(|a| a.attachment_type == "img"));
-            let body = m.and_then(|m| m.text.clone()).filter(|t| !t.is_empty() && previews).map(|t| {
+            let body = m.and_then(|m| match m.links.len() {
+                _ if m.text.as_ref().is_some_and(|t| !t.is_empty()) => m.text.clone(),
+                _ if !m.attachments.is_empty() => None,
+                0 => None,
+                1 => Some("🔗 [Link]".to_string()),
+                n => Some(format!("🔗 [{n} links]")),
+            });
+            let body = body.filter(|_| previews).map(|t| {
                 let first = m
                     .and_then(|m| m.sender_name.clone())
                     .map(|s| s.split(' ').next().expect("sender name").to_string());
