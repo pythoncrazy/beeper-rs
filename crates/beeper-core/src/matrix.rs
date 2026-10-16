@@ -303,16 +303,16 @@ fn reaction_text(key: &str, target: Option<&Message>, who: Option<&str>) -> Stri
 }
 
 fn reaction_verb(key: &str) -> String {
-    match key.trim() {
-        "❤️" | "♥️" => "loved".into(),
+    match key.trim().replace('\u{fe0f}', "").as_str() {
+        "\u{2764}" | "\u{2665}" => "loved".into(),
         "👍" => "liked".into(),
         "👎" => "disliked".into(),
         "😂" | "😹" => "laughed at".into(),
         "❓" | "🤔" => "questioned".into(),
-        "❗" | "‼️" => "emphasized".into(),
+        "❗" | "\u{203c}" => "emphasized".into(),
         k if ["haha", "laugh"].contains(&k.to_lowercase().as_str()) => "laughed at".into(),
         k if k.starts_with("mxc://") || k.starts_with("localmxc://") => "reacted to".into(),
-        k => format!("reacted {k} to"),
+        _ => format!("reacted {} to", key.trim()),
     }
 }
 
@@ -907,5 +907,14 @@ mod tests {
         super::logout(store).await.expect("demo logout");
         assert!(!dir.join("beeper-rs.db").exists() && !dir.join("media").exists());
         std::fs::remove_dir_all(dir).expect("remove the test data dir");
+    }
+
+    #[test]
+    fn reaction_verbs_ignore_variation_selectors() {
+        for (key, verb) in
+            [("👍\u{fe0f}", "liked"), ("\u{2764}", "loved"), ("\u{2764}\u{fe0f}", "loved"), ("🎉", "reacted 🎉 to")]
+        {
+            assert_eq!(super::reaction_verb(key), verb, "{key:?}");
+        }
     }
 }
