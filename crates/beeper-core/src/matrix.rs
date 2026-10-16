@@ -127,7 +127,10 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         draft: None,
         is_archived: Some(false),
         is_marked_unread: Some(room.is_marked_unread()),
-        is_muted: Some(room.user_defined_notification_mode().await == Some(RoomNotificationMode::Mute)),
+        is_muted: Some(matches!(
+            room.user_defined_notification_mode().await,
+            Some(RoomNotificationMode::Mute | RoomNotificationMode::MentionsAndKeywordsOnly)
+        )),
         is_pinned: Some(tags.contains_key(&TagName::Favorite)),
         is_low_priority: Some(tags.contains_key(&TagName::LowPriority)),
         label_ids: Vec::new(),
@@ -313,8 +316,14 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
         st.upsert_chat(chat);
     } else {
         let i = st.chat_idx_by_id[NOTE_CHAT_ID];
-        if st.chats[i].img_url != chat.img_url {
-            st.update_chat(i, |c| c.img_url = chat.img_url);
+        let room = |c: &Chat| {
+            (c.img_url.clone(), c.is_muted, c.is_pinned, c.is_low_priority, c.unread_count, c.is_marked_unread)
+        };
+        if room(&st.chats[i]) != room(&chat) {
+            st.update_chat(i, |c| {
+                (c.img_url, c.is_muted, c.is_pinned, c.is_low_priority, c.unread_count, c.is_marked_unread) =
+                    room(&chat);
+            });
         }
     }
     for id in non_messages {
