@@ -303,7 +303,8 @@ async fn history(room: &Room) -> Vec<TimelineEvent> {
 }
 
 async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>) {
-    if state(room, "m.room.create").await.expect("rooms have a create event")["type"].is_string() {
+    let space = state(room, "m.room.create").await.expect("rooms have a create event")["type"].is_string();
+    if space || state(room, "com.beeper.managed").await.is_some() {
         return;
     }
     let chat_id = chat_id(room).await;
