@@ -792,6 +792,16 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     }
 
     let _ = gui.update(UiMessage::SelectTab(InboxTab::AllChats));
+    let _ = gui.update(UiMessage::FilterButton);
+    let _ = gui.update(UiMessage::ToggleFilterMenu);
+    {
+        let mut sim = simulator(gui.view_main());
+        for label in ["Unread", "Ctrl Shift Y", "Low Priority"] {
+            assert!(sim.find(label).is_ok(), "filter menu shows {label}");
+        }
+    }
+    let _ = gui.update(UiMessage::PickFilter(1));
+    assert!(gui.filters == 0 && !gui.show_filter_menu, "picking the only active filter clears it");
     let _ = gui.update(UiMessage::ComposerChanged("Hello from Iced Simulator E2E!".to_string()));
     let _ = gui.update(UiMessage::SubmitComposer);
     let _ = gui.update(UiMessage::OpenSettings(SettingsTab::Appearance));

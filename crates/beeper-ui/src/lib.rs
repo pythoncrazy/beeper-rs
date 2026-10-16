@@ -44,15 +44,75 @@ pub enum InboxTab {
     LowPriority,
     Archived,
     Reminders,
-    Drafts,
-    Unread,
-    Pinned,
+    SendLater,
     Requests,
 }
 
 impl InboxTab {
     pub const fn label(self) -> &'static str {
-        ["Inbox", "Low Priority", "Archive", "Reminders", "Drafts", "Unread", "Pinned", "Requests"][self as usize]
+        ["Inbox", "Low Priority", "Archive", "Reminders", "Send Later", "Requests"][self as usize]
+    }
+
+    const fn fallback(self) -> Option<[Self; 2]> {
+        match self {
+            Self::AllChats => Some([Self::Archived, Self::LowPriority]),
+            Self::LowPriority => Some([Self::AllChats, Self::Archived]),
+            Self::Archived => Some([Self::AllChats, Self::LowPriority]),
+            _ => None,
+        }
+    }
+
+    const fn filterable(self) -> bool {
+        !matches!(self, Self::Reminders | Self::SendLater)
+    }
+
+    const fn empty(self) -> (&'static str, &'static str) {
+        [
+            ("You've hit inbox zero!", ""),
+            ("No messages in Low Priority", ""),
+            ("Your Archive is empty", ""),
+            (
+                "You don't have any Reminders set",
+                "Set one up by right-clicking a chat in the inbox and selecting Remind Me",
+            ),
+            (
+                "You don't have any Send Later messages",
+                "Send a message later by clicking the clock icon in the composer",
+            ),
+            ("You have no messages", ""),
+        ][self as usize]
+    }
+}
+
+const FILTERS: [(&str, char); 8] = [
+    ("Unread", icon::MARK_EMAIL_UNREAD),
+    ("Drafts", icon::SMS),
+    ("Unanswered", icon::MODE_COMMENT),
+    ("DMs", icon::PERSON),
+    ("Groups", icon::GROUP),
+    ("Archived", icon::ARCHIVE),
+    ("Requests", icon::EMAIL),
+    ("Low Priority", icon::LOW_PRIORITY_SPACE),
+];
+const F_ARCHIVED: usize = 5;
+const F_REQUESTS: usize = 6;
+const F_LOW_PRIORITY: usize = 7;
+
+fn filter_hit(i: usize, c: &Chat, st: &BeeperStore) -> bool {
+    match i {
+        0 => c.flags & CHAT_UNREAD != 0,
+        1 => c.draft.is_some(),
+        2 => {
+            st.chat_msg_indices.get(&c.id).and_then(|v| v.last()).map(|&i| &st.messages[i]).is_none_or(|m| {
+                m.is_sender != Some(true) && !m.reactions.iter().any(|r| r.participant_id == st.me().id)
+            })
+        }
+        3 => c.chat_type != "group",
+        4 => c.chat_type == "group",
+        F_ARCHIVED => c.flags & CHAT_ARCHIVED != 0,
+        F_REQUESTS => c.flags & CHAT_REQUEST != 0,
+        F_LOW_PRIORITY => c.flags & CHAT_LOW_PRIORITY != 0,
+        _ => unreachable!("filter index {i}"),
     }
 }
 
@@ -145,6 +205,8 @@ pub enum UiMessage {
     SaveNickname,
     ToggleSearch,
     ToggleFilterMenu,
+    FilterButton,
+    PickFilter(u8),
     SearchChanged(String),
     ClearSearch,
     ToggleCommandPalette,
@@ -224,10 +286,11 @@ pub fn search_settings_catalog(query: &str) -> Vec<(&'static str, &'static prefs
 const ZOOM_STEPS: [u16; 13] = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300];
 const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const HOTKEYS: [(&str, &str); 7] = [
+const HOTKEYS: [(&str, &str); 8] = [
     ("Command bar", "Ctrl K"),
     ("Open settings", "Ctrl ,"),
     ("Search chats", "Ctrl F"),
+    ("Filter: Unread", "Ctrl Shift Y"),
     ("Toggle chat info", "Ctrl ."),
     ("Next chat", "Alt ↓"),
     ("Previous chat", "Alt ↑"),
@@ -539,6 +602,7 @@ pub struct BeeperGuiApp {
     pub search_query: String,
     pub show_search: bool,
     pub show_filter_menu: bool,
+    pub filters: u8,
     pub show_attach_menu: bool,
     pub command_palette_query: String,
     pub composer_text: String,
@@ -598,6 +662,7 @@ impl BeeperGuiApp {
             search_query: String::new(),
             show_search: false,
             show_filter_menu: false,
+            filters: 0,
             show_attach_menu: false,
             command_palette_query: String::new(),
             composer_text: String::new(),
@@ -718,6 +783,10 @@ impl BeeperGuiApp {
     }
 
     pub fn visible_chats<'a>(&self, st: &'a BeeperStore) -> Vec<&'a Chat> {
+        self.chats_with(st, self.filters)
+    }
+
+    fn chats_with<'a>(&self, st: &'a BeeperStore, filters: u8) -> Vec<&'a Chat> {
         let q_ids =
             (!self.search_query.trim().is_empty()).then(|| st.chat_search_index.query_all_tokens(&self.search_query));
         let mut list: Vec<&Chat> = st
@@ -725,22 +794,27 @@ impl BeeperGuiApp {
             .iter()
             .enumerate()
             .filter(|(idx, c)| {
+                let on = |i: usize| filters & 1 << i != 0;
+                let shown = |i: usize| on(i) || !filter_hit(i, c, st);
                 c.merged_into_chat_id.is_none()
                     && self.selected_account_filter.as_ref().is_none_or(|a| &c.account_id == a)
                     && q_ids.as_ref().is_none_or(|ids| ids.binary_search(&(*idx as u32)).is_ok())
                     && match self.active_tab {
                         InboxTab::AllChats => {
                             let hidden = if self.selected_account_filter.is_some() { 0 } else { CHAT_HIDDEN };
-                            c.flags & (CHAT_ARCHIVED | CHAT_LOW_PRIORITY | CHAT_REQUEST | hidden) == 0
+                            c.flags & hidden == 0 && shown(F_ARCHIVED) && shown(F_LOW_PRIORITY) && shown(F_REQUESTS)
                         }
                         InboxTab::Requests => c.flags & CHAT_REQUEST != 0,
-                        InboxTab::Unread => c.flags & CHAT_UNREAD != 0,
-                        InboxTab::Pinned => c.flags & CHAT_PINNED != 0,
-                        InboxTab::Drafts => c.draft.is_some(),
-                        InboxTab::Archived => c.flags & CHAT_ARCHIVED != 0,
-                        InboxTab::LowPriority => c.flags & CHAT_LOW_PRIORITY != 0,
+                        InboxTab::Archived => c.flags & CHAT_ARCHIVED != 0 && shown(F_REQUESTS),
+                        InboxTab::LowPriority => {
+                            c.flags & CHAT_LOW_PRIORITY != 0 && shown(F_ARCHIVED) && shown(F_REQUESTS)
+                        }
                         InboxTab::Reminders => c.reminder.is_some(),
+                        InboxTab::SendLater => false,
                     }
+                    && (!self.active_tab.filterable()
+                        || filters == 0
+                        || (0..FILTERS.len()).any(|i| on(i) && filter_hit(i, c, st)))
             })
             .map(|(_, c)| c)
             .collect();
@@ -818,7 +892,10 @@ impl BeeperGuiApp {
 
     pub fn update(&mut self, msg: UiMessage) -> Task<UiMessage> {
         match msg {
-            UiMessage::SelectTab(tab) => self.active_tab = tab,
+            UiMessage::SelectTab(tab) => {
+                self.active_tab = tab;
+                self.show_filter_menu = false;
+            }
             UiMessage::SelectAccount(acc) => self.selected_account_filter = acc,
             UiMessage::SelectChat(id) => self.select_chat(&id),
             UiMessage::ComposerChanged(v) => self.composer_text = v,
@@ -1040,6 +1117,11 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::ToggleFilterMenu => self.show_filter_menu = !self.show_filter_menu,
+            UiMessage::FilterButton => self.filters = u8::from(self.filters == 0),
+            UiMessage::PickFilter(bit) => {
+                self.filters = if self.filters == bit { 0 } else { bit };
+                self.show_filter_menu = false;
+            }
             UiMessage::OpenSettings(tab) => return self.open_settings(tab),
             UiMessage::ToggleAddAccount => self.adding_account ^= true,
             UiMessage::SettingsQueryChanged(q) => self.settings_query = q,
@@ -1112,6 +1194,7 @@ impl BeeperGuiApp {
                     Key::Character("k") if cmd => return self.update(UiMessage::ToggleCommandPalette),
                     Key::Character(",") if cmd => return self.open_settings(self.active_settings_tab),
                     Key::Character("f") if cmd => return self.update(UiMessage::ToggleSearch),
+                    Key::Character("y" | "Y") if cmd && mods.shift() => self.filters ^= 1,
                     Key::Character(".") if cmd => self.show_right_panel = !self.show_right_panel,
                     Key::Character("=" | "+") if cmd => return self.update(UiMessage::Zoom(1)),
                     Key::Character("-") if cmd => return self.update(UiMessage::Zoom(-1)),
@@ -1205,7 +1288,57 @@ impl BeeperGuiApp {
             )
             .on_press(UiMessage::CloseModals)
         });
-        stack![base].push(scrim).into()
+        let menu = self.show_filter_menu.then(|| {
+            mouse_area(
+                container(mouse_area(self.view_filter_menu()).on_press(UiMessage::Noop))
+                    .padding(Padding::ZERO.left(self.sidebar_width - 14.5).top(26.0))
+                    .width(Fill)
+                    .height(Fill),
+            )
+            .on_press(UiMessage::CloseModals)
+            .on_right_press(UiMessage::CloseModals)
+        });
+        stack![base].push(menu).push(scrim).into()
+    }
+
+    fn view_filter_menu(&self) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read().unwrap();
+        let item = |checked: bool, glyph: char, label: String, hotkey: &'static str, bit: u8| -> El<'_> {
+            let line = row![
+                container(checked.then(|| ic(icon::CHECK, 14.0))).center_x(14),
+                container(ic(glyph, 14.0)).padding(Padding::ZERO.left(9.0).right(4.0)),
+                txt(label, 13.0),
+                Space::new().width(Fill),
+                txt(hotkey, 13.0).color(Color { a: 0.5, ..p.strong })
+            ]
+            .align_y(Center);
+            container(
+                button(line)
+                    .padding([3.125, 8.0])
+                    .width(Fill)
+                    .style(btn_style([CLEAR, p.accent, p.accent], [p.text, Color::WHITE, Color::WHITE], 4.0))
+                    .on_press(UiMessage::PickFilter(bit)),
+            )
+            .padding([2, 5])
+            .into()
+        };
+        let counted = (0..F_ARCHIVED).map(|i| {
+            let n = self.chats_with(&st, 1 << i).len();
+            let hotkey = if i == 0 { "Ctrl Shift Y" } else { "" };
+            item(self.filters & 1 << i != 0, FILTERS[i].1, format!("{} ({n})", FILTERS[i].0), hotkey, 1 << i)
+        });
+        let views = (F_ARCHIVED..FILTERS.len())
+            .map(|i| item(self.filters & 1 << i != 0, FILTERS[i].1, FILTERS[i].0.into(), "", 1 << i));
+        let line = container(Space::new()).width(Fill).height(1).style(fill_box(Color { a: 0.1, ..p.strong }, 0.0));
+        let rule = container(line).padding([5, 8]);
+        let col = Column::with_children(
+            std::iter::once(item(self.filters == 0, icon::INBOX, "All".into(), "", 0))
+                .chain(counted)
+                .chain(std::iter::once(rule.into()))
+                .chain(views),
+        );
+        container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
     }
 
     fn view_rail(&self) -> El<'_> {
@@ -1250,7 +1383,7 @@ impl BeeperGuiApp {
             tab("rail-archive", g(icon::ARCHIVE), InboxTab::Archived),
             button(add_space).padding(0).style(ghost(p, 12.0)).on_press(UiMessage::ToggleCommandPalette),
             tab("rail-reminders", g(icon::SCHEDULE), InboxTab::Reminders),
-            tab("rail-drafts", g(icon::SCHEDULE_SEND), InboxTab::Drafts),
+            tab("rail-send-later", g(icon::SCHEDULE_SEND), InboxTab::SendLater),
             tab("rail-requests", g(icon::EMAIL), InboxTab::Requests),
             tab("rail-low-priority", g(icon::LOW_PRIORITY_SPACE), InboxTab::LowPriority),
             accounts,
@@ -1288,55 +1421,52 @@ impl BeeperGuiApp {
         let me = st.me().full_name.as_deref().expect("self name");
         let h24 = st.settings.pref("timeFormat") == 1;
         let previews = st.settings.on("showMessagePreviews");
-        let title = button(
-            row![semi(self.active_tab.label(), 13.0).color(p.strong), ic(icon::UNFOLD_MORE, 13.0).color(p.weak)]
-                .spacing(4)
-                .align_y(Center),
-        )
-        .padding([4, 8])
-        .style(ghost(p, 6.0))
-        .on_press(UiMessage::ToggleFilterMenu);
+        let names: Vec<&str> =
+            (0..FILTERS.len()).filter(|i| self.filters & 1 << i != 0).map(|i| FILTERS[i].0).collect();
+        let title = column![row![
+            semi(self.active_tab.label(), 13.0).color(p.strong),
+            ic(icon::UNFOLD_MORE, 13.0).color(p.weak)
+        ]
+        .spacing(4)
+        .align_y(Center)]
+        .push((!names.is_empty()).then(|| txt(names.join(", "), 10.0).color(p.sub)))
+        .padding([0, 8]);
         let head_btn = |c: char, size: f32, w: f32, msg: UiMessage| {
             button(container(ic(c, size).color(p.strong)).center_x(w).center_y(26))
                 .padding(0)
                 .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
                 .on_press(msg)
         };
-        let header = row![
-            title,
-            Space::new().width(Fill),
-            head_btn(icon::FILTER_LIST, 19.0, 27.0, UiMessage::ToggleFilterMenu),
-            head_btn(icon::SEARCH, 23.0, 34.0, UiMessage::ToggleSearch),
-            head_btn(icon::EDIT_SQUARE, 20.0, 34.0, UiMessage::ToggleCommandPalette)
-        ]
-        .align_y(Center)
-        .height(38)
-        .padding(Padding::ZERO.right(2.0));
-        let filters = self.show_filter_menu.then(|| {
-            let tabs = [
-                InboxTab::AllChats,
-                InboxTab::Unread,
-                InboxTab::Pinned,
-                InboxTab::Drafts,
-                InboxTab::Reminders,
-                InboxTab::LowPriority,
-                InboxTab::Archived,
-            ];
-            let chips = tabs.into_iter().fold(Row::new().spacing(4), |r, t| {
-                let on = self.active_tab == t;
-                r.push(
-                    button(med(t.label(), 12.0).color(if on { Color::WHITE } else { p.text }))
-                        .padding([3, 8])
-                        .style(btn_style(
-                            [if on { p.accent } else { p.hover }, p.selected, p.selected],
-                            [p.text; 3],
-                            12.0,
-                        ))
-                        .on_press(UiMessage::SelectTab(t)),
-                )
-            });
-            container(chips.wrap().vertical_spacing(4)).padding([4, 8])
+        let filter = self.active_tab.filterable().then(|| {
+            let active = self.filters != 0;
+            let fg = if active { p.accent } else { p.strong };
+            let trigger: El<'_> = match self.filters.count_ones() {
+                0 => Space::new().into(),
+                1 => ic(icon::EXPAND_MORE, 10.0).color(fg).into(),
+                n => txt(n.to_string(), 11.0).color(fg).into(),
+            };
+            let trigger = button(container(trigger).padding(Padding::ZERO.left(6.0)).center_y(20))
+                .padding(0)
+                .width(if active { 16 } else { 0 })
+                .style(btn_style([CLEAR; 3], [fg; 3], 0.0))
+                .on_press(UiMessage::ToggleFilterMenu);
+            let pill = row![trigger, container(ic(icon::FILTER_LIST, 19.0).color(fg)).center_x(27).center_y(20)];
+            let (ring, hover) = (if active { p.accent } else { CLEAR }, p.hover);
+            let face = move |_: &Theme, s: button::Status| button::Style {
+                background: matches!(s, button::Status::Hovered | button::Status::Pressed).then(|| hover.into()),
+                border: iced::Border { color: ring, width: 1.0, radius: 12.0.into() },
+                ..Default::default()
+            };
+            mouse_area(button(pill).padding(0).style(face).on_press(UiMessage::FilterButton))
+                .on_right_press(UiMessage::ToggleFilterMenu)
         });
+        let header = row![title, Space::new().width(Fill)]
+            .push(filter)
+            .push(head_btn(icon::SEARCH, 23.0, 34.0, UiMessage::ToggleSearch))
+            .push(head_btn(icon::EDIT_SQUARE, 20.0, 34.0, UiMessage::ToggleCommandPalette))
+            .align_y(Center)
+            .height(38)
+            .padding(Padding::ZERO.right(2.0));
         let search = self.show_search.then(|| {
             let input = text_input("Search", &self.search_query)
                 .id("sidebar-search-input")
@@ -1464,15 +1594,40 @@ impl BeeperGuiApp {
             )
             .push(divider(p, 52.0))
         });
-        let empty = chats.is_empty().then(|| {
-            container(txt(format!("No chats in {}", self.active_tab.label()), 13.0).color(p.sub))
-                .center_x(Fill)
-                .padding(24)
-        });
-        let list = scrollable(column![pins, rows].push(empty).padding(Padding::ZERO.right(4.0)))
-            .height(Fill)
-            .style(scroll_style(p.divider, p.weak));
-        container(column![header].push(filters).push(search).push(list).padding(Padding::ZERO.left(8.0).top(8.0)))
+        let list: El<'_> = if chats.is_empty() {
+            let (head, hint) = self.active_tab.empty();
+            let header = column![semi(head, 16.0).color(p.strong).align_x(Center).line_height(1.25)]
+                .push((!hint.is_empty()).then(|| txt(hint, 13.0).color(p.strong).align_x(Center)))
+                .align_x(Center);
+            let fallback = self.active_tab.fallback().map(|views| {
+                let words = "If you're looking for something, check the".split(' ').map(|w| txt(w, 13.0).into());
+                let pill = |t: InboxTab| -> El<'_> {
+                    button(semi(t.label(), 12.0))
+                        .padding([6, 8])
+                        .style(btn_style([p.selected; 3], [p.strong; 3], 999.0))
+                        .on_press(UiMessage::SelectTab(t))
+                        .into()
+                };
+                let line = Row::with_children(words.chain([pill(views[0]), txt("or", 13.0).into(), pill(views[1])]))
+                    .spacing(3.5)
+                    .align_y(Center)
+                    .wrap()
+                    .vertical_spacing(5.5)
+                    .align_x(Center);
+                container(line).center_x(Fill).padding([24, 0])
+            });
+            column![Space::new().height(Fill), header, Space::new().height(Fill)]
+                .push(fallback)
+                .padding([0, 22])
+                .width(Fill)
+                .into()
+        } else {
+            scrollable(column![pins, rows].padding(Padding::ZERO.right(4.0)))
+                .height(Fill)
+                .style(scroll_style(p.divider, p.weak))
+                .into()
+        };
+        container(column![header].push(search).push(list).padding(Padding::ZERO.left(8.0).top(8.0)))
             .width(w)
             .height(Fill)
             .into()

@@ -40,6 +40,11 @@ fn main() {
     let (choice, theme) = if dark { (ThemeChoice::Dark, Theme::Dark) } else { (ThemeChoice::Light, Theme::Light) };
     let _ = app.update(UiMessage::SelectTheme(choice));
     shot(&out, "main", (1200.0, 800.0), &theme, app.view_main());
+    let _ = app.update(UiMessage::FilterButton);
+    shot(&out, "main_unread", (1200.0, 800.0), &theme, app.view_main());
+    let _ = app.update(UiMessage::ToggleFilterMenu);
+    shot(&out, "main_filter_menu", (1200.0, 800.0), &theme, app.view_main());
+    let _ = app.update(UiMessage::PickFilter(0));
     for tab in SettingsTab::ALL {
         let _ = app.update(UiMessage::OpenSettings(tab));
         shot(&out, &format!("settings_{tab:?}").to_lowercase(), (800.0, 740.0), &theme, app.view_settings());

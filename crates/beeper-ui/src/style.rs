@@ -31,6 +31,12 @@ pub mod icon {
     pub const CLOSE: char = '\u{f012}';
     pub const KEEP: char = '\u{f013}';
     pub const DOWNLOAD: char = '\u{f014}';
+    pub const MARK_EMAIL_UNREAD: char = '\u{f015}';
+    pub const SMS: char = '\u{f016}';
+    pub const MODE_COMMENT: char = '\u{f017}';
+    pub const PERSON: char = '\u{f018}';
+    pub const GROUP: char = '\u{f019}';
+    pub const CHECK: char = '\u{f01a}';
     pub const BELL: char = '\u{e059}';
     pub const CLOUD: char = '\u{e088}';
     pub const CIRCLE_PLUS: char = '\u{e081}';
@@ -410,6 +416,8 @@ pub struct Palette {
     pub prefs_border: Color,
     pub nav_sel: Color,
     pub search: Color,
+    pub menu: Color,
+    pub menu_border: Color,
     pub on_secondary: Color,
     pub danger: Color,
     pub success: Color,
@@ -456,6 +464,8 @@ pub const BEEPER_DARK: Palette = Palette {
     prefs_border: hex(0x2a2a2c),
     nav_sel: hex(0x3c3c3c),
     search: hex(0x323232),
+    menu: hex(0x232323),
+    menu_border: hex(0x434343),
     on_secondary: hex(0x9b9ba2),
     danger: hex(0xff383c),
     success: hex(0x34c759),
@@ -493,6 +503,8 @@ pub const BEEPER_LIGHT: Palette = Palette {
     prefs_border: hex(0xe5e5ea),
     nav_sel: hex(0xdedede),
     search: hex(0xe6e6e6),
+    menu: hex(0xf3f3f3),
+    menu_border: hex(0xe2e2e2),
     on_secondary: hex(0x6c6c72),
     danger: hex(0xff383c),
     success: hex(0x34c759),
