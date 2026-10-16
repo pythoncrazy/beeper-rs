@@ -456,8 +456,25 @@ pub enum Outgoing {
     React { txn: String, target: String, key: String },
 }
 
-pub async fn push(store: SharedStore, chat: String, out: Outgoing) -> Result<(), String> {
-    let client = store.read().unwrap().matrix.clone().ok_or("Matrix is not connected yet")?;
+pub async fn flush(store: SharedStore) -> Result<(), String> {
+    loop {
+        let next = {
+            let mut st = store.write().unwrap();
+            if st.matrix.is_none() || st.outbox.is_empty() {
+                st.pushing = false;
+                return Ok(());
+            }
+            st.outbox.remove(0)
+        };
+        if let Err(e) = push(&store, next.0, next.1).await {
+            store.write().unwrap().pushing = false;
+            return Err(e);
+        }
+    }
+}
+
+async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), String> {
+    let client = store.read().unwrap().matrix.clone().expect("flush checks the Matrix client");
     let mut rooms = client.joined_rooms().into_iter();
     let room = loop {
         let room = rooms.next().ok_or_else(|| format!("{chat} is not a joined Matrix room"))?;
@@ -465,14 +482,18 @@ pub async fn push(store: SharedStore, chat: String, out: Outgoing) -> Result<(),
             break room;
         }
     };
-    let event = |id: String| OwnedEventId::try_from(id).map_err(|e| e.to_string());
+    let event = |id: String| {
+        let id = store.read().unwrap().sent.get(&id).cloned().unwrap_or(id);
+        OwnedEventId::try_from(id).map_err(|e| e.to_string())
+    };
     let e = |x: matrix_sdk::Error| x.to_string();
+    let sent = |txn: String, id: OwnedEventId| store.write().unwrap().sent.insert(txn, id.to_string());
     match out {
         Outgoing::Send { txn, text, reply_to } => {
             let mut content = RoomMessageEventContent::text_plain(text);
             content.relates_to =
                 reply_to.map(|r| event(r).map(|id| Relation::Reply(Reply::with_event_id(id)))).transpose()?;
-            room.send(content).with_transaction_id(txn.into()).await.map_err(e)?;
+            sent(txn.clone(), room.send(content).with_transaction_id(txn.into()).await.map_err(e)?.response.event_id);
         }
         Outgoing::Edit { target, text } => {
             let content = RoomMessageEventContent::text_plain(text)
@@ -484,7 +505,7 @@ pub async fn push(store: SharedStore, chat: String, out: Outgoing) -> Result<(),
         }
         Outgoing::React { txn, target, key } => {
             let content = ReactionEventContent::new(Annotation::new(event(target)?, key));
-            room.send(content).with_transaction_id(txn.into()).await.map_err(e)?;
+            sent(txn.clone(), room.send(content).with_transaction_id(txn.into()).await.map_err(e)?.response.event_id);
         }
     }
     Ok(())

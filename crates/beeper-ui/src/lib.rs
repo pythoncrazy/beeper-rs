@@ -1103,10 +1103,10 @@ impl BeeperGuiApp {
     }
 
     fn push_outbox(&mut self) -> Task<UiMessage> {
-        let outbox = std::mem::take(&mut self.store.write().unwrap().outbox);
-        Task::batch(outbox.into_iter().map(|(chat, out)| {
-            Task::perform(beeper_core::matrix::push(self.store.clone(), chat, out), UiMessage::Pushed)
-        }))
+        match self.store.write().unwrap().start_flush() {
+            true => Task::perform(beeper_core::matrix::flush(self.store.clone()), UiMessage::Pushed),
+            false => Task::none(),
+        }
     }
 
     pub fn step_chat(&mut self, delta: isize) {
