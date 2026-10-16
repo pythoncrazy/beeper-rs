@@ -691,53 +691,58 @@ pub async fn verify(store: SharedStore, confirm: oneshot::Receiver<bool>) -> Res
     let request = identity.ok_or("this account has no cross-signing identity")?.request_verification().await;
     let request = request.map_err(|x| e(&x))?;
     set_verification(&store, "requested", None);
-    let mut changes = request.changes();
-    let sas = loop {
-        match changes.next().await.ok_or("the verification request ended")? {
-            VerificationRequestState::Ready { .. } => {
-                if let Some(sas) = request.start_sas().await.map_err(|x| e(&x))? {
-                    break sas;
-                }
-            }
-            VerificationRequestState::Transitioned { verification: Verification::SasV1(sas), .. } => {
-                sas.accept().await.map_err(|x| e(&x))?;
-                break sas;
-            }
-            VerificationRequestState::Cancelled(c) => return Err(c.reason().to_string()),
-            _ => {}
-        }
-    };
+    let mut requests = request.changes();
+    let mut sas = None;
+    let mut sas_changes = futures_util::stream::pending().boxed();
     let mut confirm = Some(confirm);
-    let mut changes = sas.changes();
-    while let Some(state) = changes.next().await {
-        match state {
-            SasState::KeysExchanged { emojis: Some(emojis), decimals: (a, b, c) } => {
-                let emojis = emojis.emojis.iter();
-                let emojis =
-                    emojis.map(|x| VerificationSasEmoji { emoji: x.symbol.into(), description: x.description.into() });
-                let sas_info = VerificationSas { decimals: Some(format!("{a} {b} {c}")), emojis: emojis.collect() };
-                set_verification(&store, "sas_started", Some(sas_info));
-                match confirm.take().expect("emojis are shown once").await {
-                    Ok(true) => sas.confirm().await.map_err(|x| e(&x))?,
-                    _ => {
-                        sas.cancel().await.map_err(|x| e(&x))?;
-                        set_verification(&store, "cancelled", None);
-                        return Err("the emojis did not match".into());
+    loop {
+        tokio::select! {
+            state = requests.next() => match state.ok_or("the verification request ended")? {
+                VerificationRequestState::Ready { .. } if request.is_ready() => {
+                    request.start_sas().await.map_err(|x| e(&x))?;
+                }
+                VerificationRequestState::Transitioned { verification: Verification::SasV1(s), .. } => {
+                    if !s.we_started() {
+                        s.accept().await.map_err(|x| e(&x))?;
+                    }
+                    sas_changes = s.changes().boxed();
+                    sas = Some(s);
+                }
+                VerificationRequestState::Cancelled(c) => {
+                    set_verification(&store, "cancelled", None);
+                    return Err(c.reason().to_string());
+                }
+                _ => {}
+            },
+            Some(state) = sas_changes.next() => match state {
+                SasState::KeysExchanged { emojis: Some(emojis), decimals: (a, b, c) } => {
+                    let emojis = emojis.emojis.iter();
+                    let emojis =
+                        emojis.map(|x| VerificationSasEmoji { emoji: x.symbol.into(), description: x.description.into() });
+                    let sas_info = VerificationSas { decimals: Some(format!("{a} {b} {c}")), emojis: emojis.collect() };
+                    set_verification(&store, "sas_started", Some(sas_info));
+                    let sas = sas.as_ref().expect("SAS changes come from a SAS");
+                    match confirm.take().expect("emojis are shown once").await {
+                        Ok(true) => sas.confirm().await.map_err(|x| e(&x))?,
+                        _ => {
+                            sas.cancel().await.map_err(|x| e(&x))?;
+                            set_verification(&store, "cancelled", None);
+                            return Err("the emojis did not match".into());
+                        }
                     }
                 }
-            }
-            SasState::Done { .. } => {
-                set_verification(&store, "verified", None);
-                return Ok(());
-            }
-            SasState::Cancelled(c) => {
-                set_verification(&store, "cancelled", None);
-                return Err(c.reason().to_string());
-            }
-            _ => {}
+                SasState::Done { .. } => {
+                    set_verification(&store, "verified", None);
+                    return Ok(());
+                }
+                SasState::Cancelled(c) => {
+                    set_verification(&store, "cancelled", None);
+                    return Err(c.reason().to_string());
+                }
+                _ => {}
+            },
         }
     }
-    Err("the verification ended".into())
 }
 
 pub async fn run(store: SharedStore) {
