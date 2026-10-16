@@ -252,6 +252,36 @@ pub fn all() -> impl Iterator<Item = (&'static str, &'static Pref)> {
     })
 }
 
+pub const HOTKEYS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Chats",
+        &[
+            ("Chat: Toggle Archive", "Ctrl E"),
+            ("Chat: Toggle Mute", "Ctrl Shift M"),
+            ("Chat: Toggle Pin", "Ctrl P"),
+            ("Select Next Chat", "Ctrl ], Ctrl Alt ↓"),
+            ("Select Previous Chat", "Ctrl [, Ctrl Alt ↑"),
+            ("Toggle Chat Info", "Ctrl Shift I"),
+        ],
+    ),
+    (
+        "App",
+        &[
+            ("Filter: Unread", "Ctrl Shift Y"),
+            ("Quit App", "Ctrl Q"),
+            ("Reset Zoom", "Ctrl 0"),
+            ("Search", "Ctrl K"),
+            ("Settings", "Ctrl ,"),
+            ("Zoom In", "Ctrl ="),
+            ("Zoom Out", "Ctrl -"),
+        ],
+    ),
+];
+
+pub fn assert_hotkey(name: &str) {
+    assert!(HOTKEYS.iter().any(|(_, keys)| keys.iter().any(|(n, _)| *n == name)), "unknown hotkey {name}");
+}
+
 pub fn find(key: &str) -> &'static Pref {
     all().map(|(_, p)| p).find(|p| p.key == key).unwrap_or_else(|| panic!("unknown pref {key}"))
 }

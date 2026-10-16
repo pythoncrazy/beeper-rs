@@ -865,6 +865,14 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert!(simulator(gui.view_settings()).find("Facebook").is_ok(), "Add an Account shows the network grid");
     let _ = gui.update(UiMessage::SetPref("timeFormat", 0));
     let _ = gui.update(UiMessage::SetPref("showMessagePreviews", 1));
+    let ctrl_k = || UiMessage::KeyPressed(iced::keyboard::Key::Character("k".into()), iced::keyboard::Modifiers::CTRL);
+    let _ = gui.update(UiMessage::ToggleHotkey("Search"));
+    let _ = gui.update(ctrl_k());
+    assert!(!gui.show_command_palette, "a disabled hotkey does nothing");
+    let _ = gui.update(UiMessage::RevertHotkeys);
+    let _ = gui.update(ctrl_k());
+    assert!(gui.show_command_palette, "Revert all enables the hotkey again");
+    let _ = gui.update(UiMessage::ToggleCommandPalette);
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));
     for (mode, dark) in [(iced::theme::Mode::Dark, true), (iced::theme::Mode::Light, false)] {
         let _ = gui.update(UiMessage::SystemTheme(mode));
