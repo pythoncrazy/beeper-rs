@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28"><clipPath id="tile"><rect width="28" height="28" rx="9.8"/></clipPath><g clip-path="url(#tile)"><svg x="0" y="0" width="28" height="28" viewBox="0 0 28 28">
+<rect width="28" height="28" rx="10" fill="url(#paint0_linear_5586_2496)"/>
+<defs>
+<linearGradient id="paint0_linear_5586_2496" x1="28" y1="-2.38863" x2="21.3445" y2="34.9858" gradientUnits="userSpaceOnUse">
+<stop stop-color="#6953F2"/>
+<stop offset="1" stop-color="#0C52F9"/>
+</linearGradient>
+</defs> </svg><svg x="0" y="0" width="28" height="28" color="#fff" fill="none" viewBox="-4 -5 24 28"><path fill="#fff" fill-rule="evenodd" d="M.74 4.844C.74 2.272 2.912.156 5.658.156h4.065c2.715 0 4.916 2.094 4.916 4.688a4.6 4.6 0 0 1-1.53 3.402l-.932.887c1.357.756 2.45 1.943 2.45 3.552 0 2.41-2.044 4.139-4.564 4.139h-6.87V8.906C1.74 8.096.74 6.582.74 4.846zm4.916-3.386c-1.986 0-3.553 1.527-3.553 3.386S3.67 8.229 5.656 8.229H7.35l-.942 4.55 5.743-5.46a3.34 3.34 0 0 0 1.126-2.475c0-1.889-1.618-3.405-3.554-3.386H5.656" clip-rule="evenodd"></path></svg></g></svg>
