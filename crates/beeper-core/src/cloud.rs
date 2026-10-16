@@ -1,8 +1,9 @@
 use crate::config::account_network;
 use crate::models::{BridgeAccountInfo, BridgeMode, MatrixSession, Profile};
 use serde_json::{json, Value};
+use std::future::Future;
+use std::sync::Once;
 use std::time::Duration;
-use ureq::tls::{RootCerts, TlsConfig};
 
 const GUEST_TOKEN: &str = "BEEPER-PRIVATE-API-PLEASE-DONT-USE";
 
@@ -22,7 +23,7 @@ pub enum CodeResult {
 }
 
 pub struct Cloud {
-    agent: ureq::Agent,
+    http: reqwest::Client,
     pub api_url: String,
     pub homeserver: String,
 }
@@ -69,34 +70,37 @@ fn strings(v: &Value) -> Vec<String> {
     v.as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect()
 }
 
+pub fn install_tls() {
+    static TLS: Once = Once::new();
+    TLS.call_once(|| {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .expect("no other rustls crypto provider is installed")
+    });
+}
+
+fn block_on<F: Future>(f: F) -> F::Output {
+    tokio::runtime::Handle::current().block_on(f)
+}
+
 impl Cloud {
     pub fn new(api_url: &str, homeserver: &str) -> Self {
-        let tls = TlsConfig::builder().root_certs(RootCerts::PlatformVerifier).build();
-        let agent = ureq::Agent::config_builder()
-            .tls_config(tls)
-            .http_status_as_error(false)
-            .timeout_global(Some(Duration::from_secs(20)))
-            .build()
-            .new_agent();
-        Self { agent, api_url: api_url.into(), homeserver: homeserver.into() }
+        install_tls();
+        let http = reqwest::Client::builder().timeout(Duration::from_secs(20)).build().expect("build the HTTP client");
+        Self { http, api_url: api_url.into(), homeserver: homeserver.into() }
     }
 
     fn call(&self, url: &str, token: Option<&str>, body: Option<&Value>) -> Result<Value, CloudError> {
-        let net = |e: ureq::Error| fail(0, format!("Could not reach {url}: {e}"));
-        let auth = token.map(|t| format!("Bearer {t}"));
-        let mut resp = match body {
-            Some(b) => {
-                let req = self.agent.post(url);
-                auth.iter().fold(req, |r, a| r.header("authorization", a)).send_json(b)
-            }
-            None => {
-                let req = self.agent.get(url);
-                auth.iter().fold(req, |r, a| r.header("authorization", a)).call()
-            }
-        }
-        .map_err(net)?;
-        let status = resp.status().as_u16();
-        let text = resp.body_mut().read_to_string().map_err(net)?;
+        let req = match body {
+            Some(b) => self.http.post(url).header("content-type", "application/json").body(b.to_string()),
+            None => self.http.get(url),
+        };
+        let req = token.into_iter().fold(req, |r, t| r.bearer_auth(t));
+        let (status, text) = block_on(async {
+            let resp = req.send().await?;
+            Ok((resp.status().as_u16(), resp.text().await?))
+        })
+        .map_err(|e: reqwest::Error| fail(0, format!("Could not reach {url}: {e}")))?;
         let json = serde_json::from_str::<Value>(&text);
         if status >= 300 {
             let msg = json.ok().and_then(|v| ["error", "message", "errcode"].iter().find_map(|k| field(&v, k)));
@@ -169,11 +173,13 @@ impl Cloud {
         let media = url.strip_prefix("mxc://").ok_or_else(|| fail(400, format!("Unsupported avatar URL {url}")))?;
         let url =
             format!("{}/_matrix/client/v1/media/thumbnail/{media}?width=96&height=96&method=crop", self.homeserver);
-        let net = |e: ureq::Error| fail(0, format!("Could not reach {url}: {e}"));
-        let mut resp =
-            self.agent.get(&url).header("authorization", format!("Bearer {access_token}")).call().map_err(net)?;
-        match resp.status().as_u16() {
-            200 => resp.body_mut().read_to_vec().map_err(net),
+        let (status, body) = block_on(async {
+            let resp = self.http.get(&url).bearer_auth(access_token).send().await?;
+            Ok((resp.status().as_u16(), resp.bytes().await?))
+        })
+        .map_err(|e: reqwest::Error| fail(0, format!("Could not reach {url}: {e}")))?;
+        match status {
+            200 => Ok(body.to_vec()),
             status => Err(fail(status, format!("HTTP {status} from {url}"))),
         }
     }
