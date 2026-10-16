@@ -467,7 +467,7 @@ pub const BEEPER_DARK: Palette = Palette {
     muted: hex(0x808080),
     tertiary: hexa(0xebebf5, 0.27),
     divider: hexa(0xf6f6f6, 0.2),
-    elevated: hex(0x282828),
+    elevated: hex(0x232323),
     input: hex(0x222223),
     send_btn: hex(0x4d4d4d),
     sent: hex(0x2561fb),
