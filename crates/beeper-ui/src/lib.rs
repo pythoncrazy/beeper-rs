@@ -410,9 +410,11 @@ fn icon_btn<'a>(p: &Palette, c: char, size: f32, frame: f32, color: Color, msg: 
     button(container(ic(c, size).color(color)).center(frame)).padding(0).style(ghost(p, 8.0)).on_press(msg).into()
 }
 
-fn count_badge<'a>(n: u32, bg: Color, h: f32) -> El<'a> {
-    let n = if n > 0 { n.to_string() } else { String::new() };
-    container(semi(n, 10.0).color(Color::WHITE)).padding([0, 4]).center_y(h).style(fill_box(bg, h / 2.0)).into()
+fn count_badge<'a>(c: &Chat, bg: Color, h: f32) -> El<'a> {
+    let n = if c.unread_count > 0 { c.unread_count.to_string() } else { String::new() };
+    let at = (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 10.0).color(Color::WHITE));
+    let body = row![].push(at).push(semi(n, 10.0).color(Color::WHITE)).spacing(2).align_y(Center);
+    container(body).padding([0, 4]).center_y(h).style(fill_box(bg, h / 2.0)).into()
 }
 
 fn closable_head<'a>(p: &Palette, title: &str, size: f32, msg: UiMessage) -> El<'a> {
@@ -1129,7 +1131,7 @@ impl BeeperGuiApp {
         let idx = st.resolve_chat_idx(chat_id).expect("selected chat exists");
         self.selected_chat_id = Some(chat_id.to_string());
         let chat = st.update_chat(idx, |c| {
-            c.unread_count = 0;
+            (c.unread_count, c.unread_mentions) = (0, 0);
             c.is_marked_unread = Some(false);
         });
         self.composer_text = chat.draft.as_ref().and_then(|d| d.text.clone()).unwrap_or_default();
@@ -1829,20 +1831,36 @@ impl BeeperGuiApp {
                 .style(btn_style([if on { p.rail_sel } else { CLEAR }, p.hover, p.rail_sel], [p.strong; 3], 14.0))
                 .on_press(msg)
         };
-        let tab = |id: &'static str, glyph: El<'static>, t: InboxTab| -> El<'static> {
-            container(rail_btn(
-                glyph,
-                self.active_tab == t && self.selected_account_filter.is_none(),
-                UiMessage::SelectTab(t),
-            ))
-            .id(id)
-            .into()
+        let st = self.store.read().unwrap();
+        let numbers = st.settings.on("showUnreadCount");
+        let badge = |btn: El<'static>, n: usize, number: bool| -> El<'static> {
+            let dot = match number && numbers {
+                true => container(semi(if n > 999 { "999+".into() } else { n.to_string() }, 10.0).color(Color::WHITE))
+                    .padding([0, 4])
+                    .center_y(14)
+                    .width(Shrink)
+                    .style(fill_box(p.accent, 8.0)),
+                false => container(Space::new()).width(8).height(8).style(fill_box(p.accent, 4.0)),
+            };
+            let corner = (n > 0).then(|| container(dot).align_right(36).padding(Padding::ZERO.top(2.0).right(2.0)));
+            stack![btn].push(corner).into()
         };
+        let countable = |c: &Chat| {
+            c.flags & CHAT_UNREAD != 0
+                && c.flags & (CHAT_ARCHIVED | CHAT_REQUEST) == 0
+                && c.merged_into_chat_id.is_none()
+                && (c.unread_mentions > 0 || c.flags & CHAT_MUTED == 0)
+        };
+        let tally = |f: &dyn Fn(&Chat) -> bool| st.chats.iter().filter(|c| countable(c) && f(c)).count();
+        let tab = |id: &'static str, glyph: El<'static>, t: InboxTab, n: usize, number: bool| -> El<'static> {
+            let on = self.active_tab == t && self.selected_account_filter.is_none();
+            container(badge(rail_btn(glyph, on, UiMessage::SelectTab(t)).into(), n, number)).id(id).into()
+        };
+        let requests = st.chats.iter().filter(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0).count();
         let g = |c: char| -> El<'static> { ic(c, 24.0).color(p.strong).into() };
         let ring = svg(DASHED_RING[usize::from(self.dark)].clone()).width(32).height(32);
         let add_space =
             container(stack![ring, container(ic(icon::MAPS_UGC, 24.0).color(p.strong)).center(32)]).center(36);
-        let st = self.store.read().unwrap();
         let mut accounts: Vec<String> =
             std::iter::once("hungryserv".to_string()).chain(st.accounts.iter().map(|a| a.account_id.clone())).collect();
         accounts.sort_by_cached_key(|a| {
@@ -1856,16 +1874,29 @@ impl BeeperGuiApp {
         let accounts = accounts.into_iter().fold(Column::new().spacing(8).align_x(Center), |c, acc| {
             let on = self.selected_account_filter.as_ref() == Some(&acc);
             let logo: El<'static> = svg(brand_svg(brand_key(&acc))).width(28).height(28).into();
-            c.push(rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc))))
+            let n = tally(&|c| c.account_id == acc && c.flags & CHAT_HIDDEN != 0 && c.flags & CHAT_LOW_PRIORITY == 0);
+            c.push(badge(rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc.clone()))).into(), n, true))
         });
         let top = column![
-            tab("rail-inbox", g(icon::INBOX), InboxTab::AllChats),
-            tab("rail-archive", g(icon::ARCHIVE), InboxTab::Archived),
+            tab(
+                "rail-inbox",
+                g(icon::INBOX),
+                InboxTab::AllChats,
+                tally(&|c| c.flags & (CHAT_HIDDEN | CHAT_LOW_PRIORITY) == 0),
+                true
+            ),
+            tab("rail-archive", g(icon::ARCHIVE), InboxTab::Archived, 0, false),
             button(add_space).padding(0).style(ghost(p, 12.0)).on_press(UiMessage::ToggleCommandPalette),
-            tab("rail-reminders", g(icon::SCHEDULE), InboxTab::Reminders),
-            tab("rail-send-later", g(icon::SCHEDULE_SEND), InboxTab::SendLater),
-            tab("rail-requests", g(icon::EMAIL), InboxTab::Requests),
-            tab("rail-low-priority", g(icon::LOW_PRIORITY_SPACE), InboxTab::LowPriority),
+            tab("rail-reminders", g(icon::SCHEDULE), InboxTab::Reminders, 0, false),
+            tab("rail-send-later", g(icon::SCHEDULE_SEND), InboxTab::SendLater, 0, false),
+            tab("rail-requests", g(icon::EMAIL), InboxTab::Requests, requests, false),
+            tab(
+                "rail-low-priority",
+                g(icon::LOW_PRIORITY_SPACE),
+                InboxTab::LowPriority,
+                tally(&|c| c.flags & CHAT_LOW_PRIORITY != 0),
+                true
+            ),
             accounts,
             rail_btn(g(icon::MORE_HORIZ), false, UiMessage::OpenSettings(SettingsTab::Accounts)),
         ]
@@ -1985,7 +2016,7 @@ impl BeeperGuiApp {
                         .push(muted.then(|| tinted(&BELL_OFF, 12.0, p.strong)))
                         .spacing(3.2)
                         .align_y(Center);
-                let unread = (c.unread_count > 0).then(|| count_badge(c.unread_count, p.accent, 14.0));
+                let unread = (c.unread_count > 0).then(|| count_badge(c, p.accent, 14.0));
                 let face =
                     stack![self.chat_avatar(c, 40.0), container(unread).width(44).align_right(44)].width(44).height(40);
                 let item = column![face, label]
@@ -2050,13 +2081,18 @@ impl BeeperGuiApp {
                 }
             });
             let dot_bg = if muted { Color { a: 0.3, ..p.strong } } else { p.accent };
-            let count = (counts && unread).then(|| count_badge(c.unread_count, dot_bg, 12.0));
+            let count = match counts {
+                true => unread.then(|| count_badge(c, dot_bg, 12.0)),
+                false => (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 12.0).color(p.accent).into()),
+            };
             let dot = (!counts).then(|| {
                 let dot = container(Space::new()).width(6).height(6).style(fill_box(dot_bg, 3.0));
                 container(unread.then_some(dot)).width(12)
             });
             let sender = m.filter(|_| body.is_some()).and_then(|m| preview_sender(c, m));
-            let reserve = if count.is_some() { 26.0 } else { 0.0 }
+            let digits = if counts && c.unread_count > 0 { c.unread_count.to_string().len() as f32 } else { 0.0 };
+            let at = if c.unread_mentions > 0 { 12.0 } else { 0.0 };
+            let reserve = if count.is_some() { 4.0 + if counts { 8.0 } else { 0.0 } + 6.0 * digits + at } else { 0.0 }
                 + if mine { 16.0 } else { 0.0 }
                 + if sender.is_some() { 14.0 } else { 0.0 };
             let preview = row![]

@@ -162,6 +162,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         title,
         chat_type: if dm { "single" } else { "group" }.into(),
         unread_count: u32::try_from(room.unread_notification_counts().notification_count).expect("unread count"),
+        unread_mentions: u32::try_from(room.unread_notification_counts().highlight_count).expect("mention count"),
         description: room.topic(),
         draft: None,
         is_archived: Some(false),
@@ -388,12 +389,25 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     } else {
         let i = st.chat_idx_by_id[NOTE_CHAT_ID];
         let room = |c: &Chat| {
-            (c.img_url.clone(), c.is_muted, c.is_pinned, c.is_low_priority, c.unread_count, c.is_marked_unread)
+            (
+                c.img_url.clone(),
+                c.is_muted,
+                c.is_pinned,
+                c.is_low_priority,
+                (c.unread_count, c.unread_mentions),
+                c.is_marked_unread,
+            )
         };
         if room(&st.chats[i]) != room(&chat) {
             st.update_chat(i, |c| {
-                (c.img_url, c.is_muted, c.is_pinned, c.is_low_priority, c.unread_count, c.is_marked_unread) =
-                    room(&chat);
+                (
+                    c.img_url,
+                    c.is_muted,
+                    c.is_pinned,
+                    c.is_low_priority,
+                    (c.unread_count, c.unread_mentions),
+                    c.is_marked_unread,
+                ) = room(&chat);
             });
         }
     }

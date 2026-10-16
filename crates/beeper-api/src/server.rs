@@ -790,7 +790,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
         }
         ("POST", ["read"]) => {
             st.update_chat(idx, |c| {
-                c.unread_count = 0;
+                (c.unread_count, c.unread_mentions) = (0, 0);
                 c.is_marked_unread = Some(false);
             });
             let msgs = st.chat_msg_indices.get(&st.chats[idx].id).into_iter().flatten();

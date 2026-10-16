@@ -205,6 +205,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>) -> Resul
                 title,
                 chat_type: if group { "group" } else { "single" }.into(),
                 unread_count: count("unreadCount"),
+                unread_mentions: count("unreadMentionsCount"),
                 description: str_field(&t, "description"),
                 draft: None,
                 is_archived: Some(flag(&t, "isArchived")),
