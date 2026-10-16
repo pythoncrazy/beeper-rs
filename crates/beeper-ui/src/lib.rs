@@ -227,6 +227,7 @@ pub enum UiMessage {
     ToggleSetting(fn(&mut BeeperSettings)),
     CloudAccounts(Result<Vec<BridgeAccountInfo>, String>),
     AvatarLoaded(String, Result<image::Handle, String>),
+    MediaLoaded(String, Result<image::Handle, String>),
     RecoveryInputChanged(String),
     VerifyRecoveryCode,
     Verified(Result<(), String>),
@@ -691,6 +692,7 @@ pub struct BeeperGuiApp {
     pub login: Login,
     pub cloud: Arc<Cloud>,
     pub avatars: HashMap<String, Option<image::Handle>>,
+    pub media: HashMap<String, Option<image::Handle>>,
 }
 
 impl BeeperGuiApp {
@@ -753,6 +755,7 @@ impl BeeperGuiApp {
             login: Login::new(source),
             cloud,
             avatars: HashMap::new(),
+            media: HashMap::new(),
         };
         if let Some(id) = first_chat {
             app.select_chat(&id);
@@ -1198,6 +1201,10 @@ impl BeeperGuiApp {
             UiMessage::AvatarLoaded(url, Err(e)) => {
                 self.status_banner = format!("Could not load the avatar {url}: {e}")
             }
+            UiMessage::MediaLoaded(url, Ok(h)) => {
+                self.media.insert(url, Some(h));
+            }
+            UiMessage::MediaLoaded(_, Err(e)) => self.status_banner = format!("Could not load an image: {e}"),
             UiMessage::RecoveryInputChanged(v) => self.recovery_code_input = v,
             UiMessage::VerifyRecoveryCode => {
                 let key = std::mem::take(&mut self.recovery_code_input);
@@ -1320,7 +1327,7 @@ impl BeeperGuiApp {
                     self.select_chat(&id);
                 }
                 let focus = window::gain_focus(self.main_window.or(self.login_window).expect("a window is open"));
-                return Task::batch([focus, self.load_avatars()]);
+                return Task::batch([focus, self.load_avatars(), self.load_media()]);
             }
             UiMessage::Login(m) => return self.update_login(m),
             UiMessage::KeyPressed(key, mods) => {
@@ -1341,7 +1348,32 @@ impl BeeperGuiApp {
                 }
             }
         }
-        self.load_avatars()
+        Task::batch([self.load_avatars(), self.load_media()])
+    }
+
+    fn load_media(&mut self) -> Task<UiMessage> {
+        let st = self.store.read().unwrap();
+        let (Some(client), Some(chat)) = (st.matrix.clone(), self.selected_chat_id.as_ref()) else {
+            return Task::none();
+        };
+        let images = st.chat_msg_indices.get(chat).into_iter().flatten().flat_map(|&i| &st.messages[i].attachments);
+        let urls: HashSet<String> = images
+            .filter(|a| a.attachment_type == "img")
+            .filter_map(|a| a.src_url.clone())
+            .filter(|u| !self.media.contains_key(u))
+            .collect();
+        drop(st);
+        self.media.extend(urls.iter().map(|u| (u.clone(), None)));
+        Task::batch(urls.into_iter().map(|url| {
+            let (client, u) = (client.clone(), url.clone());
+            Task::perform(
+                async move {
+                    let _slot = AVATAR_SLOTS.acquire().await.expect("the media semaphore stays open");
+                    beeper_core::matrix::media(client, u).await.map(image::Handle::from_bytes)
+                },
+                move |r| UiMessage::MediaLoaded(url, r),
+            )
+        }))
     }
 
     fn update_chat(&self, chat_id: &str, f: impl FnOnce(&mut Chat)) {
@@ -1955,12 +1987,21 @@ impl BeeperGuiApp {
                         .style(fill_box(bg, 17.0))
                         .into()
                 }
-                (false, "img") => button(
-                    container(ic(icon::IMAGE, 28.0).color(p.sub))
-                        .center_x(240)
-                        .center_y(160)
-                        .style(fill_box(p.link_card, 17.0)),
-                )
+                (false, "img") => button({
+                    let (w, h) = a.size.as_ref().map_or((240.0, 160.0), |s| {
+                        let (w, h) = (s.width.unwrap_or(240) as f32, s.height.unwrap_or(160) as f32);
+                        let k = (360.0 / w).min(400.0 / h).min(1.0);
+                        (w * k, h * k)
+                    });
+                    match a.src_url.as_ref().and_then(|u| self.media.get(u)?.clone()) {
+                        Some(handle) => El::from(image(handle).width(w).height(h).border_radius(17.0)),
+                        None => container(ic(icon::IMAGE, 28.0).color(p.sub))
+                            .center_x(w)
+                            .center_y(h)
+                            .style(fill_box(p.link_card, 17.0))
+                            .into(),
+                    }
+                })
                 .padding(0)
                 .style(btn_style([CLEAR; 3], [p.text; 3], 17.0))
                 .on_press(UiMessage::OpenQuickLook(name, "Image attachment".into()))

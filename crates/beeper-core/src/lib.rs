@@ -1,4 +1,5 @@
 pub mod cloud;
+pub mod codec;
 pub mod config;
 pub mod import;
 pub mod matrix;
