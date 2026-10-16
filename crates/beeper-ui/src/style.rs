@@ -359,11 +359,6 @@ pub fn scroll_style(
     thumb: Color,
     thumb_hover: Color,
 ) -> impl Fn(&Theme, scrollable::Status) -> scrollable::Style + Copy {
-    let rail = |c: Color| scrollable::Rail {
-        background: None,
-        border: Border::default(),
-        scroller: scrollable::Scroller { background: c.into(), border: border::rounded(4) },
-    };
     move |_, status| {
         let col = match status {
             scrollable::Status::Active { .. } => CLEAR,
@@ -371,18 +366,31 @@ pub fn scroll_style(
             | scrollable::Status::Dragged { .. } => thumb_hover,
             scrollable::Status::Hovered { .. } => thumb,
         };
-        scrollable::Style {
-            container: container::Style::default(),
-            vertical_rail: rail(col),
-            horizontal_rail: rail(CLEAR),
-            gap: None,
-            auto_scroll: scrollable::AutoScroll {
-                background: CLEAR.into(),
-                border: Border::default(),
-                shadow: Shadow::default(),
-                icon: CLEAR,
-            },
-        }
+        rail_style(CLEAR, col)
+    }
+}
+
+pub fn gutter_style([track, thumb]: [Color; 2]) -> impl Fn(&Theme, scrollable::Status) -> scrollable::Style + Copy {
+    move |_, _| rail_style(track, thumb)
+}
+
+fn rail_style(track: Color, thumb: Color) -> scrollable::Style {
+    let rail = |bg: Color, c: Color| scrollable::Rail {
+        background: Some(bg.into()),
+        border: Border::default(),
+        scroller: scrollable::Scroller { background: c.into(), border: border::rounded(4) },
+    };
+    scrollable::Style {
+        container: container::Style::default(),
+        vertical_rail: rail(track, thumb),
+        horizontal_rail: rail(CLEAR, CLEAR),
+        gap: None,
+        auto_scroll: scrollable::AutoScroll {
+            background: CLEAR.into(),
+            border: Border::default(),
+            shadow: Shadow::default(),
+            icon: CLEAR,
+        },
     }
 }
 
@@ -414,6 +422,7 @@ pub struct Palette {
     pub toggle_on: Color,
     pub toggle_off: Color,
     pub prefs_pane: Color,
+    pub gutter: [Color; 2],
     pub prefs_group: Color,
     pub prefs_border: Color,
     pub nav_sel: Color,
@@ -445,8 +454,8 @@ const fn hexa(v: u32, a: f32) -> Color {
 }
 
 pub const BEEPER_DARK: Palette = Palette {
-    frame: hex(0x282828),
-    rail: hex(0x3d3d3d),
+    frame: hex(0x212121),
+    rail: hex(0x383838),
     rail_sel: hex(0x505050),
     card: hex(0x000000),
     selected: hex(0x3e3e3e),
@@ -469,8 +478,9 @@ pub const BEEPER_DARK: Palette = Palette {
     date_text: hex(0x9a9aa1),
     accent: hex(0x2561fb),
     toggle_on: hex(0x0d4ffb),
-    toggle_off: hex(0x444444),
+    toggle_off: hex(0x606060),
     prefs_pane: hex(0x161616),
+    gutter: [hex(0x2c2c2c), hex(0x9f9f9f)],
     prefs_group: hex(0x1c1c1c),
     prefs_border: hex(0x282828),
     nav_sel: hex(0x3c3c3c),
@@ -522,6 +532,7 @@ pub const BEEPER_LIGHT: Palette = Palette {
     toggle_on: hex(0x0d4ffb),
     toggle_off: hexa(0x000000, 0.25),
     prefs_pane: hex(0xf3f3f3),
+    gutter: [hex(0xf1f1f1), hex(0xc1c1c1)],
     prefs_group: hex(0xffffff),
     prefs_border: hex(0xededed),
     nav_sel: hex(0xdedede),

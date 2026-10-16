@@ -4,9 +4,9 @@ pub mod style;
 use crate::login::{Login, LoginMsg};
 
 use crate::style::{
-    bold, bordered_box, brand_svg, btn_style, clamp, ell, ensure_fonts_loaded, fill_box, fw, hex, ic, icon, initials,
-    input_style, med, mix, name_hash, pick, pick_menu_style, pick_style, scroll_style, semi, shadow_box, txt, Palette,
-    ALL_FONTS, AVATAR_GRADIENTS, CLEAR,
+    bold, bordered_box, brand_svg, btn_style, clamp, ell, ensure_fonts_loaded, fill_box, fw, gutter_style, hex, ic,
+    icon, initials, input_style, med, mix, name_hash, pick, pick_menu_style, pick_style, scroll_style, semi,
+    shadow_box, txt, Palette, ALL_FONTS, AVATAR_GRADIENTS, CLEAR,
 };
 use beeper_core::cloud::Cloud;
 use beeper_core::config::{account_network, civil_from_days, millis_from_rfc3339, now_unix_secs, APP_VERSION};
@@ -564,9 +564,9 @@ fn slider_style(p: &Palette) -> impl Fn(&Theme, slider::Status) -> slider::Style
 
 fn toggle<'a>(p: &Palette, on: bool, msg: Option<UiMessage>) -> El<'a> {
     let knob =
-        container(Space::new()).width(14).height(14).style(fill_box(if on { p.toggle_on } else { p.toggle_off }, 7.0));
+        container(Space::new()).width(16).height(16).style(fill_box(if on { p.toggle_on } else { p.toggle_off }, 8.0));
     let track =
-        container(knob).width(36).height(24).padding(5).align_y(Center).align_x(if on { Right } else { iced::Left });
+        container(knob).width(36).height(24).padding(4).align_y(Center).align_x(if on { Right } else { iced::Left });
     button(track.style(bordered_box(CLEAR, p.toggle_off, 2.0, 12.0)))
         .padding(0)
         .style(btn_style([CLEAR; 3], [p.text; 3], 12.0))
@@ -2685,8 +2685,9 @@ impl BeeperGuiApp {
         };
         let right = container(
             scrollable(container(content).max_width(600).padding(13).center_x(Fill))
+                .direction(Direction::Vertical(Scrollbar::new().width(15).scroller_width(9).spacing(0)))
                 .height(Fill)
-                .style(scroll_style(p.divider, p.weak)),
+                .style(gutter_style(p.gutter)),
         )
         .width(Fill)
         .height(Fill)
