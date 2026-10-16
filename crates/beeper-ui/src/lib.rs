@@ -380,8 +380,9 @@ fn icon_btn<'a>(p: &Palette, c: char, size: f32, frame: f32, color: Color, msg: 
     button(container(ic(c, size).color(color)).center(frame)).padding(0).style(ghost(p, 8.0)).on_press(msg).into()
 }
 
-fn count_badge<'a>(n: u32, bg: Color) -> El<'a> {
-    container(semi(n.to_string(), 10.0).color(Color::WHITE)).padding([1, 5]).style(fill_box(bg, 9.0)).into()
+fn count_badge<'a>(n: u32, bg: Color, h: f32) -> El<'a> {
+    let n = if n > 0 { n.to_string() } else { String::new() };
+    container(semi(n, 10.0).color(Color::WHITE)).padding([0, 4]).center_y(h).style(fill_box(bg, h / 2.0)).into()
 }
 
 fn closable_head<'a>(p: &Palette, title: &str, size: f32, msg: UiMessage) -> El<'a> {
@@ -439,15 +440,10 @@ fn dm_avatar_url(chat: &Chat) -> Option<&str> {
     (chat.chat_type == "single").then_some(other?.img_url.as_deref()?)
 }
 
-fn badged<'a>(p: &Palette, inner: El<'a>, account_id: &str, size: f32, badge: f32) -> El<'a> {
-    let ring = container(svg(brand_svg(brand_key(account_id))).width(badge).height(badge))
-        .padding(1.5)
-        .style(fill_box(p.frame, badge));
-    let box_ = size + badge / 3.0;
-    stack![inner, container(ring).width(box_).height(box_).align_right(box_).align_bottom(box_)]
-        .width(box_)
-        .height(box_)
-        .into()
+fn badged<'a>(inner: El<'a>, account_id: &str, size: f32, badge: f32) -> El<'a> {
+    let icon = svg(brand_svg(brand_key(account_id))).width(badge).height(badge);
+    let w = size + badge / 8.0;
+    stack![inner, container(icon).width(w).height(size).align_right(w).align_bottom(size)].width(w).height(size).into()
 }
 
 fn slider_style(p: &Palette) -> impl Fn(&Theme, slider::Status) -> slider::Style + use<> {
@@ -1465,7 +1461,7 @@ impl BeeperGuiApp {
             .push(head_btn(icon::SEARCH, 23.0, 34.0, UiMessage::ToggleSearch))
             .push(head_btn(icon::EDIT_SQUARE, 20.0, 34.0, UiMessage::ToggleCommandPalette))
             .align_y(Center)
-            .height(38)
+            .height(52)
             .padding(Padding::ZERO.right(2.0));
         let search = self.show_search.then(|| {
             let input = text_input("Search", &self.search_query)
@@ -1498,17 +1494,14 @@ impl BeeperGuiApp {
         let pins = pinned.chunks(cols).fold(Column::new(), |col, chunk| {
             col.push(chunk.iter().fold(Row::new(), |r, c| {
                 let on = selected == Some(c.id.as_str());
-                let label = row![ell(
-                    &c.title,
-                    cell - if c.is_muted == Some(true) { 34.0 } else { 20.0 },
-                    11.0,
-                    Weight::Medium
-                )
-                .color(p.text)]
-                .push((c.is_muted == Some(true)).then(|| ic(icon::NOTIFICATIONS_OFF, 10.0).color(p.sub)))
-                .spacing(3)
-                .align_y(Center);
-                let unread = (c.unread_count > 0).then(|| count_badge(c.unread_count, p.accent));
+                let muted = c.is_muted == Some(true);
+                let title = ell(&c.title, cell - if muted { 35.2 } else { 20.0 }, 12.0, Weight::Semibold);
+                let label =
+                    row![title.color(p.strong).line_height(iced::widget::text::LineHeight::Absolute(15.0.into()))]
+                        .push(muted.then(|| ic(icon::NOTIFICATIONS_OFF, 12.0).color(p.strong)))
+                        .spacing(3.2)
+                        .align_y(Center);
+                let unread = (c.unread_count > 0).then(|| count_badge(c.unread_count, p.accent, 14.0));
                 let face = stack![self.chat_avatar(c, me, 40.0), container(unread).width(44).align_right(44)]
                     .width(44)
                     .height(40);
@@ -1516,19 +1509,21 @@ impl BeeperGuiApp {
                     .spacing(4)
                     .align_x(Center)
                     .width(cell)
-                    .padding(Padding::new(8.0).top(8.0).bottom(6.0).left(4.0).right(4.0));
+                    .padding(Padding::new(10.0).top(8.0).bottom(6.0));
                 r.push(
                     button(item)
                         .padding(0)
-                        .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.text; 3], 10.0))
+                        .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.text; 3], 8.0))
                         .on_press(UiMessage::SelectChat(c.id.clone())),
                 )
             }))
         });
-        let text_w = w - 8.0 - 16.0 - 34.0 - 4.0;
+        let counts = st.settings.on("showUnreadCount");
+        let text_w = w - 8.0 - 16.0 - 36.0 - 4.0 - if counts { 0.0 } else { 12.0 };
         let rows = rest.iter().fold(Column::new(), |col, c| {
             let on = selected == Some(c.id.as_str());
             let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
+            let muted = c.is_muted == Some(true);
             let m = st.chat_msg_indices.get(&c.id).and_then(|v| v.last()).map(|&i| &st.messages[i]);
             let reaction = c
                 .preview
@@ -1537,15 +1532,14 @@ impl BeeperGuiApp {
             let m = reaction.or(m);
             let ts = c.last_activity.as_deref().map(|t| list_ts(t, h24)).unwrap_or_default();
             let ts_w = crate::style::text_width(&ts, 10.0, Weight::Normal) + 8.0;
-            let sub = c.network_name.as_ref().map(|n| format!(" • {n}")).unwrap_or_default();
-            let sub_w = crate::style::text_width(&sub, 13.0, Weight::Normal).min((text_w - ts_w) / 2.0);
-            let top = row![
-                ell(&c.title, text_w - ts_w - sub_w, 13.0, Weight::Semibold).color(p.strong),
-                ell(&sub, sub_w, 13.0, Weight::Normal).color(p.sub),
-                Space::new().width(Fill),
-                txt(ts, 10.0).color(p.sub)
-            ]
-            .align_y(Center);
+            let title = c.network_name.as_ref().map_or_else(|| c.title.clone(), |n| format!("{} • {n}", c.title));
+            let weight = if counts && !unread { Weight::Medium } else { Weight::Semibold };
+            let bell = if muted { 16.0 } else { 0.0 };
+            let top = row![ell(&title, text_w - ts_w - bell, 13.0, weight).color(p.strong)]
+                .push(muted.then(|| container(ic(icon::NOTIFICATIONS_OFF, 12.0).color(p.strong)).padding([0, 2])))
+                .push(Space::new().width(Fill))
+                .push(txt(ts, 10.0).color(p.sub))
+                .align_y(Center);
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
             let image = m.is_some_and(|m| m.attachments.iter().any(|a| a.attachment_type == "img"));
             let body = m.and_then(|m| match m.links.len() {
@@ -1564,8 +1558,12 @@ impl BeeperGuiApp {
                     _ => t,
                 }
             });
-            let count = (c.unread_count > 0)
-                .then(|| count_badge(c.unread_count, if c.is_muted == Some(true) { p.muted } else { p.accent }));
+            let dot_bg = if muted { Color { a: 0.3, ..p.strong } } else { p.accent };
+            let count = (counts && unread).then(|| count_badge(c.unread_count, dot_bg, 12.0));
+            let dot = (!counts).then(|| {
+                let dot = container(Space::new()).width(6).height(6).style(fill_box(dot_bg, 3.0));
+                container(unread.then_some(dot)).width(12)
+            });
             let reserve = if count.is_some() { 26.0 } else { 0.0 } + if mine { 16.0 } else { 0.0 };
             let preview = row![]
                 .push(mine.then(|| ic(icon::CIRCLE_CHECK, 12.0).color(p.sub)))
@@ -1585,13 +1583,15 @@ impl BeeperGuiApp {
                 .push(count)
                 .spacing(4)
                 .align_y(Center);
-            let item = row![
-                badged(p, self.chat_avatar(c, me, 28.0), &c.account_id, 28.0, 12.0),
-                column![top, preview].spacing(1).width(Fill)
-            ]
-            .spacing(4)
-            .align_y(Center)
-            .padding([10, 8]);
+            let item = row![]
+                .push(dot)
+                .push(
+                    container(badged(self.chat_avatar(c, me, 28.0), &c.account_id, 28.0, 12.0))
+                        .padding(Padding::ZERO.right(8.5)),
+                )
+                .push(column![top, preview].spacing(1).width(Fill))
+                .align_y(Center)
+                .padding([10, 8]);
             col.push(
                 button(item)
                     .padding(0)
@@ -1634,10 +1634,7 @@ impl BeeperGuiApp {
                 .style(scroll_style(p.divider, p.weak))
                 .into()
         };
-        container(column![header].push(search).push(list).padding(Padding::ZERO.left(8.0).top(8.0)))
-            .width(w)
-            .height(Fill)
-            .into()
+        container(column![header].push(search).push(list).padding(Padding::ZERO.left(8.0))).width(w).height(Fill).into()
     }
 
     fn view_conversation(&self) -> El<'_> {
@@ -1689,14 +1686,18 @@ impl BeeperGuiApp {
             container(pill).center_x(Fill).padding(Padding::ZERO.top(44.0)),
             container(ring).center_x(Fill).padding(Padding::ZERO.top(8.0))
         ];
-        let feedback = button(
-            row![ic(icon::MESSAGE_SQUARE, 13.0).color(p.text), med("Feedback?", 12.0).color(p.text)]
-                .spacing(5)
-                .align_y(Center),
-        )
-        .padding([5, 10])
-        .style(btn_style([p.hover, p.selected, p.selected], [p.text; 3], 14.0))
-        .on_press(UiMessage::OpenQuickLook("Feedback".into(), "Tell us what to improve in beeper-rs.".into()));
+        let (rim, hover, card) = (Color { a: 0.1, ..p.strong }, p.hover, p.card);
+        let feedback = button(container(txt("Feedback?", 11.0)).center(Fill))
+            .width(74)
+            .height(24)
+            .padding(0)
+            .style(move |_, s| button::Style {
+                background: Some(if matches!(s, button::Status::Hovered) { hover } else { card }.into()),
+                text_color: Color { a: 0.9, ..rim },
+                border: iced::Border { color: rim, width: 1.0, radius: 4.0.into() },
+                ..Default::default()
+            })
+            .on_press(UiMessage::OpenQuickLook("Feedback".into(), "Tell us what to improve in beeper-rs.".into()));
         let fade = Linear::new(Radians(std::f32::consts::PI))
             .add_stop(0.0, p.card)
             .add_stop(0.75, p.card.scale_alpha(0.85))
@@ -1705,7 +1706,8 @@ impl BeeperGuiApp {
             background: Some(Background::Gradient(Gradient::Linear(fade))),
             ..Default::default()
         });
-        let overlay = stack![fade, header, container(feedback).align_right(Fill).padding([12, 12])];
+        let overlay =
+            stack![fade, header, container(feedback).align_right(Fill).padding(Padding::ZERO.top(6.0).right(5.0))];
         let pane = column![stack![list, overlay].width(Fill).height(Fill), self.view_composer(&st, chat)];
         container(pane).width(Fill).height(Fill).clip(true).style(fill_box(p.card, 10.0)).into()
     }

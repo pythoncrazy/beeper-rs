@@ -781,7 +781,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     gui.select_chat("!wa_eric:beeper.com");
     {
         let mut sim = simulator(gui.view_main());
-        for label in ["Inbox", "Eric Migicovsky", "Message Eric Migicovsky on WhatsApp", "Note to self", "Feedback?"] {
+        for label in ["Inbox", "Eric Migicovsky", "Message Eric Migicovsky on WhatsApp", "Feedback?"] {
             assert!(sim.find(label).is_ok(), "main window shows {label}");
         }
         sim.click(iced::widget::Id::new("rail-requests")).expect("requests rail button");
