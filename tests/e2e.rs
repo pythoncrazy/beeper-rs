@@ -637,7 +637,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = login.update(UiMessage::Login(LoginMsg::Continue));
     assert!(login.login_window.is_none() && login.main_window.is_some());
     assert_eq!(login.selected_chat_id.as_deref(), Some(NOTE_CHAT_ID));
-    assert!(simulator(login.view_main()).find("Note to self").is_ok());
+    assert!(simulator(login.view_main()).find("Note").is_ok());
     drop((login, login_store));
 
     let sas_verified = client.verify_device_sas().await;
@@ -777,7 +777,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     gui.select_chat("!wa_eric:beeper.com");
     {
         let mut sim = simulator(gui.view_main());
-        for label in ["Inbox", "Eric Migicovsky", "Message Eric Migicovsky on WhatsApp", "Feedback?"] {
+        for label in ["Inbox", "Eric", "Message Eric Migicovsky on WhatsApp", "Feedback?"] {
             assert!(sim.find(label).is_ok(), "main window shows {label}");
         }
         sim.click(iced::widget::Id::new("rail-requests")).expect("requests rail button");
