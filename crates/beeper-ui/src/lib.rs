@@ -29,8 +29,8 @@ use iced::widget::{
     stack, svg, text_input, Column, Row, Space, Stack,
 };
 use iced::{
-    border, mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Padding, Point, Radians,
-    Right, Size, Subscription, Task, Theme,
+    border, mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Padding, Pixels, Point,
+    Radians, Right, Shrink, Size, Subscription, Task, Theme,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -134,6 +134,12 @@ pub enum SettingsTab {
     About,
 }
 
+#[derive(Clone, Copy)]
+pub enum TabIcon {
+    Glyph(char),
+    Svg(&'static [u8]),
+}
+
 impl SettingsTab {
     pub const ALL: [Self; 12] = [
         Self::Accounts,
@@ -150,20 +156,21 @@ impl SettingsTab {
         Self::About,
     ];
 
-    pub const fn meta(self) -> (&'static str, char, u32) {
+    pub const fn meta(self) -> (&'static str, TabIcon, u32) {
+        use TabIcon::{Glyph, Svg};
         [
-            ("Accounts", icon::AT_SIGN, 0x9647e9),
-            ("General", icon::SETTINGS, 0x16b2ee),
-            ("Appearance", icon::PAINTBRUSH, 0xd736c9),
-            ("Notifications", icon::BELL, 0x1fb93d),
-            ("Hotkeys", icon::KEYBOARD, 0xeaa900),
-            ("Devices", icon::SMARTPHONE, 0xf54d0b),
-            ("AI", icon::SPARKLES, 0x1fc8d3),
-            ("Beeper Plus", icon::PLUS, 0x2a61fb),
-            ("Integrations", icon::PUZZLE, 0x7459ff),
-            ("Storage", icon::DATABASE, 0x35556a),
-            ("Help", icon::CIRCLE_HELP, 0x9a9aa1),
-            ("About", icon::INFO, 0x20b4a1),
+            ("Accounts", Glyph(icon::AT_SIGN), 0x9647e9),
+            ("General", Svg(include_bytes!("../assets/settings/general.svg")), 0x16b2ee),
+            ("Appearance", Svg(include_bytes!("../assets/settings/appearance.svg")), 0xd736c9),
+            ("Notifications", Svg(include_bytes!("../assets/settings/notifications.svg")), 0x1fb93d),
+            ("Hotkeys", Svg(include_bytes!("../assets/settings/hotkeys.svg")), 0xeaa900),
+            ("Devices", Svg(include_bytes!("../assets/settings/devices.svg")), 0xf54d0b),
+            ("AI", Svg(include_bytes!("../assets/settings/ai.svg")), 0x1fc8d3),
+            ("Beeper Plus", Svg(include_bytes!("../assets/settings/beeper_plus.svg")), 0x2a61fb),
+            ("Integrations", Glyph(icon::PUZZLE), 0x7459ff),
+            ("Storage", Glyph(icon::DATABASE), 0x35556a),
+            ("Help", Svg(include_bytes!("../assets/settings/help.svg")), 0x9a9aa1),
+            ("About", Svg(include_bytes!("../assets/settings/about.svg")), 0x20b4a1),
         ][self as usize]
     }
 
@@ -2539,35 +2546,46 @@ impl BeeperGuiApp {
         let search_input = text_input("Search Settings", &self.settings_query)
             .on_input(UiMessage::SettingsQueryChanged)
             .size(13)
-            .padding([5, 2])
+            .line_height(Pixels(16.0))
+            .padding(0)
             .style(input_style(CLEAR, p.strong, p.text, p.accent, 0.0));
         let search = container(
-            row![ic(icon::SEARCH, 15.0).color(p.text), search_input].spacing(8).align_y(Center).padding([2, 10]),
+            row![ic(icon::SEARCH, 16.0).color(p.text), search_input].spacing(8).align_y(Center).padding([6, 8]),
         )
         .style(fill_box(p.search, 38.0));
-        let free = semi("Free", 11.0).color(p.text);
+        let free = container(semi("Free", 10.0).color(p.strong)).padding([4, 6]).style(fill_box(p.chip, 25.0));
         let profile = row![
-            avatar(&name, 28.0, p),
+            avatar(&name, 32.0, p),
             column![bold(name.clone(), 14.0).color(p.strong),]
                 .push(me.email.clone().map(|e| txt(e, 11.0).color(p.text)))
                 .width(Fill),
             free
         ]
-        .spacing(10)
+        .spacing(8)
         .align_y(Center)
-        .padding([2, 8]);
+        .height(44)
+        .padding([0, 8]);
         let nav = SettingsTab::ALL.iter().fold(Column::new(), |c, &tab| {
             let (label, glyph, rgb) = tab.meta();
             let on = tab == self.active_settings_tab && self.settings_query.is_empty();
-            let tile = container(ic(glyph, 13.0).color(Color::WHITE))
+            let glyph: El = match glyph {
+                TabIcon::Glyph(g) => ic(g, 13.0).color(Color::WHITE).into(),
+                TabIcon::Svg(doc) => svg(svg::Handle::from_memory(doc)).width(Shrink).height(Shrink).into(),
+            };
+            let tile = container(glyph)
                 .center(20)
                 .style(fill_box(Color::from_rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8), 6.0));
-            let count = (tab == SettingsTab::Accounts).then(|| txt(st.accounts.len().to_string(), 13.0).color(p.sub));
+            let count = (tab == SettingsTab::Accounts).then(|| {
+                container(txt(st.accounts.len().to_string(), 11.0).color(p.strong))
+                    .center(18)
+                    .style(fill_box(p.chip, 9.0))
+            });
             let line = row![tile, txt(label, 14.0).color(p.strong), Space::new().width(Fill)]
                 .push(count)
                 .spacing(8)
                 .align_y(Center)
-                .padding([12, 8]);
+                .height(if on { 44 } else { 43 })
+                .padding([0, 8]);
             let next_on = SettingsTab::ALL.get(tab as usize + 1).is_some_and(|n| *n == self.active_settings_tab);
             c.push(
                 button(line)
@@ -2576,17 +2594,20 @@ impl BeeperGuiApp {
                     .style(btn_style([if on { p.nav_sel } else { CLEAR }, p.hover, p.nav_sel], [p.text; 3], 8.0))
                     .on_press(UiMessage::SelectSettingsTab(tab)),
             )
-            .push((!on && !next_on).then(|| divider(p, 36.0)))
+            .push((!on).then(|| {
+                let rule = if next_on { CLEAR } else { p.divider };
+                container(container(Space::new()).width(Fill).height(1).style(fill_box(rule, 0.0)))
+                    .padding(Padding::ZERO.left(36.0))
+            }))
         });
         let left = column![
-            container(semi("Settings", 14.0).color(p.strong)).padding([4, 8]),
+            container(semi("Settings", 14.0).color(p.strong)).center_y(35).padding([0, 8]),
             search,
-            profile,
-            scrollable(nav).height(Fill).style(scroll_style(p.divider, p.weak))
+            scrollable(column![profile, nav]).height(Fill).style(scroll_style(p.divider, p.weak))
         ]
         .spacing(8)
         .width(270)
-        .padding(Padding::new(8.0).right(0.0));
+        .padding(Padding::new(8.0).right(15.0));
         let content = if self.settings_query.trim().is_empty() {
             self.settings_content(&st)
         } else {
