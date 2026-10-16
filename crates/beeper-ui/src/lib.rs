@@ -658,6 +658,15 @@ fn gap_below(m: &Message, next: &Message) -> f32 {
 static LOGO: std::sync::LazyLock<svg::Handle> =
     std::sync::LazyLock::new(|| svg::Handle::from_memory(include_bytes!("../assets/beeper.svg")));
 
+pub fn short_title(c: &Chat) -> &str {
+    let first_word = c.chat_type != "group" && c.title.chars().any(char::is_alphabetic);
+    if first_word {
+        c.title.split_whitespace().next().expect("a letter")
+    } else {
+        &c.title
+    }
+}
+
 fn tinted<'a>(h: &svg::Handle, size: f32, color: Color) -> El<'a> {
     svg(h.clone()).width(size).height(size).style(move |_, _| svg::Style { color: Some(color) }).into()
 }
@@ -1854,9 +1863,7 @@ impl BeeperGuiApp {
             col.push(chunk.iter().fold(Row::new(), |r, c| {
                 let on = selected == Some(c.id.as_str());
                 let muted = c.is_muted == Some(true);
-                let first_word = c.chat_type != "group" && c.title.chars().any(char::is_alphabetic);
-                let name = if first_word { c.title.split_whitespace().next().expect("a letter") } else { &c.title };
-                let title = ell(name, cell - if muted { 35.2 } else { 20.0 }, 12.0, Weight::Semibold);
+                let title = ell(short_title(c), cell - if muted { 35.2 } else { 20.0 }, 12.0, Weight::Semibold);
                 let label =
                     row![title.color(p.strong).line_height(iced::widget::text::LineHeight::Absolute(15.0.into()))]
                         .push(muted.then(|| tinted(&BELL_OFF, 12.0, p.strong)))
@@ -2046,12 +2053,14 @@ impl BeeperGuiApp {
             prev = Some(m);
         }
         let list = scrollable(col).anchor_bottom().height(Fill).style(scroll_style(p.divider, p.weak));
-        let name_row =
-            row![semi(chat.title.clone(), 12.0).color(p.strong), ic(icon::CHEVRON_RIGHT, 14.0).color(p.tertiary)]
-                .spacing(4)
-                .align_y(Center);
+        let name_row = row![
+            semi(short_title(chat).to_string(), 13.0).line_height(Pixels(16.0)).color(p.strong),
+            ic(icon::CHEVRON_RIGHT, 16.0).color(p.tertiary)
+        ]
+        .spacing(7)
+        .align_y(Center);
         let pill = button(name_row)
-            .padding(Padding::new(6.0).left(10.0))
+            .padding(Padding::new(6.0).left(12.0).right(0.0))
             .style(btn_style([p.elevated, p.selected, p.selected], [p.text; 3], 14.0))
             .on_press(UiMessage::ToggleRightPanel);
         let ring = container(self.chat_avatar(chat, 40.0)).padding(1).style(fill_box(p.card, 21.0));

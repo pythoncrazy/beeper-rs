@@ -417,7 +417,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     }
     let _ = gui.update(UiMessage::Login(LoginMsg::Continue));
     assert!(gui.login_window.is_none() && gui.main_window.is_some(), "Continue opens the app");
-    let chats: Vec<(String, String)> = {
+    let chats = {
         let st = shared.read().unwrap();
         assert_eq!(st.setup, Some(Setup::Imported));
         assert_eq!(st.beeper_state.user_id, "@emile:beeper.com");
@@ -449,12 +449,12 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert_eq!(msg("$x1").text.as_deref(), Some("from matrix"));
         assert_eq!(msg("$x1").reactions[0].reaction_key, "❤️");
         assert!(!st.msg_idx_by_id.contains_key("$x2"), "reaction events are not messages");
-        st.chats.iter().map(|c| (c.id.clone(), c.title.clone())).collect()
+        st.chats.clone()
     };
     assert_eq!(chats.len(), 6);
-    for (id, title) in &chats {
-        gui.select_chat(id);
-        assert!(simulator(gui.view_main()).find(title.as_str()).is_ok(), "chat {title} renders");
+    for c in &chats {
+        gui.select_chat(&c.id);
+        assert!(simulator(gui.view_main()).find(beeper_ui::short_title(c)).is_ok(), "chat {} renders", c.title);
     }
     assert!(simulator(gui.view_settings()).find("emile@example.com").is_ok());
     drop((gui, shared));
@@ -637,7 +637,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = login.update(UiMessage::Login(LoginMsg::Continue));
     assert!(login.login_window.is_none() && login.main_window.is_some());
     assert_eq!(login.selected_chat_id.as_deref(), Some(NOTE_CHAT_ID));
-    assert!(simulator(login.view_main()).find("Note to self").is_ok());
+    assert!(simulator(login.view_main()).find("Note").is_ok());
     drop((login, login_store));
 
     let sas_verified = client.verify_device_sas().await;
@@ -777,7 +777,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     gui.select_chat("!wa_eric:beeper.com");
     {
         let mut sim = simulator(gui.view_main());
-        for label in ["Inbox", "Eric Migicovsky", "Message Eric Migicovsky on WhatsApp", "Feedback?"] {
+        for label in ["Inbox", "Eric", "Message Eric Migicovsky on WhatsApp", "Feedback?"] {
             assert!(sim.find(label).is_ok(), "main window shows {label}");
         }
         sim.click(iced::widget::Id::new("rail-requests")).expect("requests rail button");
