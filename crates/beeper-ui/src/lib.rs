@@ -285,7 +285,20 @@ pub fn search_settings_catalog(query: &str) -> Vec<(&'static str, &'static prefs
 
 const ZOOM_STEPS: [u16; 13] = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300];
 const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
 const HOTKEYS: [(&str, &str); 8] = [
     ("Command bar", "Ctrl K"),
     ("Open settings", "Ctrl ,"),
@@ -346,21 +359,23 @@ fn day_label(iso: &str) -> String {
         _ => {
             let ((y, m, dd), ty) = (civil_from_days(d), civil_from_days(today).0);
             let year = if y == ty { String::new() } else { format!(", {y}") };
-            format!("{}, {} {dd}{year}", &wd[..3], MONTHS[m as usize - 1])
+            format!("{}, {} {dd}{year}", &wd[..3], &MONTHS[m as usize - 1][..3])
         }
     }
 }
 
 fn list_ts(iso: &str, h24: bool) -> String {
-    let d = day_num(iso);
-    match now_unix_secs().div_euclid(86_400) - d {
+    const DAY: i64 = 86_400_000;
+    let (d, now) = (day_num(iso), now_unix_secs() * 1000);
+    let age = now - millis_from_rfc3339(iso).expect("RFC 3339 timestamp");
+    let (y, m, dd) = civil_from_days(d);
+    let month = MONTHS[m as usize - 1];
+    match now.div_euclid(DAY) - d {
         0 => format_short_ts(iso, h24),
         1 => "Yesterday".into(),
-        2..=6 => WEEKDAYS[(d + 4).rem_euclid(7) as usize][..3].into(),
-        _ => {
-            let (y, m, dd) = civil_from_days(d);
-            format!("{m}/{dd}/{:02}", y % 100)
-        }
+        _ if age < 7 * DAY => WEEKDAYS[(d + 4).rem_euclid(7) as usize].into(),
+        _ if age < 365 * DAY => format!("{month} {dd}"),
+        _ => format!("{} {dd}, {y}", &month[..3]),
     }
 }
 
