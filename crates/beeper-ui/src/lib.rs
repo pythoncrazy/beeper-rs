@@ -521,8 +521,14 @@ fn chat_avatar_urls(chat: &Chat) -> Vec<&str> {
     }
 }
 
+fn network_bot(chat: &Chat, user_id: &str) -> bool {
+    chat.participants.items.iter().any(|u| u.id == user_id && u.is_network_bot == Some(true))
+}
+
 fn preview_sender<'a>(chat: &'a Chat, m: &Message) -> Option<&'a User> {
-    let shown = chat.chat_type == "group" && m.is_sender != Some(true) && m.message_type.as_deref() != Some("REACTION");
+    let shown = (chat.chat_type == "group" || network_bot(chat, &m.sender_id))
+        && m.is_sender != Some(true)
+        && m.message_type.as_deref() != Some("REACTION");
     chat.participants.items.iter().find(|u| shown && u.id == m.sender_id)
 }
 
@@ -1831,7 +1837,7 @@ impl BeeperGuiApp {
                 let first = m
                     .and_then(|m| m.sender_name.clone())
                     .map(|s| s.split(' ').next().expect("sender name").to_string());
-                match (c.chat_type == "group", first) {
+                match (c.chat_type == "group" || m.is_some_and(|m| network_bot(c, &m.sender_id)), first) {
                     (true, Some(s)) if !mine && reaction.is_none() => format!("{s}: {t}"),
                     _ => t,
                 }
@@ -2031,7 +2037,7 @@ impl BeeperGuiApp {
             })
             .flatten();
         let mut parts = Column::new().spacing(2).align_x(if mine { Right } else { iced::Left });
-        if group && !mine && first {
+        if (group || network_bot(chat, &m.sender_id)) && !mine && first {
             parts = parts.push(
                 container(
                     semi(m.sender_name.clone().expect("sender name"), 11.0)
