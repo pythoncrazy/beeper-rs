@@ -460,6 +460,11 @@ fn chat_avatar_urls(chat: &Chat) -> Vec<&str> {
     }
 }
 
+fn preview_sender<'a>(chat: &'a Chat, m: &Message) -> Option<&'a User> {
+    let shown = chat.chat_type == "group" && m.is_sender != Some(true) && m.message_type.as_deref() != Some("REACTION");
+    chat.participants.items.iter().find(|u| shown && u.id == m.sender_id)
+}
+
 fn badged<'a>(inner: El<'a>, account_id: &str, size: f32, badge: f32) -> El<'a> {
     let icon = svg(brand_svg(brand_key(account_id))).width(badge).height(badge);
     let w = size + badge / 8.0;
@@ -733,7 +738,11 @@ impl BeeperGuiApp {
         let Some(client) = st.matrix.clone() else { return Task::none() };
         let selected = self.selected_chat_id.as_ref().and_then(|id| st.chat_idx_by_id.get(id)).map(|&i| &st.chats[i]);
         let members = selected.into_iter().flat_map(|c| &c.participants.items).filter_map(|u| u.img_url.as_deref());
-        let urls = st.chats.iter().flat_map(chat_avatar_urls).chain(members);
+        let senders = st.chats.iter().filter_map(|c| {
+            let &i = st.chat_msg_indices.get(&c.id)?.last()?;
+            preview_sender(c, &st.messages[i])?.img_url.as_deref()
+        });
+        let urls = st.chats.iter().flat_map(chat_avatar_urls).chain(members).chain(senders);
         let urls: HashSet<String> = urls.filter(|u| !self.avatars.contains_key(*u)).map(str::to_string).collect();
         drop(st);
         self.avatars.extend(urls.iter().map(|u| (u.clone(), None)));
@@ -1617,7 +1626,10 @@ impl BeeperGuiApp {
                 let dot = container(Space::new()).width(6).height(6).style(fill_box(dot_bg, 3.0));
                 container(unread.then_some(dot)).width(12)
             });
-            let reserve = if count.is_some() { 26.0 } else { 0.0 } + if mine { 16.0 } else { 0.0 };
+            let sender = m.filter(|_| body.is_some()).and_then(|m| preview_sender(c, m));
+            let reserve = if count.is_some() { 26.0 } else { 0.0 }
+                + if mine { 16.0 } else { 0.0 }
+                + if sender.is_some() { 14.0 } else { 0.0 };
             let preview = row![]
                 .push(mine.then(|| {
                     svg(SENT.clone()).width(12).height(12).style(move |_, _| svg::Style { color: Some(p.sub) })
@@ -1632,7 +1644,17 @@ impl BeeperGuiApp {
                     .style(fill_box(p.link_card, 4.0))
                 }))
                 .push(body.map(|b| {
-                    ell(&b, text_w - reserve, 13.0, Weight::Normal).color(if unread { p.text } else { p.sub })
+                    let face = sender
+                        .map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0));
+                    row![]
+                        .push(face)
+                        .push(ell(&b, text_w - reserve, 13.0, Weight::Normal).color(if unread {
+                            p.text
+                        } else {
+                            p.sub
+                        }))
+                        .spacing(2)
+                        .align_y(Center)
                 }))
                 .push(Space::new().width(Fill))
                 .push(count)
