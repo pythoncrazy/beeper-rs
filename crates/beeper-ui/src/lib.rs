@@ -743,10 +743,11 @@ impl BeeperGuiApp {
             (u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default())
         }
         if chat.img_url.is_some() {
-            return self.face(chat.img_url.as_deref(), &chat.title, size);
+            let shade = fill_box(Color { a: 0.1, ..self.pal.strong }, size / 2.0);
+            return container(self.face(chat.img_url.as_deref(), &chat.title, size)).style(shade).into();
         }
         let (shown, more) = faces(chat);
-        if chat.chat_type != "group" {
+        if chat.chat_type != "group" || shown.is_empty() {
             let (url, name) = shown.first().map_or((None, ""), |u| user(u));
             return self.face(url, name, size);
         }
