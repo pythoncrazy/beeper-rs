@@ -331,7 +331,7 @@ pub fn pick_style(
             bg
         })
         .into(),
-        border: Border { color: CLEAR, width: 0.0, radius: 6.0.into() },
+        border: Border { color: CLEAR, width: 0.0, radius: 12.0.into() },
     }
 }
 
@@ -419,6 +419,8 @@ pub struct Palette {
     pub nav_sel: Color,
     pub search: Color,
     pub chip: Color,
+    pub button: Color,
+    pub button_border: Color,
     pub menu: Color,
     pub menu_border: Color,
     pub on_secondary: Color,
@@ -466,10 +468,12 @@ pub const BEEPER_DARK: Palette = Palette {
     toggle_off: hex(0x444444),
     prefs_pane: hex(0x161616),
     prefs_group: hex(0x1c1c1c),
-    prefs_border: hex(0x232326),
+    prefs_border: hex(0x282828),
     nav_sel: hex(0x3c3c3c),
     search: hex(0x323232),
     chip: hex(0x232326),
+    button: hex(0x505050),
+    button_border: hex(0x5e5e5e),
     menu: hex(0x232323),
     menu_border: hex(0x434343),
     on_secondary: hex(0x9b9ba2),
@@ -511,10 +515,12 @@ pub const BEEPER_LIGHT: Palette = Palette {
     toggle_off: hexa(0x000000, 0.25),
     prefs_pane: hex(0xf3f3f3),
     prefs_group: hex(0xffffff),
-    prefs_border: hex(0xefeff0),
+    prefs_border: hex(0xededed),
     nav_sel: hex(0xdedede),
     search: hex(0xe6e6e6),
     chip: hex(0xefeff0),
+    button: hex(0xffffff),
+    button_border: hex(0xe2e2e2),
     menu: hex(0xf3f3f3),
     menu_border: hex(0xe2e2e2),
     on_secondary: hex(0x6c6c72),
