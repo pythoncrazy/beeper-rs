@@ -11,6 +11,7 @@ use crate::style::{
 use beeper_core::cloud::Cloud;
 use beeper_core::config::{account_network, civil_from_days, millis_from_rfc3339, now_unix_secs, APP_VERSION};
 use beeper_core::import::has_beeper_data;
+use beeper_core::matrix::DeviceInfo;
 use beeper_core::models::*;
 use beeper_core::platform::{
     build_tray_icon_rgba, current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind,
@@ -229,6 +230,10 @@ pub enum UiMessage {
     RecoveryInputChanged(String),
     VerifyRecoveryCode,
     Recovered(Result<(), String>),
+    DevicesLoaded(Result<Vec<DeviceInfo>, String>),
+    AskLogout(bool),
+    Logout,
+    LoggedOut(Result<(), String>),
     VerifySasNow,
     ClearOldMedia,
     ExportChatJson(String),
@@ -409,6 +414,17 @@ fn closable_head<'a>(p: &Palette, title: &str, size: f32, msg: UiMessage) -> El<
     ]
     .align_y(Center)
     .into()
+}
+
+fn ago(ms: u64) -> String {
+    let secs = (now_unix_secs() - (ms / 1000) as i64).max(0) as f64;
+    let units = [(60.0, 60.0, "m"), (3600.0, 24.0, "h"), (86400.0, 30.0, "d"), (2_592_000.0, 12.0, "mo")];
+    if secs < 60.0 {
+        return "now".into();
+    }
+    let (size, unit) =
+        units.iter().find(|(size, max, _)| secs / size < *max).map_or((31_536_000.0, "y"), |u| (u.0, u.2));
+    format!("{}{unit} ago", (secs / size).round())
 }
 
 fn divider<'a>(p: &Palette, left: f32) -> El<'a> {
@@ -648,6 +664,8 @@ pub struct BeeperGuiApp {
     pub editing_message_id: Option<String>,
     pub nickname_edit_buffer: String,
     pub recovery_code_input: String,
+    pub devices: Option<Result<Vec<DeviceInfo>, String>>,
+    pub confirm_logout: bool,
     pub show_command_palette: bool,
     pub active_settings_tab: SettingsTab,
     pub settings_query: String,
@@ -708,6 +726,8 @@ impl BeeperGuiApp {
             editing_message_id: None,
             nickname_edit_buffer: String::new(),
             recovery_code_input: String::new(),
+            devices: None,
+            confirm_logout: false,
             show_command_palette: false,
             active_settings_tab: SettingsTab::General,
             settings_query: String::new(),
@@ -827,12 +847,35 @@ impl BeeperGuiApp {
 
     fn open_settings(&mut self, tab: SettingsTab) -> Task<UiMessage> {
         self.active_settings_tab = tab;
+        let load = self.load_devices();
         if let Some(id) = self.settings_window {
-            return window::gain_focus(id);
+            return Task::batch([load, window::gain_focus(id)]);
         }
         let (id, open) = window::open(Self::window_settings(Size::new(793.0, 705.0)));
         self.settings_window = Some(id);
-        open.map(UiMessage::WindowOpened)
+        Task::batch([load, open.map(UiMessage::WindowOpened)])
+    }
+
+    fn load_devices(&mut self) -> Task<UiMessage> {
+        if self.active_settings_tab != SettingsTab::Devices {
+            return Task::none();
+        }
+        let st = self.store.read().unwrap();
+        match (st.matrix.clone(), st.config.demo) {
+            (Some(client), _) => Task::perform(beeper_core::matrix::devices(client), UiMessage::DevicesLoaded),
+            (None, true) => {
+                let name = format!("beeper-rs {:?}", self.os);
+                let me = DeviceInfo { name, last_seen_ms: None, verified: st.beeper_state.verified, current: true };
+                drop(st);
+                self.devices = Some(Ok(vec![me]));
+                Task::none()
+            }
+            (None, false) => {
+                drop(st);
+                self.devices = Some(Err("Matrix is not connected yet".into()));
+                Task::none()
+            }
+        }
     }
 
     pub fn title(&self, id: window::Id) -> String {
@@ -1108,7 +1151,22 @@ impl BeeperGuiApp {
                 self.command_palette_query.clear();
                 self.select_chat(&cid);
             }
-            UiMessage::SelectSettingsTab(t) => self.active_settings_tab = t,
+            UiMessage::SelectSettingsTab(t) => {
+                self.active_settings_tab = t;
+                return self.load_devices();
+            }
+            UiMessage::DevicesLoaded(r) => self.devices = Some(r),
+            UiMessage::AskLogout(on) => self.confirm_logout = on,
+            UiMessage::Logout => {
+                self.confirm_logout = false;
+                return Task::perform(beeper_core::matrix::logout(self.store.clone()), UiMessage::LoggedOut);
+            }
+            UiMessage::LoggedOut(Ok(())) => {
+                let exe = std::env::current_exe().expect("path of the running beeper-rs");
+                std::process::Command::new(exe).args(std::env::args_os().skip(1)).spawn().expect("restart beeper-rs");
+                std::process::exit(0);
+            }
+            UiMessage::LoggedOut(Err(e)) => self.status_banner = format!("Could not log out: {e}"),
             UiMessage::ToggleRightPanel => self.show_right_panel = !self.show_right_panel,
             UiMessage::ToggleDnd => {
                 self.dnd_muted = !self.dnd_muted;
@@ -2300,7 +2358,69 @@ impl BeeperGuiApp {
         .width(Fill)
         .height(Fill)
         .style(fill_box(p.prefs_pane, 10.0));
-        container(row![left, container(right).padding(8)]).width(Fill).height(Fill).style(fill_box(p.frame, 0.0)).into()
+        let base = container(row![left, container(right).padding(8)]).width(Fill).height(Fill);
+        stack![base.style(fill_box(p.frame, 0.0))].push(self.confirm_logout.then(|| self.view_logout_confirm())).into()
+    }
+
+    fn device_list<'a>(&self, title: &'a str, list: &[&DeviceInfo]) -> El<'a> {
+        let p = &self.pal;
+        let rows = list.iter().enumerate().flat_map(|(i, d)| {
+            let n = d.name.to_lowercase();
+            let glyph = if n.contains("ipad") {
+                icon::TABLET
+            } else if ["ios", "android", "iphone"].iter().any(|k| n.contains(k)) {
+                icon::SMARTPHONE
+            } else {
+                icon::MONITOR
+            };
+            let tile = container(ic(glyph, 14.0).color(Color::WHITE)).center(28).style(fill_box(p.accent, 4.0));
+            let text = column![semi(d.name.clone(), 12.0).color(p.strong)]
+                .push(d.last_seen_ms.map(|t| txt(format!("Last seen: {}", ago(t)), 11.0).color(p.sub)))
+                .width(Fill);
+            let logout = button(semi("Logout", 12.0).color(p.strong))
+                .padding([4, 8])
+                .style(btn_style([p.hover, p.selected, p.selected], [p.strong; 3], 20.0))
+                .on_press(UiMessage::AskLogout(true));
+            let line: El<'a> =
+                row![tile, text].push(d.current.then_some(logout)).spacing(12).align_y(Center).padding([8, 12]).into();
+            [(i > 0).then(|| divider(p, 0.0)), Some(line)].into_iter().flatten()
+        });
+        column![
+            container(txt(title, 12.0).color(p.sub)).padding([8, 0]),
+            container(Column::with_children(rows)).style(bordered_box(CLEAR, p.prefs_border, 1.0, 10.0))
+        ]
+        .into()
+    }
+
+    fn view_logout_confirm(&self) -> El<'_> {
+        let p = &self.pal;
+        let name = self.devices.iter().flatten().flatten().find(|d| d.current).map(|d| d.name.clone());
+        let card = column![
+            bold(format!("Logout of {}?", name.as_deref().unwrap_or("this device")), 14.0).color(p.strong),
+            txt("This will disconnect all chat accounts on this device.", 13.0).color(p.text),
+            row![
+                Space::new().width(Fill),
+                pill_btn(p, "Cancel", UiMessage::AskLogout(false)),
+                button(med("Logout", 13.0).color(Color::WHITE))
+                    .padding([5, 12])
+                    .style(btn_style([p.accent; 3], [Color::WHITE; 3], 6.0))
+                    .on_press(UiMessage::Logout)
+            ]
+            .spacing(8)
+        ]
+        .spacing(10)
+        .padding(16)
+        .width(340);
+        mouse_area(
+            container(
+                mouse_area(container(card).style(shadow_box(p.elevated, p.menu_border, 12.0, 24.0)))
+                    .on_press(UiMessage::Noop),
+            )
+            .center(Fill)
+            .style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.45), 0.0)),
+        )
+        .on_press(UiMessage::AskLogout(false))
+        .into()
     }
 
     fn settings_search_results(&self) -> El<'_> {
@@ -2397,41 +2517,41 @@ impl BeeperGuiApp {
                     .padding([6, 10])
                     .width(200)
                     .style(input_style(p.input, p.strong, p.sub, p.accent, 6.0));
-                vec![
-                    group(
-                        p,
-                        Some("This device"),
-                        vec![pref_row(
+                let encryption = group(
+                    p,
+                    Some("Encryption"),
+                    vec![
+                        pref_row(
                             p,
-                            format!("{:?} · {:?}", self.os, self.display_server),
-                            Some(APP_VERSION),
+                            "Recovery code",
+                            Some("Enter your recovery code to verify this device."),
                             None,
-                            txt(if st.beeper_state.verified { "Verified" } else { "Not verified" }, 12.0)
-                                .color(if st.beeper_state.verified { p.success } else { p.warning })
-                                .into(),
-                        )],
-                    ),
-                    group(
-                        p,
-                        Some("Encryption"),
-                        vec![
-                            pref_row(
-                                p,
-                                "Recovery code",
-                                Some("Enter your recovery code to verify this device."),
-                                None,
-                                code.into(),
-                            ),
-                            pref_row(
-                                p,
-                                "Verify with another device",
-                                None,
-                                None,
-                                pill_btn(p, "Verify", UiMessage::VerifySasNow),
-                            ),
-                        ],
-                    ),
-                ]
+                            code.into(),
+                        ),
+                        pref_row(
+                            p,
+                            "Verify with another device",
+                            None,
+                            None,
+                            pill_btn(p, "Verify", UiMessage::VerifySasNow),
+                        ),
+                    ],
+                );
+                let mut out = match &self.devices {
+                    None => Vec::new(),
+                    Some(Err(e)) => vec![txt(e.clone(), 13.0).color(p.danger).into()],
+                    Some(Ok(all)) => [
+                        ("Current Device", all.iter().filter(|d| d.current).collect::<Vec<_>>()),
+                        ("Verified Devices", all.iter().filter(|d| !d.current && d.verified).collect()),
+                        ("Unverified Devices", all.iter().filter(|d| !d.current && !d.verified).collect()),
+                    ]
+                    .into_iter()
+                    .filter(|(_, list)| !list.is_empty())
+                    .map(|(title, list)| self.device_list(title, &list))
+                    .collect(),
+                };
+                out.push(encryption);
+                out
             }
             SettingsTab::Ai => Vec::new(),
             SettingsTab::BeeperPlus => vec![group(

@@ -49,6 +49,10 @@ fn main() {
         let _ = app.update(UiMessage::OpenSettings(tab));
         shot(&out, &format!("settings_{tab:?}").to_lowercase(), (800.0, 740.0), &theme, app.view_settings());
     }
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Devices));
+    let _ = app.update(UiMessage::AskLogout(true));
+    shot(&out, "settings_logout", (800.0, 740.0), &theme, app.view_settings());
+    let _ = app.update(UiMessage::AskLogout(false));
     for screen in [Screen::Welcome, Screen::Email, Screen::Code, Screen::Username, Screen::Accounts] {
         app.login = Login::default();
         let _ = app.update(UiMessage::Login(LoginMsg::Show(screen)));

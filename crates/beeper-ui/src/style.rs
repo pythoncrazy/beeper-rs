@@ -65,6 +65,8 @@ pub mod icon {
     pub const HISTORY: char = '\u{e1f5}';
     pub const BOOKMARK: char = '\u{e060}';
     pub const MESSAGE_SQUARE: char = '\u{e117}';
+    pub const TABLET: char = '\u{e17e}';
+    pub const MONITOR: char = '\u{e11d}';
 }
 
 pub const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
