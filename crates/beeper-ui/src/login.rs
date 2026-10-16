@@ -64,6 +64,7 @@ pub struct Login {
     menu: bool,
     query: String,
     source: Option<PathBuf>,
+    import: Option<Arc<BeeperData>>,
 }
 
 impl Login {
@@ -77,7 +78,8 @@ pub enum Outcome {
     Requested(String),
     Lead(String, Vec<String>),
     Session(MatrixSession, Profile, Vec<BridgeAccountInfo>),
-    Imported(Arc<BeeperData>),
+    Read(Arc<BeeperData>),
+    Imported(Arc<BeeperData>, MatrixSession, Profile, Vec<BridgeAccountInfo>),
 }
 
 #[derive(Clone)]
@@ -281,7 +283,7 @@ impl BeeperGuiApp {
         match msg {
             LoginMsg::Import => {
                 let dir = l.source.clone().expect("import screen has a Beeper Desktop dir");
-                return self.background(move |_| read_beeper_data(&dir).map(|d| Outcome::Imported(Arc::new(d))));
+                return self.background(move |_| read_beeper_data(&dir).map(|d| Outcome::Read(Arc::new(d))));
             }
             LoginMsg::Fresh => {
                 self.store.write().unwrap().finish_setup(Setup::Fresh);
@@ -365,21 +367,38 @@ impl BeeperGuiApp {
                         l.screen = Screen::Username;
                         return operation::focus(USERNAME_INPUT);
                     }
-                    Ok(Outcome::Session(session, profile, accounts)) => {
-                        let homeserver = self.cloud.homeserver.clone();
-                        self.store.write().unwrap().sign_in(session, homeserver, &profile, accounts);
-                        l.screen = Screen::Accounts;
+                    Ok(Outcome::Read(data)) => {
+                        l.import = Some(data);
+                        l.screen = Screen::Welcome;
                     }
-                    Ok(Outcome::Imported(data)) => {
+                    Ok(Outcome::Session(session, profile, accounts)) => match l.import.take() {
+                        Some(data) if data.crypto.as_ref().is_some_and(|c| c.user_id != session.user_id) => {
+                            let user = &data.crypto.as_ref().expect("checked above").user_id;
+                            l.error = Some(format!("Sign in as {user} to finish the import."));
+                            l.import = Some(data);
+                        }
+                        Some(data) => {
+                            let dir = self.store.read().unwrap().matrix_dir();
+                            return self.background(move |_| {
+                                if let Some(c) = &data.crypto {
+                                    let import = beeper_core::matrix::import_crypto(&dir, c);
+                                    tokio::runtime::Handle::current().block_on(import)?;
+                                }
+                                Ok(Outcome::Imported(data, session, profile, accounts))
+                            });
+                        }
+                        None => {
+                            let homeserver = self.cloud.homeserver.clone();
+                            self.store.write().unwrap().sign_in(session, homeserver, &profile, accounts);
+                            l.screen = Screen::Accounts;
+                        }
+                    },
+                    Ok(Outcome::Imported(data, session, profile, accounts)) => {
+                        let homeserver = self.cloud.homeserver.clone();
                         let mut st = self.store.write().unwrap();
                         st.import_beeper(Arc::unwrap_or_clone(data));
-                        let signed_in = st.signed_in();
-                        drop(st);
-                        self.login = Login::default();
-                        if signed_in {
-                            self.login.screen = Screen::Accounts;
-                            return self.refresh_cloud_accounts();
-                        }
+                        st.sign_in(session, homeserver, &profile, accounts);
+                        l.screen = Screen::Accounts;
                     }
                 }
             }

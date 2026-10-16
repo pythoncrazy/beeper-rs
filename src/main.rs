@@ -2,7 +2,6 @@
 use beeper_api::{client::BeeperClient, server::serve_http};
 use beeper_core::{
     config::{migrate_legacy_data_dir, CentralConfig, APP_NAME, APP_VERSION, DEFAULT_PAS_HOST, DEFAULT_PAS_PORT},
-    import::read_beeper_data,
     platform::current_desktop_data_dir,
     store::{BeeperStore, SharedStore},
 };
@@ -21,7 +20,6 @@ Options:
   --port <PORT>
   --profile <PROFILE>
   --data-dir <DIR>
-  --import-from <DIR>  Copy chats and the session from a Beeper Desktop data dir on first start
   --demo        Start with demo chats instead of a signed-out account
   --headless
 
@@ -67,7 +65,7 @@ fn main() {
     let mut host = std::env::var("BEEPER_PAS_HOST").unwrap_or_else(|_| DEFAULT_PAS_HOST.to_string());
     let mut port: u16 =
         std::env::var("BEEPER_PAS_PORT").map_or(DEFAULT_PAS_PORT, |v| v.parse().expect("BEEPER_PAS_PORT is a port"));
-    let (mut profile, mut data_dir, mut import_from, mut command, mut demo) = (None, None, None, Command::Gui, false);
+    let (mut profile, mut data_dir, mut command, mut demo) = (None, None, Command::Gui, false);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| panic!("missing value for {arg}"));
@@ -78,7 +76,6 @@ fn main() {
             "--port" | "--pas-port" => port = value().parse().expect("--port is a port number"),
             "--profile" => profile = Some(value()),
             "--data-dir" => data_dir = Some(PathBuf::from(value())),
-            "--import-from" => import_from = Some(PathBuf::from(value())),
             "--demo" => demo = true,
             "--version" | "-V" => return println!("{APP_NAME} {APP_VERSION}"),
             "--help" | "-h" => return println!("{HELP}"),
@@ -103,16 +100,7 @@ fn main() {
     if let Ok(url) = std::env::var("BEEPER_MATRIX_URL") {
         cfg.homeserver = url;
     }
-    let mut store = BeeperStore::from_config(cfg);
-    if let Some(dir) = import_from {
-        assert!(
-            store.setup.is_none(),
-            "--import-from needs a new data dir, and {} is already set up",
-            store.data_dir.display()
-        );
-        store.import_beeper(read_beeper_data(&dir).unwrap_or_else(|e| panic!("{e}")));
-    }
-    let store: SharedStore = Arc::new(RwLock::new(store));
+    let store: SharedStore = Arc::new(RwLock::new(BeeperStore::from_config(cfg)));
     if !store.read().unwrap().config.demo {
         rt.spawn(beeper_core::matrix::run(store.clone()));
     }

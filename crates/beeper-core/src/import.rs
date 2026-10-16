@@ -1,7 +1,5 @@
 use crate::config::rfc3339_from_millis;
-use crate::models::{
-    Attachment, AttachmentSize, Chat, ChatParticipants, MatrixSession, Message, Profile, Reaction, User,
-};
+use crate::models::{Attachment, AttachmentSize, Chat, ChatParticipants, Message, Reaction, User};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -9,10 +7,26 @@ use std::path::Path;
 
 const SNAPSHOT_FILES: [&str; 4] = ["index.db", "index.db-wal", "account.db", "account.db-wal"];
 
+#[derive(Debug, Clone)]
+pub struct DesktopCrypto {
+    pub user_id: String,
+    pub backup_version: String,
+    pub group_sessions: Vec<GroupSessionRow>,
+    pub secrets: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GroupSessionRow {
+    pub room_id: String,
+    pub sender_key: String,
+    pub signing_key: String,
+    pub pickle: String,
+    pub shared_history: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct BeeperData {
-    pub session: Option<(MatrixSession, String)>,
-    pub profile: Profile,
+    pub crypto: Option<DesktopCrypto>,
     pub chats: Vec<Chat>,
     pub messages: Vec<Message>,
 }
@@ -46,43 +60,50 @@ fn open(path: &Path) -> rusqlite::Result<Connection> {
 
 fn read_snapshot(dir: &Path) -> Result<BeeperData, String> {
     let e = |e: rusqlite::Error| e.to_string();
-    let session = match dir.join("account.db").is_file() {
-        true => read_session(&open(&dir.join("account.db")).map_err(e)?)?,
+    let crypto = match dir.join("account.db").is_file() {
+        true => read_crypto(&open(&dir.join("account.db")).map_err(e)?).map_err(|e| format!("read the keys: {e}"))?,
         false => None,
     };
     let db = open(&dir.join("index.db")).map_err(e)?;
-    let profile = read_profile(&db).map_err(e)?;
     let mut people = read_participants(&db).map_err(e)?;
     let chats = read_chats(&db, &mut people)?;
     let messages = read_messages(&db, &chats)?;
-    Ok(BeeperData { session, profile, chats, messages })
+    Ok(BeeperData { crypto, chats, messages })
 }
 
-fn read_session(db: &Connection) -> Result<Option<(MatrixSession, String)>, String> {
-    let mut stmt =
-        db.prepare("SELECT user_id, device_id, access_token, homeserver FROM account").map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?, r.get(3)?)))
-        .and_then(Iterator::collect::<rusqlite::Result<Vec<(String, String, _, String)>>>)
-        .map_err(|e| e.to_string())?;
-    match rows.as_slice() {
-        [] => Ok(None),
-        [(user_id, device_id, Some(token), homeserver)] if !token.is_empty() => Ok(Some((
-            MatrixSession { user_id: user_id.clone(), access_token: token.clone(), device_id: device_id.clone() },
-            homeserver.clone(),
-        ))),
-        [_] => Ok(None),
-        more => Err(format!("account.db has {} accounts", more.len())),
-    }
-}
-
-fn read_profile(db: &Connection) -> rusqlite::Result<Profile> {
-    let raw: Option<String> = db
-        .query_row("SELECT CAST(value AS TEXT) FROM key_values WHERE key = 'userProfile'", [], |r| r.get(0))
-        .optional()?;
-    let v: Value = raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
-    let field = |k: &str| v.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
-    Ok(Profile { full_name: field("fullName"), username: field("username"), email: field("email") })
+fn read_crypto(db: &Connection) -> rusqlite::Result<Option<DesktopCrypto>> {
+    let Some((user_id, device_id)) = db
+        .query_row("SELECT user_id, device_id FROM account", [], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let account = format!("{user_id}/{device_id}");
+    let text = |b: Vec<u8>| String::from_utf8(b).expect("libolm pickles are base64 text");
+    let backup_version =
+        db.query_row("SELECT key_backup_version FROM crypto_account WHERE account_id = ?1", [&account], |r| r.get(0))?;
+    let group_sessions = db
+        .prepare(
+            "SELECT room_id, sender_key, signing_key, session, shared_history IS 1
+             FROM crypto_megolm_inbound_session WHERE account_id = ?1 AND session IS NOT NULL",
+        )?
+        .query_map([&account], |r| {
+            Ok(GroupSessionRow {
+                room_id: r.get(0)?,
+                sender_key: r.get(1)?,
+                signing_key: r.get(2)?,
+                pickle: text(r.get(3)?),
+                shared_history: r.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let secrets = db
+        .prepare("SELECT name, secret FROM crypto_secrets WHERE account_id = ?1")?
+        .query_map([&account], |r| Ok((r.get(0)?, text(r.get(1)?))))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(Some(DesktopCrypto { user_id, backup_version, group_sessions, secrets }))
 }
 
 fn read_participants(db: &Connection) -> rusqlite::Result<HashMap<String, Vec<User>>> {
@@ -236,17 +257,47 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
         .collect();
     let accounts: HashMap<&str, &str> = chats.iter().map(|c| (c.id.as_str(), c.account_id.as_str())).collect();
     let mut stmt = db
-        .prepare("SELECT messageID, threadID, timestamp, CAST(message AS TEXT) FROM messages ORDER BY timestamp, rowid")
+        .prepare(
+            "SELECT messageID, threadID, timestamp, CAST(message AS TEXT), NULL FROM messages
+             UNION ALL
+             SELECT eventID, roomID, timestamp, CAST(message AS TEXT), hsOrder FROM mx_room_messages
+             WHERE type NOT IN ('REACTION', 'MEMBERSHIP', 'HIDDEN') AND isDeleted = 0
+             ORDER BY 3",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+            ))
         })
         .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
         .map_err(|e| e.to_string())?;
+    let mut reactions: HashMap<String, Vec<Reaction>> = HashMap::new();
+    db.prepare(
+        "SELECT eventID, reactionID, senderID, description FROM mx_reactions WHERE isDeleted = 0 ORDER BY \"order\"",
+    )
+    .and_then(|mut q| {
+        q.query_map([], |r| {
+            let reaction = Reaction {
+                id: r.get(1)?,
+                participant_id: r.get(2)?,
+                reaction_key: r.get(3)?,
+                animated: None,
+                img_url: None,
+            };
+            Ok((r.get::<_, String>(0)?, reaction))
+        })?
+        .try_for_each(|x| x.map(|(target, r)| reactions.entry(target).or_default().push(r)))
+    })
+    .map_err(|e| e.to_string())?;
     let mut seen = HashSet::new();
     let mut out = Vec::with_capacity(rows.len());
-    for (id, chat_id, ts, json) in rows {
+    for (id, chat_id, ts, json, order) in rows {
         let Some(&account_id) = accounts.get(chat_id.as_str()) else { continue };
         let m: Value = serde_json::from_str(&json).map_err(|e| format!("message {id}: {e}"))?;
         if flag(&m, "isHidden") || flag(&m, "isDeleted") || !seen.insert(id.clone()) {
@@ -264,7 +315,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             .get("attachments")
             .and_then(Value::as_array)
             .map_or_else(Vec::new, |a| a.iter().map(read_attachment).collect());
-        let reactions = m.get("reactions").and_then(Value::as_array).map_or_else(Vec::new, |rs| {
+        let mut listed = m.get("reactions").and_then(Value::as_array).map_or_else(Vec::new, |rs| {
             rs.iter()
                 .filter_map(|r| {
                     Some(Reaction {
@@ -277,6 +328,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                 })
                 .collect()
         });
+        listed.extend(reactions.remove(&id).into_iter().flatten());
         let message_type = match attachments.first() {
             Some(a) if a.is_voice_note == Some(true) => "VOICE",
             Some(a) if a.attachment_type == "img" => "IMAGE",
@@ -290,14 +342,14 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             chat_id,
             sender_name: Some(sender_name),
             sender_id,
-            sort_key: String::new(),
+            sort_key: order.map_or_else(String::new, crate::store::sort_key),
             timestamp: rfc3339_from_millis(ts),
             attachments,
             is_sender: Some(flag(&m, "isSender")),
             is_unread: Some(false),
             is_bookmarked: Some(false),
             linked_message_id: str_field(&m, "linkedMessageID"),
-            reactions,
+            reactions: listed,
             text: str_field(&m, "text"),
             message_type: Some(message_type.into()),
             poll: None,

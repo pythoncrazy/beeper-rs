@@ -243,13 +243,6 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     std::fs::create_dir_all(orig_dir.join("media")).unwrap();
     std::fs::write(orig_dir.join("SingletonLock"), b"locked_by_electron").unwrap();
     {
-        let account = Connection::open(orig_dir.join("account.db")).unwrap();
-        account
-            .execute_batch(
-                "CREATE TABLE account (user_id TEXT NOT NULL, device_id TEXT NOT NULL, access_token TEXT, homeserver TEXT NOT NULL);
-                 INSERT INTO account VALUES ('@emile:beeper.com', 'DEV_EMILE', 'syt_emile', 'https://matrix.beeper.com');",
-            )
-            .unwrap();
         let index = Connection::open(orig_dir.join("index.db")).unwrap();
         index
             .execute_batch(
@@ -261,9 +254,16 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
                  CREATE TABLE participants (account_id TEXT NOT NULL, room_id TEXT NOT NULL, id TEXT NOT NULL, full_name TEXT,
                      nickname TEXT, img_url TEXT, is_verified INTEGER, cannot_message INTEGER, is_self INTEGER,
                      is_network_bot INTEGER, added_by TEXT, is_admin INTEGER, is_pending INTEGER, has_exited INTEGER);
+                 CREATE TABLE mx_room_messages (eventID TEXT, roomID TEXT, timestamp INTEGER, type TEXT, isDeleted INTEGER,
+                     hsOrder INTEGER, message JSON);
+                 CREATE TABLE mx_reactions (roomID TEXT, reactionID TEXT, eventID TEXT, senderID TEXT, description TEXT,
+                     \"order\" INTEGER, isDeleted INTEGER);
+                 INSERT INTO mx_room_messages VALUES ('$x1', '!mx:beeper.local', 1760000301000, 'TEXT', 0, 900,
+                     '{\"senderID\":\"@emile:beeper.com\",\"text\":\"from matrix\",\"isSender\":true}');
+                 INSERT INTO mx_room_messages VALUES ('$x2', '!mx:beeper.local', 1760000302000, 'REACTION', 0, 901, '{}');
+                 INSERT INTO mx_reactions VALUES ('!mx:beeper.local', '$x2', '$x1', '@a:beeper.com', '❤️', 1, 0);
                  INSERT INTO key_values VALUES ('beeperState', '{\"user_id\":\"\",\"access_token\":\"\"}');
-                 INSERT INTO key_values VALUES ('nextSeq', 1234);
-                 INSERT INTO key_values VALUES ('userProfile', '{\"fullName\":\"Émile Zola\",\"username\":\"emile\",\"email\":\"emile@example.com\"}');",
+                 INSERT INTO key_values VALUES ('nextSeq', 1234);",
             )
             .unwrap();
         let thread = |id: &str, acc: &str, ts: i64, label: i64, json: Value| {
@@ -367,7 +367,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
             json!({"senderID": "@x:beeper.local", "text": "label message"}),
         );
     }
-    let originals = |d: &PathBuf| ["index.db", "account.db"].map(|f| std::fs::read(d.join(f)).unwrap());
+    let originals = |d: &PathBuf| std::fs::read(d.join("index.db")).unwrap();
     let before = originals(&orig_dir);
     assert!(read_beeper_data(&rs_dir).is_err(), "a dir without Beeper Desktop data has nothing to import");
 
@@ -382,8 +382,22 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let mut sim = simulator(gui.view_login());
         assert!(sim.find("Copy from Beeper Desktop").is_ok() && sim.find("Start Fresh").is_ok());
     }
-    let data = read_beeper_data(&orig_dir).expect("read the Beeper Desktop fixture");
-    let _ = gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Imported(Arc::new(data))))));
+    let data = Arc::new(read_beeper_data(&orig_dir).expect("read the Beeper Desktop fixture"));
+    assert!(data.crypto.is_none(), "a Desktop without an account has no keys");
+    let _ = gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Read(data.clone())))));
+    assert_eq!(gui.login.screen, Screen::Welcome, "the import asks to sign in as a new device");
+    assert!(shared.read().unwrap().setup.is_none(), "nothing is imported before the sign-in");
+    let session = MatrixSession {
+        user_id: "@emile:beeper.com".into(),
+        access_token: "syt_emile".into(),
+        device_id: "NEWDEVICE".into(),
+    };
+    let profile = Profile {
+        full_name: Some("Émile Zola".into()),
+        username: Some("emile".into()),
+        email: Some("emile@example.com".into()),
+    };
+    let _ = gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Imported(data, session, profile, Vec::new())))));
     assert_eq!(before, originals(&orig_dir), "Beeper Desktop files must never be modified");
     assert_eq!(gui.login.screen, Screen::Accounts, "an imported session shows the chat accounts");
     let _ = gui.update(UiMessage::CloudAccounts(Err("offline".into())));
@@ -432,6 +446,9 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert_eq!(msg("$m2").linked_message_id, None, "links to messages that were not imported are dropped");
         assert_eq!(msg("$m1").timestamp, "2025-10-09T08:53:21.000Z");
         assert!(!st.msg_idx_by_id.contains_key("$m6") && !st.msg_idx_by_id.contains_key("$m7"));
+        assert_eq!(msg("$x1").text.as_deref(), Some("from matrix"));
+        assert_eq!(msg("$x1").reactions[0].reaction_key, "❤️");
+        assert!(!st.msg_idx_by_id.contains_key("$x2"), "reaction events are not messages");
         st.chats.iter().map(|c| (c.id.clone(), c.title.clone())).collect()
     };
     assert_eq!(chats.len(), 6);
@@ -443,7 +460,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     drop((gui, shared));
     let mut reopened = BeeperStore::from_config(CentralConfig::new(rs_dir.clone(), "127.0.0.1".into(), 23379, None));
     assert_eq!(reopened.setup, Some(Setup::Imported));
-    assert!(reopened.signed_in() && reopened.chats.len() == 6 && reopened.messages.len() == 5);
+    assert!(reopened.signed_in() && reopened.chats.len() == 6 && reopened.messages.len() == 6);
     let (_, sent_id, _) = reopened.send_message(NOTE_CHAT_ID, Some("After restart".into()), None, None).unwrap();
     let keys: Vec<&str> = reopened.messages.iter().map(|m| m.sort_key.as_str()).collect();
     assert!(keys.windows(2).all(|w| w[0] < w[1]), "new messages sort after imported ones: {keys:?}");

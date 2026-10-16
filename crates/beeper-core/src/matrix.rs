@@ -1,4 +1,5 @@
 use crate::config::{now_rfc3339_millis, rfc3339_from_millis};
+use crate::import::DesktopCrypto;
 use crate::models::{
     Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, EditHistoryEntry, Message, MessageLink,
     Reaction, User, VerificationSas, VerificationSasEmoji, VerificationState,
@@ -19,6 +20,7 @@ use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::events::tag::TagName;
 use matrix_sdk::ruma::events::{GlobalAccountDataEventType, RoomAccountDataEventType, StateEventType};
 use matrix_sdk::{Client, LoopCtrl, Room, RoomMemberships, SessionMeta, SessionTokens};
+use matrix_sdk_crypto::vodozemac;
 use serde_json::Value;
 use std::collections::HashSet;
 use tokio::sync::oneshot;
@@ -414,7 +416,7 @@ pub async fn thumbnail(client: Client, url: String) -> Result<Vec<u8>, String> {
 async fn connect(store: &SharedStore) -> Result<Client, String> {
     let (s, dir) = {
         let st = store.read().unwrap();
-        (st.beeper_state.clone(), st.data_dir.join("matrix"))
+        (st.beeper_state.clone(), st.matrix_dir())
     };
     let encryption = EncryptionSettings {
         auto_enable_cross_signing: false,
@@ -493,7 +495,14 @@ async fn retry_after_backup(client: Client, store: SharedStore) {
 
 async fn refresh_e2ee(client: &Client, store: &SharedStore) {
     let device = client.encryption().get_own_device().await.expect("read the own device");
-    let verified = device.expect("signed-in client has its own device").is_cross_signed_by_owner();
+    let device = device.expect("signed-in client has its own device");
+    let can_sign = client.encryption().cross_signing_status().await.is_some_and(|s| s.has_self_signing);
+    if can_sign && !device.is_cross_signed_by_owner() {
+        if let Err(e) = device.verify().await {
+            store.write().unwrap().matrix_error = Some(format!("Could not sign this device: {e}"));
+        }
+    }
+    let verified = device.is_cross_signed_by_owner();
     let state = (verified, client.encryption().backups().are_enabled().await);
     let mut st = store.write().unwrap();
     if (st.beeper_state.verified, st.beeper_state.key_backup) != state {
@@ -502,6 +511,82 @@ async fn refresh_e2ee(client: &Client, store: &SharedStore) {
         st.setup_status = BeeperStore::build_setup_from_state(&st.beeper_state);
         st.emit_ws("setup.updated", "", None, None, None);
     }
+}
+
+const DESKTOP_PICKLE_KEY: &[u8] = b"pickle";
+
+fn unpickle_secret(pickle: &str) -> Result<String, String> {
+    use aes::cipher::{block_padding::Pkcs7, BlockModeDecrypt, KeyIvInit};
+    use hmac::{KeyInit, Mac};
+    let raw = vodozemac::base64_decode(pickle).map_err(|e| e.to_string())?;
+    let (ciphertext, tag) = raw.split_at(raw.len().checked_sub(8).ok_or("the secret is too short")?);
+    let mut keys = [0u8; 80];
+    hkdf::Hkdf::<sha2::Sha256>::new(Some(&[0]), DESKTOP_PICKLE_KEY).expand(b"Pickle", &mut keys).expect("80 bytes");
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(&keys[32..64]).expect("any HMAC key length");
+    mac.update(ciphertext);
+    mac.verify_truncated_left(tag).map_err(|_| "the secret has a bad MAC")?;
+    let aes = cbc::Decryptor::<aes::Aes256>::new_from_slices(&keys[..32], &keys[64..]).expect("AES-256 key and IV");
+    let plain = aes.decrypt_padded_vec::<Pkcs7>(ciphertext).map_err(|e| e.to_string())?;
+    String::from_utf8(plain).map_err(|e| e.to_string())
+}
+
+pub async fn import_crypto(dir: &std::path::Path, c: &DesktopCrypto) -> Result<(), String> {
+    use matrix_sdk::ruma::{DeviceKeyAlgorithm, OwnedRoomId, OwnedUserId};
+    use matrix_sdk_crypto::olm::SenderData;
+    use matrix_sdk_crypto::olm::{InboundGroupSession, PickledInboundGroupSession, PrivateCrossSigningIdentity};
+    use matrix_sdk_crypto::store::types::{BackupDecryptionKey, Changes};
+    use matrix_sdk_crypto::store::CryptoStore;
+    use matrix_sdk_crypto::types::{EventEncryptionAlgorithm, SigningKey, SigningKeys};
+    use vodozemac::{Curve25519PublicKey, Ed25519PublicKey};
+    let e = |e: &dyn std::fmt::Display| e.to_string();
+    let mut groups = Vec::new();
+    for g in &c.group_sessions {
+        let pickle = vodozemac::megolm::InboundGroupSession::from_libolm_pickle(&g.pickle, DESKTOP_PICKLE_KEY);
+        let signing = Ed25519PublicKey::from_base64(&g.signing_key).map_err(|x| e(&x))?;
+        let mut signing_key = SigningKeys::new();
+        signing_key.insert(DeviceKeyAlgorithm::Ed25519, SigningKey::Ed25519(signing));
+        groups.push(
+            InboundGroupSession::from_pickle(PickledInboundGroupSession {
+                pickle: pickle.map_err(|x| e(&x))?.pickle(),
+                sender_key: Curve25519PublicKey::from_base64(&g.sender_key).map_err(|x| e(&x))?,
+                signing_key,
+                sender_data: SenderData::default(),
+                forwarder_data: None,
+                room_id: g.room_id.parse::<OwnedRoomId>().map_err(|x| e(&x))?,
+                imported: true,
+                backed_up: true,
+                history_visibility: None,
+                algorithm: EventEncryptionAlgorithm::MegolmV1AesSha2,
+                shared_history: g.shared_history,
+            })
+            .map_err(|x| e(&x))?,
+        );
+    }
+    let secret = |name: &str| {
+        let (_, v) = c.secrets.iter().find(|(n, _)| n == name).ok_or(format!("Desktop has no {name} secret"))?;
+        unpickle_secret(v)
+    };
+    let user: OwnedUserId = c.user_id.parse().map_err(|x| e(&x))?;
+    let identity = PrivateCrossSigningIdentity::empty(&user);
+    let (master, self_signing, user_signing) = (
+        secret("m.cross_signing.master")?,
+        secret("m.cross_signing.self_signing")?,
+        secret("m.cross_signing.user_signing")?,
+    );
+    identity
+        .import_secrets_unchecked(Some(&master), Some(&self_signing), Some(&user_signing))
+        .await
+        .map_err(|x| e(&x))?;
+    let backup = BackupDecryptionKey::from_base64(&secret("m.megolm_backup.v1")?).map_err(|x| e(&x))?;
+    let store = matrix_sdk::SqliteCryptoStore::open(dir, None).await.map_err(|x| e(&x))?;
+    let changes = Changes {
+        private_identity: Some(identity),
+        backup_version: Some(c.backup_version.clone()),
+        backup_decryption_key: Some(backup),
+        inbound_group_sessions: groups,
+        ..Default::default()
+    };
+    store.save_changes(changes).await.map_err(|x| e(&x))
 }
 
 pub async fn recover(store: SharedStore, key: String) -> Result<(), String> {
@@ -647,15 +732,21 @@ pub async fn run(store: SharedStore) {
     store.write().unwrap().matrix = Some(client.clone());
     tokio::spawn(retry_undecrypted(client.clone(), store.clone()));
     tokio::spawn(retry_after_backup(client.clone(), store.clone()));
+    let first = !store.read().unwrap().beeper_state.first_sync_done;
     futures_util::stream::iter(client.joined_rooms())
         .for_each_concurrent(8, |room| {
             let store = store.clone();
             async move {
-                let events = if has_utd(&store, &room).await { history(&room).await } else { Vec::new() };
+                let events = if first || has_utd(&store, &room).await { history(&room).await } else { Vec::new() };
                 sync_room(&store, &room, events).await
             }
         })
         .await;
+    if first {
+        let mut st = store.write().unwrap();
+        st.beeper_state.first_sync_done = true;
+        st.persist_state_to_sqlite();
+    }
     let settings = SyncSettings::default().timeout(std::time::Duration::from_secs(30));
     let client2 = client.clone();
     client
