@@ -35,7 +35,7 @@ const HISTORY: u32 = 30;
 enum Op {
     Upsert(Box<Message>),
     React(String, Reaction, Box<Message>),
-    Edit(String, String, Option<String>, Vec<MessageLink>, String),
+    Edit(String, String, Option<String>, Vec<MessageLink>, Option<String>),
     Redact(String),
     Remove(String),
 }
@@ -50,6 +50,10 @@ fn body(c: &Value) -> Option<String> {
         (Some(n), true) => Some(b.strip_prefix(&format!("{n}: ")).expect("profile fallback prefix").into()),
         _ => Some(b),
     }
+}
+
+fn caption(c: &Value) -> Option<String> {
+    s(&c["filename"]).is_some_and(|f| c["body"] != f.as_str()).then(|| body(c)).flatten()
 }
 
 fn html(c: &Value) -> Option<String> {
@@ -222,17 +226,18 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
         ("m.room.redaction", _) => return Some(Op::Redact(s(&e["redacts"]).or(s(&c["redacts"]))?)),
         ("m.room.message", _) if rel["rel_type"] == "m.replace" => {
             let (new, ts) = (&c["m.new_content"], e["origin_server_ts"].as_i64().expect("event timestamp"));
-            return Some(Op::Edit(s(&rel["event_id"])?, body(new)?, html(new), links(new), rfc3339_from_millis(ts)));
+            let shown = (c["com.beeper.dont_render_edited"] != true).then(|| rfc3339_from_millis(ts));
+            return Some(Op::Edit(s(&rel["event_id"])?, body(new)?, html(new), links(new), shown));
         }
         ("m.room.encrypted", _) => (Some(UTD_TEXT.into()), Vec::new(), "TEXT"),
         ("m.sticker", _) => (None, vec![Attachment { is_sticker: Some(true), ..attachment(c, "img") }], "STICKER"),
-        ("m.room.message", Some("m.image")) => (None, vec![attachment(c, "img")], "IMAGE"),
-        ("m.room.message", Some("m.video")) => (None, vec![attachment(c, "video")], "VIDEO"),
+        ("m.room.message", Some("m.image")) => (caption(c), vec![attachment(c, "img")], "IMAGE"),
+        ("m.room.message", Some("m.video")) => (caption(c), vec![attachment(c, "video")], "VIDEO"),
         ("m.room.message", Some("m.audio")) if c.get("org.matrix.msc3245.voice").is_some() => {
-            (None, vec![attachment(c, "audio")], "VOICE")
+            (caption(c), vec![attachment(c, "audio")], "VOICE")
         }
-        ("m.room.message", Some("m.audio")) => (None, vec![attachment(c, "audio")], "AUDIO"),
-        ("m.room.message", Some("m.file")) => (None, vec![attachment(c, "unknown")], "FILE"),
+        ("m.room.message", Some("m.audio")) => (caption(c), vec![attachment(c, "audio")], "AUDIO"),
+        ("m.room.message", Some("m.file")) => (caption(c), vec![attachment(c, "unknown")], "FILE"),
         ("m.room.message", Some("m.location")) => (body(c), Vec::new(), "LOCATION"),
         ("m.room.message", Some("m.notice")) => (body(c), Vec::new(), "NOTICE"),
         ("m.room.message", _) => (body(c), Vec::new(), "TEXT"),
@@ -416,7 +421,9 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                 if let Some(&i) = st.msg_idx_by_id.get(&target) {
                     st.update_message(i, |m| {
                         let prev = m.text.replace(text).unwrap_or_default();
-                        if m.edit_history.last().is_none_or(|e| e.timestamp != timestamp) {
+                        if let Some(timestamp) =
+                            timestamp.filter(|t| m.edit_history.last().is_none_or(|e| e.timestamp != *t))
+                        {
                             m.edit_history.push(EditHistoryEntry { text: prev, timestamp });
                         }
                         m.links = links;
@@ -907,6 +914,14 @@ mod tests {
         super::logout(store).await.expect("demo logout");
         assert!(!dir.join("beeper-rs.db").exists() && !dir.join("media").exists());
         std::fs::remove_dir_all(dir).expect("remove the test data dir");
+    }
+
+    #[test]
+    fn media_body_is_a_caption_only_when_it_differs_from_the_file_name() {
+        let c = |v: serde_json::Value| super::caption(&v);
+        assert_eq!(c(serde_json::json!({"body": "a.jpg", "filename": "a.jpg"})), None);
+        assert_eq!(c(serde_json::json!({"body": "a.jpg"})), None);
+        assert_eq!(c(serde_json::json!({"body": "look", "filename": "a.jpg"})).as_deref(), Some("look"));
     }
 
     #[test]
