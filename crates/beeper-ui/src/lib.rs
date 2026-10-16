@@ -651,6 +651,18 @@ static TRASH: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><path fill="currentColor" d="M432 32H312l-9.4-18.7A24 24 0 0 0 281.1 0H166.8a23.72 23.72 0 0 0-21.4 13.3L136 32H16A16 16 0 0 0 0 48v32a16 16 0 0 0 16 16h416a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16zM53.2 467a48 48 0 0 0 47.9 45h245.8a48 48 0 0 0 47.9-45L416 128H32z"/></svg>"#[..])
 });
 
+fn gap_below(m: &Message, next: &Message) -> f32 {
+    let ms = |m: &Message| millis_from_rfc3339(&m.timestamp).expect("message timestamp");
+    match (ms(next) - ms(m)).abs() / 60_000 {
+        _ if m.timestamp[..10] != next.timestamp[..10] => 0.0,
+        241.. => 26.0,
+        6.. => 13.0,
+        2.. => 4.0,
+        _ if m.sender_id == next.sender_id => 2.0,
+        _ => 4.0,
+    }
+}
+
 fn tinted<'a>(h: &svg::Handle, size: f32, color: Color) -> El<'a> {
     svg(h.clone()).width(size).height(size).style(move |_, _| svg::Style { color: Some(color) }).into()
 }
@@ -1970,24 +1982,22 @@ impl BeeperGuiApp {
         let msgs: Vec<&Message> = st.chat_msg_indices.get(cid).map_or_else(Vec::new, |v| {
             v.iter().map(|&i| &st.messages[i]).filter(|m| !(hide && m.is_deleted == Some(true))).collect()
         });
-        let mut col = Column::new().spacing(2).padding(Padding::new(16.0).top(96.0).bottom(8.0));
+        let mut col = Column::new().padding(Padding::new(16.0).top(96.0).bottom(8.0));
         let mut prev: Option<&Message> = None;
+        let last_live = msgs.iter().rposition(|m| m.is_deleted != Some(true));
         for (i, m) in msgs.iter().enumerate() {
             let day_changed = prev.is_none_or(|q| q.timestamp[..10] != m.timestamp[..10]);
             if day_changed {
-                let pill = container(semi(day_label(&m.timestamp), 11.0).color(p.date_text))
-                    .padding([5, 10])
-                    .style(bordered_box(p.card, p.outline, 1.0, 12.0));
-                col = col.push(container(pill).center_x(Fill).padding([12, 0]));
+                let label = semi(day_label(&m.timestamp), 11.0).line_height(Pixels(14.0)).color(p.date_text);
+                let pill = container(label).padding([5, 9]).style(bordered_box(p.card, p.outline, 1.0, 12.0));
+                col = col.push(container(pill).center_x(Fill).padding([4, 0]));
             }
             let first = day_changed || prev.is_none_or(|q| q.sender_id != m.sender_id);
             let last =
                 msgs.get(i + 1).is_none_or(|n| n.sender_id != m.sender_id || n.timestamp[..10] != m.timestamp[..10]);
-            if first && !day_changed {
-                col = col.push(Space::new().height(6));
-            }
-            let sent = i + 1 == msgs.len() && m.is_sender == Some(true);
+            let sent = Some(i) == last_live && m.is_sender == Some(true);
             col = col.push(self.view_message(&st, chat, m, first, last, sent));
+            col = col.push(msgs.get(i + 1).map(|n| Space::new().height(gap_below(m, n))));
             prev = Some(m);
         }
         let list = scrollable(col).anchor_bottom().height(Fill).style(scroll_style(p.divider, p.weak));
@@ -2310,13 +2320,13 @@ impl BeeperGuiApp {
             .map(str::to_string)
             .chain(replies)
             .collect();
-        if !footer.is_empty() {
+        let footer = (!footer.is_empty()).then(|| {
             let line = footer.into_iter().enumerate().fold(Row::new(), |r, (i, t)| {
-                r.push((i > 0).then(|| container(txt("·", 11.0).color(p.muted.scale_alpha(0.8))).padding([0, 4])))
-                    .push(txt(t, 11.0).color(p.muted))
+                r.push((i > 0).then(|| container(txt("·", 12.0).color(p.muted.scale_alpha(0.8))).padding([0, 4])))
+                    .push(txt(t, 12.0).line_height(Pixels(15.0)).color(p.muted))
             });
-            parts = parts.push(container(line).padding(Padding::new(0.0).left(4.0).right(4.0).top(2.0)));
-        }
+            container(line).padding([0, 4])
+        });
         if self.expanded_history_msg_id.as_ref() == Some(&m.id) {
             parts = parts.push(m.edit_history.iter().fold(Column::new().spacing(2), |c, e| {
                 c.push(txt(format!("{} · {}", e.text, format_short_ts(&e.timestamp, false)), 11.0).color(p.muted))
@@ -2344,6 +2354,7 @@ impl BeeperGuiApp {
             });
             parts = parts.push(pills);
         }
+        let parts = column![parts].push(footer).align_x(if mine { Right } else { iced::Left });
         let tools = (self.hovered_msg.as_ref() == Some(&m.id)).then(|| {
             let b = |c: char, msg: UiMessage| icon_btn(p, c, 14.0, 26.0, p.weak, msg);
             let (cid, mid) = (chat.id.clone(), m.id.clone());
