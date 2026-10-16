@@ -1,7 +1,7 @@
 use crate::config::{now_rfc3339_millis, rfc3339_from_millis};
 use crate::models::{
-    Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, Message, MessageLink, Reaction, User,
-    VerificationSas, VerificationSasEmoji, VerificationState,
+    Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, EditHistoryEntry, Message, MessageLink,
+    Reaction, User, VerificationSas, VerificationSasEmoji, VerificationState,
 };
 use crate::store::{sort_key, BeeperStore, SharedStore, NOTE_CHAT_ID};
 use futures_util::StreamExt;
@@ -28,12 +28,24 @@ const HISTORY: u32 = 30;
 enum Op {
     Upsert(Box<Message>),
     React(String, Reaction, Box<Message>),
-    Edit(String, String),
+    Edit(String, String, Vec<MessageLink>, String),
     Redact(String),
 }
 
 fn s(v: &Value) -> Option<String> {
     v.as_str().filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+fn body(c: &Value) -> Option<String> {
+    let (b, p) = (s(&c["body"])?, &c["com.beeper.per_message_profile"]);
+    match (s(&p["displayname"]), p["has_fallback"] == true) {
+        (Some(n), true) => Some(b.strip_prefix(&format!("{n}: ")).expect("profile fallback prefix").into()),
+        _ => Some(b),
+    }
+}
+
+fn links(c: &Value) -> Vec<MessageLink> {
+    c["com.beeper.linkpreviews"].as_array().into_iter().flatten().filter_map(link).collect()
 }
 
 async fn state(room: &Room, kind: &str) -> Option<Value> {
@@ -179,7 +191,8 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
         ("m.reaction", _) => (None, Vec::new(), "REACTION"),
         ("m.room.redaction", _) => return Some(Op::Redact(s(&e["redacts"]).or(s(&c["redacts"]))?)),
         ("m.room.message", _) if rel["rel_type"] == "m.replace" => {
-            return Some(Op::Edit(s(&rel["event_id"])?, s(&c["m.new_content"]["body"])?));
+            let (new, ts) = (&c["m.new_content"], e["origin_server_ts"].as_i64().expect("event timestamp"));
+            return Some(Op::Edit(s(&rel["event_id"])?, body(new)?, links(new), rfc3339_from_millis(ts)));
         }
         ("m.room.encrypted", _) => (Some(UTD_TEXT.into()), Vec::new(), "TEXT"),
         ("m.sticker", _) => (None, vec![Attachment { is_sticker: Some(true), ..attachment(c, "img") }], "STICKER"),
@@ -190,17 +203,12 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
         }
         ("m.room.message", Some("m.audio")) => (None, vec![attachment(c, "audio")], "AUDIO"),
         ("m.room.message", Some("m.file")) => (None, vec![attachment(c, "unknown")], "FILE"),
-        ("m.room.message", Some("m.location")) => (s(&c["body"]), Vec::new(), "LOCATION"),
-        ("m.room.message", Some("m.notice")) => (s(&c["body"]), Vec::new(), "NOTICE"),
-        ("m.room.message", _) => (s(&c["body"]), Vec::new(), "TEXT"),
+        ("m.room.message", Some("m.location")) => (body(c), Vec::new(), "LOCATION"),
+        ("m.room.message", Some("m.notice")) => (body(c), Vec::new(), "NOTICE"),
+        ("m.room.message", _) => (body(c), Vec::new(), "TEXT"),
         _ => return None,
     };
-    let profile = &c["com.beeper.per_message_profile"];
-    let profile_name = s(&profile["displayname"]);
-    let text = match (&profile_name, profile["has_fallback"] == true) {
-        (Some(n), true) => text.map(|t| t.strip_prefix(&format!("{n}: ")).expect("profile fallback prefix").into()),
-        _ => text,
-    };
+    let profile_name = s(&c["com.beeper.per_message_profile"]["displayname"]);
     let user = matrix_sdk::ruma::UserId::parse(&sender).expect("sender is a user ID");
     let member = room.get_member_no_sync(&user).await.expect("read room member");
     let order = e["unsigned"]["com.beeper.hs.order"].as_i64().expect("Beeper events carry com.beeper.hs.order");
@@ -229,7 +237,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
         message_type: Some(message_type.into()),
         poll: None,
         edit_history: Vec::new(),
-        links: c["com.beeper.linkpreviews"].as_array().into_iter().flatten().filter_map(link).collect(),
+        links: links(c),
         flags: 0,
     });
     match reaction {
@@ -364,9 +372,15 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                     });
                 }
             }
-            Op::Edit(target, text) => {
+            Op::Edit(target, text, links, timestamp) => {
                 if let Some(&i) = st.msg_idx_by_id.get(&target) {
-                    st.update_message(i, |m| m.text = Some(text));
+                    st.update_message(i, |m| {
+                        let prev = m.text.replace(text).unwrap_or_default();
+                        if m.edit_history.last().is_none_or(|e| e.timestamp != timestamp) {
+                            m.edit_history.push(EditHistoryEntry { text: prev, timestamp });
+                        }
+                        m.links = links;
+                    });
                 }
             }
             Op::Redact(target) => {

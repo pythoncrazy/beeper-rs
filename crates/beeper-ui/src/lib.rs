@@ -1743,15 +1743,9 @@ impl BeeperGuiApp {
             if first && !day_changed {
                 col = col.push(Space::new().height(6));
             }
-            col = col.push(self.view_message(&st, chat, m, first, last));
+            let sent = i + 1 == msgs.len() && m.is_sender == Some(true);
+            col = col.push(self.view_message(&st, chat, m, first, last, sent));
             prev = Some(m);
-        }
-        if msgs.last().is_some_and(|m| m.is_sender == Some(true)) {
-            col = col.push(
-                container(txt("Sent", 11.0).color(p.muted))
-                    .align_right(Fill)
-                    .padding(Padding::ZERO.right(4.0).top(2.0)),
-            );
         }
         let list = scrollable(col).anchor_bottom().height(Fill).style(scroll_style(p.divider, p.weak));
         let name_row =
@@ -1793,7 +1787,15 @@ impl BeeperGuiApp {
         container(pane).width(Fill).height(Fill).clip(true).style(fill_box(p.card, 10.0)).into()
     }
 
-    fn view_message<'a>(&self, st: &BeeperStore, chat: &Chat, m: &Message, first: bool, last: bool) -> El<'a> {
+    fn view_message<'a>(
+        &self,
+        st: &BeeperStore,
+        chat: &Chat,
+        m: &Message,
+        first: bool,
+        last: bool,
+        sent: bool,
+    ) -> El<'a> {
         let p = &self.pal;
         let mine = m.is_sender == Some(true);
         let group = chat.chat_type == "group";
@@ -1931,10 +1933,11 @@ impl BeeperGuiApp {
             );
         }
         if !text.is_empty() && m.poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
-            let edited = if m.edit_history.is_empty() { "" } else { "Edited · " };
-            let time =
-                txt(format!("{edited}{}", format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1)), 11.0)
-                    .color(if mine { p.sent_meta } else { p.sub });
+            let time = txt(format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1), 11.0).color(if mine {
+                p.sent_meta
+            } else {
+                p.sub
+            });
             let spans: Vec<_> = text
                 .split_inclusive(' ')
                 .flat_map(|w| {
@@ -1967,6 +1970,15 @@ impl BeeperGuiApp {
                     .max_width(480)
                     .style(fill_box(bg, 17.0)),
             );
+        }
+        let footer: Vec<&str> =
+            [sent.then_some("Sent"), (!m.edit_history.is_empty()).then_some("Edited")].into_iter().flatten().collect();
+        if !footer.is_empty() {
+            let line = footer.into_iter().enumerate().fold(Row::new(), |r, (i, t)| {
+                r.push((i > 0).then(|| container(txt("·", 11.0).color(p.muted.scale_alpha(0.8))).padding([0, 4])))
+                    .push(txt(t, 11.0).color(p.muted))
+            });
+            parts = parts.push(container(line).padding(Padding::new(0.0).left(4.0).right(4.0).top(2.0)));
         }
         if self.expanded_history_msg_id.as_ref() == Some(&m.id) {
             parts = parts.push(m.edit_history.iter().fold(Column::new().spacing(2), |c, e| {
