@@ -721,10 +721,14 @@ impl BeeperStore {
             return self.emit_ws("message.upserted", &m.chat_id, Some(&m.id), None, Some(m.clone()));
         };
         self.update_message(idx, |m| {
+            let mut seen = std::mem::take(&mut m.seen);
+            seen.extend(msg.seen);
             *m = Message {
                 reactions: std::mem::take(&mut m.reactions),
                 edit_history: std::mem::take(&mut m.edit_history),
                 is_bookmarked: m.is_bookmarked,
+                is_unread: m.is_unread,
+                seen,
                 ..msg
             }
         });
@@ -959,6 +963,7 @@ impl BeeperStore {
             poll: None,
             edit_history: Vec::new(),
             links: Vec::new(),
+            seen: BTreeMap::new(),
             flags: 0,
         };
         let m_idx = self.push_message(msg, true);
@@ -1097,6 +1102,33 @@ impl BeeperStore {
             c.unread_count = later.len() as u32;
             c.is_marked_unread = Some(true);
         });
+    }
+
+    pub fn mark_chat_read(&mut self, chat_or_local_id: &str, clear_messages: bool) -> Option<String> {
+        let idx = self.resolve_chat_idx(chat_or_local_id)?;
+        let chat_id = self.chats[idx].id.clone();
+        let indices = self.chat_msg_indices.get(&chat_id).cloned().unwrap_or_default();
+        let last_key = indices.last().map(|&i| self.messages[i].sort_key.clone());
+        let last_event = indices.iter().rev().map(|&i| &self.messages[i].id).find(|id| id.starts_with('$')).cloned();
+        let had_unread = self.chats[idx].flags & CHAT_UNREAD != 0;
+        if had_unread || self.chats[idx].last_read_message_sort_key < last_key {
+            self.update_chat(idx, |c| {
+                c.unread_count = 0;
+                c.unread_mentions = 0;
+                c.is_marked_unread = Some(false);
+                if last_key.is_some() {
+                    c.last_read_message_sort_key = last_key;
+                }
+            });
+        }
+        if clear_messages {
+            for i in indices {
+                if self.messages[i].is_unread == Some(true) {
+                    self.update_message(i, |m| m.is_unread = Some(false));
+                }
+            }
+        }
+        had_unread.then_some(last_event).flatten()
     }
 
     pub fn set_user_nickname(&mut self, chat_or_local_id: &str, user_id: &str, nickname: Option<String>) {
