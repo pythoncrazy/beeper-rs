@@ -784,11 +784,11 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         for label in ["Inbox", "Eric Migicovsky", "Message Eric Migicovsky on WhatsApp", "Note to self", "Feedback?"] {
             assert!(sim.find(label).is_ok(), "main window shows {label}");
         }
-        sim.click(iced::widget::Id::new("rail-unread")).expect("unread rail button");
+        sim.click(iced::widget::Id::new("rail-requests")).expect("requests rail button");
         for m in sim.into_messages() {
             let _ = gui.update(m);
         }
-        assert_eq!(gui.active_tab, InboxTab::Unread);
+        assert_eq!(gui.active_tab, InboxTab::Requests);
     }
 
     let _ = gui.update(UiMessage::SelectTab(InboxTab::AllChats));

@@ -47,11 +47,12 @@ pub enum InboxTab {
     Drafts,
     Unread,
     Pinned,
+    Requests,
 }
 
 impl InboxTab {
     pub const fn label(self) -> &'static str {
-        ["Inbox", "Low Priority", "Archive", "Reminders", "Drafts", "Unread", "Pinned"][self as usize]
+        ["Inbox", "Low Priority", "Archive", "Reminders", "Drafts", "Unread", "Pinned", "Requests"][self as usize]
     }
 }
 
@@ -236,6 +237,23 @@ const HOTKEYS: [(&str, &str); 7] = [
 fn network_name(account_id: &str) -> &'static str {
     account_network(account_id).display_name
 }
+
+const RAIL_RANK: [&str; 14] = [
+    "hungryserv",
+    "whatsapp",
+    "instagram",
+    "telegram",
+    "gmessages",
+    "googlechat",
+    "facebook",
+    "signal",
+    "linkedin",
+    "twitter",
+    "discord",
+    "slack",
+    "gvoice",
+    "imessage",
+];
 
 fn brand_key(account_id: &str) -> &'static str {
     account_network(account_id).bridge_id
@@ -713,8 +731,9 @@ impl BeeperGuiApp {
                     && match self.active_tab {
                         InboxTab::AllChats => {
                             let hidden = if self.selected_account_filter.is_some() { 0 } else { CHAT_HIDDEN };
-                            c.flags & (CHAT_ARCHIVED | CHAT_LOW_PRIORITY | hidden) == 0
+                            c.flags & (CHAT_ARCHIVED | CHAT_LOW_PRIORITY | CHAT_REQUEST | hidden) == 0
                         }
+                        InboxTab::Requests => c.flags & CHAT_REQUEST != 0,
                         InboxTab::Unread => c.flags & CHAT_UNREAD != 0,
                         InboxTab::Pinned => c.flags & CHAT_PINNED != 0,
                         InboxTab::Drafts => c.draft.is_some(),
@@ -1206,25 +1225,34 @@ impl BeeperGuiApp {
             .id(id)
             .into()
         };
-        let g = |c: char| -> El<'static> { ic(c, 18.0).color(p.strong).into() };
+        let g = |c: char| -> El<'static> { ic(c, 24.0).color(p.strong).into() };
         let ring = svg(DASHED_RING[usize::from(self.dark)].clone()).width(32).height(32);
-        let add_space = stack![ring, container(ic(icon::MAPS_UGC, 20.0).color(p.strong)).center(32)];
+        let add_space =
+            container(stack![ring, container(ic(icon::MAPS_UGC, 24.0).color(p.strong)).center(32)]).center(36);
         let st = self.store.read().unwrap();
-        let accounts =
-            std::iter::once("hungryserv".to_string()).chain(st.accounts.iter().map(|a| a.account_id.clone()));
-        let accounts = accounts.fold(Column::new().spacing(8).align_x(Center), |c, acc| {
+        let mut accounts: Vec<String> =
+            std::iter::once("hungryserv".to_string()).chain(st.accounts.iter().map(|a| a.account_id.clone())).collect();
+        accounts.sort_by_cached_key(|a| {
+            let n = account_network(a);
+            (
+                RAIL_RANK.iter().position(|r| *r == n.bridge_id).unwrap_or(usize::MAX),
+                n.display_name.to_lowercase(),
+                a.clone(),
+            )
+        });
+        let accounts = accounts.into_iter().fold(Column::new().spacing(8).align_x(Center), |c, acc| {
             let on = self.selected_account_filter.as_ref() == Some(&acc);
             let logo: El<'static> = svg(brand_svg(brand_key(&acc))).width(28).height(28).into();
             c.push(rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc))))
         });
         let top = column![
             tab("rail-inbox", g(icon::INBOX), InboxTab::AllChats),
-            tab("rail-low-priority", g(icon::LOW_PRIORITY_SPACE), InboxTab::LowPriority),
             tab("rail-archive", g(icon::ARCHIVE), InboxTab::Archived),
+            button(add_space).padding(0).style(ghost(p, 12.0)).on_press(UiMessage::ToggleCommandPalette),
             tab("rail-reminders", g(icon::SCHEDULE), InboxTab::Reminders),
             tab("rail-drafts", g(icon::SCHEDULE_SEND), InboxTab::Drafts),
-            tab("rail-unread", g(icon::EMAIL), InboxTab::Unread),
-            button(add_space).padding(0).style(ghost(p, 12.0)).on_press(UiMessage::ToggleCommandPalette),
+            tab("rail-requests", g(icon::EMAIL), InboxTab::Requests),
+            tab("rail-low-priority", g(icon::LOW_PRIORITY_SPACE), InboxTab::LowPriority),
             accounts,
             rail_btn(g(icon::MORE_HORIZ), false, UiMessage::OpenSettings(SettingsTab::Accounts)),
         ]
@@ -1260,7 +1288,6 @@ impl BeeperGuiApp {
         let me = st.me().full_name.as_deref().expect("self name");
         let h24 = st.settings.pref("timeFormat") == 1;
         let previews = st.settings.on("showMessagePreviews");
-        let header_icon = p.text.scale_alpha(0.8);
         let title = button(
             row![semi(self.active_tab.label(), 13.0).color(p.strong), ic(icon::UNFOLD_MORE, 13.0).color(p.weak)]
                 .spacing(4)
@@ -1269,16 +1296,22 @@ impl BeeperGuiApp {
         .padding([4, 8])
         .style(ghost(p, 6.0))
         .on_press(UiMessage::ToggleFilterMenu);
+        let head_btn = |c: char, size: f32, w: f32, msg: UiMessage| {
+            button(container(ic(c, size).color(p.strong)).center_x(w).center_y(26))
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
+                .on_press(msg)
+        };
         let header = row![
             title,
             Space::new().width(Fill),
-            icon_btn(p, icon::FILTER_LIST, 16.0, 26.0, header_icon, UiMessage::ToggleFilterMenu),
-            icon_btn(p, icon::SEARCH, 16.0, 26.0, header_icon, UiMessage::ToggleSearch),
-            icon_btn(p, icon::EDIT_SQUARE, 16.0, 26.0, header_icon, UiMessage::ToggleCommandPalette)
+            head_btn(icon::FILTER_LIST, 19.0, 27.0, UiMessage::ToggleFilterMenu),
+            head_btn(icon::SEARCH, 23.0, 34.0, UiMessage::ToggleSearch),
+            head_btn(icon::EDIT_SQUARE, 20.0, 34.0, UiMessage::ToggleCommandPalette)
         ]
         .align_y(Center)
         .height(38)
-        .padding(Padding::ZERO.right(4.0));
+        .padding(Padding::ZERO.right(2.0));
         let filters = self.show_filter_menu.then(|| {
             let tabs = [
                 InboxTab::AllChats,

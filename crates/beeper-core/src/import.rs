@@ -182,6 +182,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>) -> Resul
                 reminder: None,
                 chat_theme: None,
                 is_hidden_from_inbox: None,
+                is_request: None,
                 network_name: None,
                 flags: 0,
                 id,

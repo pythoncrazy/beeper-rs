@@ -112,6 +112,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     Chat {
         id: room.room_id().to_string(),
         is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, &bridge, !dm)),
+        is_request: Some(bridge["channel"]["com.beeper.message_request"] == true),
         network_name: s(&bridge["network"]["displayname"]),
         account_id,
         participants: ChatParticipants { has_more: false, total: items.len(), items },
