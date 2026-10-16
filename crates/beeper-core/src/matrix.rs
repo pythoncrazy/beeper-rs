@@ -329,6 +329,18 @@ async fn history(room: &Room) -> Vec<TimelineEvent> {
     chunk
 }
 
+async fn set_typing(store: &SharedStore, room: &Room, ids: &Value) {
+    let me = room.own_user_id().as_str();
+    let ids: Vec<String> = ids.as_array().expect("typing user IDs").iter().map(|i| s(i).expect("a user ID")).collect();
+    let ids: Vec<String> = ids.into_iter().filter(|i| i != me).collect();
+    let chat = chat_id(room).await;
+    let mut st = store.write().unwrap();
+    let old = if ids.is_empty() { st.typing.remove(&chat) } else { st.typing.insert(chat.clone(), ids.clone()) };
+    if old.unwrap_or_default() != ids {
+        st.emit_ws("chat.typing", &chat, None, None, None);
+    }
+}
+
 async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>) {
     let space = state(room, "m.room.create").await.expect("rooms have a create event")["type"].is_string();
     if space || state(room, "com.beeper.managed").await.is_some() {
@@ -480,15 +492,22 @@ pub async fn flush(store: SharedStore) -> Result<(), String> {
     }
 }
 
+async fn joined_room(client: &matrix_sdk::Client, chat: &str) -> Result<Room, String> {
+    for room in client.joined_rooms() {
+        if chat_id(&room).await == chat {
+            return Ok(room);
+        }
+    }
+    Err(format!("{chat} is not a joined Matrix room"))
+}
+
+pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) -> Result<(), String> {
+    joined_room(&client, &chat).await?.typing_notice(on).await.map_err(|e| e.to_string())
+}
+
 async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), String> {
     let client = store.read().unwrap().matrix.clone().expect("flush checks the Matrix client");
-    let mut rooms = client.joined_rooms().into_iter();
-    let room = loop {
-        let room = rooms.next().ok_or_else(|| format!("{chat} is not a joined Matrix room"))?;
-        if chat_id(&room).await == chat {
-            break room;
-        }
-    };
+    let room = joined_room(&client, &chat).await?;
     let event = |id: String| {
         let id = store.read().unwrap().sent.get(&id).cloned().unwrap_or(id);
         OwnedEventId::try_from(id).map_err(|e| e.to_string())
@@ -892,6 +911,12 @@ pub async fn run(store: SharedStore) {
                         for (id, update) in resp.rooms.joined {
                             let room = client.get_room(&id).expect("synced room is known");
                             sync_room(&store, &room, update.timeline.events).await;
+                            for e in &update.ephemeral {
+                                let v: Value = e.deserialize_as().expect("ephemeral event JSON");
+                                if v["type"] == "m.typing" {
+                                    set_typing(&store, &room, &v["content"]["user_ids"]).await;
+                                }
+                            }
                         }
                     }
                 }

@@ -907,6 +907,49 @@ impl BeeperGuiApp {
         }
     }
 
+    fn pulse(&self, delay: u128, f: impl Fn(f32) -> f32) -> f32 {
+        f(((self.started.elapsed().as_millis() + 1000 - delay) % 1000) as f32 / 1000.0)
+    }
+
+    fn typing_bubble<'a>(&self, chat: &Chat, ids: &[String]) -> El<'a> {
+        let p = &self.pal;
+        let dot = |delay| {
+            let a = self.pulse(delay, |t| 0.2 + 0.2 * (1.0 - (2.0 * t - 1.0).abs()));
+            container(Space::new()).width(6).height(6).style(fill_box(p.text.scale_alpha(a), 3.0))
+        };
+        let bubble =
+            container(row![dot(0), dot(340), dot(670)].spacing(4)).padding([12, 11]).style(fill_box(p.received, 16.0));
+        let faces = (chat.chat_type == "group").then(|| {
+            let users = ids.iter().filter_map(|id| chat.participants.items.iter().find(|u| u.id == *id));
+            let layers = users.enumerate().map(|(i, u)| {
+                pin(self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 20.0))
+                    .x(i as f32 * 10.0)
+                    .into()
+            });
+            container(Stack::with_children(layers)).center_x(34)
+        });
+        container(row![].push(faces).push(bubble).spacing(8).align_y(Center))
+            .padding(Padding::ZERO.left(8.0).top(8.0))
+            .into()
+    }
+
+    fn typing_badge<'a>(&self) -> El<'a> {
+        let p = &self.pal;
+        let dot = |delay| {
+            let a = self.pulse(delay, |t| match t {
+                ..0.15 => 0.2 + 0.2 * t / 0.15,
+                ..0.3 => 0.4 - 0.2 * (t - 0.15) / 0.15,
+                _ => 0.2,
+            });
+            container(Space::new()).width(2).height(2).style(fill_box(p.text.scale_alpha(a), 1.0))
+        };
+        container(row![dot(0), dot(100), dot(200)].spacing(2))
+            .center_y(12)
+            .padding([0, 3])
+            .style(fill_box(p.card, 6.0))
+            .into()
+    }
+
     fn chat_avatar<'a>(&self, chat: &Chat, size: f32) -> El<'a> {
         fn user(u: &User) -> (Option<&str>, &str) {
             (u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default())
@@ -1164,7 +1207,17 @@ impl BeeperGuiApp {
             }
             UiMessage::SelectAccount(acc) => self.selected_account_filter = acc,
             UiMessage::SelectChat(id) => self.select_chat(&id),
-            UiMessage::ComposerChanged(v) => self.composer_text = v,
+            UiMessage::ComposerChanged(v) => {
+                let st = self.store.read().unwrap();
+                let notice = st.matrix.clone().filter(|_| st.settings.on("typingIndicators"));
+                let task = notice.zip(self.selected_chat_id.clone()).map(|(client, chat)| {
+                    let on = !v.is_empty();
+                    Task::perform(beeper_core::matrix::typing(client, chat, on), UiMessage::Pushed)
+                });
+                drop(st);
+                self.composer_text = v;
+                return task.unwrap_or_else(Task::none);
+            }
             UiMessage::SubmitComposer => self.submit_composer(),
             UiMessage::CancelComposeMode => {
                 self.reply_to_message_id = None;
@@ -1604,14 +1657,19 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
-        let animated = self.selected_chat_id.as_ref().is_some_and(|chat| {
-            let st = self.store.read().unwrap();
-            let mut urls =
-                st.chat_msg_indices.get(chat).into_iter().flatten().flat_map(|&i| &st.messages[i].attachments);
-            urls.any(|a| {
-                a.src_url.as_ref().and_then(|u| self.media.get(u)?.as_ref()?.as_ref().ok()).is_some_and(|f| f.len() > 1)
-            })
-        });
+        let typing = !self.store.read().unwrap().typing.is_empty();
+        let animated = typing
+            || self.selected_chat_id.as_ref().is_some_and(|chat| {
+                let st = self.store.read().unwrap();
+                let mut urls =
+                    st.chat_msg_indices.get(chat).into_iter().flatten().flat_map(|&i| &st.messages[i].attachments);
+                urls.any(|a| {
+                    a.src_url
+                        .as_ref()
+                        .and_then(|u| self.media.get(u)?.as_ref()?.as_ref().ok())
+                        .is_some_and(|f| f.len() > 1)
+                })
+            });
         let tick =
             animated.then(|| iced::time::every(std::time::Duration::from_millis(20)).map(|_| UiMessage::AnimationTick));
         Subscription::batch([changes, focus, keys, system].into_iter().chain(drag).chain(tick))
@@ -1980,8 +2038,11 @@ impl BeeperGuiApp {
             let item = row![]
                 .push(dot)
                 .push(
-                    container(badged(self.chat_avatar(c, 28.0), &c.account_id, 28.0, 12.0))
-                        .padding(Padding::ZERO.right(8.5)),
+                    container(
+                        stack![badged(self.chat_avatar(c, 28.0), &c.account_id, 28.0, 12.0)]
+                            .push(st.typing.contains_key(&c.id).then(|| pin(self.typing_badge()).x(14.0).y(-2.0))),
+                    )
+                    .padding(Padding::ZERO.right(8.5)),
                 )
                 .push(column![top, preview.height(16)].width(Fill))
                 .align_y(Center)
@@ -2058,6 +2119,7 @@ impl BeeperGuiApp {
             col = col.push(msgs.get(i + 1).map(|n| Space::new().height(gap_below(m, n))));
             prev = Some(m);
         }
+        col = col.push(st.typing.get(cid).map(|ids| self.typing_bubble(chat, ids)));
         let list = scrollable(col).anchor_bottom().height(Fill).style(scroll_style(p.divider, p.weak));
         let name_row = row![
             semi(short_title(chat).to_string(), 13.0).line_height(Pixels(16.0)).color(p.strong),
