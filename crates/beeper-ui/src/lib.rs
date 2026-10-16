@@ -241,6 +241,8 @@ pub enum UiMessage {
     AvatarLoaded(String, Result<image::Handle, String>),
     MediaLoaded(String, Result<Frames, String>),
     RetryMedia(String),
+    Pasted(Result<Option<Png>, String>),
+    DiscardPaste,
     AnimationTick,
     RecoveryInputChanged(String),
     VerifyRecoveryCode,
@@ -471,6 +473,22 @@ fn round_avatar(bytes: &[u8]) -> Result<image::Handle, String> {
 
 /// Image frames with their delays in milliseconds; a still image has one frame.
 type Frames = Vec<(image::Handle, u128)>;
+type Png = (Vec<u8>, (u32, u32));
+
+async fn clipboard_image() -> Result<Option<Png>, String> {
+    let read = || {
+        let img = match arboard::Clipboard::new().and_then(|mut c| c.get_image()) {
+            Err(arboard::Error::ContentNotAvailable) => return Ok(None),
+            r => r.map_err(|e| format!("Could not read the clipboard: {e}"))?,
+        };
+        let size = (u32::try_from(img.width).unwrap(), u32::try_from(img.height).unwrap());
+        let px = ::image::RgbaImage::from_raw(size.0, size.1, img.bytes.into_owned()).expect("arboard gives RGBA");
+        let mut png = Vec::new();
+        px.write_to(&mut std::io::Cursor::new(&mut png), ::image::ImageFormat::Png).expect("encode PNG");
+        Ok(Some((png, size)))
+    };
+    tokio::task::spawn_blocking(read).await.expect("clipboard task")
+}
 
 fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
     use ::image::AnimationDecoder;
@@ -755,6 +773,7 @@ pub struct BeeperGuiApp {
     pub selected_chat_id: Option<String>,
     pub search_query: String,
     pub hotkey_query: String,
+    pub pasted: Option<(Vec<u8>, (u32, u32), image::Handle)>,
     pub show_search: bool,
     pub show_filter_menu: bool,
     pub filters: u8,
@@ -821,6 +840,7 @@ impl BeeperGuiApp {
             selected_chat_id: None,
             search_query: String::new(),
             hotkey_query: String::new(),
+            pasted: None,
             show_search: false,
             show_filter_menu: false,
             filters: 0,
@@ -1129,13 +1149,37 @@ impl BeeperGuiApp {
     pub fn submit_composer(&mut self) {
         let chat_id = self.selected_chat_id.clone().expect("a chat is selected");
         let text = self.composer_text.trim().to_string();
-        if text.is_empty() {
+        if text.is_empty() && self.pasted.is_none() {
             return;
         }
         let mut st = self.store.write().unwrap();
         let out = if let Some(target) = self.editing_message_id.take() {
             st.edit_message(&chat_id, &target, text.clone()).expect("edit message");
             Outgoing::Edit { target, text }
+        } else if let Some((png, size, handle)) = self.pasted.take() {
+            let key = format!("pasted:{}", st.next_id("img"));
+            self.media.insert(key.clone(), Some(Ok(vec![(handle, 0)])));
+            let att = Attachment {
+                attachment_type: "img".into(),
+                id: None,
+                duration: None,
+                file_name: Some("image.png".into()),
+                file_size: Some(png.len() as u64),
+                is_gif: None,
+                is_sticker: None,
+                is_voice_note: None,
+                mime_type: Some("image/png".into()),
+                poster_img: None,
+                size: Some(AttachmentSize { width: Some(size.0), height: Some(size.1) }),
+                src_url: Some(key),
+                transcript: None,
+            };
+            let reply_to = self.reply_to_message_id.take();
+            let caption = (!text.is_empty()).then_some(text);
+            let (_, txn, _) =
+                st.send_message(&chat_id, caption.clone(), reply_to.clone(), Some(att)).expect("send image");
+            st.patch_chat(&chat_id, true, None, None).expect("mark chat read");
+            Outgoing::Image { txn, png, size, caption, reply_to }
         } else {
             let reply_to = self.reply_to_message_id.take();
             let (_, txn, _) =
@@ -1413,6 +1457,11 @@ impl BeeperGuiApp {
                 self.media.remove(&url);
                 return self.load_media();
             }
+            UiMessage::Pasted(r) => match r {
+                Ok(img) => self.pasted = img.map(|(png, size)| (png.clone(), size, image::Handle::from_bytes(png))),
+                Err(e) => self.status_banner = e,
+            },
+            UiMessage::DiscardPaste => self.pasted = None,
             UiMessage::AnimationTick => {}
             UiMessage::RecoveryInputChanged(v) => self.recovery_code_input = v,
             UiMessage::VerifyRecoveryCode => {
@@ -1561,6 +1610,9 @@ impl BeeperGuiApp {
                 let hotkey = match key.as_ref() {
                     Key::Named(Named::Escape) => return self.update(UiMessage::CloseModals),
                     _ if !(mods.command() || mods.control()) => None,
+                    Key::Character("v") if self.selected_chat_id.is_some() => {
+                        return Task::perform(clipboard_image(), UiMessage::Pasted);
+                    }
                     Key::Character("k") => Some("Search"),
                     Key::Character(",") => Some("Settings"),
                     Key::Character("Y" | "y") if shift => Some("Filter: Unread"),
@@ -2616,12 +2668,25 @@ impl BeeperGuiApp {
             .padding(0)
             .style(btn_style([p.input, p.selected, p.selected], [p.text; 3], 18.0))
             .on_press(UiMessage::ToggleAttachMenu);
-        let ready = !self.composer_text.trim().is_empty();
+        let ready = !self.composer_text.trim().is_empty() || self.pasted.is_some();
+        let pasted = self.pasted.as_ref().map(|(_, _, h)| {
+            let fg = Color { a: 0.1, ..p.text };
+            let preview = container(image(h.clone()).height(66).content_fit(iced::ContentFit::Contain))
+                .clip(true)
+                .style(bordered_box(CLEAR, fg, 1.0, 8.0));
+            let close = icon_btn(p, icon::CLOSE, 12.0, 20.0, p.text, UiMessage::DiscardPaste);
+            row![stack![preview, row![Space::new().width(Fill), close]].width(Shrink)].padding([6, 58])
+        });
         let send = button(container(ic(icon::ARROW_UP, 18.0).color(Color::WHITE)).center(34))
             .padding(0)
             .style(btn_style([if ready { p.accent } else { p.send_btn }, p.accent, p.accent], [p.text; 3], 17.0))
             .on_press(UiMessage::SubmitComposer);
-        column![].push(banner).push(attach).push(row![plus, pill, send].spacing(12).align_y(Center).padding(8)).into()
+        column![]
+            .push(banner)
+            .push(attach)
+            .push(pasted)
+            .push(row![plus, pill, send].spacing(12).align_y(Center).padding(8))
+            .into()
     }
 
     fn view_info(&self) -> El<'_> {
