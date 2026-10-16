@@ -10,8 +10,11 @@ use matrix_sdk::config::SyncSettings;
 use matrix_sdk::deserialized_responses::{RawAnySyncOrStrippedState, TimelineEvent};
 use matrix_sdk::encryption::verification::{SasState, Verification, VerificationRequestState};
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
+use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
 use matrix_sdk::notification_settings::RoomNotificationMode;
 use matrix_sdk::room::MessagesOptions;
+use matrix_sdk::ruma::api::client::media::get_content_thumbnail::v3::Method;
+use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::events::tag::TagName;
 use matrix_sdk::ruma::events::{GlobalAccountDataEventType, RoomAccountDataEventType, StateEventType};
 use matrix_sdk::{Client, LoopCtrl, Room, RoomMemberships, SessionMeta, SessionTokens};
@@ -91,7 +94,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             username: None,
             email: None,
             phone_number: None,
-            img_url: m.avatar_url().map(|u| u.to_string()),
+            img_url: m.avatar_url().filter(|u| u.is_valid()).map(|u| u.to_string()),
             is_self: Some(m.user_id() == me),
             cannot_message: Some(false),
             custom_nickname: None,
@@ -114,6 +117,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, &bridge, !dm)),
         is_request: Some(bridge["channel"]["com.beeper.message_request"] == true),
         network_name: s(&bridge["network"]["displayname"]),
+        img_url: room.avatar_url().filter(|u| u.is_valid()).map(|u| u.to_string()),
         account_id,
         participants: ChatParticipants { has_more: false, total: items.len(), items },
         title,
@@ -363,6 +367,13 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     if st.chats[idx].is_archived != Some(archived) {
         st.update_chat(idx, |c| c.is_archived = Some(archived));
     }
+}
+
+pub async fn thumbnail(client: Client, url: String) -> Result<Vec<u8>, String> {
+    let size = matrix_sdk::ruma::uint!(96);
+    let format = MediaFormat::Thumbnail(MediaThumbnailSettings::with_method(Method::Crop, size, size));
+    let request = MediaRequestParameters { source: MediaSource::Plain(url.into()), format };
+    client.media().get_media_content(&request, true).await.map_err(|e| e.to_string())
 }
 
 async fn connect(store: &SharedStore) -> Result<Client, String> {

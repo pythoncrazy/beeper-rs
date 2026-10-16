@@ -579,6 +579,7 @@ impl BeeperStore {
             is_hidden_from_inbox: None,
             is_request: None,
             network_name: None,
+            img_url: None,
             flags: 0,
         };
         self.push_chat(chat, true);
@@ -834,6 +835,7 @@ impl BeeperStore {
             is_hidden_from_inbox: None,
             is_request: None,
             network_name: None,
+            img_url: None,
             participants: ChatParticipants { has_more: false, total: items.len(), items },
             flags: 0,
         };

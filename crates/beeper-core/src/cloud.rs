@@ -166,24 +166,6 @@ impl Cloud {
         Ok((profile, cloud_accounts(&v["user"]["bridges"])?))
     }
 
-    pub fn avatar(&self, access_token: &str, url: &str) -> Result<Vec<u8>, CloudError> {
-        if let Some(path) = crate::platform::file_url_to_path(url) {
-            return std::fs::read(&path).map_err(|e| fail(0, format!("Could not read {}: {e}", path.display())));
-        }
-        let media = url.strip_prefix("mxc://").ok_or_else(|| fail(400, format!("Unsupported avatar URL {url}")))?;
-        let url =
-            format!("{}/_matrix/client/v1/media/thumbnail/{media}?width=96&height=96&method=crop", self.homeserver);
-        let (status, body) = block_on(async {
-            let resp = self.http.get(&url).bearer_auth(access_token).send().await?;
-            Ok((resp.status().as_u16(), resp.bytes().await?))
-        })
-        .map_err(|e: reqwest::Error| fail(0, format!("Could not reach {url}: {e}")))?;
-        match status {
-            200 => Ok(body.to_vec()),
-            status => Err(fail(status, format!("HTTP {status} from {url}"))),
-        }
-    }
-
     pub fn finish(&self, jwt: &str) -> Result<(MatrixSession, Profile, Vec<BridgeAccountInfo>), CloudError> {
         let session = self.matrix_login(jwt)?;
         let (profile, accounts) = self.whoami(&session.access_token)?;
