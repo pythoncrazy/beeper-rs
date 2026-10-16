@@ -523,6 +523,10 @@ static DASHED_RING: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock:
     })
 });
 
+static SENT: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="none" stroke="#000"><circle cx="6" cy="6" r="5.4" stroke-width="1.2" stroke-dasharray="2.4 1.84" transform="rotate(-79 6 6)"/><path d="M3.4 6.1 5.2 7.9 8.6 4.4" stroke-width="1.1"/></svg>"##[..])
+});
+
 static THEME_ART: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock::new(|| {
     let light = THEME_WINDOW.replace("WIN", "#f5f5f7").replace("LINE", "#d9d9de");
     let dark = THEME_WINDOW.replace("WIN", "#1f1f23").replace("LINE", "#3a3a41");
@@ -1600,7 +1604,9 @@ impl BeeperGuiApp {
             });
             let reserve = if count.is_some() { 26.0 } else { 0.0 } + if mine { 16.0 } else { 0.0 };
             let preview = row![]
-                .push(mine.then(|| ic(icon::CIRCLE_CHECK, 12.0).color(p.sub)))
+                .push(mine.then(|| {
+                    svg(SENT.clone()).width(12).height(12).style(move |_, _| svg::Style { color: Some(p.sub) })
+                }))
                 .push(image.then(|| {
                     container(
                         row![ic(icon::IMAGE, 11.0).color(p.text), txt("Image", 11.0).color(p.text)]
