@@ -171,7 +171,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>) -> Resul
             "SELECT threadID, accountID, CAST(thread AS TEXT), timestamp FROM threads
              WHERE COALESCE(is_label, 0) = 0 AND json_extract(CAST(thread AS TEXT), '$.extra.roomType') IS NULL
              AND json_extract(CAST(thread AS TEXT), '$.extra.isNoteToSelf') IS NOT 1
-             ORDER BY timestamp",
+             ORDER BY rowid",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
