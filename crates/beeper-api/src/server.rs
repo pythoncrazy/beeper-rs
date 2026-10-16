@@ -6,6 +6,7 @@ use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{
     network_spec, now_rfc3339_millis, APP_BUNDLE_ID, APP_NAME, APP_VERSION, NETWORK_SPECS, OPENAPI_SPEC_JSON,
 };
+use beeper_core::matrix::Outgoing;
 use beeper_core::models::*;
 use beeper_core::platform::{path_to_file_url, OsKind};
 use beeper_core::store::{BeeperStore, InvertedIndex, OAuthClientEntry, OAuthCodeEntry, SharedStore, StoredAsset};
@@ -161,7 +162,17 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
             return matrix_verification(store, rest);
         }
     }
-    dispatch(&mut store.write().unwrap(), &method, &segs, &req)
+    let mut st = store.write().unwrap();
+    let reply = dispatch(&mut st, &method, &segs, &req);
+    for (chat, out) in std::mem::take(&mut st.outbox) {
+        let s = store.clone();
+        tokio::spawn(async move {
+            if let Err(e) = beeper_core::matrix::push(s.clone(), chat, out).await {
+                s.write().unwrap().matrix_error = Some(e);
+            }
+        });
+    }
+    reply
 }
 
 fn matrix_verification(store: &SharedStore, rest: &[&str]) -> Reply {
@@ -815,20 +826,30 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
             ok(&st.messages[*st.msg_idx_by_id.get(*mid).ok_or_else(|| missing("message_not_found"))?])
         }
         ("PUT", ["messages", mid]) => {
-            let (cid, msg) = st.edit_message(id, mid, r.need("text")?.into()).map_err(store_error)?;
+            let text = r.need("text")?;
+            let (cid, msg) = st.edit_message(id, mid, text.into()).map_err(store_error)?;
+            st.queue(&cid, Outgoing::Edit { target: msg.id.clone(), text: text.into() });
             ok(&json!({ "chatID": cid, "messageID": msg.id, "success": true }))
         }
         ("DELETE", ["messages", mid]) => {
             let cid = st.delete_message(id, mid).map_err(store_error)?;
+            st.queue(&cid, Outgoing::Redact { target: (*mid).into() });
             ok(&json!({ "chatID": cid, "messageID": mid, "success": true }))
         }
         ("POST", ["messages", mid, "reactions"]) => {
             let key = r.need("reactionKey")?;
             let (cid, tx) = st.add_reaction(id, mid, key, r.owned("transactionID")).map_err(store_error)?;
+            st.queue(&cid, Outgoing::React { txn: tx.clone(), target: (*mid).into(), key: key.into() });
             ok(&json!({ "chatID": cid, "messageID": mid, "reactionKey": key, "transactionID": tx, "success": true }))
         }
         ("DELETE", ["messages", mid, "reactions", key]) => {
+            let mine = st.messages[st.msg_idx_by_id[*mid]]
+                .reactions
+                .iter()
+                .find(|x| x.reaction_key == *key && st.is_me(&x.participant_id));
+            let target = mine.ok_or_else(|| missing("reaction_not_found"))?.id.clone();
             let cid = st.remove_reaction(id, mid, key).map_err(store_error)?;
+            st.queue(&cid, Outgoing::Redact { target });
             ok(&json!({ "chatID": cid, "messageID": mid, "reactionKey": key, "success": true }))
         }
         _ => Err(missing("not_found")),
@@ -888,8 +909,14 @@ fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
             })
         }
     };
-    let (chat_id, pending, _) =
-        st.send_message(id, r.owned("text"), r.owned("replyToMessageID"), attachment).map_err(store_error)?;
+    let (text, reply_to) = (r.owned("text"), r.owned("replyToMessageID"));
+    if !st.config.demo && (attachment.is_some() || text.is_none()) {
+        return Err(bad("only text messages can be sent to Matrix"));
+    }
+    let (chat_id, pending, _) = st.send_message(id, text.clone(), reply_to.clone(), attachment).map_err(store_error)?;
+    if let Some(text) = text {
+        st.queue(&chat_id, Outgoing::Send { txn: pending.clone(), text, reply_to });
+    }
     Ok(json_with(StatusCode::CREATED, &json!({ "chatID": chat_id, "pendingMessageID": pending })))
 }
 

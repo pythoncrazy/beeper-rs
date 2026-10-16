@@ -219,6 +219,7 @@ pub struct BeeperStore {
     pub matrix: Option<matrix_sdk::Client>,
     pub matrix_error: Option<String>,
     pub sas_confirm: Option<tokio::sync::oneshot::Sender<bool>>,
+    pub outbox: Vec<(String, crate::matrix::Outgoing)>,
     next_seq: i64,
 }
 
@@ -301,6 +302,7 @@ impl BeeperStore {
             matrix: None,
             matrix_error: None,
             sas_confirm: None,
+            outbox: Vec::new(),
             next_seq: 1000,
         };
         store.load_from_sqlite_or_seed();
@@ -609,6 +611,16 @@ impl BeeperStore {
 
     pub fn me(&self) -> &User {
         &self.chats[self.chat_idx_by_id[NOTE_CHAT_ID]].participants.items[0]
+    }
+
+    pub fn queue(&mut self, chat_id: &str, out: crate::matrix::Outgoing) {
+        if !self.config.demo {
+            self.outbox.push((chat_id.into(), out));
+        }
+    }
+
+    pub fn is_me(&self, user_id: &str) -> bool {
+        user_id == self.me().id || user_id.starts_with("@self_")
     }
 
     pub fn rebuild_accounts_from_bridges(&mut self) {
@@ -973,7 +985,7 @@ impl BeeperStore {
     ) -> Result<(String, String), &'static str> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let tx_id = transaction_id.unwrap_or_else(|| self.next_id("tx_rx"));
-        let rx_id = self.next_id("rx");
+        let rx_id = tx_id.clone();
         let pid = format!("@self_{}:beeper.com", self.messages[m_idx].account_id);
         self.update_message(m_idx, |m| {
             m.reactions.retain(|r| !(r.participant_id == pid && r.reaction_key == reaction_key));
