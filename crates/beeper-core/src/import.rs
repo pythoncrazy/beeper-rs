@@ -1,5 +1,5 @@
 use crate::config::rfc3339_from_millis;
-use crate::models::{Attachment, AttachmentSize, Chat, ChatParticipants, Message, Reaction, User};
+use crate::models::{Attachment, AttachmentSize, Chat, ChatParticipants, Message, Reaction, ThemeChoice, User};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -29,6 +29,7 @@ pub struct BeeperData {
     pub crypto: Option<DesktopCrypto>,
     pub chats: Vec<Chat>,
     pub messages: Vec<Message>,
+    pub theme: Option<ThemeChoice>,
 }
 
 pub fn has_beeper_data(dir: &Path) -> bool {
@@ -68,7 +69,22 @@ fn read_snapshot(dir: &Path) -> Result<BeeperData, String> {
     let mut people = read_participants(&db).map_err(e)?;
     let chats = read_chats(&db, &mut people)?;
     let messages = read_messages(&db, &chats)?;
-    Ok(BeeperData { crypto, chats, messages })
+    Ok(BeeperData { crypto, chats, messages, theme: read_theme(&db)? })
+}
+
+fn read_theme(db: &Connection) -> Result<Option<ThemeChoice>, String> {
+    let prefs: Option<String> = db
+        .query_row("SELECT value FROM key_values WHERE key = 'localPrefs'", [], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(prefs) = prefs else { return Ok(None) };
+    let prefs: Value = serde_json::from_str(&prefs).map_err(|e| format!("localPrefs JSON: {e}"))?;
+    match prefs["native_theme_source"].as_str() {
+        Some("light") => Ok(Some(ThemeChoice::Light)),
+        Some("dark") => Ok(Some(ThemeChoice::Dark)),
+        Some("system") => Ok(Some(ThemeChoice::System)),
+        other => Err(format!("unknown Beeper Desktop theme {other:?}")),
+    }
 }
 
 fn read_crypto(db: &Connection) -> rusqlite::Result<Option<DesktopCrypto>> {
