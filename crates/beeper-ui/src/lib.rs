@@ -663,6 +663,9 @@ fn gap_below(m: &Message, next: &Message) -> f32 {
     }
 }
 
+static LOGO: std::sync::LazyLock<svg::Handle> =
+    std::sync::LazyLock::new(|| svg::Handle::from_memory(include_bytes!("../assets/beeper.svg")));
+
 fn tinted<'a>(h: &svg::Handle, size: f32, color: Color) -> El<'a> {
     svg(h.clone()).width(size).height(size).style(move |_, _| svg::Style { color: Some(color) }).into()
 }
@@ -2998,17 +3001,36 @@ impl BeeperGuiApp {
                     .map(|h| pref_row(p, h, None, None, ic(icon::ARROW_UP_RIGHT, 14.0).color(p.sub).into()))
                     .collect(),
             )],
-            SettingsTab::About => vec![group(
-                p,
-                None,
-                vec![pref_row(
-                    p,
-                    "beeper-rs",
-                    Some("Not affiliated with Beeper Inc. or Automattic Inc. MIT license."),
-                    None,
-                    txt(APP_VERSION, 12.0).color(p.sub).into(),
-                )],
-            )],
+            SettingsTab::About => {
+                let title =
+                    column![bold("Beeper", 19.5).color(p.text), txt(format!("v{APP_VERSION}"), 13.0).color(p.weak)]
+                        .spacing(4);
+                let head = row![svg(LOGO.clone()).width(68).height(68), title].spacing(6).align_y(Center);
+                let links = [
+                    ("View changelog", UiMessage::OpenUrl("https://www.beeper.com/changelog/desktop".into())),
+                    ("Report a problem", UiMessage::OpenUrl("https://github.com/pythoncrazy/beeper-rs/issues".into())),
+                    ("Privacy", UiMessage::OpenUrl("https://www.beeper.com/privacy".into())),
+                    (
+                        "Legal Notices",
+                        UiMessage::OpenQuickLook(
+                            "Legal Notices".into(),
+                            "beeper-rs is MIT licensed. It is not affiliated with Beeper Inc. or Automattic Inc."
+                                .into(),
+                        ),
+                    ),
+                ];
+                let rows = links.into_iter().enumerate().flat_map(|(i, (label, msg))| {
+                    let last = i == 3;
+                    let link = button(container(txt(label, 13.0).color(p.link)).center_y(if last { 40 } else { 39 }))
+                        .width(Fill)
+                        .padding([0, 13])
+                        .style(btn_style([CLEAR; 3], [p.link; 3], 0.0))
+                        .on_press(msg);
+                    let line = container(Space::new()).width(Fill).height(1).style(fill_box(p.prefs_border, 0.0));
+                    [Some(link.into()), (!last).then(|| line.into())].into_iter().flatten()
+                });
+                vec![column![head, group(p, None, rows.collect())].spacing(13).into()]
+            }
         };
         let banner = (!self.status_banner.is_empty()).then(|| txt(self.status_banner.clone(), 12.0).color(p.sub));
         column![].push(banner).extend(groups).spacing(28).into()
