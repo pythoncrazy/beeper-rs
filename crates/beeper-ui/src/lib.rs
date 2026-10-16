@@ -579,24 +579,32 @@ fn select<'a, T: ToString + PartialEq + Clone + 'a>(
     let chevron = pick_list::Icon {
         font: iced::Font::with_name("icons"),
         code_point: icon::EXPAND_MORE,
-        size: Some(14.0.into()),
+        size: Some(16.0.into()),
         line_height: iced::widget::text::LineHeight::Relative(1.0),
         shaping: iced::widget::text::Shaping::Basic,
     };
     pick_list(options, Some(selected), f)
-        .text_size(12)
+        .text_size(11)
+        .text_line_height(Pixels(16.0))
         .font(fw(Weight::Semibold))
         .handle(pick_list::Handle::Static(chevron))
-        .padding([5, 10])
-        .style(pick_style(p.hover, p.selected, p.text, p.sub))
+        .padding([4, 8])
+        .style(pick_style(p.chip, p.chip, p.strong, p.strong))
         .menu_style(pick_menu_style(p.elevated, p.selected, p.text, p.prefs_border))
         .into()
 }
 
 fn pill_btn<'a>(p: &Palette, label: impl ToString, msg: UiMessage) -> El<'a> {
-    button(med(label.to_string(), 13.0).color(p.text).wrapping(iced::widget::text::Wrapping::None))
-        .padding([5, 12])
-        .style(btn_style([p.hover, p.selected, p.selected], [p.text; 3], 6.0))
+    let label = txt(label.to_string(), 13.0).line_height(1.0).wrapping(iced::widget::text::Wrapping::None);
+    let (bg, fg, edge) = (p.button, p.strong, p.button_border);
+    button(label)
+        .padding([4, 6])
+        .style(move |_, _| button::Style {
+            background: Some(bg.into()),
+            text_color: fg,
+            border: iced::Border { color: edge, width: 1.0, radius: 6.0.into() },
+            ..Default::default()
+        })
         .on_press(msg)
         .into()
 }
@@ -683,16 +691,21 @@ fn pref_row<'a>(
 ) -> El<'a> {
     let head =
         row![txt(title.to_string(), 13.0).color(p.text)].push(extra).push(Space::new().width(Fill)).push(control);
-    column![head.spacing(6).align_y(Center)]
-        .push(desc.map(|d| txt(d.to_string(), 13.0).color(p.sub)))
-        .spacing(8)
-        .padding([13, 14])
+    column![head.spacing(6).align_y(Center).padding(13)]
+        .push(desc.map(|d| {
+            let paras = d.split("\n\n").map(|t| txt(t.to_string(), 13.0).line_height(Pixels(18.0)).color(p.sub).into());
+            Column::with_children(paras).spacing(13).padding(Padding::new(13.0).top(0.0))
+        }))
         .into()
 }
 
 fn group<'a>(p: &Palette, title: Option<&str>, rows: Vec<El<'a>>) -> El<'a> {
-    let card =
-        container(Column::with_children(rows)).width(Fill).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0));
+    let card = container(Column::with_children(rows)).width(Fill).padding(1).style(bordered_box(
+        p.prefs_group,
+        p.prefs_border,
+        1.0,
+        8.0,
+    ));
     column![]
         .push(title.map(|t| container(med(t.to_string(), 12.0).color(p.weak)).padding([0, 4])))
         .push(card)
@@ -2781,11 +2794,7 @@ impl BeeperGuiApp {
                     .flat_map(|(i, r)| {
                         [
                             (i > 0).then(|| {
-                                container(Space::new())
-                                    .width(Fill)
-                                    .height(1)
-                                    .style(fill_box(p.prefs_border, 0.0))
-                                    .into()
+                                container(Space::new()).width(Fill).height(1).style(fill_box(p.chip, 0.0)).into()
                             }),
                             Some(r),
                         ]
@@ -2810,13 +2819,21 @@ impl BeeperGuiApp {
                 .spacing(7)
                 .align_x(Center)
                 .width(Fill);
-                vec![column![head, column![group(p, None, rows.collect()), foot].spacing(11)].spacing(8).into()]
-                    .into_iter()
-                    .chain(
-                        self.adding_account
-                            .then(|| group(p, None, vec![login::network_grid(&st.bridge_accounts, "", p.strong)])),
-                    )
-                    .collect()
+                vec![{
+                    let card = container(Column::with_children(rows)).width(Fill).padding(1).style(bordered_box(
+                        p.prefs_group,
+                        p.chip,
+                        1.0,
+                        8.0,
+                    ));
+                    column![head, column![card, foot].spacing(11)].spacing(8).into()
+                }]
+                .into_iter()
+                .chain(
+                    self.adding_account
+                        .then(|| group(p, None, vec![login::network_grid(&st.bridge_accounts, "", p.strong)])),
+                )
+                .collect()
             }
             SettingsTab::General => self.pref_items(prefs::GENERAL, s),
             SettingsTab::Appearance => self.pref_items(prefs::APPEARANCE, s),
@@ -2962,20 +2979,31 @@ impl BeeperGuiApp {
     fn pref_items(&self, items: &'static [prefs::Item], s: &BeeperSettings) -> Vec<El<'_>> {
         let p = &self.pal;
         let mut heading = None;
+        let mut lead = None;
         let mut out = Vec::new();
         for item in items {
             match *item {
                 prefs::Item::Heading(h) => heading = Some(h),
-                prefs::Item::Subtitle(t) => out.push(match heading.take() {
-                    Some(h) => group(p, Some(h), vec![container(txt(t, 13.0).color(p.sub)).padding([13, 14]).into()]),
-                    None => container(txt(t, 13.0).color(p.sub)).padding([0, 14]).into(),
-                }),
+                prefs::Item::Subtitle(t) => match heading.take() {
+                    Some(h) => {
+                        out.push(group(p, Some(h), vec![container(txt(t, 13.0).color(p.sub)).padding([13, 14]).into()]))
+                    }
+                    None => lead = Some(t),
+                },
                 prefs::Item::Group(rows) => {
-                    out.push(group(p, heading.take(), rows.iter().map(|r| self.pref_control(r, s)).collect()))
+                    let g = group(p, heading.take(), rows.iter().map(|r| self.pref_control(r, s)).collect());
+                    out.push(match lead.take() {
+                        Some(t) => {
+                            let t = txt(t, 13.0).line_height(Pixels(18.0)).color(p.sub);
+                            column![container(t).padding(Padding::new(13.0).top(7.0).bottom(0.0)), g].spacing(19).into()
+                        }
+                        None => g,
+                    })
                 }
                 prefs::Item::Theme => out.push(group(p, heading.take(), vec![theme_cards(p, s.theme)])),
             }
         }
+        assert!(lead.is_none(), "a subtitle without a heading comes before a group");
         out
     }
 
