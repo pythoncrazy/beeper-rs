@@ -196,6 +196,8 @@ pub struct BeeperStore {
     pub setup_status: SetupStatusResponse,
     pub verifications: HashMap<String, VerificationState>,
     pub bridge_accounts: Vec<BridgeAccountInfo>,
+    /// Position of each pinned chat in the `com.beeper.favourites_order` account data.
+    pub pin_rank: HashMap<String, usize>,
     pub bridge_sessions: HashMap<String, BridgeLoginSession>,
     pub accounts: Vec<Account>,
     pub labels: Vec<Label>,
@@ -276,6 +278,7 @@ impl BeeperStore {
             beeper_state,
             verifications: HashMap::new(),
             bridge_accounts: Vec::new(),
+            pin_rank: HashMap::new(),
             bridge_sessions: HashMap::new(),
             accounts: Vec::new(),
             labels: vec![label("lbl_favorite", "Favorites"), label("lbl_work", "Work"), label("lbl_vip", "VIP")],
@@ -493,6 +496,10 @@ impl BeeperStore {
         (messages..self.messages.len()).for_each(|i| self.persist_message(i));
         self.persist_seq();
         self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit import transaction");
+        if let Some(theme) = data.theme {
+            self.settings.theme = theme;
+            self.persist_state_to_sqlite();
+        }
     }
 
     pub fn matrix_dir(&self) -> PathBuf {

@@ -180,6 +180,7 @@ impl SettingsTab {
 #[derive(Clone)]
 pub enum UiMessage {
     Noop,
+    DismissBanner,
     SelectTab(InboxTab),
     SelectAccount(Option<String>),
     SelectChat(String),
@@ -228,7 +229,8 @@ pub enum UiMessage {
     ToggleSetting(fn(&mut BeeperSettings)),
     CloudAccounts(Result<Vec<BridgeAccountInfo>, String>),
     AvatarLoaded(String, Result<image::Handle, String>),
-    MediaLoaded(String, Result<image::Handle, String>),
+    MediaLoaded(String, Result<Frames, String>),
+    AnimationTick,
     RecoveryInputChanged(String),
     VerifyRecoveryCode,
     Verified(Result<(), String>),
@@ -466,6 +468,43 @@ fn round_avatar(bytes: &[u8]) -> Result<image::Handle, String> {
     Ok(image::Handle::from_rgba(S, S, px.into_raw()))
 }
 
+/// Image frames with their delays in milliseconds; a still image has one frame.
+type Frames = Vec<(image::Handle, u128)>;
+
+fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
+    use ::image::AnimationDecoder;
+    if !bytes.starts_with(b"GIF8") {
+        return Ok(vec![(image::Handle::from_bytes(bytes), 0)]);
+    }
+    let gif = ::image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
+    let frames = gif.into_frames().collect_frames().map_err(|e| format!("Could not decode the GIF: {e}"))?;
+    assert!(!frames.is_empty(), "a decoded GIF has frames");
+    let frame = |f: ::image::Frame| {
+        let (n, d) = f.delay().numer_denom_ms();
+        let px = f.into_buffer();
+        // Browsers play delays of 10 ms or less at 100 ms.
+        let ms = match n / d {
+            0..=10 => 100,
+            ms => ms,
+        };
+        (image::Handle::from_rgba(px.width(), px.height(), px.into_raw()), u128::from(ms))
+    };
+    Ok(frames.into_iter().map(frame).collect())
+}
+
+fn current_frame(frames: &Frames, elapsed_ms: u128) -> image::Handle {
+    let total: u128 = frames.iter().map(|f| f.1).sum();
+    if total == 0 {
+        return frames[0].0.clone();
+    }
+    let mut t = elapsed_ms % total;
+    let (handle, _) = frames
+        .iter()
+        .find(|(_, ms)| t.checked_sub(*ms).map(|rest| t = rest).is_none())
+        .expect("the time is below the total delay");
+    handle.clone()
+}
+
 fn faces(chat: &Chat) -> (Vec<&User>, usize) {
     let others: Vec<&User> = chat.participants.items.iter().filter(|u| u.is_self != Some(true)).collect();
     let group = chat.chat_type == "group";
@@ -694,7 +733,8 @@ pub struct BeeperGuiApp {
     pub login: Login,
     pub cloud: Arc<Cloud>,
     pub avatars: HashMap<String, Option<image::Handle>>,
-    pub media: HashMap<String, Option<image::Handle>>,
+    pub media: HashMap<String, Option<Frames>>,
+    started: std::time::Instant,
 }
 
 impl BeeperGuiApp {
@@ -749,7 +789,7 @@ impl BeeperGuiApp {
             hovered_msg: None,
             status_banner: String::new(),
             dnd_muted: false,
-            sidebar_width: 190.0,
+            sidebar_width: 244.0,
             dragging: false,
             main_window: None,
             settings_window: None,
@@ -758,6 +798,7 @@ impl BeeperGuiApp {
             cloud,
             avatars: HashMap::new(),
             media: HashMap::new(),
+            started: std::time::Instant::now(),
         };
         if let Some(id) = first_chat {
             app.select_chat(&id);
@@ -1227,10 +1268,11 @@ impl BeeperGuiApp {
             UiMessage::AvatarLoaded(url, Err(e)) => {
                 self.status_banner = format!("Could not load the avatar {url}: {e}")
             }
-            UiMessage::MediaLoaded(url, Ok(h)) => {
-                self.media.insert(url, Some(h));
+            UiMessage::MediaLoaded(url, Ok(frames)) => {
+                self.media.insert(url, Some(frames));
             }
             UiMessage::MediaLoaded(_, Err(e)) => self.status_banner = format!("Could not load an image: {e}"),
+            UiMessage::AnimationTick => {}
             UiMessage::RecoveryInputChanged(v) => self.recovery_code_input = v,
             UiMessage::VerifyRecoveryCode => {
                 let key = std::mem::take(&mut self.recovery_code_input);
@@ -1239,6 +1281,7 @@ impl BeeperGuiApp {
             UiMessage::Verified(Ok(())) => self.status_banner = "This device is verified.".into(),
             UiMessage::Verified(Err(e)) => self.status_banner = format!("Could not verify this device: {e}"),
             UiMessage::Pushed(Ok(())) => {}
+            UiMessage::DismissBanner => self.status_banner.clear(),
             UiMessage::Pushed(Err(e)) => self.status_banner = format!("Could not send to Matrix: {e}"),
             UiMessage::VerifySasNow => {
                 let (tx, rx) = tokio::sync::oneshot::channel();
@@ -1312,7 +1355,7 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::DragStart => self.dragging = true,
-            UiMessage::DragMoved(pt) => self.sidebar_width = (pt.x - 72.0).clamp(190.0, 420.0),
+            UiMessage::DragMoved(pt) => self.sidebar_width = (pt.x - 72.0).clamp(164.0, 724.0),
             UiMessage::DragEnd => self.dragging = false,
             UiMessage::WindowOpened(id) => {
                 let key = if Some(id) == self.settings_window {
@@ -1400,7 +1443,7 @@ impl BeeperGuiApp {
             Task::perform(
                 async move {
                     let _slot = AVATAR_SLOTS.acquire().await.expect("the media semaphore stays open");
-                    beeper_core::matrix::media(client, u).await.map(image::Handle::from_bytes)
+                    beeper_core::matrix::media(client, u).await.and_then(decode_media)
                 },
                 move |r| UiMessage::MediaLoaded(url, r),
             )
@@ -1449,7 +1492,15 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
-        Subscription::batch([changes, focus, keys, system].into_iter().chain(drag))
+        let animated = self.selected_chat_id.as_ref().is_some_and(|chat| {
+            let st = self.store.read().unwrap();
+            let mut urls =
+                st.chat_msg_indices.get(chat).into_iter().flatten().flat_map(|&i| &st.messages[i].attachments);
+            urls.any(|a| a.src_url.as_ref().and_then(|u| self.media.get(u)?.as_ref()).is_some_and(|f| f.len() > 1))
+        });
+        let tick =
+            animated.then(|| iced::time::every(std::time::Duration::from_millis(20)).map(|_| UiMessage::AnimationTick));
+        Subscription::batch([changes, focus, keys, system].into_iter().chain(drag).chain(tick))
     }
 
     pub fn view(&self, id: window::Id) -> El<'_> {
@@ -1496,7 +1547,14 @@ impl BeeperGuiApp {
             .on_press(UiMessage::CloseModals)
             .on_right_press(UiMessage::CloseModals)
         });
-        stack![base].push(menu).push(scrim).into()
+        let toast = (!self.status_banner.is_empty()).then(|| {
+            let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, p.sub, UiMessage::DismissBanner);
+            let text = txt(self.status_banner.clone(), 13.0).color(p.strong);
+            let card = row![text.wrapping(iced::widget::text::Wrapping::WordOrGlyph), close].spacing(8).align_y(Center);
+            let card = container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0));
+            container(card).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(76.0))
+        });
+        stack![base].push(toast).push(menu).push(scrim).into()
     }
 
     fn view_filter_menu(&self) -> El<'_> {
@@ -1688,8 +1746,9 @@ impl BeeperGuiApp {
         });
         let selected = self.selected_chat_id.as_deref();
         let pin_section = self.active_tab == InboxTab::AllChats && self.search_query.is_empty();
-        let (pinned, rest): (Vec<&Chat>, Vec<&Chat>) =
+        let (mut pinned, rest): (Vec<&Chat>, Vec<&Chat>) =
             chats.iter().copied().partition(|c| pin_section && c.flags & CHAT_PINNED != 0);
+        pinned.sort_by_key(|c| (st.pin_rank.get(&c.id).copied().unwrap_or(usize::MAX), c.last_activity.clone()));
         let cols = (((w - 16.0) / 80.0).floor() as usize).max(1);
         let cell = (w - 16.0) / cols as f32;
         let pins = pinned.chunks(cols).fold(Column::new(), |col, chunk| {
@@ -1741,9 +1800,16 @@ impl BeeperGuiApp {
                 .push(muted.then(|| container(tinted(&BELL_OFF, 12.0, p.strong)).padding([0, 2])))
                 .push(Space::new().width(Fill))
                 .push(txt(ts, 10.0).color(p.sub))
+                .height(16)
                 .align_y(Center);
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
-            let image = m.is_some_and(|m| m.attachments.iter().any(|a| a.attachment_type == "img"));
+            let image = m.and_then(|m| m.attachments.iter().find(|a| a.attachment_type == "img")).map(|a| {
+                if a.is_gif == Some(true) {
+                    "GIF"
+                } else {
+                    "Image"
+                }
+            });
             let body = m.and_then(|m| match m.links.len() {
                 _ if m.text.as_ref().is_some_and(|t| !t.is_empty()) => m.text.clone(),
                 _ if !m.attachments.is_empty() => None,
@@ -1772,9 +1838,9 @@ impl BeeperGuiApp {
                 + if sender.is_some() { 14.0 } else { 0.0 };
             let preview = row![]
                 .push(mine.then(|| tinted(&SENT, 12.0, p.sub)))
-                .push(image.then(|| {
+                .push(image.map(|label| {
                     container(
-                        row![ic(icon::IMAGE, 11.0).color(p.text), txt("Image", 11.0).color(p.text)]
+                        row![ic(icon::IMAGE, 11.0).color(p.text), txt(label, 11.0).color(p.text)]
                             .spacing(3)
                             .align_y(Center),
                     )
@@ -1804,9 +1870,9 @@ impl BeeperGuiApp {
                     container(badged(self.chat_avatar(c, 28.0), &c.account_id, 28.0, 12.0))
                         .padding(Padding::ZERO.right(8.5)),
                 )
-                .push(column![top, preview].spacing(1).width(Fill))
+                .push(column![top, preview.height(16)].width(Fill))
                 .align_y(Center)
-                .padding([10, 8]);
+                .padding(Padding::new(8.0).top(10.0).bottom(9.0));
             col.push(
                 button(item)
                     .padding(0)
@@ -2024,8 +2090,13 @@ impl BeeperGuiApp {
                         let k = (360.0 / w).min(400.0 / h).min(1.0);
                         (w * k, h * k)
                     });
-                    match a.src_url.as_ref().and_then(|u| self.media.get(u)?.clone()) {
-                        Some(handle) => El::from(image(handle).width(w).height(h).border_radius(17.0)),
+                    match a.src_url.as_ref().and_then(|u| self.media.get(u)?.as_ref()) {
+                        Some(frames) => El::from(
+                            image(current_frame(frames, self.started.elapsed().as_millis()))
+                                .width(w)
+                                .height(h)
+                                .border_radius(17.0),
+                        ),
                         None => container(ic(icon::IMAGE, 28.0).color(p.sub))
                             .center_x(w)
                             .center_y(h)
@@ -2085,7 +2156,9 @@ impl BeeperGuiApp {
                     .style(fill_box(bg, 17.0)),
             );
         }
-        if !text.is_empty() && m.poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
+        if jumbo(&text) {
+            parts = parts.push(container(txt(text.clone(), 48.0)).padding([0, 12]));
+        } else if !text.is_empty() && m.poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
             let time = txt(format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1), 11.0).color(if mine {
                 p.sent_meta
             } else {
@@ -2877,4 +2950,45 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         .style(|a: &BeeperGuiApp, _| iced::theme::Style { background_color: a.pal.frame, text_color: a.pal.text })
         .default_font(fw(Weight::Normal));
     ALL_FONTS.into_iter().fold(app, |app, f| app.font(f)).run()
+}
+
+fn jumbo(text: &str) -> bool {
+    let modifier = |c: char| matches!(c, '\u{200d}' | '\u{fe0f}' | '\u{20e3}' | '\u{1f3fb}'..='\u{1f3ff}' | '\u{e0020}'..='\u{e007f}');
+    let emoji = |c: char| {
+        matches!(c, '\u{1f000}'..='\u{1faff}' | '\u{2600}'..='\u{27bf}' | '\u{2300}'..='\u{23ff}' | '\u{2b00}'..='\u{2bff}'
+            | '\u{2190}'..='\u{21ff}' | '\u{3030}' | '\u{303d}' | '\u{3297}' | '\u{3299}' | '\u{a9}' | '\u{ae}' | '\u{2122}')
+    };
+    let mut glyphs = 0;
+    let mut joined = false;
+    for c in text.chars().filter(|c| !c.is_whitespace()) {
+        match (modifier(c), emoji(c)) {
+            (true, _) => joined = c == '\u{200d}',
+            (false, true) => {
+                glyphs += usize::from(!joined);
+                joined = false;
+            }
+            (false, false) => return false,
+        }
+    }
+    (1..10).contains(&glyphs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gif_frames_play_with_browser_delays() {
+        let mut bytes = Vec::new();
+        let frames = [50, 0].map(|ms| {
+            let px = ::image::RgbaImage::new(2, 2);
+            ::image::Frame::from_parts(px, 0, 0, ::image::Delay::from_numer_denom_ms(ms, 1))
+        });
+        ::image::codecs::gif::GifEncoder::new(&mut bytes).encode_frames(frames).unwrap();
+        let frames = decode_media(bytes).unwrap();
+        assert_eq!(frames.iter().map(|f| f.1).collect::<Vec<_>>(), [50, 100]);
+        assert_eq!(current_frame(&frames, 60), frames[1].0);
+        assert_eq!(current_frame(&frames, 160), frames[0].0);
+        assert_eq!(decode_media(b"\x89PNG".to_vec()).unwrap().len(), 1);
+    }
 }

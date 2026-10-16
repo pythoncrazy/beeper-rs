@@ -315,11 +315,13 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     let note = chat_id == NOTE_CHAT_ID;
     let accounts = store.read().unwrap().bridge_accounts.clone();
     let account = room.client().account();
-    let rules = account
-        .account_data_raw(GlobalAccountDataEventType::from("com.beeper.chat_list_rules"))
-        .await
-        .expect("read chat list rules")
-        .map_or(Value::Null, |r| r.deserialize_as().expect("chat list rules JSON"));
+    let global = async |kind: &str| {
+        let raw = account.account_data_raw(GlobalAccountDataEventType::from(kind)).await.expect("read account data");
+        raw.map_or(Value::Null, |r| r.deserialize_as().expect("account data JSON"))
+    };
+    let rules = global("com.beeper.chat_list_rules").await;
+    let pins = global("com.beeper.favourites_order").await;
+    let rank = pins["Inbox"].as_array().and_then(|ids| ids.iter().position(|id| id == room.room_id().as_str()));
     let chat = chat(room, &accounts, &rules).await;
     if !store.read().unwrap().chat_msg_indices.contains_key(&chat_id) {
         let known: HashSet<String> = events.iter().filter_map(|e| Some(e.event_id()?.to_string())).collect();
@@ -342,6 +344,10 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     let done = account_data(room, "com.beeper.inbox.done").await.and_then(|d| d["at_order"].as_i64());
     let (members, group) = (chat.participants.total, chat.chat_type == "group");
     let mut st = store.write().unwrap();
+    match rank {
+        Some(r) => st.pin_rank.insert(chat_id.clone(), r),
+        None => st.pin_rank.remove(&chat_id),
+    };
     if !note {
         st.upsert_chat(chat);
     } else {
