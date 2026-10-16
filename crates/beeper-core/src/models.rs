@@ -174,6 +174,8 @@ pub struct User {
     pub cannot_message: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_nickname: Option<String>,
+    #[serde(rename = "isNetworkBot", skip_serializing_if = "Option::is_none")]
+    pub is_network_bot: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

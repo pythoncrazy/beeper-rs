@@ -108,6 +108,16 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     let bot = s(&bridge["bridgebot"]);
     let me = room.own_user_id();
     let members = room.members_no_sync(RoomMemberships::JOIN).await.expect("read room members");
+    let raw = room.get_state_events(StateEventType::RoomMember).await.expect("read room members");
+    let bots: HashSet<String> = raw
+        .into_iter()
+        .map(|r| match r {
+            RawAnySyncOrStrippedState::Sync(r) => r.deserialize_as::<Value>().expect("member event JSON"),
+            RawAnySyncOrStrippedState::Stripped(r) => r.deserialize_as::<Value>().expect("member event JSON"),
+        })
+        .filter(|v| v["content"]["com.beeper.bridge.is_network_bot"] == true)
+        .filter_map(|v| s(&v["state_key"]))
+        .collect();
     let items: Vec<User> = members
         .iter()
         .filter(|m| !service.contains(m.user_id()) && bot.as_deref() != Some(m.user_id().as_str()))
@@ -121,6 +131,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             is_self: Some(m.user_id() == me),
             cannot_message: Some(false),
             custom_nickname: None,
+            is_network_bot: Some(bots.contains(m.user_id().as_str())),
         })
         .collect();
     let tags = room.tags().await.expect("read room tags").unwrap_or_default();

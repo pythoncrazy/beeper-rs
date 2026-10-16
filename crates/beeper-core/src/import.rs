@@ -124,7 +124,7 @@ fn read_crypto(db: &Connection) -> rusqlite::Result<Option<DesktopCrypto>> {
 
 fn read_participants(db: &Connection) -> rusqlite::Result<HashMap<String, Vec<User>>> {
     let mut stmt = db.prepare(
-        "SELECT room_id, id, full_name, nickname, img_url, is_self, cannot_message FROM participants
+        "SELECT room_id, id, full_name, nickname, img_url, is_self, cannot_message, is_network_bot FROM participants
          WHERE COALESCE(has_exited, 0) = 0 ORDER BY rowid",
     )?;
     let mut people: HashMap<String, Vec<User>> = HashMap::new();
@@ -142,6 +142,7 @@ fn read_participants(db: &Connection) -> rusqlite::Result<HashMap<String, Vec<Us
             is_self: Some(r.get::<_, Option<i64>>(5)? == Some(1)),
             cannot_message: Some(r.get::<_, Option<i64>>(6)? == Some(1)),
             custom_nickname: nickname,
+            is_network_bot: Some(r.get::<_, Option<i64>>(7)? == Some(1)),
         };
         Ok((r.get::<_, String>(0)?, user))
     })?;
