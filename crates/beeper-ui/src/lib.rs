@@ -2175,11 +2175,10 @@ impl BeeperGuiApp {
         if jumbo(&text) {
             parts = parts.push(container(txt(text.clone(), 48.0)).padding([0, 12]));
         } else if !text.is_empty() && m.poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
-            let time = txt(format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1), 11.0).color(if mine {
-                p.sent_meta
-            } else {
-                p.sub
-            });
+            let ts = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
+            let room = crate::style::text_width(&ts, 11.0, Weight::Normal) + 8.0;
+            let time = txt(ts, 11.0).color(if mine { p.sent_meta } else { p.sub });
+            let me = |id: &str| id == st.beeper_state.user_id;
             let arrow =
                 || span(icon::ARROW_UP_RIGHT.to_string()).font(iced::Font::with_name("icons")).size(11.0).color(fg);
             let rich = |r: beeper_core::codec::Run| {
@@ -2190,9 +2189,20 @@ impl BeeperGuiApp {
                         ..crate::style::fw(if r.bold { Weight::Bold } else { Weight::Normal })
                     },
                 };
-                let link = r.link.is_some();
-                let s = span(r.text).size(13.0).color(fg).font(font).strikethrough(r.strike).underline(link);
-                [Some(s.link_maybe(r.link)), link.then(arrow)].into_iter().flatten()
+                let mention = r.link.as_deref().and_then(|l| l.strip_prefix("https://matrix.to/#/"));
+                let mention = mention.and_then(beeper_core::codec::url_decode).filter(|id| id.starts_with('@'));
+                let s = span(r.text).size(13.0).color(fg).font(font).strikethrough(r.strike);
+                let bold = crate::style::fw(Weight::Bold);
+                let s = match mention {
+                    Some(id) if me(&id) => {
+                        let pill = if mine { Color { a: 0.3, ..fg } } else { p.accent };
+                        s.font(bold).color(Color::WHITE).background(pill).border(border::rounded(4)).padding(2)
+                    }
+                    Some(_) => s.font(bold).color(if mine { fg } else { p.accent }),
+                    None => s.underline(r.link.is_some()).link_maybe(r.link.clone()),
+                };
+                let arrow = s.link.is_some().then(arrow);
+                [Some(s), arrow].into_iter().flatten()
             };
             let plain = |w: &str| {
                 let url = w.trim_end().starts_with("http").then(|| w.trim_end().to_string());
@@ -2209,11 +2219,15 @@ impl BeeperGuiApp {
                     .collect(),
                 None => vec![(None, text.split_inclusive(' ').flat_map(plain).collect())],
             };
-            let mut prev_item = None;
-            let body = Column::with_children(blocks.into_iter().map(|(marker, mut spans)| {
+            let (mut prev_item, last) = (None, blocks.len() - 1);
+            let body = Column::with_children(blocks.into_iter().enumerate().map(|(i, (marker, mut spans))| {
                 // iced does not draw an empty last line.
                 if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
                     spans.push(span("\u{200b}").size(13.0));
+                }
+                if i == last {
+                    let nbsp = crate::style::text_width("\u{a0}", 13.0, Weight::Normal);
+                    spans.push(span("\u{a0}".repeat((room / nbsp).ceil() as usize)).size(13.0));
                 }
                 let line = rich_text(spans)
                     .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
@@ -2232,7 +2246,7 @@ impl BeeperGuiApp {
                 container(row![].push(marker).push(line)).padding(Padding::ZERO.top(gap)).into()
             }));
             parts = parts.push(
-                container(row![body, time].spacing(8).align_y(Bottom).wrap())
+                container(stack![body, container(time).align_right(Fill).align_bottom(Fill)])
                     .padding([8, 11])
                     .max_width(0.45 * self.main_width)
                     .style(fill_box(bg, 17.0)),
