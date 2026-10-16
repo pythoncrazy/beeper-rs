@@ -12,7 +12,7 @@ from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.svgLib.path import parse_path
 from fontTools.ttLib import TTFont
 
-LUCIDE = "bell cloud circle-plus circle-check arrow-up-right link plus smile audio-lines arrow-up at-sign settings paintbrush keyboard smartphone sparkles puzzle database circle-help info pencil trash-2 reply file-text play history bookmark message-square"
+LUCIDE = "bell cloud circle-plus circle-check arrow-up-right link plus smile audio-lines arrow-up at-sign settings paintbrush keyboard smartphone sparkles puzzle database circle-help info pencil trash-2 reply file-text play history bookmark message-square tablet monitor"
 MATERIAL = "inbox low_priority_space archive schedule schedule_send email maps_ugc photo_library library_add more_horiz unfold_more filter_list search edit_square notifications_off image chevron_right expand_more close keep download mark_email_unread sms mode_comment person group check"
 
 lucide, bundle, out = sys.argv[1:]

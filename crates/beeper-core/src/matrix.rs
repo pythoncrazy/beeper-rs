@@ -510,6 +510,51 @@ fn set_verification(store: &SharedStore, state: &str, sas: Option<VerificationSa
     st.emit_ws("setup.updated", "", None, None, None);
 }
 
+#[derive(Clone)]
+pub struct DeviceInfo {
+    pub name: String,
+    pub last_seen_ms: Option<u64>,
+    pub verified: bool,
+    pub current: bool,
+}
+
+pub async fn devices(client: Client) -> Result<Vec<DeviceInfo>, String> {
+    let me = client.user_id().expect("signed-in client has a user ID").to_owned();
+    let current = client.device_id().expect("signed-in client has a device ID").to_owned();
+    let mut out = Vec::new();
+    for d in client.devices().await.map_err(|e| e.to_string())?.devices {
+        let device = client.encryption().get_device(&me, &d.device_id).await.map_err(|e| e.to_string())?;
+        out.push(DeviceInfo {
+            name: d.display_name.unwrap_or_else(|| "Unknown".into()),
+            last_seen_ms: d.last_seen_ts.map(|t| t.0.into()),
+            verified: device.is_some_and(|d| d.is_verified()),
+            current: d.device_id == current,
+        });
+    }
+    Ok(out)
+}
+
+pub async fn logout(store: SharedStore) -> Result<(), String> {
+    let (client, demo, dir) = {
+        let st = store.read().unwrap();
+        (st.matrix.clone(), st.config.demo, st.data_dir.clone())
+    };
+    if !demo {
+        client.ok_or("Matrix is not connected yet")?.logout().await.map_err(|e| e.to_string())?;
+    }
+    let gone = |r: std::io::Result<()>| match r {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("Could not delete the local data: {e}")),
+        _ => Ok(()),
+    };
+    for f in ["beeper-rs.db", "beeper-rs.db-wal", "beeper-rs.db-shm"] {
+        gone(std::fs::remove_file(dir.join(f)))?;
+    }
+    for d in ["matrix", "media"] {
+        gone(std::fs::remove_dir_all(dir.join(d)))?;
+    }
+    Ok(())
+}
+
 pub async fn verify(store: SharedStore, confirm: oneshot::Receiver<bool>) -> Result<(), String> {
     let e = |e: &dyn std::fmt::Display| e.to_string();
     let client = store.read().unwrap().matrix.clone().ok_or("Matrix is not connected yet")?;
@@ -609,4 +654,19 @@ pub async fn run(store: SharedStore) {
         })
         .await
         .expect("Matrix sync loop");
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn demo_logout_deletes_local_data() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-logout-{}", std::process::id()));
+        let mut cfg = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23391, None);
+        cfg.demo = true;
+        let store = std::sync::Arc::new(std::sync::RwLock::new(crate::store::BeeperStore::from_config(cfg)));
+        assert!(dir.join("beeper-rs.db").exists());
+        super::logout(store).await.expect("demo logout");
+        assert!(!dir.join("beeper-rs.db").exists() && !dir.join("media").exists());
+        std::fs::remove_dir_all(dir).expect("remove the test data dir");
+    }
 }
