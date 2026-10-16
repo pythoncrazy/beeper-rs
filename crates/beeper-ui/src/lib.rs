@@ -625,8 +625,12 @@ static DASHED_RING: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock:
     })
 });
 
-static SENT: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
-    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="none" stroke="#000"><circle cx="6" cy="6" r="5.4" stroke-width="1.2" stroke-dasharray="2.4 1.84" transform="rotate(-79 6 6)"/><path d="M3.4 6.1 5.2 7.9 8.6 4.4" stroke-width="1.1"/></svg>"##[..])
+static SENT: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
+    [
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="none" stroke="#000"><circle cx="6" cy="6" r="5.4" stroke-width="1.2" stroke-dasharray="2.4 1.84" transform="rotate(-79 6 6)"/><path d="M3.4 6.1 5.2 7.9 8.6 4.4" stroke-width="1.1"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" fill-rule="evenodd" d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16Zm3.8-9.5a.8.8 0 0 0-1.1-1.1L6.9 9.2 5.3 7.6a.8.8 0 1 0-1.1 1.1l2.2 2.2a.8.8 0 0 0 1.1 0l4.3-4.4Z" clip-rule="evenodd"/></svg>"##[..],
+    ]
+    .map(svg::Handle::from_memory)
 });
 
 static EYES: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
@@ -1095,8 +1099,9 @@ impl BeeperGuiApp {
     }
 
     pub fn select_chat(&mut self, chat_id: &str) {
+        let mut st = self.store.write().unwrap();
         if let Some(prev_id) =
-            self.selected_chat_id.clone().filter(|p| p != chat_id && self.editing_message_id.is_none())
+            self.selected_chat_id.as_deref().filter(|&p| p != chat_id && self.editing_message_id.is_none())
         {
             let draft = self.composer_text.trim().to_string();
             let draft = (!draft.is_empty()).then(|| ChatDraft {
@@ -1104,19 +1109,19 @@ impl BeeperGuiApp {
                 reply_to_message_id: self.reply_to_message_id.clone(),
                 attachments: Vec::new(),
             });
-            let mut st = self.store.write().unwrap();
-            st.patch_chat(&prev_id, true, None, None).expect("mark previous chat read");
-            if draft.is_some() {
-                st.patch_chat(&prev_id, false, draft, None).expect("save draft");
-            }
+            st.patch_chat(prev_id, false, draft, None).expect("save draft");
         }
-        let mut st = self.store.write().unwrap();
+        let incognito = st.settings.on("incognito");
+        if let Some(prev_id) = self.selected_chat_id.as_deref().filter(|&p| !incognito && p != chat_id) {
+            st.mark_chat_read(prev_id, true);
+        }
         let idx = st.resolve_chat_idx(chat_id).expect("selected chat exists");
         self.selected_chat_id = Some(chat_id.to_string());
-        let chat = st.update_chat(idx, |c| {
-            (c.unread_count, c.unread_mentions) = (0, 0);
-            c.is_marked_unread = Some(false);
-        });
+        if let Some(ev) = (!incognito).then(|| st.mark_chat_read(chat_id, false)).flatten() {
+            let cid = st.chats[idx].id.clone();
+            st.queue(&cid, Outgoing::Read(ev));
+        }
+        let chat = st.chats[idx].clone();
         self.composer_text = chat.draft.as_ref().and_then(|d| d.text.clone()).unwrap_or_default();
         self.nickname_edit_buffer = chat
             .participants
@@ -1163,13 +1168,13 @@ impl BeeperGuiApp {
             let caption = (!text.is_empty()).then_some(text);
             let (_, txn, _) =
                 st.send_message(&chat_id, caption.clone(), reply_to.clone(), Some(att)).expect("send image");
-            st.patch_chat(&chat_id, true, None, None).expect("mark chat read");
+            st.mark_chat_read(&chat_id, true);
             Outgoing::Image { txn, png, size, caption, reply_to }
         } else {
             let reply_to = self.reply_to_message_id.take();
             let (_, txn, _) =
                 st.send_message(&chat_id, Some(text.clone()), reply_to.clone(), None).expect("send message");
-            st.patch_chat(&chat_id, true, None, None).expect("mark chat read");
+            st.mark_chat_read(&chat_id, true);
             Outgoing::Send { txn, text, reply_to }
         };
         st.queue(&chat_id, out);
@@ -2073,8 +2078,9 @@ impl BeeperGuiApp {
             let reserve = if count.is_some() { 4.0 + if counts { 8.0 } else { 0.0 } + 6.0 * digits + at } else { 0.0 }
                 + if mine { 16.0 } else { 0.0 }
                 + if sender.is_some() { 14.0 } else { 0.0 };
+            let read = m.is_some_and(|m| m.seen.keys().any(|u| !st.is_me(u) && u != &m.sender_id));
             let preview = row![]
-                .push(mine.then(|| tinted(&SENT, 12.0, p.sub)))
+                .push(mine.then(|| tinted(&SENT[usize::from(read)], 12.0, p.sub)))
                 .push(image.map(|label| {
                     container(
                         row![ic(icon::IMAGE, 11.0).color(p.text), txt(label, 11.0).color(p.text)]
@@ -2170,6 +2176,20 @@ impl BeeperGuiApp {
         let mut col = Column::new().padding(Padding::new(16.0).top(96.0).bottom(8.0));
         let mut prev: Option<&Message> = None;
         let last_live = msgs.iter().rposition(|m| m.is_deleted != Some(true));
+        let mut last_seen: HashMap<&str, (&str, &str)> = HashMap::new();
+        let mut replied: HashSet<&str> = HashSet::new();
+        for m in msgs.iter().rev() {
+            for (uid, ts) in &m.seen {
+                if !st.is_me(uid) && uid != &m.sender_id && !replied.contains(uid.as_str()) {
+                    last_seen.entry(uid.as_str()).or_insert((m.id.as_str(), ts.as_str()));
+                }
+            }
+            if m.is_deleted != Some(true) && m.is_sender != Some(true) {
+                replied.insert(m.sender_id.as_str());
+            }
+        }
+        let first_unread = msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true));
+        let (h24, group) = (st.settings.pref("timeFormat") == 1, chat.chat_type == "group");
         for (i, m) in msgs.iter().enumerate() {
             let day_changed = prev.is_none_or(|q| q.timestamp[..10] != m.timestamp[..10]);
             if day_changed {
@@ -2177,11 +2197,50 @@ impl BeeperGuiApp {
                 let pill = container(label).padding([5, 9]).style(bordered_box(p.card, p.outline, 1.0, 12.0));
                 col = col.push(container(pill).center_x(Fill).padding([4, 0]));
             }
+            if Some(i) == first_unread {
+                let line =
+                    || container(Space::new()).width(Fill).height(1).style(fill_box(p.accent.scale_alpha(0.35), 0.0));
+                let div =
+                    row![line(), semi("New", 11.0).color(p.accent), line()].spacing(8).align_y(Center).padding([6, 0]);
+                col = col.push(div);
+            }
             let first = day_changed || prev.is_none_or(|q| q.sender_id != m.sender_id);
             let last =
                 msgs.get(i + 1).is_none_or(|n| n.sender_id != m.sender_id || n.timestamp[..10] != m.timestamp[..10]);
-            let sent = Some(i) == last_live && m.is_sender == Some(true);
-            col = col.push(self.view_message(&st, chat, m, first, last, sent));
+            let mut viewers: Vec<(&str, &str)> =
+                last_seen.iter().filter(|(_, &(mid, _))| mid == m.id).map(|(&u, &(_, ts))| (u, ts)).collect();
+            viewers.sort_by_key(|&(_, ts)| ts);
+            let status = if let Some(&(_, ts)) = viewers.last() {
+                if group {
+                    let names: Vec<&str> = viewers
+                        .iter()
+                        .map(|&(uid, _)| {
+                            chat.participants
+                                .items
+                                .iter()
+                                .find(|u| u.id == uid)
+                                .and_then(|u| u.custom_nickname.as_deref().or(u.full_name.as_deref()))
+                                .unwrap_or(uid)
+                        })
+                        .collect();
+                    Some(if names.len() <= 4 {
+                        format!("Seen by {}", names.join(", "))
+                    } else {
+                        format!("Seen by {} & {} others", names[..3].join(", "), names.len() - 3)
+                    })
+                } else {
+                    let verb =
+                        if matches!(m.message_type.as_deref(), Some("VOICE" | "AUDIO")) { "Played" } else { "Seen" };
+                    let when = match day_label(ts).as_str() {
+                        "Today" => format!("at {}", format_short_ts(ts, h24)),
+                        other => other.into(),
+                    };
+                    Some(format!("{verb} {when}"))
+                }
+            } else {
+                (Some(i) == last_live && m.is_sender == Some(true)).then(|| "Sent".into())
+            };
+            col = col.push(self.view_message(&st, chat, m, first, last, status));
             col = col.push(msgs.get(i + 1).map(|n| Space::new().height(gap_below(m, n))));
             prev = Some(m);
         }
@@ -2243,7 +2302,7 @@ impl BeeperGuiApp {
         m: &Message,
         first: bool,
         last: bool,
-        sent: bool,
+        status: Option<String>,
     ) -> El<'a> {
         let p = &self.pal;
         let mine = m.is_sender == Some(true);
@@ -2522,12 +2581,8 @@ impl BeeperGuiApp {
             1 => Some("1 Reply".to_string()),
             n => Some(format!("{n} Replies")),
         };
-        let footer: Vec<String> = [sent.then_some("Sent"), (!m.edit_history.is_empty()).then_some("Edited")]
-            .into_iter()
-            .flatten()
-            .map(str::to_string)
-            .chain(replies)
-            .collect();
+        let footer: Vec<String> =
+            status.into_iter().chain((!m.edit_history.is_empty()).then(|| "Edited".into())).chain(replies).collect();
         let footer = (!footer.is_empty()).then(|| {
             let line = footer.into_iter().enumerate().fold(Row::new(), |r, (i, t)| {
                 r.push((i > 0).then(|| container(txt("·", 12.0).color(p.muted.scale_alpha(0.8))).padding([0, 4])))

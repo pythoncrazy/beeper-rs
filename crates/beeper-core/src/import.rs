@@ -2,7 +2,7 @@ use crate::config::rfc3339_from_millis;
 use crate::models::{Attachment, AttachmentSize, Chat, ChatParticipants, Message, Reaction, ThemeChoice, User};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 const SNAPSHOT_FILES: [&str; 4] = ["index.db", "index.db-wal", "account.db", "account.db-wal"];
@@ -215,7 +215,10 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>) -> Resul
                 is_low_priority: Some(flag(&t, "isLowPriority")),
                 label_ids: Vec::new(),
                 last_activity: ms.map(rfc3339_from_millis),
-                last_read_message_sort_key: None,
+                last_read_message_sort_key: t
+                    .get("lastReadMessageSortKey")
+                    .and_then(Value::as_i64)
+                    .map(crate::store::sort_key),
                 local_chat_id: None,
                 merge: None,
                 merged_into_chat_id: None,
@@ -275,6 +278,33 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
         .flat_map(|c| c.participants.items.iter().map(move |u| ((c.id.as_str(), u.id.as_str()), display_name(u))))
         .collect();
     let accounts: HashMap<&str, &str> = chats.iter().map(|c| (c.id.as_str(), c.account_id.as_str())).collect();
+    let unread_chats: HashMap<&str, Option<&str>> = chats
+        .iter()
+        .filter(|c| c.unread_count > 0 || c.is_marked_unread == Some(true))
+        .map(|c| (c.id.as_str(), c.last_read_message_sort_key.as_deref()))
+        .collect();
+    let mut receipts: HashMap<(String, String), BTreeMap<String, String>> = HashMap::new();
+    db.prepare(
+        "SELECT roomID, COALESCE(NULLIF(lastVisibleEventID, ''), relatesToID), userID, timestamp FROM mx_read_receipts",
+    )
+    .and_then(|mut q| {
+        q.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+            ))
+        })?
+        .try_for_each(|x| {
+            let (room, ev, user, ts) = x?;
+            if let Some(ev) = ev.filter(|e| !e.is_empty()) {
+                receipts.entry((room, ev)).or_default().insert(user, rfc3339_from_millis(ts.unwrap_or(0)));
+            }
+            Ok(())
+        })
+    })
+    .map_err(|e| e.to_string())?;
     let mut stmt = db
         .prepare(
             "SELECT messageID, threadID, timestamp, CAST(message AS TEXT), NULL, 0 FROM messages
@@ -364,16 +394,24 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             Some(_) => "FILE",
             None => "TEXT",
         };
+        let sort_key = order.map_or_else(String::new, crate::store::sort_key);
+        let is_sender = flag(&m, "isSender");
+        let is_unread = !is_sender
+            && !deleted
+            && unread_chats
+                .get(chat_id.as_str())
+                .is_some_and(|last| last.is_some_and(|k| !sort_key.is_empty() && sort_key.as_str() > k));
+        let seen_by = receipts.remove(&(chat_id.clone(), id.clone())).unwrap_or_default();
         out.push(Message {
             account_id: account_id.into(),
             chat_id,
             sender_name: Some(sender_name),
             sender_id,
-            sort_key: order.map_or_else(String::new, crate::store::sort_key),
+            sort_key,
             timestamp: rfc3339_from_millis(ts),
             attachments,
-            is_sender: Some(flag(&m, "isSender")),
-            is_unread: Some(false),
+            is_sender: Some(is_sender),
+            is_unread: Some(is_unread),
             is_bookmarked: Some(false),
             is_deleted: deleted.then_some(true),
             linked_message_id: str_field(&m, "linkedMessageID"),
@@ -384,6 +422,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             poll: None,
             edit_history: Vec::new(),
             links: Vec::new(),
+            seen: seen_by,
             flags: 0,
             id,
         });

@@ -439,6 +439,8 @@ pub struct Message {
     pub edit_history: Vec<EditHistoryEntry>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub links: Vec<MessageLink>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
+    pub seen: std::collections::BTreeMap<String, String>,
     #[serde(skip)]
     pub flags: u16,
 }

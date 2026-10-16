@@ -16,7 +16,9 @@ use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSetti
 use matrix_sdk::notification_settings::RoomNotificationMode;
 use matrix_sdk::room::MessagesOptions;
 use matrix_sdk::ruma::api::client::media::get_content_thumbnail::v3::Method;
+use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType as SendReceiptType;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
+use matrix_sdk::ruma::events::receipt::{ReceiptThread, ReceiptType};
 use matrix_sdk::ruma::events::relation::{Annotation, Reply};
 use matrix_sdk::ruma::events::room::message::{Relation, ReplacementMetadata, RoomMessageEventContent};
 use matrix_sdk::ruma::events::room::MediaSource;
@@ -276,6 +278,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
         poll: None,
         edit_history: Vec::new(),
         links: links(c),
+        seen: Default::default(),
         flags: 0,
     });
     match reaction {
@@ -342,6 +345,48 @@ async fn set_typing(store: &SharedStore, room: &Room, ids: &Value) {
     }
 }
 
+async fn sync_receipts(store: &SharedStore, room: &Room) {
+    let chat = chat_id(room).await;
+    let peers: Vec<String> = {
+        let st = store.read().unwrap();
+        let Some(&idx) = st.chat_idx_by_id.get(&chat) else { return };
+        st.chats[idx].participants.items.iter().filter(|u| u.is_self != Some(true)).map(|u| u.id.clone()).collect()
+    };
+    let mut updates = Vec::new();
+    for uid in peers {
+        let Ok(parsed) = matrix_sdk::ruma::UserId::parse(&uid) else { continue };
+        let receipt = room.load_user_receipt(ReceiptType::Read, &ReceiptThread::Unthreaded, &parsed).await;
+        if let Some((ev, r)) = receipt.expect("read receipt") {
+            let ts = r.ts.map_or_else(now_rfc3339_millis, |t| rfc3339_from_millis(i64::from(t.0)));
+            updates.push((uid, ev.to_string(), ts));
+        }
+    }
+    if updates.is_empty() {
+        return;
+    }
+    let mut st = store.write().unwrap();
+    let indices = st.chat_msg_indices.get(&chat).cloned().unwrap_or_default();
+    for (uid, ev, ts) in updates {
+        let target = indices.iter().copied().find(|&i| {
+            let m = &st.messages[i];
+            m.id == ev || m.reactions.iter().any(|r| r.id == ev)
+        });
+        let Some(target) = target else { continue };
+        for &i in &indices {
+            if i != target && st.messages[i].seen.contains_key(&uid) {
+                st.update_message(i, |m| {
+                    m.seen.remove(&uid);
+                });
+            }
+        }
+        if st.messages[target].seen.get(&uid) != Some(&ts) {
+            st.update_message(target, |m| {
+                m.seen.insert(uid, ts);
+            });
+        }
+    }
+}
+
 async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>) {
     let space = state(room, "m.room.create").await.expect("rooms have a create event")["type"].is_string();
     if space || state(room, "com.beeper.managed").await.is_some() {
@@ -379,107 +424,110 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     }
     let done = account_data(room, "com.beeper.inbox.done").await.and_then(|d| d["at_order"].as_i64());
     let (members, group) = (chat.participants.total, chat.chat_type == "group");
-    let mut st = store.write().unwrap();
-    match rank {
-        Some(r) => st.pin_rank.insert(chat_id.clone(), r),
-        None => st.pin_rank.remove(&chat_id),
-    };
-    if !note {
-        st.upsert_chat(chat);
-    } else {
-        let i = st.chat_idx_by_id[NOTE_CHAT_ID];
-        let room = |c: &Chat| {
-            (
-                c.img_url.clone(),
-                c.is_muted,
-                c.is_pinned,
-                c.is_low_priority,
-                (c.unread_count, c.unread_mentions),
-                c.is_marked_unread,
-            )
+    {
+        let mut st = store.write().unwrap();
+        match rank {
+            Some(r) => st.pin_rank.insert(chat_id.clone(), r),
+            None => st.pin_rank.remove(&chat_id),
         };
-        if room(&st.chats[i]) != room(&chat) {
-            st.update_chat(i, |c| {
+        if !note {
+            st.upsert_chat(chat);
+        } else {
+            let i = st.chat_idx_by_id[NOTE_CHAT_ID];
+            let room = |c: &Chat| {
                 (
-                    c.img_url,
+                    c.img_url.clone(),
                     c.is_muted,
                     c.is_pinned,
                     c.is_low_priority,
                     (c.unread_count, c.unread_mentions),
                     c.is_marked_unread,
-                ) = room(&chat);
-            });
-        }
-    }
-    for id in non_messages {
-        if st.msg_idx_by_id.contains_key(&id) {
-            st.remove_message(&chat_id, &id).expect("remove a decrypted placeholder");
-        }
-    }
-    for op in ops {
-        match op {
-            Op::Upsert(m) => st.upsert_message(*m),
-            Op::React(target, r, mut preview) => {
-                let target_msg = st.msg_idx_by_id.get(&target).map(|&i| &st.messages[i]);
-                let target_mine = target_msg.is_some_and(|m| m.is_sender == Some(true));
-                let who = match preview.is_sender == Some(true) {
-                    true => Some("You"),
-                    false => group.then(|| preview.sender_name.as_deref().expect("sender name")),
-                };
-                preview.text = Some(reaction_text(&r.reaction_key, target_msg, who));
-                if let Some(&i) = st.msg_idx_by_id.get(&target) {
-                    st.update_message(i, |m| {
-                        m.reactions.retain(|x| x.id != r.id);
-                        m.reactions.push(r);
-                    });
-                }
-                let idx = st.chat_idx_by_id[&chat_id];
-                let shown = preview.is_sender == Some(true) || (members <= 20 && (!group || target_mine));
-                let newer = st.chats[idx].preview.as_ref().is_none_or(|p| p.sort_key < preview.sort_key);
-                if shown && newer {
-                    st.update_chat(idx, |c| {
-                        c.last_activity = Some(preview.timestamp.clone());
-                        c.preview = Some(*preview);
-                    });
-                }
+                )
+            };
+            if room(&st.chats[i]) != room(&chat) {
+                st.update_chat(i, |c| {
+                    (
+                        c.img_url,
+                        c.is_muted,
+                        c.is_pinned,
+                        c.is_low_priority,
+                        (c.unread_count, c.unread_mentions),
+                        c.is_marked_unread,
+                    ) = room(&chat);
+                });
             }
-            Op::Edit(target, text, html, links, timestamp) => {
-                if let Some(&i) = st.msg_idx_by_id.get(&target) {
-                    st.update_message(i, |m| {
-                        let prev = m.text.replace(text).unwrap_or_default();
-                        if let Some(timestamp) =
-                            timestamp.filter(|t| m.edit_history.last().is_none_or(|e| e.timestamp != *t))
-                        {
-                            m.edit_history.push(EditHistoryEntry { text: prev, timestamp });
+        }
+        for id in non_messages {
+            if st.msg_idx_by_id.contains_key(&id) {
+                st.remove_message(&chat_id, &id).expect("remove a decrypted placeholder");
+            }
+        }
+        for op in ops {
+            match op {
+                Op::Upsert(m) => st.upsert_message(*m),
+                Op::React(target, r, mut preview) => {
+                    let target_msg = st.msg_idx_by_id.get(&target).map(|&i| &st.messages[i]);
+                    let target_mine = target_msg.is_some_and(|m| m.is_sender == Some(true));
+                    let who = match preview.is_sender == Some(true) {
+                        true => Some("You"),
+                        false => group.then(|| preview.sender_name.as_deref().expect("sender name")),
+                    };
+                    preview.text = Some(reaction_text(&r.reaction_key, target_msg, who));
+                    if let Some(&i) = st.msg_idx_by_id.get(&target) {
+                        st.update_message(i, |m| {
+                            m.reactions.retain(|x| x.id != r.id);
+                            m.reactions.push(r);
+                        });
+                    }
+                    let idx = st.chat_idx_by_id[&chat_id];
+                    let shown = preview.is_sender == Some(true) || (members <= 20 && (!group || target_mine));
+                    let newer = st.chats[idx].preview.as_ref().is_none_or(|p| p.sort_key < preview.sort_key);
+                    if shown && newer {
+                        st.update_chat(idx, |c| {
+                            c.last_activity = Some(preview.timestamp.clone());
+                            c.preview = Some(*preview);
+                        });
+                    }
+                }
+                Op::Edit(target, text, html, links, timestamp) => {
+                    if let Some(&i) = st.msg_idx_by_id.get(&target) {
+                        st.update_message(i, |m| {
+                            let prev = m.text.replace(text).unwrap_or_default();
+                            if let Some(timestamp) =
+                                timestamp.filter(|t| m.edit_history.last().is_none_or(|e| e.timestamp != *t))
+                            {
+                                m.edit_history.push(EditHistoryEntry { text: prev, timestamp });
+                            }
+                            m.links = links;
+                            m.html = html;
+                        });
+                    }
+                }
+                Op::Remove(id) => {
+                    if st.msg_idx_by_id.contains_key(&id) {
+                        st.remove_message(&chat_id, &id).expect("remove a local echo");
+                    }
+                }
+                Op::Redact(target) => {
+                    if st.msg_idx_by_id.contains_key(&target) {
+                        st.delete_message(&chat_id, &target).expect("redact a known message");
+                    } else {
+                        let i = st.messages.iter().position(|m| m.reactions.iter().any(|r| r.id == target));
+                        if let Some(i) = i {
+                            st.update_message(i, |m| m.reactions.retain(|r| r.id != target));
                         }
-                        m.links = links;
-                        m.html = html;
-                    });
-                }
-            }
-            Op::Remove(id) => {
-                if st.msg_idx_by_id.contains_key(&id) {
-                    st.remove_message(&chat_id, &id).expect("remove a local echo");
-                }
-            }
-            Op::Redact(target) => {
-                if st.msg_idx_by_id.contains_key(&target) {
-                    st.delete_message(&chat_id, &target).expect("redact a known message");
-                } else {
-                    let i = st.messages.iter().position(|m| m.reactions.iter().any(|r| r.id == target));
-                    if let Some(i) = i {
-                        st.update_message(i, |m| m.reactions.retain(|r| r.id != target));
                     }
                 }
             }
         }
+        let idx = st.chat_idx_by_id[&chat_id];
+        let last = st.chat_msg_indices.get(&chat_id).and_then(|v| v.last()).map(|&i| st.messages[i].sort_key.clone());
+        let archived = !note && done.is_some_and(|d| last.is_none_or(|l| sort_key(d) >= l));
+        if st.chats[idx].is_archived != Some(archived) {
+            st.update_chat(idx, |c| c.is_archived = Some(archived));
+        }
     }
-    let idx = st.chat_idx_by_id[&chat_id];
-    let last = st.chat_msg_indices.get(&chat_id).and_then(|v| v.last()).map(|&i| st.messages[i].sort_key.clone());
-    let archived = !note && done.is_some_and(|d| last.is_none_or(|l| sort_key(d) >= l));
-    if st.chats[idx].is_archived != Some(archived) {
-        st.update_chat(idx, |c| c.is_archived = Some(archived));
-    }
+    sync_receipts(store, room).await;
 }
 
 pub enum Outgoing {
@@ -487,6 +535,7 @@ pub enum Outgoing {
     Edit { target: String, text: String },
     Redact { target: String },
     React { txn: String, target: String, key: String },
+    Read(String),
     Image { txn: String, png: Vec<u8>, size: (u32, u32), caption: Option<String>, reply_to: Option<String> },
 }
 
@@ -547,6 +596,11 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
         Outgoing::React { txn, target, key } => {
             let content = ReactionEventContent::new(Annotation::new(event(target)?, key));
             sent(txn.clone(), room.send(content).with_transaction_id(txn.into()).await.map_err(e)?.response.event_id);
+        }
+        Outgoing::Read(target) => {
+            room.send_single_receipt(SendReceiptType::Read, ReceiptThread::Unthreaded, event(target)?)
+                .await
+                .map_err(e)?;
         }
         Outgoing::Image { txn, png, size: (w, h), caption, reply_to } => {
             use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseImageInfo};
@@ -957,6 +1011,8 @@ pub async fn run(store: SharedStore) {
                                 let v: Value = e.deserialize_as().expect("ephemeral event JSON");
                                 if v["type"] == "m.typing" {
                                     set_typing(&store, &room, &v["content"]["user_ids"]).await;
+                                } else if v["type"] == "m.receipt" {
+                                    sync_receipts(&store, &room).await;
                                 }
                             }
                         }

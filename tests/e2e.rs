@@ -258,6 +258,8 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
                      hsOrder INTEGER, message JSON);
                  CREATE TABLE mx_reactions (roomID TEXT, reactionID TEXT, eventID TEXT, senderID TEXT, description TEXT,
                      \"order\" INTEGER, isDeleted INTEGER);
+                 CREATE TABLE mx_read_receipts (roomID TEXT, userID TEXT, timestamp INTEGER, relatesToID TEXT, lastVisibleEventID TEXT);
+                 INSERT INTO mx_read_receipts VALUES ('!wa:beeper.local', '@wa_ana:beeper.local', 1760000003000, '$m2', '$m2');
                  INSERT INTO mx_room_messages VALUES ('$x1', '!mx:beeper.local', 1760000301000, 'TEXT', 0, 900,
                      '{\"senderID\":\"@emile:beeper.com\",\"text\":\"from matrix\",\"isSender\":true}');
                  INSERT INTO mx_room_messages VALUES ('$x2', '!mx:beeper.local', 1760000302000, 'REACTION', 0, 901, '{}');
@@ -444,6 +446,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert_eq!(msg("$m4").sender_name.as_deref(), Some("@dc_stranger:beeper.local"));
         assert_eq!(msg("$m4").linked_message_id.as_deref(), Some("$m3"));
         assert_eq!(msg("$m2").linked_message_id, None, "links to messages that were not imported are dropped");
+        assert_eq!(msg("$m2").seen["@wa_ana:beeper.local"], "2025-10-09T08:53:23.000Z");
         assert_eq!(msg("$m1").timestamp, "2025-10-09T08:53:21.000Z");
         assert!(!st.msg_idx_by_id.contains_key("$m6") && !st.msg_idx_by_id.contains_key("$m7"));
         assert_eq!(msg("$x1").text.as_deref(), Some("from matrix"));
@@ -954,8 +957,14 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
             std::fs::set_permissions(&wl_runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         let xdg = ("XDG_RUNTIME_DIR", wl_runtime.to_str().unwrap());
-        let weston_args =
-            ["--backend=headless", "--socket=beeper-wl-e2e", "--width=1440", "--height=900", "--no-config"];
+        let weston_args = [
+            "--backend=headless",
+            "--shell=kiosk",
+            "--socket=beeper-wl-e2e",
+            "--width=1440",
+            "--height=900",
+            "--no-config",
+        ];
         let weston = spawn_quiet("weston", &weston_args, &[xdg]);
         wait_for(&wl_runtime.join("beeper-wl-e2e")).await;
         let wl_status = run_gui(
