@@ -37,6 +37,7 @@ enum Op {
     React(String, Reaction, Box<Message>),
     Edit(String, String, Option<String>, Vec<MessageLink>, String),
     Redact(String),
+    Remove(String),
 }
 
 fn s(v: &Value) -> Option<String> {
@@ -209,14 +210,14 @@ fn attachment(c: &Value, kind: &str) -> Attachment {
 }
 
 async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<Op> {
-    if e["unsigned"].get("redacted_because").is_some() {
-        return None;
-    }
+    let deleted = e["unsigned"].get("redacted_because").is_some();
     let (c, rel) = (&e["content"], &e["content"]["m.relates_to"]);
     let sender = s(&e["sender"]).expect("event sender");
     let id = s(&e["event_id"]).expect("event ID");
     let kind = s(&e["type"]).expect("event type");
     let (text, attachments, message_type) = match (kind.as_str(), c["msgtype"].as_str()) {
+        ("m.room.message" | "m.sticker" | "m.room.encrypted", _) if deleted => (None, Vec::new(), "TEXT"),
+        _ if deleted => return None,
         ("m.reaction", _) => (None, Vec::new(), "REACTION"),
         ("m.room.redaction", _) => return Some(Op::Redact(s(&e["redacts"]).or(s(&c["redacts"]))?)),
         ("m.room.message", _) if rel["rel_type"] == "m.replace" => {
@@ -260,6 +261,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
         attachments,
         is_unread: Some(false),
         is_bookmarked: Some(false),
+        is_deleted: deleted.then_some(true),
         linked_message_id: s(&rel["m.in_reply_to"]["event_id"]).or(reaction.as_ref().and(s(&rel["event_id"]))),
         reactions: Vec::new(),
         text,
@@ -348,7 +350,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     let (mut ops, mut non_messages) = (Vec::new(), Vec::new());
     for e in &events {
         let v: Value = serde_json::from_str(e.raw().json().get()).expect("timeline event JSON");
-        ops.extend(s(&v["unsigned"]["transaction_id"]).map(Op::Redact));
+        ops.extend(s(&v["unsigned"]["transaction_id"]).map(Op::Remove));
         match op(room, &chat_id, &chat.account_id, &v).await {
             Some(Op::Upsert(m)) => ops.push(Op::Upsert(m)),
             o => {
@@ -380,7 +382,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     }
     for id in non_messages {
         if st.msg_idx_by_id.contains_key(&id) {
-            st.delete_message(&chat_id, &id).expect("remove a decrypted placeholder");
+            st.remove_message(&chat_id, &id).expect("remove a decrypted placeholder");
         }
     }
     for op in ops {
@@ -420,6 +422,11 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                         m.links = links;
                         m.html = html;
                     });
+                }
+            }
+            Op::Remove(id) => {
+                if st.msg_idx_by_id.contains_key(&id) {
+                    st.remove_message(&chat_id, &id).expect("remove a local echo");
                 }
             }
             Op::Redact(target) => {

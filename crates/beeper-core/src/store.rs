@@ -938,6 +938,7 @@ impl BeeperStore {
             is_sender: Some(true),
             is_unread: Some(false),
             is_bookmarked: Some(false),
+            is_deleted: None,
             linked_message_id: reply_to_message_id,
             attachments: attachment.into_iter().collect(),
             reactions: Vec::new(),
@@ -977,10 +978,23 @@ impl BeeperStore {
 
     pub fn delete_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, &'static str> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
+        self.update_message(m_idx, |m| {
+            m.is_deleted = Some(true);
+            (m.text, m.html, m.poll) = (None, None, None);
+            m.attachments.clear();
+            m.reactions.clear();
+            m.links.clear();
+        });
+        self.emit_ws("message.deleted", &chat_id, Some(message_id), None, None);
+        Ok(chat_id)
+    }
+
+    pub fn remove_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, &'static str> {
+        let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         self.msg_search_index.remove_doc(m_idx as u32, &message_index_text(&self.messages[m_idx]));
+        self.messages[m_idx].is_deleted = Some(true);
         self.messages[m_idx].flags |= MSG_DELETED;
-        self.messages[m_idx].text = None;
-        self.messages[m_idx].html = None;
+        (self.messages[m_idx].text, self.messages[m_idx].html) = (None, None);
         self.msg_idx_by_id.remove(message_id);
         self.chat_msg_indices.get_mut(&chat_id).expect("chat has messages").retain(|&i| i != m_idx);
         self.exec("DELETE FROM messages WHERE id = ?1", params![message_id]);

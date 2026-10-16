@@ -635,6 +635,10 @@ static BELL_OFF: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| 
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"/><path d="m2 2 20 20"/><path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"/></svg>"##[..])
 });
 
+static TRASH: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><path fill="currentColor" d="M432 32H312l-9.4-18.7A24 24 0 0 0 281.1 0H166.8a23.72 23.72 0 0 0-21.4 13.3L136 32H16A16 16 0 0 0 0 48v32a16 16 0 0 0 16 16h416a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16zM53.2 467a48 48 0 0 0 47.9 45h245.8a48 48 0 0 0 47.9-45L416 128H32z"/></svg>"#[..])
+});
+
 fn tinted<'a>(h: &svg::Handle, size: f32, color: Color) -> El<'a> {
     svg(h.clone()).width(size).height(size).style(move |_, _| svg::Style { color: Some(color) }).into()
 }
@@ -1942,8 +1946,10 @@ impl BeeperGuiApp {
         let st = self.store.read().unwrap();
         let cid = self.selected_chat_id.as_deref().expect("a chat is selected");
         let chat = &st.chats[st.resolve_chat_idx(cid).expect("selected chat exists")];
-        let msgs: Vec<&Message> =
-            st.chat_msg_indices.get(cid).map(|v| v.iter().map(|&i| &st.messages[i]).collect()).unwrap_or_default();
+        let hide = st.settings.on("hideDeleted");
+        let msgs: Vec<&Message> = st.chat_msg_indices.get(cid).map_or_else(Vec::new, |v| {
+            v.iter().map(|&i| &st.messages[i]).filter(|m| !(hide && m.is_deleted == Some(true))).collect()
+        });
         let mut col = Column::new().spacing(2).padding(Padding::new(16.0).top(96.0).bottom(8.0));
         let mut prev: Option<&Message> = None;
         for (i, m) in msgs.iter().enumerate() {
@@ -2023,6 +2029,20 @@ impl BeeperGuiApp {
     ) -> El<'a> {
         let p = &self.pal;
         let mine = m.is_sender == Some(true);
+        if m.is_deleted == Some(true) {
+            let (fg, italic) =
+                (mix(p.card, p.text, 0.8), iced::Font { style: iced::font::Style::Italic, ..fw(Weight::Normal) });
+            let icon = svg(TRASH.clone())
+                .width(13.0 * 448.0 / 512.0)
+                .height(13)
+                .style(move |_, _| svg::Style { color: Some(fg) });
+            let body =
+                row![icon, txt("This message has been deleted", 13.0).line_height(Pixels(16.0)).font(italic).color(fg)];
+            let pill = container(body.spacing(5).align_y(iced::Bottom))
+                .padding(Padding::new(13.0).top(9.0).bottom(7.0))
+                .style(bordered_box(CLEAR, mix(p.card, p.received, 0.8), 1.0, 17.0));
+            return container(pill).align_x(if mine { Right } else { iced::Left }).width(Fill).into();
+        }
         let group = chat.chat_type == "group";
         let (bg, fg) = if mine { (p.sent, Color::WHITE) } else { (p.received, p.strong) };
         let text = m.text.clone().unwrap_or_default();
