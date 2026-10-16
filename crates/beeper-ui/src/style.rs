@@ -222,44 +222,32 @@ pub fn mix(a: Color, b: Color, k: f32) -> Color {
     Color::from_rgba(a.r + (b.r - a.r) * k, a.g + (b.g - a.g) * k, a.b + (b.b - a.b) * k, a.a + (b.a - a.a) * k)
 }
 
-const BRANDS: [(&str, &str, &str, &str); 20] = [
-    ("whatsapp", "#48c95f", "#fff", include_str!("../assets/brands/whatsapp.svg")),
-    ("twitter", "#202124", "#fff", include_str!("../assets/brands/x.svg")),
-    ("telegram", "#2ea4db", "#fff", include_str!("../assets/brands/telegram.svg")),
-    ("slack", "#f6f6f6", "#4a154b", include_str!("../assets/brands/slack.svg")),
-    ("discord", "#5865f2", "#fff", include_str!("../assets/brands/discord.svg")),
-    ("facebook", "#f6f6f6", "#0866ff", include_str!("../assets/brands/messenger.svg")),
-    ("instagram", "url(#g)", "#fff", include_str!("../assets/brands/instagram.svg")),
-    ("linkedin", "#086ce1", "#fff", include_str!("../assets/brands/linkedin.svg")),
-    ("gmessages", "#f6f6f6", "#086ce1", include_str!("../assets/brands/googlemessages.svg")),
-    ("signal", "#3542ff", "#fff", include_str!("../assets/brands/signal.svg")),
-    ("googlechat", "#f6f6f6", "#00ac47", include_str!("../assets/brands/googlechat.svg")),
-    ("line", "#06c755", "#fff", include_str!("../assets/brands/line.svg")),
-    ("gvoice", "#f6f6f6", "#02c553", include_str!("../assets/brands/googlemessages.svg")),
-    ("tumblr", "#100f0d", "#fff", include_str!("../assets/brands/tumblr.svg")),
-    ("viber", "#7360f2", "#fff", include_str!("../assets/brands/viber.svg")),
-    ("snapchat", "#fffc00", "#000", include_str!("../assets/brands/snapchat.svg")),
-    ("wechat", "#07c160", "#fff", include_str!("../assets/brands/wechat.svg")),
-    ("imessage", "#34c759", "#fff", include_str!("../assets/brands/imessage.svg")),
-    ("bluesky", "#0085ff", "#fff", include_str!("../assets/brands/bluesky.svg")),
-    ("hungryserv", "#3844ff", "#fff", include_str!("../assets/brands/matrix.svg")),
+const BRANDS: [(&str, &str); 20] = [
+    ("whatsapp", include_str!("../assets/brands/whatsapp.svg")),
+    ("twitter", include_str!("../assets/brands/twitter.svg")),
+    ("telegram", include_str!("../assets/brands/telegram.svg")),
+    ("slack", include_str!("../assets/brands/slack.svg")),
+    ("discord", include_str!("../assets/brands/discord.svg")),
+    ("facebook", include_str!("../assets/brands/facebook.svg")),
+    ("instagram", include_str!("../assets/brands/instagram.svg")),
+    ("linkedin", include_str!("../assets/brands/linkedin.svg")),
+    ("gmessages", include_str!("../assets/brands/gmessages.svg")),
+    ("signal", include_str!("../assets/brands/signal.svg")),
+    ("googlechat", include_str!("../assets/brands/googlechat.svg")),
+    ("line", include_str!("../assets/brands/line.svg")),
+    ("gvoice", include_str!("../assets/brands/gvoice.svg")),
+    ("tumblr", include_str!("../assets/brands/tumblr.svg")),
+    ("viber", include_str!("../assets/brands/viber.svg")),
+    ("snapchat", include_str!("../assets/brands/snapchat.svg")),
+    ("wechat", include_str!("../assets/brands/wechat.svg")),
+    ("imessage", include_str!("../assets/brands/imessage.svg")),
+    ("bluesky", include_str!("../assets/brands/bluesky.svg")),
+    ("hungryserv", include_str!("../assets/brands/hungryserv.svg")),
 ];
 
 static BRAND_SVGS: LazyLock<HashMap<&'static str, svg::Handle>> = LazyLock::new(|| {
     assert!(NETWORK_SPECS.iter().all(|n| BRANDS.iter().any(|b| b.0 == n.bridge_id)), "every network has a logo");
-    BRANDS
-        .iter()
-        .map(|(id, bg, fg, src)| {
-            let d = src.split(" d=\"").nth(1).and_then(|s| s.split('"').next()).expect("simple-icons path");
-            let grad = if *id == "instagram" {
-                "<linearGradient id='g' x1='0' y1='1' x2='1' y2='0'><stop offset='0' stop-color='#fdd060'/><stop offset='.45' stop-color='#f0285a'/><stop offset='1' stop-color='#8a3ad9'/></linearGradient>"
-            } else {
-                "<linearGradient id='g' x1='0' y1='1' x2='1' y2='0'><stop offset='0' stop-color='#0a7cff'/><stop offset='.6' stop-color='#a033ff'/><stop offset='1' stop-color='#ff5280'/></linearGradient>"
-            };
-            let doc = format!("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'><defs>{grad}</defs><rect width='28' height='28' rx='10' fill='{bg}'/><g transform='translate(4.5 4.5) scale(.7917)'><path fill='{fg}' d='{d}'/></g></svg>");
-            (*id, svg::Handle::from_memory(doc.into_bytes()))
-        })
-        .collect()
+    BRANDS.iter().map(|(id, doc)| (*id, svg::Handle::from_memory(doc.as_bytes()))).collect()
 });
 
 pub fn brand_svg(bridge_id: &str) -> svg::Handle {
