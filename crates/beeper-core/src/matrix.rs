@@ -466,17 +466,27 @@ async fn retry_undecrypted(client: Client, store: SharedStore) {
         }
         let rooms =
             if lagged { client.joined_rooms() } else { rooms.iter().filter_map(|id| client.get_room(id)).collect() };
-        futures_util::stream::iter(rooms)
-            .for_each_concurrent(8, |room| {
-                let store = store.clone();
-                async move {
-                    if has_utd(&store, &room).await {
-                        sync_room(&store, &room, history(&room).await).await;
-                    }
-                }
-            })
-            .await;
+        refetch_undecrypted(&store, rooms).await;
     }
+}
+
+async fn refetch_undecrypted(store: &SharedStore, rooms: Vec<Room>) {
+    futures_util::stream::iter(rooms)
+        .for_each_concurrent(8, |room| async move {
+            if has_utd(store, &room).await {
+                sync_room(store, &room, history(&room).await).await;
+            }
+        })
+        .await;
+}
+
+pub async fn recover(store: SharedStore, key: String) -> Result<(), String> {
+    let client = store.read().unwrap().matrix.clone().ok_or("Matrix is not connected yet")?;
+    client.encryption().recovery().recover(key.trim()).await.map_err(|e| e.to_string())?;
+    store.write().unwrap().beeper_state.key_backup = true;
+    set_verification(&store, "verified", None);
+    tokio::spawn(async move { refetch_undecrypted(&store, client.joined_rooms()).await });
+    Ok(())
 }
 
 fn set_verification(store: &SharedStore, state: &str, sas: Option<VerificationSas>) {

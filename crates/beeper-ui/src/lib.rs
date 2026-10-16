@@ -228,6 +228,7 @@ pub enum UiMessage {
     AvatarLoaded(String, Result<image::Handle, String>),
     RecoveryInputChanged(String),
     VerifyRecoveryCode,
+    Recovered(Result<(), String>),
     VerifySasNow,
     ClearOldMedia,
     ExportChatJson(String),
@@ -1134,14 +1135,11 @@ impl BeeperGuiApp {
             }
             UiMessage::RecoveryInputChanged(v) => self.recovery_code_input = v,
             UiMessage::VerifyRecoveryCode => {
-                let mut st = self.store.write().unwrap();
-                st.beeper_state.verified = true;
-                st.beeper_state.cross_signing = true;
-                st.beeper_state.key_backup = true;
-                st.setup_status = BeeperStore::build_setup_from_state(&st.beeper_state);
-                st.persist_state_to_sqlite();
-                self.status_banner = "E2EE Recovery Key verified".to_string();
+                let key = std::mem::take(&mut self.recovery_code_input);
+                return Task::perform(beeper_core::matrix::recover(self.store.clone(), key), UiMessage::Recovered);
             }
+            UiMessage::Recovered(Ok(())) => self.status_banner = "This device is verified.".into(),
+            UiMessage::Recovered(Err(e)) => self.status_banner = format!("Could not use the recovery code: {e}"),
             UiMessage::VerifySasNow => {
                 let mut st = self.store.write().unwrap();
                 st.beeper_state.verified = true;
