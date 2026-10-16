@@ -184,6 +184,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>) -> Resul
                 is_hidden_from_inbox: None,
                 is_request: None,
                 network_name: None,
+                img_url: None,
                 flags: 0,
                 id,
             })

@@ -30,7 +30,7 @@ use iced::{
     border, mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Padding, Point, Radians,
     Right, Size, Subscription, Task, Theme,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Semaphore};
 
@@ -435,9 +435,9 @@ fn round_avatar(bytes: &[u8]) -> Result<image::Handle, String> {
     Ok(image::Handle::from_rgba(S, S, px.into_raw()))
 }
 
-fn dm_avatar_url(chat: &Chat) -> Option<&str> {
+fn chat_avatar_url(chat: &Chat) -> Option<&str> {
     let other = chat.participants.items.iter().find(|u| u.is_self != Some(true));
-    (chat.chat_type == "single").then_some(other?.img_url.as_deref()?)
+    chat.img_url.as_deref().or((chat.chat_type == "single").then_some(other?.img_url.as_deref()?))
 }
 
 fn badged<'a>(inner: El<'a>, account_id: &str, size: f32, badge: f32) -> El<'a> {
@@ -706,28 +706,37 @@ impl BeeperGuiApp {
 
     fn load_avatars(&mut self) -> Task<UiMessage> {
         let st = self.store.read().unwrap();
-        let token = st.beeper_state.access_token.clone();
-        let mut urls: Vec<String> = st.chats.iter().filter_map(dm_avatar_url).map(str::to_string).collect();
+        let Some(client) = st.matrix.clone() else { return Task::none() };
+        let selected = self.selected_chat_id.as_ref().and_then(|id| st.chat_idx_by_id.get(id)).map(|&i| &st.chats[i]);
+        let members = selected.into_iter().flat_map(|c| &c.participants.items).filter_map(|u| u.img_url.as_deref());
+        let urls = st.chats.iter().filter_map(chat_avatar_url).chain(members);
+        let urls: HashSet<String> = urls.filter(|u| !self.avatars.contains_key(*u)).map(str::to_string).collect();
         drop(st);
-        urls.retain(|u| self.avatars.insert(u.clone(), None).is_none());
+        self.avatars.extend(urls.iter().map(|u| (u.clone(), None)));
         Task::batch(urls.into_iter().map(|url| {
-            let (cloud, token, u) = (self.cloud.clone(), token.clone(), url.clone());
+            let (client, u) = (client.clone(), url.clone());
             Task::perform(
                 async move {
                     let _slot = AVATAR_SLOTS.acquire().await.expect("the avatar semaphore stays open");
-                    let load = move || round_avatar(&cloud.avatar(&token, &u).map_err(|e| e.message)?);
-                    tokio::task::spawn_blocking(load).await.expect("avatar worker thread")
+                    let bytes = beeper_core::matrix::thumbnail(client, u).await?;
+                    tokio::task::spawn_blocking(move || round_avatar(&bytes)).await.expect("avatar worker thread")
                 },
                 move |r| UiMessage::AvatarLoaded(url, r),
             )
         }))
     }
 
-    fn chat_avatar<'a>(&self, chat: &Chat, me: &str, size: f32) -> El<'a> {
-        match dm_avatar_url(chat).and_then(|u| self.avatars.get(u)?.clone()) {
+    fn face<'a>(&self, url: Option<&str>, name: &str, size: f32) -> El<'a> {
+        match url.and_then(|u| self.avatars.get(u)?.clone()) {
             Some(h) => image(h).width(size).height(size).into(),
+            None => avatar(name, size),
+        }
+    }
+
+    fn chat_avatar<'a>(&self, chat: &Chat, me: &str, size: f32) -> El<'a> {
+        match chat_avatar_url(chat) {
             None if chat.id == NOTE_CHAT_ID => self_avatar(me, size),
-            None => avatar(&chat.title, size),
+            url => self.face(url, &chat.title, size),
         }
     }
 
@@ -1173,15 +1182,13 @@ impl BeeperGuiApp {
             {
                 self.login.screen = login::Screen::Accounts;
             }
-            UiMessage::StoreChanged => {
-                self.refresh_theme_and_tray();
-                return self.load_avatars();
-            }
+            UiMessage::StoreChanged => self.refresh_theme_and_tray(),
             UiMessage::FocusRequested(chat) => {
                 if let Some(id) = chat {
                     self.select_chat(&id);
                 }
-                return window::gain_focus(self.main_window.or(self.login_window).expect("a window is open"));
+                let focus = window::gain_focus(self.main_window.or(self.login_window).expect("a window is open"));
+                return Task::batch([focus, self.load_avatars()]);
             }
             UiMessage::Login(m) => return self.update_login(m),
             UiMessage::KeyPressed(key, mods) => {
@@ -1202,7 +1209,7 @@ impl BeeperGuiApp {
                 }
             }
         }
-        Task::none()
+        self.load_avatars()
     }
 
     fn update_chat(&self, chat_id: &str, f: impl FnOnce(&mut Chat)) {
@@ -1927,7 +1934,9 @@ impl BeeperGuiApp {
         });
         let side = (group && !mine).then(|| -> El<'a> {
             if last {
-                avatar(m.sender_name.as_deref().expect("sender name"), 28.0)
+                let url =
+                    chat.participants.items.iter().find(|u| u.id == m.sender_id).and_then(|u| u.img_url.as_deref());
+                self.face(url, m.sender_name.as_deref().expect("sender name"), 28.0)
             } else {
                 Space::new().width(28).into()
             }
@@ -2051,7 +2060,7 @@ impl BeeperGuiApp {
             let name = u.custom_nickname.clone().or_else(|| u.full_name.clone()).expect("participant name");
             c.push(
                 row![
-                    avatar(&name, 28.0),
+                    self.face(u.img_url.as_deref(), &name, 28.0),
                     column![txt(name, 13.0).color(p.text)]
                         .push(u.phone_number.clone().map(|ph| txt(ph, 11.0).color(p.sub)))
                 ]
@@ -2095,11 +2104,12 @@ impl BeeperGuiApp {
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         let q = self.command_palette_query.to_lowercase();
         let st = self.store.read().unwrap();
+        let me = st.me().full_name.as_deref().expect("self name");
         let hits = st.chats.iter().filter(|c| c.title.to_lowercase().contains(&q)).take(8).fold(
             Column::new().spacing(2),
             |col, c| {
                 let line = row![
-                    avatar(&c.title, 24.0),
+                    self.chat_avatar(c, me, 24.0),
                     txt(c.title.clone(), 13.0).color(p.text),
                     Space::new().width(Fill),
                     txt(network_name(&c.account_id), 11.0).color(p.sub)
