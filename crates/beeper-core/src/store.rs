@@ -222,6 +222,8 @@ pub struct BeeperStore {
     pub matrix_error: Option<String>,
     pub sas_confirm: Option<tokio::sync::oneshot::Sender<bool>>,
     pub outbox: Vec<(String, crate::matrix::Outgoing)>,
+    pub pushing: bool,
+    pub sent: HashMap<String, String>,
     next_seq: i64,
 }
 
@@ -306,6 +308,8 @@ impl BeeperStore {
             matrix_error: None,
             sas_confirm: None,
             outbox: Vec::new(),
+            pushing: false,
+            sent: HashMap::new(),
             next_seq: 1000,
         };
         store.load_from_sqlite_or_seed();
@@ -625,6 +629,12 @@ impl BeeperStore {
         if !self.config.demo {
             self.outbox.push((chat_id.into(), out));
         }
+    }
+
+    pub fn start_flush(&mut self) -> bool {
+        let start = !self.pushing && self.matrix.is_some() && !self.outbox.is_empty();
+        self.pushing |= start;
+        start
     }
 
     pub fn is_me(&self, user_id: &str) -> bool {

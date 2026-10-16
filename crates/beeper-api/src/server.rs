@@ -164,10 +164,10 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     }
     let mut st = store.write().unwrap();
     let reply = dispatch(&mut st, &method, &segs, &req);
-    for (chat, out) in std::mem::take(&mut st.outbox) {
+    if st.start_flush() {
         let s = store.clone();
         tokio::spawn(async move {
-            if let Err(e) = beeper_core::matrix::push(s.clone(), chat, out).await {
+            if let Err(e) = beeper_core::matrix::flush(s.clone()).await {
                 s.write().unwrap().matrix_error = Some(e);
             }
         });
