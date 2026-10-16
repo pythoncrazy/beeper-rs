@@ -931,6 +931,7 @@ impl BeeperStore {
             sort_key: sort_key(self.next_seq),
             timestamp: now_rfc3339_millis(),
             text,
+            html: None,
             message_type: Some(msg_type.to_string()),
             is_sender: Some(true),
             is_unread: Some(false),
@@ -966,6 +967,7 @@ impl BeeperStore {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let msg = self.update_message(m_idx, |m| {
             let prev = m.text.replace(new_text).expect("edited message has text");
+            m.html = None;
             m.edit_history.push(EditHistoryEntry { text: prev, timestamp: now_rfc3339_millis() });
         });
         Ok((chat_id, msg))
@@ -976,6 +978,7 @@ impl BeeperStore {
         self.msg_search_index.remove_doc(m_idx as u32, &message_index_text(&self.messages[m_idx]));
         self.messages[m_idx].flags |= MSG_DELETED;
         self.messages[m_idx].text = None;
+        self.messages[m_idx].html = None;
         self.msg_idx_by_id.remove(message_id);
         self.chat_msg_indices.get_mut(&chat_id).expect("chat has messages").retain(|&i| i != m_idx);
         self.exec("DELETE FROM messages WHERE id = ?1", params![message_id]);

@@ -35,7 +35,7 @@ const HISTORY: u32 = 30;
 enum Op {
     Upsert(Box<Message>),
     React(String, Reaction, Box<Message>),
-    Edit(String, String, Vec<MessageLink>, String),
+    Edit(String, String, Option<String>, Vec<MessageLink>, String),
     Redact(String),
 }
 
@@ -49,6 +49,10 @@ fn body(c: &Value) -> Option<String> {
         (Some(n), true) => Some(b.strip_prefix(&format!("{n}: ")).expect("profile fallback prefix").into()),
         _ => Some(b),
     }
+}
+
+fn html(c: &Value) -> Option<String> {
+    (c["format"] == "org.matrix.custom.html").then(|| s(&c["formatted_body"])).flatten()
 }
 
 fn links(c: &Value) -> Vec<MessageLink> {
@@ -206,7 +210,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
         ("m.room.redaction", _) => return Some(Op::Redact(s(&e["redacts"]).or(s(&c["redacts"]))?)),
         ("m.room.message", _) if rel["rel_type"] == "m.replace" => {
             let (new, ts) = (&c["m.new_content"], e["origin_server_ts"].as_i64().expect("event timestamp"));
-            return Some(Op::Edit(s(&rel["event_id"])?, body(new)?, links(new), rfc3339_from_millis(ts)));
+            return Some(Op::Edit(s(&rel["event_id"])?, body(new)?, html(new), links(new), rfc3339_from_millis(ts)));
         }
         ("m.room.encrypted", _) => (Some(UTD_TEXT.into()), Vec::new(), "TEXT"),
         ("m.sticker", _) => (None, vec![Attachment { is_sticker: Some(true), ..attachment(c, "img") }], "STICKER"),
@@ -248,6 +252,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
         linked_message_id: s(&rel["m.in_reply_to"]["event_id"]).or(reaction.as_ref().and(s(&rel["event_id"]))),
         reactions: Vec::new(),
         text,
+        html: html(c),
         message_type: Some(message_type.into()),
         poll: None,
         edit_history: Vec::new(),
@@ -394,7 +399,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                     });
                 }
             }
-            Op::Edit(target, text, links, timestamp) => {
+            Op::Edit(target, text, html, links, timestamp) => {
                 if let Some(&i) = st.msg_idx_by_id.get(&target) {
                     st.update_message(i, |m| {
                         let prev = m.text.replace(text).unwrap_or_default();
@@ -402,6 +407,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                             m.edit_history.push(EditHistoryEntry { text: prev, timestamp });
                         }
                         m.links = links;
+                        m.html = html;
                     });
                 }
             }

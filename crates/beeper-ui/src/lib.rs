@@ -254,6 +254,7 @@ pub enum UiMessage {
     DragEnd,
     WindowOpened(window::Id),
     WindowClosed(window::Id),
+    WindowResized(window::Id, Size),
     ScreenshotCaptured(window::Id, window::Screenshot),
     KeyPressed(Key, Modifiers),
     StoreChanged,
@@ -728,6 +729,7 @@ pub struct BeeperGuiApp {
     pub sidebar_width: f32,
     pub dragging: bool,
     pub main_window: Option<window::Id>,
+    main_width: f32,
     pub settings_window: Option<window::Id>,
     pub login_window: Option<window::Id>,
     pub login: Login,
@@ -792,6 +794,7 @@ impl BeeperGuiApp {
             sidebar_width: 244.0,
             dragging: false,
             main_window: None,
+            main_width: 1264.0,
             settings_window: None,
             login_window: None,
             login: Login::new(source),
@@ -1367,6 +1370,11 @@ impl BeeperGuiApp {
                     return window::screenshot(id).map(move |s| UiMessage::ScreenshotCaptured(id, s));
                 }
             }
+            UiMessage::WindowResized(id, size) => {
+                if self.main_window == Some(id) {
+                    self.main_width = size.width;
+                }
+            }
             UiMessage::WindowClosed(id) => {
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
@@ -1474,6 +1482,7 @@ impl BeeperGuiApp {
         });
         let keys = iced::event::listen_with(|e, _, id| match e {
             Event::Window(window::Event::Closed) => Some(UiMessage::WindowClosed(id)),
+            Event::Window(window::Event::Resized(size)) => Some(UiMessage::WindowResized(id, size)),
             Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
                 if modifiers.command()
                     || modifiers.control()
@@ -1811,6 +1820,7 @@ impl BeeperGuiApp {
                 }
             });
             let body = m.and_then(|m| match m.links.len() {
+                _ if m.html.is_some() => m.html.as_deref().map(beeper_core::codec::html_text),
                 _ if m.text.as_ref().is_some_and(|t| !t.is_empty()) => m.text.clone(),
                 _ if !m.attachments.is_empty() => None,
                 0 => None,
@@ -2164,36 +2174,61 @@ impl BeeperGuiApp {
             } else {
                 p.sub
             });
-            let spans: Vec<_> = text
-                .split_inclusive(' ')
-                .flat_map(|w| {
-                    let url = w.trim_end().starts_with("http").then(|| w.trim_end().to_string());
-                    let arrow = url.as_ref().map(|_| {
-                        span(icon::ARROW_UP_RIGHT.to_string()).font(iced::Font::with_name("icons")).size(11.0).color(fg)
-                    });
-                    [
-                        Some(
-                            span(w.trim_end().to_string())
-                                .size(13.0)
-                                .color(fg)
-                                .underline(url.is_some())
-                                .link_maybe(url),
-                        ),
-                        arrow,
-                        w.ends_with(' ').then(|| span(" ").size(13.0)),
-                    ]
+            let arrow =
+                || span(icon::ARROW_UP_RIGHT.to_string()).font(iced::Font::with_name("icons")).size(11.0).color(fg);
+            let rich = |r: beeper_core::codec::Run| {
+                let font = match r.code {
+                    true => iced::Font::MONOSPACE,
+                    false => iced::Font {
+                        style: if r.italic { iced::font::Style::Italic } else { iced::font::Style::Normal },
+                        ..crate::style::fw(if r.bold { Weight::Bold } else { Weight::Normal })
+                    },
+                };
+                let link = r.link.is_some();
+                let s = span(r.text).size(13.0).color(fg).font(font).strikethrough(r.strike).underline(link);
+                [Some(s.link_maybe(r.link)), link.then(arrow)].into_iter().flatten()
+            };
+            let plain = |w: &str| {
+                let url = w.trim_end().starts_with("http").then(|| w.trim_end().to_string());
+                let word = span(w.trim_end().to_string()).size(13.0).color(fg).underline(url.is_some());
+                let arrow = url.is_some().then(arrow);
+                [Some(word.link_maybe(url)), arrow, w.ends_with(' ').then(|| span(" ").size(13.0))]
                     .into_iter()
                     .flatten()
-                })
-                .collect();
-            let body = rich_text(spans)
-                .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-                .on_link_click(UiMessage::OpenUrl);
+            };
+            let blocks: Vec<(Option<String>, Vec<_>)> = match m.html.as_deref() {
+                Some(html) => beeper_core::codec::html_blocks(html)
+                    .into_iter()
+                    .map(|b| (b.marker, b.runs.into_iter().flat_map(rich).collect()))
+                    .collect(),
+                None => vec![(None, text.split_inclusive(' ').flat_map(plain).collect())],
+            };
+            let mut prev_item = None;
+            let body = Column::with_children(blocks.into_iter().map(|(marker, mut spans)| {
+                // iced does not draw an empty last line.
+                if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
+                    spans.push(span("\u{200b}").size(13.0));
+                }
+                let line = rich_text(spans)
+                    .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                    .on_link_click(UiMessage::OpenUrl);
+                let gap = match (prev_item.replace(marker.is_some()), marker.is_some()) {
+                    (None, _) => 0.0,
+                    (Some(true), true) => 6.0,
+                    _ => 9.0,
+                };
+                let indent = |m: &String| if m == "•" { 15.6 } else { 23.4 };
+                let marker = marker.map(|m| {
+                    let w = indent(&m);
+                    container(txt(m, 13.0).color(fg)).width(w).align_right(w).padding(Padding::ZERO.right(5.0))
+                });
+                container(row![].push(marker).push(line)).padding(Padding::ZERO.top(gap)).into()
+            }));
             parts = parts.push(
                 container(row![body, time].spacing(8).align_y(Bottom).wrap())
                     .padding([8, 11])
-                    .max_width(480)
+                    .max_width(0.45 * self.main_width)
                     .style(fill_box(bg, 17.0)),
             );
         }
