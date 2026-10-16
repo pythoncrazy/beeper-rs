@@ -47,6 +47,18 @@ fn main() {
     let _ = app.update(UiMessage::ToggleFilterMenu);
     shot(&out, "main_filter_menu", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::PickFilter(0));
+    let dm = {
+        let mut st = app.store.write().unwrap();
+        let peer =
+            |c: &beeper_core::models::Chat| c.participants.items.iter().find(|u| u.is_self != Some(true)).cloned();
+        let c = st.chats.iter().find(|c| c.chat_type == "single" && peer(c).is_some()).expect("a DM");
+        let (id, user) = (c.id.clone(), peer(c).expect("a peer").id);
+        st.typing.insert(id.clone(), vec![user]);
+        id
+    };
+    app.select_chat(&dm);
+    shot(&out, "main_typing", (1200.0, 800.0), &theme, app.view_main());
+    app.store.write().unwrap().typing.clear();
     for tab in SettingsTab::ALL {
         let _ = app.update(UiMessage::OpenSettings(tab));
         shot(&out, &format!("settings_{tab:?}").to_lowercase(), (800.0, 740.0), &theme, app.view_settings());

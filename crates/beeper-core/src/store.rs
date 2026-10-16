@@ -224,6 +224,7 @@ pub struct BeeperStore {
     pub outbox: Vec<(String, crate::matrix::Outgoing)>,
     pub pushing: bool,
     pub sent: HashMap<String, String>,
+    pub typing: HashMap<String, Vec<String>>,
     next_seq: i64,
 }
 
@@ -310,6 +311,7 @@ impl BeeperStore {
             outbox: Vec::new(),
             pushing: false,
             sent: HashMap::new(),
+            typing: HashMap::new(),
             next_seq: 1000,
         };
         store.load_from_sqlite_or_seed();
