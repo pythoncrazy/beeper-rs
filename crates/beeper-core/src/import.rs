@@ -368,6 +368,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             linked_message_id: str_field(&m, "linkedMessageID"),
             reactions: listed,
             text: str_field(&m, "text"),
+            html: m.get("extra").and_then(|e| str_field(e, "sanitizedFormattedBody")),
             message_type: Some(message_type.into()),
             poll: None,
             edit_history: Vec::new(),

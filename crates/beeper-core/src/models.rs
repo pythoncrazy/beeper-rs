@@ -422,6 +422,9 @@ pub struct Message {
     pub sender_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// The Matrix HTML of the text, when the sender formatted it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub message_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
