@@ -691,12 +691,8 @@ fn pref_row<'a>(
 }
 
 fn group<'a>(p: &Palette, title: Option<&str>, rows: Vec<El<'a>>) -> El<'a> {
-    let card = container(Column::with_children(rows)).width(Fill).style(bordered_box(
-        p.prefs_group,
-        p.prefs_border,
-        1.0,
-        12.0,
-    ));
+    let card =
+        container(Column::with_children(rows)).width(Fill).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0));
     column![]
         .push(title.map(|t| container(med(t.to_string(), 12.0).color(p.weak)).padding([0, 4])))
         .push(card)
@@ -2634,7 +2630,7 @@ impl BeeperGuiApp {
             self.settings_search_results()
         };
         let right = container(
-            scrollable(container(content).max_width(600).padding(16).center_x(Fill))
+            scrollable(container(content).max_width(600).padding(13).center_x(Fill))
                 .height(Fill)
                 .style(scroll_style(p.divider, p.weak)),
         )
@@ -2753,30 +2749,54 @@ impl BeeperGuiApp {
         let s = &st.settings;
         let groups: Vec<El<'_>> = match self.active_settings_tab {
             SettingsTab::Accounts => {
-                let account = |logo: &str, name: String, cloud: bool, sub: Option<String>| -> El<'_> {
-                    let title = row![bold(name, 14.0).color(p.strong)]
+                let account = |logo: &str, owner: &str, name: String, cloud: bool, sub: Option<String>| -> El<'_> {
+                    let title = row![avatar(owner, 14.0, p), semi(name, 14.0).color(p.strong)]
                         .push(cloud.then(|| ic(icon::CLOUD, 13.0).color(p.sub)))
-                        .spacing(6)
+                        .spacing(4)
                         .align_y(Center);
                     row![
-                        svg(brand_svg(brand_key(logo))).width(28).height(28),
-                        column![title].push(sub.map(|s| txt(s, 12.0).color(p.sub))).spacing(2).width(Fill),
-                        ic(icon::CHEVRON_RIGHT, 18.0).color(p.sub)
+                        container(svg(brand_svg(brand_key(logo))).width(28).height(28)).center(46),
+                        column![title].push(sub.map(|s| txt(s, 13.0).color(p.sub))).width(Fill),
+                        ic(icon::CHEVRON_RIGHT, 16.0).color(p.strong)
                     ]
-                    .spacing(12)
+                    .spacing(8)
                     .align_y(Center)
-                    .padding([10, 14])
+                    .padding(Padding::new(4.0).left(8.0).right(16.0))
                     .into()
                 };
-                let rows = std::iter::once(account("hungryserv", "Beeper".into(), false, st.me().username.clone()))
-                    .chain(st.bridge_accounts.iter().map(|b| {
-                        account(&b.account_id, b.network_name.clone(), b.mode == BridgeMode::Cloud, b.display_text())
-                    }));
+                let me = st.me();
+                let rows = std::iter::once(account(
+                    "hungryserv",
+                    me.full_name.as_deref().expect("self name"),
+                    "Beeper".into(),
+                    false,
+                    me.username.clone(),
+                ))
+                .chain(st.bridge_accounts.iter().map(|b| {
+                    let owner = b.remote_profile.as_ref().and_then(|r| r.name.as_deref()).unwrap_or("");
+                    account(&b.account_id, owner, b.network_name.clone(), b.mode == BridgeMode::Cloud, b.display_text())
+                }));
+                let rows = rows
+                    .enumerate()
+                    .flat_map(|(i, r)| {
+                        [
+                            (i > 0).then(|| {
+                                container(Space::new())
+                                    .width(Fill)
+                                    .height(1)
+                                    .style(fill_box(p.prefs_border, 0.0))
+                                    .into()
+                            }),
+                            Some(r),
+                        ]
+                    })
+                    .flatten();
                 let head = row![
                     med("Accounts", 12.0).color(p.weak),
                     Space::new().width(Fill),
                     icon_btn(p, icon::CIRCLE_PLUS, 16.0, 22.0, p.accent, UiMessage::ToggleAddAccount)
                 ]
+                .height(26)
                 .align_y(Center)
                 .padding([0, 4]);
                 let remaining = login::FREE_ACCOUNTS.saturating_sub(st.bridge_accounts.len());
@@ -2787,10 +2807,10 @@ impl BeeperGuiApp {
                         .on_press(UiMessage::ToggleAddAccount),
                     txt(format!("{remaining} Free Accounts Remaining"), 12.0).color(p.sub)
                 ]
-                .spacing(6)
+                .spacing(7)
                 .align_x(Center)
                 .width(Fill);
-                vec![column![head, group(p, None, rows.collect())].spacing(8).into(), foot.into()]
+                vec![column![head, column![group(p, None, rows.collect()), foot].spacing(11)].spacing(8).into()]
                     .into_iter()
                     .chain(
                         self.adding_account
