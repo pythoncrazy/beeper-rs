@@ -546,14 +546,18 @@ fn badged<'a>(inner: El<'a>, account_id: &str, size: f32, badge: f32) -> El<'a> 
 }
 
 fn slider_style(p: &Palette) -> impl Fn(&Theme, slider::Status) -> slider::Style + use<> {
-    let (on, off) = (p.accent, p.toggle_off);
+    let (fill, track, edge) = (p.range, p.range_track, p.range_edge);
     move |_, _| slider::Style {
-        rail: slider::Rail { backgrounds: (on.into(), off.into()), width: 4.0, border: border::rounded(2) },
+        rail: slider::Rail {
+            backgrounds: (fill.into(), track.into()),
+            width: 8.0,
+            border: iced::Border { color: edge, width: 1.0, radius: 4.0.into() },
+        },
         handle: slider::Handle {
             shape: slider::HandleShape::Circle { radius: 8.0 },
-            background: Color::WHITE.into(),
-            border_width: 1.0,
-            border_color: off,
+            background: fill.into(),
+            border_width: 0.0,
+            border_color: CLEAR,
         },
     }
 }
@@ -711,9 +715,12 @@ fn group<'a>(p: &Palette, title: Option<&str>, rows: Vec<El<'a>>) -> El<'a> {
         8.0,
     ));
     column![]
-        .push(title.map(|t| container(med(t.to_string(), 12.0).color(p.weak)).padding([0, 4])))
+        .push(
+            title
+                .map(|t| container(txt(t.to_string(), 13.0).line_height(Pixels(16.0)).color(p.muted)).padding([0, 13])),
+        )
         .push(card)
-        .spacing(8)
+        .spacing(6)
         .into()
 }
 
@@ -3045,11 +3052,20 @@ impl BeeperGuiApp {
             }
             prefs::Control::Select(..) => self.pref_select(r, s),
             prefs::Control::Slider(_) => {
+                assert!(r.desc.is_none() && r.badge.is_none(), "{} is a plain slider", r.key);
                 let key = r.key;
-                slider(0..=100u8, s.pref(key), move |x| UiMessage::SetPref(key, x))
-                    .width(200)
-                    .style(slider_style(p))
-                    .into()
+                let bar = slider(0..=100u8, s.pref(key), move |x| UiMessage::SetPref(key, x))
+                    .height(16)
+                    .style(slider_style(p));
+                let body =
+                    column![txt(r.label, 13.0).line_height(Pixels(18.0)).color(p.text), container(bar).padding([0, 2])]
+                        .spacing(13)
+                        .padding(Padding::new(13.0).bottom(14.0));
+                return column![
+                    body,
+                    container(Space::new()).width(Fill).height(1).style(fill_box(p.prefs_border, 0.0))
+                ]
+                .into();
             }
             prefs::Control::Archive(scope, age) => {
                 let n = self.store.read().unwrap().stale_inbox_chats().len();
@@ -3069,7 +3085,7 @@ impl BeeperGuiApp {
                 ]
                 .spacing(8)
                 .align_y(Center)
-                .padding([13, 14])
+                .padding(13)
                 .into();
             }
         };
