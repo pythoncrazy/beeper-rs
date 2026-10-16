@@ -542,6 +542,14 @@ static SENT: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="none" stroke="#000"><circle cx="6" cy="6" r="5.4" stroke-width="1.2" stroke-dasharray="2.4 1.84" transform="rotate(-79 6 6)"/><path d="M3.4 6.1 5.2 7.9 8.6 4.4" stroke-width="1.1"/></svg>"##[..])
 });
 
+static BELL_OFF: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"/><path d="m2 2 20 20"/><path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"/></svg>"##[..])
+});
+
+fn tinted<'a>(h: &svg::Handle, size: f32, color: Color) -> El<'a> {
+    svg(h.clone()).width(size).height(size).style(move |_, _| svg::Style { color: Some(color) }).into()
+}
+
 static THEME_ART: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock::new(|| {
     let light = THEME_WINDOW.replace("WIN", "#f5f5f7").replace("LINE", "#d9d9de");
     let dark = THEME_WINDOW.replace("WIN", "#1f1f23").replace("LINE", "#3a3a41");
@@ -1552,7 +1560,7 @@ impl BeeperGuiApp {
                 let title = ell(name, cell - if muted { 35.2 } else { 20.0 }, 12.0, Weight::Semibold);
                 let label =
                     row![title.color(p.strong).line_height(iced::widget::text::LineHeight::Absolute(15.0.into()))]
-                        .push(muted.then(|| ic(icon::NOTIFICATIONS_OFF, 12.0).color(p.strong)))
+                        .push(muted.then(|| tinted(&BELL_OFF, 12.0, p.strong)))
                         .spacing(3.2)
                         .align_y(Center);
                 let unread = (c.unread_count > 0).then(|| count_badge(c.unread_count, p.accent, 14.0));
@@ -1589,7 +1597,7 @@ impl BeeperGuiApp {
             let weight = if counts && !unread { Weight::Medium } else { Weight::Semibold };
             let bell = if muted { 16.0 } else { 0.0 };
             let top = row![ell(&title, text_w - ts_w - bell, 13.0, weight).color(p.strong)]
-                .push(muted.then(|| container(ic(icon::NOTIFICATIONS_OFF, 12.0).color(p.strong)).padding([0, 2])))
+                .push(muted.then(|| container(tinted(&BELL_OFF, 12.0, p.strong)).padding([0, 2])))
                 .push(Space::new().width(Fill))
                 .push(txt(ts, 10.0).color(p.sub))
                 .align_y(Center);
@@ -1619,9 +1627,7 @@ impl BeeperGuiApp {
             });
             let reserve = if count.is_some() { 26.0 } else { 0.0 } + if mine { 16.0 } else { 0.0 };
             let preview = row![]
-                .push(mine.then(|| {
-                    svg(SENT.clone()).width(12).height(12).style(move |_, _| svg::Style { color: Some(p.sub) })
-                }))
+                .push(mine.then(|| tinted(&SENT, 12.0, p.sub)))
                 .push(image.then(|| {
                     container(
                         row![ic(icon::IMAGE, 11.0).color(p.text), txt("Image", 11.0).color(p.text)]
