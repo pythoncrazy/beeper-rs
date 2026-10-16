@@ -177,7 +177,14 @@ fn attachment(c: &Value, kind: &str) -> Attachment {
         mime_type: s(&info["mimetype"]),
         poster_img: None,
         size: dim("w").map(|w| AttachmentSize { width: Some(w), height: dim("h") }),
-        src_url: s(&c["url"]),
+        src_url: match c["file"].as_object() {
+            Some(f) => Some(format!(
+                "{}?{ENCRYPTED_FILE}={}",
+                s(&c["file"]["url"]).expect("encrypted files have a URL"),
+                crate::codec::url_encode(&Value::Object(f.clone()).to_string())
+            )),
+            None => s(&c["url"]),
+        },
         transcript: None,
     }
 }
@@ -404,6 +411,20 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     if st.chats[idx].is_archived != Some(archived) {
         st.update_chat(idx, |c| c.is_archived = Some(archived));
     }
+}
+
+const ENCRYPTED_FILE: &str = "encryptedFileInfoJSON";
+
+pub async fn media(client: Client, src: String) -> Result<Vec<u8>, String> {
+    let source = match src.split_once(&format!("?{ENCRYPTED_FILE}=")) {
+        Some((_, json)) => {
+            let json = crate::codec::url_decode(json).ok_or("bad encrypted file info")?;
+            MediaSource::Encrypted(Box::new(serde_json::from_str(&json).map_err(|e| e.to_string())?))
+        }
+        None => MediaSource::Plain(src.into()),
+    };
+    let request = MediaRequestParameters { source, format: MediaFormat::File };
+    client.media().get_media_content(&request, true).await.map_err(|e| e.to_string())
 }
 
 pub async fn thumbnail(client: Client, url: String) -> Result<Vec<u8>, String> {
