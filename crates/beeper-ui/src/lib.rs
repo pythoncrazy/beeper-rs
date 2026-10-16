@@ -5,7 +5,7 @@ use crate::login::{Login, LoginMsg};
 
 use crate::style::{
     bold, bordered_box, brand_svg, btn_style, clamp, ell, ensure_fonts_loaded, fill_box, fw, hex, ic, icon, initials,
-    input_style, med, name_hash, pick, pick_menu_style, pick_style, scroll_style, semi, shadow_box, txt, Palette,
+    input_style, med, mix, name_hash, pick, pick_menu_style, pick_style, scroll_style, semi, shadow_box, txt, Palette,
     ALL_FONTS, AVATAR_GRADIENTS, CLEAR,
 };
 use beeper_core::cloud::Cloud;
@@ -567,6 +567,12 @@ static SENT: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
 
 static EYES: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 46 46" fill="#fff"><path d="M22.1197 25.5092C23.0085 30.1093 20.937 33.1 16.2324 34.009C11.5277 34.918 8.49126 32.9143 7.60244 28.3142L6.68822 23.5827C5.7994 18.9826 7.87085 15.9919 12.5755 15.0829C17.2802 14.1738 20.3166 16.1776 21.2054 20.7777L22.1197 25.5092ZM14.8746 30.5902C15.1743 32.1411 16.6446 33.1113 18.2307 32.8049C19.8168 32.4984 20.8199 31.0503 20.5202 29.4994C20.2205 27.9485 18.7503 26.9783 17.1641 27.2847C15.578 27.5912 14.575 29.0393 14.8746 30.5902Z"/><path d="M39.1455 22.1235C40.0344 26.7236 37.9629 29.7142 33.2583 30.6233C28.5536 31.5323 25.5171 29.5286 24.6283 24.9284L23.7141 20.1969C22.8253 15.5968 24.8967 12.6061 29.6014 11.6971C34.306 10.7881 37.3425 12.7918 38.2313 17.3919L39.1455 22.1235ZM31.9005 27.2045C32.2002 28.7554 33.6704 29.7256 35.2566 29.4191C36.8427 29.1126 37.8457 27.6645 37.5461 26.1136C37.2464 24.5627 35.7761 23.5925 34.19 23.899C32.6039 24.2055 31.6008 25.6536 31.9005 27.2045Z"/></svg>"##[..])
+});
+
+static REPLY_CURVE: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
+    ["", r#" transform="matrix(-1 0 0 1 26 0)""#].map(|flip| {
+        svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0.5 0.5 25 19"><path{flip} fill="currentColor" fill-rule="evenodd" d="M17 15.5C9.544 15.5 3.5 9.456 3.5 2V.5h-3V2c0 9.113 7.387 16.5 16.5 16.5h6a1.5 1.5 0 0 0 0-3z"/></svg>"#).into_bytes())
+    })
 });
 
 static BELL_OFF: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
@@ -1887,14 +1893,18 @@ impl BeeperGuiApp {
                 .padding(Padding::ZERO.left(11.0)),
             );
         }
-        if let Some(q) = m.linked_message_id.as_ref().and_then(|r| st.msg_idx_by_id.get(r)).map(|&i| &st.messages[i]) {
-            let quote = column![
-                semi(q.sender_name.clone().expect("sender name"), 11.0).color(p.text),
-                ell(q.text.as_deref().unwrap_or(""), 260.0, 12.0, Weight::Normal).color(p.sub)
-            ]
-            .spacing(1);
-            parts = parts.push(container(quote).padding([6, 11]).style(bordered_box(p.card, p.outline, 1.0, 14.0)));
-        }
+        let quote = m.linked_message_id.as_ref().and_then(|r| st.msg_idx_by_id.get(r)).map(|&i| {
+            let q = &st.messages[i];
+            let q_mine = q.is_sender == Some(true);
+            let (edge, fill) = if q_mine { (p.sent, mix(p.card, p.sent, 0.3)) } else { (p.received, p.card) };
+            let body = ell(q.text.as_deref().unwrap_or(""), 300.0, 12.0, Weight::Medium).color(p.text);
+            let pill = container(body).padding(8).style(bordered_box(fill, edge, 2.0, 17.0));
+            let name = (group && !q_mine).then(|| {
+                container(semi(q.sender_name.clone().expect("sender name"), 12.0).color(p.strong)).padding([0, 11])
+            });
+            let col = column![].push(name).push(pill).spacing(4);
+            (col.align_x(if q_mine { Right } else { iced::Left }), q_mine)
+        });
         if let Some((url, site, title, summary)) = preview {
             let host = url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(url).to_string();
             let body = column![]
@@ -2034,8 +2044,21 @@ impl BeeperGuiApp {
                     .style(fill_box(bg, 17.0)),
             );
         }
-        let footer: Vec<&str> =
-            [sent.then_some("Sent"), (!m.edit_history.is_empty()).then_some("Edited")].into_iter().flatten().collect();
+        let replies = st.chat_msg_indices[&chat.id]
+            .iter()
+            .filter(|&&i| st.messages[i].linked_message_id.as_ref() == Some(&m.id))
+            .count();
+        let replies = match replies {
+            0 => None,
+            1 => Some("1 Reply".to_string()),
+            n => Some(format!("{n} Replies")),
+        };
+        let footer: Vec<String> = [sent.then_some("Sent"), (!m.edit_history.is_empty()).then_some("Edited")]
+            .into_iter()
+            .flatten()
+            .map(str::to_string)
+            .chain(replies)
+            .collect();
         if !footer.is_empty() {
             let line = footer.into_iter().enumerate().fold(Row::new(), |r, (i, t)| {
                 r.push((i > 0).then(|| container(txt("·", 11.0).color(p.muted.scale_alpha(0.8))).padding([0, 4])))
@@ -2093,10 +2116,38 @@ impl BeeperGuiApp {
                 Space::new().width(28).into()
             }
         });
+        let indent = (group && !mine).then(|| Space::new().width(34));
         let line: El<'a> = if mine {
             row![Space::new().width(Fill)].push(tools).push(parts).spacing(6).align_y(Center).into()
         } else {
             row![].push(side).push(parts).push(tools).push(Space::new().width(Fill)).spacing(6).align_y(Bottom).into()
+        };
+        let line: El<'a> = match quote {
+            None => line,
+            Some((q, q_mine)) => {
+                let curve = svg(REPLY_CURVE[usize::from(q_mine)].clone()).width(25).height(19);
+                let bar = container(Space::new()).width(3).height(Fill).style(fill_box(p.reply_line, 1.5));
+                let color = p.reply_line;
+                let link = column![bar, curve.style(move |_, _| svg::Style { color: Some(color) })]
+                    .push(Space::new().height(Fill))
+                    .align_x(if q_mine { Right } else { iced::Left })
+                    .padding(Padding::ZERO.left(if q_mine { 0.0 } else { 14.0 }).right(if q_mine {
+                        14.0
+                    } else {
+                        0.0
+                    }));
+                let line = match (q_mine == mine, q_mine) {
+                    (true, _) => line,
+                    (false, false) => stack![line, row![].push(indent).push(link)].into(),
+                    (false, true) => stack![line, row![Space::new().width(Fill), link]].into(),
+                };
+                let head: El<'a> = if q_mine {
+                    row![Space::new().width(Fill), q].into()
+                } else {
+                    row![].push((group && !q_mine).then(|| Space::new().width(34))).push(q).into()
+                };
+                column![head, line].into()
+            }
         };
         mouse_area(line)
             .on_enter(UiMessage::HoverEnter(m.id.clone()))
