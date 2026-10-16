@@ -382,7 +382,7 @@ impl BeeperStore {
     fn persist_chat(&self, idx: usize) {
         let c = &self.chats[idx];
         self.exec(
-            "INSERT OR REPLACE INTO chats (id, json) VALUES (?1, ?2)",
+            "INSERT INTO chats (id, json) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET json = excluded.json",
             params![c.id, serde_json::to_string(c).unwrap()],
         );
     }
@@ -413,7 +413,7 @@ impl BeeperStore {
                 kv(KEY_BRIDGES),
                 kv(KEY_SETTINGS),
                 kv(KEY_SEQ),
-                rows("SELECT json FROM chats"),
+                rows("SELECT json FROM chats ORDER BY rowid"),
                 rows("SELECT json FROM messages ORDER BY sort_key ASC"),
                 rows("SELECT json FROM assets"),
             )

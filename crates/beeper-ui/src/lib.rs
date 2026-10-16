@@ -329,23 +329,6 @@ fn network_name(account_id: &str) -> &'static str {
     account_network(account_id).display_name
 }
 
-const RAIL_RANK: [&str; 14] = [
-    "hungryserv",
-    "whatsapp",
-    "instagram",
-    "telegram",
-    "gmessages",
-    "googlechat",
-    "facebook",
-    "signal",
-    "linkedin",
-    "twitter",
-    "discord",
-    "slack",
-    "gvoice",
-    "imessage",
-];
-
 fn brand_key(account_id: &str) -> &'static str {
     account_network(account_id).bridge_id
 }
@@ -1864,12 +1847,7 @@ impl BeeperGuiApp {
         let mut accounts: Vec<String> =
             std::iter::once("hungryserv".to_string()).chain(st.accounts.iter().map(|a| a.account_id.clone())).collect();
         accounts.sort_by_cached_key(|a| {
-            let n = account_network(a);
-            (
-                RAIL_RANK.iter().position(|r| *r == n.bridge_id).unwrap_or(usize::MAX),
-                n.display_name.to_lowercase(),
-                a.clone(),
-            )
+            (a != "hungryserv", st.chats.iter().position(|c| &c.account_id == a).unwrap_or(usize::MAX))
         });
         let accounts = accounts.into_iter().fold(Column::new().spacing(8).align_x(Center), |c, acc| {
             let on = self.selected_account_filter.as_ref() == Some(&acc);
