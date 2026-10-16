@@ -1852,7 +1852,15 @@ impl BeeperGuiApp {
         });
         let overlay =
             stack![fade, header, container(feedback).align_right(Fill).padding(Padding::ZERO.top(6.0).right(5.0))];
-        let pane = column![stack![list, overlay].width(Fill).height(Fill), self.view_composer(&st, chat)];
+        let verify = (st.matrix.is_some() && !st.beeper_state.verified).then(|| {
+            let note = txt("Verify this device to read your encrypted messages.", 12.0).color(p.text);
+            let go = pill_btn(p, "Verify", UiMessage::OpenSettings(SettingsTab::Devices));
+            let bar = row![note, Space::new().width(Fill), go].align_y(Center);
+            container(bar).padding([8, 14]).style(bordered_box(p.elevated, p.outline, 1.0, 10.0))
+        });
+        let verify = verify.map(|v| container(v).padding([0, 12]));
+        let pane =
+            column![stack![list, overlay].width(Fill).height(Fill)].push(verify).push(self.view_composer(&st, chat));
         container(pane).width(Fill).height(Fill).clip(true).style(fill_box(p.card, 10.0)).into()
     }
 
