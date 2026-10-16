@@ -8,6 +8,7 @@ use futures_util::StreamExt;
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::deserialized_responses::{RawAnySyncOrStrippedState, TimelineEvent};
+use matrix_sdk::encryption::backups::BackupState;
 use matrix_sdk::encryption::verification::{SasState, Verification, VerificationRequestState};
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
@@ -480,12 +481,33 @@ async fn refetch_undecrypted(store: &SharedStore, rooms: Vec<Room>) {
         .await;
 }
 
+async fn retry_after_backup(client: Client, store: SharedStore) {
+    let mut states = client.encryption().backups().state_stream();
+    while let Some(state) = states.next().await {
+        if matches!(state, Ok(BackupState::Enabled)) {
+            refresh_e2ee(&client, &store).await;
+            refetch_undecrypted(&store, client.joined_rooms()).await;
+        }
+    }
+}
+
+async fn refresh_e2ee(client: &Client, store: &SharedStore) {
+    let device = client.encryption().get_own_device().await.expect("read the own device");
+    let verified = device.expect("signed-in client has its own device").is_cross_signed_by_owner();
+    let state = (verified, client.encryption().backups().are_enabled().await);
+    let mut st = store.write().unwrap();
+    if (st.beeper_state.verified, st.beeper_state.key_backup) != state {
+        (st.beeper_state.verified, st.beeper_state.key_backup) = state;
+        st.persist_state_to_sqlite();
+        st.setup_status = BeeperStore::build_setup_from_state(&st.beeper_state);
+        st.emit_ws("setup.updated", "", None, None, None);
+    }
+}
+
 pub async fn recover(store: SharedStore, key: String) -> Result<(), String> {
     let client = store.read().unwrap().matrix.clone().ok_or("Matrix is not connected yet")?;
     client.encryption().recovery().recover(key.trim()).await.map_err(|e| e.to_string())?;
-    store.write().unwrap().beeper_state.key_backup = true;
     set_verification(&store, "verified", None);
-    tokio::spawn(async move { refetch_undecrypted(&store, client.joined_rooms()).await });
     Ok(())
 }
 
@@ -624,6 +646,7 @@ pub async fn run(store: SharedStore) {
     };
     store.write().unwrap().matrix = Some(client.clone());
     tokio::spawn(retry_undecrypted(client.clone(), store.clone()));
+    tokio::spawn(retry_after_backup(client.clone(), store.clone()));
     futures_util::stream::iter(client.joined_rooms())
         .for_each_concurrent(8, |room| {
             let store = store.clone();
@@ -643,6 +666,7 @@ pub async fn run(store: SharedStore) {
                     Err(e) => store.write().unwrap().matrix_error = Some(e.to_string()),
                     Ok(resp) => {
                         store.write().unwrap().matrix_error = None;
+                        refresh_e2ee(&client, &store).await;
                         for (id, update) in resp.rooms.joined {
                             let room = client.get_room(&id).expect("synced room is known");
                             sync_room(&store, &room, update.timeline.events).await;
