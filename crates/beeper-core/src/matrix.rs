@@ -296,7 +296,8 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     if state(room, "m.room.create").await.expect("rooms have a create event")["type"].is_string() {
         return;
     }
-    let note = state(room, "com.beeper.rooms.note_to_self").await.is_some();
+    let chat_id = chat_id(room).await;
+    let note = chat_id == NOTE_CHAT_ID;
     let accounts = store.read().unwrap().bridge_accounts.clone();
     let account = room.client().account();
     let rules = account
@@ -305,7 +306,6 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
         .expect("read chat list rules")
         .map_or(Value::Null, |r| r.deserialize_as().expect("chat list rules JSON"));
     let chat = chat(room, &accounts, &rules).await;
-    let chat_id = if note { NOTE_CHAT_ID.to_string() } else { chat.id.clone() };
     if !store.read().unwrap().chat_msg_indices.contains_key(&chat_id) {
         let known: HashSet<String> = events.iter().filter_map(|e| Some(e.event_id()?.to_string())).collect();
         let older =
@@ -417,7 +417,7 @@ async fn connect(store: &SharedStore) -> Result<Client, String> {
     };
     let encryption = EncryptionSettings {
         auto_enable_cross_signing: false,
-        backup_download_strategy: BackupDownloadStrategy::OneShot,
+        backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
         auto_enable_backups: true,
     };
     let client = Client::builder()
@@ -436,22 +436,46 @@ async fn connect(store: &SharedStore) -> Result<Client, String> {
     Ok(client)
 }
 
+async fn chat_id(room: &Room) -> String {
+    let note = state(room, "com.beeper.rooms.note_to_self").await.is_some();
+    if note {
+        NOTE_CHAT_ID.into()
+    } else {
+        room.room_id().to_string()
+    }
+}
+
+async fn has_utd(store: &SharedStore, room: &Room) -> bool {
+    let chat = chat_id(room).await;
+    let st = store.read().unwrap();
+    st.chat_msg_indices.get(&chat).into_iter().flatten().any(|&i| st.messages[i].text.as_deref() == Some(UTD_TEXT))
+}
+
 async fn retry_undecrypted(client: Client, store: SharedStore) {
     let mut keys = client.encryption().room_keys_received_stream().await.expect("room key stream");
-    while let Some(batch) = keys.next().await {
-        let rooms: HashSet<_> = batch.into_iter().flatten().map(|k| k.room_id).collect();
-        for id in rooms {
-            let Some(room) = client.get_room(&id) else { continue };
-            let utd = {
-                let st = store.read().unwrap();
-                let chat = st.chat_idx_by_id.get(id.as_str()).map(|&i| st.chats[i].id.clone());
-                let list = chat.and_then(|c| st.chat_msg_indices.get(&c)).into_iter().flatten();
-                list.clone().any(|&i| st.messages[i].text.as_deref() == Some(UTD_TEXT))
-            };
-            if utd {
-                sync_room(&store, &room, history(&room).await).await;
+    while let Some(first) = keys.next().await {
+        let (mut rooms, mut lagged) = (HashSet::new(), false);
+        let window = std::time::Duration::from_millis(300);
+        let mut batch = Some(first);
+        while let Some(b) = batch {
+            match b {
+                Ok(infos) => rooms.extend(infos.into_iter().map(|k| k.room_id)),
+                Err(_) => lagged = true,
             }
+            batch = tokio::time::timeout(window, keys.next()).await.ok().flatten();
         }
+        let rooms =
+            if lagged { client.joined_rooms() } else { rooms.iter().filter_map(|id| client.get_room(id)).collect() };
+        futures_util::stream::iter(rooms)
+            .for_each_concurrent(8, |room| {
+                let store = store.clone();
+                async move {
+                    if has_utd(&store, &room).await {
+                        sync_room(&store, &room, history(&room).await).await;
+                    }
+                }
+            })
+            .await;
     }
 }
 
@@ -548,7 +572,10 @@ pub async fn run(store: SharedStore) {
     futures_util::stream::iter(client.joined_rooms())
         .for_each_concurrent(8, |room| {
             let store = store.clone();
-            async move { sync_room(&store, &room, Vec::new()).await }
+            async move {
+                let events = if has_utd(&store, &room).await { history(&room).await } else { Vec::new() };
+                sync_room(&store, &room, events).await
+            }
         })
         .await;
     let settings = SyncSettings::default().timeout(std::time::Duration::from_secs(30));
