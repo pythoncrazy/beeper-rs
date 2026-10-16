@@ -311,6 +311,11 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     let mut st = store.write().unwrap();
     if !note {
         st.upsert_chat(chat);
+    } else {
+        let i = st.chat_idx_by_id[NOTE_CHAT_ID];
+        if st.chats[i].img_url != chat.img_url {
+            st.update_chat(i, |c| c.img_url = chat.img_url);
+        }
     }
     for id in non_messages {
         if st.msg_idx_by_id.contains_key(&id) {

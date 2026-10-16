@@ -180,32 +180,41 @@ pub fn ic(c: char, size: f32) -> text::Text<'static> {
     text(c).font(Font::with_name("icons")).size(size).line_height(1.0)
 }
 
-pub fn hue(n: usize) -> Color {
-    const HUES: [[u8; 3]; 10] = [
-        [217, 119, 87],
-        [88, 101, 242],
-        [214, 54, 201],
-        [31, 185, 61],
-        [234, 169, 0],
-        [22, 178, 238],
-        [245, 77, 11],
-        [116, 89, 255],
-        [32, 180, 161],
-        [37, 97, 251],
-    ];
-    let [r, g, b] = HUES[n % HUES.len()];
-    Color::from_rgb8(r, g, b)
+pub const AVATAR_GRADIENTS: [(u32, u32); 20] = [
+    (0x5634de, 0x7e61f2),
+    (0x7d67d5, 0xa791ff),
+    (0xd833ca, 0xf86fdb),
+    (0xdf6f7c, 0xef939e),
+    (0xe8126b, 0xff256e),
+    (0xcd1557, 0xff657b),
+    (0xee1f34, 0xff4658),
+    (0xde4b19, 0xfa6533),
+    (0xc25e3c, 0xfc9775),
+    (0xbb7c55, 0xdba685),
+    (0x8d6954, 0x9f8778),
+    (0xc2891f, 0xffb938),
+    (0xd99c00, 0xffe500),
+    (0x6bad16, 0xb4fb44),
+    (0x0f9240, 0x25ca63),
+    (0x45a654, 0x6fe582),
+    (0x07a06d, 0x06cf9c),
+    (0x239084, 0x42c6b8),
+    (0x0a81ac, 0x29b0e1),
+    (0x1e54e1, 0x5583fc),
+];
+
+pub fn name_hash(s: &str) -> i32 {
+    s.encode_utf16().fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c)))
 }
 
-pub fn hash_str(s: &str) -> usize {
-    s.bytes().fold(5381usize, |acc, b| acc.wrapping_mul(33).wrapping_add(b as usize))
+pub fn pick<'a, T>(s: &str, list: &'a [T]) -> &'a T {
+    &list[name_hash(s).rem_euclid(i32::try_from(list.len()).expect("short list")) as usize]
 }
 
-pub fn initials(title: &str) -> String {
-    let mut chars =
-        title.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).filter_map(|w| w.chars().next());
-    let first = chars.next().unwrap_or('B').to_ascii_uppercase();
-    chars.next().map_or_else(|| first.to_string(), |s| format!("{}{}", first, s.to_ascii_uppercase()))
+pub fn initials(name: &str) -> Option<String> {
+    let letters: String = name.chars().filter(|c| c.is_alphabetic() || c.is_whitespace()).collect();
+    let firsts = letters.split(' ').filter(|w| !w.is_empty()).take(2).filter_map(|w| w.chars().next());
+    Some(firsts.flat_map(char::to_uppercase).collect::<String>()).filter(|s| !s.is_empty())
 }
 
 pub fn mix(a: Color, b: Color, k: f32) -> Color {
@@ -422,9 +431,10 @@ pub struct Palette {
     pub danger: Color,
     pub success: Color,
     pub warning: Color,
+    pub names: [u32; 20],
 }
 
-const fn hex(v: u32) -> Color {
+pub const fn hex(v: u32) -> Color {
     Color::from_rgb(((v >> 16) & 255) as f32 / 255.0, ((v >> 8) & 255) as f32 / 255.0, (v & 255) as f32 / 255.0)
 }
 
@@ -470,6 +480,10 @@ pub const BEEPER_DARK: Palette = Palette {
     danger: hex(0xff383c),
     success: hex(0x34c759),
     warning: hex(0xf54c03),
+    names: [
+        0x9e7ef8, 0xce7fff, 0xf86fdb, 0xef939e, 0xff256e, 0xff657b, 0xff4658, 0xfa6533, 0xfc9775, 0xdba685, 0x9f8778,
+        0xffb938, 0xffe500, 0xb4fb44, 0x25ca63, 0x6fe582, 0x06cf9c, 0x42c6b8, 0x29b0e1, 0x5583fc,
+    ],
 };
 
 pub const BEEPER_LIGHT: Palette = Palette {
@@ -509,6 +523,10 @@ pub const BEEPER_LIGHT: Palette = Palette {
     danger: hex(0xff383c),
     success: hex(0x34c759),
     warning: hex(0xf54c03),
+    names: [
+        0x6a4be5, 0x9745ea, 0xd833ca, 0xdf6f7c, 0xe8126b, 0xcd1557, 0xee1f34, 0xde4b19, 0xc25e3c, 0xbb7c55, 0x8d6954,
+        0xc2891f, 0xd99c00, 0x6bad16, 0x0f9240, 0x45a654, 0x07a06d, 0x239084, 0x0a81ac, 0x1e54e1,
+    ],
 };
 
 pub fn palette(dark: bool) -> Palette {

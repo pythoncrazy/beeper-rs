@@ -4,9 +4,9 @@ pub mod style;
 use crate::login::{Login, LoginMsg};
 
 use crate::style::{
-    bold, bordered_box, brand_svg, btn_style, clamp, ell, ensure_fonts_loaded, fill_box, fw, hash_str, hue, ic, icon,
-    initials, input_style, med, pick_menu_style, pick_style, scroll_style, semi, shadow_box, txt, Palette, ALL_FONTS,
-    CLEAR,
+    bold, bordered_box, brand_svg, btn_style, clamp, ell, ensure_fonts_loaded, fill_box, fw, hex, ic, icon, initials,
+    input_style, med, name_hash, pick, pick_menu_style, pick_style, scroll_style, semi, shadow_box, txt, Palette,
+    ALL_FONTS, AVATAR_GRADIENTS, CLEAR,
 };
 use beeper_core::cloud::Cloud;
 use beeper_core::config::{account_network, civil_from_days, millis_from_rfc3339, now_unix_secs, APP_VERSION};
@@ -23,8 +23,8 @@ use iced::gradient::Linear;
 use iced::keyboard::{self, key::Named, Key, Modifiers};
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{
-    button, column, container, image, mouse_area, operation, pick_list, rich_text, row, scrollable, slider, span,
-    stack, svg, text_input, Column, Row, Space,
+    button, column, container, image, mouse_area, operation, pick_list, pin, rich_text, row, scrollable, slider, span,
+    stack, svg, text_input, Column, Row, Space, Stack,
 };
 use iced::{
     border, mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Padding, Point, Radians,
@@ -401,25 +401,20 @@ fn divider<'a>(p: &Palette, left: f32) -> El<'a> {
         .into()
 }
 
-fn self_avatar<'a>(name: &str, size: f32) -> El<'a> {
-    let g = Linear::new(Radians(std::f32::consts::PI))
-        .add_stop(0.0, Color::from_rgb8(224, 170, 140))
-        .add_stop(1.0, Color::from_rgb8(186, 116, 84));
-    container(semi(initials(name).chars().take(1).collect::<String>(), size * 0.42).color(Color::WHITE))
+fn avatar<'a>(name: &str, size: f32, p: &Palette) -> El<'a> {
+    let Some(label) = initials(name) else {
+        let shade = fill_box(Color { a: 0.1, ..p.strong }, size / 2.0);
+        return container(ic(icon::PERSON, size * 0.6).color(p.strong)).center(size).style(shade).into();
+    };
+    let &(bottom, top) = pick(name, &AVATAR_GRADIENTS);
+    let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, hex(top)).add_stop(1.0, hex(bottom));
+    container(med(label, size * 0.5).color(Color::WHITE))
         .center(size)
         .style(move |_: &Theme| container::Style {
             background: Some(Background::Gradient(Gradient::Linear(g))),
-            border: iced::border::rounded(size / 2.0),
+            border: border::rounded(size / 2.0),
             ..Default::default()
         })
-        .into()
-}
-
-fn avatar<'a>(title: &str, size: f32) -> El<'a> {
-    let label = initials(title).chars().take(1).collect::<String>();
-    container(semi(label, size * 0.42).color(Color::WHITE))
-        .center(size)
-        .style(fill_box(hue(hash_str(title)), size / 2.0))
         .into()
 }
 
@@ -435,9 +430,19 @@ fn round_avatar(bytes: &[u8]) -> Result<image::Handle, String> {
     Ok(image::Handle::from_rgba(S, S, px.into_raw()))
 }
 
-fn chat_avatar_url(chat: &Chat) -> Option<&str> {
-    let other = chat.participants.items.iter().find(|u| u.is_self != Some(true));
-    chat.img_url.as_deref().or((chat.chat_type == "single").then_some(other?.img_url.as_deref()?))
+fn faces(chat: &Chat) -> (Vec<&User>, usize) {
+    let others: Vec<&User> = chat.participants.items.iter().filter(|u| u.is_self != Some(true)).collect();
+    let group = chat.chat_type == "group";
+    let more = if group && others.len() > 5 { others.len() - 4 } else { 0 };
+    let shown = if group { others.len() - more } else { others.len().min(1) };
+    (others.into_iter().take(shown).collect(), more)
+}
+
+fn chat_avatar_urls(chat: &Chat) -> Vec<&str> {
+    match chat.img_url.as_deref() {
+        Some(u) => vec![u],
+        None => faces(chat).0.into_iter().filter_map(|u| u.img_url.as_deref()).collect(),
+    }
 }
 
 fn badged<'a>(inner: El<'a>, account_id: &str, size: f32, badge: f32) -> El<'a> {
@@ -709,7 +714,7 @@ impl BeeperGuiApp {
         let Some(client) = st.matrix.clone() else { return Task::none() };
         let selected = self.selected_chat_id.as_ref().and_then(|id| st.chat_idx_by_id.get(id)).map(|&i| &st.chats[i]);
         let members = selected.into_iter().flat_map(|c| &c.participants.items).filter_map(|u| u.img_url.as_deref());
-        let urls = st.chats.iter().filter_map(chat_avatar_url).chain(members);
+        let urls = st.chats.iter().flat_map(chat_avatar_urls).chain(members);
         let urls: HashSet<String> = urls.filter(|u| !self.avatars.contains_key(*u)).map(str::to_string).collect();
         drop(st);
         self.avatars.extend(urls.iter().map(|u| (u.clone(), None)));
@@ -729,15 +734,36 @@ impl BeeperGuiApp {
     fn face<'a>(&self, url: Option<&str>, name: &str, size: f32) -> El<'a> {
         match url.and_then(|u| self.avatars.get(u)?.clone()) {
             Some(h) => image(h).width(size).height(size).into(),
-            None => avatar(name, size),
+            None => avatar(name, size, &self.pal),
         }
     }
 
-    fn chat_avatar<'a>(&self, chat: &Chat, me: &str, size: f32) -> El<'a> {
-        match chat_avatar_url(chat) {
-            None if chat.id == NOTE_CHAT_ID => self_avatar(me, size),
-            url => self.face(url, &chat.title, size),
+    fn chat_avatar<'a>(&self, chat: &Chat, size: f32) -> El<'a> {
+        fn user(u: &User) -> (Option<&str>, &str) {
+            (u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default())
         }
+        if chat.img_url.is_some() {
+            return self.face(chat.img_url.as_deref(), &chat.title, size);
+        }
+        let (shown, more) = faces(chat);
+        if chat.chat_type != "group" {
+            let (url, name) = shown.first().map_or((None, ""), |u| user(u));
+            return self.face(url, name, size);
+        }
+        const SLOTS: [(f32, f32, f32); 5] =
+            [(-0.14, -0.135, 0.48), (0.26, 0.08, 0.35), (-0.06, 0.28, 0.27), (0.25, -0.24, 0.215), (-0.33, 0.2, 0.2)];
+        let layers = shown.into_iter().zip(SLOTS).map(|(u, (x, y, k))| {
+            let (url, name) = user(u);
+            let d = size * k;
+            pin(self.face(url, name, d)).x(size * (0.5 + x) - d / 2.0).y(size * (0.5 + y) - d / 2.0).into()
+        });
+        let label = if more > 98 { "99+".to_string() } else { format!("+{more}") };
+        let font = size * 0.15 * if more > 9 { 0.85 } else { 1.0 };
+        let count = (more > 0).then(|| {
+            let t = container(med(label, font).color(self.pal.sub)).center_x(size * 0.3);
+            pin(t).x(size * 0.027).y(size * 0.484)
+        });
+        Stack::with_children(layers).push(count).width(size).height(size).into()
     }
 
     fn window_settings(size: Size) -> window::Settings {
@@ -1404,7 +1430,7 @@ impl BeeperGuiApp {
                 UiMessage::OpenQuickLook("Media".into(), "Photos, videos, and files from all chats".into())
             ),
             rail_btn(g(icon::LIBRARY_ADD), false, UiMessage::ToggleCommandPalette),
-            button(self_avatar(me, 36.0))
+            button(avatar(me, 36.0, p))
                 .padding(0)
                 .style(btn_style([CLEAR; 3], [p.text; 3], 18.0))
                 .on_press(UiMessage::OpenSettings(SettingsTab::General)),
@@ -1421,7 +1447,6 @@ impl BeeperGuiApp {
         let w = self.sidebar_width;
         let st = self.store.read().unwrap();
         let chats = self.visible_chats(&st);
-        let me = st.me().full_name.as_deref().expect("self name");
         let h24 = st.settings.pref("timeFormat") == 1;
         let previews = st.settings.on("showMessagePreviews");
         let names: Vec<&str> =
@@ -1502,16 +1527,17 @@ impl BeeperGuiApp {
             col.push(chunk.iter().fold(Row::new(), |r, c| {
                 let on = selected == Some(c.id.as_str());
                 let muted = c.is_muted == Some(true);
-                let title = ell(&c.title, cell - if muted { 35.2 } else { 20.0 }, 12.0, Weight::Semibold);
+                let first_word = c.chat_type != "group" && c.title.chars().any(char::is_alphabetic);
+                let name = if first_word { c.title.split_whitespace().next().expect("a letter") } else { &c.title };
+                let title = ell(name, cell - if muted { 35.2 } else { 20.0 }, 12.0, Weight::Semibold);
                 let label =
                     row![title.color(p.strong).line_height(iced::widget::text::LineHeight::Absolute(15.0.into()))]
                         .push(muted.then(|| ic(icon::NOTIFICATIONS_OFF, 12.0).color(p.strong)))
                         .spacing(3.2)
                         .align_y(Center);
                 let unread = (c.unread_count > 0).then(|| count_badge(c.unread_count, p.accent, 14.0));
-                let face = stack![self.chat_avatar(c, me, 40.0), container(unread).width(44).align_right(44)]
-                    .width(44)
-                    .height(40);
+                let face =
+                    stack![self.chat_avatar(c, 40.0), container(unread).width(44).align_right(44)].width(44).height(40);
                 let item = column![face, label]
                     .spacing(4)
                     .align_x(Center)
@@ -1593,7 +1619,7 @@ impl BeeperGuiApp {
             let item = row![]
                 .push(dot)
                 .push(
-                    container(badged(self.chat_avatar(c, me, 28.0), &c.account_id, 28.0, 12.0))
+                    container(badged(self.chat_avatar(c, 28.0), &c.account_id, 28.0, 12.0))
                         .padding(Padding::ZERO.right(8.5)),
                 )
                 .push(column![top, preview].spacing(1).width(Fill))
@@ -1649,7 +1675,6 @@ impl BeeperGuiApp {
         let st = self.store.read().unwrap();
         let cid = self.selected_chat_id.as_deref().expect("a chat is selected");
         let chat = &st.chats[st.resolve_chat_idx(cid).expect("selected chat exists")];
-        let me = st.me().full_name.as_deref().expect("self name");
         let msgs: Vec<&Message> =
             st.chat_msg_indices.get(cid).map(|v| v.iter().map(|&i| &st.messages[i]).collect()).unwrap_or_default();
         let mut col = Column::new().spacing(2).padding(Padding::new(16.0).top(96.0).bottom(8.0));
@@ -1688,7 +1713,7 @@ impl BeeperGuiApp {
             .padding(Padding::new(6.0).left(10.0).top(if chat.id == NOTE_CHAT_ID { 6.0 } else { 8.0 }))
             .style(btn_style([p.elevated, p.selected, p.selected], [p.text; 3], 14.0))
             .on_press(UiMessage::ToggleRightPanel);
-        let ring = container(self.chat_avatar(chat, me, 40.0)).padding(1).style(fill_box(p.card, 21.0));
+        let ring = container(self.chat_avatar(chat, 40.0)).padding(1).style(fill_box(p.card, 21.0));
         let header = stack![
             container(pill).center_x(Fill).padding(Padding::ZERO.top(44.0)),
             container(ring).center_x(Fill).padding(Padding::ZERO.top(8.0))
@@ -1741,8 +1766,11 @@ impl BeeperGuiApp {
         let mut parts = Column::new().spacing(2).align_x(if mine { Right } else { iced::Left });
         if group && !mine && first {
             parts = parts.push(
-                container(semi(m.sender_name.clone().expect("sender name"), 11.0).color(hue(hash_str(&m.sender_id))))
-                    .padding(Padding::ZERO.left(11.0)),
+                container(
+                    semi(m.sender_name.clone().expect("sender name"), 11.0)
+                        .color(hex(*pick(m.sender_name.as_deref().expect("sender name"), &p.names))),
+                )
+                .padding(Padding::ZERO.left(11.0)),
             );
         }
         if let Some(q) = m.linked_message_id.as_ref().and_then(|r| st.msg_idx_by_id.get(r)).map(|&i| &st.messages[i]) {
@@ -1774,7 +1802,7 @@ impl BeeperGuiApp {
                         r.push(
                             container(Space::new())
                                 .width(2)
-                                .height(4.0 + (hash_str(&format!("{name}{k}")) % 14) as f32)
+                                .height(4.0 + name_hash(&format!("{name}{k}")).rem_euclid(14) as f32)
                                 .style(fill_box(fg.scale_alpha(0.7), 1.0)),
                         )
                     });
@@ -2022,7 +2050,6 @@ impl BeeperGuiApp {
         let st = self.store.read().unwrap();
         let cid = self.selected_chat_id.clone().expect("a chat is selected");
         let chat = &st.chats[st.resolve_chat_idx(&cid).expect("selected chat exists")];
-        let me = st.me().full_name.as_deref().expect("self name");
         let action = |c: char, label: &'static str, msg: UiMessage| {
             button(
                 column![ic(c, 16.0).color(p.text), txt(label, 11.0).color(p.sub)].spacing(4).align_x(Center).width(52),
@@ -2071,7 +2098,7 @@ impl BeeperGuiApp {
         let body = column![
             closable_head(p, "Chat Info", 13.0, UiMessage::ToggleRightPanel),
             column![
-                self.chat_avatar(chat, me, 64.0),
+                self.chat_avatar(chat, 64.0),
                 semi(chat.title.clone(), 15.0).color(p.strong),
                 txt(network_name(&chat.account_id), 12.0).color(p.sub)
             ]
@@ -2104,12 +2131,11 @@ impl BeeperGuiApp {
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
         let q = self.command_palette_query.to_lowercase();
         let st = self.store.read().unwrap();
-        let me = st.me().full_name.as_deref().expect("self name");
         let hits = st.chats.iter().filter(|c| c.title.to_lowercase().contains(&q)).take(8).fold(
             Column::new().spacing(2),
             |col, c| {
                 let line = row![
-                    self.chat_avatar(c, me, 24.0),
+                    self.chat_avatar(c, 24.0),
                     txt(c.title.clone(), 13.0).color(p.text),
                     Space::new().width(Fill),
                     txt(network_name(&c.account_id), 11.0).color(p.sub)
@@ -2158,7 +2184,7 @@ impl BeeperGuiApp {
         .style(fill_box(p.search, 38.0));
         let free = semi("Free", 11.0).color(p.text);
         let profile = row![
-            self_avatar(&name, 28.0),
+            avatar(&name, 28.0, p),
             column![bold(name.clone(), 14.0).color(p.strong),]
                 .push(me.email.clone().map(|e| txt(e, 11.0).color(p.text)))
                 .width(Fill),
