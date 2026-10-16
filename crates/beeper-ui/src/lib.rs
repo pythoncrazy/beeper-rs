@@ -240,6 +240,7 @@ pub enum UiMessage {
     CloudAccounts(Result<Vec<BridgeAccountInfo>, String>),
     AvatarLoaded(String, Result<image::Handle, String>),
     MediaLoaded(String, Result<Frames, String>),
+    RetryMedia(String),
     AnimationTick,
     RecoveryInputChanged(String),
     VerifyRecoveryCode,
@@ -785,7 +786,7 @@ pub struct BeeperGuiApp {
     pub login: Login,
     pub cloud: Arc<Cloud>,
     pub avatars: HashMap<String, Option<image::Handle>>,
-    pub media: HashMap<String, Option<Frames>>,
+    pub media: HashMap<String, Option<Result<Frames, String>>>,
     started: std::time::Instant,
 }
 
@@ -1352,10 +1353,13 @@ impl BeeperGuiApp {
             UiMessage::AvatarLoaded(url, Err(e)) => {
                 self.status_banner = format!("Could not load the avatar {url}: {e}")
             }
-            UiMessage::MediaLoaded(url, Ok(frames)) => {
-                self.media.insert(url, Some(frames));
+            UiMessage::MediaLoaded(url, r) => {
+                self.media.insert(url, Some(r));
             }
-            UiMessage::MediaLoaded(_, Err(e)) => self.status_banner = format!("Could not load an image: {e}"),
+            UiMessage::RetryMedia(url) => {
+                self.media.remove(&url);
+                return self.load_media();
+            }
             UiMessage::AnimationTick => {}
             UiMessage::RecoveryInputChanged(v) => self.recovery_code_input = v,
             UiMessage::VerifyRecoveryCode => {
@@ -1604,7 +1608,9 @@ impl BeeperGuiApp {
             let st = self.store.read().unwrap();
             let mut urls =
                 st.chat_msg_indices.get(chat).into_iter().flatten().flat_map(|&i| &st.messages[i].attachments);
-            urls.any(|a| a.src_url.as_ref().and_then(|u| self.media.get(u)?.as_ref()).is_some_and(|f| f.len() > 1))
+            urls.any(|a| {
+                a.src_url.as_ref().and_then(|u| self.media.get(u)?.as_ref()?.as_ref().ok()).is_some_and(|f| f.len() > 1)
+            })
         });
         let tick =
             animated.then(|| iced::time::every(std::time::Duration::from_millis(20)).map(|_| UiMessage::AnimationTick));
@@ -2207,30 +2213,50 @@ impl BeeperGuiApp {
                         .style(fill_box(bg, 17.0))
                         .into()
                 }
-                (false, "img") => button({
+                (false, "img") => {
                     let (w, h) = a.size.as_ref().map_or((240.0, 160.0), |s| {
                         let (w, h) = (s.width.unwrap_or(240) as f32, s.height.unwrap_or(160) as f32);
                         let k = (360.0 / w).min(400.0 / h).min(1.0);
                         (w * k, h * k)
                     });
-                    match a.src_url.as_ref().and_then(|u| self.media.get(u)?.as_ref()) {
-                        Some(frames) => El::from(
+                    let url = a.src_url.clone();
+                    let (slot, press): (El<'_>, _) = match url.as_ref().and_then(|u| self.media.get(u)?.as_ref()) {
+                        Some(Ok(frames)) => (
                             image(current_frame(frames, self.started.elapsed().as_millis()))
                                 .width(w)
                                 .height(h)
-                                .border_radius(17.0),
+                                .border_radius(17.0)
+                                .into(),
+                            UiMessage::OpenQuickLook(name, "Image attachment".into()),
                         ),
-                        None => container(ic(icon::IMAGE, 28.0).color(p.sub))
+                        Some(Err(_)) => (
+                            container(
+                                container(
+                                    txt("Could not load. Click to try again", 14.0)
+                                        .line_height(1.0)
+                                        .color(Color::WHITE),
+                                )
+                                .center_y(36)
+                                .padding([0, 17])
+                                .style(fill_box(p.toggle_on, 18.0)),
+                            )
                             .center_x(w)
                             .center_y(h)
-                            .style(fill_box(p.link_card, 17.0))
+                            .style(fill_box(Color::BLACK.scale_alpha(0.45), 17.0))
                             .into(),
-                    }
-                })
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.text; 3], 17.0))
-                .on_press(UiMessage::OpenQuickLook(name, "Image attachment".into()))
-                .into(),
+                            UiMessage::RetryMedia(url.expect("a failed image has a URL")),
+                        ),
+                        None => (
+                            container(ic(icon::IMAGE, 28.0).color(p.sub))
+                                .center_x(w)
+                                .center_y(h)
+                                .style(fill_box(p.link_card, 17.0))
+                                .into(),
+                            UiMessage::OpenQuickLook(name, "Image attachment".into()),
+                        ),
+                    };
+                    button(slot).padding(0).style(btn_style([CLEAR; 3], [p.text; 3], 17.0)).on_press(press).into()
+                }
                 _ => {
                     let size = a.file_size.map(human_size).unwrap_or_default();
                     let tile = container(ic(icon::FILE_TEXT, 18.0).color(fg))
