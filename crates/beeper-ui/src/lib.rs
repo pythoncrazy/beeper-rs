@@ -12,6 +12,7 @@ use beeper_core::cloud::Cloud;
 use beeper_core::config::{account_network, civil_from_days, millis_from_rfc3339, now_unix_secs, APP_VERSION};
 use beeper_core::import::has_beeper_data;
 use beeper_core::matrix::DeviceInfo;
+use beeper_core::matrix::Outgoing;
 use beeper_core::models::*;
 use beeper_core::platform::{
     build_tray_icon_rgba, current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind,
@@ -231,6 +232,7 @@ pub enum UiMessage {
     RecoveryInputChanged(String),
     VerifyRecoveryCode,
     Verified(Result<(), String>),
+    Pushed(Result<(), String>),
     DevicesLoaded(Result<Vec<DeviceInfo>, String>),
     AskLogout(bool),
     Logout,
@@ -992,15 +994,27 @@ impl BeeperGuiApp {
             return;
         }
         let mut st = self.store.write().unwrap();
-        if let Some(edit_id) = self.editing_message_id.take() {
-            st.edit_message(&chat_id, &edit_id, text).expect("edit message");
+        let out = if let Some(target) = self.editing_message_id.take() {
+            st.edit_message(&chat_id, &target, text.clone()).expect("edit message");
+            Outgoing::Edit { target, text }
         } else {
-            st.send_message(&chat_id, Some(text), self.reply_to_message_id.take(), None).expect("send message");
+            let reply_to = self.reply_to_message_id.take();
+            let (_, txn, _) =
+                st.send_message(&chat_id, Some(text.clone()), reply_to.clone(), None).expect("send message");
             st.patch_chat(&chat_id, true, None, None).expect("mark chat read");
-        }
+            Outgoing::Send { txn, text, reply_to }
+        };
+        st.queue(&chat_id, out);
         self.composer_text.clear();
         drop(st);
         self.refresh_theme_and_tray();
+    }
+
+    fn push_outbox(&mut self) -> Task<UiMessage> {
+        let outbox = std::mem::take(&mut self.store.write().unwrap().outbox);
+        Task::batch(outbox.into_iter().map(|(chat, out)| {
+            Task::perform(beeper_core::matrix::push(self.store.clone(), chat, out), UiMessage::Pushed)
+        }))
     }
 
     pub fn step_chat(&mut self, delta: isize) {
@@ -1043,16 +1057,28 @@ impl BeeperGuiApp {
                 return operation::focus("composer-input");
             }
             UiMessage::DeleteMessage(cid, mid) => {
-                self.store.write().unwrap().delete_message(&cid, &mid).expect("delete message");
+                let mut st = self.store.write().unwrap();
+                st.delete_message(&cid, &mid).expect("delete message");
+                st.queue(&cid, Outgoing::Redact { target: mid });
             }
             UiMessage::ToggleReaction(cid, mid, key) => {
                 let mut st = self.store.write().unwrap();
-                let mine = |r: &Reaction| r.reaction_key == key && r.participant_id.starts_with("@self_");
-                if st.messages[st.msg_idx_by_id[&mid]].reactions.iter().any(mine) {
-                    st.remove_reaction(&cid, &mid, &key).expect("remove reaction");
-                } else {
-                    st.add_reaction(&cid, &mid, &key, None).expect("add reaction");
-                }
+                let mine = st.messages[st.msg_idx_by_id[&mid]]
+                    .reactions
+                    .iter()
+                    .find(|r| r.reaction_key == key && st.is_me(&r.participant_id))
+                    .map(|r| r.id.clone());
+                let out = match mine {
+                    Some(target) => {
+                        st.remove_reaction(&cid, &mid, &key).expect("remove reaction");
+                        Outgoing::Redact { target }
+                    }
+                    None => {
+                        let (_, txn) = st.add_reaction(&cid, &mid, &key, None).expect("add reaction");
+                        Outgoing::React { txn, target: mid, key }
+                    }
+                };
+                st.queue(&cid, out);
             }
             UiMessage::ToggleBookmark(mid) => {
                 self.store.write().unwrap().toggle_bookmark(&mid);
@@ -1212,6 +1238,8 @@ impl BeeperGuiApp {
             }
             UiMessage::Verified(Ok(())) => self.status_banner = "This device is verified.".into(),
             UiMessage::Verified(Err(e)) => self.status_banner = format!("Could not verify this device: {e}"),
+            UiMessage::Pushed(Ok(())) => {}
+            UiMessage::Pushed(Err(e)) => self.status_banner = format!("Could not send to Matrix: {e}"),
             UiMessage::VerifySasNow => {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 self.store.write().unwrap().sas_confirm = Some(tx);
@@ -1348,7 +1376,10 @@ impl BeeperGuiApp {
                 }
             }
         }
-        Task::batch([self.load_avatars(), self.load_media()])
+        if let Some(e) = self.store.write().unwrap().matrix_error.take() {
+            self.status_banner = e;
+        }
+        Task::batch([self.load_avatars(), self.load_media(), self.push_outbox()])
     }
 
     fn load_media(&mut self) -> Task<UiMessage> {
@@ -2126,7 +2157,7 @@ impl BeeperGuiApp {
             keys.dedup();
             let pills = keys.into_iter().fold(Row::new().spacing(4), |r, k| {
                 let n = m.reactions.iter().filter(|x| x.reaction_key == k).count();
-                let own = m.reactions.iter().any(|x| x.reaction_key == k && x.participant_id.starts_with("@self_"));
+                let own = m.reactions.iter().any(|x| x.reaction_key == k && st.is_me(&x.participant_id));
                 let pill =
                     row![txt(k.to_string(), 12.0), txt(n.to_string(), 11.0).color(p.text)].spacing(3).align_y(Center);
                 r.push(

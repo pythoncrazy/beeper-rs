@@ -16,9 +16,13 @@ use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSetti
 use matrix_sdk::notification_settings::RoomNotificationMode;
 use matrix_sdk::room::MessagesOptions;
 use matrix_sdk::ruma::api::client::media::get_content_thumbnail::v3::Method;
+use matrix_sdk::ruma::events::reaction::ReactionEventContent;
+use matrix_sdk::ruma::events::relation::{Annotation, Reply};
+use matrix_sdk::ruma::events::room::message::{Relation, ReplacementMetadata, RoomMessageEventContent};
 use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::events::tag::TagName;
 use matrix_sdk::ruma::events::{GlobalAccountDataEventType, RoomAccountDataEventType, StateEventType};
+use matrix_sdk::ruma::OwnedEventId;
 use matrix_sdk::{Client, LoopCtrl, Room, RoomMemberships, SessionMeta, SessionTokens};
 use matrix_sdk_crypto::vodozemac;
 use serde_json::Value;
@@ -326,6 +330,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     let (mut ops, mut non_messages) = (Vec::new(), Vec::new());
     for e in &events {
         let v: Value = serde_json::from_str(e.raw().json().get()).expect("timeline event JSON");
+        ops.extend(s(&v["unsigned"]["transaction_id"]).map(Op::Redact));
         match op(room, &chat_id, &chat.account_id, &v).await {
             Some(Op::Upsert(m)) => ops.push(Op::Upsert(m)),
             o => {
@@ -412,6 +417,47 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     if st.chats[idx].is_archived != Some(archived) {
         st.update_chat(idx, |c| c.is_archived = Some(archived));
     }
+}
+
+pub enum Outgoing {
+    Send { txn: String, text: String, reply_to: Option<String> },
+    Edit { target: String, text: String },
+    Redact { target: String },
+    React { txn: String, target: String, key: String },
+}
+
+pub async fn push(store: SharedStore, chat: String, out: Outgoing) -> Result<(), String> {
+    let client = store.read().unwrap().matrix.clone().ok_or("Matrix is not connected yet")?;
+    let mut rooms = client.joined_rooms().into_iter();
+    let room = loop {
+        let room = rooms.next().ok_or_else(|| format!("{chat} is not a joined Matrix room"))?;
+        if chat_id(&room).await == chat {
+            break room;
+        }
+    };
+    let event = |id: String| OwnedEventId::try_from(id).map_err(|e| e.to_string());
+    let e = |x: matrix_sdk::Error| x.to_string();
+    match out {
+        Outgoing::Send { txn, text, reply_to } => {
+            let mut content = RoomMessageEventContent::text_plain(text);
+            content.relates_to =
+                reply_to.map(|r| event(r).map(|id| Relation::Reply(Reply::with_event_id(id)))).transpose()?;
+            room.send(content).with_transaction_id(txn.into()).await.map_err(e)?;
+        }
+        Outgoing::Edit { target, text } => {
+            let content = RoomMessageEventContent::text_plain(text)
+                .make_replacement(ReplacementMetadata::new(event(target)?, None));
+            room.send(content).await.map_err(e)?;
+        }
+        Outgoing::Redact { target } => {
+            room.redact(&event(target)?, None, None).await.map_err(|x| x.to_string())?;
+        }
+        Outgoing::React { txn, target, key } => {
+            let content = ReactionEventContent::new(Annotation::new(event(target)?, key));
+            room.send(content).with_transaction_id(txn.into()).await.map_err(e)?;
+        }
+    }
+    Ok(())
 }
 
 const ENCRYPTED_FILE: &str = "encryptedFileInfoJSON";
