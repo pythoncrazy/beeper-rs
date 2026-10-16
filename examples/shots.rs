@@ -1,4 +1,6 @@
-use beeper_core::{config::CentralConfig, models::ThemeChoice, store::BeeperStore};
+use beeper_core::config::CentralConfig;
+use beeper_core::models::{ThemeChoice, VerificationSas, VerificationSasEmoji, VerificationState};
+use beeper_core::store::BeeperStore;
 use beeper_ui::{
     login::{Login, LoginMsg, Screen},
     style::{fw, ALL_FONTS},
@@ -53,6 +55,30 @@ fn main() {
     let _ = app.update(UiMessage::AskLogout(true));
     shot(&out, "settings_logout", (800.0, 740.0), &theme, app.view_settings());
     let _ = app.update(UiMessage::AskLogout(false));
+    {
+        let mut st = app.store.write().unwrap();
+        let emojis = [
+            ("🐶", "Dog"),
+            ("🔑", "Key"),
+            ("🎸", "Guitar"),
+            ("🚀", "Rocket"),
+            ("🌵", "Cactus"),
+            ("⏰", "Clock"),
+            ("🍕", "Pizza"),
+        ];
+        let emojis = emojis.map(|(e, d)| VerificationSasEmoji { emoji: e.into(), description: d.into() }).to_vec();
+        st.setup_status.session.verification = Some(VerificationState {
+            verification_id: "shot".into(),
+            direction: "outgoing".into(),
+            methods: vec!["sas".into()],
+            state: "sas_started".into(),
+            updated_at: String::new(),
+            sas: Some(VerificationSas { decimals: None, emojis }),
+            qr: None,
+            other_device: None,
+        });
+    }
+    shot(&out, "settings_sas", (800.0, 740.0), &theme, app.view_settings());
     for screen in [Screen::Welcome, Screen::Email, Screen::Code, Screen::Username, Screen::Accounts] {
         app.login = Login::default();
         let _ = app.update(UiMessage::Login(LoginMsg::Show(screen)));
