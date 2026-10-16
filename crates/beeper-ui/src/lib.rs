@@ -1726,13 +1726,12 @@ impl BeeperGuiApp {
             );
         }
         let list = scrollable(col).anchor_bottom().height(Fill).style(scroll_style(p.divider, p.weak));
-        let status = (chat.id != NOTE_CHAT_ID).then(|| txt(network_name(&chat.account_id), 10.0).color(p.sub));
         let name_row =
-            row![semi(chat.title.clone(), 12.0).color(p.strong), ic(icon::CHEVRON_RIGHT, 12.0).color(p.tertiary)]
-                .spacing(2)
+            row![semi(chat.title.clone(), 12.0).color(p.strong), ic(icon::CHEVRON_RIGHT, 14.0).color(p.tertiary)]
+                .spacing(4)
                 .align_y(Center);
-        let pill = button(column![name_row].push(status).align_x(Center).spacing(1))
-            .padding(Padding::new(6.0).left(10.0).top(if chat.id == NOTE_CHAT_ID { 6.0 } else { 8.0 }))
+        let pill = button(name_row)
+            .padding(Padding::new(6.0).left(10.0))
             .style(btn_style([p.elevated, p.selected, p.selected], [p.text; 3], 14.0))
             .on_press(UiMessage::ToggleRightPanel);
         let ring = container(self.chat_avatar(chat, 40.0)).padding(1).style(fill_box(p.card, 21.0));
