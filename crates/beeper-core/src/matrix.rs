@@ -358,7 +358,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
         }
     }
     let idx = st.chat_idx_by_id[&chat_id];
-    let last = st.chats[idx].preview.as_ref().map(|p| p.sort_key.clone());
+    let last = st.chat_msg_indices.get(&chat_id).and_then(|v| v.last()).map(|&i| st.messages[i].sort_key.clone());
     let archived = !note && done.is_some_and(|d| last.is_none_or(|l| sort_key(d) >= l));
     if st.chats[idx].is_archived != Some(archived) {
         st.update_chat(idx, |c| c.is_archived = Some(archived));
