@@ -101,7 +101,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         })
         .collect();
     let tags = room.tags().await.expect("read room tags").unwrap_or_default();
-    let dm = bridge["com.beeper.room_type"] == "dm" || room.is_direct().await.expect("read m.direct");
+    let dm = if bridge.is_null() { items.len() <= 2 } else { bridge["com.beeper.room_type.v2"] == "dm" };
     let names = |own: bool| items.iter().filter(move |u| u.is_self == Some(own)).filter_map(|u| u.full_name.clone());
     let others: Vec<String> = names(false).collect();
     let title = room.name().filter(|n| !n.is_empty()).unwrap_or_else(|| {
@@ -195,6 +195,12 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
         ("m.room.message", _) => (s(&c["body"]), Vec::new(), "TEXT"),
         _ => return None,
     };
+    let profile = &c["com.beeper.per_message_profile"];
+    let profile_name = s(&profile["displayname"]);
+    let text = match (&profile_name, profile["has_fallback"] == true) {
+        (Some(n), true) => text.map(|t| t.strip_prefix(&format!("{n}: ")).expect("profile fallback prefix").into()),
+        _ => text,
+    };
     let user = matrix_sdk::ruma::UserId::parse(&sender).expect("sender is a user ID");
     let member = room.get_member_no_sync(&user).await.expect("read room member");
     let order = e["unsigned"]["com.beeper.hs.order"].as_i64().expect("Beeper events carry com.beeper.hs.order");
@@ -209,7 +215,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
         id,
         account_id: account_id.into(),
         chat_id: chat_id.into(),
-        sender_name: Some(member.map_or_else(|| sender.clone(), |m| m.name().to_string())),
+        sender_name: Some(profile_name.unwrap_or_else(|| member.map_or_else(|| sender.clone(), |m| m.name().into()))),
         is_sender: Some(user == room.own_user_id()),
         sender_id: sender,
         sort_key: sort_key(order),
