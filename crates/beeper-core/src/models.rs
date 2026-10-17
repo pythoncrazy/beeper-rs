@@ -738,6 +738,7 @@ pub struct BeeperSettings {
     pub pas_port: u16,
     pub prefs: std::collections::BTreeMap<String, u8>,
     pub hotkeys_off: std::collections::BTreeSet<String>,
+    pub reminders_order: u8,
 }
 
 impl BeeperSettings {
@@ -766,6 +767,7 @@ impl BeeperSettings {
             self.clone().set_pref(k, *v);
         }
         self.hotkeys_off.iter().for_each(|h| crate::prefs::assert_hotkey(h));
+        assert!(self.reminders_order < 4, "reminders order {} is out of range", self.reminders_order);
         assert!((50..=300).contains(&self.zoom_percent), "zoom {}% is out of range", self.zoom_percent);
     }
 }

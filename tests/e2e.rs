@@ -1010,7 +1010,26 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
                 .collect();
             assert_eq!(sent, [Some(at), None], "a reminder is set and dismissed on the homeserver");
             assert!(st.chats[0].reminder.is_none() && gui.chat_menu.is_none());
+            for (i, at) in [(0, 2), (1, 1)] {
+                st.set_reminder(i, Some(ChatReminder { remind_at_ms: at, dismiss_on_incoming_message: true }));
+            }
         }
+        let _ = gui.update(UiMessage::SelectTab(InboxTab::Reminders));
+        let order = |gui: &BeeperGuiApp| {
+            let st = store.read().unwrap();
+            gui.visible_chats(&st).iter().map(|c| c.reminder.as_ref().unwrap().remind_at_ms).collect::<Vec<_>>()
+        };
+        assert_eq!(order(&gui), [1, 2], "reminders come by least time remaining");
+        let _ = gui.update(UiMessage::ReminderMenu);
+        let _ = gui.update(UiMessage::OrderReminders(1));
+        assert_eq!(order(&gui), [2, 1], "the display options change the order");
+        assert_eq!(store.read().unwrap().settings.reminders_order, 1);
+        let _ = gui.update(UiMessage::OrderReminders(0));
+        let _ = gui.update(UiMessage::Ask(Some(1)));
+        assert!(simulator(gui.view_main()).find("Dismiss All Reminders?").is_ok());
+        let _ = gui.update(UiMessage::DismissAllReminders);
+        assert!(order(&gui).is_empty() && gui.confirm.is_none(), "dismiss all clears every reminder");
+        let _ = gui.update(UiMessage::SelectTab(InboxTab::AllChats));
         let _ = gui.update(UiMessage::SearchRoom(cid.clone()));
         assert!(gui.show_command_palette && gui.search_room.as_deref() == Some(cid.as_str()));
         let _ = gui.update(UiMessage::ToggleCommandPalette);

@@ -273,7 +273,10 @@ pub enum UiMessage {
     Verified(Result<(), String>),
     Pushed(Result<(), String>),
     DevicesLoaded(Result<Vec<DeviceInfo>, String>),
-    AskLogout(bool),
+    Ask(Option<u8>),
+    ReminderMenu,
+    OrderReminders(u8),
+    DismissAllReminders,
     Logout,
     LoggedOut(Result<(), String>),
     VerifySasNow,
@@ -448,6 +451,14 @@ fn menu_item<'a>(
     container(button(line).padding([3.125, 8.0]).width(Fill).style(style).on_press_maybe(msg)).padding([2, 5]).into()
 }
 
+const ASK_LOGOUT: u8 = 0;
+const ASK_DISMISS_REMINDERS: u8 = 1;
+const REMINDER_ORDERS: [&str; 4] = [
+    "Order by Least Time Remaining",
+    "Order by Most Time Remaining",
+    "Order by Oldest Message",
+    "Order by Newest Message",
+];
 const MENU_ITEM: f32 = 26.0;
 const SUB_MENU_W: [f32; 2] = [124.0, 257.0];
 const REMIND_PRESETS: [&str; 5] = ["In an Hour", "In Two Hours", "This Evening", "Tomorrow", "Next Week"];
@@ -809,6 +820,10 @@ static REPLY_CURVE: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock:
     ["", r#" transform="matrix(-1 0 0 1 26 0)""#].map(|flip| {
         svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0.5 0.5 25 19"><path{flip} fill="currentColor" fill-rule="evenodd" d="M17 15.5C9.544 15.5 3.5 9.456 3.5 2V.5h-3V2c0 9.113 7.387 16.5 16.5 16.5h6a1.5 1.5 0 0 0 0-3z"/></svg>"#).into_bytes())
     })
+});
+
+static TUNE: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.167 17.5v-5h1.666v1.667H17.5v1.666h-6.667V17.5zM2.5 15.833v-1.666h5v1.666zM5.833 12.5v-1.667H2.5V9.167h3.333V7.5H7.5v5zm3.334-1.667V9.167H17.5v1.666zM12.5 7.5v-5h1.667v1.667H17.5v1.666h-3.333V7.5zm-10-1.667V4.167h8.333v1.666z"/></svg>"##[..])
 });
 
 static PIN: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
@@ -1223,7 +1238,8 @@ pub struct BeeperGuiApp {
     pub nickname_edit_buffer: String,
     pub recovery_code_input: String,
     pub devices: Option<Result<Vec<DeviceInfo>, String>>,
-    pub confirm_logout: bool,
+    pub confirm: Option<u8>,
+    reminder_menu: Option<Point>,
     pub show_command_palette: bool,
     pub active_settings_tab: SettingsTab,
     pub settings_query: String,
@@ -1310,7 +1326,8 @@ impl BeeperGuiApp {
             nickname_edit_buffer: String::new(),
             recovery_code_input: String::new(),
             devices: None,
-            confirm_logout: false,
+            confirm: None,
+            reminder_menu: None,
             show_command_palette: false,
             active_settings_tab: SettingsTab::General,
             settings_query: String::new(),
@@ -1580,7 +1597,13 @@ impl BeeperGuiApp {
                         || (0..FILTERS.len()).any(|i| on(i) && filter_hit(i, c, st)))
             })
             .collect();
-        list.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+        let remind_at = |c: &Chat| c.reminder.as_ref().map_or(0, |r| r.remind_at_ms);
+        match (self.active_tab, st.settings.reminders_order) {
+            (InboxTab::Reminders, 0) => list.sort_by_key(|c| remind_at(c)),
+            (InboxTab::Reminders, 1) => list.sort_by_key(|c| std::cmp::Reverse(remind_at(c))),
+            (InboxTab::Reminders, 2) => list.sort_by(|a, b| a.last_activity.cmp(&b.last_activity)),
+            _ => list.sort_by(|a, b| b.last_activity.cmp(&a.last_activity)),
+        }
         list
     }
 
@@ -2001,9 +2024,27 @@ impl BeeperGuiApp {
                 return self.load_devices();
             }
             UiMessage::DevicesLoaded(r) => self.devices = Some(r),
-            UiMessage::AskLogout(on) => self.confirm_logout = on,
+            UiMessage::Ask(dialog) => (self.confirm, self.reminder_menu) = (dialog, None),
+            UiMessage::ReminderMenu => {
+                self.reminder_menu = Some(Point::new(68.0 + self.sidebar_cursor.x, self.sidebar_cursor.y));
+            }
+            UiMessage::OrderReminders(i) => {
+                self.reminder_menu = None;
+                self.patch_settings(|s| s.reminders_order = i);
+            }
+            UiMessage::DismissAllReminders => {
+                self.confirm = None;
+                let mut st = self.store.write().unwrap();
+                for i in 0..st.chats.len() {
+                    if st.chats[i].reminder.is_some() {
+                        st.set_reminder(i, None);
+                    }
+                }
+                drop(st);
+                self.refresh_theme_and_tray();
+            }
             UiMessage::Logout => {
-                self.confirm_logout = false;
+                self.confirm = None;
                 return Task::perform(beeper_core::matrix::logout(self.store.clone()), UiMessage::LoggedOut);
             }
             UiMessage::LoggedOut(Ok(())) => {
@@ -2278,6 +2319,7 @@ impl BeeperGuiApp {
                 if self.show_command_palette
                     || self.show_filter_menu
                     || self.chat_menu.is_some()
+                    || self.reminder_menu.is_some()
                     || self.show_attach_menu
                     || self.show_gif_picker
                     || self.quick_look_target.is_some()
@@ -2285,6 +2327,7 @@ impl BeeperGuiApp {
                     self.show_command_palette = false;
                     self.show_filter_menu = false;
                     self.chat_menu = None;
+                    self.reminder_menu = None;
                     self.show_attach_menu = false;
                     self.show_gif_picker = false;
                     self.quick_look_target = None;
@@ -2607,6 +2650,7 @@ impl BeeperGuiApp {
             .on_press(UiMessage::SearchSelect(None))
         });
         let filter_menu = self.show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 14.5, 26.0));
+        let reminder_menu = self.reminder_menu.map(|at| (self.view_reminder_menu(), at.x, at.y));
         let chat_menu = self.chat_menu.as_ref().map(|(cid, at)| {
             let (w, h) = if cid.starts_with("draft:") { (124.0, 31.0) } else { (233.0, 8.0 + 8.0 * MENU_ITEM + 22.0) };
             let x = if at.x + w > self.main_size.width { at.x - w } else { at.x };
@@ -2618,7 +2662,7 @@ impl BeeperGuiApp {
                 at.y.min(self.main_size.height - h - 8.0),
             )
         });
-        let menu = filter_menu.or(chat_menu).map(|(m, x, y)| {
+        let menu = filter_menu.or(reminder_menu).or(chat_menu).map(|(m, x, y)| {
             mouse_area(
                 container(mouse_area(m).on_press(UiMessage::Noop))
                     .padding(Padding::ZERO.left(x).top(y))
@@ -2635,7 +2679,8 @@ impl BeeperGuiApp {
             let card = container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0));
             container(card).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(76.0))
         });
-        stack![base].push(toast).push(menu).push(scrim).push(select).into()
+        let confirm = self.confirm.filter(|&d| d == ASK_DISMISS_REMINDERS).map(|d| self.view_confirm(d));
+        stack![base].push(toast).push(menu).push(scrim).push(select).push(confirm).into()
     }
 
     fn view_filter_menu(&self) -> El<'_> {
@@ -2662,6 +2707,21 @@ impl BeeperGuiApp {
                 .chain(views),
         );
         container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
+    }
+
+    fn view_reminder_menu(&self) -> El<'_> {
+        let p = &self.pal;
+        let order = self.store.read().unwrap().settings.reminders_order;
+        let lead = |on: bool| Some(container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into());
+        let orders = REMINDER_ORDERS
+            .iter()
+            .zip(0..)
+            .map(|(label, i)| menu_item(p, lead(order == i), (*label).into(), "", Some(UiMessage::OrderReminders(i))));
+        let ask = Some(UiMessage::Ask(Some(ASK_DISMISS_REMINDERS)));
+        let col = Column::with_children(
+            orders.chain([menu_rule(p), menu_item(p, lead(false), "Dismiss All Reminders".into(), "", ask)]),
+        );
+        container(col.padding([4, 0])).width(291).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
     }
 
     /// Messages for the search media grid, newest first.
@@ -3079,8 +3139,16 @@ impl BeeperGuiApp {
             self.tip(el.into(), "Filter", vec![], tooltip::Position::Bottom)
         });
         let below = |el: El<'static>, label, keys| self.tip(el, label, keys, tooltip::Position::Bottom);
+        let options = (self.active_tab == InboxTab::Reminders).then(|| {
+            let btn = button(container(tinted(&TUNE, 18.0, p.strong)).center_x(30).center_y(26))
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
+                .on_press(UiMessage::ReminderMenu);
+            below(btn.into(), "Display Options", vec![])
+        });
         let header = row![title]
             .push(filter)
+            .push(options)
             .push(below(
                 head_btn(icon::SEARCH, 23.0, [6.5, 10.0], UiMessage::ToggleCommandPalette).into(),
                 "Search Chats",
@@ -3303,6 +3371,7 @@ impl BeeperGuiApp {
             let (head, hint) = tab.empty();
             let header = column![semi(head, 16.0).color(p.strong).align_x(Center).line_height(1.25)]
                 .push((!hint.is_empty()).then(|| txt(hint, 13.0).color(p.strong).align_x(Center)))
+                .spacing(12)
                 .align_x(Center);
             let fallback = self.active_tab.fallback().map(|views| {
                 let words = "If you're looking for something, check the".split(' ').map(|w| txt(w, 13.0).into());
@@ -4694,7 +4763,8 @@ impl BeeperGuiApp {
         .height(Fill)
         .style(fill_box(p.prefs_pane, 10.0));
         let base = container(row![left, container(right).padding(8)]).width(Fill).height(Fill);
-        stack![base.style(fill_box(p.frame, 0.0))].push(self.confirm_logout.then(|| self.view_logout_confirm())).into()
+        let confirm = self.confirm.filter(|&d| d == ASK_LOGOUT).map(|d| self.view_confirm(d));
+        stack![base.style(fill_box(p.frame, 0.0))].push(confirm).into()
     }
 
     fn sas_row<'a>(&self, st: &BeeperStore) -> El<'a> {
@@ -4743,7 +4813,7 @@ impl BeeperGuiApp {
             let logout = button(semi("Logout", 12.0).color(p.strong))
                 .padding([4, 8])
                 .style(btn_style([p.hover, p.selected, p.selected], [p.strong; 3], 20.0))
-                .on_press(UiMessage::AskLogout(true));
+                .on_press(UiMessage::Ask(Some(ASK_LOGOUT)));
             let line: El<'a> =
                 row![tile, text].push(d.current.then_some(logout)).spacing(12).align_y(Center).padding([8, 12]).into();
             [(i > 0).then(|| divider(p, 0.0)), Some(line)].into_iter().flatten()
@@ -4755,19 +4825,32 @@ impl BeeperGuiApp {
         .into()
     }
 
-    fn view_logout_confirm(&self) -> El<'_> {
+    fn view_confirm(&self, dialog: u8) -> El<'_> {
         let p = &self.pal;
-        let name = self.devices.iter().flatten().flatten().find(|d| d.current).map(|d| d.name.clone());
+        let (title, body, yes, msg) = match dialog {
+            ASK_LOGOUT => {
+                let name = self.devices.iter().flatten().flatten().find(|d| d.current).map(|d| d.name.clone());
+                let title = format!("Logout of {}?", name.as_deref().unwrap_or("this device"));
+                (title, "This will disconnect all chat accounts on this device.", "Logout", UiMessage::Logout)
+            }
+            ASK_DISMISS_REMINDERS => (
+                "Dismiss All Reminders?".into(),
+                "This will remove Reminders from all of your chats.",
+                "Yes",
+                UiMessage::DismissAllReminders,
+            ),
+            _ => unreachable!("dialog {dialog}"),
+        };
         let card = column![
-            bold(format!("Logout of {}?", name.as_deref().unwrap_or("this device")), 14.0).color(p.strong),
-            txt("This will disconnect all chat accounts on this device.", 13.0).color(p.text),
+            bold(title, 14.0).color(p.strong),
+            txt(body, 13.0).color(p.text),
             row![
                 Space::new().width(Fill),
-                pill_btn(p, "Cancel", UiMessage::AskLogout(false)),
-                button(med("Logout", 13.0).color(Color::WHITE))
+                pill_btn(p, "Cancel", UiMessage::Ask(None)),
+                button(med(yes, 13.0).color(Color::WHITE))
                     .padding([5, 12])
                     .style(btn_style([p.accent; 3], [Color::WHITE; 3], 6.0))
-                    .on_press(UiMessage::Logout)
+                    .on_press(msg)
             ]
             .spacing(8)
         ]
@@ -4782,7 +4865,7 @@ impl BeeperGuiApp {
             .center(Fill)
             .style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.45), 0.0)),
         )
-        .on_press(UiMessage::AskLogout(false))
+        .on_press(UiMessage::Ask(None))
         .into()
     }
 
