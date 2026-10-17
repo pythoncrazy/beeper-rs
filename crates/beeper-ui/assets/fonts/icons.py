@@ -45,6 +45,10 @@ for i, name in enumerate(MATERIAL.split()):
         cmap[0xF000 + i] = glyph
     print(f"pub const {name.upper()}: char = '\\u{{{0xF000 + i:x}}}';")
 font.setGlyphOrder(font["glyf"].glyphOrder)
+for name in font.getGlyphOrder():
+    g = font["glyf"][name]
+    g.recalcBounds(font["glyf"])
+    font["hmtx"][name] = (font["hmtx"][name][0], getattr(g, "xMin", 0))
 for rec in font["name"].names:
     if rec.nameID in (1, 3, 4, 6):
         rec.string = "icons"
