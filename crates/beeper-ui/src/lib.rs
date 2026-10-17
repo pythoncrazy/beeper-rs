@@ -460,6 +460,7 @@ fn menu_item<'a>(
     container(button(line).padding([3.125, 8.0]).width(Fill).style(style).on_press_maybe(msg)).padding([2, 5]).into()
 }
 
+pub(crate) const ISSUES_URL: &str = "https://github.com/pythoncrazy/beeper-rs/issues";
 const ORANGE: Color = Color::from_rgb8(245, 76, 3);
 const CHECKED: Color = Color::from_rgb8(14, 77, 242);
 const ASK_LOGOUT: u8 = 0;
@@ -1781,6 +1782,7 @@ impl BeeperGuiApp {
             "Zoom Out" => Some(UiMessage::Zoom(-1)),
             "Reset Zoom" => Some(UiMessage::Zoom(0)),
             "Quit App" => return iced::exit(),
+            "Report a Problem" => Some(UiMessage::OpenUrl(ISSUES_URL.into())),
             "Filter: Unread" => {
                 self.filters ^= 1;
                 None
@@ -2630,6 +2632,7 @@ impl BeeperGuiApp {
                     Key::Character("I" | "i") if shift => Some("Toggle Chat Info"),
                     Key::Character("M" | "m") if shift => Some("Chat: Toggle Mute"),
                     Key::Character("U" | "u") if shift => Some("Chat: Toggle Mark As Read"),
+                    Key::Character("P" | "p") if shift => Some("Report a Problem"),
                     Key::Character("p") => Some("Chat: Toggle Pin"),
                     Key::Character("e") => Some("Chat: Toggle Archive"),
                     Key::Character("q") => Some("Quit App"),
@@ -2826,7 +2829,7 @@ impl BeeperGuiApp {
             let (w, h) = if cid.starts_with("draft:") {
                 (124.0, 31.0)
             } else {
-                (233.0, 8.0 + 9.0 * MENU_ITEM + 33.0 + if self.selection.is_empty() { MENU_ITEM + 11.0 } else { 0.0 })
+                (233.0, 8.0 + 10.0 * MENU_ITEM + 44.0 + if self.selection.is_empty() { MENU_ITEM + 11.0 } else { 0.0 })
             };
             let x = if at.x + w > self.main_size.width { at.x - w } else { at.x };
             let sub_w = self.chat_sub.map_or(0.0, |i| SUB_MENU_W[usize::from(i)]);
@@ -3243,6 +3246,14 @@ impl BeeperGuiApp {
                 .push(self.selection.is_empty().then(|| {
                     menu_item(p, None, "Begin Selecting".into(), "", Some(UiMessage::BeginSelecting(c.id.clone())))
                 }))
+                .push(menu_rule(p))
+                .push(menu_item(
+                    p,
+                    None,
+                    "Report a Problem".into(),
+                    "Ctrl Shift P",
+                    Some(UiMessage::OpenUrl(ISSUES_URL.into()))
+                ))
             ),
         ];
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
@@ -5528,7 +5539,7 @@ impl BeeperGuiApp {
                 let head = row![svg(LOGO.clone()).width(68).height(68), title].spacing(6).align_y(Center);
                 let links = [
                     ("View changelog", UiMessage::OpenUrl("https://www.beeper.com/changelog/desktop".into())),
-                    ("Report a problem", UiMessage::OpenUrl("https://github.com/pythoncrazy/beeper-rs/issues".into())),
+                    ("Report a problem", UiMessage::OpenUrl(ISSUES_URL.into())),
                     ("Privacy", UiMessage::OpenUrl("https://www.beeper.com/privacy".into())),
                     (
                         "Legal Notices",
