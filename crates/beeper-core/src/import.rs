@@ -371,8 +371,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 is_request: Some(flag(&t, "isMessageRequest")),
                 network_name: str_field(&t, "networkName")
                     .or_else(|| bridge.get("network").and_then(|n| str_field(n, "displayname"))),
-                img_url: str_field(&t, "imgURL")
-                    .filter(|u| u != "mxc://beeper.com/f9eecb7116fee96d4ad382338888d0add1e6e0d0"),
+                img_url: str_field(&t, "imgURL"),
                 flags: 0,
                 id,
             })

@@ -178,11 +178,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, &bridge, !dm)),
         is_request: Some(bridge["channel"]["com.beeper.message_request"] == true),
         network_name: s(&bridge["network"]["displayname"]),
-        img_url: room
-            .avatar_url()
-            .filter(|u| u.is_valid())
-            .map(|u| u.to_string())
-            .filter(|u| u != "mxc://beeper.com/f9eecb7116fee96d4ad382338888d0add1e6e0d0"),
+        img_url: room.avatar_url().filter(|u| u.is_valid()).map(|u| u.to_string()),
         account_id,
         participants: ChatParticipants { has_more: false, total: items.len(), items },
         title,
