@@ -660,6 +660,7 @@ impl BeeperStore {
             network_name: None,
             network_id: None,
             img_url: None,
+            delete_modes: 0,
             flags: 0,
         };
         self.push_chat(chat, true);
@@ -843,6 +844,15 @@ impl BeeperStore {
         self.emit_ws("chat.deleted", id, None, None, None);
     }
 
+    /// Asks the bridge to delete the chat, and removes it here at once like Desktop.
+    pub fn delete_chat(&mut self, id: &str, for_everyone: bool) {
+        let modes = self.chats[self.chat_idx_by_id[id]].delete_modes;
+        let mode = if for_everyone { DELETE_FOR_EVERYONE } else { DELETE_FOR_ME };
+        assert!(modes & mode != 0, "{id} does not support delete mode {mode}");
+        self.remove_chat(id);
+        self.queue(id, Outgoing::DeleteChat { for_everyone });
+    }
+
     pub fn upsert_message(&mut self, msg: Message) {
         let Some(&idx) = self.msg_idx_by_id.get(&msg.id) else {
             let idx = self.push_message(msg, true);
@@ -1015,6 +1025,7 @@ impl BeeperStore {
             network_id: None,
             img_url: None,
             participants: ChatParticipants { has_more: false, total: items.len(), items },
+            delete_modes: 0,
             flags: 0,
         };
         let idx = self.push_chat(chat, true);

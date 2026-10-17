@@ -373,6 +373,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                     .or_else(|| bridge.get("network").and_then(|n| str_field(n, "displayname"))),
                 network_id: bridge.get("network").and_then(|n| str_field(n, "id")),
                 img_url: str_field(&t, "imgURL"),
+                delete_modes: 0,
                 flags: 0,
                 id,
             })

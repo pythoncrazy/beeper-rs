@@ -11,6 +11,8 @@ pub const CHAT_NOTIFY_ANYWAY: u16 = 1 << 6;
 pub const CHAT_MERGED_PARENT: u16 = 1 << 7;
 pub const CHAT_HIDDEN: u16 = 1 << 8;
 pub const CHAT_REQUEST: u16 = 1 << 9;
+pub const DELETE_FOR_ME: u8 = 1 << 0;
+pub const DELETE_FOR_EVERYONE: u8 = 1 << 1;
 
 pub const MSG_SENDER_SELF: u16 = 1 << 0;
 pub const MSG_UNREAD: u16 = 1 << 1;
@@ -297,6 +299,8 @@ pub struct Chat {
     pub network_id: Option<String>,
     #[serde(rename = "imgURL", skip_serializing_if = "Option::is_none")]
     pub img_url: Option<String>,
+    #[serde(rename = "deleteModes", default)]
+    pub delete_modes: u8,
     #[serde(skip)]
     pub flags: u16,
 }
