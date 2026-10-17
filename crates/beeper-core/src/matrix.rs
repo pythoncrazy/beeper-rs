@@ -2,7 +2,8 @@ use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
     Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder, EditHistoryEntry, Message,
-    MessageLink, Reaction, User, VerificationSas, VerificationSasEmoji, VerificationState,
+    MessageLink, Reaction, User, VerificationSas, VerificationSasEmoji, VerificationState, DELETE_FOR_EVERYONE,
+    DELETE_FOR_ME,
 };
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
 use futures_util::StreamExt;
@@ -237,6 +238,10 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             })
         }),
         chat_theme: None,
+        delete_modes: state(room, "com.beeper.room_features").await.map_or(0, |f| {
+            (u8::from(f["delete_chat"] == true) * DELETE_FOR_ME)
+                | (u8::from(f["delete_chat_for_everyone"] == true) * DELETE_FOR_EVERYONE)
+        }),
         flags: 0,
     }
 }
@@ -682,6 +687,9 @@ pub enum Outgoing {
     Read(String),
     Flag(ChatFlag, bool),
     Reminder(Option<ChatReminder>),
+    DeleteChat {
+        for_everyone: bool,
+    },
     Image {
         txn: String,
         bytes: Vec<u8>,
@@ -793,6 +801,10 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             });
             let raw = Raw::from_json(serde_json::value::to_raw_value(&v).expect("reminder JSON"));
             room.set_account_data_raw(REMINDER.into(), raw).await.map_err(e)?;
+        }
+        Outgoing::DeleteChat { for_everyone } => {
+            let content = serde_json::json!({ "delete_for_everyone": for_everyone });
+            room.send_raw("com.beeper.delete_chat", content).await.map_err(e)?;
         }
         Outgoing::Image { txn, bytes: data, name, mime, size: (w, h), caption, reply_to } => {
             use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseImageInfo};

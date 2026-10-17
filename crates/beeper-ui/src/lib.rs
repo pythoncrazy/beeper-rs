@@ -240,6 +240,8 @@ pub enum UiMessage {
     NewChat,
     SelectNewChat(u32),
     DeleteNewChat(u32),
+    AskDeleteChat(String),
+    DeleteChat(String, bool),
     NewChatQueryChanged(String),
     ToggleNewChatExpanded,
     ToggleJoinMatrix,
@@ -456,6 +458,7 @@ fn menu_item<'a>(
 const ORANGE: Color = Color::from_rgb8(245, 76, 3);
 const ASK_LOGOUT: u8 = 0;
 const ASK_DISMISS_REMINDERS: u8 = 1;
+const ASK_DELETE_CHAT: u8 = 2;
 const REMINDER_ORDERS: [&str; 4] = [
     "Order by Least Time Remaining",
     "Order by Most Time Remaining",
@@ -1241,6 +1244,7 @@ pub struct BeeperGuiApp {
     pub recovery_code_input: String,
     pub devices: Option<Result<Vec<DeviceInfo>, String>>,
     pub confirm: Option<u8>,
+    delete_target: Option<String>,
     reminder_menu: Option<Point>,
     pub show_command_palette: bool,
     pub active_settings_tab: SettingsTab,
@@ -1330,6 +1334,7 @@ impl BeeperGuiApp {
             recovery_code_input: String::new(),
             devices: None,
             confirm: None,
+            delete_target: None,
             reminder_menu: None,
             show_command_palette: false,
             active_settings_tab: SettingsTab::General,
@@ -2058,6 +2063,14 @@ impl BeeperGuiApp {
             }
             UiMessage::DevicesLoaded(r) => self.devices = Some(r),
             UiMessage::Ask(dialog) => (self.confirm, self.reminder_menu) = (dialog, None),
+            UiMessage::AskDeleteChat(id) => {
+                (self.confirm, self.chat_menu, self.delete_target) = (Some(ASK_DELETE_CHAT), None, Some(id));
+            }
+            UiMessage::DeleteChat(id, everyone) => {
+                self.confirm = None;
+                self.store.write().unwrap().delete_chat(&id, everyone);
+                return self.update(UiMessage::StoreChanged);
+            }
             UiMessage::ReminderMenu => {
                 self.reminder_menu = Some(Point::new(68.0 + self.sidebar_cursor.x, self.sidebar_cursor.y));
             }
@@ -2709,7 +2722,7 @@ impl BeeperGuiApp {
         let filter_menu = self.show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 14.5, 26.0));
         let reminder_menu = self.reminder_menu.map(|at| (self.view_reminder_menu(), at.x, at.y));
         let chat_menu = self.chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
-            let (w, h) = if cid.starts_with("draft:") { (124.0, 31.0) } else { (233.0, 8.0 + 8.0 * MENU_ITEM + 22.0) };
+            let (w, h) = if cid.starts_with("draft:") { (124.0, 31.0) } else { (233.0, 8.0 + 9.0 * MENU_ITEM + 33.0) };
             let x = if at.x + w > self.main_size.width { at.x - w } else { at.x };
             let sub_w = self.chat_sub.map_or(0.0, |i| SUB_MENU_W[usize::from(i)]);
             let left = x + w + sub_w > self.main_size.width;
@@ -2736,7 +2749,7 @@ impl BeeperGuiApp {
             let card = container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0));
             container(card).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(76.0))
         });
-        let confirm = self.confirm.filter(|&d| d == ASK_DISMISS_REMINDERS).map(|d| self.view_confirm(d));
+        let confirm = self.confirm.filter(|&d| d != ASK_LOGOUT).map(|d| self.view_confirm(d));
         stack![base].push(toast).push(menu).push(scrim).push(select).push(confirm).into()
     }
 
@@ -2950,6 +2963,16 @@ impl BeeperGuiApp {
                 ),
             ]),
             open_sub(1, "Remind Me"),
+            close_sub(column![
+                menu_rule(p),
+                menu_item(
+                    p,
+                    None,
+                    "Delete Chat".into(),
+                    "",
+                    (c.delete_modes != 0).then(|| UiMessage::AskDeleteChat(c.id.clone())),
+                ),
+            ]),
         ];
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         let sub = self.chat_sub.map(|i| {
@@ -4934,32 +4957,52 @@ impl BeeperGuiApp {
 
     fn view_confirm(&self, dialog: u8) -> El<'_> {
         let p = &self.pal;
-        let (title, body, yes, msg) = match dialog {
+        let (title, body, actions) = match dialog {
             ASK_LOGOUT => {
                 let name = self.devices.iter().flatten().flatten().find(|d| d.current).map(|d| d.name.clone());
                 let title = format!("Logout of {}?", name.as_deref().unwrap_or("this device"));
-                (title, "This will disconnect all chat accounts on this device.", "Logout", UiMessage::Logout)
+                (title, "This will disconnect all chat accounts on this device.", vec![("Logout", UiMessage::Logout)])
             }
             ASK_DISMISS_REMINDERS => (
                 "Dismiss All Reminders?".into(),
                 "This will remove Reminders from all of your chats.",
-                "Yes",
-                UiMessage::DismissAllReminders,
+                vec![("Yes", UiMessage::DismissAllReminders)],
             ),
+            ASK_DELETE_CHAT => {
+                let st = self.store.read().unwrap();
+                let id = self.delete_target.clone().expect("a chat to delete");
+                let c = &st.chats[st.resolve_chat_idx(&id).expect("the chat to delete exists")];
+                let delete = |label, everyone| (label, UiMessage::DeleteChat(id.clone(), everyone));
+                let (body, actions) = match c.delete_modes {
+                    DELETE_FOR_ME => {
+                        ("This action will permanently delete this chat.", vec![delete("Delete Chat", false)])
+                    }
+                    DELETE_FOR_EVERYONE => (
+                        "This action will permanently delete this chat for all participants.",
+                        vec![delete("Delete for Everyone", true)],
+                    ),
+                    _ => (
+                        "Choose to delete permanently for yourself only, or for all participants.",
+                        vec![delete("Delete for Me", false), delete("Delete for Everyone", true)],
+                    ),
+                };
+                (format!("Delete {}", c.title), body, actions)
+            }
             _ => unreachable!("dialog {dialog}"),
+        };
+        let action = |(label, msg): (&'static str, UiMessage)| {
+            button(med(label, 13.0).color(Color::WHITE))
+                .padding([5, 12])
+                .style(btn_style([p.accent; 3], [Color::WHITE; 3], 6.0))
+                .on_press(msg)
+                .into()
         };
         let card = column![
             bold(title, 14.0).color(p.strong),
             txt(body, 13.0).color(p.text),
-            row![
-                Space::new().width(Fill),
-                pill_btn(p, "Cancel", UiMessage::Ask(None)),
-                button(med(yes, 13.0).color(Color::WHITE))
-                    .padding([5, 12])
-                    .style(btn_style([p.accent; 3], [Color::WHITE; 3], 6.0))
-                    .on_press(msg)
-            ]
-            .spacing(8)
+            row![Space::new().width(Fill), pill_btn(p, "Cancel", UiMessage::Ask(None))]
+                .extend(actions.into_iter().map(action))
+                .spacing(8)
         ]
         .spacing(10)
         .padding(16)

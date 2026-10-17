@@ -1089,6 +1089,24 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert!(st.resolve_chat_idx(&left).is_none() && !st.chat_msg_indices.contains_key(&left));
         assert!(st.msg_idx_by_id.values().all(|&i| st.messages[i].chat_id != left), "a left chat loses its messages");
         assert_eq!(gui.selected_chat_id.as_deref(), Some(note), "leaving the open chat opens Note to self");
+        drop(st);
+        let doomed = {
+            let mut st = store.write().unwrap();
+            let c = st.chats.last_mut().expect("a chat");
+            assert!(c.id != note && c.id != "!wa_eric:beeper.com");
+            c.delete_modes = DELETE_FOR_ME | DELETE_FOR_EVERYONE;
+            c.id.clone()
+        };
+        let _ = gui.update(UiMessage::OpenChatMenu(doomed.clone()));
+        let _ = gui.update(UiMessage::AskDeleteChat(doomed.clone()));
+        assert!(gui.chat_menu.is_none() && simulator(gui.view_main()).find("Delete for Everyone").is_ok());
+        store.write().unwrap().config.demo = false;
+        let _ = gui.update(UiMessage::DeleteChat(doomed.clone(), true));
+        let mut st = store.write().unwrap();
+        st.config.demo = true;
+        let sent = matches!(st.outbox.as_slice(), [(c, Outgoing::DeleteChat { for_everyone: true })] if *c == doomed);
+        assert!(sent && st.resolve_chat_idx(&doomed).is_none(), "Delete Chat asks the bridge and drops the chat");
+        st.outbox.clear();
     }
     let _ = gui.update(rail("1"));
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));
