@@ -28,7 +28,7 @@ use matrix_sdk::ruma::OwnedEventId;
 use matrix_sdk::{Client, LoopCtrl, Room, RoomMemberships, SessionMeta, SessionTokens};
 use matrix_sdk_crypto::vodozemac;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::oneshot;
 
 pub const UTD_TEXT: &str = "Waiting for message";
@@ -127,29 +127,38 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     let me = room.own_user_id();
     let members = room.members_no_sync(RoomMemberships::JOIN).await.expect("read room members");
     let raw = room.get_state_events(StateEventType::RoomMember).await.expect("read room members");
-    let bots: HashSet<String> = raw
+    let contents: HashMap<String, Value> = raw
         .into_iter()
         .map(|r| match r {
             RawAnySyncOrStrippedState::Sync(r) => r.deserialize_as::<Value>().expect("member event JSON"),
             RawAnySyncOrStrippedState::Stripped(r) => r.deserialize_as::<Value>().expect("member event JSON"),
         })
-        .filter(|v| v["content"]["com.beeper.bridge.is_network_bot"] == true)
-        .filter_map(|v| s(&v["state_key"]))
+        .filter_map(|mut v| Some((s(&v["state_key"])?, v["content"].take())))
         .collect();
+    let ident = |id: &str, scheme: Option<&str>| {
+        let ids = contents.get(id)?["com.beeper.bridge.identifiers"].as_array()?;
+        ids.iter()
+            .filter_map(|i| i.as_str()?.split_once(':'))
+            .find(|(k, _)| scheme.map_or(!matches!(*k, "tel" | "mailto"), |want| *k == want))
+            .map(|(_, v)| v.to_string())
+    };
     let items: Vec<User> = members
         .iter()
         .filter(|m| !service.contains(m.user_id()) && bot.as_deref() != Some(m.user_id().as_str()))
-        .map(|m| User {
-            id: m.user_id().to_string(),
-            full_name: Some(m.name().to_string()),
-            username: None,
-            email: None,
-            phone_number: None,
-            img_url: m.avatar_url().filter(|u| u.is_valid()).map(|u| u.to_string()),
-            is_self: Some(m.user_id() == me),
-            cannot_message: Some(false),
-            custom_nickname: None,
-            is_network_bot: Some(bots.contains(m.user_id().as_str())),
+        .map(|m| {
+            let id = m.user_id().as_str();
+            User {
+                id: id.to_string(),
+                full_name: Some(m.name().to_string()),
+                username: ident(id, None),
+                email: ident(id, Some("mailto")),
+                phone_number: ident(id, Some("tel")),
+                img_url: m.avatar_url().filter(|u| u.is_valid()).map(|u| u.to_string()),
+                is_self: Some(m.user_id() == me),
+                cannot_message: Some(false),
+                custom_nickname: None,
+                is_network_bot: Some(contents.get(id).is_some_and(|c| c["com.beeper.bridge.is_network_bot"] == true)),
+            }
         })
         .collect();
     let tags = room.tags().await.expect("read room tags").unwrap_or_default();

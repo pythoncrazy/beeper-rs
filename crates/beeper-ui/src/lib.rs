@@ -760,7 +760,7 @@ fn chat_search_subtitle(c: &Chat) -> String {
             .username
             .as_deref()
             .filter(|s| !s.is_empty())
-            .map(|s| format!("@{s}"))
+            .map(|s| format!("@{}", s.trim_start_matches('@')))
             .or_else(|| u.phone_number.as_deref().filter(|s| !s.is_empty()).map(fmt_phone))
             .or_else(|| u.email.clone().filter(|s| !s.is_empty()));
         if let Some(sub) = sub.filter(|s| s != &c.title) {
