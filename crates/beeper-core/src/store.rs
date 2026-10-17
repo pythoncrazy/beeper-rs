@@ -243,6 +243,10 @@ pub struct BeeperStore {
     pub pushing: bool,
     pub sent: HashMap<String, String>,
     pub typing: HashMap<String, Vec<String>>,
+    /// `io.element.recent_emoji` keys (emoji or emoji-mart ids) with their use counts.
+    pub recent_emoji: Vec<(String, u64)>,
+    /// `com.beeper.emoji_skin_tone`, 0 is the default yellow.
+    pub skin_tone: u8,
     next_seq: i64,
 }
 
@@ -348,6 +352,8 @@ impl BeeperStore {
             pushing: false,
             sent: HashMap::new(),
             typing: HashMap::new(),
+            recent_emoji: Vec::new(),
+            skin_tone: 0,
             next_seq: 1000,
         };
         store.load_from_sqlite_or_seed();

@@ -64,6 +64,10 @@ fn main() {
     app.select_chat(&dm);
     shot(&out, "main_typing", (1200.0, 800.0), &theme, app.view_main());
     app.store.write().unwrap().typing.clear();
+    app.store.write().unwrap().recent_emoji = vec![("👍".into(), 3), ("joy".into(), 2), ("❤️".into(), 1)];
+    let _ = app.update(UiMessage::Emoji(beeper_ui::emoji::EmojiMsg::Pointer(0, true)));
+    shot(&out, "main_emoji", (1200.0, 800.0), &theme, app.view_main());
+    let _ = app.update(UiMessage::CloseModals);
     let _ = app.update(UiMessage::BeginSelecting(dm.clone()));
     shot(&out, "main_selecting", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::CloseModals);

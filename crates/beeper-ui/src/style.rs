@@ -404,7 +404,7 @@ pub fn gutter_style([track, thumb]: [Color; 2]) -> impl Fn(&Theme, scrollable::S
     move |_, _| rail_style(track, thumb)
 }
 
-fn rail_style(track: Color, thumb: Color) -> scrollable::Style {
+pub(crate) fn rail_style(track: Color, thumb: Color) -> scrollable::Style {
     let rail = |bg: Color, c: Color| scrollable::Rail {
         background: Some(bg.into()),
         border: Border::default(),

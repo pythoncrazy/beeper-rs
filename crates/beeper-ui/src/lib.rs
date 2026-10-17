@@ -1,3 +1,4 @@
+pub mod emoji;
 pub mod login;
 pub mod style;
 
@@ -206,6 +207,7 @@ pub enum UiMessage {
     VotePoll(String, String),
     ToggleAttachMenu,
     ToggleGifPicker,
+    Emoji(emoji::EmojiMsg),
     GifQueryChanged(String),
     GifsLoaded(Result<Vec<KlipyGif>, String>),
     PickGif(KlipyGif),
@@ -1272,6 +1274,9 @@ pub struct BeeperGuiApp {
     pub filters: u8,
     pub show_attach_menu: bool,
     pub show_gif_picker: bool,
+    emoji: Option<emoji::Picker>,
+    emoji_gen: u32,
+    emoji_hovered: [bool; 2],
     pub gif_query: String,
     pub gifs: Vec<KlipyGif>,
     pub gif_loading: bool,
@@ -1362,6 +1367,9 @@ impl BeeperGuiApp {
             filters: 0,
             show_attach_menu: false,
             show_gif_picker: false,
+            emoji: None,
+            emoji_gen: 0,
+            emoji_hovered: [false; 2],
             gif_query: String::new(),
             gifs: Vec::new(),
             gif_loading: false,
@@ -2278,6 +2286,7 @@ impl BeeperGuiApp {
             },
             UiMessage::DiscardPaste => self.pasted = None,
             UiMessage::PasteClipboard => return Task::perform(clipboard_image(), UiMessage::Pasted),
+            UiMessage::Emoji(m) => return self.update_emoji(m),
             UiMessage::ToggleGifPicker => {
                 self.show_gif_picker = !self.show_gif_picker;
                 if self.show_gif_picker {
@@ -2414,6 +2423,7 @@ impl BeeperGuiApp {
                     || self.selection_menu.is_some()
                     || self.show_attach_menu
                     || self.show_gif_picker
+                    || self.emoji.is_some()
                     || self.quick_look_target.is_some()
                 {
                     self.show_command_palette = false;
@@ -2423,6 +2433,7 @@ impl BeeperGuiApp {
                     self.selection_menu = None;
                     self.show_attach_menu = false;
                     self.show_gif_picker = false;
+                    self.emoji = None;
                     self.quick_look_target = None;
                 } else if !self.selection.is_empty() {
                     self.selection.clear();
@@ -3926,6 +3937,12 @@ impl BeeperGuiApp {
         let verify = verify.map(|v| container(v).padding([0, 12]));
         let pane =
             column![stack![list, overlay].width(Fill).height(Fill)].push(verify).push(self.view_composer(&st, chat));
+        let secondary = st.settings.pref("secondaryComposerButton") != 5;
+        let picker = self.view_emoji_picker().map(|e| {
+            let right = if secondary { 112.0 } else { 82.0 };
+            container(e).align_right(Fill).align_bottom(Fill).padding(Padding::ZERO.right(right).bottom(36.0))
+        });
+        let pane = stack![pane].push(picker);
         let shadow = Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.18), offset: Vector::ZERO, blur_radius: 20.0 };
         let card = fill_box(p.card, 10.0);
         container(pane)
@@ -4453,12 +4470,12 @@ impl BeeperGuiApp {
         });
         let action_btn = |id: u8| -> El<'a> {
             let msg = match id {
-                0 => Some(UiMessage::ComposerChanged(format!("{}🙂", self.composer_text))),
+                0 => Some(UiMessage::Emoji(emoji::EmojiMsg::Toggle)),
                 2 => Some(UiMessage::ToggleGifPicker),
                 3 => Some(UiMessage::PasteClipboard),
                 _ => None,
             };
-            let active = id == 2 && self.show_gif_picker;
+            let active = (id == 2 && self.show_gif_picker) || (id == 0 && self.emoji.is_some());
             let color = if active { p.strong } else { p.on_secondary };
             let bg = if active { p.hover } else { CLEAR };
             let glyph = svg(COMPOSER_ICONS[usize::from(id) + 2].clone())
@@ -4466,11 +4483,17 @@ impl BeeperGuiApp {
                 .height(20)
                 .opacity(if msg.is_some() { 1.0_f32 } else { 0.3 })
                 .style(move |_, _| svg::Style { color: Some(color) });
-            button(container(glyph).center(28))
+            let b = button(container(glyph).center(28))
                 .padding(0)
                 .style(btn_style([bg, p.hover, p.selected], [p.text; 3], 14.0))
-                .on_press_maybe(msg)
-                .into()
+                .on_press_maybe(msg);
+            match id {
+                0 => mouse_area(b)
+                    .on_enter(UiMessage::Emoji(emoji::EmojiMsg::Pointer(0, true)))
+                    .on_exit(UiMessage::Emoji(emoji::EmojiMsg::Pointer(0, false)))
+                    .into(),
+                _ => b.into(),
+            }
         };
         let pri = [Some(0), Some(1), Some(2), Some(3), Some(4), None]
             .get(usize::from(st.settings.pref("primaryComposerButton")))
