@@ -280,6 +280,8 @@ pub enum UiMessage {
     CloseModals,
     ToggleEditHistory(String),
     HoverEnter(String),
+    HoverChat(String, bool),
+    DeleteDraft(String),
     HoverExit(String),
     DragStart,
     DragMoved(Point),
@@ -771,6 +773,24 @@ static TRASH: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><path fill="currentColor" d="M432 32H312l-9.4-18.7A24 24 0 0 0 281.1 0H166.8a23.72 23.72 0 0 0-21.4 13.3L136 32H16A16 16 0 0 0 0 48v32a16 16 0 0 0 16 16h416a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16zM53.2 467a48 48 0 0 0 47.9 45h245.8a48 48 0 0 0 47.9-45L416 128H32z"/></svg>"#[..])
 });
 
+/// Chat row hover actions: archive, unarchive, mark read, mark unread, context menu and delete draft.
+static ROW_ACTIONS: std::sync::LazyLock<[svg::Handle; 6]> = std::sync::LazyLock::new(|| {
+    [
+        ("0 0 14 14", "M1.55556 14C1.12778 14 0.761444 13.8478 0.456555 13.5434C0.152185 13.2386 0 12.8722 0 12.4444V2.72222C0 2.52778 0.0324074 2.35278 0.0972222 2.19722C0.162037 2.04167 0.246296 1.89259 0.35 1.75L1.43889 0.427778C1.54259 0.285185 1.67222 0.178111 1.82778 0.106556C1.98333 0.0355186 2.15185 0 2.33333 0H11.6667C11.8481 0 12.0167 0.0355186 12.1722 0.106556C12.3278 0.178111 12.4574 0.285185 12.5611 0.427778L13.65 1.75C13.7537 1.89259 13.838 2.04167 13.9028 2.19722C13.9676 2.35278 14 2.52778 14 2.72222V12.4444C14 12.8722 13.8478 13.2386 13.5434 13.5434C13.2386 13.8478 12.8722 14 12.4444 14H1.55556ZM1.86667 2.33333H12.1333L11.4722 1.55556H2.52778L1.86667 2.33333ZM1.55556 3.88889V12.4444H12.4444V3.88889H1.55556ZM7 11.6667L10.1111 8.55556L9.02222 7.46667L7.77778 8.71111V5.44444H6.22222V8.71111L4.97778 7.46667L3.88889 8.55556L7 11.6667Z"),
+        ("0 0 14 14", "M1.55556 14C1.12778 14 0.761444 13.8478 0.456555 13.5434C0.152185 13.2386 0 12.8722 0 12.4444V2.72222C0 2.52778 0.0324074 2.35278 0.0972222 2.19722C0.162037 2.04167 0.246296 1.89259 0.35 1.75L1.43889 0.427778C1.54259 0.285185 1.67222 0.178111 1.82778 0.106556C1.98333 0.0355186 2.15185 0 2.33333 0H11.6667C11.8481 0 12.0167 0.0355186 12.1722 0.106556C12.3278 0.178111 12.4574 0.285185 12.5611 0.427778L13.65 1.75C13.7537 1.89259 13.838 2.04167 13.9028 2.19722C13.9676 2.35278 14 2.52778 14 2.72222V12.4444C14 12.8722 13.8478 13.2386 13.5434 13.5434C13.2386 13.8478 12.8722 14 12.4444 14H1.55556ZM1.86667 2.33333H12.1333L11.4722 1.55556H2.52778L1.86667 2.33333ZM1.55556 3.88889V12.4444H12.4444V3.88889H1.55556ZM7 5L3.88889 8.11111L4.97778 9.2L6.22222 7.95556V11.2222H7.77778V7.95556L9.02222 9.2L10.1111 8.11111L7 5Z"),
+        ("0 0 20 20", "M14.48 16.792 12 14.333l1.063-1.062 1.416 1.416 3.167-3.187 1.062 1.063zM2 18V3.5q0-.604.448-1.052A1.44 1.44 0 0 1 3.5 2h13q.604 0 1.052.448Q18 2.897 18 3.5v6h-1.5v-6h-13v10.875l.875-.875H10.5V15H5z"),
+        ("0 0 20 20", "M2.667 18.137V4.934q0-.605.43-1.036.431-.43 1.037-.431h7.408a3.7 3.7 0 0 0 0 1.467H4.134v9.627l.843-.825H15.87V7.795q.421-.092.788-.248t.679-.412v6.601q0 .605-.431 1.036-.432.43-1.036.431H5.6zm12.47-11.736q-.918 0-1.56-.642a2.12 2.12 0 0 1-.641-1.559q0-.915.642-1.558A2.12 2.12 0 0 1 15.136 2q.917 0 1.559.642t.642 1.559q0 .915-.642 1.558a2.12 2.12 0 0 1-1.559.642"),
+        ("0 0 181 38", "M19 38c10.493 0 19-8.507 19-19S29.493 0 19 0 0 8.507 0 19s8.507 19 19 19M90.25 38c10.493 0 19-8.507 19-19s-8.507-19-19-19-19 8.507-19 19 8.507 19 19 19M161.5 38c10.493 0 19-8.507 19-19s-8.507-19-19-19-19 8.507-19 19 8.507 19 19 19"),
+        ("0 0 20 20", "M7.042 13.999 6 12.957l2.938-2.958L6 7.06 7.042 6.02 10 8.957l2.938-2.937 1.041 1.041L11.042 10l2.937 2.958-1.041 1.042L10 11.06z"),
+    ]
+    .map(|(vb, d)| {
+        svg::Handle::from_memory(
+            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vb}"><path fill="currentColor" d="{d}"/></svg>"#)
+                .into_bytes(),
+        )
+    })
+});
+
 static DROP_ARROW: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M12.625 14.375 17 10l-4.375-4.375-1.062 1.063 2.562 2.562H4.5V7H3v3.75h11.125l-2.562 2.563z"/></svg>"##[..])
 });
@@ -1145,6 +1165,7 @@ pub struct BeeperGuiApp {
     pub quick_look_target: Option<(String, String)>,
     pub expanded_history_msg_id: Option<String>,
     pub hovered_msg: Option<String>,
+    pub hovered_chat: Option<String>,
     pub flash: Option<(String, std::time::Instant)>,
     pub status_banner: String,
     pub dnd_muted: bool,
@@ -1229,6 +1250,7 @@ impl BeeperGuiApp {
             quick_look_target: None,
             expanded_history_msg_id: None,
             hovered_msg: None,
+            hovered_chat: None,
             flash: None,
             status_banner: String::new(),
             dnd_muted: false,
@@ -2214,6 +2236,19 @@ impl BeeperGuiApp {
                 };
             }),
             UiMessage::HoverEnter(id) => self.hovered_msg = Some(id),
+            UiMessage::HoverChat(id, true) => self.hovered_chat = Some(id),
+            UiMessage::HoverChat(id, false) => {
+                if self.hovered_chat.as_ref() == Some(&id) {
+                    self.hovered_chat = None;
+                }
+            }
+            UiMessage::DeleteDraft(cid) => {
+                self.store.write().unwrap().patch_chat(&cid, true, None, None).expect("chat exists");
+                if self.selected_chat_id.as_ref() == Some(&cid) {
+                    self.composer_text.clear();
+                    self.reply_to_message_id = None;
+                }
+            }
             UiMessage::HoverExit(id) => {
                 if self.hovered_msg.as_ref() == Some(&id) {
                     self.hovered_msg = None;
@@ -2677,13 +2712,38 @@ impl BeeperGuiApp {
         container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
     }
 
+    fn row_action<'a>(&self, c: &Chat, pref: u8, unread: bool) -> Option<El<'a>> {
+        let p = &self.pal;
+        let archived = c.flags & CHAT_ARCHIVED != 0;
+        let (glyph, size, label, keys, msg) = match pref {
+            _ if c.draft.is_some() => (5, 20.0, "Delete draft", vec![], UiMessage::DeleteDraft(c.id.clone())),
+            0 if archived || c.flags & CHAT_PINNED == 0 => {
+                let msg = UiMessage::ToggleFlag(c.id.clone(), ChatFlag::Archived);
+                (usize::from(archived), 14.0, if archived { "Unarchive" } else { "Archive" }, vec!["Ctrl", "E"], msg)
+            }
+            1 => {
+                let label = if unread { "Mark Read" } else { "Mark Unread" };
+                (2 + usize::from(!unread), 20.0, label, vec!["Ctrl", "Shift", "U"], UiMessage::ToggleRead(c.id.clone()))
+            }
+            2 => (4, 20.0, "Open Context Menu", vec![], UiMessage::OpenChatMenu(c.id.clone())),
+            _ => return None,
+        };
+        let btn = button(tinted(&ROW_ACTIONS[glyph], size, p.strong))
+            .padding(6)
+            .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
+            .on_press(msg);
+        Some(
+            self.tip(btn.into(), label, keys, tooltip::Position::Right).delay(std::time::Duration::from_secs(1)).into(),
+        )
+    }
+
     fn tip<'a>(
         &self,
         el: El<'a>,
         label: impl iced::widget::text::IntoFragment<'a>,
         keys: Vec<&'static str>,
         at: tooltip::Position,
-    ) -> El<'a> {
+    ) -> iced::widget::Tooltip<'a, UiMessage> {
         let p = &self.pal;
         let kbd = |k: &'static str| -> El<'a> {
             container(med(k, 13.0).color(p.strong))
@@ -2695,7 +2755,7 @@ impl BeeperGuiApp {
         };
         let keys = (!keys.is_empty()).then(|| Row::with_children(keys.into_iter().map(kbd)).spacing(4));
         let body = row![med(label, 13.0).color(p.strong)].push(keys).spacing(8).align_y(Center);
-        tooltip(el, container(body).padding([8, 12]).style(fill_box(p.card, 18.0)), at).into()
+        tooltip(el, container(body).padding([8, 12]).style(fill_box(p.card, 18.0)), at)
     }
 
     fn view_rail(&self) -> El<'_> {
@@ -2875,6 +2935,7 @@ impl BeeperGuiApp {
             chats.iter().copied().partition(|c| pin_section && c.flags & CHAT_PINNED != 0);
         pinned.sort_by_key(|c| (st.pin_rank.get(&c.id).copied().unwrap_or(usize::MAX), c.last_activity.clone()));
         let counts = st.settings.on("showUnreadCount");
+        let hover_action = st.settings.pref("chatActionButton");
         let cols = (((w - 16.0) / 80.0).floor() as usize).max(1);
         let cell = (w - 16.0) / cols as f32;
         let pins = pinned.chunks(cols).fold(Column::new(), |col, chunk| {
@@ -2994,12 +3055,16 @@ impl BeeperGuiApp {
                 let dot = container(Space::new()).width(6).height(6).style(fill_box(dot_bg, 3.0));
                 container(unread.then_some(dot)).width(12)
             });
+            let hovered = self.hovered_chat.as_deref() == Some(c.id.as_str());
+            let action = hovered.then(|| self.row_action(c, hover_action, unread)).flatten();
+            let count = if action.is_some() { None } else { count };
             let sender = show_sender.then(|| preview_sender(c, m?)).flatten();
             let digits = if counts && c.unread_count > 0 { c.unread_count.to_string().len() as f32 } else { 0.0 };
             let at = if c.unread_mentions > 0 { 12.0 } else { 0.0 };
             let prefix = first.filter(|_| media_tag.is_some()).map(|s| format!("{s}:"));
             let prefix_w = prefix.as_deref().map_or(0.0, |s| crate::style::text_width(s, 13.0, Weight::Normal) + 4.0);
-            let reserve = if count.is_some() { 4.0 + if counts { 8.0 } else { 0.0 } + 6.0 * digits + at } else { 0.0 }
+            let reserve = 16.0
+                + if counts { 8.0 + 6.0 * digits + at } else { at }.max(18.0)
                 + if mine { 16.0 } else { 0.0 }
                 + if sender.is_some() { 16.0 } else { 0.0 }
                 + if media_tag.is_some() { 52.0 } else { 0.0 }
@@ -3038,14 +3103,17 @@ impl BeeperGuiApp {
                 .push(column![top, preview.height(16)].width(Fill))
                 .align_y(Center)
                 .padding(Padding::new(8.0).top(10.0).bottom(9.0));
+            let action = action.map(|a| container(a).align_right(Fill).padding(Padding::ZERO.top(22.0).right(4.0)));
             col.push(
                 mouse_area(
-                    button(item)
+                    button(stack![item].push(action))
                         .padding(0)
                         .width(Fill)
                         .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.text; 3], 8.0))
                         .on_press(UiMessage::SelectChat(c.id.clone())),
                 )
+                .on_enter(UiMessage::HoverChat(c.id.clone(), true))
+                .on_exit(UiMessage::HoverChat(c.id.clone(), false))
                 .on_right_press(UiMessage::OpenChatMenu(c.id.clone())),
             )
             .push(divider(p, 52.0))

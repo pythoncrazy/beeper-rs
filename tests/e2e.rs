@@ -1004,12 +1004,20 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert_eq!(gui.search_filters, SearchFilters::default(), "a new search starts without filters");
         let _ = gui.update(UiMessage::ToggleCommandPalette);
         let other = store.read().unwrap().chats[1].id.clone();
+        let _ = gui.update(UiMessage::HoverChat(cid.clone(), true));
+        let _ = gui.update(UiMessage::HoverChat(other.clone(), false));
+        assert_eq!(gui.hovered_chat.as_deref(), Some(cid.as_str()), "leaving another row keeps the hover");
+        let _ = gui.update(UiMessage::HoverChat(cid.clone(), false));
+        assert!(gui.hovered_chat.is_none());
         for _ in 0..2 {
             let _ = gui.update(UiMessage::ComposerChanged("draft".into()));
             let _ = gui.update(UiMessage::SelectChat(other.clone()));
             let _ = gui.update(UiMessage::SelectChat(cid.clone()));
             assert_eq!(gui.composer_text, "draft", "a chat keeps its draft");
         }
+        let _ = gui.update(UiMessage::DeleteDraft(cid.clone()));
+        let c = store.read().unwrap().chats[0].clone();
+        assert!(c.draft.is_none() && gui.composer_text.is_empty(), "the hover action deletes the draft");
     }
     let _ = gui.update(rail("1"));
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));
