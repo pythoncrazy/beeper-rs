@@ -792,10 +792,8 @@ fn badge<'a>(p: &Palette, b: prefs::Badge) -> El<'a> {
 
 const THEME_WINDOW: &str = r##"<rect x="10" y="7" width="76" height="47" rx="4" fill="WIN"/><circle cx="15" cy="12" r="1.4" fill="#ff5f57"/><circle cx="19.5" cy="12" r="1.4" fill="#febc2e"/><circle cx="24" cy="12" r="1.4" fill="#28c840"/><rect x="36" y="16" width="24" height="3" rx="1.5" fill="LINE"/><rect x="14" y="23" width="68" height="2" rx="1" fill="LINE"/><rect x="14" y="28" width="68" height="11" rx="2.5" fill="#0d4ffb"/><circle cx="19.5" cy="33.5" r="3" fill="#fff"/><rect x="25" y="31" width="28" height="1.8" rx=".9" fill="#fff"/><rect x="25" y="34.6" width="48" height="1.5" rx=".75" fill="#bcd2ff"/><rect x="14" y="43" width="68" height="2" rx="1" fill="LINE"/><rect x="14" y="48" width="48" height="2" rx="1" fill="LINE"/>"##;
 
-static DASHED_RING: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
-    ["#000", "#fff"].map(|c| {
-        svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect x="1" y="1" width="30" height="30" rx="7" fill="none" stroke="{c}" stroke-opacity=".15" stroke-width="2" stroke-dasharray="4 3"/></svg>"#).into_bytes())
-    })
+static DASHED_RING: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect x="1" y="1" width="30" height="30" rx="7" fill="none" stroke="#000" stroke-width="2" stroke-dasharray="6 3" stroke-dashoffset="8.5"/></svg>"##[..])
 });
 
 static SENT: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
@@ -3068,7 +3066,12 @@ impl BeeperGuiApp {
             };
         let requests = st.chats.iter().filter(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0).count();
         let g = |c: char| -> El<'static> { ic(c, 24.0).color(p.strong).into() };
-        let ring = svg(DASHED_RING[usize::from(self.dark)].clone()).width(32).height(32);
+        let ring_color = if self.dark { Color::WHITE } else { Color::BLACK };
+        let ring = svg(DASHED_RING.clone())
+            .width(32)
+            .height(32)
+            .opacity(0.15_f32)
+            .style(move |_, _| svg::Style { color: Some(ring_color) });
         let add_space =
             container(stack![ring, container(ic(icon::MAPS_UGC, 24.0).color(p.strong)).center(32)]).center(36);
         let accounts =
@@ -3153,12 +3156,12 @@ impl BeeperGuiApp {
             network_space(&st, id).map_or_else(|| network_label(id).to_string(), |n| n.name.clone())
         });
         let heading = semi(heading, 13.0).color(p.strong).wrapping(iced::widget::text::Wrapping::None);
-        let title = column![row![heading, ic(icon::UNFOLD_MORE, 13.0).color(p.weak)].spacing(4).align_y(Center)]
+        let title = column![row![heading, ic(icon::UNFOLD_MORE, 12.0).color(p.weak)].spacing(1.4).align_y(Center)]
             .push((!names.is_empty()).then(|| txt(names.join(", "), 10.0).color(p.sub)))
             .padding([0, 8]);
         let title = container(title).width(Fill).clip(true);
         let head_btn = |c: char, size: f32, [l, r]: [f32; 2], msg: UiMessage| {
-            button(container(ic(c, size).color(p.strong)).padding(Padding::ZERO.left(l).right(r)).center_y(26))
+            button(container(ic(c, size).color(p.strong)).padding(Padding::ZERO.left(l).right(r).top(2.0)).center_y(26))
                 .padding(0)
                 .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
                 .on_press(msg)
@@ -3176,7 +3179,7 @@ impl BeeperGuiApp {
                 .width(if active { 16 } else { 0 })
                 .style(btn_style([CLEAR; 3], [fg; 3], 0.0))
                 .on_press(UiMessage::ToggleFilterMenu);
-            let pill = row![trigger, container(ic(icon::FILTER_LIST, 19.0).color(fg)).center_x(27).center_y(20)];
+            let pill = row![trigger, container(ic(icon::FILTER_LIST, 16.8).color(fg)).center_x(27).center_y(20)];
             let ring = if active { p.accent } else { CLEAR };
             let face = bordered_btn([CLEAR, p.hover, p.hover], [fg; 3], ring, 1.0, 12.0);
             let el = mouse_area(button(pill).padding(0).style(face).on_press(UiMessage::FilterButton))
@@ -3195,12 +3198,12 @@ impl BeeperGuiApp {
             .push(filter)
             .push(options)
             .push(below(
-                head_btn(icon::SEARCH, 23.0, [6.5, 10.0], UiMessage::ToggleCommandPalette).into(),
+                head_btn(icon::SEARCH, 23.0, [7.5, 10.0], UiMessage::ToggleCommandPalette).into(),
                 "Search Chats",
                 vec!["Ctrl", "K"],
             ))
             .push(below(
-                head_btn(icon::EDIT_SQUARE, 20.0, [0.0, 0.0], UiMessage::NewChat).into(),
+                head_btn(icon::EDIT_SQUARE, 20.0, [0.0, 3.0], UiMessage::NewChat).into(),
                 "New Chat",
                 vec!["Ctrl", "N"],
             ))
@@ -3565,13 +3568,13 @@ impl BeeperGuiApp {
         col = col.push(st.typing.get(cid).map(|ids| self.typing_bubble(chat, ids)));
         let list = scrollable(col).id("timeline").anchor_bottom().height(Fill).style(scroll_style(p.divider, p.weak));
         let name_row = row![
-            semi(short_title(chat).to_string(), 13.0).line_height(Pixels(16.0)).color(p.strong),
+            semi(short_title(chat).to_string(), 13.0).line_height(Pixels(16.0)).color(p.fg),
             ic(icon::CHEVRON_RIGHT, 16.0).color(p.tertiary)
         ]
-        .spacing(7)
+        .spacing(2)
         .align_y(Center);
         let pill = button(name_row)
-            .padding(Padding::new(6.0).left(12.0).right(0.0))
+            .padding(Padding::new(6.0).left(10.5).right(2.5))
             .style(btn_style([p.elevated, p.selected, p.selected], [p.text; 3], 14.0))
             .on_press(UiMessage::ToggleRightPanel);
         let ring = container(self.chat_avatar(chat, 40.0)).padding(1).style(fill_box(p.card, 21.0));
