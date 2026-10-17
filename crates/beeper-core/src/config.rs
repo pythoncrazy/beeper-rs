@@ -258,6 +258,13 @@ pub fn millis_from_rfc3339(s: &str) -> Option<i64> {
     Some(((days * 24 + num(11..13)?) * 60 + num(14..16)?) * 60_000 + num(17..19)? * 1000 + frac)
 }
 
+/// Shifts Unix milliseconds by the local UTC offset at that instant, so day and clock math shows local time.
+pub fn local_millis(utc_ms: i64) -> i64 {
+    use chrono::{Offset, TimeZone};
+    let at = chrono::DateTime::from_timestamp_millis(utc_ms).expect("timestamp in range").naive_utc();
+    utc_ms + i64::from(chrono::Local.offset_from_utc_datetime(&at).fix().local_minus_utc()) * 1000
+}
+
 pub fn now_unix_millis() -> i64 {
     unix_now().as_millis() as i64
 }
