@@ -190,6 +190,14 @@ fn message_index_text(m: &Message) -> String {
     [&m.text, &m.sender_name].into_iter().chain(files).flatten().map(String::as_str).collect::<Vec<_>>().join(" ")
 }
 
+/// A network inside a bridged account, like a Discord server. Its chats have the same `network_id`.
+#[derive(Debug, Clone)]
+pub struct NetworkSpace {
+    pub id: String,
+    pub account_id: String,
+    pub name: String,
+}
+
 pub struct BeeperStore {
     pub config: CentralConfig,
     pub data_dir: PathBuf,
@@ -202,6 +210,7 @@ pub struct BeeperStore {
     /// Position of each pinned chat in the `com.beeper.favourites_order` account data.
     pub pin_rank: HashMap<String, usize>,
     pub recent_chat_ids: Vec<String>,
+    pub network_spaces: Vec<NetworkSpace>,
     pub contacts: Vec<User>,
     pub bridge_sessions: HashMap<String, BridgeLoginSession>,
     pub accounts: Vec<Account>,
@@ -288,6 +297,7 @@ impl BeeperStore {
             bridge_accounts: Vec::new(),
             pin_rank: HashMap::new(),
             recent_chat_ids: Vec::new(),
+            network_spaces: Vec::new(),
             contacts: Vec::new(),
             bridge_sessions: HashMap::new(),
             accounts: Vec::new(),
@@ -629,6 +639,7 @@ impl BeeperStore {
             is_hidden_from_inbox: None,
             is_request: None,
             network_name: None,
+            network_id: None,
             img_url: None,
             flags: 0,
         };
@@ -927,6 +938,7 @@ impl BeeperStore {
             is_hidden_from_inbox: None,
             is_request: None,
             network_name: None,
+            network_id: None,
             img_url: None,
             participants: ChatParticipants { has_more: false, total: items.len(), items },
             flags: 0,

@@ -19,7 +19,7 @@ use beeper_core::platform::{
     SystemTrayState,
 };
 use beeper_core::prefs;
-use beeper_core::store::{BeeperStore, SharedStore, NOTE_CHAT_ID};
+use beeper_core::store::{BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
 use iced::font::Weight;
 use iced::gradient::Linear;
 use iced::keyboard::{self, key::Named, Key, Modifiers};
@@ -763,7 +763,19 @@ fn rail_accounts(st: &BeeperStore) -> Vec<String> {
     accounts.sort_by_cached_key(|a| {
         (a != "hungryserv", st.chats.iter().position(|c| &c.account_id == a).unwrap_or(usize::MAX))
     });
+    let spaces = st.network_spaces.iter().filter(|n| accounts.contains(&n.account_id)).map(|n| n.id.clone());
+    accounts.extend(spaces.collect::<Vec<_>>());
     accounts
+}
+
+/// Finds the network space of a rail entry. Other rail entries are accounts.
+fn network_space<'a>(st: &'a BeeperStore, id: &str) -> Option<&'a NetworkSpace> {
+    st.network_spaces.iter().find(|n| n.id == id)
+}
+
+fn in_rail_entry(st: &BeeperStore, id: &str, c: &Chat) -> bool {
+    network_space(st, id)
+        .map_or(c.account_id == id, |n| c.account_id == n.account_id && c.network_id == Some(n.id.clone()))
 }
 
 fn network_label(account_id: &str) -> &'static str {
@@ -1248,7 +1260,7 @@ impl BeeperGuiApp {
                 let on = |i: usize| filters & 1 << i != 0;
                 let shown = |i: usize| on(i) || !filter_hit(i, c, st);
                 c.merged_into_chat_id.is_none()
-                    && self.selected_account_filter.as_ref().is_none_or(|a| &c.account_id == a)
+                    && self.selected_account_filter.as_ref().is_none_or(|a| in_rail_entry(st, a, c))
                     && match self.active_tab {
                         InboxTab::AllChats => {
                             let hidden = if self.selected_account_filter.is_some() { 0 } else { CHAT_HIDDEN };
@@ -2219,7 +2231,13 @@ impl BeeperGuiApp {
         container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
     }
 
-    fn tip<'a>(&self, el: El<'a>, label: &'static str, keys: Vec<&'static str>, at: tooltip::Position) -> El<'a> {
+    fn tip<'a>(
+        &self,
+        el: El<'a>,
+        label: impl iced::widget::text::IntoFragment<'a>,
+        keys: Vec<&'static str>,
+        at: tooltip::Position,
+    ) -> El<'a> {
         let p = &self.pal;
         let kbd = |k: &'static str| -> El<'a> {
             container(med(k, 13.0).color(p.strong))
@@ -2281,12 +2299,19 @@ impl BeeperGuiApp {
         let accounts =
             rail_accounts(&st).into_iter().enumerate().fold(Column::new().spacing(8).align_x(Center), |c, (i, acc)| {
                 let on = self.selected_account_filter.as_ref() == Some(&acc);
-                let logo: El<'static> = svg(brand_svg(brand_key(&acc))).width(28).height(28).into();
-                let n =
-                    tally(&|c| c.account_id == acc && c.flags & CHAT_HIDDEN != 0 && c.flags & CHAT_LOW_PRIORITY == 0);
+                let space = network_space(&st, &acc);
+                let owner = space.map_or(acc.as_str(), |n| &n.account_id);
+                let logo: El<'static> = svg(brand_svg(brand_key(owner))).width(28).height(28).into();
+                let n = tally(&|c| {
+                    in_rail_entry(&st, &acc, c) && c.flags & CHAT_HIDDEN != 0 && c.flags & CHAT_LOW_PRIORITY == 0
+                });
+                let label = space.map_or_else(
+                    || network_label(owner).to_string(),
+                    |n| format!("{} ({})", n.name, network_label(owner)),
+                );
                 let btn =
                     badge(rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc.clone()))).into(), n, true);
-                c.push(tip(btn, network_label(&acc), hotkey(7 + i)))
+                c.push(self.tip(btn, label, hotkey(7 + i), tooltip::Position::Right))
             });
         let add_label = button(add_space).padding(0).style(ghost(p, 12.0)).on_press(UiMessage::ToggleCommandPalette);
         let top = column![
@@ -2349,15 +2374,14 @@ impl BeeperGuiApp {
         let previews = st.settings.on("showMessagePreviews");
         let names: Vec<&str> =
             (0..FILTERS.len()).filter(|i| self.filters & 1 << i != 0).map(|i| FILTERS[i].0).collect();
-        let title = column![row![
-            semi(self.selected_account_filter.as_deref().map_or(self.active_tab.label(), network_label), 13.0)
-                .color(p.strong),
-            ic(icon::UNFOLD_MORE, 13.0).color(p.weak)
-        ]
-        .spacing(4)
-        .align_y(Center)]
-        .push((!names.is_empty()).then(|| txt(names.join(", "), 10.0).color(p.sub)))
-        .padding([0, 8]);
+        let heading = self.selected_account_filter.as_deref().map_or(self.active_tab.label().to_string(), |id| {
+            network_space(&st, id).map_or_else(|| network_label(id).to_string(), |n| n.name.clone())
+        });
+        let heading = semi(heading, 13.0).color(p.strong).wrapping(iced::widget::text::Wrapping::None);
+        let title = column![row![heading, ic(icon::UNFOLD_MORE, 13.0).color(p.weak)].spacing(4).align_y(Center)]
+            .push((!names.is_empty()).then(|| txt(names.join(", "), 10.0).color(p.sub)))
+            .padding([0, 8]);
+        let title = container(title).width(Fill).clip(true);
         let head_btn = |c: char, size: f32, [l, r]: [f32; 2], msg: UiMessage| {
             button(container(ic(c, size).color(p.strong)).padding(Padding::ZERO.left(l).right(r)).center_y(26))
                 .padding(0)
@@ -2385,7 +2409,7 @@ impl BeeperGuiApp {
             self.tip(el.into(), "Filter", vec![], tooltip::Position::Bottom)
         });
         let below = |el: El<'static>, label, keys| self.tip(el, label, keys, tooltip::Position::Bottom);
-        let header = row![title, Space::new().width(Fill)]
+        let header = row![title]
             .push(filter)
             .push(below(
                 head_btn(icon::SEARCH, 23.0, [6.5, 10.0], UiMessage::ToggleCommandPalette).into(),
@@ -2557,7 +2581,8 @@ impl BeeperGuiApp {
             .push(divider(p, 52.0))
         });
         let list: El<'_> = if chats.is_empty() {
-            let (head, hint) = self.active_tab.empty();
+            let tab = if self.selected_account_filter.is_some() { InboxTab::Requests } else { self.active_tab };
+            let (head, hint) = tab.empty();
             let header = column![semi(head, 16.0).color(p.strong).align_x(Center).line_height(1.25)]
                 .push((!hint.is_empty()).then(|| txt(hint, 13.0).color(p.strong).align_x(Center)))
                 .align_x(Center);

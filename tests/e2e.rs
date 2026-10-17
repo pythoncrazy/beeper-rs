@@ -941,6 +941,25 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert_eq!(gui.selected_account_filter.as_deref(), Some("hungryserv"), "Ctrl Alt 8 opens the first account");
     let _ = gui.update(rail("1"));
     assert!(gui.active_tab == InboxTab::AllChats && gui.selected_account_filter.is_none());
+    {
+        let mut st = store.write().unwrap();
+        let account_id = st.accounts[0].account_id.clone();
+        st.network_spaces.push(beeper_core::store::NetworkSpace { id: "g1".into(), account_id, name: "Guild".into() });
+    }
+    let _ = gui.update(UiMessage::SelectAccount(Some("g1".into())));
+    {
+        let mut sim = simulator(gui.view_main());
+        assert!(sim.find("Guild").is_ok(), "the header shows the server name");
+        assert!(sim.find("You have no messages").is_ok(), "a server without chats is empty");
+    }
+    {
+        let mut st = store.write().unwrap();
+        let i = st.chats.iter().position(|c| c.account_id == st.accounts[0].account_id).expect("a chat of the account");
+        st.chats[i].network_id = Some("g1".into());
+        let shown: Vec<_> = gui.visible_chats(&st).iter().map(|c| c.id.clone()).collect();
+        assert_eq!(shown, [st.chats[i].id.clone()], "the server shows only its chats");
+    }
+    let _ = gui.update(rail("1"));
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));
     for (mode, dark) in [(iced::theme::Mode::Dark, true), (iced::theme::Mode::Light, false)] {
         let _ = gui.update(UiMessage::SystemTheme(mode));
