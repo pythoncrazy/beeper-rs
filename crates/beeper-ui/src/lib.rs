@@ -856,6 +856,7 @@ pub struct SearchFilters {
     pub sent: Option<bool>,
     pub group: Option<bool>,
     pub period: Option<usize>,
+    pub media: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -864,9 +865,11 @@ pub enum SearchPick {
     Sent(bool),
     Group(bool),
     Period(usize),
+    Media(usize),
 }
 
 const SEARCH_CHIPS: [&str; 4] = ["Accounts", "Message type", "Time period", "Media"];
+const MEDIA_KINDS: [&str; 5] = ["Images", "Videos", "Audio", "Links", "Files"];
 const PERIODS: [&str; 6] = ["Last hour", "Today", "Yesterday", "This week", "Last 30 days", "The last year"];
 
 impl SearchFilters {
@@ -888,8 +891,22 @@ impl SearchFilters {
                 }
             }
             2 => self.period.map(|i| PERIODS[i].to_string()),
-            _ => None,
+            _ => (!self.media.is_empty())
+                .then(|| self.media.iter().map(|&k| MEDIA_KINDS[k]).collect::<Vec<_>>().join(", ")),
         }
+    }
+
+    fn keeps(&self, st: &BeeperStore, room: Option<&str>, m: &Message) -> bool {
+        let (after, before) = self.window();
+        let group = st.chats[st.chat_idx_by_id[&m.chat_id]].chat_type == "group";
+        let at = millis_from_rfc3339(&m.timestamp).expect("RFC 3339 timestamp");
+        m.is_deleted != Some(true)
+            && room.is_none_or(|r| m.chat_id == r)
+            && (self.accounts.is_empty() || self.accounts.contains(&m.account_id))
+            && self.sent.is_none_or(|s| (m.is_sender == Some(true)) == s)
+            && self.group.is_none_or(|g| group == g)
+            && (after..before).contains(&at)
+            && (self.media.is_empty() || self.media.iter().any(|&k| has_media(m, k)))
     }
 
     /// The `[after, before)` window of message times in Unix milliseconds.
@@ -907,6 +924,18 @@ impl SearchFilters {
             Some(5) => (now - 365 * DAY, i64::MAX),
             Some(i) => unreachable!("time period {i}"),
         }
+    }
+}
+
+fn has_media(m: &Message, kind: usize) -> bool {
+    let typed = |t: &str| m.attachments.iter().any(|a| a.attachment_type == t);
+    match kind {
+        0 => typed("img"),
+        1 => typed("video"),
+        2 => typed("audio"),
+        3 => !m.links.is_empty() || m.text.as_deref().is_some_and(|t| t.contains("http://") || t.contains("https://")),
+        4 => typed("unknown"),
+        _ => unreachable!("media kind {kind}"),
     }
 }
 
@@ -2107,6 +2136,10 @@ impl BeeperGuiApp {
                     },
                     SearchPick::Sent(v) => f.sent = (f.sent != Some(v)).then_some(v),
                     SearchPick::Group(v) => f.group = (f.group != Some(v)).then_some(v),
+                    SearchPick::Media(v) => match f.media.iter().position(|&x| x == v) {
+                        Some(i) => drop(f.media.remove(i)),
+                        None => f.media.push(v),
+                    },
                     SearchPick::Period(v) => {
                         f.period = (f.period != Some(v)).then_some(v);
                         self.search_select = None;
@@ -2307,7 +2340,12 @@ impl BeeperGuiApp {
             .filter_map(|a| a.poster_img.clone().or_else(|| a.src_url.clone()));
         let gif_urls =
             self.show_gif_picker.then(|| self.gifs.iter().map(|g| g.preview_url.clone())).into_iter().flatten();
-        let urls: HashSet<String> = images.chain(gif_urls).filter(|u| !self.media.contains_key(u)).collect();
+        let hits = self.media_hits(&st);
+        let found =
+            hits.iter().flat_map(|m| &m.attachments).filter(|a| matches!(a.attachment_type.as_str(), "img" | "video"));
+        let found = found.filter_map(|a| a.poster_img.clone().or_else(|| a.src_url.clone()));
+        let urls: HashSet<String> =
+            images.chain(gif_urls).chain(found).filter(|u| !self.media.contains_key(u)).collect();
         drop(st);
         self.media.extend(urls.iter().map(|u| (u.clone(), None)));
         Task::batch(urls.into_iter().map(|url| {
@@ -2489,6 +2527,32 @@ impl BeeperGuiApp {
         container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
     }
 
+    /// Messages for the search media grid, newest first.
+    fn media_hits<'s>(&self, st: &'s BeeperStore) -> Vec<&'s Message> {
+        let f = &self.search_filters;
+        if !self.show_command_palette || self.cmd_bar_commands_mode || f.media.is_empty() {
+            return Vec::new();
+        }
+        let q = self.command_palette_query.trim().to_lowercase();
+        let text: Option<HashSet<u32>> =
+            (q.chars().count() > 1).then(|| st.msg_search_index.query_all_tokens(&q).into_iter().collect());
+        let mut hits: Vec<&Message> = st
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| {
+                text.as_ref().is_none_or(|t| {
+                    t.contains(&(*i as u32))
+                        || st.chats[st.chat_idx_by_id[&m.chat_id]].title.to_lowercase().contains(&q)
+                }) && f.keeps(st, self.search_room.as_deref(), m)
+            })
+            .map(|(_, m)| m)
+            .collect();
+        hits.sort_by(|a, b| b.sort_key.cmp(&a.sort_key));
+        hits.truncate(50);
+        hits
+    }
+
     fn view_search_select(&self, chip: usize, at: iced::Rectangle) -> El<'_> {
         let p = &self.pal;
         let f = &self.search_filters;
@@ -2503,6 +2567,34 @@ impl BeeperGuiApp {
                 .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
                 .into()
         };
+        let brand = |options: Vec<(String, bool, SearchPick)>| -> El<'static> {
+            let any = options.iter().any(|o| o.1);
+            let widest = options.iter().map(|o| crate::style::text_width(&o.0, 11.0, Weight::Semibold));
+            let width = widest.fold(at.width, |w, t| w.max(t + 48.0));
+            let hover = Color { a: 0.1, ..p.text };
+            let options = options.into_iter().map(|(label, on, m)| {
+                let fg = if on || !any { p.text } else { p.sub };
+                let line = row![
+                    semi(label, 11.0).line_height(Pixels(14.0)).color(fg),
+                    Space::new().width(Fill),
+                    ic(icon::CHECK, 16.0).color(if on { fg } else { CLEAR })
+                ]
+                .spacing(8)
+                .align_y(Center);
+                let style = btn_style([CLEAR, hover, hover], [fg; 3], 4.0);
+                button(line).padding([6, 4]).width(Fill).style(style).on_press(UiMessage::PickSearchFilter(m)).into()
+            });
+            let head = row![
+                semi(f.label(chip).unwrap_or_else(|| SEARCH_CHIPS[chip].into()), 13.0).color(p.text),
+                Space::new().width(Fill),
+                ic(icon::EXPAND_MORE, 14.0).color(p.text)
+            ]
+            .spacing(4)
+            .padding([0, 12])
+            .align_y(Center);
+            let body = column![head, Column::with_children(options).spacing(4).padding([0, 8])].spacing(8);
+            container(body).width(width).padding([4, 0]).style(shadow_box(p.chip, CLEAR, 8.0, 4.0)).into()
+        };
         match chip {
             0 => {
                 let st = self.store.read().unwrap();
@@ -2510,37 +2602,12 @@ impl BeeperGuiApp {
                     .chain(st.accounts.iter().map(|a| a.account_id.clone()))
                     .collect();
                 accounts.sort_by_key(|a| network_label(a));
-                let widest =
-                    accounts.iter().map(|a| crate::style::text_width(network_label(a), 11.0, Weight::Semibold));
-                let width = widest.fold(at.width, |w, t| w.max(t + 48.0));
-                let options = accounts.into_iter().map(|a| {
-                    let on = f.accounts.contains(&a);
-                    let fg = if on || f.accounts.is_empty() { p.text } else { p.sub };
-                    let line = row![
-                        semi(network_label(&a), 11.0).line_height(Pixels(14.0)).color(fg),
-                        Space::new().width(Fill),
-                        ic(icon::CHECK, 16.0).color(if on { fg } else { CLEAR })
-                    ]
-                    .spacing(8)
-                    .align_y(Center);
-                    let hover = Color { a: 0.1, ..p.text };
-                    button(line)
-                        .padding([6, 4])
-                        .width(Fill)
-                        .style(btn_style([CLEAR, hover, hover], [fg; 3], 4.0))
-                        .on_press(UiMessage::PickSearchFilter(SearchPick::Account(a)))
-                        .into()
-                });
-                let head = row![
-                    semi(f.label(0).unwrap_or_else(|| SEARCH_CHIPS[0].into()), 13.0).color(p.text),
-                    Space::new().width(Fill),
-                    ic(icon::EXPAND_MORE, 14.0).color(p.text)
-                ]
-                .spacing(4)
-                .padding([0, 12])
-                .align_y(Center);
-                let body = column![head, Column::with_children(options).spacing(4).padding([0, 8])].spacing(8);
-                container(body).width(width).padding([4, 0]).style(shadow_box(p.chip, CLEAR, 8.0, 4.0)).into()
+                brand(
+                    accounts
+                        .into_iter()
+                        .map(|a| (network_label(&a).to_string(), f.accounts.contains(&a), SearchPick::Account(a)))
+                        .collect(),
+                )
             }
             1 => menu(vec![
                 radio(f.sent == Some(true), "Sent", SearchPick::Sent(true)),
@@ -2551,6 +2618,13 @@ impl BeeperGuiApp {
             ]),
             2 => menu(
                 PERIODS.iter().enumerate().map(|(i, l)| radio(f.period == Some(i), l, SearchPick::Period(i))).collect(),
+            ),
+            3 => brand(
+                MEDIA_KINDS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| (l.to_string(), f.media.contains(&i), SearchPick::Media(i)))
+                    .collect(),
             ),
             _ => unreachable!("chip {chip} has no menu"),
         }
@@ -3909,7 +3983,7 @@ impl BeeperGuiApp {
             .spacing(4)
             .align_y(Center);
             let chip = button(body).padding([4, 13]).style(btn_style([CLEAR; 3], [fg; 3], 20.0));
-            container(chip.on_press_maybe((!disabled && i < 3).then_some(UiMessage::OpenSearchSelect(i))))
+            container(chip.on_press_maybe((!disabled).then_some(UiMessage::OpenSearchSelect(i))))
                 .id(format!("search-chip-{i}"))
                 .style(style)
                 .into()
@@ -3917,7 +3991,7 @@ impl BeeperGuiApp {
         .spacing(12)
         .padding(Padding::new(6.0).left(13.0).right(13.0));
         let filtered = *f != SearchFilters::default();
-        let mut chats: Vec<&Chat> = if room.is_some() || (filtered && q.is_empty()) {
+        let mut chats: Vec<&Chat> = if room.is_some() || !f.media.is_empty() || (filtered && q.is_empty()) {
             Vec::new()
         } else if q.is_empty() && !st.recent_chat_ids.is_empty() {
             st.recent_chat_ids
@@ -3955,29 +4029,21 @@ impl BeeperGuiApp {
                 }))
                 .align_y(Center)
                 .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0));
-        let (after, before) = f.window();
-        let mut found: Vec<&Message> = match q.chars().count() > 1 {
+        let mut found: Vec<&Message> = match q.chars().count() > 1 && f.media.is_empty() {
             true => st
                 .msg_search_index
                 .query_all_tokens(&q)
                 .into_iter()
                 .map(|i| &st.messages[i as usize])
-                .filter(|m| m.is_deleted != Some(true) && m.text.as_deref().is_some_and(|t| !t.is_empty()))
-                .filter(|m| room.is_none_or(|r| m.chat_id == r))
-                .filter(|m| {
-                    let group = st.chats[st.chat_idx_by_id[&m.chat_id]].chat_type == "group";
-                    let at = millis_from_rfc3339(&m.timestamp).expect("RFC 3339 timestamp");
-                    (f.accounts.is_empty() || f.accounts.contains(&m.account_id))
-                        && f.sent.is_none_or(|s| (m.is_sender == Some(true)) == s)
-                        && f.group.is_none_or(|g| group == g)
-                        && (after..before).contains(&at)
-                })
+                .filter(|m| m.text.as_deref().is_some_and(|t| !t.is_empty()) && f.keeps(&st, room, m))
                 .collect(),
             false => Vec::new(),
         };
         found.sort_by(|a, b| b.sort_key.cmp(&a.sort_key));
         found.truncate(20);
-        let none = found.is_empty() && chats.is_empty() && q.chars().count() > 1;
+        let media = self.media_hits(&st);
+        let none =
+            found.is_empty() && chats.is_empty() && media.is_empty() && (q.chars().count() > 1 || !f.media.is_empty());
         let heading = |label: &'static str| {
             container(txt(label, 12.0).color(p.sub)).padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0))
         };
@@ -4029,6 +4095,68 @@ impl BeeperGuiApp {
                         .on_press(UiMessage::JumpTo(c.id.clone(), m.id.clone())),
                 )
             });
+        let tiles = media.iter().map(|m| -> El<'_> {
+            let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
+            let card = |title: String, sub: El<'static>| -> El<'static> {
+                let body =
+                    column![clamp(&title, 94.0, 3, 10.0, Weight::Normal).line_height(Pixels(12.0)).color(p.text), sub];
+                container(body).align_bottom(Fill).width(Fill).padding(8).style(fill_box(p.frame, 8.0)).into()
+            };
+            let thumb = m.attachments.iter().find(|a| matches!(a.attachment_type.as_str(), "img" | "video"));
+            let body: El<'_> = match (thumb, m.links.first(), m.attachments.first()) {
+                (Some(a), _, _) => {
+                    match a.poster_img.as_ref().or(a.src_url.as_ref()).and_then(|u| self.media.get(u)?.as_ref()) {
+                        Some(Ok(frames)) => image(frames[0].0.clone())
+                            .width(Fill)
+                            .height(Fill)
+                            .content_fit(iced::ContentFit::Cover)
+                            .border_radius(8.0)
+                            .into(),
+                        _ => Space::new().into(),
+                    }
+                }
+                (None, Some(l), _) => {
+                    let host = l.url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(&l.url);
+                    let title = if l.title.is_empty() { host.to_string() } else { l.title.clone() };
+                    let sub = row![
+                        ic(icon::LINK, 12.0).color(p.text),
+                        ell(&l.url, 77.0, 10.0, Weight::Semibold).color(p.text)
+                    ];
+                    card(title, sub.spacing(4).align_y(Center).into())
+                }
+                (None, None, Some(a)) => {
+                    let mime = a.mime_type.as_deref().unwrap_or("");
+                    let kind = match mime {
+                        _ if mime.starts_with("audio/") => "Audio",
+                        "application/pdf" => "PDF",
+                        _ if mime.starts_with("text/") => "Text",
+                        _ if mime.starts_with("application/") => "Document",
+                        _ => "File",
+                    };
+                    let name = a.file_name.clone().unwrap_or_else(|| "Attachment".into());
+                    card(name, semi(kind, 10.0).line_height(Pixels(12.0)).color(p.text).into())
+                }
+                (None, None, None) => {
+                    let text = m.text.clone().expect("a link message has text");
+                    card(text, Space::new().into())
+                }
+            };
+            let face =
+                container(self.chat_avatar(c, 24.0)).padding(2).style(bordered_box(CLEAR, Color::WHITE, 2.0, 14.0));
+            let tile = stack![container(body).width(110).height(110).style(fill_box(p.outline, 8.0))]
+                .push(container(face).padding(6));
+            button(tile)
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.text; 3], 8.0))
+                .on_press(UiMessage::JumpTo(c.id.clone(), m.id.clone()))
+                .into()
+        });
+        let mut grid = Column::new().spacing(6.5).padding(Padding::new(0.0).left(13.0).right(13.0).bottom(4.0));
+        let mut tiles = tiles.peekable();
+        while tiles.peek().is_some() {
+            grid = grid.push(Row::with_children(tiles.by_ref().take(5)).spacing(6.5));
+        }
+        let media_grid = (!media.is_empty()).then(|| column![heading("Media"), grid]);
         let empty = none.then(|| {
             let desc = "Only messages loaded in Beeper can be searched.\nFor more results, scroll through older conversations.";
             column![
@@ -4067,11 +4195,9 @@ impl BeeperGuiApp {
                 .padding([0, 6]),
             )
         });
-        frame(
-            column![inputs].push(hint).push(chips).push(empty).push(
-                (!none).then(|| scrollable(hits.push(messages)).height(Fill).style(scroll_style(p.divider, p.weak))),
-            ),
-        )
+        frame(column![inputs].push(hint).push(chips).push(empty).push((!none).then(|| {
+            scrollable(hits.push(media_grid).push(messages)).height(Fill).style(scroll_style(p.divider, p.weak))
+        })))
     }
 
     fn view_new_chat(&self) -> El<'_> {

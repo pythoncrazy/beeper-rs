@@ -993,10 +993,12 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert!(!gui.show_command_palette && gui.selected_chat_id.as_deref() == Some(cid.as_str()));
         assert!(gui.flash.as_ref().is_some_and(|(id, _)| *id == mid), "a message hit flashes the message");
         let _ = gui.update(UiMessage::ToggleCommandPalette);
-        for pick in [SearchPick::Sent(true), SearchPick::Sent(false), SearchPick::Period(2), SearchPick::Period(2)] {
+        let picks = [SearchPick::Sent(true), SearchPick::Sent(false), SearchPick::Period(2), SearchPick::Period(2)];
+        for pick in picks.into_iter().chain([SearchPick::Media(0), SearchPick::Media(3), SearchPick::Media(0)]) {
             let _ = gui.update(UiMessage::PickSearchFilter(pick));
         }
         assert_eq!((gui.search_filters.sent, gui.search_filters.period), (Some(false), None), "a second pick clears");
+        assert_eq!(gui.search_filters.media, [3], "media kinds toggle one by one");
         let _ = gui.update(UiMessage::ToggleCommandPalette);
         let _ = gui.update(UiMessage::ToggleCommandPalette);
         assert_eq!(gui.search_filters, SearchFilters::default(), "a new search starts without filters");
