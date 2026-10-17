@@ -1098,17 +1098,7 @@ pub async fn logout(store: SharedStore) -> Result<(), String> {
     if !demo {
         client.ok_or("Matrix is not connected yet")?.logout().await.map_err(|e| e.to_string())?;
     }
-    let gone = |r: std::io::Result<()>| match r {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("Could not delete the local data: {e}")),
-        _ => Ok(()),
-    };
-    for f in ["beeper-rs.db", "beeper-rs.db-wal", "beeper-rs.db-shm"] {
-        gone(std::fs::remove_file(dir.join(f)))?;
-    }
-    for d in ["matrix", "media"] {
-        gone(std::fs::remove_dir_all(dir.join(d)))?;
-    }
-    Ok(())
+    std::fs::write(dir.join(crate::store::LOGGED_OUT), "").map_err(|e| format!("Could not mark the logout: {e}"))
 }
 
 pub async fn verify(store: SharedStore, confirm: oneshot::Receiver<bool>) -> Result<(), String> {
@@ -1240,10 +1230,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("beeper-rs-logout-{}", std::process::id()));
         let mut cfg = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23391, None);
         cfg.demo = true;
-        let store = std::sync::Arc::new(std::sync::RwLock::new(crate::store::BeeperStore::from_config(cfg)));
-        assert!(dir.join("beeper-rs.db").exists());
+        let store = std::sync::Arc::new(std::sync::RwLock::new(crate::store::BeeperStore::from_config(cfg.clone())));
+        let cached = dir.join("media").join("cached");
+        std::fs::write(&cached, "x").expect("write a cached file");
         super::logout(store).await.expect("demo logout");
-        assert!(!dir.join("beeper-rs.db").exists() && !dir.join("media").exists());
+        crate::store::BeeperStore::from_config(cfg);
+        assert!(!cached.exists() && !dir.join(crate::store::LOGGED_OUT).exists(), "the next start deletes the data");
         std::fs::remove_dir_all(dir).expect("remove the test data dir");
     }
 
