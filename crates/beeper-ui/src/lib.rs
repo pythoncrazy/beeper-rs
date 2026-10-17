@@ -26,11 +26,11 @@ use iced::keyboard::{self, key::Named, Key, Modifiers};
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{
     button, column, container, image, mouse_area, operation, pick_list, pin, rich_text, row, scrollable, slider, span,
-    stack, svg, text_input, Column, Row, Space, Stack,
+    stack, svg, text_input, tooltip, Column, Row, Space, Stack,
 };
 use iced::{
-    border, mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Padding, Pixels, Point,
-    Radians, Right, Shrink, Size, Subscription, Task, Theme,
+    border, mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Length, Padding, Pixels,
+    Point, Radians, Right, Shrink, Size, Subscription, Task, Theme,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -747,11 +747,15 @@ fn fmt_phone(s: &str) -> String {
     }
 }
 
-fn chat_search_subtitle(c: &Chat) -> String {
-    let plat = match brand_key(&c.account_id) {
+fn network_label(account_id: &str) -> &'static str {
+    match brand_key(account_id) {
         "beeper" => "Beeper",
-        _ => account_network(&c.account_id).display_name,
-    };
+        _ => account_network(account_id).display_name,
+    }
+}
+
+fn chat_search_subtitle(c: &Chat) -> String {
+    let plat = network_label(&c.account_id);
     let net = c.network_name.as_deref().map_or_else(|| plat.to_string(), |n| format!("{n} • {plat}"));
     if let Some(u) =
         (c.chat_type == "single").then(|| c.participants.items.iter().find(|u| u.is_self != Some(true))).flatten()
@@ -2194,6 +2198,23 @@ impl BeeperGuiApp {
                 .style(btn_style([if on { p.rail_sel } else { CLEAR }, p.hover, p.rail_sel], [p.strong; 3], 14.0))
                 .on_press(msg)
         };
+        let tip = |btn: El<'static>, label: &'static str, keys: Vec<&'static str>| -> El<'static> {
+            let kbd = |k: &'static str| -> El<'static> {
+                container(med(k, 13.0).color(p.strong))
+                    .center_x(if k.len() == 1 { Length::Fixed(20.0) } else { Shrink })
+                    .center_y(20)
+                    .padding([0, 2])
+                    .style(fill_box(p.chip, 4.0))
+                    .into()
+            };
+            let keys = (!keys.is_empty()).then(|| Row::with_children(keys.into_iter().map(kbd)).spacing(4));
+            let body = row![med(label, 13.0).color(p.strong)].push(keys).spacing(8).align_y(Center);
+            let bubble = container(body).padding([8, 12]).style(fill_box(p.card, 18.0));
+            tooltip(btn, bubble, tooltip::Position::Right).into()
+        };
+        let hotkey = |n: usize| -> Vec<&'static str> {
+            ["1", "2", "3", "4", "5", "6", "7", "8", "9"].get(n).map_or(vec![], |d| vec!["Ctrl", "Alt", d])
+        };
         let st = self.store.read().unwrap();
         let numbers = st.settings.on("showUnreadCount");
         let badge = |btn: El<'static>, n: usize, number: bool| -> El<'static> {
@@ -2215,10 +2236,12 @@ impl BeeperGuiApp {
                 && (c.unread_mentions > 0 || c.flags & CHAT_MUTED == 0)
         };
         let tally = |f: &dyn Fn(&Chat) -> bool| st.chats.iter().filter(|c| countable(c) && f(c)).count();
-        let tab = |id: &'static str, glyph: El<'static>, t: InboxTab, n: usize, number: bool| -> El<'static> {
-            let on = self.active_tab == t && self.selected_account_filter.is_none();
-            container(badge(rail_btn(glyph, on, UiMessage::SelectTab(t)).into(), n, number)).id(id).into()
-        };
+        let tab =
+            |id: &'static str, key: usize, glyph: El<'static>, t: InboxTab, n: usize, number: bool| -> El<'static> {
+                let on = self.active_tab == t && self.selected_account_filter.is_none();
+                let btn = badge(rail_btn(glyph, on, UiMessage::SelectTab(t)).into(), n, number);
+                container(tip(btn, t.label(), hotkey(key))).id(id).into()
+            };
         let requests = st.chats.iter().filter(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0).count();
         let g = |c: char| -> El<'static> { ic(c, 24.0).color(p.strong).into() };
         let ring = svg(DASHED_RING[usize::from(self.dark)].clone()).width(32).height(32);
@@ -2229,27 +2252,34 @@ impl BeeperGuiApp {
         accounts.sort_by_cached_key(|a| {
             (a != "hungryserv", st.chats.iter().position(|c| &c.account_id == a).unwrap_or(usize::MAX))
         });
-        let accounts = accounts.into_iter().fold(Column::new().spacing(8).align_x(Center), |c, acc| {
-            let on = self.selected_account_filter.as_ref() == Some(&acc);
-            let logo: El<'static> = svg(brand_svg(brand_key(&acc))).width(28).height(28).into();
-            let n = tally(&|c| c.account_id == acc && c.flags & CHAT_HIDDEN != 0 && c.flags & CHAT_LOW_PRIORITY == 0);
-            c.push(badge(rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc.clone()))).into(), n, true))
-        });
+        let accounts =
+            accounts.into_iter().enumerate().fold(Column::new().spacing(8).align_x(Center), |c, (i, acc)| {
+                let on = self.selected_account_filter.as_ref() == Some(&acc);
+                let logo: El<'static> = svg(brand_svg(brand_key(&acc))).width(28).height(28).into();
+                let n =
+                    tally(&|c| c.account_id == acc && c.flags & CHAT_HIDDEN != 0 && c.flags & CHAT_LOW_PRIORITY == 0);
+                let btn =
+                    badge(rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc.clone()))).into(), n, true);
+                c.push(tip(btn, network_label(&acc), hotkey(7 + i)))
+            });
+        let add_label = button(add_space).padding(0).style(ghost(p, 12.0)).on_press(UiMessage::ToggleCommandPalette);
         let top = column![
             tab(
                 "rail-inbox",
+                0,
                 g(icon::INBOX),
                 InboxTab::AllChats,
                 tally(&|c| c.flags & (CHAT_HIDDEN | CHAT_LOW_PRIORITY) == 0),
                 true
             ),
-            tab("rail-archive", g(icon::ARCHIVE), InboxTab::Archived, 0, false),
-            button(add_space).padding(0).style(ghost(p, 12.0)).on_press(UiMessage::ToggleCommandPalette),
-            tab("rail-reminders", g(icon::SCHEDULE), InboxTab::Reminders, 0, false),
-            tab("rail-send-later", g(icon::SCHEDULE_SEND), InboxTab::SendLater, 0, false),
-            tab("rail-requests", g(icon::EMAIL), InboxTab::Requests, requests, false),
+            tab("rail-archive", 1, g(icon::ARCHIVE), InboxTab::Archived, 0, false),
+            tip(add_label.into(), "Create Label", vec![]),
+            tab("rail-reminders", 3, g(icon::SCHEDULE), InboxTab::Reminders, 0, false),
+            tab("rail-send-later", 4, g(icon::SCHEDULE_SEND), InboxTab::SendLater, 0, false),
+            tab("rail-requests", 5, g(icon::EMAIL), InboxTab::Requests, requests, false),
             tab(
                 "rail-low-priority",
+                6,
                 g(icon::LOW_PRIORITY_SPACE),
                 InboxTab::LowPriority,
                 tally(&|c| c.flags & CHAT_LOW_PRIORITY != 0),
@@ -2263,17 +2293,19 @@ impl BeeperGuiApp {
         .width(68)
         .padding(Padding::ZERO.top(14.0));
         let me = st.me().full_name.as_deref().expect("self name");
+        let media = UiMessage::OpenQuickLook("Media".into(), "Photos, videos, and files from all chats".into());
+        let me_btn = button(avatar(me, 36.0, p))
+            .padding(0)
+            .style(btn_style([CLEAR; 3], [p.text; 3], 18.0))
+            .on_press(UiMessage::OpenSettings(SettingsTab::General));
         let footer = column![
-            rail_btn(
-                g(icon::PHOTO_LIBRARY),
-                false,
-                UiMessage::OpenQuickLook("Media".into(), "Photos, videos, and files from all chats".into())
+            tip(rail_btn(g(icon::PHOTO_LIBRARY), false, media).into(), "Media", vec![]),
+            tip(
+                rail_btn(g(icon::LIBRARY_ADD), false, UiMessage::OpenSettings(SettingsTab::Accounts)).into(),
+                "Add an account",
+                vec!["Ctrl", ","]
             ),
-            rail_btn(g(icon::LIBRARY_ADD), false, UiMessage::ToggleCommandPalette),
-            button(avatar(me, 36.0, p))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.text; 3], 18.0))
-                .on_press(UiMessage::OpenSettings(SettingsTab::General)),
+            tip(me_btn.into(), "Settings", vec!["Ctrl", ","]),
         ]
         .spacing(8)
         .align_x(Center)
@@ -2292,13 +2324,8 @@ impl BeeperGuiApp {
         let names: Vec<&str> =
             (0..FILTERS.len()).filter(|i| self.filters & 1 << i != 0).map(|i| FILTERS[i].0).collect();
         let title = column![row![
-            semi(
-                self.selected_account_filter
-                    .as_deref()
-                    .map_or(self.active_tab.label(), |a| account_network(a).display_name),
-                13.0
-            )
-            .color(p.strong),
+            semi(self.selected_account_filter.as_deref().map_or(self.active_tab.label(), network_label), 13.0)
+                .color(p.strong),
             ic(icon::UNFOLD_MORE, 13.0).color(p.weak)
         ]
         .spacing(4)
