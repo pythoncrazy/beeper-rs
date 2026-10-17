@@ -540,8 +540,8 @@ fn ago(ms: u64) -> String {
     format!("{}{unit} ago", (secs / size).round())
 }
 
-fn divider<'a>(p: &Palette, left: f32) -> El<'a> {
-    container(container(Space::new()).width(Fill).height(1).style(fill_box(p.divider.scale_alpha(0.4), 0.0)))
+fn divider<'a>(color: Color, left: f32) -> El<'a> {
+    container(container(Space::new()).width(Fill).height(1).style(fill_box(color, 0.0)))
         .padding(Padding::ZERO.left(left))
         .into()
 }
@@ -3285,7 +3285,7 @@ impl BeeperGuiApp {
             .on_enter(UiMessage::HoverChat(key.clone(), true))
             .on_exit(UiMessage::HoverChat(key.clone(), false))
             .on_right_press(UiMessage::OpenChatMenu(key));
-            column![row, divider(p, 52.0)]
+            column![row, divider(p.divider, 46.0)]
         };
         let drafts = self.new_chats.iter().map(|&n| {
             let dot = (!counts).then(|| container(Space::new()).width(12).into());
@@ -4901,7 +4901,7 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::Ask(Some(ASK_LOGOUT)));
             let line: El<'a> =
                 row![tile, text].push(d.current.then_some(logout)).spacing(12).align_y(Center).padding([8, 12]).into();
-            [(i > 0).then(|| divider(p, 0.0)), Some(line)].into_iter().flatten()
+            [(i > 0).then(|| divider(p.prefs_border, 0.0)), Some(line)].into_iter().flatten()
         });
         column![
             container(txt(title, 12.0).color(p.sub)).padding([8, 0]),
