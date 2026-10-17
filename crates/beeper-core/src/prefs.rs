@@ -272,6 +272,7 @@ pub const HOTKEYS: &[(&str, &[(&str, &str)])] = &[
             ("Quit App", "Ctrl Q"),
             ("Reset Zoom", "Ctrl 0"),
             ("Search", "Ctrl K"),
+            ("Search: Room", "Ctrl F"),
             ("Settings", "Ctrl ,"),
             ("Zoom In", "Ctrl ="),
             ("Zoom Out", "Ctrl -"),

@@ -981,8 +981,14 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert!(gui.chat_menu.as_ref().is_some_and(|(c, _)| *c == cid), "right-click opens the chat menu");
         let _ = gui.update(UiMessage::ToggleRead(cid.clone()));
         assert!(gui.chat_menu.is_none(), "a menu action closes the menu");
-        let c = &store.read().unwrap().chats[0];
+        let c = store.read().unwrap().chats[0].clone();
         assert_eq!(c.unread_count == 0 && c.is_marked_unread != Some(true), !read, "the read toggle flips the chat");
+        let _ = gui.update(UiMessage::SearchRoom(cid.clone()));
+        assert!(gui.show_command_palette && gui.search_room.as_deref() == Some(cid.as_str()));
+        let _ = gui.update(UiMessage::ToggleCommandPalette);
+        assert!(gui.show_command_palette && gui.search_room.is_none(), "Ctrl K widens a chat search");
+        let _ = gui.update(UiMessage::ToggleCommandPalette);
+        assert!(!gui.show_command_palette);
     }
     let _ = gui.update(rail("1"));
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));
