@@ -11,8 +11,7 @@ use crate::style::{
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{account_network, civil_from_days, millis_from_rfc3339, now_unix_secs, APP_VERSION};
 use beeper_core::import::has_beeper_data;
-use beeper_core::matrix::DeviceInfo;
-use beeper_core::matrix::Outgoing;
+use beeper_core::matrix::{ChatFlag, DeviceInfo, Outgoing};
 use beeper_core::models::*;
 use beeper_core::platform::{
     build_tray_icon_rgba, current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind,
@@ -212,11 +211,8 @@ pub enum UiMessage {
     GifDownloaded(KlipyGif, Result<(Vec<u8>, Frames), String>),
     PasteClipboard,
     SetReminder(String),
-    TogglePinChat(String),
-    ToggleMuteChat(String),
-    ToggleArchiveChat(String),
+    ToggleFlag(String, ChatFlag),
     ArchiveStale,
-    NotifyAnyway(String),
     NicknameChanged(String),
     SaveNickname,
     ToggleFilterMenu,
@@ -1379,14 +1375,14 @@ impl BeeperGuiApp {
     }
 
     fn run_hotkey(&mut self, name: &str) -> Task<UiMessage> {
-        let chat = |f: fn(String) -> UiMessage| self.selected_chat_id.clone().map(f);
+        let chat = |f: ChatFlag| self.selected_chat_id.clone().map(|c| UiMessage::ToggleFlag(c, f));
         let msg = match name {
             "Search" => Some(UiMessage::ToggleCommandPalette),
             "Settings" => Some(UiMessage::OpenSettings(self.active_settings_tab)),
             "Toggle Chat Info" => Some(UiMessage::ToggleRightPanel),
-            "Chat: Toggle Mute" => chat(UiMessage::ToggleMuteChat),
-            "Chat: Toggle Pin" => chat(UiMessage::TogglePinChat),
-            "Chat: Toggle Archive" => chat(UiMessage::ToggleArchiveChat),
+            "Chat: Toggle Mute" => chat(ChatFlag::Muted),
+            "Chat: Toggle Pin" => chat(ChatFlag::Pinned),
+            "Chat: Toggle Archive" => chat(ChatFlag::Archived),
             "Zoom In" => Some(UiMessage::Zoom(1)),
             "Zoom Out" => Some(UiMessage::Zoom(-1)),
             "Reset Zoom" => Some(UiMessage::Zoom(0)),
@@ -1550,24 +1546,24 @@ impl BeeperGuiApp {
                 self.update_chat(&cid, |c| c.reminder = Some(reminder));
                 self.status_banner = "Reminder scheduled for tomorrow 09:00".to_string();
             }
-            UiMessage::TogglePinChat(cid) => self.update_chat(&cid, |c| c.is_pinned = Some(c.is_pinned != Some(true))),
-            UiMessage::ToggleMuteChat(cid) => self.update_chat(&cid, |c| c.is_muted = Some(c.is_muted != Some(true))),
             UiMessage::ArchiveStale => {
                 {
                     let mut st = self.store.write().unwrap();
                     for idx in st.stale_inbox_chats() {
-                        st.update_chat(idx, |c| c.is_archived = Some(true));
+                        assert!(st.set_chat_flag(idx, ChatFlag::Archived, Some(true)));
                     }
                 }
                 self.refresh_theme_and_tray();
             }
-            UiMessage::ToggleArchiveChat(cid) => {
-                self.update_chat(&cid, |c| c.is_archived = Some(c.is_archived != Some(true)));
+            UiMessage::ToggleFlag(cid, flag) => {
+                {
+                    let mut st = self.store.write().unwrap();
+                    let idx = st.resolve_chat_idx(&cid).expect("chat exists");
+                    if !st.set_chat_flag(idx, flag, None) {
+                        self.status_banner = "Pinned chats can't be archived".into();
+                    }
+                }
                 self.refresh_theme_and_tray();
-            }
-            UiMessage::NotifyAnyway(cid) => {
-                self.update_chat(&cid, |c| c.is_muted = Some(false));
-                self.status_banner = "Notifications unmuted for conversation".to_string();
             }
             UiMessage::NicknameChanged(v) => self.nickname_edit_buffer = v,
             UiMessage::SaveNickname => {
@@ -3349,14 +3345,18 @@ impl BeeperGuiApp {
             action(
                 icon::KEEP,
                 if chat.is_pinned == Some(true) { "Unpin" } else { "Pin" },
-                UiMessage::TogglePinChat(cid.clone())
+                UiMessage::ToggleFlag(cid.clone(), ChatFlag::Pinned)
             ),
             action(
                 icon::NOTIFICATIONS_OFF,
                 if chat.is_muted == Some(true) { "Unmute" } else { "Mute" },
-                UiMessage::ToggleMuteChat(cid.clone())
+                UiMessage::ToggleFlag(cid.clone(), ChatFlag::Muted)
             ),
-            action(icon::ARCHIVE, "Archive", UiMessage::ToggleArchiveChat(cid.clone())),
+            action(
+                icon::ARCHIVE,
+                if chat.is_archived == Some(true) { "Unarchive" } else { "Archive" },
+                UiMessage::ToggleFlag(cid.clone(), ChatFlag::Archived)
+            ),
             action(icon::SCHEDULE, "Remind", UiMessage::SetReminder(cid.clone())),
             action(icon::DOWNLOAD, "Export", UiMessage::ExportChatJson(cid.clone())),
         ]

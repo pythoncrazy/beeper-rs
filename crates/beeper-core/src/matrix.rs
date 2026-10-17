@@ -1,4 +1,4 @@
-use crate::config::{now_rfc3339_millis, rfc3339_from_millis};
+use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
     Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, EditHistoryEntry, Message, MessageLink,
@@ -22,8 +22,9 @@ use matrix_sdk::ruma::events::receipt::{ReceiptThread, ReceiptType};
 use matrix_sdk::ruma::events::relation::{Annotation, Reply};
 use matrix_sdk::ruma::events::room::message::{Relation, ReplacementMetadata, RoomMessageEventContent};
 use matrix_sdk::ruma::events::room::MediaSource;
-use matrix_sdk::ruma::events::tag::TagName;
+use matrix_sdk::ruma::events::tag::{TagInfo, TagName};
 use matrix_sdk::ruma::events::{GlobalAccountDataEventType, RoomAccountDataEventType, StateEventType};
+use matrix_sdk::ruma::serde::Raw;
 use matrix_sdk::ruma::OwnedEventId;
 use matrix_sdk::{Client, LoopCtrl, Room, RoomMemberships, SessionMeta, SessionTokens};
 use matrix_sdk_crypto::vodozemac;
@@ -96,6 +97,28 @@ async fn state(room: &Room, kind: &str) -> Option<Value> {
 async fn account_data(room: &Room, kind: &str) -> Option<Value> {
     let raw = room.account_data(RoomAccountDataEventType::from(kind)).await.expect("read room account data")?;
     Some(serde_json::from_str::<Value>(raw.json().get()).expect("account data JSON")["content"].take())
+}
+
+async fn tag(room: &Room, name: TagName, on: bool) -> matrix_sdk::Result<()> {
+    match on {
+        true => room.set_tag(name, TagInfo::new()).await.map(drop),
+        false => room.remove_tag(name).await.map(drop),
+    }
+}
+
+/// Adds a pinned room to the end of the `com.beeper.favourites_order` inbox list, or removes it.
+async fn edit_pins(client: &Client, id: &str, add: bool) -> matrix_sdk::Result<()> {
+    let (account, kind) = (client.account(), GlobalAccountDataEventType::from("com.beeper.favourites_order"));
+    let raw = account.account_data_raw(kind.clone()).await?;
+    let mut v = raw.map_or(Value::Null, |r| r.deserialize_as::<Value>().expect("account data JSON"));
+    let mut ids = v["Inbox"].as_array().cloned().unwrap_or_default();
+    ids.retain(|x| x != id);
+    if add {
+        ids.push(id.into());
+    }
+    v["Inbox"] = ids.into();
+    let raw = Raw::from_json(serde_json::value::to_raw_value(&v).expect("account data JSON"));
+    account.set_account_data_raw(kind, raw).await.map(drop)
 }
 
 fn account_id(bridge: &Value, accounts: &[BridgeAccountInfo]) -> String {
@@ -611,12 +634,22 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
         }
         let idx = st.chat_idx_by_id[&chat_id];
         let last = st.chat_msg_indices.get(&chat_id).and_then(|v| v.last()).map(|&i| st.messages[i].sort_key.clone());
-        let archived = !note && done.is_some_and(|d| last.is_none_or(|l| sort_key(d) >= l));
+        let archived =
+            st.chats[idx].is_pinned != Some(true) && done.is_some_and(|d| last.is_none_or(|l| sort_key(d) >= l));
         if st.chats[idx].is_archived != Some(archived) {
             st.update_chat(idx, |c| c.is_archived = Some(archived));
         }
     }
     sync_receipts(store, room).await;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatFlag {
+    Archived,
+    Pinned,
+    LowPriority,
+    Muted,
+    MarkedUnread,
 }
 
 pub enum Outgoing {
@@ -638,6 +671,7 @@ pub enum Outgoing {
         key: String,
     },
     Read(String),
+    Flag(ChatFlag, bool),
     Image {
         txn: String,
         bytes: Vec<u8>,
@@ -712,6 +746,34 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                 .await
                 .map_err(e)?;
         }
+        Outgoing::Flag(flag, on) => match flag {
+            ChatFlag::Archived => {
+                let now = now_unix_millis();
+                let mut done = serde_json::json!({ "at_ts": now, "updated_ts": now });
+                if on {
+                    let st = store.read().unwrap();
+                    let last = st.chat_msg_indices.get(&chat).and_then(|v| v.last());
+                    let order = last.map_or(0, |&i| st.messages[i].sort_key.parse().expect("numeric sort key"));
+                    done["at_order"] = order.into();
+                }
+                let raw = Raw::from_json(serde_json::value::to_raw_value(&done).expect("inbox done JSON"));
+                room.set_account_data_raw("com.beeper.inbox.done".into(), raw).await.map_err(e)?;
+            }
+            ChatFlag::Pinned => {
+                tag(&room, TagName::Favorite, on).await.map_err(e)?;
+                edit_pins(&client, room.room_id().as_str(), on).await.map_err(e)?;
+            }
+            ChatFlag::LowPriority => tag(&room, TagName::LowPriority, on).await.map_err(e)?,
+            ChatFlag::Muted => {
+                let settings = client.notification_settings().await;
+                match on {
+                    true => settings.set_room_notification_mode(room.room_id(), RoomNotificationMode::Mute).await,
+                    false => settings.delete_user_defined_room_rules(room.room_id()).await,
+                }
+                .map_err(|x| x.to_string())?;
+            }
+            ChatFlag::MarkedUnread => room.set_unread_flag(on).await.map_err(e)?,
+        },
         Outgoing::Image { txn, bytes: data, name, mime, size: (w, h), caption, reply_to } => {
             use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseImageInfo};
             use matrix_sdk::room::reply::{EnforceThread, Reply};

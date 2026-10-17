@@ -6,6 +6,7 @@ use beeper_api::{
 use beeper_core::{
     config::{is_original_beeper_dir, CentralConfig, APP_BUNDLE_ID, DEFAULT_RECOVERY_CODE},
     import::read_beeper_data,
+    matrix::{ChatFlag, Outgoing},
     models::*,
     platform::{
         build_tray_icon_rgba, file_url_to_path, generate_os_autostart_manifest, open_url_or_path_command,
@@ -958,6 +959,22 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         st.chats[i].network_id = Some("g1".into());
         let shown: Vec<_> = gui.visible_chats(&st).iter().map(|c| c.id.clone()).collect();
         assert_eq!(shown, [st.chats[i].id.clone()], "the server shows only its chats");
+    }
+    {
+        let cid = store.read().unwrap().chats[0].id.clone();
+        let was = store.read().unwrap().chats[0].is_muted == Some(true);
+        store.write().unwrap().config.demo = false;
+        let _ = gui.update(UiMessage::ToggleFlag(cid.clone(), ChatFlag::Muted));
+        let mut st = store.write().unwrap();
+        st.config.demo = true;
+        assert_eq!(st.chats[0].is_muted, Some(!was), "the mute toggle changes the chat");
+        let queued =
+            matches!(st.outbox.as_slice(), [(c, Outgoing::Flag(ChatFlag::Muted, on))] if *c == cid && *on != was);
+        assert!(queued, "the mute toggle goes to the homeserver");
+        st.outbox.clear();
+        st.chats[0].is_pinned = Some(true);
+        assert!(!st.set_chat_flag(0, ChatFlag::Archived, None), "pinned chats can't be archived");
+        assert!(st.outbox.is_empty());
     }
     let _ = gui.update(rail("1"));
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));

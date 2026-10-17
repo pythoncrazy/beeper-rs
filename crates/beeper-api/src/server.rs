@@ -6,7 +6,7 @@ use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{
     network_spec, now_rfc3339_millis, APP_BUNDLE_ID, APP_NAME, APP_VERSION, NETWORK_SPECS, OPENAPI_SPEC_JSON,
 };
-use beeper_core::matrix::Outgoing;
+use beeper_core::matrix::{ChatFlag, Outgoing};
 use beeper_core::models::*;
 use beeper_core::platform::{path_to_file_url, OsKind};
 use beeper_core::store::{BeeperStore, InvertedIndex, OAuthClientEntry, OAuthCodeEntry, SharedStore, StoredAsset};
@@ -785,26 +785,18 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
         }
         ("POST", ["archive"]) => {
             let archived = r.body["archived"].as_bool().unwrap_or(true);
-            st.update_chat(idx, |c| c.is_archived = Some(archived));
+            st.set_chat_flag(idx, ChatFlag::Archived, Some(archived));
             empty(StatusCode::NO_CONTENT, Vec::new())
         }
         ("POST", ["read"]) => {
-            st.update_chat(idx, |c| {
-                (c.unread_count, c.unread_mentions) = (0, 0);
-                c.is_marked_unread = Some(false);
-            });
-            let msgs = st.chat_msg_indices.get(&st.chats[idx].id).into_iter().flatten();
-            let unread: Vec<usize> = msgs.copied().filter(|&m| st.messages[m].is_unread == Some(true)).collect();
-            for m in unread {
-                st.update_message(m, |m| m.is_unread = Some(false));
+            if let Some(ev) = st.mark_chat_read(id, true) {
+                let cid = st.chats[idx].id.clone();
+                st.queue(&cid, Outgoing::Read(ev));
             }
             success(st)
         }
         ("POST", ["unread"]) => {
-            st.update_chat(idx, |c| {
-                c.is_marked_unread = Some(true);
-                c.unread_count = c.unread_count.max(1);
-            });
+            st.set_chat_flag(idx, ChatFlag::MarkedUnread, Some(true));
             success(st)
         }
         ("POST", ["notify-anyway"]) => {

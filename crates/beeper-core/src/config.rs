@@ -258,6 +258,10 @@ pub fn millis_from_rfc3339(s: &str) -> Option<i64> {
     Some(((days * 24 + num(11..13)?) * 60 + num(14..16)?) * 60_000 + num(17..19)? * 1000 + frac)
 }
 
+pub fn now_unix_millis() -> i64 {
+    unix_now().as_millis() as i64
+}
+
 pub fn now_rfc3339_millis() -> String {
-    rfc3339_from_millis(unix_now().as_millis() as i64)
+    rfc3339_from_millis(now_unix_millis())
 }
