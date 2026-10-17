@@ -3,6 +3,7 @@ use crate::config::{
     DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN, DEFAULT_USER_ID, SEED_JSON,
     WS_CHANNEL_CAPACITY,
 };
+use crate::matrix::{ChatFlag, Outgoing};
 use crate::models::*;
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
@@ -235,7 +236,7 @@ pub struct BeeperStore {
     pub matrix: Option<matrix_sdk::Client>,
     pub matrix_error: Option<String>,
     pub sas_confirm: Option<tokio::sync::oneshot::Sender<bool>>,
-    pub outbox: Vec<(String, crate::matrix::Outgoing)>,
+    pub outbox: Vec<(String, Outgoing)>,
     pub pushing: bool,
     pub sent: HashMap<String, String>,
     pub typing: HashMap<String, Vec<String>>,
@@ -683,10 +684,34 @@ impl BeeperStore {
         &self.chats[self.chat_idx_by_id[NOTE_CHAT_ID]].participants.items[0]
     }
 
-    pub fn queue(&mut self, chat_id: &str, out: crate::matrix::Outgoing) {
+    pub fn queue(&mut self, chat_id: &str, out: Outgoing) {
         if !self.config.demo {
             self.outbox.push((chat_id.into(), out));
         }
+    }
+
+    /// Sets a chat flag here and on the homeserver. `None` toggles the flag.
+    /// Returns false, like Desktop, when asked to archive a pinned chat.
+    pub fn set_chat_flag(&mut self, idx: usize, flag: ChatFlag, on: Option<bool>) -> bool {
+        let c = &self.chats[idx];
+        if flag == ChatFlag::Archived && c.is_pinned == Some(true) && on.unwrap_or(c.is_archived != Some(true)) {
+            return false;
+        }
+        let mut value = false;
+        self.update_chat(idx, |c| {
+            let slot = match flag {
+                ChatFlag::Archived => &mut c.is_archived,
+                ChatFlag::Pinned => &mut c.is_pinned,
+                ChatFlag::LowPriority => &mut c.is_low_priority,
+                ChatFlag::Muted => &mut c.is_muted,
+                ChatFlag::MarkedUnread => &mut c.is_marked_unread,
+            };
+            value = on.unwrap_or(*slot != Some(true));
+            *slot = Some(value);
+        });
+        let id = self.chats[idx].id.clone();
+        self.queue(&id, Outgoing::Flag(flag, value));
+        true
     }
 
     pub fn start_flush(&mut self) -> bool {
@@ -1173,6 +1198,9 @@ impl BeeperStore {
         let last_key = indices.last().map(|&i| self.messages[i].sort_key.clone());
         let last_event = indices.iter().rev().map(|&i| &self.messages[i].id).find(|id| id.starts_with('$')).cloned();
         let had_unread = self.chats[idx].flags & CHAT_UNREAD != 0;
+        if self.chats[idx].is_marked_unread == Some(true) {
+            self.queue(&chat_id, Outgoing::Flag(ChatFlag::MarkedUnread, false));
+        }
         if had_unread || self.chats[idx].last_read_message_sort_key < last_key {
             self.update_chat(idx, |c| {
                 c.unread_count = 0;
