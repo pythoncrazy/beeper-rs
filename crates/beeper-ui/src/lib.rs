@@ -8,7 +8,7 @@ use crate::style::{
     icon, initials, input_style, med, mix, name_hash, pick, pick_menu_style, pick_style, scroll_style, semi,
     shadow_box, txt, Palette, ALL_FONTS, AVATAR_GRADIENTS, CLEAR,
 };
-use beeper_core::cloud::Cloud;
+use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{account_network, civil_from_days, millis_from_rfc3339, now_unix_secs, APP_VERSION};
 use beeper_core::import::has_beeper_data;
 use beeper_core::matrix::DeviceInfo;
@@ -205,6 +205,12 @@ pub enum UiMessage {
     SendQuickVoiceNote,
     SendQuickPoll,
     ToggleAttachMenu,
+    ToggleGifPicker,
+    GifQueryChanged(String),
+    GifsLoaded(Result<Vec<KlipyGif>, String>),
+    PickGif(KlipyGif),
+    GifDownloaded(KlipyGif, Result<(Vec<u8>, Frames), String>),
+    PasteClipboard,
     SetReminder(String),
     TogglePinChat(String),
     ToggleMuteChat(String),
@@ -457,8 +463,18 @@ fn round_avatar(bytes: &[u8]) -> Result<image::Handle, String> {
 }
 
 /// Image frames with their delays in milliseconds; a still image has one frame.
-type Frames = Vec<(image::Handle, u128)>;
+pub type Frames = Vec<(image::Handle, u128)>;
 type Png = (Vec<u8>, (u32, u32));
+
+#[derive(Clone)]
+pub struct PendingMedia {
+    pub bytes: Vec<u8>,
+    pub name: String,
+    pub mime: String,
+    pub is_gif: bool,
+    pub size: (u32, u32),
+    pub frames: Frames,
+}
 
 async fn clipboard_image() -> Result<Option<Png>, String> {
     let read = || {
@@ -647,6 +663,20 @@ static BELL_OFF: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| 
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"/><path d="m2 2 20 20"/><path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"/></svg>"##[..])
 });
 
+static COMPOSER_ICONS: std::sync::LazyLock<[svg::Handle; 8]> = std::sync::LazyLock::new(|| {
+    [
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M9.2 14h1.5v-3.2H14V9.3h-3.3V6H9.3v3.3H6v1.5h3.3V14ZM10 18a7.8 7.8 0 0 1-3.1-.6 8.1 8.1 0 0 1-4.3-4.3A7.8 7.8 0 0 1 2 10c0-1.1.2-2.1.6-3.1a8.1 8.1 0 0 1 4.3-4.3A7.8 7.8 0 0 1 10 2c1.1 0 2.1.2 3.1.6a8.1 8.1 0 0 1 4.3 4.3c.4 1 .6 2 .6 3.1 0 1.1-.2 2.1-.6 3.1a8.1 8.1 0 0 1-4.3 4.3c-1 .4-2 .6-3.1.6Zm0-1.5c1.8 0 3.4-.6 4.6-1.9 1.3-1.2 1.9-2.8 1.9-4.6 0-1.8-.6-3.4-1.9-4.6C13.4 4.1 11.8 3.5 10 3.5c-1.8 0-3.4.6-4.6 1.9C4.1 6.6 3.5 8.2 3.5 10c0 1.8.6 3.4 1.9 4.6 1.2 1.3 2.8 1.9 4.6 1.9Z"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path transform="rotate(45 10 10)" fill="currentColor" d="M9.2 14h1.5v-3.2H14V9.3h-3.3V6H9.3v3.3H6v1.5h3.3V14ZM10 18a7.8 7.8 0 0 1-3.1-.6 8.1 8.1 0 0 1-4.3-4.3A7.8 7.8 0 0 1 2 10c0-1.1.2-2.1.6-3.1a8.1 8.1 0 0 1 4.3-4.3A7.8 7.8 0 0 1 10 2c1.1 0 2.1.2 3.1.6a8.1 8.1 0 0 1 4.3 4.3c.4 1 .6 2 .6 3.1 0 1.1-.2 2.1-.6 3.1a8.1 8.1 0 0 1-4.3 4.3c-1 .4-2 .6-3.1.6Zm0-1.5c1.8 0 3.4-.6 4.6-1.9 1.3-1.2 1.9-2.8 1.9-4.6 0-1.8-.6-3.4-1.9-4.6C13.4 4.1 11.8 3.5 10 3.5c-1.8 0-3.4.6-4.6 1.9C4.1 6.6 3.5 8.2 3.5 10c0 1.8.6 3.4 1.9 4.6 1.2 1.3 2.8 1.9 4.6 1.9Z"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M12.7 9a1.2 1.2 0 0 0 .3-.8c0-.4-.1-.6-.3-.9a1.2 1.2 0 0 0-.9-.3c-.3 0-.6.1-.8.3-.3.3-.4.5-.4.9 0 .3.1.6.4.8.2.3.5.4.8.4.4 0 .7-.1.9-.4Zm-4.6 0c.2-.2.3-.5.3-.8 0-.4-.1-.6-.3-.9a1.2 1.2 0 0 0-.9-.3c-.3 0-.6.1-.9.3-.2.3-.3.5-.3.9 0 .3.1.6.3.8.3.3.6.4.9.4.3 0 .6-.1.9-.4Zm1.9 5.5c1 0 2-.3 2.8-.9.8-.6 1.3-1.4 1.7-2.4h-1.3c-.3.6-.7 1.1-1.3 1.5s-1.2.6-1.9.6-1.3-.2-1.9-.6c-.6-.4-1-.9-1.3-1.5H5.5c.4 1 1 1.8 1.7 2.4.8.6 1.8.9 2.8.9Zm0 3.5a7.8 7.8 0 0 1-3.1-.6 8.1 8.1 0 0 1-4.3-4.3A7.8 7.8 0 0 1 2 10c0-1.1.2-2.1.6-3.1a8.1 8.1 0 0 1 4.3-4.3A7.8 7.8 0 0 1 10 2c1.1 0 2.1.2 3.1.6a8.1 8.1 0 0 1 4.3 4.3c.4 1 .6 2 .6 3.1 0 1.1-.2 2.1-.6 3.1a8.1 8.1 0 0 1-4.3 4.3c-1 .4-2 .6-3.1.6Zm0-1.5c1.8 0 3.4-.6 4.6-1.9 1.3-1.2 1.9-2.8 1.9-4.6 0-1.8-.6-3.4-1.9-4.6C13.4 4.1 11.8 3.5 10 3.5c-1.8 0-3.4.6-4.6 1.9C4.1 6.6 3.5 8.2 3.5 10c0 1.8.6 3.4 1.9 4.6 1.2 1.3 2.8 1.9 4.6 1.9Z"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M6.1 14.8v-9.6h1.5v9.6H6.1Zm3.1 3.2v-16h1.5v16H9.2Zm-6.1-6.4V8.4h1.5v3.2H3.1Zm9.3 3.2v-9.6h1.5v9.6h-1.5Zm3.1-3.2V8.4H17v3.2h-1.5Z"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M9.6 18c-1.3 0-2.3-.4-3.2-1.3-.9-.9-1.4-2-1.4-3.3V5.8c0-.9.3-1.7 1-2.3.6-.7 1.4-1 2.3-1 .9 0 1.7.3 2.3 1 .7.6 1 1.4 1 2.3v7c0 .6-.2 1-.6 1.5-.4.4-.9.6-1.5.6-.6 0-1-.2-1.5-.6-.4-.5-.6-1-.6-1.6V6h1.5v6.8c0 .2 0 .3.2.5.1.1.2.2.4.2.2 0 .3 0 .5-.2.1-.2.2-.3.2-.5v-7c0-.5-.2-1-.6-1.3-.3-.4-.8-.5-1.3-.5-.5 0-1 .1-1.3.5-.4.3-.5.8-.5 1.3v7.6c0 .9.3 1.7.9 2.2.6.6 1.3.9 2.2.9.9 0 1.6-.3 2.2-.9.6-.5.9-1.3.9-2.2V6h1.5v7.4c0 1.3-.5 2.4-1.4 3.3-.9.9-2 1.3-3.2 1.3Z"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M6.4 12.1h1.3c.2 0 .4 0 .5-.2.2-.1.2-.3.2-.5v-1.2H7.2v1H6.4v-2.4h2V7.9c0-.2 0-.4-.2-.5-.1-.2-.3-.2-.5-.2H6.4c-.2 0-.4 0-.5.2-.2.1-.2.3-.2.5v3.5c0 .2 0 .4.2.5.1.2.3.2.5.2Zm3.4 0H11V7.2H9.8v4.9Zm2.3 0h1.2v-1.8h1.4V9.1h-1.4V8.4h2V7.2H12v4.9ZM4.5 17c-.4 0-.8-.2-1-.5-.3-.2-.5-.6-.5-1V4.5c0-.4.2-.8.5-1 .2-.3.6-.5 1-.5h11c.4 0 .8.2 1 .5.3.2.5.6.5 1v11c0 .4-.2.8-.5 1-.2.3-.6.5-1 .5h-11Zm0-1.5h11v-11h-11v11Z"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M10 12c-.7 0-1.3-.3-1.8-.8-.5-.5-.7-1-.7-1.8V4.5c0-.7.2-1.3.7-1.8.5-.4 1.1-.7 1.8-.7.7 0 1.3.3 1.8.8.5.4.7 1 .7 1.7v5c0 .7-.2 1.3-.7 1.8-.5.5-1.1.7-1.8.7Zm-.8 5v-2.4c-1.3-.2-2.5-.8-3.3-1.7-.9-1-1.3-2.1-1.3-3.5H6c0 1.1.4 2 1.1 2.7.8.8 1.7 1.1 2.8 1.1 1.1 0 2-.3 2.8-1 .8-.8 1.1-1.7 1.1-2.8h1.6c0 1.4-.4 2.5-1.3 3.5-.9.9-2 1.5-3.3 1.7V17H9.2Zm.8-6.5c.3 0 .5-.1.7-.3.2-.2.3-.4.3-.7v-5c0-.3-.1-.5-.3-.7a1 1 0 0 0-.7-.3c-.3 0-.5.1-.7.3-.2.2-.3.4-.3.7v5c0 .3.1.5.3.7.2.2.4.3.7.3Z"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M12.4 13.5 13.5 12.4l-2.7-2.8V6H9.3v4.3l3.1 3.2ZM10 18a7.8 7.8 0 0 1-3.1-.6 8.1 8.1 0 0 1-4.3-4.3A7.8 7.8 0 0 1 2 10c0-1.1.2-2.1.6-3.1a8.1 8.1 0 0 1 4.3-4.3A7.8 7.8 0 0 1 10 2c1.1 0 2.1.2 3.1.6a8.1 8.1 0 0 1 4.3 4.3c.4 1 .6 2 .6 3.1 0 1.1-.2 2.1-.6 3.1a8.1 8.1 0 0 1-4.3 4.3c-1 .4-2 .6-3.1.6Zm0-1.5c1.8 0 3.4-.6 4.6-1.9 1.3-1.2 1.9-2.8 1.9-4.6 0-1.8-.6-3.4-1.9-4.6C13.4 4.1 11.8 3.5 10 3.5c-1.8 0-3.4.6-4.6 1.9C4.1 6.6 3.5 8.2 3.5 10c0 1.8.6 3.4 1.9 4.6 1.2 1.3 2.8 1.9 4.6 1.9Z"/></svg>"##[..],
+    ]
+    .map(svg::Handle::from_memory)
+});
+
 static TRASH: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><path fill="currentColor" d="M432 32H312l-9.4-18.7A24 24 0 0 0 281.1 0H166.8a23.72 23.72 0 0 0-21.4 13.3L136 32H16A16 16 0 0 0 0 48v32a16 16 0 0 0 16 16h416a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16zM53.2 467a48 48 0 0 0 47.9 45h245.8a48 48 0 0 0 47.9-45L416 128H32z"/></svg>"#[..])
 });
@@ -762,11 +792,16 @@ pub struct BeeperGuiApp {
     pub selected_chat_id: Option<String>,
     pub search_query: String,
     pub hotkey_query: String,
-    pub pasted: Option<(Vec<u8>, (u32, u32), image::Handle)>,
+    pub pasted: Option<PendingMedia>,
     pub show_search: bool,
     pub show_filter_menu: bool,
     pub filters: u8,
     pub show_attach_menu: bool,
+    pub show_gif_picker: bool,
+    pub gif_query: String,
+    pub gifs: Vec<KlipyGif>,
+    pub gif_loading: bool,
+    pub gif_error: Option<String>,
     pub command_palette_query: String,
     pub composer_text: String,
     pub reply_to_message_id: Option<String>,
@@ -834,6 +869,11 @@ impl BeeperGuiApp {
             show_filter_menu: false,
             filters: 0,
             show_attach_menu: false,
+            show_gif_picker: false,
+            gif_query: String::new(),
+            gifs: Vec::new(),
+            gif_loading: false,
+            gif_error: None,
             command_palette_query: String::new(),
             composer_text: String::new(),
             reply_to_message_id: None,
@@ -1146,19 +1186,19 @@ impl BeeperGuiApp {
         let out = if let Some(target) = self.editing_message_id.take() {
             st.edit_message(&chat_id, &target, text.clone()).expect("edit message");
             Outgoing::Edit { target, text }
-        } else if let Some((png, size, handle)) = self.pasted.take() {
+        } else if let Some(PendingMedia { bytes, name, mime, is_gif, size, frames }) = self.pasted.take() {
             let key = format!("pasted:{}", st.next_id("img"));
-            self.media.insert(key.clone(), Some(Ok(vec![(handle, 0)])));
+            self.media.insert(key.clone(), Some(Ok(frames)));
             let att = Attachment {
                 attachment_type: "img".into(),
                 id: None,
                 duration: None,
-                file_name: Some("image.png".into()),
-                file_size: Some(png.len() as u64),
-                is_gif: None,
+                file_name: Some(name.clone()),
+                file_size: Some(bytes.len() as u64),
+                is_gif: Some(is_gif),
                 is_sticker: None,
                 is_voice_note: None,
-                mime_type: Some("image/png".into()),
+                mime_type: Some(mime.clone()),
                 poster_img: None,
                 size: Some(AttachmentSize { width: Some(size.0), height: Some(size.1) }),
                 src_url: Some(key),
@@ -1169,7 +1209,7 @@ impl BeeperGuiApp {
             let (_, txn, _) =
                 st.send_message(&chat_id, caption.clone(), reply_to.clone(), Some(att)).expect("send image");
             st.mark_chat_read(&chat_id, true);
-            Outgoing::Image { txn, png, size, caption, reply_to }
+            Outgoing::Image { txn, bytes, name, mime, size, caption, reply_to }
         } else {
             let reply_to = self.reply_to_message_id.take();
             let (_, txn, _) =
@@ -1448,10 +1488,85 @@ impl BeeperGuiApp {
                 return self.load_media();
             }
             UiMessage::Pasted(r) => match r {
-                Ok(img) => self.pasted = img.map(|(png, size)| (png.clone(), size, image::Handle::from_bytes(png))),
+                Ok(img) => {
+                    self.pasted = img.map(|(png, size)| PendingMedia {
+                        name: "image.png".into(),
+                        mime: "image/png".into(),
+                        is_gif: false,
+                        size,
+                        frames: vec![(image::Handle::from_bytes(png.clone()), 0)],
+                        bytes: png,
+                    });
+                }
                 Err(e) => self.status_banner = e,
             },
             UiMessage::DiscardPaste => self.pasted = None,
+            UiMessage::PasteClipboard => return Task::perform(clipboard_image(), UiMessage::Pasted),
+            UiMessage::ToggleGifPicker => {
+                self.show_gif_picker = !self.show_gif_picker;
+                if self.show_gif_picker {
+                    self.show_attach_menu = true;
+                    let focus = operation::focus("gif-search-input");
+                    if self.gifs.is_empty() && !self.gif_loading {
+                        self.gif_loading = true;
+                        self.gif_error = None;
+                        let q = self.gif_query.clone();
+                        return Task::batch([
+                            focus,
+                            Task::perform(beeper_core::cloud::klipy_gifs(q), UiMessage::GifsLoaded),
+                        ]);
+                    }
+                    return focus;
+                }
+            }
+            UiMessage::GifQueryChanged(q) => {
+                self.gif_query = q.clone();
+                self.gif_loading = true;
+                self.gif_error = None;
+                return Task::perform(beeper_core::cloud::klipy_gifs(q), UiMessage::GifsLoaded);
+            }
+            UiMessage::GifsLoaded(r) => {
+                self.gif_loading = false;
+                match r {
+                    Ok(gifs) => {
+                        self.gifs = gifs;
+                        self.gif_error = None;
+                        return self.load_media();
+                    }
+                    Err(e) => {
+                        self.gifs.clear();
+                        self.gif_error = Some(e);
+                    }
+                }
+            }
+            UiMessage::PickGif(g) => {
+                self.show_gif_picker = false;
+                let url = g.gif_url.clone();
+                return Task::perform(
+                    async move {
+                        let bytes = beeper_core::cloud::http_bytes(&url).await?;
+                        let frames = decode_media(bytes.clone())?;
+                        Ok((bytes, frames))
+                    },
+                    move |r| UiMessage::GifDownloaded(g, r),
+                );
+            }
+            UiMessage::GifDownloaded(g, r) => match r {
+                Ok((bytes, frames)) => {
+                    self.pasted = Some(PendingMedia {
+                        bytes,
+                        name: format!("{}.gif", g.id),
+                        mime: "image/gif".into(),
+                        is_gif: true,
+                        size: g.gif_size,
+                        frames,
+                    });
+                    if self.store.read().unwrap().settings.on("autoSendGifs") {
+                        self.submit_composer();
+                    }
+                }
+                Err(e) => self.status_banner = format!("Could not download GIF: {e}"),
+            },
             UiMessage::AnimationTick => {}
             UiMessage::RecoveryInputChanged(v) => self.recovery_code_input = v,
             UiMessage::VerifyRecoveryCode => {
@@ -1491,6 +1606,7 @@ impl BeeperGuiApp {
                 self.show_command_palette = false;
                 self.show_filter_menu = false;
                 self.show_attach_menu = false;
+                self.show_gif_picker = false;
                 self.quick_look_target = None;
             }
             UiMessage::ToggleEditHistory(mid) => {
@@ -1503,7 +1619,12 @@ impl BeeperGuiApp {
                     assert!(std::process::Command::new(cmd).args(args).status().expect("run URL opener").success())
                 });
             }
-            UiMessage::ToggleAttachMenu => self.show_attach_menu = !self.show_attach_menu,
+            UiMessage::ToggleAttachMenu => {
+                self.show_attach_menu = !self.show_attach_menu;
+                if !self.show_attach_menu {
+                    self.show_gif_picker = false;
+                }
+            }
             UiMessage::ToggleSearch => {
                 self.show_search = !self.show_search;
                 self.search_query.clear();
@@ -1603,6 +1724,9 @@ impl BeeperGuiApp {
                     Key::Character("v") if self.selected_chat_id.is_some() => {
                         return Task::perform(clipboard_image(), UiMessage::Pasted);
                     }
+                    Key::Character("G" | "g") if shift && self.selected_chat_id.is_some() => {
+                        return self.update(UiMessage::ToggleGifPicker);
+                    }
                     Key::Character("k") => Some("Search"),
                     Key::Character(",") => Some("Settings"),
                     Key::Character("Y" | "y") if shift => Some("Filter: Unread"),
@@ -1633,15 +1757,20 @@ impl BeeperGuiApp {
 
     fn load_media(&mut self) -> Task<UiMessage> {
         let st = self.store.read().unwrap();
-        let (Some(client), Some(chat)) = (st.matrix.clone(), self.selected_chat_id.as_ref()) else {
-            return Task::none();
-        };
-        let images = st.chat_msg_indices.get(chat).into_iter().flatten().flat_map(|&i| &st.messages[i].attachments);
-        let urls: HashSet<String> = images
+        let client = st.matrix.clone();
+        let images = self
+            .selected_chat_id
+            .as_ref()
+            .filter(|_| client.is_some())
+            .and_then(|chat| st.chat_msg_indices.get(chat))
+            .into_iter()
+            .flatten()
+            .flat_map(|&i| &st.messages[i].attachments)
             .filter(|a| a.attachment_type == "img")
-            .filter_map(|a| a.src_url.clone())
-            .filter(|u| !self.media.contains_key(u))
-            .collect();
+            .filter_map(|a| a.src_url.clone());
+        let gif_urls =
+            self.show_gif_picker.then(|| self.gifs.iter().map(|g| g.preview_url.clone())).into_iter().flatten();
+        let urls: HashSet<String> = images.chain(gif_urls).filter(|u| !self.media.contains_key(u)).collect();
         drop(st);
         self.media.extend(urls.iter().map(|u| (u.clone(), None)));
         Task::batch(urls.into_iter().map(|url| {
@@ -1649,7 +1778,11 @@ impl BeeperGuiApp {
             Task::perform(
                 async move {
                     let _slot = AVATAR_SLOTS.acquire().await.expect("the media semaphore stays open");
-                    beeper_core::matrix::media(client, u).await.and_then(decode_media)
+                    let bytes = match u.starts_with("https://") {
+                        true => beeper_core::cloud::http_bytes(&u).await,
+                        false => beeper_core::matrix::media(client.expect("Matrix media has a client"), u).await,
+                    };
+                    bytes.and_then(decode_media)
                 },
                 move |r| UiMessage::MediaLoaded(url, r),
             )
@@ -1701,6 +1834,11 @@ impl BeeperGuiApp {
         });
         let typing = !self.store.read().unwrap().typing.is_empty();
         let animated = typing
+            || self.pasted.as_ref().is_some_and(|p| p.frames.len() > 1)
+            || (self.show_gif_picker
+                && self.gifs.iter().any(|g| {
+                    self.media.get(&g.preview_url).and_then(|v| v.as_ref()?.as_ref().ok()).is_some_and(|f| f.len() > 1)
+                }))
             || self.selected_chat_id.as_ref().is_some_and(|chat| {
                 let st = self.store.read().unwrap();
                 let mut urls =
@@ -2701,14 +2839,72 @@ impl BeeperGuiApp {
             .align_y(Center)
             .padding([4, 16])
         });
-        let attach = self.show_attach_menu.then(|| {
-            row![
-                pill_btn(p, "Poll", UiMessage::SendQuickPoll),
-                pill_btn(p, "Voice note", UiMessage::SendQuickVoiceNote)
-            ]
-            .spacing(6)
-            .padding([4, 16])
+        let gif_picker = self.show_gif_picker.then(|| {
+            let search = text_input("Search KLIPY...", &self.gif_query)
+                .id("gif-search-input")
+                .on_input(UiMessage::GifQueryChanged)
+                .size(13)
+                .padding([6, 12])
+                .style(input_style(p.input, p.strong, p.sub, p.accent, 8.0));
+            let elapsed = self.started.elapsed().as_millis();
+            let carousel: El<'a> = if let Some(err) = &self.gif_error {
+                container(txt(err.clone(), 12.0).color(p.danger)).center_y(215).padding([0, 14]).into()
+            } else if self.gif_loading && self.gifs.is_empty() {
+                container(txt("Loading GIFs...", 12.0).color(p.sub)).center_y(215).padding([0, 14]).into()
+            } else {
+                let items = self.gifs.iter().map(|g| {
+                    let (pw, ph) = g.preview_size;
+                    let w = (215.0 * pw as f32 / ph.max(1) as f32).round().max(48.0);
+                    let cell: El<'a> = match self.media.get(&g.preview_url).and_then(|v| v.as_ref()) {
+                        Some(Ok(frames)) => image(current_frame(frames, elapsed))
+                            .width(w)
+                            .height(215)
+                            .content_fit(iced::ContentFit::Cover)
+                            .into(),
+                        _ => container(Space::new()).width(w).height(215).style(fill_box(p.hover, 4.0)).into(),
+                    };
+                    button(container(cell).clip(true).style(fill_box(CLEAR, 4.0)))
+                        .padding(0)
+                        .style(btn_style([CLEAR, p.hover, p.selected], [p.text; 3], 4.0))
+                        .on_press(UiMessage::PickGif(g.clone()))
+                        .into()
+                });
+                let dir = Direction::Horizontal(Scrollbar::new().width(4).scroller_width(4));
+                scrollable(container(Row::with_children(items).spacing(4)).padding(Padding::ZERO.left(14.0)))
+                    .direction(dir)
+                    .height(215)
+                    .width(Fill)
+                    .style(scroll_style(p.divider, p.weak))
+                    .into()
+            };
+            column![container(search).padding([0, 14]), carousel].spacing(8).padding(Padding::ZERO.top(4.0))
         });
+        let action_btn = |id: u8| -> El<'a> {
+            let (idx, active, msg) = match id {
+                0 => (2, false, UiMessage::ComposerChanged(format!("{}🙂", self.composer_text))),
+                1 => (3, false, UiMessage::SendQuickVoiceNote),
+                2 => (5, self.show_gif_picker, UiMessage::ToggleGifPicker),
+                3 => (4, false, UiMessage::PasteClipboard),
+                4 => (7, false, UiMessage::SendQuickPoll),
+                _ => (6, false, UiMessage::SendQuickVoiceNote),
+            };
+            let color = if active { p.strong } else { p.on_secondary };
+            let bg = if active { p.hover } else { CLEAR };
+            button(container(tinted(&COMPOSER_ICONS[idx], 20.0, color)).center(28))
+                .padding(0)
+                .style(btn_style([bg, p.hover, p.selected], [p.text; 3], 14.0))
+                .on_press(msg)
+                .into()
+        };
+        let pri = [Some(0), Some(1), Some(2), Some(3), Some(4), None]
+            .get(usize::from(st.settings.pref("primaryComposerButton")))
+            .copied()
+            .flatten();
+        let sec = [Some(1), Some(5), Some(2), Some(3), Some(4), None]
+            .get(usize::from(st.settings.pref("secondaryComposerButton")))
+            .copied()
+            .flatten()
+            .filter(|&x| Some(x) != pri);
         let placeholder = format!("Message {} on {}", chat.title, network_name(&chat.account_id));
         let input = text_input(&placeholder, &self.composer_text)
             .id("composer-input")
@@ -2718,29 +2914,29 @@ impl BeeperGuiApp {
             .padding([9, 2])
             .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
         let net = svg(brand_svg(brand_key(&chat.account_id))).width(20).height(20);
-        let smile = icon_btn(
-            p,
-            icon::SMILE,
-            17.0,
-            26.0,
-            p.on_secondary,
-            UiMessage::ComposerChanged(format!("{}🙂", self.composer_text)),
-        );
-        let voice = icon_btn(p, icon::AUDIO_LINES, 17.0, 26.0, p.on_secondary, UiMessage::SendQuickVoiceNote);
+        let inline = Row::with_children([pri, sec].into_iter().flatten().map(&action_btn)).spacing(2).align_y(Center);
         let pill = container(
-            row![net, input, smile, voice].spacing(6).align_y(Center).padding(Padding::new(0.0).left(8.0).right(6.0)),
+            row![net, input, inline].spacing(6).align_y(Center).padding(Padding::new(0.0).left(8.0).right(4.0)),
         )
         .height(36)
         .width(Fill)
         .style(fill_box(p.input, 18.0));
-        let plus = button(container(ic(icon::PLUS, 18.0).color(p.on_secondary)).center(36))
+        let plus_icon = tinted(&COMPOSER_ICONS[usize::from(self.show_attach_menu)], 20.0, p.on_secondary);
+        let toggle = button(container(plus_icon).center(36))
             .padding(0)
-            .style(btn_style([p.input, p.selected, p.selected], [p.text; 3], 18.0))
+            .style(btn_style([CLEAR, p.hover, p.selected], [p.text; 3], 18.0))
             .on_press(UiMessage::ToggleAttachMenu);
+        let unveiled = self.show_attach_menu.then(|| {
+            let ids = [0u8, 3, 5, 2, 1, 4].into_iter().filter(|&x| Some(x) != pri && Some(x) != sec);
+            container(Row::with_children(ids.map(&action_btn)).spacing(2).align_y(Center))
+                .padding(Padding::ZERO.right(4.0))
+        });
+        let plus = container(row![toggle].push(unveiled).align_y(Center)).height(36).style(fill_box(p.input, 18.0));
         let ready = !self.composer_text.trim().is_empty() || self.pasted.is_some();
-        let pasted = self.pasted.as_ref().map(|(_, _, h)| {
+        let pasted = self.pasted.as_ref().map(|pm| {
             let fg = Color { a: 0.1, ..p.text };
-            let preview = container(image(h.clone()).height(66).content_fit(iced::ContentFit::Contain))
+            let h = current_frame(&pm.frames, self.started.elapsed().as_millis());
+            let preview = container(image(h).height(66).content_fit(iced::ContentFit::Contain))
                 .clip(true)
                 .style(bordered_box(CLEAR, fg, 1.0, 8.0));
             let close = icon_btn(p, icon::CLOSE, 12.0, 20.0, p.text, UiMessage::DiscardPaste);
@@ -2752,7 +2948,7 @@ impl BeeperGuiApp {
             .on_press(UiMessage::SubmitComposer);
         column![]
             .push(banner)
-            .push(attach)
+            .push(gif_picker)
             .push(pasted)
             .push(row![plus, pill, send].spacing(12).align_y(Center).padding(8))
             .into()

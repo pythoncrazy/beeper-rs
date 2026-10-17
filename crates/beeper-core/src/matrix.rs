@@ -198,7 +198,11 @@ fn attachment(c: &Value, kind: &str) -> Attachment {
         duration: info["duration"].as_f64().map(|ms| ms / 1000.0),
         file_name: s(&c["filename"]).or(s(&c["body"])),
         file_size: info["size"].as_u64(),
-        is_gif: Some(info["fi.mau.gif"] == true),
+        is_gif: Some(
+            info["fi.mau.gif"] == true
+                || info["org.matrix.msc4230.is_animated"] == true
+                || info["mimetype"] == "image/gif",
+        ),
         is_sticker: Some(false),
         is_voice_note: Some(voice),
         mime_type: s(&info["mimetype"]),
@@ -531,12 +535,33 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
 }
 
 pub enum Outgoing {
-    Send { txn: String, text: String, reply_to: Option<String> },
-    Edit { target: String, text: String },
-    Redact { target: String },
-    React { txn: String, target: String, key: String },
+    Send {
+        txn: String,
+        text: String,
+        reply_to: Option<String>,
+    },
+    Edit {
+        target: String,
+        text: String,
+    },
+    Redact {
+        target: String,
+    },
+    React {
+        txn: String,
+        target: String,
+        key: String,
+    },
     Read(String),
-    Image { txn: String, png: Vec<u8>, size: (u32, u32), caption: Option<String>, reply_to: Option<String> },
+    Image {
+        txn: String,
+        bytes: Vec<u8>,
+        name: String,
+        mime: String,
+        size: (u32, u32),
+        caption: Option<String>,
+        reply_to: Option<String>,
+    },
 }
 
 pub async fn flush(store: SharedStore) -> Result<(), String> {
@@ -602,7 +627,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                 .await
                 .map_err(e)?;
         }
-        Outgoing::Image { txn, png, size: (w, h), caption, reply_to } => {
+        Outgoing::Image { txn, bytes: data, name, mime, size: (w, h), caption, reply_to } => {
             use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseImageInfo};
             use matrix_sdk::room::reply::{EnforceThread, Reply};
             let reply = reply_to
@@ -614,11 +639,12 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                     })
                 })
                 .transpose()?;
-            let bytes = matrix_sdk::ruma::UInt::try_from(png.len()).expect("the image size fits");
+            let bytes = matrix_sdk::ruma::UInt::try_from(data.len()).expect("the image size fits");
             let info = BaseImageInfo {
                 width: Some(w.into()),
                 height: Some(h.into()),
                 size: Some(bytes),
+                is_animated: Some(mime == "image/gif"),
                 ..Default::default()
             };
             let caption = caption.map(matrix_sdk::ruma::events::room::message::TextMessageEventContent::plain);
@@ -627,7 +653,8 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                 .info(AttachmentInfo::Image(info))
                 .caption(caption)
                 .reply(reply);
-            sent(txn, room.send_attachment("image.png", &mime::IMAGE_PNG, png, config).await.map_err(e)?.event_id);
+            let parsed_mime = mime.parse().expect("valid image mime");
+            sent(txn, room.send_attachment(&name, &parsed_mime, data, config).await.map_err(e)?.event_id);
         }
     }
     Ok(())

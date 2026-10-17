@@ -172,3 +172,146 @@ impl Cloud {
         Ok((session, profile, accounts))
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KlipyGif {
+    pub id: String,
+    pub preview_url: String,
+    pub preview_size: (u32, u32),
+    pub gif_url: String,
+    pub gif_size: (u32, u32),
+    pub mp4_url: String,
+    pub mp4_size: (u32, u32),
+}
+
+fn http_client() -> &'static reqwest::Client {
+    static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    HTTP.get_or_init(|| {
+        install_tls();
+        reqwest::Client::builder().timeout(Duration::from_secs(20)).build().expect("build the HTTP client")
+    })
+}
+
+pub fn klipy_key() -> Result<&'static str, String> {
+    static KEY: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        let rel = "target/beeper/squashfs-root/resources/app.asar";
+        let exe_paths = std::env::current_exe()
+            .ok()
+            .into_iter()
+            .flat_map(|p| p.ancestors().map(|a| a.join(rel)).collect::<Vec<_>>());
+        let candidates = std::env::var_os("BEEPER_ASAR")
+            .map(std::path::PathBuf::from)
+            .into_iter()
+            .chain([std::path::PathBuf::from(rel)])
+            .chain(exe_paths)
+            .chain(
+                [
+                    "/opt/BeeperTexts/resources/app.asar",
+                    "/usr/lib/beepertexts/resources/app.asar",
+                    "/Applications/Beeper Desktop.app/Contents/Resources/app.asar",
+                ]
+                .map(std::path::PathBuf::from),
+            );
+        let path = candidates.into_iter().find(|p| p.is_file()).ok_or("Beeper Desktop app.asar not found")?;
+        let bytes = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let needle = b"https://api.klipy.com/v2";
+        let pos = bytes.windows(needle.len()).position(|w| w == needle).ok_or("KLIPY URL not found in app.asar")?;
+        let window = &bytes[pos.saturating_sub(600)..pos];
+        let key = window
+            .windows(66)
+            .find(|w| w[0] == b'"' && w[65] == b'"' && w[1..65].iter().all(u8::is_ascii_alphanumeric))
+            .map(|w| std::str::from_utf8(&w[1..65]).expect("ASCII key").to_string())
+            .ok_or("KLIPY key not found in app.asar")?;
+        Ok(key)
+    })
+    .as_deref()
+    .map_err(Clone::clone)
+}
+
+pub async fn klipy_gifs(query: String) -> Result<Vec<KlipyGif>, String> {
+    let key = klipy_key()?;
+    let q = query.trim();
+    let url = match q.is_empty() {
+        true => format!(
+            "https://api.klipy.com/v2/featured?key={key}&limit=10&contentfilter=high&media_filter=gif,tinygif,mp4,tinymp4&pos="
+        ),
+        false => format!(
+            "https://api.klipy.com/v2/search?key={key}&limit=10&contentfilter=high&media_filter=gif,tinygif,mp4,tinymp4&q={}&pos=",
+            crate::codec::url_encode(q)
+        ),
+    };
+    let resp = http_client().get(&url).send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("HTTP {}: {text}", status.as_u16()));
+    }
+    let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let fmt = |f: &Value| {
+        let u = f["url"].as_str()?.to_string();
+        let w = u32::try_from(f["dims"][0].as_u64()?).ok()?;
+        let h = u32::try_from(f["dims"][1].as_u64()?).ok()?;
+        Some((u, (w.max(1), h.max(1))))
+    };
+    Ok(v["results"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| {
+            let m = &r["media_formats"];
+            let (preview_url, preview_size) = fmt(&m["tinygif"])?;
+            let (gif_url, gif_size) = fmt(&m["gif"])?;
+            let (mp4_url, mp4_size) = fmt(&m["mp4"])?;
+            Some(KlipyGif {
+                id: r["id"].as_str()?.to_string(),
+                preview_url,
+                preview_size,
+                gif_url,
+                gif_size,
+                mp4_url,
+                mp4_size,
+            })
+        })
+        .collect())
+}
+
+pub async fn http_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let resp = http_client().get(url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {} for {url}", resp.status().as_u16()));
+    }
+    resp.bytes().await.map(|b| b.to_vec()).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn klipy_key_and_live_endpoints() {
+        if std::path::Path::new("target/beeper/squashfs-root/resources/app.asar").is_file() {
+            let key = klipy_key().expect("extract KLIPY key from app.asar");
+            assert_eq!(key.len(), 64);
+        }
+        if std::env::var_os("KLIPY_LIVE").is_some() {
+            let featured = klipy_gifs(String::new()).await.expect("KLIPY featured");
+            assert!(!featured.is_empty());
+            let search = klipy_gifs("cat".into()).await.expect("KLIPY search");
+            assert!(!search.is_empty());
+            let g = &search[0];
+            let tiny = http_bytes(&g.preview_url).await.expect("download tinygif");
+            let gif = http_bytes(&g.gif_url).await.expect("download gif");
+            let mp4 = http_bytes(&g.mp4_url).await.expect("download mp4");
+            assert!(tiny.starts_with(b"GIF8") && gif.starts_with(b"GIF8") && mp4.len() > 16);
+            println!(
+                "KLIPY live OK: featured={} search={} tinygif={}B gif={}B mp4={}B",
+                featured.len(),
+                search.len(),
+                tiny.len(),
+                gif.len(),
+                mp4.len()
+            );
+        }
+    }
+}
