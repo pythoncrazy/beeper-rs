@@ -32,7 +32,7 @@ use iced::widget::{
 };
 use iced::{
     border, mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Length, Padding, Pixels,
-    Point, Radians, Right, Shrink, Size, Subscription, Task, Theme,
+    Point, Radians, Right, Shadow, Shrink, Size, Subscription, Task, Theme, Vector,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -2683,7 +2683,7 @@ impl BeeperGuiApp {
         let sidebar = mouse_area(self.view_sidebar()).on_move(UiMessage::SidebarCursor);
         let body =
             row![self.view_rail(), sidebar, grip, card].push((self.show_right_panel && open).then(|| self.view_info()));
-        let base: El<'_> = container(body).width(Fill).height(Fill).style(fill_box(p.frame, 0.0)).into();
+        let base: El<'_> = container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0)).into();
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
             (None, true) => Some(self.view_command_palette()),
@@ -3641,7 +3641,14 @@ impl BeeperGuiApp {
         let verify = verify.map(|v| container(v).padding([0, 12]));
         let pane =
             column![stack![list, overlay].width(Fill).height(Fill)].push(verify).push(self.view_composer(&st, chat));
-        container(pane).width(Fill).height(Fill).clip(true).style(fill_box(p.card, 10.0)).into()
+        let shadow = Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.18), offset: Vector::ZERO, blur_radius: 20.0 };
+        let card = fill_box(p.card, 10.0);
+        container(pane)
+            .width(Fill)
+            .height(Fill)
+            .clip(true)
+            .style(move |t| container::Style { shadow, ..card(t) })
+            .into()
     }
 
     fn view_message<'a>(
