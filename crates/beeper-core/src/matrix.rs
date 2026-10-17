@@ -4,7 +4,7 @@ use crate::models::{
     Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, EditHistoryEntry, Message, MessageLink,
     Reaction, User, VerificationSas, VerificationSasEmoji, VerificationState,
 };
-use crate::store::{sort_key, BeeperStore, SharedStore, NOTE_CHAT_ID};
+use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
 use futures_util::StreamExt;
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::config::SyncSettings;
@@ -77,13 +77,20 @@ fn links(c: &Value) -> Vec<MessageLink> {
     c["com.beeper.linkpreviews"].as_array().into_iter().flatten().filter_map(link).collect()
 }
 
+async fn states(room: &Room, kind: StateEventType) -> Vec<Value> {
+    let events = room.get_state_events(kind).await.expect("read room state");
+    events
+        .into_iter()
+        .map(|r| match r {
+            RawAnySyncOrStrippedState::Sync(r) => r.deserialize_as::<Value>(),
+            RawAnySyncOrStrippedState::Stripped(r) => r.deserialize_as::<Value>(),
+        })
+        .map(|v| v.expect("state event JSON"))
+        .collect()
+}
+
 async fn state(room: &Room, kind: &str) -> Option<Value> {
-    let events = room.get_state_events(StateEventType::from(kind)).await.expect("read room state");
-    let raw = match events.into_iter().next()? {
-        RawAnySyncOrStrippedState::Sync(r) => r.json().get().to_string(),
-        RawAnySyncOrStrippedState::Stripped(r) => r.json().get().to_string(),
-    };
-    Some(serde_json::from_str::<Value>(&raw).expect("state event JSON")["content"].take())
+    Some(states(room, kind.into()).await.into_iter().next()?["content"].take())
 }
 
 async fn account_data(room: &Room, kind: &str) -> Option<Value> {
@@ -126,13 +133,9 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     let bot = s(&bridge["bridgebot"]);
     let me = room.own_user_id();
     let members = room.members_no_sync(RoomMemberships::JOIN).await.expect("read room members");
-    let raw = room.get_state_events(StateEventType::RoomMember).await.expect("read room members");
-    let contents: HashMap<String, Value> = raw
+    let contents: HashMap<String, Value> = states(room, StateEventType::RoomMember)
+        .await
         .into_iter()
-        .map(|r| match r {
-            RawAnySyncOrStrippedState::Sync(r) => r.deserialize_as::<Value>().expect("member event JSON"),
-            RawAnySyncOrStrippedState::Stripped(r) => r.deserialize_as::<Value>().expect("member event JSON"),
-        })
         .filter_map(|mut v| Some((s(&v["state_key"])?, v["content"].take())))
         .collect();
     let ident = |id: &str, scheme: Option<&str>| {
@@ -178,6 +181,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, &bridge, !dm)),
         is_request: Some(bridge["channel"]["com.beeper.message_request"] == true),
         network_name: s(&bridge["network"]["displayname"]),
+        network_id: s(&bridge["network"]["id"]),
         img_url: room.avatar_url().filter(|u| u.is_valid()).map(|u| u.to_string()),
         account_id,
         participants: ChatParticipants { has_more: false, total: items.len(), items },
@@ -441,9 +445,26 @@ async fn sync_receipts(store: &SharedStore, room: &Room) {
     }
 }
 
+async fn sync_space(store: &SharedStore, room: &Room) {
+    let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
+    // A Slack login is one workspace, so the workspace space is the account itself.
+    if bridge["com.beeper.bridge_name"] == "slackgo" {
+        return;
+    }
+    let (Some(id), Some(name)) = (s(&bridge["network"]["id"]), s(&bridge["network"]["displayname"])) else { return };
+    let mut st = store.write().unwrap();
+    let space = NetworkSpace { id, account_id: account_id(&bridge, &st.bridge_accounts), name };
+    match st.network_spaces.iter().position(|n| n.id == space.id) {
+        Some(i) => st.network_spaces[i] = space,
+        None => st.network_spaces.push(space),
+    }
+}
+
 async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>) {
-    let space = state(room, "m.room.create").await.expect("rooms have a create event")["type"].is_string();
-    if space || state(room, "com.beeper.managed").await.is_some() {
+    if state(room, "m.room.create").await.expect("rooms have a create event")["type"].is_string() {
+        return sync_space(store, room).await;
+    }
+    if state(room, "com.beeper.managed").await.is_some() {
         return;
     }
     let chat_id = chat_id(room).await;

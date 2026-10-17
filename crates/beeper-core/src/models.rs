@@ -293,6 +293,8 @@ pub struct Chat {
     pub is_request: Option<bool>,
     #[serde(rename = "networkName", skip_serializing_if = "Option::is_none")]
     pub network_name: Option<String>,
+    #[serde(rename = "networkID", skip_serializing_if = "Option::is_none")]
+    pub network_id: Option<String>,
     #[serde(rename = "imgURL", skip_serializing_if = "Option::is_none")]
     pub img_url: Option<String>,
     #[serde(skip)]
