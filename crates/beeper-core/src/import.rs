@@ -32,6 +32,7 @@ pub struct BeeperData {
     pub chats: Vec<Chat>,
     pub messages: Vec<Message>,
     pub pin_rank: HashMap<String, usize>,
+    pub recent_chat_ids: Vec<String>,
     pub theme: Option<ThemeChoice>,
 }
 
@@ -53,7 +54,9 @@ pub fn read_beeper_data(dir: &Path) -> Result<BeeperData, String> {
         .try_for_each(|(src, dst)| {
             std::fs::copy(&src, dst).map(drop).map_err(|e| format!("copy {}: {e}", src.display()))
         })
-        .and_then(|()| read_snapshot(&tmp).map_err(|e| format!("read Beeper Desktop data in {}: {e}", dir.display())));
+        .and_then(|()| {
+            read_snapshot(&tmp, dir).map_err(|e| format!("read Beeper Desktop data in {}: {e}", dir.display()))
+        });
     std::fs::remove_dir_all(&tmp).unwrap_or_else(|e| panic!("remove import snapshot {}: {e}", tmp.display()));
     out
 }
@@ -69,13 +72,47 @@ fn read_kv_json(db: &Connection, key: &str) -> Result<Value, String> {
         .map_or(Ok(Value::Null), |s| serde_json::from_str(&s).map_err(|e| format!("{key} JSON: {e}")))
 }
 
-fn read_snapshot(dir: &Path) -> Result<BeeperData, String> {
+fn read_recent_chats(dir: &Path, remap: &dyn Fn(&str) -> String) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir.join("Local Storage/leveldb")) else { return Vec::new() };
+    let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
+    paths.sort();
+    let mut out = Vec::new();
+    let needle = b"thread-history";
+    for path in paths {
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        for i in bytes.windows(needle.len()).enumerate().filter_map(|(i, w)| (w == needle).then_some(i)) {
+            let rest = &bytes[i + needle.len()..bytes.len().min(i + 8192)];
+            let Some(s) = rest.windows(2).position(|w| w == b"[[") else { continue };
+            let Some(e) = rest[s..].windows(2).position(|w| w == b"]]") else { continue };
+            if let Ok(pairs) = serde_json::from_slice::<Vec<(String, String)>>(&rest[s..s + e + 2]) {
+                if !pairs.is_empty() {
+                    out = pairs.into_iter().map(|(_, id)| remap(&id)).collect();
+                }
+            }
+        }
+    }
+    out
+}
+
+fn read_snapshot(dir: &Path, src_dir: &Path) -> Result<BeeperData, String> {
     let e = |e: rusqlite::Error| e.to_string();
     let crypto = match dir.join("account.db").is_file() {
         true => read_crypto(&open(&dir.join("account.db")).map_err(e)?).map_err(|e| format!("read the keys: {e}"))?,
         false => None,
     };
     let db = open(&dir.join("index.db")).map_err(e)?;
+    let note_id: Option<String> = db
+        .query_row(
+            "SELECT threadID FROM threads WHERE json_extract(CAST(thread AS TEXT), '$.extra.isNoteToSelf') = 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(e)?;
+    let remap = |s: &str| match note_id.as_deref() == Some(s) {
+        true => crate::store::NOTE_CHAT_ID.to_string(),
+        false => s.to_string(),
+    };
     let rules = read_kv_json(&db, "ad:com.beeper.chat_list_rules")?;
     let pins = read_kv_json(&db, "ad:com.beeper.favourites_order")?;
     let pin_rank = pins["Inbox"]
@@ -83,12 +120,13 @@ fn read_snapshot(dir: &Path) -> Result<BeeperData, String> {
         .into_iter()
         .flatten()
         .enumerate()
-        .filter_map(|(i, v)| Some((v.as_str()?.to_string(), i)))
+        .filter_map(|(i, v)| Some((remap(v.as_str()?), i)))
         .collect();
+    let recent_chat_ids = read_recent_chats(src_dir, &remap);
     let mut people = read_participants(&db).map_err(e)?;
     let chats = read_chats(&db, &mut people, &rules)?;
     let messages = read_messages(&db, &chats)?;
-    Ok(BeeperData { crypto, chats, messages, pin_rank, theme: read_theme(&db)? })
+    Ok(BeeperData { crypto, chats, messages, pin_rank, recent_chat_ids, theme: read_theme(&db)? })
 }
 
 fn read_theme(db: &Connection) -> Result<Option<ThemeChoice>, String> {
@@ -142,6 +180,20 @@ fn read_crypto(db: &Connection) -> rusqlite::Result<Option<DesktopCrypto>> {
 }
 
 fn read_participants(db: &Connection) -> rusqlite::Result<HashMap<String, Vec<User>>> {
+    let mut ids: HashMap<String, [Option<String>; 3]> = HashMap::new();
+    let mut id_stmt = db.prepare("SELECT participant_id, identifier, identifier_type FROM participant_identifiers")?;
+    let id_rows =
+        id_stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+    for row in id_rows {
+        let (pid, val, kind) = row?;
+        let slot = match kind.as_str() {
+            "username" => 0,
+            "email" => 1,
+            "phone" => 2,
+            _ => continue,
+        };
+        ids.entry(pid).or_default()[slot].get_or_insert(val);
+    }
     let mut stmt = db.prepare(
         "SELECT room_id, id, full_name, nickname, img_url, is_self, cannot_message, is_network_bot FROM participants
          WHERE COALESCE(has_exited, 0) = 0 ORDER BY rowid",
@@ -149,14 +201,15 @@ fn read_participants(db: &Connection) -> rusqlite::Result<HashMap<String, Vec<Us
     let mut people: HashMap<String, Vec<User>> = HashMap::new();
     let rows = stmt.query_map([], |r| {
         let id: String = r.get(1)?;
+        let [username, email, phone_number] = ids.get(&id).cloned().unwrap_or_default();
         let name: Option<String> = r.get::<_, Option<String>>(2)?.filter(|n| !n.is_empty());
         let nickname: Option<String> = r.get::<_, Option<String>>(3)?.filter(|n| !n.is_empty());
         let user = User {
             full_name: Some(name.or_else(|| nickname.clone()).unwrap_or_else(|| id.clone())),
             id,
-            username: None,
-            email: None,
-            phone_number: None,
+            username,
+            email,
+            phone_number,
             img_url: r.get(4)?,
             is_self: Some(r.get::<_, Option<i64>>(5)? == Some(1)),
             cannot_message: Some(r.get::<_, Option<i64>>(6)? == Some(1)),
@@ -316,7 +369,8 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 reminder: None,
                 chat_theme: None,
                 is_request: Some(flag(&t, "isMessageRequest")),
-                network_name: str_field(&t, "networkName"),
+                network_name: str_field(&t, "networkName")
+                    .or_else(|| bridge.get("network").and_then(|n| str_field(n, "displayname"))),
                 img_url: str_field(&t, "imgURL")
                     .filter(|u| u != "mxc://beeper.com/f9eecb7116fee96d4ad382338888d0add1e6e0d0"),
                 flags: 0,

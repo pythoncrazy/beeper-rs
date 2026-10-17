@@ -117,6 +117,8 @@ const KEY_STATE: &str = "state";
 const KEY_BRIDGES: &str = "bridges";
 const KEY_SETTINGS: &str = "settings";
 const KEY_PIN_RANK: &str = "pinRank";
+const KEY_RECENT_CHATS: &str = "recentChats";
+const KEY_CONTACTS: &str = "contacts";
 const KEY_SEQ: &str = "nextSeq";
 const KEY_SETUP: &str = "setup";
 
@@ -199,6 +201,8 @@ pub struct BeeperStore {
     pub bridge_accounts: Vec<BridgeAccountInfo>,
     /// Position of each pinned chat in the `com.beeper.favourites_order` account data.
     pub pin_rank: HashMap<String, usize>,
+    pub recent_chat_ids: Vec<String>,
+    pub contacts: Vec<User>,
     pub bridge_sessions: HashMap<String, BridgeLoginSession>,
     pub accounts: Vec<Account>,
     pub labels: Vec<Label>,
@@ -283,6 +287,8 @@ impl BeeperStore {
             verifications: HashMap::new(),
             bridge_accounts: Vec::new(),
             pin_rank: HashMap::new(),
+            recent_chat_ids: Vec::new(),
+            contacts: Vec::new(),
             bridge_sessions: HashMap::new(),
             accounts: Vec::new(),
             labels: vec![label("lbl_favorite", "Favorites"), label("lbl_work", "Work"), label("lbl_vip", "VIP")],
@@ -372,6 +378,8 @@ impl BeeperStore {
             (KEY_BRIDGES, serde_json::to_string(&self.bridge_accounts)),
             (KEY_SETTINGS, serde_json::to_string(&self.settings)),
             (KEY_PIN_RANK, serde_json::to_string(&self.pin_rank)),
+            (KEY_RECENT_CHATS, serde_json::to_string(&self.recent_chat_ids)),
+            (KEY_CONTACTS, serde_json::to_string(&self.contacts)),
         ] {
             self.exec("INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)", params![k, v.unwrap()]);
         }
@@ -398,7 +406,7 @@ impl BeeperStore {
     }
 
     fn load_from_sqlite_or_seed(&mut self) {
-        let (setup, state, bridges, settings, pin_rank, seq, chats, messages, assets) = {
+        let (setup, state, bridges, settings, pin_rank, recents, contacts, seq, chats, messages, assets) = {
             let conn = self.db.lock().unwrap();
             let kv = |k: &str| {
                 conn.query_row("SELECT value FROM kv WHERE key = ?1", [k], |r| r.get::<_, String>(0))
@@ -415,6 +423,8 @@ impl BeeperStore {
                 kv(KEY_BRIDGES),
                 kv(KEY_SETTINGS),
                 kv(KEY_PIN_RANK),
+                kv(KEY_RECENT_CHATS),
+                kv(KEY_CONTACTS),
                 kv(KEY_SEQ),
                 rows("SELECT json FROM chats ORDER BY rowid"),
                 rows("SELECT json FROM messages ORDER BY sort_key ASC"),
@@ -438,6 +448,12 @@ impl BeeperStore {
         }
         if let Some(p) = pin_rank {
             self.pin_rank = serde_json::from_str(&p).expect("parse stored pin rank");
+        }
+        if let Some(r) = recents {
+            self.recent_chat_ids = serde_json::from_str(&r).expect("parse stored recent chats");
+        }
+        if let Some(c) = contacts {
+            self.contacts = serde_json::from_str(&c).expect("parse stored contacts");
         }
         if let Some(s) = settings {
             self.settings = BeeperSettings {
@@ -509,6 +525,7 @@ impl BeeperStore {
         self.persist_seq();
         self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit import transaction");
         self.pin_rank = data.pin_rank;
+        self.recent_chat_ids = data.recent_chat_ids;
         if let Some(theme) = data.theme {
             self.settings.theme = theme;
         }
@@ -527,6 +544,11 @@ impl BeeperStore {
         assert!(self.signed_in(), "cloud accounts need a signed-in session");
         self.bridge_accounts = accounts;
         self.rebuild_accounts_from_bridges();
+        self.persist_state_to_sqlite();
+    }
+
+    pub fn set_contacts(&mut self, contacts: Vec<User>) {
+        self.contacts = contacts;
         self.persist_state_to_sqlite();
     }
 
@@ -627,6 +649,21 @@ impl BeeperStore {
         for m in seed.messages {
             self.push_message(m, true);
         }
+        for c in &self.chats {
+            for u in &c.participants.items {
+                if u.is_self != Some(true)
+                    && u.full_name.as_deref().is_some_and(|n| {
+                        !n.is_empty() && !self.contacts.iter().any(|x| x.full_name.as_deref() == Some(n))
+                    })
+                {
+                    self.contacts.push(u.clone());
+                }
+            }
+        }
+        self.contacts.sort_by_key(|u| {
+            let ch = u.full_name.as_deref().and_then(|s| s.chars().next()).unwrap_or(' ').to_ascii_uppercase();
+            (!ch.is_ascii_alphabetic(), ch)
+        });
         self.persist_state_to_sqlite();
         self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit seed transaction");
     }

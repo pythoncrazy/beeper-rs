@@ -254,6 +254,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
                  CREATE TABLE participants (account_id TEXT NOT NULL, room_id TEXT NOT NULL, id TEXT NOT NULL, full_name TEXT,
                      nickname TEXT, img_url TEXT, is_verified INTEGER, cannot_message INTEGER, is_self INTEGER,
                      is_network_bot INTEGER, added_by TEXT, is_admin INTEGER, is_pending INTEGER, has_exited INTEGER);
+                 CREATE TABLE participant_identifiers (account_id TEXT, participant_id TEXT, identifier TEXT, identifier_type TEXT);
                  CREATE TABLE mx_room_messages (eventID TEXT, roomID TEXT, timestamp INTEGER, type TEXT, isDeleted INTEGER,
                      hsOrder INTEGER, message JSON);
                  CREATE TABLE mx_reactions (roomID TEXT, reactionID TEXT, eventID TEXT, senderID TEXT, description TEXT,
@@ -842,6 +843,21 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     }
     let _ = gui.update(UiMessage::PickFilter(1));
     assert!(gui.filters == 0 && !gui.show_filter_menu, "picking the only active filter clears it");
+    let _ = gui.update(UiMessage::ToggleCommandPalette);
+    {
+        let mut sim = simulator(gui.view_main());
+        for label in ["Commands", "Accounts", "Message type", "Recent chats"] {
+            assert!(sim.find(label).is_ok(), "search modal shows {label}");
+        }
+    }
+    let _ = gui.update(UiMessage::ToggleNewChat);
+    {
+        let mut sim = simulator(gui.view_main());
+        for label in ["New Chat", "All accounts", "New Group", "Join a Matrix room", "In your contacts"] {
+            assert!(sim.find(label).is_ok(), "new chat panel shows {label}");
+        }
+    }
+    let _ = gui.update(UiMessage::ToggleNewChat);
     let _ = gui.update(UiMessage::ComposerChanged("Hello from Iced Simulator E2E!".to_string()));
     let _ = gui.update(UiMessage::SubmitComposer);
     let _ = gui.update(UiMessage::OpenSettings(SettingsTab::Appearance));
