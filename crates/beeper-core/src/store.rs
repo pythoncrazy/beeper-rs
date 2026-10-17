@@ -93,6 +93,9 @@ pub struct OAuthCodeEntry {
 }
 
 pub const NOTE_CHAT_ID: &str = "!note_self:beeper.com";
+/// Logout writes this file and the next start deletes the local data, because
+/// Windows can't delete the databases while this process has them open.
+pub const LOGGED_OUT: &str = "logged-out";
 
 #[rustfmt::skip]
 const LINK_PREVIEWS: [(&str, &str, &str, &str); 3] = [
@@ -246,6 +249,21 @@ pub struct BeeperStore {
 impl BeeperStore {
     pub fn from_config(config: CentralConfig) -> Self {
         assert_not_original_beeper_dir(&config.data_dir);
+        let logged_out = config.data_dir.join(LOGGED_OUT);
+        if logged_out.exists() {
+            let gone = |r: std::io::Result<()>| {
+                if let Err(e) = r {
+                    assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "delete the logged-out data: {e}");
+                }
+            };
+            for f in ["beeper-rs.db", "beeper-rs.db-wal", "beeper-rs.db-shm"] {
+                gone(std::fs::remove_file(config.data_dir.join(f)));
+            }
+            for d in ["matrix", "media"] {
+                gone(std::fs::remove_dir_all(config.data_dir.join(d)));
+            }
+            std::fs::remove_file(logged_out).expect("remove the logout marker");
+        }
         std::fs::create_dir_all(&config.data_dir).expect("create the beeper-rs data dir");
         std::fs::create_dir_all(&config.assets_dir).expect("create isolated media dir");
         let conn = Connection::open(&config.db_path).expect("open beeper-rs.db");
