@@ -1107,6 +1107,21 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let sent = matches!(st.outbox.as_slice(), [(c, Outgoing::DeleteChat { for_everyone: true })] if *c == doomed);
         assert!(sent && st.resolve_chat_idx(&doomed).is_none(), "Delete Chat asks the bridge and drops the chat");
         st.outbox.clear();
+        let picks: Vec<String> =
+            st.chats.iter().filter(|c| c.is_muted != Some(true)).take(2).map(|c| c.id.clone()).collect();
+        drop(st);
+        let _ = gui.update(UiMessage::BeginSelecting(picks[0].clone()));
+        let _ = gui.update(UiMessage::ToggleSelected(picks[1].clone()));
+        assert!(simulator(gui.view_main()).find("2 chats selected").is_ok(), "Begin Selecting shows the selection bar");
+        let _ = gui.update(UiMessage::SelectionSet(ChatFlag::Muted, true));
+        let st = store.read().unwrap();
+        let muted = picks.iter().all(|id| st.chats[st.resolve_chat_idx(id).unwrap()].is_muted == Some(true));
+        assert!(muted && gui.selection.is_empty(), "a selection action applies to every chat and ends the selection");
+        drop(st);
+        for id in &picks {
+            let _ = gui.update(UiMessage::ToggleFlag(id.clone(), ChatFlag::Muted));
+        }
+        store.write().unwrap().outbox.clear();
     }
     let _ = gui.update(rail("1"));
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));

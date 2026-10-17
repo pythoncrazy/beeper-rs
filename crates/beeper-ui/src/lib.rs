@@ -241,6 +241,11 @@ pub enum UiMessage {
     SelectNewChat(u32),
     DeleteNewChat(u32),
     AskDeleteChat(String),
+    BeginSelecting(String),
+    ToggleSelected(String),
+    SelectionSet(ChatFlag, bool),
+    SelectionRemind(Option<i64>),
+    SelectionMenu(u8, f32),
     DeleteChat(String, bool),
     NewChatQueryChanged(String),
     ToggleNewChatExpanded,
@@ -456,6 +461,7 @@ fn menu_item<'a>(
 }
 
 const ORANGE: Color = Color::from_rgb8(245, 76, 3);
+const CHECKED: Color = Color::from_rgb8(14, 77, 242);
 const ASK_LOGOUT: u8 = 0;
 const ASK_DISMISS_REMINDERS: u8 = 1;
 const ASK_DELETE_CHAT: u8 = 2;
@@ -502,6 +508,23 @@ fn reminder_day(at: i64) -> String {
             format!("{m:02}/{dd:02}/{y}")
         }
     }
+}
+
+fn has_flag(c: &Chat, flag: ChatFlag) -> bool {
+    let on = match flag {
+        ChatFlag::Archived => c.is_archived,
+        ChatFlag::Pinned => c.is_pinned,
+        ChatFlag::LowPriority => c.is_low_priority,
+        ChatFlag::Muted => c.is_muted,
+        ChatFlag::MarkedUnread => return c.unread_count > 0 || c.is_marked_unread == Some(true),
+    };
+    on == Some(true)
+}
+
+fn checkbox<'a>(p: &Palette, on: bool) -> El<'a> {
+    let (bg, ring) = if on { (CHECKED, CLEAR) } else { (CLEAR, Color { a: 0.3, ..p.strong }) };
+    let check = on.then(|| ic(icon::CHECK, 12.0).color(Color::WHITE));
+    container(check).center(16).style(bordered_box(bg, ring, 1.5, 8.0)).into()
 }
 
 fn menu_rule<'a>(p: &Palette) -> El<'a> {
@@ -874,6 +897,26 @@ static ROW_ACTIONS: std::sync::LazyLock<[svg::Handle; 7]> = std::sync::LazyLock:
     })
 });
 
+/// Selection bar icons: archive, unarchive, mute, unmute, low priority, inbox, remind me and more.
+static SELECTION_ICONS: std::sync::LazyLock<[svg::Handle; 8]> = std::sync::LazyLock::new(|| {
+    [
+        ("0 0 20 20", "M4.556 17a1.5 1.5 0 0 1-1.1-.457A1.5 1.5 0 0 1 3 15.444V5.722q0-.292.097-.525.098-.232.253-.447l1.089-1.322a1 1 0 0 1 .389-.321Q5.06 3 5.333 3h9.334q.272 0 .505.107a1 1 0 0 1 .39.32L16.65 4.75q.156.214.253.447t.097.525v9.722a1.5 1.5 0 0 1-.457 1.1 1.5 1.5 0 0 1-1.099.456zm.31-11.667h10.267l-.66-.777H5.527zm-.31 1.556v8.555h10.888V6.89zM10 14.667l3.111-3.111-1.089-1.09-1.244 1.245V8.444H9.222v3.267l-1.244-1.244-1.09 1.089z"),
+        ("0 0 21 20", "m10.5 8.25-3 3 1.063 1.063 1.187-1.188v3.125h1.5v-3.125l1.188 1.188L13.5 11.25zM5 7v8.5h11V7zm0 10q-.618 0-1.06-.44a1.45 1.45 0 0 1-.44-1.06V5.625q0-.292.11-.562.108-.272.328-.5l1.124-1.125A1.44 1.44 0 0 1 6.126 3h8.75q.294 0 .564.104t.498.333l1.126 1.126q.218.228.328.5.11.27.109.562V15.5q0 .619-.44 1.06-.44.44-1.06.44zm.125-11.5h10.75l-1-1h-8.75z"),
+        ("0 0 20 20", "M3.332 15.834v-1.667h1.667V8.334q0-.688.177-1.355t.531-1.27l1.25 1.25q-.146.333-.219.677t-.073.698v5.833h5.167L1.165 3.5l1.167-1.166 15.333 15.333-1.166 1.167-3.042-3zm11.667-3.209-1.667-1.666V8.334a3.2 3.2 0 0 0-.98-2.355A3.2 3.2 0 0 0 10 5q-.542 0-1.042.167a3 3 0 0 0-.917.5L6.832 4.459a5.5 5.5 0 0 1 .896-.584q.48-.249 1.02-.375v-.583q0-.52.365-.885.364-.365.886-.365.52 0 .885.365t.365.885V3.5a4.8 4.8 0 0 1 2.708 1.76 4.88 4.88 0 0 1 1.042 3.074zm-5 5.709q-.688 0-1.177-.49a1.6 1.6 0 0 1-.49-1.177h3.333q0 .687-.49 1.177-.489.49-1.176.49"),
+        ("0 0 20 20", "M3.333 15.834v-1.667H5V8.334A4.88 4.88 0 0 1 6.042 5.26 4.8 4.8 0 0 1 8.75 3.5v-.584q0-.52.365-.885.364-.365.885-.365.52 0 .885.365.366.365.365.885V3.5a4.8 4.8 0 0 1 2.708 1.76A4.88 4.88 0 0 1 15 8.335v5.833h1.667v1.667zm6.667 2.5q-.687 0-1.177-.49a1.6 1.6 0 0 1-.49-1.177h3.334q0 .687-.49 1.177t-1.177.49m-3.333-4.167h6.666V8.334a3.2 3.2 0 0 0-.979-2.355A3.2 3.2 0 0 0 10 5a3.2 3.2 0 0 0-2.354.98 3.2 3.2 0 0 0-.98 2.354z"),
+        ("0 0 20 20", "M11.667 4.167h6.666v1.556h-6.666zm0 4.278h6.666V10h-6.666zm0 4.278h6.666v1.555h-6.666zm-10-3.5c0 2.784 2.433 5.055 5.416 5.055H7.5v1.556L10 13.5l-2.5-2.333v1.556h-.417c-2.066 0-3.75-1.572-3.75-3.5 0-1.93 1.684-3.5 3.75-3.5H10V4.167H7.083c-2.983 0-5.416 2.271-5.416 5.056"),
+        ("0 0 20 20", "M15.833 2.5H4.158c-.925 0-1.65.742-1.65 1.667L2.5 15.833A1.66 1.66 0 0 0 4.158 17.5h11.675c.917 0 1.667-.75 1.667-1.667V4.167c0-.925-.75-1.667-1.667-1.667m0 10H12.5c0 1.383-1.125 2.5-2.5 2.5a2.5 2.5 0 0 1-2.5-2.5H4.158V4.167h11.675z"),
+        ("0 0 20 20", "m12.75 13.917 1.167-1.167-3.084-3.083V5.834H9.167v4.5zM10 18.334a8.1 8.1 0 0 1-3.25-.657 8.4 8.4 0 0 1-2.646-1.78 8.4 8.4 0 0 1-1.781-2.647A8.1 8.1 0 0 1 1.667 10q0-1.729.656-3.25a8.4 8.4 0 0 1 1.781-2.646 8.4 8.4 0 0 1 2.646-1.78A8.1 8.1 0 0 1 10 1.666q1.73 0 3.25.656a8.4 8.4 0 0 1 2.646 1.781 8.4 8.4 0 0 1 1.781 2.646 8.1 8.1 0 0 1 .656 3.25 8.1 8.1 0 0 1-.656 3.25 8.4 8.4 0 0 1-1.781 2.646 8.4 8.4 0 0 1-2.646 1.781 8.1 8.1 0 0 1-3.25.657m0-1.667q2.77 0 4.719-1.948 1.947-1.947 1.948-4.719 0-2.77-1.948-4.718T10 3.334 5.281 5.282Q3.334 7.229 3.333 10t1.948 4.72T10 16.666"),
+        ("0 0 20 20", "m10 10.5 3.833-3.833L15 7.834l-5 5-5-5 1.167-1.167z"),
+    ]
+    .map(|(vb, d)| {
+        svg::Handle::from_memory(
+            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vb}"><path fill="currentColor" d="{d}"/></svg>"#)
+                .into_bytes(),
+        )
+    })
+});
+
 static DROP_ARROW: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M12.625 14.375 17 10l-4.375-4.375-1.062 1.063 2.562 2.562H4.5V7H3v3.75h11.125l-2.562 2.563z"/></svg>"##[..])
 });
@@ -1215,6 +1258,10 @@ pub struct BeeperGuiApp {
     pub show_filter_menu: bool,
     /// The chat whose context menu is open, and where it opens in the window.
     pub chat_menu: Option<(String, Point)>,
+    /// Chats picked by Begin Selecting; selection mode is on while this is not empty.
+    pub selection: Vec<String>,
+    /// The open selection bar menu (Remind Me or More) and the x of its button.
+    selection_menu: Option<(u8, f32)>,
     chat_sub: Option<u8>,
     /// The reminder time each chat was last reminded of.
     reminded: HashMap<String, i64>,
@@ -1336,6 +1383,8 @@ impl BeeperGuiApp {
             confirm: None,
             delete_target: None,
             reminder_menu: None,
+            selection: Vec::new(),
+            selection_menu: None,
             show_command_palette: false,
             active_settings_tab: SettingsTab::General,
             settings_query: String::new(),
@@ -1943,14 +1992,8 @@ impl BeeperGuiApp {
                 {
                     let mut st = self.store.write().unwrap();
                     let idx = st.resolve_chat_idx(&cid).expect("chat exists");
-                    let c = &st.chats[idx];
-                    if c.unread_count > 0 || c.is_marked_unread == Some(true) {
-                        if self.expired(c) {
-                            st.set_reminder(idx, None);
-                        }
-                        if let Some(ev) = st.mark_chat_read(&cid, true) {
-                            st.queue(&cid, Outgoing::Read(ev));
-                        }
+                    if has_flag(&st.chats[idx], ChatFlag::MarkedUnread) {
+                        self.mark_read(&mut st, idx);
                     } else {
                         st.set_chat_flag(idx, ChatFlag::MarkedUnread, Some(true));
                     }
@@ -2066,6 +2109,51 @@ impl BeeperGuiApp {
             UiMessage::AskDeleteChat(id) => {
                 (self.confirm, self.chat_menu, self.delete_target) = (Some(ASK_DELETE_CHAT), None, Some(id));
             }
+            UiMessage::BeginSelecting(id) => {
+                (self.selection, self.chat_menu) = (vec![id.clone()], None);
+                self.select_chat(&id);
+            }
+            UiMessage::ToggleSelected(id) => {
+                match self.selection.iter().position(|c| *c == id) {
+                    Some(i) => drop(self.selection.remove(i)),
+                    None => self.selection.push(id.clone()),
+                }
+                self.select_chat(&id);
+            }
+            UiMessage::SelectionSet(flag, on) => {
+                self.selection_menu = None;
+                {
+                    let mut st = self.store.write().unwrap();
+                    for cid in std::mem::take(&mut self.selection) {
+                        let idx = st.resolve_chat_idx(&cid).expect("selected chat exists");
+                        if has_flag(&st.chats[idx], flag) == on {
+                            continue;
+                        }
+                        if flag == ChatFlag::MarkedUnread && !on {
+                            self.mark_read(&mut st, idx);
+                        } else if !st.set_chat_flag(idx, flag, Some(on)) {
+                            self.status_banner = "Pinned chats can't be archived".into();
+                        }
+                    }
+                }
+                self.refresh_theme_and_tray();
+            }
+            UiMessage::SelectionRemind(at) => {
+                self.selection_menu = None;
+                {
+                    let mut st = self.store.write().unwrap();
+                    for cid in std::mem::take(&mut self.selection) {
+                        let idx = st.resolve_chat_idx(&cid).expect("selected chat exists");
+                        if at.is_some() || st.chats[idx].reminder.is_some() {
+                            let reminder =
+                                at.map(|remind_at_ms| ChatReminder { remind_at_ms, dismiss_on_incoming_message: true });
+                            st.set_reminder(idx, reminder);
+                        }
+                    }
+                }
+                self.refresh_theme_and_tray();
+            }
+            UiMessage::SelectionMenu(menu, x) => self.selection_menu = Some((menu, x)),
             UiMessage::DeleteChat(id, everyone) => {
                 self.confirm = None;
                 self.store.write().unwrap().delete_chat(&id, everyone);
@@ -2366,6 +2454,7 @@ impl BeeperGuiApp {
                     || self.show_filter_menu
                     || self.chat_menu.is_some()
                     || self.reminder_menu.is_some()
+                    || self.selection_menu.is_some()
                     || self.show_attach_menu
                     || self.show_gif_picker
                     || self.quick_look_target.is_some()
@@ -2374,9 +2463,12 @@ impl BeeperGuiApp {
                     self.show_filter_menu = false;
                     self.chat_menu = None;
                     self.reminder_menu = None;
+                    self.selection_menu = None;
                     self.show_attach_menu = false;
                     self.show_gif_picker = false;
                     self.quick_look_target = None;
+                } else if !self.selection.is_empty() {
+                    self.selection.clear();
                 } else if self.join_matrix_mode {
                     self.join_matrix_mode = false;
                 } else {
@@ -2490,6 +2582,7 @@ impl BeeperGuiApp {
             UiMessage::StoreChanged => {
                 let st = self.store.read().unwrap();
                 let left = self.selected_chat_id.as_deref().is_some_and(|c| st.resolve_chat_idx(c).is_none());
+                self.selection.retain(|c| st.resolve_chat_idx(c).is_some());
                 drop(st);
                 if left {
                     (self.selected_chat_id, self.chat_menu) = (None, None);
@@ -2692,10 +2785,18 @@ impl BeeperGuiApp {
             None if open => self.view_conversation(),
             None => Space::new().into(),
         };
-        let card = container(pane).padding(Padding::new(8.0).left(0.0)).width(Fill);
+        let info = (self.show_right_panel && open).then(|| self.view_info());
+        let right: El<'_> = if self.selection.is_empty() {
+            row![container(pane).padding(Padding::new(8.0).left(0.0)).width(Fill)].push(info).into()
+        } else {
+            let content = container(row![pane].push(info)).padding(8).style(fill_box(p.selected, 18.0));
+            column![self.view_selection_head(), content, self.view_selection_bar()]
+                .spacing(8)
+                .padding(Padding::new(8.0).left(0.0))
+                .into()
+        };
         let sidebar = mouse_area(self.view_sidebar()).on_move(UiMessage::SidebarCursor);
-        let body =
-            row![self.view_rail(), sidebar, grip, card].push((self.show_right_panel && open).then(|| self.view_info()));
+        let body = row![self.view_rail(), sidebar, grip, right];
         let base: El<'_> = container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0)).into();
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
@@ -2722,7 +2823,11 @@ impl BeeperGuiApp {
         let filter_menu = self.show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 14.5, 26.0));
         let reminder_menu = self.reminder_menu.map(|at| (self.view_reminder_menu(), at.x, at.y));
         let chat_menu = self.chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
-            let (w, h) = if cid.starts_with("draft:") { (124.0, 31.0) } else { (233.0, 8.0 + 9.0 * MENU_ITEM + 33.0) };
+            let (w, h) = if cid.starts_with("draft:") {
+                (124.0, 31.0)
+            } else {
+                (233.0, 8.0 + 9.0 * MENU_ITEM + 33.0 + if self.selection.is_empty() { MENU_ITEM + 11.0 } else { 0.0 })
+            };
             let x = if at.x + w > self.main_size.width { at.x - w } else { at.x };
             let sub_w = self.chat_sub.map_or(0.0, |i| SUB_MENU_W[usize::from(i)]);
             let left = x + w + sub_w > self.main_size.width;
@@ -2732,7 +2837,12 @@ impl BeeperGuiApp {
                 at.y.min(self.main_size.height - h - 8.0),
             )
         });
-        let menu = filter_menu.or(reminder_menu).or(chat_menu).map(|(m, x, y)| {
+        let selection_menu = self.selection_menu.map(|(i, x)| {
+            let (menu, h) = self.view_selection_menu(i);
+            let w = if i == 0 { SUB_MENU_W[1] } else { 233.0 };
+            (menu, x.min(self.main_size.width - w - 8.0), self.main_size.height - 60.0 - h)
+        });
+        let menu = filter_menu.or(reminder_menu).or(chat_menu).or(selection_menu).map(|(m, x, y)| {
             mouse_area(
                 container(mouse_area(m).on_press(UiMessage::Noop))
                     .padding(Padding::ZERO.left(x).top(y))
@@ -2751,6 +2861,161 @@ impl BeeperGuiApp {
         });
         let confirm = self.confirm.filter(|&d| d != ASK_LOGOUT).map(|d| self.view_confirm(d));
         stack![base].push(toast).push(menu).push(scrim).push(select).push(confirm).into()
+    }
+
+    /// The selected chats that still exist: the sync task can drop one before StoreChanged reaches update.
+    fn selected_chats<'s>(&self, st: &'s BeeperStore) -> Vec<&'s Chat> {
+        self.selection.iter().filter_map(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]).collect()
+    }
+
+    fn view_selection_head(&self) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read().unwrap();
+        let chats = self.selected_chats(&st);
+        let n = chats.len();
+        let step = 28.0 / 3.0;
+        let avatars = chats.iter().enumerate().fold(Stack::new(), |s, (i, c)| {
+            s.push(pin(container(self.chat_avatar(c, 28.0)).style(fill_box(p.card, 14.0))).x(i as f32 * step))
+        });
+        let avatars = container(avatars.width((n + 2) as f32 * step).height(28)).width(Fill).clip(true);
+        let title = semi(format!("{n} chat{} selected", if n == 1 { "" } else { "s" }), 15.0).color(p.strong);
+        let close = button(tinted(&ROW_ACTIONS[6], 20.0, p.strong))
+            .padding(6)
+            .style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 16.0))
+            .on_press(UiMessage::CloseModals);
+        let row = row![avatars, container(title).width(140), container(close).width(Fill).align_right(Fill)];
+        container(row.align_y(Center).padding([0, 4])).height(36).width(Fill).style(fill_box(p.selected, 18.0)).into()
+    }
+
+    fn view_selection_bar(&self) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read().unwrap();
+        let chats = self.selected_chats(&st);
+        let all = |f: ChatFlag| chats.iter().all(|c| has_flag(c, f));
+        let x0 = 68.0 + self.sidebar_width + 16.0;
+        let cell = (self.main_size.width - x0 - 16.0) / 6.0;
+        let toggles = [
+            (
+                ChatFlag::Archived,
+                ["Archive", "Unarchive"],
+                ["Archive", "Unarchive"],
+                [&SELECTION_ICONS[0], &SELECTION_ICONS[1]],
+                vec!["Ctrl", "E"],
+            ),
+            (
+                ChatFlag::MarkedUnread,
+                ["Mark Unread", "Mark Read"],
+                ["Mark as Unread", "Mark as Read"],
+                [&ROW_ACTIONS[3], &ROW_ACTIONS[2]],
+                vec!["Ctrl", "Shift", "U"],
+            ),
+            (
+                ChatFlag::Muted,
+                ["Mute", "Unmute"],
+                ["Mute", "Unmute"],
+                [&SELECTION_ICONS[2], &SELECTION_ICONS[3]],
+                vec!["Ctrl", "Shift", "M"],
+            ),
+            (
+                ChatFlag::LowPriority,
+                ["Low Priority", "Move to Inbox"],
+                ["Move to Low Priority", "Move to Inbox"],
+                [&SELECTION_ICONS[4], &SELECTION_ICONS[5]],
+                vec![],
+            ),
+        ]
+        .map(|(f, labels, tips, glyphs, keys)| {
+            let on = usize::from(all(f));
+            (labels[on], tips[on], glyphs[on], UiMessage::SelectionSet(f, on == 0), keys)
+        });
+        let menus = [("Remind Me", &SELECTION_ICONS[6]), ("More", &SELECTION_ICONS[7])].into_iter().zip(0u8..).map(
+            |((label, glyph), i)| {
+                let x = x0 + cell * (4.5 + f32::from(i));
+                (label, label, glyph, UiMessage::SelectionMenu(i, x), vec![])
+            },
+        );
+        let wide = cell * 6.0 >= 800.0;
+        let buttons = toggles.into_iter().chain(menus).map(|(label, tip, glyph, msg, keys)| {
+            let face = row![]
+                .push(wide.then(|| semi(label, 14.0).color(p.strong)))
+                .push(tinted(glyph, 24.0, p.strong))
+                .spacing(10)
+                .align_y(Center);
+            let btn = button(container(face).center_x(Fill)).padding([6, 0]).width(Fill).style(btn_style(
+                [CLEAR; 3],
+                [p.strong; 3],
+                0.0,
+            ));
+            let btn = btn.on_press(msg).into();
+            match self.selection_menu {
+                Some(_) => btn,
+                None => self.tip(btn, tip, keys, tooltip::Position::Top).into(),
+            }
+        });
+        let bar = container(Row::with_children(buttons).align_y(Center))
+            .center_y(36)
+            .width(Fill)
+            .style(fill_box(p.card, 18.0));
+        container(bar).padding(8).style(fill_box(p.selected, 26.0)).into()
+    }
+
+    /// The Remind Me or More menu of the selection bar, and its height.
+    fn view_selection_menu(&self, which: u8) -> (El<'_>, f32) {
+        let p = &self.pal;
+        let st = self.store.read().unwrap();
+        let chats = self.selected_chats(&st);
+        let item = |label: String, at: String, msg| menu_item(p, None, label, at, msg);
+        let items: Vec<El> = if which == 0 {
+            let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
+            let presets = REMIND_PRESETS.iter().enumerate().map(|(k, label)| {
+                let at = remind_preset(k, now);
+                item((*label).into(), remind_label(at, h24), Some(UiMessage::SelectionRemind(Some(at))))
+            });
+            let set = chats.iter().filter(|c| c.reminder.is_some()).count();
+            let dismiss = match set {
+                0 => vec![],
+                1 => vec![
+                    menu_rule(p),
+                    item("Dismiss Reminder".into(), String::new(), Some(UiMessage::SelectionRemind(None))),
+                ],
+                n => vec![
+                    menu_rule(p),
+                    item(format!("Dismiss {n} Reminders"), String::new(), Some(UiMessage::SelectionRemind(None))),
+                ],
+            };
+            presets.chain(dismiss).collect()
+        } else {
+            let n = chats.len();
+            let count = |f: ChatFlag| chats.iter().filter(|c| has_flag(c, f)).count();
+            let some = |f: ChatFlag| (1..n).contains(&count(f));
+            let entry = |label: &str, keys: &str, f: ChatFlag, on: bool| {
+                item(label.into(), keys.into(), Some(UiMessage::SelectionSet(f, on)))
+            };
+            let pinned = count(ChatFlag::Pinned);
+            [Some(item(format!("{n} chat{} selected", if n == 1 { "" } else { "s" }), String::new(), None))]
+                .into_iter()
+                .chain([
+                    some(ChatFlag::Archived).then(|| entry("Unarchive", "Ctrl E", ChatFlag::Archived, false)),
+                    some(ChatFlag::MarkedUnread)
+                        .then(|| entry("Mark as Read", "Ctrl Shift U", ChatFlag::MarkedUnread, false)),
+                    some(ChatFlag::Muted).then(|| entry("Unmute", "Ctrl Shift M", ChatFlag::Muted, false)),
+                    some(ChatFlag::LowPriority).then(|| entry("Move to Inbox", "", ChatFlag::LowPriority, false)),
+                    (pinned < n).then(|| entry("Pin", "Ctrl P", ChatFlag::Pinned, true)),
+                    (pinned > 0).then(|| entry("Unpin", "Ctrl P", ChatFlag::Pinned, false)),
+                ])
+                .flatten()
+                .collect()
+        };
+        let rules = if which == 0 && items.len() > REMIND_PRESETS.len() { 11.0 - MENU_ITEM } else { 0.0 };
+        let h = 8.0 + items.len() as f32 * MENU_ITEM + rules;
+        let width = if which == 0 { SUB_MENU_W[1] } else { 233.0 };
+        let menu = container(Column::with_children(items).padding([4, 0])).width(width).style(shadow_box(
+            p.menu,
+            p.menu_border,
+            6.0,
+            16.0,
+        ));
+        (menu.into(), h)
     }
 
     fn view_filter_menu(&self) -> El<'_> {
@@ -2963,16 +3228,22 @@ impl BeeperGuiApp {
                 ),
             ]),
             open_sub(1, "Remind Me"),
-            close_sub(column![
-                menu_rule(p),
-                menu_item(
-                    p,
-                    None,
-                    "Delete Chat".into(),
-                    "",
-                    (c.delete_modes != 0).then(|| UiMessage::AskDeleteChat(c.id.clone())),
-                ),
-            ]),
+            close_sub(
+                column![
+                    menu_rule(p),
+                    menu_item(
+                        p,
+                        None,
+                        "Delete Chat".into(),
+                        "",
+                        (c.delete_modes != 0).then(|| UiMessage::AskDeleteChat(c.id.clone())),
+                    ),
+                ]
+                .push(self.selection.is_empty().then(|| menu_rule(p)))
+                .push(self.selection.is_empty().then(|| {
+                    menu_item(p, None, "Begin Selecting".into(), "", Some(UiMessage::BeginSelecting(c.id.clone())))
+                }))
+            ),
         ];
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         let sub = self.chat_sub.map(|i| {
@@ -2995,6 +3266,16 @@ impl BeeperGuiApp {
         });
         let (l, r) = if sub_left { (sub, None) } else { (None, sub) };
         row![].push(l).push(menu).push(r).into()
+    }
+
+    fn mark_read(&self, st: &mut BeeperStore, idx: usize) {
+        if self.expired(&st.chats[idx]) {
+            st.set_reminder(idx, None);
+        }
+        let cid = st.chats[idx].id.clone();
+        if let Some(ev) = st.mark_chat_read(&cid, true) {
+            st.queue(&cid, Outgoing::Read(ev));
+        }
     }
 
     /// Desktop's `hasExpiredReminder`: the reminder time came while the reminder was set.
@@ -3256,6 +3537,12 @@ impl BeeperGuiApp {
         pinned.sort_by_key(|c| (st.pin_rank.get(&c.id).copied().unwrap_or(usize::MAX), c.last_activity.clone()));
         let counts = st.settings.on("showUnreadCount");
         let hover_action = st.settings.pref("chatActionButton");
+        let selecting = !self.selection.is_empty();
+        let picked = |c: &Chat| self.selection.contains(&c.id);
+        let pick = |c: &Chat| match selecting {
+            true => UiMessage::ToggleSelected(c.id.clone()),
+            false => UiMessage::SelectChat(c.id.clone()),
+        };
         let cols = (((w - 16.0) / 80.0).floor() as usize).max(1);
         let cell = (w - 16.0) / cols as f32;
         let pins = pinned.chunks(cols).fold(Column::new(), |col, chunk| {
@@ -3283,8 +3570,11 @@ impl BeeperGuiApp {
                         container(at).padding([0, 4]).center_y(14).style(fill_box(bg, 7.0)).into()
                     }),
                 };
-                let face =
-                    stack![self.chat_avatar(c, 40.0), container(unread).width(44).align_right(44)].width(44).height(40);
+                let face = stack![self.chat_avatar(c, 40.0)]
+                    .push((!selecting).then(|| container(unread).width(44).align_right(44)))
+                    .push(selecting.then(|| pin(checkbox(p, picked(c))).x(29.0).y(-5.0)))
+                    .width(44)
+                    .height(40);
                 let item = column![face, label]
                     .spacing(4)
                     .align_x(Center)
@@ -3299,13 +3589,18 @@ impl BeeperGuiApp {
                                 [p.text; 3],
                                 8.0,
                             ))
-                            .on_press(UiMessage::SelectChat(c.id.clone())),
+                            .on_press(pick(c)),
                     )
                     .on_right_press(UiMessage::OpenChatMenu(c.id.clone())),
                 )
             }))
         });
-        let text_w = w - 8.0 - 16.0 - 36.0 - 4.0 - if counts { 0.0 } else { 12.0 };
+        let lead = match (selecting, counts) {
+            (true, _) => 16.0,
+            (false, true) => 0.0,
+            (false, false) => 12.0,
+        };
+        let text_w = w - 8.0 - 16.0 - 36.0 - 4.0 - lead;
         let frame = |key: String, dot: Option<El<'static>>, face: El<'static>, lines: [El<'static>; 2], on, select| {
             let [top, preview] = lines;
             let item = row![]
@@ -3313,13 +3608,18 @@ impl BeeperGuiApp {
                 .push(container(face).padding(Padding::ZERO.right(8.5)))
                 .push(column![top, preview].width(Fill))
                 .align_y(Center)
-                .padding(Padding::new(8.0).top(10.0).bottom(9.0));
-            let action = (self.hovered_chat.as_ref() == Some(&key)).then(|| match key.strip_prefix("draft:") {
-                Some(n) => {
-                    Some(self.hover_btn(5, 20.0, "Delete Chat", vec![], UiMessage::DeleteNewChat(n.parse().unwrap())))
-                }
-                None => self.row_action(&st.chats[st.resolve_chat_idx(&key).expect("listed chat")], hover_action),
-            });
+                .padding(Padding::new(8.0).top(10.0).bottom(9.0).left(if selecting { 0.0 } else { 8.0 }));
+            let action =
+                (!selecting && self.hovered_chat.as_ref() == Some(&key)).then(|| match key.strip_prefix("draft:") {
+                    Some(n) => Some(self.hover_btn(
+                        5,
+                        20.0,
+                        "Delete Chat",
+                        vec![],
+                        UiMessage::DeleteNewChat(n.parse().unwrap()),
+                    )),
+                    None => self.row_action(&st.chats[st.resolve_chat_idx(&key).expect("listed chat")], hover_action),
+                });
             let row = mouse_area(
                 button(stack![item].push(action.flatten()))
                     .padding(0)
@@ -3472,15 +3772,11 @@ impl BeeperGuiApp {
                 .align_y(Center);
             let face = stack![badged(self.chat_avatar(c, 28.0), &c.account_id, 28.0, 12.0)]
                 .push(st.typing.contains_key(&c.id).then(|| pin(self.typing_badge()).x(14.0).y(-2.0)));
-            let dot = dot.map(El::from);
-            col.push(frame(
-                c.id.clone(),
-                dot,
-                face.into(),
-                [top.into(), preview.height(16).into()],
-                on,
-                UiMessage::SelectChat(c.id.clone()),
-            ))
+            let dot = match selecting {
+                true => Some(container(checkbox(p, picked(c))).padding(Padding::ZERO.right(8.0)).into()),
+                false => dot.map(El::from),
+            };
+            col.push(frame(c.id.clone(), dot, face.into(), [top.into(), preview.height(16).into()], on, pick(c)))
         });
         let list: El<'_> = if chats.is_empty() && self.new_chats.is_empty() {
             let tab = if self.selected_account_filter.is_some() { InboxTab::Requests } else { self.active_tab };
