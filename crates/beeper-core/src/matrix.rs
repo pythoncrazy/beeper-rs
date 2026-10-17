@@ -378,7 +378,8 @@ fn link(p: &Value) -> Option<MessageLink> {
 
 pub fn reaction_text(key: &str, target: Option<&Message>, who: Option<&str>) -> String {
     let whose = if target.is_some_and(|t| t.is_sender == Some(true)) { "your" } else { "a" };
-    let object = match target.map(|t| (t.text.as_deref().filter(|x| !x.is_empty()), t.attachments.first())) {
+    let plain = |t: &Message| t.html.as_deref().map(crate::codec::html_text).or_else(|| t.text.clone());
+    let object = match target.map(|t| (plain(t).filter(|x| !x.is_empty()), t.attachments.first())) {
         Some((Some(text), _)) => format!("\"{text}\""),
         Some((None, Some(a))) => match a.attachment_type.as_str() {
             "img" => format!("{whose} photo"),
@@ -1259,5 +1260,16 @@ mod tests {
         {
             assert_eq!(super::reaction_verb(key), verb, "{key:?}");
         }
+    }
+
+    #[test]
+    fn reaction_text_quotes_the_plain_text() {
+        let m: crate::models::Message = serde_json::from_value(serde_json::json!({
+            "id": "1", "chatID": "!r", "accountID": "a", "senderID": "@u", "timestamp": "2026-01-01T00:00:00Z",
+            "sortKey": "1", "type": "TEXT", "text": "[https://x.io](https://x.io)",
+            "html": "<a href=\"https://x.io\">https://x.io</a>", "attachments": [],
+        }))
+        .unwrap();
+        assert_eq!(super::reaction_text("\u{2764}", Some(&m), None), "loved \"https://x.io\"");
     }
 }
