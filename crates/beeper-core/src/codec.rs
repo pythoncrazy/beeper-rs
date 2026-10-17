@@ -126,6 +126,19 @@ pub fn html_text(html: &str) -> String {
     html_blocks(html).into_iter().map(line).collect::<Vec<_>>().join("\n")
 }
 
+pub fn markdown_links(md: &str) -> String {
+    let (mut out, mut rest) = (String::with_capacity(md.len()), md);
+    while let Some((label, url_end)) = rest.find('[').and_then(|i| {
+        let close = i + rest[i..].find("](")?;
+        Some((i..close, close + 2 + rest[close + 2..].find(')')?))
+    }) {
+        out.push_str(&rest[..label.start]);
+        out.push_str(&rest[label.start + 1..label.end]);
+        rest = &rest[url_end + 1..];
+    }
+    out + rest
+}
+
 fn attr(tag: &str, name: &str) -> Option<String> {
     let (_, v) = tag.split_once(&format!("{name}="))?;
     let quote = v.chars().next().filter(|c| matches!(c, '"' | '\''))?;
@@ -181,5 +194,10 @@ mod tests {
         assert_eq!(blocks[0].runs[5], Run { code: true, ..run("x<y") });
         assert_eq!(blocks[2], Block { marker: Some("2.".into()), runs: vec![run("two")] });
         assert_eq!(html_text(html), "Invite to team & PR\nx<y\n1. one\n2. two\n\nend");
+    }
+
+    #[test]
+    fn markdown_links_keep_the_labels() {
+        assert_eq!(markdown_links("[https://x.io](https://x.io) see [a](b) [c] d"), "https://x.io see a [c] d");
     }
 }
