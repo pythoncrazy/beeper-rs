@@ -228,6 +228,7 @@ pub enum UiMessage {
     ToggleSearchExpanded,
     CommandQueryChanged(String),
     ExecuteCommandChat(String),
+    JumpTo(String, String),
     ToggleNewChat,
     NewChatQueryChanged(String),
     ToggleNewChatExpanded,
@@ -846,6 +847,46 @@ fn chat_search_subtitle(c: &Chat) -> String {
     net
 }
 
+fn ease_out(x: f32) -> f32 {
+    1.0 - (1.0 - x) * (1.0 - x)
+}
+
+/// Finds how far from the bottom the timeline must scroll to center a message.
+struct Locate(iced::widget::Id, Option<(iced::Rectangle, iced::Rectangle)>, Option<iced::Rectangle>);
+
+impl iced::advanced::widget::Operation<f32> for Locate {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<f32>)) {
+        operate(self)
+    }
+
+    fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+        if id == Some(&self.0) {
+            self.2 = Some(bounds);
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&iced::widget::Id>,
+        bounds: iced::Rectangle,
+        content: iced::Rectangle,
+        _: iced::Vector,
+        _: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        if id == Some(&iced::widget::Id::new("timeline")) {
+            self.1 = Some((bounds, content));
+        }
+    }
+
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<f32> {
+        let (view, content) = self.1.expect("the timeline is shown");
+        let msg = self.2.expect("the message is in the timeline");
+        let max = (content.height - view.height).max(0.0);
+        let top = msg.y - content.y - (view.height - msg.height) / 2.0;
+        iced::advanced::widget::operation::Outcome::Some(max - top.clamp(0.0, max))
+    }
+}
+
 fn gap_below(m: &Message, next: &Message) -> f32 {
     let ms = |m: &Message| millis_from_rfc3339(&m.timestamp).expect("message timestamp");
     match (ms(next) - ms(m)).abs() / 60_000 {
@@ -991,6 +1032,7 @@ pub struct BeeperGuiApp {
     pub quick_look_target: Option<(String, String)>,
     pub expanded_history_msg_id: Option<String>,
     pub hovered_msg: Option<String>,
+    pub flash: Option<(String, std::time::Instant)>,
     pub status_banner: String,
     pub dnd_muted: bool,
     pub sidebar_width: f32,
@@ -1072,6 +1114,7 @@ impl BeeperGuiApp {
             quick_look_target: None,
             expanded_history_msg_id: None,
             hovered_msg: None,
+            flash: None,
             status_banner: String::new(),
             dnd_muted: false,
             sidebar_width: 244.0,
@@ -1680,6 +1723,14 @@ impl BeeperGuiApp {
             }
             UiMessage::ToggleSearchExpanded => self.search_expanded = !self.search_expanded,
             UiMessage::CommandQueryChanged(q) => self.command_palette_query = q,
+            UiMessage::JumpTo(cid, mid) => {
+                (self.show_command_palette, self.command_palette_query) = (false, String::new());
+                self.select_chat(&cid);
+                let msg = format!("msg-{mid}");
+                self.flash = Some((mid, std::time::Instant::now()));
+                return iced::advanced::widget::operate(Locate(msg.into(), None, None))
+                    .then(|y| operation::scroll_to("timeline", operation::AbsoluteOffset { x: 0.0, y }));
+            }
             UiMessage::ExecuteCommandChat(cid) => {
                 self.show_command_palette = false;
                 self.command_palette_query.clear();
@@ -2206,6 +2257,7 @@ impl BeeperGuiApp {
         });
         let typing = !self.store.read().unwrap().typing.is_empty();
         let animated = typing
+            || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
             || self.playing_video.as_ref().is_some_and(|(_, s)| matches!(s, Some(Ok(_))))
             || self.pasted.as_ref().is_some_and(|p| p.frames.len() > 1)
             || (self.show_gif_picker
@@ -2846,12 +2898,18 @@ impl BeeperGuiApp {
             } else {
                 (Some(i) == last_live && m.is_sender == Some(true)).then(|| "Sent".into())
             };
-            col = col.push(self.view_message(&st, chat, m, first, last, status));
+            let view = self.view_message(&st, chat, m, first, last, status);
+            let flash = self.flash.as_ref().filter(|(id, _)| *id == m.id).map(|(_, at)| {
+                let t = (at.elapsed().as_secs_f32() / 1.5).min(1.0);
+                let a = if t < 0.2 { ease_out(t / 0.2) } else { 1.0 - ease_out((t - 0.2) / 0.8) };
+                container(Space::new()).width(Fill).height(Fill).style(fill_box(p.accent.scale_alpha(0.4 * a), 0.0))
+            });
+            col = col.push(container(stack![view].push(flash)).id(format!("msg-{}", m.id)));
             col = col.push(msgs.get(i + 1).map(|n| Space::new().height(gap_below(m, n))));
             prev = Some(m);
         }
         col = col.push(st.typing.get(cid).map(|ids| self.typing_bubble(chat, ids)));
-        let list = scrollable(col).anchor_bottom().height(Fill).style(scroll_style(p.divider, p.weak));
+        let list = scrollable(col).id("timeline").anchor_bottom().height(Fill).style(scroll_style(p.divider, p.weak));
         let name_row = row![
             semi(short_title(chat).to_string(), 13.0).line_height(Pixels(16.0)).color(p.strong),
             ic(icon::CHEVRON_RIGHT, 16.0).color(p.tertiary)
@@ -3755,7 +3813,7 @@ impl BeeperGuiApp {
                         .padding([4, 13])
                         .width(Fill)
                         .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
-                        .on_press(UiMessage::ExecuteCommandChat(c.id.clone())),
+                        .on_press(UiMessage::JumpTo(c.id.clone(), m.id.clone())),
                 )
             });
         let empty = none.then(|| {
