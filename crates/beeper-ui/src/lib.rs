@@ -204,8 +204,6 @@ pub enum UiMessage {
     MarkUnreadFromHere(String, String),
     RetranscribeVoice(String),
     VotePoll(String, String),
-    SendQuickVoiceNote,
-    SendQuickPoll,
     ToggleAttachMenu,
     ToggleGifPicker,
     GifQueryChanged(String),
@@ -861,16 +859,17 @@ static BELL_OFF: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| 
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"/><path d="m2 2 20 20"/><path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"/></svg>"##[..])
 });
 
-static COMPOSER_ICONS: std::sync::LazyLock<[svg::Handle; 8]> = std::sync::LazyLock::new(|| {
+static COMPOSER_ICONS: std::sync::LazyLock<[svg::Handle; 9]> = std::sync::LazyLock::new(|| {
     [
-        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M9.2 14h1.5v-3.2H14V9.3h-3.3V6H9.3v3.3H6v1.5h3.3V14ZM10 18a7.8 7.8 0 0 1-3.1-.6 8.1 8.1 0 0 1-4.3-4.3A7.8 7.8 0 0 1 2 10c0-1.1.2-2.1.6-3.1a8.1 8.1 0 0 1 4.3-4.3A7.8 7.8 0 0 1 10 2c1.1 0 2.1.2 3.1.6a8.1 8.1 0 0 1 4.3 4.3c.4 1 .6 2 .6 3.1 0 1.1-.2 2.1-.6 3.1a8.1 8.1 0 0 1-4.3 4.3c-1 .4-2 .6-3.1.6Zm0-1.5c1.8 0 3.4-.6 4.6-1.9 1.3-1.2 1.9-2.8 1.9-4.6 0-1.8-.6-3.4-1.9-4.6C13.4 4.1 11.8 3.5 10 3.5c-1.8 0-3.4.6-4.6 1.9C4.1 6.6 3.5 8.2 3.5 10c0 1.8.6 3.4 1.9 4.6 1.2 1.3 2.8 1.9 4.6 1.9Z"/></svg>"##[..],
-        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path transform="rotate(45 10 10)" fill="currentColor" d="M9.2 14h1.5v-3.2H14V9.3h-3.3V6H9.3v3.3H6v1.5h3.3V14ZM10 18a7.8 7.8 0 0 1-3.1-.6 8.1 8.1 0 0 1-4.3-4.3A7.8 7.8 0 0 1 2 10c0-1.1.2-2.1.6-3.1a8.1 8.1 0 0 1 4.3-4.3A7.8 7.8 0 0 1 10 2c1.1 0 2.1.2 3.1.6a8.1 8.1 0 0 1 4.3 4.3c.4 1 .6 2 .6 3.1 0 1.1-.2 2.1-.6 3.1a8.1 8.1 0 0 1-4.3 4.3c-1 .4-2 .6-3.1.6Zm0-1.5c1.8 0 3.4-.6 4.6-1.9 1.3-1.2 1.9-2.8 1.9-4.6 0-1.8-.6-3.4-1.9-4.6C13.4 4.1 11.8 3.5 10 3.5c-1.8 0-3.4.6-4.6 1.9C4.1 6.6 3.5 8.2 3.5 10c0 1.8.6 3.4 1.9 4.6 1.2 1.3 2.8 1.9 4.6 1.9Z"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M9.167 10.833h-5V9.166h5v-5h1.666v5h5v1.667h-5v5H9.167z"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path transform="rotate(45 10 10)" fill="currentColor" d="M9.167 10.833h-5V9.166h5v-5h1.666v5h5v1.667h-5v5H9.167z"/></svg>"##[..],
         &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M12.917 9.167q.52 0 .885-.365t.365-.885-.365-.885a1.2 1.2 0 0 0-.885-.365q-.522 0-.886.365a1.2 1.2 0 0 0-.364.885q0 .52.364.885t.886.365m-5.834 0q.522 0 .886-.365t.364-.885q0-.52-.364-.885a1.2 1.2 0 0 0-.886-.365q-.52 0-.885.365a1.2 1.2 0 0 0-.365.885q0 .52.365.885t.885.365M10 14.584q1.416 0 2.573-.802a4.57 4.57 0 0 0 1.677-2.115h-8.5a4.57 4.57 0 0 0 1.677 2.115q1.156.802 2.573.802m0 3.75a8.1 8.1 0 0 1-3.25-.657 8.4 8.4 0 0 1-2.646-1.78 8.4 8.4 0 0 1-1.781-2.647A8.1 8.1 0 0 1 1.667 10q0-1.729.656-3.25a8.4 8.4 0 0 1 1.781-2.646 8.4 8.4 0 0 1 2.646-1.78A8.1 8.1 0 0 1 10 1.666q1.73 0 3.25.656a8.4 8.4 0 0 1 2.646 1.781 8.4 8.4 0 0 1 1.781 2.646 8.1 8.1 0 0 1 .656 3.25 8.1 8.1 0 0 1-.656 3.25 8.4 8.4 0 0 1-1.781 2.646 8.4 8.4 0 0 1-2.646 1.781 8.1 8.1 0 0 1-3.25.657m0-1.667q2.792 0 4.73-1.938 1.936-1.937 1.937-4.729 0-2.79-1.938-4.729Q12.792 3.334 10 3.334T5.27 5.27t-1.937 4.73q0 2.79 1.938 4.729Q7.209 16.667 10 16.667"/></svg>"##[..],
-        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M14.167 14.5v-9H12.5v9zm-3.334 3.833V1.667H9.167v16.666zm6.667-6.666V8.333h-1.667v3.333zM7.5 13.5v-7H5.833v7zm-3.333-1.834V8.333H2.5v3.333z"/></svg>"##[..],
-        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M9.6 18c-1.3 0-2.3-.4-3.2-1.3-.9-.9-1.4-2-1.4-3.3V5.8c0-.9.3-1.7 1-2.3.6-.7 1.4-1 2.3-1 .9 0 1.7.3 2.3 1 .7.6 1 1.4 1 2.3v7c0 .6-.2 1-.6 1.5-.4.4-.9.6-1.5.6-.6 0-1-.2-1.5-.6-.4-.5-.6-1-.6-1.6V6h1.5v6.8c0 .2 0 .3.2.5.1.1.2.2.4.2.2 0 .3 0 .5-.2.1-.2.2-.3.2-.5v-7c0-.5-.2-1-.6-1.3-.3-.4-.8-.5-1.3-.5-.5 0-1 .1-1.3.5-.4.3-.5.8-.5 1.3v7.6c0 .9.3 1.7.9 2.2.6.6 1.3.9 2.2.9.9 0 1.6-.3 2.2-.9.6-.5.9-1.3.9-2.2V6h1.5v7.4c0 1.3-.5 2.4-1.4 3.3-.9.9-2 1.3-3.2 1.3Z"/></svg>"##[..],
-        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M6.4 12.1h1.3c.2 0 .4 0 .5-.2.2-.1.2-.3.2-.5v-1.2H7.2v1H6.4v-2.4h2V7.9c0-.2 0-.4-.2-.5-.1-.2-.3-.2-.5-.2H6.4c-.2 0-.4 0-.5.2-.2.1-.2.3-.2.5v3.5c0 .2 0 .4.2.5.1.2.3.2.5.2Zm3.4 0H11V7.2H9.8v4.9Zm2.3 0h1.2v-1.8h1.4V9.1h-1.4V8.4h2V7.2H12v4.9ZM4.5 17c-.4 0-.8-.2-1-.5-.3-.2-.5-.6-.5-1V4.5c0-.4.2-.8.5-1 .2-.3.6-.5 1-.5h11c.4 0 .8.2 1 .5.3.2.5.6.5 1v11c0 .4-.2.8-.5 1-.2.3-.6.5-1 .5h-11Zm0-1.5h11v-11h-11v11Z"/></svg>"##[..],
         &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M10 11.667a2.4 2.4 0 0 1-1.77-.73 2.4 2.4 0 0 1-.73-1.77v-5q0-1.042.73-1.77a2.4 2.4 0 0 1 1.77-.73 2.4 2.4 0 0 1 1.77.73q.73.728.73 1.77v5a2.4 2.4 0 0 1-.73 1.77 2.4 2.4 0 0 1-1.77.73M9.167 17.5v-2.562Q6.999 14.646 5.583 13T4.167 9.167h1.666q0 1.729 1.22 2.948Q8.27 13.333 10 13.334q1.729 0 2.948-1.22 1.218-1.218 1.219-2.947h1.666q0 2.187-1.416 3.833-1.418 1.646-3.584 1.938V17.5zM10 10q.354 0 .594-.24.24-.239.24-.593v-5a.8.8 0 0 0-.24-.594.8.8 0 0 0-.594-.24.8.8 0 0 0-.594.24.8.8 0 0 0-.24.594v5q0 .354.24.594T10 10"/></svg>"##[..],
-        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M12.4 13.5 13.5 12.4l-2.7-2.8V6H9.3v4.3l3.1 3.2ZM10 18a7.8 7.8 0 0 1-3.1-.6 8.1 8.1 0 0 1-4.3-4.3A7.8 7.8 0 0 1 2 10c0-1.1.2-2.1.6-3.1a8.1 8.1 0 0 1 4.3-4.3A7.8 7.8 0 0 1 10 2c1.1 0 2.1.2 3.1.6a8.1 8.1 0 0 1 4.3 4.3c.4 1 .6 2 .6 3.1 0 1.1-.2 2.1-.6 3.1a8.1 8.1 0 0 1-4.3 4.3c-1 .4-2 .6-3.1.6Zm0-1.5c1.8 0 3.4-.6 4.6-1.9 1.3-1.2 1.9-2.8 1.9-4.6 0-1.8-.6-3.4-1.9-4.6C13.4 4.1 11.8 3.5 10 3.5c-1.8 0-3.4.6-4.6 1.9C4.1 6.6 3.5 8.2 3.5 10c0 1.8.6 3.4 1.9 4.6 1.2 1.3 2.8 1.9 4.6 1.9Z"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M4.167 17.5q-.688 0-1.177-.49a1.6 1.6 0 0 1-.49-1.177V4.167q0-.688.49-1.177.489-.49 1.177-.49h11.666q.688 0 1.177.49.49.489.49 1.177v11.666q0 .688-.49 1.177-.489.49-1.177.49zm0-1.667h11.666V4.167H4.167zm5-3.333h1.25v-5h-1.25zm-3.334 0H7.5q.354 0 .594-.24t.24-.593V10h-1.25v1.25H6.25v-2.5h2.083v-.417a.8.8 0 0 0-.24-.593.8.8 0 0 0-.593-.24H5.833a.8.8 0 0 0-.593.24.8.8 0 0 0-.24.593v3.334q0 .354.24.593.24.24.593.24m5.834 0h1.25v-1.667h1.666v-1.25h-1.666V8.75h2.5V7.5h-3.75z"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M9.583 18.333q-1.915 0-3.25-1.333Q5 15.666 5 13.75V5q0-1.376.98-2.354a3.2 3.2 0 0 1 2.353-.98 3.2 3.2 0 0 1 2.355.98A3.2 3.2 0 0 1 11.667 5v7.916q0 .876-.604 1.48a2.01 2.01 0 0 1-1.48.604 2.01 2.01 0 0 1-1.479-.604 2.01 2.01 0 0 1-.604-1.48V5h1.25v7.916q0 .355.24.594.24.24.593.24.354 0 .594-.24t.24-.594V5q0-.875-.604-1.48a2.01 2.01 0 0 0-1.48-.603q-.875-.001-1.479.604A2.01 2.01 0 0 0 6.25 5v8.75q0 1.374.98 2.354a3.2 3.2 0 0 0 2.353.98 3.2 3.2 0 0 0 2.355-.98 3.2 3.2 0 0 0 .979-2.354V5h1.25v8.75q0 1.916-1.334 3.25-1.333 1.333-3.25 1.333"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M4.697 15.303A7.5 7.5 0 0 0 17.5 9.993l-1.667.066a5.833 5.833 0 1 1-1.708-4.184h-1.768v1.768h4.714V2.929h-1.768v1.768A7.5 7.5 0 0 0 4.697 15.303"/><path fill="currentColor" d="M10.884 5.833v5L7.55 12.917l-.834-1.25L9.217 10V5.833z"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M14.167 14.5v-9H12.5v9zm-3.334 3.833V1.667H9.167v16.666zm6.667-6.666V8.333h-1.667v3.333zM7.5 13.5v-7H5.833v7zm-3.333-1.834V8.333H2.5v3.333z"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M4.214 8.874q.65 0 1.182.322.536.323.859.86t.322 1.187q0 .645-.322 1.182a2.5 2.5 0 0 1-.86.86 2.24 2.24 0 0 1-1.181.321q-.645 0-1.182-.322a2.5 2.5 0 0 1-.86-.86 2.26 2.26 0 0 1-.321-1.18q0-.646.316-1.182a2.5 2.5 0 0 1 .86-.86 2.24 2.24 0 0 1 1.187-.328m0 .902q-.398 0-.73.204-.334.199-.533.533a1.4 1.4 0 0 0-.198.73q0 .398.198.73.2.334.532.532.333.199.73.2.4-.002.731-.2.333-.2.532-.531.198-.333.199-.73 0-.4-.2-.731-.198-.333-.53-.533a1.37 1.37 0 0 0-.731-.204m9.432.962q.208 0 .354.15.15.146.15.355 0 .205-.15.355a.48.48 0 0 1-.354.144H8.3a.495.495 0 0 1-.499-.499q0-.21.144-.354.145-.15.355-.15zM4.214 2.66q.65 0 1.182.322.536.317.859.854t.322 1.187q0 .645-.322 1.182a2.5 2.5 0 0 1-.86.864 2.24 2.24 0 0 1-1.181.323q-.645 0-1.182-.323a2.5 2.5 0 0 1-.86-.864 2.26 2.26 0 0 1-.321-1.182q0-.65.316-1.187.322-.537.86-.854a2.27 2.27 0 0 1 1.187-.322m.924 1.197q-.156 0-.258.162l-.956 1.536-.414-.52a.4.4 0 0 0-.118-.103.27.27 0 0 0-.14-.033.27.27 0 0 0-.198.086.3.3 0 0 0-.086.215q0 .124.08.215l.601.726a.6.6 0 0 0 .124.112q.07.043.162.043a.33.33 0 0 0 .29-.161l1.143-1.778a.43.43 0 0 0 .07-.225.25.25 0 0 0-.091-.194.3.3 0 0 0-.21-.08m8.508.666q.209.001.354.146.15.146.15.354 0 .21-.15.36a.48.48 0 0 1-.354.15H8.3a.47.47 0 0 1-.355-.15.5.5 0 0 1-.144-.36q0-.21.144-.354a.48.48 0 0 1 .355-.146z"/></svg>"##[..],
     ]
     .map(svg::Handle::from_memory)
 });
@@ -1891,50 +1890,6 @@ impl BeeperGuiApp {
             }
             UiMessage::VotePoll(mid, opt_id) => {
                 self.store.write().unwrap().vote_poll(&mid, &opt_id, "@self:beeper.com");
-            }
-            UiMessage::SendQuickVoiceNote => {
-                let cid = self.selected_chat_id.clone().expect("a chat is selected");
-                {
-                    let att = Attachment {
-                        attachment_type: "audio".to_string(),
-                        id: Some("att_vn_quick".to_string()),
-                        duration: Some(8.4),
-                        file_name: Some("voice-note.ogg".to_string()),
-                        file_size: Some(34_816),
-                        is_gif: Some(false),
-                        is_sticker: Some(false),
-                        is_voice_note: Some(true),
-                        mime_type: Some("audio/ogg".to_string()),
-                        poster_img: None,
-                        size: None,
-                        src_url: Some("mxc://beeper.com/quick_vn".to_string()),
-                        transcript: None,
-                    };
-                    let text = Some("Voice note".to_string());
-                    self.store.write().unwrap().send_message(&cid, text, None, Some(att)).expect("send voice note");
-                }
-                self.refresh_theme_and_tray();
-            }
-            UiMessage::SendQuickPoll => {
-                let cid = self.selected_chat_id.clone().expect("a chat is selected");
-                {
-                    let mut st = self.store.write().unwrap();
-                    let question = "Ship Beeper v4.3 today?".to_string();
-                    let (_, mid, _) =
-                        st.send_message(&cid, Some(format!("Poll: {question}")), None, None).expect("send poll");
-                    let option = |id: &str, label: &str, voter_ids: Vec<String>| PollOption {
-                        id: id.into(),
-                        label: label.into(),
-                        voter_ids,
-                    };
-                    let options = vec![
-                        option("p_yes", "Yes, ship it", vec!["@self:beeper.com".into()]),
-                        option("p_no", "Wait for QA", Vec::new()),
-                    ];
-                    let idx = st.msg_idx_by_id[&mid];
-                    st.update_message(idx, |m| m.poll = Some(PollData { question, allow_multiple: false, options }));
-                }
-                self.refresh_theme_and_tray();
             }
             UiMessage::SetReminder(cid, at) => {
                 {
@@ -4497,20 +4452,24 @@ impl BeeperGuiApp {
             column![container(search).padding([0, 14]), carousel].spacing(8).padding(Padding::ZERO.top(4.0))
         });
         let action_btn = |id: u8| -> El<'a> {
-            let (idx, active, msg) = match id {
-                0 => (2, false, UiMessage::ComposerChanged(format!("{}🙂", self.composer_text))),
-                1 => (6, false, UiMessage::SendQuickVoiceNote),
-                2 => (5, self.show_gif_picker, UiMessage::ToggleGifPicker),
-                3 => (4, false, UiMessage::PasteClipboard),
-                4 => (7, false, UiMessage::SendQuickPoll),
-                _ => (3, false, UiMessage::SendQuickVoiceNote),
+            let msg = match id {
+                0 => Some(UiMessage::ComposerChanged(format!("{}🙂", self.composer_text))),
+                2 => Some(UiMessage::ToggleGifPicker),
+                3 => Some(UiMessage::PasteClipboard),
+                _ => None,
             };
+            let active = id == 2 && self.show_gif_picker;
             let color = if active { p.strong } else { p.on_secondary };
             let bg = if active { p.hover } else { CLEAR };
-            button(container(tinted(&COMPOSER_ICONS[idx], 20.0, color)).center(28))
+            let glyph = svg(COMPOSER_ICONS[usize::from(id) + 2].clone())
+                .width(20)
+                .height(20)
+                .opacity(if msg.is_some() { 1.0_f32 } else { 0.3 })
+                .style(move |_, _| svg::Style { color: Some(color) });
+            button(container(glyph).center(28))
                 .padding(0)
                 .style(btn_style([bg, p.hover, p.selected], [p.text; 3], 14.0))
-                .on_press(msg)
+                .on_press_maybe(msg)
                 .into()
         };
         let pri = [Some(0), Some(1), Some(2), Some(3), Some(4), None]
@@ -4544,8 +4503,8 @@ impl BeeperGuiApp {
             .style(btn_style([p.input, p.hover, p.selected], [p.text; 3], 18.0))
             .on_press(UiMessage::ToggleAttachMenu);
         let unveiled = self.show_attach_menu.then(|| {
-            let ids = [0u8, 3, 5, 2, 1, 4].into_iter().filter(|&x| Some(x) != pri && Some(x) != sec);
-            Row::with_children(ids.map(&action_btn)).spacing(6).align_y(Center)
+            let ids = [0u8, 3, 5, 2, 1, 4, 6].into_iter().filter(|&x| Some(x) != pri && Some(x) != sec);
+            Row::with_children(ids.map(&action_btn)).spacing(2).padding([0, 1]).align_y(Center)
         });
         let plus = row![toggle].push(unveiled).spacing(6).align_y(Center);
         let ready = !self.composer_text.trim().is_empty() || self.pasted.is_some();
