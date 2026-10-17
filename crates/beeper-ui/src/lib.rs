@@ -2219,6 +2219,21 @@ impl BeeperGuiApp {
         container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
     }
 
+    fn tip<'a>(&self, el: El<'a>, label: &'static str, keys: Vec<&'static str>, at: tooltip::Position) -> El<'a> {
+        let p = &self.pal;
+        let kbd = |k: &'static str| -> El<'a> {
+            container(med(k, 13.0).color(p.strong))
+                .center_x(if k.len() == 1 { Length::Fixed(20.0) } else { Shrink })
+                .center_y(20)
+                .padding([0, 2])
+                .style(fill_box(p.chip, 4.0))
+                .into()
+        };
+        let keys = (!keys.is_empty()).then(|| Row::with_children(keys.into_iter().map(kbd)).spacing(4));
+        let body = row![med(label, 13.0).color(p.strong)].push(keys).spacing(8).align_y(Center);
+        tooltip(el, container(body).padding([8, 12]).style(fill_box(p.card, 18.0)), at).into()
+    }
+
     fn view_rail(&self) -> El<'_> {
         let p = &self.pal;
         let rail_btn = |glyph: El<'static>, on: bool, msg: UiMessage| {
@@ -2227,20 +2242,7 @@ impl BeeperGuiApp {
                 .style(btn_style([if on { p.rail_sel } else { CLEAR }, p.hover, p.rail_sel], [p.strong; 3], 14.0))
                 .on_press(msg)
         };
-        let tip = |btn: El<'static>, label: &'static str, keys: Vec<&'static str>| -> El<'static> {
-            let kbd = |k: &'static str| -> El<'static> {
-                container(med(k, 13.0).color(p.strong))
-                    .center_x(if k.len() == 1 { Length::Fixed(20.0) } else { Shrink })
-                    .center_y(20)
-                    .padding([0, 2])
-                    .style(fill_box(p.chip, 4.0))
-                    .into()
-            };
-            let keys = (!keys.is_empty()).then(|| Row::with_children(keys.into_iter().map(kbd)).spacing(4));
-            let body = row![med(label, 13.0).color(p.strong)].push(keys).spacing(8).align_y(Center);
-            let bubble = container(body).padding([8, 12]).style(fill_box(p.card, 18.0));
-            tooltip(btn, bubble, tooltip::Position::Right).into()
-        };
+        let tip = |btn, label, keys| self.tip(btn, label, keys, tooltip::Position::Right);
         let hotkey = |n: usize| -> Vec<&'static str> {
             ["1", "2", "3", "4", "5", "6", "7", "8", "9"].get(n).map_or(vec![], |d| vec!["Ctrl", "Alt", d])
         };
@@ -2356,8 +2358,8 @@ impl BeeperGuiApp {
         .align_y(Center)]
         .push((!names.is_empty()).then(|| txt(names.join(", "), 10.0).color(p.sub)))
         .padding([0, 8]);
-        let head_btn = |c: char, size: f32, w: f32, msg: UiMessage| {
-            button(container(ic(c, size).color(p.strong)).center_x(w).center_y(26))
+        let head_btn = |c: char, size: f32, [l, r]: [f32; 2], msg: UiMessage| {
+            button(container(ic(c, size).color(p.strong)).padding(Padding::ZERO.left(l).right(r)).center_y(26))
                 .padding(0)
                 .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
                 .on_press(msg)
@@ -2378,16 +2380,25 @@ impl BeeperGuiApp {
             let pill = row![trigger, container(ic(icon::FILTER_LIST, 19.0).color(fg)).center_x(27).center_y(20)];
             let ring = if active { p.accent } else { CLEAR };
             let face = bordered_btn([CLEAR, p.hover, p.hover], [fg; 3], ring, 1.0, 12.0);
-            mouse_area(button(pill).padding(0).style(face).on_press(UiMessage::FilterButton))
-                .on_right_press(UiMessage::ToggleFilterMenu)
+            let el = mouse_area(button(pill).padding(0).style(face).on_press(UiMessage::FilterButton))
+                .on_right_press(UiMessage::ToggleFilterMenu);
+            self.tip(el.into(), "Filter", vec![], tooltip::Position::Bottom)
         });
+        let below = |el: El<'static>, label, keys| self.tip(el, label, keys, tooltip::Position::Bottom);
         let header = row![title, Space::new().width(Fill)]
             .push(filter)
-            .push(head_btn(icon::SEARCH, 23.0, 34.0, UiMessage::ToggleCommandPalette))
-            .push(head_btn(icon::EDIT_SQUARE, 20.0, 34.0, UiMessage::ToggleNewChat))
+            .push(below(
+                head_btn(icon::SEARCH, 23.0, [6.5, 10.0], UiMessage::ToggleCommandPalette).into(),
+                "Search Chats",
+                vec!["Ctrl", "K"],
+            ))
+            .push(below(
+                head_btn(icon::EDIT_SQUARE, 20.0, [0.0, 0.0], UiMessage::ToggleNewChat).into(),
+                "New Chat",
+                vec!["Ctrl", "N"],
+            ))
             .align_y(Center)
-            .height(52)
-            .padding(Padding::ZERO.right(2.0));
+            .height(52);
         let selected = (!self.creating_chat).then_some(self.selected_chat_id.as_deref()).flatten();
         let pin_section = self.active_tab == InboxTab::AllChats;
         let (mut pinned, rest): (Vec<&Chat>, Vec<&Chat>) =
