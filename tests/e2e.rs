@@ -19,7 +19,7 @@ use beeper_ui::{
     login::{Login, LoginMsg, Outcome, Screen},
     search_settings_catalog,
     style::{fw, icon, ALL_FONTS},
-    write_rgba_png, BeeperGuiApp, InboxTab, SettingsTab, UiMessage,
+    write_rgba_png, BeeperGuiApp, InboxTab, SearchFilters, SearchPick, SettingsTab, UiMessage,
 };
 use iced::font::Weight;
 use iced::{Size, Theme};
@@ -992,6 +992,15 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let _ = gui.update(UiMessage::JumpTo(cid.clone(), mid.clone()));
         assert!(!gui.show_command_palette && gui.selected_chat_id.as_deref() == Some(cid.as_str()));
         assert!(gui.flash.as_ref().is_some_and(|(id, _)| *id == mid), "a message hit flashes the message");
+        let _ = gui.update(UiMessage::ToggleCommandPalette);
+        for pick in [SearchPick::Sent(true), SearchPick::Sent(false), SearchPick::Period(2), SearchPick::Period(2)] {
+            let _ = gui.update(UiMessage::PickSearchFilter(pick));
+        }
+        assert_eq!((gui.search_filters.sent, gui.search_filters.period), (Some(false), None), "a second pick clears");
+        let _ = gui.update(UiMessage::ToggleCommandPalette);
+        let _ = gui.update(UiMessage::ToggleCommandPalette);
+        assert_eq!(gui.search_filters, SearchFilters::default(), "a new search starts without filters");
+        let _ = gui.update(UiMessage::ToggleCommandPalette);
     }
     let _ = gui.update(rail("1"));
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));

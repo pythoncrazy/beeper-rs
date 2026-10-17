@@ -229,6 +229,9 @@ pub enum UiMessage {
     CommandQueryChanged(String),
     ExecuteCommandChat(String),
     JumpTo(String, String),
+    OpenSearchSelect(usize),
+    SearchSelect(Option<(usize, iced::Rectangle)>),
+    PickSearchFilter(SearchPick),
     ToggleNewChat,
     NewChatQueryChanged(String),
     ToggleNewChatExpanded,
@@ -847,6 +850,85 @@ fn chat_search_subtitle(c: &Chat) -> String {
     net
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SearchFilters {
+    pub accounts: Vec<String>,
+    pub sent: Option<bool>,
+    pub group: Option<bool>,
+    pub period: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub enum SearchPick {
+    Account(String),
+    Sent(bool),
+    Group(bool),
+    Period(usize),
+}
+
+const SEARCH_CHIPS: [&str; 4] = ["Accounts", "Message type", "Time period", "Media"];
+const PERIODS: [&str; 6] = ["Last hour", "Today", "Yesterday", "This week", "Last 30 days", "The last year"];
+
+impl SearchFilters {
+    fn label(&self, chip: usize) -> Option<String> {
+        match chip {
+            0 => match self.accounts.as_slice() {
+                [] => None,
+                [a] => Some(network_label(a).to_string()),
+                many => Some(format!("{} Accounts", many.len())),
+            },
+            1 => {
+                let dir = self.sent.map(|s| if s { "Sent" } else { "Received" });
+                let kind = self.group.map(|g| if g { "group messages" } else { "direct messages" });
+                match (dir, kind) {
+                    (None, None) => None,
+                    (Some(d), None) => Some(format!("{d} messages")),
+                    (None, Some(k)) => Some(format!("{}{}", k[..1].to_uppercase(), &k[1..])),
+                    (Some(d), Some(k)) => Some(format!("{d} {k}")),
+                }
+            }
+            2 => self.period.map(|i| PERIODS[i].to_string()),
+            _ => None,
+        }
+    }
+
+    /// The `[after, before)` window of message times in Unix milliseconds.
+    fn window(&self) -> (i64, i64) {
+        const DAY: i64 = 86_400_000;
+        let now = now_unix_secs() * 1000;
+        let today = now.div_euclid(DAY) * DAY;
+        match self.period {
+            None => (i64::MIN, i64::MAX),
+            Some(0) => (now - 3_600_000, i64::MAX),
+            Some(1) => (today, i64::MAX),
+            Some(2) => (today - DAY, today),
+            Some(3) => (now - 7 * DAY, i64::MAX),
+            Some(4) => (now - 30 * DAY, i64::MAX),
+            Some(5) => (now - 365 * DAY, i64::MAX),
+            Some(i) => unreachable!("time period {i}"),
+        }
+    }
+}
+
+/// Finds the layout bounds of the container with the given id.
+struct Find(iced::widget::Id, Option<iced::Rectangle>);
+
+impl iced::advanced::widget::Operation<iced::Rectangle> for Find {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<iced::Rectangle>)) {
+        operate(self)
+    }
+
+    fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+        if id == Some(&self.0) {
+            self.1 = Some(bounds);
+        }
+    }
+
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<iced::Rectangle> {
+        iced::advanced::widget::operation::Outcome::Some(self.1.expect("the container is shown"))
+    }
+}
+
 fn ease_out(x: f32) -> f32 {
     1.0 - (1.0 - x) * (1.0 - x)
 }
@@ -1002,6 +1084,8 @@ pub struct BeeperGuiApp {
     /// The chat whose context menu is open, and where it opens in the window.
     pub chat_menu: Option<(String, Point)>,
     pub search_room: Option<String>,
+    pub search_filters: SearchFilters,
+    pub search_select: Option<(usize, iced::Rectangle)>,
     sidebar_cursor: Point,
     pub filters: u8,
     pub show_attach_menu: bool,
@@ -1084,6 +1168,8 @@ impl BeeperGuiApp {
             show_filter_menu: false,
             chat_menu: None,
             search_room: None,
+            search_filters: SearchFilters::default(),
+            search_select: None,
             sidebar_cursor: Point::ORIGIN,
             filters: 0,
             show_attach_menu: false,
@@ -1705,6 +1791,9 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::ToggleCommandPalette => {
+                if !self.show_command_palette {
+                    self.search_filters = SearchFilters::default();
+                }
                 self.show_command_palette ^= self.search_room.take().is_none() || !self.show_command_palette;
                 self.cmd_bar_commands_mode = false;
                 self.search_expanded = false;
@@ -1715,6 +1804,7 @@ impl BeeperGuiApp {
             UiMessage::SearchRoom(cid) => {
                 (self.show_command_palette, self.cmd_bar_commands_mode) = (true, false);
                 (self.search_room, self.chat_menu) = (Some(cid), None);
+                self.search_filters.accounts.clear();
                 return operation::focus("cmd-palette-input");
             }
             UiMessage::ToggleCommandMode => {
@@ -2003,6 +2093,30 @@ impl BeeperGuiApp {
             UiMessage::OpenQuickLook(title, detail) => {
                 self.quick_look_target = Some((title, detail));
             }
+            UiMessage::OpenSearchSelect(chip) => {
+                let find = Find(format!("search-chip-{chip}").into(), None);
+                return iced::advanced::widget::operate(find).map(move |r| UiMessage::SearchSelect(Some((chip, r))));
+            }
+            UiMessage::SearchSelect(open) => self.search_select = open,
+            UiMessage::PickSearchFilter(pick) => {
+                let f = &mut self.search_filters;
+                match pick {
+                    SearchPick::Account(a) => match f.accounts.iter().position(|x| *x == a) {
+                        Some(i) => drop(f.accounts.remove(i)),
+                        None => f.accounts.push(a),
+                    },
+                    SearchPick::Sent(v) => f.sent = (f.sent != Some(v)).then_some(v),
+                    SearchPick::Group(v) => f.group = (f.group != Some(v)).then_some(v),
+                    SearchPick::Period(v) => {
+                        f.period = (f.period != Some(v)).then_some(v);
+                        self.search_select = None;
+                    }
+                }
+                if matches!(self.search_select, Some((1, _))) {
+                    self.search_select = None;
+                }
+            }
+            UiMessage::CloseModals if self.search_select.is_some() => self.search_select = None,
             UiMessage::CloseModals => {
                 if self.show_command_palette
                     || self.show_filter_menu
@@ -2314,6 +2428,15 @@ impl BeeperGuiApp {
             )
             .on_press(UiMessage::CloseModals)
         });
+        let select = self.search_select.filter(|_| self.show_command_palette).map(|(chip, at)| {
+            mouse_area(
+                container(mouse_area(self.view_search_select(chip, at)).on_press(UiMessage::Noop))
+                    .padding(Padding::ZERO.left(at.x).top(at.y))
+                    .width(Fill)
+                    .height(Fill),
+            )
+            .on_press(UiMessage::SearchSelect(None))
+        });
         let filter_menu = self.show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 14.5, 26.0));
         let chat_menu = self.chat_menu.as_ref().map(|(cid, at)| {
             let (w, h) = (233.0, 223.0);
@@ -2337,7 +2460,7 @@ impl BeeperGuiApp {
             let card = container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0));
             container(card).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(76.0))
         });
-        stack![base].push(toast).push(menu).push(scrim).into()
+        stack![base].push(toast).push(menu).push(scrim).push(select).into()
     }
 
     fn view_filter_menu(&self) -> El<'_> {
@@ -2364,6 +2487,73 @@ impl BeeperGuiApp {
                 .chain(views),
         );
         container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
+    }
+
+    fn view_search_select(&self, chip: usize, at: iced::Rectangle) -> El<'_> {
+        let p = &self.pal;
+        let f = &self.search_filters;
+        let pick = |m: SearchPick| Some(UiMessage::PickSearchFilter(m));
+        let radio = |on: bool, label: &str, m: SearchPick| {
+            let lead = container(on.then(|| ic(icon::CHECK, 14.0))).center_x(14).padding(Padding::ZERO.right(6.0));
+            menu_item(p, Some(lead.into()), label.into(), "", pick(m))
+        };
+        let menu = |items: Vec<El<'static>>| -> El<'static> {
+            container(Column::with_children(items).padding([4, 0]))
+                .width(233)
+                .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
+                .into()
+        };
+        match chip {
+            0 => {
+                let st = self.store.read().unwrap();
+                let mut accounts: Vec<String> = std::iter::once("hungryserv".into())
+                    .chain(st.accounts.iter().map(|a| a.account_id.clone()))
+                    .collect();
+                accounts.sort_by_key(|a| network_label(a));
+                let widest =
+                    accounts.iter().map(|a| crate::style::text_width(network_label(a), 11.0, Weight::Semibold));
+                let width = widest.fold(at.width, |w, t| w.max(t + 48.0));
+                let options = accounts.into_iter().map(|a| {
+                    let on = f.accounts.contains(&a);
+                    let fg = if on || f.accounts.is_empty() { p.text } else { p.sub };
+                    let line = row![
+                        semi(network_label(&a), 11.0).line_height(Pixels(14.0)).color(fg),
+                        Space::new().width(Fill),
+                        ic(icon::CHECK, 16.0).color(if on { fg } else { CLEAR })
+                    ]
+                    .spacing(8)
+                    .align_y(Center);
+                    let hover = Color { a: 0.1, ..p.text };
+                    button(line)
+                        .padding([6, 4])
+                        .width(Fill)
+                        .style(btn_style([CLEAR, hover, hover], [fg; 3], 4.0))
+                        .on_press(UiMessage::PickSearchFilter(SearchPick::Account(a)))
+                        .into()
+                });
+                let head = row![
+                    semi(f.label(0).unwrap_or_else(|| SEARCH_CHIPS[0].into()), 13.0).color(p.text),
+                    Space::new().width(Fill),
+                    ic(icon::EXPAND_MORE, 14.0).color(p.text)
+                ]
+                .spacing(4)
+                .padding([0, 12])
+                .align_y(Center);
+                let body = column![head, Column::with_children(options).spacing(4).padding([0, 8])].spacing(8);
+                container(body).width(width).padding([4, 0]).style(shadow_box(p.chip, CLEAR, 8.0, 4.0)).into()
+            }
+            1 => menu(vec![
+                radio(f.sent == Some(true), "Sent", SearchPick::Sent(true)),
+                radio(f.sent == Some(false), "Received", SearchPick::Sent(false)),
+                menu_rule(p),
+                radio(f.group == Some(true), "Group", SearchPick::Group(true)),
+                radio(f.group == Some(false), "Direct message", SearchPick::Group(false)),
+            ]),
+            2 => menu(
+                PERIODS.iter().enumerate().map(|(i, l)| radio(f.period == Some(i), l, SearchPick::Period(i))).collect(),
+            ),
+            _ => unreachable!("chip {chip} has no menu"),
+        }
     }
 
     fn view_chat_menu(&self, cid: &str) -> El<'_> {
@@ -3703,18 +3893,31 @@ impl BeeperGuiApp {
                     .align_y(Center)
                     .padding([8, 24])
             });
-        let chips = Row::with_children(["Accounts", "Message type", "Time period", "Media"].map(|label| {
-            let fg = if room.is_some() && label == "Accounts" { p.text.scale_alpha(0.5) } else { p.text };
-            container(
-                row![semi(label, 13.0).color(fg), ic(icon::EXPAND_MORE, 14.0).color(fg)].spacing(4).align_y(Center),
-            )
-            .padding([4, 14])
-            .style(fill_box(p.chip, 20.0))
-            .into()
+        let f = &self.search_filters;
+        let chips = Row::with_children(SEARCH_CHIPS.iter().enumerate().map(|(i, &placeholder)| {
+            let disabled = room.is_some() && i == 0;
+            let fg = if disabled { p.text.scale_alpha(0.3) } else { p.text };
+            let label = f.label(i);
+            let style = match label {
+                Some(_) => bordered_box(CLEAR, p.text, 1.0, 20.0),
+                None => bordered_box(p.chip, CLEAR, 1.0, 20.0),
+            };
+            let body = row![
+                semi(label.unwrap_or_else(|| placeholder.into()), 13.0).color(fg),
+                ic(icon::EXPAND_MORE, 14.0).color(fg)
+            ]
+            .spacing(4)
+            .align_y(Center);
+            let chip = button(body).padding([4, 13]).style(btn_style([CLEAR; 3], [fg; 3], 20.0));
+            container(chip.on_press_maybe((!disabled && i < 3).then_some(UiMessage::OpenSearchSelect(i))))
+                .id(format!("search-chip-{i}"))
+                .style(style)
+                .into()
         }))
         .spacing(12)
         .padding(Padding::new(6.0).left(13.0).right(13.0));
-        let mut chats: Vec<&Chat> = if room.is_some() {
+        let filtered = *f != SearchFilters::default();
+        let mut chats: Vec<&Chat> = if room.is_some() || (filtered && q.is_empty()) {
             Vec::new()
         } else if q.is_empty() && !st.recent_chat_ids.is_empty() {
             st.recent_chat_ids
@@ -3728,6 +3931,7 @@ impl BeeperGuiApp {
                 .iter()
                 .filter(|c| {
                     c.flags & CHAT_HIDDEN == 0
+                        && (f.accounts.is_empty() || f.accounts.contains(&c.account_id))
                         && (q.is_empty()
                             || c.title.to_lowercase().contains(&q)
                             || chat_search_subtitle(c).to_lowercase().contains(&q))
@@ -3751,6 +3955,7 @@ impl BeeperGuiApp {
                 }))
                 .align_y(Center)
                 .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0));
+        let (after, before) = f.window();
         let mut found: Vec<&Message> = match q.chars().count() > 1 {
             true => st
                 .msg_search_index
@@ -3759,6 +3964,14 @@ impl BeeperGuiApp {
                 .map(|i| &st.messages[i as usize])
                 .filter(|m| m.is_deleted != Some(true) && m.text.as_deref().is_some_and(|t| !t.is_empty()))
                 .filter(|m| room.is_none_or(|r| m.chat_id == r))
+                .filter(|m| {
+                    let group = st.chats[st.chat_idx_by_id[&m.chat_id]].chat_type == "group";
+                    let at = millis_from_rfc3339(&m.timestamp).expect("RFC 3339 timestamp");
+                    (f.accounts.is_empty() || f.accounts.contains(&m.account_id))
+                        && f.sent.is_none_or(|s| (m.is_sender == Some(true)) == s)
+                        && f.group.is_none_or(|g| group == g)
+                        && (after..before).contains(&at)
+                })
                 .collect(),
             false => Vec::new(),
         };
