@@ -11,6 +11,7 @@ beeper-core.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 png = "0.18"
+unicode-script = "0.5.8"
 arboard = { version = "3.7.0", default-features = false, features = ["image-data"] }
 image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg", "webp"] }
 iced = { version = "0.14.0", default-features = false, features = ["svg", "image-without-codecs", "advanced", "linux-theme-detection", "wgpu-bare", "tiny-skia", "tokio", "x11", "wayland", "web-colors", "crisp"] }
