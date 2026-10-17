@@ -10,7 +10,8 @@ use crate::style::{
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{
-    account_network, civil_from_days, local_millis, millis_from_rfc3339, now_unix_millis, now_unix_secs, APP_VERSION,
+    account_network, civil_from_days, local_millis, millis_from_rfc3339, now_unix_millis, now_unix_secs,
+    rfc3339_from_millis, APP_VERSION,
 };
 use beeper_core::import::has_beeper_data;
 use beeper_core::matrix::{ChatFlag, DeviceInfo, Outgoing};
@@ -214,6 +215,7 @@ pub enum UiMessage {
     PasteClipboard,
     SetReminder(String, Option<i64>),
     ChatSub(Option<u8>),
+    CheckReminders,
     ToggleFlag(String, ChatFlag),
     ToggleRead(String),
     CopyChatLink(String),
@@ -451,6 +453,7 @@ fn menu_item<'a>(
     container(button(line).padding([3.125, 8.0]).width(Fill).style(style).on_press_maybe(msg)).padding([2, 5]).into()
 }
 
+const ORANGE: Color = Color::from_rgb8(245, 76, 3);
 const ASK_LOGOUT: u8 = 0;
 const ASK_DISMISS_REMINDERS: u8 = 1;
 const REMINDER_ORDERS: [&str; 4] = [
@@ -483,10 +486,10 @@ fn remind_label(at: i64, h24: bool) -> String {
     format!("{}, {:0>8}", &wd[..3], clock(at, h24))
 }
 
-/// A reminder time in the Reminders view, like Desktop's `Today 9:00 PM`.
-fn reminder_ts(at: i64, h24: bool) -> String {
+/// The day of a reminder time, like Desktop's `Today` or `Tomorrow`.
+fn reminder_day(at: i64) -> String {
     let (d, t) = (day_of(at), today());
-    let day = match d - t {
+    match d - t {
         -1 => "Yesterday".into(),
         0 => "Today".into(),
         1 => "Tomorrow".into(),
@@ -495,8 +498,7 @@ fn reminder_ts(at: i64, h24: bool) -> String {
             let (y, m, dd) = civil_from_days(d);
             format!("{m:02}/{dd:02}/{y}")
         }
-    };
-    format!("{day} {}", clock(at, h24))
+    }
 }
 
 fn menu_rule<'a>(p: &Palette) -> El<'a> {
@@ -1213,6 +1215,8 @@ pub struct BeeperGuiApp {
     /// The chat whose context menu is open, and where it opens in the window.
     pub chat_menu: Option<(String, Point)>,
     chat_sub: Option<u8>,
+    /// The reminder time each chat was last reminded of.
+    reminded: HashMap<String, i64>,
     pub search_room: Option<String>,
     pub search_filters: SearchFilters,
     pub search_select: Option<(usize, iced::Rectangle)>,
@@ -1301,6 +1305,7 @@ impl BeeperGuiApp {
             show_filter_menu: false,
             chat_menu: None,
             chat_sub: None,
+            reminded: HashMap::new(),
             search_room: None,
             search_filters: SearchFilters::default(),
             search_select: None,
@@ -1627,6 +1632,12 @@ impl BeeperGuiApp {
         if let Some(prev_id) = self.selected_chat_id.as_deref().filter(|&p| !incognito && p != chat_id) {
             st.mark_chat_read(prev_id, true);
         }
+        if let Some(prev) = self.selected_chat_id.as_deref().filter(|&p| p != chat_id) {
+            let idx = st.resolve_chat_idx(prev).expect("selected chat exists");
+            if self.expired(&st.chats[idx]) {
+                st.set_reminder(idx, None);
+            }
+        }
         let idx = st.resolve_chat_idx(chat_id).expect("selected chat exists");
         self.selected_chat_id = Some(chat_id.to_string());
         if let Some(ev) = (!incognito).then(|| st.mark_chat_read(chat_id, false)).flatten() {
@@ -1884,6 +1895,27 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
             }
             UiMessage::ChatSub(sub) => self.chat_sub = sub,
+            UiMessage::CheckReminders => {
+                let now = now_unix_millis();
+                let mut st = self.store.write().unwrap();
+                for i in 0..st.chats.len() {
+                    let c = &st.chats[i];
+                    let Some(at) = c.reminder.as_ref().map(|r| r.remind_at_ms).filter(|&at| at <= now) else {
+                        continue;
+                    };
+                    if self.reminded.insert(c.id.clone(), at) == Some(at) {
+                        continue;
+                    }
+                    let flags = [(ChatFlag::LowPriority, c.is_low_priority), (ChatFlag::Archived, c.is_archived)];
+                    let ts = rfc3339_from_millis(at);
+                    st.update_chat(i, |c| c.last_activity = c.last_activity.take().max(Some(ts)));
+                    for (flag, _) in flags.into_iter().filter(|(_, on)| *on == Some(true)) {
+                        st.set_chat_flag(i, flag, Some(false));
+                    }
+                }
+                drop(st);
+                self.refresh_theme_and_tray();
+            }
             UiMessage::ArchiveStale => {
                 {
                     let mut st = self.store.write().unwrap();
@@ -1910,6 +1942,9 @@ impl BeeperGuiApp {
                     let idx = st.resolve_chat_idx(&cid).expect("chat exists");
                     let c = &st.chats[idx];
                     if c.unread_count > 0 || c.is_marked_unread == Some(true) {
+                        if self.expired(c) {
+                            st.set_reminder(idx, None);
+                        }
                         if let Some(ev) = st.mark_chat_read(&cid, true) {
                             st.queue(&cid, Outgoing::Read(ev));
                         }
@@ -2581,7 +2616,12 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
-        let typing = !self.store.read().unwrap().typing.is_empty();
+        let (typing, due) = {
+            let st = self.store.read().unwrap();
+            (!st.typing.is_empty(), st.chats.iter().any(|c| c.reminder.is_some() && !self.expired(c)))
+        };
+        let remind =
+            due.then(|| iced::time::every(std::time::Duration::from_secs(1)).map(|_| UiMessage::CheckReminders));
         let animated = typing
             || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
             || self.playing_video.as_ref().is_some_and(|(_, s)| matches!(s, Some(Ok(_))))
@@ -2603,7 +2643,7 @@ impl BeeperGuiApp {
             });
         let tick =
             animated.then(|| iced::time::every(std::time::Duration::from_millis(20)).map(|_| UiMessage::AnimationTick));
-        Subscription::batch([changes, focus, keys, system].into_iter().chain(drag).chain(tick))
+        Subscription::batch([changes, focus, keys, system].into_iter().chain(drag).chain(tick).chain(remind))
     }
 
     pub fn view(&self, id: window::Id) -> El<'_> {
@@ -2915,6 +2955,11 @@ impl BeeperGuiApp {
         });
         let (l, r) = if sub_left { (sub, None) } else { (None, sub) };
         row![].push(l).push(menu).push(r).into()
+    }
+
+    /// Desktop's `hasExpiredReminder`: the reminder time came while the reminder was set.
+    fn expired(&self, c: &Chat) -> bool {
+        c.reminder.as_ref().is_some_and(|r| self.reminded.get(&c.id) == Some(&r.remind_at_ms))
     }
 
     fn row_action<'a>(&self, c: &Chat, pref: u8) -> Option<El<'a>> {
@@ -3263,10 +3308,22 @@ impl BeeperGuiApp {
                 .filter(|p| p.message_type.as_deref() == Some("REACTION") && m.is_none_or(|m| m.sort_key < p.sort_key));
             let m = reaction.or(m);
             let ts = match (self.active_tab, &c.reminder) {
-                (InboxTab::Reminders, Some(r)) => reminder_ts(r.remind_at_ms, h24),
+                (InboxTab::Reminders, Some(r)) => {
+                    format!("{} {}", reminder_day(r.remind_at_ms), clock(r.remind_at_ms, h24))
+                }
                 _ => c.last_activity.as_deref().map(|t| list_ts(t, h24)).unwrap_or_default(),
             };
             let ts_w = crate::style::text_width(&ts, 10.0, Weight::Normal) + 8.0;
+            let expired = self.expired(c);
+            let reminded_last = c
+                .reminder
+                .as_ref()
+                .zip(c.last_activity.as_deref())
+                .is_some_and(|(r, t)| millis_from_rfc3339(t).expect("RFC 3339 timestamp") <= r.remind_at_ms);
+            let style = match expired && reminded_last {
+                true => iced::font::Style::Italic,
+                false => iced::font::Style::Normal,
+            };
             let title = c.network_name.as_ref().map_or_else(|| c.title.clone(), |n| format!("{} • {n}", c.title));
             let weight = if counts && !unread { Weight::Medium } else { Weight::Semibold };
             let bell = if muted { 16.0 } else { 0.0 };
@@ -3278,7 +3335,7 @@ impl BeeperGuiApp {
                 .push(ell(&title, text_w - ts_w - bell - pin_w, 13.0, weight).color(p.strong))
                 .push(muted.then(|| container(tinted(&BELL_OFF, 12.0, p.strong)).padding([0, 2])))
                 .push(Space::new().width(Fill))
-                .push(txt(ts, 10.0).color(p.sub))
+                .push(txt(ts, 10.0).color(p.sub).font(iced::Font { style, ..fw(Weight::Normal) }))
                 .height(16)
                 .align_y(Center);
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
@@ -3330,17 +3387,30 @@ impl BeeperGuiApp {
                 + if counts { 8.0 + 6.0 * digits + at } else { at }.max(18.0)
                 + if mine { 16.0 } else { 0.0 }
                 + if sender.is_some() { 16.0 } else { 0.0 }
-                + if media_tag.is_some() { 52.0 } else { 0.0 }
+                + match media_tag {
+                    Some((_, label)) if expired => crate::style::text_width(label, 13.0, Weight::Normal) + 4.0,
+                    Some(_) => 52.0,
+                    None => 0.0,
+                }
+                + if expired { crate::style::text_width("Reminder", 11.0, Weight::Semibold) + 10.0 } else { 0.0 }
                 + prefix_w;
             let read = m.is_some_and(|m| m.seen.keys().any(|u| !st.is_me(u) && u != &m.sender_id));
             let fg = if unread { p.text } else { p.sub };
             let face =
                 sender.map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0));
+            let badge = expired.then(|| {
+                let label = semi("Reminder", 11.0).line_height(Pixels(14.0)).color(Color::WHITE.scale_alpha(0.7));
+                container(label).padding([0, 3]).style(fill_box(ORANGE.scale_alpha(0.7), 4.0))
+            });
             let preview = row![]
+                .push(badge)
                 .push(mine.then(|| tinted(&SENT[usize::from(read)], 12.0, p.sub)))
                 .push(face)
                 .push(prefix.map(|s| txt(s, 13.0).color(fg)))
-                .push(media_tag.map(|(is_video, label)| {
+                .push(media_tag.map(|(is_video, label)| -> El<'_> {
+                    if expired {
+                        return txt(label, 13.0).color(fg).into();
+                    }
                     let glyph: El<'_> = match is_video {
                         true => tinted(&VIDEO_TAG, 12.0, fg),
                         false => ic(icon::IMAGE, 12.0).color(fg).into(),
@@ -3348,6 +3418,7 @@ impl BeeperGuiApp {
                     container(row![glyph, med(label, 11.0).color(fg)].spacing(2).align_y(Center))
                         .padding([1, 4])
                         .style(fill_box(p.strong.scale_alpha(0.12), 4.0))
+                        .into()
                 }))
                 .push(body.map(|b| ell(&b, text_w - reserve, 13.0, Weight::Normal).color(fg)))
                 .push(Space::new().width(Fill))
@@ -3523,8 +3594,22 @@ impl BeeperGuiApp {
             background: Some(Background::Gradient(Gradient::Linear(fade))),
             ..Default::default()
         });
+        let reminder = chat.reminder.as_ref().filter(|_| !self.expired(chat)).map(|r| {
+            let (day, time) =
+                (reminder_day(r.remind_at_ms), clock(r.remind_at_ms, st.settings.pref("timeFormat") == 1));
+            let at = if day == "Today" { time.clone() } else { format!("{time} {day}") };
+            let tip =
+                format!("Set to remind at {at}{}", if r.dismiss_on_incoming_message { " if no reply" } else { "" });
+            let label = row![ic(icon::SCHEDULE, 16.0).color(ORANGE), semi(format!("{day} {time}"), 11.0).color(ORANGE)];
+            let pill = container(label.spacing(4).align_y(Center))
+                .padding(Padding { top: 2.0, right: 8.0, bottom: 2.0, left: 4.0 })
+                .style(fill_box(mix(p.card, ORANGE, 0.1), 30.0));
+            container(self.tip(pill.into(), tip, vec![], tooltip::Position::Bottom))
+                .padding(Padding::ZERO.top(9.0).left(8.0))
+        });
         let overlay =
-            stack![fade, header, container(feedback).align_right(Fill).padding(Padding::ZERO.top(6.0).right(5.0))];
+            stack![fade, header, container(feedback).align_right(Fill).padding(Padding::ZERO.top(6.0).right(5.0))]
+                .push(reminder);
         let verify = (st.matrix.is_some() && !st.beeper_state.verified).then(|| {
             let note = txt("Verify this device to read your encrypted messages.", 12.0).color(p.text);
             let go = pill_btn(p, "Verify", UiMessage::OpenSettings(SettingsTab::Devices));
