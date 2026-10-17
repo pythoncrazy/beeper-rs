@@ -435,6 +435,8 @@ pub struct Message {
     pub message_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub poll: Option<PollData>,
+    #[serde(rename = "unresolvedMedia", skip_serializing_if = "Option::is_none")]
+    pub unresolved_media: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub edit_history: Vec<EditHistoryEntry>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]

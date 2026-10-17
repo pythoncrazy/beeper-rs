@@ -961,6 +961,7 @@ impl BeeperStore {
             attachments: attachment.into_iter().collect(),
             reactions: Vec::new(),
             poll: None,
+            unresolved_media: None,
             edit_history: Vec::new(),
             links: Vec::new(),
             seen: BTreeMap::new(),

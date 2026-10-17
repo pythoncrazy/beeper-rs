@@ -37,7 +37,16 @@ const HISTORY: u32 = 30;
 enum Op {
     Upsert(Box<Message>),
     React(String, Reaction, Box<Message>),
-    Edit(String, String, Option<String>, Vec<MessageLink>, Option<String>),
+    Edit {
+        target: String,
+        text: Option<String>,
+        html: Option<String>,
+        links: Vec<MessageLink>,
+        attachments: Vec<Attachment>,
+        message_type: &'static str,
+        unresolved_media: Option<String>,
+        timestamp: Option<String>,
+    },
     Redact(String),
     Remove(String),
 }
@@ -55,7 +64,9 @@ fn body(c: &Value) -> Option<String> {
 }
 
 fn caption(c: &Value) -> Option<String> {
-    s(&c["filename"]).is_some_and(|f| c["body"] != f.as_str()).then(|| body(c)).flatten()
+    (unresolved_media(c).is_some() || s(&c["filename"]).is_some_and(|f| c["body"] != f.as_str()))
+        .then(|| body(c))
+        .flatten()
 }
 
 fn html(c: &Value) -> Option<String> {
@@ -192,6 +203,17 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     }
 }
 
+fn url_field(url: &Value, file: &Value) -> Option<String> {
+    match file.as_object() {
+        Some(f) => Some(format!(
+            "{}?{ENCRYPTED_FILE}={}",
+            s(&file["url"]).expect("encrypted files have a URL"),
+            crate::codec::url_encode(&Value::Object(f.clone()).to_string())
+        )),
+        None => s(url),
+    }
+}
+
 fn attachment(c: &Value, kind: &str) -> Attachment {
     let info = &c["info"];
     let dim = |k: &str| info[k].as_u64().map(|n| u32::try_from(n).expect("media dimension"));
@@ -210,18 +232,34 @@ fn attachment(c: &Value, kind: &str) -> Attachment {
         is_sticker: Some(false),
         is_voice_note: Some(voice),
         mime_type: s(&info["mimetype"]),
-        poster_img: None,
+        poster_img: url_field(&info["thumbnail_url"], &info["thumbnail_file"]),
         size: dim("w").map(|w| AttachmentSize { width: Some(w), height: dim("h") }),
-        src_url: match c["file"].as_object() {
-            Some(f) => Some(format!(
-                "{}?{ENCRYPTED_FILE}={}",
-                s(&c["file"]["url"]).expect("encrypted files have a URL"),
-                crate::codec::url_encode(&Value::Object(f.clone()).to_string())
-            )),
-            None => s(&c["url"]),
-        },
+        src_url: url_field(&c["url"], &c["file"]),
         transcript: None,
     }
+}
+
+fn content(kind: &str, c: &Value) -> Option<(Option<String>, Vec<Attachment>, &'static str)> {
+    match (kind, c["msgtype"].as_str()) {
+        ("m.sticker", _) => {
+            Some((None, vec![Attachment { is_sticker: Some(true), ..attachment(c, "img") }], "STICKER"))
+        }
+        ("m.room.message", Some("m.image")) => Some((caption(c), vec![attachment(c, "img")], "IMAGE")),
+        ("m.room.message", Some("m.video")) => Some((caption(c), vec![attachment(c, "video")], "VIDEO")),
+        ("m.room.message", Some("m.audio")) if c.get("org.matrix.msc3245.voice").is_some() => {
+            Some((caption(c), vec![attachment(c, "audio")], "VOICE"))
+        }
+        ("m.room.message", Some("m.audio")) => Some((caption(c), vec![attachment(c, "audio")], "AUDIO")),
+        ("m.room.message", Some("m.file")) => Some((caption(c), vec![attachment(c, "unknown")], "FILE")),
+        ("m.room.message", Some("m.location")) => Some((body(c), Vec::new(), "LOCATION")),
+        ("m.room.message", Some("m.notice")) => Some((body(c), Vec::new(), "NOTICE")),
+        ("m.room.message", _) => Some((body(c), Vec::new(), "TEXT")),
+        _ => None,
+    }
+}
+
+fn unresolved_media(c: &Value) -> Option<String> {
+    c.get("com.beeper.unresolved_media").filter(|v| !v.is_null()).map(Value::to_string)
 }
 
 async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<Op> {
@@ -230,29 +268,31 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
     let sender = s(&e["sender"]).expect("event sender");
     let id = s(&e["event_id"]).expect("event ID");
     let kind = s(&e["type"]).expect("event type");
-    let (text, attachments, message_type) = match (kind.as_str(), c["msgtype"].as_str()) {
-        ("m.room.message" | "m.sticker" | "m.room.encrypted", _) if deleted => (None, Vec::new(), "TEXT"),
+    let (text, attachments, message_type) = match kind.as_str() {
+        "m.room.message" | "m.sticker" | "m.room.encrypted" if deleted => (None, Vec::new(), "TEXT"),
         _ if deleted => return None,
-        ("m.reaction", _) => (None, Vec::new(), "REACTION"),
-        ("m.room.redaction", _) => return Some(Op::Redact(s(&e["redacts"]).or(s(&c["redacts"]))?)),
-        ("m.room.message", _) if rel["rel_type"] == "m.replace" => {
+        "m.reaction" => (None, Vec::new(), "REACTION"),
+        "m.room.redaction" => return Some(Op::Redact(s(&e["redacts"]).or(s(&c["redacts"]))?)),
+        "m.room.message" if rel["rel_type"] == "m.replace" => {
             let (new, ts) = (&c["m.new_content"], e["origin_server_ts"].as_i64().expect("event timestamp"));
-            let shown = (c["com.beeper.dont_render_edited"] != true).then(|| rfc3339_from_millis(ts));
-            return Some(Op::Edit(s(&rel["event_id"])?, body(new)?, html(new), links(new), shown));
+            let (text, attachments, message_type) = content("m.room.message", new)?;
+            if text.is_none() && attachments.is_empty() {
+                return None;
+            }
+            let timestamp = (c["com.beeper.dont_render_edited"] != true).then(|| rfc3339_from_millis(ts));
+            return Some(Op::Edit {
+                target: s(&rel["event_id"])?,
+                text,
+                html: html(new),
+                links: links(new),
+                attachments,
+                message_type,
+                unresolved_media: unresolved_media(new),
+                timestamp,
+            });
         }
-        ("m.room.encrypted", _) => (Some(UTD_TEXT.into()), Vec::new(), "TEXT"),
-        ("m.sticker", _) => (None, vec![Attachment { is_sticker: Some(true), ..attachment(c, "img") }], "STICKER"),
-        ("m.room.message", Some("m.image")) => (caption(c), vec![attachment(c, "img")], "IMAGE"),
-        ("m.room.message", Some("m.video")) => (caption(c), vec![attachment(c, "video")], "VIDEO"),
-        ("m.room.message", Some("m.audio")) if c.get("org.matrix.msc3245.voice").is_some() => {
-            (caption(c), vec![attachment(c, "audio")], "VOICE")
-        }
-        ("m.room.message", Some("m.audio")) => (caption(c), vec![attachment(c, "audio")], "AUDIO"),
-        ("m.room.message", Some("m.file")) => (caption(c), vec![attachment(c, "unknown")], "FILE"),
-        ("m.room.message", Some("m.location")) => (body(c), Vec::new(), "LOCATION"),
-        ("m.room.message", Some("m.notice")) => (body(c), Vec::new(), "NOTICE"),
-        ("m.room.message", _) => (body(c), Vec::new(), "TEXT"),
-        _ => return None,
+        "m.room.encrypted" => (Some(UTD_TEXT.into()), Vec::new(), "TEXT"),
+        k => content(k, c)?,
     };
     let profile_name = s(&c["com.beeper.per_message_profile"]["displayname"]);
     let user = matrix_sdk::ruma::UserId::parse(&sender).expect("sender is a user ID");
@@ -284,6 +324,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
         html: html(c),
         message_type: Some(message_type.into()),
         poll: None,
+        unresolved_media: unresolved_media(c).filter(|_| !deleted),
         edit_history: Vec::new(),
         links: links(c),
         seen: Default::default(),
@@ -497,15 +538,23 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                         });
                     }
                 }
-                Op::Edit(target, text, html, links, timestamp) => {
+                Op::Edit { target, text, html, links, attachments, message_type, unresolved_media, timestamp } => {
                     if let Some(&i) = st.msg_idx_by_id.get(&target) {
                         st.update_message(i, |m| {
-                            let prev = m.text.replace(text).unwrap_or_default();
+                            let prev = match text {
+                                Some(t) => m.text.replace(t).unwrap_or_default(),
+                                None => m.text.take().unwrap_or_default(),
+                            };
                             if let Some(timestamp) =
                                 timestamp.filter(|t| m.edit_history.last().is_none_or(|e| e.timestamp != *t))
                             {
                                 m.edit_history.push(EditHistoryEntry { text: prev, timestamp });
                             }
+                            if !attachments.is_empty() {
+                                m.attachments = attachments;
+                                m.message_type = Some(message_type.into());
+                            }
+                            m.unresolved_media = unresolved_media;
                             m.links = links;
                             m.html = html;
                         });
@@ -670,12 +719,46 @@ pub async fn media(client: Client, src: String) -> Result<Vec<u8>, String> {
     let source = match src.split_once(&format!("?{ENCRYPTED_FILE}=")) {
         Some((_, json)) => {
             let json = crate::codec::url_decode(json).ok_or("bad encrypted file info")?;
-            MediaSource::Encrypted(Box::new(serde_json::from_str(&json).map_err(|e| e.to_string())?))
+            let json = match json.starts_with('{') {
+                true => json.into_bytes(),
+                false => vodozemac::base64_decode(json.trim_end_matches('=').replace('-', "+").replace('_', "/"))
+                    .map_err(|e| e.to_string())?,
+            };
+            MediaSource::Encrypted(Box::new(serde_json::from_slice(&json).map_err(|e| e.to_string())?))
         }
         None => MediaSource::Plain(src.into()),
     };
     let request = MediaRequestParameters { source, format: MediaFormat::File };
     client.media().get_media_content(&request, true).await.map_err(|e| e.to_string())
+}
+
+pub async fn resolve_media(
+    homeserver: String,
+    access_token: String,
+    user_id: String,
+    bridge_id: String,
+    login_id: String,
+    event_id: String,
+    raw: String,
+) -> Result<(), String> {
+    let enc = crate::codec::url_encode;
+    let url = format!(
+        "{}/_matrix/client/unstable/com.beeper.bridge/{}/_matrix/provision/v3/resolve_media/{}?user_id={}&login_id={}",
+        homeserver.trim_end_matches('/'),
+        enc(&bridge_id),
+        enc(&event_id),
+        enc(&user_id),
+        enc(&login_id),
+    );
+    let resp = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(access_token)
+        .header("content-type", "application/json")
+        .body(raw)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    resp.error_for_status().map(drop).map_err(|e| e.to_string())
 }
 
 pub async fn thumbnail(client: Client, url: String) -> Result<Vec<u8>, String> {
@@ -1076,6 +1159,11 @@ mod tests {
         assert_eq!(c(serde_json::json!({"body": "a.jpg", "filename": "a.jpg"})), None);
         assert_eq!(c(serde_json::json!({"body": "a.jpg"})), None);
         assert_eq!(c(serde_json::json!({"body": "look", "filename": "a.jpg"})).as_deref(), Some("look"));
+        assert_eq!(
+            c(serde_json::json!({"body": "https://www.instagram.com/reel/x/", "com.beeper.unresolved_media": {}}))
+                .as_deref(),
+            Some("https://www.instagram.com/reel/x/")
+        );
     }
 
     #[test]
