@@ -1030,6 +1030,19 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let _ = gui.update(UiMessage::DismissAllReminders);
         assert!(order(&gui).is_empty() && gui.confirm.is_none(), "dismiss all clears every reminder");
         let _ = gui.update(UiMessage::SelectTab(InboxTab::AllChats));
+        {
+            let mut st = store.write().unwrap();
+            st.chats[1].is_pinned = Some(false);
+            assert!(st.set_chat_flag(1, ChatFlag::Archived, Some(true)));
+            st.set_reminder(1, Some(ChatReminder { remind_at_ms: 1, dismiss_on_incoming_message: true }));
+        }
+        let _ = gui.update(UiMessage::CheckReminders);
+        let other = store.read().unwrap().chats[1].id.clone();
+        assert_eq!(store.read().unwrap().chats[1].is_archived, Some(false), "a due reminder unarchives the chat");
+        assert!(simulator(gui.view_main()).find("Reminder").is_ok(), "the chat list shows the Reminder badge");
+        gui.select_chat(&other);
+        gui.select_chat(&cid);
+        assert!(store.read().unwrap().chats[1].reminder.is_none(), "leaving a reminded chat dismisses the reminder");
         let _ = gui.update(UiMessage::SearchRoom(cid.clone()));
         assert!(gui.show_command_palette && gui.search_room.as_deref() == Some(cid.as_str()));
         let _ = gui.update(UiMessage::ToggleCommandPalette);
