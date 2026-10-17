@@ -9,7 +9,9 @@ use crate::style::{
     pick_style, scroll_style, semi, shadow_box, txt, Palette, ALL_FONTS, AVATAR_GRADIENTS, CLEAR,
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
-use beeper_core::config::{account_network, civil_from_days, millis_from_rfc3339, now_unix_secs, APP_VERSION};
+use beeper_core::config::{
+    account_network, civil_from_days, local_millis, millis_from_rfc3339, now_unix_millis, now_unix_secs, APP_VERSION,
+};
 use beeper_core::import::has_beeper_data;
 use beeper_core::matrix::{ChatFlag, DeviceInfo, Outgoing};
 use beeper_core::models::*;
@@ -358,7 +360,7 @@ fn brand_key(account_id: &str) -> &'static str {
 
 pub fn format_short_ts(iso: &str, twenty_four: bool) -> String {
     let ms = millis_from_rfc3339(iso).unwrap_or_else(|| panic!("timestamp {iso} is not RFC 3339"));
-    let mins = ms.div_euclid(60_000).rem_euclid(1440);
+    let mins = local_millis(ms).div_euclid(60_000).rem_euclid(1440);
     let (h, m) = (mins / 60, format!("{:02}", mins % 60));
     if twenty_four {
         return format!("{h:02}:{m}");
@@ -367,11 +369,16 @@ pub fn format_short_ts(iso: &str, twenty_four: bool) -> String {
 }
 
 fn day_num(iso: &str) -> i64 {
-    millis_from_rfc3339(iso).unwrap_or_else(|| panic!("timestamp {iso} is not RFC 3339")).div_euclid(86_400_000)
+    local_millis(millis_from_rfc3339(iso).unwrap_or_else(|| panic!("timestamp {iso} is not RFC 3339")))
+        .div_euclid(86_400_000)
+}
+
+fn today() -> i64 {
+    local_millis(now_unix_millis()).div_euclid(86_400_000)
 }
 
 fn day_label(iso: &str) -> String {
-    let (d, today) = (day_num(iso), now_unix_secs().div_euclid(86_400));
+    let (d, today) = (day_num(iso), today());
     let wd = WEEKDAYS[(d + 4).rem_euclid(7) as usize];
     match today - d {
         0 => "Today".into(),
@@ -387,11 +394,11 @@ fn day_label(iso: &str) -> String {
 
 fn list_ts(iso: &str, h24: bool) -> String {
     const DAY: i64 = 86_400_000;
-    let (d, now) = (day_num(iso), now_unix_secs() * 1000);
-    let age = now - millis_from_rfc3339(iso).expect("RFC 3339 timestamp");
+    let d = day_num(iso);
+    let age = now_unix_millis() - millis_from_rfc3339(iso).expect("RFC 3339 timestamp");
     let (y, m, dd) = civil_from_days(d);
     let month = MONTHS[m as usize - 1];
-    match now.div_euclid(DAY) - d {
+    match today() - d {
         0 => format_short_ts(iso, h24),
         1 => "Yesterday".into(),
         _ if age < 7 * DAY => WEEKDAYS[(d + 4).rem_euclid(7) as usize].into(),
@@ -934,8 +941,8 @@ impl SearchFilters {
     /// The `[after, before)` window of message times in Unix milliseconds.
     fn window(&self) -> (i64, i64) {
         const DAY: i64 = 86_400_000;
-        let now = now_unix_secs() * 1000;
-        let today = now.div_euclid(DAY) * DAY;
+        let now = now_unix_millis();
+        let today = now - local_millis(now).rem_euclid(DAY);
         match self.period {
             None => (i64::MIN, i64::MAX),
             Some(0) => (now - 3_600_000, i64::MAX),
@@ -1023,7 +1030,7 @@ impl iced::advanced::widget::Operation<f32> for Locate {
 fn gap_below(m: &Message, next: &Message) -> f32 {
     let ms = |m: &Message| millis_from_rfc3339(&m.timestamp).expect("message timestamp");
     match (ms(next) - ms(m)).abs() / 60_000 {
-        _ if m.timestamp[..10] != next.timestamp[..10] => 0.0,
+        _ if day_num(&m.timestamp) != day_num(&next.timestamp) => 0.0,
         241.. => 26.0,
         6.. => 13.0,
         2.. => 4.0,
@@ -3239,7 +3246,7 @@ impl BeeperGuiApp {
         let first_unread = msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true));
         let (h24, group) = (st.settings.pref("timeFormat") == 1, chat.chat_type == "group");
         for (i, m) in msgs.iter().enumerate() {
-            let day_changed = prev.is_none_or(|q| q.timestamp[..10] != m.timestamp[..10]);
+            let day_changed = prev.is_none_or(|q| day_num(&q.timestamp) != day_num(&m.timestamp));
             if day_changed {
                 let label = semi(day_label(&m.timestamp), 11.0).line_height(Pixels(14.0)).color(p.date_text);
                 let pill = container(label).padding([5, 9]).style(bordered_box(p.card, p.outline, 1.0, 12.0));
@@ -3253,8 +3260,9 @@ impl BeeperGuiApp {
                 col = col.push(div);
             }
             let first = day_changed || prev.is_none_or(|q| q.sender_id != m.sender_id);
-            let last =
-                msgs.get(i + 1).is_none_or(|n| n.sender_id != m.sender_id || n.timestamp[..10] != m.timestamp[..10]);
+            let last = msgs
+                .get(i + 1)
+                .is_none_or(|n| n.sender_id != m.sender_id || day_num(&n.timestamp) != day_num(&m.timestamp));
             let mut viewers: Vec<(&str, &str)> =
                 last_seen.iter().filter(|(_, &(mid, _))| mid == m.id).map(|(&u, &(_, ts))| (u, ts)).collect();
             viewers.sort_by_key(|&(_, ts)| ts);
