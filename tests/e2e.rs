@@ -933,6 +933,14 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = gui.update(ctrl_k());
     assert!(gui.show_command_palette, "Revert all enables the hotkey again");
     let _ = gui.update(UiMessage::ToggleCommandPalette);
+    let mods = iced::keyboard::Modifiers::CTRL | iced::keyboard::Modifiers::ALT;
+    let rail = |d: &str| UiMessage::KeyPressed(iced::keyboard::Key::Character(d.into()), mods);
+    let _ = gui.update(rail("2"));
+    assert_eq!(gui.active_tab, InboxTab::Archived, "Ctrl Alt 2 opens Archive");
+    let _ = gui.update(rail("8"));
+    assert_eq!(gui.selected_account_filter.as_deref(), Some("hungryserv"), "Ctrl Alt 8 opens the first account");
+    let _ = gui.update(rail("1"));
+    assert!(gui.active_tab == InboxTab::AllChats && gui.selected_account_filter.is_none());
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));
     for (mode, dark) in [(iced::theme::Mode::Dark, true), (iced::theme::Mode::Light, false)] {
         let _ = gui.update(UiMessage::SystemTheme(mode));

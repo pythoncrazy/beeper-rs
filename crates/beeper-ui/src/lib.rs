@@ -747,6 +747,25 @@ fn fmt_phone(s: &str) -> String {
     }
 }
 
+const RAIL_VIEWS: [Option<InboxTab>; 7] = [
+    Some(InboxTab::AllChats),
+    Some(InboxTab::Archived),
+    None,
+    Some(InboxTab::Reminders),
+    Some(InboxTab::SendLater),
+    Some(InboxTab::Requests),
+    Some(InboxTab::LowPriority),
+];
+
+fn rail_accounts(st: &BeeperStore) -> Vec<String> {
+    let mut accounts: Vec<String> =
+        std::iter::once("hungryserv".to_string()).chain(st.accounts.iter().map(|a| a.account_id.clone())).collect();
+    accounts.sort_by_cached_key(|a| {
+        (a != "hungryserv", st.chats.iter().position(|c| &c.account_id == a).unwrap_or(usize::MAX))
+    });
+    accounts
+}
+
 fn network_label(account_id: &str) -> &'static str {
     match brand_key(account_id) {
         "beeper" => "Beeper",
@@ -1967,6 +1986,16 @@ impl BeeperGuiApp {
                     Key::Character("j") if self.show_command_palette => {
                         return self.update(UiMessage::ToggleCommandMode);
                     }
+                    Key::Character(d @ ("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")) if alt => {
+                        let i = d.parse::<usize>().expect("a digit") - 1;
+                        let msg = match RAIL_VIEWS.get(i) {
+                            Some(view) => view.map(UiMessage::SelectTab),
+                            None => rail_accounts(&self.store.read().unwrap())
+                                .get(i - RAIL_VIEWS.len())
+                                .map(|a| UiMessage::SelectAccount(Some(a.clone()))),
+                        };
+                        return msg.map_or_else(Task::none, |m| self.update(m));
+                    }
                     Key::Character("n") => return self.update(UiMessage::ToggleNewChat),
                     Key::Character("k" | "f") => Some("Search"),
                     Key::Character(",") => Some("Settings"),
@@ -2247,13 +2276,8 @@ impl BeeperGuiApp {
         let ring = svg(DASHED_RING[usize::from(self.dark)].clone()).width(32).height(32);
         let add_space =
             container(stack![ring, container(ic(icon::MAPS_UGC, 24.0).color(p.strong)).center(32)]).center(36);
-        let mut accounts: Vec<String> =
-            std::iter::once("hungryserv".to_string()).chain(st.accounts.iter().map(|a| a.account_id.clone())).collect();
-        accounts.sort_by_cached_key(|a| {
-            (a != "hungryserv", st.chats.iter().position(|c| &c.account_id == a).unwrap_or(usize::MAX))
-        });
         let accounts =
-            accounts.into_iter().enumerate().fold(Column::new().spacing(8).align_x(Center), |c, (i, acc)| {
+            rail_accounts(&st).into_iter().enumerate().fold(Column::new().spacing(8).align_x(Center), |c, (i, acc)| {
                 let on = self.selected_account_filter.as_ref() == Some(&acc);
                 let logo: El<'static> = svg(brand_svg(brand_key(&acc))).width(28).height(28).into();
                 let n =
