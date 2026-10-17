@@ -1222,6 +1222,10 @@ pub async fn run(store: SharedStore) {
                     Ok(resp) => {
                         store.write().unwrap().matrix_error = None;
                         refresh_e2ee(&client, &store).await;
+                        for id in resp.rooms.left.keys() {
+                            let chat = chat_id(&client.get_room(id).expect("left room is known")).await;
+                            store.write().unwrap().remove_chat(&chat);
+                        }
                         for (id, update) in resp.rooms.joined {
                             let room = client.get_room(&id).expect("synced room is known");
                             sync_room(&store, &room, update.timeline.events).await;

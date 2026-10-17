@@ -1078,6 +1078,17 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let _ = gui.update(UiMessage::DeleteDraft(cid.clone()));
         let c = store.read().unwrap().chats[0].clone();
         assert!(c.draft.is_none() && gui.composer_text.is_empty(), "the hover action deletes the draft");
+        let note = beeper_core::store::NOTE_CHAT_ID;
+        let left = store.read().unwrap().chats.last().expect("a chat").id.clone();
+        assert!(left != note && left != "!wa_eric:beeper.com");
+        gui.select_chat(&left);
+        store.write().unwrap().remove_chat(&left);
+        let _ = simulator(gui.view_main());
+        let _ = gui.update(UiMessage::StoreChanged);
+        let st = store.read().unwrap();
+        assert!(st.resolve_chat_idx(&left).is_none() && !st.chat_msg_indices.contains_key(&left));
+        assert!(st.msg_idx_by_id.values().all(|&i| st.messages[i].chat_id != left), "a left chat loses its messages");
+        assert_eq!(gui.selected_chat_id.as_deref(), Some(note), "leaving the open chat opens Note to self");
     }
     let _ = gui.update(rail("1"));
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));

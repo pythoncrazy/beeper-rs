@@ -818,6 +818,31 @@ impl BeeperStore {
         });
     }
 
+    /// Drops a chat that the user left, with its messages, and rebuilds the indices.
+    pub fn remove_chat(&mut self, id: &str) {
+        if !self.chat_idx_by_id.contains_key(id) {
+            return;
+        }
+        let (chats, messages) = (std::mem::take(&mut self.chats), std::mem::take(&mut self.messages));
+        let live = std::mem::take(&mut self.msg_idx_by_id);
+        (self.chat_idx_by_id, self.local_chat_idx_by_id, self.chat_msg_indices) = Default::default();
+        (self.chat_search_index, self.msg_search_index) = Default::default();
+        for c in chats.into_iter().filter(|c| c.id != id) {
+            self.push_chat(c, false);
+        }
+        for (i, m) in messages.into_iter().enumerate() {
+            if m.chat_id != id && live.get(&m.id) == Some(&i) {
+                self.push_message(m, false);
+            }
+        }
+        self.exec("DELETE FROM messages WHERE chat_id = ?1", params![id]);
+        self.exec("DELETE FROM chats WHERE id = ?1", params![id]);
+        self.recent_chat_ids.retain(|c| c != id);
+        self.typing.remove(id);
+        self.outbox.retain(|(c, _)| c != id);
+        self.emit_ws("chat.deleted", id, None, None, None);
+    }
+
     pub fn upsert_message(&mut self, msg: Message) {
         let Some(&idx) = self.msg_idx_by_id.get(&msg.id) else {
             let idx = self.push_message(msg, true);
