@@ -389,7 +389,9 @@ fn link(p: &Value) -> Option<MessageLink> {
 
 pub fn reaction_text(key: &str, target: Option<&Message>, who: Option<&str>) -> String {
     let whose = if target.is_some_and(|t| t.is_sender == Some(true)) { "your" } else { "a" };
-    let plain = |t: &Message| t.html.as_deref().map(crate::codec::html_text).or_else(|| t.text.clone());
+    let plain = |t: &Message| {
+        t.html.as_deref().map(crate::codec::html_text).or_else(|| t.text.as_deref().map(crate::codec::markdown_links))
+    };
     let object = match target.map(|t| (plain(t).filter(|x| !x.is_empty()), t.attachments.first())) {
         Some((Some(text), _)) => format!("\"{text}\""),
         Some((None, Some(a))) => match a.attachment_type.as_str() {
@@ -1306,5 +1308,11 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(super::reaction_text("\u{2764}", Some(&m), None), "loved \"https://x.io\"");
+        let m = crate::models::Message { html: None, ..m };
+        assert_eq!(
+            super::reaction_text("\u{2764}", Some(&m), None),
+            "loved \"https://x.io\"",
+            "markdown links lose the URL"
+        );
     }
 }
