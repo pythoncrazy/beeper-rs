@@ -185,21 +185,24 @@ impl Cloud {
                 self.homeserver, a.bridge_id
             );
             let Ok(v) = self.call(&url, Some(access_token), None) else { continue };
-            for (cid, c) in v["contacts"].as_object().into_iter().flatten() {
-                let Some(name) = field(c, "name").filter(|n| !n.trim().is_empty()) else { continue };
-                let Some(phone) = strings(&c["user"]["identifiers"]).into_iter().find_map(|s| {
-                    s.strip_prefix("tel:").map(str::to_string).or_else(|| s.starts_with('+').then_some(s))
-                }) else {
-                    continue;
-                };
-                if out.iter().any(|u: &User| u.full_name.as_deref() == Some(name.as_str())) {
+            for c in v["contacts"].as_array().expect("contacts is a list") {
+                let ids = strings(&c["identifiers"]);
+                let key = ids.first().cloned().or_else(|| field(c, "id")).or_else(|| field(c, "mxid"));
+                let Some(name) = field(c, "name").filter(|n| !n.is_empty()) else { continue };
+                let phone = ids.iter().find_map(|s| s.strip_prefix("tel:")).map(|p| match p.starts_with('+') {
+                    true => p.to_string(),
+                    false => format!("+{p}"),
+                });
+                let Some(phone) = phone else { continue };
+                let id = format!("contact:{}:{}", a.account_id, key.as_deref().unwrap_or(&name));
+                if out.iter().any(|u: &User| u.id == id) {
                     continue;
                 }
                 out.push(User {
-                    id: format!("contact:{}:{cid}", a.bridge_id),
+                    id,
                     full_name: Some(name),
                     phone_number: Some(phone),
-                    img_url: field(&c["contact_info"], "avatar"),
+                    img_url: field(c, "avatar_url"),
                     username: None,
                     email: None,
                     is_self: Some(false),

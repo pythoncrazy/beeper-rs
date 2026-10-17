@@ -3519,9 +3519,9 @@ impl BeeperGuiApp {
         let inputs = row![ic(icon::SEARCH, 16.0).color(p.sub), field("Search contacts"), all_acc]
             .spacing(8)
             .align_y(Center)
-            .padding(Padding::new(6.0).left(13.0).right(8.0));
+            .padding(Padding::new(6.0).top(10.0).left(13.0).right(8.0));
         let q = self.new_chat_query.trim().to_lowercase();
-        let mut col = Column::new();
+        let mut col = Column::new().padding(Padding::ZERO.top(3.0));
         if q.is_empty() {
             let group_btn = button(
                 row![ic(icon::GROUP, 20.0).color(p.accent), semi("New Group", 13.0).color(p.strong)]
