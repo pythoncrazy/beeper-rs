@@ -49,9 +49,9 @@ fn main() {
     let _ = app.update(UiMessage::PickFilter(0));
     let _ = app.update(UiMessage::ToggleCommandPalette);
     shot(&out, "main_search", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::ToggleNewChat);
+    let _ = app.update(UiMessage::NewChat);
     shot(&out, "main_new_chat", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::ToggleNewChat);
+    let _ = app.update(UiMessage::DeleteNewChat(0));
     let dm = {
         let mut st = app.store.write().unwrap();
         let peer =
