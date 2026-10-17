@@ -1502,6 +1502,7 @@ impl BeeperGuiApp {
                 reply_to_message_id: self.reply_to_message_id.clone(),
                 attachments: Vec::new(),
             });
+            st.patch_chat(prev_id, true, None, None).expect("clear draft");
             st.patch_chat(prev_id, false, draft, None).expect("save draft");
         }
         let incognito = st.settings.on("incognito");
