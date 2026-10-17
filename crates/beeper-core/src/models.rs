@@ -227,10 +227,10 @@ pub struct ChatMergeInfo {
     pub default_chat_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatReminder {
-    #[serde(rename = "remindAt")]
-    pub remind_at: String,
+    #[serde(rename = "remindAtMs")]
+    pub remind_at_ms: i64,
     #[serde(rename = "dismissOnIncomingMessage", default)]
     pub dismiss_on_incoming_message: bool,
 }

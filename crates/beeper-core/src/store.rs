@@ -732,6 +732,13 @@ impl BeeperStore {
         true
     }
 
+    /// Sets or dismisses a chat reminder here and on the homeserver.
+    pub fn set_reminder(&mut self, idx: usize, reminder: Option<ChatReminder>) {
+        self.update_chat(idx, |c| c.reminder = reminder.clone());
+        let id = self.chats[idx].id.clone();
+        self.queue(&id, Outgoing::Reminder(reminder));
+    }
+
     pub fn start_flush(&mut self) -> bool {
         let start = !self.pushing && self.matrix.is_some() && !self.outbox.is_empty();
         self.pushing |= start;
@@ -805,7 +812,6 @@ impl BeeperStore {
                 merge: c.merge.take(),
                 merged_into_chat_id: c.merged_into_chat_id.take(),
                 preview: c.preview.take(),
-                reminder: c.reminder.take(),
                 chat_theme: c.chat_theme.take(),
                 ..chat
             }

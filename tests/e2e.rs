@@ -990,6 +990,27 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert!(gui.chat_menu.is_none(), "a menu action closes the menu");
         let c = store.read().unwrap().chats[0].clone();
         assert_eq!(c.unread_count == 0 && c.is_marked_unread != Some(true), !read, "the read toggle flips the chat");
+        let _ = gui.update(UiMessage::OpenChatMenu(cid.clone()));
+        let _ = gui.update(UiMessage::ChatSub(Some(1)));
+        assert!(simulator(gui.view_main()).find("In an Hour").is_ok(), "Remind Me opens the presets");
+        let at = beeper_core::config::now_unix_millis() + 3_600_000;
+        store.write().unwrap().config.demo = false;
+        let _ = gui.update(UiMessage::SetReminder(cid.clone(), Some(at)));
+        let _ = gui.update(UiMessage::SetReminder(cid.clone(), None));
+        {
+            let mut st = store.write().unwrap();
+            st.config.demo = true;
+            let sent: Vec<_> = st
+                .outbox
+                .drain(..)
+                .map(|(_, o)| match o {
+                    Outgoing::Reminder(r) => r.map(|r| r.remind_at_ms),
+                    _ => panic!("only reminders are queued"),
+                })
+                .collect();
+            assert_eq!(sent, [Some(at), None], "a reminder is set and dismissed on the homeserver");
+            assert!(st.chats[0].reminder.is_none() && gui.chat_menu.is_none());
+        }
         let _ = gui.update(UiMessage::SearchRoom(cid.clone()));
         assert!(gui.show_command_palette && gui.search_room.as_deref() == Some(cid.as_str()));
         let _ = gui.update(UiMessage::ToggleCommandPalette);

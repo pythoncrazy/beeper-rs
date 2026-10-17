@@ -212,7 +212,8 @@ pub enum UiMessage {
     PickGif(KlipyGif),
     GifDownloaded(KlipyGif, Result<(Vec<u8>, Frames), String>),
     PasteClipboard,
-    SetReminder(String),
+    SetReminder(String, Option<i64>),
+    ChatSub(Option<u8>),
     ToggleFlag(String, ChatFlag),
     ToggleRead(String),
     CopyChatLink(String),
@@ -358,8 +359,15 @@ fn brand_key(account_id: &str) -> &'static str {
     account_network(account_id).bridge_id
 }
 
+fn iso_millis(iso: &str) -> i64 {
+    millis_from_rfc3339(iso).unwrap_or_else(|| panic!("timestamp {iso} is not RFC 3339"))
+}
+
 pub fn format_short_ts(iso: &str, twenty_four: bool) -> String {
-    let ms = millis_from_rfc3339(iso).unwrap_or_else(|| panic!("timestamp {iso} is not RFC 3339"));
+    clock(iso_millis(iso), twenty_four)
+}
+
+fn clock(ms: i64, twenty_four: bool) -> String {
     let mins = local_millis(ms).div_euclid(60_000).rem_euclid(1440);
     let (h, m) = (mins / 60, format!("{:02}", mins % 60));
     if twenty_four {
@@ -369,12 +377,15 @@ pub fn format_short_ts(iso: &str, twenty_four: bool) -> String {
 }
 
 fn day_num(iso: &str) -> i64 {
-    local_millis(millis_from_rfc3339(iso).unwrap_or_else(|| panic!("timestamp {iso} is not RFC 3339")))
-        .div_euclid(86_400_000)
+    day_of(iso_millis(iso))
+}
+
+fn day_of(ms: i64) -> i64 {
+    local_millis(ms).div_euclid(86_400_000)
 }
 
 fn today() -> i64 {
-    local_millis(now_unix_millis()).div_euclid(86_400_000)
+    day_of(now_unix_millis())
 }
 
 fn day_label(iso: &str) -> String {
@@ -424,7 +435,7 @@ fn menu_item<'a>(
     p: &Palette,
     lead: Option<El<'a>>,
     label: String,
-    hotkey: &'static str,
+    hotkey: impl iced::widget::text::IntoFragment<'a>,
     msg: Option<UiMessage>,
 ) -> El<'a> {
     let line = row![]
@@ -435,6 +446,46 @@ fn menu_item<'a>(
         .align_y(Center);
     let style = btn_style([CLEAR, p.accent, p.accent], [p.text, Color::WHITE, Color::WHITE], 4.0);
     container(button(line).padding([3.125, 8.0]).width(Fill).style(style).on_press_maybe(msg)).padding([2, 5]).into()
+}
+
+const MENU_ITEM: f32 = 26.0;
+const SUB_MENU_W: [f32; 2] = [124.0, 257.0];
+const REMIND_PRESETS: [&str; 5] = ["In an Hour", "In Two Hours", "This Evening", "Tomorrow", "Next Week"];
+
+/// The UTC time of a Remind Me preset, read like Desktop's chrono-node parse with forward dates.
+fn remind_preset(k: usize, now: i64) -> i64 {
+    const HOUR: i64 = 3_600_000;
+    let evening = now - local_millis(now).rem_euclid(24 * HOUR) + 20 * HOUR;
+    match k {
+        0 => now + HOUR,
+        1 => now + 2 * HOUR,
+        2 if evening > now => evening,
+        2 => evening + 24 * HOUR,
+        3 => now + 24 * HOUR,
+        4 => now + 7 * 24 * HOUR,
+        _ => unreachable!("preset {k}"),
+    }
+}
+
+fn remind_label(at: i64, h24: bool) -> String {
+    let wd = WEEKDAYS[(day_of(at) + 4).rem_euclid(7) as usize];
+    format!("{}, {:0>8}", &wd[..3], clock(at, h24))
+}
+
+/// A reminder time in the Reminders view, like Desktop's `Today 9:00 PM`.
+fn reminder_ts(at: i64, h24: bool) -> String {
+    let (d, t) = (day_of(at), today());
+    let day = match d - t {
+        -1 => "Yesterday".into(),
+        0 => "Today".into(),
+        1 => "Tomorrow".into(),
+        _ if (d + 3).div_euclid(7) == (t + 3).div_euclid(7) => WEEKDAYS[(d + 4).rem_euclid(7) as usize].into(),
+        _ => {
+            let (y, m, dd) = civil_from_days(d);
+            format!("{m:02}/{dd:02}/{y}")
+        }
+    };
+    format!("{day} {}", clock(at, h24))
 }
 
 fn menu_rule<'a>(p: &Palette) -> El<'a> {
@@ -783,7 +834,7 @@ static TRASH: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
 });
 
 /// Chat row hover actions: archive, unarchive, mark read, mark unread, context menu and delete draft.
-static ROW_ACTIONS: std::sync::LazyLock<[svg::Handle; 6]> = std::sync::LazyLock::new(|| {
+static ROW_ACTIONS: std::sync::LazyLock<[svg::Handle; 7]> = std::sync::LazyLock::new(|| {
     [
         ("0 0 14 14", "M1.55556 14C1.12778 14 0.761444 13.8478 0.456555 13.5434C0.152185 13.2386 0 12.8722 0 12.4444V2.72222C0 2.52778 0.0324074 2.35278 0.0972222 2.19722C0.162037 2.04167 0.246296 1.89259 0.35 1.75L1.43889 0.427778C1.54259 0.285185 1.67222 0.178111 1.82778 0.106556C1.98333 0.0355186 2.15185 0 2.33333 0H11.6667C11.8481 0 12.0167 0.0355186 12.1722 0.106556C12.3278 0.178111 12.4574 0.285185 12.5611 0.427778L13.65 1.75C13.7537 1.89259 13.838 2.04167 13.9028 2.19722C13.9676 2.35278 14 2.52778 14 2.72222V12.4444C14 12.8722 13.8478 13.2386 13.5434 13.5434C13.2386 13.8478 12.8722 14 12.4444 14H1.55556ZM1.86667 2.33333H12.1333L11.4722 1.55556H2.52778L1.86667 2.33333ZM1.55556 3.88889V12.4444H12.4444V3.88889H1.55556ZM7 11.6667L10.1111 8.55556L9.02222 7.46667L7.77778 8.71111V5.44444H6.22222V8.71111L4.97778 7.46667L3.88889 8.55556L7 11.6667Z"),
         ("0 0 14 14", "M1.55556 14C1.12778 14 0.761444 13.8478 0.456555 13.5434C0.152185 13.2386 0 12.8722 0 12.4444V2.72222C0 2.52778 0.0324074 2.35278 0.0972222 2.19722C0.162037 2.04167 0.246296 1.89259 0.35 1.75L1.43889 0.427778C1.54259 0.285185 1.67222 0.178111 1.82778 0.106556C1.98333 0.0355186 2.15185 0 2.33333 0H11.6667C11.8481 0 12.0167 0.0355186 12.1722 0.106556C12.3278 0.178111 12.4574 0.285185 12.5611 0.427778L13.65 1.75C13.7537 1.89259 13.838 2.04167 13.9028 2.19722C13.9676 2.35278 14 2.52778 14 2.72222V12.4444C14 12.8722 13.8478 13.2386 13.5434 13.5434C13.2386 13.8478 12.8722 14 12.4444 14H1.55556ZM1.86667 2.33333H12.1333L11.4722 1.55556H2.52778L1.86667 2.33333ZM1.55556 3.88889V12.4444H12.4444V3.88889H1.55556ZM7 5L3.88889 8.11111L4.97778 9.2L6.22222 7.95556V11.2222H7.77778V7.95556L9.02222 9.2L10.1111 8.11111L7 5Z"),
@@ -791,6 +842,7 @@ static ROW_ACTIONS: std::sync::LazyLock<[svg::Handle; 6]> = std::sync::LazyLock:
         ("0 0 20 20", "M2.667 18.137V4.934q0-.605.43-1.036.431-.43 1.037-.431h7.408a3.7 3.7 0 0 0 0 1.467H4.134v9.627l.843-.825H15.87V7.795q.421-.092.788-.248t.679-.412v6.601q0 .605-.431 1.036-.432.43-1.036.431H5.6zm12.47-11.736q-.918 0-1.56-.642a2.12 2.12 0 0 1-.641-1.559q0-.915.642-1.558A2.12 2.12 0 0 1 15.136 2q.917 0 1.559.642t.642 1.559q0 .915-.642 1.558a2.12 2.12 0 0 1-1.559.642"),
         ("0 0 181 38", "M19 38c10.493 0 19-8.507 19-19S29.493 0 19 0 0 8.507 0 19s8.507 19 19 19M90.25 38c10.493 0 19-8.507 19-19s-8.507-19-19-19-19 8.507-19 19 8.507 19 19 19M161.5 38c10.493 0 19-8.507 19-19s-8.507-19-19-19-19 8.507-19 19 8.507 19 19 19"),
         ("0 0 20 20", "M7.042 13.999 6 12.957l2.938-2.958L6 7.06 7.042 6.02 10 8.957l2.938-2.937 1.041 1.041L11.042 10l2.937 2.958-1.041 1.042L10 11.06z"),
+        ("0 0 20 20", "m5.333 15.834-1.166-1.167L8.833 10 4.167 5.334l1.166-1.167L10 8.834l4.667-4.667 1.166 1.167L11.167 10l4.666 4.667-1.166 1.167L10 11.167z"),
     ]
     .map(|(vb, d)| {
         svg::Handle::from_memory(
@@ -1141,6 +1193,7 @@ pub struct BeeperGuiApp {
     pub show_filter_menu: bool,
     /// The chat whose context menu is open, and where it opens in the window.
     pub chat_menu: Option<(String, Point)>,
+    chat_sub: Option<u8>,
     pub search_room: Option<String>,
     pub search_filters: SearchFilters,
     pub search_select: Option<(usize, iced::Rectangle)>,
@@ -1227,6 +1280,7 @@ impl BeeperGuiApp {
             pasted: None,
             show_filter_menu: false,
             chat_menu: None,
+            chat_sub: None,
             search_room: None,
             search_filters: SearchFilters::default(),
             search_select: None,
@@ -1790,12 +1844,19 @@ impl BeeperGuiApp {
                 }
                 self.refresh_theme_and_tray();
             }
-            UiMessage::SetReminder(cid) => {
-                let reminder =
-                    ChatReminder { remind_at: "2026-10-15T09:00:00.000Z".into(), dismiss_on_incoming_message: true };
-                self.update_chat(&cid, |c| c.reminder = Some(reminder));
-                self.status_banner = "Reminder scheduled for tomorrow 09:00".to_string();
+            UiMessage::SetReminder(cid, at) => {
+                {
+                    let mut st = self.store.write().unwrap();
+                    let idx = st.resolve_chat_idx(&cid).expect("chat exists");
+                    st.set_reminder(
+                        idx,
+                        at.map(|remind_at_ms| ChatReminder { remind_at_ms, dismiss_on_incoming_message: true }),
+                    );
+                }
+                self.chat_menu = None;
+                self.refresh_theme_and_tray();
             }
+            UiMessage::ChatSub(sub) => self.chat_sub = sub,
             UiMessage::ArchiveStale => {
                 {
                     let mut st = self.store.write().unwrap();
@@ -1844,6 +1905,7 @@ impl BeeperGuiApp {
             }
             UiMessage::OpenChatMenu(cid) => {
                 self.chat_menu = Some((cid, Point::new(68.0 + self.sidebar_cursor.x, self.sidebar_cursor.y)));
+                self.chat_sub = None;
             }
             UiMessage::SidebarCursor(at) => self.sidebar_cursor = at,
             UiMessage::NicknameChanged(v) => self.nickname_edit_buffer = v,
@@ -2435,12 +2497,6 @@ impl BeeperGuiApp {
         }))
     }
 
-    fn update_chat(&self, chat_id: &str, f: impl FnOnce(&mut Chat)) {
-        let mut st = self.store.write().unwrap();
-        let idx = st.resolve_chat_idx(chat_id).expect("chat exists");
-        st.update_chat(idx, f);
-    }
-
     fn patch_settings(&mut self, f: impl FnOnce(&mut BeeperSettings)) {
         {
             let mut st = self.store.write().unwrap();
@@ -2548,9 +2604,15 @@ impl BeeperGuiApp {
         });
         let filter_menu = self.show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 14.5, 26.0));
         let chat_menu = self.chat_menu.as_ref().map(|(cid, at)| {
-            let (w, h) = if cid.starts_with("draft:") { (124.0, 31.0) } else { (233.0, 223.0) };
+            let (w, h) = if cid.starts_with("draft:") { (124.0, 31.0) } else { (233.0, 8.0 + 8.0 * MENU_ITEM + 22.0) };
             let x = if at.x + w > self.main_size.width { at.x - w } else { at.x };
-            (self.view_chat_menu(cid), x, at.y.min(self.main_size.height - h - 8.0))
+            let sub_w = self.chat_sub.map_or(0.0, |i| SUB_MENU_W[usize::from(i)]);
+            let left = x + w + sub_w > self.main_size.width;
+            (
+                self.view_chat_menu(cid, left),
+                if left { x - sub_w } else { x },
+                at.y.min(self.main_size.height - h - 8.0),
+            )
         });
         let menu = filter_menu.or(chat_menu).map(|(m, x, y)| {
             mouse_area(
@@ -2701,7 +2763,7 @@ impl BeeperGuiApp {
         }
     }
 
-    fn view_chat_menu(&self, cid: &str) -> El<'_> {
+    fn view_chat_menu(&self, cid: &str, sub_left: bool) -> El<'_> {
         let p = &self.pal;
         if let Some(n) = cid.strip_prefix("draft:") {
             let delete =
@@ -2717,48 +2779,87 @@ impl BeeperGuiApp {
         let flag = |f: ChatFlag| Some(UiMessage::ToggleFlag(c.id.clone(), f));
         let archived = on(c.is_archived);
         let unread = c.unread_count > 0 || on(c.is_marked_unread);
+        let close_sub = |items: Column<'static, UiMessage>| mouse_area(items).on_enter(UiMessage::ChatSub(None));
+        let open_sub = |i: u8, label: &str| {
+            mouse_area(menu_item(p, None, label.into(), "›", Some(UiMessage::ChatSub(Some(i)))))
+                .on_enter(UiMessage::ChatSub(Some(i)))
+        };
         let col = column![
-            menu_item(
-                p,
-                None,
-                if archived { "Unarchive" } else { "Archive" }.into(),
-                "Ctrl E",
-                flag(ChatFlag::Archived).filter(|_| archived || !on(c.is_pinned)),
-            ),
-            menu_item(
-                p,
-                None,
-                if on(c.is_muted) { "Unmute" } else { "Mute" }.into(),
-                "Ctrl Shift M",
-                flag(ChatFlag::Muted)
-            ),
-            menu_item(
-                p,
-                None,
-                if unread { "Mark as Read" } else { "Mark as Unread" }.into(),
-                "Ctrl Shift U",
-                Some(UiMessage::ToggleRead(c.id.clone())),
-            ),
-            menu_item(p, None, if on(c.is_pinned) { "Unpin" } else { "Pin" }.into(), "Ctrl P", flag(ChatFlag::Pinned)),
-            menu_item(p, None, "Copy Chat Link".into(), "", Some(UiMessage::CopyChatLink(c.id.clone()))),
-            menu_rule(p),
-            menu_item(p, None, "Search…".into(), "Ctrl F", Some(UiMessage::SearchRoom(c.id.clone()))),
-            menu_rule(p),
-            menu_item(
-                p,
-                None,
-                if on(c.is_low_priority) { "Move to Inbox" } else { "Move to Low Priority" }.into(),
-                "",
-                flag(ChatFlag::LowPriority),
-            ),
+            close_sub(column![
+                menu_item(
+                    p,
+                    None,
+                    if archived { "Unarchive" } else { "Archive" }.into(),
+                    "Ctrl E",
+                    flag(ChatFlag::Archived).filter(|_| archived || !on(c.is_pinned)),
+                ),
+                menu_item(
+                    p,
+                    None,
+                    if on(c.is_muted) { "Unmute" } else { "Mute" }.into(),
+                    "Ctrl Shift M",
+                    flag(ChatFlag::Muted)
+                ),
+                menu_item(
+                    p,
+                    None,
+                    if unread { "Mark as Read" } else { "Mark as Unread" }.into(),
+                    "Ctrl Shift U",
+                    Some(UiMessage::ToggleRead(c.id.clone())),
+                ),
+                menu_item(
+                    p,
+                    None,
+                    if on(c.is_pinned) { "Unpin" } else { "Pin" }.into(),
+                    "Ctrl P",
+                    flag(ChatFlag::Pinned)
+                ),
+            ]),
+            open_sub(0, "Copy"),
+            close_sub(column![
+                menu_rule(p),
+                menu_item(p, None, "Search…".into(), "Ctrl F", Some(UiMessage::SearchRoom(c.id.clone()))),
+                menu_rule(p),
+                menu_item(
+                    p,
+                    None,
+                    if on(c.is_low_priority) { "Move to Inbox" } else { "Move to Low Priority" }.into(),
+                    "",
+                    flag(ChatFlag::LowPriority),
+                ),
+            ]),
+            open_sub(1, "Remind Me"),
         ];
-        container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
+        let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let sub = self.chat_sub.map(|i| {
+            let item = |label: &str, at: String, msg| menu_item(p, None, label.into(), at, msg);
+            let items: Vec<El> = match i {
+                0 => vec![item("Chat Link", String::new(), Some(UiMessage::CopyChatLink(c.id.clone())))],
+                _ => {
+                    let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
+                    let presets = REMIND_PRESETS.iter().enumerate().map(|(k, label)| {
+                        let at = remind_preset(k, now);
+                        item(label, remind_label(at, h24), Some(UiMessage::SetReminder(c.id.clone(), Some(at))))
+                    });
+                    let dismiss = c.reminder.is_some().then(|| UiMessage::SetReminder(c.id.clone(), None));
+                    presets.chain([menu_rule(p), item("Dismiss Reminder", String::new(), dismiss)]).collect()
+                }
+            };
+            let top = if i == 0 { 4.0 * MENU_ITEM } else { 7.0 * MENU_ITEM + 22.0 };
+            let body = container(Column::with_children(items).padding([4, 0])).width(SUB_MENU_W[usize::from(i)]);
+            column![Space::new().height(top), body.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))]
+        });
+        let (l, r) = if sub_left { (sub, None) } else { (None, sub) };
+        row![].push(l).push(menu).push(r).into()
     }
 
     fn row_action<'a>(&self, c: &Chat, pref: u8) -> Option<El<'a>> {
         let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
         let archived = c.flags & CHAT_ARCHIVED != 0;
         let (glyph, size, label, keys, msg) = match pref {
+            _ if self.active_tab == InboxTab::Reminders => {
+                (6, 20.0, "Dismiss Reminder", vec![], UiMessage::SetReminder(c.id.clone(), None))
+            }
             _ if c.draft.is_some() => (5, 20.0, "Delete draft", vec![], UiMessage::DeleteDraft(c.id.clone())),
             0 if archived || c.flags & CHAT_PINNED == 0 => {
                 let msg = UiMessage::ToggleFlag(c.id.clone(), ChatFlag::Archived);
@@ -3086,7 +3187,10 @@ impl BeeperGuiApp {
                 .as_ref()
                 .filter(|p| p.message_type.as_deref() == Some("REACTION") && m.is_none_or(|m| m.sort_key < p.sort_key));
             let m = reaction.or(m);
-            let ts = c.last_activity.as_deref().map(|t| list_ts(t, h24)).unwrap_or_default();
+            let ts = match (self.active_tab, &c.reminder) {
+                (InboxTab::Reminders, Some(r)) => reminder_ts(r.remind_at_ms, h24),
+                _ => c.last_activity.as_deref().map(|t| list_ts(t, h24)).unwrap_or_default(),
+            };
             let ts_w = crate::style::text_width(&ts, 10.0, Weight::Normal) + 8.0;
             let title = c.network_name.as_ref().map_or_else(|| c.title.clone(), |n| format!("{} • {n}", c.title));
             let weight = if counts && !unread { Weight::Medium } else { Weight::Semibold };
@@ -3970,7 +4074,6 @@ impl BeeperGuiApp {
                 if chat.is_archived == Some(true) { "Unarchive" } else { "Archive" },
                 UiMessage::ToggleFlag(cid.clone(), ChatFlag::Archived)
             ),
-            action(icon::SCHEDULE, "Remind", UiMessage::SetReminder(cid.clone())),
             action(icon::DOWNLOAD, "Export", UiMessage::ExportChatJson(cid.clone())),
         ]
         .spacing(4);
