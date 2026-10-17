@@ -975,6 +975,14 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         st.chats[0].is_pinned = Some(true);
         assert!(!st.set_chat_flag(0, ChatFlag::Archived, None), "pinned chats can't be archived");
         assert!(st.outbox.is_empty());
+        let read = st.chats[0].unread_count == 0 && st.chats[0].is_marked_unread != Some(true);
+        drop(st);
+        let _ = gui.update(UiMessage::OpenChatMenu(cid.clone()));
+        assert!(gui.chat_menu.as_ref().is_some_and(|(c, _)| *c == cid), "right-click opens the chat menu");
+        let _ = gui.update(UiMessage::ToggleRead(cid.clone()));
+        assert!(gui.chat_menu.is_none(), "a menu action closes the menu");
+        let c = &store.read().unwrap().chats[0];
+        assert_eq!(c.unread_count == 0 && c.is_marked_unread != Some(true), !read, "the read toggle flips the chat");
     }
     let _ = gui.update(rail("1"));
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));

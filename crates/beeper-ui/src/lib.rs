@@ -212,6 +212,10 @@ pub enum UiMessage {
     PasteClipboard,
     SetReminder(String),
     ToggleFlag(String, ChatFlag),
+    ToggleRead(String),
+    CopyChatLink(String),
+    OpenChatMenu(String),
+    SidebarCursor(Point),
     ArchiveStale,
     NicknameChanged(String),
     SaveNickname,
@@ -399,6 +403,29 @@ fn ghost(p: &Palette, r: f32) -> impl Fn(&Theme, button::Status) -> button::Styl
     btn_style([CLEAR, p.hover, p.selected], [p.text; 3], r)
 }
 
+/// A row of a dropdown or context menu. Without a message it is greyed out.
+fn menu_item<'a>(
+    p: &Palette,
+    lead: Option<El<'a>>,
+    label: String,
+    hotkey: &'static str,
+    msg: Option<UiMessage>,
+) -> El<'a> {
+    let line = row![]
+        .push(lead)
+        .push(txt(label, 13.0))
+        .push(Space::new().width(Fill))
+        .push(txt(hotkey, 13.0).color(Color { a: 0.5, ..p.strong }))
+        .align_y(Center);
+    let style = btn_style([CLEAR, p.accent, p.accent], [p.text, Color::WHITE, Color::WHITE], 4.0);
+    container(button(line).padding([3.125, 8.0]).width(Fill).style(style).on_press_maybe(msg)).padding([2, 5]).into()
+}
+
+fn menu_rule<'a>(p: &Palette) -> El<'a> {
+    let line = container(Space::new()).width(Fill).height(1).style(fill_box(Color { a: 0.1, ..p.strong }, 0.0));
+    container(line).padding([5, 8]).into()
+}
+
 fn icon_btn<'a>(p: &Palette, c: char, size: f32, frame: f32, color: Color, msg: UiMessage) -> El<'a> {
     button(container(ic(c, size).color(color)).center(frame)).padding(0).style(ghost(p, 8.0)).on_press(msg).into()
 }
@@ -479,6 +506,17 @@ pub struct PendingMedia {
     pub is_gif: bool,
     pub size: (u32, u32),
     pub frames: Frames,
+}
+
+/// JavaScript's `encodeURIComponent`, which Desktop uses for chat links.
+fn encode_uri_component(s: &str) -> String {
+    s.bytes().fold(String::new(), |mut out, b| {
+        match b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) {
+            true => out.push(b as char),
+            false => out.push_str(&format!("%{b:02X}")),
+        }
+        out
+    })
 }
 
 async fn clipboard_image() -> Result<Option<Png>, String> {
@@ -913,6 +951,9 @@ pub struct BeeperGuiApp {
     pub hotkey_query: String,
     pub pasted: Option<PendingMedia>,
     pub show_filter_menu: bool,
+    /// The chat whose context menu is open, and where it opens in the window.
+    pub chat_menu: Option<(String, Point)>,
+    sidebar_cursor: Point,
     pub filters: u8,
     pub show_attach_menu: bool,
     pub show_gif_picker: bool,
@@ -947,7 +988,7 @@ pub struct BeeperGuiApp {
     pub sidebar_width: f32,
     pub dragging: bool,
     pub main_window: Option<window::Id>,
-    main_width: f32,
+    main_size: Size,
     pub settings_window: Option<window::Id>,
     pub login_window: Option<window::Id>,
     pub login: Login,
@@ -991,6 +1032,8 @@ impl BeeperGuiApp {
             hotkey_query: String::new(),
             pasted: None,
             show_filter_menu: false,
+            chat_menu: None,
+            sidebar_cursor: Point::ORIGIN,
             filters: 0,
             show_attach_menu: false,
             show_gif_picker: false,
@@ -1025,7 +1068,7 @@ impl BeeperGuiApp {
             sidebar_width: 244.0,
             dragging: false,
             main_window: None,
-            main_width: 1264.0,
+            main_size: Size::new(1264.0, 893.0),
             settings_window: None,
             login_window: None,
             login: Login::new(source),
@@ -1383,6 +1426,7 @@ impl BeeperGuiApp {
             "Chat: Toggle Mute" => chat(ChatFlag::Muted),
             "Chat: Toggle Pin" => chat(ChatFlag::Pinned),
             "Chat: Toggle Archive" => chat(ChatFlag::Archived),
+            "Chat: Toggle Mark As Read" => self.selected_chat_id.clone().map(UiMessage::ToggleRead),
             "Zoom In" => Some(UiMessage::Zoom(1)),
             "Zoom Out" => Some(UiMessage::Zoom(-1)),
             "Reset Zoom" => Some(UiMessage::Zoom(0)),
@@ -1563,8 +1607,39 @@ impl BeeperGuiApp {
                         self.status_banner = "Pinned chats can't be archived".into();
                     }
                 }
+                self.chat_menu = None;
                 self.refresh_theme_and_tray();
             }
+            UiMessage::ToggleRead(cid) => {
+                {
+                    let mut st = self.store.write().unwrap();
+                    let idx = st.resolve_chat_idx(&cid).expect("chat exists");
+                    let c = &st.chats[idx];
+                    if c.unread_count > 0 || c.is_marked_unread == Some(true) {
+                        if let Some(ev) = st.mark_chat_read(&cid, true) {
+                            st.queue(&cid, Outgoing::Read(ev));
+                        }
+                    } else {
+                        st.set_chat_flag(idx, ChatFlag::MarkedUnread, Some(true));
+                    }
+                }
+                self.chat_menu = None;
+                self.refresh_theme_and_tray();
+            }
+            UiMessage::CopyChatLink(cid) => {
+                self.chat_menu = None;
+                let st = self.store.read().unwrap();
+                let c = &st.chats[st.resolve_chat_idx(&cid).expect("chat exists")];
+                return iced::clipboard::write(format!(
+                    "beeper://select-thread/{}/{}",
+                    c.account_id,
+                    encode_uri_component(&c.id)
+                ));
+            }
+            UiMessage::OpenChatMenu(cid) => {
+                self.chat_menu = Some((cid, Point::new(68.0 + self.sidebar_cursor.x, self.sidebar_cursor.y)));
+            }
+            UiMessage::SidebarCursor(at) => self.sidebar_cursor = at,
             UiMessage::NicknameChanged(v) => self.nickname_edit_buffer = v,
             UiMessage::SaveNickname => {
                 let cid = self.selected_chat_id.clone().expect("a chat is selected");
@@ -1865,12 +1940,14 @@ impl BeeperGuiApp {
             UiMessage::CloseModals => {
                 if self.show_command_palette
                     || self.show_filter_menu
+                    || self.chat_menu.is_some()
                     || self.show_attach_menu
                     || self.show_gif_picker
                     || self.quick_look_target.is_some()
                 {
                     self.show_command_palette = false;
                     self.show_filter_menu = false;
+                    self.chat_menu = None;
                     self.show_attach_menu = false;
                     self.show_gif_picker = false;
                     self.quick_look_target = None;
@@ -1943,7 +2020,7 @@ impl BeeperGuiApp {
             }
             UiMessage::WindowResized(id, size) => {
                 if self.main_window == Some(id) {
-                    self.main_width = size.width;
+                    self.main_size = size;
                 }
             }
             UiMessage::WindowClosed(id) => {
@@ -2010,6 +2087,7 @@ impl BeeperGuiApp {
                     Key::Character("Y" | "y") if shift => Some("Filter: Unread"),
                     Key::Character("I" | "i") if shift => Some("Toggle Chat Info"),
                     Key::Character("M" | "m") if shift => Some("Chat: Toggle Mute"),
+                    Key::Character("U" | "u") if shift => Some("Chat: Toggle Mark As Read"),
                     Key::Character("p") => Some("Chat: Toggle Pin"),
                     Key::Character("e") => Some("Chat: Toggle Archive"),
                     Key::Character("q") => Some("Quit App"),
@@ -2151,7 +2229,8 @@ impl BeeperGuiApp {
             .interaction(mouse::Interaction::ResizingHorizontally);
         let pane = if self.creating_chat { self.view_new_chat() } else { self.view_conversation() };
         let card = container(pane).padding(Padding::new(8.0).left(0.0)).width(Fill);
-        let body = row![self.view_rail(), self.view_sidebar(), grip, card]
+        let sidebar = mouse_area(self.view_sidebar()).on_move(UiMessage::SidebarCursor);
+        let body = row![self.view_rail(), sidebar, grip, card]
             .push((self.show_right_panel && !self.creating_chat).then(|| self.view_info()));
         let base: El<'_> = container(body).width(Fill).height(Fill).style(fill_box(p.frame, 0.0)).into();
         let modal = match (&self.quick_look_target, self.show_command_palette) {
@@ -2167,10 +2246,16 @@ impl BeeperGuiApp {
             )
             .on_press(UiMessage::CloseModals)
         });
-        let menu = self.show_filter_menu.then(|| {
+        let filter_menu = self.show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 14.5, 26.0));
+        let chat_menu = self.chat_menu.as_ref().map(|(cid, at)| {
+            let (w, h) = (233.0, 186.0);
+            let x = if at.x + w > self.main_size.width { at.x - w } else { at.x };
+            (self.view_chat_menu(cid), x, at.y.min(self.main_size.height - h - 8.0))
+        });
+        let menu = filter_menu.or(chat_menu).map(|(m, x, y)| {
             mouse_area(
-                container(mouse_area(self.view_filter_menu()).on_press(UiMessage::Noop))
-                    .padding(Padding::ZERO.left(self.sidebar_width - 14.5).top(26.0))
+                container(mouse_area(m).on_press(UiMessage::Noop))
+                    .padding(Padding::ZERO.left(x).top(y))
                     .width(Fill)
                     .height(Fill),
             )
@@ -2191,23 +2276,11 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let st = self.store.read().unwrap();
         let item = |checked: bool, glyph: char, label: String, hotkey: &'static str, bit: u8| -> El<'_> {
-            let line = row![
+            let lead = row![
                 container(checked.then(|| ic(icon::CHECK, 14.0))).center_x(14),
                 container(ic(glyph, 14.0)).padding(Padding::ZERO.left(9.0).right(4.0)),
-                txt(label, 13.0),
-                Space::new().width(Fill),
-                txt(hotkey, 13.0).color(Color { a: 0.5, ..p.strong })
-            ]
-            .align_y(Center);
-            container(
-                button(line)
-                    .padding([3.125, 8.0])
-                    .width(Fill)
-                    .style(btn_style([CLEAR, p.accent, p.accent], [p.text, Color::WHITE, Color::WHITE], 4.0))
-                    .on_press(UiMessage::PickFilter(bit)),
-            )
-            .padding([2, 5])
-            .into()
+            ];
+            menu_item(p, Some(lead.into()), label, hotkey, Some(UiMessage::PickFilter(bit)))
         };
         let counted = (0..F_ARCHIVED).map(|i| {
             let n = self.chats_with(&st, 1 << i).len();
@@ -2216,14 +2289,56 @@ impl BeeperGuiApp {
         });
         let views = (F_ARCHIVED..FILTERS.len())
             .map(|i| item(self.filters & 1 << i != 0, FILTERS[i].1, FILTERS[i].0.into(), "", 1 << i));
-        let line = container(Space::new()).width(Fill).height(1).style(fill_box(Color { a: 0.1, ..p.strong }, 0.0));
-        let rule = container(line).padding([5, 8]);
         let col = Column::with_children(
             std::iter::once(item(self.filters == 0, icon::INBOX, "All".into(), "", 0))
                 .chain(counted)
-                .chain(std::iter::once(rule.into()))
+                .chain(std::iter::once(menu_rule(p)))
                 .chain(views),
         );
+        container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
+    }
+
+    fn view_chat_menu(&self, cid: &str) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read().unwrap();
+        let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
+        let on = |v: Option<bool>| v == Some(true);
+        let flag = |f: ChatFlag| Some(UiMessage::ToggleFlag(c.id.clone(), f));
+        let archived = on(c.is_archived);
+        let unread = c.unread_count > 0 || on(c.is_marked_unread);
+        let col = column![
+            menu_item(
+                p,
+                None,
+                if archived { "Unarchive" } else { "Archive" }.into(),
+                "Ctrl E",
+                flag(ChatFlag::Archived).filter(|_| archived || !on(c.is_pinned)),
+            ),
+            menu_item(
+                p,
+                None,
+                if on(c.is_muted) { "Unmute" } else { "Mute" }.into(),
+                "Ctrl Shift M",
+                flag(ChatFlag::Muted)
+            ),
+            menu_item(
+                p,
+                None,
+                if unread { "Mark as Read" } else { "Mark as Unread" }.into(),
+                "Ctrl Shift U",
+                Some(UiMessage::ToggleRead(c.id.clone())),
+            ),
+            menu_item(p, None, if on(c.is_pinned) { "Unpin" } else { "Pin" }.into(), "Ctrl P", flag(ChatFlag::Pinned)),
+            menu_item(p, None, "Copy Chat Link".into(), "", Some(UiMessage::CopyChatLink(c.id.clone()))),
+            menu_rule(p),
+            menu_item(
+                p,
+                None,
+                if on(c.is_low_priority) { "Move to Inbox" } else { "Move to Low Priority" }.into(),
+                "",
+                flag(ChatFlag::LowPriority),
+            ),
+        ];
         container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
     }
 
@@ -2445,10 +2560,17 @@ impl BeeperGuiApp {
                     .width(cell)
                     .padding(Padding::new(10.0).top(8.0).bottom(6.0));
                 r.push(
-                    button(item)
-                        .padding(0)
-                        .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.text; 3], 8.0))
-                        .on_press(UiMessage::SelectChat(c.id.clone())),
+                    mouse_area(
+                        button(item)
+                            .padding(0)
+                            .style(btn_style(
+                                [if on { p.selected } else { CLEAR }, p.hover, p.selected],
+                                [p.text; 3],
+                                8.0,
+                            ))
+                            .on_press(UiMessage::SelectChat(c.id.clone())),
+                    )
+                    .on_right_press(UiMessage::OpenChatMenu(c.id.clone())),
                 )
             }))
         });
@@ -2568,11 +2690,14 @@ impl BeeperGuiApp {
                 .align_y(Center)
                 .padding(Padding::new(8.0).top(10.0).bottom(9.0));
             col.push(
-                button(item)
-                    .padding(0)
-                    .width(Fill)
-                    .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.text; 3], 8.0))
-                    .on_press(UiMessage::SelectChat(c.id.clone())),
+                mouse_area(
+                    button(item)
+                        .padding(0)
+                        .width(Fill)
+                        .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.text; 3], 8.0))
+                        .on_press(UiMessage::SelectChat(c.id.clone())),
+                )
+                .on_right_press(UiMessage::OpenChatMenu(c.id.clone())),
             )
             .push(divider(p, 52.0))
         });
@@ -3058,7 +3183,7 @@ impl BeeperGuiApp {
             parts = parts.push(
                 container(stack![body, container(time).align_right(Fill).align_bottom(Fill)])
                     .padding([8, 11])
-                    .max_width(0.45 * self.main_width)
+                    .max_width(0.45 * self.main_size.width)
                     .style(fill_box(bg, 17.0)),
             );
         }

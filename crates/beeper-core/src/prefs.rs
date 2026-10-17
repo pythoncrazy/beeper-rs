@@ -257,6 +257,7 @@ pub const HOTKEYS: &[(&str, &[(&str, &str)])] = &[
         "Chats",
         &[
             ("Chat: Toggle Archive", "Ctrl E"),
+            ("Chat: Toggle Mark As Read", "Ctrl Shift U"),
             ("Chat: Toggle Mute", "Ctrl Shift M"),
             ("Chat: Toggle Pin", "Ctrl P"),
             ("Select Next Chat", "Ctrl ], Ctrl Alt ↓"),
