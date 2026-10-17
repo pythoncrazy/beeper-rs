@@ -615,7 +615,7 @@ impl BeeperGuiApp {
         let menu = l.menu.then(|| {
             let back = previous(l.screen).map(|s| item("Go Back", LoginMsg::Show(s).into()));
             let last = if onboarding {
-                item("Report a Problem", UiMessage::OpenUrl("https://github.com/pythoncrazy/beeper-rs/issues".into()))
+                item("Report a Problem", UiMessage::OpenUrl(crate::ISSUES_URL.into()))
             } else {
                 item("Start Over", LoginMsg::StartOver.into())
             };

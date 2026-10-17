@@ -270,6 +270,7 @@ pub const HOTKEYS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Filter: Unread", "Ctrl Shift Y"),
             ("Quit App", "Ctrl Q"),
+            ("Report a Problem", "Ctrl Shift P"),
             ("Reset Zoom", "Ctrl 0"),
             ("Search", "Ctrl K"),
             ("Search: Room", "Ctrl F"),
