@@ -136,11 +136,19 @@ pub fn ell<'a>(s: &str, max: f32, size: f32, w: Weight) -> text::Text<'a> {
 
 /// Collapses whitespace like CSS and keeps at most `lines` lines of `max` width, with "…" at the end of the last line.
 pub fn clamp<'a>(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> text::Text<'a> {
+    t(clamped(s, max, lines, size, w).to_string(), size, w).wrapping(if lines == 1 {
+        text::Wrapping::None
+    } else {
+        text::Wrapping::WordOrGlyph
+    })
+}
+
+pub fn clamped(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> Rc<str> {
     type Key = (String, u32, u32, Weight, usize);
     thread_local!(static CACHE: RefCell<HashMap<Key, Rc<str>>> = RefCell::default());
     assert!(lines > 0, "clamp to zero lines");
     let key = (s.to_owned(), max.max(0.0).to_bits(), size.to_bits(), w, lines);
-    let out = CACHE.with(|c| c.borrow().get(&key).cloned()).unwrap_or_else(|| {
+    CACHE.with(|c| c.borrow().get(&key).cloned()).unwrap_or_else(|| {
         let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
         let starts: Vec<usize> = shape(&s, size, w, Some(max.max(0.0)), |buf| {
             buf.layout_runs().map(|r| r.glyphs.first().map_or(0, |g| g.start)).collect()
@@ -157,8 +165,7 @@ pub fn clamp<'a>(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> text:
             m.insert(key, res.clone());
         });
         res
-    });
-    t(out.to_string(), size, w).wrapping(if lines == 1 { text::Wrapping::None } else { text::Wrapping::WordOrGlyph })
+    })
 }
 
 pub fn t<'a>(s: impl text::IntoFragment<'a>, size: f32, w: Weight) -> text::Text<'a> {
