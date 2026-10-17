@@ -804,12 +804,11 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
             success(st)
         }
         ("POST", ["reminders"]) => {
-            let reminder: ChatReminder = r.parse("reminder")?;
-            st.update_chat(idx, |c| c.reminder = Some(reminder));
+            st.set_reminder(idx, Some(r.parse("reminder")?));
             empty(StatusCode::NO_CONTENT, Vec::new())
         }
         ("DELETE", ["reminders"]) => {
-            st.update_chat(idx, |c| c.reminder = None);
+            st.set_reminder(idx, None);
             empty(StatusCode::NO_CONTENT, Vec::new())
         }
         ("GET", ["messages"]) => list_messages(st, idx, r),

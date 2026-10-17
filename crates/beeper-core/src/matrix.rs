@@ -1,8 +1,8 @@
 use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
-    Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, EditHistoryEntry, Message, MessageLink,
-    Reaction, User, VerificationSas, VerificationSasEmoji, VerificationState,
+    Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder, EditHistoryEntry, Message,
+    MessageLink, Reaction, User, VerificationSas, VerificationSasEmoji, VerificationState,
 };
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
 use futures_util::StreamExt;
@@ -93,6 +93,8 @@ async fn states(room: &Room, kind: StateEventType) -> Vec<Value> {
 async fn state(room: &Room, kind: &str) -> Option<Value> {
     Some(states(room, kind.into()).await.into_iter().next()?["content"].take())
 }
+
+const REMINDER: &str = "com.beeper.chats.reminder";
 
 async fn account_data(room: &Room, kind: &str) -> Option<Value> {
     let raw = room.account_data(RoomAccountDataEventType::from(kind)).await.expect("read room account data")?;
@@ -228,7 +230,12 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         merge: None,
         merged_into_chat_id: None,
         preview: None,
-        reminder: None,
+        reminder: account_data(room, REMINDER).await.and_then(|r| {
+            Some(ChatReminder {
+                remind_at_ms: r["remind_at_ms"].as_i64().filter(|&ms| ms > 0)?,
+                dismiss_on_incoming_message: r["dismiss_on_incoming_message"] == true,
+            })
+        }),
         chat_theme: None,
         flags: 0,
     }
@@ -543,6 +550,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                     c.is_low_priority,
                     (c.unread_count, c.unread_mentions),
                     c.is_marked_unread,
+                    c.reminder.clone(),
                 )
             };
             if room(&st.chats[i]) != room(&chat) {
@@ -554,6 +562,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                         c.is_low_priority,
                         (c.unread_count, c.unread_mentions),
                         c.is_marked_unread,
+                        c.reminder,
                     ) = room(&chat);
                 });
             }
@@ -672,6 +681,7 @@ pub enum Outgoing {
     },
     Read(String),
     Flag(ChatFlag, bool),
+    Reminder(Option<ChatReminder>),
     Image {
         txn: String,
         bytes: Vec<u8>,
@@ -777,6 +787,13 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             }
             ChatFlag::MarkedUnread => room.set_unread_flag(on).await.map_err(e)?,
         },
+        Outgoing::Reminder(at) => {
+            let v = at.map_or(serde_json::json!({}), |r| {
+                serde_json::json!({ "remind_at_ms": r.remind_at_ms, "dismiss_on_incoming_message": r.dismiss_on_incoming_message })
+            });
+            let raw = Raw::from_json(serde_json::value::to_raw_value(&v).expect("reminder JSON"));
+            room.set_account_data_raw(REMINDER.into(), raw).await.map_err(e)?;
+        }
         Outgoing::Image { txn, bytes: data, name, mime, size: (w, h), caption, reply_to } => {
             use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseImageInfo};
             use matrix_sdk::room::reply::{EnforceThread, Reply};
