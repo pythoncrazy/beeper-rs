@@ -1390,9 +1390,15 @@ impl BeeperGuiApp {
         match msg {
             UiMessage::SelectTab(tab) => {
                 self.active_tab = tab;
+                self.selected_account_filter = None;
                 self.show_filter_menu = false;
+                self.creating_chat = false;
             }
-            UiMessage::SelectAccount(acc) => self.selected_account_filter = acc,
+            UiMessage::SelectAccount(acc) => {
+                self.active_tab = InboxTab::AllChats;
+                self.selected_account_filter = acc;
+                self.creating_chat = false;
+            }
             UiMessage::SelectChat(id) => self.select_chat(&id),
             UiMessage::ComposerChanged(v) => {
                 let st = self.store.read().unwrap();
@@ -2286,7 +2292,13 @@ impl BeeperGuiApp {
         let names: Vec<&str> =
             (0..FILTERS.len()).filter(|i| self.filters & 1 << i != 0).map(|i| FILTERS[i].0).collect();
         let title = column![row![
-            semi(self.active_tab.label(), 13.0).color(p.strong),
+            semi(
+                self.selected_account_filter
+                    .as_deref()
+                    .map_or(self.active_tab.label(), |a| account_network(a).display_name),
+                13.0
+            )
+            .color(p.strong),
             ic(icon::UNFOLD_MORE, 13.0).color(p.weak)
         ]
         .spacing(4)
