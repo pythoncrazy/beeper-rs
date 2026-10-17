@@ -69,9 +69,9 @@ fn main() {
         shot(&out, &format!("settings_{tab:?}").to_lowercase(), (800.0, 740.0), &theme, app.view_settings());
     }
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::Devices));
-    let _ = app.update(UiMessage::AskLogout(true));
+    let _ = app.update(UiMessage::Ask(Some(0)));
     shot(&out, "settings_logout", (800.0, 740.0), &theme, app.view_settings());
-    let _ = app.update(UiMessage::AskLogout(false));
+    let _ = app.update(UiMessage::Ask(None));
     {
         let mut st = app.store.write().unwrap();
         let emojis = [
