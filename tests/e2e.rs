@@ -987,8 +987,11 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert!(gui.show_command_palette && gui.search_room.as_deref() == Some(cid.as_str()));
         let _ = gui.update(UiMessage::ToggleCommandPalette);
         assert!(gui.show_command_palette && gui.search_room.is_none(), "Ctrl K widens a chat search");
-        let _ = gui.update(UiMessage::ToggleCommandPalette);
-        assert!(!gui.show_command_palette);
+        let mid =
+            store.read().unwrap().messages.iter().find(|m| m.chat_id == cid).expect("chat has messages").id.clone();
+        let _ = gui.update(UiMessage::JumpTo(cid.clone(), mid.clone()));
+        assert!(!gui.show_command_palette && gui.selected_chat_id.as_deref() == Some(cid.as_str()));
+        assert!(gui.flash.as_ref().is_some_and(|(id, _)| *id == mid), "a message hit flashes the message");
     }
     let _ = gui.update(rail("1"));
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));
