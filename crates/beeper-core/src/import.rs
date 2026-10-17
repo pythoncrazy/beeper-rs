@@ -265,7 +265,7 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         is_deleted: None,
         linked_message_id: None,
         reactions: Vec::new(),
-        text: str_field(l, "text"),
+        text: str_field(l, "text").map(|t| crate::codec::markdown_links(&t)),
         html: None,
         message_type: None,
         poll: None,
