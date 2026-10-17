@@ -427,6 +427,7 @@ fn rail_style(track: Color, thumb: Color) -> scrollable::Style {
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
     pub frame: Color,
+    pub window: Color,
     pub rail: Color,
     pub rail_sel: Color,
     pub card: Color,
@@ -487,10 +488,11 @@ const fn hexa(v: u32, a: f32) -> Color {
 
 pub const BEEPER_DARK: Palette = Palette {
     frame: hex(0x212121),
+    window: hex(0x232323),
     rail: hex(0x383838),
     rail_sel: hex(0x505050),
     card: hex(0x000000),
-    selected: hex(0x3e3e3e),
+    selected: hex(0x393939),
     hover: hexa(0xf6f6f6, 0.05),
     text: hex(0xededed),
     fg: hex(0xffffff),
@@ -541,6 +543,7 @@ pub const BEEPER_DARK: Palette = Palette {
 
 pub const BEEPER_LIGHT: Palette = Palette {
     frame: hex(0xf0f0f0),
+    window: hex(0xf0f0f0),
     rail: hex(0xe1e1e1),
     rail_sel: hex(0xcfcfcf),
     card: hex(0xffffff),
