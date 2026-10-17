@@ -270,6 +270,16 @@ pub fn bordered_box(bg: Color, border_col: Color, width: f32, r: f32) -> impl Fn
     }
 }
 
+pub fn glow_box(bg: Color, glow: Color, r: f32, blur: f32) -> impl Fn(&Theme) -> container::Style + Copy {
+    move |_| container::Style {
+        background: Some(bg.into()),
+        border: Border { radius: r.into(), ..Border::default() },
+        shadow: Shadow { color: glow, offset: Vector::new(0.0, 4.0), blur_radius: blur },
+        text_color: None,
+        snap: false,
+    }
+}
+
 pub fn shadow_box(bg: Color, border_col: Color, r: f32, blur: f32) -> impl Fn(&Theme) -> container::Style + Copy {
     move |_| container::Style {
         background: Some(bg.into()),

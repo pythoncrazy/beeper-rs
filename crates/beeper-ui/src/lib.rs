@@ -4,7 +4,7 @@ pub mod style;
 use crate::login::{Login, LoginMsg};
 
 use crate::style::{
-    bold, bordered_box, bordered_btn, brand_svg, btn_style, clamp, ell, ensure_fonts_loaded, fill_box, fw,
+    bold, bordered_box, bordered_btn, brand_svg, btn_style, clamp, ell, ensure_fonts_loaded, fill_box, fw, glow_box,
     gutter_style, hex, ic, icon, initials, input_style, med, mix, name_hash, pick, pick_menu_style, pick_style,
     scroll_style, semi, shadow_box, txt, Palette, ALL_FONTS, AVATAR_GRADIENTS, CLEAR,
 };
@@ -219,15 +219,19 @@ pub enum UiMessage {
     NotifyAnyway(String),
     NicknameChanged(String),
     SaveNickname,
-    ToggleSearch,
     ToggleFilterMenu,
     FilterButton,
     PickFilter(u8),
-    SearchChanged(String),
-    ClearSearch,
     ToggleCommandPalette,
+    ToggleCommandMode,
+    ToggleSearchExpanded,
     CommandQueryChanged(String),
     ExecuteCommandChat(String),
+    ToggleNewChat,
+    NewChatQueryChanged(String),
+    ToggleNewChatExpanded,
+    ToggleJoinMatrix,
+    ContactsLoaded(Vec<User>),
     OpenSettings(SettingsTab),
     ToggleAddAccount,
     SelectSettingsTab(SettingsTab),
@@ -726,6 +730,46 @@ static TRASH: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><path fill="currentColor" d="M432 32H312l-9.4-18.7A24 24 0 0 0 281.1 0H166.8a23.72 23.72 0 0 0-21.4 13.3L136 32H16A16 16 0 0 0 0 48v32a16 16 0 0 0 16 16h416a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16zM53.2 467a48 48 0 0 0 47.9 45h245.8a48 48 0 0 0 47.9-45L416 128H32z"/></svg>"#[..])
 });
 
+static DROP_ARROW: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M12.625 14.375 17 10l-4.375-4.375-1.062 1.063 2.562 2.562H4.5V7H3v3.75h11.125l-2.562 2.563z"/></svg>"##[..])
+});
+
+static MAT_LINK: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="M440-280H280q-83 0-141.5-58.5T80-480q0-83 58.5-141.5T280-680h160v80H280q-50 0-85 35t-35 85q0 50 35 85t85 35h160v80ZM320-440v-80h320v80H320Zm200 160v-80h160q50 0 85-35t35-85q0-50-35-85t-85-35H520v-80h160q83 0 141.5 58.5T880-480q0 83-58.5 141.5T680-280H520Z"/></svg>"##[..])
+});
+
+fn fmt_phone(s: &str) -> String {
+    let b = s.as_bytes();
+    if b.len() == 12 && b.starts_with(b"+1") && b[2..].iter().all(u8::is_ascii_digit) {
+        format!("+1 {}-{}-{}", &s[2..5], &s[5..8], &s[8..12])
+    } else {
+        s.to_string()
+    }
+}
+
+fn chat_search_subtitle(c: &Chat) -> String {
+    let plat = match brand_key(&c.account_id) {
+        "beeper" => "Beeper",
+        _ => account_network(&c.account_id).display_name,
+    };
+    let net = c.network_name.as_deref().map_or_else(|| plat.to_string(), |n| format!("{n} • {plat}"));
+    if let Some(u) =
+        (c.chat_type == "single").then(|| c.participants.items.iter().find(|u| u.is_self != Some(true))).flatten()
+    {
+        let sub = u
+            .username
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("@{s}"))
+            .or_else(|| u.phone_number.as_deref().filter(|s| !s.is_empty()).map(fmt_phone))
+            .or_else(|| u.email.clone().filter(|s| !s.is_empty()));
+        if let Some(sub) = sub.filter(|s| s != &c.title) {
+            return sub;
+        }
+    }
+    net
+}
+
 fn gap_below(m: &Message, next: &Message) -> f32 {
     let ms = |m: &Message| millis_from_rfc3339(&m.timestamp).expect("message timestamp");
     match (ms(next) - ms(m)).abs() / 60_000 {
@@ -835,10 +879,8 @@ pub struct BeeperGuiApp {
     pub active_tab: InboxTab,
     pub selected_account_filter: Option<String>,
     pub selected_chat_id: Option<String>,
-    pub search_query: String,
     pub hotkey_query: String,
     pub pasted: Option<PendingMedia>,
-    pub show_search: bool,
     pub show_filter_menu: bool,
     pub filters: u8,
     pub show_attach_menu: bool,
@@ -848,6 +890,12 @@ pub struct BeeperGuiApp {
     pub gif_loading: bool,
     pub gif_error: Option<String>,
     pub command_palette_query: String,
+    pub cmd_bar_commands_mode: bool,
+    pub search_expanded: bool,
+    pub creating_chat: bool,
+    pub new_chat_query: String,
+    pub new_chat_expanded: bool,
+    pub join_matrix_mode: bool,
     pub composer_text: String,
     pub reply_to_message_id: Option<String>,
     pub editing_message_id: Option<String>,
@@ -909,10 +957,8 @@ impl BeeperGuiApp {
             active_tab: InboxTab::AllChats,
             selected_account_filter: None,
             selected_chat_id: None,
-            search_query: String::new(),
             hotkey_query: String::new(),
             pasted: None,
-            show_search: false,
             show_filter_menu: false,
             filters: 0,
             show_attach_menu: false,
@@ -922,6 +968,12 @@ impl BeeperGuiApp {
             gif_loading: false,
             gif_error: None,
             command_palette_query: String::new(),
+            cmd_bar_commands_mode: false,
+            search_expanded: false,
+            creating_chat: false,
+            new_chat_query: String::new(),
+            new_chat_expanded: false,
+            join_matrix_mode: false,
             composer_text: String::new(),
             reply_to_message_id: None,
             editing_message_id: None,
@@ -982,7 +1034,15 @@ impl BeeperGuiApp {
             let &i = st.chat_msg_indices.get(&c.id)?.last()?;
             preview_sender(c, &st.messages[i])?.img_url.as_deref()
         });
-        let raw = visible.iter().copied().chain(&st.chats).flat_map(chat_avatar_urls).chain(members).chain(senders);
+        let recents = st.recent_chat_ids.iter().filter_map(|id| st.chat_idx_by_id.get(id).map(|&i| &st.chats[i]));
+        let raw = visible
+            .iter()
+            .copied()
+            .chain(recents)
+            .chain(&st.chats)
+            .flat_map(chat_avatar_urls)
+            .chain(members)
+            .chain(senders);
         let mut urls = Vec::new();
         for u in raw {
             if !self.avatars.contains_key(u) {
@@ -1158,18 +1218,14 @@ impl BeeperGuiApp {
     }
 
     fn chats_with<'a>(&self, st: &'a BeeperStore, filters: u8) -> Vec<&'a Chat> {
-        let q_ids =
-            (!self.search_query.trim().is_empty()).then(|| st.chat_search_index.query_all_tokens(&self.search_query));
         let mut list: Vec<&Chat> = st
             .chats
             .iter()
-            .enumerate()
-            .filter(|(idx, c)| {
+            .filter(|c| {
                 let on = |i: usize| filters & 1 << i != 0;
                 let shown = |i: usize| on(i) || !filter_hit(i, c, st);
                 c.merged_into_chat_id.is_none()
                     && self.selected_account_filter.as_ref().is_none_or(|a| &c.account_id == a)
-                    && q_ids.as_ref().is_none_or(|ids| ids.binary_search(&(*idx as u32)).is_ok())
                     && match self.active_tab {
                         InboxTab::AllChats => {
                             let hidden = if self.selected_account_filter.is_some() { 0 } else { CHAT_HIDDEN };
@@ -1187,13 +1243,14 @@ impl BeeperGuiApp {
                         || filters == 0
                         || (0..FILTERS.len()).any(|i| on(i) && filter_hit(i, c, st)))
             })
-            .map(|(_, c)| c)
             .collect();
         list.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
         list
     }
 
     pub fn select_chat(&mut self, chat_id: &str) {
+        self.creating_chat = false;
+        self.join_matrix_mode = false;
         let mut st = self.store.write().unwrap();
         if let Some(prev_id) =
             self.selected_chat_id.as_deref().filter(|&p| p != chat_id && self.editing_message_id.is_none())
@@ -1482,19 +1539,41 @@ impl BeeperGuiApp {
                     st.set_user_nickname(&cid, &uid, nick);
                 }
             }
-            UiMessage::SearchChanged(q) => self.search_query = q,
-            UiMessage::ClearSearch => self.search_query.clear(),
             UiMessage::ToggleCommandPalette => {
                 self.show_command_palette = !self.show_command_palette;
+                self.cmd_bar_commands_mode = false;
+                self.search_expanded = false;
                 if self.show_command_palette {
                     return operation::focus("cmd-palette-input");
                 }
             }
+            UiMessage::ToggleCommandMode => {
+                self.cmd_bar_commands_mode = !self.cmd_bar_commands_mode;
+                return operation::focus("cmd-palette-input");
+            }
+            UiMessage::ToggleSearchExpanded => self.search_expanded = !self.search_expanded,
             UiMessage::CommandQueryChanged(q) => self.command_palette_query = q,
             UiMessage::ExecuteCommandChat(cid) => {
                 self.show_command_palette = false;
                 self.command_palette_query.clear();
                 self.select_chat(&cid);
+            }
+            UiMessage::ToggleNewChat => {
+                self.creating_chat = !self.creating_chat;
+                self.show_command_palette = false;
+                self.new_chat_query.clear();
+                self.new_chat_expanded = false;
+                self.join_matrix_mode = false;
+                if self.creating_chat {
+                    return operation::focus("new-chat-input");
+                }
+            }
+            UiMessage::NewChatQueryChanged(q) => self.new_chat_query = q,
+            UiMessage::ToggleNewChatExpanded => self.new_chat_expanded = !self.new_chat_expanded,
+            UiMessage::ToggleJoinMatrix => {
+                self.join_matrix_mode = !self.join_matrix_mode;
+                self.new_chat_query.clear();
+                return operation::focus("new-chat-input");
             }
             UiMessage::SelectSettingsTab(t) => {
                 self.active_settings_tab = t;
@@ -1528,7 +1607,30 @@ impl BeeperGuiApp {
             }
             UiMessage::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
             UiMessage::ToggleSetting(flip) => self.patch_settings(flip),
-            UiMessage::CloudAccounts(Ok(accounts)) => self.store.write().unwrap().set_cloud_accounts(accounts),
+            UiMessage::CloudAccounts(Ok(accounts)) => {
+                let (token, uid, demo) = {
+                    let mut st = self.store.write().unwrap();
+                    let info = (st.beeper_state.access_token.clone(), st.beeper_state.user_id.clone(), st.config.demo);
+                    st.set_cloud_accounts(accounts.clone());
+                    info
+                };
+                if !demo {
+                    let cloud = self.cloud.clone();
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || cloud.contacts(&token, &uid, &accounts))
+                                .await
+                                .expect("contacts worker thread")
+                        },
+                        UiMessage::ContactsLoaded,
+                    );
+                }
+            }
+            UiMessage::ContactsLoaded(contacts) => {
+                if !contacts.is_empty() {
+                    self.store.write().unwrap().set_contacts(contacts);
+                }
+            }
             UiMessage::CloudAccounts(Err(e)) => self.status_banner = format!("Could not load your chat accounts: {e}"),
             UiMessage::AvatarLoaded(url, Ok(h)) => {
                 self.avatars.insert(url, Some(h));
@@ -1724,11 +1826,22 @@ impl BeeperGuiApp {
                 self.quick_look_target = Some((title, detail));
             }
             UiMessage::CloseModals => {
-                self.show_command_palette = false;
-                self.show_filter_menu = false;
-                self.show_attach_menu = false;
-                self.show_gif_picker = false;
-                self.quick_look_target = None;
+                if self.show_command_palette
+                    || self.show_filter_menu
+                    || self.show_attach_menu
+                    || self.show_gif_picker
+                    || self.quick_look_target.is_some()
+                {
+                    self.show_command_palette = false;
+                    self.show_filter_menu = false;
+                    self.show_attach_menu = false;
+                    self.show_gif_picker = false;
+                    self.quick_look_target = None;
+                } else if self.join_matrix_mode {
+                    self.join_matrix_mode = false;
+                } else {
+                    self.creating_chat = false;
+                }
             }
             UiMessage::ToggleEditHistory(mid) => {
                 self.expanded_history_msg_id = (self.expanded_history_msg_id.as_ref() != Some(&mid)).then_some(mid);
@@ -1744,13 +1857,6 @@ impl BeeperGuiApp {
                 self.show_attach_menu = !self.show_attach_menu;
                 if !self.show_attach_menu {
                     self.show_gif_picker = false;
-                }
-            }
-            UiMessage::ToggleSearch => {
-                self.show_search = !self.show_search;
-                self.search_query.clear();
-                if self.show_search {
-                    return operation::focus("sidebar-search-input");
                 }
             }
             UiMessage::ToggleFilterMenu => self.show_filter_menu = !self.show_filter_menu,
@@ -1848,7 +1954,11 @@ impl BeeperGuiApp {
                     Key::Character("G" | "g") if shift && self.selected_chat_id.is_some() => {
                         return self.update(UiMessage::ToggleGifPicker);
                     }
-                    Key::Character("k") => Some("Search"),
+                    Key::Character("j") if self.show_command_palette => {
+                        return self.update(UiMessage::ToggleCommandMode);
+                    }
+                    Key::Character("n") => return self.update(UiMessage::ToggleNewChat),
+                    Key::Character("k" | "f") => Some("Search"),
                     Key::Character(",") => Some("Settings"),
                     Key::Character("Y" | "y") if shift => Some("Filter: Unread"),
                     Key::Character("I" | "i") if shift => Some("Toggle Chat Info"),
@@ -1992,9 +2102,10 @@ impl BeeperGuiApp {
         let grip = mouse_area(container(Space::new()).width(8).height(Fill))
             .on_press(UiMessage::DragStart)
             .interaction(mouse::Interaction::ResizingHorizontally);
-        let card = container(self.view_conversation()).padding(Padding::new(8.0).left(0.0)).width(Fill);
+        let pane = if self.creating_chat { self.view_new_chat() } else { self.view_conversation() };
+        let card = container(pane).padding(Padding::new(8.0).left(0.0)).width(Fill);
         let body = row![self.view_rail(), self.view_sidebar(), grip, card]
-            .push(self.show_right_panel.then(|| self.view_info()));
+            .push((self.show_right_panel && !self.creating_chat).then(|| self.view_info()));
         let base: El<'_> = container(body).width(Fill).height(Fill).style(fill_box(p.frame, 0.0)).into();
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
@@ -2004,10 +2115,8 @@ impl BeeperGuiApp {
         let scrim = modal.map(|m| {
             mouse_area(
                 container(mouse_area(m).on_press(UiMessage::Noop))
-                    .padding(Padding::ZERO.top(90.0))
-                    .center_x(Fill)
-                    .height(Fill)
-                    .style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.45), 0.0)),
+                    .center(Fill)
+                    .style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.2), 0.0)),
             )
             .on_press(UiMessage::CloseModals)
         });
@@ -2211,35 +2320,13 @@ impl BeeperGuiApp {
         });
         let header = row![title, Space::new().width(Fill)]
             .push(filter)
-            .push(head_btn(icon::SEARCH, 23.0, 34.0, UiMessage::ToggleSearch))
-            .push(head_btn(icon::EDIT_SQUARE, 20.0, 34.0, UiMessage::ToggleCommandPalette))
+            .push(head_btn(icon::SEARCH, 23.0, 34.0, UiMessage::ToggleCommandPalette))
+            .push(head_btn(icon::EDIT_SQUARE, 20.0, 34.0, UiMessage::ToggleNewChat))
             .align_y(Center)
             .height(52)
             .padding(Padding::ZERO.right(2.0));
-        let search = self.show_search.then(|| {
-            let input = text_input("Search", &self.search_query)
-                .id("sidebar-search-input")
-                .on_input(UiMessage::SearchChanged)
-                .size(13)
-                .padding([6, 4])
-                .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
-            container(
-                container(
-                    row![
-                        ic(icon::SEARCH, 14.0).color(p.sub),
-                        input,
-                        icon_btn(p, icon::CLOSE, 12.0, 20.0, p.sub, UiMessage::ToggleSearch)
-                    ]
-                    .spacing(4)
-                    .align_y(Center)
-                    .padding([0, 8]),
-                )
-                .style(fill_box(p.search, 8.0)),
-            )
-            .padding([4, 8])
-        });
-        let selected = self.selected_chat_id.as_deref();
-        let pin_section = self.active_tab == InboxTab::AllChats && self.search_query.is_empty();
+        let selected = (!self.creating_chat).then_some(self.selected_chat_id.as_deref()).flatten();
+        let pin_section = self.active_tab == InboxTab::AllChats;
         let (mut pinned, rest): (Vec<&Chat>, Vec<&Chat>) =
             chats.iter().copied().partition(|c| pin_section && c.flags & CHAT_PINNED != 0);
         pinned.sort_by_key(|c| (st.pin_rank.get(&c.id).copied().unwrap_or(usize::MAX), c.last_activity.clone()));
@@ -2273,7 +2360,17 @@ impl BeeperGuiApp {
         });
         let counts = st.settings.on("showUnreadCount");
         let text_w = w - 8.0 - 16.0 - 36.0 - 4.0 - if counts { 0.0 } else { 12.0 };
-        let rows = rest.iter().fold(Column::new(), |col, c| {
+        let draft_row = self.creating_chat.then(|| {
+            let dot = (!counts).then(|| container(Space::new()).width(12));
+            let item = row![]
+                .push(dot)
+                .push(container(self.face(None, "", 28.0)).padding(Padding::ZERO.right(8.5)))
+                .push(semi("New Chat", 13.0).color(p.strong))
+                .align_y(Center)
+                .padding(Padding::new(8.0).top(13.0).bottom(13.0));
+            column![container(item).width(Fill).style(fill_box(p.selected, 8.0)), divider(p, 52.0)]
+        });
+        let rows = rest.iter().fold(Column::new().push(draft_row), |col, c| {
             let on = selected == Some(c.id.as_str());
             let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
             let muted = c.is_muted == Some(true);
@@ -2418,7 +2515,7 @@ impl BeeperGuiApp {
                 .style(scroll_style(p.divider, p.weak))
                 .into()
         };
-        container(column![header].push(search).push(list).padding(Padding::ZERO.left(8.0))).width(w).height(Fill).into()
+        container(column![header, list].padding(Padding::ZERO.left(8.0))).width(w).height(Fill).into()
     }
 
     fn view_conversation(&self) -> El<'_> {
@@ -3212,42 +3309,311 @@ impl BeeperGuiApp {
         .into()
     }
 
-    fn view_command_palette(&self) -> El<'_> {
+    fn view_command_palette<'a>(&'a self) -> El<'a> {
         let p = &self.pal;
-        let input = text_input("Search chats and commands", &self.command_palette_query)
+        let st = self.store.read().unwrap();
+        let placeholder = if self.cmd_bar_commands_mode { "Search commands" } else { "Search chats" };
+        let input = text_input(placeholder, &self.command_palette_query)
             .id("cmd-palette-input")
             .on_input(UiMessage::CommandQueryChanged)
-            .size(14)
-            .padding([10, 4])
+            .size(13)
+            .padding([6, 0])
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
-        let q = self.command_palette_query.to_lowercase();
-        let st = self.store.read().unwrap();
-        let hits = st.chats.iter().filter(|c| c.title.to_lowercase().contains(&q)).take(8).fold(
-            Column::new().spacing(2),
-            |col, c| {
-                let line = row![
-                    self.chat_avatar(c, 24.0),
-                    txt(c.title.clone(), 13.0).color(p.text),
-                    Space::new().width(Fill),
-                    txt(network_name(&c.account_id), 11.0).color(p.sub)
-                ]
-                .spacing(10)
-                .align_y(Center);
-                col.push(
+        let kbd = |label: &'static str| {
+            container(semi(label, 13.0).color(p.sub))
+                .center_x(Shrink)
+                .center_y(20)
+                .padding([0, 2])
+                .style(fill_box(Color { a: 0.1, ..p.strong }, 4.0))
+        };
+        let frame = |body: Column<'a, UiMessage>| -> El<'a> {
+            container(body)
+                .width(602)
+                .height(360)
+                .style(glow_box(p.card, Color { a: 0.18, ..p.strong }, 18.0, 84.0))
+                .into()
+        };
+        let mode_btn = button(
+            row![
+                txt(if self.cmd_bar_commands_mode { "Chat" } else { "Commands" }, 13.0).color(p.sub),
+                kbd("Ctrl"),
+                kbd(if self.cmd_bar_commands_mode { "F" } else { "J" })
+            ]
+            .spacing(4)
+            .align_y(Center),
+        )
+        .padding([2, 6])
+        .style(ghost(p, 8.0))
+        .on_press(UiMessage::ToggleCommandMode);
+        let inputs = row![ic(icon::SEARCH, 14.0).color(p.sub), input, mode_btn]
+            .spacing(8)
+            .align_y(Center)
+            .padding(Padding::new(6.0).left(13.0).right(8.0));
+        let q = self.command_palette_query.trim().to_lowercase();
+        if self.cmd_bar_commands_mode {
+            let cmds: [(&str, UiMessage); 4] = [
+                ("Create new chat", UiMessage::ToggleNewChat),
+                ("Search messages in all chats", UiMessage::ToggleCommandMode),
+                ("Open settings", UiMessage::OpenSettings(self.active_settings_tab)),
+                ("Toggle chat info", UiMessage::ToggleRightPanel),
+            ];
+            let list = cmds.into_iter().filter(|(t, _)| t.to_lowercase().contains(&q)).enumerate().fold(
+                Column::new().padding([4, 6]),
+                |col, (i, (title, msg))| {
+                    let bg = if i == 0 { p.chip } else { CLEAR };
+                    col.push(
+                        button(container(semi(title, 13.0).color(p.strong)).center_y(36))
+                            .padding([0, 12])
+                            .width(Fill)
+                            .style(btn_style([bg, p.chip, p.selected], [p.strong; 3], 8.0))
+                            .on_press(msg),
+                    )
+                },
+            );
+            return frame(column![inputs, scrollable(list).height(Fill).style(scroll_style(p.divider, p.weak))]);
+        }
+        let hint =
+            self.selected_chat_id.as_deref().and_then(|cid| st.resolve_chat_idx(cid).map(|i| &st.chats[i])).map(|c| {
+                let prep = if c.chat_type == "group" { "in" } else { "with" };
+                let label = format!("Press Ctrl F to search your conversation {prep} {}", c.title);
+                row![tinted(&DROP_ARROW, 20.0, p.sub), txt(label, 13.0).color(p.text)]
+                    .spacing(16)
+                    .align_y(Center)
+                    .padding([8, 24])
+            });
+        let chips = Row::with_children(["Accounts", "Message type", "Time period", "Media"].map(|label| {
+            container(
+                row![semi(label, 13.0).color(p.text), ic(icon::EXPAND_MORE, 14.0).color(p.text)]
+                    .spacing(4)
+                    .align_y(Center),
+            )
+            .padding([4, 14])
+            .style(fill_box(p.chip, 20.0))
+            .into()
+        }))
+        .spacing(12)
+        .padding(Padding::new(6.0).left(13.0).right(13.0));
+        let mut chats: Vec<&Chat> = if q.is_empty() && !st.recent_chat_ids.is_empty() {
+            st.recent_chat_ids
+                .iter()
+                .filter_map(|id| st.chat_idx_by_id.get(id).map(|&i| &st.chats[i]))
+                .filter(|c| c.flags & CHAT_HIDDEN == 0)
+                .collect()
+        } else {
+            let mut v: Vec<&Chat> = st
+                .chats
+                .iter()
+                .filter(|c| {
+                    c.flags & CHAT_HIDDEN == 0
+                        && (q.is_empty()
+                            || c.title.to_lowercase().contains(&q)
+                            || chat_search_subtitle(c).to_lowercase().contains(&q))
+                })
+                .collect();
+            v.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+            v
+        };
+        if q.is_empty() && chats.len() > 1 {
+            chats.retain(|c| self.selected_chat_id.as_deref() != Some(c.id.as_str()));
+        }
+        let has_more = chats.len() > 5;
+        let limit = if self.search_expanded { 12 } else { 5 };
+        let cat =
+            row![txt(if q.is_empty() { "Recent chats" } else { "Chats" }, 12.0).color(p.sub), Space::new().width(Fill)]
+                .push(has_more.then(|| {
+                    button(semi(if self.search_expanded { "Show less" } else { "Show more" }, 11.0).color(p.accent))
+                        .padding(0)
+                        .style(ghost(p, 4.0))
+                        .on_press(UiMessage::ToggleSearchExpanded)
+                }))
+                .align_y(Center)
+                .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0));
+        let hits = chats.into_iter().take(limit).enumerate().fold(Column::new().push(cat), |col, (i, c)| {
+            let sub = chat_search_subtitle(c);
+            let title = row![
+                ell(&c.title, 260.0, 13.0, Weight::Semibold).color(p.strong),
+                ell(&sub, 220.0, 13.0, Weight::Normal).color(p.sub),
+            ]
+            .spacing(4)
+            .align_y(Center);
+            let line = row![
+                self.chat_avatar(c, 28.0),
+                title,
+                Space::new().width(Fill),
+                svg(brand_svg(brand_key(&c.account_id))).width(16).height(16)
+            ]
+            .spacing(8)
+            .align_y(Center);
+            let bg = if i == 0 { p.chip } else { CLEAR };
+            col.push(
+                container(
                     button(line)
-                        .padding([6, 10])
+                        .height(36)
+                        .padding([0, 6])
                         .width(Fill)
-                        .style(ghost(p, 8.0))
+                        .style(btn_style([bg, p.chip, p.selected], [p.text; 3], 8.0))
                         .on_press(UiMessage::ExecuteCommandChat(c.id.clone())),
                 )
-            },
-        );
+                .padding([0, 6]),
+            )
+        });
+        frame(
+            column![inputs]
+                .push(hint)
+                .push(chips)
+                .push(scrollable(hits).height(Fill).style(scroll_style(p.divider, p.weak))),
+        )
+    }
+
+    fn view_new_chat(&self) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read().unwrap();
+        let fade = Color { a: 0.4, ..Color::WHITE };
+        let footer = |label: &'static str, key: &'static str| {
+            let pill = container(
+                row![med(label, 13.0).color(fade), txt(key, 10.0).color(Color { a: 0.32, ..Color::WHITE })]
+                    .spacing(4)
+                    .align_y(Center),
+            )
+            .padding([4, 8])
+            .style(fill_box(Color { a: 0.4, ..p.accent }, 20.0));
+            row![Space::new().width(Fill), pill].padding(Padding::new(8.0).left(13.0)).align_y(Center)
+        };
+        let field = |placeholder: &'static str| {
+            text_input(placeholder, &self.new_chat_query)
+                .id("new-chat-input")
+                .on_input(UiMessage::NewChatQueryChanged)
+                .size(13)
+                .padding([8, 0])
+                .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0))
+        };
+        if self.join_matrix_mode {
+            let back = button(
+                row![ic(icon::CHEVRON_RIGHT, 14.0).color(p.strong), semi("Back", 13.0).color(p.strong)]
+                    .spacing(4)
+                    .align_y(Center),
+            )
+            .padding([4, 8])
+            .style(ghost(p, 6.0))
+            .on_press(UiMessage::ToggleJoinMatrix);
+            let head =
+                container(row![back, txt("Join a Matrix room", 13.0).color(p.strong)].spacing(12).align_y(Center))
+                    .width(Fill)
+                    .padding([8, 13])
+                    .style(fill_box(p.chip, 0.0));
+            let inputs = row![tinted(&MAT_LINK, 18.0, p.sub), field("Room address or Matrix link")]
+                .spacing(8)
+                .align_y(Center)
+                .padding(Padding::new(6.0).left(13.0).right(8.0));
+            let body = column![head, inputs, Space::new().height(Fill), footer("Join", "ENTER")];
+            return container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0)).into();
+        }
+        let all_acc = container(
+            row![med("All accounts", 12.0).color(p.strong), ic(icon::EXPAND_MORE, 14.0).color(p.strong)]
+                .spacing(4)
+                .align_y(Center),
+        )
+        .center_y(24)
+        .padding(Padding::new(0.0).left(8.0).right(6.0))
+        .style(fill_box(p.chip, 12.0));
+        let inputs = row![ic(icon::SEARCH, 16.0).color(p.sub), field("Search contacts"), all_acc]
+            .spacing(8)
+            .align_y(Center)
+            .padding(Padding::new(6.0).left(13.0).right(8.0));
+        let q = self.new_chat_query.trim().to_lowercase();
+        let mut col = Column::new();
+        if q.is_empty() {
+            let group_btn = button(
+                row![ic(icon::GROUP, 20.0).color(p.accent), semi("New Group", 13.0).color(p.strong)]
+                    .spacing(7)
+                    .align_y(Center),
+            )
+            .width(Fill)
+            .height(36)
+            .padding([0, 11])
+            .style(btn_style([p.chip, p.chip, p.selected], [p.strong; 3], 6.0))
+            .on_press(UiMessage::Noop);
+            let join_btn = button(
+                row![tinted(&MAT_LINK, 20.0, p.accent), semi("Join a Matrix room", 13.0).color(p.strong)]
+                    .spacing(7)
+                    .align_y(Center),
+            )
+            .width(Fill)
+            .height(36)
+            .padding([0, 11])
+            .style(btn_style([CLEAR, p.chip, p.selected], [p.strong; 3], 6.0))
+            .on_press(UiMessage::ToggleJoinMatrix);
+            col = col.push(container(group_btn).padding([0, 8])).push(container(join_btn).padding([0, 8]));
+        }
+        let contacts: Vec<&User> = st
+            .contacts
+            .iter()
+            .filter(|u| u.full_name.as_deref().unwrap_or_default().to_lowercase().contains(&q))
+            .collect();
+        if !contacts.is_empty() {
+            col = col.push(
+                container(txt("In your contacts", 12.0).color(p.sub))
+                    .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0)),
+            );
+            let limit = if self.new_chat_expanded || !q.is_empty() { contacts.len() } else { 10.min(contacts.len()) };
+            let mut last_cat = None;
+            for u in contacts.iter().take(limit) {
+                let name = u.full_name.as_deref().unwrap_or(&u.id);
+                let ch = name.chars().next().unwrap_or(' ').to_ascii_uppercase();
+                let cat = if ch.is_ascii_alphabetic() { ch.to_string() } else { "Others".to_string() };
+                if last_cat.as_deref() != Some(cat.as_str()) {
+                    col = col.push(
+                        container(txt(cat.clone(), 12.0).color(p.sub))
+                            .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0)),
+                    );
+                    last_cat = Some(cat);
+                }
+                let target = st
+                    .chats
+                    .iter()
+                    .find(|c| c.chat_type == "single" && c.title.eq_ignore_ascii_case(name))
+                    .map(|c| c.id.clone());
+                let line = row![
+                    self.face(u.img_url.as_deref(), name, 28.0),
+                    semi(name.to_string(), 13.0).color(p.strong),
+                    Space::new().width(Fill),
+                    ic(icon::EXPAND_MORE, 20.0).color(p.strong)
+                ]
+                .spacing(8)
+                .align_y(Center);
+                col = col.push(
+                    container(
+                        button(line)
+                            .height(36)
+                            .padding([0, 6])
+                            .width(Fill)
+                            .style(ghost(p, 8.0))
+                            .on_press_maybe(target.map(UiMessage::ExecuteCommandChat)),
+                    )
+                    .padding([0, 6]),
+                );
+            }
+            if q.is_empty() && contacts.len() > 10 {
+                let label = if self.new_chat_expanded { "Show less contacts" } else { "Show more contacts" };
+                col = col.push(
+                    container(
+                        button(txt(label, 13.0).color(p.text))
+                            .height(36)
+                            .padding([0, 6])
+                            .width(Fill)
+                            .style(ghost(p, 8.0))
+                            .on_press(UiMessage::ToggleNewChatExpanded),
+                    )
+                    .padding([0, 6]),
+                );
+            }
+        }
         let body = column![
-            row![ic(icon::SEARCH, 16.0).color(p.sub), input].spacing(8).align_y(Center).padding([0, 12]),
-            divider(p, 0.0),
-            container(hits).padding(6)
+            inputs,
+            scrollable(col).height(Fill).style(scroll_style(p.divider, p.weak)),
+            footer("Start chat", "CTRL ENTER")
         ];
-        container(body).width(560).style(shadow_box(p.elevated, p.outline, 12.0, 30.0)).into()
+        container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0)).into()
     }
 
     fn view_quick_look<'a>(&self, title: &str, detail: &str) -> El<'a> {

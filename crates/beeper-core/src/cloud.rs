@@ -1,5 +1,5 @@
 use crate::config::account_network;
-use crate::models::{BridgeAccountInfo, BridgeMode, MatrixSession, Profile};
+use crate::models::{BridgeAccountInfo, BridgeMode, MatrixSession, Profile, User};
 use serde_json::{json, Value};
 use std::future::Future;
 use std::sync::Once;
@@ -170,6 +170,50 @@ impl Cloud {
         let session = self.matrix_login(jwt)?;
         let (profile, accounts) = self.whoami(&session.access_token)?;
         Ok((session, profile, accounts))
+    }
+
+    pub fn contacts(&self, access_token: &str, user_id: &str, accounts: &[BridgeAccountInfo]) -> Vec<User> {
+        let uid = crate::codec::url_encode(user_id);
+        let mut out = Vec::new();
+        for a in accounts.iter().filter(|a| {
+            a.state == "CONNECTED"
+                && matches!(a.bridge_type.as_str(), "signal" | "whatsapp" | "telegram" | "gmessages" | "imessagecloud")
+        }) {
+            let lid = crate::codec::url_encode(&a.login_id);
+            let url = format!(
+                "{}/_matrix/client/unstable/com.beeper.bridge/{}/_matrix/provision/v3/contacts?user_id={uid}&login_id={lid}",
+                self.homeserver, a.bridge_id
+            );
+            let Ok(v) = self.call(&url, Some(access_token), None) else { continue };
+            for (cid, c) in v["contacts"].as_object().into_iter().flatten() {
+                let Some(name) = field(c, "name").filter(|n| !n.trim().is_empty()) else { continue };
+                let Some(phone) = strings(&c["user"]["identifiers"]).into_iter().find_map(|s| {
+                    s.strip_prefix("tel:").map(str::to_string).or_else(|| s.starts_with('+').then_some(s))
+                }) else {
+                    continue;
+                };
+                if out.iter().any(|u: &User| u.full_name.as_deref() == Some(name.as_str())) {
+                    continue;
+                }
+                out.push(User {
+                    id: format!("contact:{}:{cid}", a.bridge_id),
+                    full_name: Some(name),
+                    phone_number: Some(phone),
+                    img_url: field(&c["contact_info"], "avatar"),
+                    username: None,
+                    email: None,
+                    is_self: Some(false),
+                    cannot_message: None,
+                    custom_nickname: None,
+                    is_network_bot: None,
+                });
+            }
+        }
+        out.sort_by_key(|u| {
+            let ch = u.full_name.as_deref().and_then(|s| s.chars().next()).unwrap_or(' ').to_ascii_uppercase();
+            (!ch.is_ascii_alphabetic(), ch)
+        });
+        out
     }
 }
 
