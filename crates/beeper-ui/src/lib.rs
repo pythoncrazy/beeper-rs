@@ -430,11 +430,13 @@ fn icon_btn<'a>(p: &Palette, c: char, size: f32, frame: f32, color: Color, msg: 
     button(container(ic(c, size).color(color)).center(frame)).padding(0).style(ghost(p, 8.0)).on_press(msg).into()
 }
 
-fn count_badge<'a>(c: &Chat, bg: Color, h: f32) -> El<'a> {
+fn count_badge<'a>(c: &Chat, bg: Color, fg: Color, h: f32) -> El<'a> {
     let n = if c.unread_count > 0 { c.unread_count.to_string() } else { String::new() };
-    let at = (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 10.0).color(Color::WHITE));
-    let body = row![].push(at).push(semi(n, 10.0).color(Color::WHITE)).spacing(2).align_y(Center);
-    container(body).padding([0, 4]).center_y(h).style(fill_box(bg, h / 2.0)).into()
+    let empty = n.is_empty() && c.unread_mentions == 0;
+    let at = (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 10.0).color(fg));
+    let body = row![].push(at).push(semi(n, 10.0).color(fg)).spacing(2).align_y(Center);
+    let pill = container(body).padding([0, 4]).center_y(h).style(fill_box(bg, h / 2.0));
+    if empty { pill.width(h) } else { pill }.into()
 }
 
 fn closable_head<'a>(p: &Palette, title: &str, size: f32, msg: UiMessage) -> El<'a> {
@@ -2539,19 +2541,34 @@ impl BeeperGuiApp {
         let (mut pinned, rest): (Vec<&Chat>, Vec<&Chat>) =
             chats.iter().copied().partition(|c| pin_section && c.flags & CHAT_PINNED != 0);
         pinned.sort_by_key(|c| (st.pin_rank.get(&c.id).copied().unwrap_or(usize::MAX), c.last_activity.clone()));
+        let counts = st.settings.on("showUnreadCount");
         let cols = (((w - 16.0) / 80.0).floor() as usize).max(1);
         let cell = (w - 16.0) / cols as f32;
         let pins = pinned.chunks(cols).fold(Column::new(), |col, chunk| {
             col.push(chunk.iter().fold(Row::new(), |r, c| {
                 let on = selected == Some(c.id.as_str());
                 let muted = c.is_muted == Some(true);
-                let title = ell(short_title(c), cell - if muted { 35.2 } else { 20.0 }, 12.0, Weight::Semibold);
-                let label =
-                    row![title.color(p.strong).line_height(iced::widget::text::LineHeight::Absolute(15.0.into()))]
-                        .push(muted.then(|| tinted(&BELL_OFF, 12.0, p.strong)))
-                        .spacing(3.2)
-                        .align_y(Center);
-                let unread = (c.unread_count > 0).then(|| count_badge(c, p.accent, 14.0));
+                let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
+                let quiet = muted && c.unread_mentions == 0;
+                let (bg, fg) = if quiet { (p.frame, p.text) } else { (p.accent, Color::WHITE) };
+                let dot =
+                    (!counts && unread).then(|| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0)));
+                let title_w = cell - if muted { 35.2 } else { 20.0 } - if dot.is_some() { 9.2 } else { 0.0 };
+                let title = ell(short_title(c), title_w, 12.0, Weight::Semibold);
+                let label = row![]
+                    .push(dot)
+                    .push(title.color(p.strong).line_height(iced::widget::text::LineHeight::Absolute(15.0.into())))
+                    .push(muted.then(|| tinted(&BELL_OFF, 12.0, p.strong)))
+                    .spacing(3.2)
+                    .align_y(Center);
+                let unread = match (st.typing.contains_key(&c.id), counts) {
+                    (true, _) => Some(self.typing_badge()),
+                    (false, true) => unread.then(|| count_badge(c, bg, fg, 14.0)),
+                    (false, false) => (c.unread_mentions > 0).then(|| {
+                        let at = ic(icon::AT_SIGN, 10.0).color(fg);
+                        container(at).padding([0, 4]).center_y(14).style(fill_box(bg, 7.0)).into()
+                    }),
+                };
                 let face =
                     stack![self.chat_avatar(c, 40.0), container(unread).width(44).align_right(44)].width(44).height(40);
                 let item = column![face, label]
@@ -2574,7 +2591,6 @@ impl BeeperGuiApp {
                 )
             }))
         });
-        let counts = st.settings.on("showUnreadCount");
         let text_w = w - 8.0 - 16.0 - 36.0 - 4.0 - if counts { 0.0 } else { 12.0 };
         let draft_row = self.creating_chat.then(|| {
             let dot = (!counts).then(|| container(Space::new()).width(12));
@@ -2638,7 +2654,7 @@ impl BeeperGuiApp {
             });
             let dot_bg = if muted { Color { a: 0.3, ..p.strong } } else { p.accent };
             let count = match counts {
-                true => unread.then(|| count_badge(c, dot_bg, 12.0)),
+                true => unread.then(|| count_badge(c, dot_bg, Color::WHITE, 12.0)),
                 false => (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 12.0).color(p.accent).into()),
             };
             let dot = (!counts).then(|| {
