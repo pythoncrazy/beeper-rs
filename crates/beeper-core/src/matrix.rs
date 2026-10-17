@@ -216,10 +216,9 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         draft: None,
         is_archived: Some(false),
         is_marked_unread: Some(room.is_marked_unread()),
-        is_muted: Some(matches!(
-            room.user_defined_notification_mode().await,
-            Some(RoomNotificationMode::Mute | RoomNotificationMode::MentionsAndKeywordsOnly)
-        )),
+        is_muted: Some(
+            room.user_defined_notification_mode().await == Some(RoomNotificationMode::MentionsAndKeywordsOnly),
+        ),
         is_pinned: Some(tags.contains_key(&TagName::Favorite)),
         is_low_priority: Some(tags.contains_key(&TagName::LowPriority)),
         label_ids: Vec::new(),
@@ -768,7 +767,10 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             ChatFlag::Muted => {
                 let settings = client.notification_settings().await;
                 match on {
-                    true => settings.set_room_notification_mode(room.room_id(), RoomNotificationMode::Mute).await,
+                    true => {
+                        let mode = RoomNotificationMode::MentionsAndKeywordsOnly;
+                        settings.set_room_notification_mode(room.room_id(), mode).await
+                    }
                     false => settings.delete_user_defined_room_rules(room.room_id()).await,
                 }
                 .map_err(|x| x.to_string())?;
