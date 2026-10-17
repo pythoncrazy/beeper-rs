@@ -851,14 +851,21 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
             assert!(sim.find(label).is_ok(), "search modal shows {label}");
         }
     }
-    let _ = gui.update(UiMessage::ToggleNewChat);
+    let _ = gui.update(UiMessage::NewChat);
     {
         let mut sim = simulator(gui.view_main());
         for label in ["New Chat", "All accounts", "New Group", "Join a Matrix room", "In your contacts"] {
             assert!(sim.find(label).is_ok(), "new chat panel shows {label}");
         }
     }
-    let _ = gui.update(UiMessage::ToggleNewChat);
+    let prev = gui.selected_chat_id.clone().expect("a chat is selected");
+    let _ = gui.update(UiMessage::NewChat);
+    assert_eq!((gui.new_chats.as_slice(), gui.creating_chat), ([1, 0].as_slice(), Some(1)), "compose adds a new chat");
+    let _ = gui.update(UiMessage::DeleteNewChat(1));
+    assert_eq!(gui.creating_chat, Some(0), "deleting a new chat selects the next row");
+    let _ = gui.update(UiMessage::DeleteNewChat(0));
+    assert!(gui.new_chats.is_empty() && gui.creating_chat.is_none() && gui.selected_chat_id.is_some());
+    let _ = gui.update(UiMessage::SelectChat(prev));
     let _ = gui.update(UiMessage::ComposerChanged("Hello from Iced Simulator E2E!".to_string()));
     let _ = gui.update(UiMessage::SubmitComposer);
     let _ = gui.update(UiMessage::OpenSettings(SettingsTab::Appearance));
