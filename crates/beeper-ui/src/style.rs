@@ -298,6 +298,19 @@ pub fn btn_style(bgs: [Color; 3], fgs: [Color; 3], r: f32) -> impl Fn(&Theme, bu
     }
 }
 
+pub fn bordered_btn(
+    bgs: [Color; 3],
+    fgs: [Color; 3],
+    border_col: Color,
+    width: f32,
+    r: f32,
+) -> impl Fn(&Theme, button::Status) -> button::Style + Copy {
+    move |t, s| button::Style {
+        border: Border { color: border_col, width, radius: r.into() },
+        ..btn_style(bgs, fgs, r)(t, s)
+    }
+}
+
 pub fn input_style(
     bg: Color,
     text_col: Color,
@@ -469,7 +482,7 @@ pub const BEEPER_DARK: Palette = Palette {
     tertiary: hexa(0xebebf5, 0.27),
     divider: hexa(0xf6f6f6, 0.2),
     elevated: hex(0x232323),
-    input: hex(0x222223),
+    input: hex(0x1c1c1d),
     send_btn: hex(0x4d4d4d),
     sent: hex(0x2561fb),
     sent_meta: hexa(0xffffff, 0.6),
@@ -522,7 +535,7 @@ pub const BEEPER_LIGHT: Palette = Palette {
     tertiary: hexa(0x3c3c43, 0.3),
     divider: hexa(0x000000, 0.12),
     elevated: hex(0xffffff),
-    input: hex(0xf0f0f2),
+    input: hex(0xf4f4f5),
     send_btn: hex(0xd5d5d8),
     sent: hex(0x0d4ffb),
     sent_meta: hexa(0xffffff, 0.7),

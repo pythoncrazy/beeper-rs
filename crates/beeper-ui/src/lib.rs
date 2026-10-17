@@ -4,9 +4,9 @@ pub mod style;
 use crate::login::{Login, LoginMsg};
 
 use crate::style::{
-    bold, bordered_box, brand_svg, btn_style, clamp, ell, ensure_fonts_loaded, fill_box, fw, gutter_style, hex, ic,
-    icon, initials, input_style, med, mix, name_hash, pick, pick_menu_style, pick_style, scroll_style, semi,
-    shadow_box, txt, Palette, ALL_FONTS, AVATAR_GRADIENTS, CLEAR,
+    bold, bordered_box, bordered_btn, brand_svg, btn_style, clamp, ell, ensure_fonts_loaded, fill_box, fw,
+    gutter_style, hex, ic, icon, initials, input_style, med, mix, name_hash, pick, pick_menu_style, pick_style,
+    scroll_style, semi, shadow_box, txt, Palette, ALL_FONTS, AVATAR_GRADIENTS, CLEAR,
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{account_network, civil_from_days, millis_from_rfc3339, now_unix_secs, APP_VERSION};
@@ -616,13 +616,7 @@ fn pill_btn<'a>(p: &Palette, label: impl ToString, msg: UiMessage) -> El<'a> {
 }
 
 fn pill_style(p: &Palette) -> impl Fn(&Theme, button::Status) -> button::Style + use<> {
-    let (bg, fg, edge) = (p.button, p.strong, p.button_border);
-    move |_, _| button::Style {
-        background: Some(bg.into()),
-        text_color: fg,
-        border: iced::Border { color: edge, width: 1.0, radius: 6.0.into() },
-        ..Default::default()
-    }
+    bordered_btn([p.button; 3], [p.strong; 3], p.button_border, 1.0, 6.0)
 }
 
 fn badge<'a>(p: &Palette, b: prefs::Badge) -> El<'a> {
@@ -644,7 +638,7 @@ static DASHED_RING: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock:
 static SENT: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
     [
         &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="none" stroke="#000"><circle cx="6" cy="6" r="5.4" stroke-width="1.2" stroke-dasharray="2.4 1.84" transform="rotate(-79 6 6)"/><path d="M3.4 6.1 5.2 7.9 8.6 4.4" stroke-width="1.1"/></svg>"##[..],
-        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" fill-rule="evenodd" d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16Zm3.8-9.5a.8.8 0 0 0-1.1-1.1L6.9 9.2 5.3 7.6a.8.8 0 1 0-1.1 1.1l2.2 2.2a.8.8 0 0 0 1.1 0l4.3-4.4Z" clip-rule="evenodd"/></svg>"##[..],
+        &br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="none" stroke="#000"><circle cx="6" cy="6" r="5.4" stroke-width="1.2"/><path d="M3.4 6.1 5.2 7.9 8.6 4.4" stroke-width="1.1"/></svg>"##[..],
     ]
     .map(svg::Handle::from_memory)
 });
@@ -928,14 +922,20 @@ impl BeeperGuiApp {
         let Some(client) = st.matrix.clone() else { return Task::none() };
         let selected = self.selected_chat_id.as_ref().and_then(|id| st.chat_idx_by_id.get(id)).map(|&i| &st.chats[i]);
         let members = selected.into_iter().flat_map(|c| &c.participants.items).filter_map(|u| u.img_url.as_deref());
-        let senders = st.chats.iter().filter_map(|c| {
+        let visible = self.visible_chats(&st);
+        let senders = visible.iter().copied().chain(st.chats.iter()).filter_map(|c| {
             let &i = st.chat_msg_indices.get(&c.id)?.last()?;
             preview_sender(c, &st.messages[i])?.img_url.as_deref()
         });
-        let urls = st.chats.iter().flat_map(chat_avatar_urls).chain(members).chain(senders);
-        let urls: HashSet<String> = urls.filter(|u| !self.avatars.contains_key(*u)).map(str::to_string).collect();
+        let raw = visible.iter().copied().chain(&st.chats).flat_map(chat_avatar_urls).chain(members).chain(senders);
+        let mut urls = Vec::new();
+        for u in raw {
+            if !self.avatars.contains_key(u) {
+                self.avatars.insert(u.to_string(), None);
+                urls.push(u.to_string());
+            }
+        }
         drop(st);
-        self.avatars.extend(urls.iter().map(|u| (u.clone(), None)));
         Task::batch(urls.into_iter().map(|url| {
             let (client, u) = (client.clone(), url.clone());
             Task::perform(
@@ -2082,12 +2082,8 @@ impl BeeperGuiApp {
                 .style(btn_style([CLEAR; 3], [fg; 3], 0.0))
                 .on_press(UiMessage::ToggleFilterMenu);
             let pill = row![trigger, container(ic(icon::FILTER_LIST, 19.0).color(fg)).center_x(27).center_y(20)];
-            let (ring, hover) = (if active { p.accent } else { CLEAR }, p.hover);
-            let face = move |_: &Theme, s: button::Status| button::Style {
-                background: matches!(s, button::Status::Hovered | button::Status::Pressed).then(|| hover.into()),
-                border: iced::Border { color: ring, width: 1.0, radius: 12.0.into() },
-                ..Default::default()
-            };
+            let ring = if active { p.accent } else { CLEAR };
+            let face = bordered_btn([CLEAR, p.hover, p.hover], [fg; 3], ring, 1.0, 12.0);
             mouse_area(button(pill).padding(0).style(face).on_press(UiMessage::FilterButton))
                 .on_right_press(UiMessage::ToggleFilterMenu)
         });
@@ -2192,14 +2188,16 @@ impl BeeperGuiApp {
                 1 => Some("🔗 [Link]".to_string()),
                 n => Some(format!("🔗 [{n} links]")),
             });
-            let body = body.filter(|_| previews).map(|t| {
-                let first = m
-                    .and_then(|m| m.sender_name.clone())
-                    .map(|s| s.split(' ').next().expect("sender name").to_string());
-                match (c.chat_type == "group" || m.is_some_and(|m| network_bot(c, &m.sender_id)), first) {
-                    (true, Some(s)) if !mine && reaction.is_none() => format!("{s}: {t}"),
-                    _ => t,
-                }
+            let body = body.filter(|_| previews);
+            let show_sender = previews
+                && !mine
+                && reaction.is_none()
+                && (image.is_some() || body.is_some())
+                && (c.chat_type == "group" || m.is_some_and(|m| network_bot(c, &m.sender_id)));
+            let first = show_sender.then(|| m?.sender_name.as_deref()?.split(' ').next()).flatten();
+            let body = body.map(|t| match (image.is_none(), first) {
+                (true, Some(s)) => format!("{s}: {t}"),
+                _ => t,
             });
             let dot_bg = if muted { Color { a: 0.3, ..p.strong } } else { p.accent };
             let count = match counts {
@@ -2210,37 +2208,32 @@ impl BeeperGuiApp {
                 let dot = container(Space::new()).width(6).height(6).style(fill_box(dot_bg, 3.0));
                 container(unread.then_some(dot)).width(12)
             });
-            let sender = m.filter(|_| body.is_some()).and_then(|m| preview_sender(c, m));
+            let sender = show_sender.then(|| preview_sender(c, m?)).flatten();
             let digits = if counts && c.unread_count > 0 { c.unread_count.to_string().len() as f32 } else { 0.0 };
             let at = if c.unread_mentions > 0 { 12.0 } else { 0.0 };
+            let prefix = first.filter(|_| image.is_some()).map(|s| format!("{s}:"));
+            let prefix_w = prefix.as_deref().map_or(0.0, |s| crate::style::text_width(s, 13.0, Weight::Normal) + 4.0);
             let reserve = if count.is_some() { 4.0 + if counts { 8.0 } else { 0.0 } + 6.0 * digits + at } else { 0.0 }
                 + if mine { 16.0 } else { 0.0 }
-                + if sender.is_some() { 14.0 } else { 0.0 };
+                + if sender.is_some() { 16.0 } else { 0.0 }
+                + if image.is_some() { 52.0 } else { 0.0 }
+                + prefix_w;
             let read = m.is_some_and(|m| m.seen.keys().any(|u| !st.is_me(u) && u != &m.sender_id));
+            let fg = if unread { p.text } else { p.sub };
+            let face =
+                sender.map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0));
             let preview = row![]
                 .push(mine.then(|| tinted(&SENT[usize::from(read)], 12.0, p.sub)))
+                .push(face)
+                .push(prefix.map(|s| txt(s, 13.0).color(fg)))
                 .push(image.map(|label| {
                     container(
-                        row![ic(icon::IMAGE, 11.0).color(p.text), txt(label, 11.0).color(p.text)]
-                            .spacing(3)
-                            .align_y(Center),
+                        row![ic(icon::IMAGE, 12.0).color(fg), med(label, 11.0).color(fg)].spacing(2).align_y(Center),
                     )
-                    .padding([1, 5])
-                    .style(fill_box(p.link_card, 4.0))
+                    .padding([1, 4])
+                    .style(fill_box(p.strong.scale_alpha(0.12), 4.0))
                 }))
-                .push(body.map(|b| {
-                    let face = sender
-                        .map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0));
-                    row![]
-                        .push(face)
-                        .push(ell(&b, text_w - reserve, 13.0, Weight::Normal).color(if unread {
-                            p.text
-                        } else {
-                            p.sub
-                        }))
-                        .spacing(2)
-                        .align_y(Center)
-                }))
+                .push(body.map(|b| ell(&b, text_w - reserve, 13.0, Weight::Normal).color(fg)))
                 .push(Space::new().width(Fill))
                 .push(count)
                 .spacing(4)
@@ -2399,17 +2392,12 @@ impl BeeperGuiApp {
             container(pill).center_x(Fill).padding(Padding::ZERO.top(44.0)),
             container(ring).center_x(Fill).padding(Padding::ZERO.top(8.0))
         ];
-        let (rim, hover, card) = (Color { a: 0.1, ..p.strong }, p.hover, p.card);
+        let rim = Color { a: 0.1, ..p.strong };
         let feedback = button(container(txt("Feedback?", 11.0)).center(Fill))
             .width(74)
             .height(24)
             .padding(0)
-            .style(move |_, s| button::Style {
-                background: Some(if matches!(s, button::Status::Hovered) { hover } else { card }.into()),
-                text_color: Color { a: 0.9, ..rim },
-                border: iced::Border { color: rim, width: 1.0, radius: 4.0.into() },
-                ..Default::default()
-            })
+            .style(bordered_btn([p.card, p.hover, p.card], [Color { a: 0.9, ..rim }; 3], rim, 1.0, 4.0))
             .on_press(UiMessage::OpenQuickLook("Feedback".into(), "Tell us what to improve in beeper-rs.".into()));
         let fade = Linear::new(Radians(std::f32::consts::PI))
             .add_stop(0.0, p.card)
@@ -2728,34 +2716,57 @@ impl BeeperGuiApp {
             });
             container(line).padding([0, 4])
         });
-        if self.expanded_history_msg_id.as_ref() == Some(&m.id) {
-            parts = parts.push(m.edit_history.iter().fold(Column::new().spacing(2), |c, e| {
+        let edits = (self.expanded_history_msg_id.as_ref() == Some(&m.id)).then(|| {
+            m.edit_history.iter().fold(Column::new().spacing(2), |c, e| {
                 c.push(txt(format!("{} · {}", e.text, format_short_ts(&e.timestamp, false)), 11.0).color(p.muted))
-            }));
-        }
-        if !m.reactions.is_empty() {
+            })
+        });
+        let parts: El<'a> = if m.reactions.is_empty() {
+            parts.into()
+        } else {
             let mut keys: Vec<&str> = m.reactions.iter().map(|r| r.reaction_key.as_str()).collect();
             keys.sort_unstable();
             keys.dedup();
-            let pills = keys.into_iter().fold(Row::new().spacing(4), |r, k| {
-                let n = m.reactions.iter().filter(|x| x.reaction_key == k).count();
-                let own = m.reactions.iter().any(|x| x.reaction_key == k && st.is_me(&x.participant_id));
-                let pill =
-                    row![txt(k.to_string(), 12.0), txt(n.to_string(), 11.0).color(p.text)].spacing(3).align_y(Center);
+            let min_w = keys.len() as f32 * 36.0;
+            let pills = keys.into_iter().fold(Row::new().spacing(2), |r, k| {
+                let reactors: Vec<_> = m.reactions.iter().filter(|x| x.reaction_key == k).collect();
+                let n = reactors.len();
+                let own = reactors.iter().any(|x| st.is_me(&x.participant_id));
+                let mut pill = row![txt(k.to_string(), 14.0).line_height(1.0)].spacing(4).align_y(Center);
+                if group || n > 1 {
+                    for x in reactors.iter().take(3) {
+                        let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
+                        let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(&x.participant_id);
+                        pill = pill.push(self.face(u.and_then(|u| u.img_url.as_deref()), name, 16.0));
+                    }
+                    if n > 3 {
+                        pill = pill.push(semi(format!("+{}", n - 3), 11.0).color(p.on_secondary));
+                    }
+                }
+                let fill = if own {
+                    if p.card.r < 0.5 {
+                        hex(0x1b43aa)
+                    } else {
+                        hex(0xcbd9ff)
+                    }
+                } else {
+                    p.received
+                };
                 r.push(
                     button(pill)
-                        .padding([2, 7])
-                        .style(btn_style(
-                            [if own { p.accent.scale_alpha(0.3) } else { p.received }, p.selected, p.selected],
-                            [p.text; 3],
-                            11.0,
-                        ))
+                        .padding([4, 6])
+                        .style(bordered_btn([fill, p.selected, p.selected], [p.text; 3], p.card, 2.0, 14.0))
                         .on_press(UiMessage::ToggleReaction(chat.id.clone(), m.id.clone(), k.to_string())),
                 )
             });
-            parts = parts.push(pills);
-        }
-        let parts = column![parts].push(footer).align_x(if mine { Right } else { iced::Left });
+            stack![
+                container(column![parts, Space::new().width(min_w)].align_x(if mine { Right } else { iced::Left }))
+                    .padding(Padding::ZERO.bottom(16.0)),
+                container(pills).align_bottom(Fill).align_x(if mine { Right } else { iced::Left }),
+            ]
+            .into()
+        };
+        let parts = column![parts].push(edits).push(footer).align_x(if mine { Right } else { iced::Left });
         let tools = (self.hovered_msg.as_ref() == Some(&m.id)).then(|| {
             let b = |c: char, msg: UiMessage| icon_btn(p, c, 14.0, 26.0, p.weak, msg);
             let (cid, mid) = (chat.id.clone(), m.id.clone());
@@ -2882,11 +2893,11 @@ impl BeeperGuiApp {
         let action_btn = |id: u8| -> El<'a> {
             let (idx, active, msg) = match id {
                 0 => (2, false, UiMessage::ComposerChanged(format!("{}🙂", self.composer_text))),
-                1 => (3, false, UiMessage::SendQuickVoiceNote),
+                1 => (6, false, UiMessage::SendQuickVoiceNote),
                 2 => (5, self.show_gif_picker, UiMessage::ToggleGifPicker),
                 3 => (4, false, UiMessage::PasteClipboard),
                 4 => (7, false, UiMessage::SendQuickPoll),
-                _ => (6, false, UiMessage::SendQuickVoiceNote),
+                _ => (3, false, UiMessage::SendQuickVoiceNote),
             };
             let color = if active { p.strong } else { p.on_secondary };
             let bg = if active { p.hover } else { CLEAR };
@@ -2924,14 +2935,13 @@ impl BeeperGuiApp {
         let plus_icon = tinted(&COMPOSER_ICONS[usize::from(self.show_attach_menu)], 20.0, p.on_secondary);
         let toggle = button(container(plus_icon).center(36))
             .padding(0)
-            .style(btn_style([CLEAR, p.hover, p.selected], [p.text; 3], 18.0))
+            .style(btn_style([p.input, p.hover, p.selected], [p.text; 3], 18.0))
             .on_press(UiMessage::ToggleAttachMenu);
         let unveiled = self.show_attach_menu.then(|| {
             let ids = [0u8, 3, 5, 2, 1, 4].into_iter().filter(|&x| Some(x) != pri && Some(x) != sec);
-            container(Row::with_children(ids.map(&action_btn)).spacing(2).align_y(Center))
-                .padding(Padding::ZERO.right(4.0))
+            Row::with_children(ids.map(&action_btn)).spacing(6).align_y(Center)
         });
-        let plus = container(row![toggle].push(unveiled).align_y(Center)).height(36).style(fill_box(p.input, 18.0));
+        let plus = row![toggle].push(unveiled).spacing(6).align_y(Center);
         let ready = !self.composer_text.trim().is_empty() || self.pasted.is_some();
         let pasted = self.pasted.as_ref().map(|pm| {
             let fg = Color { a: 0.1, ..p.text };
@@ -2942,9 +2952,9 @@ impl BeeperGuiApp {
             let close = icon_btn(p, icon::CLOSE, 12.0, 20.0, p.text, UiMessage::DiscardPaste);
             row![stack![preview, row![Space::new().width(Fill), close]].width(Shrink)].padding([6, 58])
         });
-        let send = button(container(ic(icon::ARROW_UP, 18.0).color(Color::WHITE)).center(34))
+        let send = button(container(ic(icon::ARROW_UP, 18.0).color(Color::WHITE)).center(36))
             .padding(0)
-            .style(btn_style([if ready { p.accent } else { p.send_btn }, p.accent, p.accent], [p.text; 3], 17.0))
+            .style(btn_style([if ready { p.accent } else { p.send_btn }, p.accent, p.accent], [p.text; 3], 18.0))
             .on_press(UiMessage::SubmitComposer);
         column![]
             .push(banner)

@@ -1,5 +1,7 @@
 use crate::config::rfc3339_from_millis;
-use crate::models::{Attachment, AttachmentSize, Chat, ChatParticipants, Message, Reaction, ThemeChoice, User};
+use crate::models::{
+    Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, Reaction, ThemeChoice, User,
+};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -226,9 +228,10 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>) -> Resul
                 reminder: None,
                 chat_theme: None,
                 is_hidden_from_inbox: None,
-                is_request: None,
-                network_name: None,
-                img_url: None,
+                is_request: Some(flag(&t, "isMessageRequest")),
+                network_name: str_field(&t, "networkName"),
+                img_url: str_field(&t, "imgURL")
+                    .filter(|u| u != "mxc://beeper.com/f9eecb7116fee96d4ad382338888d0add1e6e0d0"),
                 flags: 0,
                 id,
             })
@@ -311,7 +314,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
              UNION ALL
              SELECT eventID, roomID, timestamp, CAST(message AS TEXT), hsOrder, isDeleted FROM mx_room_messages
              WHERE type NOT IN ('REACTION', 'MEMBERSHIP', 'HIDDEN')
-             ORDER BY 3",
+             ORDER BY 3, 5",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -421,7 +424,20 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             message_type: Some(message_type.into()),
             poll: None,
             edit_history: Vec::new(),
-            links: Vec::new(),
+            links: m
+                .get("links")
+                .and_then(Value::as_array)
+                .filter(|_| !deleted)
+                .into_iter()
+                .flatten()
+                .filter_map(|l| {
+                    Some(MessageLink {
+                        url: str_field(l, "url")?,
+                        title: str_field(l, "title").unwrap_or_default(),
+                        summary: str_field(l, "description"),
+                    })
+                })
+                .collect(),
             seen: seen_by,
             flags: 0,
             id,
