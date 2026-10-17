@@ -261,16 +261,19 @@ fn read_attachment(a: &Value) -> Attachment {
     Attachment {
         attachment_type: kind.into(),
         id: str_field(a, "id"),
-        duration: a.get("duration").and_then(Value::as_f64),
+        duration: a
+            .get("duration")
+            .and_then(Value::as_f64)
+            .or_else(|| a.pointer("/extra/duration").and_then(Value::as_f64).map(|ms| ms / 1000.0)),
         file_name: Some(str_field(a, "fileName").unwrap_or_else(|| default_name.into())),
         file_size: a.get("fileSize").and_then(Value::as_u64),
         is_gif: Some(flag(a, "isGif")),
         is_sticker: Some(flag(a, "isSticker")),
         is_voice_note: Some(voice),
         mime_type: str_field(a, "mimeType"),
-        poster_img: None,
+        poster_img: str_field(a, "posterImg"),
         size,
-        src_url: None,
+        src_url: str_field(a, "srcURL"),
         transcript: None,
     }
 }
@@ -423,6 +426,13 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             html: m.get("extra").and_then(|e| str_field(e, "sanitizedFormattedBody")).filter(|_| !deleted),
             message_type: Some(message_type.into()),
             poll: None,
+            unresolved_media: m
+                .pointer("/extra/lastEditionID")
+                .and_then(Value::as_str)
+                .is_none()
+                .then(|| m.pointer("/extra/unresolvedMedia").and_then(Value::as_str).map(str::to_string))
+                .flatten()
+                .filter(|_| !deleted),
             edit_history: Vec::new(),
             links: m
                 .get("links")

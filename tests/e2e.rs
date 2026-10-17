@@ -354,7 +354,15 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
             "$m5",
             "!sl:beeper.local",
             1_760_000_201_000,
-            json!({"senderID": "@sl_x:beeper.local", "attachments": [{"type": "unknown"}, {"type": "img", "size": {"width": 64, "height": 64}}]}),
+            json!({
+                "senderID": "@sl_x:beeper.local",
+                "extra": {"unresolvedMedia": "{\"kind\":\"permanent\"}"},
+                "attachments": [
+                    {"type": "unknown"},
+                    {"type": "img", "srcURL": "mxc://beeper.local/reel_thumb", "size": {"width": 64, "height": 64}},
+                    {"type": "video", "srcURL": "mxc://beeper.local/reel_vid", "posterImg": "mxc://beeper.local/reel_poster", "extra": {"duration": 15000}}
+                ]
+            }),
         );
         message(
             "$m6",
@@ -447,6 +455,10 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert_eq!(msg("$m4").linked_message_id.as_deref(), Some("$m3"));
         assert_eq!(msg("$m2").linked_message_id, None, "links to messages that were not imported are dropped");
         assert_eq!(msg("$m2").seen["@wa_ana:beeper.local"], "2025-10-09T08:53:23.000Z");
+        assert_eq!(msg("$m5").unresolved_media.as_deref(), Some("{\"kind\":\"permanent\"}"));
+        assert_eq!(msg("$m5").attachments[1].src_url.as_deref(), Some("mxc://beeper.local/reel_thumb"));
+        assert_eq!(msg("$m5").attachments[2].poster_img.as_deref(), Some("mxc://beeper.local/reel_poster"));
+        assert_eq!(msg("$m5").attachments[2].duration, Some(15.0));
         assert_eq!(msg("$m1").timestamp, "2025-10-09T08:53:21.000Z");
         assert!(!st.msg_idx_by_id.contains_key("$m6") && !st.msg_idx_by_id.contains_key("$m7"));
         assert_eq!(msg("$x1").text.as_deref(), Some("from matrix"));
@@ -459,6 +471,8 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         gui.select_chat(&c.id);
         assert!(simulator(gui.view_main()).find(beeper_ui::short_title(c)).is_ok(), "chat {} renders", c.title);
     }
+    gui.select_chat("!sl:beeper.local");
+    assert!(simulator(gui.view_main()).find("Click to load").is_ok());
     assert!(simulator(gui.view_settings()).find("emile@example.com").is_ok());
     drop((gui, shared));
     let mut reopened = BeeperStore::from_config(CentralConfig::new(rs_dir.clone(), "127.0.0.1".into(), 23379, None));
