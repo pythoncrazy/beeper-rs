@@ -102,7 +102,7 @@ fn account_id(bridge: &Value, accounts: &[BridgeAccountInfo]) -> String {
     found.map_or(name, |a| a.account_id.clone())
 }
 
-fn hidden_from_inbox(rules: &Value, account_id: &str, bridge: &Value, group: bool) -> bool {
+pub fn hidden_from_inbox(rules: &Value, account_id: &str, bridge: &Value, group: bool) -> bool {
     let name = bridge["com.beeper.bridge_name"].as_str().unwrap_or_default();
     let vis = |key: &str| rules["visibility"][key].as_str().map(str::to_string);
     let default = if matches!(name, "slackgo" | "discordgo") { "dmOnly" } else { "all" };
@@ -344,7 +344,7 @@ fn link(p: &Value) -> Option<MessageLink> {
     })
 }
 
-fn reaction_text(key: &str, target: Option<&Message>, who: Option<&str>) -> String {
+pub fn reaction_text(key: &str, target: Option<&Message>, who: Option<&str>) -> String {
     let whose = if target.is_some_and(|t| t.is_sender == Some(true)) { "your" } else { "a" };
     let object = match target.map(|t| (t.text.as_deref().filter(|x| !x.is_empty()), t.attachments.first())) {
         Some((Some(text), _)) => format!("\"{text}\""),
@@ -475,10 +475,13 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     let (members, group) = (chat.participants.total, chat.chat_type == "group");
     {
         let mut st = store.write().unwrap();
-        match rank {
+        let old = match rank {
             Some(r) => st.pin_rank.insert(chat_id.clone(), r),
             None => st.pin_rank.remove(&chat_id),
         };
+        if old != rank {
+            st.persist_state_to_sqlite();
+        }
         if !note {
             st.upsert_chat(chat);
         } else {
@@ -530,7 +533,10 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                     }
                     let idx = st.chat_idx_by_id[&chat_id];
                     let shown = preview.is_sender == Some(true) || (members <= 20 && (!group || target_mine));
-                    let newer = st.chats[idx].preview.as_ref().is_none_or(|p| p.sort_key < preview.sort_key);
+                    let newer = st.chats[idx]
+                        .preview
+                        .as_ref()
+                        .is_none_or(|p| p.sort_key < preview.sort_key || p.id == preview.id);
                     if shown && newer {
                         st.update_chat(idx, |c| {
                             c.last_activity = Some(preview.timestamp.clone());
