@@ -507,13 +507,8 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     let chat_id = chat_id(room).await;
     let note = chat_id == NOTE_CHAT_ID;
     let accounts = store.read().unwrap().bridge_accounts.clone();
-    let account = room.client().account();
-    let global = async |kind: &str| {
-        let raw = account.account_data_raw(GlobalAccountDataEventType::from(kind)).await.expect("read account data");
-        raw.map_or(Value::Null, |r| r.deserialize_as().expect("account data JSON"))
-    };
-    let rules = global("com.beeper.chat_list_rules").await;
-    let pins = global("com.beeper.favourites_order").await;
+    let rules = global(&room.client(), "com.beeper.chat_list_rules").await;
+    let pins = global(&room.client(), "com.beeper.favourites_order").await;
     let rank = pins["Inbox"].as_array().and_then(|ids| ids.iter().position(|id| id == room.room_id().as_str()));
     let chat = chat(room, &accounts, &rules).await;
     if !store.read().unwrap().chat_msg_indices.contains_key(&chat_id) {
@@ -966,6 +961,33 @@ async fn refetch_undecrypted(store: &SharedStore, rooms: Vec<Room>) {
         .await;
 }
 
+async fn global(client: &Client, kind: &str) -> Value {
+    let raw =
+        client.account().account_data_raw(GlobalAccountDataEventType::from(kind)).await.expect("read account data");
+    raw.map_or(Value::Null, |r| r.deserialize_as().expect("account data JSON"))
+}
+
+async fn sync_emoji(client: &Client, store: &SharedStore) {
+    let recent = global(client, "io.element.recent_emoji").await;
+    let recent = recent["recent_emoji"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|e| (e[0].as_str().expect("recent emoji key").into(), e[1].as_u64().expect("recent emoji count")));
+    let recent = recent.collect();
+    let tone = global(client, "com.beeper.emoji_skin_tone").await["tone"].as_u64().map_or(0, |t| t as u8);
+    let mut st = store.write().unwrap();
+    st.recent_emoji = recent;
+    st.skin_tone = tone;
+}
+
+pub async fn set_skin_tone(client: Client, tone: u8) -> Result<(), String> {
+    let content = serde_json::json!({ "tone": tone });
+    let raw = Raw::from_json(serde_json::value::to_raw_value(&content).expect("account data JSON"));
+    let kind = GlobalAccountDataEventType::from("com.beeper.emoji_skin_tone");
+    client.account().set_account_data_raw(kind, raw).await.map(drop).map_err(|e| e.to_string())
+}
+
 async fn retry_after_backup(client: Client, store: SharedStore) {
     let mut states = client.encryption().backups().state_stream();
     while let Some(state) = states.next().await {
@@ -1210,6 +1232,7 @@ pub async fn run(store: SharedStore) {
     store.write().unwrap().matrix = Some(client.clone());
     tokio::spawn(retry_undecrypted(client.clone(), store.clone()));
     tokio::spawn(retry_after_backup(client.clone(), store.clone()));
+    sync_emoji(&client, &store).await;
     let first = !store.read().unwrap().beeper_state.first_sync_done;
     futures_util::stream::iter(client.joined_rooms())
         .for_each_concurrent(8, |room| {
@@ -1236,6 +1259,7 @@ pub async fn run(store: SharedStore) {
                     Ok(resp) => {
                         store.write().unwrap().matrix_error = None;
                         refresh_e2ee(&client, &store).await;
+                        sync_emoji(&client, &store).await;
                         for id in resp.rooms.left.keys() {
                             let chat = chat_id(&client.get_room(id).expect("left room is known")).await;
                             store.write().unwrap().remove_chat(&chat);
