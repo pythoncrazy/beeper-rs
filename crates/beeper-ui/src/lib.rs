@@ -2474,7 +2474,16 @@ impl BeeperGuiApp {
             {
                 self.login.screen = login::Screen::Accounts;
             }
-            UiMessage::StoreChanged => self.refresh_theme_and_tray(),
+            UiMessage::StoreChanged => {
+                let st = self.store.read().unwrap();
+                let left = self.selected_chat_id.as_deref().is_some_and(|c| st.resolve_chat_idx(c).is_none());
+                drop(st);
+                if left {
+                    (self.selected_chat_id, self.chat_menu) = (None, None);
+                    self.select_chat(NOTE_CHAT_ID);
+                }
+                self.refresh_theme_and_tray()
+            }
             UiMessage::FocusRequested(chat) => {
                 if let Some(id) = chat {
                     self.select_chat(&id);
@@ -2659,11 +2668,21 @@ impl BeeperGuiApp {
         let grip = mouse_area(container(Space::new()).width(8).height(Fill))
             .on_press(UiMessage::DragStart)
             .interaction(mouse::Interaction::ResizingHorizontally);
-        let pane = if self.creating_chat.is_some() { self.view_new_chat() } else { self.view_conversation() };
+        let st = self.store.read().unwrap();
+        // The sync task can drop a chat before StoreChanged reaches update.
+        let known = |c: &str| c.starts_with("draft:") || st.resolve_chat_idx(c).is_some();
+        let open = self.creating_chat.is_none() && self.selected_chat_id.as_deref().is_some_and(known);
+        let menu_open = self.chat_menu.as_ref().is_some_and(|(c, _)| known(c));
+        drop(st);
+        let pane = match self.creating_chat {
+            Some(_) => self.view_new_chat(),
+            None if open => self.view_conversation(),
+            None => Space::new().into(),
+        };
         let card = container(pane).padding(Padding::new(8.0).left(0.0)).width(Fill);
         let sidebar = mouse_area(self.view_sidebar()).on_move(UiMessage::SidebarCursor);
-        let body = row![self.view_rail(), sidebar, grip, card]
-            .push((self.show_right_panel && self.creating_chat.is_none()).then(|| self.view_info()));
+        let body =
+            row![self.view_rail(), sidebar, grip, card].push((self.show_right_panel && open).then(|| self.view_info()));
         let base: El<'_> = container(body).width(Fill).height(Fill).style(fill_box(p.frame, 0.0)).into();
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
@@ -2689,7 +2708,7 @@ impl BeeperGuiApp {
         });
         let filter_menu = self.show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 14.5, 26.0));
         let reminder_menu = self.reminder_menu.map(|at| (self.view_reminder_menu(), at.x, at.y));
-        let chat_menu = self.chat_menu.as_ref().map(|(cid, at)| {
+        let chat_menu = self.chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
             let (w, h) = if cid.starts_with("draft:") { (124.0, 31.0) } else { (233.0, 8.0 + 8.0 * MENU_ITEM + 22.0) };
             let x = if at.x + w > self.main_size.width { at.x - w } else { at.x };
             let sub_w = self.chat_sub.map_or(0.0, |i| SUB_MENU_W[usize::from(i)]);
