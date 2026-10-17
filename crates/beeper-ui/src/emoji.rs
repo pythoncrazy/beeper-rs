@@ -248,7 +248,9 @@ impl BeeperGuiApp {
                 };
                 self.emoji.as_mut().expect("the picker is open").skins_open = false;
                 if let Some(c) = client {
-                    return Task::perform(beeper_core::matrix::set_skin_tone(c, t), UiMessage::Pushed);
+                    let content = serde_json::json!({ "tone": t });
+                    let write = beeper_core::matrix::set_global(c, "com.beeper.emoji_skin_tone", content);
+                    return Task::perform(write, UiMessage::Pushed);
                 }
             }
             EmojiMsg::Jump(k) => {

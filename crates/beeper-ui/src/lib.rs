@@ -1874,6 +1874,7 @@ impl BeeperGuiApp {
                     .iter()
                     .find(|r| r.reaction_key == key && st.is_me(&r.participant_id))
                     .map(|r| r.id.clone());
+                let mut recent = None;
                 let out = match mine {
                     Some(target) => {
                         st.remove_reaction(&cid, &mid, &key).expect("remove reaction");
@@ -1881,10 +1882,16 @@ impl BeeperGuiApp {
                     }
                     None => {
                         let (_, txn) = st.add_reaction(&cid, &mid, &key, None).expect("add reaction");
+                        st.add_recent_emoji(&key);
+                        recent = st.matrix.clone().map(|c| (c, serde_json::json!({ "recent_emoji": st.recent_emoji })));
                         Outgoing::React { txn, target: mid, key }
                     }
                 };
                 st.queue(&cid, out);
+                if let Some((c, content)) = recent {
+                    let write = beeper_core::matrix::set_global(c, "io.element.recent_emoji", content);
+                    return Task::perform(write, UiMessage::Pushed);
+                }
             }
             UiMessage::ToggleBookmark(mid) => {
                 self.store.write().unwrap().toggle_bookmark(&mid);
