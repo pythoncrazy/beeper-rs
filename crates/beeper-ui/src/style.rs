@@ -1,5 +1,6 @@
 use beeper_core::config::NETWORK_SPECS;
-use iced::advanced::graphics::text::{cosmic_text, font_system, to_attributes};
+use iced::advanced::graphics::text::cosmic_text::{self, Fallback as _};
+use iced::advanced::graphics::text::{font_system, to_attributes};
 use iced::font::{Family, Font, Weight};
 use iced::overlay::menu;
 use iced::widget::{button, container, pick_list, scrollable, svg, text, text_input};
@@ -81,10 +82,32 @@ pub const ALL_FONTS: [&[u8]; 7] =
 pub const CLEAR: Color = Color::TRANSPARENT;
 
 static LOAD_FONTS: Once = Once::new();
+static PLATFORM: cosmic_text::PlatformFallback = cosmic_text::PlatformFallback;
+static COMMON_FALLBACK: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    std::iter::once(crate::emoji::EMOJI_FAMILY).chain(PLATFORM.common_fallback().iter().copied()).collect()
+});
+
+/// Desktop's font stack reaches Twemoji before the generic sans-serif fonts.
+struct TwemojiFirst;
+
+impl cosmic_text::Fallback for TwemojiFirst {
+    fn common_fallback(&self) -> &[&'static str] {
+        &COMMON_FALLBACK
+    }
+    fn forbidden_fallback(&self) -> &[&'static str] {
+        PLATFORM.forbidden_fallback()
+    }
+    fn script_fallback(&self, script: unicode_script::Script, locale: &str) -> &[&'static str] {
+        PLATFORM.script_fallback(script, locale)
+    }
+}
 
 pub fn ensure_fonts_loaded() {
     LOAD_FONTS.call_once(|| {
         let mut fs = font_system().write().expect("font system");
+        let empty = cosmic_text::FontSystem::new_with_locale_and_db(String::new(), Default::default());
+        let (locale, db) = std::mem::replace(fs.raw(), empty).into_locale_and_db();
+        *fs.raw() = cosmic_text::FontSystem::new_with_locale_and_db_and_fallback(locale, db, TwemojiFirst);
         for bytes in ALL_FONTS {
             fs.load_font(bytes.into());
         }
