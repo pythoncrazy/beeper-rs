@@ -64,6 +64,9 @@ fn main() {
     app.select_chat(&dm);
     shot(&out, "main_typing", (1200.0, 800.0), &theme, app.view_main());
     app.store.write().unwrap().typing.clear();
+    let _ = app.update(UiMessage::BeginSelecting(dm.clone()));
+    shot(&out, "main_selecting", (1200.0, 800.0), &theme, app.view_main());
+    let _ = app.update(UiMessage::CloseModals);
     for tab in SettingsTab::ALL {
         let _ = app.update(UiMessage::OpenSettings(tab));
         shot(&out, &format!("settings_{tab:?}").to_lowercase(), (800.0, 740.0), &theme, app.view_settings());
