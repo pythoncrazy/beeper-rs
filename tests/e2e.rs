@@ -265,7 +265,9 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
                  INSERT INTO mx_room_messages VALUES ('$x2', '!mx:beeper.local', 1760000302000, 'REACTION', 0, 901, '{}');
                  INSERT INTO mx_reactions VALUES ('!mx:beeper.local', '$x2', '$x1', '@a:beeper.com', '❤️', 1, 0);
                  INSERT INTO key_values VALUES ('beeperState', '{\"user_id\":\"\",\"access_token\":\"\"}');
-                 INSERT INTO key_values VALUES ('nextSeq', 1234);",
+                 INSERT INTO key_values VALUES ('nextSeq', 1234);
+                 INSERT INTO key_values VALUES ('ad:com.beeper.favourites_order', '{\"Inbox\":[\"!dc:beeper.local\"]}');
+                 INSERT INTO key_values VALUES ('ad:com.beeper.chat_list_rules', '{\"visibility\":{}}');",
             )
             .unwrap();
         let thread = |id: &str, acc: &str, ts: i64, label: i64, json: Value| {
@@ -290,13 +292,31 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
             0,
             json!({"title": "Rust Café ☕", "type": "group", "isPinned": true, "mutedUntil": "forever"}),
         );
-        thread("!sl:beeper.local", "slackgo.T0123", 1_760_000_200_000, 0, json!({"type": "group", "isArchived": true}));
+        thread(
+            "!sl:beeper.local",
+            "slackgo.T0123",
+            1_760_000_200_000,
+            0,
+            json!({"type": "group", "isArchived": true, "extra": {"bridge": {"com.beeper.bridge_name": "slackgo"}}}),
+        );
         thread(
             "!mx:beeper.local",
             "hungryserv",
             1_760_000_300_000,
             0,
-            json!({"title": "", "type": "single", "isLowPriority": 1}),
+            json!({
+                "title": "",
+                "type": "single",
+                "isLowPriority": 1,
+                "partialLastMessage": {
+                    "id": "$x2",
+                    "senderID": "@a:beeper.com",
+                    "sortKey": 901,
+                    "timestamp": "2025-10-09T08:58:22.000Z",
+                    "action": {"reactionKey": "❤️"},
+                    "linkedMessage": {"text": "from matrix", "isSender": true}
+                }
+            }),
         );
         thread(
             "!zz:beeper.local",
@@ -448,6 +468,12 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         );
         let dc = &st.chats[st.chat_idx_by_id["!dc:beeper.local"]];
         assert!(dc.is_pinned == Some(true) && dc.is_muted == Some(true) && dc.participants.items.len() == 2);
+        assert_eq!(st.pin_rank.get("!dc:beeper.local"), Some(&0));
+        assert_eq!(st.chats[st.chat_idx_by_id["!sl:beeper.local"]].is_hidden_from_inbox, Some(true));
+        assert_eq!(
+            st.chats[st.chat_idx_by_id["!mx:beeper.local"]].preview.as_ref().and_then(|p| p.text.as_deref()),
+            Some("loved \"from matrix\"")
+        );
         let msg = |id: &str| &st.messages[st.msg_idx_by_id[id]];
         assert_eq!(msg("$m3").sender_name.as_deref(), Some("Bo"));
         assert_eq!(msg("$m3").attachments[0].file_name.as_deref(), Some("Voice message"));
@@ -477,6 +503,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     drop((gui, shared));
     let mut reopened = BeeperStore::from_config(CentralConfig::new(rs_dir.clone(), "127.0.0.1".into(), 23379, None));
     assert_eq!(reopened.setup, Some(Setup::Imported));
+    assert_eq!(reopened.pin_rank.get("!dc:beeper.local"), Some(&0));
     assert!(reopened.signed_in() && reopened.chats.len() == 6 && reopened.messages.len() == 6);
     let (_, sent_id, _) = reopened.send_message(NOTE_CHAT_ID, Some("After restart".into()), None, None).unwrap();
     let keys: Vec<&str> = reopened.messages.iter().map(|m| m.sort_key.as_str()).collect();

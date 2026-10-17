@@ -31,6 +31,7 @@ pub struct BeeperData {
     pub crypto: Option<DesktopCrypto>,
     pub chats: Vec<Chat>,
     pub messages: Vec<Message>,
+    pub pin_rank: HashMap<String, usize>,
     pub theme: Option<ThemeChoice>,
 }
 
@@ -61,6 +62,13 @@ fn open(path: &Path) -> rusqlite::Result<Connection> {
     Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
 }
 
+fn read_kv_json(db: &Connection, key: &str) -> Result<Value, String> {
+    db.query_row("SELECT value FROM key_values WHERE key = ?1", [key], |r| r.get::<_, String>(0))
+        .optional()
+        .map_err(|e| e.to_string())?
+        .map_or(Ok(Value::Null), |s| serde_json::from_str(&s).map_err(|e| format!("{key} JSON: {e}")))
+}
+
 fn read_snapshot(dir: &Path) -> Result<BeeperData, String> {
     let e = |e: rusqlite::Error| e.to_string();
     let crypto = match dir.join("account.db").is_file() {
@@ -68,10 +76,19 @@ fn read_snapshot(dir: &Path) -> Result<BeeperData, String> {
         false => None,
     };
     let db = open(&dir.join("index.db")).map_err(e)?;
+    let rules = read_kv_json(&db, "ad:com.beeper.chat_list_rules")?;
+    let pins = read_kv_json(&db, "ad:com.beeper.favourites_order")?;
+    let pin_rank = pins["Inbox"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(i, v)| Some((v.as_str()?.to_string(), i)))
+        .collect();
     let mut people = read_participants(&db).map_err(e)?;
-    let chats = read_chats(&db, &mut people)?;
+    let chats = read_chats(&db, &mut people, &rules)?;
     let messages = read_messages(&db, &chats)?;
-    Ok(BeeperData { crypto, chats, messages, theme: read_theme(&db)? })
+    Ok(BeeperData { crypto, chats, messages, pin_rank, theme: read_theme(&db)? })
 }
 
 fn read_theme(db: &Connection) -> Result<Option<ThemeChoice>, String> {
@@ -167,7 +184,73 @@ fn flag(v: &Value, k: &str) -> bool {
     v.get(k).is_some_and(|x| !matches!(x, Value::Null | Value::Bool(false)) && x.as_i64() != Some(0))
 }
 
-fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>) -> Result<Vec<Chat>, String> {
+fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, items: &[User]) -> Option<Message> {
+    let plm = t.get("partialLastMessage")?;
+    let key = str_field(plm.get("action")?, "reactionKey")?;
+    let sender_id = str_field(plm, "senderID")?;
+    let is_sender = flag(plm, "isSender");
+    let sender_name = items.iter().find(|u| u.id == sender_id).map(|u| display_name(u).to_string());
+    let who = match is_sender {
+        true => Some("You"),
+        false => group.then(|| sender_name.as_deref().unwrap_or(sender_id.as_str())),
+    };
+    let target = plm.get("linkedMessage").map(|l| Message {
+        id: String::new(),
+        account_id: String::new(),
+        chat_id: String::new(),
+        sender_id: String::new(),
+        sender_name: None,
+        sort_key: String::new(),
+        timestamp: String::new(),
+        attachments: l
+            .get("attachments")
+            .and_then(Value::as_array)
+            .map_or_else(Vec::new, |a| a.iter().map(read_attachment).collect()),
+        is_sender: Some(flag(l, "isSender")),
+        is_unread: None,
+        is_bookmarked: None,
+        is_deleted: None,
+        linked_message_id: None,
+        reactions: Vec::new(),
+        text: str_field(l, "text"),
+        html: None,
+        message_type: None,
+        poll: None,
+        unresolved_media: None,
+        edit_history: Vec::new(),
+        links: Vec::new(),
+        seen: Default::default(),
+        flags: 0,
+    });
+    let text = Some(crate::matrix::reaction_text(&key, target.as_ref(), who));
+    Some(Message {
+        id: str_field(plm, "id")?,
+        account_id: account_id.into(),
+        chat_id: id.into(),
+        sender_id,
+        sender_name,
+        sort_key: crate::store::sort_key(plm.get("sortKey")?.as_i64()?),
+        timestamp: str_field(plm, "timestamp")?,
+        attachments: Vec::new(),
+        is_sender: Some(is_sender),
+        is_unread: Some(false),
+        is_bookmarked: Some(false),
+        is_deleted: None,
+        linked_message_id: str_field(plm, "linkedMessageID").or_else(|| str_field(plm.get("linkedMessage")?, "id")),
+        reactions: Vec::new(),
+        text,
+        html: None,
+        message_type: Some("REACTION".into()),
+        poll: None,
+        unresolved_media: None,
+        edit_history: Vec::new(),
+        links: Vec::new(),
+        seen: Default::default(),
+        flags: 0,
+    })
+}
+
+fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &Value) -> Result<Vec<Chat>, String> {
     let mut stmt = db
         .prepare(
             "SELECT threadID, accountID, CAST(thread AS TEXT), timestamp FROM threads
@@ -199,10 +282,15 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>) -> Resul
                 many if group => many.iter().take(3).copied().collect::<Vec<_>>().join(", "),
                 [first, ..] => first.to_string(),
             });
+            let account_id = account.or_else(|| str_field(&t, "accountID")).unwrap_or_else(|| "hungryserv".into());
+            let bridge = t.pointer("/extra/bridge").unwrap_or(&Value::Null);
+            let preview = read_reaction_preview(&t, &id, &account_id, group, &items);
             let ms = t.get("timestamp").and_then(Value::as_i64).or(ts);
+            let last_activity = preview.as_ref().map(|p| p.timestamp.clone()).or_else(|| ms.map(rfc3339_from_millis));
             let count = |k: &str| t.get(k).and_then(Value::as_u64).map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX));
             Ok(Chat {
-                account_id: account.or_else(|| str_field(&t, "accountID")).unwrap_or_else(|| "hungryserv".into()),
+                is_hidden_from_inbox: Some(crate::matrix::hidden_from_inbox(rules, &account_id, bridge, group)),
+                account_id,
                 participants: ChatParticipants { has_more: false, total: items.len(), items },
                 title,
                 chat_type: if group { "group" } else { "single" }.into(),
@@ -216,7 +304,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>) -> Resul
                 is_pinned: Some(flag(&t, "isPinned")),
                 is_low_priority: Some(flag(&t, "isLowPriority")),
                 label_ids: Vec::new(),
-                last_activity: ms.map(rfc3339_from_millis),
+                last_activity,
                 last_read_message_sort_key: t
                     .get("lastReadMessageSortKey")
                     .and_then(Value::as_i64)
@@ -224,10 +312,9 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>) -> Resul
                 local_chat_id: None,
                 merge: None,
                 merged_into_chat_id: None,
-                preview: None,
+                preview,
                 reminder: None,
                 chat_theme: None,
-                is_hidden_from_inbox: None,
                 is_request: Some(flag(&t, "isMessageRequest")),
                 network_name: str_field(&t, "networkName"),
                 img_url: str_field(&t, "imgURL")

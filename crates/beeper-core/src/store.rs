@@ -116,6 +116,7 @@ const SCHEMA: &str = "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL
 const KEY_STATE: &str = "state";
 const KEY_BRIDGES: &str = "bridges";
 const KEY_SETTINGS: &str = "settings";
+const KEY_PIN_RANK: &str = "pinRank";
 const KEY_SEQ: &str = "nextSeq";
 const KEY_SETUP: &str = "setup";
 
@@ -370,6 +371,7 @@ impl BeeperStore {
             (KEY_STATE, serde_json::to_string(&self.beeper_state)),
             (KEY_BRIDGES, serde_json::to_string(&self.bridge_accounts)),
             (KEY_SETTINGS, serde_json::to_string(&self.settings)),
+            (KEY_PIN_RANK, serde_json::to_string(&self.pin_rank)),
         ] {
             self.exec("INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)", params![k, v.unwrap()]);
         }
@@ -396,7 +398,7 @@ impl BeeperStore {
     }
 
     fn load_from_sqlite_or_seed(&mut self) {
-        let (setup, state, bridges, settings, seq, chats, messages, assets) = {
+        let (setup, state, bridges, settings, pin_rank, seq, chats, messages, assets) = {
             let conn = self.db.lock().unwrap();
             let kv = |k: &str| {
                 conn.query_row("SELECT value FROM kv WHERE key = ?1", [k], |r| r.get::<_, String>(0))
@@ -412,6 +414,7 @@ impl BeeperStore {
                 kv(KEY_STATE),
                 kv(KEY_BRIDGES),
                 kv(KEY_SETTINGS),
+                kv(KEY_PIN_RANK),
                 kv(KEY_SEQ),
                 rows("SELECT json FROM chats ORDER BY rowid"),
                 rows("SELECT json FROM messages ORDER BY sort_key ASC"),
@@ -432,6 +435,9 @@ impl BeeperStore {
         self.setup_status = Self::build_setup_from_state(&self.beeper_state);
         if let Some(b) = bridges {
             self.bridge_accounts = serde_json::from_str(&b).expect("parse stored bridge accounts");
+        }
+        if let Some(p) = pin_rank {
+            self.pin_rank = serde_json::from_str(&p).expect("parse stored pin rank");
         }
         if let Some(s) = settings {
             self.settings = BeeperSettings {
@@ -502,10 +508,11 @@ impl BeeperStore {
         (messages..self.messages.len()).for_each(|i| self.persist_message(i));
         self.persist_seq();
         self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit import transaction");
+        self.pin_rank = data.pin_rank;
         if let Some(theme) = data.theme {
             self.settings.theme = theme;
-            self.persist_state_to_sqlite();
         }
+        self.persist_state_to_sqlite();
     }
 
     pub fn matrix_dir(&self) -> PathBuf {
@@ -720,6 +727,11 @@ impl BeeperStore {
             let m = self.messages[idx].clone();
             return self.emit_ws("message.upserted", &m.chat_id, Some(&m.id), None, Some(m.clone()));
         };
+        if msg.text.as_deref() == Some(crate::matrix::UTD_TEXT)
+            && self.messages[idx].text.as_deref() != Some(crate::matrix::UTD_TEXT)
+        {
+            return;
+        }
         self.update_message(idx, |m| {
             let mut seen = std::mem::take(&mut m.seen);
             seen.extend(msg.seen);
