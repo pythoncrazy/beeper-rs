@@ -977,6 +977,83 @@ fn network_bot(chat: &Chat, user_id: &str) -> bool {
     chat.participants.items.iter().any(|u| u.id == user_id && u.is_network_bot == Some(true))
 }
 
+/// The message that the chat list previews: the newest shown message, or a newer reaction.
+fn preview_message<'s>(st: &'s BeeperStore, c: &'s Chat) -> Option<&'s Message> {
+    let m = st
+        .chat_msg_indices
+        .get(&c.id)
+        .and_then(|v| v.iter().rev().map(|&i| &st.messages[i]).find(|m| m.is_deleted != Some(true) && !m.silent()));
+    let reaction = c
+        .preview
+        .as_ref()
+        .filter(|p| p.message_type.as_deref() == Some("REACTION") && m.is_none_or(|m| m.sort_key < p.sort_key));
+    reaction.or(m)
+}
+
+/// The text of a chat list preview, or a label for its links.
+fn preview_body(m: &Message) -> Option<String> {
+    match m.links.len() {
+        _ if m.html.is_some() => m.html.as_deref().map(beeper_core::codec::html_text),
+        _ if m.text.as_ref().is_some_and(|t| !t.is_empty()) => m.text.clone(),
+        _ if !m.attachments.is_empty() => None,
+        0 => None,
+        1 => Some("🔗 [Link]".to_string()),
+        n => Some(format!("🔗 [{n} links]")),
+    }
+}
+
+/// The text of Desktop's bubble on an unread pinned chat. A new message shows it, and after a minute it hides
+/// when the chat has more unread messages than Desktop's limit for its size.
+fn bubble_text(st: &BeeperStore, c: &Chat, launched: i64, now: i64) -> Option<String> {
+    let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
+    let at = c.last_activity.as_deref().map_or(0, |t| millis_from_rfc3339(t).expect("RFC 3339 timestamp"));
+    let limit = match c.participants.total {
+        0..=2 => 3,
+        3..=6 => 5,
+        _ => 10,
+    };
+    if !unread || c.unread_count == 0 || (now - at.max(launched) >= 60_000 && c.unread_count > limit) {
+        return None;
+    }
+    let m = preview_message(st, c)?;
+    let text = preview_body(m).or_else(|| media_tag(m).map(|t| t.1.to_string()))?;
+    let first = preview_sender(c, m).and(m.sender_name.as_deref()).and_then(|n| n.split(' ').next());
+    Some(first.map_or_else(|| text.clone(), |f| format!("{f}: {text}")))
+}
+
+/// Desktop's `PinnedThreadListItem` bubble: at most 8em wide, from 3px right of the avatar's top right corner,
+/// centered on the avatar when wider than it, with a half disc below.
+fn pin_bubble<'a>(text: &str, mention: bool, (bg, fg): (Color, Color), cell: f32, av: f32, compact: bool) -> El<'a> {
+    let max = 80f32.min(cell - 4.0);
+    let at_w = if mention { 14.0 } else { 0.0 };
+    let w = (crate::style::text_width(text, 10.0, Weight::Normal) + at_w + 8.0).clamp(22.0, max);
+    let right = (cell + av - 4.0) / 2.0;
+    let x = right + 3.0 + ((w - av - 6.0) / 2.0).max(0.0) - w;
+    let (y, h) = if compact { (10.0, 18.56) } else { (17.0, 20.0) };
+    let line = row![]
+        .push(mention.then(|| ic(icon::AT_SIGN, 10.0).color(fg)))
+        .push(ell(text, w - 8.0 - at_w, 10.0, Weight::Normal).color(fg).line_height(Pixels(h - 8.0)))
+        .spacing(4)
+        .align_y(Center);
+    let bubble = container(line).padding(4).width(w).height(h).center_x(w).style(fill_box(bg, 6.0));
+    let nub = container(Space::new()).width(6).height(3).style(move |_: &Theme| container::Style {
+        background: Some(bg.into()),
+        border: iced::Border { radius: iced::border::Radius::default().bottom(3.0), ..Default::default() },
+        ..Default::default()
+    });
+    stack![pin(bubble).x(x).y(y - h / 2.0), pin(nub).x(right - 9.0).y(y + if compact { 9.0 } else { 10.0 })].into()
+}
+
+/// The media badge of a chat list preview: whether it is a video, and its label.
+fn media_tag(m: &Message) -> Option<(bool, &'static str)> {
+    m.attachments.iter().find_map(|a| match a.attachment_type.as_str() {
+        "img" | "video" if a.is_gif == Some(true) => Some((false, tr("GIF"))),
+        "img" => Some((false, tr("Image"))),
+        "video" => Some((true, tr("Video"))),
+        _ => None,
+    })
+}
+
 fn preview_sender<'a>(chat: &'a Chat, m: &Message) -> Option<&'a User> {
     let shown = (chat.chat_type == "group" || network_bot(chat, &m.sender_id))
         && m.is_sender != Some(true)
@@ -5405,7 +5482,6 @@ impl BeeperGuiApp {
         let st = self.store.read().unwrap();
         let chats = self.visible_chats(&st);
         let h24 = st.settings.pref("timeFormat") == 1;
-        let previews = st.settings.on("showMessagePreviews");
         let compact = st.settings.on("compactChatList");
         let (av, lines, title_size, ts_size, pin_av) =
             if compact { (28.0, 1, 13.0, 10.0, 40.0) } else { (46.0, 2, 14.0, 11.0, 52.0) };
@@ -5482,6 +5558,9 @@ impl BeeperGuiApp {
         };
         let cols = (((w - 16.0) / 80.0).floor() as usize).max(1);
         let cell = (w - 16.0) / cols as f32;
+        let previews = st.settings.on("showMessagePreviews");
+        let now = now_unix_millis();
+        let launched = now - self.started.elapsed().as_millis() as i64;
         let pins = pinned.chunks(cols).fold(Column::new(), |col, chunk| {
             col.push(chunk.iter().fold(Row::new(), |r, c| {
                 let on = selected == Some(c.id.as_str());
@@ -5507,6 +5586,8 @@ impl BeeperGuiApp {
                         container(at).padding([0, 4]).center_y(14).style(fill_box(bg, 7.0)).into()
                     }),
                 };
+                let bubble = bubble_text(&st, c, launched, now).filter(|_| previews && !on && !selecting);
+                let unread = unread.filter(|_| bubble.is_none());
                 let face = stack![self.chat_avatar(c, pin_av)]
                     .push((!selecting).then(|| container(unread).width(pin_av + 4.0).align_right(pin_av + 4.0)))
                     .push(selecting.then(|| pin(checkbox(p, picked(c))).x(pin_av - 11.0).y(-5.0)))
@@ -5519,6 +5600,9 @@ impl BeeperGuiApp {
                             false => Padding::new(12.0).bottom(10.0),
                         },
                     );
+                let colors = if muted { (p.frame, p.text) } else { (p.accent, Color::WHITE) };
+                let bubble = bubble.map(|t| pin_bubble(&t, c.unread_mentions > 0, colors, cell, pin_av, compact));
+                let item = stack![item].push(bubble);
                 r.push(
                     mouse_area(
                         button(item)
@@ -5588,14 +5672,8 @@ impl BeeperGuiApp {
             let on = selected == Some(c.id.as_str());
             let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
             let muted = c.is_muted == Some(true);
-            let m = st.chat_msg_indices.get(&c.id).and_then(|v| {
-                v.iter().rev().map(|&i| &st.messages[i]).find(|m| m.is_deleted != Some(true) && !m.silent())
-            });
-            let reaction = c
-                .preview
-                .as_ref()
-                .filter(|p| p.message_type.as_deref() == Some("REACTION") && m.is_none_or(|m| m.sort_key < p.sort_key));
-            let m = reaction.or(m);
+            let m = preview_message(&st, c);
+            let reaction = m.filter(|m| m.message_type.as_deref() == Some("REACTION"));
             let ts = match (self.active_tab, &c.reminder) {
                 (InboxTab::Reminders, Some(r)) => {
                     format!("{} {}", reminder_day(r.remind_at_ms), clock(r.remind_at_ms, h24))
@@ -5628,26 +5706,9 @@ impl BeeperGuiApp {
                 .height(16)
                 .align_y(Center);
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
-            let media_tag = m.and_then(|m| {
-                m.attachments.iter().find_map(|a| match a.attachment_type.as_str() {
-                    "img" if a.is_gif == Some(true) => Some((false, tr("GIF"))),
-                    "img" => Some((false, tr("Image"))),
-                    "video" if a.is_gif == Some(true) => Some((false, tr("GIF"))),
-                    "video" => Some((true, tr("Video"))),
-                    _ => None,
-                })
-            });
-            let body = m.and_then(|m| match m.links.len() {
-                _ if m.html.is_some() => m.html.as_deref().map(beeper_core::codec::html_text),
-                _ if m.text.as_ref().is_some_and(|t| !t.is_empty()) => m.text.clone(),
-                _ if !m.attachments.is_empty() => None,
-                0 => None,
-                1 => Some("🔗 [Link]".to_string()),
-                n => Some(format!("🔗 [{n} links]")),
-            });
-            let body = body.filter(|_| previews);
-            let show_sender = previews
-                && !mine
+            let media_tag = m.and_then(media_tag);
+            let body = m.and_then(preview_body);
+            let show_sender = !mine
                 && reaction.is_none()
                 && (media_tag.is_some() || body.is_some())
                 && (c.chat_type == "group" || m.is_some_and(|m| network_bot(c, &m.sender_id)));
