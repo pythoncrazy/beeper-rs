@@ -3754,7 +3754,8 @@ impl BeeperGuiApp {
                 .padding(Padding::new(8.0).left(0.0))
                 .into()
         };
-        let rail = self.store.read().unwrap().settings.on("showSidebar").then(|| self.view_rail());
+        let rail = self.store.read().unwrap().settings.on("showSidebar");
+        let rail = rail.then(|| self.view_rail());
         let body = mouse_area(Row::new().push(rail).push(self.view_sidebar()).push(grip).push(right))
             .on_move(UiMessage::Cursor);
         let base: El<'_> = container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0)).into();
