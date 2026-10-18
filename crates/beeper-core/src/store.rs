@@ -98,10 +98,10 @@ pub const NOTE_CHAT_ID: &str = "!note_self:beeper.com";
 pub const LOGGED_OUT: &str = "logged-out";
 
 #[rustfmt::skip]
-const LINK_PREVIEWS: [(&str, &str, &str, &str); 3] = [
-    ("https://arxiv.org/abs/2001.08361", "arXiv.org", "Scaling Laws for Neural Language Models", "We study empirical scaling laws for language model performance on the cross-entropy loss. The loss scales as a power-law with model size, dataset size, and the amount of compute used for training."),
-    ("https://github.com/pythoncrazy/navify", "GitHub", "pythoncrazy/navify", "A fast, native Navidrome client written in Rust with iced. Low memory use, instant startup, and a polished desktop interface."),
-    ("https://github.com/pythoncrazy/beeper-rs", "GitHub", "pythoncrazy/beeper-rs", "Ultra-fast, cross-platform, Rust-native drop-in replacement for Beeper Desktop with a compatible Desktop API server."),
+const LINK_PREVIEWS: [(&str, &str, &str); 3] = [
+    ("https://arxiv.org/abs/2001.08361", "Scaling Laws for Neural Language Models", "We study empirical scaling laws for language model performance on the cross-entropy loss. The loss scales as a power-law with model size, dataset size, and the amount of compute used for training."),
+    ("https://github.com/pythoncrazy/navify", "pythoncrazy/navify", "A fast, native Navidrome client written in Rust with iced. Low memory use, instant startup, and a polished desktop interface."),
+    ("https://github.com/pythoncrazy/beeper-rs", "pythoncrazy/beeper-rs", "Ultra-fast, cross-platform, Rust-native drop-in replacement for Beeper Desktop with a compatible Desktop API server."),
 ];
 
 #[derive(Deserialize)]
@@ -337,8 +337,8 @@ impl BeeperStore {
             assets_by_mxc: HashMap::new(),
             link_previews: LINK_PREVIEWS
                 .iter()
-                .map(|&(url, site, title, summary)| {
-                    (url.to_string(), LinkPreview { site: site.into(), title: title.into(), summary: summary.into() })
+                .map(|&(url, title, summary)| {
+                    (url.to_string(), LinkPreview { title: title.into(), summary: summary.into() })
                 })
                 .collect(),
             oauth_clients: HashMap::new(),
