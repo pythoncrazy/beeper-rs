@@ -248,11 +248,21 @@ pub enum UiMessage {
     ForwardSubmit,
     ForwardPick(String),
     ForwardSend,
-    /// Show an attachment of a message full screen.
-    OpenCarousel(String, usize),
-    /// Show the previous (`false`) or next (`true`) image of the chat.
+    /// Show an attachment of a message full screen, in the Media window with `true`.
+    OpenCarousel(String, usize, bool),
+    /// Show the previous (`false`) or next (`true`) image of the carousel.
     CarouselStep(bool),
     RotateCarousel,
+    CloseCarousel,
+    /// Open Desktop's Media window, or focus it.
+    OpenMedia,
+    /// Show the Media, Links or Docs tab of the Media window.
+    MediaTab(usize),
+    /// Load more items in the Media window.
+    MediaMore,
+    /// Open a message in the main window.
+    GoToMessage(String, String),
+    WindowKey(window::Id, Key, keyboard::Modifiers),
     /// Save the attachments of a message, or only one of them, to the downloads folder.
     Download(String, Option<usize>),
     Downloaded(Result<String, String>),
@@ -1017,6 +1027,22 @@ static SYS_CLOSE: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(||
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="m5.333 15.834-1.166-1.167L8.833 10 4.167 5.334l1.166-1.167L10 8.834l4.667-4.667 1.166 1.167L11.167 10l4.666 4.667-1.166 1.167L10 11.167z"/></svg>"##[..])
 });
 
+/// Desktop's system icons file-default, videocam, link and sms.
+static MEDIA_ICONS: std::sync::LazyLock<[svg::Handle; 4]> = std::sync::LazyLock::new(|| {
+    [
+        "M5 18.334q-.687 0-1.177-.49a1.6 1.6 0 0 1-.49-1.177V3.334q0-.688.49-1.177T5 1.667h6.667l5 5v10q0 .687-.49 1.177t-1.177.49zM10.833 7.5V3.334H5v13.333h10V7.5z",
+        "M3.333 16.666q-.687 0-1.177-.49A1.6 1.6 0 0 1 1.666 15V5q0-.688.49-1.177t1.177-.49h10q.688 0 1.177.49Q15 4.312 15 5v3.75l3.333-3.334v9.167L15 11.25V15q0 .687-.49 1.177-.489.49-1.177.49zm0-1.666h10V5h-10z",
+        "M12.357 13.536 10 15.893q-1.223 1.222-2.946 1.222t-2.947-1.222q-1.222-1.224-1.222-2.947T4.107 10l2.357-2.357 1.179 1.179-2.357 2.357a2.4 2.4 0 0 0-.737 1.767q0 1.032.737 1.768.736.737 1.768.737 1.03 0 1.767-.737l2.358-2.357zm-4.125-.59-1.178-1.178 4.714-4.714 1.178 1.178zm5.304-.589-1.179-1.178 2.357-2.357a2.4 2.4 0 0 0 .737-1.768 2.4 2.4 0 0 0-.737-1.768 2.4 2.4 0 0 0-1.768-.737q-1.03 0-1.767.737L8.82 7.643 7.643 6.464 10 4.107q1.223-1.222 2.946-1.222t2.947 1.222q1.222 1.224 1.222 2.947T15.893 10z",
+        "M6.667 9.167q.354 0 .593-.24.24-.24.24-.593a.8.8 0 0 0-.24-.594.8.8 0 0 0-.593-.24.8.8 0 0 0-.594.24.8.8 0 0 0-.24.594q0 .354.24.593.24.24.594.24m3.333 0q.354 0 .594-.24t.24-.593a.8.8 0 0 0-.24-.594A.8.8 0 0 0 10 7.5a.8.8 0 0 0-.594.24.8.8 0 0 0-.24.594q0 .354.24.593.24.24.594.24m3.333 0q.354 0 .594-.24t.24-.593a.8.8 0 0 0-.24-.594.8.8 0 0 0-.594-.24.8.8 0 0 0-.593.24.8.8 0 0 0-.24.594q0 .354.24.593.24.24.593.24M1.667 18.334v-15q0-.688.49-1.177.489-.49 1.176-.49h13.334q.687 0 1.177.49.49.489.49 1.177v10q0 .687-.49 1.177t-1.177.49H5zm2.625-5h12.375v-10H3.333V14.27z",
+    ]
+    .map(|d| {
+        svg::Handle::from_memory(
+            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="{d}"/></svg>"#)
+                .into_bytes(),
+        )
+    })
+});
+
 static MAT_FORWARD: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="m640-280-57-56 184-184-184-184 57-56 240 240-240 240ZM80-200v-160q0-83 58.5-141.5T280-560h247L383-704l57-56 240 240-240 240-57-56 144-144H280q-50 0-85 35t-35 85v160H80Z"/></svg>"##[..])
 });
@@ -1264,6 +1290,111 @@ struct Forward {
     query: String,
 }
 
+/// The attachment that a carousel shows, its quarter turns, and if it shows the Media window items.
+#[derive(Clone)]
+struct Carousel {
+    mid: String,
+    ai: usize,
+    turns: u8,
+    in_media: bool,
+}
+
+/// Desktop's Media window: its tab (Media, Links or Docs), its size, and how many items it shows.
+struct MediaWindow {
+    id: window::Id,
+    tab: usize,
+    size: Size,
+    shown: usize,
+}
+
+/// Desktop's Media window page size.
+const MEDIA_PAGE: usize = 50;
+const MEDIA_TABS: [&str; 3] = ["Media", "Links", "Docs"];
+
+/// The items of a Media window tab, newest first, as (message index, attachment or link index).
+/// Like Desktop, it skips low priority chats and message requests.
+fn media_items(st: &BeeperStore, tab: usize) -> Vec<(usize, usize)> {
+    let shown = |m: &&Message| {
+        m.is_deleted != Some(true)
+            && st.chats[st.chat_idx_by_id[&m.chat_id]].flags & (CHAT_LOW_PRIORITY | CHAT_REQUEST) == 0
+    };
+    let mut items: Vec<_> = st
+        .messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| shown(m))
+        .flat_map(|(i, m)| {
+            let parts: Vec<usize> = match tab {
+                1 => (0..m.links.len()).collect(),
+                _ => {
+                    let kinds: &[&str] = if tab == 0 { &["img", "video"] } else { &["unknown"] };
+                    let atts = m.attachments.iter().enumerate();
+                    atts.filter(|(_, a)| kinds.contains(&a.attachment_type.as_str())).map(|(k, _)| k).collect()
+                }
+            };
+            let t = iso_millis(&m.timestamp);
+            parts.into_iter().map(move |k| (t, i, k))
+        })
+        .collect();
+    items.sort_by_key(|&(t, ..)| std::cmp::Reverse(t));
+    items.into_iter().map(|(_, i, k)| (i, k)).collect()
+}
+
+/// The items that the Media window filmstrip shows around the current one, as a range.
+fn filmstrip(size: &Size, at: usize, len: usize) -> (usize, usize) {
+    let n = ((size.width - 20.0) / 52.0) as usize;
+    let start = at.saturating_sub(n / 2).min(len.saturating_sub(n));
+    (start, (start + n).min(len))
+}
+
+/// Desktop's Media window date group of a day, like "Today", "Last week" or "March 2025".
+fn media_group(d: i64) -> String {
+    let t = today();
+    let week = t - (t + 3).rem_euclid(7);
+    let (y, m, _) = civil_from_days(d);
+    match t - d {
+        0 => "Today".into(),
+        1 => "Yesterday".into(),
+        _ if d >= week => "This week".into(),
+        _ if d >= week - 7 => "Last week".into(),
+        _ if y == civil_from_days(t).0 => MONTHS[m as usize - 1].into(),
+        _ => format!("{} {y}", MONTHS[m as usize - 1]),
+    }
+}
+
+/// The en-US medium date of a day, like "Oct 17, 2026".
+fn medium_date(d: i64) -> String {
+    let (y, m, dd) = civil_from_days(d);
+    format!("{} {dd}, {y}", &MONTHS[m as usize - 1][..3])
+}
+
+/// Desktop's `formatRelativeDate`: "Today", a weekday, "Tue, Oct 7", or "Oct 7, 2025" in other years.
+fn relative_date(iso: &str) -> String {
+    let d = day_num(iso);
+    match civil_from_days(d).0 == civil_from_days(today()).0 {
+        true => day_label(iso),
+        false => medium_date(d),
+    }
+}
+
+/// Desktop's attachment kind label of a MIME type.
+fn file_kind(mime: Option<&str>) -> &'static str {
+    match mime.unwrap_or("") {
+        m if m.starts_with("audio/") => "Audio",
+        "application/pdf" => "PDF",
+        m if m.starts_with("text/") => "Text",
+        m if m.starts_with("application/") => "Document",
+        _ => "File",
+    }
+}
+
+/// Desktop's media duration, like "00:05" or "01:02:03".
+fn clip_time(secs: f64) -> String {
+    let s = secs as u64;
+    let hours = (s >= 3600).then(|| format!("{:02}:", s / 3600));
+    format!("{}{:02}:{:02}", hours.unwrap_or_default(), s % 3600 / 60, s % 60)
+}
+
 /// The chats the forward dialog offers: recent chats, or all chats that match the query.
 fn forward_chats<'s>(st: &'s BeeperStore, f: &Forward) -> Vec<&'s Chat> {
     let q = f.query.trim().to_lowercase();
@@ -1414,8 +1545,8 @@ pub struct BeeperGuiApp {
     message_menu: Option<(String, Point)>,
     selected_msg: Option<String>,
     forward: Option<Forward>,
-    /// The message and attachment that the carousel shows, and its quarter turns.
-    carousel: Option<(String, usize, u8)>,
+    carousel: Option<Carousel>,
+    media_window: Option<MediaWindow>,
     /// On X11 the copied image stays available only while its clipboard lives.
     image_clipboard: Option<arboard::Clipboard>,
     pub filters: u8,
@@ -1520,6 +1651,7 @@ impl BeeperGuiApp {
             image_clipboard: None,
             forward: None,
             carousel: None,
+            media_window: None,
             filters: 0,
             show_attach_menu: false,
             show_gif_picker: false,
@@ -1768,7 +1900,12 @@ impl BeeperGuiApp {
     }
 
     pub fn title(&self, id: window::Id) -> String {
-        if Some(id) == self.settings_window { "Settings" } else { "Beeper" }.into()
+        match () {
+            _ if Some(id) == self.settings_window => "Settings",
+            _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => "Media",
+            _ => "Beeper",
+        }
+        .into()
     }
 
     pub fn iced_theme(&self) -> Theme {
@@ -2247,19 +2384,54 @@ impl BeeperGuiApp {
                     self.status_banner = "Couldn't copy the image".into();
                 }
             }
-            UiMessage::OpenCarousel(mid, ai) => self.carousel = Some((mid, ai, 0)),
+            UiMessage::OpenCarousel(mid, ai, in_media) => {
+                self.carousel = Some(Carousel { mid, ai, turns: 0, in_media });
+                return self.load_media();
+            }
             UiMessage::CarouselStep(next) => {
-                let (mid, ai, turns) = self.carousel.take().expect("the carousel is open");
-                let items = self.carousel_items(&self.store.read().unwrap());
-                let at =
-                    items.iter().position(|(m, a)| *m == mid && *a == ai).expect("the carousel shows a chat image");
+                let (items, at) = self.carousel_items(&self.store.read().unwrap());
                 let to = if next { at + 1 } else { at.checked_sub(1).expect("a previous image") };
-                let (mid, ai) = items.into_iter().nth(to).expect("a next image");
-                self.carousel = Some((mid, ai, turns));
+                let c = self.carousel.as_mut().expect("the carousel is open");
+                (c.mid, c.ai) = items.into_iter().nth(to).expect("a next image");
+                return self.load_media();
             }
             UiMessage::RotateCarousel => {
                 let c = self.carousel.as_mut().expect("the carousel is open");
-                c.2 = (c.2 + 1) % 4;
+                c.turns = (c.turns + 1) % 4;
+            }
+            UiMessage::CloseCarousel => self.carousel = None,
+            UiMessage::OpenMedia => {
+                if let Some(w) = &self.media_window {
+                    return window::gain_focus(w.id);
+                }
+                let size = Size::new(1000.0, 720.0);
+                let (id, open) = window::open(Self::window_settings(size));
+                self.media_window = Some(MediaWindow { id, tab: 0, size, shown: MEDIA_PAGE });
+                return Task::batch([open.map(UiMessage::WindowOpened), self.load_media()]);
+            }
+            UiMessage::MediaTab(tab) => {
+                let w = self.media_window.as_mut().expect("the Media window is open");
+                (w.tab, w.shown) = (tab, MEDIA_PAGE);
+                return self.load_media();
+            }
+            UiMessage::MediaMore => {
+                self.media_window.as_mut().expect("the Media window is open").shown += MEDIA_PAGE;
+                return self.load_media();
+            }
+            UiMessage::GoToMessage(chat, mid) => {
+                let main = window::gain_focus(self.main_window.expect("the main window is open"));
+                return Task::batch([self.update(UiMessage::JumpTo(chat, mid)), main]);
+            }
+            UiMessage::WindowKey(id, key, mods) => {
+                if self.media_window.as_ref().is_none_or(|w| w.id != id) {
+                    return self.update(UiMessage::KeyPressed(key, mods));
+                }
+                if self.carousel.as_ref().is_some_and(|c| c.in_media) {
+                    return self.carousel_key(&key, mods);
+                }
+                if key == Key::Named(Named::Escape) {
+                    return window::close(id);
+                }
             }
             UiMessage::Forward(mid) => {
                 self.forward = Some(Forward { mid, picked: Vec::new(), query: String::new() });
@@ -2790,9 +2962,7 @@ impl BeeperGuiApp {
             }
             UiMessage::CloseModals if self.search_select.is_some() => self.search_select = None,
             UiMessage::CloseModals => {
-                if self.carousel.is_some() {
-                    self.carousel = None;
-                } else if self.show_command_palette
+                if self.show_command_palette
                     || self.forward.is_some()
                     || self.show_filter_menu
                     || self.chat_menu.is_some()
@@ -2915,10 +3085,16 @@ impl BeeperGuiApp {
                 if self.main_window == Some(id) {
                     self.main_size = size;
                 }
+                if let Some(w) = self.media_window.as_mut().filter(|w| w.id == id) {
+                    w.size = size;
+                }
             }
             UiMessage::WindowClosed(id) => {
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
+                } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
+                    self.media_window = None;
+                    self.carousel = self.carousel.take().filter(|c| !c.in_media);
                 } else if [self.main_window, self.login_window].contains(&Some(id)) {
                     return iced::exit();
                 }
@@ -2961,23 +3137,8 @@ impl BeeperGuiApp {
                 return Task::batch([focus, self.load_avatars(), self.load_media(), self.close_notifications()]);
             }
             UiMessage::Login(m) => return self.update_login(m),
-            UiMessage::KeyPressed(key, mods) if self.carousel.is_some() => {
-                let (mid, ai, _) = self.carousel.clone().expect("the carousel is open");
-                let items = self.carousel_items(&self.store.read().unwrap());
-                let at =
-                    items.iter().position(|(m, a)| *m == mid && *a == ai).expect("the carousel shows a chat image");
-                return match key.as_ref() {
-                    Key::Named(Named::Escape) => self.update(UiMessage::CloseModals),
-                    Key::Named(Named::ArrowLeft) if mods.is_empty() && at > 0 => {
-                        self.update(UiMessage::CarouselStep(false))
-                    }
-                    Key::Named(Named::ArrowRight) if mods.is_empty() && at + 1 < items.len() => {
-                        self.update(UiMessage::CarouselStep(true))
-                    }
-                    Key::Character("d") if mods.is_empty() => self.update(UiMessage::Download(mid, Some(ai))),
-                    Key::Character("r") if mods.is_empty() => self.update(UiMessage::RotateCarousel),
-                    _ => Task::none(),
-                };
+            UiMessage::KeyPressed(key, mods) if self.carousel.as_ref().is_some_and(|c| !c.in_media) => {
+                return self.carousel_key(&key, mods);
             }
             UiMessage::KeyPressed(key, mods) => {
                 let (shift, alt) = (mods.shift(), mods.alt());
@@ -3124,8 +3285,24 @@ impl BeeperGuiApp {
         let found =
             hits.iter().flat_map(|m| &m.attachments).filter(|a| matches!(a.attachment_type.as_str(), "img" | "video"));
         let found = found.filter_map(|a| a.poster_img.clone().or_else(|| a.src_url.clone()));
+        let tiles = self.media_window.iter().filter(|w| w.tab == 0 && client.is_some());
+        let tiles = tiles.flat_map(|w| media_items(&st, 0).into_iter().take(w.shown));
+        let shown = match &self.carousel {
+            Some(c) if c.in_media => {
+                let (items, at) = self.carousel_items(&st);
+                let size = self.media_window.as_ref().expect("the Media window is open").size;
+                let (start, end) = filmstrip(&size, at, items.len());
+                items[start..end].to_vec()
+            }
+            c => c.iter().map(|c| (c.mid.clone(), c.ai)).collect(),
+        };
+        let shown = shown.into_iter().map(|(m, k)| (st.msg_idx_by_id[&m], k));
+        let viewer = tiles.chain(shown).filter_map(|(i, k)| {
+            let a = &st.messages[i].attachments[k];
+            a.poster_img.clone().or_else(|| a.src_url.clone())
+        });
         let urls: HashSet<String> =
-            images.chain(gif_urls).chain(found).filter(|u| !self.media.contains_key(u)).collect();
+            images.chain(gif_urls).chain(found).chain(viewer).filter(|u| !self.media.contains_key(u)).collect();
         drop(st);
         self.media.extend(urls.iter().map(|u| (u.clone(), None)));
         Task::batch(urls.into_iter().map(|url| {
@@ -3181,17 +3358,17 @@ impl BeeperGuiApp {
                         )
                     ) =>
             {
-                Some(UiMessage::KeyPressed(key, modifiers))
+                Some(UiMessage::WindowKey(id, key, modifiers))
             }
             _ => None,
         });
         let system = iced::system::theme_changes().map(UiMessage::SystemTheme);
         let carousel = self.carousel.is_some().then(|| {
-            iced::event::listen_with(|e, _, _| match e {
+            iced::event::listen_with(|e, _, id| match e {
                 Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Character(c), modifiers, .. })
                     if modifiers.is_empty() && matches!(c.as_str(), "d" | "r") =>
                 {
-                    Some(UiMessage::KeyPressed(Key::Character(c), modifiers))
+                    Some(UiMessage::WindowKey(id, Key::Character(c), modifiers))
                 }
                 _ => None,
             })
@@ -3213,6 +3390,12 @@ impl BeeperGuiApp {
             || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
             || self.playing_video.as_ref().is_some_and(|(_, s)| matches!(s, Some(Ok(_))))
             || self.pasted.as_ref().is_some_and(|p| p.frames.len() > 1)
+            || self.carousel.as_ref().is_some_and(|c| {
+                let st = self.store.read().unwrap();
+                let a = &st.messages[st.msg_idx_by_id[&c.mid]].attachments[c.ai];
+                let url = a.poster_img.as_ref().or(a.src_url.as_ref());
+                url.and_then(|u| self.media.get(u)?.as_ref()?.as_ref().ok()).is_some_and(|f| f.len() > 1)
+            })
             || (self.show_gif_picker
                 && self.gifs.iter().any(|g| {
                     self.media.get(&g.preview_url).and_then(|v| v.as_ref()?.as_ref().ok()).is_some_and(|f| f.len() > 1)
@@ -3246,6 +3429,8 @@ impl BeeperGuiApp {
     pub fn view(&self, id: window::Id) -> El<'_> {
         if Some(id) == self.settings_window {
             self.view_settings()
+        } else if let Some(w) = self.media_window.as_ref().filter(|w| w.id == id) {
+            self.view_media(w)
         } else if Some(id) == self.login_window {
             self.view_login()
         } else {
@@ -3354,7 +3539,7 @@ impl BeeperGuiApp {
             container(card).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(76.0))
         });
         let confirm = self.confirm.filter(|&d| d != ASK_LOGOUT).map(|d| self.view_confirm(d));
-        let carousel = self.carousel.as_ref().map(|(mid, ai, turns)| self.view_carousel(mid, *ai, *turns));
+        let carousel = self.carousel.as_ref().filter(|c| !c.in_media).map(|c| self.view_carousel(c));
         stack![base].push(toast).push(menu).push(scrim).push(select).push(confirm).push(carousel).into()
     }
 
@@ -4026,7 +4211,7 @@ impl BeeperGuiApp {
         .width(68)
         .padding(Padding::ZERO.top(14.0));
         let me = st.me().full_name.as_deref().expect("self name");
-        let media = UiMessage::OpenQuickLook("Media".into(), "Photos, videos, and files from all chats".into());
+        let media = UiMessage::OpenMedia;
         let me_btn = button(avatar(me, 36.0, p))
             .padding(0)
             .style(btn_style([CLEAR; 3], [p.text; 3], 18.0))
@@ -4767,7 +4952,7 @@ impl BeeperGuiApp {
                                 ),
                             )
                         } else {
-                            (base, UiMessage::OpenCarousel(m.id.clone(), ai))
+                            (base, UiMessage::OpenCarousel(m.id.clone(), ai, false))
                         }
                     };
                     button(slot).padding(0).style(btn_style([CLEAR; 3], [p.text; 3], 17.0)).on_press(press).into()
@@ -5514,14 +5699,7 @@ impl BeeperGuiApp {
                     card(title, sub.spacing(4).align_y(Center).into())
                 }
                 (None, None, Some(a)) => {
-                    let mime = a.mime_type.as_deref().unwrap_or("");
-                    let kind = match mime {
-                        _ if mime.starts_with("audio/") => "Audio",
-                        "application/pdf" => "PDF",
-                        _ if mime.starts_with("text/") => "Text",
-                        _ if mime.starts_with("application/") => "Document",
-                        _ => "File",
-                    };
+                    let kind = file_kind(a.mime_type.as_deref());
                     let name = a.file_name.clone().unwrap_or_else(|| "Attachment".into());
                     card(name, semi(kind, 10.0).line_height(Pixels(12.0)).color(p.text).into())
                 }
@@ -5589,51 +5767,106 @@ impl BeeperGuiApp {
         })))
     }
 
-    /// The images and GIFs of the open chat, oldest first, as (message, attachment index).
-    fn carousel_items(&self, st: &BeeperStore) -> Vec<(String, usize)> {
-        let chat = self.selected_chat_id.as_deref().expect("an open chat");
-        let messages = st.chat_msg_indices[chat].iter().map(|&i| &st.messages[i]);
-        messages
-            .flat_map(|m| {
-                let shown = |(_, a): &(usize, &Attachment)| a.attachment_type == "img" || a.is_gif == Some(true);
-                m.attachments.iter().enumerate().filter(shown).map(|(ai, _)| (m.id.clone(), ai))
-            })
-            .collect()
+    /// The (message, attachment index) items of the carousel, and the position of the shown one:
+    /// the images and GIFs of the open chat, oldest first, or the Media window items.
+    fn carousel_items(&self, st: &BeeperStore) -> (Vec<(String, usize)>, usize) {
+        let c = self.carousel.as_ref().expect("the carousel is open");
+        let items: Vec<_> = match c.in_media {
+            true => media_items(st, 0).into_iter().map(|(i, k)| (st.messages[i].id.clone(), k)).collect(),
+            false => {
+                let chat = self.selected_chat_id.as_deref().expect("an open chat");
+                let messages = st.chat_msg_indices[chat].iter().map(|&i| &st.messages[i]);
+                messages
+                    .flat_map(|m| {
+                        let shown =
+                            |(_, a): &(usize, &Attachment)| a.attachment_type == "img" || a.is_gif == Some(true);
+                        m.attachments.iter().enumerate().filter(shown).map(|(ai, _)| (m.id.clone(), ai))
+                    })
+                    .collect()
+            }
+        };
+        let at = items.iter().position(|(m, k)| *m == c.mid && *k == c.ai).expect("the carousel shows its item");
+        (items, at)
     }
 
-    fn view_carousel<'a>(&'a self, mid: &str, ai: usize, turns: u8) -> El<'a> {
+    fn carousel_key(&mut self, key: &Key, mods: keyboard::Modifiers) -> Task<UiMessage> {
+        let (items, at) = self.carousel_items(&self.store.read().unwrap());
+        let c = self.carousel.clone().expect("the carousel is open");
+        match key.as_ref() {
+            Key::Named(Named::Escape) => self.update(UiMessage::CloseCarousel),
+            Key::Named(Named::ArrowLeft) if mods.is_empty() && at > 0 => self.update(UiMessage::CarouselStep(false)),
+            Key::Named(Named::ArrowRight) if mods.is_empty() && at + 1 < items.len() => {
+                self.update(UiMessage::CarouselStep(true))
+            }
+            Key::Character("d") if mods.is_empty() => self.update(UiMessage::Download(c.mid, Some(c.ai))),
+            Key::Character("r") if mods.is_empty() => self.update(UiMessage::RotateCarousel),
+            _ => Task::none(),
+        }
+    }
+
+    /// The square cover crop of an image or video poster, or an empty tile while it loads.
+    fn thumb<'a>(&self, a: &Attachment, size: f32, r: f32) -> El<'a> {
+        let url = a.poster_img.as_ref().or(a.src_url.as_ref());
+        match url.and_then(|u| self.media.get(u)?.as_ref()) {
+            Some(Ok(frames)) => image(frames[0].0.clone())
+                .width(size)
+                .height(size)
+                .content_fit(iced::ContentFit::Cover)
+                .border_radius(r)
+                .into(),
+            _ => container(Space::new()).width(size).height(size).style(fill_box(self.pal.chip, r)).into(),
+        }
+    }
+
+    /// The name Desktop shows for the sender of a message.
+    fn sender_name<'s>(st: &'s BeeperStore, m: &'s Message) -> &'s str {
+        match m.is_sender == Some(true) {
+            true => st.me().full_name.as_deref().expect("self name"),
+            false => m.sender_name.as_deref().expect("sender name"),
+        }
+    }
+
+    fn view_carousel<'a>(&'a self, car: &Carousel) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read().unwrap();
+        let (mid, ai) = (car.mid.as_str(), car.ai);
         let m = &st.messages[st.msg_idx_by_id[mid]];
         let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
         let a = &m.attachments[ai];
-        let items = self.carousel_items(&st);
-        let at = items.iter().position(|(i, k)| i == mid && *k == ai).expect("the carousel shows a chat image");
+        let (items, at) = self.carousel_items(&st);
         let h24 = st.settings.pref("timeFormat") == 1;
         let white = Color::WHITE;
         let control = |h: &svg::Handle, msg| {
             button(tinted(h, 20.0, white)).padding(0).style(btn_style([CLEAR; 3], [white; 3], 0.0)).on_press(msg)
         };
-        let title = row![
-            self.chat_avatar(c, 28.0),
-            ell(&c.title, 600.0, 14.0, Weight::Medium).color(white),
-            txt(format_short_ts(&m.timestamp, h24), 12.0).color(white.scale_alpha(0.7)),
-        ]
-        .spacing(8)
-        .align_y(Center);
-        let controls = row![
-            control(&SYS_ROTATE, UiMessage::RotateCarousel),
-            control(&SYS_DOWNLOAD, UiMessage::Download(mid.to_string(), Some(ai))),
-            control(&SYS_CLOSE, UiMessage::CloseModals),
-        ]
-        .spacing(8);
+        let (face, name) = match car.in_media {
+            true => {
+                let u = c.participants.items.iter().find(|u| u.id == m.sender_id);
+                let name = Self::sender_name(&st, m);
+                (u.map(|u| self.face(u.img_url.as_deref(), name, 28.0)), name)
+            }
+            false => (Some(self.chat_avatar(c, 28.0)), c.title.as_str()),
+        };
+        let title = row![]
+            .push(face)
+            .push(ell(name, 600.0, 14.0, Weight::Medium).color(white))
+            .push(txt(format_short_ts(&m.timestamp, h24), 12.0).color(white.scale_alpha(0.7)))
+            .spacing(8)
+            .align_y(Center);
+        let go = car.in_media.then(|| control(&MEDIA_ICONS[3], UiMessage::GoToMessage(c.id.clone(), mid.into())));
+        let controls = row![]
+            .push(go)
+            .push(control(&SYS_ROTATE, UiMessage::RotateCarousel))
+            .push(control(&SYS_DOWNLOAD, UiMessage::Download(mid.to_string(), Some(ai))))
+            .push(control(&SYS_CLOSE, UiMessage::CloseCarousel))
+            .spacing(8);
         let head =
             stack![container(title).center_x(Fill).center_y(34), container(controls).align_right(Fill).center_y(34)];
         let url = a.poster_img.as_ref().or(a.src_url.as_ref());
         let shown: El<'a> = match url.and_then(|u| self.media.get(u)?.as_ref()) {
             Some(Ok(frames)) => image(current_frame(frames, self.started.elapsed().as_millis()))
                 .content_fit(iced::ContentFit::ScaleDown)
-                .rotation(iced::Rotation::Solid(iced::Radians(-std::f32::consts::FRAC_PI_2 * f32::from(turns))))
+                .rotation(iced::Rotation::Solid(iced::Radians(-std::f32::consts::FRAC_PI_2 * f32::from(car.turns))))
                 .into(),
             _ => Space::new().into(),
         };
@@ -5656,11 +5889,167 @@ impl BeeperGuiApp {
                 b.into()
             }
         };
+        let strip = car.in_media.then(|| {
+            let (start, end) =
+                filmstrip(&self.media_window.as_ref().expect("the Media window is open").size, at, items.len());
+            let thumbs = items[start..end].iter().enumerate().map(|(k, (mid, ai))| -> El<'a> {
+                let a = &st.messages[st.msg_idx_by_id[mid]].attachments[*ai];
+                let edge = if start + k == at { p.accent } else { CLEAR };
+                let face = container(self.thumb(a, 44.0, 6.0)).padding(2).style(bordered_box(CLEAR, edge, 2.0, 8.0));
+                let open = UiMessage::OpenCarousel(mid.clone(), *ai, true);
+                button(face).padding(0).style(btn_style([CLEAR; 3], [white; 3], 8.0)).on_press(open).into()
+            });
+            let row = container(Row::with_children(thumbs).spacing(4)).padding([6, 10]).width(Fill);
+            container(mouse_area(row.style(fill_box(Color::BLACK.scale_alpha(0.45), 0.0))).on_press(UiMessage::Noop))
+                .align_bottom(Fill)
+        });
         let body = column![container(head).padding(8).height(50), main];
-        let layer = stack![body].push((at > 0).then(|| step(false))).push((at + 1 < items.len()).then(|| step(true)));
+        let layer = stack![body]
+            .push((at > 0).then(|| step(false)))
+            .push((at + 1 < items.len()).then(|| step(true)))
+            .push(strip);
         mouse_area(container(layer).width(Fill).height(Fill).style(fill_box(Color::BLACK.scale_alpha(0.85), 0.0)))
-            .on_press(UiMessage::CloseModals)
+            .on_press(UiMessage::CloseCarousel)
             .into()
+    }
+
+    fn view_media<'a>(&'a self, w: &MediaWindow) -> El<'a> {
+        let p = &self.pal;
+        let st = self.store.read().unwrap();
+        let [file_icon, video_icon, link_icon, _] = &*MEDIA_ICONS;
+        let items = media_items(&st, w.tab);
+        let sub = |s: String| txt(s, 12.0).line_height(Pixels(15.0)).color(p.on_secondary);
+        let tabs = MEDIA_TABS.iter().enumerate().map(|(i, label)| -> El<'a> {
+            let bg = if i == w.tab { p.chip } else { CLEAR };
+            let label = txt(*label, 12.0).line_height(Pixels(15.0)).color(p.strong);
+            button(label)
+                .padding([2, 8])
+                .style(btn_style([bg; 3], [p.strong; 3], 20.0))
+                .on_press(UiMessage::MediaTab(i))
+                .into()
+        });
+        let tabs = container(Row::with_children(tabs).spacing(4)).padding(4).style(fill_box(p.card, 20.0));
+        let header = container(tabs).padding([8, 10]).center_y(52);
+        let rule = container(Space::new()).width(Fill).height(0.5).style(fill_box(p.outline, 0.0));
+        let inner = w.size.width - 16.0;
+        let cols = ((inner / 160.0) as usize).max(3);
+        let tile = (inner - 20.0 - 4.0 * (cols - 1) as f32) / cols as f32;
+        let text_w = inner - 20.0 - 48.0 - 8.0 - 150.0;
+        let mut groups: Vec<(String, Vec<(usize, usize)>)> = Vec::new();
+        for &(i, k) in items.iter().take(w.shown) {
+            let label = media_group(day_num(&st.messages[i].timestamp));
+            match groups.last_mut() {
+                Some((l, g)) if *l == label => g.push((i, k)),
+                _ => groups.push((label, vec![(i, k)])),
+            }
+        }
+        let body = groups.iter().fold(Column::new(), |col, (label, group)| {
+            let days = group.iter().map(|&(i, _)| day_num(&st.messages[i].timestamp));
+            let (lo, hi) = (days.clone().min().expect("a group has items"), days.max().expect("a group has items"));
+            let range = if lo == hi { medium_date(lo) } else { format!("{} - {}", medium_date(lo), medium_date(hi)) };
+            let head = column![bold(label.clone(), 15.0).line_height(Pixels(20.0)).color(p.strong), sub(range)];
+            let col = col.push(container(head).padding(Padding::new(6.0).top(12.0).left(10.0).right(10.0)));
+            match w.tab {
+                0 => group.chunks(cols).fold(col, |col, chunk| {
+                    let tiles = chunk.iter().map(|&(i, k)| -> El<'a> {
+                        let m = &st.messages[i];
+                        let a = &m.attachments[k];
+                        let badge = match (a.is_gif == Some(true), a.attachment_type == "video") {
+                            (true, _) => Some(row![semi("GIF", 12.0)]),
+                            (false, true) => {
+                                let time = a.duration.map(|d| semi(clip_time(d), 12.0));
+                                Some(row![tinted(video_icon, 12.0, Color::WHITE)].push(time).spacing(2).align_y(Center))
+                            }
+                            _ => None,
+                        };
+                        let badge = badge.map(|b| {
+                            let b = container(b).padding([1, 4]).style(move |_: &Theme| container::Style {
+                                text_color: Some(Color::WHITE),
+                                ..fill_box(Color::BLACK.scale_alpha(0.55), 8.0)(&Theme::Dark)
+                            });
+                            container(b).padding(4)
+                        });
+                        let fade = iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
+                            .add_stop(0.0, CLEAR)
+                            .add_stop(1.0, Color::BLACK.scale_alpha(0.55));
+                        let name =
+                            ell(Self::sender_name(&st, m), tile - 12.0, 12.0, Weight::Semibold).color(Color::WHITE);
+                        let name =
+                            container(name).width(Fill).padding(Padding::new(4.0).top(10.0).left(6.0).right(6.0));
+                        let name = container(name.style(move |_| container::Style {
+                            background: Some(fade.into()),
+                            border: border::rounded(border::Radius::default().bottom(8)),
+                            ..Default::default()
+                        }))
+                        .align_bottom(Fill);
+                        let face = stack![self.thumb(a, tile, 8.0)].push(badge).push(name).width(tile).height(tile);
+                        let open = UiMessage::OpenCarousel(m.id.clone(), k, true);
+                        button(face).padding(0).style(btn_style([CLEAR; 3], [p.strong; 3], 8.0)).on_press(open).into()
+                    });
+                    col.push(
+                        container(Row::with_children(tiles).spacing(4))
+                            .padding(Padding::new(0.0).bottom(4.0).left(10.0).right(10.0)),
+                    )
+                }),
+                _ => group.iter().fold(col, |col, &(i, k)| {
+                    let m = &st.messages[i];
+                    let (glyph, size, title, line, press) = match w.tab {
+                        1 => {
+                            let l = &m.links[k];
+                            let host = l.url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(&l.url);
+                            let title = if l.title.is_empty() { host.to_string() } else { l.title.clone() };
+                            (link_icon, 16.0, title, l.url.clone(), UiMessage::OpenUrl(l.url.clone()))
+                        }
+                        _ => {
+                            let a = &m.attachments[k];
+                            let kind = file_kind(a.mime_type.as_deref());
+                            let line = std::iter::once(kind.to_string()).chain(a.file_size.map(human_size));
+                            let name = a.file_name.clone().unwrap_or_else(|| "Attachment".into());
+                            (
+                                file_icon,
+                                18.0,
+                                name,
+                                line.collect::<Vec<_>>().join(" · "),
+                                UiMessage::Download(m.id.clone(), Some(k)),
+                            )
+                        }
+                    };
+                    let thumb = container(tinted(glyph, size, p.on_secondary)).center(40).style(fill_box(p.chip, 8.0));
+                    let text = column![
+                        ell(&title, text_w, 14.0, Weight::Semibold).line_height(Pixels(17.0)).color(p.strong),
+                        ell(&line, text_w, 12.0, Weight::Normal).line_height(Pixels(15.0)).color(p.on_secondary),
+                    ]
+                    .width(Fill);
+                    let meta = column![sub(Self::sender_name(&st, m).to_string()), sub(relative_date(&m.timestamp))]
+                        .align_x(Right);
+                    let line = row![thumb, text, meta].spacing(8).align_y(Center);
+                    col.push(
+                        button(line)
+                            .padding([6, 10])
+                            .width(Fill)
+                            .style(btn_style([CLEAR, p.chip, p.chip], [p.strong; 3], 0.0))
+                            .on_press(press),
+                    )
+                }),
+            }
+        });
+        let more = w.shown < items.len();
+        let list: El<'a> = match items.is_empty() {
+            true => container(txt("Nothing here", 14.0).color(p.on_secondary)).center_x(Fill).padding(16).into(),
+            false => scrollable(body.push(Space::new().height(8)))
+                .direction(bar())
+                .height(Fill)
+                .style(scroll_style(p.scroll))
+                .on_scroll(
+                    move |v| if more && v.relative_offset().y > 0.8 { UiMessage::MediaMore } else { UiMessage::Noop },
+                )
+                .into(),
+        };
+        let title = container(semi("Media", 14.0).color(p.strong)).center_x(Fill).padding([8, 0]);
+        let pane = container(column![header, rule, list]).width(Fill).height(Fill).style(fill_box(p.card, 12.0));
+        let base = container(column![title, pane]).padding(8).width(Fill).height(Fill).style(fill_box(p.window, 0.0));
+        let carousel = self.carousel.as_ref().filter(|c| c.in_media).map(|c| self.view_carousel(c));
+        stack![base].push(carousel).into()
     }
 
     fn view_forward<'a>(&'a self, f: &'a Forward) -> El<'a> {
@@ -6559,5 +6948,18 @@ mod tests {
         assert_eq!(unused_path(&dir, "a.png"), dir.join("a (1).png"));
         assert_eq!(unused_path(&dir, ".env"), dir.join(".env"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn media_window_formats_like_desktop() {
+        assert_eq!([5.0, 65.4, 3723.0].map(clip_time), ["00:05", "01:05", "01:02:03"]);
+        assert_eq!(
+            [file_kind(Some("application/pdf")), file_kind(Some("audio/ogg")), file_kind(None)],
+            ["PDF", "Audio", "File"]
+        );
+        let size = Size::new(540.0, 720.0);
+        assert_eq!([0, 9, 29].map(|at| filmstrip(&size, at, 30)), [(0, 10), (4, 14), (20, 30)]);
+        assert_eq!(filmstrip(&size, 1, 3), (0, 3));
+        assert_eq!(medium_date(20_743), "Oct 17, 2026");
     }
 }
