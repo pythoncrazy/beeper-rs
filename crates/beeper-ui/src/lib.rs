@@ -1095,6 +1095,11 @@ static MAT_LINK: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| 
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="M440-280H280q-83 0-141.5-58.5T80-480q0-83 58.5-141.5T280-680h160v80H280q-50 0-85 35t-35 85q0 50 35 85t85 35h160v80ZM320-440v-80h320v80H320Zm200 160v-80h160q50 0 85-35t35-85q0-50-35-85t-85-35H520v-80h160q83 0 141.5 58.5T880-480q0 83-58.5 141.5T680-280H520Z"/></svg>"##[..])
 });
 
+/// Desktop's system icon arrow-back.
+static ARROW_BACK: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="m6.52 10.833 4.668 4.667L10 16.666 3.333 10 10 3.333 11.188 4.5 6.52 9.166h10.146v1.667z"/></svg>"##[..])
+});
+
 fn fmt_phone(s: &str) -> String {
     let b = s.as_bytes();
     if b.len() == 12 && b.starts_with(b"+1") && b[2..].iter().all(u8::is_ascii_digit) {
@@ -6532,11 +6537,11 @@ impl BeeperGuiApp {
         };
         if self.join_matrix_mode {
             let back = button(
-                row![ic(icon::CHEVRON_RIGHT, 14.0).color(p.strong), semi("Back", 13.0).color(p.strong)]
+                row![tinted(&ARROW_BACK, 18.0, p.strong), txt("Back", 12.0).line_height(Pixels(15.0)).color(p.strong)]
                     .spacing(4)
                     .align_y(Center),
             )
-            .padding([4, 8])
+            .padding([4, 6])
             .style(ghost(p, 6.0))
             .on_press(UiMessage::ToggleJoinMatrix);
             let head =
