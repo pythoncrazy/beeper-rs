@@ -310,12 +310,14 @@ fn unresolved_media(c: &Value) -> Option<String> {
     c.get("com.beeper.unresolved_media").filter(|v| !v.is_null()).map(Value::to_string)
 }
 
-async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<Op> {
+/// The store operation for a timeline event. With `hidden`, the events that Desktop hides become `HIDDEN` rows.
+async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: bool) -> Option<Op> {
     let deleted = e["unsigned"].get("redacted_because").is_some();
     let (c, rel) = (&e["content"], &e["content"]["m.relates_to"]);
     let sender = s(&e["sender"]).expect("event sender");
     let id = s(&e["event_id"]).expect("event ID");
     let kind = s(&e["type"]).expect("event type");
+    let hide = || hidden.then(|| (Some(kind.clone()), Vec::new(), "HIDDEN"));
     let (text, attachments, message_type) = match kind.as_str() {
         "m.room.message" | "m.sticker" | "m.room.encrypted" if deleted => (None, Vec::new(), "TEXT"),
         _ if deleted => return None,
@@ -340,8 +342,8 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
             });
         }
         "m.room.encrypted" => (Some(UTD_TEXT.into()), Vec::new(), "TEXT"),
-        "m.room.member" => (Some(membership(room, e).await?), Vec::new(), "MEMBERSHIP"),
-        k => content(k, c)?,
+        "m.room.member" => membership(room, e).await.map(|t| (Some(t), Vec::new(), "MEMBERSHIP")).or_else(hide)?,
+        k => content(k, c).or_else(hide)?,
     };
     let profile_name = s(&c["com.beeper.per_message_profile"]["displayname"]);
     let user = matrix_sdk::ruma::UserId::parse(&sender).expect("sender is a user ID");
@@ -591,10 +593,11 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
         events = older.chain(events).collect();
     }
     let (mut ops, mut non_messages) = (Vec::new(), Vec::new());
+    let hidden = store.read().unwrap().settings.on("hiddenEvents");
     for e in &events {
         let v: Value = serde_json::from_str(e.raw().json().get()).expect("timeline event JSON");
         ops.extend(s(&v["unsigned"]["transaction_id"]).map(Op::Remove));
-        match op(room, &chat_id, &chat.account_id, &v).await {
+        match op(room, &chat_id, &chat.account_id, &v, hidden).await {
             Some(Op::Upsert(m)) => ops.push(Op::Upsert(m)),
             o => {
                 non_messages.extend(s(&v["event_id"]));
