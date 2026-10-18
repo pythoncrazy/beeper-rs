@@ -1,8 +1,10 @@
 //! Desktop's message notifications (`maybeSendNotification` and `sendNotification`).
-use crate::BeeperGuiApp;
+use crate::{BeeperGuiApp, UiMessage};
 use beeper_core::config::account_network;
 use beeper_core::models::NetworkKind::*;
-use beeper_core::models::{Attachment, Message};
+use beeper_core::models::{Attachment, Chat, Message};
+use iced::Task;
+use std::collections::{HashMap, HashSet};
 
 /// Desktop's attachment text: the verbose form when the message has no text.
 pub(crate) fn attachment_text(all: &[Attachment], verbose: bool) -> Option<String> {
@@ -99,10 +101,166 @@ pub(crate) fn otp_code(text: &str) -> Option<&str> {
     (!file).then_some(found)
 }
 
+/// A notification of a chat, for the message with the ID `message`.
+#[derive(Clone)]
+pub(crate) struct Note {
+    chat: String,
+    message: String,
+    title: String,
+    body: String,
+    silent: bool,
+}
+
+/// Desktop's notification state of each chat.
+#[derive(Default)]
+pub(crate) struct Pending {
+    timer: u64,
+    /// `notificationsQueue`: the timer of the last delayed message, and the delayed notifications.
+    queued: HashMap<String, (u64, Vec<Note>)>,
+    /// `renotifies`: the timer, and the notification to repeat.
+    repeat: HashMap<String, (u64, Note)>,
+    /// The users that type, and `lastTypingNotificationParticipantID`.
+    typing: HashMap<String, (Vec<String>, Option<String>)>,
+    /// The chats of the store at boot, which are not new message requests.
+    old_chats: HashSet<String>,
+}
+
+impl Pending {
+    pub(crate) fn new(chats: &[Chat]) -> Self {
+        Self { old_chats: chats.iter().map(|c| c.id.clone()).collect(), ..Self::default() }
+    }
+}
+
+fn wait(secs: u64, then: UiMessage) -> Task<UiMessage> {
+    Task::perform(tokio::time::sleep(std::time::Duration::from_secs(secs)), move |()| then)
+}
+
 impl BeeperGuiApp {
-    /// The title, the body, whether the sound is off, and the code to copy, for the notification of a new message
-    /// if Desktop shows one. A message with a code always shows one when "Auto copy OTP/2FA codes" is on.
-    pub(crate) fn notification(&mut self, m: &Message) -> Option<(String, String, bool, Option<String>)> {
+    /// Desktop's `maybeSendNotification`: show the notification now, or after "Delay notifications for".
+    pub(crate) fn notify_message(&mut self, m: &Message) -> Task<UiMessage> {
+        if let Some(t) = self.pending.typing.get_mut(&m.chat_id) {
+            t.1 = None;
+        }
+        let Some((note, otp)) = self.notification(m) else { return Task::none() };
+        if let Some(code) = otp {
+            return Task::batch([self.show_note(note, false), iced::clipboard::write(code)]);
+        }
+        let delay = self.store.read().unwrap().settings.secs("notificationDelay");
+        if delay == 0 {
+            return self.show_note(note, true);
+        }
+        self.pending.timer += 1;
+        let chat = note.chat.clone();
+        let queued = self.pending.queued.entry(chat.clone()).or_default();
+        queued.0 = self.pending.timer;
+        queued.1.push(note);
+        wait(delay, UiMessage::NotifyTimer(chat, self.pending.timer))
+    }
+
+    /// Show a notification, and with `repeat` show it again after "Repeat notification if still unread after".
+    fn show_note(&mut self, note: Note, repeat: bool) -> Task<UiMessage> {
+        let secs = self.store.read().unwrap().settings.secs("repeatNotification");
+        let chat = note.chat.clone();
+        let again = (repeat && secs > 0).then(|| {
+            self.pending.timer += 1;
+            self.pending.repeat.insert(chat.clone(), (self.pending.timer, note.clone()));
+            wait(secs, UiMessage::NotifyTimer(chat.clone(), self.pending.timer))
+        });
+        let show = Task::perform(show(note.title, note.body, note.silent), move |r| {
+            UiMessage::Notified(r.map(|id| (id, chat)))
+        });
+        Task::batch([show].into_iter().chain(again))
+    }
+
+    /// Desktop's `sendQueuedNotifications` and `renotifyIfUnread`.
+    pub(crate) fn notify_timer(&mut self, chat: String, timer: u64) -> Task<UiMessage> {
+        let st = self.store.read().unwrap();
+        let unread = st.chat_idx_by_id.get(&chat).is_some_and(|&i| {
+            let c = &st.chats[i];
+            c.unread_count > 0
+                && c.is_muted != Some(true)
+                && c.is_hidden_from_inbox != Some(true)
+                && c.is_request != Some(true)
+        });
+        let (notes, repeat) = match (self.pending.queued.get(&chat), self.pending.repeat.get(&chat)) {
+            (Some(q), _) if q.0 == timer => (self.pending.queued.remove(&chat).expect("queued").1, true),
+            (_, Some(r)) if r.0 == timer => {
+                let note = self.pending.repeat.remove(&chat).expect("repeated").1;
+                let kept =
+                    st.msg_idx_by_id.get(&note.message).is_some_and(|&i| st.messages[i].is_deleted != Some(true));
+                let seen = self.focused && self.selected_chat_id.as_ref() == Some(&chat);
+                let on = kept && !seen && st.settings.on("messageNotifications");
+                (on.then_some(note).into_iter().collect(), false)
+            }
+            _ => (Vec::new(), false),
+        };
+        drop(st);
+        Task::batch(notes.into_iter().filter(|_| unread).map(|n| self.show_note(n, repeat)).collect::<Vec<_>>())
+    }
+
+    /// Desktop's `showTypingNotification` for each user that starts to type.
+    pub(crate) fn notify_typing(&mut self, chat: String) -> Task<UiMessage> {
+        let st = self.store.read().unwrap();
+        let now = st.typing.get(&chat).cloned().unwrap_or_default();
+        let (before, last) = self.pending.typing.entry(chat.clone()).or_default();
+        let started: Vec<String> = now.iter().filter(|u| !before.contains(u)).cloned().collect();
+        *before = now;
+        let Some(c) = st.chat_idx_by_id.get(&chat).map(|&i| &st.chats[i]) else { return Task::none() };
+        let shown = cfg!(target_os = "linux")
+            && self.selected_chat_id.as_ref() != Some(&chat)
+            && c.is_muted != Some(true)
+            && c.is_hidden_from_inbox != Some(true)
+            && c.is_request != Some(true)
+            && st.settings.on("notifyTyping");
+        let mut notes = Vec::new();
+        for user in started.into_iter().filter(|_| shown) {
+            if last.as_ref() == Some(&user) {
+                continue;
+            }
+            *last = Some(user.clone());
+            let Some(p) = c.participants.items.iter().find(|p| p.id == user) else { continue };
+            let name = p.full_name.as_deref().expect("members have a name");
+            let body = if c.chat_type == "group" { format!("{name} is typing...") } else { "typing...".into() };
+            notes.push(Note {
+                chat: chat.clone(),
+                message: String::new(),
+                title: c.title.clone(),
+                body,
+                silent: false,
+            });
+        }
+        drop(st);
+        Task::batch(notes.into_iter().map(|n| self.show_note(n, false)).collect::<Vec<_>>())
+    }
+
+    /// The notifications of a changed chat: Desktop's reaction notification, and its message request notification
+    /// in `pushThread`.
+    pub(crate) fn notify_chat(&mut self, c: &Chat) -> Task<UiMessage> {
+        let reaction = c.preview.as_ref().filter(|p| p.message_type.as_deref() == Some("REACTION"));
+        let reaction = reaction.map(|p| self.notify_message(p));
+        let request = cfg!(target_os = "linux")
+            && c.is_request == Some(true)
+            && !self.pending.old_chats.contains(&c.id)
+            && c.last_activity.as_ref().is_some_and(|t| *t > self.booted)
+            && self.store.read().unwrap().settings.on("requestNotifications")
+            && self.notified.insert(c.id.clone());
+        let request = request.then(|| {
+            let body = if c.chat_type == "group" { "Group Invitation" } else { "Chat Invitation" };
+            let note = Note {
+                chat: c.id.clone(),
+                message: String::new(),
+                title: c.title.clone(),
+                body: body.into(),
+                silent: false,
+            };
+            self.show_note(note, false)
+        });
+        Task::batch(reaction.into_iter().chain(request))
+    }
+
+    /// The notification of a new message, and the code to copy, if Desktop shows one. A message with a code always
+    /// shows one when "Auto copy OTP/2FA codes" is on.
+    fn notification(&mut self, m: &Message) -> Option<(Note, Option<String>)> {
         if !cfg!(target_os = "linux") {
             return None;
         }
@@ -125,6 +283,7 @@ impl BeeperGuiApp {
                 && chat.is_request != Some(true)
                 && prefs.on("messageNotifications")
                 && (prefs.on("groupNotifications") || !group)
+                && (m.message_type.as_deref() != Some("REACTION") || prefs.on("notifyReactions"))
                 && !(self.focused && (self.selected_chat_id.as_ref() == Some(&chat.id) || !prefs.on("notifyInFocus")));
         if !shown || !self.notified.insert(m.id.clone()) {
             return None;
@@ -132,7 +291,8 @@ impl BeeperGuiApp {
         let text = body(m) + if otp.is_some() { " (OTP auto copied to clipboard)" } else { "" };
         let sender = m.sender_name.as_deref().filter(|s| group && !text.starts_with(&format!("{s} ")));
         let silent = prefs.pref(if group { "groupSound" } else { "messageSound" }) == 1;
-        Some((chat.title.clone(), sender.map_or(text.clone(), |s| format!("{s}: {text}")), silent, otp))
+        let body = sender.map_or(text.clone(), |s| format!("{s}: {text}"));
+        Some((Note { chat: chat.id.clone(), message: m.id.clone(), title: chat.title.clone(), body, silent }, otp))
     }
 
     /// Desktop's `clearShownNotifications`: close the notifications of read chats without a reminder, and of the

@@ -757,6 +757,13 @@ impl BeeperSettings {
         options[usize::from(self.pref(key))]
     }
 
+    pub fn secs(&self, key: &str) -> u64 {
+        let Some(crate::prefs::Ad::Desktop(_, crate::prefs::Values::Secs(values))) = crate::prefs::synced(key) else {
+            panic!("{key} is in seconds")
+        };
+        u64::try_from(values[usize::from(self.pref(key))]).expect("positive seconds")
+    }
+
     pub fn on(&self, key: &str) -> bool {
         assert!(matches!(crate::prefs::find(key).control, crate::prefs::Control::Toggle(_)), "{key} is a toggle");
         self.pref(key) == 1
