@@ -1,6 +1,7 @@
 mod cursor;
 pub mod emoji;
 mod format;
+mod gif;
 mod lift;
 pub mod login;
 mod notify;
@@ -269,7 +270,6 @@ pub enum UiMessage {
     ToggleRead(String),
     CopyChatLink(String),
     OpenChatMenu(String),
-    Cursor(Point),
     OpenMessageMenu(String),
     /// Select the message, or unselect it when it is selected.
     ClickMessage(String),
@@ -312,7 +312,6 @@ pub enum UiMessage {
     /// Search the Media window by caption, or close the search with `None`.
     MediaSearch(Option<String>),
     MediaMenu(bool),
-    MediaCursor(Point),
     /// Open the context menu of a Media window item, or close it with `None`.
     MediaItemMenu(Option<(String, usize)>),
     /// Close the Media window item menu and run its action.
@@ -876,19 +875,6 @@ fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
         (image::Handle::from_rgba(px.width(), px.height(), px.into_raw()), u128::from(ms))
     };
     Ok(frames.into_iter().map(frame).collect())
-}
-
-fn current_frame(frames: &Frames, elapsed_ms: u128) -> image::Handle {
-    let total: u128 = frames.iter().map(|f| f.1).sum();
-    if total == 0 {
-        return frames[0].0.clone();
-    }
-    let mut t = elapsed_ms % total;
-    let (handle, _) = frames
-        .iter()
-        .find(|(_, ms)| t.checked_sub(*ms).map(|rest| t = rest).is_none())
-        .expect("the time is below the total delay");
-    handle.clone()
 }
 
 fn faces(chat: &Chat) -> (Vec<&User>, usize) {
@@ -1472,7 +1458,6 @@ struct MediaWindow {
     oldest: bool,
     search: Option<String>,
     menu: bool,
-    cursor: Point,
     /// The item whose context menu is open, as (message, attachment or link index), and where.
     item_menu: Option<(String, usize, Point)>,
     select: bool,
@@ -1767,7 +1752,7 @@ pub struct BeeperGuiApp {
     pub search_room: Option<String>,
     pub search_filters: SearchFilters,
     pub search_select: Option<(usize, iced::Rectangle)>,
-    cursor: Point,
+    cursor: std::cell::Cell<Point>,
     message_menu: Option<(String, Point)>,
     selected_msg: Option<String>,
     forward: Option<Forward>,
@@ -1888,7 +1873,7 @@ impl BeeperGuiApp {
             search_room: None,
             search_filters: SearchFilters::default(),
             search_select: None,
-            cursor: Point::ORIGIN,
+            cursor: Default::default(),
             message_menu: None,
             selected_msg: None,
             image_clipboard: None,
@@ -2792,11 +2777,10 @@ impl BeeperGuiApp {
                 ));
             }
             UiMessage::OpenChatMenu(cid) => {
-                self.chat_menu = Some((cid, self.cursor));
+                self.chat_menu = Some((cid, self.cursor.get()));
                 self.chat_sub = None;
             }
-            UiMessage::Cursor(at) => self.cursor = at,
-            UiMessage::OpenMessageMenu(mid) => self.message_menu = Some((mid, self.cursor)),
+            UiMessage::OpenMessageMenu(mid) => self.message_menu = Some((mid, self.cursor.get())),
             UiMessage::ClickMessage(mid) => {
                 self.selected_msg = (self.selected_msg.as_ref() != Some(&mid)).then_some(mid)
             }
@@ -2839,7 +2823,7 @@ impl BeeperGuiApp {
                     None => operation::focus("composer-input"),
                 };
             }
-            UiMessage::React(mid) => return self.open_emoji(Some((mid, self.cursor))),
+            UiMessage::React(mid) => return self.open_emoji(Some((mid, self.cursor.get()))),
             UiMessage::MessageMenu(msg) => {
                 self.message_menu = None;
                 return self.update(*msg);
@@ -2898,7 +2882,6 @@ impl BeeperGuiApp {
                     oldest: false,
                     search: None,
                     menu: false,
-                    cursor: Point::ORIGIN,
                     item_menu: None,
                     select: false,
                     picked: Vec::new(),
@@ -2928,7 +2911,6 @@ impl BeeperGuiApp {
                 return if open { Task::batch([reload, operation::focus("media-search")]) } else { reload };
             }
             UiMessage::MediaMenu(open) => self.media_mut().menu = open,
-            UiMessage::MediaCursor(at) => self.media_mut().cursor = at,
             UiMessage::Modifiers(mods) => self.mods = mods,
             UiMessage::MediaSelect(on) => {
                 let w = self.media_mut();
@@ -2989,8 +2971,8 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::MediaItemMenu(item) => {
-                let w = self.media_mut();
-                w.item_menu = item.map(|(mid, k)| (mid, k, w.cursor));
+                let at = self.cursor.get();
+                self.media_mut().item_menu = item.map(|(mid, k)| (mid, k, at));
             }
             UiMessage::MediaItemAct(msg) => {
                 self.media_mut().item_menu = None;
@@ -3260,7 +3242,7 @@ impl BeeperGuiApp {
             }
             UiMessage::Voice(msg) => return self.voice(msg),
             UiMessage::ReminderMenu => {
-                self.reminder_menu = Some(self.cursor);
+                self.reminder_menu = Some(self.cursor.get());
             }
             UiMessage::OrderReminders(i) => {
                 self.reminder_menu = None;
@@ -4089,30 +4071,7 @@ impl BeeperGuiApp {
         };
         let remind =
             due.then(|| iced::time::every(std::time::Duration::from_secs(1)).map(|_| UiMessage::CheckReminders));
-        let animated = typing
-            || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
-            || self.pasted.as_ref().is_some_and(|p| p.frames.len() > 1)
-            || self.carousel.as_ref().is_some_and(|c| {
-                let st = self.store.read().unwrap();
-                let a = &st.messages[st.msg_idx_by_id[&c.mid]].attachments[c.ai];
-                let url = a.poster_img.as_ref().or(a.src_url.as_ref());
-                url.and_then(|u| self.media.get(u)?.as_ref()?.as_ref().ok()).is_some_and(|f| f.len() > 1)
-            })
-            || (self.show_gif_picker
-                && self.gifs.iter().any(|g| {
-                    self.media.get(&g.preview_url).and_then(|v| v.as_ref()?.as_ref().ok()).is_some_and(|f| f.len() > 1)
-                }))
-            || self.selected_chat_id.as_ref().is_some_and(|chat| {
-                let st = self.store.read().unwrap();
-                let mut urls =
-                    st.chat_msg_indices.get(chat).into_iter().flatten().flat_map(|&i| &st.messages[i].attachments);
-                urls.any(|a| {
-                    a.src_url
-                        .as_ref()
-                        .and_then(|u| self.media.get(u)?.as_ref()?.as_ref().ok())
-                        .is_some_and(|f| f.len() > 1)
-                })
-            });
+        let animated = typing || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5);
         let tray = (cfg!(target_os = "linux") && self.store.read().unwrap().settings.on("showTrayIcon"))
             .then(|| Subscription::run(tray::events).map(UiMessage::Tray));
         let notes = (!self.notifications.is_empty())
@@ -4134,11 +4093,8 @@ impl BeeperGuiApp {
     }
 
     pub fn view(&self, id: window::Id) -> El<'_> {
-        let view = self.view_window(id);
-        match self.store.read().unwrap().settings.on("pointerCursor") {
-            true => view,
-            false => cursor::arrow(view).into(),
-        }
+        let arrow = !self.store.read().unwrap().settings.on("pointerCursor");
+        cursor::root(self.view_window(id), arrow, &self.cursor).into()
     }
 
     fn view_window(&self, id: window::Id) -> El<'_> {
@@ -4181,8 +4137,7 @@ impl BeeperGuiApp {
         };
         let rail = self.store.read().unwrap().settings.on("showSidebar");
         let rail = rail.then(|| self.view_rail());
-        let body = mouse_area(Row::new().push(rail).push(self.view_sidebar()).push(grip).push(right))
-            .on_move(UiMessage::Cursor);
+        let body = Row::new().push(rail).push(self.view_sidebar()).push(grip).push(right);
         let base: El<'_> = container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0)).into();
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
@@ -5589,7 +5544,7 @@ impl BeeperGuiApp {
     }
 
     fn view_message<'a>(
-        &self,
+        &'a self,
         st: &BeeperStore,
         chat: &Chat,
         m: &Message,
@@ -5702,11 +5657,9 @@ impl BeeperGuiApp {
                         .into()
                     };
                     let base: El<'_> = match thumb_url.as_ref().and_then(|u| self.media.get(u)?.as_ref()) {
-                        Some(Ok(frames)) => image(current_frame(frames, self.started.elapsed().as_millis()))
-                            .width(w)
-                            .height(h)
-                            .border_radius(17.0)
-                            .into(),
+                        Some(Ok(frames)) => {
+                            gif::gif(frames, self.started, move |f| image(f).width(w).height(h).border_radius(17.0))
+                        }
                         Some(Err(_)) if m.unresolved_media.is_none() => {
                             pill("Could not load. Click to try again", 0.45)
                         }
@@ -6090,7 +6043,6 @@ impl BeeperGuiApp {
                 .size(13)
                 .padding([6, 12])
                 .style(input_style(p.input, p.strong, p.sub, p.accent, 8.0));
-            let elapsed = self.started.elapsed().as_millis();
             let carousel: El<'a> = if let Some(err) = &self.gif_error {
                 container(txt(err.clone(), 12.0).color(p.danger)).center_y(215).padding([0, 14]).into()
             } else if self.gif_loading && self.gifs.is_empty() {
@@ -6100,11 +6052,9 @@ impl BeeperGuiApp {
                     let (pw, ph) = g.preview_size;
                     let w = (215.0 * pw as f32 / ph.max(1) as f32).round().max(48.0);
                     let cell: El<'a> = match self.media.get(&g.preview_url).and_then(|v| v.as_ref()) {
-                        Some(Ok(frames)) => image(current_frame(frames, elapsed))
-                            .width(w)
-                            .height(215)
-                            .content_fit(iced::ContentFit::Cover)
-                            .into(),
+                        Some(Ok(frames)) => gif::gif(frames, self.started, move |f| {
+                            image(f).width(w).height(215).content_fit(iced::ContentFit::Cover)
+                        }),
                         _ => container(Space::new()).width(w).height(215).style(fill_box(p.hover, 4.0)).into(),
                     };
                     button(container(cell).clip(true).style(fill_box(CLEAR, 4.0)))
@@ -6210,10 +6160,9 @@ impl BeeperGuiApp {
         let ready = !self.composer.text().trim().is_empty() || self.pasted.is_some();
         let pasted = self.pasted.as_ref().map(|pm| {
             let fg = Color { a: 0.1, ..p.text };
-            let h = current_frame(&pm.frames, self.started.elapsed().as_millis());
-            let preview = container(image(h).height(66).content_fit(iced::ContentFit::Contain))
-                .clip(true)
-                .style(bordered_box(CLEAR, fg, 1.0, 8.0));
+            let fit = |f| image(f).height(66).content_fit(iced::ContentFit::Contain);
+            let preview =
+                container(gif::gif(&pm.frames, self.started, fit)).clip(true).style(bordered_box(CLEAR, fg, 1.0, 8.0));
             row![removable(p, preview, UiMessage::DiscardPaste)].padding([6, 54])
         });
         let send = button(container(ic(icon::ARROW_UP, 18.0).color(Color::WHITE)).center(36))
@@ -6746,11 +6695,11 @@ impl BeeperGuiApp {
         let head =
             stack![container(title).center_x(Fill).center_y(34), container(controls).align_right(Fill).center_y(34)];
         let url = a.poster_img.as_ref().or(a.src_url.as_ref());
+        let turn = iced::Radians(-std::f32::consts::FRAC_PI_2 * f32::from(car.turns));
         let shown: El<'a> = match url.and_then(|u| self.media.get(u)?.as_ref()) {
-            Some(Ok(frames)) => image(current_frame(frames, self.started.elapsed().as_millis()))
-                .content_fit(iced::ContentFit::ScaleDown)
-                .rotation(iced::Rotation::Solid(iced::Radians(-std::f32::consts::FRAC_PI_2 * f32::from(car.turns))))
-                .into(),
+            Some(Ok(frames)) => gif::gif(frames, self.started, move |f| {
+                image(f).content_fit(iced::ContentFit::ScaleDown).rotation(iced::Rotation::Solid(turn))
+            }),
             _ => Space::new().into(),
         };
         let main = container(mouse_area(shown).on_press(UiMessage::Noop)).center(Fill).padding(8);
@@ -7043,7 +6992,6 @@ impl BeeperGuiApp {
         let pane = column![header, rule()].push(search_row).push(list).push(footer);
         let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.card, 12.0));
         let base = container(column![title, pane]).padding(8).width(Fill).height(Fill).style(fill_box(p.window, 0.0));
-        let base = mouse_area(base).on_move(UiMessage::MediaCursor);
         let item_menu = w.item_menu.as_ref().map(|(mid, k, at)| {
             let m = &st.messages[st.msg_idx_by_id[mid]];
             let act =
@@ -7996,8 +7944,8 @@ mod tests {
         ::image::codecs::gif::GifEncoder::new(&mut bytes).encode_frames(frames).unwrap();
         let frames = decode_media(bytes).unwrap();
         assert_eq!(frames.iter().map(|f| f.1).collect::<Vec<_>>(), [50, 100]);
-        assert_eq!(current_frame(&frames, 60), frames[1].0);
-        assert_eq!(current_frame(&frames, 160), frames[0].0);
+        assert_eq!(gif::frame(&frames, 60), (&frames[1].0, 90));
+        assert_eq!(gif::frame(&frames, 160), (&frames[0].0, 40));
         assert_eq!(decode_media(b"\x89PNG".to_vec()).unwrap().len(), 1);
     }
 

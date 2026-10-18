@@ -1,24 +1,36 @@
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{mouse, overlay, renderer, Clipboard, Shell};
-use iced::{Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector};
+use iced::{Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector};
+use std::cell::Cell;
 
-/// Shows the arrow cursor instead of the pointer over `content` and its overlays, like Desktop
-/// when "Use pointer cursor for interactive elements" is off.
-pub struct Arrow<'a, Message>(Element<'a, Message>);
+/// The root of a window. It keeps the cursor position in `at` without a message, so a mouse move does not
+/// rebuild the view. With `arrow`, it shows the arrow cursor instead of the pointer over `content` and its
+/// overlays, like Desktop when "Use pointer cursor for interactive elements" is off.
+pub struct Root<'a, Message>(Element<'a, Message>, bool, &'a Cell<Point>);
 
-pub fn arrow<'a, Message>(content: impl Into<Element<'a, Message>>) -> Arrow<'a, Message> {
-    Arrow(content.into())
+pub fn root<'a, Message>(
+    content: impl Into<Element<'a, Message>>,
+    arrow: bool,
+    at: &'a Cell<Point>,
+) -> Root<'a, Message> {
+    Root(content.into(), arrow, at)
 }
 
-fn unpoint(i: mouse::Interaction) -> mouse::Interaction {
+fn unpoint(arrow: bool, i: mouse::Interaction) -> mouse::Interaction {
     match i {
-        mouse::Interaction::Pointer => mouse::Interaction::Idle,
+        mouse::Interaction::Pointer if arrow => mouse::Interaction::Idle,
         i => i,
     }
 }
 
-impl<Message> Widget<Message, Theme, Renderer> for Arrow<'_, Message> {
+fn record(at: &Cell<Point>, event: &Event) {
+    if let Event::Mouse(mouse::Event::CursorMoved { position }) = event {
+        at.set(*position);
+    }
+}
+
+impl<Message> Widget<Message, Theme, Renderer> for Root<'_, Message> {
     fn children(&self) -> Vec<widget::Tree> {
         vec![widget::Tree::new(&self.0)]
     }
@@ -56,6 +68,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Arrow<'_, Message> {
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        record(self.2, event);
         let tree = &mut tree.children[0];
         self.0.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
     }
@@ -68,7 +81,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Arrow<'_, Message> {
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
-        unpoint(self.0.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer))
+        unpoint(self.1, self.0.as_widget().mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer))
     }
 
     fn draw(
@@ -93,13 +106,13 @@ impl<Message> Widget<Message, Theme, Renderer> for Arrow<'_, Message> {
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         let inner = self.0.as_widget_mut().overlay(&mut tree.children[0], layout, renderer, viewport, translation);
-        inner.map(|o| overlay::Element::new(Box::new(ArrowOverlay(o))))
+        inner.map(|o| overlay::Element::new(Box::new(RootOverlay(o, self.1, self.2))))
     }
 }
 
-struct ArrowOverlay<'a, Message>(overlay::Element<'a, Message, Theme, Renderer>);
+struct RootOverlay<'a, Message>(overlay::Element<'a, Message, Theme, Renderer>, bool, &'a Cell<Point>);
 
-impl<Message> overlay::Overlay<Message, Theme, Renderer> for ArrowOverlay<'_, Message> {
+impl<Message> overlay::Overlay<Message, Theme, Renderer> for RootOverlay<'_, Message> {
     fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
         self.0.as_overlay_mut().layout(renderer, bounds)
     }
@@ -117,11 +130,12 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for ArrowOverlay<'_, Me
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
     ) {
+        record(self.2, event);
         self.0.as_overlay_mut().update(event, layout, cursor, renderer, clipboard, shell);
     }
 
     fn mouse_interaction(&self, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer) -> mouse::Interaction {
-        unpoint(self.0.as_overlay().mouse_interaction(layout, cursor, renderer))
+        unpoint(self.1, self.0.as_overlay().mouse_interaction(layout, cursor, renderer))
     }
 
     fn draw(
@@ -141,7 +155,7 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for ArrowOverlay<'_, Me
         renderer: &Renderer,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         let inner = self.0.as_overlay_mut().overlay(layout, renderer);
-        inner.map(|o| overlay::Element::new(Box::new(ArrowOverlay(o))))
+        inner.map(|o| overlay::Element::new(Box::new(RootOverlay(o, self.1, self.2))))
     }
 
     fn index(&self) -> f32 {
@@ -149,8 +163,8 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for ArrowOverlay<'_, Me
     }
 }
 
-impl<'a, Message: 'a> From<Arrow<'a, Message>> for Element<'a, Message> {
-    fn from(a: Arrow<'a, Message>) -> Self {
+impl<'a, Message: 'a> From<Root<'a, Message>> for Element<'a, Message> {
+    fn from(a: Root<'a, Message>) -> Self {
         Element::new(a)
     }
 }
