@@ -18,9 +18,5 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 mime = "0.3.17"
 rustls = { version = "0.23.46", default-features = false, features = ["ring"] }
 matrix-sdk-crypto = { version = "0.19.1", default-features = false }
-aes = "0.9.3"
-cbc = "0.2.1"
-hkdf = "0.13.0"
-hmac = "0.13.0"
-sha2 = "0.11.1"
+vodozemac = { version = "0.11.1", default-features = false, features = ["low-level-api"] }
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
