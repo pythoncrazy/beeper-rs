@@ -38,7 +38,7 @@ fn main() {
     let mut cfg = CentralConfig::new(data.clone(), "127.0.0.1".into(), 23390, None);
     cfg.demo = real.is_none();
     let store = Arc::new(RwLock::new(BeeperStore::from_config(cfg)));
-    let mut app = BeeperGuiApp::new(store, false);
+    let mut app = BeeperGuiApp::new(store);
     let (choice, theme) = if dark { (ThemeChoice::Dark, Theme::Dark) } else { (ThemeChoice::Light, Theme::Light) };
     let _ = app.update(UiMessage::SelectTheme(choice));
     shot(&out, "main", (1200.0, 800.0), &theme, app.view_main());

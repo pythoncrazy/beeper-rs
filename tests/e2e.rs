@@ -9,9 +9,8 @@ use beeper_core::{
     matrix::{ChatFlag, Outgoing},
     models::*,
     platform::{
-        build_tray_icon_rgba, file_url_to_path, generate_os_autostart_manifest, open_url_or_path_command,
-        path_to_file_url, resolve_desktop_data_dir, resolve_original_beeper_data_dir, DisplayServerKind, OsKind,
-        SystemTrayState,
+        file_url_to_path, generate_os_autostart_manifest, open_url_or_path_command, path_to_file_url,
+        resolve_desktop_data_dir, resolve_original_beeper_data_dir, DisplayServerKind, OsKind,
     },
     store::{BeeperStore, Setup, SharedStore, NOTE_CHAT_ID},
 };
@@ -407,7 +406,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert!(fresh.setup.is_none() && !fresh.signed_in() && fresh.chats.is_empty(), "a new data dir starts empty");
     assert!(!rs_dir.join("index.db").exists() && !rs_dir.join("account.db").exists(), "no Beeper files are copied");
     let shared: SharedStore = Arc::new(RwLock::new(fresh));
-    let mut gui = BeeperGuiApp::new(shared.clone(), false);
+    let mut gui = BeeperGuiApp::new(shared.clone());
     gui.login_window = Some(iced::window::Id::unique());
     gui.login = Login::new(Some(orig_dir.clone()));
     {
@@ -512,15 +511,12 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert!(keys.windows(2).all(|w| w[0] < w[1]), "new messages sort after imported ones: {keys:?}");
     reopened.delete_message(NOTE_CHAT_ID, &sent_id).unwrap();
     drop(reopened);
-    let mut fresh_gui = BeeperGuiApp::new(
-        Arc::new(RwLock::new(BeeperStore::from_config(CentralConfig::new(
-            temp_dir("BeeperRs-fresh"),
-            "127.0.0.1".into(),
-            23379,
-            None,
-        )))),
-        false,
-    );
+    let mut fresh_gui = BeeperGuiApp::new(Arc::new(RwLock::new(BeeperStore::from_config(CentralConfig::new(
+        temp_dir("BeeperRs-fresh"),
+        "127.0.0.1".into(),
+        23379,
+        None,
+    )))));
     fresh_gui.login = Login::new(Some(orig_dir.clone()));
     let _ = fresh_gui.update(UiMessage::Login(LoginMsg::Fresh));
     assert_eq!(fresh_gui.login.screen, Screen::Welcome);
@@ -627,7 +623,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     }
 
     let (_, _, login_store, _) = spawn_e2e_beeper_instance("gui_login", Some(&cloud)).await;
-    let mut login = BeeperGuiApp::new(login_store.clone(), false);
+    let mut login = BeeperGuiApp::new(login_store.clone());
     assert!(login.selected_chat_id.is_none());
     login.login_window = Some(iced::window::Id::unique());
     let shows = |app: &BeeperGuiApp, labels: &[&str]| {
@@ -808,17 +804,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         [(false, false), (true, true), (false, true)]
     );
 
-    let (rgba_unread, w, h) = build_tray_icon_rgba(5, false);
-    assert_eq!((w, h), (32, 32));
-    let (rgba_clear, _, _) = build_tray_icon_rgba(0, true);
-    assert_ne!(rgba_unread, rgba_clear);
-
-    let mut tray_state = SystemTrayState::new(3, false, false);
-    assert!(tray_state.tooltip.contains("3 unread"));
-    tray_state.update(0, true);
-    assert!(tray_state.tooltip.contains("DND"));
-
-    let mut gui = BeeperGuiApp::new(store.clone(), false);
+    let mut gui = BeeperGuiApp::new(store.clone());
     assert_eq!(gui.selected_chat_id.as_deref(), Some("!note_self:beeper.com"));
     gui.select_chat("!wa_eric:beeper.com");
     {

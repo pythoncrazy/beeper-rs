@@ -165,7 +165,7 @@ static BUS: tokio::sync::OnceCell<zbus::Connection> = tokio::sync::OnceCell::con
 
 /// Notification servers send the click signals to the connection that showed the notification.
 #[cfg(target_os = "linux")]
-async fn bus() -> Result<&'static zbus::Connection, String> {
+pub(crate) async fn bus() -> Result<&'static zbus::Connection, String> {
     BUS.get_or_try_init(zbus::Connection::session).await.map_err(|e| e.to_string())
 }
 
