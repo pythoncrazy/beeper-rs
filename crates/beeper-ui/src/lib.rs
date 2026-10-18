@@ -226,7 +226,12 @@ pub enum UiMessage {
     ToggleRead(String),
     CopyChatLink(String),
     OpenChatMenu(String),
-    SidebarCursor(Point),
+    Cursor(Point),
+    OpenMessageMenu(String),
+    /// An action picked in the message menu, which closes it.
+    MessageMenu(Box<UiMessage>),
+    CopyText(String),
+    AskDeleteMessage(String),
     ArchiveStale,
     NicknameChanged(String),
     SaveNickname,
@@ -394,6 +399,30 @@ fn clock(ms: i64, twenty_four: bool) -> String {
     format!("{}:{m} {}", (h + 11) % 12 + 1, ["AM", "PM"][usize::from(h >= 12)])
 }
 
+/// The en-US `Date.toLocaleString()` of a timestamp, like "10/16/2026, 10:40:56 PM".
+fn locale_string(iso: &str) -> String {
+    let ms = local_millis(iso_millis(iso));
+    let (y, mo, d) = civil_from_days(ms.div_euclid(86_400_000));
+    let s = ms.div_euclid(1000).rem_euclid(86_400);
+    let (h, ampm) = (s / 3600, ["AM", "PM"][usize::from(s >= 43_200)]);
+    format!("{mo}/{d}/{y}, {}:{:02}:{:02} {ampm}", (h + 11) % 12 + 1, s / 60 % 60, s % 60)
+}
+
+/// Desktop's Copy text of a message: its attachment label, its text and the links the text lacks.
+/// With `stamp`, the time and the sender come first.
+fn copy_text(m: &Message, stamp: bool) -> String {
+    let text = m.text.as_deref().unwrap_or_default();
+    let links = m.links.iter().map(|l| l.url.as_str()).filter(|u| !text.contains(u));
+    let body = std::iter::once(text).chain(links).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+    let head = stamp
+        .then(|| format!("[{}] {}:", locale_string(&m.timestamp), m.sender_name.as_deref().unwrap_or("(Unknown)")));
+    head.into_iter()
+        .chain(notify::attachment_text(&m.attachments, false))
+        .chain((!body.is_empty()).then_some(body))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn day_num(iso: &str) -> i64 {
     day_of(iso_millis(iso))
 }
@@ -472,6 +501,9 @@ const CHECKED: Color = Color::from_rgb8(14, 77, 242);
 const ASK_LOGOUT: u8 = 0;
 const ASK_DISMISS_REMINDERS: u8 = 1;
 const ASK_DELETE_CHAT: u8 = 2;
+const ASK_DELETE_MESSAGE: u8 = 3;
+/// Wide enough for "Copy Entire Message with Timestamp" on one line.
+const MESSAGE_MENU_W: f32 = 270.0;
 const REMINDER_ORDERS: [&str; 4] = [
     "Order by Least Time Remaining",
     "Order by Most Time Remaining",
@@ -1286,7 +1318,8 @@ pub struct BeeperGuiApp {
     pub search_room: Option<String>,
     pub search_filters: SearchFilters,
     pub search_select: Option<(usize, iced::Rectangle)>,
-    sidebar_cursor: Point,
+    cursor: Point,
+    message_menu: Option<(String, Point)>,
     pub filters: u8,
     pub show_attach_menu: bool,
     pub show_gif_picker: bool,
@@ -1383,7 +1416,8 @@ impl BeeperGuiApp {
             search_room: None,
             search_filters: SearchFilters::default(),
             search_select: None,
-            sidebar_cursor: Point::ORIGIN,
+            cursor: Point::ORIGIN,
+            message_menu: None,
             filters: 0,
             show_attach_menu: false,
             show_gif_picker: false,
@@ -1890,6 +1924,7 @@ impl BeeperGuiApp {
                 return operation::focus("composer-input");
             }
             UiMessage::DeleteMessage(cid, mid) => {
+                self.confirm = None;
                 let mut st = self.store.write().unwrap();
                 st.delete_message(&cid, &mid).expect("delete message");
                 st.queue(&cid, Outgoing::Redact { target: mid });
@@ -2011,10 +2046,19 @@ impl BeeperGuiApp {
                 ));
             }
             UiMessage::OpenChatMenu(cid) => {
-                self.chat_menu = Some((cid, Point::new(68.0 + self.sidebar_cursor.x, self.sidebar_cursor.y)));
+                self.chat_menu = Some((cid, self.cursor));
                 self.chat_sub = None;
             }
-            UiMessage::SidebarCursor(at) => self.sidebar_cursor = at,
+            UiMessage::Cursor(at) => self.cursor = at,
+            UiMessage::OpenMessageMenu(mid) => self.message_menu = Some((mid, self.cursor)),
+            UiMessage::MessageMenu(msg) => {
+                self.message_menu = None;
+                return self.update(*msg);
+            }
+            UiMessage::CopyText(s) => return iced::clipboard::write(s),
+            UiMessage::AskDeleteMessage(mid) => {
+                (self.confirm, self.delete_target) = (Some(ASK_DELETE_MESSAGE), Some(mid))
+            }
             UiMessage::NicknameChanged(v) => self.nickname_edit_buffer = v,
             UiMessage::SaveNickname => {
                 let cid = self.selected_chat_id.clone().expect("a chat is selected");
@@ -2159,7 +2203,7 @@ impl BeeperGuiApp {
                 return self.update(UiMessage::StoreChanged);
             }
             UiMessage::ReminderMenu => {
-                self.reminder_menu = Some(Point::new(68.0 + self.sidebar_cursor.x, self.sidebar_cursor.y));
+                self.reminder_menu = Some(self.cursor);
             }
             UiMessage::OrderReminders(i) => {
                 self.reminder_menu = None;
@@ -2470,6 +2514,7 @@ impl BeeperGuiApp {
                 if self.show_command_palette
                     || self.show_filter_menu
                     || self.chat_menu.is_some()
+                    || self.message_menu.is_some()
                     || self.reminder_menu.is_some()
                     || self.selection_menu.is_some()
                     || self.show_attach_menu
@@ -2480,6 +2525,7 @@ impl BeeperGuiApp {
                     self.show_command_palette = false;
                     self.show_filter_menu = false;
                     self.chat_menu = None;
+                    self.message_menu = None;
                     self.reminder_menu = None;
                     self.selection_menu = None;
                     self.show_attach_menu = false;
@@ -2825,8 +2871,7 @@ impl BeeperGuiApp {
                 .padding(Padding::new(8.0).left(0.0))
                 .into()
         };
-        let sidebar = mouse_area(self.view_sidebar()).on_move(UiMessage::SidebarCursor);
-        let body = row![self.view_rail(), sidebar, grip, right];
+        let body = mouse_area(row![self.view_rail(), self.view_sidebar(), grip, right]).on_move(UiMessage::Cursor);
         let base: El<'_> = container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0)).into();
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
@@ -2867,12 +2912,17 @@ impl BeeperGuiApp {
                 at.y.min(self.main_size.height - h - 8.0),
             )
         });
+        let message_menu = self.message_menu.as_ref().map(|(mid, at)| {
+            let (menu, h) = self.view_message_menu(mid);
+            let x = if at.x + MESSAGE_MENU_W > self.main_size.width { at.x - MESSAGE_MENU_W } else { at.x };
+            (menu, x, at.y.min(self.main_size.height - h - 8.0))
+        });
         let selection_menu = self.selection_menu.map(|(i, x)| {
             let (menu, h) = self.view_selection_menu(i);
             let w = if i == 0 { SUB_MENU_W[1] } else { 233.0 };
             (menu, x.min(self.main_size.width - w - 8.0), self.main_size.height - 60.0 - h)
         });
-        let menu = filter_menu.or(reminder_menu).or(chat_menu).or(selection_menu).map(|(m, x, y)| {
+        let menu = filter_menu.or(reminder_menu).or(chat_menu).or(message_menu).or(selection_menu).map(|(m, x, y)| {
             mouse_area(
                 container(mouse_area(m).on_press(UiMessage::Noop))
                     .padding(Padding::ZERO.left(x).top(y))
@@ -3087,6 +3137,57 @@ impl BeeperGuiApp {
             orders.chain([menu_rule(p), menu_item(p, lead(false), "Dismiss All Reminders".into(), "", ask)]),
         );
         container(col.padding([4, 0])).width(291).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
+    }
+
+    /// Desktop's message context menu, with its height.
+    fn view_message_menu(&self, mid: &str) -> (El<'_>, f32) {
+        let p = &self.pal;
+        let st = self.store.read().unwrap();
+        let m = &st.messages[st.msg_idx_by_id[mid]];
+        let (cid, mid, mine) = (m.chat_id.clone(), m.id.clone(), m.is_sender == Some(true));
+        let text = m.text.clone().unwrap_or_default();
+        let link = m.links.first().map(|l| l.url.clone());
+        let entire = if link.is_some() { " Entire Message" } else { "" };
+        let rule = || (menu_rule(p), 11.0);
+        let item = |label: String, hotkey, msg: Option<UiMessage>| {
+            (menu_item(p, None, label, hotkey, msg.map(|m| UiMessage::MessageMenu(Box::new(m)))), MENU_ITEM)
+        };
+        let bookmark = if m.is_bookmarked == Some(true) { "Remove Bookmark" } else { "Bookmark" };
+        let at = format!("{} at {}", if mine { "Sent" } else { "Received" }, locale_string(&m.timestamp));
+        let rows: Vec<(El, f32)> = [
+            link.map(|u| vec![item("Copy Link".into(), "", Some(UiMessage::CopyText(u))), rule()]),
+            (mine && !text.is_empty())
+                .then(|| vec![item("Edit…".into(), "Ctrl T", Some(UiMessage::StartEdit(mid.clone(), text)))]),
+            Some(vec![
+                item("Reply…".into(), "Ctrl R", Some(UiMessage::StartReply(mid.clone()))),
+                item(bookmark.into(), "", Some(UiMessage::ToggleBookmark(mid.clone()))),
+            ]),
+            (m.is_unread != Some(true)).then(|| {
+                vec![item("Mark as Unread".into(), "", Some(UiMessage::MarkUnreadFromHere(cid, mid.clone())))]
+            }),
+            mine.then(|| vec![item("Delete for Everyone…".into(), "", Some(UiMessage::AskDeleteMessage(mid)))]),
+            Some(vec![
+                rule(),
+                item(format!("Copy{entire}"), "Ctrl C", Some(UiMessage::CopyText(copy_text(m, false)))),
+                item(format!("Copy{entire} with Timestamp"), "", Some(UiMessage::CopyText(copy_text(m, true)))),
+                item(at, "", None),
+                rule(),
+                item("Report a Problem".into(), "Ctrl Shift P", Some(UiMessage::OpenUrl(ISSUES_URL.into()))),
+            ]),
+        ]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .collect();
+        let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
+        let col = Column::with_children(rows.into_iter().map(|r| r.0));
+        (
+            container(col.padding([4, 0]))
+                .width(MESSAGE_MENU_W)
+                .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
+                .into(),
+            h,
+        )
     }
 
     /// Messages for the search media grid, newest first.
@@ -4474,6 +4575,7 @@ impl BeeperGuiApp {
         mouse_area(line)
             .on_enter(UiMessage::HoverEnter(m.id.clone()))
             .on_exit(UiMessage::HoverExit(m.id.clone()))
+            .on_right_press(UiMessage::OpenMessageMenu(m.id.clone()))
             .into()
     }
 
@@ -5357,6 +5459,12 @@ impl BeeperGuiApp {
                 };
                 (format!("Delete {}", c.title), body, actions)
             }
+            ASK_DELETE_MESSAGE => {
+                let mid = self.delete_target.clone().expect("a message to delete");
+                let cid = self.selected_chat_id.clone().expect("an open chat");
+                let delete = vec![("Delete", UiMessage::DeleteMessage(cid, mid))];
+                ("Delete message".into(), "Are you sure you want to delete this message?", delete)
+            }
             _ => unreachable!("dialog {dialog}"),
         };
         let action = |(label, msg): (&'static str, UiMessage)| {
@@ -5820,5 +5928,19 @@ mod tests {
         assert_eq!(current_frame(&frames, 60), frames[1].0);
         assert_eq!(current_frame(&frames, 160), frames[0].0);
         assert_eq!(decode_media(b"\x89PNG".to_vec()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn copy_text_matches_desktop() {
+        let mut m: Message = serde_json::from_value(serde_json::json!({
+            "id": "m", "accountID": "a", "chatID": "c", "senderID": "s", "sortKey": "1",
+            "timestamp": "2026-01-02T03:04:05Z", "text": "see https://a.b", "attachments": [{ "type": "img" }],
+            "links": [{ "url": "https://a.b", "title": "" }, { "url": "https://c.d", "title": "" }],
+        }))
+        .expect("message JSON");
+        assert_eq!(copy_text(&m, false), "🖼 [Picture] see https://a.b\nhttps://c.d");
+        m.sender_name = Some("Jo".into());
+        let stamped = copy_text(&m, true);
+        assert!(stamped.starts_with('[') && stamped.ends_with("] Jo: 🖼 [Picture] see https://a.b\nhttps://c.d"));
     }
 }
