@@ -482,6 +482,11 @@ pub struct MessageLink {
 }
 
 impl Message {
+    /// Desktop's silent rows, which neither preview a chat nor notify.
+    pub fn silent(&self) -> bool {
+        matches!(self.message_type.as_deref(), Some("MEMBERSHIP" | "HIDDEN"))
+    }
+
     pub fn sync_flags(&mut self) {
         self.flags = flag_bits(&[
             (self.is_sender == Some(true), MSG_SENDER_SELF),

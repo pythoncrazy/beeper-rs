@@ -130,8 +130,8 @@ const F_ARCHIVED: usize = 5;
 const F_REQUESTS: usize = 6;
 const F_LOW_PRIORITY: usize = 7;
 
-/// Desktop's silent membership events, which the chat list skips.
-fn silent(m: &Message) -> bool {
+/// Desktop's membership events, which the timeline groups.
+fn membership(m: &Message) -> bool {
     m.message_type.as_deref() == Some("MEMBERSHIP")
 }
 
@@ -146,7 +146,7 @@ fn filter_hit(i: usize, c: &Chat, st: &BeeperStore) -> bool {
         1 => c.draft.is_some(),
         2 => {
             let v = st.chat_msg_indices.get(&c.id);
-            v.and_then(|v| v.iter().rev().map(|&i| &st.messages[i]).find(|m| !silent(m))).is_none_or(|m| {
+            v.and_then(|v| v.iter().rev().map(|&i| &st.messages[i]).find(|m| !m.silent())).is_none_or(|m| {
                 m.is_sender != Some(true) && !m.reactions.iter().any(|r| r.participant_id == st.me().id)
             })
         }
@@ -5171,7 +5171,7 @@ impl BeeperGuiApp {
             let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
             let muted = c.is_muted == Some(true);
             let m = st.chat_msg_indices.get(&c.id).and_then(|v| {
-                v.iter().rev().map(|&i| &st.messages[i]).find(|m| m.is_deleted != Some(true) && !silent(m))
+                v.iter().rev().map(|&i| &st.messages[i]).find(|m| m.is_deleted != Some(true) && !m.silent())
             });
             let reaction = c
                 .preview
@@ -5369,13 +5369,13 @@ impl BeeperGuiApp {
         let msgs: Vec<&Message> = st.chat_msg_indices.get(cid).map_or_else(Vec::new, |v| {
             v.iter()
                 .map(|&i| &st.messages[i])
-                .filter(|m| !(hide && m.is_deleted == Some(true)) && (members || !silent(m)))
+                .filter(|m| !(hide && m.is_deleted == Some(true)) && (members || !membership(m)))
                 .collect()
         });
         let mut run_start: Vec<usize> = (0..msgs.len()).collect();
         for i in 1..msgs.len() {
             let (a, b) = (msgs[i - 1], msgs[i]);
-            if silent(a) && silent(b) && day_num(&a.timestamp) == day_num(&b.timestamp) {
+            if membership(a) && membership(b) && day_num(&a.timestamp) == day_num(&b.timestamp) {
                 run_start[i] = run_start[i - 1];
             }
         }
@@ -5411,7 +5411,7 @@ impl BeeperGuiApp {
                     row![line(), semi("New", 11.0).color(p.accent), line()].spacing(8).align_y(Center).padding([6, 0]);
                 head = head.push(div);
             }
-            if silent(m) {
+            if membership(m) {
                 let s = run_start[i];
                 let size = run_start[s..].iter().take_while(|&&r| r == s).count();
                 let open = self.open_members.contains(&msgs[s].id);
@@ -5437,9 +5437,9 @@ impl BeeperGuiApp {
                 prev = Some(m);
                 continue;
             }
-            let first = day_changed || prev.is_none_or(|q| q.sender_id != m.sender_id || silent(q));
+            let first = day_changed || prev.is_none_or(|q| q.sender_id != m.sender_id || membership(q));
             let last = msgs.get(i + 1).is_none_or(|n| {
-                n.sender_id != m.sender_id || silent(n) || day_num(&n.timestamp) != day_num(&m.timestamp)
+                n.sender_id != m.sender_id || membership(n) || day_num(&n.timestamp) != day_num(&m.timestamp)
             });
             let mut viewers: Vec<(&str, &str)> =
                 last_seen.iter().filter(|(_, &(mid, _))| mid == m.id).map(|(&u, &(_, ts))| (u, ts)).collect();
@@ -5768,7 +5768,20 @@ impl BeeperGuiApp {
                     .style(fill_box(bg, 17.0)),
             );
         }
-        if jumbo(&text) {
+        if m.message_type.as_deref() == Some("HIDDEN") {
+            let bold = |s: String| span::<(), _>(s).font(fw(Weight::Bold));
+            let head = container(txt("Hidden event", 13.0).font(fw(Weight::Bold)))
+                .padding([2.6, 5.2])
+                .style(fill_box(p.chip, 0.0));
+            let why = "Shown because you enabled Settings > General > Show hidden events in timeline";
+            let body = rich_text![bold(text.clone()), span::<(), _>(" from "), bold(m.sender_id.clone())]
+                .size(13.0)
+                .color(p.text);
+            let row =
+                row![self.tip(head.into(), why, vec![], tooltip::Position::Top), body].spacing(5.2).align_y(Center);
+            let section = container(row.padding(Padding::ZERO.right(6.5))).clip(true);
+            parts = parts.push(section.style(bordered_box(CLEAR, p.chip, 2.0, 4.0)));
+        } else if jumbo(&text) {
             parts = parts.push(container(txt(text.clone(), 48.0)).padding([0, 12]));
         } else if !text.is_empty() && m.poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
             let ts = st

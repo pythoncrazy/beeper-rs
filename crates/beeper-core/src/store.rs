@@ -816,9 +816,7 @@ impl BeeperStore {
         list.insert(pos, idx);
         let c_idx = self.chat_idx_by_id[&msg.chat_id];
         let chat = &mut self.chats[c_idx];
-        if msg.message_type.as_deref() != Some("MEMBERSHIP")
-            && chat.preview.as_ref().is_none_or(|p| p.sort_key <= msg.sort_key)
-        {
+        if !msg.silent() && chat.preview.as_ref().is_none_or(|p| p.sort_key <= msg.sort_key) {
             chat.last_activity = Some(msg.timestamp.clone());
             chat.preview = Some(msg.clone());
         }

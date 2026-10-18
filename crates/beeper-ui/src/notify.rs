@@ -150,7 +150,8 @@ impl BeeperGuiApp {
             (false, 2 | 3)
                 if !hour_old
                     && m.timestamp > self.booted
-                    && !matches!(m.message_type.as_deref(), Some("REACTION" | "MEMBERSHIP")) =>
+                    && !m.silent()
+                    && m.message_type.as_deref() != Some("REACTION") =>
             {
                 Sound::Receive
             }
@@ -298,7 +299,7 @@ impl BeeperGuiApp {
             .and_then(otp_code)
             .map(str::to_string);
         let shown = m.is_sender != Some(true)
-            && m.message_type.as_deref() != Some("MEMBERSHIP")
+            && !m.silent()
             && m.timestamp > self.booted
             && m.text.as_deref() != Some(beeper_core::matrix::UTD_TEXT);
         let shown = shown && otp.is_some()
