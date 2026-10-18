@@ -1739,28 +1739,8 @@ impl BeeperGuiApp {
         self.creating_chat = None;
         self.join_matrix_mode = false;
         let mut st = self.store.write().unwrap();
-        if let Some(prev_id) =
-            self.selected_chat_id.as_deref().filter(|&p| p != chat_id && self.editing_message_id.is_none())
-        {
-            let draft = self.composer_text.trim().to_string();
-            let draft = (!draft.is_empty()).then(|| ChatDraft {
-                text: Some(draft),
-                reply_to_message_id: self.reply_to_message_id.clone(),
-                attachments: Vec::new(),
-            });
-            st.patch_chat(prev_id, true, None, None).expect("clear draft");
-            st.patch_chat(prev_id, false, draft, None).expect("save draft");
-        }
+        self.leave_chat(&mut st, Some(chat_id));
         let incognito = st.settings.on("incognito");
-        if let Some(prev_id) = self.selected_chat_id.as_deref().filter(|&p| !incognito && p != chat_id) {
-            st.mark_chat_read(prev_id, true);
-        }
-        if let Some(prev) = self.selected_chat_id.as_deref().filter(|&p| p != chat_id) {
-            let idx = st.resolve_chat_idx(prev).expect("selected chat exists");
-            if self.expired(&st.chats[idx]) {
-                st.set_reminder(idx, None);
-            }
-        }
         let idx = st.resolve_chat_idx(chat_id).expect("selected chat exists");
         self.selected_chat_id = Some(chat_id.to_string());
         if let Some(ev) = (!incognito).then(|| st.mark_chat_read(chat_id, false)).flatten() {
@@ -1781,6 +1761,28 @@ impl BeeperGuiApp {
         self.playing_video = None;
         drop(st);
         self.refresh_theme_and_tray();
+    }
+
+    /// Leave the selected chat for `next`: save its draft, mark it read, and drop its elapsed reminder.
+    fn leave_chat(&self, st: &mut BeeperStore, next: Option<&str>) {
+        let Some(prev) = self.selected_chat_id.as_deref().filter(|&p| Some(p) != next) else { return };
+        if self.editing_message_id.is_none() {
+            let draft = self.composer_text.trim().to_string();
+            let draft = (!draft.is_empty()).then(|| ChatDraft {
+                text: Some(draft),
+                reply_to_message_id: self.reply_to_message_id.clone(),
+                attachments: Vec::new(),
+            });
+            st.patch_chat(prev, true, None, None).expect("clear draft");
+            st.patch_chat(prev, false, draft, None).expect("save draft");
+        }
+        if !st.settings.on("incognito") {
+            st.mark_chat_read(prev, true);
+        }
+        let idx = st.resolve_chat_idx(prev).expect("selected chat exists");
+        if self.expired(&st.chats[idx]) {
+            st.set_reminder(idx, None);
+        }
     }
 
     pub fn submit_composer(&mut self) {
@@ -2542,8 +2544,20 @@ impl BeeperGuiApp {
                     self.selection.clear();
                 } else if self.join_matrix_mode {
                     self.join_matrix_mode = false;
+                } else if self.creating_chat.is_some() {
+                    (self.creating_chat, self.selected_chat_id) = (None, None);
+                } else if self.reply_to_message_id.is_some() {
+                    self.reply_to_message_id = None;
+                } else if self.editing_message_id.is_some() {
+                    return self.update(UiMessage::CancelComposeMode);
+                } else if self.selected_chat_id.is_some() {
+                    self.leave_chat(&mut self.store.write().unwrap(), None);
+                    (self.selected_chat_id, self.composer_text) = (None, String::new());
+                    self.refresh_theme_and_tray();
+                } else if self.active_tab != InboxTab::AllChats {
+                    self.active_tab = InboxTab::AllChats;
                 } else {
-                    self.creating_chat = None;
+                    self.status_banner.clear();
                 }
             }
             UiMessage::ToggleEditHistory(mid) => {
@@ -2865,7 +2879,7 @@ impl BeeperGuiApp {
         let pane = match self.creating_chat {
             Some(_) => self.view_new_chat(),
             None if open => self.view_conversation(),
-            None => Space::new().into(),
+            None => container(Space::new()).width(Fill).height(Fill).style(fill_box(p.card, 10.0)).into(),
         };
         let info = (self.show_right_panel && open).then(|| self.view_info());
         let right: El<'_> = if self.selection.is_empty() {
