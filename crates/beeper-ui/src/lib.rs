@@ -3959,9 +3959,11 @@ impl BeeperGuiApp {
                 self.patch_settings(|s| s.set_pref(key, v));
                 self.relaunch_toast = match key {
                     "spellcheck" | "quitOnClose" => Some("Preference changed"),
-                    "appLanguage" => Some("App language will change after relaunch"),
                     _ => self.relaunch_toast,
                 };
+                if key == "appLanguage" {
+                    i18n::set(v);
+                }
                 let mut st = self.store.write().unwrap();
                 let client = st.matrix.clone();
                 if let Some(((kind, content), c)) = beeper_core::matrix::pref_write(&mut st, key).zip(client) {
@@ -8495,7 +8497,7 @@ pub fn write_rgba_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u
 pub static RELAUNCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn run_native_gui(store: SharedStore) -> iced::Result {
-    i18n::init(store.read().unwrap().settings.pref("appLanguage"));
+    i18n::set(store.read().unwrap().settings.pref("appLanguage"));
     let app = iced::daemon(move || BeeperGuiApp::boot(store.clone()), BeeperGuiApp::update, BeeperGuiApp::view)
         .title(BeeperGuiApp::title)
         .subscription(BeeperGuiApp::subscription)
