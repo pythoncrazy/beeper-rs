@@ -2314,9 +2314,9 @@ impl BeeperGuiApp {
             UiMessage::PasteClipboard => return Task::perform(clipboard_image(), UiMessage::Pasted),
             UiMessage::Emoji(m) => return self.update_emoji(m),
             UiMessage::Upserted(m) => {
-                let note = self.notification(&m).map(|(t, b)| {
+                let note = self.notification(&m).map(|(t, b, silent)| {
                     let chat = m.chat_id.clone();
-                    Task::perform(notify::show(t, b), move |r| UiMessage::Notified(r.map(|id| (id, chat))))
+                    Task::perform(notify::show(t, b, silent), move |r| UiMessage::Notified(r.map(|id| (id, chat))))
                 });
                 return Task::batch([self.update(UiMessage::StoreChanged)].into_iter().chain(note));
             }

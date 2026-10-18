@@ -51,8 +51,8 @@ pub fn body(m: &Message) -> String {
 }
 
 impl BeeperGuiApp {
-    /// The title and body of the notification for a new message, if Desktop shows one.
-    pub(crate) fn notification(&mut self, m: &Message) -> Option<(String, String)> {
+    /// The title, the body, and whether the sound is off, for the notification of a new message if Desktop shows one.
+    pub(crate) fn notification(&mut self, m: &Message) -> Option<(String, String, bool)> {
         if !cfg!(target_os = "linux") {
             return None;
         }
@@ -74,7 +74,8 @@ impl BeeperGuiApp {
         }
         let text = body(m);
         let sender = m.sender_name.as_deref().filter(|s| group && !text.starts_with(&format!("{s} ")));
-        Some((chat.title.clone(), sender.map_or(text.clone(), |s| format!("{s}: {text}"))))
+        let silent = prefs.pref(if group { "groupSound" } else { "messageSound" }) == 1;
+        Some((chat.title.clone(), sender.map_or(text.clone(), |s| format!("{s}: {text}")), silent))
     }
 
     /// Desktop's `clearShownNotifications`: close the notifications of read chats without a reminder, and of the
@@ -112,8 +113,8 @@ async fn bus() -> Result<&'static zbus::Connection, String> {
 }
 
 #[cfg(target_os = "linux")]
-pub async fn show(title: String, body: String) -> Result<u32, String> {
-    let hints = std::collections::HashMap::<&str, zbus::zvariant::Value>::new();
+pub async fn show(title: String, body: String, silent: bool) -> Result<u32, String> {
+    let hints = std::collections::HashMap::from([("suppress-sound", zbus::zvariant::Value::from(silent))]);
     let args = ("Beeper", 0u32, "", title, body, vec!["default", ""], hints, -1i32);
     let path = "/org/freedesktop/Notifications";
     let iface = Some("org.freedesktop.Notifications");
@@ -161,7 +162,7 @@ pub fn events() -> impl iced::futures::Stream<Item = (u32, bool)> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub async fn show(_title: String, _body: String) -> Result<u32, String> {
+pub async fn show(_title: String, _body: String, _silent: bool) -> Result<u32, String> {
     unreachable!("only the Linux build shows notifications")
 }
 
