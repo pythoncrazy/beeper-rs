@@ -916,7 +916,7 @@ impl BeeperStore {
     pub fn next_id(&mut self, prefix: &str) -> String {
         self.next_seq += 1;
         self.persist_seq();
-        format!("{prefix}_{}", self.next_seq)
+        format!("{prefix}_{}_{}", crate::config::now_unix_millis(), self.next_seq)
     }
 
     pub fn resolve_chat_idx(&self, chat_or_local_id: &str) -> Option<usize> {
