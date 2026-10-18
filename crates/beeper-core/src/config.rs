@@ -13,7 +13,6 @@ pub const DEFAULT_USER_ID: &str = "@alex:beeper.com";
 pub const DEFAULT_DEVICE_ID: &str = "BEEPER_RS_DEV01";
 pub const DEFAULT_TOKEN: &str = "bp_tok_beeper_rs_default_secret";
 pub const DEFAULT_RECOVERY_CODE: &str = "EsTc 9K4p Lm2Q Xv8N Beeper RsKey 2026";
-pub const TRAY_ICON_SIZE: u32 = 32;
 pub const WS_CHANNEL_CAPACITY: usize = 512;
 pub const DATA_FOLDER_PREFIX: &str = "beeper-rs";
 const LEGACY_DATA_FOLDER_PREFIX: &str = "BeeperRs";

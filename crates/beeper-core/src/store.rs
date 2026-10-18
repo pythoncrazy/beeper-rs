@@ -1330,10 +1330,6 @@ impl BeeperStore {
             .collect()
     }
 
-    pub fn total_unread_chats(&self) -> u32 {
-        self.chats.iter().filter(|c| c.flags & CHAT_ARCHIVED == 0 && c.flags & CHAT_UNREAD != 0).count() as u32
-    }
-
     pub fn store_uploaded_asset(&mut self, file_name: String, mime_type: String, bytes: &[u8]) -> StoredAsset {
         assert!(!bytes.is_empty(), "uploaded asset bytes cannot be empty");
         let upload_id = self.next_id("upl");

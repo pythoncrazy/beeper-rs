@@ -3,6 +3,24 @@ pub mod emoji;
 pub mod login;
 mod notify;
 mod popover;
+#[cfg(target_os = "linux")]
+mod tray;
+#[cfg(not(target_os = "linux"))]
+mod tray {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Event {
+        Up,
+        Show,
+        Hide,
+        Quit,
+    }
+    pub fn events() -> iced::futures::stream::Empty<Result<Event, String>> {
+        unreachable!("only the Linux build shows a tray icon")
+    }
+    pub async fn update(_unread: u32, _visible: bool) -> Result<(), String> {
+        Ok(())
+    }
+}
 pub mod style;
 
 use crate::login::{Login, LoginMsg};
@@ -21,10 +39,7 @@ use beeper_core::config::{
 use beeper_core::import::has_beeper_data;
 use beeper_core::matrix::{ChatFlag, DeviceInfo, Outgoing};
 use beeper_core::models::*;
-use beeper_core::platform::{
-    build_tray_icon_rgba, current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind,
-    SystemTrayState,
-};
+use beeper_core::platform::{current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind};
 use beeper_core::prefs;
 use beeper_core::store::{BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
 use iced::font::Weight;
@@ -380,6 +395,9 @@ pub enum UiMessage {
     DragEnd,
     WindowOpened(window::Id),
     WindowClosed(window::Id),
+    CloseRequested(window::Id),
+    Tray(Result<tray::Event, String>),
+    TrayFailed(String),
     WindowResized(window::Id, Size),
     ScreenshotCaptured(window::Id, window::Screenshot),
     KeyPressed(Key, Modifiers),
@@ -1646,7 +1664,12 @@ pub struct BeeperGuiApp {
     pub store: SharedStore,
     pub os: OsKind,
     pub display_server: DisplayServerKind,
-    pub tray: SystemTrayState,
+    /// The tray icon is registered with the tray host.
+    pub tray_up: bool,
+    /// The main window is hidden in the tray.
+    pub hidden: bool,
+    /// The unread count and window state last sent to the tray and the app badge, and whether they can be stale.
+    tray_sent: (Option<(u32, bool)>, bool),
     pub system_dark: bool,
     pub dark: bool,
     pub zoom: f32,
@@ -1739,11 +1762,11 @@ pub struct BeeperGuiApp {
 }
 
 impl BeeperGuiApp {
-    pub fn new(store: SharedStore, try_native_tray: bool) -> Self {
+    pub fn new(store: SharedStore) -> Self {
         ensure_fonts_loaded();
         let os = OsKind::current();
         let display_server = os.detect_display_server(&std::env::vars().collect());
-        let (theme, unread, panel, first_chat, cloud, source) = {
+        let (theme, panel, first_chat, cloud, source) = {
             let st = store.read().unwrap();
             let first = st.signed_in().then(|| NOTE_CHAT_ID.to_string());
             let s = &st.settings;
@@ -1753,13 +1776,15 @@ impl BeeperGuiApp {
                 .is_none()
                 .then(|| current_original_beeper_data_dir(st.config.profile.as_deref()))
                 .filter(|d| has_beeper_data(d));
-            (s.theme.is_dark(false), st.total_unread_chats(), false, first, cloud, source)
+            (s.theme.is_dark(false), false, first, cloud, source)
         };
         let mut app = Self {
             store,
             os,
             display_server,
-            tray: SystemTrayState::new(unread, false, try_native_tray),
+            tray_up: false,
+            hidden: false,
+            tray_sent: (None, true),
             pal: crate::style::palette(theme),
             system_dark: false,
             dark: theme,
@@ -1852,10 +1877,14 @@ impl BeeperGuiApp {
     }
 
     pub fn boot(store: SharedStore) -> (Self, Task<UiMessage>) {
-        let mut app = Self::new(store, true);
+        let mut app = Self::new(store);
         let signed_in = app.selected_chat_id.is_some();
-        let settings =
+        let mut settings =
             if signed_in { Self::window_settings(Size::new(1264.0, 893.0)) } else { Self::login_window_settings() };
+        let st = app.store.read().unwrap();
+        app.hidden = signed_in && st.settings.on("startMinimized") && st.settings.on("showTrayIcon");
+        drop(st);
+        settings.visible = !app.hidden;
         let (id, open) = window::open(settings);
         *(if signed_in { &mut app.main_window } else { &mut app.login_window }) = Some(id);
         let cloud = (signed_in && !app.store.read().unwrap().config.demo).then(|| app.refresh_cloud_accounts());
@@ -1987,9 +2016,13 @@ impl BeeperGuiApp {
         window::Settings {
             size,
             min_size: Some(Size::new(640.0, 480.0)),
+            exit_on_close_request: false,
             icon: Some({
-                let (rgba, w, h) = build_tray_icon_rgba(0, false);
-                window::icon::from_rgba(rgba, w, h).expect("the app icon is valid RGBA")
+                let img =
+                    ::image::load_from_memory(include_bytes!("../assets/icon.png")).expect("the app icon is a PNG");
+                let img = img.into_rgba8();
+                let (w, h) = img.dimensions();
+                window::icon::from_rgba(img.into_raw(), w, h).expect("the app icon is valid RGBA")
             }),
             #[cfg(target_os = "linux")]
             platform_specific: window::settings::PlatformSpecific {
@@ -2055,7 +2088,7 @@ impl BeeperGuiApp {
         self.dark = st.settings.theme.is_dark(self.system_dark);
         self.pal = crate::style::palette(self.dark);
         self.zoom = f32::from(st.settings.zoom_percent) / 100.0;
-        self.tray.update(st.total_unread_chats(), self.dnd_muted);
+        self.tray_sent.1 = true;
     }
 
     /// Splits the visible chats into the pinned tiles and the list rows, in display order.
@@ -2296,6 +2329,48 @@ impl BeeperGuiApp {
     }
 
     pub fn update(&mut self, msg: UiMessage) -> Task<UiMessage> {
+        let task = self.handle(msg);
+        if !std::mem::take(&mut self.tray_sent.1) || !cfg!(target_os = "linux") {
+            return task;
+        }
+        let now = (self.badge_count(), !self.hidden);
+        if self.tray_sent.0.replace(now) == Some(now) {
+            return task;
+        }
+        let sync = Task::future(tray::update(now.0, now.1))
+            .map(Result::err)
+            .and_then(|e| Task::done(UiMessage::TrayFailed(e)));
+        Task::batch([task, sync])
+    }
+
+    /// Desktop's `updateAppBadgeCount`: the unread chats in all chats or in the chat list, by "Badge count".
+    fn badge_count(&self) -> u32 {
+        let st = self.store.read().unwrap();
+        let counts = |c: &Chat| {
+            c.flags & (CHAT_HIDDEN | CHAT_ARCHIVED | CHAT_REQUEST) == 0
+                && c.flags & CHAT_UNREAD != 0
+                && (c.unread_mentions > 0 || c.flags & CHAT_MUTED == 0)
+        };
+        let n = match st.settings.pref("badgeCount") {
+            0 => 0,
+            1 => st.chats.iter().filter(|c| counts(c)).count(),
+            _ => self.visible_chats(&st).into_iter().filter(|c| counts(c)).count(),
+        };
+        n as u32
+    }
+
+    /// Desktop's `hideToTray` and `showWindow`.
+    fn set_hidden(&mut self, hidden: bool) -> Task<UiMessage> {
+        let Some(id) = self.main_window else { return Task::none() };
+        self.hidden = hidden;
+        self.tray_sent.1 = true;
+        match hidden {
+            true => window::set_mode(id, window::Mode::Hidden),
+            false => window::set_mode(id, window::Mode::Windowed).chain(window::gain_focus(id)),
+        }
+    }
+
+    fn handle(&mut self, msg: UiMessage) -> Task<UiMessage> {
         match msg {
             UiMessage::SelectTab(tab) => {
                 self.active_tab = tab;
@@ -3408,6 +3483,27 @@ impl BeeperGuiApp {
                     w.size = size;
                 }
             }
+            UiMessage::Tray(Ok(tray::Event::Up)) => {
+                self.tray_up = true;
+                self.tray_sent = (None, true);
+            }
+            UiMessage::Tray(Ok(tray::Event::Show)) => return self.set_hidden(false),
+            UiMessage::Tray(Ok(tray::Event::Hide)) => return self.set_hidden(true),
+            UiMessage::Tray(Ok(tray::Event::Quit)) => return iced::exit(),
+            UiMessage::Tray(Err(e)) | UiMessage::TrayFailed(e) => {
+                self.tray_up = false;
+                self.status_banner = format!("Tray icon failed: {e}");
+                return self.set_hidden(false);
+            }
+            UiMessage::CloseRequested(id) => {
+                let st = self.store.read().unwrap();
+                let quit = st.settings.on("quitOnClose") || !(self.tray_up && st.settings.on("showTrayIcon"));
+                drop(st);
+                return match Some(id) == self.main_window && !quit {
+                    true => self.set_hidden(true),
+                    false => window::close(id),
+                };
+            }
             UiMessage::WindowClosed(id) => {
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
@@ -3667,6 +3763,7 @@ impl BeeperGuiApp {
         });
         let keys = iced::event::listen_with(|e, _, id| match e {
             Event::Window(window::Event::Closed) => Some(UiMessage::WindowClosed(id)),
+            Event::Window(window::Event::CloseRequested) => Some(UiMessage::CloseRequested(id)),
             Event::Window(window::Event::Resized(size)) => Some(UiMessage::WindowResized(id, size)),
             Event::Window(window::Event::Focused) => Some(UiMessage::WindowFocused(true)),
             Event::Window(window::Event::Unfocused) => Some(UiMessage::WindowFocused(false)),
@@ -3741,6 +3838,8 @@ impl BeeperGuiApp {
                         .is_some_and(|f| f.len() > 1)
                 })
             });
+        let tray = (cfg!(target_os = "linux") && self.store.read().unwrap().settings.on("showTrayIcon"))
+            .then(|| Subscription::run(tray::events).map(UiMessage::Tray));
         let notes = (!self.notifications.is_empty())
             .then(|| Subscription::run(notify::events).map(|(id, clicked)| UiMessage::NotificationEvent(id, clicked)));
         let tick =
@@ -3752,7 +3851,8 @@ impl BeeperGuiApp {
                 .chain(carousel)
                 .chain(tick)
                 .chain(remind)
-                .chain(notes),
+                .chain(notes)
+                .chain(tray),
         )
     }
 

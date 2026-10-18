@@ -1,4 +1,4 @@
-use crate::config::{resolve_data_dir_for_os, resolve_original_data_dir_for_os, APP_BUNDLE_ID, TRAY_ICON_SIZE};
+use crate::config::{resolve_data_dir_for_os, resolve_original_data_dir_for_os, APP_BUNDLE_ID};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -148,84 +148,5 @@ pub fn generate_os_autostart_manifest(os: OsKind, home_dir: &Path, bin_path: &Pa
             desktop_entry_path: None,
             desktop_entry_content: None,
         },
-    }
-}
-
-pub fn build_tray_icon_rgba(unread_count: u32, muted: bool) -> (Vec<u8>, u32, u32) {
-    let width = TRAY_ICON_SIZE;
-    let height = TRAY_ICON_SIZE;
-    let mut rgba = vec![0u8; (width * height * 4) as usize];
-    let base_color: [u8; 4] = if muted { [108, 117, 125, 255] } else { [107, 83, 255, 255] };
-
-    for y in 0..height {
-        for x in 0..width {
-            let dx = x as i32 - 15;
-            let dy = y as i32 - 15;
-            let idx = ((y * width + x) * 4) as usize;
-            if dx * dx + dy * dy <= 169 {
-                let in_glyph = ((11..=20).contains(&x) && (y == 11 || y == 15 || y == 19))
-                    || ((x == 11 || x == 20) && (11..=19).contains(&y));
-                let color = if in_glyph { [255, 255, 255, 255] } else { base_color };
-                rgba[idx..idx + 4].copy_from_slice(&color);
-            }
-            if unread_count > 0 {
-                let bdx = x as i32 - 25;
-                let bdy = y as i32 - 7;
-                if bdx * bdx + bdy * bdy <= 25 {
-                    rgba[idx..idx + 4].copy_from_slice(&[255, 59, 48, 255]);
-                }
-            }
-        }
-    }
-    assert_eq!(rgba.len(), (width * height * 4) as usize);
-    (rgba, width, height)
-}
-
-pub struct SystemTrayState {
-    pub unread_count: u32,
-    pub muted: bool,
-    pub window_visible: bool,
-    pub tooltip: String,
-    pub icon_rgba: Vec<u8>,
-    pub icon_width: u32,
-    pub icon_height: u32,
-    pub menu_items: Vec<String>,
-    pub native_enabled: bool,
-}
-
-impl SystemTrayState {
-    pub fn new(unread_count: u32, muted: bool, try_native: bool) -> Self {
-        let mut tray = Self {
-            unread_count,
-            muted,
-            window_visible: true,
-            tooltip: String::new(),
-            icon_rgba: Vec::new(),
-            icon_width: 0,
-            icon_height: 0,
-            menu_items: Vec::new(),
-            native_enabled: try_native,
-        };
-        tray.update(unread_count, muted);
-        tray
-    }
-
-    pub fn update(&mut self, unread_count: u32, muted: bool) {
-        (self.icon_rgba, self.icon_width, self.icon_height) = build_tray_icon_rgba(unread_count, muted);
-        self.tooltip = match (unread_count, muted) {
-            (0, false) => "Beeper — All caught up".to_string(),
-            (0, true) => "Beeper — Notifications muted (DND)".to_string(),
-            (n, false) => format!("Beeper — {n} unread conversation(s)"),
-            (n, true) => format!("Beeper — {n} unread (DND active)"),
-        };
-        let mute = if muted { "Unmute Notifications" } else { "Mute Notifications (DND)" };
-        self.menu_items = vec![
-            "Open Beeper".to_string(),
-            format!("Unread Chats ({unread_count})"),
-            mute.to_string(),
-            "Quit Beeper".to_string(),
-        ];
-        self.unread_count = unread_count;
-        self.muted = muted;
     }
 }
