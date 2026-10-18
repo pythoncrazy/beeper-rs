@@ -1761,6 +1761,19 @@ fn duration(n: usize, unit: &str) -> String {
     }
 }
 
+/// Saves the composer text of the chat open in `pane` as its draft, unless the composer edits a message.
+fn save_draft(st: &mut BeeperStore, pane: &Pane) {
+    let Some(chat) = pane.selected_chat_id.as_deref().filter(|_| pane.editing_message_id.is_none()) else { return };
+    let text = pane.composer.text().trim().to_string();
+    let draft = (!text.is_empty()).then(|| ChatDraft {
+        text: Some(text),
+        reply_to_message_id: pane.reply_to_message_id.clone(),
+        attachments: Vec::new(),
+    });
+    st.patch_chat(chat, true, None, None).expect("clear draft");
+    st.patch_chat(chat, false, draft, None).expect("save draft");
+}
+
 fn pref_row<'a>(
     p: &Palette,
     title: impl ToString,
@@ -2445,16 +2458,7 @@ impl BeeperGuiApp {
     /// Leave the selected chat for `next`: save its draft, mark it read, and drop its elapsed reminder.
     fn leave_chat(&self, st: &mut BeeperStore, next: Option<&str>) {
         let Some(prev) = self.pane().selected_chat_id.as_deref().filter(|&p| Some(p) != next) else { return };
-        if self.pane().editing_message_id.is_none() {
-            let draft = self.pane().composer.text().trim().to_string();
-            let draft = (!draft.is_empty()).then(|| ChatDraft {
-                text: Some(draft),
-                reply_to_message_id: self.pane().reply_to_message_id.clone(),
-                attachments: Vec::new(),
-            });
-            st.patch_chat(prev, true, None, None).expect("clear draft");
-            st.patch_chat(prev, false, draft, None).expect("save draft");
-        }
+        save_draft(st, self.pane());
         let idx = st.resolve_chat_idx(prev).expect("selected chat exists");
         if !st.settings.on("incognito") && st.chats[idx].is_marked_unread != Some(true) {
             st.mark_chat_read(prev, true);
@@ -2462,6 +2466,15 @@ impl BeeperGuiApp {
         if self.expired(&st.chats[idx]) {
             st.set_reminder(idx, None);
         }
+    }
+
+    /// Quits the app; the open chats keep their drafts.
+    fn quit(&self) -> Task<UiMessage> {
+        let mut st = self.store.write().unwrap();
+        for pane in std::iter::once(&self.pane).chain(self.chat_windows.iter().map(|w| &w.1)) {
+            save_draft(&mut st, pane);
+        }
+        iced::exit()
     }
 
     /// Desktop's reaction to new composer text: emoticons, the typing notice, and link previews.
@@ -2584,7 +2597,7 @@ impl BeeperGuiApp {
             "Zoom In" => Some(UiMessage::Zoom(1)),
             "Zoom Out" => Some(UiMessage::Zoom(-1)),
             "Reset Zoom" => Some(UiMessage::Zoom(0)),
-            "Quit App" => return iced::exit(),
+            "Quit App" => return self.quit(),
             "Report a Problem" => Some(UiMessage::OpenUrl(ISSUES_URL.into())),
             "Filter: Unread" => {
                 self.filters ^= 1;
@@ -3674,7 +3687,7 @@ impl BeeperGuiApp {
             UiMessage::DismissBanner => (self.status_banner, self.relaunch_toast) = (String::new(), None),
             UiMessage::Relaunch => {
                 RELAUNCH.store(true, std::sync::atomic::Ordering::Relaxed);
-                return iced::exit();
+                return self.quit();
             }
             UiMessage::Pushed(Err(e)) => self.status_banner = format!("Could not send to Matrix: {e}"),
             UiMessage::VerifySasNow => {
@@ -3928,7 +3941,7 @@ impl BeeperGuiApp {
             UiMessage::Tray(Ok(tray::Event::Activate)) if !self.hidden && self.focused => {}
             UiMessage::Tray(Ok(tray::Event::Show | tray::Event::Activate)) => return self.set_hidden(false),
             UiMessage::Tray(Ok(tray::Event::Hide)) => return self.set_hidden(true),
-            UiMessage::Tray(Ok(tray::Event::Quit)) => return iced::exit(),
+            UiMessage::Tray(Ok(tray::Event::Quit)) => return self.quit(),
             UiMessage::Tray(Err(e)) | UiMessage::TrayFailed(e) => {
                 eprintln!("tray icon failed: {e}");
                 self.tray_up = false;
@@ -3973,6 +3986,9 @@ impl BeeperGuiApp {
                 return Task::batch([open.discard(), near, select]);
             }
             UiMessage::WindowClosed(id) => {
+                if let Some(w) = self.chat_windows.iter().find(|w| w.0 == id) {
+                    save_draft(&mut self.store.write().unwrap(), &w.1);
+                }
                 self.chat_windows.retain(|w| w.0 != id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
@@ -3980,7 +3996,7 @@ impl BeeperGuiApp {
                     self.media_window = None;
                     self.carousel = self.carousel.take().filter(|c| !c.in_media);
                 } else if [self.main_window, self.login_window].contains(&Some(id)) {
-                    return iced::exit();
+                    return self.quit();
                 }
             }
             UiMessage::ScreenshotCaptured(id, shot) => {
