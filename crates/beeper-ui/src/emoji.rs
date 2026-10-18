@@ -135,6 +135,107 @@ fn search(q: &str) -> Vec<usize> {
     pool.into_iter().take(90).map(|(i, _)| i).collect()
 }
 
+/// Desktop's `EmojiReplacer` input rules: typing the emoticon and a space replaces them with the emoji and a space.
+const EMOTICONS: [(&str, &str); 38] = [
+    (":P ", "😛"),
+    (":p ", "😛"),
+    (":D ", "😃"),
+    (":) ", "🙂"),
+    (":( ", "☹️"),
+    (";) ", "😉"),
+    (":O ", "😮"),
+    (":o ", "😮"),
+    (":| ", "😐"),
+    (":v ", "😋"),
+    ("</3 ", "💔"),
+    (":* ", "😘"),
+    (":x ", "😘"),
+    (":'D ", "😂"),
+    (":'( ", "😢"),
+    (";( ", "😢"),
+    (":_( ", "😢"),
+    (">:( ", "😠"),
+    ("-_-/ ", "😑"),
+    ("-.-/ ", "😑"),
+    (">:O ", "😡"),
+    ("=O ", "😮"),
+    ("o.O ", "😳"),
+    ("O.o ", "😳"),
+    ("B) ", "😎"),
+    (":b ", "😛"),
+    (":/ ", "😕"),
+    (":\\ ", "😕"),
+    (":s ", "😖"),
+    (":S ", "😖"),
+    (":$ ", "😳"),
+    (":& ", "🤐"),
+    (":? ", "🤔"),
+    ("^_^ ", "😊"),
+    ("^.^ ", "😊"),
+    ("=) ", "😊"),
+    ("-.-zzz", "😴"),
+    (":zzz ", "😴"),
+];
+
+/// The composer text after typing the last character of `typed`, with Desktop's emoticon replacement.
+pub(crate) fn replace_emoticon(before: &str, typed: String) -> String {
+    let appended =
+        typed.len() > before.len() && typed.starts_with(before) && typed[before.len()..].chars().count() == 1;
+    match EMOTICONS.iter().find(|(e, _)| appended && typed.ends_with(e)) {
+        Some((e, emoji)) => format!("{}{emoji} ", &typed[..typed.len() - e.len()]),
+        None => typed,
+    }
+}
+
+/// Desktop's emoticon queries, which put an emoji first in the autocomplete.
+const QUERY_EMOJI: [(&str, &str, &str); 16] = [
+    (":)", "smile", "🙂"),
+    (":D", "smile", "😃"),
+    (":d", "smile", "😃"),
+    (":-D", "smile", "🙂"),
+    (":-)", "smile", "🙂"),
+    (":(", "sad", "🙁"),
+    (":-(", "sad", "🙁"),
+    (";)", "wink", "😉"),
+    (";-)", "wink", "😉"),
+    (":P", "stuck_out_tongue", "😛"),
+    (":p", "stuck_out_tongue", "😛"),
+    (":-P", "stuck_out_tongue", "😛"),
+    (":-p", "stuck_out_tongue", "😛"),
+    (":o", "surprised", "😮"),
+    (":O", "surprised", "😮"),
+    (":*", "kiss", "😘"),
+];
+
+/// Desktop's emoji autocomplete for the text after ":": up to 10 emoji with a search term that is or starts
+/// with `q`, ranked like match-sorter, as `(emoji, name)`.
+pub(crate) fn suggestions(prefix: char, q: &str, tone: u8) -> Vec<(String, &'static str)> {
+    let number = q.trim().is_empty() || q.trim().parse::<f64>().is_ok_and(f64::is_finite);
+    if !q.starts_with(['-', '+']) && number && q != "100" {
+        return Vec::new();
+    }
+    let lower = q.to_lowercase();
+    let mut ranked: Vec<(u8, usize, &str, usize)> = (search(q).into_iter())
+        .filter_map(|i| {
+            let terms = DATA.emojis[i].search.split(',').filter(|t| !t.is_empty());
+            let rank = |t: &str| match t {
+                _ if t == q => 7,
+                _ if t == lower => 6,
+                _ if t.starts_with(&lower) => 5,
+                _ => 0,
+            };
+            let (at, term) = terms.enumerate().max_by_key(|&(at, t)| (rank(t), std::cmp::Reverse(at)))?;
+            (rank(term) > 0).then_some((rank(term), at, term, i))
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then_with(|| a.2.cmp(b.2)));
+    let found = ranked.into_iter().map(|r| (DATA.emojis[r.3].skinned(tone), DATA.emojis[r.3].name)).take(10);
+    let key = format!("{prefix}{q}");
+    let first = QUERY_EMOJI.iter().find(|e| e.0 == key).map(|e| (e.2.to_string(), e.1));
+    let mut seen = std::collections::HashSet::new();
+    first.into_iter().chain(found).take(10).filter(|(c, _)| seen.insert(c.clone())).collect()
+}
+
 #[derive(Debug, Clone)]
 pub enum EmojiMsg {
     Toggle,
@@ -585,6 +686,18 @@ pub(crate) fn quick_reactions(st: &beeper_core::store::BeeperStore) -> Vec<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composer_emoji_match_desktop() {
+        assert_eq!(replace_emoticon("hi :)", "hi :) ".into()), "hi 🙂 ");
+        assert_eq!(replace_emoticon("", "hi :) ".into()), "hi :) ");
+        assert_eq!(replace_emoticon("-.-zz", "-.-zzz".into()), "😴 ");
+        let names = |q: &str| suggestions(':', q, 0).into_iter().map(|(c, _)| c).collect::<Vec<_>>().join("");
+        assert!(names(")").starts_with("🙂"));
+        assert_eq!(names("12"), "");
+        assert_eq!(names(""), "");
+        assert!(names("100").starts_with("💯"));
+    }
 
     #[test]
     fn data_skins_and_search_match_emoji_mart() {

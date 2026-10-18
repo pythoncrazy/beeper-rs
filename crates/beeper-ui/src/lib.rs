@@ -365,6 +365,7 @@ pub enum UiMessage {
     VideoDecoded(String, Result<Frames, String>),
     Pasted(Result<Option<Png>, String>),
     DiscardPaste,
+    PickEmoji(usize),
     AnimationTick,
     RecoveryInputChanged(String),
     VerifyRecoveryCode,
@@ -1741,6 +1742,10 @@ pub struct BeeperGuiApp {
     pub expanded_history_msg_id: Option<String>,
     pub hovered_msg: Option<String>,
     quick_open: bool,
+    /// The selected emoji autocomplete row.
+    suggest: usize,
+    /// The composer text where Escape closed the emoji autocomplete.
+    suggest_hidden: Option<String>,
     pub hovered_chat: Option<String>,
     pub flash: Option<(String, std::time::Instant)>,
     last_click: Option<(String, std::time::Instant)>,
@@ -1851,6 +1856,8 @@ impl BeeperGuiApp {
             expanded_history_msg_id: None,
             hovered_msg: None,
             quick_open: false,
+            suggest: 0,
+            suggest_hidden: None,
             hovered_chat: None,
             flash: None,
             status_banner: String::new(),
@@ -2186,6 +2193,41 @@ impl BeeperGuiApp {
         UiMessage::ToggleReaction(chat, mid, st.settings.choice("quickReactionEmoji").into())
     }
 
+    /// Desktop's emoji autocomplete for the ":" word at the end of the composer.
+    fn emoji_suggestions(&self, st: &BeeperStore) -> Vec<(String, &'static str)> {
+        let text = &self.composer_text;
+        let on = st.settings.on("emojiAutocomplete") && self.suggest_hidden.as_ref() != Some(text);
+        let query = text.rfind(':').filter(|_| on).map(|at| &text[at + 1..]);
+        match query.filter(|q| !q.contains(char::is_whitespace)) {
+            Some(q) => emoji::suggestions(':', q, st.skin_tone),
+            None => Vec::new(),
+        }
+    }
+
+    /// The emoji autocomplete list, with its left edge at the ":" in the composer and its bottom at the text top.
+    fn view_suggestions(&self, st: &BeeperStore) -> Option<El<'_>> {
+        let p = &self.pal;
+        let picks = self.emoji_suggestions(st);
+        let at = self.suggest.min(picks.len().checked_sub(1)?);
+        let rows: Vec<String> = picks.iter().map(|(c, name)| format!("{c} {name}")).collect();
+        let width = rows.iter().map(|r| text_width(r, 13.0, Weight::Normal)).fold(0.0, f32::max) + 12.0;
+        let items = rows.into_iter().enumerate().map(|(i, r)| {
+            let (bg, fg) = if i == at { (p.accent, Color::WHITE) } else { (CLEAR, p.text) };
+            let b = button(txt(r, 13.0).wrapping(iced::widget::text::Wrapping::None)).padding([4, 6]).width(width);
+            b.style(btn_style([bg; 3], [fg; 3], 4.0)).on_press(UiMessage::PickEmoji(i)).into()
+        });
+        let list =
+            container(Column::with_children(items).padding([4, 4])).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let (pri, sec) = composer_buttons(st);
+        let unveiled = ATTACH_BUTTONS.iter().filter(|&&x| Some(x) != pri && Some(x) != sec).count() as f32;
+        let plus = if self.show_attach_menu { 36.0 + 6.0 + 2.0 + unveiled * 30.0 - 2.0 } else { 36.0 };
+        let colon = self.composer_text.rfind(':').expect("an emoji query");
+        let x = 8.0 + plus + 8.0 + 14.0 + 2.0 + text_width(&self.composer_text[..colon], 13.0, Weight::Normal);
+        let rail = if st.settings.on("showSidebar") { 72.0 } else { 0.0 };
+        let x = x.min(self.main_size.width / self.zoom - rail - self.sidebar_width - width - 40.0);
+        Some(container(list).align_bottom(Fill).padding(Padding::ZERO.left(x).bottom(34.0)).into())
+    }
+
     /// The newest message you can edit in the open chat.
     fn last_own_message(&self) -> Option<Message> {
         let st = self.store.read().unwrap();
@@ -2404,7 +2446,10 @@ impl BeeperGuiApp {
             }
             UiMessage::ComposerChanged(v) => {
                 self.selected_msg = None;
+                self.suggest = 0;
                 let st = self.store.read().unwrap();
+                let v =
+                    if st.settings.on("keepEmoticons") { v } else { emoji::replace_emoticon(&self.composer_text, v) };
                 let notice = st.matrix.clone().filter(|_| st.settings.on("typingIndicators"));
                 let task = notice.zip(self.selected_chat_id.clone()).map(|(client, chat)| {
                     let on = !v.is_empty();
@@ -2414,7 +2459,16 @@ impl BeeperGuiApp {
                 self.composer_text = v;
                 return task.unwrap_or_else(Task::none);
             }
+            UiMessage::SubmitComposer if !self.emoji_suggestions(&self.store.read().unwrap()).is_empty() => {
+                return self.update(UiMessage::PickEmoji(self.suggest));
+            }
             UiMessage::SubmitComposer => self.submit_composer(),
+            UiMessage::PickEmoji(i) => {
+                let picks = self.emoji_suggestions(&self.store.read().unwrap());
+                let at = self.composer_text.rfind(':').expect("an emoji query");
+                self.composer_text.replace_range(at.., &format!("{} ", picks[i.min(picks.len() - 1)].0));
+                return operation::focus("composer-input").chain(operation::move_cursor_to_end("composer-input"));
+            }
             UiMessage::CancelComposeMode => {
                 self.reply_to_message_id = None;
                 self.editing_message_id = None;
@@ -3491,8 +3545,8 @@ impl BeeperGuiApp {
             UiMessage::Tray(Ok(tray::Event::Hide)) => return self.set_hidden(true),
             UiMessage::Tray(Ok(tray::Event::Quit)) => return iced::exit(),
             UiMessage::Tray(Err(e)) | UiMessage::TrayFailed(e) => {
+                eprintln!("tray icon failed: {e}");
                 self.tray_up = false;
-                self.status_banner = format!("Tray icon failed: {e}");
                 return self.set_hidden(false);
             }
             UiMessage::CloseRequested(id) => {
@@ -3556,6 +3610,23 @@ impl BeeperGuiApp {
                 return self.carousel_key(&key, mods);
             }
             UiMessage::KeyPressed(key, mods) => {
+                let n = self.emoji_suggestions(&self.store.read().unwrap()).len();
+                if n > 0 && mods.is_empty() {
+                    let at = self.suggest.min(n - 1);
+                    match key.as_ref() {
+                        Key::Named(Named::ArrowUp | Named::ArrowDown) => {
+                            let down = key == Key::Named(Named::ArrowDown);
+                            self.suggest = if down { (at + 1) % n } else { (at + n - 1) % n };
+                            return Task::none();
+                        }
+                        Key::Named(Named::Tab) => return self.update(UiMessage::PickEmoji(at)),
+                        Key::Named(Named::Escape) => {
+                            self.suggest_hidden = Some(self.composer_text.clone());
+                            return Task::none();
+                        }
+                        _ => {}
+                    }
+                }
                 let (shift, alt) = (mods.shift(), mods.alt());
                 let hotkey = match key.as_ref() {
                     Key::Named(Named::Escape) => return self.update(UiMessage::CloseModals),
@@ -3781,6 +3852,7 @@ impl BeeperGuiApp {
                                 | Named::ArrowLeft
                                 | Named::ArrowRight
                                 | Named::Enter
+                                | Named::Tab
                                 | Named::Backspace
                         )
                     ) =>
@@ -5255,7 +5327,7 @@ impl BeeperGuiApp {
                 let right = if secondary { 112.0 } else { 82.0 };
                 container(e).align_right(Fill).align_bottom(Fill).padding(Padding::ZERO.right(right).bottom(36.0))
             });
-        let pane = stack![pane].push(picker);
+        let pane = stack![pane].push(picker).push(self.view_suggestions(&st));
         let shadow = Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.18), offset: Vector::ZERO, blur_radius: 20.0 };
         let card = fill_box(p.card, 10.0);
         container(pane)
@@ -5884,10 +5956,7 @@ impl BeeperGuiApp {
                 _ => b.into(),
             }
         };
-        let action =
-            |key| [Some(0), Some(1), Some(5), Some(2), Some(3), Some(4), None][usize::from(st.settings.pref(key))];
-        let pri = action("primaryComposerButton");
-        let sec = action("secondaryComposerButton").filter(|&x| Some(x) != pri);
+        let (pri, sec) = composer_buttons(st);
         let placeholder = format!("Message {} on {}", chat.title, network_name(&chat.account_id));
         let input = text_input(&placeholder, &self.composer_text)
             .id("composer-input")
@@ -5899,19 +5968,19 @@ impl BeeperGuiApp {
         let net = (st.settings.on("showNetworkIcons") && self.composer_text.is_empty())
             .then(|| svg(brand_svg(brand_key(&chat.account_id))).width(14).height(14));
         let inline = Row::with_children([pri, sec].into_iter().flatten().map(&action_btn)).spacing(2).align_y(Center);
-        let pill = container(
-            row![net, input, inline].spacing(2).align_y(Center).padding(Padding::new(0.0).left(14.0).right(6.5)),
-        )
-        .height(36)
-        .width(Fill)
-        .style(fill_box(p.input, 18.0));
+        let net = Row::new().push(net.map(|n| container(n).padding(Padding::ZERO.right(2.0))));
+        let inline = container(inline).padding(Padding::ZERO.left(2.0));
+        let pill = container(row![net, input, inline].align_y(Center).padding(Padding::new(0.0).left(14.0).right(6.5)))
+            .height(36)
+            .width(Fill)
+            .style(fill_box(p.input, 18.0));
         let plus_icon = tinted(&COMPOSER_ICONS[usize::from(self.show_attach_menu)], 20.0, p.on_secondary);
         let toggle = button(container(plus_icon).center(36))
             .padding(0)
             .style(btn_style([p.input, p.hover, p.selected], [p.text; 3], 18.0))
             .on_press(UiMessage::ToggleAttachMenu);
         let unveiled = self.show_attach_menu.then(|| {
-            let ids = [0u8, 3, 5, 2, 1, 4, 6].into_iter().filter(|&x| Some(x) != pri && Some(x) != sec);
+            let ids = ATTACH_BUTTONS.into_iter().filter(|&x| Some(x) != pri && Some(x) != sec);
             Row::with_children(ids.map(&action_btn)).spacing(2).padding([0, 1]).align_y(Center)
         });
         let plus = row![toggle].push(unveiled).spacing(6).align_y(Center);
@@ -5929,12 +5998,8 @@ impl BeeperGuiApp {
             .padding(0)
             .style(btn_style([if ready { p.accent } else { p.send_btn }, p.accent, p.accent], [p.text; 3], 18.0))
             .on_press(UiMessage::SubmitComposer);
-        column![]
-            .push(banner)
-            .push(gif_picker)
-            .push(pasted)
-            .push(row![plus, pill, send].spacing(8).align_y(Center).padding(8))
-            .into()
+        let extras = Column::new().push(banner).push(gif_picker).push(pasted);
+        column![extras, row![plus, pill, send].spacing(8).align_y(Center).padding(8)].into()
     }
 
     fn view_info(&self) -> El<'_> {
@@ -7622,6 +7687,15 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         .style(|a: &BeeperGuiApp, _| iced::theme::Style { background_color: a.pal.frame, text_color: a.pal.text })
         .default_font(fw(Weight::Normal));
     ALL_FONTS.into_iter().fold(app, |app, f| app.font(f)).run()
+}
+
+const ATTACH_BUTTONS: [u8; 7] = [0, 3, 5, 2, 1, 4, 6];
+
+/// The composer buttons in the pill by "Primary composer action" and "Secondary composer action".
+fn composer_buttons(st: &BeeperStore) -> (Option<u8>, Option<u8>) {
+    let action = |key| [Some(0), Some(1), Some(5), Some(2), Some(3), Some(4), None][usize::from(st.settings.pref(key))];
+    let pri = action("primaryComposerButton");
+    (pri, action("secondaryComposerButton").filter(|&x| Some(x) != pri))
 }
 
 fn jumbo(text: &str) -> bool {
