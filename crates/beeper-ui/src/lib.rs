@@ -25,6 +25,7 @@ mod tray {
     }
 }
 pub mod style;
+mod video;
 mod voice;
 
 use crate::login::{Login, LoginMsg};
@@ -386,8 +387,7 @@ pub enum UiMessage {
     RetryMedia(String),
     ResolveMedia(String, String, String),
     MediaResolved(String, Result<(), String>),
-    PlayVideo(String, u32, u32),
-    VideoDecoded(String, Result<Frames, String>),
+    Video(video::Msg),
     Pasted(Result<Option<Png>, String>),
     DiscardPaste,
     LinkPreviewLoaded(String, Result<Option<beeper_core::cloud::PagePreview>, String>),
@@ -772,7 +772,6 @@ fn round_avatar(bytes: &[u8]) -> Result<image::Handle, String> {
 /// Image frames with their delays in milliseconds; a still image has one frame.
 pub type Frames = Vec<(image::Handle, u128)>;
 type Png = (Vec<u8>, (u32, u32));
-type PlayingVideo = (String, Option<Result<(Frames, std::time::Instant), String>>);
 
 #[derive(Clone)]
 pub struct PendingMedia {
@@ -851,13 +850,6 @@ fn run_ffmpeg(bytes: &[u8], args: &[&str]) -> Result<Vec<u8>, String> {
             false => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
         }
     })
-}
-
-fn decode_video(bytes: Vec<u8>, w: u32, h: u32) -> Result<Frames, String> {
-    let vf = format!("fps=15,scale={w}:{h}:flags=fast_bilinear");
-    let raw = run_ffmpeg(&bytes, &["-t", "30", "-vf", &vf, "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"])?;
-    let step = (w * h * 4) as usize;
-    Ok(raw.chunks_exact(step).map(|px| (image::Handle::from_rgba(w, h, px.to_vec()), 67)).collect())
 }
 
 fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
@@ -1034,10 +1026,6 @@ static SENT: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(||
 
 static VIDEO_TAG: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h480q33 0 56.5 23.5T720-720v180l160-160v440L720-420v180q0 33-23.5 56.5T640-160H160Zm0-80h480v-480H160v480Zm0 0v-480 480Z"/></svg>"##[..])
-});
-
-static PLAY_FILL: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
-    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#000"><path d="M5.798 20.552C4.465 21.337 3 20.435 3 18.888V5.112c0-1.547 1.465-2.45 2.798-1.664l13.214 7.78c1.317.776 1.317 2.552 0 3.328L5.798 20.552Z"/></svg>"##[..])
 });
 
 static EYES: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
@@ -1853,7 +1841,7 @@ pub struct BeeperGuiApp {
     pub avatars: HashMap<String, Option<image::Handle>>,
     pub media: HashMap<String, Option<Result<Frames, String>>>,
     pub resolving_media: HashMap<String, bool>,
-    pub playing_video: Option<PlayingVideo>,
+    video: Option<video::Video>,
     started: std::time::Instant,
 }
 
@@ -1970,7 +1958,7 @@ impl BeeperGuiApp {
             avatars: HashMap::new(),
             media: HashMap::new(),
             resolving_media: HashMap::new(),
-            playing_video: None,
+            video: None,
             started: std::time::Instant::now(),
             last_click: None,
         };
@@ -2273,7 +2261,7 @@ impl BeeperGuiApp {
         self.reply_to_message_id = None;
         self.editing_message_id = None;
         self.selected_msg = None;
-        self.playing_video = None;
+        self.video = None;
         drop(st);
         self.refresh_theme_and_tray();
     }
@@ -3403,27 +3391,7 @@ impl BeeperGuiApp {
                     self.status_banner = "Could not load this media.".into();
                 }
             }
-            UiMessage::PlayVideo(url, w, h) => {
-                if self.playing_video.as_ref().is_some_and(|(u, _)| u == &url) {
-                    self.playing_video = None;
-                    return Task::none();
-                }
-                self.playing_video = Some((url.clone(), None));
-                let client = self.store.read().unwrap().matrix.clone();
-                let u = url.clone();
-                return Task::perform(
-                    async move {
-                        let bytes = beeper_core::matrix::media(client, u).await?;
-                        tokio::task::spawn_blocking(move || decode_video(bytes, w, h)).await.expect("video decode task")
-                    },
-                    move |r| UiMessage::VideoDecoded(url, r),
-                );
-            }
-            UiMessage::VideoDecoded(url, r) => {
-                if self.playing_video.as_ref().is_some_and(|(u, _)| u == &url) {
-                    self.playing_video = Some((url, Some(r.map(|f| (f, std::time::Instant::now())))));
-                }
-            }
+            UiMessage::Video(msg) => return self.video(msg),
             UiMessage::Pasted(r) => match r {
                 Ok(img) => {
                     self.pasted = img.map(|(png, size)| PendingMedia {
@@ -4120,7 +4088,6 @@ impl BeeperGuiApp {
             due.then(|| iced::time::every(std::time::Duration::from_secs(1)).map(|_| UiMessage::CheckReminders));
         let animated = typing
             || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
-            || self.playing_video.as_ref().is_some_and(|(_, s)| matches!(s, Some(Ok(_))))
             || self.pasted.as_ref().is_some_and(|p| p.frames.len() > 1)
             || self.carousel.as_ref().is_some_and(|c| {
                 let st = self.store.read().unwrap();
@@ -4158,7 +4125,8 @@ impl BeeperGuiApp {
                 .chain(remind)
                 .chain(notes)
                 .chain(tray)
-                .chain(self.audio_ticks()),
+                .chain(self.audio_ticks())
+                .chain(self.video_ticks()),
         )
     }
 
@@ -5730,73 +5698,42 @@ impl BeeperGuiApp {
                         .style(fill_box(Color::BLACK.scale_alpha(alpha), 17.0))
                         .into()
                     };
-                    let playing = a.src_url.as_ref().and_then(|u| {
-                        let (pu, state) = self.playing_video.as_ref()?;
-                        (pu == u).then_some(state)
-                    });
-                    let (slot, press): (El<'_>, _) = if let Some(Some(Ok((frames, started)))) = playing {
-                        (
-                            image(current_frame(frames, started.elapsed().as_millis()))
-                                .width(w)
-                                .height(h)
-                                .border_radius(17.0)
-                                .into(),
-                            UiMessage::PlayVideo(
-                                a.src_url.clone().unwrap_or_default(),
-                                w.round() as u32,
-                                h.round() as u32,
-                            ),
-                        )
-                    } else {
-                        let base: El<'_> = match thumb_url.as_ref().and_then(|u| self.media.get(u)?.as_ref()) {
-                            Some(Ok(frames)) => image(current_frame(frames, self.started.elapsed().as_millis()))
-                                .width(w)
-                                .height(h)
-                                .border_radius(17.0)
-                                .into(),
-                            Some(Err(_)) if m.unresolved_media.is_none() => {
-                                pill("Could not load. Click to try again", 0.45)
-                            }
-                            _ => container(ic(icon::IMAGE, 28.0).color(p.sub))
-                                .center_x(w)
-                                .center_y(h)
-                                .style(fill_box(p.link_card, 17.0))
-                                .into(),
-                        };
-                        if let Some(raw) = m.unresolved_media.as_ref().filter(|_| !is_video) {
-                            let failed = self.resolving_media.get(&m.id) == Some(&false);
-                            let (label, alpha) = match failed {
-                                true => ("Could not load. Click to try again", 0.45),
-                                false => ("Click to load", 0.25),
-                            };
-                            (
-                                stack![base, pill(label, alpha)].into(),
-                                UiMessage::ResolveMedia(m.account_id.clone(), m.id.clone(), raw.clone()),
-                            )
-                        } else if thumb_url
-                            .as_ref()
-                            .and_then(|u| self.media.get(u)?.as_ref())
-                            .is_some_and(Result::is_err)
-                        {
-                            (base, UiMessage::RetryMedia(thumb_url.expect("a failed media has a URL")))
-                        } else if is_video && a.is_gif != Some(true) {
-                            let play = container(
-                                container(tinted(&PLAY_FILL, 20.0, Color::from_rgb8(0x20, 0x21, 0x24)))
-                                    .center(36)
-                                    .style(fill_box(Color::from_rgb8(0xef, 0xef, 0xf0), 18.0)),
-                            )
-                            .center_x(w)
-                            .center_y(h);
-                            (
-                                stack![base, play].into(),
-                                a.src_url.clone().map_or_else(
-                                    || UiMessage::OpenQuickLook(name, "Video attachment".into()),
-                                    |u| UiMessage::PlayVideo(u, w.round() as u32, h.round() as u32),
-                                ),
-                            )
-                        } else {
-                            (base, UiMessage::OpenCarousel(m.id.clone(), ai, false))
+                    let base: El<'_> = match thumb_url.as_ref().and_then(|u| self.media.get(u)?.as_ref()) {
+                        Some(Ok(frames)) => image(current_frame(frames, self.started.elapsed().as_millis()))
+                            .width(w)
+                            .height(h)
+                            .border_radius(17.0)
+                            .into(),
+                        Some(Err(_)) if m.unresolved_media.is_none() => {
+                            pill("Could not load. Click to try again", 0.45)
                         }
+                        _ => container(ic(icon::IMAGE, 28.0).color(p.sub))
+                            .center_x(w)
+                            .center_y(h)
+                            .style(fill_box(p.link_card, 17.0))
+                            .into(),
+                    };
+                    let (slot, press): (El<'_>, _) = if let Some(raw) =
+                        m.unresolved_media.as_ref().filter(|_| !is_video)
+                    {
+                        let failed = self.resolving_media.get(&m.id) == Some(&false);
+                        let (label, alpha) = match failed {
+                            true => ("Could not load. Click to try again", 0.45),
+                            false => ("Click to load", 0.25),
+                        };
+                        (
+                            stack![base, pill(label, alpha)].into(),
+                            UiMessage::ResolveMedia(m.account_id.clone(), m.id.clone(), raw.clone()),
+                        )
+                    } else if thumb_url.as_ref().and_then(|u| self.media.get(u)?.as_ref()).is_some_and(Result::is_err) {
+                        (base, UiMessage::RetryMedia(thumb_url.expect("a failed media has a URL")))
+                    } else if let Some(src) = a.src_url.as_ref().filter(|_| is_video && a.is_gif != Some(true)) {
+                        parts = parts.push(self.view_video(src, base, w, h));
+                        continue;
+                    } else if is_video && a.is_gif != Some(true) {
+                        (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))
+                    } else {
+                        (base, UiMessage::OpenCarousel(m.id.clone(), ai, false))
                     };
                     button(slot).padding(0).style(btn_style([CLEAR; 3], [p.text; 3], 17.0)).on_press(press).into()
                 }
