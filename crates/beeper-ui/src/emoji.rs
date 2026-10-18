@@ -194,27 +194,10 @@ impl BeeperGuiApp {
         if !pk.query.trim().is_empty() {
             return vec![("Search Results", search(&pk.query))];
         }
-        let frequent = self.frequent_emoji();
+        let frequent = frequent_emoji(&self.store.read().unwrap());
         let frequent = (!frequent.is_empty()).then_some((CATEGORIES[0].1, frequent));
         let cats = DATA.categories.iter().zip(&CATEGORIES[1..]).map(|(r, (_, title))| (*title, r.clone().collect()));
         frequent.into_iter().chain(cats).collect()
-    }
-
-    /// Desktop's top 27 recent emoji, merged by emoji and sorted by use count.
-    fn frequent_emoji(&self) -> Vec<usize> {
-        let st = self.store.read().unwrap();
-        let mut counts: Vec<(usize, u64)> = Vec::new();
-        for (key, n) in &st.recent_emoji {
-            let id = !key.is_empty() && key.chars().all(|c| c.is_ascii_alphabetic() || c == '_');
-            let found = if id { DATA.ids.get(key.as_str()) } else { DATA.natives.get(&bare(key)) };
-            let Some(&i) = found else { continue };
-            match counts.iter_mut().find(|(j, _)| *j == i) {
-                Some((_, c)) => *c += n,
-                None => counts.push((i, *n)),
-            }
-        }
-        counts.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
-        counts.into_iter().take(27).map(|(i, _)| i).collect()
     }
 
     pub(crate) fn update_emoji(&mut self, m: EmojiMsg) -> Task<UiMessage> {
@@ -306,7 +289,7 @@ impl BeeperGuiApp {
             .collect();
         let current = tops.iter().rposition(|&t| t <= pk.scroll + 1.0).expect("the first section starts at 0");
         let searching = !pk.query.trim().is_empty();
-        let frequent = usize::from(!self.frequent_emoji().is_empty());
+        let frequent = usize::from(!frequent_emoji(&self.store.read().unwrap()).is_empty());
         let nav = row((1 - frequent..CATEGORIES.len()).enumerate().map(|(k, cat)| {
             let on = !searching && k == current;
             let (fg, accent, dim) = (c.fg, c.accent, mix(c.bg, c.fg, 0.65));
@@ -569,6 +552,35 @@ static CATEGORY_ICONS: LazyLock<[svg::Handle; 9]> = LazyLock::new(|| {
     ]
     .map(|s| svg::Handle::from_memory(s.as_bytes()))
 });
+
+/// Desktop's top 27 recent emoji, merged by emoji and sorted by use count.
+fn frequent_emoji(st: &beeper_core::store::BeeperStore) -> Vec<usize> {
+    let mut counts: Vec<(usize, u64)> = Vec::new();
+    for (key, n) in &st.recent_emoji {
+        let id = !key.is_empty() && key.chars().all(|c| c.is_ascii_alphabetic() || c == '_');
+        let found = if id { DATA.ids.get(key.as_str()) } else { DATA.natives.get(&bare(key)) };
+        let Some(&i) = found else { continue };
+        match counts.iter_mut().find(|(j, _)| *j == i) {
+            Some((_, c)) => *c += n,
+            None => counts.push((i, *n)),
+        }
+    }
+    counts.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+    counts.into_iter().take(27).map(|(i, _)| i).collect()
+}
+
+/// Desktop's `topEmoji`: the 3 most used emoji, then 👍 ❤️ 😂.
+pub(crate) fn quick_reactions(st: &beeper_core::store::BeeperStore) -> Vec<String> {
+    let top = frequent_emoji(st).into_iter().take(3).map(|i| DATA.emojis[i].skinned(st.skin_tone));
+    let mut out: Vec<String> = Vec::new();
+    for e in top.chain(["👍", "❤️", "😂"].map(String::from)) {
+        if !out.iter().any(|o| bare(o) == bare(&e)) {
+            out.push(e);
+        }
+    }
+    out.truncate(3);
+    out
+}
 
 #[cfg(test)]
 mod tests {
