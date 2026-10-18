@@ -883,7 +883,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = gui.update(UiMessage::DeleteNewChat(0));
     assert!(gui.new_chats.is_empty() && gui.creating_chat.is_none() && gui.selected_chat_id.is_some());
     let _ = gui.update(UiMessage::SelectChat(prev));
-    let _ = gui.update(UiMessage::ComposerChanged("Hello from Iced Simulator E2E!".to_string()));
+    let _ = gui.update(UiMessage::ComposerChanged("Hello from **Iced** Simulator E2E!".to_string()));
     let _ = gui.update(UiMessage::SubmitComposer);
     let _ = gui.update(UiMessage::OpenSettings(SettingsTab::Appearance));
     assert!(gui.settings_window.is_some());
@@ -1164,7 +1164,10 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = gui.update(UiMessage::CloseModals);
 
     let final_wa_msgs = client.list_messages("!wa_eric:beeper.com").await;
-    assert!(final_wa_msgs.items.iter().any(|m| m.text.as_deref() == Some("Hello from Iced Simulator E2E!")));
+    assert!(final_wa_msgs.items.iter().any(|m| {
+        m.text.as_deref() == Some("Hello from **Iced** Simulator E2E!")
+            && m.html.as_deref() == Some("Hello from <strong>Iced</strong> Simulator E2E!")
+    }));
 
     let emu_store = store.clone();
     std::thread::spawn(move || {

@@ -1127,8 +1127,8 @@ impl BeeperStore {
             sender_name: self.me().full_name.clone(),
             sort_key: sort_key(self.next_seq),
             timestamp: now_rfc3339_millis(),
+            html: text.as_deref().and_then(crate::codec::markdown_html),
             text,
-            html: None,
             message_type: Some(msg_type.to_string()),
             is_sender: Some(true),
             is_unread: Some(false),
@@ -1166,8 +1166,8 @@ impl BeeperStore {
     ) -> Result<(String, Message), &'static str> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let msg = self.update_message(m_idx, |m| {
+            m.html = crate::codec::markdown_html(&new_text);
             let prev = m.text.replace(new_text).expect("edited message has text");
-            m.html = None;
             m.edit_history.push(EditHistoryEntry { text: prev, timestamp: now_rfc3339_millis() });
         });
         Ok((chat_id, msg))
