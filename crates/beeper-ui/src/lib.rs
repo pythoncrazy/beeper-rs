@@ -1,5 +1,6 @@
 mod cursor;
 pub mod emoji;
+mod lift;
 pub mod login;
 mod notify;
 mod popover;
@@ -1332,6 +1333,30 @@ impl iced::advanced::widget::Operation<iced::Rectangle> for Find {
 
 fn ease_out(x: f32) -> f32 {
     1.0 - (1.0 - x) * (1.0 - x)
+}
+
+/// CSS `cubic-bezier(.22, 1, .36, 1)`.
+fn ease_out_quint(x: f32) -> f32 {
+    let bezier =
+        |t: f32, p1: f32, p2: f32| 3.0 * (1.0 - t) * (1.0 - t) * t * p1 + 3.0 * (1.0 - t) * t * t * p2 + t.powi(3);
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..20 {
+        let mid = (lo + hi) / 2.0;
+        if bezier(mid, 0.22, 0.36) < x {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    bezier((lo + hi) / 2.0, 1.0, 1.0)
+}
+
+/// Desktop's `animate-on-insert` for your pending message, with "Enable message animations" on: the eased
+/// progress of its 260 ms `message-send-insert` animation.
+fn send_rise(st: &BeeperStore, m: &Message) -> Option<f32> {
+    let age = now_unix_millis() - millis_from_rfc3339(&m.timestamp).expect("RFC 3339 timestamp");
+    let pending = m.is_sender == Some(true) && m.id.starts_with("msg_");
+    (pending && age < 260 && st.settings.on("messageAnimations")).then(|| ease_out_quint(age.max(0) as f32 / 260.0))
 }
 
 /// Finds how far from the bottom the timeline must scroll to center a message.
@@ -3893,7 +3918,9 @@ impl BeeperGuiApp {
         });
         let (typing, due) = {
             let st = self.store.read().unwrap();
-            (!st.typing.is_empty(), st.chats.iter().any(|c| c.reminder.is_some() && !self.expired(c)))
+            let last = self.selected_chat_id.as_ref().and_then(|c| st.chat_msg_indices.get(c)?.last());
+            let rising = last.is_some_and(|&i| send_rise(&st, &st.messages[i]).is_some());
+            (!st.typing.is_empty() || rising, st.chats.iter().any(|c| c.reminder.is_some() && !self.expired(c)))
         };
         let remind =
             due.then(|| iced::time::every(std::time::Duration::from_secs(1)).map(|_| UiMessage::CheckReminders));
@@ -5261,6 +5288,10 @@ impl BeeperGuiApp {
             };
             let chained = prev.is_some_and(|q| reply_root(&st, q) == reply_root(&st, m));
             let view = self.view_message(&st, chat, m, (first, last, chained), status, head);
+            let view = match send_rise(&st, m) {
+                Some(t) => lift::lift(view, 14.0 * (1.0 - t), 0.97 + 0.03 * t).into(),
+                None => view,
+            };
             let flash = self.flash.as_ref().filter(|(id, _)| *id == m.id).map(|(_, at)| {
                 let t = (at.elapsed().as_secs_f32() / 1.5).min(1.0);
                 let a = if t < 0.2 { ease_out(t / 0.2) } else { 1.0 - ease_out((t - 0.2) / 0.8) };
@@ -5377,7 +5408,8 @@ impl BeeperGuiApp {
         }
         let group = chat.chat_type == "group";
         let selected = self.selected_msg.as_ref() == Some(&m.id);
-        let dim = move |c: Color| if selected { brightness(c, 0.7) } else { c };
+        let rise = send_rise(st, m).unwrap_or(1.0);
+        let dim = move |c: Color| (if selected { brightness(c, 0.7) } else { c }).scale_alpha(rise);
         let (bg, fg) = if mine { (dim(p.sent), dim(Color::WHITE)) } else { (dim(p.received), dim(p.strong)) };
         let text = m.text.clone().unwrap_or_default();
         let preview = st
@@ -7734,6 +7766,12 @@ fn jumbo(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ease_out_quint_matches_css() {
+        assert!(ease_out_quint(0.0).abs() < 1e-3 && (ease_out_quint(1.0) - 1.0).abs() < 1e-3);
+        assert!((ease_out_quint(0.5) - 0.963).abs() < 5e-3);
+    }
 
     #[test]
     fn gif_frames_play_with_browser_delays() {
