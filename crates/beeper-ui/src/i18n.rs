@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 /// Desktop's languages other than English, in the order of the "App language" options after "System" and "English".
@@ -13,28 +14,33 @@ const LANGS: [(&str, &str); 5] = [
     ("pt-BR", include_str!("../assets/i18n/pt-BR.json")),
 ];
 
-/// The language, and the plural forms of each translation.
-static TABLE: OnceLock<(&str, HashMap<String, Vec<String>>)> = OnceLock::new();
+/// The plural forms of each translation, for each language of [`LANGS`].
+static TABLES: [OnceLock<HashMap<String, Vec<String>>>; 5] = [const { OnceLock::new() }; 5];
 
-/// Loads the language of the "App language" option `choice`, where 0 is the system language and 1 is English.
-/// Desktop changes the language only when it starts, so this runs once.
-pub fn init(choice: u8) {
+/// The index in [`LANGS`] of the current language, or `usize::MAX` for English.
+static CURRENT: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// Uses the language of the "App language" option `choice`, where 0 is the system language and 1 is English.
+pub fn set(choice: u8) {
     let locale = ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"]
         .iter()
         .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()));
-    let code = match choice {
-        0 => locale.as_deref().and_then(language),
+    let index = match choice {
+        0 => locale
+            .as_deref()
+            .and_then(language)
+            .map(|c| LANGS.iter().position(|l| l.0 == c).expect("a listed language")),
         1 => None,
-        i => Some(LANGS[usize::from(i) - 2].0),
+        i => Some(usize::from(i) - 2),
     };
-    let table = code.map_or_else(
-        || ("en", HashMap::new()),
-        |c| {
-            let json = LANGS.iter().find(|l| l.0 == c).expect("a listed language").1;
-            (c, serde_json::from_str(json).expect("valid translations"))
-        },
-    );
-    TABLE.set(table).expect("the language loads once");
+    CURRENT.store(index.unwrap_or(usize::MAX), Ordering::Relaxed);
+}
+
+/// The current language and its translations, or `None` for English.
+fn table() -> Option<(&'static str, &'static HashMap<String, Vec<String>>)> {
+    let i = CURRENT.load(Ordering::Relaxed);
+    let (code, json) = LANGS.get(i)?;
+    Some((code, TABLES[i].get_or_init(|| serde_json::from_str(json).expect("valid translations"))))
 }
 
 /// Desktop's language for a system locale such as `de_DE.UTF-8`, or `None` for English.
@@ -47,7 +53,7 @@ fn language(locale: &str) -> Option<&'static str> {
 }
 
 fn forms(key: &str) -> Option<&'static [String]> {
-    TABLE.get().and_then(|t| t.1.get(key)).map(Vec::as_slice)
+    table().and_then(|t| t.1.get(key)).map(Vec::as_slice)
 }
 
 /// The translation of a UI string.
@@ -82,7 +88,7 @@ pub fn trnx(one: &'static str, many: &'static str, n: usize, context: &str, args
 }
 
 fn plural(key: &str, english: [&str; 2], n: usize, args: &[&dyn Display]) -> String {
-    let form = match TABLE.get().map_or("en", |t| t.0) {
+    let form = match table().map_or("en", |t| t.0) {
         "ja" => 0,
         "fr" => usize::from(n > 1),
         _ => usize::from(n != 1),

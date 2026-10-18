@@ -1175,6 +1175,10 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = gui.update(UiMessage::PickSetting(search_settings("tray")[1]));
     assert_eq!(gui.active_settings_tab, SettingsTab::Appearance);
     assert!(simulator(gui.view_settings()).find("Show tray icon").is_ok());
+    let _ = gui.update(UiMessage::SetPref("appLanguage", 2));
+    assert!(simulator(gui.view_main()).find("Posteingang").is_ok(), "the language changes at once");
+    let _ = gui.update(UiMessage::SetPref("appLanguage", 1));
+    assert!(simulator(gui.view_main()).find("Inbox").is_ok());
     let _ = gui.update(UiMessage::CloseModals);
 
     let final_wa_msgs = client.list_messages("!wa_eric:beeper.com").await;
