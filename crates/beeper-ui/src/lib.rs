@@ -228,6 +228,8 @@ pub enum UiMessage {
     OpenChatMenu(String),
     Cursor(Point),
     OpenMessageMenu(String),
+    /// Open the emoji picker at the cursor to react to a message.
+    React(String),
     /// An action picked in the message menu, which closes it.
     MessageMenu(Box<UiMessage>),
     CopyText(String),
@@ -2054,6 +2056,7 @@ impl BeeperGuiApp {
             }
             UiMessage::Cursor(at) => self.cursor = at,
             UiMessage::OpenMessageMenu(mid) => self.message_menu = Some((mid, self.cursor)),
+            UiMessage::React(mid) => return self.open_emoji(Some((mid, self.cursor))),
             UiMessage::MessageMenu(msg) => {
                 self.message_menu = None;
                 return self.update(*msg);
@@ -2920,21 +2923,27 @@ impl BeeperGuiApp {
             let x = if at.x + MESSAGE_MENU_W > self.main_size.width { at.x - MESSAGE_MENU_W } else { at.x };
             (menu, x, at.y.min(self.main_size.height - h - 8.0))
         });
+        let react = self.emoji.as_ref().and_then(|pk| pk.react.as_ref()).map(|(_, at)| {
+            let x = if at.x + 352.0 > self.main_size.width { at.x - 352.0 } else { at.x };
+            (self.view_emoji_picker().expect("the picker is open"), x, at.y.min(self.main_size.height - 435.0 - 8.0))
+        });
         let selection_menu = self.selection_menu.map(|(i, x)| {
             let (menu, h) = self.view_selection_menu(i);
             let w = if i == 0 { SUB_MENU_W[1] } else { 233.0 };
             (menu, x.min(self.main_size.width - w - 8.0), self.main_size.height - 60.0 - h)
         });
-        let menu = filter_menu.or(reminder_menu).or(chat_menu).or(message_menu).or(selection_menu).map(|(m, x, y)| {
-            mouse_area(
-                container(mouse_area(m).on_press(UiMessage::Noop))
-                    .padding(Padding::ZERO.left(x).top(y))
-                    .width(Fill)
-                    .height(Fill),
-            )
-            .on_press(UiMessage::CloseModals)
-            .on_right_press(UiMessage::CloseModals)
-        });
+        let menu = filter_menu.or(reminder_menu).or(chat_menu).or(message_menu).or(react).or(selection_menu).map(
+            |(m, x, y)| {
+                mouse_area(
+                    container(mouse_area(m).on_press(UiMessage::Noop))
+                        .padding(Padding::ZERO.left(x).top(y))
+                        .width(Fill)
+                        .height(Fill),
+                )
+                .on_press(UiMessage::CloseModals)
+                .on_right_press(UiMessage::CloseModals)
+            },
+        );
         let toast = (!self.status_banner.is_empty()).then(|| {
             let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, p.sub, UiMessage::DismissBanner);
             let text = txt(self.status_banner.clone(), 13.0).color(p.strong);
@@ -3163,6 +3172,7 @@ impl BeeperGuiApp {
                 .then(|| vec![item("Edit…".into(), "Ctrl T", Some(UiMessage::StartEdit(mid.clone(), text)))]),
             Some(vec![
                 item("Reply…".into(), "Ctrl R", Some(UiMessage::StartReply(mid.clone()))),
+                item("React…".into(), "", Some(UiMessage::React(mid.clone()))),
                 item(bookmark.into(), "", Some(UiMessage::ToggleBookmark(mid.clone()))),
             ]),
             (m.is_unread != Some(true)).then(|| {
@@ -4110,10 +4120,11 @@ impl BeeperGuiApp {
         let pane =
             column![stack![list, overlay].width(Fill).height(Fill)].push(verify).push(self.view_composer(&st, chat));
         let secondary = st.settings.pref("secondaryComposerButton") != 5;
-        let picker = self.view_emoji_picker().map(|e| {
-            let right = if secondary { 112.0 } else { 82.0 };
-            container(e).align_right(Fill).align_bottom(Fill).padding(Padding::ZERO.right(right).bottom(36.0))
-        });
+        let picker =
+            self.view_emoji_picker().filter(|_| self.emoji.as_ref().is_some_and(|pk| pk.react.is_none())).map(|e| {
+                let right = if secondary { 112.0 } else { 82.0 };
+                container(e).align_right(Fill).align_bottom(Fill).padding(Padding::ZERO.right(right).bottom(36.0))
+            });
         let pane = stack![pane].push(picker);
         let shadow = Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.18), offset: Vector::ZERO, blur_radius: 20.0 };
         let card = fill_box(p.card, 10.0);
@@ -4453,16 +4464,21 @@ impl BeeperGuiApp {
                     .style(fill_box(bg, 17.0)),
             );
         }
-        let footer: Vec<String> =
-            status.into_iter().chain((!m.edit_history.is_empty()).then(|| "Edited".into())).collect();
+        let open = self.expanded_history_msg_id.as_ref() == Some(&m.id);
+        let label = |t: String| txt(t, 12.0).line_height(Pixels(15.0)).color(p.muted);
+        let edited = (!m.edit_history.is_empty()).then(|| {
+            let toggle = button(label(if open { "Hide Edits" } else { "Edited" }.into())).padding(0);
+            toggle.style(|_, _| button::Style::default()).on_press(UiMessage::ToggleEditHistory(m.id.clone())).into()
+        });
+        let footer: Vec<El<'a>> = status.map(|t| label(t).into()).into_iter().chain(edited).collect();
         let footer = (!footer.is_empty()).then(|| {
             let line = footer.into_iter().enumerate().fold(Row::new(), |r, (i, t)| {
                 r.push((i > 0).then(|| container(txt("·", 12.0).color(p.muted.scale_alpha(0.8))).padding([0, 4])))
-                    .push(txt(t, 12.0).line_height(Pixels(15.0)).color(p.muted))
+                    .push(t)
             });
             container(line).padding([0.0, BUBBLE_PAD_X])
         });
-        let edits = (self.expanded_history_msg_id.as_ref() == Some(&m.id)).then(|| {
+        let edits = open.then(|| {
             m.edit_history.iter().fold(Column::new().spacing(2), |c, e| {
                 c.push(txt(format!("{} · {}", e.text, format_short_ts(&e.timestamp, false)), 11.0).color(p.muted))
             })
@@ -4518,18 +4534,24 @@ impl BeeperGuiApp {
         };
         let parts = column![parts].push(edits).push(footer).align_x(if mine { Right } else { iced::Left });
         let tools = (self.hovered_msg.as_ref() == Some(&m.id)).then(|| {
-            let b = |c: char, msg: UiMessage| icon_btn(p, c, 14.0, 26.0, p.weak, msg);
-            let (cid, mid) = (chat.id.clone(), m.id.clone());
-            let bar = row![
-                b(icon::SMILE, UiMessage::ToggleReaction(cid.clone(), mid.clone(), "👍".into())),
-                b(icon::REPLY, UiMessage::StartReply(mid.clone())),
-                b(icon::BOOKMARK, UiMessage::ToggleBookmark(mid.clone())),
-                b(icon::EMAIL, UiMessage::MarkUnreadFromHere(cid.clone(), mid.clone()))
-            ]
-            .push((!m.edit_history.is_empty()).then(|| b(icon::HISTORY, UiMessage::ToggleEditHistory(mid.clone()))))
-            .push(mine.then(|| b(icon::PENCIL, UiMessage::StartEdit(mid.clone(), text.clone()))))
-            .push(mine.then(|| b(icon::TRASH_2, UiMessage::DeleteMessage(cid.clone(), mid.clone()))));
-            container(bar).padding(2).style(shadow_box(p.elevated, p.outline, 10.0, 8.0))
+            let muted = p.muted;
+            let b = |c: char, msg: UiMessage| -> El<'a> {
+                let style = move |_: &Theme, s| button::Style {
+                    text_color: match s {
+                        button::Status::Hovered => Color::from_rgb(muted.r * 0.8, muted.g * 0.8, muted.b * 0.8),
+                        _ => muted,
+                    },
+                    ..Default::default()
+                };
+                button(container(ic(c, 20.0)).center(32)).padding(0).style(style).on_press(msg).into()
+            };
+            let (reply, react) =
+                (b(icon::REPLY, UiMessage::StartReply(m.id.clone())), b(icon::SMILE, UiMessage::React(m.id.clone())));
+            if mine {
+                row![react, reply]
+            } else {
+                row![reply, react]
+            }
         });
         let side = (group && !mine).then(|| -> El<'a> {
             if last {
@@ -4544,7 +4566,8 @@ impl BeeperGuiApp {
         let line: El<'a> = if mine {
             row![Space::new().width(Fill)].push(tools).push(parts).spacing(6).align_y(Center).into()
         } else {
-            row![].push(side).push(parts).push(tools).push(Space::new().width(Fill)).spacing(6).align_y(Bottom).into()
+            let body = row![parts].push(tools).spacing(6).align_y(Center);
+            row![].push(side).push(body).push(Space::new().width(Fill)).spacing(6).align_y(Bottom).into()
         };
         let line: El<'a> = match quote {
             None => line,
@@ -4650,7 +4673,8 @@ impl BeeperGuiApp {
                 3 => Some(UiMessage::PasteClipboard),
                 _ => None,
             };
-            let active = (id == 2 && self.show_gif_picker) || (id == 0 && self.emoji.is_some());
+            let active = (id == 2 && self.show_gif_picker)
+                || (id == 0 && self.emoji.as_ref().is_some_and(|pk| pk.react.is_none()));
             let color = if active { p.strong } else { p.on_secondary };
             let bg = if active { p.hover } else { CLEAR };
             let glyph = svg(COMPOSER_ICONS[usize::from(id) + 2].clone())

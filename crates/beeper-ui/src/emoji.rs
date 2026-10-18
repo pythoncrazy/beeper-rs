@@ -153,6 +153,8 @@ pub enum EmojiMsg {
 
 #[derive(Default)]
 pub struct Picker {
+    /// The message that a pick reacts to and where the picker opens, or `None` for the composer.
+    pub(crate) react: Option<(String, iced::Point)>,
     query: String,
     hover: Option<usize>,
     skins_open: bool,
@@ -220,13 +222,13 @@ impl BeeperGuiApp {
         match m {
             EmojiMsg::Toggle if on_hover => return Task::none(),
             EmojiMsg::Toggle if self.emoji.is_some() => self.emoji = None,
-            EmojiMsg::Toggle => return self.open_emoji(),
+            EmojiMsg::Toggle => return self.open_emoji(None),
             EmojiMsg::Pointer(area, inside) => {
                 self.emoji_hovered[usize::from(area)] = inside;
                 self.emoji_gen += 1;
                 match inside {
-                    true if on_hover && self.emoji.is_none() => return self.open_emoji(),
-                    false if on_hover => {
+                    true if on_hover && self.emoji.is_none() => return self.open_emoji(None),
+                    false if on_hover && self.emoji.as_ref().is_none_or(|pk| pk.react.is_none()) => {
                         let g = self.emoji_gen;
                         let wait = tokio::time::sleep(std::time::Duration::from_millis(200));
                         return Task::perform(wait, move |_| UiMessage::Emoji(EmojiMsg::Close(g)));
@@ -238,6 +240,10 @@ impl BeeperGuiApp {
             EmojiMsg::Close(_) => {}
             EmojiMsg::Pick(i) => {
                 let tone = self.store.read().unwrap().skin_tone;
+                if let Some((mid, _)) = self.emoji.take_if(|pk| pk.react.is_some()).and_then(|pk| pk.react) {
+                    let cid = self.selected_chat_id.clone().expect("an open chat");
+                    return self.update(UiMessage::ToggleReaction(cid, mid, DATA.emojis[i].skinned(tone)));
+                }
                 let text = format!("{}{}", self.composer_text, DATA.emojis[i].skinned(tone));
                 return self.update(UiMessage::ComposerChanged(text));
             }
@@ -279,8 +285,8 @@ impl BeeperGuiApp {
         Task::none()
     }
 
-    fn open_emoji(&mut self) -> Task<UiMessage> {
-        self.emoji = Some(Picker::default());
+    pub(crate) fn open_emoji(&mut self, react: Option<(String, iced::Point)>) -> Task<UiMessage> {
+        self.emoji = Some(Picker { react, ..Picker::default() });
         self.emoji_hovered[1] = false;
         operation::focus(SEARCH_INPUT)
     }
