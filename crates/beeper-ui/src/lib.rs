@@ -229,6 +229,9 @@ pub enum UiMessage {
     ToggleGifPicker,
     Emoji(emoji::EmojiMsg),
     Upserted(Box<Message>),
+    ChatUpserted(Box<Chat>),
+    Typing(String),
+    NotifyTimer(String, u64),
     Notified(Result<(u32, String), String>),
     NotificationEvent(u32, bool),
     WindowFocused(bool),
@@ -1711,6 +1714,7 @@ pub struct BeeperGuiApp {
     focused: bool,
     notified: HashSet<String>,
     notifications: HashMap<u32, String>,
+    pending: notify::Pending,
     pub gif_query: String,
     pub gifs: Vec<KlipyGif>,
     pub gif_loading: bool,
@@ -1783,6 +1787,7 @@ impl BeeperGuiApp {
                 .filter(|d| has_beeper_data(d));
             (s.theme.is_dark(false), false, first, cloud, source)
         };
+        let pending = notify::Pending::new(&store.read().unwrap().chats);
         let mut app = Self {
             store,
             os,
@@ -1824,6 +1829,7 @@ impl BeeperGuiApp {
             focused: false,
             notified: HashSet::new(),
             notifications: HashMap::new(),
+            pending,
             gif_query: String::new(),
             gifs: Vec::new(),
             gif_loading: false,
@@ -3249,14 +3255,18 @@ impl BeeperGuiApp {
             UiMessage::PasteClipboard => return Task::perform(clipboard_image(), UiMessage::Pasted),
             UiMessage::Emoji(m) => return self.update_emoji(m),
             UiMessage::Upserted(m) => {
-                let note = self.notification(&m).map(|(t, b, silent, otp)| {
-                    let chat = m.chat_id.clone();
-                    let show =
-                        Task::perform(notify::show(t, b, silent), move |r| UiMessage::Notified(r.map(|id| (id, chat))));
-                    Task::batch([show].into_iter().chain(otp.map(iced::clipboard::write)))
-                });
-                return Task::batch([self.update(UiMessage::StoreChanged)].into_iter().chain(note));
+                let note = self.notify_message(&m);
+                return Task::batch([self.update(UiMessage::StoreChanged), note]);
             }
+            UiMessage::ChatUpserted(c) => {
+                let note = self.notify_chat(&c);
+                return Task::batch([self.update(UiMessage::StoreChanged), note]);
+            }
+            UiMessage::Typing(chat) => {
+                let note = self.notify_typing(chat);
+                return Task::batch([self.update(UiMessage::StoreChanged), note]);
+            }
+            UiMessage::NotifyTimer(chat, timer) => return self.notify_timer(chat, timer),
             UiMessage::Notified(Ok((id, chat))) => _ = self.notifications.insert(id, chat),
             UiMessage::Notified(Err(e)) => self.status_banner = format!("Notifications failed: {e}"),
             UiMessage::NotificationEvent(id, clicked) => {
@@ -3824,8 +3834,10 @@ impl BeeperGuiApp {
 
     pub fn subscription(&self) -> Subscription<UiMessage> {
         let changes = Subscription::run_with(StoreFeed(self.store.clone(), 0), |f| {
-            feed(f.0.read().unwrap().ws_tx.subscribe(), |e| match e.message {
-                Some(m) if e.event_type == "message.upserted" => UiMessage::Upserted(Box::new(m)),
+            feed(f.0.read().unwrap().ws_tx.subscribe(), |e| match (e.event_type.as_str(), e.message, e.chat) {
+                ("message.upserted", Some(m), _) => UiMessage::Upserted(Box::new(m)),
+                ("chat.upserted", _, Some(c)) => UiMessage::ChatUpserted(Box::new(c)),
+                ("chat.typing", ..) => UiMessage::Typing(e.chat_id.expect("typing events name the chat")),
                 _ => UiMessage::StoreChanged,
             })
         });
