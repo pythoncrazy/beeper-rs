@@ -265,8 +265,8 @@ impl BeeperGuiApp {
             return Task::none();
         }
         let wave = waveform(&take.levels.lock().unwrap());
-        let chat = self.selected_chat_id.clone().expect("a chat is selected");
-        let reply_to = self.reply_to_message_id.take();
+        let chat = self.pane.selected_chat_id.clone().expect("a chat is selected");
+        let reply_to = self.pane.reply_to_message_id.take();
         let clip = Clip::new(samples.clone());
         let run = async move { tokio::task::spawn_blocking(move || encode(&samples)).await.expect("encoding runs") };
         Task::perform(run, move |r| UiMessage::Record(Msg::Encoded(chat, reply_to, clip, wave, r)))

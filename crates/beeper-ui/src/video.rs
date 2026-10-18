@@ -248,13 +248,13 @@ impl BeeperGuiApp {
                 let v = self.video.as_mut().expect("a played video");
                 (v.at, v.rate, v.since) = (v.pos(), rate, v.since.map(|_| Instant::now()));
                 v.restart();
-                self.message_menu = None;
+                self.pane.message_menu = None;
             }
             Msg::Mute => {
                 let v = self.video.as_mut().expect("a played video");
                 v.muted ^= true;
                 v.output();
-                self.message_menu = None;
+                self.pane.message_menu = None;
             }
             Msg::Sub => self.video.as_mut().expect("a played video").sub = true,
             Msg::Fullscreen => {
@@ -264,13 +264,13 @@ impl BeeperGuiApp {
                     None => {
                         v.full = Some(v.size);
                         let (w, h) = (v.size.0 as f32, v.size.1 as f32);
-                        let k = (self.main_size.width / w).min(self.main_size.height / h);
+                        let k = (self.pane.size.width / w).min(self.pane.size.height / h);
                         (window::Mode::Fullscreen, ((w * k) as u32, (h * k) as u32))
                     }
                 };
                 (v.at, v.since, v.size) = (v.pos(), v.since.map(|_| Instant::now()), size);
                 v.restart();
-                self.message_menu = None;
+                self.pane.message_menu = None;
                 return window::set_mode(self.main_window.expect("the main window is open"), mode);
             }
             Msg::Tick => {
@@ -356,7 +356,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_full_video(&self) -> Option<El<'_>> {
         let v = self.video.as_ref().filter(|v| v.full.is_some())?;
         let (w, h) = (v.size.0 as f32, v.size.1 as f32);
-        let k = (self.main_size.width / w).min(self.main_size.height / h);
+        let k = (self.pane().size.width / w).min(self.pane().size.height / h);
         let video = self.view_video(&v.mid, &v.url, Space::new().into(), w * k, h * k);
         Some(container(video).center(Fill).style(fill_box(Color::BLACK, 0.0)).into())
     }

@@ -624,7 +624,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
 
     let (_, _, login_store, _) = spawn_e2e_beeper_instance("gui_login", Some(&cloud)).await;
     let mut login = BeeperGuiApp::new(login_store.clone());
-    assert!(login.selected_chat_id.is_none());
+    assert!(login.pane.selected_chat_id.is_none());
     login.login_window = Some(iced::window::Id::unique());
     let shows = |app: &BeeperGuiApp, labels: &[&str]| {
         let mut sim = simulator(app.view_login());
@@ -678,7 +678,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     shows(&login, &["No networks found"]);
     let _ = login.update(UiMessage::Login(LoginMsg::Continue));
     assert!(login.login_window.is_none() && login.main_window.is_some());
-    assert_eq!(login.selected_chat_id.as_deref(), Some(NOTE_CHAT_ID));
+    assert_eq!(login.pane.selected_chat_id.as_deref(), Some(NOTE_CHAT_ID));
     assert!(simulator(login.view_main()).find("Note").is_ok());
     drop((login, login_store));
 
@@ -805,7 +805,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     );
 
     let mut gui = BeeperGuiApp::new(store.clone());
-    assert_eq!(gui.selected_chat_id.as_deref(), Some("!note_self:beeper.com"));
+    assert_eq!(gui.pane.selected_chat_id.as_deref(), Some("!note_self:beeper.com"));
     gui.select_chat("!wa_eric:beeper.com");
     {
         let mut sim = simulator(gui.view_main());
@@ -844,9 +844,9 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = gui.update(UiMessage::ComposerChanged("make it bold".into()));
     let _ = gui.update(UiMessage::ComposerEdit(iced::widget::text_editor::Action::SelectAll));
     let _ = gui.update(UiMessage::Format(0));
-    assert_eq!(gui.composer.text(), "**make it bold**", "the formatting menu wraps the selection");
+    assert_eq!(gui.pane.composer.text(), "**make it bold**", "the formatting menu wraps the selection");
     let _ = gui.update(UiMessage::Format(0));
-    assert_eq!(gui.composer.text(), "make it bold", "pressing it again removes the marks");
+    assert_eq!(gui.pane.composer.text(), "make it bold", "pressing it again removes the marks");
     let _ = gui.update(UiMessage::ComposerChanged(String::new()));
     {
         let mut sim = simulator(gui.view_main());
@@ -882,13 +882,13 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
             assert!(sim.find(label).is_ok(), "new chat panel shows {label}");
         }
     }
-    let prev = gui.selected_chat_id.clone().expect("a chat is selected");
+    let prev = gui.pane.selected_chat_id.clone().expect("a chat is selected");
     let _ = gui.update(UiMessage::NewChat);
     assert_eq!((gui.new_chats.as_slice(), gui.creating_chat), ([1, 0].as_slice(), Some(1)), "compose adds a new chat");
     let _ = gui.update(UiMessage::DeleteNewChat(1));
     assert_eq!(gui.creating_chat, Some(0), "deleting a new chat selects the next row");
     let _ = gui.update(UiMessage::DeleteNewChat(0));
-    assert!(gui.new_chats.is_empty() && gui.creating_chat.is_none() && gui.selected_chat_id.is_some());
+    assert!(gui.new_chats.is_empty() && gui.creating_chat.is_none() && gui.pane.selected_chat_id.is_some());
     let _ = gui.update(UiMessage::SelectChat(prev));
     let _ = gui.update(UiMessage::ComposerChanged("Hello from **Iced** Simulator E2E!".to_string()));
     let _ = gui.update(UiMessage::SubmitComposer);
@@ -1087,7 +1087,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let mid =
             store.read().unwrap().messages.iter().find(|m| m.chat_id == cid).expect("chat has messages").id.clone();
         let _ = gui.update(UiMessage::JumpTo(cid.clone(), mid.clone()));
-        assert!(!gui.show_command_palette && gui.selected_chat_id.as_deref() == Some(cid.as_str()));
+        assert!(!gui.show_command_palette && gui.pane.selected_chat_id.as_deref() == Some(cid.as_str()));
         assert!(gui.flash.as_ref().is_some_and(|(id, _)| *id == mid), "a message hit flashes the message");
         let _ = gui.update(UiMessage::ToggleCommandPalette);
         let picks = [SearchPick::Sent(true), SearchPick::Sent(false), SearchPick::Period(2), SearchPick::Period(2)];
@@ -1110,11 +1110,11 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
             let _ = gui.update(UiMessage::ComposerChanged("draft".into()));
             let _ = gui.update(UiMessage::SelectChat(other.clone()));
             let _ = gui.update(UiMessage::SelectChat(cid.clone()));
-            assert_eq!(gui.composer.text(), "draft", "a chat keeps its draft");
+            assert_eq!(gui.pane.composer.text(), "draft", "a chat keeps its draft");
         }
         let _ = gui.update(UiMessage::DeleteDraft(cid.clone()));
         let c = store.read().unwrap().chats[0].clone();
-        assert!(c.draft.is_none() && gui.composer.is_empty(), "the hover action deletes the draft");
+        assert!(c.draft.is_none() && gui.pane.composer.is_empty(), "the hover action deletes the draft");
         let note = beeper_core::store::NOTE_CHAT_ID;
         let left = store.read().unwrap().chats.last().expect("a chat").id.clone();
         assert!(left != note && left != "!wa_eric:beeper.com");
@@ -1125,7 +1125,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let st = store.read().unwrap();
         assert!(st.resolve_chat_idx(&left).is_none() && !st.chat_msg_indices.contains_key(&left));
         assert!(st.msg_idx_by_id.values().all(|&i| st.messages[i].chat_id != left), "a left chat loses its messages");
-        assert_eq!(gui.selected_chat_id.as_deref(), Some(note), "leaving the open chat opens Note to self");
+        assert_eq!(gui.pane.selected_chat_id.as_deref(), Some(note), "leaving the open chat opens Note to self");
         drop(st);
         let doomed = {
             let mut st = store.write().unwrap();

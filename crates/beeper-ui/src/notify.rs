@@ -157,7 +157,10 @@ impl BeeperGuiApp {
             }
             _ => return,
         };
-        if self.focused && self.selected_chat_id.as_ref() == Some(&m.chat_id) && st.chats[i].is_muted != Some(true) {
+        if self.focused
+            && self.pane().selected_chat_id.as_ref() == Some(&m.chat_id)
+            && st.chats[i].is_muted != Some(true)
+        {
             play(sound, st.settings.pref("soundVolume") as f32 / 100.0);
         }
     }
@@ -213,7 +216,7 @@ impl BeeperGuiApp {
                 let note = self.pending.repeat.remove(&chat).expect("repeated").1;
                 let kept =
                     st.msg_idx_by_id.get(&note.message).is_some_and(|&i| st.messages[i].is_deleted != Some(true));
-                let seen = self.focused && self.selected_chat_id.as_ref() == Some(&chat);
+                let seen = self.focused && self.pane.selected_chat_id.as_ref() == Some(&chat);
                 let on = kept && !seen && st.settings.on("messageNotifications");
                 (on.then_some(note).into_iter().collect(), false)
             }
@@ -232,7 +235,7 @@ impl BeeperGuiApp {
         *before = now;
         let Some(c) = st.chat_idx_by_id.get(&chat).map(|&i| &st.chats[i]) else { return Task::none() };
         let shown = cfg!(target_os = "linux")
-            && self.selected_chat_id.as_ref() != Some(&chat)
+            && self.pane.selected_chat_id.as_ref() != Some(&chat)
             && c.is_muted != Some(true)
             && c.is_hidden_from_inbox != Some(true)
             && c.is_request != Some(true)
@@ -310,7 +313,8 @@ impl BeeperGuiApp {
                 && prefs.on("messageNotifications")
                 && (prefs.on("groupNotifications") || !group)
                 && (m.message_type.as_deref() != Some("REACTION") || prefs.on("notifyReactions"))
-                && !(self.focused && (self.selected_chat_id.as_ref() == Some(&chat.id) || !prefs.on("notifyInFocus")));
+                && !(self.focused
+                    && (self.pane.selected_chat_id.as_ref() == Some(&chat.id) || !prefs.on("notifyInFocus")));
         if !shown || !self.notified.insert(m.id.clone()) {
             return None;
         }
@@ -331,7 +335,8 @@ impl BeeperGuiApp {
                     let c = &st.chats[i];
                     c.unread_count == 0 && c.is_marked_unread != Some(true) && c.reminder.is_none()
                 };
-                (self.focused && self.selected_chat_id.as_ref() == Some(c)) || st.resolve_chat_idx(c).is_none_or(read)
+                (self.focused && self.pane.selected_chat_id.as_ref() == Some(c))
+                    || st.resolve_chat_idx(c).is_none_or(read)
             })
             .map(|(&id, _)| id)
             .collect();

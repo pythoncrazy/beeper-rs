@@ -132,9 +132,9 @@ pub fn link(text: &str, r: Range<usize>, url: &str, label: &str) -> (String, Ran
 impl BeeperGuiApp {
     /// The composer with Desktop's bubble menu or link dialog centered above the selection, 8px over its first line.
     pub(crate) fn with_formatting<'a>(&'a self, editor: El<'a>, formats: u16) -> El<'a> {
-        let text = self.composer.text();
-        let r = selection(&self.composer).filter(|_| formats != 0);
-        let popup = r.clone().map(|r| match &self.link_dialog {
+        let text = self.pane().composer.text();
+        let r = selection(&self.pane().composer).filter(|_| formats != 0);
+        let popup = r.clone().map(|r| match &self.pane().link_dialog {
             Some((url, label)) => self.view_link_dialog(url, label),
             None => self.view_bubble(&text, &r, formats),
         });
