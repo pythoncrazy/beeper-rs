@@ -1,6 +1,6 @@
 //! Desktop's message notifications (`maybeSendNotification` and `sendNotification`).
 use crate::{BeeperGuiApp, UiMessage};
-use beeper_core::config::account_network;
+use beeper_core::config::{account_network, millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::NetworkKind::*;
 use beeper_core::models::{Attachment, Chat, Message};
 use iced::Task;
@@ -137,6 +137,30 @@ fn wait(secs: u64, then: UiMessage) -> Task<UiMessage> {
 
 impl BeeperGuiApp {
     /// Desktop's `maybeSendNotification`: show the notification now, or after "Delay notifications for".
+    /// Desktop's `playMessageSendSound` for your local echo, and its receive sound for a new message from the last hour,
+    /// both only in the selected chat of a focused window and when the chat is not muted.
+    pub(crate) fn message_sound(&self, m: &Message) {
+        use crate::sound::{play, Sound};
+        let st = self.store.read().unwrap();
+        let Some(&i) = st.chat_idx_by_id.get(&m.chat_id) else { return };
+        let mine = m.is_sender == Some(true);
+        let hour_old = now_unix_millis() - millis_from_rfc3339(&m.timestamp).expect("RFC 3339 timestamp") > 3_600_000;
+        let sound = match (mine, st.settings.pref("soundEffects")) {
+            (true, 1 | 3) if m.id.starts_with("msg_") => Sound::Send,
+            (false, 2 | 3)
+                if !hour_old
+                    && m.timestamp > self.booted
+                    && !matches!(m.message_type.as_deref(), Some("REACTION" | "MEMBERSHIP")) =>
+            {
+                Sound::Receive
+            }
+            _ => return,
+        };
+        if self.focused && self.selected_chat_id.as_ref() == Some(&m.chat_id) && st.chats[i].is_muted != Some(true) {
+            play(sound, st.settings.pref("soundVolume") as f32 / 100.0);
+        }
+    }
+
     pub(crate) fn notify_message(&mut self, m: &Message) -> Task<UiMessage> {
         if let Some(t) = self.pending.typing.get_mut(&m.chat_id) {
             t.1 = None;

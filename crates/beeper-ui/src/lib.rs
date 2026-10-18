@@ -4,6 +4,7 @@ mod lift;
 pub mod login;
 mod notify;
 mod popover;
+mod sound;
 #[cfg(target_os = "linux")]
 mod tray;
 #[cfg(not(target_os = "linux"))]
@@ -3385,6 +3386,7 @@ impl BeeperGuiApp {
             UiMessage::PasteClipboard => return Task::perform(clipboard_image(), UiMessage::Pasted),
             UiMessage::Emoji(m) => return self.update_emoji(m),
             UiMessage::Upserted(m) => {
+                self.message_sound(&m);
                 let note = self.notify_message(&m);
                 return Task::batch([self.update(UiMessage::StoreChanged), note]);
             }
