@@ -26,3 +26,6 @@ wgpu = { version = "27.0.1", default-features = false, features = ["std", "parki
 
 [target.'cfg(target_os = "windows")'.dependencies]
 wgpu = { version = "27.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "dx12"] }
+
+[dev-dependencies]
+iced_test = "0.14.0"
