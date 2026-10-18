@@ -1,9 +1,9 @@
 use crate::Frames;
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{self, Widget};
-use iced::advanced::{mouse, renderer, Clipboard, Shell};
+use iced::advanced::{mouse, renderer, Clipboard, Renderer as _, Shell};
 use iced::widget::{image, Image};
-use iced::{window, Element, Event, Length, Rectangle, Renderer, Size, Theme};
+use iced::{window, Color, Element, Event, Length, Rectangle, Renderer, Size, Theme};
 use std::time::{Duration, Instant};
 
 /// Draws the frame of `frames` that is due since `start`, and asks for a redraw at the next frame while it is
@@ -80,5 +80,64 @@ impl<M> Widget<M, Theme, Renderer> for Gif<'_> {
         let (h, _) = frame(self.frames, self.start.elapsed().as_millis());
         let image = (self.make)(h.clone());
         Widget::<M, Theme, Renderer>::draw(&image, tree, renderer, theme, style, layout, cursor, viewport);
+    }
+}
+
+/// A round dot of `color` whose alpha is `alpha(t)`, with `t` the part of a 1 s loop that starts `delay` ms
+/// after `start`. It redraws each frame while it is visible, without view or layout.
+pub struct Dot {
+    size: f32,
+    color: Color,
+    start: Instant,
+    delay: u128,
+    alpha: fn(f32) -> f32,
+}
+
+pub fn dot<'a, M: 'a>(size: f32, color: Color, start: Instant, delay: u128, alpha: fn(f32) -> f32) -> Element<'a, M> {
+    Element::new(Dot { size, color, start, delay, alpha })
+}
+
+impl<M> Widget<M, Theme, Renderer> for Dot {
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Fixed(self.size), Length::Fixed(self.size))
+    }
+
+    fn layout(&mut self, _: &mut widget::Tree, _: &Renderer, _: &layout::Limits) -> layout::Node {
+        layout::Node::new(Size::new(self.size, self.size))
+    }
+
+    fn update(
+        &mut self,
+        _: &mut widget::Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        _: mouse::Cursor,
+        _: &Renderer,
+        _: &mut dyn Clipboard,
+        shell: &mut Shell<'_, M>,
+        viewport: &Rectangle,
+    ) {
+        if matches!(event, Event::Window(window::Event::RedrawRequested(_))) && layout.bounds().intersects(viewport) {
+            shell.request_redraw();
+        }
+    }
+
+    fn draw(
+        &self,
+        _: &widget::Tree,
+        renderer: &mut Renderer,
+        _: &Theme,
+        _: &renderer::Style,
+        layout: Layout<'_>,
+        _: mouse::Cursor,
+        _: &Rectangle,
+    ) {
+        let t = ((self.start.elapsed().as_millis() + 1000 - self.delay) % 1000) as f32 / 1000.0;
+        let quad = renderer::Quad {
+            bounds: layout.bounds(),
+            border: iced::border::rounded(self.size / 2.0),
+            ..Default::default()
+        };
+        renderer.fill_quad(quad, self.color.scale_alpha((self.alpha)(t)));
     }
 }

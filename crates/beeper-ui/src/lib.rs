@@ -1,7 +1,7 @@
+mod anim;
 mod cursor;
 pub mod emoji;
 mod format;
-mod gif;
 mod lift;
 pub mod login;
 mod notify;
@@ -2018,16 +2018,9 @@ impl BeeperGuiApp {
         }
     }
 
-    fn pulse(&self, delay: u128, f: impl Fn(f32) -> f32) -> f32 {
-        f(((self.started.elapsed().as_millis() + 1000 - delay) % 1000) as f32 / 1000.0)
-    }
-
     fn typing_bubble<'a>(&self, chat: &Chat, ids: &[String]) -> El<'a> {
         let p = &self.pal;
-        let dot = |delay| {
-            let a = self.pulse(delay, |t| 0.2 + 0.2 * (1.0 - (2.0 * t - 1.0).abs()));
-            container(Space::new()).width(6).height(6).style(fill_box(p.text.scale_alpha(a), 3.0))
-        };
+        let dot = |delay| anim::dot(6.0, p.text, self.started, delay, |t| 0.2 + 0.2 * (1.0 - (2.0 * t - 1.0).abs()));
         let bubble =
             container(row![dot(0), dot(340), dot(670)].spacing(4)).padding([12, 11]).style(fill_box(p.received, 16.0));
         let faces = (chat.chat_type == "group").then(|| {
@@ -2047,12 +2040,11 @@ impl BeeperGuiApp {
     fn typing_badge<'a>(&self) -> El<'a> {
         let p = &self.pal;
         let dot = |delay| {
-            let a = self.pulse(delay, |t| match t {
+            anim::dot(2.0, p.text, self.started, delay, |t| match t {
                 ..0.15 => 0.2 + 0.2 * t / 0.15,
                 ..0.3 => 0.4 - 0.2 * (t - 0.15) / 0.15,
                 _ => 0.2,
-            });
-            container(Space::new()).width(2).height(2).style(fill_box(p.text.scale_alpha(a), 1.0))
+            })
         };
         container(row![dot(0), dot(100), dot(200)].spacing(2))
             .center_y(12)
@@ -4063,15 +4055,18 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
-        let (typing, due) = {
+        let (rising, due) = {
             let st = self.store.read().unwrap();
             let last = self.selected_chat_id.as_ref().and_then(|c| st.chat_msg_indices.get(c)?.last());
             let rising = last.is_some_and(|&i| send_rise(&st, &st.messages[i]).is_some());
-            (!st.typing.is_empty() || rising, st.chats.iter().any(|c| c.reminder.is_some() && !self.expired(c)))
+            let pending = st.chats.iter().filter(|c| !self.expired(c));
+            (rising, pending.filter_map(|c| Some(c.reminder.as_ref()?.remind_at_ms)).min())
         };
-        let remind =
-            due.then(|| iced::time::every(std::time::Duration::from_secs(1)).map(|_| UiMessage::CheckReminders));
-        let animated = typing || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5);
+        let remind = due.map(|at| {
+            let wait = std::time::Duration::from_millis((at - now_unix_millis()).max(1) as u64);
+            iced::time::every(wait).map(|_| UiMessage::CheckReminders)
+        });
+        let animated = rising || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5);
         let tray = (cfg!(target_os = "linux") && self.store.read().unwrap().settings.on("showTrayIcon"))
             .then(|| Subscription::run(tray::events).map(UiMessage::Tray));
         let notes = (!self.notifications.is_empty())
@@ -5658,7 +5653,7 @@ impl BeeperGuiApp {
                     };
                     let base: El<'_> = match thumb_url.as_ref().and_then(|u| self.media.get(u)?.as_ref()) {
                         Some(Ok(frames)) => {
-                            gif::gif(frames, self.started, move |f| image(f).width(w).height(h).border_radius(17.0))
+                            anim::gif(frames, self.started, move |f| image(f).width(w).height(h).border_radius(17.0))
                         }
                         Some(Err(_)) if m.unresolved_media.is_none() => {
                             pill("Could not load. Click to try again", 0.45)
@@ -6052,7 +6047,7 @@ impl BeeperGuiApp {
                     let (pw, ph) = g.preview_size;
                     let w = (215.0 * pw as f32 / ph.max(1) as f32).round().max(48.0);
                     let cell: El<'a> = match self.media.get(&g.preview_url).and_then(|v| v.as_ref()) {
-                        Some(Ok(frames)) => gif::gif(frames, self.started, move |f| {
+                        Some(Ok(frames)) => anim::gif(frames, self.started, move |f| {
                             image(f).width(w).height(215).content_fit(iced::ContentFit::Cover)
                         }),
                         _ => container(Space::new()).width(w).height(215).style(fill_box(p.hover, 4.0)).into(),
@@ -6162,7 +6157,7 @@ impl BeeperGuiApp {
             let fg = Color { a: 0.1, ..p.text };
             let fit = |f| image(f).height(66).content_fit(iced::ContentFit::Contain);
             let preview =
-                container(gif::gif(&pm.frames, self.started, fit)).clip(true).style(bordered_box(CLEAR, fg, 1.0, 8.0));
+                container(anim::gif(&pm.frames, self.started, fit)).clip(true).style(bordered_box(CLEAR, fg, 1.0, 8.0));
             row![removable(p, preview, UiMessage::DiscardPaste)].padding([6, 54])
         });
         let send = button(container(ic(icon::ARROW_UP, 18.0).color(Color::WHITE)).center(36))
@@ -6697,7 +6692,7 @@ impl BeeperGuiApp {
         let url = a.poster_img.as_ref().or(a.src_url.as_ref());
         let turn = iced::Radians(-std::f32::consts::FRAC_PI_2 * f32::from(car.turns));
         let shown: El<'a> = match url.and_then(|u| self.media.get(u)?.as_ref()) {
-            Some(Ok(frames)) => gif::gif(frames, self.started, move |f| {
+            Some(Ok(frames)) => anim::gif(frames, self.started, move |f| {
                 image(f).content_fit(iced::ContentFit::ScaleDown).rotation(iced::Rotation::Solid(turn))
             }),
             _ => Space::new().into(),
@@ -7944,8 +7939,8 @@ mod tests {
         ::image::codecs::gif::GifEncoder::new(&mut bytes).encode_frames(frames).unwrap();
         let frames = decode_media(bytes).unwrap();
         assert_eq!(frames.iter().map(|f| f.1).collect::<Vec<_>>(), [50, 100]);
-        assert_eq!(gif::frame(&frames, 60), (&frames[1].0, 90));
-        assert_eq!(gif::frame(&frames, 160), (&frames[0].0, 40));
+        assert_eq!(anim::frame(&frames, 60), (&frames[1].0, 90));
+        assert_eq!(anim::frame(&frames, 160), (&frames[0].0, 40));
         assert_eq!(decode_media(b"\x89PNG".to_vec()).unwrap().len(), 1);
     }
 
