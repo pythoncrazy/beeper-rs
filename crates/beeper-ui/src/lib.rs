@@ -50,7 +50,7 @@ use iced::keyboard::{self, key::Named, Key, Modifiers};
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{
     button, column, container, image, mouse_area, operation, pick_list, pin, rich_text, row, scrollable, slider, span,
-    stack, svg, text_input, tooltip, Column, Row, Space, Stack,
+    stack, svg, text_editor, text_input, tooltip, Column, Row, Space, Stack,
 };
 use iced::{
     border, mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Length, Padding, Pixels,
@@ -127,6 +127,13 @@ const F_LOW_PRIORITY: usize = 7;
 /// Desktop's silent membership events, which the chat list skips.
 fn silent(m: &Message) -> bool {
     m.message_type.as_deref() == Some("MEMBERSHIP")
+}
+
+/// Composer content with `text` and the cursor at the end.
+fn composer_with(text: &str) -> text_editor::Content {
+    let mut c = text_editor::Content::with_text(text);
+    c.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+    c
 }
 
 fn filter_hit(i: usize, c: &Chat, st: &BeeperStore) -> bool {
@@ -223,6 +230,7 @@ pub enum UiMessage {
     SelectChat(String),
     ClickChat(String),
     ComposerChanged(String),
+    ComposerEdit(text_editor::Action),
     SubmitComposer,
     CancelComposeMode,
     StartReply(String),
@@ -1796,7 +1804,7 @@ pub struct BeeperGuiApp {
     pub new_chat_query: String,
     pub new_chat_expanded: bool,
     pub join_matrix_mode: bool,
-    pub composer_text: String,
+    pub composer: text_editor::Content,
     pub reply_to_message_id: Option<String>,
     pub editing_message_id: Option<String>,
     pub nickname_edit_buffer: String,
@@ -1914,7 +1922,7 @@ impl BeeperGuiApp {
             new_chat_query: String::new(),
             new_chat_expanded: false,
             join_matrix_mode: false,
-            composer_text: String::new(),
+            composer: text_editor::Content::new(),
             reply_to_message_id: None,
             editing_message_id: None,
             nickname_edit_buffer: String::new(),
@@ -2244,7 +2252,7 @@ impl BeeperGuiApp {
             st.queue(&cid, Outgoing::Read(ev));
         }
         let chat = st.chats[idx].clone();
-        self.composer_text = chat.draft.as_ref().and_then(|d| d.text.clone()).unwrap_or_default();
+        self.composer = composer_with(chat.draft.as_ref().and_then(|d| d.text.as_deref()).unwrap_or_default());
         self.nickname_edit_buffer = chat
             .participants
             .items
@@ -2274,7 +2282,7 @@ impl BeeperGuiApp {
 
     /// Desktop's emoji autocomplete for the ":" word at the end of the composer.
     fn emoji_suggestions(&self, st: &BeeperStore) -> Vec<(String, &'static str)> {
-        let text = &self.composer_text;
+        let text = &self.composer.text();
         let on = st.settings.on("emojiAutocomplete") && self.suggest_hidden.as_ref() != Some(text);
         let query = text.rfind(':').filter(|_| on).map(|at| &text[at + 1..]);
         match query.filter(|q| !q.contains(char::is_whitespace)) {
@@ -2300,8 +2308,9 @@ impl BeeperGuiApp {
         let (pri, sec) = composer_buttons(st);
         let unveiled = ATTACH_BUTTONS.iter().filter(|&&x| Some(x) != pri && Some(x) != sec).count() as f32;
         let plus = if self.show_attach_menu { 36.0 + 6.0 + 2.0 + unveiled * 30.0 - 2.0 } else { 36.0 };
-        let colon = self.composer_text.rfind(':').expect("an emoji query");
-        let x = 8.0 + plus + 8.0 + 14.0 + 2.0 + text_width(&self.composer_text[..colon], 13.0, Weight::Normal);
+        let text = self.composer.text();
+        let line = &text[text.rfind('\n').map_or(0, |i| i + 1)..text.rfind(':').expect("an emoji query")];
+        let x = 8.0 + plus + 8.0 + 14.0 + 2.0 + text_width(line, 13.0, Weight::Normal);
         let rail = if st.settings.on("showSidebar") { 72.0 } else { 0.0 };
         let x = x.min(self.main_size.width / self.zoom - rail - self.sidebar_width - width - 40.0);
         Some(container(list).align_bottom(Fill).padding(Padding::ZERO.left(x).bottom(34.0)).into())
@@ -2324,14 +2333,14 @@ impl BeeperGuiApp {
             && !self.show_command_palette
             && self.forward.is_none()
             && self.emoji.is_none()
-            && (self.selected_msg.is_some() || self.composer_text.is_empty())
+            && (self.selected_msg.is_some() || self.composer.is_empty())
     }
 
     /// Leave the selected chat for `next`: save its draft, mark it read, and drop its elapsed reminder.
     fn leave_chat(&self, st: &mut BeeperStore, next: Option<&str>) {
         let Some(prev) = self.selected_chat_id.as_deref().filter(|&p| Some(p) != next) else { return };
         if self.editing_message_id.is_none() {
-            let draft = self.composer_text.trim().to_string();
+            let draft = self.composer.text().trim().to_string();
             let draft = (!draft.is_empty()).then(|| ChatDraft {
                 text: Some(draft),
                 reply_to_message_id: self.reply_to_message_id.clone(),
@@ -2349,9 +2358,27 @@ impl BeeperGuiApp {
         }
     }
 
+    /// Desktop's reaction to new composer text: emoticons, the typing notice, and link previews.
+    fn composer_changed(&mut self, old: String) -> Task<UiMessage> {
+        self.selected_msg = None;
+        self.suggest = 0;
+        let st = self.store.read().unwrap();
+        let new = self.composer.text();
+        let notice = st.matrix.clone().filter(|_| st.settings.on("typingIndicators"));
+        let task = notice.zip(self.selected_chat_id.clone()).map(|(client, chat)| {
+            Task::perform(beeper_core::matrix::typing(client, chat, !new.is_empty()), UiMessage::Pushed)
+        });
+        let replaced = (!st.settings.on("keepEmoticons")).then(|| emoji::replace_emoticon(&old, new.clone()));
+        drop(st);
+        if let Some(r) = replaced.filter(|r| *r != new) {
+            self.composer = composer_with(&r);
+        }
+        Task::batch([task.unwrap_or_else(Task::none), self.fetch_link_previews()])
+    }
+
     pub fn submit_composer(&mut self) {
         let chat_id = self.selected_chat_id.clone().expect("a chat is selected");
-        let text = self.composer_text.trim().to_string();
+        let text = self.composer.text().trim().to_string();
         if text.is_empty() && self.pasted.is_none() {
             return;
         }
@@ -2402,7 +2429,7 @@ impl BeeperGuiApp {
             Outgoing::Send { txn, text, reply_to, preview }
         };
         st.queue(&chat_id, out);
-        self.composer_text.clear();
+        self.composer = composer_with("");
         self.composer_links.clear();
         drop(st);
         self.refresh_theme_and_tray();
@@ -2412,7 +2439,7 @@ impl BeeperGuiApp {
     /// link previews" is on or the network cannot send previews.
     fn fetch_link_previews(&mut self) -> Task<UiMessage> {
         use beeper_core::models::NetworkKind::*;
-        let urls: Vec<String> = text_urls(&self.composer_text).into_iter().map(str::to_string).collect();
+        let urls: Vec<String> = text_urls(&self.composer.text()).into_iter().map(str::to_string).collect();
         self.composer_links.retain(|(u, _)| urls.contains(u));
         let st = self.store.read().unwrap();
         let chat = self.selected_chat_id.as_ref().and_then(|c| st.resolve_chat_idx(c)).map(|i| &st.chats[i]);
@@ -2561,20 +2588,16 @@ impl BeeperGuiApp {
                 };
                 return self.update(msg);
             }
+            UiMessage::ComposerEdit(action) if !action.is_edit() => self.composer.perform(action),
+            UiMessage::ComposerEdit(action) => {
+                let old = self.composer.text();
+                self.composer.perform(action);
+                return self.composer_changed(old);
+            }
             UiMessage::ComposerChanged(v) => {
-                self.selected_msg = None;
-                self.suggest = 0;
-                let st = self.store.read().unwrap();
-                let v =
-                    if st.settings.on("keepEmoticons") { v } else { emoji::replace_emoticon(&self.composer_text, v) };
-                let notice = st.matrix.clone().filter(|_| st.settings.on("typingIndicators"));
-                let task = notice.zip(self.selected_chat_id.clone()).map(|(client, chat)| {
-                    let on = !v.is_empty();
-                    Task::perform(beeper_core::matrix::typing(client, chat, on), UiMessage::Pushed)
-                });
-                drop(st);
-                self.composer_text = v;
-                return Task::batch([task.unwrap_or_else(Task::none), self.fetch_link_previews()]);
+                let old = self.composer.text();
+                self.composer = composer_with(&v);
+                return self.composer_changed(old);
             }
             UiMessage::SubmitComposer if !self.emoji_suggestions(&self.store.read().unwrap()).is_empty() => {
                 return self.update(UiMessage::PickEmoji(self.suggest));
@@ -2582,14 +2605,16 @@ impl BeeperGuiApp {
             UiMessage::SubmitComposer => self.submit_composer(),
             UiMessage::PickEmoji(i) => {
                 let picks = self.emoji_suggestions(&self.store.read().unwrap());
-                let at = self.composer_text.rfind(':').expect("an emoji query");
-                self.composer_text.replace_range(at.., &format!("{} ", picks[i.min(picks.len() - 1)].0));
-                return operation::focus("composer-input").chain(operation::move_cursor_to_end("composer-input"));
+                let mut text = self.composer.text();
+                let at = text.rfind(':').expect("an emoji query");
+                text.replace_range(at.., &format!("{} ", picks[i.min(picks.len() - 1)].0));
+                self.composer = composer_with(&text);
+                return operation::focus("composer-input");
             }
             UiMessage::CancelComposeMode => {
                 self.reply_to_message_id = None;
                 self.editing_message_id = None;
-                self.composer_text.clear();
+                self.composer = composer_with("");
             }
             UiMessage::StartReply(mid) => {
                 self.editing_message_id = None;
@@ -2599,7 +2624,7 @@ impl BeeperGuiApp {
             UiMessage::StartEdit(mid, old_txt) => {
                 self.reply_to_message_id = None;
                 self.editing_message_id = Some(mid);
-                self.composer_text = old_txt;
+                self.composer = composer_with(&old_txt);
                 return operation::focus("composer-input");
             }
             UiMessage::DeleteMessage(cid, mid) => {
@@ -3587,7 +3612,8 @@ impl BeeperGuiApp {
                     self.selected_msg = None;
                 } else if self.selected_chat_id.is_some() {
                     self.leave_chat(&mut self.store.write().unwrap(), None);
-                    (self.selected_chat_id, self.composer_text) = (None, String::new());
+                    self.selected_chat_id = None;
+                    self.composer = composer_with("");
                     self.refresh_theme_and_tray();
                 } else if self.active_tab != InboxTab::AllChats {
                     self.active_tab = InboxTab::AllChats;
@@ -3658,7 +3684,7 @@ impl BeeperGuiApp {
             UiMessage::DeleteDraft(cid) => {
                 self.store.write().unwrap().patch_chat(&cid, true, None, None).expect("chat exists");
                 if self.selected_chat_id.as_ref() == Some(&cid) {
-                    self.composer_text.clear();
+                    self.composer = composer_with("");
                     self.reply_to_message_id = None;
                 }
             }
@@ -3775,7 +3801,7 @@ impl BeeperGuiApp {
                         }
                         Key::Named(Named::Tab) => return self.update(UiMessage::PickEmoji(at)),
                         Key::Named(Named::Escape) => {
-                            self.suggest_hidden = Some(self.composer_text.clone());
+                            self.suggest_hidden = Some(self.composer.text());
                             return Task::none();
                         }
                         _ => {}
@@ -6065,7 +6091,7 @@ impl BeeperGuiApp {
         column![head, line].into()
     }
 
-    fn view_composer<'a>(&self, st: &BeeperStore, chat: &Chat) -> El<'a> {
+    fn view_composer<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {
         let p = &self.pal;
         let banner = match (&self.editing_message_id, &self.reply_to_message_id) {
             (Some(_), _) => Some((icon::PENCIL, "Editing message".to_string())),
@@ -6156,20 +6182,37 @@ impl BeeperGuiApp {
         };
         let (pri, sec) = composer_buttons(st);
         let placeholder = format!("Message {} on {}", chat.title, network_name(&chat.account_id));
-        let input = text_input(&placeholder, &self.composer_text)
+        let suggesting = !self.emoji_suggestions(st).is_empty();
+        let input = text_editor(&self.composer)
             .id("composer-input")
-            .on_input(UiMessage::ComposerChanged)
-            .on_submit(UiMessage::SubmitComposer)
+            .placeholder(placeholder)
+            .on_action(UiMessage::ComposerEdit)
+            .key_binding(move |k| match k.key.as_ref() {
+                Key::Named(Named::Enter) if !k.modifiers.shift() => {
+                    Some(text_editor::Binding::Custom(UiMessage::SubmitComposer))
+                }
+                Key::Named(Named::ArrowUp | Named::ArrowDown) if suggesting => None,
+                Key::Named(Named::Escape) => None,
+                _ => text_editor::Binding::from_key_press(k),
+            })
             .size(13)
             .padding([9, 2])
-            .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
-        let net = (st.settings.on("showNetworkIcons") && self.composer_text.is_empty())
+            .height(Shrink)
+            .max_height(self.main_size.height / 2.0)
+            .style(move |_, _| text_editor::Style {
+                background: CLEAR.into(),
+                border: iced::Border::default(),
+                placeholder: p.on_secondary,
+                value: p.strong,
+                selection: p.accent.scale_alpha(0.45),
+            });
+        let empty = self.composer.is_empty();
+        let net = (st.settings.on("showNetworkIcons") && empty)
             .then(|| svg(brand_svg(brand_key(&chat.account_id))).width(14).height(14));
         let inline = Row::with_children([pri, sec].into_iter().flatten().map(&action_btn)).spacing(2).align_y(Center);
-        let net = Row::new().push(net.map(|n| container(n).padding(Padding::ZERO.right(2.0))));
-        let inline = container(inline).padding(Padding::ZERO.left(2.0));
-        let pill = container(row![net, input, inline].align_y(Center).padding(Padding::new(0.0).left(14.0).right(6.5)))
-            .height(36)
+        let net = Row::new().push(net.map(|n| container(n).padding(Padding::ZERO.right(2.0)).center_y(36)));
+        let inline = container(inline).padding(Padding::ZERO.left(2.0)).center_y(36);
+        let pill = container(row![net, input, inline].align_y(Bottom).padding(Padding::new(0.0).left(14.0).right(6.5)))
             .width(Fill)
             .style(fill_box(p.input, 18.0));
         let plus_icon = tinted(&COMPOSER_ICONS[usize::from(self.show_attach_menu)], 20.0, p.on_secondary);
@@ -6182,7 +6225,7 @@ impl BeeperGuiApp {
             Row::with_children(ids.map(&action_btn)).spacing(2).padding([0, 1]).align_y(Center)
         });
         let plus = row![toggle].push(unveiled).spacing(6).align_y(Center);
-        let ready = !self.composer_text.trim().is_empty() || self.pasted.is_some();
+        let ready = !self.composer.text().trim().is_empty() || self.pasted.is_some();
         let pasted = self.pasted.as_ref().map(|pm| {
             let fg = Color { a: 0.1, ..p.text };
             let h = current_frame(&pm.frames, self.started.elapsed().as_millis());
@@ -6195,7 +6238,8 @@ impl BeeperGuiApp {
             .padding(0)
             .style(btn_style([if ready { p.accent } else { p.send_btn }, p.accent, p.accent], [p.text; 3], 18.0))
             .on_press(UiMessage::SubmitComposer);
-        let urls = text_urls(&self.composer_text);
+        let text = self.composer.text();
+        let urls = text_urls(&text);
         let links = self.composer_links.iter().filter(|(u, _)| urls.contains(&u.as_str())).filter_map(|(u, s)| {
             let card: El<'a> = match s {
                 LinkState::Discarded => return None,

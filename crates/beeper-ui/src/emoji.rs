@@ -328,8 +328,8 @@ impl BeeperGuiApp {
                     let cid = self.selected_chat_id.clone().expect("an open chat");
                     return self.update(UiMessage::ToggleReaction(cid, mid, DATA.emojis[i].skinned(tone)));
                 }
-                let text = format!("{}{}", self.composer_text, DATA.emojis[i].skinned(tone));
-                return self.update(UiMessage::ComposerChanged(text));
+                let paste = iced::widget::text_editor::Edit::Paste(DATA.emojis[i].skinned(tone).into());
+                return self.update(UiMessage::ComposerEdit(iced::widget::text_editor::Action::Edit(paste)));
             }
             EmojiMsg::Skin(t) => {
                 let client = {
