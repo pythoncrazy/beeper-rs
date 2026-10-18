@@ -196,6 +196,7 @@ pub enum UiMessage {
     SelectTab(InboxTab),
     SelectAccount(Option<String>),
     SelectChat(String),
+    ClickChat(String),
     ComposerChanged(String),
     SubmitComposer,
     CancelComposeMode,
@@ -854,8 +855,18 @@ fn preview_sender<'a>(chat: &'a Chat, m: &Message) -> Option<&'a User> {
     chat.participants.items.iter().find(|u| shown && u.id == m.sender_id)
 }
 
-fn badged<'a>(inner: El<'a>, account_id: &str, size: f32, badge: f32) -> El<'a> {
-    let icon = svg(brand_svg(brand_key(account_id))).width(badge).height(badge);
+fn badged<'a>(inner: El<'a>, account_id: &str, size: f32, badge: f32, mono: Option<&Palette>) -> El<'a> {
+    let icon: El<'a> = match mono {
+        None => svg(brand_svg(brand_key(account_id))).width(badge).height(badge).into(),
+        Some(p) => {
+            let fg = p.strong;
+            let glyph = svg(crate::style::brand_badge(brand_key(account_id)))
+                .style(move |_, _| svg::Style { color: Some(fg) })
+                .width(badge)
+                .height(badge);
+            container(glyph).style(fill_box(p.chip, badge / 2.0)).into()
+        }
+    };
     let w = size + badge / 8.0;
     stack![inner, container(icon).width(w).height(size).align_right(w).align_bottom(size)].width(w).height(size).into()
 }
@@ -878,11 +889,15 @@ fn slider_style(p: &Palette) -> impl Fn(&Theme, slider::Status) -> slider::Style
 }
 
 fn toggle<'a>(p: &Palette, on: bool, msg: Option<UiMessage>) -> El<'a> {
-    let knob =
-        container(Space::new()).width(16).height(16).style(fill_box(if on { p.toggle_on } else { p.toggle_off }, 8.0));
+    toggle_faded(p, on, msg, 1.0)
+}
+
+fn toggle_faded<'a>(p: &Palette, on: bool, msg: Option<UiMessage>, alpha: f32) -> El<'a> {
+    let fill = if on { p.toggle_on } else { p.toggle_off }.scale_alpha(alpha);
+    let knob = container(Space::new()).width(16).height(16).style(fill_box(fill, 8.0));
     let track =
         container(knob).width(36).height(24).padding(4).align_y(Center).align_x(if on { Right } else { iced::Left });
-    button(track.style(bordered_box(CLEAR, p.toggle_off, 2.0, 12.0)))
+    button(track.style(bordered_box(CLEAR, p.toggle_off.scale_alpha(alpha), 2.0, 12.0)))
         .padding(0)
         .style(btn_style([CLEAR; 3], [p.text; 3], 12.0))
         .on_press_maybe(msg)
@@ -1702,6 +1717,7 @@ pub struct BeeperGuiApp {
     pub hovered_msg: Option<String>,
     pub hovered_chat: Option<String>,
     pub flash: Option<(String, std::time::Instant)>,
+    last_click: Option<(String, std::time::Instant)>,
     pub status_banner: String,
     pub dnd_muted: bool,
     pub sidebar_width: f32,
@@ -1823,6 +1839,7 @@ impl BeeperGuiApp {
             resolving_media: HashMap::new(),
             playing_video: None,
             started: std::time::Instant::now(),
+            last_click: None,
         };
         if let Some(id) = first_chat {
             app.select_chat(&id);
@@ -2037,8 +2054,17 @@ impl BeeperGuiApp {
         self.tray.update(st.total_unread_chats(), self.dnd_muted);
     }
 
-    fn in_pins(&self, c: &Chat) -> bool {
-        self.active_tab == InboxTab::AllChats && c.flags & CHAT_PINNED != 0
+    /// Splits the visible chats into the pinned tiles and the list rows, in display order.
+    fn pins_and_rows<'a>(&self, st: &'a BeeperStore) -> (Vec<&'a Chat>, Vec<&'a Chat>) {
+        let (mut pinned, rest): (Vec<&Chat>, Vec<&Chat>) = self
+            .visible_chats(st)
+            .into_iter()
+            .partition(|c| self.active_tab == InboxTab::AllChats && c.flags & CHAT_PINNED != 0);
+        pinned.sort_by_key(|c| (st.pin_rank.get(&c.id).copied().unwrap_or(usize::MAX), c.last_activity.clone()));
+        match st.settings.on("regularPinned") {
+            true => (vec![], pinned.into_iter().chain(rest).collect()),
+            false => (pinned, rest),
+        }
     }
 
     pub fn visible_chats<'a>(&self, st: &'a BeeperStore) -> Vec<&'a Chat> {
@@ -2269,6 +2295,21 @@ impl BeeperGuiApp {
             UiMessage::SelectChat(id) => {
                 self.select_chat(&id);
                 return self.close_notifications();
+            }
+            UiMessage::ClickChat(id) => {
+                let last = self.last_click.take();
+                if last.is_none_or(|(c, at)| c != id || at.elapsed() > std::time::Duration::from_millis(500)) {
+                    self.last_click = Some((id.clone(), std::time::Instant::now()));
+                    return self.update(UiMessage::SelectChat(id));
+                }
+                let msg = match self.store.read().unwrap().settings.pref("chatDoubleClick") {
+                    1 => UiMessage::ToggleFlag(id, ChatFlag::Archived),
+                    2 => UiMessage::ToggleRead(id),
+                    3 => UiMessage::ToggleFlag(id, ChatFlag::Muted),
+                    4 => UiMessage::ToggleFlag(id, ChatFlag::LowPriority),
+                    _ => return Task::none(),
+                };
+                return self.update(msg);
             }
             UiMessage::ComposerChanged(v) => {
                 self.selected_msg = None;
@@ -2811,8 +2852,7 @@ impl BeeperGuiApp {
                 }
                 self.creating_chat = None;
                 let st = self.store.read().unwrap();
-                let rest = self.visible_chats(&st).into_iter().filter(|c| !self.in_pins(c));
-                let rest = rest.map(|c| UiMessage::SelectChat(c.id.clone()));
+                let rest = self.pins_and_rows(&st).1.into_iter().map(|c| UiMessage::SelectChat(c.id.clone()));
                 let items: Vec<_> = self.new_chats.iter().map(|&n| UiMessage::SelectNewChat(n)).chain(rest).collect();
                 drop(st);
                 if let Some(next) = items.get(i).or(i.checked_sub(1).and_then(|j| items.get(j))) {
@@ -3305,7 +3345,10 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::DragStart => self.dragging = true,
-            UiMessage::DragMoved(pt) => self.sidebar_width = (pt.x - 72.0).clamp(164.0, 724.0),
+            UiMessage::DragMoved(pt) => {
+                let rail = if self.store.read().unwrap().settings.on("showSidebar") { 72.0 } else { 0.0 };
+                self.sidebar_width = (pt.x - rail).clamp(164.0, 724.0);
+            }
             UiMessage::DragEnd => self.dragging = false,
             UiMessage::WindowOpened(id) => {
                 let key = if Some(id) == self.settings_window {
@@ -3711,7 +3754,9 @@ impl BeeperGuiApp {
                 .padding(Padding::new(8.0).left(0.0))
                 .into()
         };
-        let body = mouse_area(row![self.view_rail(), self.view_sidebar(), grip, right]).on_move(UiMessage::Cursor);
+        let rail = self.store.read().unwrap().settings.on("showSidebar").then(|| self.view_rail());
+        let body = mouse_area(Row::new().push(rail).push(self.view_sidebar()).push(grip).push(right))
+            .on_move(UiMessage::Cursor);
         let base: El<'_> = container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0)).into();
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
@@ -4480,6 +4525,9 @@ impl BeeperGuiApp {
         let chats = self.visible_chats(&st);
         let h24 = st.settings.pref("timeFormat") == 1;
         let previews = st.settings.on("showMessagePreviews");
+        let compact = st.settings.on("compactChatList");
+        let (av, lines, title_size, ts_size, pin_av) =
+            if compact { (28.0, 1, 13.0, 10.0, 40.0) } else { (46.0, 2, 14.0, 11.0, 52.0) };
         let names: Vec<&str> =
             (0..FILTERS.len()).filter(|i| self.filters & 1 << i != 0).map(|i| FILTERS[i].0).collect();
         let heading = self.selected_account_filter.as_deref().map_or(self.active_tab.label().to_string(), |id| {
@@ -4540,15 +4588,16 @@ impl BeeperGuiApp {
             .align_y(Center)
             .height(52);
         let selected = self.creating_chat.is_none().then_some(self.selected_chat_id.as_deref()).flatten();
-        let (mut pinned, rest): (Vec<&Chat>, Vec<&Chat>) = chats.iter().copied().partition(|c| self.in_pins(c));
-        pinned.sort_by_key(|c| (st.pin_rank.get(&c.id).copied().unwrap_or(usize::MAX), c.last_activity.clone()));
+        let (pinned, rest) = self.pins_and_rows(&st);
         let counts = st.settings.on("showUnreadCount");
+        let network_icons = st.settings.on("showNetworkIcons") && self.selected_account_filter.is_none();
+        let colorize = st.settings.on("colorizeNetworkIcons");
         let hover_action = st.settings.pref("chatActionButton");
         let selecting = !self.selection.is_empty();
         let picked = |c: &Chat| self.selection.contains(&c.id);
         let pick = |c: &Chat| match selecting {
             true => UiMessage::ToggleSelected(c.id.clone()),
-            false => UiMessage::SelectChat(c.id.clone()),
+            false => UiMessage::ClickChat(c.id.clone()),
         };
         let cols = (((w - 16.0) / 80.0).floor() as usize).max(1);
         let cell = (w - 16.0) / cols as f32;
@@ -4577,16 +4626,18 @@ impl BeeperGuiApp {
                         container(at).padding([0, 4]).center_y(14).style(fill_box(bg, 7.0)).into()
                     }),
                 };
-                let face = stack![self.chat_avatar(c, 40.0)]
-                    .push((!selecting).then(|| container(unread).width(44).align_right(44)))
-                    .push(selecting.then(|| pin(checkbox(p, picked(c))).x(29.0).y(-5.0)))
-                    .width(44)
-                    .height(40);
-                let item = column![face, label]
-                    .spacing(4)
-                    .align_x(Center)
-                    .width(cell)
-                    .padding(Padding::new(10.0).top(8.0).bottom(6.0));
+                let face = stack![self.chat_avatar(c, pin_av)]
+                    .push((!selecting).then(|| container(unread).width(pin_av + 4.0).align_right(pin_av + 4.0)))
+                    .push(selecting.then(|| pin(checkbox(p, picked(c))).x(pin_av - 11.0).y(-5.0)))
+                    .width(pin_av + 4.0)
+                    .height(pin_av);
+                let item =
+                    column![face, label].spacing(if compact { 4 } else { 8 }).align_x(Center).width(cell).padding(
+                        match compact {
+                            true => Padding::new(10.0).top(8.0).bottom(6.0),
+                            false => Padding::new(12.0).bottom(10.0),
+                        },
+                    );
                 r.push(
                     mouse_area(
                         button(item)
@@ -4607,7 +4658,7 @@ impl BeeperGuiApp {
             (false, true) => 0.0,
             (false, false) => 12.0,
         };
-        let text_w = w - 8.0 - 16.0 - 36.0 - 4.0 - lead;
+        let text_w = w - 8.0 - 16.0 - av - 8.0 - 4.0 - lead;
         let frame = |key: String, dot: Option<El<'static>>, face: El<'static>, lines: [El<'static>; 2], on, select| {
             let [top, preview] = lines;
             let item = row![]
@@ -4635,16 +4686,22 @@ impl BeeperGuiApp {
                     .on_press(select),
             )
             .on_enter(UiMessage::HoverChat(key.clone(), true))
-            .on_exit(UiMessage::HoverChat(key.clone(), false))
+            .on_exit(UiMessage::HoverChat(key.clone(), false));
+            let inbox = st.resolve_chat_idx(&key).is_some_and(|i| st.chats[i].flags & CHAT_ARCHIVED == 0);
+            let row = match inbox {
+                true => row.on_middle_press(UiMessage::ToggleFlag(key.clone(), ChatFlag::Archived)),
+                false => row,
+            }
             .on_right_press(UiMessage::OpenChatMenu(key));
-            column![row, divider(p.divider, 46.0)]
+            column![row, divider(p.divider, av + 18.0)]
         };
         let drafts = self.new_chats.iter().map(|&n| {
             let dot = (!counts).then(|| container(Space::new()).width(12).into());
-            let title = ell("New Chat", text_w, 13.0, if counts { Weight::Medium } else { Weight::Semibold });
-            let lines = [container(title.color(p.strong)).height(16).into(), Space::new().height(16).into()];
-            let face = self.face(None, "", 28.0);
-            frame(format!("draft:{n}"), dot, face, lines, self.creating_chat == Some(n), UiMessage::SelectNewChat(n))
+            let title = ell("New Chat", text_w, title_size, if counts { Weight::Medium } else { Weight::Semibold });
+            let rows =
+                [container(title.color(p.strong)).height(16).into(), Space::new().height(16 * lines as u32).into()];
+            let face = self.face(None, "", av);
+            frame(format!("draft:{n}"), dot, face, rows, self.creating_chat == Some(n), UiMessage::SelectNewChat(n))
         });
         let rows = rest.iter().fold(Column::with_children(drafts.map(El::from)), |col, c| {
             let on = selected == Some(c.id.as_str());
@@ -4665,7 +4722,7 @@ impl BeeperGuiApp {
                 }
                 _ => c.last_activity.as_deref().map(|t| list_ts(t, h24)).unwrap_or_default(),
             };
-            let ts_w = crate::style::text_width(&ts, 10.0, Weight::Normal) + 8.0;
+            let ts_w = crate::style::text_width(&ts, ts_size, Weight::Normal) + 8.0;
             let expired = self.expired(c);
             let reminded_last = c
                 .reminder
@@ -4684,10 +4741,10 @@ impl BeeperGuiApp {
             let pin_w = if pinned { 15.0 } else { 0.0 };
             let top = row![]
                 .push(pin_icon)
-                .push(ell(&title, text_w - ts_w - bell - pin_w, 13.0, weight).color(p.strong))
+                .push(ell(&title, text_w - ts_w - bell - pin_w, title_size, weight).color(p.strong))
                 .push(muted.then(|| container(tinted(&BELL_OFF, 12.0, p.strong)).padding([0, 2])))
                 .push(Space::new().width(Fill))
-                .push(txt(ts, 10.0).color(p.sub).font(iced::Font { style, ..fw(Weight::Normal) }))
+                .push(txt(ts, ts_size).color(p.sub).font(iced::Font { style, ..fw(Weight::Normal) }))
                 .height(16)
                 .align_y(Center);
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
@@ -4772,18 +4829,35 @@ impl BeeperGuiApp {
                         .style(fill_box(p.strong.scale_alpha(0.12), 4.0))
                         .into()
                 }))
-                .push(body.map(|b| ell(&b, text_w - reserve, 13.0, Weight::Normal).color(fg)))
+                .push(body.map(|b| {
+                    clamp(&b, text_w - reserve, lines, 13.0, Weight::Normal)
+                        .width(text_w - reserve)
+                        .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
+                        .color(fg)
+                }))
                 .push(Space::new().width(Fill))
                 .push(count)
                 .spacing(4)
-                .align_y(Center);
-            let face = stack![badged(self.chat_avatar(c, 28.0), &c.account_id, 28.0, 12.0)]
-                .push(st.typing.contains_key(&c.id).then(|| pin(self.typing_badge()).x(14.0).y(-2.0)));
+                .align_y(if compact { Center } else { iced::Alignment::Start });
+            let avatar = self.chat_avatar(c, av);
+            let avatar = match network_icons {
+                true => badged(avatar, &c.account_id, av, if compact { 12.0 } else { 16.0 }, (!colorize).then_some(p)),
+                false => avatar,
+            };
+            let face = stack![avatar]
+                .push(st.typing.contains_key(&c.id).then(|| pin(self.typing_badge()).x(av - 14.0).y(-2.0)));
             let dot = match selecting {
                 true => Some(container(checkbox(p, picked(c))).padding(Padding::ZERO.right(8.0)).into()),
                 false => dot.map(El::from),
             };
-            col.push(frame(c.id.clone(), dot, face.into(), [top.into(), preview.height(16).into()], on, pick(c)))
+            col.push(frame(
+                c.id.clone(),
+                dot,
+                face.into(),
+                [top.into(), preview.height(16 * lines as u32).into()],
+                on,
+                pick(c),
+            ))
         });
         let list: El<'_> = if chats.is_empty() && self.new_chats.is_empty() {
             let tab = if self.selected_account_filter.is_some() { InboxTab::Requests } else { self.active_tab };
@@ -5576,7 +5650,8 @@ impl BeeperGuiApp {
             .size(13)
             .padding([9, 2])
             .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
-        let net = svg(brand_svg(brand_key(&chat.account_id))).width(14).height(14);
+        let net = (st.settings.on("showNetworkIcons") && self.composer_text.is_empty())
+            .then(|| svg(brand_svg(brand_key(&chat.account_id))).width(14).height(14));
         let inline = Row::with_children([pri, sec].into_iter().flatten().map(&action_btn)).spacing(2).align_y(Center);
         let pill = container(
             row![net, input, inline].spacing(2).align_y(Center).padding(Padding::new(0.0).left(14.0).right(6.5)),
@@ -7237,7 +7312,9 @@ impl BeeperGuiApp {
         let control = match r.control {
             prefs::Control::Toggle(_) => {
                 let v = s.pref(r.key);
-                toggle(p, v == 1, (!locked).then_some(UiMessage::SetPref(r.key, 1 - v)))
+                let off = r.requires.is_some_and(|k| !s.on(k));
+                let msg = (!locked && !off).then_some(UiMessage::SetPref(r.key, 1 - v));
+                toggle_faded(p, v == 1, msg, if off { 0.5 } else { 1.0 })
             }
             prefs::Control::Select(..) => self.pref_select(r, s),
             prefs::Control::Slider(_) => {

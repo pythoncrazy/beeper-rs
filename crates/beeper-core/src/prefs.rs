@@ -18,6 +18,8 @@ pub struct Pref {
     pub label: &'static str,
     pub desc: Option<&'static str>,
     pub badge: Option<Badge>,
+    /// The toggle that must be on for this row to be enabled.
+    pub requires: Option<&'static str>,
     pub control: Control,
 }
 
@@ -54,15 +56,19 @@ impl Pref {
     const fn badge(self, badge: Badge) -> Self {
         Pref { badge: Some(badge), ..self }
     }
+
+    const fn requires(self, key: &'static str) -> Self {
+        Pref { requires: Some(key), ..self }
+    }
 }
 
 const fn t(key: &'static str, label: &'static str, on: bool) -> Pref {
-    Pref { key, label, desc: None, badge: None, control: Control::Toggle(on) }
+    Pref { key, label, desc: None, badge: None, requires: None, control: Control::Toggle(on) }
 }
 
 const fn s(key: &'static str, label: &'static str, options: &'static [&'static str], default: u8) -> Pref {
     assert!((default as usize) < options.len());
-    Pref { key, label, desc: None, badge: None, control: Control::Select(options, default) }
+    Pref { key, label, desc: None, badge: None, requires: None, control: Control::Select(options, default) }
 }
 
 macro_rules! cmd {
@@ -101,7 +107,7 @@ pub const GENERAL: &[Item] = &[
     Item::Group(&[
         t("markReadOnArchive", "Mark unread chats as read on archive", false),
         s("afterArchive", "After archive", AFTER, 0),
-        Pref { key: "archiveOlder", label: "", desc: None, badge: None, control: Control::Archive(&ARCHIVE_SCOPE, &ARCHIVE_AGE) },
+        Pref { key: "archiveOlder", label: "", desc: None, badge: None, requires: None, control: Control::Archive(&ARCHIVE_SCOPE, &ARCHIVE_AGE) },
     ]),
     Item::Group(&[
         s("afterMarkRead", "After mark as read/unread", AFTER, 0),
@@ -147,7 +153,7 @@ pub const APPEARANCE: &[Item] = &[
         t("showMessagePreviews", "Show message previews", true),
         t("compactChatList", "Compact chat list", false).badge(Badge::Labs),
         t("showNetworkIcons", "Show network icons", true),
-        t("colorizeNetworkIcons", "Colorize network icons", true),
+        t("colorizeNetworkIcons", "Colorize network icons", true).requires("showNetworkIcons"),
         s(
             "chatActionButton",
             "Chat action button (on hover) should",
@@ -204,7 +210,7 @@ pub const NOTIFICATIONS: &[Item] = &[
             &["Never", "Only for sent messages", "Only for received messages", "Always"],
             0,
         ),
-        Pref { key: "soundVolume", label: "Sound effect volume", desc: None, badge: None, control: Control::Slider(50) },
+        Pref { key: "soundVolume", label: "Sound effect volume", desc: None, badge: None, requires: None, control: Control::Slider(50) },
         t("messageNotifications", "Message notifications", true),
         s("messageSound", "Sound", SOUND, 0),
         t("groupNotifications", "Group message notifications", true),
