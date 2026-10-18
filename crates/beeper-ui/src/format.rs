@@ -1,10 +1,10 @@
 //! Desktop's composer formatting menu (`BubbleMenu`): Markdown marks on the selection, sent as Matrix HTML.
 use crate::popover::above;
 use crate::style::{bordered_box, btn_style, carets, fill_box, semi, shadow_box, txt, CLEAR};
-use crate::{BeeperGuiApp, El, UiMessage};
+use crate::{spell, BeeperGuiApp, El, UiMessage};
 use iced::widget::text_editor::{Content, Cursor, Position};
 use iced::widget::{button, column, container, row, svg, text_input, tooltip, Row, Space};
-use iced::{Border, Center, Color, Fill, Padding, Pixels, Vector};
+use iced::{Border, Center, Color, Fill, Padding, Pixels, Point, Vector};
 use std::ops::Range;
 
 pub const LINK: usize = 3;
@@ -139,10 +139,23 @@ impl BeeperGuiApp {
             None => self.view_bubble(&text, &r, formats),
         });
         let r = r.unwrap_or_default();
+        let caret = offset(&text, self.pane().composer.cursor().position);
+        let typos = spell::misspelled(&text, caret);
+        let text: std::rc::Rc<str> = text.into();
+        let at = |text: &str, r: &Range<usize>| [r.start, r.end].map(|o| position(text, o)).map(|p| (p.line, p.column));
+        let shown = text.clone();
         above(editor, popup, move |size| {
-            let at = [r.start, r.end].map(|o| position(&text, o)).map(|p| (p.line, p.column));
-            let [(x0, row), (x1, _)] = carets(&text, 13.0, size.width - 4.0, at);
+            let &[(x0, row), (x1, _)] = &carets(&text, 13.0, size.width - 4.0, at(&text, &r))[..] else {
+                unreachable!()
+            };
             Vector::new(2.0 + (x0 + x1) / 2.0, 9.0 + row as f32 * 13.0 * 1.3 - 8.0)
+        })
+        .squiggles(move |size| {
+            let ends = carets(&shown, 13.0, size.width - 4.0, typos.iter().flat_map(|r| at(&shown, r)));
+            let words = ends.chunks(2).filter(|w| w[0].1 == w[1].1);
+            words
+                .map(|w| (Point::new(2.0 + w[0].0, 9.0 + (w[0].1 as f32 + 1.0) * 13.0 * 1.3 - 3.0), w[1].0 - w[0].0))
+                .collect()
         })
         .into()
     }

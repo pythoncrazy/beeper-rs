@@ -139,9 +139,9 @@ fn glyphs(s: &str, size: f32, w: Weight) -> (f32, Vec<(usize, f32)>) {
 }
 
 /// The x position and wrapped row of each (line, byte) caret in `s` wrapped at `width`.
-pub fn carets<const N: usize>(s: &str, size: f32, width: f32, at: [(usize, usize); N]) -> [(f32, usize); N] {
+pub fn carets(s: &str, size: f32, width: f32, at: impl IntoIterator<Item = (usize, usize)>) -> Vec<(f32, usize)> {
     shape(s, size, Weight::Normal, Some(width), |buf| {
-        at.map(|(line, byte)| {
+        let at = at.into_iter().map(|(line, byte)| {
             let mut end = (0.0, 0);
             for (row, r) in buf.layout_runs().enumerate().filter(|(_, r)| r.line_i == line) {
                 if let Some(g) = r.glyphs.iter().find(|g| g.end > byte) {
@@ -150,7 +150,8 @@ pub fn carets<const N: usize>(s: &str, size: f32, width: f32, at: [(usize, usize
                 end = (r.line_w, row);
             }
             end
-        })
+        });
+        at.collect()
     })
 }
 
