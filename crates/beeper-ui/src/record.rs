@@ -26,16 +26,9 @@ const BARS: (f32, f32, f32, f32) = (3.0, 1.5, 24.0, 6.0);
 /// `AudioBar`'s WaveSurfer `waveColor` and `progressColor`.
 const WAVE: [Color; 2] = [hex(0x787d87), hex(0x007aff)];
 
-/// Desktop's `close` and `record` icons.
-static ICON: LazyLock<[svg::Handle; 2]> = LazyLock::new(|| {
-    [
-        r#"<path fill="currentColor" d="m5.333 15.834-1.166-1.167L8.833 10 4.167 5.334l1.166-1.167L10 8.834l4.667-4.667 1.166 1.167L11.167 10l4.666 4.667-1.166 1.167L10 11.167z"/>"#,
-        r#"<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="10" cy="10" r="4" fill="currentColor"/>"#,
-    ]
-    .map(|body| {
-        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">{body}</svg>"#);
-        svg::Handle::from_memory(svg.into_bytes())
-    })
+/// Desktop's `record` icon.
+static RECORD: LazyLock<svg::Handle> = LazyLock::new(|| {
+    svg::Handle::from_memory(&br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="10" cy="10" r="4" fill="currentColor"/></svg>"#[..])
 });
 
 /// What the capture thread shares: mono 48 kHz samples, and the levels of the live waveform.
@@ -300,7 +293,7 @@ impl BeeperGuiApp {
         let icon_btn = |h: &svg::Handle, msg| {
             button(tinted(h, 20.0, fg)).padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0)).on_press(msg)
         };
-        let cancel = button(tinted(&ICON[0], 20.0, p.on_secondary))
+        let cancel = button(tinted(&crate::ROW_ACTIONS[6], 20.0, p.on_secondary))
             .padding(8)
             .style(btn_style([CLEAR; 3], [p.on_secondary; 3], 18.0))
             .on_press(UiMessage::Record(Msg::Cancel));
@@ -339,7 +332,7 @@ impl BeeperGuiApp {
             }
         };
         let (label, act, msg) = match paused {
-            true => ("Resume Recording", &ICON[1], Msg::Resume),
+            true => ("Resume Recording", &*RECORD, Msg::Resume),
             false => ("Pause Recording", &ICONS[1], Msg::Pause),
         };
         let action = self.tip(icon_btn(act, UiMessage::Record(msg)).into(), label, vec![], tooltip::Position::Top);

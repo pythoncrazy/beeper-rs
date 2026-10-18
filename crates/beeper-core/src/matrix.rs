@@ -268,7 +268,6 @@ fn attachment(c: &Value, kind: &str) -> Attachment {
     let voice = c.get("org.matrix.msc3245.voice").is_some();
     Attachment {
         attachment_type: kind.into(),
-        id: None,
         duration: info["duration"].as_f64().map(|ms| ms / 1000.0),
         file_name: s(&c["filename"]).or(s(&c["body"])),
         file_size: info["size"].as_u64(),
@@ -283,7 +282,7 @@ fn attachment(c: &Value, kind: &str) -> Attachment {
         poster_img: url_field(&info["thumbnail_url"], &info["thumbnail_file"]),
         size: dim("w").map(|w| AttachmentSize { width: Some(w), height: dim("h") }),
         src_url: url_field(&c["url"], &c["file"]),
-        transcript: None,
+        ..Default::default()
     }
 }
 
