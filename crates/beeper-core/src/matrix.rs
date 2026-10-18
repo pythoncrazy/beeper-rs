@@ -776,15 +776,22 @@ pub enum Outgoing {
         text: Option<String>,
         html: Option<String>,
     },
-    Image {
+    Media {
         txn: String,
         bytes: Vec<u8>,
         name: String,
         mime: String,
-        size: (u32, u32),
+        info: MediaInfo,
         caption: Option<String>,
         reply_to: Option<String>,
     },
+}
+
+pub enum MediaInfo {
+    /// The width and height of an image.
+    Image(u32, u32),
+    /// A recorded voice note: its length and its waveform, with values from 0 to 1.
+    Voice { ms: u64, wave: Vec<f32> },
 }
 
 pub async fn flush(store: SharedStore) -> Result<(), String> {
@@ -934,8 +941,8 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             let sent_id = room.send_raw(&kind, ev["content"].take()).with_transaction_id(txn.as_str().into());
             sent(txn, sent_id.await.map_err(e)?.response.event_id);
         }
-        Outgoing::Image { txn, bytes: data, name, mime, size: (w, h), caption, reply_to } => {
-            use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseImageInfo};
+        Outgoing::Media { txn, bytes: data, name, mime, info, caption, reply_to } => {
+            use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo, BaseImageInfo};
             use matrix_sdk::room::reply::{EnforceThread, Reply};
             let reply = reply_to
                 .map(|r| {
@@ -946,21 +953,24 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                     })
                 })
                 .transpose()?;
-            let bytes = matrix_sdk::ruma::UInt::try_from(data.len()).expect("the image size fits");
-            let info = BaseImageInfo {
-                width: Some(w.into()),
-                height: Some(h.into()),
-                size: Some(bytes),
-                is_animated: Some(mime == "image/gif"),
-                ..Default::default()
+            let size = Some(matrix_sdk::ruma::UInt::try_from(data.len()).expect("the media size fits"));
+            let info = match info {
+                MediaInfo::Image(w, h) => AttachmentInfo::Image(BaseImageInfo {
+                    width: Some(w.into()),
+                    height: Some(h.into()),
+                    size,
+                    is_animated: Some(mime == "image/gif"),
+                    ..Default::default()
+                }),
+                MediaInfo::Voice { ms, wave } => AttachmentInfo::Voice(BaseAudioInfo {
+                    duration: Some(std::time::Duration::from_millis(ms)),
+                    size,
+                    waveform: Some(wave),
+                }),
             };
             let caption = caption.map(matrix_sdk::ruma::events::room::message::TextMessageEventContent::plain);
-            let config = AttachmentConfig::new()
-                .txn_id(txn.clone().into())
-                .info(AttachmentInfo::Image(info))
-                .caption(caption)
-                .reply(reply);
-            let parsed_mime = mime.parse().expect("valid image mime");
+            let config = AttachmentConfig::new().txn_id(txn.clone().into()).info(info).caption(caption).reply(reply);
+            let parsed_mime = mime.parse().expect("valid media mime");
             sent(txn, room.send_attachment(&name, &parsed_mime, data, config).await.map_err(e)?.event_id);
         }
     }

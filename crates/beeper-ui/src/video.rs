@@ -4,7 +4,7 @@ use crate::style::{btn_style, fill_box, CLEAR};
 use crate::{sound, tinted, BeeperGuiApp, El, UiMessage};
 use iced::gradient::Linear;
 use iced::widget::{button, column, container, hover, image, row, slider, stack, svg, Space};
-use iced::{Background, Border, Center, Color, Fill, Padding, Subscription, Task};
+use iced::{Background, Center, Color, Fill, Padding, Subscription, Task};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -268,15 +268,7 @@ impl BeeperGuiApp {
             .step(0.001_f32)
             .height(11)
             .on_release(UiMessage::Video(Msg::SeekEnd))
-            .style(|_, _| slider::Style {
-                rail: slider::Rail { backgrounds: (CLEAR.into(), CLEAR.into()), width: 0.0, border: Border::default() },
-                handle: slider::Handle {
-                    shape: slider::HandleShape::Circle { radius: 0.0 },
-                    background: CLEAR.into(),
-                    border_width: 0.0,
-                    border_color: CLEAR,
-                },
-            });
+            .style(crate::style::hidden_slider);
         let progress = stack![container(stack![bar(Color::WHITE.scale_alpha(0.2)), progress]).center_y(11), seek];
         let shade = Linear::new(iced::Radians(std::f32::consts::PI))
             .add_stop(0.0, Color::TRANSPARENT)

@@ -11,7 +11,7 @@ beeper-core.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 png = "0.18"
-rodio = { version = "0.23", default-features = false, features = ["playback", "wav"] }
+rodio = { version = "0.23", default-features = false, features = ["playback", "recording", "wav"] }
 unicode-script = "0.5.8"
 arboard = { version = "3.7.0", default-features = false, features = ["image-data"] }
 image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg", "webp"] }
