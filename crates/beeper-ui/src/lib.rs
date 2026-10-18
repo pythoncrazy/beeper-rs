@@ -1,3 +1,4 @@
+mod cursor;
 pub mod emoji;
 pub mod login;
 mod notify;
@@ -2152,6 +2153,17 @@ impl BeeperGuiApp {
         UiMessage::ToggleReaction(chat, mid, st.settings.choice("quickReactionEmoji").into())
     }
 
+    /// The newest message you can edit in the open chat.
+    fn last_own_message(&self) -> Option<Message> {
+        let st = self.store.read().unwrap();
+        let all = &st.chat_msg_indices[self.selected_chat_id.as_deref().expect("an open chat")];
+        let own = all
+            .iter()
+            .map(|&i| &st.messages[i])
+            .rfind(|m| m.is_sender == Some(true) && m.is_deleted != Some(true) && m.attachments.is_empty());
+        own.cloned()
+    }
+
     fn can_select_messages(&self) -> bool {
         self.selected_chat_id.is_some()
             && self.creating_chat.is_none()
@@ -3108,9 +3120,11 @@ impl BeeperGuiApp {
             UiMessage::PasteClipboard => return Task::perform(clipboard_image(), UiMessage::Pasted),
             UiMessage::Emoji(m) => return self.update_emoji(m),
             UiMessage::Upserted(m) => {
-                let note = self.notification(&m).map(|(t, b, silent)| {
+                let note = self.notification(&m).map(|(t, b, silent, otp)| {
                     let chat = m.chat_id.clone();
-                    Task::perform(notify::show(t, b, silent), move |r| UiMessage::Notified(r.map(|id| (id, chat))))
+                    let show =
+                        Task::perform(notify::show(t, b, silent), move |r| UiMessage::Notified(r.map(|id| (id, chat))));
+                    Task::batch([show].into_iter().chain(otp.map(iced::clipboard::write)))
                 });
                 return Task::batch([self.update(UiMessage::StoreChanged)].into_iter().chain(note));
             }
@@ -3450,7 +3464,14 @@ impl BeeperGuiApp {
                 let hotkey = match key.as_ref() {
                     Key::Named(Named::Escape) => return self.update(UiMessage::CloseModals),
                     Key::Named(Named::ArrowUp | Named::ArrowDown) if mods.is_empty() && self.can_select_messages() => {
-                        return self.update(UiMessage::StepMessage(key == Key::Named(Named::ArrowDown)));
+                        let down = key == Key::Named(Named::ArrowDown);
+                        let edit = !down
+                            && self.selected_msg.is_none()
+                            && self.store.read().unwrap().settings.pref("upArrow") == 1;
+                        let step = self.update(UiMessage::StepMessage(down));
+                        let Some(m) = edit.then(|| self.last_own_message()).flatten() else { return step };
+                        self.selected_msg = Some(m.id.clone());
+                        return step.chain(self.update(UiMessage::StartEdit(m.id, m.text.unwrap_or_default())));
                     }
                     Key::Named(Named::Enter) if self.forward.is_some() => {
                         let picked = !self.forward.as_ref().expect("forward").picked.is_empty();
@@ -3508,15 +3529,8 @@ impl BeeperGuiApp {
                         return self.update(UiMessage::Download(mid, None));
                     }
                     Key::Character("t") if self.selected_chat_id.is_some() => {
-                        let edit = self.selected_message().filter(|m| m.is_sender == Some(true)).or_else(|| {
-                            let st = self.store.read().unwrap();
-                            let all = &st.chat_msg_indices[self.selected_chat_id.as_deref().expect("an open chat")];
-                            let own = all.iter().map(|&i| &st.messages[i]).rfind(|m| {
-                                m.is_sender == Some(true) && m.is_deleted != Some(true) && m.attachments.is_empty()
-                            });
-                            own.cloned()
-                        });
-                        let Some(m) = edit else { return Task::none() };
+                        let edit = self.selected_message().filter(|m| m.is_sender == Some(true));
+                        let Some(m) = edit.or_else(|| self.last_own_message()) else { return Task::none() };
                         self.selected_msg = Some(m.id.clone());
                         return self.update(UiMessage::StartEdit(m.id, m.text.unwrap_or_default()));
                     }
@@ -3743,6 +3757,14 @@ impl BeeperGuiApp {
     }
 
     pub fn view(&self, id: window::Id) -> El<'_> {
+        let view = self.view_window(id);
+        match self.store.read().unwrap().settings.on("pointerCursor") {
+            true => view,
+            false => cursor::arrow(view).into(),
+        }
+    }
+
+    fn view_window(&self, id: window::Id) -> El<'_> {
         if Some(id) == self.settings_window {
             self.view_settings()
         } else if let Some(w) = self.media_window.as_ref().filter(|w| w.id == id) {
