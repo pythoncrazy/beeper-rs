@@ -305,14 +305,14 @@ impl BeeperGuiApp {
         let on_hover = self.store.read().unwrap().settings.on("emojiPickerOnHover");
         match m {
             EmojiMsg::Toggle if on_hover => return Task::none(),
-            EmojiMsg::Toggle if self.emoji.is_some() => self.emoji = None,
+            EmojiMsg::Toggle if self.pane.emoji.is_some() => self.pane.emoji = None,
             EmojiMsg::Toggle => return self.open_emoji(None),
             EmojiMsg::Pointer(area, inside) => {
                 self.emoji_hovered[usize::from(area)] = inside;
                 self.emoji_gen += 1;
                 match inside {
-                    true if on_hover && self.emoji.is_none() => return self.open_emoji(None),
-                    false if on_hover && self.emoji.as_ref().is_none_or(|pk| pk.react.is_none()) => {
+                    true if on_hover && self.pane.emoji.is_none() => return self.open_emoji(None),
+                    false if on_hover && self.pane.emoji.as_ref().is_none_or(|pk| pk.react.is_none()) => {
                         let g = self.emoji_gen;
                         let wait = tokio::time::sleep(std::time::Duration::from_millis(200));
                         return Task::perform(wait, move |_| UiMessage::Emoji(EmojiMsg::Close(g)));
@@ -320,12 +320,12 @@ impl BeeperGuiApp {
                     _ => {}
                 }
             }
-            EmojiMsg::Close(g) if g == self.emoji_gen && self.emoji_hovered == [false; 2] => self.emoji = None,
+            EmojiMsg::Close(g) if g == self.emoji_gen && self.emoji_hovered == [false; 2] => self.pane.emoji = None,
             EmojiMsg::Close(_) => {}
             EmojiMsg::Pick(i) => {
                 let tone = self.store.read().unwrap().skin_tone;
-                if let Some((mid, _)) = self.emoji.take_if(|pk| pk.react.is_some()).and_then(|pk| pk.react) {
-                    let cid = self.selected_chat_id.clone().expect("an open chat");
+                if let Some((mid, _)) = self.pane.emoji.take_if(|pk| pk.react.is_some()).and_then(|pk| pk.react) {
+                    let cid = self.pane.selected_chat_id.clone().expect("an open chat");
                     return self.update(UiMessage::ToggleReaction(cid, mid, DATA.emojis[i].skinned(tone)));
                 }
                 let paste = iced::widget::text_editor::Edit::Paste(DATA.emojis[i].skinned(tone).into());
@@ -337,7 +337,7 @@ impl BeeperGuiApp {
                     st.skin_tone = t;
                     st.matrix.clone()
                 };
-                self.emoji.as_mut().expect("the picker is open").skins_open = false;
+                self.pane.emoji.as_mut().expect("the picker is open").skins_open = false;
                 if let Some(c) = client {
                     let content = serde_json::json!({ "tone": t });
                     let write = beeper_core::matrix::set_global(c, "com.beeper.emoji_skin_tone", content);
@@ -345,14 +345,14 @@ impl BeeperGuiApp {
                 }
             }
             EmojiMsg::Jump(k) => {
-                let pk = self.emoji.as_mut().expect("the picker is open");
+                let pk = self.pane.emoji.as_mut().expect("the picker is open");
                 pk.query.clear();
-                let pk = self.emoji.as_ref().expect("the picker is open");
+                let pk = self.pane.emoji.as_ref().expect("the picker is open");
                 let y = self.emoji_sections(pk).iter().take(k).map(|(_, v)| section_height(v.len())).sum();
                 return operation::scroll_to(GRID, operation::AbsoluteOffset { x: 0.0, y });
             }
             m => {
-                let pk = self.emoji.as_mut().expect("the picker is open");
+                let pk = self.pane.emoji.as_mut().expect("the picker is open");
                 match m {
                     EmojiMsg::Query(q) => {
                         pk.query = q;
@@ -370,13 +370,13 @@ impl BeeperGuiApp {
     }
 
     pub(crate) fn open_emoji(&mut self, react: Option<(String, iced::Point)>) -> Task<UiMessage> {
-        self.emoji = Some(Picker { react, ..Picker::default() });
+        self.pane.emoji = Some(Picker { react, ..Picker::default() });
         self.emoji_hovered[1] = false;
         operation::focus(SEARCH_INPUT)
     }
 
     pub(crate) fn view_emoji_picker(&self) -> Option<El<'_>> {
-        let pk = self.emoji.as_ref()?;
+        let pk = self.pane().emoji.as_ref()?;
         let c = self.emoji_colors();
         let tone = self.store.read().unwrap().skin_tone;
         let sections = self.emoji_sections(pk);

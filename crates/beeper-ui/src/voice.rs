@@ -226,7 +226,7 @@ impl BeeperGuiApp {
     pub(crate) fn load_audio(&mut self) -> Task<UiMessage> {
         let st = self.store.read().unwrap();
         let Some(client) = st.matrix.clone() else { return Task::none() };
-        let chat = self.selected_chat_id.as_ref().and_then(|c| st.chat_msg_indices.get(c));
+        let chat = self.pane.selected_chat_id.as_ref().and_then(|c| st.chat_msg_indices.get(c));
         let urls: Vec<String> = chat
             .into_iter()
             .flatten()
