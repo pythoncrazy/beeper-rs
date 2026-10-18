@@ -975,6 +975,14 @@ fn in_rail_entry(st: &BeeperStore, id: &str, c: &Chat) -> bool {
         .map_or(c.account_id == id, |n| c.account_id == n.account_id && c.network_id == Some(n.id.clone()))
 }
 
+/// Desktop's `rootMessageIDs`: the first loaded message of the reply chain of `m`.
+fn reply_root<'s>(st: &'s BeeperStore, mut m: &'s Message) -> &'s str {
+    while let Some(&i) = m.linked_message_id.as_ref().and_then(|r| st.msg_idx_by_id.get(r)) {
+        m = &st.messages[i];
+    }
+    &m.id
+}
+
 fn network_label(account_id: &str) -> &'static str {
     match brand_key(account_id) {
         "beeper" => "Beeper",
@@ -3924,7 +3932,8 @@ impl BeeperGuiApp {
             } else {
                 (Some(i) == last_live && m.is_sender == Some(true)).then(|| "Sent".into())
             };
-            let view = self.view_message(&st, chat, m, first, last, status);
+            let chained = prev.is_some_and(|q| reply_root(&st, q) == reply_root(&st, m));
+            let view = self.view_message(&st, chat, m, (first, last, chained), status);
             let flash = self.flash.as_ref().filter(|(id, _)| *id == m.id).map(|(_, at)| {
                 let t = (at.elapsed().as_secs_f32() / 1.5).min(1.0);
                 let a = if t < 0.2 { ease_out(t / 0.2) } else { 1.0 - ease_out((t - 0.2) / 0.8) };
@@ -4017,8 +4026,7 @@ impl BeeperGuiApp {
         st: &BeeperStore,
         chat: &Chat,
         m: &Message,
-        first: bool,
-        last: bool,
+        (first, last, chained): (bool, bool, bool),
         status: Option<String>,
     ) -> El<'a> {
         let p = &self.pal;
@@ -4073,7 +4081,7 @@ impl BeeperGuiApp {
                 container(semi(q.sender_name.clone().expect("sender name"), 12.0).color(p.strong)).padding([0, 11])
             });
             let col = column![].push(name).push(pill).spacing(4);
-            (col.align_x(if q_mine { Right } else { iced::Left }), q_mine)
+            ((!chained).then(|| col.align_x(if q_mine { Right } else { iced::Left })), q_mine)
         });
         if let Some((url, title, summary)) = preview {
             let host = url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(url).to_string();
@@ -4341,17 +4349,8 @@ impl BeeperGuiApp {
                     .style(fill_box(bg, 17.0)),
             );
         }
-        let replies = st.chat_msg_indices[&chat.id]
-            .iter()
-            .filter(|&&i| st.messages[i].linked_message_id.as_ref() == Some(&m.id))
-            .count();
-        let replies = match replies {
-            0 => None,
-            1 => Some("1 Reply".to_string()),
-            n => Some(format!("{n} Replies")),
-        };
         let footer: Vec<String> =
-            status.into_iter().chain((!m.edit_history.is_empty()).then(|| "Edited".into())).chain(replies).collect();
+            status.into_iter().chain((!m.edit_history.is_empty()).then(|| "Edited".into())).collect();
         let footer = (!footer.is_empty()).then(|| {
             let line = footer.into_iter().enumerate().fold(Row::new(), |r, (i, t)| {
                 r.push((i > 0).then(|| container(txt("·", 12.0).color(p.muted.scale_alpha(0.8))).padding([0, 4])))
@@ -4462,12 +4461,14 @@ impl BeeperGuiApp {
                     (false, false) => stack![line, row![].push(indent).push(link)].into(),
                     (false, true) => stack![line, row![Space::new().width(Fill), link]].into(),
                 };
-                let head: El<'a> = if q_mine {
-                    row![Space::new().width(Fill), q].into()
-                } else {
-                    row![].push((group && !q_mine).then(|| Space::new().width(34))).push(q).into()
-                };
-                column![head, line].into()
+                let head = q.map(|q| -> El<'a> {
+                    if q_mine {
+                        row![Space::new().width(Fill), q].into()
+                    } else {
+                        row![].push(group.then(|| Space::new().width(34))).push(q).into()
+                    }
+                });
+                column![].push(head).push(line).into()
             }
         };
         mouse_area(line)
