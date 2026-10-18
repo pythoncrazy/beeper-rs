@@ -6,6 +6,7 @@ mod lift;
 pub mod login;
 mod notify;
 mod popover;
+mod record;
 mod sound;
 #[cfg(target_os = "linux")]
 mod tray;
@@ -44,7 +45,7 @@ use beeper_core::config::{
     rfc3339_from_millis, APP_VERSION,
 };
 use beeper_core::import::has_beeper_data;
-use beeper_core::matrix::{ChatFlag, DeviceInfo, Outgoing};
+use beeper_core::matrix::{ChatFlag, DeviceInfo, MediaInfo, Outgoing};
 use beeper_core::models::*;
 use beeper_core::platform::{current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind};
 use beeper_core::prefs;
@@ -384,6 +385,7 @@ pub enum UiMessage {
     AvatarLoaded(String, Result<image::Handle, String>),
     MediaLoaded(String, Result<Frames, String>),
     Voice(voice::Msg),
+    Record(record::Msg),
     RetryMedia(String),
     ResolveMedia(String, String, String),
     MediaResolved(String, Result<(), String>),
@@ -1796,6 +1798,7 @@ pub struct BeeperGuiApp {
     mods: keyboard::Modifiers,
     reminder_menu: Option<Point>,
     audio: voice::Player,
+    recorder: Option<record::Recorder>,
     pub show_command_palette: bool,
     pub active_settings_tab: SettingsTab,
     pub settings_query: String,
@@ -1915,6 +1918,7 @@ impl BeeperGuiApp {
             delete_target: None,
             reminder_menu: None,
             audio: Default::default(),
+            recorder: None,
             selection: Vec::new(),
             selection_menu: None,
             show_command_palette: false,
@@ -2386,7 +2390,7 @@ impl BeeperGuiApp {
             let (_, txn, _) =
                 st.send_message(&chat_id, caption.clone(), reply_to.clone(), Some(att)).expect("send image");
             st.mark_chat_read(&chat_id, true);
-            Outgoing::Image { txn, bytes, name, mime, size, caption, reply_to }
+            Outgoing::Media { txn, bytes, name, mime, info: MediaInfo::Image(size.0, size.1), caption, reply_to }
         } else {
             let reply_to = self.reply_to_message_id.take();
             let urls = text_urls(&text);
@@ -2546,6 +2550,9 @@ impl BeeperGuiApp {
                 self.selected_account_filter = acc;
                 self.creating_chat = None;
             }
+            UiMessage::SelectChat(_) if self.recorder.is_some() => {
+                self.status_banner = "Stop recording to switch chats".into();
+            }
             UiMessage::SelectChat(id) => {
                 self.select_chat(&id);
                 return self.close_notifications();
@@ -2607,6 +2614,7 @@ impl BeeperGuiApp {
             UiMessage::SubmitComposer if !self.emoji_suggestions(&self.store.read().unwrap()).is_empty() => {
                 return self.update(UiMessage::PickEmoji(self.suggest));
             }
+            UiMessage::SubmitComposer if self.recorder.is_some() => return self.send_take(),
             UiMessage::SubmitComposer => self.submit_composer(),
             UiMessage::PickEmoji(i) => {
                 let picks = self.emoji_suggestions(&self.store.read().unwrap());
@@ -3233,6 +3241,7 @@ impl BeeperGuiApp {
                 return self.update(UiMessage::StoreChanged);
             }
             UiMessage::Voice(msg) => return self.voice(msg),
+            UiMessage::Record(msg) => return self.record(msg),
             UiMessage::ReminderMenu => {
                 self.reminder_menu = Some(self.cursor.get());
             }
@@ -3778,6 +3787,11 @@ impl BeeperGuiApp {
                 return Task::batch([focus, self.load_avatars(), self.load_media(), self.close_notifications()]);
             }
             UiMessage::Login(m) => return self.update_login(m),
+            UiMessage::KeyPressed(Key::Named(k @ (Named::Enter | Named::Escape)), m)
+                if self.recorder.is_some() && m.is_empty() =>
+            {
+                return self.record(record::Msg::Key(k));
+            }
             UiMessage::KeyPressed(key, mods) if self.carousel.as_ref().is_some_and(|c| !c.in_media) => {
                 return self.carousel_key(&key, mods);
             }
@@ -4083,6 +4097,7 @@ impl BeeperGuiApp {
                 .chain(notes)
                 .chain(tray)
                 .chain(self.audio_ticks())
+                .chain(self.record_events())
                 .chain(self.video_ticks()),
         )
     }
@@ -6073,6 +6088,7 @@ impl BeeperGuiApp {
                 0 => Some(UiMessage::Emoji(emoji::EmojiMsg::Toggle)),
                 2 => Some(UiMessage::ToggleGifPicker),
                 3 => Some(UiMessage::PasteClipboard),
+                5 => Some(UiMessage::Record(record::Msg::Start)),
                 _ => None,
             };
             let active = (id == 2 && self.show_gif_picker)
@@ -6152,7 +6168,7 @@ impl BeeperGuiApp {
             Row::with_children(ids.map(&action_btn)).spacing(2).padding([0, 1]).align_y(Center)
         });
         let plus = row![toggle].push(unveiled).spacing(6).align_y(Center);
-        let ready = !self.composer.text().trim().is_empty() || self.pasted.is_some();
+        let ready = !self.composer.text().trim().is_empty() || self.pasted.is_some() || self.recorder.is_some();
         let pasted = self.pasted.as_ref().map(|pm| {
             let fg = Color { a: 0.1, ..p.text };
             let fit = |f| image(f).height(66).content_fit(iced::ContentFit::Contain);
@@ -6200,7 +6216,11 @@ impl BeeperGuiApp {
         });
         let links = Column::with_children(links).spacing(4).padding([2, 54]);
         let extras = Column::new().push(banner).push(gif_picker).push(pasted).push(links);
-        column![extras, row![plus, pill, send].spacing(8).align_y(Center).padding(8)].into()
+        let line: Row<'a, UiMessage> = match &self.recorder {
+            Some(r) => row![self.view_recorder(r), send],
+            None => row![plus, pill, send],
+        };
+        column![extras, line.spacing(8).align_y(Center).padding(8)].into()
     }
 
     fn view_info(&self) -> El<'_> {

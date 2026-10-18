@@ -355,7 +355,7 @@ pub struct AttachmentSize {
     pub height: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Attachment {
     #[serde(rename = "type")]
     pub attachment_type: String,

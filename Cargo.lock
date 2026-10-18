@@ -4882,6 +4882,7 @@ dependencies = [
  "cpal",
  "dasp_sample",
  "num-rational",
+ "rtrb",
  "symphonia",
  "thiserror 2.0.21",
 ]
@@ -4891,6 +4892,12 @@ name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
+
+[[package]]
+name = "rtrb"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fae8ee26b0371a29a77d2b2d6b3ae13aa81def6f9bf1b1b92a32d279a5e709b7"
 
 [[package]]
 name = "ruma"

@@ -1,6 +1,6 @@
 //! Desktop's audio player (`Audio.tsx`): Ogg Opus decoding, the waveform, playback speed, and autoplay of the next
 //! voice note.
-use crate::style::{btn_style, fill_box, ic, icon, semi, shadow_box, text_width, txt, CLEAR};
+use crate::style::{btn_style, fill_box, hidden_slider, ic, icon, semi, shadow_box, text_width, txt, CLEAR};
 use crate::{menu_item, sound, tinted, BeeperGuiApp, El, UiMessage, AVATAR_SLOTS};
 use beeper_core::models::{Attachment, Message};
 use iced::font::Weight;
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 /// `PlaybackControl`'s speeds.
 const RATES: [f32; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
-const HZ: usize = 48_000;
+pub(crate) const HZ: usize = 48_000;
 const PEAKS: usize = 1024;
 /// `.waveform-container`'s min-width.
 const WAVE_W: f32 = 165.0;
@@ -29,11 +29,18 @@ pub(crate) static ICONS: LazyLock<[svg::Handle; 2]> = LazyLock::new(|| {
 #[derive(Clone)]
 pub struct Clip {
     samples: Arc<[f32]>,
-    peaks: Arc<[f32]>,
+    pub(crate) peaks: Arc<[f32]>,
 }
 
 impl Clip {
-    fn secs(&self) -> f32 {
+    pub(crate) fn new(samples: Vec<f32>) -> Self {
+        let peaks: Vec<f32> =
+            samples.chunks(samples.len().div_ceil(PEAKS)).map(|c| c.iter().fold(0f32, |m, s| m.max(s.abs()))).collect();
+        let top = peaks.iter().copied().fold(f32::EPSILON, f32::max);
+        Clip { samples: samples.into(), peaks: peaks.iter().map(|p| p / top).collect() }
+    }
+
+    pub(crate) fn secs(&self) -> f32 {
         self.samples.len() as f32 / HZ as f32
     }
 }
@@ -95,33 +102,47 @@ pub fn decode(bytes: &[u8]) -> Result<Clip, String> {
     if samples.is_empty() {
         return Err("no audio".into());
     }
-    let peaks: Vec<f32> =
-        samples.chunks(samples.len().div_ceil(PEAKS)).map(|c| c.iter().fold(0f32, |m, s| m.max(s.abs()))).collect();
-    let top = peaks.iter().copied().fold(f32::EPSILON, f32::max);
-    Ok(Clip { samples: samples.into(), peaks: peaks.iter().map(|p| p / top).collect() })
+    Ok(Clip::new(samples))
 }
 
 /// Desktop's duration format, `00:05` or `01:00:05`.
-fn clock(secs: f32) -> String {
+pub(crate) fn clock(secs: f32) -> String {
     let s = secs as u32;
     let hours = if s >= 3600 { format!("{:02}:", s / 3600) } else { String::new() };
     format!("{hours}{:02}:{:02}", s % 3600 / 60, s % 60)
 }
 
-/// The heights of WaveSurfer's 2px bars with 2px gaps, 20px tall and at least 8px, over `width`.
-fn bars(peaks: &[f32], width: f32) -> Vec<f32> {
-    let n = ((width + 2.0) / 4.0) as usize;
+/// The heights of WaveSurfer's bars over `width`, as (bar width, gap, height, minimum height).
+pub(crate) fn bars(peaks: &[f32], width: f32, (bar, gap, tall, min): (f32, f32, f32, f32)) -> Vec<f32> {
+    let n = ((width + gap) / (bar + gap)) as usize;
     (0..n)
         .map(|k| {
             let span = &peaks[k * peaks.len() / n..((k + 1) * peaks.len() / n).max(k * peaks.len() / n + 1)];
-            (span.iter().copied().fold(0.0, f32::max) * 20.0).round().max(8.0)
+            (span.iter().copied().fold(0.0, f32::max) * tall).round().max(min)
         })
         .collect()
 }
 
+/// `Audio.tsx`'s WaveSurfer: 2px bars with 2px gaps, 20px tall and at least 8px.
+const BUBBLE_BARS: (f32, f32, f32, f32) = (2.0, 2.0, 20.0, 8.0);
+
 impl Player {
-    fn clip(&self, url: &str) -> Option<&Clip> {
+    pub(crate) fn clip(&self, url: &str) -> Option<&Clip> {
         self.clips.get(url)?.as_ref()?.as_ref().ok()
+    }
+
+    /// The position of `url`, and whether it plays, when it is the current track.
+    pub(crate) fn state(&self, url: &str) -> Option<(f32, bool)> {
+        self.now.as_ref().filter(|t| t.url == url).map(|t| (self.pos(t), t.since.is_some()))
+    }
+
+    /// Forget `url`, and stop it when it is the current track.
+    pub(crate) fn forget(&mut self, url: &str) {
+        if self.now.as_ref().is_some_and(|t| t.url == url) {
+            self.pause();
+            self.now = None;
+        }
+        self.clips.remove(url);
     }
 
     fn pos(&self, t: &Track) -> f32 {
@@ -274,7 +295,7 @@ impl BeeperGuiApp {
         let (wave, progress) = (if mine { fg.scale_alpha(0.5) } else { self.pal.on_secondary }, fg);
         let wave: El<'a> = match clip {
             Some(c) => {
-                let heights = bars(&c.peaks, wave_w);
+                let heights = bars(&c.peaks, wave_w, BUBBLE_BARS);
                 let done = pos.map_or(0.0, |p| p / secs) * heights.len() as f32;
                 let bars = heights.iter().enumerate().fold(Row::new().spacing(2).align_y(Center), |r, (k, &h)| {
                     let color = if (k as f32 + 0.5) < done { progress } else { wave };
@@ -287,19 +308,7 @@ impl BeeperGuiApp {
                 .step(0.001_f32)
                 .height(20)
                 .on_release(UiMessage::Voice(Msg::SeekEnd))
-                .style(|_, _| slider::Style {
-                    rail: slider::Rail {
-                        backgrounds: (CLEAR.into(), CLEAR.into()),
-                        width: 0.0,
-                        border: Default::default(),
-                    },
-                    handle: slider::Handle {
-                        shape: slider::HandleShape::Circle { radius: 0.0 },
-                        background: CLEAR.into(),
-                        border_width: 0.0,
-                        border_color: CLEAR,
-                    },
-                });
+                .style(hidden_slider);
                 stack![container(bars).center_y(20), seek].width(wave_w).into()
             }
             None => Space::new().width(wave_w).height(20).into(),
@@ -357,7 +366,7 @@ mod tests {
     #[test]
     fn formats_and_draws_like_desktop() {
         assert_eq!([clock(5.9), clock(65.0), clock(3605.0)], ["00:05", "01:05", "01:00:05"]);
-        let b = bars(&[0.0, 0.1, 1.0, 0.5], 14.0);
+        let b = bars(&[0.0, 0.1, 1.0, 0.5], 14.0, BUBBLE_BARS);
         assert_eq!(b, [8.0, 8.0, 20.0, 10.0]);
         assert!(decode(b"not ogg").is_err());
         let clip = decode(include_bytes!("../assets/voice_test.ogg")).unwrap();

@@ -3,7 +3,7 @@ use iced::advanced::graphics::text::cosmic_text::{self, Fallback as _};
 use iced::advanced::graphics::text::{font_system, to_attributes};
 use iced::font::{Family, Font, Weight};
 use iced::overlay::menu;
-use iced::widget::{button, container, pick_list, scrollable, svg, text, text_input};
+use iced::widget::{button, container, pick_list, scrollable, slider, svg, text, text_input};
 use iced::{border, Border, Color, Shadow, Theme, Vector};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -567,6 +567,8 @@ pub struct Palette {
     pub danger: Color,
     pub success: Color,
     pub warning: Color,
+    /// `AudioBar`'s ring while recording, its ring while paused, its text, and its live waveform.
+    pub audio_bar: [Color; 4],
     pub names: [u32; 20],
 }
 
@@ -630,6 +632,7 @@ pub const BEEPER_DARK: Palette = Palette {
     danger: hex(0xff383c),
     success: hex(0x34c759),
     warning: hex(0xf54c03),
+    audio_bar: [hex(0x606366), hex(0x303236), hex(0xd8d8d8), hex(0x9b9ba2)],
     names: [
         0x9e7ef8, 0xce7fff, 0xf86fdb, 0xef939e, 0xff256e, 0xff657b, 0xff4658, 0xfa6533, 0xfc9775, 0xdba685, 0x9f8778,
         0xffb938, 0xffe500, 0xb4fb44, 0x25ca63, 0x6fe582, 0x06cf9c, 0x42c6b8, 0x29b0e1, 0x5583fc,
@@ -687,6 +690,7 @@ pub const BEEPER_LIGHT: Palette = Palette {
     danger: hex(0xff383c),
     success: hex(0x34c759),
     warning: hex(0xf54c03),
+    audio_bar: [hex(0xe3e9f2), hex(0xf1f4f8), hex(0x7f7f7f), hex(0x828286)],
     names: [
         0x6a4be5, 0x9745ea, 0xd833ca, 0xdf6f7c, 0xe8126b, 0xcd1557, 0xee1f34, 0xde4b19, 0xc25e3c, 0xbb7c55, 0x8d6954,
         0xc2891f, 0xd99c00, 0x6bad16, 0x0f9240, 0x45a654, 0x07a06d, 0x239084, 0x0a81ac, 0x1e54e1,
@@ -698,5 +702,18 @@ pub fn palette(dark: bool) -> Palette {
         BEEPER_DARK
     } else {
         BEEPER_LIGHT
+    }
+}
+
+/// A slider with no visible rail or handle, over a custom track.
+pub fn hidden_slider(_: &Theme, _: slider::Status) -> slider::Style {
+    slider::Style {
+        rail: slider::Rail { backgrounds: (CLEAR.into(), CLEAR.into()), width: 0.0, border: Default::default() },
+        handle: slider::Handle {
+            shape: slider::HandleShape::Circle { radius: 0.0 },
+            background: CLEAR.into(),
+            border_width: 0.0,
+            border_color: CLEAR,
+        },
     }
 }
