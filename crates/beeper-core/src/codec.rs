@@ -139,6 +139,25 @@ pub fn markdown_links(md: &str) -> String {
     out + rest
 }
 
+/// The lowercase `property` or `name` and the `content` of each `<meta>` tag of a web page, then its `<title>`.
+pub fn page_meta(html: &str) -> Vec<(String, String)> {
+    let lower = html.to_ascii_lowercase();
+    let mut tags: Vec<(String, String)> = lower
+        .match_indices("<meta")
+        .filter_map(|(i, _)| {
+            let tag = &html[i..i + html[i..].find('>')?];
+            let key = attr(tag, "property").or_else(|| attr(tag, "name"))?;
+            Some((key.to_ascii_lowercase(), attr(tag, "content")?))
+        })
+        .collect();
+    let title = lower.find("<title").and_then(|i| {
+        let start = i + html[i..].find('>')? + 1;
+        Some(entities(html[start..start + lower[start..].find("</title")?].trim()))
+    });
+    tags.extend(title.map(|t| ("title".to_string(), t)));
+    tags
+}
+
 fn attr(tag: &str, name: &str) -> Option<String> {
     let (_, v) = tag.split_once(&format!("{name}="))?;
     let quote = v.chars().next().filter(|c| matches!(c, '"' | '\''))?;
@@ -199,5 +218,13 @@ mod tests {
     #[test]
     fn markdown_links_keep_the_labels() {
         assert_eq!(markdown_links("[https://x.io](https://x.io) see [a](b) [c] d"), "https://x.io see a [c] d");
+    }
+
+    #[test]
+    fn page_meta_reads_open_graph() {
+        let html = "<head><TITLE> A &amp; B </TITLE><meta property=\"og:Title\" content=\"T\">\
+                    <META content='D' name=\"description\"/><meta charset=\"utf-8\"></head>";
+        let tags = |k: &str, v: &str| (k.to_string(), v.to_string());
+        assert_eq!(page_meta(html), vec![tags("og:title", "T"), tags("description", "D"), tags("title", "A & B")]);
     }
 }

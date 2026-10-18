@@ -906,7 +906,7 @@ fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
     }
     let (chat_id, pending, _) = st.send_message(id, text.clone(), reply_to.clone(), attachment).map_err(store_error)?;
     if let Some(text) = text {
-        st.queue(&chat_id, Outgoing::Send { txn: pending.clone(), text, reply_to });
+        st.queue(&chat_id, Outgoing::Send { txn: pending.clone(), text, reply_to, preview: None });
     }
     Ok(json_with(StatusCode::CREATED, &json!({ "chatID": chat_id, "pendingMessageID": pending })))
 }
