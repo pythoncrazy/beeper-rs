@@ -4011,17 +4011,18 @@ impl BeeperGuiApp {
         let (h24, group) = (st.settings.pref("timeFormat") == 1, chat.chat_type == "group");
         for (i, m) in msgs.iter().enumerate() {
             let day_changed = prev.is_none_or(|q| day_num(&q.timestamp) != day_num(&m.timestamp));
+            let mut head = Column::new().push(prev.map(|q| Space::new().height(gap_below(q, m))));
             if day_changed {
                 let label = semi(day_label(&m.timestamp), 11.0).line_height(Pixels(14.0)).color(p.date_text);
                 let pill = container(label).padding([5, 9]).style(bordered_box(p.card, p.outline, 1.0, 12.0));
-                col = col.push(container(pill).center_x(Fill).padding([4, 0]));
+                head = head.push(container(pill).center_x(Fill).padding([4, 0]));
             }
             if Some(i) == first_unread {
                 let line =
                     || container(Space::new()).width(Fill).height(1).style(fill_box(p.accent.scale_alpha(0.35), 0.0));
                 let div =
                     row![line(), semi("New", 11.0).color(p.accent), line()].spacing(8).align_y(Center).padding([6, 0]);
-                col = col.push(div);
+                head = head.push(div);
             }
             let first = day_changed || prev.is_none_or(|q| q.sender_id != m.sender_id);
             let last = msgs
@@ -4061,14 +4062,13 @@ impl BeeperGuiApp {
                 (Some(i) == last_live && m.is_sender == Some(true)).then(|| "Sent".into())
             };
             let chained = prev.is_some_and(|q| reply_root(&st, q) == reply_root(&st, m));
-            let view = self.view_message(&st, chat, m, (first, last, chained), status);
+            let view = self.view_message(&st, chat, m, (first, last, chained), status, head);
             let flash = self.flash.as_ref().filter(|(id, _)| *id == m.id).map(|(_, at)| {
                 let t = (at.elapsed().as_secs_f32() / 1.5).min(1.0);
                 let a = if t < 0.2 { ease_out(t / 0.2) } else { 1.0 - ease_out((t - 0.2) / 0.8) };
                 container(Space::new()).width(Fill).height(Fill).style(fill_box(p.accent.scale_alpha(0.4 * a), 0.0))
             });
             col = col.push(container(stack![view].push(flash)).id(format!("msg-{}", m.id)));
-            col = col.push(msgs.get(i + 1).map(|n| Space::new().height(gap_below(m, n))));
             prev = Some(m);
         }
         col = col.push(st.typing.get(cid).map(|ids| self.typing_bubble(chat, ids)));
@@ -4157,6 +4157,7 @@ impl BeeperGuiApp {
         m: &Message,
         (first, last, chained): (bool, bool, bool),
         status: Option<String>,
+        head: Column<'a, UiMessage>,
     ) -> El<'a> {
         let p = &self.pal;
         let mine = m.is_sender == Some(true);
@@ -4492,6 +4493,7 @@ impl BeeperGuiApp {
             });
             container(line).padding([0.0, BUBBLE_PAD_X])
         });
+        let tail = if footer.is_some() { 15.0 } else { 0.0 } + if m.reactions.is_empty() { 0.0 } else { 21.0 };
         let edits = open.then(|| {
             m.edit_history.iter().fold(Column::new().spacing(2), |c, e| {
                 c.push(txt(format!("{} · {}", e.text, format_short_ts(&e.timestamp, false)), 11.0).color(p.muted))
@@ -4576,47 +4578,51 @@ impl BeeperGuiApp {
                 Space::new().width(28).into()
             }
         });
-        let indent = (group && !mine).then(|| Space::new().width(34));
         let line: El<'a> = if mine {
             row![Space::new().width(Fill)].push(tools).push(parts).spacing(6).align_y(Center).into()
         } else {
             let body = row![parts].push(tools).spacing(6).align_y(Center);
             row![].push(side).push(body).push(Space::new().width(Fill)).spacing(6).align_y(Bottom).into()
         };
-        let line: El<'a> = match quote {
-            None => line,
+        let (line, head): (El<'a>, El<'a>) = match quote {
+            None => (line, head.into()),
             Some((q, q_mine)) => {
-                let curve = svg(REPLY_CURVE[usize::from(q_mine)].clone()).width(25).height(19);
-                let bar = container(Space::new()).width(3).height(Fill).style(fill_box(p.reply_line, 1.5));
                 let color = p.reply_line;
-                let link = column![bar, curve.style(move |_, _| svg::Style { color: Some(color) })]
-                    .push(Space::new().height(Fill))
-                    .align_x(if q_mine { Right } else { iced::Left })
-                    .padding(Padding::ZERO.left(if q_mine { 0.0 } else { 14.0 }).right(if q_mine {
-                        14.0
-                    } else {
-                        0.0
-                    }));
-                let line = match (q_mine == mine, q_mine) {
-                    (true, _) => line,
-                    (false, false) => stack![line, row![].push(indent).push(link)].into(),
-                    (false, true) => stack![line, row![Space::new().width(Fill), link]].into(),
+                let bar = || container(Space::new()).width(3).height(Fill).style(fill_box(color, 1.5));
+                let curve = svg(REPLY_CURVE[usize::from(q_mine)].clone())
+                    .width(25)
+                    .height(19)
+                    .style(move |_, _| svg::Style { color: Some(color) });
+                let side = |c: Column<'a, UiMessage>| -> El<'a> {
+                    let c = c.align_x(if q_mine { Right } else { iced::Left });
+                    match q_mine {
+                        true => row![Space::new().width(Fill), c.padding(Padding::ZERO.right(14.0))].into(),
+                        false => row![]
+                            .push(group.then(|| Space::new().width(34)))
+                            .push(c.padding(Padding::ZERO.left(14.0)))
+                            .into(),
+                    }
                 };
-                let head = q.map(|q| -> El<'a> {
+                let cross = q_mine != mine;
+                // The curve ends level with the middle of the bubble, above the footer and the reactions.
+                let link = column![bar(), curve, Space::new().height(Fill), Space::new().height(tail + 19.0)];
+                let line = if cross { stack![line, side(link)].into() } else { line };
+                let head = if cross && chained { stack![head, side(column![bar()])].into() } else { head.into() };
+                let quote = q.map(|q| -> El<'a> {
                     if q_mine {
                         row![Space::new().width(Fill), q].into()
                     } else {
                         row![].push(group.then(|| Space::new().width(34))).push(q).into()
                     }
                 });
-                column![].push(head).push(line).into()
+                (column![].push(quote).push(line).into(), head)
             }
         };
-        mouse_area(line)
+        let line = mouse_area(line)
             .on_enter(UiMessage::HoverEnter(m.id.clone()))
             .on_exit(UiMessage::HoverExit(m.id.clone()))
-            .on_right_press(UiMessage::OpenMessageMenu(m.id.clone()))
-            .into()
+            .on_right_press(UiMessage::OpenMessageMenu(m.id.clone()));
+        column![head, line].into()
     }
 
     fn view_composer<'a>(&self, st: &BeeperStore, chat: &Chat) -> El<'a> {
