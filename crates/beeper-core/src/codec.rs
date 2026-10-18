@@ -126,6 +126,30 @@ pub fn html_text(html: &str) -> String {
     html_blocks(html).into_iter().map(line).collect::<Vec<_>>().join("\n")
 }
 
+/// Converts composer Markdown to Matrix HTML like Desktop: GFM, a line break is a `<br>`, typed HTML stays text,
+/// and one paragraph is not wrapped. Gives `None` when the text has no formatting.
+pub fn markdown_html(md: &str) -> Option<String> {
+    use pulldown_cmark::{html, CowStr, Event, Options, Parser};
+    let render = |events: &mut dyn Iterator<Item = Event>| {
+        let mut out = String::new();
+        html::push_html(&mut out, events);
+        out
+    };
+    let parser = Parser::new_ext(md, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH);
+    let rich = render(&mut parser.map(|e| match e {
+        Event::SoftBreak => Event::HardBreak,
+        Event::Html(h) | Event::InlineHtml(h) => Event::Text(h),
+        e => e,
+    }));
+    let rich = rich.trim_end();
+    let rich =
+        rich.strip_prefix("<p>").and_then(|r| r.strip_suffix("</p>")).filter(|r| !r.contains("<p>")).unwrap_or(rich);
+    let plain = render(&mut md.split('\n').enumerate().flat_map(|(i, line)| {
+        (i > 0).then_some(Event::HardBreak).into_iter().chain([Event::Text(CowStr::Borrowed(line))])
+    }));
+    (rich != plain.trim_end()).then(|| rich.to_owned())
+}
+
 pub fn markdown_links(md: &str) -> String {
     let (mut out, mut rest) = (String::with_capacity(md.len()), md);
     while let Some((label, url_end)) = rest.find('[').and_then(|i| {
@@ -200,6 +224,23 @@ fn entities(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markdown_html_formats_like_desktop() {
+        for plain in ["hi", "a & b < c", "two\nlines", "5 * 3 = 15", ""] {
+            assert_eq!(markdown_html(plain), None, "{plain:?}");
+        }
+        for (md, html) in [
+            ("**b** _i_ ~~s~~ `c`", "<strong>b</strong> <em>i</em> <del>s</del> <code>c</code>"),
+            ("[x](https://x.test)", "<a href=\"https://x.test\">x</a>"),
+            ("**a**\nb", "<strong>a</strong><br />\nb"),
+            ("<b>no</b> **yes**", "&lt;b&gt;no&lt;/b&gt; <strong>yes</strong>"),
+            ("- a\n- b", "<ul>\n<li>a</li>\n<li>b</li>\n</ul>"),
+            ("> q", "<blockquote>\n<p>q</p>\n</blockquote>"),
+        ] {
+            assert_eq!(markdown_html(md).as_deref(), Some(html), "{md:?}");
+        }
+    }
 
     #[test]
     fn html_blocks_keep_styles_and_drop_fallbacks() {

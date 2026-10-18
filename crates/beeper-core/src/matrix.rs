@@ -813,6 +813,13 @@ pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) -> Resul
     joined_room(&client, &chat).await?.typing_notice(on).await.map_err(|e| e.to_string())
 }
 
+fn text_content(text: String) -> RoomMessageEventContent {
+    match crate::codec::markdown_html(&text) {
+        Some(html) => RoomMessageEventContent::text_html(text, html),
+        None => RoomMessageEventContent::text_plain(text),
+    }
+}
+
 async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), String> {
     let client = store.read().unwrap().matrix.clone().expect("flush checks the Matrix client");
     let room = joined_room(&client, &chat).await?;
@@ -824,7 +831,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
     let sent = |txn: String, id: OwnedEventId| store.write().unwrap().sent.insert(txn, id.to_string());
     match out {
         Outgoing::Send { txn, text, reply_to, preview } => {
-            let mut content = RoomMessageEventContent::text_plain(text);
+            let mut content = text_content(text);
             content.relates_to =
                 reply_to.map(|r| event(r).map(|id| Relation::Reply(Reply::with_event_id(id)))).transpose()?;
             let mut content = serde_json::to_value(content).expect("message JSON");
@@ -846,8 +853,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             sent(txn, id.await.map_err(e)?.response.event_id);
         }
         Outgoing::Edit { target, text } => {
-            let content = RoomMessageEventContent::text_plain(text)
-                .make_replacement(ReplacementMetadata::new(event(target)?, None));
+            let content = text_content(text).make_replacement(ReplacementMetadata::new(event(target)?, None));
             room.send(content).await.map_err(e)?;
         }
         Outgoing::Redact { target } => {
