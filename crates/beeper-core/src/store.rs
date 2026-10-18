@@ -112,7 +112,7 @@ struct Seed {
     messages: Vec<Message>,
 }
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const SCHEMA: &str = "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
      CREATE TABLE chats (id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;
      CREATE TABLE messages (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, sort_key TEXT NOT NULL, json TEXT NOT NULL) STRICT;
@@ -141,14 +141,31 @@ impl Setup {
     }
 }
 
+/// A text key that sorts like `seq`. Beeper puts events before the history at `Number.MIN_SAFE_INTEGER`.
 pub fn sort_key(seq: i64) -> String {
-    const SPAN: i64 = 1_000_000_000_000;
-    assert!(seq.abs() < SPAN, "sort key {seq} does not fit in 12 digits");
+    const SPAN: i64 = 10_000_000_000_000_000;
+    assert!(seq.abs() < SPAN, "sort key {seq} does not fit in 16 digits");
     if seq < 0 {
-        format!("-{:012}", SPAN + seq)
+        format!("-{:016}", SPAN + seq)
     } else {
-        format!("{seq:012}")
+        format!("{seq:016}")
     }
+}
+
+/// SQL that changes the 12-digit sort keys of schema 2 to the 16-digit keys of schema 3.
+fn widen_sort_keys() -> String {
+    let widen =
+        |x: &str| format!("CASE WHEN substr({x}, 1, 1) = '-' THEN '-9999' || substr({x}, 2) ELSE '0000' || {x} END");
+    let chat = |path: &str| {
+        let x = format!("json_extract(json, '{path}')");
+        format!("UPDATE chats SET json = json_set(json, '{path}', {}) WHERE {x} IS NOT NULL;", widen(&x))
+    };
+    format!(
+        "UPDATE messages SET sort_key = {}; UPDATE messages SET json = json_set(json, '$.sortKey', sort_key); {} {}",
+        widen("sort_key"),
+        chat("$.preview.sortKey"),
+        chat("$.lastReadMessageSortKey")
+    )
 }
 
 fn demo_state() -> BeeperStateRecord {
@@ -292,15 +309,18 @@ impl BeeperStore {
             0 => conn
                 .execute_batch(&format!("BEGIN; {SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"))
                 .expect("create beeper-rs schema"),
-            1 => conn
-                .execute_batch(
-                    "BEGIN;
-                     UPDATE assets SET json = json_set(json_remove(json, '$.local_file_path'), '$.disk_name',
-                         substr(json_extract(json, '$.local_file_path'), instr(json_extract(json, '$.local_file_path'), upload_id || '_')));
-                     PRAGMA user_version = 2;
-                     COMMIT;",
-                )
-                .expect("migrate beeper-rs schema 1 to 2"),
+            1..SCHEMA_VERSION => {
+                let steps = [
+                    "UPDATE assets SET json = json_set(json_remove(json, '$.local_file_path'), '$.disk_name',
+                         substr(json_extract(json, '$.local_file_path'), instr(json_extract(json, '$.local_file_path'), upload_id || '_')));"
+                        .to_string(),
+                    widen_sort_keys(),
+                ];
+                for (from, sql) in (version..).zip(&steps[version as usize - 1..]) {
+                    conn.execute_batch(&format!("BEGIN; {sql} PRAGMA user_version = {}; COMMIT;", from + 1))
+                        .unwrap_or_else(|e| panic!("migrate beeper-rs schema {from} to {}: {e}", from + 1));
+                }
+            }
             SCHEMA_VERSION => {}
             other => panic!(
                 "{} has schema version {other}, and this beeper-rs build reads version {SCHEMA_VERSION}",
@@ -795,7 +815,9 @@ impl BeeperStore {
         list.insert(pos, idx);
         let c_idx = self.chat_idx_by_id[&msg.chat_id];
         let chat = &mut self.chats[c_idx];
-        if chat.preview.as_ref().is_none_or(|p| p.sort_key <= msg.sort_key) {
+        if msg.message_type.as_deref() != Some("MEMBERSHIP")
+            && chat.preview.as_ref().is_none_or(|p| p.sort_key <= msg.sort_key)
+        {
             chat.last_activity = Some(msg.timestamp.clone());
             chat.preview = Some(msg.clone());
         }
@@ -1379,5 +1401,35 @@ impl BeeperStore {
             self.exec("DELETE FROM assets WHERE upload_id = ?1", params![id]);
         }
         old.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn widened_sort_keys_match_sort_key() {
+        let old = |seq: i64| if seq < 0 { format!("-{:012}", 1_000_000_000_000 + seq) } else { format!("{seq:012}") };
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(super::SCHEMA).unwrap();
+        let seqs = [-5, -1, 0, 7, 123_456_789];
+        for seq in seqs {
+            let (key, json) = (old(seq), serde_json::json!({ "sortKey": old(seq) }).to_string());
+            db.execute("INSERT INTO messages VALUES (?1, 'c', ?1, ?2)", [&key, &json]).unwrap();
+            let chat = serde_json::json!({ "preview": { "sortKey": key }, "lastReadMessageSortKey": key });
+            db.execute("INSERT INTO chats VALUES (?1, ?2)", [&key, &chat.to_string()]).unwrap();
+        }
+        db.execute_batch(&super::widen_sort_keys()).unwrap();
+        let rows = |sql: &str| -> Vec<String> {
+            db.prepare(sql).unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+        };
+        let want: Vec<String> = seqs.iter().map(|&s| super::sort_key(s)).collect();
+        for sql in [
+            "SELECT sort_key FROM messages ORDER BY sort_key",
+            "SELECT json_extract(json, '$.sortKey') FROM messages ORDER BY sort_key",
+            "SELECT json_extract(json, '$.preview.sortKey') FROM chats ORDER BY 1",
+            "SELECT json_extract(json, '$.lastReadMessageSortKey') FROM chats ORDER BY 1",
+        ] {
+            assert_eq!(rows(sql), want, "{sql}");
+        }
     }
 }
