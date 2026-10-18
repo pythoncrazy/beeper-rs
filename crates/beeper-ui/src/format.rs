@@ -1,4 +1,5 @@
 //! Desktop's composer formatting menu (`BubbleMenu`): Markdown marks on the selection, sent as Matrix HTML.
+use crate::i18n::tr;
 use crate::popover::above;
 use crate::style::{bordered_box, btn_style, carets, fill_box, semi, shadow_box, txt, CLEAR};
 use crate::{spell, BeeperGuiApp, El, UiMessage};
@@ -169,7 +170,7 @@ impl BeeperGuiApp {
             }
             group = Some(GROUPS[i]);
             let on = active(i, text, r);
-            let label = if i == LINK && on { "Remove Link" } else { LABELS[i] };
+            let label = tr(if i == LINK && on { "Remove Link" } else { LABELS[i] });
             let (bg, fg) = if on { (p.accent, Color::WHITE) } else { (CLEAR, p.strong) };
             let icon = svg(ICONS[i].clone()).width(16).height(16).style(move |_, _| svg::Style { color: Some(fg) });
             let b = button(icon).padding(4).style(btn_style([bg; 3], [fg; 3], 8.0)).on_press(UiMessage::Format(i));
@@ -199,15 +200,15 @@ impl BeeperGuiApp {
                 })
         };
         let field = |name: &'static str, input| {
-            column![txt(name, 11.0).line_height(Pixels(14.0)).color(p.sub), input].spacing(2)
+            column![txt(tr(name), 11.0).line_height(Pixels(14.0)).color(p.sub), input].spacing(2)
         };
         let (u, l) = (url.to_owned(), label.to_owned());
         let url_in = input("link-url", "https://example.com", url)
             .on_input(move |u| UiMessage::LinkDialog(Some((u, l.clone()))));
-        let text_in = input("link-text", "Link text (optional)", label)
+        let text_in = input("link-text", tr("Link text (optional)"), label)
             .on_input(move |l| UiMessage::LinkDialog(Some((u.clone(), l))));
         let btn = |name: &'static str, bg: Color, fg: Color, msg: Option<UiMessage>| {
-            button(semi(name, 10.0).line_height(Pixels(12.0)))
+            button(semi(tr(name), 10.0).line_height(Pixels(12.0)))
                 .padding([4, 10])
                 .style(btn_style([bg; 3], [fg; 3], 8.0))
                 .on_press_maybe(msg)
