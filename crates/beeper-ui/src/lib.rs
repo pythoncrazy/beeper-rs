@@ -895,23 +895,22 @@ fn select<'a, T: ToString + PartialEq + Clone + 'a>(
     selected: T,
     f: impl Fn(T) -> UiMessage + 'a,
 ) -> El<'a> {
-    let chevron = pick_list::Icon {
-        font: iced::Font::with_name("icons"),
-        code_point: icon::EXPAND_MORE,
-        size: Some(16.0.into()),
-        line_height: iced::widget::text::LineHeight::Relative(1.0),
-        shaping: iced::widget::text::Shaping::Basic,
-    };
-    pick_list(options, Some(selected), f)
+    let list = pick_list(options, Some(selected), f)
         .text_size(11)
         .text_line_height(Pixels(16.0))
         .font(fw(Weight::Semibold))
-        .handle(pick_list::Handle::Static(chevron))
+        .handle(pick_list::Handle::None)
         .padding([4, 8])
         .style(pick_style(p.chip, p.chip, p.strong, p.strong))
-        .menu_style(pick_menu_style(p.elevated, p.selected, p.text, p.prefs_border))
-        .into()
+        .menu_style(pick_menu_style(p.elevated, p.selected, p.text, p.prefs_border));
+    let chevron = container(tinted(&SELECT_ARROW, 10.0, p.strong)).align_right(Fill).center_y(Fill).padding([0, 8]);
+    stack![list, chevron].into()
 }
+
+/// The bold arrow of Chromium's native select, which Desktop's Settings use.
+static SELECT_ARROW: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M1 3.25 5 7.25 9 3.25" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##[..])
+});
 
 fn pill_btn<'a>(p: &Palette, label: impl ToString, msg: UiMessage) -> El<'a> {
     let label = txt(label.to_string(), 13.0).line_height(1.0).wrapping(iced::widget::text::Wrapping::None);
