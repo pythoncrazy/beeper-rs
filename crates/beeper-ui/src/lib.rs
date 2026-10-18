@@ -438,6 +438,8 @@ pub enum UiMessage {
     ExportChatJson(String),
     OpenQuickLook(String, String),
     OpenUrl(String),
+    /// The result of opening a URL in the browser.
+    Opened(Result<(), String>),
     CloseModals,
     ToggleEditHistory(String),
     HoverEnter(String),
@@ -3904,9 +3906,20 @@ impl BeeperGuiApp {
             UiMessage::Noop => {}
             UiMessage::OpenUrl(url) => {
                 let (cmd, args) = open_url_or_path_command(self.os, &url);
-                std::thread::spawn(move || {
-                    assert!(std::process::Command::new(cmd).args(args).status().expect("run URL opener").success())
-                });
+                let open = move || match std::process::Command::new(&cmd).args(args).status() {
+                    Ok(s) if s.success() => Ok(()),
+                    Ok(s) => Err(format!("Could not open {url}: {cmd} {s}")),
+                    Err(e) => Err(format!("Could not open {url}: {cmd}: {e}")),
+                };
+                return Task::perform(
+                    async { tokio::task::spawn_blocking(open).await.expect("URL opener thread") },
+                    UiMessage::Opened,
+                );
+            }
+            UiMessage::Opened(r) => {
+                if let Err(e) = r {
+                    self.status_banner = e;
+                }
             }
             UiMessage::ToggleAttachMenu => {
                 self.pane.show_attach_menu = !self.pane.show_attach_menu;
