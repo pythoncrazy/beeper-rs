@@ -239,45 +239,19 @@ fn http_client() -> &'static reqwest::Client {
     })
 }
 
-pub fn klipy_key() -> Result<&'static str, String> {
-    static KEY: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
-    KEY.get_or_init(|| {
-        let rel = "target/beeper/squashfs-root/resources/app.asar";
-        let exe_paths = std::env::current_exe()
-            .ok()
-            .into_iter()
-            .flat_map(|p| p.ancestors().map(|a| a.join(rel)).collect::<Vec<_>>());
-        let candidates = std::env::var_os("BEEPER_ASAR")
-            .map(std::path::PathBuf::from)
-            .into_iter()
-            .chain([std::path::PathBuf::from(rel)])
-            .chain(exe_paths)
-            .chain(
-                [
-                    "/opt/BeeperTexts/resources/app.asar",
-                    "/usr/lib/beepertexts/resources/app.asar",
-                    "/Applications/Beeper Desktop.app/Contents/Resources/app.asar",
-                ]
-                .map(std::path::PathBuf::from),
-            );
-        let path = candidates.into_iter().find(|p| p.is_file()).ok_or("Beeper Desktop app.asar not found")?;
-        let bytes = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        let needle = b"https://api.klipy.com/v2";
-        let pos = bytes.windows(needle.len()).position(|w| w == needle).ok_or("KLIPY URL not found in app.asar")?;
-        let window = &bytes[pos.saturating_sub(600)..pos];
-        let key = window
-            .windows(66)
-            .find(|w| w[0] == b'"' && w[65] == b'"' && w[1..65].iter().all(u8::is_ascii_alphanumeric))
-            .map(|w| std::str::from_utf8(&w[1..65]).expect("ASCII key").to_string())
-            .ok_or("KLIPY key not found in app.asar")?;
-        Ok(key)
-    })
-    .as_deref()
-    .map_err(Clone::clone)
+/// Beeper Desktop's KLIPY API key, masked so that it is not plain text in the repository (see NOTICE).
+const KLIPY_KEY: [u8; 64] = [
+    5, 93, 45, 61, 22, 55, 85, 26, 60, 48, 2, 36, 6, 21, 1, 64, 71, 6, 35, 6, 22, 21, 85, 70, 116, 74, 27, 54, 17, 38,
+    69, 38, 51, 94, 4, 42, 26, 7, 35, 36, 48, 64, 97, 5, 67, 81, 93, 9, 36, 50, 2, 64, 21, 20, 83, 55, 80, 70, 92, 40,
+    104, 20, 71, 9,
+];
+
+fn klipy_key() -> String {
+    KLIPY_KEY.iter().zip(b"beeper-rs".iter().cycle()).map(|(k, m)| char::from(k ^ m)).collect()
 }
 
 pub async fn klipy_gifs(query: String) -> Result<Vec<KlipyGif>, String> {
-    let key = klipy_key()?;
+    let key = klipy_key();
     let q = query.trim();
     let url = match q.is_empty() {
         true => format!(
@@ -288,9 +262,9 @@ pub async fn klipy_gifs(query: String) -> Result<Vec<KlipyGif>, String> {
             crate::codec::url_encode(q)
         ),
     };
-    let resp = http_client().get(&url).send().await.map_err(|e| e.to_string())?;
+    let resp = http_client().get(&url).send().await.map_err(|e| e.without_url().to_string())?;
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| e.to_string())?;
+    let text = resp.text().await.map_err(|e| e.without_url().to_string())?;
     if !status.is_success() {
         return Err(format!("HTTP {}: {text}", status.as_u16()));
     }
@@ -337,10 +311,8 @@ mod tests {
 
     #[tokio::test]
     async fn klipy_key_and_live_endpoints() {
-        if std::path::Path::new("target/beeper/squashfs-root/resources/app.asar").is_file() {
-            let key = klipy_key().expect("extract KLIPY key from app.asar");
-            assert_eq!(key.len(), 64);
-        }
+        let key = klipy_key();
+        assert!(key.len() == 64 && key.bytes().all(|b| b.is_ascii_alphanumeric()));
         if std::env::var_os("KLIPY_LIVE").is_some() {
             let featured = klipy_gifs(String::new()).await.expect("KLIPY featured");
             assert!(!featured.is_empty());
