@@ -1,6 +1,7 @@
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{mouse, overlay, renderer, Clipboard, Shell};
+use iced::keyboard;
 use iced::{Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector};
 use std::cell::Cell;
 
@@ -22,6 +23,15 @@ fn unpoint(arrow: bool, i: mouse::Interaction) -> mouse::Interaction {
         mouse::Interaction::Pointer if arrow => mouse::Interaction::Idle,
         i => i,
     }
+}
+
+/// Whether `event` is a Ctrl or Cmd shortcut on a digit or a symbol, like Ctrl , or Ctrl 1. Inputs would type
+/// its character, so only the hotkey subscription gets it.
+fn shortcut(event: &Event) -> bool {
+    let Event::Keyboard(keyboard::Event::KeyPressed { key: keyboard::Key::Character(c), modifiers, .. }) = event else {
+        return false;
+    };
+    modifiers.command() && !c.chars().all(char::is_alphabetic)
 }
 
 fn record(at: &Cell<Point>, event: &Event) {
@@ -69,6 +79,9 @@ impl<Message> Widget<Message, Theme, Renderer> for Root<'_, Message> {
         viewport: &Rectangle,
     ) {
         record(self.2, event);
+        if shortcut(event) {
+            return;
+        }
         let tree = &mut tree.children[0];
         self.0.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
     }
@@ -131,6 +144,9 @@ impl<Message> overlay::Overlay<Message, Theme, Renderer> for RootOverlay<'_, Mes
         shell: &mut Shell<'_, Message>,
     ) {
         record(self.2, event);
+        if shortcut(event) {
+            return;
+        }
         self.0.as_overlay_mut().update(event, layout, cursor, renderer, clipboard, shell);
     }
 
