@@ -11,7 +11,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 /// `PlaybackControl`'s speeds.
-const RATES: [f32; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+pub(crate) const RATES: [f32; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
 pub(crate) const HZ: usize = 48_000;
 const PEAKS: usize = 1024;
 /// `.waveform-container`'s min-width.
