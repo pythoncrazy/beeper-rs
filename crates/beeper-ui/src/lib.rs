@@ -25,14 +25,15 @@ mod tray {
     }
 }
 pub mod style;
+mod voice;
 
 use crate::login::{Login, LoginMsg};
 
 use crate::style::{
     bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded, fill_box,
-    fw, glow_box, gutter_style, hex, ic, icon, initials, input_style, med, mix, name_hash, pick, pick_menu_style,
-    pick_style, scroll_style, semi, shadow_box, stable_bar, text_width, txt, Palette, ALL_FONTS, AVATAR_GRADIENTS,
-    CLEAR, GUTTER, SOLID_BARS,
+    fw, glow_box, gutter_style, hex, ic, icon, initials, input_style, med, mix, pick, pick_menu_style, pick_style,
+    scroll_style, semi, shadow_box, stable_bar, text_width, txt, Palette, ALL_FONTS, AVATAR_GRADIENTS, CLEAR, GUTTER,
+    SOLID_BARS,
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{
@@ -381,6 +382,7 @@ pub enum UiMessage {
     CloudAccounts(Result<Vec<BridgeAccountInfo>, String>),
     AvatarLoaded(String, Result<image::Handle, String>),
     MediaLoaded(String, Result<Frames, String>),
+    Voice(voice::Msg),
     RetryMedia(String),
     ResolveMedia(String, String, String),
     MediaResolved(String, Result<(), String>),
@@ -1819,6 +1821,7 @@ pub struct BeeperGuiApp {
     delete_target: Option<String>,
     mods: keyboard::Modifiers,
     reminder_menu: Option<Point>,
+    audio: voice::Player,
     pub show_command_palette: bool,
     pub active_settings_tab: SettingsTab,
     pub settings_query: String,
@@ -1937,6 +1940,7 @@ impl BeeperGuiApp {
             confirm: None,
             delete_target: None,
             reminder_menu: None,
+            audio: Default::default(),
             selection: Vec::new(),
             selection_menu: None,
             show_command_palette: false,
@@ -3265,6 +3269,7 @@ impl BeeperGuiApp {
                 self.store.write().unwrap().delete_chat(&id, everyone);
                 return self.update(UiMessage::StoreChanged);
             }
+            UiMessage::Voice(msg) => return self.voice(msg),
             UiMessage::ReminderMenu => {
                 self.reminder_menu = Some(self.cursor);
             }
@@ -3616,6 +3621,7 @@ impl BeeperGuiApp {
                     || self.chat_menu.is_some()
                     || self.message_menu.is_some()
                     || self.reminder_menu.is_some()
+                    || self.audio.menu.is_some()
                     || self.selection_menu.is_some()
                     || self.show_attach_menu
                     || self.show_gif_picker
@@ -3628,6 +3634,7 @@ impl BeeperGuiApp {
                     self.chat_menu = None;
                     self.message_menu = None;
                     self.reminder_menu = None;
+                    self.audio.menu = None;
                     self.selection_menu = None;
                     self.show_attach_menu = false;
                     self.show_gif_picker = false;
@@ -4016,6 +4023,7 @@ impl BeeperGuiApp {
             images.chain(gif_urls).chain(found).chain(viewer).filter(|u| !self.media.contains_key(u)).collect();
         drop(st);
         self.media.extend(urls.iter().map(|u| (u.clone(), None)));
+        let audio = self.load_audio();
         Task::batch(urls.into_iter().map(|url| {
             let (client, u) = (client.clone(), url.clone());
             Task::perform(
@@ -4026,6 +4034,7 @@ impl BeeperGuiApp {
                 move |r| UiMessage::MediaLoaded(url, r),
             )
         }))
+        .chain(audio)
     }
 
     fn patch_settings(&mut self, f: impl FnOnce(&mut BeeperSettings)) {
@@ -4143,7 +4152,8 @@ impl BeeperGuiApp {
                 .chain(tick)
                 .chain(remind)
                 .chain(notes)
-                .chain(tray),
+                .chain(tray)
+                .chain(self.audio_ticks()),
         )
     }
 
@@ -4222,6 +4232,7 @@ impl BeeperGuiApp {
         });
         let filter_menu = self.show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 14.5, 26.0));
         let reminder_menu = self.reminder_menu.map(|at| (self.view_reminder_menu(), at.x, at.y));
+        let rate_menu = self.audio.menu.map(|at| (self.view_rate_menu(), at.x, at.y));
         let chat_menu = self.chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
             let (w, h) = if cid.starts_with("draft:") {
                 (124.0, 31.0)
@@ -4251,8 +4262,14 @@ impl BeeperGuiApp {
             let w = if i == 0 { SUB_MENU_W[1] } else { 233.0 };
             (menu, x.min(self.main_size.width - w - 8.0), self.main_size.height - 60.0 - h)
         });
-        let menu = filter_menu.or(reminder_menu).or(chat_menu).or(message_menu).or(react).or(selection_menu).map(
-            |(m, x, y)| {
+        let menu = filter_menu
+            .or(reminder_menu)
+            .or(rate_menu)
+            .or(chat_menu)
+            .or(message_menu)
+            .or(react)
+            .or(selection_menu)
+            .map(|(m, x, y)| {
                 mouse_area(
                     container(mouse_area(m).on_press(UiMessage::Noop))
                         .padding(Padding::ZERO.left(x).top(y))
@@ -4261,8 +4278,7 @@ impl BeeperGuiApp {
                 )
                 .on_press(UiMessage::CloseModals)
                 .on_right_press(UiMessage::CloseModals)
-            },
-        );
+            });
         let toast = self.view_toast(76.0);
         let confirm = self.confirm.filter(|&d| d != ASK_LOGOUT).map(|d| self.view_confirm(d));
         let carousel = self.carousel.as_ref().filter(|c| !c.in_media).map(|c| self.view_carousel(c));
@@ -5688,32 +5704,7 @@ impl BeeperGuiApp {
         for (ai, a) in m.attachments.iter().enumerate() {
             let name = a.file_name.clone().expect("attachment file name");
             let content: El<'a> = match (a.is_voice_note == Some(true), a.attachment_type.as_str()) {
-                (true, _) => {
-                    let bars = (0..28).fold(Row::new().spacing(2).align_y(Center), |r, k| {
-                        r.push(
-                            container(Space::new())
-                                .width(2)
-                                .height(4.0 + name_hash(&format!("{name}{k}")).rem_euclid(14) as f32)
-                                .style(fill_box(fg.scale_alpha(0.7), 1.0)),
-                        )
-                    });
-                    let play = container(ic(icon::PLAY, 14.0).color(bg)).center(30).style(fill_box(fg, 15.0));
-                    let dur = a.duration.map(|d| {
-                        let s = d.round() as u32;
-                        txt(format!("{}:{:02}", s / 60, s % 60), 11.0).color(fg.scale_alpha(0.7))
-                    });
-                    let line = row![play, bars].push(dur).spacing(8).align_y(Center);
-                    let transcript = a.transcript.clone().map(|t| {
-                        button(txt(t, 12.0).color(fg.scale_alpha(0.75)))
-                            .padding(0)
-                            .style(btn_style([CLEAR; 3], [fg; 3], 0.0))
-                            .on_press(UiMessage::RetranscribeVoice(m.id.clone()))
-                    });
-                    container(column![line].push(transcript).spacing(6).max_width(300))
-                        .padding([8, 11])
-                        .style(fill_box(bg, 17.0))
-                        .into()
-                }
+                (_, "audio") if self.playable(a) => self.view_audio(m, a, mine, fg, bg),
                 (false, "img" | "video") => {
                     let is_video = a.attachment_type == "video";
                     let (w, h) = a.size.as_ref().map_or((240.0, 160.0), |s| {
