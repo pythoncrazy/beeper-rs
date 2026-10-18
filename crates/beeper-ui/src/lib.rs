@@ -228,6 +228,8 @@ pub enum UiMessage {
     OpenChatMenu(String),
     Cursor(Point),
     OpenMessageMenu(String),
+    /// Select the message above (`false`) or below (`true`) the selected one, as with the arrow keys.
+    StepMessage(bool),
     /// Open the emoji picker at the cursor to react to a message.
     React(String),
     /// An action picked in the message menu, which closes it.
@@ -1164,7 +1166,8 @@ fn ease_out(x: f32) -> f32 {
 }
 
 /// Finds how far from the bottom the timeline must scroll to center a message.
-struct Locate(iced::widget::Id, Option<(iced::Rectangle, iced::Rectangle)>, Option<iced::Rectangle>);
+/// Finds the timeline offset that shows a message: in the middle, or with the least scroll when `nearest`.
+struct Locate(iced::widget::Id, Option<(iced::Rectangle, iced::Rectangle, f32)>, Option<iced::Rectangle>, bool);
 
 impl iced::advanced::widget::Operation<f32> for Locate {
     fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<f32>)) {
@@ -1182,21 +1185,30 @@ impl iced::advanced::widget::Operation<f32> for Locate {
         id: Option<&iced::widget::Id>,
         bounds: iced::Rectangle,
         content: iced::Rectangle,
-        _: iced::Vector,
+        at: iced::Vector,
         _: &mut dyn iced::advanced::widget::operation::Scrollable,
     ) {
         if id == Some(&iced::widget::Id::new("timeline")) {
-            self.1 = Some((bounds, content));
+            self.1 = Some((bounds, content, at.y));
         }
     }
 
     fn finish(&self) -> iced::advanced::widget::operation::Outcome<f32> {
-        let (view, content) = self.1.expect("the timeline is shown");
+        let (view, content, at) = self.1.expect("the timeline is shown");
         let msg = self.2.expect("the message is in the timeline");
         let max = (content.height - view.height).max(0.0);
-        let top = msg.y - content.y - (view.height - msg.height) / 2.0;
+        let y = msg.y - content.y;
+        let top = match self.3 {
+            true => at.max(y + msg.height - view.height).min(y),
+            false => y - (view.height - msg.height) / 2.0,
+        };
         iced::advanced::widget::operation::Outcome::Some(max - top.clamp(0.0, max))
     }
+}
+
+/// CSS `filter: brightness(k)`.
+fn brightness(c: Color, k: f32) -> Color {
+    Color { r: c.r * k, g: c.g * k, b: c.b * k, ..c }
 }
 
 fn gap_below(m: &Message, next: &Message) -> f32 {
@@ -1325,6 +1337,7 @@ pub struct BeeperGuiApp {
     pub search_select: Option<(usize, iced::Rectangle)>,
     cursor: Point,
     message_menu: Option<(String, Point)>,
+    selected_msg: Option<String>,
     pub filters: u8,
     pub show_attach_menu: bool,
     pub show_gif_picker: bool,
@@ -1423,6 +1436,7 @@ impl BeeperGuiApp {
             search_select: None,
             cursor: Point::ORIGIN,
             message_menu: None,
+            selected_msg: None,
             filters: 0,
             show_attach_menu: false,
             show_gif_picker: false,
@@ -1758,9 +1772,24 @@ impl BeeperGuiApp {
             .unwrap_or_default();
         self.reply_to_message_id = None;
         self.editing_message_id = None;
+        self.selected_msg = None;
         self.playing_video = None;
         drop(st);
         self.refresh_theme_and_tray();
+    }
+
+    fn selected_message(&self) -> Option<Message> {
+        let st = self.store.read().unwrap();
+        self.selected_msg.as_ref().map(|id| st.messages[st.msg_idx_by_id[id]].clone())
+    }
+
+    /// The arrow keys select messages when no panel is open and the composer is empty.
+    fn can_select_messages(&self) -> bool {
+        self.selected_chat_id.is_some()
+            && self.creating_chat.is_none()
+            && !self.show_command_palette
+            && self.emoji.is_none()
+            && (self.selected_msg.is_some() || self.composer_text.is_empty())
     }
 
     /// Leave the selected chat for `next`: save its draft, mark it read, and drop its elapsed reminder.
@@ -1903,6 +1932,7 @@ impl BeeperGuiApp {
                 return self.close_notifications();
             }
             UiMessage::ComposerChanged(v) => {
+                self.selected_msg = None;
                 let st = self.store.read().unwrap();
                 let notice = st.matrix.clone().filter(|_| st.settings.on("typingIndicators"));
                 let task = notice.zip(self.selected_chat_id.clone()).map(|(client, chat)| {
@@ -2058,6 +2088,30 @@ impl BeeperGuiApp {
             }
             UiMessage::Cursor(at) => self.cursor = at,
             UiMessage::OpenMessageMenu(mid) => self.message_menu = Some((mid, self.cursor)),
+            UiMessage::StepMessage(down) => {
+                let st = self.store.read().unwrap();
+                let all = &st.chat_msg_indices[self.selected_chat_id.as_deref().expect("an open chat")];
+                let ids: Vec<&str> = all
+                    .iter()
+                    .map(|&i| &st.messages[i])
+                    .filter(|m| m.is_deleted != Some(true))
+                    .map(|m| m.id.as_str())
+                    .collect();
+                let at = self.selected_msg.as_deref().map(|s| ids.iter().position(|&i| i == s).expect("selected"));
+                let next = match (at, down) {
+                    (None, false) => ids.len().checked_sub(1),
+                    (None, true) => None,
+                    (Some(i), false) => Some(i.saturating_sub(1)),
+                    (Some(i), true) => (i + 1 < ids.len()).then_some(i + 1),
+                };
+                self.selected_msg = next.map(|i| ids[i].to_string());
+                drop(st);
+                return match &self.selected_msg {
+                    Some(mid) => iced::advanced::widget::operate(Locate(format!("msg-{mid}").into(), None, None, true))
+                        .then(|y| operation::scroll_to("timeline", operation::AbsoluteOffset { x: 0.0, y })),
+                    None => operation::focus("composer-input"),
+                };
+            }
             UiMessage::React(mid) => return self.open_emoji(Some((mid, self.cursor))),
             UiMessage::MessageMenu(msg) => {
                 self.message_menu = None;
@@ -2106,7 +2160,7 @@ impl BeeperGuiApp {
                 self.select_chat(&cid);
                 let msg = format!("msg-{mid}");
                 self.flash = Some((mid, std::time::Instant::now()));
-                return iced::advanced::widget::operate(Locate(msg.into(), None, None))
+                return iced::advanced::widget::operate(Locate(msg.into(), None, None, false))
                     .then(|y| operation::scroll_to("timeline", operation::AbsoluteOffset { x: 0.0, y }));
             }
             UiMessage::ExecuteCommandChat(cid) => {
@@ -2550,6 +2604,8 @@ impl BeeperGuiApp {
                     self.reply_to_message_id = None;
                 } else if self.editing_message_id.is_some() {
                     return self.update(UiMessage::CancelComposeMode);
+                } else if self.selected_msg.is_some() {
+                    self.selected_msg = None;
                 } else if self.selected_chat_id.is_some() {
                     self.leave_chat(&mut self.store.write().unwrap(), None);
                     (self.selected_chat_id, self.composer_text) = (None, String::new());
@@ -2688,7 +2744,38 @@ impl BeeperGuiApp {
                 let (shift, alt) = (mods.shift(), mods.alt());
                 let hotkey = match key.as_ref() {
                     Key::Named(Named::Escape) => return self.update(UiMessage::CloseModals),
+                    Key::Named(Named::ArrowUp | Named::ArrowDown) if mods.is_empty() && self.can_select_messages() => {
+                        return self.update(UiMessage::StepMessage(key == Key::Named(Named::ArrowDown)));
+                    }
+                    Key::Named(Named::Enter) if mods.is_empty() => {
+                        let Some(m) = self.selected_message() else { return Task::none() };
+                        return self.update(match m.is_sender == Some(true) {
+                            true => UiMessage::StartEdit(m.id.clone(), m.text.clone().unwrap_or_default()),
+                            false => UiMessage::StartReply(m.id.clone()),
+                        });
+                    }
                     _ if !(mods.command() || mods.control()) => None,
+                    Key::Character("r") if self.selected_msg.is_some() => {
+                        return self
+                            .update(UiMessage::StartReply(self.selected_msg.clone().expect("a selected message")));
+                    }
+                    Key::Character("c") if self.selected_msg.is_some() => {
+                        let text = copy_text(&self.selected_message().expect("a selected message"), false);
+                        return self.update(UiMessage::CopyText(text));
+                    }
+                    Key::Character("t") if self.selected_chat_id.is_some() => {
+                        let edit = self.selected_message().filter(|m| m.is_sender == Some(true)).or_else(|| {
+                            let st = self.store.read().unwrap();
+                            let all = &st.chat_msg_indices[self.selected_chat_id.as_deref().expect("an open chat")];
+                            let own = all.iter().map(|&i| &st.messages[i]).rfind(|m| {
+                                m.is_sender == Some(true) && m.is_deleted != Some(true) && m.attachments.is_empty()
+                            });
+                            own.cloned()
+                        });
+                        let Some(m) = edit else { return Task::none() };
+                        self.selected_msg = Some(m.id.clone());
+                        return self.update(UiMessage::StartEdit(m.id, m.text.unwrap_or_default()));
+                    }
                     Key::Character("v") if self.selected_chat_id.is_some() => {
                         return Task::perform(clipboard_image(), UiMessage::Pasted);
                     }
@@ -2807,7 +2894,7 @@ impl BeeperGuiApp {
                 if modifiers.command()
                     || modifiers.control()
                     || modifiers.alt()
-                    || key == Key::Named(Named::Escape) =>
+                    || matches!(key, Key::Named(Named::Escape | Named::ArrowUp | Named::ArrowDown | Named::Enter)) =>
             {
                 Some(UiMessage::KeyPressed(key, modifiers))
             }
@@ -4176,7 +4263,9 @@ impl BeeperGuiApp {
             return container(pill).align_x(if mine { Right } else { iced::Left }).width(Fill).into();
         }
         let group = chat.chat_type == "group";
-        let (bg, fg) = if mine { (p.sent, Color::WHITE) } else { (p.received, p.strong) };
+        let selected = self.selected_msg.as_ref() == Some(&m.id);
+        let dim = move |c: Color| if selected { brightness(c, 0.7) } else { c };
+        let (bg, fg) = if mine { (dim(p.sent), dim(Color::WHITE)) } else { (dim(p.received), dim(p.strong)) };
         let text = m.text.clone().unwrap_or_default();
         let preview = st
             .settings
@@ -4215,22 +4304,26 @@ impl BeeperGuiApp {
         });
         if let Some((url, title, summary)) = preview {
             let host = url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(url).to_string();
-            let body = column![]
-                .push(clamp(title, 338.0, 3, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(p.strong))
-                .push(
-                    summary.map(|s| clamp(s, 338.0, 3, 13.0, Weight::Normal).line_height(Pixels(16.0)).color(p.strong)),
-                )
-                .push(
-                    row![ic(icon::LINK, 12.0).color(p.weak), txt(host, 11.0).line_height(Pixels(14.0)).color(p.weak)]
+            let body =
+                column![]
+                    .push(clamp(title, 338.0, 3, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(dim(p.strong)))
+                    .push(summary.map(|s| {
+                        clamp(s, 338.0, 3, 13.0, Weight::Normal).line_height(Pixels(16.0)).color(dim(p.strong))
+                    }))
+                    .push(
+                        row![
+                            ic(icon::LINK, 12.0).color(dim(p.weak)),
+                            txt(host, 11.0).line_height(Pixels(14.0)).color(dim(p.weak))
+                        ]
                         .spacing(4)
                         .align_y(Center),
-                )
-                .spacing(8)
-                .padding([8, 11]);
+                    )
+                    .spacing(8)
+                    .padding([8, 11]);
             let wraps = text_width(title, 13.0, Weight::Semibold) > 338.0
                 || summary.is_some_and(|s| text_width(s, 13.0, Weight::Normal) > 338.0);
             let card = container(body).width(if wraps { Length::Fixed(360.0) } else { Shrink });
-            parts = parts.push(card.max_width(360).style(fill_box(p.link_card, 17.0)));
+            parts = parts.push(card.max_width(360).style(fill_box(dim(p.link_card), 17.0)));
         }
         for a in &m.attachments {
             let name = a.file_name.clone().expect("attachment file name");
@@ -4554,7 +4647,7 @@ impl BeeperGuiApp {
             let b = |c: char, msg: UiMessage| -> El<'a> {
                 let style = move |_: &Theme, s| button::Style {
                     text_color: match s {
-                        button::Status::Hovered => Color::from_rgb(muted.r * 0.8, muted.g * 0.8, muted.b * 0.8),
+                        button::Status::Hovered => brightness(muted, 0.8),
                         _ => muted,
                     },
                     ..Default::default()
