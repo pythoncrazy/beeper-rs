@@ -260,6 +260,13 @@ pub enum UiMessage {
     MediaTab(usize),
     /// Load more items in the Media window.
     MediaMore,
+    /// Show the Media window items that all, you or others sent.
+    MediaSentBy(u8),
+    /// Show the oldest Media window items first.
+    MediaOldest(bool),
+    /// Search the Media window by caption, or close the search with `None`.
+    MediaSearch(Option<String>),
+    MediaMenu(bool),
     /// Open a message in the main window.
     GoToMessage(String, String),
     WindowKey(window::Id, Key, keyboard::Modifiers),
@@ -1027,13 +1034,15 @@ static SYS_CLOSE: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(||
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="m5.333 15.834-1.166-1.167L8.833 10 4.167 5.334l1.166-1.167L10 8.834l4.667-4.667 1.166 1.167L11.167 10l4.666 4.667-1.166 1.167L10 11.167z"/></svg>"##[..])
 });
 
-/// Desktop's system icons file-default, videocam, link and sms.
-static MEDIA_ICONS: std::sync::LazyLock<[svg::Handle; 4]> = std::sync::LazyLock::new(|| {
+/// Desktop's system icons file-default, videocam, link, sms, tune and search.
+static MEDIA_ICONS: std::sync::LazyLock<[svg::Handle; 6]> = std::sync::LazyLock::new(|| {
     [
         "M5 18.334q-.687 0-1.177-.49a1.6 1.6 0 0 1-.49-1.177V3.334q0-.688.49-1.177T5 1.667h6.667l5 5v10q0 .687-.49 1.177t-1.177.49zM10.833 7.5V3.334H5v13.333h10V7.5z",
         "M3.333 16.666q-.687 0-1.177-.49A1.6 1.6 0 0 1 1.666 15V5q0-.688.49-1.177t1.177-.49h10q.688 0 1.177.49Q15 4.312 15 5v3.75l3.333-3.334v9.167L15 11.25V15q0 .687-.49 1.177-.489.49-1.177.49zm0-1.666h10V5h-10z",
         "M12.357 13.536 10 15.893q-1.223 1.222-2.946 1.222t-2.947-1.222q-1.222-1.224-1.222-2.947T4.107 10l2.357-2.357 1.179 1.179-2.357 2.357a2.4 2.4 0 0 0-.737 1.767q0 1.032.737 1.768.736.737 1.768.737 1.03 0 1.767-.737l2.358-2.357zm-4.125-.59-1.178-1.178 4.714-4.714 1.178 1.178zm5.304-.589-1.179-1.178 2.357-2.357a2.4 2.4 0 0 0 .737-1.768 2.4 2.4 0 0 0-.737-1.768 2.4 2.4 0 0 0-1.768-.737q-1.03 0-1.767.737L8.82 7.643 7.643 6.464 10 4.107q1.223-1.222 2.946-1.222t2.947 1.222q1.222 1.224 1.222 2.947T15.893 10z",
         "M6.667 9.167q.354 0 .593-.24.24-.24.24-.593a.8.8 0 0 0-.24-.594.8.8 0 0 0-.593-.24.8.8 0 0 0-.594.24.8.8 0 0 0-.24.594q0 .354.24.593.24.24.594.24m3.333 0q.354 0 .594-.24t.24-.593a.8.8 0 0 0-.24-.594A.8.8 0 0 0 10 7.5a.8.8 0 0 0-.594.24.8.8 0 0 0-.24.594q0 .354.24.593.24.24.594.24m3.333 0q.354 0 .594-.24t.24-.593a.8.8 0 0 0-.24-.594.8.8 0 0 0-.594-.24.8.8 0 0 0-.593.24.8.8 0 0 0-.24.594q0 .354.24.593.24.24.593.24M1.667 18.334v-15q0-.688.49-1.177.489-.49 1.176-.49h13.334q.687 0 1.177.49.49.489.49 1.177v10q0 .687-.49 1.177t-1.177.49H5zm2.625-5h12.375v-10H3.333V14.27z",
+        "M9.167 17.5v-5h1.666v1.667H17.5v1.666h-6.667V17.5zM2.5 15.833v-1.666h5v1.666zM5.833 12.5v-1.667H2.5V9.167h3.333V7.5H7.5v5zm3.334-1.667V9.167H17.5v1.666zM12.5 7.5v-5h1.667v1.667H17.5v1.666h-3.333V7.5zm-10-1.667V4.167h8.333v1.666z",
+        "m16.333 17.5-5.25-5.25a5.08 5.08 0 0 1-3.167 1.083q-2.27 0-3.843-1.573T2.5 7.917t1.573-3.844T7.917 2.5t3.843 1.573 1.573 3.844a5.08 5.08 0 0 1-1.083 3.166l5.25 5.25zm-8.416-5.833q1.562 0 2.656-1.094t1.094-2.656-1.094-2.657Q9.478 4.167 7.917 4.167T5.26 5.26Q4.167 6.355 4.167 7.917t1.093 2.656 2.657 1.094",
     ]
     .map(|d| {
         svg::Handle::from_memory(
@@ -1315,24 +1324,37 @@ struct Carousel {
     in_media: bool,
 }
 
-/// Desktop's Media window: its tab (Media, Links or Docs), its size, and how many items it shows.
+/// Desktop's Media window: its tab (Media, Links or Docs), its size, how many items it shows,
+/// its filters (sent by all, you or others; oldest first; the caption search), and if its filter menu is open.
 struct MediaWindow {
     id: window::Id,
     tab: usize,
     size: Size,
     shown: usize,
+    sent_by: u8,
+    oldest: bool,
+    search: Option<String>,
+    menu: bool,
 }
 
 /// Desktop's Media window page size.
 const MEDIA_PAGE: usize = 50;
 const MEDIA_TABS: [&str; 3] = ["Media", "Links", "Docs"];
 
-/// The items of a Media window tab, newest first, as (message index, attachment or link index).
+/// The items of the Media window tab, as (message index, attachment or link index), in its order.
 /// Like Desktop, it skips low priority chats and message requests.
-fn media_items(st: &BeeperStore, tab: usize) -> Vec<(usize, usize)> {
+fn media_items(st: &BeeperStore, w: &MediaWindow) -> Vec<(usize, usize)> {
+    let (tab, needle) = (w.tab, w.search.as_deref().unwrap_or("").trim().to_lowercase());
     let shown = |m: &&Message| {
         m.is_deleted != Some(true)
             && st.chats[st.chat_idx_by_id[&m.chat_id]].flags & (CHAT_LOW_PRIORITY | CHAT_REQUEST) == 0
+            && match w.sent_by {
+                0 => true,
+                1 => m.is_sender == Some(true),
+                2 => m.is_sender != Some(true),
+                n => unreachable!("sent by {n}"),
+            }
+            && m.text.as_deref().unwrap_or("").to_lowercase().contains(&needle)
     };
     let mut items: Vec<_> = st
         .messages
@@ -1352,7 +1374,7 @@ fn media_items(st: &BeeperStore, tab: usize) -> Vec<(usize, usize)> {
             parts.into_iter().map(move |k| (t, i, k))
         })
         .collect();
-    items.sort_by_key(|&(t, ..)| std::cmp::Reverse(t));
+    items.sort_by_key(|&(t, ..)| if w.oldest { t } else { -t });
     items.into_iter().map(|(_, i, k)| (i, k)).collect()
 }
 
@@ -2455,16 +2477,42 @@ impl BeeperGuiApp {
                 }
                 let size = Size::new(1000.0, 720.0);
                 let (id, open) = window::open(Self::window_settings(size));
-                self.media_window = Some(MediaWindow { id, tab: 0, size, shown: MEDIA_PAGE });
+                self.media_window = Some(MediaWindow {
+                    id,
+                    tab: 0,
+                    size,
+                    shown: MEDIA_PAGE,
+                    sent_by: 0,
+                    oldest: false,
+                    search: None,
+                    menu: false,
+                });
                 return Task::batch([open.map(UiMessage::WindowOpened), self.load_media()]);
             }
             UiMessage::MediaTab(tab) => {
-                let w = self.media_window.as_mut().expect("the Media window is open");
-                (w.tab, w.shown) = (tab, MEDIA_PAGE);
-                return self.load_media();
+                self.media_mut().tab = tab;
+                return self.media_reload();
             }
+            UiMessage::MediaSentBy(n) => {
+                let w = self.media_mut();
+                (w.sent_by, w.menu) = (n, false);
+                return self.media_reload();
+            }
+            UiMessage::MediaOldest(on) => {
+                let w = self.media_mut();
+                (w.oldest, w.menu) = (on, false);
+                return self.media_reload();
+            }
+            UiMessage::MediaSearch(q) => {
+                let w = self.media_mut();
+                let open = q.is_some() && w.search.is_none();
+                w.search = q;
+                let reload = self.media_reload();
+                return if open { Task::batch([reload, operation::focus("media-search")]) } else { reload };
+            }
+            UiMessage::MediaMenu(open) => self.media_mut().menu = open,
             UiMessage::MediaMore => {
-                self.media_window.as_mut().expect("the Media window is open").shown += MEDIA_PAGE;
+                self.media_mut().shown += MEDIA_PAGE;
                 return self.load_media();
             }
             UiMessage::GoToMessage(chat, mid) => {
@@ -2479,7 +2527,14 @@ impl BeeperGuiApp {
                     return self.carousel_key(&key, mods);
                 }
                 if key == Key::Named(Named::Escape) {
-                    return window::close(id);
+                    let w = self.media_mut();
+                    if w.menu {
+                        w.menu = false;
+                    } else if let Some(q) = w.search.as_ref().map(|q| (!q.is_empty()).then(String::new)) {
+                        return self.update(UiMessage::MediaSearch(q));
+                    } else {
+                        return window::close(id);
+                    }
                 }
             }
             UiMessage::Forward(mid) => {
@@ -3315,6 +3370,16 @@ impl BeeperGuiApp {
         Task::batch([self.load_avatars(), self.load_media(), self.push_outbox()])
     }
 
+    fn media_mut(&mut self) -> &mut MediaWindow {
+        self.media_window.as_mut().expect("the Media window is open")
+    }
+
+    /// Show the first page of the Media window items after a filter changes.
+    fn media_reload(&mut self) -> Task<UiMessage> {
+        self.media_mut().shown = MEDIA_PAGE;
+        self.load_media()
+    }
+
     fn load_media(&mut self) -> Task<UiMessage> {
         let st = self.store.read().unwrap();
         let client = st.matrix.clone();
@@ -3335,7 +3400,7 @@ impl BeeperGuiApp {
             hits.iter().flat_map(|m| &m.attachments).filter(|a| matches!(a.attachment_type.as_str(), "img" | "video"));
         let found = found.filter_map(|a| a.poster_img.clone().or_else(|| a.src_url.clone()));
         let tiles = self.media_window.iter().filter(|w| w.tab == 0 && client.is_some());
-        let tiles = tiles.flat_map(|w| media_items(&st, 0).into_iter().take(w.shown));
+        let tiles = tiles.flat_map(|w| media_items(&st, w).into_iter().take(w.shown));
         let shown = match &self.carousel {
             Some(c) if c.in_media => {
                 let (items, at) = self.carousel_items(&st);
@@ -5822,7 +5887,10 @@ impl BeeperGuiApp {
     fn carousel_items(&self, st: &BeeperStore) -> (Vec<(String, usize)>, usize) {
         let c = self.carousel.as_ref().expect("the carousel is open");
         let items: Vec<_> = match c.in_media {
-            true => media_items(st, 0).into_iter().map(|(i, k)| (st.messages[i].id.clone(), k)).collect(),
+            true => media_items(st, self.media_window.as_ref().expect("the Media window is open"))
+                .into_iter()
+                .map(|(i, k)| (st.messages[i].id.clone(), k))
+                .collect(),
             false => {
                 let chat = self.selected_chat_id.as_deref().expect("an open chat");
                 let messages = st.chat_msg_indices[chat].iter().map(|&i| &st.messages[i]);
@@ -5966,8 +6034,8 @@ impl BeeperGuiApp {
     fn view_media<'a>(&'a self, w: &MediaWindow) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read().unwrap();
-        let [file_icon, video_icon, link_icon, _] = &*MEDIA_ICONS;
-        let items = media_items(&st, w.tab);
+        let [file_icon, video_icon, link_icon, _, tune_icon, search_icon] = &*MEDIA_ICONS;
+        let items = media_items(&st, w);
         let sub = |s: String| txt(s, 12.0).line_height(Pixels(15.0)).color(p.on_secondary);
         let tabs = MEDIA_TABS.iter().enumerate().map(|(i, label)| -> El<'a> {
             let bg = if i == w.tab { p.chip } else { CLEAR };
@@ -5979,8 +6047,47 @@ impl BeeperGuiApp {
                 .into()
         });
         let tabs = container(Row::with_children(tabs).spacing(4)).padding(4).style(fill_box(p.card, 20.0));
-        let header = container(tabs).padding([8, 10]).center_y(52);
-        let rule = container(Space::new()).width(Fill).height(0.5).style(fill_box(p.outline, 0.0));
+        let control = |glyph: &svg::Handle, size: f32, on: bool, msg| -> El<'a> {
+            let (bg, fg) = if on { (p.chip, p.strong) } else { (CLEAR, p.on_secondary) };
+            let b = button(container(tinted(glyph, size, fg)).center(28)).padding(0);
+            b.style(btn_style([bg, p.chip, p.chip], [fg; 3], 12.0)).on_press(msg).into()
+        };
+        let search = UiMessage::MediaSearch(w.search.is_none().then(String::new));
+        let controls = row![
+            self.tip(
+                control(tune_icon, 18.0, false, UiMessage::MediaMenu(true)),
+                "Filter",
+                vec![],
+                tooltip::Position::Bottom
+            ),
+            self.tip(
+                control(search_icon, 18.0, w.search.is_some(), search),
+                "Search",
+                vec![],
+                tooltip::Position::Bottom
+            ),
+        ]
+        .spacing(4);
+        let header = container(row![tabs, Space::new().width(Fill), controls].spacing(8).align_y(Center))
+            .padding([8, 10])
+            .center_y(52);
+        let rule = || container(Space::new()).width(Fill).height(0.5).style(fill_box(p.outline, 0.0));
+        let search_row = w.search.as_deref().map(|q| {
+            let input = text_input("Search by caption", q)
+                .id("media-search")
+                .on_input(|q| UiMessage::MediaSearch(Some(q)))
+                .size(14)
+                .padding(0)
+                .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
+            let close = self.tip(
+                control(&SYS_CLOSE, 16.0, false, UiMessage::MediaSearch(None)),
+                "Close",
+                vec![],
+                tooltip::Position::Bottom,
+            );
+            let line = row![tinted(search_icon, 16.0, p.on_secondary), input, close].spacing(6).align_y(Center);
+            column![container(line).padding([6, 10]), rule()]
+        });
         let inner = w.size.width - 16.0;
         let cols = ((inner / 160.0) as usize).max(3);
         let tile = (inner - 20.0 - 4.0 * (cols - 1) as f32) / cols as f32;
@@ -6096,10 +6203,33 @@ impl BeeperGuiApp {
                 .into(),
         };
         let title = container(semi("Media", 14.0).color(p.strong)).center_x(Fill).padding([8, 0]);
-        let pane = container(column![header, rule, list]).width(Fill).height(Fill).style(fill_box(p.card, 12.0));
+        let pane = column![header, rule()].push(search_row).push(list);
+        let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.card, 12.0));
         let base = container(column![title, pane]).padding(8).width(Fill).height(Fill).style(fill_box(p.window, 0.0));
+        let menu = w.menu.then(|| {
+            let heading = |label| container(med(label, 11.0).color(p.sub)).padding([6, 13]);
+            let radio = |label: &str, on: bool, msg| {
+                let lead = container(on.then(|| ic(icon::CHECK, 14.0))).width(22);
+                menu_item(p, Some(lead.into()), label.into(), "", Some(msg))
+            };
+            let col = column![
+                heading("Sent By"),
+                radio("All", w.sent_by == 0, UiMessage::MediaSentBy(0)),
+                radio("You", w.sent_by == 1, UiMessage::MediaSentBy(1)),
+                radio("Others", w.sent_by == 2, UiMessage::MediaSentBy(2)),
+                menu_rule(p),
+                heading("Sort by"),
+                radio("Newest", !w.oldest, UiMessage::MediaOldest(false)),
+                radio("Oldest", w.oldest, UiMessage::MediaOldest(true)),
+            ];
+            let menu = container(col.padding([4, 0])).width(180).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            let x = (w.size.width - 8.0 - 10.0 - 60.0).min(w.size.width - 8.0 - 180.0);
+            let at = Padding::ZERO.top(8.0 + 33.0 + 44.0).left(x);
+            mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
+                .on_press(UiMessage::MediaMenu(false))
+        });
         let carousel = self.carousel.as_ref().filter(|c| c.in_media).map(|c| self.view_carousel(c));
-        stack![base].push(carousel).into()
+        stack![base].push(menu).push(carousel).into()
     }
 
     fn view_forward<'a>(&'a self, f: &'a Forward) -> El<'a> {
