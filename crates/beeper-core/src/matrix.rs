@@ -815,7 +815,7 @@ pub async fn flush(store: SharedStore) -> Result<(), String> {
 
 async fn joined_room(client: &matrix_sdk::Client, chat: &str) -> Result<Room, String> {
     for room in client.joined_rooms() {
-        if chat_id(&room).await == chat {
+        if room.room_id() == chat || chat == NOTE_CHAT_ID && chat_id(&room).await == chat {
             return Ok(room);
         }
     }
