@@ -3,7 +3,7 @@ use crate::BeeperGuiApp;
 use beeper_core::models::{Attachment, Message};
 
 /// Desktop's attachment text: the verbose form when the message has no text.
-fn attachment_text(all: &[Attachment], verbose: bool) -> Option<String> {
+pub(crate) fn attachment_text(all: &[Attachment], verbose: bool) -> Option<String> {
     let pick = |long: &str, short: &str| Some(if verbose { long } else { short }.to_string());
     let [a] = all else {
         return (!all.is_empty()).then(|| match verbose {
