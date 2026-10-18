@@ -3379,7 +3379,8 @@ impl BeeperGuiApp {
                     )
                 };
                 let eid = event_id.clone();
-                return Task::perform(
+                // Like Desktop, a resolve whose edit does not arrive in 30 s fails.
+                let resolve = async move {
                     beeper_core::matrix::resolve_media(
                         homeserver,
                         access_token,
@@ -3388,14 +3389,18 @@ impl BeeperGuiApp {
                         login_id,
                         eid,
                         raw,
-                    ),
-                    move |r| UiMessage::MediaResolved(event_id, r),
-                );
+                    )
+                    .await?;
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    Ok(())
+                };
+                return Task::perform(resolve, move |r| UiMessage::MediaResolved(event_id, r));
             }
             UiMessage::MediaResolved(event_id, r) => {
+                self.resolving_media.insert(event_id, false);
                 if let Err(e) = r {
-                    self.resolving_media.insert(event_id, false);
-                    self.status_banner = format!("Could not load media: {e}");
+                    eprintln!("resolve media failed: {e}");
+                    self.status_banner = "Could not load this media.".into();
                 }
             }
             UiMessage::PlayVideo(url, w, h) => {
