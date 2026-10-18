@@ -1,5 +1,7 @@
 //! Desktop's message notifications (`maybeSendNotification` and `sendNotification`).
 use crate::BeeperGuiApp;
+use beeper_core::config::account_network;
+use beeper_core::models::NetworkKind::*;
 use beeper_core::models::{Attachment, Message};
 
 /// Desktop's attachment text: the verbose form when the message has no text.
@@ -50,9 +52,57 @@ pub fn body(m: &Message) -> String {
     [attachment, text.map(str::to_string), link].into_iter().flatten().collect::<Vec<_>>().join(" ")
 }
 
+/// Desktop's `extractOTP` without its natural language pass that skips money, percentages, and dates:
+/// the first `\d{3,4}[-\s]\d{3}` or `\d{4,8}` code that is not part of a word, a number, a file name, or an email.
+pub(crate) fn otp_code(text: &str) -> Option<&str> {
+    let b = text.as_bytes();
+    let at = |i: usize| b.get(i).copied().unwrap_or(0);
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let digits = |i: usize| b[i.min(b.len())..].iter().take_while(|c| c.is_ascii_digit()).count();
+    let free = |p: usize| {
+        let c = at(p);
+        let more = b.get(p + 1..).unwrap_or_default().iter().find(|c| !c.is_ascii_whitespace());
+        !(c.is_ascii_alphanumeric()
+            || b"-'".contains(&c)
+            || b",.;:".contains(&c) && more.is_some_and(u8::is_ascii_digit))
+    };
+    let ends = |e: usize| (!word(at(e)) && free(e)) || (at(e) == b'.' && free(e + 1));
+    let found = (0..b.len()).find_map(|i| {
+        let run = digits(i);
+        if run < 3 || i > 0 && (b[i - 1].is_ascii_alphanumeric() || b".-".contains(&b[i - 1])) {
+            return None;
+        }
+        let split = run <= 4 && (at(i + run) == b'-' || at(i + run).is_ascii_whitespace()) && digits(i + run + 1) == 3;
+        [(split, i + run + 4), ((4..=8).contains(&run), i + run)]
+            .into_iter()
+            .find(|&(ok, e)| ok && ends(e))
+            .map(|(_, e)| &text[i..e])
+    })?;
+    let lower = text.to_ascii_lowercase();
+    let handle = lower.match_indices('@').any(|(p, _)| {
+        let name = lower[p + 1..].bytes().take_while(|c| c.is_ascii_lowercase() || *c == b'.').collect::<Vec<_>>();
+        let rest = &lower.as_bytes()[p + 1 + name.len()..];
+        name.iter().filter(|c| c.is_ascii_lowercase()).count() >= 3
+            && rest.first().is_some_and(u8::is_ascii_whitespace)
+            && rest.get(1) == Some(&b'#')
+            && rest.get(2).is_some_and(u8::is_ascii_digit)
+    });
+    if text.contains('@') && !handle {
+        return None;
+    }
+    let file = text.match_indices(found).any(|(p, _)| {
+        let mut before = b[..p].iter().rev().take_while(|&&c| word(c) || c == b'-');
+        let (next, ext) = (at(p + found.len()), at(p + found.len() + 1));
+        before.any(u8::is_ascii_alphabetic) && (!word(next) || next == b'.')
+            || (p == 0 || !word(b[p - 1])) && next == b'.' && ext.is_ascii_alphanumeric()
+    });
+    (!file).then_some(found)
+}
+
 impl BeeperGuiApp {
-    /// The title, the body, and whether the sound is off, for the notification of a new message if Desktop shows one.
-    pub(crate) fn notification(&mut self, m: &Message) -> Option<(String, String, bool)> {
+    /// The title, the body, whether the sound is off, and the code to copy, for the notification of a new message
+    /// if Desktop shows one. A message with a code always shows one when "Auto copy OTP/2FA codes" is on.
+    pub(crate) fn notification(&mut self, m: &Message) -> Option<(String, String, bool, Option<String>)> {
         if !cfg!(target_os = "linux") {
             return None;
         }
@@ -60,22 +110,29 @@ impl BeeperGuiApp {
         let chat = &st.chats[*st.chat_idx_by_id.get(&m.chat_id)?];
         let group = chat.chat_type == "group";
         let prefs = &st.settings;
+        let otp_network = matches!(account_network(&chat.account_id).kind, IMessage | GoogleMessages | GoogleVoice);
+        let otp = (m.text.as_deref())
+            .filter(|_| otp_network && prefs.on("autoCopyOtp"))
+            .and_then(otp_code)
+            .map(str::to_string);
         let shown = m.is_sender != Some(true)
             && m.timestamp > self.booted
-            && m.text.as_deref() != Some(beeper_core::matrix::UTD_TEXT)
-            && chat.is_muted != Some(true)
-            && chat.is_hidden_from_inbox != Some(true)
-            && chat.is_request != Some(true)
-            && prefs.on("messageNotifications")
-            && (prefs.on("groupNotifications") || !group)
-            && !(self.focused && (self.selected_chat_id.as_ref() == Some(&chat.id) || !prefs.on("notifyInFocus")));
+            && m.text.as_deref() != Some(beeper_core::matrix::UTD_TEXT);
+        let shown = shown && otp.is_some()
+            || shown
+                && chat.is_muted != Some(true)
+                && chat.is_hidden_from_inbox != Some(true)
+                && chat.is_request != Some(true)
+                && prefs.on("messageNotifications")
+                && (prefs.on("groupNotifications") || !group)
+                && !(self.focused && (self.selected_chat_id.as_ref() == Some(&chat.id) || !prefs.on("notifyInFocus")));
         if !shown || !self.notified.insert(m.id.clone()) {
             return None;
         }
-        let text = body(m);
+        let text = body(m) + if otp.is_some() { " (OTP auto copied to clipboard)" } else { "" };
         let sender = m.sender_name.as_deref().filter(|s| group && !text.starts_with(&format!("{s} ")));
         let silent = prefs.pref(if group { "groupSound" } else { "messageSound" }) == 1;
-        Some((chat.title.clone(), sender.map_or(text.clone(), |s| format!("{s}: {text}")), silent))
+        Some((chat.title.clone(), sender.map_or(text.clone(), |s| format!("{s}: {text}")), silent, otp))
     }
 
     /// Desktop's `clearShownNotifications`: close the notifications of read chats without a reminder, and of the
@@ -199,5 +256,19 @@ mod tests {
         assert_eq!(body(&m), "Sent a contact: Jo Doe");
         m.attachments.push(attachment("video", None));
         assert_eq!(body(&m), "Sent 2 attachments");
+    }
+
+    #[test]
+    fn otp_code_matches_desktop() {
+        assert_eq!(otp_code("Your code is 123456."), Some("123456"));
+        assert_eq!(otp_code("Code: 123-456"), Some("123-456"));
+        assert_eq!(otp_code("G-482913 is your Google verification code."), None);
+        assert_eq!(otp_code("Use 4821 to log in.\n\n@example.com #4821"), Some("4821"));
+        assert_eq!(otp_code("Mail me at a@b.com, code 4821"), None);
+        assert_eq!(otp_code("See IMG_4821.jpg"), None);
+        assert_eq!(otp_code("Open 4821.pdf"), None);
+        assert_eq!(otp_code("Total 1,234.56 today"), None);
+        assert_eq!(otp_code("Call 555"), None);
+        assert_eq!(otp_code("abc123456"), None);
     }
 }
