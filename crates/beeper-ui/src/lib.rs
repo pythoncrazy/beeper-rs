@@ -3472,8 +3472,9 @@ impl BeeperGuiApp {
                 return Task::perform(
                     async move {
                         let bytes = beeper_core::cloud::http_bytes(&url).await?;
-                        let frames = decode_media(bytes.clone())?;
-                        Ok((bytes, frames))
+                        let b = bytes.clone();
+                        let frames = tokio::task::spawn_blocking(move || decode_media(b)).await;
+                        Ok((bytes, frames.expect("media decode task")?))
                     },
                     move |r| UiMessage::GifDownloaded(g, r),
                 );
@@ -3984,7 +3985,8 @@ impl BeeperGuiApp {
             Task::perform(
                 async move {
                     let _slot = AVATAR_SLOTS.acquire().await.expect("the media semaphore stays open");
-                    beeper_core::matrix::media(client, u).await.and_then(decode_media)
+                    let bytes = beeper_core::matrix::media(client, u).await?;
+                    tokio::task::spawn_blocking(move || decode_media(bytes)).await.expect("media decode task")
                 },
                 move |r| UiMessage::MediaLoaded(url, r),
             )
