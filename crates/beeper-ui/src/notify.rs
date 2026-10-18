@@ -273,7 +273,7 @@ impl BeeperGuiApp {
             && self.store.read().unwrap().settings.on("requestNotifications")
             && self.notified.insert(c.id.clone());
         let request = request.then(|| {
-            let body = if c.chat_type == "group" { "Group Invitation" } else { "Chat Invitation" };
+            let body = crate::i18n::tr(if c.chat_type == "group" { "Group Invitation" } else { "Chat Invitation" });
             let note = Note {
                 chat: c.id.clone(),
                 message: String::new(),

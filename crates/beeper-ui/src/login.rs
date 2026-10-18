@@ -1,3 +1,4 @@
+use crate::i18n::{tr, trn};
 use crate::style::{
     bold, bordered_box, brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, CLEAR,
 };
@@ -165,7 +166,7 @@ pub fn network_grid(accounts: &[BridgeAccountInfo], query: &str, ink: Color) -> 
         })
         .collect();
     if tiles.is_empty() {
-        return container(txt("No networks found", 13.0).color(HINT)).center_x(Fill).padding(24).into();
+        return container(txt(tr("No networks found"), 13.0).color(HINT)).center_x(Fill).padding(24).into();
     }
     let mut rows = Vec::new();
     let mut tiles = tiles.into_iter().peekable();
@@ -307,7 +308,7 @@ impl BeeperGuiApp {
             LoginMsg::SubmitEmail | LoginMsg::Resend => {
                 let email = l.email.trim().to_string();
                 if email.is_empty() {
-                    l.error = Some("Please enter your email.".into());
+                    l.error = Some(tr("Please enter your email.").into());
                     return Task::none();
                 }
                 l.code.clear();
@@ -473,7 +474,7 @@ impl BeeperGuiApp {
                                 go(LoginMsg::Google)
                             ),
                             pill(
-                                label("Continue with Email", Some(mail.into())),
+                                label(tr("Continue with Email"), Some(mail.into())),
                                 36.0,
                                 None,
                                 go(LoginMsg::Show(Screen::Email))
@@ -486,15 +487,15 @@ impl BeeperGuiApp {
             }
             Screen::Email => column![
                 Space::new().height(40),
-                heading("Enter your Email", 36.0),
+                heading(tr("Enter your Email"), 36.0),
                 Space::new().height(36),
                 art(1, 314.0),
                 Space::new().height(Fill),
                 error,
                 actions(
                     vec![
-                        field(EMAIL_INPUT, "Email", &l.email, LoginMsg::Email, LoginMsg::SubmitEmail),
-                        pill(label("Next", None), 33.0, None, go(LoginMsg::SubmitEmail)),
+                        field(EMAIL_INPUT, tr("Email"), &l.email, LoginMsg::Email, LoginMsg::SubmitEmail),
+                        pill(label(tr("Next"), None), 33.0, None, go(LoginMsg::SubmitEmail)),
                     ],
                     24.0
                 ),
@@ -529,7 +530,7 @@ impl BeeperGuiApp {
                 let info = format!("Check {}\nfor your login code", l.email.trim());
                 let foot = rich_text![
                     span("Didn't get a code? ").color(HINT),
-                    span("Resend").color(LINK).link(UiMessage::Login(LoginMsg::Resend))
+                    span(tr("Resend")).color(LINK).link(UiMessage::Login(LoginMsg::Resend))
                 ]
                 .on_link_click(move |m: UiMessage| if l.busy { UiMessage::Noop } else { m })
                 .size(11)
@@ -537,7 +538,7 @@ impl BeeperGuiApp {
                 .center();
                 column![
                     Space::new().height(50),
-                    heading("Enter Code", 36.0),
+                    heading(tr("Enter Code"), 36.0),
                     art(2, 240.0),
                     otp,
                     Space::new().height(Fill),
@@ -547,7 +548,7 @@ impl BeeperGuiApp {
                             container(txt(info, 13.0).color(HINT).center().width(Fill))
                                 .padding(Padding::ZERO.bottom(8))
                                 .into(),
-                            pill(label("Open Email", None), 33.0, None, Some(UiMessage::OpenUrl("mailto:".into()))),
+                            pill(label(tr("Open Email"), None), 33.0, None, Some(UiMessage::OpenUrl("mailto:".into()))),
                             container(foot).padding(Padding::ZERO.top(8)).into(),
                         ],
                         24.0
@@ -559,7 +560,7 @@ impl BeeperGuiApp {
                 let accounts = self.store.read().unwrap().bridge_accounts.clone();
                 let search = row![
                     ic(icon::SEARCH, 16.0).color(HINT),
-                    text_input("Search...", &l.query)
+                    text_input(tr("Search..."), &l.query)
                         .on_input(|v| LoginMsg::Query(v).into())
                         .size(14)
                         .padding([10, 0])
@@ -570,13 +571,16 @@ impl BeeperGuiApp {
                 .padding([0, 16]);
                 let divider = container(Space::new()).width(Fill).height(1).style(fill_box(FIELD, 0.0));
                 let grid = scrollable(network_grid(&accounts, &l.query, Color::BLACK)).height(Fill);
-                let go_on = container(pill(label("Continue", None), 30.0, None, Some(LoginMsg::Continue.into())))
+                let go_on = container(pill(label(tr("Continue"), None), 30.0, None, Some(LoginMsg::Continue.into())))
                     .padding(Padding::new(12.0).top(8.0));
                 let remaining = FREE_ACCOUNTS.saturating_sub(accounts.len());
-                let foot =
-                    txt(format!("{remaining} free accounts remaining."), 12.0).color(Color::from_rgb8(128, 128, 128));
+                let foot = txt(
+                    trn("%d free account remaining.", "%d free accounts remaining.", remaining, &[&remaining]),
+                    12.0,
+                )
+                .color(Color::from_rgb8(128, 128, 128));
                 column![
-                    container(bold("Connect Chat Accounts", 26.0).color(HEADING)).center_x(Fill).center_y(48),
+                    container(bold(tr("Connect Chat Accounts"), 26.0).color(HEADING)).center_x(Fill).center_y(48),
                     Space::new().height(8),
                     container(column![search, divider, grid, go_on]).height(Fill).style(card_style),
                     container(foot).center_x(Fill).center_y(31),
@@ -586,13 +590,19 @@ impl BeeperGuiApp {
             }
             Screen::Username => column![
                 Space::new().height(34),
-                heading("Pick a Username", 28.0),
+                heading(tr("Pick a Username"), 28.0),
                 container(art(0, 300.0)).height(Fill).center_y(Fill),
                 error,
                 actions(
                     vec![
-                        field(USERNAME_INPUT, "Username", &l.username, LoginMsg::Username, LoginMsg::SubmitUsername),
-                        pill(label("Next", None), 33.0, None, go(LoginMsg::SubmitUsername)),
+                        field(
+                            USERNAME_INPUT,
+                            tr("Username"),
+                            &l.username,
+                            LoginMsg::Username,
+                            LoginMsg::SubmitUsername
+                        ),
+                        pill(label(tr("Next"), None), 33.0, None, go(LoginMsg::SubmitUsername)),
                     ],
                     52.0
                 ),
@@ -616,11 +626,11 @@ impl BeeperGuiApp {
                 .into()
         };
         let menu = l.menu.then(|| {
-            let back = previous(l.screen).map(|s| item("Go Back", LoginMsg::Show(s).into()));
+            let back = previous(l.screen).map(|s| item(tr("Go Back"), LoginMsg::Show(s).into()));
             let last = if onboarding {
-                item("Report a Problem", UiMessage::OpenUrl(crate::ISSUES_URL.into()))
+                item(tr("Report a Problem"), UiMessage::OpenUrl(crate::ISSUES_URL.into()))
             } else {
-                item("Start Over", LoginMsg::StartOver.into())
+                item(tr("Start Over"), LoginMsg::StartOver.into())
             };
             let items = column![].push(back).push(last).padding(4).width(160);
             mouse_area(

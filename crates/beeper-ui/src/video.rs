@@ -1,5 +1,6 @@
 //! Desktop's inline video player (`Video/index.tsx`): frames streamed from ffmpeg, the sound track, and the hover
 //! controls.
+use crate::i18n::tr;
 use crate::style::{btn_style, fill_box, shadow_box, CLEAR};
 use crate::{ic, icon, menu_item, menu_rule, sound, tinted, BeeperGuiApp, El, UiMessage, MENU_ITEM};
 use iced::gradient::Linear;
@@ -214,7 +215,7 @@ impl BeeperGuiApp {
                 (Some(_), Err(e)) => {
                     eprintln!("video failed: {e}");
                     self.video = None;
-                    self.status_banner = "Something went wrong displaying video".into();
+                    self.status_banner = tr("Something went wrong displaying video").into();
                 }
                 (None, _) => {}
             },
@@ -370,8 +371,8 @@ impl BeeperGuiApp {
     pub(crate) fn video_menu_rows(&self, mid: &str) -> Option<Vec<(El<'_>, f32)>> {
         let v = self.menu_video(mid)?;
         let p = &self.pal;
-        let item = |label: &str, hotkey, msg| (menu_item(p, None, label.into(), hotkey, Some(msg)), MENU_ITEM);
-        let speed = mouse_area(menu_item(p, None, "Playback Speed".into(), "›", Some(UiMessage::Video(Msg::Sub))))
+        let item = |label, hotkey, msg| (menu_item(p, None, tr(label).into(), hotkey, Some(msg)), MENU_ITEM);
+        let speed = mouse_area(menu_item(p, None, tr("Playback Speed").into(), "›", Some(UiMessage::Video(Msg::Sub))))
             .on_enter(UiMessage::Video(Msg::Sub));
         Some(vec![
             item(
@@ -392,7 +393,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let lead = |on: bool| Some(container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into());
         let rates = crate::voice::RATES.map(|r| {
-            let label = if r == 1.0 { "Normal".into() } else { format!("{r}x") };
+            let label = if r == 1.0 { tr("Normal").into() } else { format!("{r}x") };
             menu_item(p, lead(v.rate == r), label, "", Some(UiMessage::Video(Msg::Rate(r))))
         });
         let list = container(Column::with_children(rates).padding([4, 0])).width(SPEED_MENU_W);

@@ -19,6 +19,8 @@ pub struct Pref {
     pub key: &'static str,
     pub label: &'static str,
     pub desc: Option<&'static str>,
+    /// The values of the `%s` placeholders in the label or the description.
+    pub args: &'static [&'static str],
     pub badge: Option<Badge>,
     /// The toggle that must be on for this row to be enabled.
     pub requires: Option<&'static str>,
@@ -27,7 +29,8 @@ pub struct Pref {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Item {
-    Subtitle(&'static str),
+    /// A text with the values of its `%s` placeholders.
+    Subtitle(&'static str, &'static [&'static str]),
     Heading(&'static str),
     Group(&'static [Pref]),
     Theme,
@@ -55,6 +58,10 @@ impl Pref {
         Pref { desc: Some(desc), ..self }
     }
 
+    const fn args(self, args: &'static [&'static str]) -> Self {
+        Pref { args, ..self }
+    }
+
     const fn badge(self, badge: Badge) -> Self {
         Pref { badge: Some(badge), ..self }
     }
@@ -65,12 +72,12 @@ impl Pref {
 }
 
 const fn t(key: &'static str, label: &'static str, on: bool) -> Pref {
-    Pref { key, label, desc: None, badge: None, requires: None, control: Control::Toggle(on) }
+    Pref { key, label, desc: None, args: &[], badge: None, requires: None, control: Control::Toggle(on) }
 }
 
 const fn s(key: &'static str, label: &'static str, options: &'static [&'static str], default: u8) -> Pref {
     assert!((default as usize) < options.len());
-    Pref { key, label, desc: None, badge: None, requires: None, control: Control::Select(options, default) }
+    Pref { key, label, desc: None, args: &[], badge: None, requires: None, control: Control::Select(options, default) }
 }
 
 macro_rules! cmd {
@@ -86,19 +93,17 @@ const SOUND: &[&str] = &["Default", "None"];
 
 pub const LANGUAGES: &[&str] =
     &["System", "English", "Deutsch", "Español", "Français", "日本語", "Português do Brasil"];
-pub const ZOOM_HINT: &str = cmd!("You can use ", " + to zoom in and ", " - to zoom out.");
-pub const ARCHIVE_AGE_DAYS: [i64; 6] = [1, 3, 7, 14, 30, 90];
-pub const ARCHIVE_SCOPE: Pref = s("archiveScope", "Archive", &["all", "read"], 0);
-pub const ARCHIVE_AGE: Pref =
-    s("archiveAge", "chats older than", &["1 day", "3 days", "1 week", "2 weeks", "1 month", "3 months"], 1);
+pub const ARCHIVE_AGE_DAYS: [i64; 6] = [3, 7, 14, 28, 90, 365];
+pub const ARCHIVE_SCOPE: Pref = s("archiveScope", "", &["all", "read"], 0);
+pub const ARCHIVE_AGE: Pref = s("archiveAge", "", &["3 days", "7 days", "14 days", "28 days", "3 months", "1 year"], 0);
 
 pub const GENERAL: &[Item] = &[
-    Item::Subtitle("These settings are for Beeper and aren't synced to the messaging platforms."),
+    Item::Subtitle("These settings are for %s and aren't synced to the messaging platforms.", &["Beeper"]),
     Item::Group(&[
-        t("incognito", "Incognito mode", false).badge(Badge::Plus).desc(cmd!(
-            "Incognito mode keeps chats unread even when you click on them and doesn't notify recipients you've read them. Respond or hit ",
-            " Shift U to mark a chat as read.\n\nRequires a paid subscription."
-        )),
+        t("incognito", "Incognito mode", false)
+            .badge(Badge::Plus)
+            .desc("Incognito mode keeps chats unread even when you click on them and doesn't notify recipients you've read them. Respond or hit %s to mark a chat as read.")
+            .args(const { &[cmd!("", " Shift U")] }),
         t("typingIndicators", "Show recipients I'm typing", true).badge(Badge::Plus),
     ]),
     Item::Group(&[s("appLanguage", "App language", LANGUAGES, 0)]),
@@ -109,7 +114,7 @@ pub const GENERAL: &[Item] = &[
     Item::Group(&[
         t("markReadOnArchive", "Mark unread chats as read on archive", false),
         s("afterArchive", "After archive", AFTER, 0),
-        Pref { key: "archiveOlder", label: "", desc: None, badge: None, requires: None, control: Control::Archive(&ARCHIVE_SCOPE, &ARCHIVE_AGE) },
+        Pref { key: "archiveOlder", label: "", desc: None, args: &[], badge: None, requires: None, control: Control::Archive(&ARCHIVE_SCOPE, &ARCHIVE_AGE) },
     ]),
     Item::Group(&[
         s("afterMarkRead", "After mark as read/unread", AFTER, 0),
@@ -121,18 +126,18 @@ pub const GENERAL: &[Item] = &[
         ),
     ]),
     Item::Group(&[
-        t("copyTimestamps", cmd!("Include timestamps when copying messages with ", " C"), false),
+        t("copyTimestamps", "Include timestamps when copying messages with %s", false).args(const { &[cmd!("", " C")] }),
         t("emojiAutocomplete", "Enable emoji autocomplete", true),
         t("autoSendGifs", "Automatically send GIFs after selection", false),
         t("autoPlayVoiceNotes", "Automatically play the next voice note", true),
-        Pref { key: "microphone", label: "Microphone", desc: None, badge: None, requires: None, control: Control::Microphone },
+        Pref { key: "microphone", label: "Microphone", desc: None, args: &[], badge: None, requires: None, control: Control::Microphone },
         t("keepEmoticons", "Disable automatic replacement of emoticons with emojis", false),
         t("autoCopyOtp", "Auto copy OTP/2FA codes", true).desc("If the chat is muted, you'll still be notified."),
         s("upArrow", "Press ↑ in the composer to:", &["Move focus to the message list", "Edit your last message"], 0),
     ]),
     Item::Group(&[
-        t("startMinimized", "Keep Beeper minimized on launch", false),
-        t("quitOnClose", "Quit Beeper when closing the main window", false),
+        t("startMinimized", "Keep %s minimized on launch", false).args(&["Beeper"]),
+        t("quitOnClose", "Quit %s when closing the main window", false).args(&["Beeper"]),
     ]),
     Item::Group(&[
         t("whatsappCommunities", "Show WhatsApp Communities as separate spaces", false),
@@ -178,7 +183,8 @@ pub const APPEARANCE: &[Item] = &[
         t("loadEmbeds", "Load external embeds automatically", true),
         t("quickReactions", "Show quick reactions", true),
         s("quickReactionEmoji", "Quick reaction emoji", &["❤️", "👍", "😂", "😮", "😢", "🔥"], 0)
-            .desc(cmd!("Used for quick react keyboard shortcut (", " Shift R)")),
+            .desc("Used for quick react keyboard shortcut (%s)")
+            .args(const { &[cmd!("", " Shift R")] }),
         t("reactionsOnSelect", "Show reactions when a message is selected", false),
         t("feedbackWidget", "Show feedback widget", true),
         t("membershipEvents", "Show membership events", true),
@@ -200,7 +206,7 @@ pub const APPEARANCE: &[Item] = &[
     Item::Heading("Theme"),
     Item::Theme,
     Item::Heading("Zoom"),
-    Item::Subtitle(ZOOM_HINT),
+    Item::Subtitle("You can use %1$s to zoom in and %2$s to zoom out.", const { &[cmd!("", " +"), cmd!("", " -")] }),
 ];
 
 pub const NOTIFICATIONS: &[Item] = &[
@@ -212,7 +218,7 @@ pub const NOTIFICATIONS: &[Item] = &[
             &["Never", "Only for sent messages", "Only for received messages", "Always"],
             0,
         ),
-        Pref { key: "soundVolume", label: "Sound effect volume", desc: None, badge: None, requires: None, control: Control::Slider(50) },
+        Pref { key: "soundVolume", label: "Sound effect volume", desc: None, args: &[], badge: None, requires: None, control: Control::Slider(50) },
         t("messageNotifications", "Message notifications", true),
         s("messageSound", "Sound", SOUND, 0),
         t("groupNotifications", "Group message notifications", true),
