@@ -5,6 +5,7 @@ use crate::models::{
     MessageLink, Reaction, User, VerificationSas, VerificationSasEmoji, VerificationState, DELETE_FOR_EVERYONE,
     DELETE_FOR_ME,
 };
+use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
 use futures_util::StreamExt;
 use matrix_sdk::authentication::matrix::MatrixSession;
@@ -1020,6 +1021,52 @@ async fn sync_emoji(client: &Client, store: &SharedStore) {
     st.skin_tone = tone;
 }
 
+/// Applies Desktop's synced preferences to the settings.
+async fn sync_prefs(client: &Client, store: &SharedStore) {
+    let mut events = std::collections::BTreeMap::<&'static str, Value>::new();
+    for (_, ad) in crate::prefs::SYNCED {
+        let kind = match *ad {
+            Ad::Desktop(..) => crate::prefs::DESKTOP_PREFS,
+            Ad::Event(kind, _) => kind,
+        };
+        if !events.contains_key(kind) {
+            events.insert(kind, global(client, kind).await);
+        }
+    }
+    let mut st = store.write().unwrap();
+    let mut settings = st.settings.clone();
+    for (key, ad) in crate::prefs::SYNCED {
+        let value = match ad {
+            Ad::Desktop(k, values) => values.decode(&events[crate::prefs::DESKTOP_PREFS][k]),
+            Ad::Event(kind, field) => events[kind][field].as_bool().map(u8::from),
+        };
+        if let Some(x) = value {
+            settings.set_pref(key, x);
+        }
+    }
+    st.synced_prefs = events;
+    if settings.prefs != st.settings.prefs {
+        st.settings = settings;
+        st.persist_state_to_sqlite();
+        st.emit_ws("settings.updated", "", None, None, None);
+    }
+}
+
+/// The account data write that syncs a changed preference to Desktop, if Desktop syncs it and the first sync is done.
+pub fn pref_write(st: &mut BeeperStore, key: &str) -> Option<(&'static str, Value)> {
+    let x = st.settings.pref(key);
+    let (kind, field, value) = match crate::prefs::synced(key)? {
+        Ad::Desktop(k, values) => (crate::prefs::DESKTOP_PREFS, k, values.encode(x)),
+        Ad::Event(kind, field) => (kind, field, (x == 1).into()),
+    };
+    let content = st.synced_prefs.get_mut(kind)?;
+    if content.is_null() {
+        *content = serde_json::json!({});
+    }
+    content[field] = value;
+    Some((kind, content.clone()))
+}
+
 pub async fn set_global(client: Client, kind: &'static str, content: Value) -> Result<(), String> {
     let raw = Raw::from_json(serde_json::value::to_raw_value(&content).expect("account data JSON"));
     let kind = GlobalAccountDataEventType::from(kind);
@@ -1271,6 +1318,7 @@ pub async fn run(store: SharedStore) {
     tokio::spawn(retry_undecrypted(client.clone(), store.clone()));
     tokio::spawn(retry_after_backup(client.clone(), store.clone()));
     sync_emoji(&client, &store).await;
+    sync_prefs(&client, &store).await;
     let first = !store.read().unwrap().beeper_state.first_sync_done;
     futures_util::stream::iter(client.joined_rooms())
         .for_each_concurrent(8, |room| {
@@ -1298,6 +1346,7 @@ pub async fn run(store: SharedStore) {
                         store.write().unwrap().matrix_error = None;
                         refresh_e2ee(&client, &store).await;
                         sync_emoji(&client, &store).await;
+                        sync_prefs(&client, &store).await;
                         for id in resp.rooms.left.keys() {
                             let chat = chat_id(&client.get_room(id).expect("left room is known")).await;
                             store.write().unwrap().remove_chat(&chat);

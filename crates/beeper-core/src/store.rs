@@ -245,6 +245,8 @@ pub struct BeeperStore {
     pub typing: HashMap<String, Vec<String>>,
     /// `io.element.recent_emoji` keys (emoji or emoji-mart ids) with their use counts.
     pub recent_emoji: Vec<(String, u64)>,
+    /// The last synced global account data of each event in [`crate::prefs::SYNCED`].
+    pub synced_prefs: BTreeMap<&'static str, serde_json::Value>,
     /// `com.beeper.emoji_skin_tone`, 0 is the default yellow.
     pub skin_tone: u8,
     next_seq: i64,
@@ -353,6 +355,7 @@ impl BeeperStore {
             sent: HashMap::new(),
             typing: HashMap::new(),
             recent_emoji: Vec::new(),
+            synced_prefs: BTreeMap::new(),
             skin_tone: 0,
             next_seq: 1000,
         };

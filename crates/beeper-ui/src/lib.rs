@@ -3261,7 +3261,14 @@ impl BeeperGuiApp {
             UiMessage::OpenSettings(tab) => return self.open_settings(tab),
             UiMessage::ToggleAddAccount => self.adding_account ^= true,
             UiMessage::SettingsQueryChanged(q) => self.settings_query = q,
-            UiMessage::SetPref(key, v) => self.patch_settings(|s| s.set_pref(key, v)),
+            UiMessage::SetPref(key, v) => {
+                self.patch_settings(|s| s.set_pref(key, v));
+                let mut st = self.store.write().unwrap();
+                let client = st.matrix.clone();
+                if let Some(((kind, content), c)) = beeper_core::matrix::pref_write(&mut st, key).zip(client) {
+                    return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed);
+                }
+            }
             UiMessage::ToggleHotkey(name) => self.patch_settings(|s| {
                 if s.hotkey_on(name) {
                     s.hotkeys_off.insert(name.to_string());
@@ -4967,7 +4974,7 @@ impl BeeperGuiApp {
         let verify = verify.map(|v| container(v).padding([0, 12]));
         let pane =
             column![stack![list, overlay].width(Fill).height(Fill)].push(verify).push(self.view_composer(&st, chat));
-        let secondary = st.settings.pref("secondaryComposerButton") != 5;
+        let secondary = st.settings.pref("secondaryComposerButton") != 6;
         let picker =
             self.view_emoji_picker().filter(|_| self.emoji.as_ref().is_some_and(|pk| pk.react.is_none())).map(|e| {
                 let right = if secondary { 112.0 } else { 82.0 };
@@ -5557,15 +5564,10 @@ impl BeeperGuiApp {
                 _ => b.into(),
             }
         };
-        let pri = [Some(0), Some(1), Some(2), Some(3), Some(4), None]
-            .get(usize::from(st.settings.pref("primaryComposerButton")))
-            .copied()
-            .flatten();
-        let sec = [Some(1), Some(5), Some(2), Some(3), Some(4), None]
-            .get(usize::from(st.settings.pref("secondaryComposerButton")))
-            .copied()
-            .flatten()
-            .filter(|&x| Some(x) != pri);
+        let action =
+            |key| [Some(0), Some(1), Some(5), Some(2), Some(3), Some(4), None][usize::from(st.settings.pref(key))];
+        let pri = action("primaryComposerButton");
+        let sec = action("secondaryComposerButton").filter(|&x| Some(x) != pri);
         let placeholder = format!("Message {} on {}", chat.title, network_name(&chat.account_id));
         let input = text_input(&placeholder, &self.composer_text)
             .id("composer-input")
