@@ -4625,75 +4625,50 @@ impl BeeperGuiApp {
         let archived = on(c.is_archived);
         let unread = c.unread_count > 0 || on(c.is_marked_unread);
         let close_sub = |items: Column<'static, UiMessage>| mouse_area(items).on_enter(UiMessage::ChatSub(None));
+        let item = |label: &str, key: &'static str, msg| menu_item(p, None, label.into(), key, msg);
         let open_sub = |i: u8, label: &str| {
             mouse_area(menu_item(p, None, label.into(), "›", Some(UiMessage::ChatSub(Some(i)))))
                 .on_enter(UiMessage::ChatSub(Some(i)))
         };
+        let pick = |on: bool, yes, no| if on { yes } else { no };
+        let selecting = self.selection.is_empty();
         let col = column![
             close_sub(column![
-                menu_item(
-                    p,
-                    None,
-                    if archived { "Unarchive" } else { "Archive" }.into(),
+                item(
+                    pick(archived, "Unarchive", "Archive"),
                     "Ctrl E",
-                    flag(ChatFlag::Archived).filter(|_| archived || !on(c.is_pinned)),
+                    flag(ChatFlag::Archived).filter(|_| archived || !on(c.is_pinned))
                 ),
-                menu_item(
-                    p,
-                    None,
-                    if on(c.is_muted) { "Unmute" } else { "Mute" }.into(),
-                    "Ctrl Shift M",
-                    flag(ChatFlag::Muted)
-                ),
-                menu_item(
-                    p,
-                    None,
-                    if unread { "Mark as Read" } else { "Mark as Unread" }.into(),
+                item(pick(on(c.is_muted), "Unmute", "Mute"), "Ctrl Shift M", flag(ChatFlag::Muted)),
+                item(
+                    pick(unread, "Mark as Read", "Mark as Unread"),
                     "Ctrl Shift U",
-                    Some(UiMessage::ToggleRead(c.id.clone())),
+                    Some(UiMessage::ToggleRead(c.id.clone()))
                 ),
-                menu_item(
-                    p,
-                    None,
-                    if on(c.is_pinned) { "Unpin" } else { "Pin" }.into(),
-                    "Ctrl P",
-                    flag(ChatFlag::Pinned)
-                ),
+                item(pick(on(c.is_pinned), "Unpin", "Pin"), "Ctrl P", flag(ChatFlag::Pinned)),
             ]),
             open_sub(0, "Copy"),
             close_sub(column![
                 menu_rule(p),
-                menu_item(p, None, "Search…".into(), "Ctrl F", Some(UiMessage::SearchRoom(c.id.clone()))),
+                item("Search…", "Ctrl F", Some(UiMessage::SearchRoom(c.id.clone()))),
                 menu_rule(p),
-                menu_item(
-                    p,
-                    None,
-                    if on(c.is_low_priority) { "Move to Inbox" } else { "Move to Low Priority" }.into(),
+                item(
+                    pick(on(c.is_low_priority), "Move to Inbox", "Move to Low Priority"),
                     "",
-                    flag(ChatFlag::LowPriority),
+                    flag(ChatFlag::LowPriority)
                 ),
             ]),
             open_sub(1, "Remind Me"),
             close_sub(
                 column![
                     menu_rule(p),
-                    menu_item(
-                        p,
-                        None,
-                        "Delete Chat".into(),
-                        "",
-                        (c.delete_modes != 0).then(|| UiMessage::AskDeleteChat(c.id.clone())),
-                    ),
+                    item("Delete Chat", "", (c.delete_modes != 0).then(|| UiMessage::AskDeleteChat(c.id.clone()))),
                 ]
-                .push(self.selection.is_empty().then(|| menu_rule(p)))
-                .push(self.selection.is_empty().then(|| {
-                    menu_item(p, None, "Begin Selecting".into(), "", Some(UiMessage::BeginSelecting(c.id.clone())))
-                }))
+                .push(selecting.then(|| menu_rule(p)))
+                .push(selecting.then(|| item("Begin Selecting", "", Some(UiMessage::BeginSelecting(c.id.clone())))))
                 .push(menu_rule(p))
-                .push(menu_item(
-                    p,
-                    None,
-                    "Report a Problem".into(),
+                .push(item(
+                    "Report a Problem",
                     "Ctrl Shift P",
                     Some(UiMessage::OpenUrl(ISSUES_URL.into()))
                 ))
