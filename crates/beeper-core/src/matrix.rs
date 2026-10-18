@@ -2,8 +2,8 @@ use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
     Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder, EditHistoryEntry, Message,
-    MessageLink, Reaction, User, VerificationSas, VerificationSasEmoji, VerificationState, DELETE_FOR_EVERYONE,
-    DELETE_FOR_ME,
+    MessageLink, Reaction, User, VerificationSas, VerificationSasEmoji, VerificationState, ALL_FORMATS,
+    DELETE_FOR_EVERYONE, DELETE_FOR_ME, FORMATS,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -203,6 +203,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         }
     });
     let account_id = account_id(&bridge, accounts);
+    let features = state(room, "com.beeper.room_features").await;
     Chat {
         id: room.room_id().to_string(),
         is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, &bridge, !dm)),
@@ -239,9 +240,12 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             })
         }),
         chat_theme: None,
-        delete_modes: state(room, "com.beeper.room_features").await.map_or(0, |f| {
+        delete_modes: features.as_ref().map_or(0, |f| {
             (u8::from(f["delete_chat"] == true) * DELETE_FOR_ME)
                 | (u8::from(f["delete_chat_for_everyone"] == true) * DELETE_FOR_EVERYONE)
+        }),
+        formatting: features.as_ref().map_or(ALL_FORMATS, |f| {
+            FORMATS.iter().enumerate().filter(|(_, k)| f["formatting"][**k] == 2).fold(0, |m, (i, _)| m | 1 << i)
         }),
         flags: 0,
     }

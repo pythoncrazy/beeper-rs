@@ -13,6 +13,20 @@ pub const CHAT_HIDDEN: u16 = 1 << 8;
 pub const CHAT_REQUEST: u16 = 1 << 9;
 pub const DELETE_FOR_ME: u8 = 1 << 0;
 pub const DELETE_FOR_EVERYONE: u8 = 1 << 1;
+/// The `com.beeper.room_features` formatting keys of Desktop's formatting menu buttons, in menu order.
+pub const FORMATS: [&str; 9] = [
+    "bold",
+    "italic",
+    "strikethrough",
+    "inline_link",
+    "unordered_list",
+    "ordered_list",
+    "blockquote",
+    "inline_code",
+    "code_block",
+];
+/// Desktop's formatting for a Matrix room without room features.
+pub const ALL_FORMATS: u16 = (1 << FORMATS.len()) - 1;
 
 pub const MSG_SENDER_SELF: u16 = 1 << 0;
 pub const MSG_UNREAD: u16 = 1 << 1;
@@ -301,8 +315,15 @@ pub struct Chat {
     pub img_url: Option<String>,
     #[serde(rename = "deleteModes", default)]
     pub delete_modes: u8,
+    /// The `FORMATS` the network fully supports, one bit each.
+    #[serde(default = "all_formats")]
+    pub formatting: u16,
     #[serde(skip)]
     pub flags: u16,
+}
+
+fn all_formats() -> u16 {
+    ALL_FORMATS
 }
 
 fn flag_bits(bits: &[(bool, u16)]) -> u16 {
