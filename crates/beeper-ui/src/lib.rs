@@ -401,6 +401,8 @@ pub enum UiMessage {
     Verified(Result<(), String>),
     Pushed(Result<(), String>),
     DevicesLoaded(Result<Vec<DeviceInfo>, String>),
+    MicsLoaded(Result<(String, Vec<String>), String>),
+    SetMicrophone(String),
     Ask(Option<u8>),
     ReminderMenu,
     OrderReminders(u8),
@@ -1799,6 +1801,8 @@ pub struct BeeperGuiApp {
     reminder_menu: Option<Point>,
     audio: voice::Player,
     recorder: Option<record::Recorder>,
+    /// The system microphone and the other inputs, listed when General settings open.
+    mics: Option<Result<(String, Vec<String>), String>>,
     pub show_command_palette: bool,
     pub active_settings_tab: SettingsTab,
     pub settings_query: String,
@@ -1914,6 +1918,7 @@ impl BeeperGuiApp {
             nickname_edit_buffer: String::new(),
             recovery_code_input: String::new(),
             devices: None,
+            mics: None,
             confirm: None,
             delete_target: None,
             reminder_menu: None,
@@ -2119,6 +2124,10 @@ impl BeeperGuiApp {
     }
 
     fn load_devices(&mut self) -> Task<UiMessage> {
+        if self.active_settings_tab == SettingsTab::General {
+            let list = async { tokio::task::spawn_blocking(record::inputs).await.expect("input list worker thread") };
+            return Task::perform(list, UiMessage::MicsLoaded);
+        }
         if self.active_settings_tab != SettingsTab::Devices {
             return Task::none();
         }
@@ -3182,6 +3191,13 @@ impl BeeperGuiApp {
                 return self.load_devices();
             }
             UiMessage::DevicesLoaded(r) => self.devices = Some(r),
+            UiMessage::MicsLoaded(r) => {
+                if let Err(e) = &r {
+                    eprintln!("Unable to load audio input devices: {e}");
+                }
+                self.mics = Some(r);
+            }
+            UiMessage::SetMicrophone(name) => self.patch_settings(|s| s.microphone = name),
             UiMessage::Ask(dialog) => (self.confirm, self.reminder_menu) = (dialog, None),
             UiMessage::AskDeleteChat(id) => {
                 (self.confirm, self.chat_menu, self.delete_target) = (Some(ASK_DELETE_CHAT), None, Some(id));
@@ -7848,6 +7864,28 @@ impl BeeperGuiApp {
                 toggle_faded(p, v == 1, msg, if off { 0.5 } else { 1.0 })
             }
             prefs::Control::Select(..) => self.pref_select(r, s),
+            prefs::Control::Microphone => {
+                let (system, names) = match &self.mics {
+                    Some(Ok((system, names))) => (system.as_str(), names.as_slice()),
+                    Some(Err(_)) | None => ("", &[][..]),
+                };
+                let same = match system {
+                    "" => "Same as system".to_string(),
+                    x => format!("Same as system ({x})"),
+                };
+                let chosen = &s.microphone;
+                let shown = match chosen.is_empty() {
+                    true => same.clone(),
+                    false if self.mics.is_some() && !names.contains(chosen) => "Selected microphone unavailable".into(),
+                    false => chosen.clone(),
+                };
+                let options: Vec<String> = std::iter::once(same.clone()).chain(names.iter().cloned()).collect();
+                let pick = select(p, options, shown, move |o| {
+                    UiMessage::SetMicrophone(if o == same { String::new() } else { o })
+                });
+                let desc = matches!(self.mics, Some(Err(_))).then_some("Unable to load microphones.");
+                return pref_row(p, r.label, desc, None, pick);
+            }
             prefs::Control::Slider(_) => {
                 assert!(r.desc.is_none() && r.badge.is_none(), "{} is a plain slider", r.key);
                 let key = r.key;

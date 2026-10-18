@@ -10,7 +10,7 @@ use iced::widget::{button, container, responsive, row, slider, stack, svg, toolt
 use iced::{
     window, Center, Color, Element, Event, Fill, Length, Padding, Rectangle, Renderer, Size, Subscription, Task,
 };
-use rodio::microphone::MicrophoneBuilder;
+use rodio::microphone::{available_inputs, MicrophoneBuilder};
 use std::io::Write;
 use std::num::NonZero;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -67,10 +67,27 @@ pub enum Msg {
     Encoded(String, Option<String>, Clip, Vec<f32>, Result<Vec<u8>, String>),
 }
 
-/// Capture the default microphone into `take` until it stops, like `getUserMedia({audio: true})`.
-fn capture(take: &Take) -> Result<(), String> {
-    let mic = MicrophoneBuilder::new().default_device().and_then(|b| b.default_config()).map_err(|e| e.to_string())?;
-    let mic = mic.open_stream().map_err(|e| e.to_string())?;
+/// Desktop's `enumerateDevices`: the system default and the other inputs, by name.
+pub(crate) fn inputs() -> Result<(String, Vec<String>), String> {
+    use rodio::cpal::traits::{DeviceTrait, HostTrait};
+    let system =
+        rodio::cpal::default_host().default_input_device().and_then(|d| Some(d.description().ok()?.name().to_string()));
+    let mut names: Vec<String> = available_inputs().map_err(|e| e.to_string())?.iter().map(|i| i.to_string()).collect();
+    names.retain(|n| Some(n) != system.as_ref());
+    Ok((system.unwrap_or_default(), names))
+}
+
+/// Capture the named microphone into `take` until it stops, like `getUserMedia`. As in Desktop, an unplugged
+/// microphone records from the system default.
+fn capture(take: &Take, name: &str) -> Result<(), String> {
+    let b = MicrophoneBuilder::new();
+    let chosen =
+        available_inputs().map_err(|e| e.to_string())?.into_iter().find(|i| !name.is_empty() && i.to_string() == name);
+    if chosen.is_none() && !name.is_empty() {
+        eprintln!("Selected audio input {name:?} unavailable, falling back to system default");
+    }
+    let mic = chosen.map_or_else(|| b.default_device(), |i| b.device(i)).and_then(|b| b.default_config());
+    let mic = mic.map_err(|e| e.to_string())?.open_stream().map_err(|e| e.to_string())?;
     let one = NonZero::new(1).expect("one channel");
     let hz = NonZero::new(HZ as u32).expect("a sample rate");
     let mut chunk = Vec::with_capacity(STEP);
@@ -180,8 +197,10 @@ impl BeeperGuiApp {
             Msg::Start => {
                 let take = Arc::new(Take::default());
                 self.recorder = Some(Recorder(take.clone()));
-                let run =
-                    async move { tokio::task::spawn_blocking(move || capture(&take)).await.expect("capture runs") };
+                let name = self.store.read().unwrap().settings.microphone.clone();
+                let run = async move {
+                    tokio::task::spawn_blocking(move || capture(&take, &name)).await.expect("capture runs")
+                };
                 return Task::perform(run, |r| UiMessage::Record(Msg::Ended(r)));
             }
             Msg::Ended(Ok(())) => {}
