@@ -1212,7 +1212,10 @@ impl BeeperStore {
         reaction_key: &str,
     ) -> Result<String, &'static str> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
-        self.update_message(m_idx, |m| m.reactions.retain(|r| r.reaction_key != reaction_key));
+        let mine = |r: &Reaction| r.reaction_key == reaction_key && self.is_me(&r.participant_id);
+        let ids: Vec<String> =
+            self.messages[m_idx].reactions.iter().filter(|r| mine(r)).map(|r| r.id.clone()).collect();
+        self.update_message(m_idx, |m| m.reactions.retain(|r| !ids.contains(&r.id)));
         Ok(chat_id)
     }
 

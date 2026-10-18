@@ -629,6 +629,8 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                 Op::Remove(id) => {
                     if st.msg_idx_by_id.contains_key(&id) {
                         st.remove_message(&chat_id, &id).expect("remove a local echo");
+                    } else if let Some(i) = st.messages.iter().position(|m| m.reactions.iter().any(|r| r.id == id)) {
+                        st.update_message(i, |m| m.reactions.retain(|r| r.id != id));
                     }
                 }
                 Op::Redact(target) => {
