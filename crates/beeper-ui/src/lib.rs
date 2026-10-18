@@ -1200,19 +1200,31 @@ fn rail_accounts(st: &BeeperStore) -> Vec<String> {
     accounts.sort_by_cached_key(|a| {
         (a != "hungryserv", st.chats.iter().position(|c| &c.account_id == a).unwrap_or(usize::MAX))
     });
-    let spaces = st.network_spaces.iter().filter(|n| accounts.contains(&n.account_id)).map(|n| n.id.clone());
-    accounts.extend(spaces.collect::<Vec<_>>());
+    let spaces = st.network_spaces.iter().filter(|n| accounts.contains(&n.account_id) && space_shown(st, n));
+    accounts.extend(spaces.map(|n| n.id.clone()).collect::<Vec<_>>());
     accounts
+}
+
+/// Desktop's `allSpaces`: WhatsApp Communities and Telegram Topics are spaces only when their setting is on.
+fn space_shown(st: &BeeperStore, n: &NetworkSpace) -> bool {
+    match account_network(&n.account_id).kind {
+        NetworkKind::WhatsApp => st.settings.on("whatsappCommunities"),
+        NetworkKind::Telegram => st.settings.on("telegramTopics"),
+        _ => true,
+    }
 }
 
 /// Finds the network space of a rail entry. Other rail entries are accounts.
 fn network_space<'a>(st: &'a BeeperStore, id: &str) -> Option<&'a NetworkSpace> {
-    st.network_spaces.iter().find(|n| n.id == id)
+    st.network_spaces.iter().find(|n| n.id == id && space_shown(st, n))
 }
 
+/// Desktop's space filter: an account shows the chats that are not in one of its shown network spaces.
 fn in_rail_entry(st: &BeeperStore, id: &str, c: &Chat) -> bool {
-    network_space(st, id)
-        .map_or(c.account_id == id, |n| c.account_id == n.account_id && c.network_id == Some(n.id.clone()))
+    match network_space(st, id) {
+        Some(n) => c.account_id == n.account_id && c.network_id.as_ref() == Some(&n.id),
+        None => c.account_id == id && c.network_id.as_ref().is_none_or(|n| network_space(st, n).is_none()),
+    }
 }
 
 /// Desktop's `rootMessageIDs`: the first loaded message of the reply chain of `m`.

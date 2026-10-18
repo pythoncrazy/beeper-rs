@@ -937,9 +937,20 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert!(gui.active_tab == InboxTab::AllChats && gui.selected_account_filter.is_none());
     {
         let mut st = store.write().unwrap();
-        let account_id = st.accounts[0].account_id.clone();
-        st.network_spaces.push(beeper_core::store::NetworkSpace { id: "g1".into(), account_id, name: "Guild".into() });
+        let account = |net: &str| st.accounts.iter().find(|a| a.account_id.contains(net)).unwrap().account_id.clone();
+        let space = |id: &str, account_id, name: &str| beeper_core::store::NetworkSpace {
+            id: id.into(),
+            account_id,
+            name: name.into(),
+        };
+        let (signal, whatsapp) = (account("signal"), account("whatsapp"));
+        st.network_spaces.extend([space("g1", signal, "Guild"), space("c1", whatsapp, "Community")]);
     }
+    let _ = gui.update(UiMessage::SelectAccount(Some("c1".into())));
+    assert!(simulator(gui.view_main()).find("Community").is_err(), "WhatsApp Communities are not spaces by default");
+    let _ = gui.update(UiMessage::SetPref("whatsappCommunities", 1));
+    assert!(simulator(gui.view_main()).find("Community").is_ok(), "the setting shows WhatsApp Communities as spaces");
+    let _ = gui.update(UiMessage::SetPref("whatsappCommunities", 0));
     let _ = gui.update(UiMessage::SelectAccount(Some("g1".into())));
     {
         let mut sim = simulator(gui.view_main());
@@ -948,10 +959,12 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     }
     {
         let mut st = store.write().unwrap();
-        let i = st.chats.iter().position(|c| c.account_id == st.accounts[0].account_id).expect("a chat of the account");
+        let i = st.chats.iter().position(|c| c.account_id.contains("signal")).expect("a chat of the account");
         st.chats[i].network_id = Some("g1".into());
         let shown: Vec<_> = gui.visible_chats(&st).iter().map(|c| c.id.clone()).collect();
         assert_eq!(shown, [st.chats[i].id.clone()], "the server shows only its chats");
+        gui.selected_account_filter = Some(st.chats[i].account_id.clone());
+        assert!(!gui.visible_chats(&st).iter().any(|c| c.id == st.chats[i].id), "the account omits the server chats");
     }
     {
         let cid = store.read().unwrap().chats[0].id.clone();
