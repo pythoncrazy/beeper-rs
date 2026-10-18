@@ -134,7 +134,7 @@ impl BeeperGuiApp {
     /// The composer with Desktop's bubble menu or link dialog centered above the selection, 8px over its first line.
     pub(crate) fn with_formatting<'a>(&'a self, editor: El<'a>, formats: u16) -> El<'a> {
         let text = self.pane().composer.text();
-        let r = selection(&self.pane().composer).filter(|_| formats != 0);
+        let r = selection(&self.pane().composer).filter(|_| formats != 0 && self.pane().edit_menu.is_none());
         let popup = r.clone().map(|r| match &self.pane().link_dialog {
             Some((url, label)) => self.view_link_dialog(url, label),
             None => self.view_bubble(&text, &r, formats),
@@ -145,18 +145,23 @@ impl BeeperGuiApp {
         let text: std::rc::Rc<str> = text.into();
         let at = |text: &str, r: &Range<usize>| [r.start, r.end].map(|o| position(text, o)).map(|p| (p.line, p.column));
         let shown = text.clone();
+        let words = std::rc::Rc::new(move |size: iced::Size| {
+            let ends = carets(&shown, 13.0, size.width - 4.0, typos.iter().flat_map(|r| at(&shown, r)));
+            let lines = typos.iter().zip(ends.chunks(2)).filter(|(_, w)| w[0].1 == w[1].1);
+            let line = |w: &[(f32, usize)]| 9.0 + (w[0].1 as f32 + 1.0) * 13.0 * 1.3 - 3.0;
+            lines.map(|(r, w)| (r.clone(), Point::new(2.0 + w[0].0, line(w)), w[1].0 - w[0].0)).collect::<Vec<_>>()
+        });
+        let hits = words.clone();
         above(editor, popup, move |size| {
             let &[(x0, row), (x1, _)] = &carets(&text, 13.0, size.width - 4.0, at(&text, &r))[..] else {
                 unreachable!()
             };
             Vector::new(2.0 + (x0 + x1) / 2.0, 9.0 + row as f32 * 13.0 * 1.3 - 8.0)
         })
-        .squiggles(move |size| {
-            let ends = carets(&shown, 13.0, size.width - 4.0, typos.iter().flat_map(|r| at(&shown, r)));
-            let words = ends.chunks(2).filter(|w| w[0].1 == w[1].1);
-            words
-                .map(|w| (Point::new(2.0 + w[0].0, 9.0 + (w[0].1 as f32 + 1.0) * 13.0 * 1.3 - 3.0), w[1].0 - w[0].0))
-                .collect()
+        .squiggles(move |size| words(size).into_iter().map(|(_, at, width)| (at, width)).collect())
+        .on_right(move |size, p| {
+            let over = |at: &Point, w: f32| (at.x..at.x + w).contains(&p.x) && (at.y - 16.9..at.y + 3.0).contains(&p.y);
+            UiMessage::EditMenu(hits(size).into_iter().find(|(_, at, w)| over(at, *w)).map(|w| w.0))
         })
         .into()
     }
