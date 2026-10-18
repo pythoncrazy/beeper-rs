@@ -690,6 +690,7 @@ impl BeeperStore {
             network_id: None,
             img_url: None,
             delete_modes: 0,
+            formatting: ALL_FORMATS,
             flags: 0,
         };
         self.push_chat(chat, true);
@@ -1057,6 +1058,7 @@ impl BeeperStore {
             img_url: None,
             participants: ChatParticipants { has_more: false, total: items.len(), items },
             delete_modes: 0,
+            formatting: ALL_FORMATS,
             flags: 0,
         };
         let idx = self.push_chat(chat, true);

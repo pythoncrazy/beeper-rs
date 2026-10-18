@@ -138,6 +138,22 @@ fn glyphs(s: &str, size: f32, w: Weight) -> (f32, Vec<(usize, f32)>) {
     })
 }
 
+/// The x position and wrapped row of each (line, byte) caret in `s` wrapped at `width`.
+pub fn carets<const N: usize>(s: &str, size: f32, width: f32, at: [(usize, usize); N]) -> [(f32, usize); N] {
+    shape(s, size, Weight::Normal, Some(width), |buf| {
+        at.map(|(line, byte)| {
+            let mut end = (0.0, 0);
+            for (row, r) in buf.layout_runs().enumerate().filter(|(_, r)| r.line_i == line) {
+                if let Some(g) = r.glyphs.iter().find(|g| g.end > byte) {
+                    return (if g.start >= byte { g.x } else { g.x + g.w }, row);
+                }
+                end = (r.line_w, row);
+            }
+            end
+        })
+    })
+}
+
 /// CSS `text-wrap: balance`: the narrowest width that wraps `s` into as many lines as `max` does, if that is more than one.
 pub fn balanced_width(s: &str, max: f32, size: f32) -> Option<f32> {
     thread_local!(static CACHE: RefCell<HashMap<(String, u32), Option<f32>>> = RefCell::default());
@@ -546,6 +562,7 @@ pub struct Palette {
     pub menu: Color,
     pub menu_border: Color,
     pub on_secondary: Color,
+    pub surface_dim: Color,
     pub reply_line: Color,
     pub danger: Color,
     pub success: Color,
@@ -608,6 +625,7 @@ pub const BEEPER_DARK: Palette = Palette {
     menu: hex(0x232323),
     menu_border: hex(0x434343),
     on_secondary: hex(0x9b9ba2),
+    surface_dim: hex(0x000000),
     reply_line: hex(0x353535),
     danger: hex(0xff383c),
     success: hex(0x34c759),
@@ -664,6 +682,7 @@ pub const BEEPER_LIGHT: Palette = Palette {
     menu: hex(0xf3f3f3),
     menu_border: hex(0xe2e2e2),
     on_secondary: hex(0x6c6c72),
+    surface_dim: hex(0xebebeb),
     reply_line: hex(0xe1e1e1),
     danger: hex(0xff383c),
     success: hex(0x34c759),

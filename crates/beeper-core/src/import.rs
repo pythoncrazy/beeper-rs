@@ -1,6 +1,6 @@
 use crate::config::rfc3339_from_millis;
 use crate::models::{
-    Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, Reaction, ThemeChoice, User,
+    Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, Reaction, ThemeChoice, User, ALL_FORMATS,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
@@ -374,6 +374,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 network_id: bridge.get("network").and_then(|n| str_field(n, "id")),
                 img_url: str_field(&t, "imgURL"),
                 delete_modes: 0,
+                formatting: ALL_FORMATS,
                 flags: 0,
                 id,
             })

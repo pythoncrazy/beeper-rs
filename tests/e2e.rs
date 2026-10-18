@@ -841,6 +841,13 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
             "Shift Enter adds a line and Enter sends"
         );
     }
+    let _ = gui.update(UiMessage::ComposerChanged("make it bold".into()));
+    let _ = gui.update(UiMessage::ComposerEdit(iced::widget::text_editor::Action::SelectAll));
+    let _ = gui.update(UiMessage::Format(0));
+    assert_eq!(gui.composer.text(), "**make it bold**", "the formatting menu wraps the selection");
+    let _ = gui.update(UiMessage::Format(0));
+    assert_eq!(gui.composer.text(), "make it bold", "pressing it again removes the marks");
+    let _ = gui.update(UiMessage::ComposerChanged(String::new()));
     {
         let mut sim = simulator(gui.view_main());
         sim.click(iced::widget::Id::new("rail-requests")).expect("requests rail button");

@@ -1,5 +1,6 @@
 mod cursor;
 pub mod emoji;
+mod format;
 mod lift;
 pub mod login;
 mod notify;
@@ -131,9 +132,7 @@ fn silent(m: &Message) -> bool {
 
 /// Composer content with `text` and the cursor at the end.
 fn composer_with(text: &str) -> text_editor::Content {
-    let mut c = text_editor::Content::with_text(text);
-    c.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
-    c
+    format::content(text, text.len()..text.len())
 }
 
 fn filter_hit(i: usize, c: &Chat, st: &BeeperStore) -> bool {
@@ -231,6 +230,10 @@ pub enum UiMessage {
     ClickChat(String),
     ComposerChanged(String),
     ComposerEdit(text_editor::Action),
+    /// Toggles a `format::LABELS` button on the composer selection.
+    Format(usize),
+    LinkDialog(Option<(String, String)>),
+    SaveLink,
     SubmitComposer,
     CancelComposeMode,
     StartReply(String),
@@ -1784,6 +1787,8 @@ pub struct BeeperGuiApp {
     pub filters: u8,
     pub show_attach_menu: bool,
     pub show_gif_picker: bool,
+    /// The URL and text of the formatting menu's link dialog.
+    link_dialog: Option<(String, String)>,
     emoji: Option<emoji::Picker>,
     emoji_gen: u32,
     emoji_hovered: [bool; 2],
@@ -1902,6 +1907,7 @@ impl BeeperGuiApp {
             filters: 0,
             show_attach_menu: false,
             show_gif_picker: false,
+            link_dialog: None,
             emoji: None,
             emoji_gen: 0,
             emoji_hovered: [false; 2],
@@ -2361,6 +2367,7 @@ impl BeeperGuiApp {
     /// Desktop's reaction to new composer text: emoticons, the typing notice, and link previews.
     fn composer_changed(&mut self, old: String) -> Task<UiMessage> {
         self.selected_msg = None;
+        self.link_dialog = None;
         self.suggest = 0;
         let st = self.store.read().unwrap();
         let new = self.composer.text();
@@ -2598,6 +2605,34 @@ impl BeeperGuiApp {
                 let old = self.composer.text();
                 self.composer = composer_with(&v);
                 return self.composer_changed(old);
+            }
+            UiMessage::Format(i) => {
+                let old = self.composer.text();
+                let caret = format::offset(&old, self.composer.cursor().position);
+                let r = format::selection(&self.composer).unwrap_or(caret..caret);
+                if i == format::LINK && !format::active(i, &old, &r) {
+                    self.link_dialog = Some((String::new(), old[r].to_owned()));
+                    return operation::focus("link-url");
+                }
+                let (text, r) = format::toggle(i, &old, r);
+                self.composer = format::content(&text, r);
+                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
+            }
+            UiMessage::LinkDialog(d) => {
+                let closed = d.is_none();
+                self.link_dialog = d;
+                if closed {
+                    return operation::focus("composer-input");
+                }
+            }
+            UiMessage::SaveLink => {
+                let (url, label) = self.link_dialog.take().expect("the link dialog is open");
+                let old = self.composer.text();
+                let caret = format::offset(&old, self.composer.cursor().position);
+                let r = format::selection(&self.composer).unwrap_or(caret..caret);
+                let (text, r) = format::link(&old, r, url.trim(), label.trim());
+                self.composer = format::content(&text, r);
+                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
             }
             UiMessage::SubmitComposer if !self.emoji_suggestions(&self.store.read().unwrap()).is_empty() => {
                 return self.update(UiMessage::PickEmoji(self.suggest));
@@ -6183,6 +6218,7 @@ impl BeeperGuiApp {
         let (pri, sec) = composer_buttons(st);
         let placeholder = format!("Message {} on {}", chat.title, network_name(&chat.account_id));
         let suggesting = !self.emoji_suggestions(st).is_empty();
+        let formats = chat.formatting;
         let input = text_editor(&self.composer)
             .id("composer-input")
             .placeholder(placeholder)
@@ -6193,6 +6229,15 @@ impl BeeperGuiApp {
                 }
                 Key::Named(Named::ArrowUp | Named::ArrowDown) if suggesting => None,
                 Key::Named(Named::Escape) => None,
+                Key::Character(c) if k.modifiers.command() => {
+                    let i = match (c.to_ascii_lowercase().as_str(), k.modifiers.shift()) {
+                        ("b", false) => 0,
+                        ("i", false) => 1,
+                        ("x", true) => 2,
+                        _ => return text_editor::Binding::from_key_press(k),
+                    };
+                    (formats & 1 << i != 0).then_some(text_editor::Binding::Custom(UiMessage::Format(i)))
+                }
                 _ => text_editor::Binding::from_key_press(k),
             })
             .size(13)
@@ -6212,6 +6257,7 @@ impl BeeperGuiApp {
         let inline = Row::with_children([pri, sec].into_iter().flatten().map(&action_btn)).spacing(2).align_y(Center);
         let net = Row::new().push(net.map(|n| container(n).padding(Padding::ZERO.right(2.0)).center_y(36)));
         let inline = container(inline).padding(Padding::ZERO.left(2.0)).center_y(36);
+        let input = self.with_formatting(input.into(), if st.settings.on("formattingMenu") { formats } else { 0 });
         let pill = container(row![net, input, inline].align_y(Bottom).padding(Padding::new(0.0).left(14.0).right(6.5)))
             .width(Fill)
             .style(fill_box(p.input, 18.0));
