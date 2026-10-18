@@ -235,6 +235,11 @@ pub enum UiMessage {
     /// An action picked in the message menu, which closes it.
     MessageMenu(Box<UiMessage>),
     CopyText(String),
+    CopyImage(String),
+    ImageFetched(Result<Vec<u8>, String>),
+    /// Save the attachments of a message to the downloads folder.
+    Download(String),
+    Downloaded(Result<String, String>),
     AskDeleteMessage(String),
     ArchiveStale,
     NicknameChanged(String),
@@ -470,11 +475,19 @@ fn list_ts(iso: &str, h24: bool) -> String {
 }
 
 fn human_size(n: u64) -> String {
-    match n {
-        0..1024 => format!("{n} B"),
-        1024..1_048_576 => format!("{:.0} KB", n as f64 / 1024.0),
-        _ => format!("{:.1} MB", n as f64 / 1_048_576.0),
-    }
+    let i = (n.max(1) as f64).log(1024.0).floor() as i32;
+    let v = format!("{:.1}", n as f64 / 1024f64.powi(i));
+    format!("{} {}", v.trim_end_matches(".0"), ["B", "KB", "MB", "GB", "TB"][i as usize])
+}
+
+/// `dir/name`, or `dir/stem (n).ext` with the first free `n`.
+fn unused_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s, format!(".{e}")),
+        _ => (name, String::new()),
+    };
+    let names = std::iter::once(name.to_string()).chain((1..).map(|i| format!("{stem} ({i}){ext}")));
+    names.map(|n| dir.join(n)).find(|p| !p.exists()).expect("a free file name")
 }
 
 fn ghost(p: &Palette, r: f32) -> impl Fn(&Theme, button::Status) -> button::Style + Copy {
@@ -1338,6 +1351,8 @@ pub struct BeeperGuiApp {
     cursor: Point,
     message_menu: Option<(String, Point)>,
     selected_msg: Option<String>,
+    /// On X11 the copied image stays available only while its clipboard lives.
+    image_clipboard: Option<arboard::Clipboard>,
     pub filters: u8,
     pub show_attach_menu: bool,
     pub show_gif_picker: bool,
@@ -1437,6 +1452,7 @@ impl BeeperGuiApp {
             cursor: Point::ORIGIN,
             message_menu: None,
             selected_msg: None,
+            image_clipboard: None,
             filters: 0,
             show_attach_menu: false,
             show_gif_picker: false,
@@ -2118,6 +2134,68 @@ impl BeeperGuiApp {
                 return self.update(*msg);
             }
             UiMessage::CopyText(s) => return iced::clipboard::write(s),
+            UiMessage::CopyImage(mid) => {
+                let st = self.store.read().unwrap();
+                let a = &st.messages[st.msg_idx_by_id[&mid]].attachments[0];
+                let url = a.src_url.clone().expect("an image has a source");
+                return Task::perform(beeper_core::matrix::media(st.matrix.clone(), url), UiMessage::ImageFetched);
+            }
+            UiMessage::ImageFetched(r) => {
+                let copy = |bytes: Vec<u8>, c: &mut Option<arboard::Clipboard>| -> Result<(), String> {
+                    let px = ::image::load_from_memory(&bytes).map_err(|e| e.to_string())?.into_rgba8();
+                    let (width, height) = (px.width() as usize, px.height() as usize);
+                    let img = arboard::ImageData { width, height, bytes: px.into_raw().into() };
+                    let c = match c {
+                        Some(c) => c,
+                        None => c.insert(arboard::Clipboard::new().map_err(|e| e.to_string())?),
+                    };
+                    c.set_image(img).map_err(|e| e.to_string())
+                };
+                if let Err(e) = r.and_then(|b| copy(b, &mut self.image_clipboard)) {
+                    eprintln!("copy image failed: {e}");
+                    self.status_banner = "Couldn't copy the image".into();
+                }
+            }
+            UiMessage::Download(mid) => {
+                let st = self.store.read().unwrap();
+                let m = &st.messages[st.msg_idx_by_id[&mid]];
+                let files: Vec<(String, String)> = m
+                    .attachments
+                    .iter()
+                    .map(|a| {
+                        let name = a.file_name.clone().expect("an attachment has a file name");
+                        (a.src_url.clone().expect("an attachment has a source"), name)
+                    })
+                    .collect();
+                let client = st.matrix.clone();
+                self.status_banner = format!("Downloading {}", files[0].1);
+                let dir = beeper_core::platform::resolve_home_dir(&std::env::vars().collect()).join("Downloads");
+                return Task::perform(
+                    async move {
+                        let mut last = String::new();
+                        for (url, name) in files {
+                            let name: String =
+                                name.chars().filter(|c| !r#"/\?<>:*|""#.contains(*c) && !c.is_control()).collect();
+                            if name.trim_matches('.').is_empty() {
+                                return Err(format!("bad file name {name:?}"));
+                            }
+                            let bytes = beeper_core::matrix::media(client.clone(), url).await?;
+                            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                            let path = unused_path(&dir, &name);
+                            std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+                            last = path.file_name().expect("a file path").to_string_lossy().into_owned();
+                        }
+                        Ok(last)
+                    },
+                    UiMessage::Downloaded,
+                );
+            }
+            UiMessage::Downloaded(r) => {
+                self.status_banner = match r {
+                    Ok(name) => format!("Downloaded {name}"),
+                    Err(e) => format!("Download failed: {e}"),
+                }
+            }
             UiMessage::AskDeleteMessage(mid) => {
                 (self.confirm, self.delete_target) = (Some(ASK_DELETE_MESSAGE), Some(mid))
             }
@@ -2397,10 +2475,7 @@ impl BeeperGuiApp {
                 let u = url.clone();
                 return Task::perform(
                     async move {
-                        let bytes = match u.starts_with("https://") {
-                            true => beeper_core::cloud::http_bytes(&u).await,
-                            false => beeper_core::matrix::media(client.expect("Matrix video has a client"), u).await,
-                        }?;
+                        let bytes = beeper_core::matrix::media(client, u).await?;
                         tokio::task::spawn_blocking(move || decode_video(bytes, w, h)).await.expect("video decode task")
                     },
                     move |r| UiMessage::VideoDecoded(url, r),
@@ -2763,6 +2838,10 @@ impl BeeperGuiApp {
                         let text = copy_text(&self.selected_message().expect("a selected message"), false);
                         return self.update(UiMessage::CopyText(text));
                     }
+                    Key::Character("d") if self.selected_message().is_some_and(|m| !m.attachments.is_empty()) => {
+                        return self
+                            .update(UiMessage::Download(self.selected_msg.clone().expect("a selected message")));
+                    }
                     Key::Character("t") if self.selected_chat_id.is_some() => {
                         let edit = self.selected_message().filter(|m| m.is_sender == Some(true)).or_else(|| {
                             let st = self.store.read().unwrap();
@@ -2855,11 +2934,7 @@ impl BeeperGuiApp {
             Task::perform(
                 async move {
                     let _slot = AVATAR_SLOTS.acquire().await.expect("the media semaphore stays open");
-                    let bytes = match u.starts_with("https://") {
-                        true => beeper_core::cloud::http_bytes(&u).await,
-                        false => beeper_core::matrix::media(client.expect("Matrix media has a client"), u).await,
-                    };
-                    bytes.and_then(decode_media)
+                    beeper_core::matrix::media(client, u).await.and_then(decode_media)
                 },
                 move |r| UiMessage::MediaLoaded(url, r),
             )
@@ -3267,6 +3342,14 @@ impl BeeperGuiApp {
         };
         let bookmark = if m.is_bookmarked == Some(true) { "Remove Bookmark" } else { "Bookmark" };
         let at = format!("{} at {}", if mine { "Sent" } else { "Received" }, locale_string(&m.timestamp));
+        let files = m.attachments.len();
+        let image = m.attachments.first().is_some_and(|a| a.attachment_type == "img");
+        let only_image = image && m.text.is_none();
+        let noun = if image { "Image" } else { "Attachment" };
+        let download = match m.attachments.first().and_then(|a| a.file_size).filter(|_| files == 1) {
+            Some(n) => format!("Download {noun} ({})", human_size(n)),
+            None => format!("Download {noun}{}", if files == 1 { "" } else { "s" }),
+        };
         let rows: Vec<(El, f32)> = [
             link.map(|u| vec![item("Copy Link".into(), "", Some(UiMessage::CopyText(u))), rule()]),
             (mine && !text.is_empty())
@@ -3279,11 +3362,26 @@ impl BeeperGuiApp {
             (m.is_unread != Some(true)).then(|| {
                 vec![item("Mark as Unread".into(), "", Some(UiMessage::MarkUnreadFromHere(cid, mid.clone())))]
             }),
-            mine.then(|| vec![item("Delete for Everyone…".into(), "", Some(UiMessage::AskDeleteMessage(mid)))]),
+            mine.then(|| vec![item("Delete for Everyone…".into(), "", Some(UiMessage::AskDeleteMessage(mid.clone())))]),
             Some(vec![
                 rule(),
-                item(format!("Copy{entire}"), "Ctrl C", Some(UiMessage::CopyText(copy_text(m, false)))),
-                item(format!("Copy{entire} with Timestamp"), "", Some(UiMessage::CopyText(copy_text(m, true)))),
+                item(
+                    format!("Copy{entire}"),
+                    "Ctrl C",
+                    Some(match only_image {
+                        true => UiMessage::CopyImage(mid.clone()),
+                        false => UiMessage::CopyText(copy_text(m, false)),
+                    }),
+                ),
+            ]),
+            (!image).then(|| {
+                let copy = UiMessage::CopyText(copy_text(m, true));
+                vec![item(format!("Copy{entire} with Timestamp"), "", Some(copy))]
+            }),
+            (image && !only_image)
+                .then(|| vec![item("Copy Image".into(), "", Some(UiMessage::CopyImage(mid.clone())))]),
+            (files > 0).then(|| vec![item(download, "Ctrl D", Some(UiMessage::Download(mid.clone())))]),
+            Some(vec![
                 item(at, "", None),
                 rule(),
                 item("Report a Problem".into(), "Ctrl Shift P", Some(UiMessage::OpenUrl(ISSUES_URL.into()))),
@@ -6082,5 +6180,17 @@ mod tests {
         m.sender_name = Some("Jo".into());
         let stamped = copy_text(&m, true);
         assert!(stamped.starts_with('[') && stamped.ends_with("] Jo: 🖼 [Picture] see https://a.b\nhttps://c.d"));
+    }
+
+    #[test]
+    fn downloads_name_like_desktop() {
+        assert_eq!([0, 1000, 1536, 1 << 20, 5_000_000].map(human_size), ["0 B", "1000 B", "1.5 KB", "1 MB", "4.8 MB"]);
+        let dir = std::env::temp_dir().join(format!("beeper-rs-unused-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(unused_path(&dir, "a.png"), dir.join("a.png"));
+        std::fs::write(dir.join("a.png"), b"").unwrap();
+        assert_eq!(unused_path(&dir, "a.png"), dir.join("a (1).png"));
+        assert_eq!(unused_path(&dir, ".env"), dir.join(".env"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
