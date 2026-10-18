@@ -228,6 +228,10 @@ pub enum UiMessage {
     OpenChatMenu(String),
     Cursor(Point),
     OpenMessageMenu(String),
+    /// Select the message, or unselect it when it is selected.
+    ClickMessage(String),
+    /// Do the "On double-clicking a message" action.
+    DoubleClickMessage(String),
     /// Select the message above (`false`) or below (`true`) the selected one, as with the arrow keys.
     StepMessage(bool),
     /// Open the emoji picker at the cursor to react to a message.
@@ -519,6 +523,8 @@ const ASK_LOGOUT: u8 = 0;
 const ASK_DISMISS_REMINDERS: u8 = 1;
 const ASK_DELETE_CHAT: u8 = 2;
 const ASK_DELETE_MESSAGE: u8 = 3;
+/// Desktop's default "Quick reaction emoji".
+const QUICK_REACTION: &str = "❤️";
 /// Wide enough for "Copy Entire Message with Timestamp" on one line.
 const MESSAGE_MENU_W: f32 = 270.0;
 const REMINDER_ORDERS: [&str; 4] = [
@@ -1800,6 +1806,11 @@ impl BeeperGuiApp {
     }
 
     /// The arrow keys select messages when no panel is open and the composer is empty.
+    fn quick_react(&self, mid: String) -> UiMessage {
+        let chat = self.selected_chat_id.clone().expect("an open chat");
+        UiMessage::ToggleReaction(chat, mid, QUICK_REACTION.into())
+    }
+
     fn can_select_messages(&self) -> bool {
         self.selected_chat_id.is_some()
             && self.creating_chat.is_none()
@@ -2104,6 +2115,23 @@ impl BeeperGuiApp {
             }
             UiMessage::Cursor(at) => self.cursor = at,
             UiMessage::OpenMessageMenu(mid) => self.message_menu = Some((mid, self.cursor)),
+            UiMessage::ClickMessage(mid) => {
+                self.selected_msg = (self.selected_msg.as_ref() != Some(&mid)).then_some(mid)
+            }
+            UiMessage::DoubleClickMessage(mid) => {
+                let action = self.store.read().unwrap().settings.pref("messageDoubleClick");
+                return match action {
+                    0 | 3 => Task::none(),
+                    1 => self.update(UiMessage::React(mid)),
+                    2 => {
+                        self.selected_msg = Some(mid.clone());
+                        self.update(UiMessage::StartReply(mid))
+                    }
+                    4 => self.update(UiMessage::OpenMessageMenu(mid)),
+                    5 => self.update(self.quick_react(mid)),
+                    n => unreachable!("messageDoubleClick option {n}"),
+                };
+            }
             UiMessage::StepMessage(down) => {
                 let st = self.store.read().unwrap();
                 let all = &st.chat_msg_indices[self.selected_chat_id.as_deref().expect("an open chat")];
@@ -2829,13 +2857,31 @@ impl BeeperGuiApp {
                             false => UiMessage::StartReply(m.id.clone()),
                         });
                     }
+                    Key::Named(Named::ArrowRight)
+                        if mods.is_empty() && self.selected_msg.is_some() && self.can_select_messages() =>
+                    {
+                        return self.update(UiMessage::React(self.selected_msg.clone().expect("a selected message")));
+                    }
                     _ if !(mods.command() || mods.control()) => None,
+                    Key::Character("R" | "r") if shift && self.selected_msg.is_some() => {
+                        return self.update(self.quick_react(self.selected_msg.clone().expect("a selected message")));
+                    }
+                    Key::Character("H" | "h") if shift && self.selected_msg.is_some() => {
+                        let m = self.selected_message().expect("a selected message");
+                        let Some(url) =
+                            m.text.as_deref().and_then(|t| t.split_whitespace().find(|w| w.starts_with("http")))
+                        else {
+                            return Task::none();
+                        };
+                        return self.update(UiMessage::OpenUrl(url.into()));
+                    }
                     Key::Character("r") if self.selected_msg.is_some() => {
                         return self
                             .update(UiMessage::StartReply(self.selected_msg.clone().expect("a selected message")));
                     }
                     Key::Character("c") if self.selected_msg.is_some() => {
-                        let text = copy_text(&self.selected_message().expect("a selected message"), false);
+                        let stamp = self.store.read().unwrap().settings.on("copyTimestamps");
+                        let text = copy_text(&self.selected_message().expect("a selected message"), stamp);
                         return self.update(UiMessage::CopyText(text));
                     }
                     Key::Character("d") if self.selected_message().is_some_and(|m| !m.attachments.is_empty()) => {
@@ -2969,7 +3015,12 @@ impl BeeperGuiApp {
                 if modifiers.command()
                     || modifiers.control()
                     || modifiers.alt()
-                    || matches!(key, Key::Named(Named::Escape | Named::ArrowUp | Named::ArrowDown | Named::Enter)) =>
+                    || matches!(
+                        key,
+                        Key::Named(
+                            Named::Escape | Named::ArrowUp | Named::ArrowDown | Named::ArrowRight | Named::Enter
+                        )
+                    ) =>
             {
                 Some(UiMessage::KeyPressed(key, modifiers))
             }
@@ -3342,6 +3393,7 @@ impl BeeperGuiApp {
         };
         let bookmark = if m.is_bookmarked == Some(true) { "Remove Bookmark" } else { "Bookmark" };
         let at = format!("{} at {}", if mine { "Sent" } else { "Received" }, locale_string(&m.timestamp));
+        let stamp = st.settings.on("copyTimestamps");
         let files = m.attachments.len();
         let image = m.attachments.first().is_some_and(|a| a.attachment_type == "img");
         let only_image = image && m.text.is_none();
@@ -3367,7 +3419,7 @@ impl BeeperGuiApp {
                 rule(),
                 item(
                     format!("Copy{entire}"),
-                    "Ctrl C",
+                    if stamp { "" } else { "Ctrl C" },
                     Some(match only_image {
                         true => UiMessage::CopyImage(mid.clone()),
                         false => UiMessage::CopyText(copy_text(m, false)),
@@ -3376,7 +3428,7 @@ impl BeeperGuiApp {
             ]),
             (!image).then(|| {
                 let copy = UiMessage::CopyText(copy_text(m, true));
-                vec![item(format!("Copy{entire} with Timestamp"), "", Some(copy))]
+                vec![item(format!("Copy{entire} with Timestamp"), if stamp { "Ctrl C" } else { "" }, Some(copy))]
             }),
             (image && !only_image)
                 .then(|| vec![item("Copy Image".into(), "", Some(UiMessage::CopyImage(mid.clone())))]),
@@ -4812,7 +4864,9 @@ impl BeeperGuiApp {
         let line = mouse_area(line)
             .on_enter(UiMessage::HoverEnter(m.id.clone()))
             .on_exit(UiMessage::HoverExit(m.id.clone()))
-            .on_right_press(UiMessage::OpenMessageMenu(m.id.clone()));
+            .on_right_press(UiMessage::OpenMessageMenu(m.id.clone()))
+            .on_press(UiMessage::ClickMessage(m.id.clone()))
+            .on_double_click(UiMessage::DoubleClickMessage(m.id.clone()));
         column![head, line].into()
     }
 
