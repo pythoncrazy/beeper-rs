@@ -97,6 +97,10 @@ See `LICENSE` and `NOTICE` for details.
 
 This software project was built using **Gemini 4 Argon**.
 
+## Third-Party API Key Notice
+
+The GIF picker uses the KLIPY API key of Beeper Desktop. The repository stores this key masked, not in plain text, but anyone can get it from the code. The key is the property of its owner, who can revoke it at any time. See section 5 of `NOTICE`.
+
 ## Legal Disclaimer and Non-Affiliation Notice
 
 `beeper-rs` is an independent open-source software project.
