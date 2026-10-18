@@ -288,7 +288,8 @@ pub fn brand_svg(bridge_id: &str) -> svg::Handle {
     BRAND_SVGS[bridge_id].clone()
 }
 
-pub fn fill_box(bg: Color, r: f32) -> impl Fn(&Theme) -> container::Style + Copy {
+pub fn fill_box(bg: Color, r: impl Into<border::Radius>) -> impl Fn(&Theme) -> container::Style + Copy {
+    let r = r.into();
     move |_| container::Style { background: Some(bg.into()), border: border::rounded(r), ..Default::default() }
 }
 

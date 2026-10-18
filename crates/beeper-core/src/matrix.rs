@@ -689,6 +689,14 @@ pub enum Outgoing {
     DeleteChat {
         for_everyone: bool,
     },
+    /// Send the content of `event` from the `from` chat again, with the current `text` and `html`.
+    Forward {
+        txn: String,
+        from: String,
+        event: String,
+        text: Option<String>,
+        html: Option<String>,
+    },
     Image {
         txn: String,
         bytes: Vec<u8>,
@@ -804,6 +812,26 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
         Outgoing::DeleteChat { for_everyone } => {
             let content = serde_json::json!({ "delete_for_everyone": for_everyone });
             room.send_raw("com.beeper.delete_chat", content).await.map_err(e)?;
+        }
+        Outgoing::Forward { txn, from, event: id, text, html } => {
+            let source = joined_room(&client, &from).await?.event(&event(id)?, None).await.map_err(e)?;
+            let mut ev: Value = source.raw().deserialize_as().map_err(|x| x.to_string())?;
+            let kind = ev["type"].as_str().expect("an event type").to_string();
+            assert!(matches!(kind.as_str(), "m.room.message" | "m.sticker"), "cannot forward a {kind} event");
+            let c = ev["content"].as_object_mut().expect("event content");
+            c.remove("m.relates_to");
+            c.remove("m.mentions");
+            if matches!(c["msgtype"].as_str(), Some("m.text" | "m.notice" | "m.emote")) {
+                c.insert("body".into(), text.expect("a text message has text").into());
+                c.remove("format");
+                c.remove("formatted_body");
+                if let Some(h) = html {
+                    c.insert("format".into(), "org.matrix.custom.html".into());
+                    c.insert("formatted_body".into(), h.into());
+                }
+            }
+            let sent_id = room.send_raw(&kind, ev["content"].take()).with_transaction_id(txn.as_str().into());
+            sent(txn, sent_id.await.map_err(e)?.response.event_id);
         }
         Outgoing::Image { txn, bytes: data, name, mime, size: (w, h), caption, reply_to } => {
             use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseImageInfo};

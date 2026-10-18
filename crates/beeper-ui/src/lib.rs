@@ -241,6 +241,13 @@ pub enum UiMessage {
     CopyText(String),
     CopyImage(String),
     ImageFetched(Result<Vec<u8>, String>),
+    /// Open the forward dialog for a message.
+    Forward(String),
+    ForwardQuery(String),
+    /// Add the first chat that matches the query.
+    ForwardSubmit,
+    ForwardPick(String),
+    ForwardSend,
     /// Save the attachments of a message to the downloads folder.
     Download(String),
     Downloaded(Result<String, String>),
@@ -989,6 +996,10 @@ static DROP_ARROW: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M12.625 14.375 17 10l-4.375-4.375-1.062 1.063 2.562 2.562H4.5V7H3v3.75h11.125l-2.562 2.563z"/></svg>"##[..])
 });
 
+static MAT_FORWARD: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="m640-280-57-56 184-184-184-184 57-56 240 240-240 240ZM80-200v-160q0-83 58.5-141.5T280-560h247L383-704l57-56 240 240-240 240-57-56 144-144H280q-50 0-85 35t-35 85v160H80Z"/></svg>"##[..])
+});
+
 static MAT_LINK: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="M440-280H280q-83 0-141.5-58.5T80-480q0-83 58.5-141.5T280-680h160v80H280q-50 0-85 35t-35 85q0 50 35 85t85 35h160v80ZM320-440v-80h320v80H320Zm200 160v-80h160q50 0 85-35t35-85q0-50-35-85t-85-35H520v-80h160q83 0 141.5 58.5T880-480q0 83-58.5 141.5T680-280H520Z"/></svg>"##[..])
 });
@@ -1225,6 +1236,30 @@ impl iced::advanced::widget::Operation<f32> for Locate {
     }
 }
 
+/// The forward dialog: the message, the picked chats, and the search text.
+struct Forward {
+    mid: String,
+    picked: Vec<String>,
+    query: String,
+}
+
+/// The chats the forward dialog offers: recent chats, or all chats that match the query.
+fn forward_chats<'s>(st: &'s BeeperStore, f: &Forward) -> Vec<&'s Chat> {
+    let q = f.query.trim().to_lowercase();
+    let mut v: Vec<&Chat> = match q.is_empty() && !st.recent_chat_ids.is_empty() {
+        true => st.recent_chat_ids.iter().filter_map(|id| st.chat_idx_by_id.get(id).map(|&i| &st.chats[i])).collect(),
+        false => {
+            let hit =
+                |c: &&Chat| c.title.to_lowercase().contains(&q) || chat_search_subtitle(c).to_lowercase().contains(&q);
+            let mut v: Vec<&Chat> = st.chats.iter().filter(hit).collect();
+            v.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+            v
+        }
+    };
+    v.retain(|c| c.flags & CHAT_HIDDEN == 0 && !f.picked.contains(&c.id));
+    v
+}
+
 /// CSS `filter: brightness(k)`.
 fn brightness(c: Color, k: f32) -> Color {
     Color { r: c.r * k, g: c.g * k, b: c.b * k, ..c }
@@ -1357,6 +1392,7 @@ pub struct BeeperGuiApp {
     cursor: Point,
     message_menu: Option<(String, Point)>,
     selected_msg: Option<String>,
+    forward: Option<Forward>,
     /// On X11 the copied image stays available only while its clipboard lives.
     image_clipboard: Option<arboard::Clipboard>,
     pub filters: u8,
@@ -1459,6 +1495,7 @@ impl BeeperGuiApp {
             message_menu: None,
             selected_msg: None,
             image_clipboard: None,
+            forward: None,
             filters: 0,
             show_attach_menu: false,
             show_gif_picker: false,
@@ -1815,6 +1852,7 @@ impl BeeperGuiApp {
         self.selected_chat_id.is_some()
             && self.creating_chat.is_none()
             && !self.show_command_palette
+            && self.forward.is_none()
             && self.emoji.is_none()
             && (self.selected_msg.is_some() || self.composer_text.is_empty())
     }
@@ -2121,8 +2159,9 @@ impl BeeperGuiApp {
             UiMessage::DoubleClickMessage(mid) => {
                 let action = self.store.read().unwrap().settings.pref("messageDoubleClick");
                 return match action {
-                    0 | 3 => Task::none(),
+                    0 => Task::none(),
                     1 => self.update(UiMessage::React(mid)),
+                    3 => self.update(UiMessage::Forward(mid)),
                     2 => {
                         self.selected_msg = Some(mid.clone());
                         self.update(UiMessage::StartReply(mid))
@@ -2182,6 +2221,41 @@ impl BeeperGuiApp {
                 if let Err(e) = r.and_then(|b| copy(b, &mut self.image_clipboard)) {
                     eprintln!("copy image failed: {e}");
                     self.status_banner = "Couldn't copy the image".into();
+                }
+            }
+            UiMessage::Forward(mid) => {
+                self.forward = Some(Forward { mid, picked: Vec::new(), query: String::new() });
+                return operation::focus("forward-input");
+            }
+            UiMessage::ForwardQuery(q) => self.forward.as_mut().expect("the forward dialog is open").query = q,
+            UiMessage::ForwardSubmit => {
+                let st = self.store.read().unwrap();
+                let first = forward_chats(&st, self.forward.as_ref().expect("the forward dialog is open"));
+                let first = first.first().map(|c| c.id.clone());
+                drop(st);
+                return first.map_or_else(Task::none, |c| self.update(UiMessage::ForwardPick(c)));
+            }
+            UiMessage::ForwardPick(cid) => {
+                let f = self.forward.as_mut().expect("the forward dialog is open");
+                f.picked.push(cid);
+                f.query.clear();
+                return operation::focus("forward-input");
+            }
+            UiMessage::ForwardSend => {
+                let Forward { mid, picked, .. } = self.forward.take().expect("the forward dialog is open");
+                assert!(!picked.is_empty(), "forward needs a chat");
+                let mut st = self.store.write().unwrap();
+                let m = st.messages[st.msg_idx_by_id[&mid]].clone();
+                for cid in &picked {
+                    let (_, txn, _) = st
+                        .send_message(cid, m.text.clone(), None, m.attachments.first().cloned())
+                        .expect("forward message");
+                    let (from, event, text, html) = (m.chat_id.clone(), m.id.clone(), m.text.clone(), m.html.clone());
+                    st.queue(cid, Outgoing::Forward { txn, from, event, text, html });
+                }
+                drop(st);
+                if let [one] = picked.as_slice() {
+                    self.select_chat(one);
                 }
             }
             UiMessage::Download(mid) => {
@@ -2677,6 +2751,7 @@ impl BeeperGuiApp {
             UiMessage::CloseModals if self.search_select.is_some() => self.search_select = None,
             UiMessage::CloseModals => {
                 if self.show_command_palette
+                    || self.forward.is_some()
                     || self.show_filter_menu
                     || self.chat_menu.is_some()
                     || self.message_menu.is_some()
@@ -2688,6 +2763,7 @@ impl BeeperGuiApp {
                     || self.quick_look_target.is_some()
                 {
                     self.show_command_palette = false;
+                    self.forward = None;
                     self.show_filter_menu = false;
                     self.chat_menu = None;
                     self.message_menu = None;
@@ -2850,6 +2926,18 @@ impl BeeperGuiApp {
                     Key::Named(Named::ArrowUp | Named::ArrowDown) if mods.is_empty() && self.can_select_messages() => {
                         return self.update(UiMessage::StepMessage(key == Key::Named(Named::ArrowDown)));
                     }
+                    Key::Named(Named::Enter) if self.forward.is_some() => {
+                        let picked = !self.forward.as_ref().expect("forward").picked.is_empty();
+                        return match mods.control() {
+                            false => self.update(UiMessage::ForwardSubmit),
+                            true if picked => self.update(UiMessage::ForwardSend),
+                            true => Task::none(),
+                        };
+                    }
+                    Key::Named(Named::Backspace) if self.forward.as_ref().is_some_and(|f| f.query.is_empty()) => {
+                        self.forward.as_mut().expect("forward").picked.pop();
+                        return Task::none();
+                    }
                     Key::Named(Named::Enter) if mods.is_empty() => {
                         let Some(m) = self.selected_message() else { return Task::none() };
                         return self.update(match m.is_sender == Some(true) {
@@ -2863,6 +2951,11 @@ impl BeeperGuiApp {
                         return self.update(UiMessage::React(self.selected_msg.clone().expect("a selected message")));
                     }
                     _ if !(mods.command() || mods.control()) => None,
+                    Key::Character("F" | "f")
+                        if shift && self.selected_message().is_some_and(|m| m.is_deleted != Some(true)) =>
+                    {
+                        return self.update(UiMessage::Forward(self.selected_msg.clone().expect("a selected message")));
+                    }
                     Key::Character("R" | "r") if shift && self.selected_msg.is_some() => {
                         return self.update(self.quick_react(self.selected_msg.clone().expect("a selected message")));
                     }
@@ -3018,7 +3111,12 @@ impl BeeperGuiApp {
                     || matches!(
                         key,
                         Key::Named(
-                            Named::Escape | Named::ArrowUp | Named::ArrowDown | Named::ArrowRight | Named::Enter
+                            Named::Escape
+                                | Named::ArrowUp
+                                | Named::ArrowDown
+                                | Named::ArrowRight
+                                | Named::Enter
+                                | Named::Backspace
                         )
                     ) =>
             {
@@ -3109,7 +3207,7 @@ impl BeeperGuiApp {
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
             (None, true) => Some(self.view_command_palette()),
-            _ => None,
+            (None, false) => self.forward.as_ref().map(|f| self.view_forward(f)),
         };
         let scrim = modal.map(|m| {
             mouse_area(
@@ -3432,6 +3530,8 @@ impl BeeperGuiApp {
             }),
             (image && !only_image)
                 .then(|| vec![item("Copy Image".into(), "", Some(UiMessage::CopyImage(mid.clone())))]),
+            (m.is_deleted != Some(true))
+                .then(|| vec![item("Forward…".into(), "Ctrl Shift F", Some(UiMessage::Forward(mid.clone())))]),
             (files > 0).then(|| vec![item(download, "Ctrl D", Some(UiMessage::Download(mid.clone())))]),
             Some(vec![
                 item(at, "", None),
@@ -5409,6 +5509,67 @@ impl BeeperGuiApp {
         frame(column![inputs].push(hint).push(chips).push(empty).push((!none).then(|| {
             scrollable(hits.push(media_grid).push(messages)).direction(bar()).height(Fill).style(scroll_style(p.scroll))
         })))
+    }
+
+    fn view_forward<'a>(&'a self, f: &'a Forward) -> El<'a> {
+        let p = &self.pal;
+        let st = self.store.read().unwrap();
+        let shade = Color { a: 0.1, ..p.strong };
+        let strip = |content: El<'a>, r| container(content).width(Fill).padding([8, 13]).style(fill_box(p.chip, r));
+        let head = row![tinted(&MAT_FORWARD, 16.0, p.strong), txt("Forward message", 14.0).color(p.strong)];
+        let head = strip(head.spacing(12).align_y(Center).into(), border::Radius::default().top(18)).center_y(44);
+        let pills = f.picked.iter().map(|cid| -> El<'a> {
+            let c = &st.chats[st.chat_idx_by_id[cid]];
+            let label = semi(c.title.clone(), 14.0).line_height(Pixels(16.0)).color(p.strong);
+            let pill = row![self.chat_avatar(c, 16.0), label].spacing(4).align_y(Center);
+            container(pill).padding(Padding::new(2.0).right(8.0)).style(fill_box(shade, 20.0)).into()
+        });
+        let input = text_input("Search name, @, or number", &f.query)
+            .id("forward-input")
+            .on_input(UiMessage::ForwardQuery)
+            .size(14)
+            .padding(0)
+            .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
+        let inputs = Row::with_children(pills).push(input).spacing(4).align_y(Center).height(24);
+        let inputs = container(inputs).padding(Padding::new(18.0).left(13.0).right(20.0));
+        let chats = forward_chats(&st, f);
+        let cat = (f.query.trim().is_empty() && !chats.is_empty()).then(|| {
+            container(txt("Recent chats", 12.0).color(p.sub))
+                .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0))
+        });
+        let rows = chats.iter().enumerate().fold(Column::new().push(cat), |col, (i, c)| {
+            let sub = chat_search_subtitle(c);
+            let title = row![
+                ell(&c.title, 260.0, 13.0, Weight::Semibold).color(p.strong),
+                ell(&sub, 220.0, 13.0, Weight::Normal).color(p.sub),
+            ]
+            .spacing(4)
+            .align_y(Center);
+            let line = row![self.chat_avatar(c, 32.0), title, Space::new().width(Fill)]
+                .push(svg(brand_svg(brand_key(&c.account_id))).width(16).height(16))
+                .spacing(8)
+                .align_y(Center);
+            let bg = if i == 0 { p.chip } else { CLEAR };
+            let pick = button(line).height(36).padding([0, 6]).width(Fill);
+            let pick = pick.style(btn_style([bg, p.chip, p.selected], [p.text; 3], 8.0));
+            col.push(container(pick.on_press(UiMessage::ForwardPick(c.id.clone()))).padding([0, 6]))
+        });
+        let ready = !f.picked.is_empty();
+        let label = row![semi("Forward", 12.0), txt("CTRL ENTER", 11.0).color(Color { a: 0.8, ..Color::WHITE })];
+        let send = button(label.spacing(4).align_y(Center))
+            .padding([6, 8])
+            .style(btn_style([if ready { p.accent } else { shade }; 3], [Color::WHITE; 3], 100.0))
+            .on_press_maybe(ready.then_some(UiMessage::ForwardSend));
+        let note = "Forwarding messages through Beeper will not include any attribution on the native apps.";
+        let foot = row![txt(note, 14.0).color(p.sub).width(Fill), send].spacing(12).align_y(Center);
+        let body = column![
+            head,
+            inputs,
+            scrollable(rows).direction(bar()).height(300).style(scroll_style(p.scroll)),
+            container(Space::new()).width(Fill).height(2).style(fill_box(shade, 0.0)),
+            strip(foot.into(), border::Radius::default().bottom(18)),
+        ];
+        container(body).width(602).style(glow_box(p.card, Color { a: 0.18, ..p.strong }, 18.0, 84.0)).into()
     }
 
     fn view_new_chat(&self) -> El<'_> {
