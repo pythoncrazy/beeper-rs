@@ -351,7 +351,7 @@ pub const SYNCED: &[(&str, Ad)] = &[
     ("incognito", b("dont_mark_as_read_until_responded")),
     ("typingIndicators", b("show_typing_indicator")),
     ("remindLaterDefault", v("dismiss_reminder_on_incoming_default", &["no_reply", "always"])),
-    ("archiveOnReminder", b("archive_after_reminder")),
+    ("archiveOnReminder", Ad::Event("com.beeper.reminder_settings", "archive_on_reminder_set")),
     ("markReadOnArchive", Ad::Event("com.beeper.mark_read_when_archive", "enabled")),
     ("afterArchive", v("after_archive", AFTER_VALUES)),
     ("afterMarkRead", v("after_toggle_read", AFTER_VALUES)),

@@ -2174,10 +2174,10 @@ impl BeeperGuiApp {
             st.patch_chat(prev, true, None, None).expect("clear draft");
             st.patch_chat(prev, false, draft, None).expect("save draft");
         }
-        if !st.settings.on("incognito") {
+        let idx = st.resolve_chat_idx(prev).expect("selected chat exists");
+        if !st.settings.on("incognito") && st.chats[idx].is_marked_unread != Some(true) {
             st.mark_chat_read(prev, true);
         }
-        let idx = st.resolve_chat_idx(prev).expect("selected chat exists");
         if self.expired(&st.chats[idx]) {
             st.set_reminder(idx, None);
         }
@@ -2393,10 +2393,7 @@ impl BeeperGuiApp {
                 {
                     let mut st = self.store.write().unwrap();
                     let idx = st.resolve_chat_idx(&cid).expect("chat exists");
-                    st.set_reminder(
-                        idx,
-                        at.map(|remind_at_ms| ChatReminder { remind_at_ms, dismiss_on_incoming_message: true }),
-                    );
+                    self.remind(&mut st, idx, at);
                 }
                 self.chat_menu = None;
                 self.refresh_theme_and_tray();
@@ -2433,28 +2430,45 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
             }
             UiMessage::ToggleFlag(cid, flag) => {
-                {
-                    let mut st = self.store.write().unwrap();
-                    let idx = st.resolve_chat_idx(&cid).expect("chat exists");
-                    if !st.set_chat_flag(idx, flag, None) {
-                        self.status_banner = "Pinned chats can't be archived".into();
+                let mut st = self.store.write().unwrap();
+                let at = self.list_ids(&st).iter().position(|c| *c == cid);
+                let idx = st.resolve_chat_idx(&cid).expect("chat exists");
+                let moved = match flag {
+                    ChatFlag::Archived => {
+                        let on = !has_flag(&st.chats[idx], flag);
+                        self.set_archived(&mut st, idx, on)
                     }
+                    _ => st.set_chat_flag(idx, flag, None),
+                };
+                let list = self.list_ids(&st);
+                drop(st);
+                if !moved {
+                    self.status_banner = "Pinned chats can't be archived".into();
                 }
                 self.chat_menu = None;
                 self.refresh_theme_and_tray();
+                let selected = self.selected_chat_id.as_deref() == Some(cid.as_str());
+                if let Some(at) = at.filter(|_| flag == ChatFlag::Archived && moved && selected) {
+                    return self.after_action("afterArchive", &list, at, true);
+                }
             }
             UiMessage::ToggleRead(cid) => {
-                {
-                    let mut st = self.store.write().unwrap();
-                    let idx = st.resolve_chat_idx(&cid).expect("chat exists");
-                    if has_flag(&st.chats[idx], ChatFlag::MarkedUnread) {
-                        self.mark_read(&mut st, idx);
-                    } else {
-                        st.set_chat_flag(idx, ChatFlag::MarkedUnread, Some(true));
-                    }
+                let mut st = self.store.write().unwrap();
+                let list = self.list_ids(&st);
+                let idx = st.resolve_chat_idx(&cid).expect("chat exists");
+                let c = &st.chats[idx];
+                if c.unread_count > 0 || c.is_marked_unread == Some(true) {
+                    self.mark_read(&mut st, idx);
+                } else {
+                    st.set_chat_flag(idx, ChatFlag::MarkedUnread, Some(true));
                 }
+                drop(st);
                 self.chat_menu = None;
                 self.refresh_theme_and_tray();
+                let at = list.iter().position(|c| *c == cid);
+                if let Some(at) = at.filter(|_| self.selected_chat_id.as_deref() == Some(cid.as_str())) {
+                    return self.after_action("afterMarkRead", &list, at, false);
+                }
             }
             UiMessage::CopyChatLink(cid) => {
                 self.chat_menu = None;
@@ -2899,9 +2913,15 @@ impl BeeperGuiApp {
                         if has_flag(&st.chats[idx], flag) == on {
                             continue;
                         }
-                        if flag == ChatFlag::MarkedUnread && !on {
-                            self.mark_read(&mut st, idx);
-                        } else if !st.set_chat_flag(idx, flag, Some(on)) {
+                        let moved = match flag {
+                            ChatFlag::MarkedUnread if !on => {
+                                self.mark_read(&mut st, idx);
+                                true
+                            }
+                            ChatFlag::Archived => self.set_archived(&mut st, idx, on),
+                            _ => st.set_chat_flag(idx, flag, Some(on)),
+                        };
+                        if !moved {
                             self.status_banner = "Pinned chats can't be archived".into();
                         }
                     }
@@ -2915,9 +2935,7 @@ impl BeeperGuiApp {
                     for cid in std::mem::take(&mut self.selection) {
                         let idx = st.resolve_chat_idx(&cid).expect("selected chat exists");
                         if at.is_some() || st.chats[idx].reminder.is_some() {
-                            let reminder =
-                                at.map(|remind_at_ms| ChatReminder { remind_at_ms, dismiss_on_incoming_message: true });
-                            st.set_reminder(idx, reminder);
+                            self.remind(&mut st, idx, at);
                         }
                     }
                 }
@@ -4336,6 +4354,56 @@ impl BeeperGuiApp {
         let cid = st.chats[idx].id.clone();
         if let Some(ev) = st.mark_chat_read(&cid, true) {
             st.queue(&cid, Outgoing::Read(ev));
+        }
+    }
+
+    /// Desktop's `setIsArchived`: archiving marks the chat read when "Mark unread chats as read on archive" is on.
+    /// Returns false for a pinned chat, which stays in the inbox.
+    fn set_archived(&self, st: &mut BeeperStore, idx: usize, on: bool) -> bool {
+        if on && st.settings.on("markReadOnArchive") {
+            self.mark_read(st, idx);
+        }
+        st.set_chat_flag(idx, ChatFlag::Archived, Some(on))
+    }
+
+    /// Desktop's `setThreadReminder`: the reminder ends on a reply unless "Default for remind later" is "Always",
+    /// and the chat is archived when "Archive after setting reminder on chat" is on.
+    fn remind(&self, st: &mut BeeperStore, idx: usize, at: Option<i64>) {
+        let dismiss_on_incoming_message = st.settings.pref("remindLaterDefault") == 0;
+        st.set_reminder(idx, at.map(|remind_at_ms| ChatReminder { remind_at_ms, dismiss_on_incoming_message }));
+        let c = &st.chats[idx];
+        if at.is_some() && st.settings.on("archiveOnReminder") && c.flags & (CHAT_PINNED | CHAT_REQUEST) == 0 {
+            self.set_archived(st, idx, true);
+        }
+    }
+
+    /// The chat IDs in list order: the pinned tiles, then the rows.
+    fn list_ids(&self, st: &BeeperStore) -> Vec<String> {
+        let (pins, rows) = self.pins_and_rows(st);
+        pins.into_iter().chain(rows).map(|c| c.id.clone()).collect()
+    }
+
+    /// Desktop's `afterToggleArchive` and `afterToggleRead`: select a chat next to list position `at` by the `key`
+    /// setting. An archived chat left the list, so the chat at `at` is the next one.
+    fn after_action(&mut self, key: &str, list: &[String], at: usize, archived: bool) -> Task<UiMessage> {
+        let get = |i: Option<usize>| i.and_then(|i| list.get(i));
+        let (next, prev) = match archived {
+            true => (get(Some(at)).or(get(at.checked_sub(1))), get(at.checked_sub(1)).or(get(Some(at)))),
+            false => (get(Some(at + 1)), get(at.checked_sub(1))),
+        };
+        let pick = match self.store.read().unwrap().settings.pref(key) {
+            0 => next,
+            1 => prev,
+            2 => None,
+            _ => return Task::none(),
+        };
+        match pick {
+            Some(id) => self.update(UiMessage::SelectChat(id.clone())),
+            None => {
+                self.leave_chat(&mut self.store.write().unwrap(), None);
+                self.selected_chat_id = None;
+                Task::none()
+            }
         }
     }
 
