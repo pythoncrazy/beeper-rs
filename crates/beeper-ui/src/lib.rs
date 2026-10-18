@@ -239,7 +239,9 @@ pub enum UiMessage {
     /// An action picked in the message menu, which closes it.
     MessageMenu(Box<UiMessage>),
     CopyText(String),
-    CopyImage(String),
+    /// Copy a link and say so, like Desktop's Media window.
+    CopyLink(String),
+    CopyImage(String, usize),
     ImageFetched(Result<Vec<u8>, String>),
     /// Open the forward dialog for a message.
     Forward(String),
@@ -267,6 +269,11 @@ pub enum UiMessage {
     /// Search the Media window by caption, or close the search with `None`.
     MediaSearch(Option<String>),
     MediaMenu(bool),
+    MediaCursor(Point),
+    /// Open the context menu of a Media window item, or close it with `None`.
+    MediaItemMenu(Option<(String, usize)>),
+    /// Close the Media window item menu and run its action.
+    MediaItemAct(Box<UiMessage>),
     /// Open a message in the main window.
     GoToMessage(String, String),
     WindowKey(window::Id, Key, keyboard::Modifiers),
@@ -1335,6 +1342,9 @@ struct MediaWindow {
     oldest: bool,
     search: Option<String>,
     menu: bool,
+    cursor: Point,
+    /// The item whose context menu is open, as (message, attachment or link index), and where.
+    item_menu: Option<(String, usize, Point)>,
 }
 
 /// Desktop's Media window page size.
@@ -2433,9 +2443,9 @@ impl BeeperGuiApp {
                 return self.update(*msg);
             }
             UiMessage::CopyText(s) => return iced::clipboard::write(s),
-            UiMessage::CopyImage(mid) => {
+            UiMessage::CopyImage(mid, ai) => {
                 let st = self.store.read().unwrap();
-                let a = &st.messages[st.msg_idx_by_id[&mid]].attachments[0];
+                let a = &st.messages[st.msg_idx_by_id[&mid]].attachments[ai];
                 let url = a.src_url.clone().expect("an image has a source");
                 return Task::perform(beeper_core::matrix::media(st.matrix.clone(), url), UiMessage::ImageFetched);
             }
@@ -2486,6 +2496,8 @@ impl BeeperGuiApp {
                     oldest: false,
                     search: None,
                     menu: false,
+                    cursor: Point::ORIGIN,
+                    item_menu: None,
                 });
                 return Task::batch([open.map(UiMessage::WindowOpened), self.load_media()]);
             }
@@ -2511,6 +2523,19 @@ impl BeeperGuiApp {
                 return if open { Task::batch([reload, operation::focus("media-search")]) } else { reload };
             }
             UiMessage::MediaMenu(open) => self.media_mut().menu = open,
+            UiMessage::MediaCursor(at) => self.media_mut().cursor = at,
+            UiMessage::MediaItemMenu(item) => {
+                let w = self.media_mut();
+                w.item_menu = item.map(|(mid, k)| (mid, k, w.cursor));
+            }
+            UiMessage::MediaItemAct(msg) => {
+                self.media_mut().item_menu = None;
+                return self.update(*msg);
+            }
+            UiMessage::CopyLink(url) => {
+                self.status_banner = "Copied to clipboard!".into();
+                return iced::clipboard::write(url);
+            }
             UiMessage::MediaMore => {
                 self.media_mut().shown += MEDIA_PAGE;
                 return self.load_media();
@@ -2528,7 +2553,9 @@ impl BeeperGuiApp {
                 }
                 if key == Key::Named(Named::Escape) {
                     let w = self.media_mut();
-                    if w.menu {
+                    if w.item_menu.is_some() {
+                        w.item_menu = None;
+                    } else if w.menu {
                         w.menu = false;
                     } else if let Some(q) = w.search.as_ref().map(|q| (!q.is_empty()).then(String::new)) {
                         return self.update(UiMessage::MediaSearch(q));
@@ -3645,13 +3672,7 @@ impl BeeperGuiApp {
                 .on_right_press(UiMessage::CloseModals)
             },
         );
-        let toast = (!self.status_banner.is_empty()).then(|| {
-            let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, p.sub, UiMessage::DismissBanner);
-            let text = txt(self.status_banner.clone(), 13.0).color(p.strong);
-            let card = row![text.wrapping(iced::widget::text::Wrapping::WordOrGlyph), close].spacing(8).align_y(Center);
-            let card = container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0));
-            container(card).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(76.0))
-        });
+        let toast = self.view_toast(76.0);
         let confirm = self.confirm.filter(|&d| d != ASK_LOGOUT).map(|d| self.view_confirm(d));
         let carousel = self.carousel.as_ref().filter(|c| !c.in_media).map(|c| self.view_carousel(c));
         stack![base].push(toast).push(menu).push(scrim).push(select).push(confirm).push(carousel).into()
@@ -3896,7 +3917,7 @@ impl BeeperGuiApp {
                     format!("Copy{entire}"),
                     if stamp { "" } else { "Ctrl C" },
                     Some(match only_image {
-                        true => UiMessage::CopyImage(mid.clone()),
+                        true => UiMessage::CopyImage(mid.clone(), 0),
                         false => UiMessage::CopyText(copy_text(m, false)),
                     }),
                 ),
@@ -3906,7 +3927,7 @@ impl BeeperGuiApp {
                 vec![item(format!("Copy{entire} with Timestamp"), if stamp { "Ctrl C" } else { "" }, Some(copy))]
             }),
             (image && !only_image)
-                .then(|| vec![item("Copy Image".into(), "", Some(UiMessage::CopyImage(mid.clone())))]),
+                .then(|| vec![item("Copy Image".into(), "", Some(UiMessage::CopyImage(mid.clone(), 0)))]),
             (m.is_deleted != Some(true))
                 .then(|| vec![item("Forward…".into(), "Ctrl Shift F", Some(UiMessage::Forward(mid.clone())))]),
             (files > 0).then(|| vec![item(download, "Ctrl D", Some(UiMessage::Download(mid.clone(), None)))]),
@@ -6031,6 +6052,18 @@ impl BeeperGuiApp {
             .into()
     }
 
+    /// The status toast at the bottom left of a window, `left` from its edge.
+    fn view_toast(&self, left: f32) -> Option<El<'_>> {
+        let p = &self.pal;
+        (!self.status_banner.is_empty()).then(|| {
+            let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, p.sub, UiMessage::DismissBanner);
+            let text = txt(self.status_banner.clone(), 13.0).color(p.strong);
+            let card = row![text.wrapping(iced::widget::text::Wrapping::WordOrGlyph), close].spacing(8).align_y(Center);
+            let card = container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0));
+            container(card).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(left)).into()
+        })
+    }
+
     fn view_media<'a>(&'a self, w: &MediaWindow) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read().unwrap();
@@ -6141,7 +6174,10 @@ impl BeeperGuiApp {
                         .align_bottom(Fill);
                         let face = stack![self.thumb(a, tile, 8.0)].push(badge).push(name).width(tile).height(tile);
                         let open = UiMessage::OpenCarousel(m.id.clone(), k, true);
-                        button(face).padding(0).style(btn_style([CLEAR; 3], [p.strong; 3], 8.0)).on_press(open).into()
+                        let b = button(face).padding(0).style(btn_style([CLEAR; 3], [p.strong; 3], 8.0));
+                        mouse_area(b.on_press(open))
+                            .on_right_press(UiMessage::MediaItemMenu(Some((m.id.clone(), k))))
+                            .into()
                     });
                     col.push(
                         container(Row::with_children(tiles).spacing(4))
@@ -6180,13 +6216,9 @@ impl BeeperGuiApp {
                     let meta = column![sub(Self::sender_name(&st, m).to_string()), sub(relative_date(&m.timestamp))]
                         .align_x(Right);
                     let line = row![thumb, text, meta].spacing(8).align_y(Center);
-                    col.push(
-                        button(line)
-                            .padding([6, 10])
-                            .width(Fill)
-                            .style(btn_style([CLEAR, p.chip, p.chip], [p.strong; 3], 0.0))
-                            .on_press(press),
-                    )
+                    let b = button(line).padding([6, 10]).width(Fill);
+                    let b = b.style(btn_style([CLEAR, p.chip, p.chip], [p.strong; 3], 0.0)).on_press(press);
+                    col.push(mouse_area(b).on_right_press(UiMessage::MediaItemMenu(Some((m.id.clone(), k)))))
                 }),
             }
         });
@@ -6206,6 +6238,29 @@ impl BeeperGuiApp {
         let pane = column![header, rule()].push(search_row).push(list);
         let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.card, 12.0));
         let base = container(column![title, pane]).padding(8).width(Fill).height(Fill).style(fill_box(p.window, 0.0));
+        let base = mouse_area(base).on_move(UiMessage::MediaCursor);
+        let item_menu = w.item_menu.as_ref().map(|(mid, k, at)| {
+            let m = &st.messages[st.msg_idx_by_id[mid]];
+            let act =
+                |label: &str, msg| menu_item(p, None, label.into(), "", Some(UiMessage::MediaItemAct(Box::new(msg))));
+            let go = act("Go to Message", UiMessage::GoToMessage(m.chat_id.clone(), mid.clone()));
+            let actions = match w.tab {
+                1 => vec![act("Copy Link", UiMessage::CopyLink(m.links[*k].url.clone()))],
+                _ => std::iter::once(act("Download", UiMessage::Download(mid.clone(), Some(*k))))
+                    .chain(
+                        (m.attachments[*k].attachment_type == "img")
+                            .then(|| act("Copy Image", UiMessage::CopyImage(mid.clone(), *k))),
+                    )
+                    .collect(),
+            };
+            let h = 8.0 + MENU_ITEM * (1 + actions.len()) as f32 + 11.0;
+            let col = Column::with_children([go, menu_rule(p)].into_iter().chain(actions));
+            let menu = container(col.padding([4, 0])).width(180).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            let at = Padding::ZERO.left(at.x.min(w.size.width - 180.0 - 8.0)).top(at.y.min(w.size.height - h - 8.0));
+            mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
+                .on_press(UiMessage::MediaItemMenu(None))
+                .on_right_press(UiMessage::MediaItemMenu(None))
+        });
         let menu = w.menu.then(|| {
             let heading = |label| container(med(label, 11.0).color(p.sub)).padding([6, 13]);
             let radio = |label: &str, on: bool, msg| {
@@ -6229,7 +6284,7 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::MediaMenu(false))
         });
         let carousel = self.carousel.as_ref().filter(|c| c.in_media).map(|c| self.view_carousel(c));
-        stack![base].push(menu).push(carousel).into()
+        stack![base].push(self.view_toast(8.0)).push(menu).push(item_menu).push(carousel).into()
     }
 
     fn view_forward<'a>(&'a self, f: &'a Forward) -> El<'a> {
