@@ -16,9 +16,9 @@ use beeper_core::{
 };
 use beeper_ui::{
     login::{Login, LoginMsg, Outcome, Screen},
-    search_settings_catalog,
+    search_settings,
     style::{fw, icon, ALL_FONTS},
-    write_rgba_png, BeeperGuiApp, InboxTab, SearchFilters, SearchPick, SettingsTab, UiMessage,
+    write_rgba_png, BeeperGuiApp, InboxTab, SearchFilters, SearchPick, SettingsHit, SettingsTab, UiMessage,
 };
 use iced::font::Weight;
 use iced::{Size, Theme};
@@ -770,12 +770,16 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let unified = client.unified_search("rust").await;
     assert!(!unified["results"]["in_groups"].as_array().unwrap().is_empty());
 
-    let settings_hits = search_settings_catalog("notifications");
+    let settings_hits = search_settings("notifications");
+    assert_eq!(settings_hits[0], SettingsHit::Section(SettingsTab::Notifications, true));
+    assert!(settings_hits.iter().any(|h| matches!(h, SettingsHit::Pref(_, r) if r.key == "groupNotifications")));
+    assert_eq!(settings_hits.last(), Some(&SettingsHit::Section(SettingsTab::About, false)));
+    let emoji = search_settings("emoji autocomplete");
     assert!(
-        settings_hits.len() > 5
-            && settings_hits.iter().all(|(page, _)| *page == "Notifications" || page.contains("otif"))
+        matches!(emoji[..2], [SettingsHit::Section(SettingsTab::General, true), SettingsHit::Pref(_, r)] if r.key == "emojiAutocomplete")
     );
-    assert_eq!(search_settings_catalog("emoji autocomplete")[0].1.key, "emojiAutocomplete");
+    assert_eq!(search_settings("whats")[1], SettingsHit::Network("WhatsApp"));
+    assert!(search_settings(" ").is_empty());
 
     let del_resp = client.delete_message("!im_sarah:beeper.com", &sent_msg_id).await;
     assert_eq!(del_resp["success"], true);
@@ -1166,8 +1170,11 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let _ = gui.update(UiMessage::SystemTheme(mode));
         assert_eq!(gui.dark, dark);
     }
-    let _ = gui.update(UiMessage::SettingsQueryChanged("theme".to_string()));
-    assert!(simulator(gui.view_settings()).find("Results").is_ok());
+    let _ = gui.update(UiMessage::SettingsQueryChanged("tray".to_string()));
+    let _ = simulator(gui.view_settings());
+    let _ = gui.update(UiMessage::PickSetting(search_settings("tray")[1]));
+    assert_eq!(gui.active_settings_tab, SettingsTab::Appearance);
+    assert!(simulator(gui.view_settings()).find("Show tray icon").is_ok());
     let _ = gui.update(UiMessage::CloseModals);
 
     let final_wa_msgs = client.list_messages("!wa_eric:beeper.com").await;
