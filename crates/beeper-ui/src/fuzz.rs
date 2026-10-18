@@ -1,4 +1,5 @@
 //! Random clicks, keys and messages on every window of a demo account, with every value of every preference.
+//! `FUZZ_SEED` is the first of the four seeds, and `FUZZ_STEPS` is the number of steps of each seed.
 
 use super::*;
 use beeper_core::config::CentralConfig;
@@ -161,7 +162,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
     let branch = rng.below(60);
     let what =
         format!("message #{branch} chat {chat} message {msg} text {text:?} pref {} key {key:?} {mods:?}", pref.key);
-    let needs_msg = (7..=14).contains(&branch) || branch == 53;
+    let needs_msg = (7..=14).contains(&branch) || [16, 53].contains(&branch);
     if needs_msg && !open {
         return (what, UiMessage::Noop);
     }
@@ -211,9 +212,9 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         44 => UiMessage::OpenChatWindow(chat),
         45 => UiMessage::CloseRequested(*rng.pick(&windows(app))),
         46 | 47 | 48 => UiMessage::KeyPressed(key, mods),
-        49 => UiMessage::Ask(Some(rng.below(4) as u8)),
+        49 => UiMessage::AskDeleteChat(chat),
         50 => UiMessage::ReminderMenu,
-        51 => UiMessage::ChatSub(Some(rng.below(3) as u8)),
+        51 => UiMessage::ChatSub(Some(rng.below(SUB_MENU_W.len()) as u8)),
         52 => UiMessage::ArchiveStale,
         53 => UiMessage::Forward(msg),
         54 if app.forward.is_some() => UiMessage::ForwardPick(chat),
@@ -277,8 +278,10 @@ fn every_pref_value_renders() {
 
 #[test]
 fn random_input_does_not_panic() {
-    let steps = std::env::var("FUZZ_STEPS").map_or(100, |n| n.parse().expect("FUZZ_STEPS is a number"));
-    for seed in 0..4 {
-        run(seed, steps);
+    let var =
+        |k, default| std::env::var(k).map_or(default, |n| n.parse().unwrap_or_else(|_| panic!("{k} is a number")));
+    let (seed, steps) = (var("FUZZ_SEED", 0), var("FUZZ_STEPS", 100));
+    for seed in seed..seed + 4 {
+        run(seed, steps as usize);
     }
 }
