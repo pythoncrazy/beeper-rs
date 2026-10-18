@@ -750,6 +750,13 @@ impl BeeperSettings {
         self.prefs.get(key).copied().unwrap_or(p.default_value())
     }
 
+    pub fn choice(&self, key: &str) -> &'static str {
+        let crate::prefs::Control::Select(options, _) = crate::prefs::find(key).control else {
+            panic!("{key} is a select")
+        };
+        options[usize::from(self.pref(key))]
+    }
+
     pub fn on(&self, key: &str) -> bool {
         assert!(matches!(crate::prefs::find(key).control, crate::prefs::Control::Toggle(_)), "{key} is a toggle");
         self.pref(key) == 1

@@ -1,6 +1,7 @@
 pub mod emoji;
 pub mod login;
 mod notify;
+mod popover;
 pub mod style;
 
 use crate::login::{Login, LoginMsg};
@@ -369,6 +370,7 @@ pub enum UiMessage {
     CloseModals,
     ToggleEditHistory(String),
     HoverEnter(String),
+    ShowQuickReactions,
     HoverChat(String, bool),
     DeleteDraft(String),
     HoverExit(String),
@@ -572,7 +574,6 @@ const ASK_DISMISS_REMINDERS: u8 = 1;
 const ASK_DELETE_CHAT: u8 = 2;
 const ASK_DELETE_MESSAGE: u8 = 3;
 /// Desktop's default "Quick reaction emoji".
-const QUICK_REACTION: &str = "❤️";
 /// Wide enough for "Copy Entire Message with Timestamp" on one line.
 const MESSAGE_MENU_W: f32 = 270.0;
 const REMINDER_ORDERS: [&str; 4] = [
@@ -1715,6 +1716,7 @@ pub struct BeeperGuiApp {
     pub quick_look_target: Option<(String, String)>,
     pub expanded_history_msg_id: Option<String>,
     pub hovered_msg: Option<String>,
+    quick_open: bool,
     pub hovered_chat: Option<String>,
     pub flash: Option<(String, std::time::Instant)>,
     last_click: Option<(String, std::time::Instant)>,
@@ -1822,6 +1824,7 @@ impl BeeperGuiApp {
             quick_look_target: None,
             expanded_history_msg_id: None,
             hovered_msg: None,
+            quick_open: false,
             hovered_chat: None,
             flash: None,
             status_banner: String::new(),
@@ -2145,7 +2148,8 @@ impl BeeperGuiApp {
     /// The arrow keys select messages when no panel is open and the composer is empty.
     fn quick_react(&self, mid: String) -> UiMessage {
         let chat = self.selected_chat_id.clone().expect("an open chat");
-        UiMessage::ToggleReaction(chat, mid, QUICK_REACTION.into())
+        let st = self.store.read().unwrap();
+        UiMessage::ToggleReaction(chat, mid, st.settings.choice("quickReactionEmoji").into())
     }
 
     fn can_select_messages(&self) -> bool {
@@ -3325,7 +3329,11 @@ impl BeeperGuiApp {
                     _ => ZOOM_STEPS[at.saturating_add_signed(step as isize).min(ZOOM_STEPS.len() - 1)],
                 };
             }),
-            UiMessage::HoverEnter(id) => self.hovered_msg = Some(id),
+            UiMessage::HoverEnter(id) => {
+                self.quick_open &= self.hovered_msg.as_ref() == Some(&id);
+                self.hovered_msg = Some(id);
+            }
+            UiMessage::ShowQuickReactions => self.quick_open = true,
             UiMessage::HoverChat(id, true) => self.hovered_chat = Some(id),
             UiMessage::HoverChat(id, false) => {
                 if self.hovered_chat.as_ref() == Some(&id) {
@@ -5037,9 +5045,11 @@ impl BeeperGuiApp {
             container(self.tip(pill.into(), tip, vec![], tooltip::Position::Bottom))
                 .padding(Padding::ZERO.top(9.0).left(8.0))
         });
-        let overlay =
-            stack![fade, header, container(feedback).align_right(Fill).padding(Padding::ZERO.top(6.0).right(5.0))]
-                .push(reminder);
+        let feedback = st
+            .settings
+            .on("feedbackWidget")
+            .then(|| container(feedback).align_right(Fill).padding(Padding::ZERO.top(6.0).right(5.0)));
+        let overlay = stack![fade, header].push(feedback).push(reminder);
         let verify = (st.matrix.is_some() && !st.beeper_state.verified).then(|| {
             let note = txt("Verify this device to read your encrypted messages.", 12.0).color(p.text);
             let go = pill_btn(p, "Verify", UiMessage::OpenSettings(SettingsTab::Devices));
@@ -5325,9 +5335,12 @@ impl BeeperGuiApp {
         if jumbo(&text) {
             parts = parts.push(container(txt(text.clone(), 48.0)).padding([0, 12]));
         } else if !text.is_empty() && m.poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
-            let ts = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
-            let room = crate::style::text_width(&ts, 11.0, Weight::Normal) + 8.0;
-            let time = txt(ts, 11.0).color(if mine { p.sent_meta } else { p.sub });
+            let ts = st
+                .settings
+                .on("showTimestamps")
+                .then(|| format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1));
+            let room = ts.as_deref().map_or(0.0, |t| crate::style::text_width(t, 11.0, Weight::Normal) + 8.0);
+            let time = ts.map(|t| txt(t, 11.0).color(if mine { p.sent_meta } else { p.sub }));
             let me = |id: &str| id == st.beeper_state.user_id;
             let arrow =
                 || span(icon::ARROW_UP_RIGHT.to_string()).font(iced::Font::with_name("icons")).size(11.0).color(fg);
@@ -5370,14 +5383,21 @@ impl BeeperGuiApp {
                 None => vec![(None, text.split_inclusive(' ').flat_map(plain).collect())],
             };
             let (mut prev_item, last) = (None, blocks.len() - 1);
+            let nbsp = crate::style::text_width("\u{a0}", 13.0, Weight::Normal);
+            let pad = "\u{a0}".repeat((room / nbsp).ceil() as usize);
+            let balanced = (st.settings.on("balanceText") && last == 0 && blocks[0].0.is_none())
+                .then(|| {
+                    crate::style::balanced_width(&format!("{text}{pad}"), 0.45 * self.main_size.width - 22.0, 13.0)
+                })
+                .flatten()
+                .map(|w| w.ceil() + 1.0);
             let body = Column::with_children(blocks.into_iter().enumerate().map(|(i, (marker, mut spans))| {
                 // iced does not draw an empty last line.
                 if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
                     spans.push(span("\u{200b}").size(13.0));
                 }
-                if i == last {
-                    let nbsp = crate::style::text_width("\u{a0}", 13.0, Weight::Normal);
-                    spans.push(span("\u{a0}".repeat((room / nbsp).ceil() as usize)).size(13.0));
+                if i == last && room > 0.0 {
+                    spans.push(span(pad.clone()).size(13.0));
                 }
                 let line = rich_text(spans)
                     .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
@@ -5394,9 +5414,10 @@ impl BeeperGuiApp {
                     container(txt(m, 13.0).color(fg)).width(w).align_right(w).padding(Padding::ZERO.right(5.0))
                 });
                 container(row![].push(marker).push(line)).padding(Padding::ZERO.top(gap)).into()
-            }));
+            }))
+            .width(balanced.map_or(Length::Shrink, Length::Fixed));
             parts = parts.push(
-                container(stack![body, container(time).align_right(Fill).align_bottom(Fill)])
+                container(stack![body].push(time.map(|t| container(t).align_right(Fill).align_bottom(Fill))))
                     .padding([8, 11])
                     .max_width(0.45 * self.main_size.width)
                     .style(fill_box(bg, 17.0)),
@@ -5429,6 +5450,23 @@ impl BeeperGuiApp {
             keys.sort_unstable();
             keys.dedup();
             let min_w = keys.len() as f32 * 36.0 + 2.0 * BUBBLE_PAD_X;
+            let order = keys.iter().flat_map(|&k| m.reactions.iter().filter(move |x| x.reaction_key == k));
+            let all: Vec<_> = order.collect();
+            let (shown, more) = if all.len() <= 20 { (&all[..], 0) } else { (&all[..19], all.len() - 19) };
+            let list = shown.iter().fold(Column::new(), |col, x| {
+                let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
+                let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(&x.participant_id);
+                let line = row![
+                    container(txt(x.reaction_key.clone(), 17.0)).padding(Padding::ZERO.right(10.0)),
+                    container(self.face(u.and_then(|u| u.img_url.as_deref()), name, 20.0))
+                        .padding(Padding::ZERO.right(8.0)),
+                    med(name.to_string(), 13.0).color(p.text),
+                ]
+                .align_y(Center);
+                col.push(container(line).padding([4, 8]))
+            });
+            let list = list.push((more > 0).then(|| container(txt(format!("and {more} more"), 13.0)).padding([4, 8])));
+            let list = container(list).padding([2, 4]).style(bordered_box(p.menu, p.menu_border, 1.0, 6.0));
             let pills = keys.into_iter().fold(Row::new().spacing(2), |r, k| {
                 let reactors: Vec<_> = m.reactions.iter().filter(|x| x.reaction_key == k).collect();
                 let n = reactors.len();
@@ -5463,11 +5501,15 @@ impl BeeperGuiApp {
             stack![
                 container(column![parts, Space::new().width(min_w)].align_x(if mine { Right } else { iced::Left }))
                     .padding(Padding::ZERO.bottom(21.0)),
-                container(pills)
-                    .align_bottom(Fill)
-                    .width(Fill)
-                    .align_x(if mine { Right } else { iced::Left })
-                    .padding([0.0, BUBBLE_PAD_X]),
+                container(crate::popover::popover(
+                    pills,
+                    list,
+                    self.selected_msg.as_ref() == Some(&m.id) && st.settings.on("reactionsOnSelect"),
+                ))
+                .align_bottom(Fill)
+                .width(Fill)
+                .align_x(if mine { Right } else { iced::Left })
+                .padding([0.0, BUBBLE_PAD_X]),
             ]
             .into()
         };
@@ -5484,12 +5526,25 @@ impl BeeperGuiApp {
                 };
                 button(container(ic(c, 20.0)).center(32)).padding(0).style(style).on_press(msg).into()
             };
-            let (reply, react) =
-                (b(icon::REPLY, UiMessage::StartReply(m.id.clone())), b(icon::SMILE, UiMessage::React(m.id.clone())));
-            if mine {
-                row![react, reply]
-            } else {
-                row![reply, react]
+            let reply = b(icon::REPLY, UiMessage::StartReply(m.id.clone()));
+            let react = mouse_area(b(icon::SMILE, UiMessage::React(m.id.clone())))
+                .on_enter(UiMessage::ShowQuickReactions)
+                .into();
+            let quick =
+                (self.quick_open && st.settings.on("quickReactions")).then(|| crate::emoji::quick_reactions(st));
+            let quick = quick.into_iter().flatten().map(|e| -> El<'a> {
+                let msg = UiMessage::ToggleReaction(chat.id.clone(), m.id.clone(), e.clone());
+                let glyph = txt(e, 18.0);
+                button(container(glyph).center(32))
+                    .padding(0)
+                    .style(btn_style([CLEAR; 3], [p.text; 3], 8.0))
+                    .on_press(msg)
+                    .into()
+            });
+            let all: Vec<El<'a>> = [reply, react].into_iter().chain(quick).collect();
+            match mine {
+                true => Row::with_children(all.into_iter().rev()),
+                false => Row::with_children(all),
             }
         });
         let side = (group && !mine).then(|| -> El<'a> {
