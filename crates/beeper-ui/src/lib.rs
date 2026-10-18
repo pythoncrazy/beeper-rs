@@ -248,8 +248,13 @@ pub enum UiMessage {
     ForwardSubmit,
     ForwardPick(String),
     ForwardSend,
-    /// Save the attachments of a message to the downloads folder.
-    Download(String),
+    /// Show an attachment of a message full screen.
+    OpenCarousel(String, usize),
+    /// Show the previous (`false`) or next (`true`) image of the chat.
+    CarouselStep(bool),
+    RotateCarousel,
+    /// Save the attachments of a message, or only one of them, to the downloads folder.
+    Download(String, Option<usize>),
     Downloaded(Result<String, String>),
     AskDeleteMessage(String),
     ArchiveStale,
@@ -996,6 +1001,22 @@ static DROP_ARROW: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M12.625 14.375 17 10l-4.375-4.375-1.062 1.063 2.562 2.562H4.5V7H3v3.75h11.125l-2.562 2.563z"/></svg>"##[..])
 });
 
+static SYS_ARROW_BACK: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="m6.52 10.833 4.668 4.667L10 16.666 3.333 10 10 3.333 11.188 4.5 6.52 9.166h10.146v1.667z"/></svg>"##[..])
+});
+
+static SYS_ROTATE: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M10 18.25q-1.083 0-2.052-.302a6.9 6.9 0 0 1-1.802-.865L7.229 16a5.5 5.5 0 0 0 2.771.75q2.271 0 3.885-1.615Q15.5 13.521 15.5 11.25t-1.615-3.906-4.01-1.594l1.188 1.188L10 8 7 5l3-3 1.063 1.063L9.875 4.25q3-.063 5.063 2.01T17 11.25q0 1.458-.552 2.73a7.1 7.1 0 0 1-1.5 2.218 7.1 7.1 0 0 1-2.219 1.5A6.8 6.8 0 0 1 10 18.25m-5-2-5-5 5-5 5 5zm0-2.125 2.875-2.875L5 8.375 2.125 11.25z"/></svg>"##[..])
+});
+
+static SYS_DOWNLOAD: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M10 13.333 5.833 9.166 7 7.958l2.167 2.167V3.333h1.666v6.792L13 7.958l1.167 1.208zm-5 3.333q-.687 0-1.177-.49A1.6 1.6 0 0 1 3.333 15v-2.5H5V15h10v-2.5h1.667V15q0 .687-.49 1.177t-1.177.49z"/></svg>"##[..])
+});
+
+static SYS_CLOSE: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
+    svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="m5.333 15.834-1.166-1.167L8.833 10 4.167 5.334l1.166-1.167L10 8.834l4.667-4.667 1.166 1.167L11.167 10l4.666 4.667-1.166 1.167L10 11.167z"/></svg>"##[..])
+});
+
 static MAT_FORWARD: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="m640-280-57-56 184-184-184-184 57-56 240 240-240 240ZM80-200v-160q0-83 58.5-141.5T280-560h247L383-704l57-56 240 240-240 240-57-56 144-144H280q-50 0-85 35t-35 85v160H80Z"/></svg>"##[..])
 });
@@ -1393,6 +1414,8 @@ pub struct BeeperGuiApp {
     message_menu: Option<(String, Point)>,
     selected_msg: Option<String>,
     forward: Option<Forward>,
+    /// The message and attachment that the carousel shows, and its quarter turns.
+    carousel: Option<(String, usize, u8)>,
     /// On X11 the copied image stays available only while its clipboard lives.
     image_clipboard: Option<arboard::Clipboard>,
     pub filters: u8,
@@ -1496,6 +1519,7 @@ impl BeeperGuiApp {
             selected_msg: None,
             image_clipboard: None,
             forward: None,
+            carousel: None,
             filters: 0,
             show_attach_menu: false,
             show_gif_picker: false,
@@ -2223,6 +2247,20 @@ impl BeeperGuiApp {
                     self.status_banner = "Couldn't copy the image".into();
                 }
             }
+            UiMessage::OpenCarousel(mid, ai) => self.carousel = Some((mid, ai, 0)),
+            UiMessage::CarouselStep(next) => {
+                let (mid, ai, turns) = self.carousel.take().expect("the carousel is open");
+                let items = self.carousel_items(&self.store.read().unwrap());
+                let at =
+                    items.iter().position(|(m, a)| *m == mid && *a == ai).expect("the carousel shows a chat image");
+                let to = if next { at + 1 } else { at.checked_sub(1).expect("a previous image") };
+                let (mid, ai) = items.into_iter().nth(to).expect("a next image");
+                self.carousel = Some((mid, ai, turns));
+            }
+            UiMessage::RotateCarousel => {
+                let c = self.carousel.as_mut().expect("the carousel is open");
+                c.2 = (c.2 + 1) % 4;
+            }
             UiMessage::Forward(mid) => {
                 self.forward = Some(Forward { mid, picked: Vec::new(), query: String::new() });
                 return operation::focus("forward-input");
@@ -2258,13 +2296,15 @@ impl BeeperGuiApp {
                     self.select_chat(one);
                 }
             }
-            UiMessage::Download(mid) => {
+            UiMessage::Download(mid, only) => {
                 let st = self.store.read().unwrap();
                 let m = &st.messages[st.msg_idx_by_id[&mid]];
                 let files: Vec<(String, String)> = m
                     .attachments
                     .iter()
-                    .map(|a| {
+                    .enumerate()
+                    .filter(|(i, _)| only.is_none_or(|o| o == *i))
+                    .map(|(_, a)| {
                         let name = a.file_name.clone().expect("an attachment has a file name");
                         (a.src_url.clone().expect("an attachment has a source"), name)
                     })
@@ -2750,7 +2790,9 @@ impl BeeperGuiApp {
             }
             UiMessage::CloseModals if self.search_select.is_some() => self.search_select = None,
             UiMessage::CloseModals => {
-                if self.show_command_palette
+                if self.carousel.is_some() {
+                    self.carousel = None;
+                } else if self.show_command_palette
                     || self.forward.is_some()
                     || self.show_filter_menu
                     || self.chat_menu.is_some()
@@ -2919,6 +2961,24 @@ impl BeeperGuiApp {
                 return Task::batch([focus, self.load_avatars(), self.load_media(), self.close_notifications()]);
             }
             UiMessage::Login(m) => return self.update_login(m),
+            UiMessage::KeyPressed(key, mods) if self.carousel.is_some() => {
+                let (mid, ai, _) = self.carousel.clone().expect("the carousel is open");
+                let items = self.carousel_items(&self.store.read().unwrap());
+                let at =
+                    items.iter().position(|(m, a)| *m == mid && *a == ai).expect("the carousel shows a chat image");
+                return match key.as_ref() {
+                    Key::Named(Named::Escape) => self.update(UiMessage::CloseModals),
+                    Key::Named(Named::ArrowLeft) if mods.is_empty() && at > 0 => {
+                        self.update(UiMessage::CarouselStep(false))
+                    }
+                    Key::Named(Named::ArrowRight) if mods.is_empty() && at + 1 < items.len() => {
+                        self.update(UiMessage::CarouselStep(true))
+                    }
+                    Key::Character("d") if mods.is_empty() => self.update(UiMessage::Download(mid, Some(ai))),
+                    Key::Character("r") if mods.is_empty() => self.update(UiMessage::RotateCarousel),
+                    _ => Task::none(),
+                };
+            }
             UiMessage::KeyPressed(key, mods) => {
                 let (shift, alt) = (mods.shift(), mods.alt());
                 let hotkey = match key.as_ref() {
@@ -2978,8 +3038,8 @@ impl BeeperGuiApp {
                         return self.update(UiMessage::CopyText(text));
                     }
                     Key::Character("d") if self.selected_message().is_some_and(|m| !m.attachments.is_empty()) => {
-                        return self
-                            .update(UiMessage::Download(self.selected_msg.clone().expect("a selected message")));
+                        let mid = self.selected_msg.clone().expect("a selected message");
+                        return self.update(UiMessage::Download(mid, None));
                     }
                     Key::Character("t") if self.selected_chat_id.is_some() => {
                         let edit = self.selected_message().filter(|m| m.is_sender == Some(true)).or_else(|| {
@@ -3114,6 +3174,7 @@ impl BeeperGuiApp {
                             Named::Escape
                                 | Named::ArrowUp
                                 | Named::ArrowDown
+                                | Named::ArrowLeft
                                 | Named::ArrowRight
                                 | Named::Enter
                                 | Named::Backspace
@@ -3125,6 +3186,16 @@ impl BeeperGuiApp {
             _ => None,
         });
         let system = iced::system::theme_changes().map(UiMessage::SystemTheme);
+        let carousel = self.carousel.is_some().then(|| {
+            iced::event::listen_with(|e, _, _| match e {
+                Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Character(c), modifiers, .. })
+                    if modifiers.is_empty() && matches!(c.as_str(), "d" | "r") =>
+                {
+                    Some(UiMessage::KeyPressed(Key::Character(c), modifiers))
+                }
+                _ => None,
+            })
+        });
         let drag = self.dragging.then(|| {
             iced::event::listen_with(|e, _, _| match e {
                 Event::Mouse(mouse::Event::CursorMoved { position }) => Some(UiMessage::DragMoved(position)),
@@ -3162,7 +3233,13 @@ impl BeeperGuiApp {
         let tick =
             animated.then(|| iced::time::every(std::time::Duration::from_millis(20)).map(|_| UiMessage::AnimationTick));
         Subscription::batch(
-            [changes, focus, keys, system].into_iter().chain(drag).chain(tick).chain(remind).chain(notes),
+            [changes, focus, keys, system]
+                .into_iter()
+                .chain(drag)
+                .chain(carousel)
+                .chain(tick)
+                .chain(remind)
+                .chain(notes),
         )
     }
 
@@ -3277,7 +3354,8 @@ impl BeeperGuiApp {
             container(card).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(76.0))
         });
         let confirm = self.confirm.filter(|&d| d != ASK_LOGOUT).map(|d| self.view_confirm(d));
-        stack![base].push(toast).push(menu).push(scrim).push(select).push(confirm).into()
+        let carousel = self.carousel.as_ref().map(|(mid, ai, turns)| self.view_carousel(mid, *ai, *turns));
+        stack![base].push(toast).push(menu).push(scrim).push(select).push(confirm).push(carousel).into()
     }
 
     /// The selected chats that still exist: the sync task can drop one before StoreChanged reaches update.
@@ -3532,7 +3610,7 @@ impl BeeperGuiApp {
                 .then(|| vec![item("Copy Image".into(), "", Some(UiMessage::CopyImage(mid.clone())))]),
             (m.is_deleted != Some(true))
                 .then(|| vec![item("Forward…".into(), "Ctrl Shift F", Some(UiMessage::Forward(mid.clone())))]),
-            (files > 0).then(|| vec![item(download, "Ctrl D", Some(UiMessage::Download(mid.clone())))]),
+            (files > 0).then(|| vec![item(download, "Ctrl D", Some(UiMessage::Download(mid.clone(), None)))]),
             Some(vec![
                 item(at, "", None),
                 rule(),
@@ -4575,7 +4653,7 @@ impl BeeperGuiApp {
             let card = container(body).width(if wraps { Length::Fixed(360.0) } else { Shrink });
             parts = parts.push(card.max_width(360).style(fill_box(dim(p.link_card), 17.0)));
         }
-        for a in &m.attachments {
+        for (ai, a) in m.attachments.iter().enumerate() {
             let name = a.file_name.clone().expect("attachment file name");
             let content: El<'a> = match (a.is_voice_note == Some(true), a.attachment_type.as_str()) {
                 (true, _) => {
@@ -4689,7 +4767,7 @@ impl BeeperGuiApp {
                                 ),
                             )
                         } else {
-                            (base, UiMessage::OpenQuickLook(name, "Image attachment".into()))
+                            (base, UiMessage::OpenCarousel(m.id.clone(), ai))
                         }
                     };
                     button(slot).padding(0).style(btn_style([CLEAR; 3], [p.text; 3], 17.0)).on_press(press).into()
@@ -5509,6 +5587,80 @@ impl BeeperGuiApp {
         frame(column![inputs].push(hint).push(chips).push(empty).push((!none).then(|| {
             scrollable(hits.push(media_grid).push(messages)).direction(bar()).height(Fill).style(scroll_style(p.scroll))
         })))
+    }
+
+    /// The images and GIFs of the open chat, oldest first, as (message, attachment index).
+    fn carousel_items(&self, st: &BeeperStore) -> Vec<(String, usize)> {
+        let chat = self.selected_chat_id.as_deref().expect("an open chat");
+        let messages = st.chat_msg_indices[chat].iter().map(|&i| &st.messages[i]);
+        messages
+            .flat_map(|m| {
+                let shown = |(_, a): &(usize, &Attachment)| a.attachment_type == "img" || a.is_gif == Some(true);
+                m.attachments.iter().enumerate().filter(shown).map(|(ai, _)| (m.id.clone(), ai))
+            })
+            .collect()
+    }
+
+    fn view_carousel<'a>(&'a self, mid: &str, ai: usize, turns: u8) -> El<'a> {
+        let p = &self.pal;
+        let st = self.store.read().unwrap();
+        let m = &st.messages[st.msg_idx_by_id[mid]];
+        let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
+        let a = &m.attachments[ai];
+        let items = self.carousel_items(&st);
+        let at = items.iter().position(|(i, k)| i == mid && *k == ai).expect("the carousel shows a chat image");
+        let h24 = st.settings.pref("timeFormat") == 1;
+        let white = Color::WHITE;
+        let control = |h: &svg::Handle, msg| {
+            button(tinted(h, 20.0, white)).padding(0).style(btn_style([CLEAR; 3], [white; 3], 0.0)).on_press(msg)
+        };
+        let title = row![
+            self.chat_avatar(c, 28.0),
+            ell(&c.title, 600.0, 14.0, Weight::Medium).color(white),
+            txt(format_short_ts(&m.timestamp, h24), 12.0).color(white.scale_alpha(0.7)),
+        ]
+        .spacing(8)
+        .align_y(Center);
+        let controls = row![
+            control(&SYS_ROTATE, UiMessage::RotateCarousel),
+            control(&SYS_DOWNLOAD, UiMessage::Download(mid.to_string(), Some(ai))),
+            control(&SYS_CLOSE, UiMessage::CloseModals),
+        ]
+        .spacing(8);
+        let head =
+            stack![container(title).center_x(Fill).center_y(34), container(controls).align_right(Fill).center_y(34)];
+        let url = a.poster_img.as_ref().or(a.src_url.as_ref());
+        let shown: El<'a> = match url.and_then(|u| self.media.get(u)?.as_ref()) {
+            Some(Ok(frames)) => image(current_frame(frames, self.started.elapsed().as_millis()))
+                .content_fit(iced::ContentFit::ScaleDown)
+                .rotation(iced::Rotation::Solid(iced::Radians(-std::f32::consts::FRAC_PI_2 * f32::from(turns))))
+                .into(),
+            _ => Space::new().into(),
+        };
+        let main = container(mouse_area(shown).on_press(UiMessage::Noop)).center(Fill).padding(8);
+        let step = |next: bool| -> El<'a> {
+            let arrow = svg(SYS_ARROW_BACK.clone())
+                .width(20)
+                .height(20)
+                .rotation(if next { std::f32::consts::PI } else { 0.0 })
+                .style(move |_, _| svg::Style { color: Some(white) });
+            let b = button(container(arrow).center(32)).padding(0).style(btn_style(
+                [Color { a: 0.1, ..p.strong }; 3],
+                [white; 3],
+                32.0,
+            ));
+            let b = container(b.on_press(UiMessage::CarouselStep(next))).center_y(Fill).padding([0, 24]);
+            if next {
+                b.align_right(Fill).into()
+            } else {
+                b.into()
+            }
+        };
+        let body = column![container(head).padding(8).height(50), main];
+        let layer = stack![body].push((at > 0).then(|| step(false))).push((at + 1 < items.len()).then(|| step(true)));
+        mouse_area(container(layer).width(Fill).height(Fill).style(fill_box(Color::BLACK.scale_alpha(0.85), 0.0)))
+            .on_press(UiMessage::CloseModals)
+            .into()
     }
 
     fn view_forward<'a>(&'a self, f: &'a Forward) -> El<'a> {
