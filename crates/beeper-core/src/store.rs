@@ -1174,6 +1174,13 @@ impl BeeperStore {
         Ok(chat_id)
     }
 
+    /// Desktop's `addRecentEmoji`: move `key` to the front with one more use and keep 100 entries.
+    pub fn add_recent_emoji(&mut self, key: &str) {
+        let n = self.recent_emoji.iter().position(|(k, _)| k == key).map_or(0, |i| self.recent_emoji.remove(i).1);
+        self.recent_emoji.insert(0, (key.into(), n + 1));
+        self.recent_emoji.truncate(100);
+    }
+
     pub fn add_reaction(
         &mut self,
         chat_or_local_id: &str,

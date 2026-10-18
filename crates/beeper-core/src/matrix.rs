@@ -981,10 +981,9 @@ async fn sync_emoji(client: &Client, store: &SharedStore) {
     st.skin_tone = tone;
 }
 
-pub async fn set_skin_tone(client: Client, tone: u8) -> Result<(), String> {
-    let content = serde_json::json!({ "tone": tone });
+pub async fn set_global(client: Client, kind: &'static str, content: Value) -> Result<(), String> {
     let raw = Raw::from_json(serde_json::value::to_raw_value(&content).expect("account data JSON"));
-    let kind = GlobalAccountDataEventType::from("com.beeper.emoji_skin_tone");
+    let kind = GlobalAccountDataEventType::from(kind);
     client.account().set_account_data_raw(kind, raw).await.map(drop).map_err(|e| e.to_string())
 }
 
