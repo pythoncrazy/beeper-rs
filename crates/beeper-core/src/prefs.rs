@@ -217,7 +217,7 @@ pub const NOTIFICATIONS: &[Item] = &[
         s("messageSound", "Sound", SOUND, 0),
         t("groupNotifications", "Group message notifications", true),
         t("requestNotifications", "Message request notifications", true),
-        s("requestSound", "Sound", SOUND, 0),
+        s("groupSound", "Sound", SOUND, 0),
         t("notifyInFocus", "Notify when app is in focus", true),
         t("notifyReactions", "Notify when someone reacts to a message", true),
         t("notifyTyping", "Notify when someone starts typing (supported platforms only)", false),
