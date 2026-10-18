@@ -1849,7 +1849,10 @@ impl BeeperGuiApp {
                 self.selected_account_filter = acc;
                 self.creating_chat = None;
             }
-            UiMessage::SelectChat(id) => self.select_chat(&id),
+            UiMessage::SelectChat(id) => {
+                self.select_chat(&id);
+                return self.close_notifications();
+            }
             UiMessage::ComposerChanged(v) => {
                 let st = self.store.read().unwrap();
                 let notice = st.matrix.clone().filter(|_| st.settings.on("typingIndicators"));
@@ -2318,12 +2321,15 @@ impl BeeperGuiApp {
                 return Task::batch([self.update(UiMessage::StoreChanged)].into_iter().chain(note));
             }
             UiMessage::Notified(Ok((id, chat))) => _ = self.notifications.insert(id, chat),
-            UiMessage::Notified(Err(e)) => self.status_banner = format!("Could not show a notification: {e}"),
+            UiMessage::Notified(Err(e)) => self.status_banner = format!("Notifications failed: {e}"),
             UiMessage::NotificationEvent(id, clicked) => {
                 let chat = self.notifications.remove(&id).filter(|_| clicked);
                 return chat.map_or_else(Task::none, |c| self.update(UiMessage::FocusRequested(Some(c))));
             }
-            UiMessage::WindowFocused(focused) => self.focused = focused,
+            UiMessage::WindowFocused(focused) => {
+                self.focused = focused;
+                return self.close_notifications();
+            }
             UiMessage::ToggleGifPicker => {
                 self.show_gif_picker = !self.show_gif_picker;
                 if self.show_gif_picker {
@@ -2593,14 +2599,15 @@ impl BeeperGuiApp {
                     (self.selected_chat_id, self.chat_menu) = (None, None);
                     self.select_chat(NOTE_CHAT_ID);
                 }
-                self.refresh_theme_and_tray()
+                self.refresh_theme_and_tray();
+                return self.close_notifications();
             }
             UiMessage::FocusRequested(chat) => {
                 if let Some(id) = chat {
                     self.select_chat(&id);
                 }
                 let focus = window::gain_focus(self.main_window.or(self.login_window).expect("a window is open"));
-                return Task::batch([focus, self.load_avatars(), self.load_media()]);
+                return Task::batch([focus, self.load_avatars(), self.load_media(), self.close_notifications()]);
             }
             UiMessage::Login(m) => return self.update_login(m),
             UiMessage::KeyPressed(key, mods) => {

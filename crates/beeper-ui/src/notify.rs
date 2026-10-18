@@ -76,6 +76,30 @@ impl BeeperGuiApp {
         let sender = m.sender_name.as_deref().filter(|s| group && !text.starts_with(&format!("{s} ")));
         Some((chat.title.clone(), sender.map_or(text.clone(), |s| format!("{s}: {text}"))))
     }
+
+    /// Desktop's `clearShownNotifications`: close the notifications of read chats without a reminder, and of the
+    /// selected chat in a focused window.
+    pub(crate) fn close_notifications(&mut self) -> iced::Task<crate::UiMessage> {
+        let st = self.store.read().unwrap();
+        let stale: Vec<u32> = (self.notifications.iter())
+            .filter(|(_, c)| {
+                let read = |i: usize| {
+                    let c = &st.chats[i];
+                    c.unread_count == 0 && c.is_marked_unread != Some(true) && c.reminder.is_none()
+                };
+                (self.focused && self.selected_chat_id.as_ref() == Some(c)) || st.resolve_chat_idx(c).is_none_or(read)
+            })
+            .map(|(&id, _)| id)
+            .collect();
+        drop(st);
+        if stale.is_empty() {
+            return iced::Task::none();
+        }
+        stale.iter().for_each(|id| _ = self.notifications.remove(id));
+        iced::Task::future(close(stale))
+            .map(Result::err)
+            .and_then(|e| iced::Task::done(crate::UiMessage::Notified(Err(e))))
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -95,6 +119,15 @@ pub async fn show(title: String, body: String) -> Result<u32, String> {
     let iface = Some("org.freedesktop.Notifications");
     let reply = bus().await?.call_method(iface, path, iface, "Notify", &args).await.map_err(|e| e.to_string())?;
     Ok(reply.body().deserialize().expect("Notify returns the notification id"))
+}
+
+#[cfg(target_os = "linux")]
+async fn close(ids: Vec<u32>) -> Result<(), String> {
+    let (path, iface) = ("/org/freedesktop/Notifications", Some("org.freedesktop.Notifications"));
+    for id in ids {
+        bus().await?.call_method(iface, path, iface, "CloseNotification", &id).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// A notification id, and whether the user clicked it or the server closed it.
@@ -129,6 +162,11 @@ pub fn events() -> impl iced::futures::Stream<Item = (u32, bool)> {
 
 #[cfg(not(target_os = "linux"))]
 pub async fn show(_title: String, _body: String) -> Result<u32, String> {
+    unreachable!("only the Linux build shows notifications")
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn close(_ids: Vec<u32>) -> Result<(), String> {
     unreachable!("only the Linux build shows notifications")
 }
 
