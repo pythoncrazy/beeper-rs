@@ -255,36 +255,49 @@ pub fn mix(a: Color, b: Color, k: f32) -> Color {
     Color::from_rgba(a.r + (b.r - a.r) * k, a.g + (b.g - a.g) * k, a.b + (b.b - a.b) * k, a.a + (b.a - a.a) * k)
 }
 
-const BRANDS: [(&str, &str); 20] = [
-    ("whatsapp", include_str!("../assets/brands/whatsapp.svg")),
-    ("twitter", include_str!("../assets/brands/twitter.svg")),
-    ("telegram", include_str!("../assets/brands/telegram.svg")),
-    ("slack", include_str!("../assets/brands/slack.svg")),
-    ("discord", include_str!("../assets/brands/discord.svg")),
-    ("facebook", include_str!("../assets/brands/facebook.svg")),
-    ("instagram", include_str!("../assets/brands/instagram.svg")),
-    ("linkedin", include_str!("../assets/brands/linkedin.svg")),
-    ("gmessages", include_str!("../assets/brands/gmessages.svg")),
-    ("signal", include_str!("../assets/brands/signal.svg")),
-    ("googlechat", include_str!("../assets/brands/googlechat.svg")),
-    ("line", include_str!("../assets/brands/line.svg")),
-    ("gvoice", include_str!("../assets/brands/gvoice.svg")),
-    ("tumblr", include_str!("../assets/brands/tumblr.svg")),
-    ("viber", include_str!("../assets/brands/viber.svg")),
-    ("snapchat", include_str!("../assets/brands/snapchat.svg")),
-    ("wechat", include_str!("../assets/brands/wechat.svg")),
-    ("imessage", include_str!("../assets/brands/imessage.svg")),
-    ("bluesky", include_str!("../assets/brands/bluesky.svg")),
-    ("hungryserv", include_str!("../assets/brands/hungryserv.svg")),
-];
+macro_rules! brands {
+    ($($id:literal),*) => {
+        [$(($id, include_str!(concat!("../assets/brands/", $id, ".svg")), include_str!(concat!("../assets/brands/badge/", $id, ".svg")))),*]
+    };
+}
 
-static BRAND_SVGS: LazyLock<HashMap<&'static str, svg::Handle>> = LazyLock::new(|| {
+const BRANDS: [(&str, &str, &str); 20] = brands!(
+    "whatsapp",
+    "twitter",
+    "telegram",
+    "slack",
+    "discord",
+    "facebook",
+    "instagram",
+    "linkedin",
+    "gmessages",
+    "signal",
+    "googlechat",
+    "line",
+    "gvoice",
+    "tumblr",
+    "viber",
+    "snapchat",
+    "wechat",
+    "imessage",
+    "bluesky",
+    "hungryserv"
+);
+
+static BRAND_SVGS: LazyLock<HashMap<&'static str, [svg::Handle; 2]>> = LazyLock::new(|| {
     assert!(NETWORK_SPECS.iter().all(|n| BRANDS.iter().any(|b| b.0 == n.bridge_id)), "every network has a logo");
-    BRANDS.iter().map(|(id, doc)| (*id, svg::Handle::from_memory(doc.as_bytes()))).collect()
+    BRANDS
+        .iter()
+        .map(|(id, tile, badge)| (*id, [tile, badge].map(|d| svg::Handle::from_memory(d.as_bytes()))))
+        .collect()
 });
 
 pub fn brand_svg(bridge_id: &str) -> svg::Handle {
-    BRAND_SVGS[bridge_id].clone()
+    BRAND_SVGS[bridge_id][0].clone()
+}
+
+pub fn brand_badge(bridge_id: &str) -> svg::Handle {
+    BRAND_SVGS[bridge_id][1].clone()
 }
 
 pub fn fill_box(bg: Color, r: impl Into<border::Radius>) -> impl Fn(&Theme) -> container::Style + Copy {
