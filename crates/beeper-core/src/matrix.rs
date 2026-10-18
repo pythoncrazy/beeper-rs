@@ -840,7 +840,12 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
 
 const ENCRYPTED_FILE: &str = "encryptedFileInfoJSON";
 
-pub async fn media(client: Client, src: String) -> Result<Vec<u8>, String> {
+/// The bytes of a Matrix (`mxc://`) or web (`https://`) media URL.
+pub async fn media(client: Option<Client>, src: String) -> Result<Vec<u8>, String> {
+    if src.starts_with("https://") {
+        return crate::cloud::http_bytes(&src).await;
+    }
+    let client = client.expect("Matrix media has a client");
     let source = match src.split_once(&format!("?{ENCRYPTED_FILE}=")) {
         Some((_, json)) => {
             let json = crate::codec::url_decode(json).ok_or("bad encrypted file info")?;
