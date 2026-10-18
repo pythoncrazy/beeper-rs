@@ -408,18 +408,34 @@ pub fn pick_menu_style(
     }
 }
 
-pub fn scroll_style(
-    thumb: Color,
-    thumb_hover: Color,
-) -> impl Fn(&Theme, scrollable::Status) -> scrollable::Style + Copy {
+/// Desktop's `custom-scrollbars`: solid scrollbars, except where macOS uses overlay scrollbars.
+pub const SOLID_BARS: bool = !cfg!(target_os = "macos");
+
+/// The width of Desktop's solid scrollbar gutter.
+pub const GUTTER: f32 = if SOLID_BARS { 12.0 } else { 0.0 };
+
+/// Desktop's vertical scrollbar: a 12 px gutter with a 6 px thumb when the content overflows.
+pub fn bar() -> scrollable::Direction {
+    let solid = scrollable::Scrollbar::new().width(GUTTER).scroller_width(6).spacing(0);
+    scrollable::Direction::Vertical(if SOLID_BARS { solid } else { scrollable::Scrollbar::default() })
+}
+
+/// `scrollbar-gutter: stable`: the thumb floats over a right padding of [`GUTTER`] that the caller adds.
+pub fn stable_bar() -> scrollable::Direction {
+    let solid = scrollable::Scrollbar::new().width(GUTTER).scroller_width(6);
+    scrollable::Direction::Vertical(if SOLID_BARS { solid } else { scrollable::Scrollbar::default() })
+}
+
+/// Desktop's thumb: `base` at 30%, and at 50% when the pointer is on it.
+pub fn scroll_style(base: Color) -> impl Fn(&Theme, scrollable::Status) -> scrollable::Style + Copy {
     move |_, status| {
-        let col = match status {
-            scrollable::Status::Active { .. } => CLEAR,
+        let alpha = match status {
             scrollable::Status::Hovered { is_vertical_scrollbar_hovered: true, .. }
-            | scrollable::Status::Dragged { .. } => thumb_hover,
-            scrollable::Status::Hovered { .. } => thumb,
+            | scrollable::Status::Dragged { .. } => 0.5,
+            scrollable::Status::Active { .. } if !SOLID_BARS => 0.0,
+            _ => 0.3,
         };
-        rail_style(CLEAR, col)
+        rail_style(CLEAR, base.scale_alpha(alpha))
     }
 }
 
@@ -478,6 +494,7 @@ pub struct Palette {
     pub toggle_off: Color,
     pub prefs_pane: Color,
     pub gutter: [Color; 2],
+    pub scroll: Color,
     pub prefs_group: Color,
     pub prefs_border: Color,
     pub neutral_border: Color,
@@ -539,6 +556,7 @@ pub const BEEPER_DARK: Palette = Palette {
     toggle_off: hex(0x606060),
     prefs_pane: hex(0x161616),
     gutter: [hex(0x2c2c2c), hex(0x9f9f9f)],
+    scroll: Color::WHITE,
     prefs_group: hex(0x1c1c1c),
     prefs_border: hex(0x282828),
     neutral_border: hex(0x343434),
@@ -594,6 +612,7 @@ pub const BEEPER_LIGHT: Palette = Palette {
     toggle_off: hexa(0x000000, 0.25),
     prefs_pane: hex(0xf3f3f3),
     gutter: [hex(0xf1f1f1), hex(0xc1c1c1)],
+    scroll: Color::BLACK,
     prefs_group: hex(0xffffff),
     prefs_border: hex(0xededed),
     neutral_border: hex(0xe2e2e2),

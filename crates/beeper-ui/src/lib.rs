@@ -6,9 +6,10 @@ pub mod style;
 use crate::login::{Login, LoginMsg};
 
 use crate::style::{
-    bold, bordered_box, bordered_btn, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded, fill_box, fw,
-    glow_box, gutter_style, hex, ic, icon, initials, input_style, med, mix, name_hash, pick, pick_menu_style,
-    pick_style, scroll_style, semi, shadow_box, txt, Palette, ALL_FONTS, AVATAR_GRADIENTS, CLEAR,
+    bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded, fill_box,
+    fw, glow_box, gutter_style, hex, ic, icon, initials, input_style, med, mix, name_hash, pick, pick_menu_style,
+    pick_style, scroll_style, semi, shadow_box, stable_bar, txt, Palette, ALL_FONTS, AVATAR_GRADIENTS, CLEAR, GUTTER,
+    SOLID_BARS,
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{
@@ -3828,9 +3829,10 @@ impl BeeperGuiApp {
                 .width(Fill)
                 .into()
         } else {
-            scrollable(column![pins, rows].padding(Padding::ZERO.right(4.0)))
+            scrollable(column![pins, rows].padding(Padding::ZERO.right(if SOLID_BARS { 0.0 } else { 4.0 })))
+                .direction(bar())
                 .height(Fill)
-                .style(scroll_style(p.divider, p.weak))
+                .style(scroll_style(p.scroll))
                 .into()
         };
         container(column![header, list].padding(Padding::ZERO.left(8.0))).width(w).height(Fill).into()
@@ -3845,7 +3847,7 @@ impl BeeperGuiApp {
         let msgs: Vec<&Message> = st.chat_msg_indices.get(cid).map_or_else(Vec::new, |v| {
             v.iter().map(|&i| &st.messages[i]).filter(|m| !(hide && m.is_deleted == Some(true))).collect()
         });
-        let mut col = Column::new().padding(Padding::new(16.0).top(96.0).bottom(8.0));
+        let mut col = Column::new().padding(Padding::new(8.0).right(8.0 + GUTTER).top(96.0).bottom(8.0));
         let mut prev: Option<&Message> = None;
         let last_live = msgs.iter().rposition(|m| m.is_deleted != Some(true));
         let mut last_seen: HashMap<&str, (&str, &str)> = HashMap::new();
@@ -3924,7 +3926,12 @@ impl BeeperGuiApp {
             prev = Some(m);
         }
         col = col.push(st.typing.get(cid).map(|ids| self.typing_bubble(chat, ids)));
-        let list = scrollable(col).id("timeline").anchor_bottom().height(Fill).style(scroll_style(p.divider, p.weak));
+        let list = scrollable(col)
+            .id("timeline")
+            .direction(stable_bar())
+            .anchor_bottom()
+            .height(Fill)
+            .style(scroll_style(p.scroll));
         let name_row = row![
             semi(short_title(chat).to_string(), 13.0).line_height(Pixels(16.0)).color(p.fg),
             ic(icon::CHEVRON_RIGHT, 16.0).color(p.tertiary)
@@ -4506,7 +4513,7 @@ impl BeeperGuiApp {
                     .direction(dir)
                     .height(215)
                     .width(Fill)
-                    .style(scroll_style(p.divider, p.weak))
+                    .style(scroll_style(p.scroll))
                     .into()
             };
             column![container(search).padding([0, 14]), carousel].spacing(8).padding(Padding::ZERO.top(4.0))
@@ -4665,7 +4672,7 @@ impl BeeperGuiApp {
         .spacing(16)
         .padding(16);
         container(
-            container(scrollable(body).style(scroll_style(p.divider, p.weak)))
+            container(scrollable(body).direction(bar()).style(scroll_style(p.scroll)))
                 .width(300)
                 .height(Fill)
                 .style(fill_box(p.card, 10.0)),
@@ -4740,7 +4747,10 @@ impl BeeperGuiApp {
                     )
                 },
             );
-            return frame(column![inputs, scrollable(list).height(Fill).style(scroll_style(p.divider, p.weak))]);
+            return frame(column![
+                inputs,
+                scrollable(list).direction(bar()).height(Fill).style(scroll_style(p.scroll))
+            ]);
         }
         let hint =
             self.selected_chat_id.as_deref().and_then(|cid| st.resolve_chat_idx(cid).map(|i| &st.chats[i])).map(|c| {
@@ -4983,7 +4993,7 @@ impl BeeperGuiApp {
             )
         });
         frame(column![inputs].push(hint).push(chips).push(empty).push((!none).then(|| {
-            scrollable(hits.push(media_grid).push(messages)).height(Fill).style(scroll_style(p.divider, p.weak))
+            scrollable(hits.push(media_grid).push(messages)).direction(bar()).height(Fill).style(scroll_style(p.scroll))
         })))
     }
 
@@ -5132,7 +5142,7 @@ impl BeeperGuiApp {
         }
         let body = column![
             inputs,
-            scrollable(col).height(Fill).style(scroll_style(p.divider, p.weak)),
+            scrollable(col).direction(bar()).height(Fill).style(scroll_style(p.scroll)),
             footer("Start chat", "CTRL ENTER")
         ];
         container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0)).into()
@@ -5212,7 +5222,7 @@ impl BeeperGuiApp {
         let left = column![
             container(semi("Settings", 14.0).color(p.strong)).center_y(35).padding([0, 8]),
             search,
-            scrollable(column![profile, nav]).height(Fill).style(scroll_style(p.divider, p.weak))
+            scrollable(column![profile, nav]).direction(bar()).height(Fill).style(scroll_style(p.scroll))
         ]
         .spacing(8)
         .width(270)
