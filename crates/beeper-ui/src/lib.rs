@@ -215,15 +215,6 @@ impl SettingsTab {
             ("About", Svg(include_bytes!("../assets/settings/about.svg")), 0x20b4a1),
         ][self as usize]
     }
-
-    fn for_section(section: &str) -> Self {
-        match section {
-            "General" => Self::General,
-            "Appearance" => Self::Appearance,
-            "Notifications" => Self::Notifications,
-            other => panic!("settings section {other} has no tab"),
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -370,6 +361,10 @@ pub enum UiMessage {
     ToggleAddAccount,
     SelectSettingsTab(SettingsTab),
     SettingsQueryChanged(String),
+    SettingsFocus(usize),
+    /// Moves the focused search result down by the given count, wrapping around.
+    SettingsStep(usize),
+    PickSetting(SettingsHit),
     ToggleRightPanel,
     ToggleMembers(String),
     ToggleDnd,
@@ -470,11 +465,57 @@ impl std::fmt::Debug for UiMessage {
     }
 }
 
-pub fn search_settings_catalog(query: &str) -> Vec<(&'static str, &'static prefs::Pref)> {
-    let q = query.trim().to_lowercase();
-    prefs::all()
-        .filter(|(page, r)| [r.label, r.desc.unwrap_or(""), page].iter().any(|s| s.to_lowercase().contains(&q)))
-        .collect()
+/// A row of the settings search results.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SettingsHit {
+    /// A section, and whether its name matches.
+    Section(SettingsTab, bool),
+    Pref(SettingsTab, &'static prefs::Pref),
+    /// A network to add an account on.
+    Network(&'static str),
+}
+
+impl SettingsHit {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Section(tab, _) => tab.meta().0,
+            Self::Pref(_, r) => r.label,
+            Self::Network(name) => name,
+        }
+    }
+}
+
+/// Desktop's settings search: each matching section, then its matching rows, then the other sections when a row
+/// matches.
+pub fn search_settings(query: &str) -> Vec<SettingsHit> {
+    if query.trim().is_empty() {
+        return Vec::new();
+    }
+    let q = query.to_lowercase();
+    let has = |s: &str| s.to_lowercase().contains(&q);
+    let mut out = Vec::new();
+    for tab in SettingsTab::ALL {
+        let rows: Vec<_> = match tab {
+            SettingsTab::Accounts => {
+                login::addable().filter(|n| has(n.display_name)).map(|n| SettingsHit::Network(n.display_name)).collect()
+            }
+            _ => prefs::rows()
+                .filter(|(page, r)| *page == tab.meta().0 && !r.label.is_empty())
+                .filter(|(_, r)| has(&r.desc.map_or(r.label.to_string(), |d| format!("{} {d}", r.label))))
+                .map(|(_, r)| SettingsHit::Pref(tab, r))
+                .collect(),
+        };
+        if has(tab.meta().0) || !rows.is_empty() {
+            out.push(SettingsHit::Section(tab, true));
+            out.extend(rows);
+        }
+    }
+    if out.iter().any(|h| !matches!(h, SettingsHit::Section(..))) {
+        let shown: Vec<_> =
+            out.iter().filter_map(|h| if let SettingsHit::Section(t, _) = h { Some(*t) } else { None }).collect();
+        out.extend(SettingsTab::ALL.into_iter().filter(|t| !shown.contains(t)).map(|t| SettingsHit::Section(t, false)));
+    }
+    out
 }
 
 const ZOOM_STEPS: [u16; 13] = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300];
@@ -1343,6 +1384,16 @@ impl iced::advanced::widget::Operation<iced::Rectangle> for Find {
     }
 }
 
+/// The `width` and `height` attributes of an SVG document.
+fn svg_size(doc: &[u8]) -> (f32, f32) {
+    let doc = std::str::from_utf8(doc).expect("UTF-8 SVG");
+    let attr = |name: &str| -> f32 {
+        let at = doc.find(&format!(" {name}=\"")).unwrap_or_else(|| panic!("the SVG has a {name}")) + name.len() + 3;
+        doc[at..].split('"').next().and_then(|v| v.parse().ok()).unwrap_or_else(|| panic!("the SVG {name} is a number"))
+    };
+    (attr("width"), attr("height"))
+}
+
 fn ease_out(x: f32) -> f32 {
     1.0 - (1.0 - x) * (1.0 - x)
 }
@@ -1371,9 +1422,20 @@ fn send_rise(st: &BeeperStore, m: &Message) -> Option<f32> {
     (pending && age < 260 && st.settings.on("messageAnimations")).then(|| ease_out_quint(age.max(0) as f32 / 260.0))
 }
 
-/// Finds how far from the bottom the timeline must scroll to center a message.
-/// Finds the timeline offset that shows a message: in the middle, or with the least scroll when `nearest`.
-struct Locate(iced::widget::Id, Option<(iced::Rectangle, iced::Rectangle, f32)>, Option<iced::Rectangle>, bool);
+/// Finds the offset of a scrollable that shows a container: in the middle, or with the least scroll when `nearest`.
+/// The offset of the timeline counts from its bottom, because it is anchored there.
+struct Locate(
+    iced::widget::Id,
+    Option<(iced::Rectangle, iced::Rectangle, f32)>,
+    Option<iced::Rectangle>,
+    bool,
+    &'static str,
+);
+
+fn locate(target: impl Into<iced::widget::Id>, scroll: &'static str, nearest: bool) -> Task<UiMessage> {
+    iced::advanced::widget::operate(Locate(target.into(), None, None, nearest, scroll))
+        .then(move |y| operation::scroll_to(scroll, operation::AbsoluteOffset { x: 0.0, y }))
+}
 
 impl iced::advanced::widget::Operation<f32> for Locate {
     fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<f32>)) {
@@ -1394,21 +1456,22 @@ impl iced::advanced::widget::Operation<f32> for Locate {
         at: iced::Vector,
         _: &mut dyn iced::advanced::widget::operation::Scrollable,
     ) {
-        if id == Some(&iced::widget::Id::new("timeline")) {
+        if id == Some(&iced::widget::Id::new(self.4)) {
             self.1 = Some((bounds, content, at.y));
         }
     }
 
     fn finish(&self) -> iced::advanced::widget::operation::Outcome<f32> {
-        let (view, content, at) = self.1.expect("the timeline is shown");
-        let msg = self.2.expect("the message is in the timeline");
+        let (view, content, at) = self.1.unwrap_or_else(|| panic!("{} is shown", self.4));
+        let msg = self.2.unwrap_or_else(|| panic!("{:?} is in {}", self.0, self.4));
         let max = (content.height - view.height).max(0.0);
         let y = msg.y - content.y;
         let top = match self.3 {
             true => at.max(y + msg.height - view.height).min(y),
             false => y - (view.height - msg.height) / 2.0,
         };
-        iced::advanced::widget::operation::Outcome::Some(max - top.clamp(0.0, max))
+        let top = top.clamp(0.0, max);
+        iced::advanced::widget::operation::Outcome::Some(if self.4 == "timeline" { max - top } else { top })
     }
 }
 
@@ -1802,6 +1865,11 @@ pub struct BeeperGuiApp {
     pub show_command_palette: bool,
     pub active_settings_tab: SettingsTab,
     pub settings_query: String,
+    /// The focused row of the settings search results, and the last opened one.
+    settings_focus: usize,
+    settings_pick: Option<SettingsHit>,
+    /// The pref that a search result opened, which flashes for 2 s.
+    pref_flash: Option<(&'static str, std::time::Instant)>,
     pub adding_account: bool,
     pub show_right_panel: bool,
     pub quick_look_target: Option<(String, String)>,
@@ -1909,6 +1977,9 @@ impl BeeperGuiApp {
             show_command_palette: false,
             active_settings_tab: SettingsTab::General,
             settings_query: String::new(),
+            settings_focus: 0,
+            settings_pick: None,
+            pref_flash: None,
             adding_account: false,
             show_right_panel: panel,
             quick_look_target: None,
@@ -2100,6 +2171,34 @@ impl BeeperGuiApp {
         let (id, open) = window::open(Self::window_settings(Size::new(793.0, 705.0)));
         self.settings_window = Some(id);
         Task::batch([load, open.map(UiMessage::WindowOpened)])
+    }
+
+    /// Desktop's keys of the settings search: Ctrl F focuses it, ↑ and ↓ move through the results, and Escape clears
+    /// it. Enter is the submit of the input.
+    fn settings_key(&mut self, key: Key, mods: keyboard::Modifiers) -> Task<UiMessage> {
+        if mods.command() && key == Key::Character("f".into()) {
+            return operation::focus("settings-search");
+        }
+        if mods.command() || mods.control() || mods.alt() {
+            return self.update(UiMessage::KeyPressed(key, mods));
+        }
+        let n = search_settings(&self.settings_query).len();
+        match key {
+            Key::Named(Named::Escape) if self.confirm.is_some() => self.confirm = None,
+            Key::Named(Named::Escape) => return self.update(UiMessage::SettingsQueryChanged(String::new())),
+            Key::Named(k @ (Named::ArrowUp | Named::ArrowDown)) if n > 0 => {
+                let step = if k == Named::ArrowDown { 1 } else { n - 1 };
+                return operation::is_focused("settings-search").then(move |on| {
+                    if on {
+                        Task::done(UiMessage::SettingsStep(step))
+                    } else {
+                        Task::none()
+                    }
+                });
+            }
+            _ => {}
+        }
+        Task::none()
     }
 
     fn load_devices(&mut self) -> Task<UiMessage> {
@@ -2819,8 +2918,7 @@ impl BeeperGuiApp {
                 self.pane.selected_msg = next.map(|i| ids[i].to_string());
                 drop(st);
                 return match &self.pane.selected_msg {
-                    Some(mid) => iced::advanced::widget::operate(Locate(format!("msg-{mid}").into(), None, None, true))
-                        .then(|y| operation::scroll_to("timeline", operation::AbsoluteOffset { x: 0.0, y })),
+                    Some(mid) => locate(format!("msg-{mid}"), "timeline", true),
                     None => operation::focus("composer-input"),
                 };
             }
@@ -2992,6 +3090,9 @@ impl BeeperGuiApp {
                 return Task::batch([self.update(UiMessage::JumpTo(chat, mid)), main]);
             }
             UiMessage::WindowKey(id, key, mods) => {
+                if Some(id) == self.settings_window {
+                    return self.settings_key(key, mods);
+                }
                 if self.media_window.as_ref().is_none_or(|w| w.id != id) {
                     let key = UiMessage::KeyPressed(key, mods);
                     return match self.chat_windows.iter().any(|w| w.0 == id) {
@@ -3138,8 +3239,7 @@ impl BeeperGuiApp {
                 self.select_chat(&cid);
                 let msg = format!("msg-{mid}");
                 self.flash = Some((mid, std::time::Instant::now()));
-                return iced::advanced::widget::operate(Locate(msg.into(), None, None, false))
-                    .then(|y| operation::scroll_to("timeline", operation::AbsoluteOffset { x: 0.0, y }));
+                return locate(msg, "timeline", false);
             }
             UiMessage::ExecuteCommandChat(cid) => {
                 self.show_command_palette = false;
@@ -3672,7 +3772,39 @@ impl BeeperGuiApp {
             }
             UiMessage::OpenSettings(tab) => return self.open_settings(tab),
             UiMessage::ToggleAddAccount => self.adding_account ^= true,
-            UiMessage::SettingsQueryChanged(q) => self.settings_query = q,
+            UiMessage::SettingsQueryChanged(q) => {
+                let n = search_settings(&q).len();
+                if n != search_settings(&self.settings_query).len() {
+                    self.settings_focus = 0;
+                    self.settings_pick = self.settings_pick.filter(|_| n > 0);
+                }
+                self.settings_query = q;
+            }
+            UiMessage::SettingsFocus(i) => self.settings_focus = i,
+            UiMessage::SettingsStep(step) => {
+                self.settings_focus = (self.settings_focus + step) % search_settings(&self.settings_query).len();
+                return locate(format!("hit-{}", self.settings_focus), "settings-nav", true);
+            }
+            UiMessage::PickSetting(hit) => {
+                self.settings_pick = Some(hit);
+                let tab = match hit {
+                    SettingsHit::Section(t, _) | SettingsHit::Pref(t, _) => t,
+                    SettingsHit::Network(_) => SettingsTab::Accounts,
+                };
+                let load =
+                    Task::batch([self.update(UiMessage::SelectSettingsTab(tab)), operation::focus("settings-search")]);
+                return match hit {
+                    SettingsHit::Pref(_, r) => {
+                        self.pref_flash = Some((r.key, std::time::Instant::now()));
+                        Task::batch([load, locate(r.key, "settings-pane", false)])
+                    }
+                    SettingsHit::Network(_) => {
+                        self.adding_account = true;
+                        load
+                    }
+                    SettingsHit::Section(..) => load,
+                };
+            }
             UiMessage::SetPref(key, v) => {
                 self.patch_settings(|s| s.set_pref(key, v));
                 self.relaunch_toast |= matches!(key, "spellcheck" | "quitOnClose");
@@ -4148,7 +4280,9 @@ impl BeeperGuiApp {
             let wait = std::time::Duration::from_millis((at - now_unix_millis()).max(1) as u64);
             iced::time::every(wait).map(|_| UiMessage::CheckReminders)
         });
-        let animated = rising || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5);
+        let animated = rising
+            || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
+            || self.pref_flash.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 2.0);
         let tray = (cfg!(target_os = "linux") && self.store.read().unwrap().settings.on("showTrayIcon"))
             .then(|| Subscription::run(tray::events).map(UiMessage::Tray));
         let notes = (!self.notifications.is_empty())
@@ -7389,16 +7523,44 @@ impl BeeperGuiApp {
         let st = self.store.read().unwrap();
         let me = st.me();
         let name = me.full_name.clone().expect("self name");
+        let hits = search_settings(&self.settings_query);
         let search_input = text_input("Search Settings", &self.settings_query)
+            .id("settings-search")
             .on_input(UiMessage::SettingsQueryChanged)
+            .on_submit_maybe(hits.get(self.settings_focus).map(|&h| UiMessage::PickSetting(h)))
             .size(13)
             .line_height(Pixels(16.0))
             .padding(0)
             .style(input_style(CLEAR, p.strong, p.text, p.accent, 0.0));
+        let clear = (!self.settings_query.is_empty()).then(|| {
+            button(ic(icon::CLOSE, 12.0).color(p.strong))
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
+                .on_press(UiMessage::SettingsQueryChanged(String::new()))
+        });
         let search = container(
-            row![ic(icon::SEARCH, 16.0).color(p.text), search_input].spacing(8).align_y(Center).padding([6, 8]),
+            row![ic(icon::SEARCH, 16.0).color(p.text), search_input]
+                .push(clear)
+                .spacing(8)
+                .align_y(Center)
+                .padding([6, 8]),
         )
         .style(fill_box(p.search, 38.0));
+        // The search results draw the icons at Desktop's 11 px instead of 13 px.
+        let tile = |tab: SettingsTab, small: bool, alpha: f32| {
+            let (_, glyph, rgb) = tab.meta();
+            let em = if small { 11.0 } else { 13.0 };
+            let glyph: El = match glyph {
+                TabIcon::Glyph(g) => ic(g, em).color(Color::WHITE.scale_alpha(alpha)).into(),
+                TabIcon::Svg(doc) => {
+                    let (w, h) = svg_size(doc);
+                    svg(svg::Handle::from_memory(doc)).width(w * em / 13.0).height(h * em / 13.0).opacity(alpha).into()
+                }
+            };
+            let fill = Color::from_rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8).scale_alpha(alpha);
+            let (size, radius) = if small { (16, 4.0) } else { (20, 6.0) };
+            container(glyph).center(size).style(fill_box(fill, radius))
+        };
         let free = container(semi("Free", 10.0).color(p.strong)).padding([4, 6]).style(fill_box(p.chip, 25.0));
         let profile = row![
             avatar(&name, 32.0, p),
@@ -7412,21 +7574,13 @@ impl BeeperGuiApp {
         .height(44)
         .padding([0, 8]);
         let nav = SettingsTab::ALL.iter().fold(Column::new(), |c, &tab| {
-            let (label, glyph, rgb) = tab.meta();
-            let on = tab == self.active_settings_tab && self.settings_query.is_empty();
-            let glyph: El = match glyph {
-                TabIcon::Glyph(g) => ic(g, 13.0).color(Color::WHITE).into(),
-                TabIcon::Svg(doc) => svg(svg::Handle::from_memory(doc)).width(Shrink).height(Shrink).into(),
-            };
-            let tile = container(glyph)
-                .center(20)
-                .style(fill_box(Color::from_rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8), 6.0));
+            let on = tab == self.active_settings_tab;
             let count = (tab == SettingsTab::Accounts).then(|| {
                 container(txt(st.accounts.len().to_string(), 11.0).color(p.strong))
                     .center(18)
                     .style(fill_box(p.chip, 9.0))
             });
-            let line = row![tile, txt(label, 14.0).color(p.strong), Space::new().width(Fill)]
+            let line = row![tile(tab, false, 1.0), txt(tab.meta().0, 14.0).color(p.strong), Space::new().width(Fill)]
                 .push(count)
                 .spacing(8)
                 .align_y(Center)
@@ -7446,21 +7600,66 @@ impl BeeperGuiApp {
                     .padding(Padding::ZERO.left(36.0))
             }))
         });
+        // Desktop's search results: the query in each label is at full color, and the rest at half.
+        let q = self.settings_query.to_lowercase();
+        let marked = |label: &'static str, max: f32, base: Color, hi: Color| {
+            let lower = label.to_lowercase();
+            assert_eq!(lower.len(), label.len(), "{label} keeps its length in lower case");
+            let s = style::clamped(label, max, 1, 13.0, Weight::Normal);
+            let cut = s.strip_suffix('…').unwrap_or(&s).len();
+            assert!(label.starts_with(&s[..cut]), "{label} has single spaces");
+            let (a, b) = lower.find(&q).map_or((0, 0), |i| (i.min(cut), (i + q.len()).min(cut)));
+            rich_text![
+                span::<(), _>(s[..a].to_string()).color(base),
+                span(s[a..b].to_string()).color(hi),
+                span(s[b..].to_string()).color(base)
+            ]
+            .size(13)
+            .line_height(Pixels(16.0))
+            .wrapping(iced::widget::text::Wrapping::None)
+        };
+        let results = hits.iter().enumerate().fold(Column::new(), |c, (i, &hit)| {
+            let picked = self.settings_pick == Some(hit);
+            let (line, alpha): (El, f32) = match hit {
+                SettingsHit::Section(tab, true) => {
+                    let base = if picked { Color::WHITE } else { p.strong.scale_alpha(0.5) };
+                    let title = marked(hit.label(), 207.0, base, p.strong);
+                    (row![tile(tab, true, 1.0), title].spacing(8).align_y(Center).padding([4, 8]).into(), 1.0)
+                }
+                SettingsHit::Section(tab, false) => {
+                    let base = if picked { Color::WHITE } else { p.strong }.scale_alpha(0.25);
+                    let title = marked(hit.label(), 207.0, base, base);
+                    (row![tile(tab, true, 0.5), title].spacing(8).align_y(Center).padding([4, 8]).into(), 0.5)
+                }
+                _ => {
+                    let ink = if picked { Color::WHITE } else { p.strong };
+                    let label = marked(hit.label(), 203.0, ink.scale_alpha(0.5), ink);
+                    (container(label).padding(Padding::new(6.0).left(36.0).right(8.0)).into(), 1.0)
+                }
+            };
+            let bg = match (picked, i == self.settings_focus) {
+                (true, _) => p.accent,
+                (false, true) => p.strong.scale_alpha(0.1),
+                (false, false) => CLEAR,
+            };
+            let line = container(line).width(Fill).id(format!("hit-{i}")).style(fill_box(bg.scale_alpha(alpha), 6.0));
+            c.push(mouse_area(line).on_enter(UiMessage::SettingsFocus(i)).on_release(UiMessage::PickSetting(hit)))
+        });
+        let list: El = match self.settings_query.trim().is_empty() {
+            true => column![profile, nav].into(),
+            false => results.into(),
+        };
         let left = column![
             container(semi("Settings", 14.0).color(p.strong)).center_y(35).padding([0, 8]),
             search,
-            scrollable(column![profile, nav]).direction(bar()).height(Fill).style(scroll_style(p.scroll))
+            scrollable(list).id("settings-nav").direction(bar()).height(Fill).style(scroll_style(p.scroll))
         ]
         .spacing(8)
         .width(270)
         .padding(Padding::new(8.0).right(15.0));
-        let content = if self.settings_query.trim().is_empty() {
-            self.settings_content(&st)
-        } else {
-            self.settings_search_results()
-        };
         let right = container(
-            scrollable(container(content).max_width(600).padding(13).center_x(Fill))
+            scrollable(container(self.settings_content(&st)).max_width(600).padding(13).center_x(Fill))
+                .id("settings-pane")
                 .direction(Direction::Vertical(Scrollbar::new().width(15).scroller_width(9).spacing(0)))
                 .height(Fill)
                 .style(gutter_style(p.gutter)),
@@ -7610,20 +7809,6 @@ impl BeeperGuiApp {
         )
         .on_press(cancel)
         .into()
-    }
-
-    fn settings_search_results(&self) -> El<'_> {
-        let p = &self.pal;
-        let hits = search_settings_catalog(&self.settings_query).into_iter().map(|(page, r)| {
-            let tab = SettingsTab::for_section(page);
-            button(column![txt(r.label, 13.0).color(p.text), txt(page, 12.0).color(p.sub)].spacing(2))
-                .padding([10, 12])
-                .width(Fill)
-                .style(ghost(p, 6.0))
-                .on_press(UiMessage::SelectSettingsTab(tab))
-                .into()
-        });
-        group(p, Some("Results"), hits.collect())
     }
 
     fn settings_content(&self, st: &BeeperStore) -> El<'_> {
@@ -7914,7 +8099,17 @@ impl BeeperGuiApp {
                     None => lead = Some(t),
                 },
                 prefs::Item::Group(rows) => {
-                    let g = group(p, heading.take(), rows.iter().map(|r| self.pref_control(r, s)).collect());
+                    let row = |r: &'static prefs::Pref| {
+                        let flash = self
+                            .pref_flash
+                            .filter(|(k, _)| *k == r.key)
+                            .map_or(0.0, |(_, at)| 1.0 - ease_out((at.elapsed().as_secs_f32() / 2.0).min(1.0)));
+                        container(self.pref_control(r, s))
+                            .id(r.key)
+                            .style(fill_box(p.accent.scale_alpha(flash), 8.0))
+                            .into()
+                    };
+                    let g = group(p, heading.take(), rows.iter().map(row).collect());
                     out.push(match lead.take() {
                         Some(t) => {
                             let t = txt(t, 13.0).line_height(Pixels(18.0)).color(p.sub);

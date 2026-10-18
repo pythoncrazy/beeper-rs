@@ -236,19 +236,17 @@ pub const NOTIFICATIONS: &[Item] = &[
 pub const PAGES: [(&str, &[Item]); 3] =
     [("General", GENERAL), ("Appearance", APPEARANCE), ("Notifications", NOTIFICATIONS)];
 
-pub fn all() -> impl Iterator<Item = (&'static str, &'static Pref)> {
+/// The rows of the settings pages, with the page of each.
+pub fn rows() -> impl Iterator<Item = (&'static str, &'static Pref)> {
     PAGES.iter().flat_map(|(page, items)| {
-        items.iter().flat_map(move |i| match i {
-            Item::Group(prefs) => prefs
-                .iter()
-                .flat_map(|p| match p.control {
-                    Control::Archive(scope, age) => vec![scope, age],
-                    _ => vec![p],
-                })
-                .map(move |p| (*page, p))
-                .collect::<Vec<_>>(),
-            _ => Vec::new(),
-        })
+        items.iter().flat_map(|i| if let Item::Group(prefs) = i { *prefs } else { &[] }).map(move |p| (*page, p))
+    })
+}
+
+pub fn all() -> impl Iterator<Item = (&'static str, &'static Pref)> {
+    rows().flat_map(|(page, p)| match p.control {
+        Control::Archive(scope, age) => vec![(page, scope), (page, age)],
+        _ => vec![(page, p)],
     })
 }
 

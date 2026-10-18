@@ -121,11 +121,14 @@ fn session(cloud: &Cloud, jwt: &str) -> Result<Outcome, CloudError> {
 
 pub const FREE_ACCOUNTS: usize = 10;
 
+/// The networks that you can add an account on here.
+pub fn addable() -> impl Iterator<Item = &'static beeper_core::models::NetworkSpec> {
+    NETWORK_SPECS[1..].iter().filter(|n| cfg!(target_os = "macos") || n.bridge_id != "imessage")
+}
+
 pub fn network_grid(accounts: &[BridgeAccountInfo], query: &str, ink: Color) -> El<'static> {
     let q = query.trim().to_lowercase();
-    let tiles: Vec<El<'static>> = NETWORK_SPECS[1..]
-        .iter()
-        .filter(|n| cfg!(target_os = "macos") || n.bridge_id != "imessage")
+    let tiles: Vec<El<'static>> = addable()
         .filter(|n| n.display_name.to_lowercase().contains(&q) || n.bridge_id.contains(&q))
         .map(|n| {
             let count = accounts.iter().filter(|a| account_network(&a.bridge_id).bridge_id == n.bridge_id).count();
