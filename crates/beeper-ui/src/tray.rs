@@ -11,6 +11,8 @@ const MENU: &str = "/MenuBar";
 pub enum Event {
     /// The tray host shows the icon.
     Up,
+    /// A click on the icon, which shows the window unless it shows and has focus.
+    Activate,
     Show,
     Hide,
     Quit,
@@ -74,7 +76,7 @@ impl Item {
         zbus::zvariant::ObjectPath::from_static_str_unchecked(MENU)
     }
     fn activate(&self, _x: i32, _y: i32) {
-        _ = self.tx.send(Event::Show);
+        _ = self.tx.send(Event::Activate);
     }
     fn secondary_activate(&self, _x: i32, _y: i32) {}
     fn context_menu(&self, _x: i32, _y: i32) {}
@@ -92,22 +94,22 @@ struct Menu {
 }
 
 /// Desktop's tray menu: "Minimize to Tray" while the window shows, "Show Window" while it hides, then "Quit Beeper".
-const ENTRIES: [(i32, &str, &str, Event); 3] = [
-    (1, "Minimize to Tray", "Alt", Event::Hide),
-    (2, "Show Window", "", Event::Show),
-    (3, "Quit Beeper", "Control", Event::Quit),
+const ENTRIES: [(i32, &str, &[&str], Event); 3] = [
+    (1, "Minimize to Tray", &["Control", "Alt", "q"], Event::Hide),
+    (2, "Show Window", &[], Event::Show),
+    (3, "Quit Beeper", &["Control", "q"], Event::Quit),
 ];
 
 impl Menu {
-    fn items(&self) -> impl Iterator<Item = &'static (i32, &'static str, &'static str, Event)> + '_ {
+    fn items(&self) -> impl Iterator<Item = &'static (i32, &'static str, &'static [&'static str], Event)> + '_ {
         ENTRIES.iter().filter(|e| e.3 != if self.visible { Event::Show } else { Event::Hide })
     }
 }
 
-fn props(label: &str, modifier: &str) -> HashMap<String, OwnedValue> {
+fn props(label: &str, keys: &[&str]) -> HashMap<String, OwnedValue> {
     let mut p = HashMap::from([("label".to_string(), OwnedValue::from(zbus::zvariant::Str::from(label.to_string())))]);
-    if !modifier.is_empty() {
-        let keys = vec![vec![modifier.to_string(), "q".to_string()]];
+    if !keys.is_empty() {
+        let keys = vec![keys.iter().map(|k| k.to_string()).collect::<Vec<_>>()];
         p.insert("shortcut".into(), OwnedValue::try_from(zbus::zvariant::Value::from(keys)).expect("shortcut value"));
     }
     p

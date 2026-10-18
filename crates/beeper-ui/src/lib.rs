@@ -13,6 +13,7 @@ mod tray {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Event {
         Up,
+        Activate,
         Show,
         Hide,
         Quit,
@@ -3768,7 +3769,9 @@ impl BeeperGuiApp {
                 self.tray_up = true;
                 self.tray_sent = (None, true);
             }
-            UiMessage::Tray(Ok(tray::Event::Show)) => return self.set_hidden(false),
+            // Electron cannot pop up the tray menu on Linux, so Desktop's click on a focused window does nothing.
+            UiMessage::Tray(Ok(tray::Event::Activate)) if !self.hidden && self.focused => {}
+            UiMessage::Tray(Ok(tray::Event::Show | tray::Event::Activate)) => return self.set_hidden(false),
             UiMessage::Tray(Ok(tray::Event::Hide)) => return self.set_hidden(true),
             UiMessage::Tray(Ok(tray::Event::Quit)) => return iced::exit(),
             UiMessage::Tray(Err(e)) | UiMessage::TrayFailed(e) => {
