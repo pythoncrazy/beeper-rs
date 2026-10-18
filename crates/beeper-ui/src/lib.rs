@@ -368,6 +368,8 @@ pub enum UiMessage {
     VideoDecoded(String, Result<Frames, String>),
     Pasted(Result<Option<Png>, String>),
     DiscardPaste,
+    LinkPreviewLoaded(String, Result<Option<beeper_core::cloud::PagePreview>, String>),
+    RemoveLinkPreview(String),
     PickEmoji(usize),
     AnimationTick,
     RecoveryInputChanged(String),
@@ -672,6 +674,14 @@ fn icon_btn<'a>(p: &Palette, c: char, size: f32, frame: f32, color: Color, msg: 
     button(container(ic(c, size).color(color)).center(frame)).padding(0).style(ghost(p, 8.0)).on_press(msg).into()
 }
 
+/// Desktop's `remove-btn`: a 20px round button over the top right corner of a composer attachment.
+fn removable<'a>(p: &Palette, item: impl Into<El<'a>>, msg: UiMessage) -> El<'a> {
+    let close = container(ic(icon::CLOSE, 12.0).color(p.strong)).center(20);
+    let close = button(close).padding(0).style(btn_style([p.elevated, p.hover, p.selected], [p.strong; 3], 10.0));
+    let item = container(item).padding(Padding::ZERO.top(5.0).right(5.0));
+    stack![item, row![Space::new().width(Fill), close.on_press(msg)]].width(Shrink).into()
+}
+
 fn count_badge<'a>(c: &Chat, bg: Color, fg: Color, h: f32) -> El<'a> {
     let n = if c.unread_count > 0 { c.unread_count.to_string() } else { String::new() };
     let empty = n.is_empty() && c.unread_mentions == 0;
@@ -750,6 +760,19 @@ pub struct PendingMedia {
     pub is_gif: bool,
     pub size: (u32, u32),
     pub frames: Frames,
+}
+
+/// Desktop's composer `linkPreviews` entry: a `com.beeper.linkpreviews` entry and its image when loaded.
+pub enum LinkState {
+    Loading,
+    Loaded(serde_json::Value, Option<(Vec<u8>, image::Handle)>),
+    Discarded,
+}
+
+/// The links that Desktop previews in the composer.
+fn text_urls(text: &str) -> Vec<&str> {
+    let link = |w: &&str| (w.starts_with("https://") || w.starts_with("http://")) && !w.contains('@');
+    text.split_whitespace().filter(link).collect()
 }
 
 /// JavaScript's `encodeURIComponent`, which Desktop uses for chat links.
@@ -1683,6 +1706,7 @@ pub struct BeeperGuiApp {
     pub selected_chat_id: Option<String>,
     pub hotkey_query: String,
     pub pasted: Option<PendingMedia>,
+    pub composer_links: Vec<(String, LinkState)>,
     pub show_filter_menu: bool,
     /// The chat whose context menu is open, and where it opens in the window.
     pub chat_menu: Option<(String, Point)>,
@@ -1804,6 +1828,7 @@ impl BeeperGuiApp {
             selected_chat_id: None,
             hotkey_query: String::new(),
             pasted: None,
+            composer_links: Vec::new(),
             show_filter_menu: false,
             chat_menu: None,
             chat_sub: None,
@@ -2312,15 +2337,53 @@ impl BeeperGuiApp {
             Outgoing::Image { txn, bytes, name, mime, size, caption, reply_to }
         } else {
             let reply_to = self.reply_to_message_id.take();
-            let (_, txn, _) =
+            let urls = text_urls(&text);
+            let preview = self.composer_links.iter().find_map(|(u, s)| match s {
+                LinkState::Loaded(v, img) if urls.contains(&u.as_str()) => {
+                    Some((v.clone(), img.as_ref().map(|(b, _)| b.clone())))
+                }
+                _ => None,
+            });
+            let (id, txn, _) =
                 st.send_message(&chat_id, Some(text.clone()), reply_to.clone(), None).expect("send message");
+            if let Some(link) = preview.as_ref().and_then(|(v, _)| beeper_core::matrix::link(v)) {
+                let i = st.msg_idx_by_id[&id];
+                st.update_message(i, |m| m.links = vec![link]);
+            }
             st.mark_chat_read(&chat_id, true);
-            Outgoing::Send { txn, text, reply_to }
+            Outgoing::Send { txn, text, reply_to, preview }
         };
         st.queue(&chat_id, out);
         self.composer_text.clear();
+        self.composer_links.clear();
         drop(st);
         self.refresh_theme_and_tray();
+    }
+
+    /// Desktop's `fetchLinkPreviews`: forget the links that left the composer, and load the new ones unless "Disable
+    /// link previews" is on or the network cannot send previews.
+    fn fetch_link_previews(&mut self) -> Task<UiMessage> {
+        use beeper_core::models::NetworkKind::*;
+        let urls: Vec<String> = text_urls(&self.composer_text).into_iter().map(str::to_string).collect();
+        self.composer_links.retain(|(u, _)| urls.contains(u));
+        let st = self.store.read().unwrap();
+        let chat = self.selected_chat_id.as_ref().and_then(|c| st.resolve_chat_idx(c)).map(|i| &st.chats[i]);
+        let kind = chat.map(|c| account_network(&c.account_id).kind);
+        let can =
+            matches!(kind, Some(Beeper | WhatsApp | TwitterX | Telegram | Slack | GoogleMessages | Signal | Line));
+        if !can || st.settings.on("noOutgoingLinkPreviews") {
+            return Task::none();
+        }
+        drop(st);
+        let mut tasks = Vec::new();
+        for url in urls {
+            if self.composer_links.iter().all(|(u, _)| *u != url) {
+                self.composer_links.push((url.clone(), LinkState::Loading));
+                let load = beeper_core::cloud::link_preview(url.clone());
+                tasks.push(Task::perform(load, move |r| UiMessage::LinkPreviewLoaded(url, r)));
+            }
+        }
+        Task::batch(tasks)
     }
 
     fn push_outbox(&mut self) -> Task<UiMessage> {
@@ -2463,7 +2526,7 @@ impl BeeperGuiApp {
                 });
                 drop(st);
                 self.composer_text = v;
-                return task.unwrap_or_else(Task::none);
+                return Task::batch([task.unwrap_or_else(Task::none), self.fetch_link_previews()]);
             }
             UiMessage::SubmitComposer if !self.emoji_suggestions(&self.store.read().unwrap()).is_empty() => {
                 return self.update(UiMessage::PickEmoji(self.suggest));
@@ -3252,6 +3315,33 @@ impl BeeperGuiApp {
                 Err(e) => self.status_banner = e,
             },
             UiMessage::DiscardPaste => self.pasted = None,
+            UiMessage::LinkPreviewLoaded(url, r) => {
+                let entry = self.composer_links.iter_mut().find(|(u, s)| *u == url && matches!(s, LinkState::Loading));
+                if let Some((_, s)) = entry {
+                    *s = match r {
+                        Ok(Some((mut v, bytes))) => {
+                            let image = bytes.and_then(|b| {
+                                let format = ::image::guess_format(&b).ok()?;
+                                let reader = ::image::ImageReader::with_format(std::io::Cursor::new(&b), format);
+                                let (w, h) = reader.into_dimensions().ok()?;
+                                v["og:image:width"] = w.into();
+                                v["og:image:height"] = h.into();
+                                v["og:image:type"] = format.to_mime_type().into();
+                                Some((b.clone(), image::Handle::from_bytes(b)))
+                            });
+                            LinkState::Loaded(v, image)
+                        }
+                        Ok(None) => LinkState::Discarded,
+                        Err(e) => {
+                            eprintln!("link preview failed: {e}");
+                            LinkState::Discarded
+                        }
+                    };
+                }
+            }
+            UiMessage::RemoveLinkPreview(url) => {
+                self.composer_links.iter_mut().filter(|(u, _)| *u == url).for_each(|(_, s)| *s = LinkState::Discarded);
+            }
             UiMessage::PasteClipboard => return Task::perform(clipboard_image(), UiMessage::Pasted),
             UiMessage::Emoji(m) => return self.update_emoji(m),
             UiMessage::Upserted(m) => {
@@ -6003,14 +6093,47 @@ impl BeeperGuiApp {
             let preview = container(image(h).height(66).content_fit(iced::ContentFit::Contain))
                 .clip(true)
                 .style(bordered_box(CLEAR, fg, 1.0, 8.0));
-            let close = icon_btn(p, icon::CLOSE, 12.0, 20.0, p.text, UiMessage::DiscardPaste);
-            row![stack![preview, row![Space::new().width(Fill), close]].width(Shrink)].padding([6, 54])
+            row![removable(p, preview, UiMessage::DiscardPaste)].padding([6, 54])
         });
         let send = button(container(ic(icon::ARROW_UP, 18.0).color(Color::WHITE)).center(36))
             .padding(0)
             .style(btn_style([if ready { p.accent } else { p.send_btn }, p.accent, p.accent], [p.text; 3], 18.0))
             .on_press(UiMessage::SubmitComposer);
-        let extras = Column::new().push(banner).push(gif_picker).push(pasted);
+        let urls = text_urls(&self.composer_text);
+        let links = self.composer_links.iter().filter(|(u, _)| urls.contains(&u.as_str())).filter_map(|(u, s)| {
+            let card: El<'a> = match s {
+                LinkState::Discarded => return None,
+                LinkState::Loading => {
+                    let bar = |w: f32| container(Space::new()).width(w).height(12).style(fill_box(p.hover, 12.0));
+                    let bars = column![bar(111.0), bar(47.0)].spacing(8);
+                    container(bars).width(180).padding([8, 11]).style(fill_box(p.input, 17.0)).into()
+                }
+                LinkState::Loaded(v, img) => {
+                    let title = v["og:title"].as_str().expect("previews have a title");
+                    let host = u.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(u).to_string();
+                    let img = img
+                        .as_ref()
+                        .map(|(_, h)| image(h.clone()).width(180).height(101).content_fit(iced::ContentFit::Cover));
+                    let wide = if img.is_some() { 158.0 } else { 338.0 };
+                    let link = row![
+                        ic(icon::LINK, 12.0).color(p.weak),
+                        txt(host, 11.0).line_height(Pixels(14.0)).color(p.weak)
+                    ];
+                    let text = column![
+                        clamp(title, wide, 3, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(p.strong),
+                        link.spacing(4).align_y(Center)
+                    ];
+                    let card = container(column![].push(img).push(text.spacing(8).padding([12, 11])));
+                    card.width(if wide < 300.0 { Length::Fixed(180.0) } else { Shrink })
+                        .clip(true)
+                        .style(fill_box(p.link_card, 17.0))
+                        .into()
+                }
+            };
+            Some(removable(p, card, UiMessage::RemoveLinkPreview(u.clone())))
+        });
+        let links = Column::with_children(links).spacing(4).padding([2, 54]);
+        let extras = Column::new().push(banner).push(gif_picker).push(pasted).push(links);
         column![extras, row![plus, pill, send].spacing(8).align_y(Center).padding(8)].into()
     }
 

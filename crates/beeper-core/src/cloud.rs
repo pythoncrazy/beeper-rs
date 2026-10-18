@@ -305,6 +305,37 @@ pub async fn http_bytes(url: &str) -> Result<Vec<u8>, String> {
     resp.bytes().await.map(|b| b.to_vec()).map_err(|e| e.to_string())
 }
 
+/// A `com.beeper.linkpreviews` entry without its image, and the bytes of the image.
+pub type PagePreview = (Value, Option<Vec<u8>>);
+
+/// The Beeper SDK's link preview of a web page, with the rules of Desktop's `getLinkPreview`.
+pub async fn link_preview(url: String) -> Result<Option<PagePreview>, String> {
+    let agent = (reqwest::header::USER_AGENT, "BeeperLinkPreviewBot/1.0");
+    let resp = http_client().get(&url).header(agent.0, agent.1).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {} for {url}", resp.status().as_u16()));
+    }
+    let page = resp.url().clone();
+    let tags = crate::codec::page_meta(&resp.text().await.map_err(|e| e.to_string())?);
+    let get = |k: &str| tags.iter().find(|(n, c)| n == k && !c.is_empty()).map(|(_, c)| c.clone());
+    let image = get("og:image:secure_url").or_else(|| get("og:image")).and_then(|i| page.join(&i).ok());
+    let (title, summary) =
+        (get("og:title").or_else(|| get("title")), get("og:description").or_else(|| get("description")));
+    let Some(kind) = get("og:type").filter(|_| title.is_some() || image.is_some() || summary.is_some()) else {
+        return Ok(None);
+    };
+    let title = title.unwrap_or("Untitled".into());
+    let mut p = json!({ "matched_url": url, "og:url": url, "og:title": title, "og:type": kind });
+    if let Some(s) = summary {
+        p["og:description"] = s.into();
+    }
+    let bytes = match image {
+        Some(i) => Some(http_bytes(i.as_str()).await?),
+        None => None,
+    };
+    Ok(Some((p, bytes)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -380,7 +380,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
     }
 }
 
-fn link(p: &Value) -> Option<MessageLink> {
+pub fn link(p: &Value) -> Option<MessageLink> {
     Some(MessageLink {
         url: s(&p["matched_url"]).or(s(&p["og:url"]))?,
         title: s(&p["og:title"]).unwrap_or_default(),
@@ -675,6 +675,8 @@ pub enum Outgoing {
         txn: String,
         text: String,
         reply_to: Option<String>,
+        /// A link preview with the `og:image:type` of its image.
+        preview: Option<crate::cloud::PagePreview>,
     },
     Edit {
         target: String,
@@ -753,11 +755,27 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
     let e = |x: matrix_sdk::Error| x.to_string();
     let sent = |txn: String, id: OwnedEventId| store.write().unwrap().sent.insert(txn, id.to_string());
     match out {
-        Outgoing::Send { txn, text, reply_to } => {
+        Outgoing::Send { txn, text, reply_to, preview } => {
             let mut content = RoomMessageEventContent::text_plain(text);
             content.relates_to =
                 reply_to.map(|r| event(r).map(|id| Relation::Reply(Reply::with_event_id(id)))).transpose()?;
-            sent(txn.clone(), room.send(content).with_transaction_id(txn.into()).await.map_err(e)?.response.event_id);
+            let mut content = serde_json::to_value(content).expect("message JSON");
+            if let Some((mut p, image)) = preview {
+                if let Some(bytes) = image {
+                    if room.latest_encryption_state().await.map_err(e)?.is_encrypted() {
+                        let file = client.upload_encrypted_file(&mut bytes.as_slice()).await.map_err(e)?;
+                        p["beeper:image:encryption"] = serde_json::to_value(file).expect("encrypted file JSON");
+                    } else {
+                        let mime: mime::Mime =
+                            p["og:image:type"].as_str().expect("an image type").parse().expect("a MIME type");
+                        let uri = client.media().upload(&mime, bytes, None).await.map_err(e)?.content_uri;
+                        p["og:image"] = uri.to_string().into();
+                    }
+                }
+                content["com.beeper.linkpreviews"] = Value::Array(vec![p]);
+            }
+            let id = room.send_raw("m.room.message", content).with_transaction_id(txn.as_str().into());
+            sent(txn, id.await.map_err(e)?.response.event_id);
         }
         Outgoing::Edit { target, text } => {
             let content = RoomMessageEventContent::text_plain(text)
