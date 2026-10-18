@@ -181,7 +181,7 @@ impl BeeperGuiApp {
                 }
             }
             Msg::SeekEnd => audio.output(),
-            Msg::Menu => audio.menu = Some(self.cursor),
+            Msg::Menu => audio.menu = Some(self.cursor.get()),
             Msg::Rate(rate) => {
                 let playing = audio.now.as_ref().is_some_and(|t| t.since.is_some());
                 audio.pause();
