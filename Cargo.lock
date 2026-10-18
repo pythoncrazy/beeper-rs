@@ -450,12 +450,8 @@ dependencies = [
 name = "beeper-core"
 version = "4.3.176"
 dependencies = [
- "aes",
- "cbc",
  "chrono",
  "futures-util",
- "hkdf",
- "hmac",
  "matrix-sdk",
  "matrix-sdk-crypto",
  "mime",
@@ -465,8 +461,8 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sha2 0.11.1",
  "tokio",
+ "vodozemac",
 ]
 
 [[package]]

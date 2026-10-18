@@ -29,7 +29,6 @@ use matrix_sdk::ruma::events::{GlobalAccountDataEventType, RoomAccountDataEventT
 use matrix_sdk::ruma::serde::Raw;
 use matrix_sdk::ruma::OwnedEventId;
 use matrix_sdk::{Client, LoopCtrl, Room, RoomMemberships, SessionMeta, SessionTokens};
-use matrix_sdk_crypto::vodozemac;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::oneshot;
@@ -1214,17 +1213,9 @@ async fn refresh_e2ee(client: &Client, store: &SharedStore) {
 const DESKTOP_PICKLE_KEY: &[u8] = b"pickle";
 
 fn unpickle_secret(pickle: &str) -> Result<String, String> {
-    use aes::cipher::{block_padding::Pkcs7, BlockModeDecrypt, KeyIvInit};
-    use hmac::{KeyInit, Mac};
     let raw = vodozemac::base64_decode(pickle).map_err(|e| e.to_string())?;
-    let (ciphertext, tag) = raw.split_at(raw.len().checked_sub(8).ok_or("the secret is too short")?);
-    let mut keys = [0u8; 80];
-    hkdf::Hkdf::<sha2::Sha256>::new(Some(&[0]), DESKTOP_PICKLE_KEY).expand(b"Pickle", &mut keys).expect("80 bytes");
-    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(&keys[32..64]).expect("any HMAC key length");
-    mac.update(ciphertext);
-    mac.verify_truncated_left(tag).map_err(|_| "the secret has a bad MAC")?;
-    let aes = cbc::Decryptor::<aes::Aes256>::new_from_slices(&keys[..32], &keys[64..]).expect("AES-256 key and IV");
-    let plain = aes.decrypt_padded_vec::<Pkcs7>(ciphertext).map_err(|e| e.to_string())?;
+    let plain =
+        vodozemac::hazmat::Cipher::new_pickle(DESKTOP_PICKLE_KEY).decrypt_pickle(&raw).map_err(|e| e.to_string())?;
     String::from_utf8(plain).map_err(|e| e.to_string())
 }
 
