@@ -479,6 +479,8 @@ const REMINDER_ORDERS: [&str; 4] = [
     "Order by Newest Message",
 ];
 const MENU_ITEM: f32 = 26.0;
+/// Desktop's `--chat-view-bubble-padding-x`, which also insets the message footer.
+const BUBBLE_PAD_X: f32 = 11.0;
 const SUB_MENU_W: [f32; 2] = [124.0, 257.0];
 const REMIND_PRESETS: [&str; 5] = ["In an Hour", "In Two Hours", "This Evening", "Tomorrow", "Next Week"];
 
@@ -4342,7 +4344,7 @@ impl BeeperGuiApp {
                 r.push((i > 0).then(|| container(txt("·", 12.0).color(p.muted.scale_alpha(0.8))).padding([0, 4])))
                     .push(txt(t, 12.0).line_height(Pixels(15.0)).color(p.muted))
             });
-            container(line).padding([0, 4])
+            container(line).padding([0.0, BUBBLE_PAD_X])
         });
         let edits = (self.expanded_history_msg_id.as_ref() == Some(&m.id)).then(|| {
             m.edit_history.iter().fold(Column::new().spacing(2), |c, e| {
@@ -4355,12 +4357,12 @@ impl BeeperGuiApp {
             let mut keys: Vec<&str> = m.reactions.iter().map(|r| r.reaction_key.as_str()).collect();
             keys.sort_unstable();
             keys.dedup();
-            let min_w = keys.len() as f32 * 36.0;
+            let min_w = keys.len() as f32 * 36.0 + 2.0 * BUBBLE_PAD_X;
             let pills = keys.into_iter().fold(Row::new().spacing(2), |r, k| {
                 let reactors: Vec<_> = m.reactions.iter().filter(|x| x.reaction_key == k).collect();
                 let n = reactors.len();
                 let own = reactors.iter().any(|x| st.is_me(&x.participant_id));
-                let mut pill = row![txt(k.to_string(), 14.0).line_height(1.0)].spacing(4).align_y(Center);
+                let mut pill = row![txt(k.to_string(), 16.0).line_height(Pixels(15.0))].spacing(4).align_y(Center);
                 if group || n > 1 {
                     for x in reactors.iter().take(3) {
                         let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
@@ -4382,15 +4384,19 @@ impl BeeperGuiApp {
                 };
                 r.push(
                     button(pill)
-                        .padding([4, 6])
+                        .padding([6, 7])
                         .style(bordered_btn([fill, p.selected, p.selected], [p.text; 3], p.card, 2.0, 14.0))
                         .on_press(UiMessage::ToggleReaction(chat.id.clone(), m.id.clone(), k.to_string())),
                 )
             });
             stack![
                 container(column![parts, Space::new().width(min_w)].align_x(if mine { Right } else { iced::Left }))
-                    .padding(Padding::ZERO.bottom(16.0)),
-                container(pills).align_bottom(Fill).align_x(if mine { Right } else { iced::Left }),
+                    .padding(Padding::ZERO.bottom(21.0)),
+                container(pills)
+                    .align_bottom(Fill)
+                    .width(Fill)
+                    .align_x(if mine { Right } else { iced::Left })
+                    .padding([0.0, BUBBLE_PAD_X]),
             ]
             .into()
         };
