@@ -1,5 +1,6 @@
 pub mod emoji;
 pub mod login;
+mod notify;
 pub mod style;
 
 use crate::login::{Login, LoginMsg};
@@ -208,6 +209,9 @@ pub enum UiMessage {
     ToggleAttachMenu,
     ToggleGifPicker,
     Emoji(emoji::EmojiMsg),
+    Upserted(Box<Message>),
+    Notified(Result<(), String>),
+    WindowFocused(bool),
     GifQueryChanged(String),
     GifsLoaded(Result<Vec<KlipyGif>, String>),
     PickGif(KlipyGif),
@@ -1277,6 +1281,9 @@ pub struct BeeperGuiApp {
     emoji: Option<emoji::Picker>,
     emoji_gen: u32,
     emoji_hovered: [bool; 2],
+    booted: String,
+    focused: bool,
+    notified: HashSet<String>,
     pub gif_query: String,
     pub gifs: Vec<KlipyGif>,
     pub gif_loading: bool,
@@ -1370,6 +1377,9 @@ impl BeeperGuiApp {
             emoji: None,
             emoji_gen: 0,
             emoji_hovered: [false; 2],
+            booted: beeper_core::config::now_rfc3339_millis(),
+            focused: false,
+            notified: HashSet::new(),
             gif_query: String::new(),
             gifs: Vec::new(),
             gif_loading: false,
@@ -2294,6 +2304,16 @@ impl BeeperGuiApp {
             UiMessage::DiscardPaste => self.pasted = None,
             UiMessage::PasteClipboard => return Task::perform(clipboard_image(), UiMessage::Pasted),
             UiMessage::Emoji(m) => return self.update_emoji(m),
+            UiMessage::Upserted(m) => {
+                let note = self.notification(&m).map(|(t, b)| Task::perform(notify::show(t, b), UiMessage::Notified));
+                return Task::batch([self.update(UiMessage::StoreChanged)].into_iter().chain(note));
+            }
+            UiMessage::Notified(r) => {
+                if let Err(e) = r {
+                    self.status_banner = format!("Could not show a notification: {e}");
+                }
+            }
+            UiMessage::WindowFocused(focused) => self.focused = focused,
             UiMessage::ToggleGifPicker => {
                 self.show_gif_picker = !self.show_gif_picker;
                 if self.show_gif_picker {
@@ -2679,7 +2699,10 @@ impl BeeperGuiApp {
 
     pub fn subscription(&self) -> Subscription<UiMessage> {
         let changes = Subscription::run_with(StoreFeed(self.store.clone(), 0), |f| {
-            feed(f.0.read().unwrap().ws_tx.subscribe(), |_| UiMessage::StoreChanged)
+            feed(f.0.read().unwrap().ws_tx.subscribe(), |e| match e.message {
+                Some(m) if e.event_type == "message.upserted" => UiMessage::Upserted(Box::new(m)),
+                _ => UiMessage::StoreChanged,
+            })
         });
         let focus = Subscription::run_with(StoreFeed(self.store.clone(), 1), |f| {
             feed(f.0.read().unwrap().focus_tx.subscribe(), UiMessage::FocusRequested)
@@ -2687,6 +2710,8 @@ impl BeeperGuiApp {
         let keys = iced::event::listen_with(|e, _, id| match e {
             Event::Window(window::Event::Closed) => Some(UiMessage::WindowClosed(id)),
             Event::Window(window::Event::Resized(size)) => Some(UiMessage::WindowResized(id, size)),
+            Event::Window(window::Event::Focused) => Some(UiMessage::WindowFocused(true)),
+            Event::Window(window::Event::Unfocused) => Some(UiMessage::WindowFocused(false)),
             Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
                 if modifiers.command()
                     || modifiers.control()

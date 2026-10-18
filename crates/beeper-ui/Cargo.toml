@@ -18,6 +18,7 @@ iced = { version = "0.14.0", default-features = false, features = ["svg", "image
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wgpu = { version = "27.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan"] }
+zbus = { version = "5.19", default-features = false, features = ["async-io"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu = { version = "27.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "metal"] }
