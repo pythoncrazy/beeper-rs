@@ -2088,9 +2088,10 @@ impl BeeperGuiApp {
         let (id, open) = window::open(settings);
         *(if signed_in { &mut app.main_window } else { &mut app.login_window }) = Some(id);
         let cloud = (signed_in && !app.store.read().unwrap().config.demo).then(|| app.refresh_cloud_accounts());
+        let restore = (signed_in && !app.hidden).then(|| app.restore_subwindows());
         let tasks =
             [open.map(UiMessage::WindowOpened), iced::system::theme().map(UiMessage::SystemTheme), app.load_avatars()];
-        (app, Task::batch(tasks.into_iter().chain(cloud)))
+        (app, Task::batch(tasks.into_iter().chain(cloud).chain(restore)))
     }
 
     fn load_avatars(&mut self) -> Task<UiMessage> {
@@ -2234,7 +2235,40 @@ impl BeeperGuiApp {
         }
         let (id, open) = window::open(Self::window_settings(Size::new(793.0, 705.0)));
         self.settings_window = Some(id);
+        self.save_subwindows();
         Task::batch([load, open.map(UiMessage::WindowOpened)])
+    }
+
+    /// Desktop's `subwindow-state`: the chat and settings windows to open again at the next launch.
+    fn save_subwindows(&self) {
+        let threads = self.chat_windows.iter().filter_map(|w| w.1.selected_chat_id.as_deref());
+        let threads =
+            threads.map(|t| serde_json::json!({"windowId": format!("thread-{t}"), "type": "thread", "threadId": t}));
+        let prefs = self.settings_window.map(|_| serde_json::json!({"windowId": "prefs", "type": "prefs"}));
+        let state = serde_json::json!({"openSubwindows": threads.chain(prefs).collect::<Vec<_>>()});
+        let path = self.store.read().unwrap().data_dir.join("subwindow-state.json");
+        std::fs::write(path, state.to_string()).expect("write the subwindow state");
+    }
+
+    /// Opens the windows of the last session, like Desktop's `setupSubwindowRestoreHandler`.
+    fn restore_subwindows(&mut self) -> Task<UiMessage> {
+        let path = self.store.read().unwrap().data_dir.join("subwindow-state.json");
+        let json = match std::fs::read_to_string(path) {
+            Ok(json) => json,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Task::none(),
+            Err(e) => panic!("read the subwindow state: {e}"),
+        };
+        let state: serde_json::Value = serde_json::from_str(&json).expect("a valid subwindow state");
+        let open = state["openSubwindows"].as_array().expect("a list of subwindows").clone();
+        let tasks = open.into_iter().filter_map(|w| match w["type"].as_str().expect("a subwindow type") {
+            "thread" => {
+                let id = w["threadId"].as_str().expect("a thread window has a chat").to_owned();
+                let known = self.store.read().unwrap().resolve_chat_idx(&id).is_some();
+                known.then(|| self.update(UiMessage::OpenChatWindow(id)))
+            }
+            _ => Some(self.open_settings(self.active_settings_tab)),
+        });
+        Task::batch(tasks.collect::<Vec<_>>())
     }
 
     /// Desktop's keys of the settings search: Ctrl F focuses it, ↑ and ↓ move through the results, and Escape clears
@@ -2493,6 +2527,8 @@ impl BeeperGuiApp {
         for pane in std::iter::once(&self.pane).chain(self.chat_windows.iter().map(|w| &w.1)) {
             save_draft(&mut st, pane);
         }
+        drop(st);
+        self.save_subwindows();
         iced::exit()
     }
 
@@ -4048,6 +4084,7 @@ impl BeeperGuiApp {
                     None => Task::none(),
                 });
                 let select = self.update(UiMessage::InWindow(id, Box::new(UiMessage::SelectChat(cid))));
+                self.save_subwindows();
                 return Task::batch([open.discard(), near, select]);
             }
             UiMessage::WindowClosed(id) => {
@@ -4063,6 +4100,7 @@ impl BeeperGuiApp {
                 } else if [self.main_window, self.login_window].contains(&Some(id)) {
                     return self.quit();
                 }
+                self.save_subwindows();
             }
             UiMessage::ScreenshotCaptured(id, shot) => {
                 let is_settings = Some(id) == self.settings_window;
