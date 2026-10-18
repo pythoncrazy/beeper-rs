@@ -923,11 +923,12 @@ fn pill_style(p: &Palette) -> impl Fn(&Theme, button::Status) -> button::Style +
 }
 
 fn badge<'a>(p: &Palette, b: prefs::Badge) -> El<'a> {
-    let label = match b {
-        prefs::Badge::Plus => "+ Plus",
-        prefs::Badge::Labs => "🧪 Labs",
+    let (lead, label) = match b {
+        prefs::Badge::Plus => ("+", "Plus"),
+        prefs::Badge::Labs => ("🧪", "Labs"),
     };
-    container(semi(label, 11.0).color(p.strong)).padding([2, 7]).style(fill_box(p.outline, 9.0)).into()
+    let label = row![semi(lead, 12.0).line_height(1.0), semi(label, 10.0).line_height(Pixels(12.0))];
+    container(label.spacing(2).align_y(Center).padding([4, 6])).style(fill_box(p.chip, 25.0)).into()
 }
 
 const THEME_WINDOW: &str = r##"<rect x="10" y="7" width="76" height="47" rx="4" fill="WIN"/><circle cx="15" cy="12" r="1.4" fill="#ff5f57"/><circle cx="19.5" cy="12" r="1.4" fill="#febc2e"/><circle cx="24" cy="12" r="1.4" fill="#28c840"/><rect x="36" y="16" width="24" height="3" rx="1.5" fill="LINE"/><rect x="14" y="23" width="68" height="2" rx="1" fill="LINE"/><rect x="14" y="28" width="68" height="11" rx="2.5" fill="#0d4ffb"/><circle cx="19.5" cy="33.5" r="3" fill="#fff"/><rect x="25" y="31" width="28" height="1.8" rx=".9" fill="#fff"/><rect x="25" y="34.6" width="48" height="1.5" rx=".75" fill="#bcd2ff"/><rect x="14" y="43" width="68" height="2" rx="1" fill="LINE"/><rect x="14" y="48" width="48" height="2" rx="1" fill="LINE"/>"##;
