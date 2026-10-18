@@ -7934,11 +7934,8 @@ impl BeeperGuiApp {
 }
 
 pub fn write_rgba_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u8]) {
-    let file = std::fs::File::create(path).expect("create png");
-    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), width, height);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    enc.write_header().expect("png header").write_image_data(rgba).expect("png data");
+    let (rgba8, png) = (::image::ExtendedColorType::Rgba8, ::image::ImageFormat::Png);
+    ::image::save_buffer_with_format(path, rgba, width, height, rgba8, png).expect("write png");
 }
 
 pub fn run_native_gui(store: SharedStore) -> iced::Result {
