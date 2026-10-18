@@ -2756,7 +2756,10 @@ impl BeeperGuiApp {
                 self.chat_menu = Some((cid, self.cursor.get()));
                 self.chat_sub = None;
             }
-            UiMessage::OpenMessageMenu(mid) => self.message_menu = Some((mid, self.cursor.get())),
+            UiMessage::OpenMessageMenu(mid) => {
+                self.video.iter_mut().for_each(|v| v.sub = false);
+                self.message_menu = Some((mid, self.cursor.get()));
+            }
             UiMessage::ClickMessage(mid) => {
                 self.selected_msg = (self.selected_msg.as_ref() != Some(&mid)).then_some(mid)
             }
@@ -3554,6 +3557,11 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::CloseModals if self.search_select.is_some() => self.search_select = None,
+            UiMessage::CloseModals
+                if self.message_menu.is_none() && self.video.as_ref().is_some_and(video::Video::is_full) =>
+            {
+                return self.video(video::Msg::Fullscreen);
+            }
             UiMessage::CloseModals => {
                 if self.show_command_palette
                     || self.forward.is_some()
@@ -4102,17 +4110,12 @@ impl BeeperGuiApp {
         }
     }
 
-    pub fn view_main(&self) -> El<'_> {
+    /// The rail, the chat list and the open chat.
+    fn view_body(&self, open: bool) -> El<'_> {
         let p = &self.pal;
         let grip = mouse_area(container(Space::new()).width(8).height(Fill))
             .on_press(UiMessage::DragStart)
             .interaction(mouse::Interaction::ResizingHorizontally);
-        let st = self.store.read().unwrap();
-        // The sync task can drop a chat before StoreChanged reaches update.
-        let known = |c: &str| c.starts_with("draft:") || st.resolve_chat_idx(c).is_some();
-        let open = self.creating_chat.is_none() && self.selected_chat_id.as_deref().is_some_and(known);
-        let menu_open = self.chat_menu.as_ref().is_some_and(|(c, _)| known(c));
-        drop(st);
         let pane = match self.creating_chat {
             Some(_) => self.view_new_chat(),
             None if open => self.view_conversation(),
@@ -4131,7 +4134,17 @@ impl BeeperGuiApp {
         let rail = self.store.read().unwrap().settings.on("showSidebar");
         let rail = rail.then(|| self.view_rail());
         let body = Row::new().push(rail).push(self.view_sidebar()).push(grip).push(right);
-        let base: El<'_> = container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0)).into();
+        container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0)).into()
+    }
+
+    pub fn view_main(&self) -> El<'_> {
+        let st = self.store.read().unwrap();
+        // The sync task can drop a chat before StoreChanged reaches update.
+        let known = |c: &str| c.starts_with("draft:") || st.resolve_chat_idx(c).is_some();
+        let open = self.creating_chat.is_none() && self.selected_chat_id.as_deref().is_some_and(known);
+        let menu_open = self.chat_menu.as_ref().is_some_and(|(c, _)| known(c));
+        drop(st);
+        let base = self.view_full_video().unwrap_or_else(|| self.view_body(open));
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
             (None, true) => Some(self.view_command_palette()),
@@ -4175,6 +4188,12 @@ impl BeeperGuiApp {
         let message_menu = self.message_menu.as_ref().map(|(mid, at)| {
             let (menu, h) = self.view_message_menu(mid);
             let x = if at.x + MESSAGE_MENU_W > self.main_size.width { at.x - MESSAGE_MENU_W } else { at.x };
+            let sub = self.view_speed_menu(mid);
+            let left = sub.is_some() && x + MESSAGE_MENU_W + video::SPEED_MENU_W > self.main_size.width;
+            let (x, menu) = match left {
+                true => (x - video::SPEED_MENU_W, row![].push(sub).push(menu).into()),
+                false => (x, row![menu].push(sub).into()),
+            };
             (menu, x, at.y.min(self.main_size.height - h - 8.0))
         });
         let react = self.emoji.as_ref().and_then(|pk| pk.react.as_ref()).map(|(_, at)| {
@@ -4430,6 +4449,7 @@ impl BeeperGuiApp {
             None => format!("Download {noun}{}", if files == 1 { "" } else { "s" }),
         };
         let rows: Vec<(El, f32)> = [
+            self.video_menu_rows(&mid),
             link.map(|u| vec![item("Copy Link".into(), "", Some(UiMessage::CopyText(u))), rule()]),
             (mine && !text.is_empty())
                 .then(|| vec![item("Edit…".into(), "Ctrl T", Some(UiMessage::StartEdit(mid.clone(), text)))]),
@@ -5677,7 +5697,7 @@ impl BeeperGuiApp {
                     } else if thumb_url.as_ref().and_then(|u| self.media.get(u)?.as_ref()).is_some_and(Result::is_err) {
                         (base, UiMessage::RetryMedia(thumb_url.expect("a failed media has a URL")))
                     } else if let Some(src) = a.src_url.as_ref().filter(|_| is_video && a.is_gif != Some(true)) {
-                        parts = parts.push(self.view_video(src, base, w, h));
+                        parts = parts.push(self.view_video(&m.id, src, base, w, h));
                         continue;
                     } else if is_video && a.is_gif != Some(true) {
                         (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))

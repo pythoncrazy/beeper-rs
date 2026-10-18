@@ -1279,7 +1279,8 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert!(x_status.success(), "beeper-rs GUI on Xvfb :99 exited cleanly");
 
         for (png, min) in [(wl_png, 25_000), (wl_settings_png, 15_000), (x_png, 15_000)] {
-            assert!(std::fs::metadata(png).expect("screenshot PNG is written").len() > min, "{png} is too small");
+            let len = std::fs::metadata(png).expect("screenshot PNG is written").len();
+            assert!(len > min, "{png} has {len} bytes");
         }
         for dir in [wl_runtime, fb_dir] {
             std::fs::remove_dir_all(dir).expect("remove test dir");
