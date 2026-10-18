@@ -4,6 +4,8 @@ pub enum Control {
     Select(&'static [&'static str], u8),
     Slider(u8),
     Archive(&'static Pref, &'static Pref),
+    /// Desktop's `AUDIO_INPUT_DEVICE_ID`, a device name in [`crate::models::BeeperSettings::microphone`].
+    Microphone,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +38,7 @@ impl Pref {
         match self.control {
             Control::Toggle(on) => on as u8,
             Control::Select(_, i) | Control::Slider(i) => i,
-            Control::Archive(..) => unreachable!("the archive row {} has no value", self.key),
+            Control::Archive(..) | Control::Microphone => unreachable!("the row {} has no value", self.key),
         }
     }
 
@@ -45,7 +47,7 @@ impl Pref {
             Control::Toggle(_) => 1,
             Control::Select(options, _) => options.len() as u8 - 1,
             Control::Slider(_) => 100,
-            Control::Archive(..) => unreachable!("the archive row {} has no value", self.key),
+            Control::Archive(..) | Control::Microphone => unreachable!("the row {} has no value", self.key),
         }
     }
 
@@ -123,7 +125,7 @@ pub const GENERAL: &[Item] = &[
         t("emojiAutocomplete", "Enable emoji autocomplete", true),
         t("autoSendGifs", "Automatically send GIFs after selection", false),
         t("autoPlayVoiceNotes", "Automatically play the next voice note", true),
-        s("microphone", "Microphone", &["Select a microphone", "Same as system"], 1),
+        Pref { key: "microphone", label: "Microphone", desc: None, badge: None, requires: None, control: Control::Microphone },
         t("keepEmoticons", "Disable automatic replacement of emoticons with emojis", false),
         t("autoCopyOtp", "Auto copy OTP/2FA codes", true).desc("If the chat is muted, you'll still be notified."),
         s("upArrow", "Press ↑ in the composer to:", &["Move focus to the message list", "Edit your last message"], 0),

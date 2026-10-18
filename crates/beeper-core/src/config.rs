@@ -70,6 +70,7 @@ impl Default for BeeperSettings {
             prefs: Default::default(),
             hotkeys_off: Default::default(),
             reminders_order: 0,
+            microphone: String::new(),
         }
     }
 }

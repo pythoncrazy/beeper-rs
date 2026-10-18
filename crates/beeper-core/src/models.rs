@@ -763,6 +763,8 @@ pub struct BeeperSettings {
     pub prefs: std::collections::BTreeMap<String, u8>,
     pub hotkeys_off: std::collections::BTreeSet<String>,
     pub reminders_order: u8,
+    /// The input device name, or empty for the system default.
+    pub microphone: String,
 }
 
 impl BeeperSettings {
