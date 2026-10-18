@@ -18,7 +18,7 @@ const PEAKS: usize = 1024;
 const WAVE_W: f32 = 165.0;
 
 /// Desktop's `play-fill` and `pause-fill`.
-static ICONS: LazyLock<[svg::Handle; 2]> = LazyLock::new(|| {
+pub(crate) static ICONS: LazyLock<[svg::Handle; 2]> = LazyLock::new(|| {
     ["M6.667 15.834V4.167L15.833 10z", "M11.667 15.834V4.167H15v11.667zm-6.667 0V4.167h3.333v11.667z"].map(|d| {
         let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="{d}"/></svg>"#);
         svg::Handle::from_memory(svg.into_bytes())
@@ -137,10 +137,9 @@ impl Player {
         sound::voice(t.since.map(|_| (samples.clone(), from, self.rate)));
     }
 
-    /// Pause at the current position.
-    fn pause(&mut self) {
-        let t = self.now.as_ref().expect("a current track");
-        let at = self.pos(t);
+    /// Pause at the current position, if playing.
+    pub(crate) fn pause(&mut self) {
+        let Some(at) = self.now.as_ref().filter(|t| t.since.is_some()).map(|t| self.pos(t)) else { return };
         let t = self.now.as_mut().expect("a current track");
         (t.at, t.since) = (at, None);
         sound::voice(None);
@@ -149,6 +148,9 @@ impl Player {
 
 impl BeeperGuiApp {
     pub(crate) fn voice(&mut self, msg: Msg) -> Task<UiMessage> {
+        if let (Msg::Toggle(..) | Msg::SeekEnd, Some(v)) = (&msg, self.video.as_mut()) {
+            v.pause();
+        }
         let audio = &mut self.audio;
         match msg {
             Msg::Loaded(url, clip) => {
@@ -182,9 +184,7 @@ impl BeeperGuiApp {
             Msg::Menu => audio.menu = Some(self.cursor),
             Msg::Rate(rate) => {
                 let playing = audio.now.as_ref().is_some_and(|t| t.since.is_some());
-                if playing {
-                    audio.pause();
-                }
+                audio.pause();
                 (audio.rate, audio.menu) = (rate, None);
                 if playing {
                     audio.now.as_mut().expect("a current track").since = Some(Instant::now());
