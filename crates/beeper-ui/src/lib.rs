@@ -210,7 +210,8 @@ pub enum UiMessage {
     ToggleGifPicker,
     Emoji(emoji::EmojiMsg),
     Upserted(Box<Message>),
-    Notified(Result<(), String>),
+    Notified(Result<(u32, String), String>),
+    NotificationEvent(u32, bool),
     WindowFocused(bool),
     GifQueryChanged(String),
     GifsLoaded(Result<Vec<KlipyGif>, String>),
@@ -1284,6 +1285,7 @@ pub struct BeeperGuiApp {
     booted: String,
     focused: bool,
     notified: HashSet<String>,
+    notifications: HashMap<u32, String>,
     pub gif_query: String,
     pub gifs: Vec<KlipyGif>,
     pub gif_loading: bool,
@@ -1380,6 +1382,7 @@ impl BeeperGuiApp {
             booted: beeper_core::config::now_rfc3339_millis(),
             focused: false,
             notified: HashSet::new(),
+            notifications: HashMap::new(),
             gif_query: String::new(),
             gifs: Vec::new(),
             gif_loading: false,
@@ -2305,13 +2308,17 @@ impl BeeperGuiApp {
             UiMessage::PasteClipboard => return Task::perform(clipboard_image(), UiMessage::Pasted),
             UiMessage::Emoji(m) => return self.update_emoji(m),
             UiMessage::Upserted(m) => {
-                let note = self.notification(&m).map(|(t, b)| Task::perform(notify::show(t, b), UiMessage::Notified));
+                let note = self.notification(&m).map(|(t, b)| {
+                    let chat = m.chat_id.clone();
+                    Task::perform(notify::show(t, b), move |r| UiMessage::Notified(r.map(|id| (id, chat))))
+                });
                 return Task::batch([self.update(UiMessage::StoreChanged)].into_iter().chain(note));
             }
-            UiMessage::Notified(r) => {
-                if let Err(e) = r {
-                    self.status_banner = format!("Could not show a notification: {e}");
-                }
+            UiMessage::Notified(Ok((id, chat))) => _ = self.notifications.insert(id, chat),
+            UiMessage::Notified(Err(e)) => self.status_banner = format!("Could not show a notification: {e}"),
+            UiMessage::NotificationEvent(id, clicked) => {
+                let chat = self.notifications.remove(&id).filter(|_| clicked);
+                return chat.map_or_else(Task::none, |c| self.update(UiMessage::FocusRequested(Some(c))));
             }
             UiMessage::WindowFocused(focused) => self.focused = focused,
             UiMessage::ToggleGifPicker => {
@@ -2755,9 +2762,13 @@ impl BeeperGuiApp {
                         .is_some_and(|f| f.len() > 1)
                 })
             });
+        let notes = (!self.notifications.is_empty())
+            .then(|| Subscription::run(notify::events).map(|(id, clicked)| UiMessage::NotificationEvent(id, clicked)));
         let tick =
             animated.then(|| iced::time::every(std::time::Duration::from_millis(20)).map(|_| UiMessage::AnimationTick));
-        Subscription::batch([changes, focus, keys, system].into_iter().chain(drag).chain(tick).chain(remind))
+        Subscription::batch(
+            [changes, focus, keys, system].into_iter().chain(drag).chain(tick).chain(remind).chain(notes),
+        )
     }
 
     pub fn view(&self, id: window::Id) -> El<'_> {

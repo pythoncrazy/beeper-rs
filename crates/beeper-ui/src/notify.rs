@@ -53,6 +53,9 @@ pub fn body(m: &Message) -> String {
 impl BeeperGuiApp {
     /// The title and body of the notification for a new message, if Desktop shows one.
     pub(crate) fn notification(&mut self, m: &Message) -> Option<(String, String)> {
+        if !cfg!(target_os = "linux") {
+            return None;
+        }
         let st = self.store.read().unwrap();
         let chat = &st.chats[*st.chat_idx_by_id.get(&m.chat_id)?];
         let group = chat.chat_type == "group";
@@ -76,19 +79,62 @@ impl BeeperGuiApp {
 }
 
 #[cfg(target_os = "linux")]
-pub async fn show(title: String, body: String) -> Result<(), String> {
-    let bus = zbus::Connection::session().await.map_err(|e| e.to_string())?;
-    let hints = std::collections::HashMap::<&str, zbus::zvariant::Value>::new();
-    let args = ("Beeper", 0u32, "", title, body, Vec::<&str>::new(), hints, -1i32);
-    let path = "/org/freedesktop/Notifications";
-    let iface = Some("org.freedesktop.Notifications");
-    bus.call_method(iface, path, iface, "Notify", &args).await.map(drop).map_err(|e| e.to_string())
+static BUS: tokio::sync::OnceCell<zbus::Connection> = tokio::sync::OnceCell::const_new();
+
+/// Notification servers send the click signals to the connection that showed the notification.
+#[cfg(target_os = "linux")]
+async fn bus() -> Result<&'static zbus::Connection, String> {
+    BUS.get_or_try_init(zbus::Connection::session).await.map_err(|e| e.to_string())
 }
 
-/// Only the Linux build shows notifications so far.
+#[cfg(target_os = "linux")]
+pub async fn show(title: String, body: String) -> Result<u32, String> {
+    let hints = std::collections::HashMap::<&str, zbus::zvariant::Value>::new();
+    let args = ("Beeper", 0u32, "", title, body, vec!["default", ""], hints, -1i32);
+    let path = "/org/freedesktop/Notifications";
+    let iface = Some("org.freedesktop.Notifications");
+    let reply = bus().await?.call_method(iface, path, iface, "Notify", &args).await.map_err(|e| e.to_string())?;
+    Ok(reply.body().deserialize().expect("Notify returns the notification id"))
+}
+
+/// A notification id, and whether the user clicked it or the server closed it.
+#[cfg(target_os = "linux")]
+pub fn events() -> impl iced::futures::Stream<Item = (u32, bool)> {
+    use iced::futures::StreamExt;
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface("org.freedesktop.Notifications")
+        .expect("a valid match rule")
+        .build();
+    let signals = async move {
+        let bus = bus().await.expect("a notification was shown, so the session bus works");
+        zbus::MessageStream::for_match_rule(rule, bus, None).await.expect("subscribe to notification signals")
+    };
+    iced::futures::stream::once(signals).flatten().filter_map(|m| async move {
+        let m = m.expect("a D-Bus signal");
+        let body = m.body();
+        match m.header().member().expect("signals have a member").as_str() {
+            "ActionInvoked" => {
+                let (id, action): (u32, String) =
+                    body.deserialize().expect("ActionInvoked carries an id and an action");
+                (action == "default").then_some((id, true))
+            }
+            "NotificationClosed" => {
+                Some((body.deserialize::<(u32, u32)>().expect("NotificationClosed carries an id").0, false))
+            }
+            _ => None,
+        }
+    })
+}
+
 #[cfg(not(target_os = "linux"))]
-pub async fn show(_title: String, _body: String) -> Result<(), String> {
-    Ok(())
+pub async fn show(_title: String, _body: String) -> Result<u32, String> {
+    unreachable!("only the Linux build shows notifications")
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn events() -> iced::futures::stream::Empty<(u32, bool)> {
+    unreachable!("only the Linux build shows notifications")
 }
 
 #[cfg(test)]
