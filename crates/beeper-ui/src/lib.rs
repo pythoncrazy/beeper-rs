@@ -228,6 +228,19 @@ impl SettingsTab {
     }
 }
 
+/// A misspelled word of the composer and its suggestions.
+type Typo = (std::ops::Range<usize>, Vec<String>);
+
+/// An item of the composer context menu.
+#[derive(Debug, Clone)]
+pub enum MenuEdit {
+    Replace(String),
+    Learn,
+    Cut,
+    Copy,
+    Paste,
+}
+
 #[derive(Clone)]
 pub enum UiMessage {
     Noop,
@@ -275,6 +288,9 @@ pub enum UiMessage {
     CopyChatLink(String),
     OpenChatMenu(String),
     OpenMessageMenu(String),
+    /// Chromium's composer context menu, on a misspelled word or not.
+    EditMenu(Option<std::ops::Range<usize>>),
+    MenuEdit(MenuEdit),
     /// Select the message, or unselect it when it is selected.
     ClickMessage(String),
     /// Do the "On double-clicking a message" action.
@@ -1802,6 +1818,8 @@ pub struct Pane {
     pub pasted: Option<PendingMedia>,
     pub composer_links: Vec<(String, LinkState)>,
     pub message_menu: Option<(String, Point)>,
+    /// The composer context menu, with the misspelled word and its suggestions.
+    pub edit_menu: Option<(Point, Option<Typo>)>,
     pub selected_msg: Option<String>,
     pub show_attach_menu: bool,
     pub show_gif_picker: bool,
@@ -2049,7 +2067,8 @@ impl BeeperGuiApp {
         let st = app.store.read().unwrap();
         app.hidden = signed_in && st.settings.on("startMinimized") && st.settings.on("showTrayIcon");
         if st.settings.on("spellcheck") {
-            std::thread::spawn(spell::load);
+            let custom = st.data_dir.join("Custom Dictionary.txt");
+            std::thread::spawn(|| spell::load(custom));
         }
         drop(st);
         settings.visible = !app.hidden;
@@ -2700,6 +2719,50 @@ impl BeeperGuiApp {
                     _ => UiMessage::OpenChatWindow(id),
                 };
                 return self.update(msg);
+            }
+            UiMessage::EditMenu(word) => {
+                let text = self.pane.composer.text();
+                if let Some(r) = &word {
+                    self.pane.composer = format::content(&text, r.clone());
+                }
+                let word = word.map(|r| (r.clone(), spell::suggest(&text[r])));
+                self.pane.edit_menu = Some((self.cursor.get(), word));
+            }
+            UiMessage::MenuEdit(edit) => {
+                let (_, word) = self.pane.edit_menu.take().expect("the edit menu is open");
+                let old = self.pane.composer.text();
+                let sel = format::selection(&self.pane.composer).map_or("", |r| &old[r]).to_owned();
+                let focus = operation::focus("composer-input");
+                return match edit {
+                    MenuEdit::Replace(fix) => {
+                        let (r, _) = word.expect("a suggestion has a word");
+                        let text = format!("{}{fix}{}", &old[..r.start], &old[r.end..]);
+                        self.pane.composer = format::content(&text, r.start + fix.len()..r.start + fix.len());
+                        Task::batch([self.composer_changed(old), focus])
+                    }
+                    MenuEdit::Learn => match spell::learn(&old[word.expect("Learn Spelling has a word").0]) {
+                        Ok(()) => focus,
+                        Err(e) => {
+                            self.status_banner = e.to_string();
+                            focus
+                        }
+                    },
+                    MenuEdit::Copy => Task::batch([iced::clipboard::write(sel), focus]),
+                    MenuEdit::Cut => {
+                        self.pane.composer.perform(text_editor::Action::Edit(text_editor::Edit::Delete));
+                        Task::batch([iced::clipboard::write(sel), self.composer_changed(old), focus])
+                    }
+                    MenuEdit::Paste => Task::batch([
+                        iced::clipboard::read().map(|t| match t {
+                            Some(t) => {
+                                UiMessage::ComposerEdit(text_editor::Action::Edit(text_editor::Edit::Paste(t.into())))
+                            }
+                            None => UiMessage::Noop,
+                        }),
+                        Task::perform(clipboard_image(), UiMessage::Pasted),
+                        focus,
+                    ]),
+                };
             }
             UiMessage::ComposerEdit(action) if !action.is_edit() => self.pane.composer.perform(action),
             UiMessage::ComposerEdit(action) => {
@@ -3740,6 +3803,7 @@ impl BeeperGuiApp {
                     || self.show_filter_menu
                     || self.chat_menu.is_some()
                     || self.pane.message_menu.is_some()
+                    || self.pane.edit_menu.is_some()
                     || self.reminder_menu.is_some()
                     || self.audio.menu.is_some()
                     || self.selection_menu.is_some()
@@ -3753,6 +3817,7 @@ impl BeeperGuiApp {
                     self.show_filter_menu = false;
                     self.chat_menu = None;
                     self.pane.message_menu = None;
+                    self.pane.edit_menu = None;
                     self.reminder_menu = None;
                     self.audio.menu = None;
                     self.selection_menu = None;
@@ -4471,6 +4536,11 @@ impl BeeperGuiApp {
             };
             (menu, x, at.y.min(self.pane().size.height - h - 8.0))
         });
+        let edit_menu = self.pane().edit_menu.as_ref().map(|(at, word)| {
+            let (menu, h) = self.view_edit_menu(word.as_ref());
+            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
+            (menu, x, at.y.min(self.pane().size.height - h - 8.0))
+        });
         let react = self.pane().emoji.as_ref().and_then(|pk| pk.react.as_ref()).map(|(_, at)| {
             let x = if at.x + 352.0 > self.pane().size.width { at.x - 352.0 } else { at.x };
             (self.view_emoji_picker().expect("the picker is open"), x, at.y.min(self.pane().size.height - 435.0 - 8.0))
@@ -4481,16 +4551,18 @@ impl BeeperGuiApp {
             (menu, x.min(self.pane().size.width - w - 8.0), self.pane().size.height - 60.0 - h)
         });
         let main_menu = filter_menu.or(reminder_menu).or(rate_menu).or(chat_menu).filter(|_| in_main);
-        let menu = main_menu.or(message_menu).or(react).or(selection_menu.filter(|_| in_main)).map(|(m, x, y)| {
-            mouse_area(
-                container(mouse_area(m).on_press(UiMessage::Noop))
-                    .padding(Padding::ZERO.left(x).top(y))
-                    .width(Fill)
-                    .height(Fill),
-            )
-            .on_press(UiMessage::CloseModals)
-            .on_right_press(UiMessage::CloseModals)
-        });
+        let menu = main_menu.or(message_menu).or(edit_menu).or(react).or(selection_menu.filter(|_| in_main)).map(
+            |(m, x, y)| {
+                mouse_area(
+                    container(mouse_area(m).on_press(UiMessage::Noop))
+                        .padding(Padding::ZERO.left(x).top(y))
+                        .width(Fill)
+                        .height(Fill),
+                )
+                .on_press(UiMessage::CloseModals)
+                .on_right_press(UiMessage::CloseModals)
+            },
+        );
         let toast = self.view_toast(76.0);
         let confirm = self.confirm.filter(|&d| d != ASK_LOGOUT).map(|d| self.view_confirm(d));
         let carousel = self.carousel.as_ref().filter(|c| !c.in_media).map(|c| self.view_carousel(c));
@@ -4695,6 +4767,46 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's message context menu, with its height.
+    /// Electron's context menu of the composer: the suggestions for a misspelled word, "Learn Spelling", "Search with
+    /// Google" for the selection, and Cut, Copy and Paste.
+    fn view_edit_menu(&self, word: Option<&Typo>) -> (El<'_>, f32) {
+        let p = &self.pal;
+        let text = self.pane().composer.text();
+        let sel = format::selection(&self.pane().composer).map(|r| text[r].trim().to_owned()).filter(|s| !s.is_empty());
+        let item = |label: &str, msg: Option<UiMessage>| Some(menu_item(p, None, label.into(), "", msg));
+        let edit = |e: MenuEdit| Some(UiMessage::MenuEdit(e));
+        let mut items: Vec<Option<El<'_>>> = Vec::new();
+        if let Some((_, fixes)) = word {
+            items.extend(fixes.iter().map(|f| item(f, edit(MenuEdit::Replace(f.clone())))));
+            items.extend(fixes.is_empty().then(|| item("No Guesses Found", None)));
+            items.extend([Some(menu_rule(p)), item("Learn Spelling", edit(MenuEdit::Learn)), Some(menu_rule(p))]);
+        }
+        if let Some(q) = &sel {
+            let q: String = q
+                .bytes()
+                .map(|b| match b {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'*' => char::from(b).to_string(),
+                    b' ' => "+".into(),
+                    b => format!("%{b:02X}"),
+                })
+                .collect();
+            let google = UiMessage::OpenUrl(format!("https://www.google.com/search?q={q}"));
+            items.extend([item("Search with Google", Some(google)), Some(menu_rule(p))]);
+        }
+        let has = sel.is_some();
+        items.extend([
+            item("Cut", has.then(|| UiMessage::MenuEdit(MenuEdit::Cut))),
+            item("Copy", has.then(|| UiMessage::MenuEdit(MenuEdit::Copy))),
+            item("Paste", edit(MenuEdit::Paste)),
+        ]);
+        let rules = word.map_or(0, |_| 2) + usize::from(has);
+        let h = 8.0 + (items.len() - rules) as f32 * MENU_ITEM + rules as f32 * 11.0;
+        let menu = container(Column::with_children(items.into_iter().flatten()).padding([4, 0]))
+            .width(MESSAGE_MENU_W)
+            .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        (menu.into(), h)
+    }
+
     fn view_message_menu(&self, mid: &str) -> (El<'_>, f32) {
         let p = &self.pal;
         let st = self.store.read().unwrap();

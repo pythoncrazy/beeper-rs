@@ -164,6 +164,7 @@ pub struct Above<'a, Message> {
     popup: Option<Element<'a, Message>>,
     anchor: Box<dyn Fn(Size) -> Vector + 'a>,
     squiggles: Box<dyn Fn(Size) -> Vec<(Point, f32)> + 'a>,
+    on_right: Option<Box<dyn Fn(Size, Point) -> Message + 'a>>,
 }
 
 pub fn above<'a, Message>(
@@ -171,13 +172,25 @@ pub fn above<'a, Message>(
     popup: Option<Element<'a, Message>>,
     anchor: impl Fn(Size) -> Vector + 'a,
 ) -> Above<'a, Message> {
-    Above { content: content.into(), popup, anchor: Box::new(anchor), squiggles: Box::new(|_| Vec::new()) }
+    Above {
+        content: content.into(),
+        popup,
+        anchor: Box::new(anchor),
+        squiggles: Box::new(|_| Vec::new()),
+        on_right: None,
+    }
 }
 
 impl<'a, Message> Above<'a, Message> {
     /// Chromium's red wavy spelling underlines, as (left end, width) from the top-left of `content`.
     pub fn squiggles(mut self, at: impl Fn(Size) -> Vec<(Point, f32)> + 'a) -> Self {
         self.squiggles = Box::new(at);
+        self
+    }
+
+    /// The message of a right click, from the size of `content` and the cursor from its top-left.
+    pub fn on_right(mut self, f: impl Fn(Size, Point) -> Message + 'a) -> Self {
+        self.on_right = Some(Box::new(f));
         self
     }
 }
@@ -211,6 +224,12 @@ impl<Message> Widget<Message, Theme, Renderer> for Above<'_, Message> {
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        let b = layout.bounds();
+        if let (Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)), Some(f), Some(at)) =
+            (event, &self.on_right, cursor.position_in(b))
+        {
+            shell.publish(f(b.size(), at));
+        }
         let tree = &mut tree.children[0];
         self.content.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
     }
