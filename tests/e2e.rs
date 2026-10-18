@@ -809,9 +809,40 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     gui.select_chat("!wa_eric:beeper.com");
     {
         let mut sim = simulator(gui.view_main());
-        for label in ["Inbox", "Eric", "Message Eric Migicovsky on WhatsApp", "Feedback?"] {
+        for label in ["Inbox", "Eric", "Feedback?"] {
             assert!(sim.find(label).is_ok(), "main window shows {label}");
         }
+    }
+    {
+        use iced::keyboard::{key::Named, Event::KeyPressed, Key, Location, Modifiers};
+        use iced::widget::text_editor::{Action, Edit};
+        let mut sim = simulator(gui.view_main());
+        sim.click(iced::widget::Id::new("composer-input")).expect("the composer");
+        let enter = |modifiers| {
+            iced::Event::Keyboard(KeyPressed {
+                key: Key::Named(Named::Enter),
+                modified_key: Key::Named(Named::Enter),
+                physical_key: iced::keyboard::key::Physical::Unidentified(
+                    iced::keyboard::key::NativeCode::Unidentified,
+                ),
+                location: Location::Standard,
+                modifiers,
+                repeat: false,
+                text: None,
+            })
+        };
+        sim.simulate([enter(Modifiers::SHIFT), enter(Modifiers::empty())]);
+        let keys: Vec<_> = sim
+            .into_messages()
+            .filter(|m| matches!(m, UiMessage::ComposerEdit(Action::Edit(_)) | UiMessage::SubmitComposer))
+            .collect();
+        assert!(
+            matches!(keys[..], [UiMessage::ComposerEdit(Action::Edit(Edit::Enter)), UiMessage::SubmitComposer]),
+            "Shift Enter adds a line and Enter sends"
+        );
+    }
+    {
+        let mut sim = simulator(gui.view_main());
         sim.click(iced::widget::Id::new("rail-requests")).expect("requests rail button");
         for m in sim.into_messages() {
             let _ = gui.update(m);
@@ -1072,11 +1103,11 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
             let _ = gui.update(UiMessage::ComposerChanged("draft".into()));
             let _ = gui.update(UiMessage::SelectChat(other.clone()));
             let _ = gui.update(UiMessage::SelectChat(cid.clone()));
-            assert_eq!(gui.composer_text, "draft", "a chat keeps its draft");
+            assert_eq!(gui.composer.text(), "draft", "a chat keeps its draft");
         }
         let _ = gui.update(UiMessage::DeleteDraft(cid.clone()));
         let c = store.read().unwrap().chats[0].clone();
-        assert!(c.draft.is_none() && gui.composer_text.is_empty(), "the hover action deletes the draft");
+        assert!(c.draft.is_none() && gui.composer.is_empty(), "the hover action deletes the draft");
         let note = beeper_core::store::NOTE_CHAT_ID;
         let left = store.read().unwrap().chats.last().expect("a chat").id.clone();
         assert!(left != note && left != "!wa_eric:beeper.com");
