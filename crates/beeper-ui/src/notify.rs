@@ -274,6 +274,7 @@ impl BeeperGuiApp {
             .and_then(otp_code)
             .map(str::to_string);
         let shown = m.is_sender != Some(true)
+            && m.message_type.as_deref() != Some("MEMBERSHIP")
             && m.timestamp > self.booted
             && m.text.as_deref() != Some(beeper_core::matrix::UTD_TEXT);
         let shown = shown && otp.is_some()

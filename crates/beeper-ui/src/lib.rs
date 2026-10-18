@@ -123,12 +123,18 @@ const F_ARCHIVED: usize = 5;
 const F_REQUESTS: usize = 6;
 const F_LOW_PRIORITY: usize = 7;
 
+/// Desktop's silent membership events, which the chat list skips.
+fn silent(m: &Message) -> bool {
+    m.message_type.as_deref() == Some("MEMBERSHIP")
+}
+
 fn filter_hit(i: usize, c: &Chat, st: &BeeperStore) -> bool {
     match i {
         0 => c.flags & CHAT_UNREAD != 0,
         1 => c.draft.is_some(),
         2 => {
-            st.chat_msg_indices.get(&c.id).and_then(|v| v.last()).map(|&i| &st.messages[i]).is_none_or(|m| {
+            let v = st.chat_msg_indices.get(&c.id);
+            v.and_then(|v| v.iter().rev().map(|&i| &st.messages[i]).find(|m| !silent(m))).is_none_or(|m| {
                 m.is_sender != Some(true) && !m.reactions.iter().any(|r| r.participant_id == st.me().id)
             })
         }
@@ -349,6 +355,7 @@ pub enum UiMessage {
     SelectSettingsTab(SettingsTab),
     SettingsQueryChanged(String),
     ToggleRightPanel,
+    ToggleMembers(String),
     ToggleDnd,
     CycleTheme,
     SelectTheme(ThemeChoice),
@@ -1801,6 +1808,8 @@ pub struct BeeperGuiApp {
     suggest_hidden: Option<String>,
     pub hovered_chat: Option<String>,
     pub flash: Option<(String, std::time::Instant)>,
+    /// The first message IDs of the expanded membership event groups.
+    open_members: HashSet<String>,
     last_click: Option<(String, std::time::Instant)>,
     pub status_banner: String,
     pub dnd_muted: bool,
@@ -1916,6 +1925,7 @@ impl BeeperGuiApp {
             suggest_hidden: None,
             hovered_chat: None,
             flash: None,
+            open_members: HashSet::new(),
             status_banner: String::new(),
             dnd_muted: false,
             sidebar_width: 244.0,
@@ -3211,6 +3221,11 @@ impl BeeperGuiApp {
             }
             UiMessage::LoggedOut(Err(e)) => self.status_banner = format!("Could not log out: {e}"),
             UiMessage::ToggleRightPanel => self.show_right_panel = !self.show_right_panel,
+            UiMessage::ToggleMembers(id) => {
+                if !self.open_members.remove(&id) {
+                    self.open_members.insert(id);
+                }
+            }
             UiMessage::ToggleDnd => {
                 self.dnd_muted = !self.dnd_muted;
                 self.refresh_theme_and_tray();
@@ -5107,10 +5122,9 @@ impl BeeperGuiApp {
             let on = selected == Some(c.id.as_str());
             let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
             let muted = c.is_muted == Some(true);
-            let m = st
-                .chat_msg_indices
-                .get(&c.id)
-                .and_then(|v| v.iter().rev().map(|&i| &st.messages[i]).find(|m| m.is_deleted != Some(true)));
+            let m = st.chat_msg_indices.get(&c.id).and_then(|v| {
+                v.iter().rev().map(|&i| &st.messages[i]).find(|m| m.is_deleted != Some(true) && !silent(m))
+            });
             let reaction = c
                 .preview
                 .as_ref()
@@ -5303,10 +5317,20 @@ impl BeeperGuiApp {
         let st = self.store.read().unwrap();
         let cid = self.selected_chat_id.as_deref().expect("a chat is selected");
         let chat = &st.chats[st.resolve_chat_idx(cid).expect("selected chat exists")];
-        let hide = st.settings.on("hideDeleted");
+        let (hide, members) = (st.settings.on("hideDeleted"), st.settings.on("membershipEvents"));
         let msgs: Vec<&Message> = st.chat_msg_indices.get(cid).map_or_else(Vec::new, |v| {
-            v.iter().map(|&i| &st.messages[i]).filter(|m| !(hide && m.is_deleted == Some(true))).collect()
+            v.iter()
+                .map(|&i| &st.messages[i])
+                .filter(|m| !(hide && m.is_deleted == Some(true)) && (members || !silent(m)))
+                .collect()
         });
+        let mut run_start: Vec<usize> = (0..msgs.len()).collect();
+        for i in 1..msgs.len() {
+            let (a, b) = (msgs[i - 1], msgs[i]);
+            if silent(a) && silent(b) && day_num(&a.timestamp) == day_num(&b.timestamp) {
+                run_start[i] = run_start[i - 1];
+            }
+        }
         let mut col = Column::new().padding(Padding::new(8.0).right(8.0 + GUTTER).top(96.0).bottom(8.0));
         let mut prev: Option<&Message> = None;
         let last_live = msgs.iter().rposition(|m| m.is_deleted != Some(true));
@@ -5339,10 +5363,36 @@ impl BeeperGuiApp {
                     row![line(), semi("New", 11.0).color(p.accent), line()].spacing(8).align_y(Center).padding([6, 0]);
                 head = head.push(div);
             }
-            let first = day_changed || prev.is_none_or(|q| q.sender_id != m.sender_id);
-            let last = msgs
-                .get(i + 1)
-                .is_none_or(|n| n.sender_id != m.sender_id || day_num(&n.timestamp) != day_num(&m.timestamp));
+            if silent(m) {
+                let s = run_start[i];
+                let size = run_start[s..].iter().take_while(|&&r| r == s).count();
+                let open = self.open_members.contains(&msgs[s].id);
+                let dim = p.muted.scale_alpha(0.75);
+                if size >= 3 && i == s {
+                    let label = row![
+                        txt(format!("{size} Membership Events"), 11.0).line_height(Pixels(14.0)).color(dim),
+                        txt(if open { "Collapse" } else { "Expand" }, 11.0).color(p.accent.scale_alpha(0.75))
+                    ];
+                    let toggle = button(label.spacing(4))
+                        .padding(0)
+                        .style(btn_style([Color::TRANSPARENT; 3], [dim; 3], 0.0))
+                        .on_press(UiMessage::ToggleMembers(msgs[s].id.clone()));
+                    col = col.push(head.push(container(toggle).center_x(Fill)));
+                    head = Column::new();
+                }
+                if size < 3 || open {
+                    let gap = if size >= 3 { Space::new().height(6) } else { Space::new() };
+                    let line = txt(m.text.clone().expect("membership text"), 11.0).line_height(Pixels(14.0));
+                    let line = container(line.color(dim).align_x(Center)).center_x(Fill).padding([2, 0]);
+                    col = col.push(head.push(gap).push(line));
+                }
+                prev = Some(m);
+                continue;
+            }
+            let first = day_changed || prev.is_none_or(|q| q.sender_id != m.sender_id || silent(q));
+            let last = msgs.get(i + 1).is_none_or(|n| {
+                n.sender_id != m.sender_id || silent(n) || day_num(&n.timestamp) != day_num(&m.timestamp)
+            });
             let mut viewers: Vec<(&str, &str)> =
                 last_seen.iter().filter(|(_, &(mid, _))| mid == m.id).map(|(&u, &(_, ts))| (u, ts)).collect();
             viewers.sort_by_key(|&(_, ts)| ts);

@@ -81,15 +81,15 @@ fn links(c: &Value) -> Vec<MessageLink> {
 }
 
 async fn states(room: &Room, kind: StateEventType) -> Vec<Value> {
-    let events = room.get_state_events(kind).await.expect("read room state");
-    events
-        .into_iter()
-        .map(|r| match r {
-            RawAnySyncOrStrippedState::Sync(r) => r.deserialize_as::<Value>(),
-            RawAnySyncOrStrippedState::Stripped(r) => r.deserialize_as::<Value>(),
-        })
-        .map(|v| v.expect("state event JSON"))
-        .collect()
+    room.get_state_events(kind).await.expect("read room state").into_iter().map(state_json).collect()
+}
+
+fn state_json(r: RawAnySyncOrStrippedState) -> Value {
+    match r {
+        RawAnySyncOrStrippedState::Sync(r) => r.deserialize_as::<Value>(),
+        RawAnySyncOrStrippedState::Stripped(r) => r.deserialize_as::<Value>(),
+    }
+    .expect("state event JSON")
 }
 
 async fn state(room: &Room, kind: &str) -> Option<Value> {
@@ -336,6 +336,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
             });
         }
         "m.room.encrypted" => (Some(UTD_TEXT.into()), Vec::new(), "TEXT"),
+        "m.room.member" => (Some(membership(room, e).await?), Vec::new(), "MEMBERSHIP"),
         k => content(k, c)?,
     };
     let profile_name = s(&c["com.beeper.per_message_profile"]["displayname"]);
@@ -377,6 +378,73 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value) -> Option<O
     match reaction {
         Some(r) => Some(Op::React(msg.linked_message_id.clone()?, r, msg)),
         None => Some(Op::Upsert(msg)),
+    }
+}
+
+/// The timeline text of an `m.room.member` event, or `None` when Desktop hides it.
+async fn membership(room: &Room, e: &Value) -> Option<String> {
+    let (c, prev) = (&e["content"], &e["unsigned"]["prev_content"]);
+    let (now, before) = (c["membership"].as_str()?, prev["membership"].as_str().unwrap_or_default());
+    let bot = |c: &Value| c["com.beeper.bridge.is_network_bot"] == true;
+    if bot(c) || c["com.beeper.exclude_from_timeline"] == true || now == before {
+        return None;
+    }
+    let (target, sender) = (s(&e["state_key"]).expect("member state key"), s(&e["sender"]).expect("event sender"));
+    let me = room.own_user_id().as_str();
+    if !matches!(now, "join" | "leave" | "ban" | "invite") || target != me && room.joined_members_count() >= 100 {
+        return None;
+    }
+    let name = |id: &str| {
+        let user = matrix_sdk::ruma::UserId::parse(id).expect("member is a user ID");
+        async move { room.get_member_no_sync(&user).await.expect("read room member").map(|m| m.name().to_string()) }
+    };
+    let who = match s(&c["displayname"]).or(s(&prev["displayname"])) {
+        Some(n) => n,
+        None => name(&target).await.unwrap_or_else(|| target.clone()),
+    };
+    let by = match sender != target && matches!(now, "invite" | "leave" | "ban") {
+        true => Some(match state_member(room, &sender).await.is_some_and(|c| bot(&c)) {
+            true => None,
+            false if sender == me => Some("You".to_string()),
+            false => Some(name(&sender).await.unwrap_or(sender)),
+        }),
+        false => None,
+    };
+    Some(membership_text(now, before, (&who, target == me), by.as_ref().map(Option::as_deref)))
+}
+
+async fn state_member(room: &Room, user: &str) -> Option<Value> {
+    let raw = room.get_state_event(StateEventType::RoomMember, user).await.expect("read room member state")?;
+    Some(state_json(raw)["content"].take())
+}
+
+/// Desktop's text for `who` (name, is me) going from `before` to `now`, changed by `by`: `Some(None)` is a network bot.
+fn membership_text(now: &str, before: &str, (name, me): (&str, bool), by: Option<Option<&str>>) -> String {
+    let n = if me { "You" } else { name };
+    let (a, was, is) = if me { ("you", "were", "are") } else { (n, "was", "is") };
+    let r = by.flatten();
+    let removed =
+        r.map_or_else(|| format!("{n} {was} removed from the chat"), |r| format!("{r} removed {a} from the chat"));
+    match (now, before) {
+        ("join", _) => format!("{n} joined the chat"),
+        ("leave", "ban") => r.map_or_else(|| format!("{n} {was} unbanned"), |r| format!("{r} unbanned {a}")),
+        ("leave", "invite") if by.is_none() => format!("{n} declined the invitation"),
+        ("leave", "invite") => {
+            let whose = if me { "your invitation".to_string() } else { format!("{n}'s invitation") };
+            match r {
+                Some(r) => format!("{r} withdrew {whose}"),
+                None if me => "Your invitation was withdrawn".into(),
+                None => format!("{whose} was withdrawn"),
+            }
+        }
+        ("leave", "join") if by.is_none() => format!("{n} left the chat"),
+        ("leave" | "ban", "join") => removed,
+        ("leave", _) => format!("{n} {is} no longer in the chat"),
+        ("ban", _) => r.map_or_else(|| format!("{n} {was} banned"), |r| format!("{r} banned {a}")),
+        ("invite", _) => {
+            r.map_or_else(|| format!("{n} {was} invited to the chat"), |r| format!("{r} invited {a} to the chat"))
+        }
+        _ => unreachable!("membership {now}"),
     }
 }
 
@@ -1417,6 +1485,22 @@ mod tests {
                 .as_deref(),
             Some("https://www.instagram.com/reel/x/")
         );
+    }
+
+    #[test]
+    fn membership_text_matches_desktop() {
+        use super::membership_text as t;
+        assert_eq!(t("join", "invite", ("Ann", false), None), "Ann joined the chat");
+        assert_eq!(t("leave", "join", ("Ann", false), None), "Ann left the chat");
+        assert_eq!(t("leave", "join", ("Ann", false), Some(Some("Bob"))), "Bob removed Ann from the chat");
+        assert_eq!(t("leave", "join", ("Ann", true), Some(None)), "You were removed from the chat");
+        assert_eq!(t("leave", "invite", ("Ann", false), None), "Ann declined the invitation");
+        assert_eq!(t("leave", "invite", ("Ann", false), Some(Some("You"))), "You withdrew Ann's invitation");
+        assert_eq!(t("leave", "invite", ("Ann", true), Some(None)), "Your invitation was withdrawn");
+        assert_eq!(t("leave", "ban", ("Ann", false), Some(Some("Bob"))), "Bob unbanned Ann");
+        assert_eq!(t("ban", "leave", ("Ann", false), None), "Ann was banned");
+        assert_eq!(t("invite", "", ("Ann", false), Some(Some("Bob"))), "Bob invited Ann to the chat");
+        assert_eq!(t("invite", "", ("Ann", true), Some(None)), "You were invited to the chat");
     }
 
     #[test]
