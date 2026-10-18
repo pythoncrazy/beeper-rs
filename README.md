@@ -47,6 +47,8 @@ sudo apt-get install -y mold pkg-config libxkbcommon-dev libwayland-dev
 cargo install --locked sccache
 ```
 
+The app and the tests use `ffmpeg` and `ffprobe` to decode audio and video, and to record voice notes. Install them on all platforms.
+
 ### 1. Run the Automated End-to-End Test Suite
 
 Run the following command to execute the end-to-end test suite (including `iced_test::Simulator`, `iced_test::Emulator`, headless Wayland via `weston --backend=headless`, and headless X11 via `Xvfb :99`):

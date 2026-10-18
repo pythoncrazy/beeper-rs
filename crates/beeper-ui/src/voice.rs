@@ -1,4 +1,4 @@
-//! Desktop's audio player (`Audio.tsx`): Ogg Opus decoding, the waveform, playback speed, and autoplay of the next
+//! Desktop's audio player (`Audio.tsx`): decoding, the waveform, playback speed, and autoplay of the next
 //! voice note.
 use crate::style::{btn_style, fill_box, hidden_slider, ic, icon, semi, shadow_box, text_width, txt, CLEAR};
 use crate::{menu_item, sound, tinted, BeeperGuiApp, El, UiMessage, AVATAR_SLOTS};
@@ -78,31 +78,17 @@ pub enum Msg {
     Tick,
 }
 
-/// Decode an Ogg Opus stream, like the voice notes of every network, to mono.
+/// The `-f f32le` arguments that make ffmpeg write mono `HZ` samples.
+pub(crate) const PCM: [&str; 7] = ["-ac", "1", "-ar", "48000", "-f", "f32le", "pipe:1"];
+
+/// The samples of ffmpeg's `PCM` output.
+pub(crate) fn samples(pcm: &[u8]) -> Vec<f32> {
+    pcm.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect()
+}
+
+/// Decode any audio, like the Ogg Opus voice notes of every network, to mono.
 pub fn decode(bytes: &[u8]) -> Result<Clip, String> {
-    let mut ogg = ogg::PacketReader::new(std::io::Cursor::new(bytes));
-    let mut next = || ogg.read_packet().map_err(|e| e.to_string());
-    let head = next()?.ok_or("an empty Ogg stream")?.data;
-    if !head.starts_with(b"OpusHead") {
-        return Err("not an Ogg Opus stream".into());
-    }
-    let channels = usize::from(head[9]);
-    let skip = usize::from(u16::from_le_bytes([head[10], head[11]]));
-    next()?.ok_or("no OpusTags packet")?;
-    let mut opus = opus_decoder::OpusDecoder::new(HZ as u32, channels).map_err(|e| format!("{e:?}"))?;
-    let (mut pcm, mut samples, mut end) = (vec![0.0; 5760 * channels], Vec::new(), 0);
-    while let Some(packet) = next()? {
-        let n = opus.decode_float(&packet.data, &mut pcm, false).map_err(|e| format!("{e:?}"))?;
-        samples.extend(pcm[..n * channels].chunks(channels).map(|f| f.iter().sum::<f32>() / channels as f32));
-        end = packet.absgp_page();
-    }
-    // The last page's granule position ends the stream, which trims the padding of its last packet.
-    samples.truncate(usize::try_from(end).expect("a granule position fits in memory"));
-    samples.drain(..skip.min(samples.len()));
-    if samples.is_empty() {
-        return Err("no audio".into());
-    }
-    Ok(Clip::new(samples))
+    Ok(Clip::new(samples(&crate::run_ffmpeg(bytes, &PCM)?)))
 }
 
 /// Desktop's duration format, `00:05` or `01:00:05`.
@@ -255,7 +241,8 @@ impl BeeperGuiApp {
             Task::perform(
                 async move {
                     let _slot = AVATAR_SLOTS.acquire().await.expect("the media semaphore stays open");
-                    beeper_core::matrix::media(client, u).await.and_then(|b| decode(&b))
+                    let bytes = beeper_core::matrix::media(client, u).await?;
+                    tokio::task::spawn_blocking(move || decode(&bytes)).await.expect("audio decode task")
                 },
                 move |r| UiMessage::Voice(Msg::Loaded(url, r)),
             )

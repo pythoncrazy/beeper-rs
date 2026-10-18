@@ -98,8 +98,8 @@ fn probe(url: &str, bytes: &[u8]) -> Result<Media, String> {
     let info = String::from_utf8_lossy(&info);
     media.secs = info.lines().last().and_then(|l| l.trim().parse().ok()).ok_or("no video duration")?;
     if info.lines().any(|l| l == "audio") {
-        let pcm = run("ffmpeg", &["-vn", "-ac", "1", "-ar", "48000", "-f", "f32le", "pipe:1"], &media.path)?;
-        media.sound = Some(pcm.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect());
+        let pcm = run("ffmpeg", &[&["-vn"], &crate::voice::PCM[..]].concat(), &media.path)?;
+        media.sound = Some(crate::voice::samples(&pcm).into());
     }
     Ok(media)
 }
