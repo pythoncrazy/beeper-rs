@@ -4634,7 +4634,11 @@ impl BeeperGuiApp {
         );
         let toast = self.view_toast(76.0);
         let confirm = self.confirm.filter(|&d| d != ASK_LOGOUT).map(|d| self.view_confirm(d));
-        let carousel = self.carousel.as_ref().filter(|c| !c.in_media).map(|c| self.view_carousel(c));
+        let shows = |c: &&Carousel| {
+            let st = self.store.read().unwrap();
+            !c.in_media && Some(&st.messages[st.msg_idx_by_id[&c.mid]].chat_id) == self.pane().selected_chat_id.as_ref()
+        };
+        let carousel = self.carousel.as_ref().filter(shows).map(|c| self.view_carousel(c));
         stack![base].push(toast).push(menu).push(scrim).push(select).push(confirm).push(carousel).into()
     }
 
@@ -7099,7 +7103,7 @@ impl BeeperGuiApp {
                 .map(|(i, k)| (st.messages[i].id.clone(), k))
                 .collect(),
             false => {
-                let chat = self.pane().selected_chat_id.as_deref().expect("an open chat");
+                let chat = &st.messages[st.msg_idx_by_id[&c.mid]].chat_id;
                 let messages = st.chat_msg_indices[chat].iter().map(|&i| &st.messages[i]);
                 messages
                     .flat_map(|m| {
@@ -8025,7 +8029,8 @@ impl BeeperGuiApp {
             }
             ASK_DELETE_MESSAGE => {
                 let mid = self.delete_target.clone().expect("a message to delete");
-                let cid = self.pane().selected_chat_id.clone().expect("an open chat");
+                let st = self.store.read().unwrap();
+                let cid = st.messages[st.msg_idx_by_id[&mid]].chat_id.clone();
                 let delete = vec![(tr("Delete"), UiMessage::DeleteMessage(cid, mid))];
                 (tr("Delete message").into(), tr("Are you sure you want to delete this message?"), delete)
             }
