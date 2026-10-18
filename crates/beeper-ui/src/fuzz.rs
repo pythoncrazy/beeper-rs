@@ -105,6 +105,7 @@ fn random_events(rng: &mut Rng) -> (String, Vec<iced::Event>) {
 fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
     let st = app.store.read().unwrap();
     let chats: Vec<String> = st.chats.iter().map(|c| c.id.clone()).collect();
+    let deletable: Vec<String> = st.chats.iter().filter(|c| c.delete_modes != 0).map(|c| c.id.clone()).collect();
     let open = app.pane.selected_chat_id.as_deref().and_then(|c| st.chat_msg_indices.get(c)).filter(|m| !m.is_empty());
     let msgs: Vec<(String, String)> = match open {
         Some(idx) => idx.iter().map(|&i| (st.messages[i].chat_id.clone(), st.messages[i].id.clone())).collect(),
@@ -212,7 +213,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         44 => UiMessage::OpenChatWindow(chat),
         45 => UiMessage::CloseRequested(*rng.pick(&windows(app))),
         46 | 47 | 48 => UiMessage::KeyPressed(key, mods),
-        49 => UiMessage::AskDeleteChat(chat),
+        49 if !deletable.is_empty() => UiMessage::AskDeleteChat(rng.pick(&deletable).clone()),
         50 => UiMessage::ReminderMenu,
         51 => UiMessage::ChatSub(Some(rng.below(SUB_MENU_W.len()) as u8)),
         52 => UiMessage::ArchiveStale,
