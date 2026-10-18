@@ -274,6 +274,17 @@ pub enum UiMessage {
     MediaItemMenu(Option<(String, usize)>),
     /// Close the Media window item menu and run its action.
     MediaItemAct(Box<UiMessage>),
+    MediaSelect(bool),
+    /// Select or unselect a Media window item, as (message, attachment or link index).
+    MediaPick(String, usize),
+    MediaPickAll,
+    /// Download the selected Media window attachments.
+    MediaSave,
+    /// Ask to delete Media window items.
+    MediaAskDelete(Vec<(String, usize)>),
+    /// Delete the items that the Media window dialog asks about, or cancel with `false`.
+    MediaDelete(bool),
+    Modifiers(keyboard::Modifiers),
     /// Open a message in the main window.
     GoToMessage(String, String),
     WindowKey(window::Id, Key, keyboard::Modifiers),
@@ -1041,8 +1052,8 @@ static SYS_CLOSE: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(||
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="m5.333 15.834-1.166-1.167L8.833 10 4.167 5.334l1.166-1.167L10 8.834l4.667-4.667 1.166 1.167L11.167 10l4.666 4.667-1.166 1.167L10 11.167z"/></svg>"##[..])
 });
 
-/// Desktop's system icons file-default, videocam, link, sms, tune and search.
-static MEDIA_ICONS: std::sync::LazyLock<[svg::Handle; 6]> = std::sync::LazyLock::new(|| {
+/// Desktop's system icons file-default, videocam, link, sms, tune, search and done.
+static MEDIA_ICONS: std::sync::LazyLock<[svg::Handle; 7]> = std::sync::LazyLock::new(|| {
     [
         "M5 18.334q-.687 0-1.177-.49a1.6 1.6 0 0 1-.49-1.177V3.334q0-.688.49-1.177T5 1.667h6.667l5 5v10q0 .687-.49 1.177t-1.177.49zM10.833 7.5V3.334H5v13.333h10V7.5z",
         "M3.333 16.666q-.687 0-1.177-.49A1.6 1.6 0 0 1 1.666 15V5q0-.688.49-1.177t1.177-.49h10q.688 0 1.177.49Q15 4.312 15 5v3.75l3.333-3.334v9.167L15 11.25V15q0 .687-.49 1.177-.489.49-1.177.49zm0-1.666h10V5h-10z",
@@ -1050,6 +1061,7 @@ static MEDIA_ICONS: std::sync::LazyLock<[svg::Handle; 6]> = std::sync::LazyLock:
         "M6.667 9.167q.354 0 .593-.24.24-.24.24-.593a.8.8 0 0 0-.24-.594.8.8 0 0 0-.593-.24.8.8 0 0 0-.594.24.8.8 0 0 0-.24.594q0 .354.24.593.24.24.594.24m3.333 0q.354 0 .594-.24t.24-.593a.8.8 0 0 0-.24-.594A.8.8 0 0 0 10 7.5a.8.8 0 0 0-.594.24.8.8 0 0 0-.24.594q0 .354.24.593.24.24.594.24m3.333 0q.354 0 .594-.24t.24-.593a.8.8 0 0 0-.24-.594.8.8 0 0 0-.594-.24.8.8 0 0 0-.593.24.8.8 0 0 0-.24.594q0 .354.24.593.24.24.593.24M1.667 18.334v-15q0-.688.49-1.177.489-.49 1.176-.49h13.334q.687 0 1.177.49.49.489.49 1.177v10q0 .687-.49 1.177t-1.177.49H5zm2.625-5h12.375v-10H3.333V14.27z",
         "M9.167 17.5v-5h1.666v1.667H17.5v1.666h-6.667V17.5zM2.5 15.833v-1.666h5v1.666zM5.833 12.5v-1.667H2.5V9.167h3.333V7.5H7.5v5zm3.334-1.667V9.167H17.5v1.666zM12.5 7.5v-5h1.667v1.667H17.5v1.666h-3.333V7.5zm-10-1.667V4.167h8.333v1.666z",
         "m16.333 17.5-5.25-5.25a5.08 5.08 0 0 1-3.167 1.083q-2.27 0-3.843-1.573T2.5 7.917t1.573-3.844T7.917 2.5t3.843 1.573 1.573 3.844a5.08 5.08 0 0 1-1.083 3.166l5.25 5.25zm-8.416-5.833q1.562 0 2.656-1.094t1.094-2.656-1.094-2.657Q9.478 4.167 7.917 4.167T5.26 5.26Q4.167 6.355 4.167 7.917t1.093 2.656 2.657 1.094",
+        "m7.958 15-4.75-4.75 1.188-1.187 3.562 3.562 7.646-7.646 1.188 1.188z",
     ]
     .map(|d| {
         svg::Handle::from_memory(
@@ -1345,6 +1357,15 @@ struct MediaWindow {
     cursor: Point,
     /// The item whose context menu is open, as (message, attachment or link index), and where.
     item_menu: Option<(String, usize, Point)>,
+    select: bool,
+    picked: Vec<(String, usize)>,
+    /// The (chat, message) pairs that the delete dialog asks about, and how many items it skips.
+    deleting: Option<(Vec<(String, String)>, usize)>,
+}
+
+/// If you can delete a message for everyone, like Desktop's Media window asks.
+fn deletable(m: &Message) -> bool {
+    m.is_sender == Some(true) && m.is_deleted != Some(true)
 }
 
 /// Desktop's Media window page size.
@@ -1660,6 +1681,7 @@ pub struct BeeperGuiApp {
     pub devices: Option<Result<Vec<DeviceInfo>, String>>,
     pub confirm: Option<u8>,
     delete_target: Option<String>,
+    mods: keyboard::Modifiers,
     reminder_menu: Option<Point>,
     pub show_command_palette: bool,
     pub active_settings_tab: SettingsTab,
@@ -1733,6 +1755,7 @@ impl BeeperGuiApp {
             forward: None,
             carousel: None,
             media_window: None,
+            mods: keyboard::Modifiers::empty(),
             filters: 0,
             show_attach_menu: false,
             show_gif_picker: false,
@@ -2498,6 +2521,9 @@ impl BeeperGuiApp {
                     menu: false,
                     cursor: Point::ORIGIN,
                     item_menu: None,
+                    select: false,
+                    picked: Vec::new(),
+                    deleting: None,
                 });
                 return Task::batch([open.map(UiMessage::WindowOpened), self.load_media()]);
             }
@@ -2524,6 +2550,65 @@ impl BeeperGuiApp {
             }
             UiMessage::MediaMenu(open) => self.media_mut().menu = open,
             UiMessage::MediaCursor(at) => self.media_mut().cursor = at,
+            UiMessage::Modifiers(mods) => self.mods = mods,
+            UiMessage::MediaSelect(on) => {
+                let w = self.media_mut();
+                w.select = on;
+                w.picked.clear();
+            }
+            UiMessage::MediaPick(mid, k) => {
+                let w = self.media_mut();
+                w.select = true;
+                match w.picked.iter().position(|(m, i)| *m == mid && *i == k) {
+                    Some(at) => _ = w.picked.remove(at),
+                    None => w.picked.push((mid, k)),
+                }
+            }
+            UiMessage::MediaPickAll => {
+                let st = self.store.read().unwrap();
+                let w = self.media_window.as_ref().expect("the Media window is open");
+                let all = media_items(&st, w).into_iter().take(w.shown).map(|(i, k)| (st.messages[i].id.clone(), k));
+                let all = all.collect();
+                drop(st);
+                self.media_mut().picked = all;
+            }
+            UiMessage::MediaSave => {
+                let w = self.media_window.as_ref().expect("the Media window is open");
+                let files = if w.tab == 1 { Vec::new() } else { w.picked.clone() };
+                return Task::batch(files.into_iter().map(|(mid, k)| self.update(UiMessage::Download(mid, Some(k)))));
+            }
+            UiMessage::MediaAskDelete(items) => {
+                let st = self.store.read().unwrap();
+                let mut pairs: Vec<(String, String)> = Vec::new();
+                for (mid, _) in &items {
+                    let m = &st.messages[st.msg_idx_by_id[mid]];
+                    if deletable(m) && !pairs.iter().any(|(_, x)| x == mid) {
+                        pairs.push((m.chat_id.clone(), mid.clone()));
+                    }
+                }
+                let skipped = items.iter().filter(|(mid, _)| !deletable(&st.messages[st.msg_idx_by_id[mid]])).count();
+                drop(st);
+                match pairs.is_empty() {
+                    true => self.status_banner = "These messages can\u{2019}t be deleted".into(),
+                    false => self.media_mut().deleting = Some((pairs, skipped)),
+                }
+            }
+            UiMessage::MediaDelete(go) => {
+                let (pairs, skipped) = self.media_mut().deleting.take().expect("the delete dialog is open");
+                if go {
+                    let mut st = self.store.write().unwrap();
+                    for (cid, mid) in &pairs {
+                        st.delete_message(cid, mid).expect("delete message");
+                        st.queue(cid, Outgoing::Redact { target: mid.clone() });
+                    }
+                    drop(st);
+                    self.media_mut().picked.retain(|(m, _)| pairs.iter().all(|(_, x)| x != m));
+                    if skipped > 0 {
+                        let s = if skipped == 1 { "" } else { "s" };
+                        self.status_banner = format!("Skipped {skipped} item{s} that can\u{2019}t be deleted");
+                    }
+                }
+            }
             UiMessage::MediaItemMenu(item) => {
                 let w = self.media_mut();
                 w.item_menu = item.map(|(mid, k)| (mid, k, w.cursor));
@@ -2557,8 +2642,12 @@ impl BeeperGuiApp {
                         w.item_menu = None;
                     } else if w.menu {
                         w.menu = false;
+                    } else if w.deleting.is_some() {
+                        w.deleting = None;
                     } else if let Some(q) = w.search.as_ref().map(|q| (!q.is_empty()).then(String::new)) {
                         return self.update(UiMessage::MediaSearch(q));
+                    } else if w.select {
+                        (w.select, w.picked) = (false, Vec::new());
                     } else {
                         return window::close(id);
                     }
@@ -3482,6 +3571,7 @@ impl BeeperGuiApp {
             Event::Window(window::Event::Resized(size)) => Some(UiMessage::WindowResized(id, size)),
             Event::Window(window::Event::Focused) => Some(UiMessage::WindowFocused(true)),
             Event::Window(window::Event::Unfocused) => Some(UiMessage::WindowFocused(false)),
+            Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => Some(UiMessage::Modifiers(m)),
             Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
                 if modifiers.command()
                     || modifiers.control()
@@ -6067,7 +6157,14 @@ impl BeeperGuiApp {
     fn view_media<'a>(&'a self, w: &MediaWindow) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read().unwrap();
-        let [file_icon, video_icon, link_icon, _, tune_icon, search_icon] = &*MEDIA_ICONS;
+        let [file_icon, video_icon, link_icon, _, tune_icon, search_icon, done_icon] = &*MEDIA_ICONS;
+        let picking = w.select || self.mods.control();
+        let picked = |mid: &str, k: usize| w.picked.iter().any(|(m, i)| m == mid && *i == k);
+        let check = |on: bool| -> El<'a> {
+            let (bg, edge) = if on { (p.accent, p.accent) } else { (Color::BLACK.scale_alpha(0.25), Color::WHITE) };
+            let mark = on.then(|| tinted(done_icon, 14.0, Color::WHITE));
+            container(mark).center(20).style(bordered_box(bg, edge, 1.5, 10.0)).into()
+        };
         let items = media_items(&st, w);
         let sub = |s: String| txt(s, 12.0).line_height(Pixels(15.0)).color(p.on_secondary);
         let tabs = MEDIA_TABS.iter().enumerate().map(|(i, label)| -> El<'a> {
@@ -6087,6 +6184,12 @@ impl BeeperGuiApp {
         };
         let search = UiMessage::MediaSearch(w.search.is_none().then(String::new));
         let controls = row![
+            self.tip(
+                control(done_icon, 18.0, w.select, UiMessage::MediaSelect(!w.select)),
+                "Select",
+                vec![],
+                tooltip::Position::Bottom
+            ),
             self.tip(
                 control(tune_icon, 18.0, false, UiMessage::MediaMenu(true)),
                 "Filter",
@@ -6172,8 +6275,20 @@ impl BeeperGuiApp {
                             ..Default::default()
                         }))
                         .align_bottom(Fill);
-                        let face = stack![self.thumb(a, tile, 8.0)].push(badge).push(name).width(tile).height(tile);
-                        let open = UiMessage::OpenCarousel(m.id.clone(), k, true);
+                        let on = picked(&m.id, k);
+                        let mark = w.select.then(|| container(check(on)).align_right(Fill).padding(4));
+                        let ring = on.then(|| {
+                            container(Space::new())
+                                .width(Fill)
+                                .height(Fill)
+                                .style(bordered_box(CLEAR, p.accent, 2.0, 8.0))
+                        });
+                        let face = stack![self.thumb(a, tile, 8.0)].push(badge).push(name).push(mark).push(ring);
+                        let face = face.width(tile).height(tile);
+                        let open = match picking {
+                            true => UiMessage::MediaPick(m.id.clone(), k),
+                            false => UiMessage::OpenCarousel(m.id.clone(), k, true),
+                        };
                         let b = button(face).padding(0).style(btn_style([CLEAR; 3], [p.strong; 3], 8.0));
                         mouse_area(b.on_press(open))
                             .on_right_press(UiMessage::MediaItemMenu(Some((m.id.clone(), k))))
@@ -6215,9 +6330,12 @@ impl BeeperGuiApp {
                     .width(Fill);
                     let meta = column![sub(Self::sender_name(&st, m).to_string()), sub(relative_date(&m.timestamp))]
                         .align_x(Right);
-                    let line = row![thumb, text, meta].spacing(8).align_y(Center);
+                    let on = picked(&m.id, k);
+                    let line = row![thumb, text, meta].push(w.select.then(|| check(on))).spacing(8).align_y(Center);
+                    let press = if picking { UiMessage::MediaPick(m.id.clone(), k) } else { press };
+                    let bg = if on { p.chip } else { CLEAR };
                     let b = button(line).padding([6, 10]).width(Fill);
-                    let b = b.style(btn_style([CLEAR, p.chip, p.chip], [p.strong; 3], 0.0)).on_press(press);
+                    let b = b.style(btn_style([bg, p.chip, p.chip], [p.strong; 3], 0.0)).on_press(press);
                     col.push(mouse_area(b).on_right_press(UiMessage::MediaItemMenu(Some((m.id.clone(), k)))))
                 }),
             }
@@ -6235,7 +6353,40 @@ impl BeeperGuiApp {
                 .into(),
         };
         let title = container(semi("Media", 14.0).color(p.strong)).center_x(Fill).padding([8, 0]);
-        let pane = column![header, rule()].push(search_row).push(list);
+        let footer = w.select.then(|| {
+            let bytes: u64 = match w.tab {
+                1 => 0,
+                _ => w
+                    .picked
+                    .iter()
+                    .filter_map(|(mid, k)| st.messages[st.msg_idx_by_id[mid]].attachments[*k].file_size)
+                    .sum(),
+            };
+            let n = w.picked.len();
+            let count = match bytes {
+                0 => format!("{n} selected"),
+                _ => format!("{n} selected ({})", human_size(bytes)),
+            };
+            let act = |label, msg: Option<UiMessage>| -> El<'a> {
+                let a = if msg.is_some() { 1.0 } else { 0.5 };
+                let b =
+                    button(semi(label, 12.0).line_height(Pixels(15.0)).color(p.strong.scale_alpha(a))).padding([4, 8]);
+                b.style(btn_style([p.chip.scale_alpha(a); 3], [p.strong; 3], 12.0)).on_press_maybe(msg).into()
+            };
+            let picked = w.picked.clone();
+            let bar = row![
+                semi(count, 14.0).line_height(Pixels(17.0)).color(p.strong),
+                Space::new().width(Fill),
+                act("Delete", (n > 0).then(|| UiMessage::MediaAskDelete(picked))),
+                act("Save", (n > 0 && w.tab != 1).then_some(UiMessage::MediaSave)),
+                act("Select all", Some(UiMessage::MediaPickAll)),
+                act("Cancel", Some(UiMessage::MediaSelect(false))),
+            ]
+            .spacing(4)
+            .align_y(Center);
+            column![rule(), container(bar).padding([8, 10]).center_y(44)]
+        });
+        let pane = column![header, rule()].push(search_row).push(list).push(footer);
         let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.card, 12.0));
         let base = container(column![title, pane]).padding(8).width(Fill).height(Fill).style(fill_box(p.window, 0.0));
         let base = mouse_area(base).on_move(UiMessage::MediaCursor);
@@ -6244,7 +6395,7 @@ impl BeeperGuiApp {
             let act =
                 |label: &str, msg| menu_item(p, None, label.into(), "", Some(UiMessage::MediaItemAct(Box::new(msg))));
             let go = act("Go to Message", UiMessage::GoToMessage(m.chat_id.clone(), mid.clone()));
-            let actions = match w.tab {
+            let mut actions = match w.tab {
                 1 => vec![act("Copy Link", UiMessage::CopyLink(m.links[*k].url.clone()))],
                 _ => std::iter::once(act("Download", UiMessage::Download(mid.clone(), Some(*k))))
                     .chain(
@@ -6253,6 +6404,7 @@ impl BeeperGuiApp {
                     )
                     .collect(),
             };
+            actions.extend(deletable(m).then(|| act("Delete…", UiMessage::MediaAskDelete(vec![(mid.clone(), *k)]))));
             let h = 8.0 + MENU_ITEM * (1 + actions.len()) as f32 + 11.0;
             let col = Column::with_children([go, menu_rule(p)].into_iter().chain(actions));
             let menu = container(col.padding([4, 0])).width(180).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
@@ -6284,7 +6436,15 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::MediaMenu(false))
         });
         let carousel = self.carousel.as_ref().filter(|c| c.in_media).map(|c| self.view_carousel(c));
-        stack![base].push(self.view_toast(8.0)).push(menu).push(item_menu).push(carousel).into()
+        let ask = w.deleting.as_ref().map(|(pairs, _)| {
+            let n = pairs.len();
+            let (title, body) = match n {
+                1 => ("Delete message".to_string(), "Are you sure you want to delete this message?".to_string()),
+                _ => ("Delete messages".to_string(), format!("Are you sure you want to delete {n} messages?")),
+            };
+            self.dialog(title, body, vec![("Delete", UiMessage::MediaDelete(true))], UiMessage::MediaDelete(false))
+        });
+        stack![base].push(self.view_toast(8.0)).push(menu).push(item_menu).push(ask).push(carousel).into()
     }
 
     fn view_forward<'a>(&'a self, f: &'a Forward) -> El<'a> {
@@ -6656,7 +6816,6 @@ impl BeeperGuiApp {
     }
 
     fn view_confirm(&self, dialog: u8) -> El<'_> {
-        let p = &self.pal;
         let (title, body, actions) = match dialog {
             ASK_LOGOUT => {
                 let name = self.devices.iter().flatten().flatten().find(|d| d.current).map(|d| d.name.clone());
@@ -6696,6 +6855,18 @@ impl BeeperGuiApp {
             }
             _ => unreachable!("dialog {dialog}"),
         };
+        self.dialog(title, body.into(), actions, UiMessage::Ask(None))
+    }
+
+    /// A confirmation dialog over a window, with its actions after Cancel.
+    fn dialog<'a>(
+        &'a self,
+        title: String,
+        body: String,
+        actions: Vec<(&'static str, UiMessage)>,
+        cancel: UiMessage,
+    ) -> El<'a> {
+        let p = &self.pal;
         let action = |(label, msg): (&'static str, UiMessage)| {
             button(med(label, 13.0).color(Color::WHITE))
                 .padding([5, 12])
@@ -6706,7 +6877,7 @@ impl BeeperGuiApp {
         let card = column![
             bold(title, 14.0).color(p.strong),
             txt(body, 13.0).color(p.text),
-            row![Space::new().width(Fill), pill_btn(p, "Cancel", UiMessage::Ask(None))]
+            row![Space::new().width(Fill), pill_btn(p, "Cancel", cancel.clone())]
                 .extend(actions.into_iter().map(action))
                 .spacing(8)
         ]
@@ -6721,7 +6892,7 @@ impl BeeperGuiApp {
             .center(Fill)
             .style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.45), 0.0)),
         )
-        .on_press(UiMessage::Ask(None))
+        .on_press(cancel)
         .into()
     }
 
