@@ -638,8 +638,11 @@ fn encode_uri_component(s: &str) -> String {
 
 async fn clipboard_image() -> Result<Option<Png>, String> {
     let read = || {
-        let img = match arboard::Clipboard::new().and_then(|mut c| c.get_image()) {
+        let mut c = arboard::Clipboard::new().map_err(|e| format!("Could not read the clipboard: {e}"))?;
+        let img = match c.get_image() {
             Err(arboard::Error::ContentNotAvailable) => return Ok(None),
+            // iced's X11 clipboard answers every target, image/png too, with its text.
+            Err(arboard::Error::Unknown { .. }) if c.get_text().is_ok() => return Ok(None),
             r => r.map_err(|e| format!("Could not read the clipboard: {e}"))?,
         };
         let size = (u32::try_from(img.width).unwrap(), u32::try_from(img.height).unwrap());
