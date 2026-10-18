@@ -386,7 +386,6 @@ pub struct PollOption {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkPreview {
-    pub site: String,
     pub title: String,
     pub summary: String,
 }

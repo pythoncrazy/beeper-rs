@@ -8,8 +8,8 @@ use crate::login::{Login, LoginMsg};
 use crate::style::{
     bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded, fill_box,
     fw, glow_box, gutter_style, hex, ic, icon, initials, input_style, med, mix, name_hash, pick, pick_menu_style,
-    pick_style, scroll_style, semi, shadow_box, stable_bar, txt, Palette, ALL_FONTS, AVATAR_GRADIENTS, CLEAR, GUTTER,
-    SOLID_BARS,
+    pick_style, scroll_style, semi, shadow_box, stable_bar, text_width, txt, Palette, ALL_FONTS, AVATAR_GRADIENTS,
+    CLEAR, GUTTER, SOLID_BARS,
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{
@@ -4035,11 +4035,11 @@ impl BeeperGuiApp {
             .settings
             .on("loadEmbeds")
             .then(|| {
-                let link = m.links.first().map(|l| (l.url.as_str(), None, l.title.as_str(), l.summary.as_deref()));
+                let link = m.links.first().map(|l| (l.url.as_str(), l.title.as_str(), l.summary.as_deref()));
                 link.or_else(|| {
                     text.split_whitespace().find_map(|w| {
                         let lp = st.link_previews.get(w)?;
-                        Some((w, Some(lp.site.as_str()), lp.title.as_str(), Some(lp.summary.as_str())))
+                        Some((w, lp.title.as_str(), Some(lp.summary.as_str())))
                     })
                 })
             })
@@ -4066,18 +4066,24 @@ impl BeeperGuiApp {
             let col = column![].push(name).push(pill).spacing(4);
             (col.align_x(if q_mine { Right } else { iced::Left }), q_mine)
         });
-        if let Some((url, site, title, summary)) = preview {
+        if let Some((url, title, summary)) = preview {
             let host = url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(url).to_string();
             let body = column![]
-                .push(site.map(|s| txt(s.to_string(), 11.0).color(p.sub)))
-                .push(clamp(title, 338.0, 3, 13.0, Weight::Semibold).color(p.strong))
-                .push(summary.map(|s| clamp(s, 338.0, 3, 13.0, Weight::Normal).color(p.sub)))
+                .push(clamp(title, 338.0, 3, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(p.strong))
                 .push(
-                    row![ic(icon::LINK, 11.0).color(p.weak), txt(host, 11.0).color(p.weak)].spacing(4).align_y(Center),
+                    summary.map(|s| clamp(s, 338.0, 3, 13.0, Weight::Normal).line_height(Pixels(16.0)).color(p.strong)),
                 )
-                .spacing(6)
-                .padding([10, 11]);
-            parts = parts.push(container(body).max_width(360).style(fill_box(p.link_card, 17.0)));
+                .push(
+                    row![ic(icon::LINK, 12.0).color(p.weak), txt(host, 11.0).line_height(Pixels(14.0)).color(p.weak)]
+                        .spacing(4)
+                        .align_y(Center),
+                )
+                .spacing(8)
+                .padding([8, 11]);
+            let wraps = text_width(title, 13.0, Weight::Semibold) > 338.0
+                || summary.is_some_and(|s| text_width(s, 13.0, Weight::Normal) > 338.0);
+            let card = container(body).width(if wraps { Length::Fixed(360.0) } else { Shrink });
+            parts = parts.push(card.max_width(360).style(fill_box(p.link_card, 17.0)));
         }
         for a in &m.attachments {
             let name = a.file_name.clone().expect("attachment file name");
