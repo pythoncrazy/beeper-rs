@@ -61,7 +61,6 @@ pub mod icon {
     pub const PENCIL: char = '\u{e1f9}';
     pub const TRASH_2: char = '\u{e18e}';
     pub const REPLY: char = '\u{e22a}';
-    pub const FILE_TEXT: char = '\u{e0cc}';
     pub const PLAY: char = '\u{e13c}';
     pub const HISTORY: char = '\u{e1f5}';
     pub const BOOKMARK: char = '\u{e060}';

@@ -1043,6 +1043,22 @@ static MEDIA_ICONS: std::sync::LazyLock<[svg::Handle; 4]> = std::sync::LazyLock:
     })
 });
 
+/// Desktop's file row icons: Material draft, csv, folder_zip and audio_file.
+static FILE_ICONS: std::sync::LazyLock<[svg::Handle; 4]> = std::sync::LazyLock::new(|| {
+    [
+        "M240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-520v-200H240v640h480v-440H520ZM240-800v200-200 640-640Z",
+        "M230-360h120v-60H250v-120h100v-60H230q-17 0-28.5 11.5T190-560v160q0 17 11.5 28.5T230-360Zm156 0h120q17 0 28.5-11.5T546-400v-60q0-17-11.5-31.5T506-506h-60v-34h100v-60H426q-17 0-28.5 11.5T386-560v60q0 17 11.5 30.5T426-456h60v36H386v60Zm264 0h60l70-240h-60l-40 138-40-138h-60l70 240ZM160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h640q33 0 56.5 23.5T880-720v480q0 33-23.5 56.5T800-160H160Zm0-80h640v-480H160v480Zm0 0v-480 480Z",
+        "M640-480v-80h80v80h-80Zm0 80h-80v-80h80v80Zm0 80v-80h80v80h-80ZM447-640l-80-80H160v480h400v-80h80v80h160v-400H640v80h-80v-80H447ZM160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640v400q0 33-23.5 56.5T800-160H160Zm0-80v-480 480Z",
+        "M430-200q38 0 64-26t26-64v-150h120v-80H480v155q-11-8-23.5-11.5T430-380q-38 0-64 26t-26 64q0 38 26 64t64 26ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-520v-200H240v640h480v-440H520ZM240-800v200-200 640-640Z",
+    ]
+    .map(|d| {
+        svg::Handle::from_memory(
+            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path fill="currentColor" d="{d}"/></svg>"#)
+                .into_bytes(),
+        )
+    })
+});
+
 static MAT_FORWARD: std::sync::LazyLock<svg::Handle> = std::sync::LazyLock::new(|| {
     svg::Handle::from_memory(&br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="m640-280-57-56 184-184-184-184 57-56 240 240-240 240ZM80-200v-160q0-83 58.5-141.5T280-560h247L383-704l57-56 240 240-240 240-57-56 144-144H280q-50 0-85 35t-35 85v160H80Z"/></svg>"##[..])
 });
@@ -1386,6 +1402,39 @@ fn file_kind(mime: Option<&str>) -> &'static str {
         m if m.starts_with("application/") => "Document",
         _ => "File",
     }
+}
+
+/// Desktop's file type label: the extension in capitals, or a name for some MIME types.
+fn file_label(a: &Attachment) -> Option<String> {
+    let ext = a.file_name.as_deref().and_then(|n| n.rsplit_once('.')).filter(|(stem, e)| {
+        !stem.is_empty() && (1..=10).contains(&e.len()) && e.bytes().all(|b| b.is_ascii_alphanumeric())
+    });
+    let named = || match a.mime_type.as_deref()? {
+        "application/pdf" => Some("PDF"),
+        "application/zip" | "application/x-zip-compressed" | "multipart/x-zip" => Some("ZIP"),
+        "text/csv" => Some("CSV"),
+        "text/plain" => Some("TXT"),
+        "video/quicktime" => Some("MOV"),
+        "video/x-msvideo" => Some("AVI"),
+        _ => None,
+    };
+    ext.map(|(_, e)| e.to_ascii_uppercase()).or_else(|| named().map(String::from))
+}
+
+/// Desktop's file row icon: audio, CSV, zip, or document.
+fn file_icon(a: &Attachment) -> &'static svg::Handle {
+    let (mime, name) = (a.mime_type.as_deref().unwrap_or(""), a.file_name.as_deref().unwrap_or("").to_lowercase());
+    let k = match () {
+        _ if a.attachment_type == "audio" => 3,
+        _ if mime == "text/csv" || name.ends_with(".csv") => 1,
+        _ if matches!(mime, "application/zip" | "application/x-zip-compressed" | "multipart/x-zip")
+            || name.ends_with(".zip") =>
+        {
+            2
+        }
+        _ => 0,
+    };
+    &FILE_ICONS[k]
 }
 
 /// Desktop's media duration, like "00:05" or "01:02:03".
@@ -4958,17 +5007,18 @@ impl BeeperGuiApp {
                     button(slot).padding(0).style(btn_style([CLEAR; 3], [p.text; 3], 17.0)).on_press(press).into()
                 }
                 _ => {
-                    let size = a.file_size.map(human_size).unwrap_or_default();
-                    let tile = container(ic(icon::FILE_TEXT, 18.0).color(fg))
-                        .center(36)
-                        .style(fill_box(fg.scale_alpha(0.15), 8.0));
-                    let info =
-                        column![semi(name.clone(), 13.0).color(fg), txt(size.clone(), 11.0).color(fg.scale_alpha(0.7))]
-                            .spacing(2);
-                    button(row![tile, info].spacing(10).align_y(Center))
+                    let meta = file_label(a).into_iter().chain(a.file_size.map(human_size)).collect::<Vec<_>>();
+                    let info = column![clamp(&name, 206.0, 2, 14.0, Weight::Semibold).line_height(Pixels(17.0))]
+                        .push(
+                            (!meta.is_empty())
+                                .then(|| txt(meta.join(" · "), 12.0).line_height(Pixels(15.0)).color(p.sub)),
+                        )
+                        .spacing(4);
+                    let line = row![tinted(file_icon(a), 24.0, p.strong), info].spacing(8).align_y(Center);
+                    button(container(line).max_width(238))
                         .padding([8, 11])
-                        .style(btn_style([bg, bg, bg], [fg; 3], 17.0))
-                        .on_press(UiMessage::OpenQuickLook(name, size))
+                        .style(btn_style([p.received; 3], [p.strong; 3], 17.0))
+                        .on_press(UiMessage::Download(m.id.clone(), Some(ai)))
                         .into()
                 }
             };
