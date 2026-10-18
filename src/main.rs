@@ -116,4 +116,11 @@ fn main() {
         std::thread::spawn(move || rt.block_on(serve_http(listener, server_store)));
     }
     beeper_ui::run_native_gui(store).expect("run native GUI");
+    if beeper_ui::RELAUNCH.load(std::sync::atomic::Ordering::Relaxed) {
+        let (exe, args) = (std::env::current_exe().expect("the program path"), std::env::args_os().skip(1));
+        #[cfg(unix)]
+        panic!("relaunch: {}", std::os::unix::process::CommandExt::exec(std::process::Command::new(exe).args(args)));
+        #[cfg(not(unix))]
+        std::process::Command::new(exe).args(args).spawn().expect("relaunch");
+    }
 }

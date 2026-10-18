@@ -8,6 +8,7 @@ mod notify;
 mod popover;
 mod record;
 mod sound;
+mod spell;
 #[cfg(target_os = "linux")]
 mod tray;
 #[cfg(not(target_os = "linux"))]
@@ -428,6 +429,7 @@ pub enum UiMessage {
     WindowOpened(window::Id),
     /// A message from a chat window, handled with its pane.
     InWindow(window::Id, Box<UiMessage>),
+    Relaunch,
     OpenChatWindow(String),
     WindowClosed(window::Id),
     CloseRequested(window::Id),
@@ -1808,6 +1810,8 @@ pub struct BeeperGuiApp {
     pub flash: Option<(String, std::time::Instant)>,
     last_click: Option<(String, std::time::Instant)>,
     pub status_banner: String,
+    /// Desktop's "Preference changed" toast with its "Relaunch app" button.
+    relaunch_toast: bool,
     pub dnd_muted: bool,
     pub sidebar_width: f32,
     pub dragging: bool,
@@ -1912,6 +1916,7 @@ impl BeeperGuiApp {
             hovered_chat: None,
             flash: None,
             status_banner: String::new(),
+            relaunch_toast: false,
             dnd_muted: false,
             sidebar_width: 244.0,
             dragging: false,
@@ -1940,6 +1945,9 @@ impl BeeperGuiApp {
             if signed_in { Self::window_settings(Size::new(1264.0, 893.0)) } else { Self::login_window_settings() };
         let st = app.store.read().unwrap();
         app.hidden = signed_in && st.settings.on("startMinimized") && st.settings.on("showTrayIcon");
+        if st.settings.on("spellcheck") {
+            std::thread::spawn(spell::load);
+        }
         drop(st);
         settings.visible = !app.hidden;
         let (id, open) = window::open(settings);
@@ -3527,7 +3535,11 @@ impl BeeperGuiApp {
             UiMessage::Verified(Ok(())) => self.status_banner = "This device is verified.".into(),
             UiMessage::Verified(Err(e)) => self.status_banner = format!("Could not verify this device: {e}"),
             UiMessage::Pushed(Ok(())) => {}
-            UiMessage::DismissBanner => self.status_banner.clear(),
+            UiMessage::DismissBanner => (self.status_banner, self.relaunch_toast) = (String::new(), false),
+            UiMessage::Relaunch => {
+                RELAUNCH.store(true, std::sync::atomic::Ordering::Relaxed);
+                return iced::exit();
+            }
             UiMessage::Pushed(Err(e)) => self.status_banner = format!("Could not send to Matrix: {e}"),
             UiMessage::VerifySasNow => {
                 let (tx, rx) = tokio::sync::oneshot::channel();
@@ -3663,6 +3675,7 @@ impl BeeperGuiApp {
             UiMessage::SettingsQueryChanged(q) => self.settings_query = q,
             UiMessage::SetPref(key, v) => {
                 self.patch_settings(|s| s.set_pref(key, v));
+                self.relaunch_toast |= matches!(key, "spellcheck" | "quitOnClose");
                 let mut st = self.store.write().unwrap();
                 let client = st.matrix.clone();
                 if let Some(((kind, content), c)) = beeper_core::matrix::pref_write(&mut st, key).zip(client) {
@@ -6843,10 +6856,13 @@ impl BeeperGuiApp {
     /// The status toast at the bottom left of a window, `left` from its edge.
     fn view_toast(&self, left: f32) -> Option<El<'_>> {
         let p = &self.pal;
-        (!self.status_banner.is_empty()).then(|| {
+        let banner = if self.relaunch_toast { "Preference changed" } else { &self.status_banner };
+        (!banner.is_empty()).then(|| {
             let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, p.sub, UiMessage::DismissBanner);
-            let text = txt(self.status_banner.clone(), 13.0).color(p.strong);
-            let card = row![text.wrapping(iced::widget::text::Wrapping::WordOrGlyph), close].spacing(8).align_y(Center);
+            let text = txt(banner.to_string(), 13.0).color(p.strong);
+            let relaunch = self.relaunch_toast.then(|| pill_btn(p, "Relaunch app", UiMessage::Relaunch));
+            let card = row![text.wrapping(iced::widget::text::Wrapping::WordOrGlyph)].push(relaunch).push(close);
+            let card = card.spacing(8).align_y(Center);
             let card = container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0));
             container(card).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(left)).into()
         })
@@ -8001,6 +8017,9 @@ pub fn write_rgba_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u
     let (rgba8, png) = (::image::ExtendedColorType::Rgba8, ::image::ImageFormat::Png);
     ::image::save_buffer_with_format(path, rgba, width, height, rgba8, png).expect("write png");
 }
+
+/// "Relaunch app" closed the app; `main` starts it again.
+pub static RELAUNCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn run_native_gui(store: SharedStore) -> iced::Result {
     let app = iced::daemon(move || BeeperGuiApp::boot(store.clone()), BeeperGuiApp::update, BeeperGuiApp::view)

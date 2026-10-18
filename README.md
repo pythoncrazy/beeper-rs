@@ -49,6 +49,8 @@ cargo install --locked sccache
 
 The app and the tests use `ffmpeg` and `ffprobe` to decode audio and video, and to record voice notes. Install them on all platforms.
 
+Spellcheck uses the Hunspell dictionary of your locale (for example `hunspell-en-us`) from `/usr/share/hunspell`, `/usr/share/myspell` or `~/.local/share/hunspell`. Without a dictionary, spellcheck is off.
+
 ### 1. Run the Automated End-to-End Test Suite
 
 Run the following command to execute the end-to-end test suite (including `iced_test::Simulator`, `iced_test::Emulator`, headless Wayland via `weston --backend=headless`, and headless X11 via `Xvfb :99`):

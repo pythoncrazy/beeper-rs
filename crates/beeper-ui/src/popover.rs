@@ -1,7 +1,8 @@
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{self, Widget};
+use iced::advanced::Renderer as _;
 use iced::advanced::{mouse, overlay, renderer, Clipboard, Shell};
-use iced::{Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector};
+use iced::{Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector};
 
 /// Shows `popup` with its top-left corner at the cursor while the cursor is over `content`,
 /// or at the top-left corner of `content` while `open` is set, like Desktop's "right-start" popover.
@@ -162,6 +163,7 @@ pub struct Above<'a, Message> {
     content: Element<'a, Message>,
     popup: Option<Element<'a, Message>>,
     anchor: Box<dyn Fn(Size) -> Vector + 'a>,
+    squiggles: Box<dyn Fn(Size) -> Vec<(Point, f32)> + 'a>,
 }
 
 pub fn above<'a, Message>(
@@ -169,7 +171,15 @@ pub fn above<'a, Message>(
     popup: Option<Element<'a, Message>>,
     anchor: impl Fn(Size) -> Vector + 'a,
 ) -> Above<'a, Message> {
-    Above { content: content.into(), popup, anchor: Box::new(anchor) }
+    Above { content: content.into(), popup, anchor: Box::new(anchor), squiggles: Box::new(|_| Vec::new()) }
+}
+
+impl<'a, Message> Above<'a, Message> {
+    /// Chromium's red wavy spelling underlines, as (left end, width) from the top-left of `content`.
+    pub fn squiggles(mut self, at: impl Fn(Size) -> Vec<(Point, f32)> + 'a) -> Self {
+        self.squiggles = Box::new(at);
+        self
+    }
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for Above<'_, Message> {
@@ -227,6 +237,14 @@ impl<Message> Widget<Message, Theme, Renderer> for Above<'_, Message> {
         viewport: &Rectangle,
     ) {
         self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
+        let b = layout.bounds();
+        for (at, width) in (self.squiggles)(b.size()) {
+            for x in 0..width as u16 {
+                let dot = Point::new(b.x + at.x + f32::from(x), b.y + at.y + [0.0, 1.0, 2.0, 1.0][usize::from(x % 4)]);
+                let quad = renderer::Quad { bounds: Rectangle::new(dot, Size::new(1.0, 1.0)), ..Default::default() };
+                renderer.fill_quad(quad, Color::from_rgb8(255, 0, 0));
+            }
+        }
     }
 
     fn operate(
