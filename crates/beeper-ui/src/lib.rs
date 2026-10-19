@@ -4404,7 +4404,6 @@ impl BeeperGuiApp {
             .pane
             .selected_chat_id
             .as_ref()
-            .filter(|_| client.is_some())
             .and_then(|chat| st.chat_msg_indices.get(chat))
             .into_iter()
             .flatten()
@@ -4417,7 +4416,7 @@ impl BeeperGuiApp {
         let found =
             hits.iter().flat_map(|m| &m.attachments).filter(|a| matches!(a.attachment_type.as_str(), "img" | "video"));
         let found = found.filter_map(|a| a.poster_img.clone().or_else(|| a.src_url.clone()));
-        let tiles = self.media_window.iter().filter(|w| w.tab == 0 && client.is_some());
+        let tiles = self.media_window.iter().filter(|w| w.tab == 0);
         let tiles = tiles.flat_map(|w| media_items(&st, w).into_iter().take(w.shown));
         let shown = match &self.carousel {
             Some(c) if c.in_media => {
@@ -4433,8 +4432,8 @@ impl BeeperGuiApp {
             let a = &st.messages[i].attachments[k];
             a.poster_img.clone().or_else(|| a.src_url.clone())
         });
-        let urls: HashSet<String> =
-            images.chain(gif_urls).chain(found).chain(viewer).filter(|u| !self.media.contains_key(u)).collect();
+        let loadable = |u: &String| !self.media.contains_key(u) && (client.is_some() || u.starts_with("https://"));
+        let urls: HashSet<String> = images.chain(gif_urls).chain(found).chain(viewer).filter(loadable).collect();
         drop(st);
         self.media.extend(urls.iter().map(|u| (u.clone(), None)));
         let audio = self.load_audio();
