@@ -86,7 +86,12 @@ fn interact(app: &BeeperGuiApp, id: window::Id, size: Size, at: Point, events: V
 
 fn random_events(rng: &mut Rng) -> (String, Vec<iced::Event>) {
     let button = |b| [mouse::Event::ButtonPressed(b), mouse::Event::ButtonReleased(b)].map(iced::Event::Mouse).to_vec();
-    match rng.below(6) {
+    match rng.below(7) {
+        5 => {
+            let k = *rng.pick(&[Named::Backspace, Named::Delete, Named::Enter, Named::ArrowLeft, Named::Home]);
+            let m = *rng.pick(&[Modifiers::empty(), Modifiers::CTRL, Modifiers::SHIFT, Modifiers::ALT]);
+            (format!("click and {k:?} {m:?}"), [button(Button::Left), vec![key(k, m)]].concat())
+        }
         0 | 1 => ("click".into(), button(Button::Left)),
         2 => ("right click".into(), button(Button::Right)),
         3 => {
@@ -263,6 +268,56 @@ fn run(seed: u64, steps: usize) {
             panic!("seed {seed} panicked after:\n{}", log[log.len().saturating_sub(12)..].join("\n"));
         }
     }
+}
+
+/// Sends `events` to the main window, after a click on the composer if `focus`, and applies the messages.
+fn press(app: &mut BeeperGuiApp, focus: bool, events: impl IntoIterator<Item = iced::Event>) {
+    let id = app.main_window.expect("a main window");
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id));
+    if focus {
+        sim.click(iced::widget::Id::new("composer-input")).expect("a composer");
+    }
+    let _ = sim.simulate(events);
+    let msgs: Vec<UiMessage> = sim.into_messages().collect();
+    for m in msgs {
+        let _ = app.update(m);
+    }
+}
+
+/// The modifier of Desktop's word deletion: Option on macOS, Ctrl elsewhere.
+const WORD: Modifiers = if cfg!(target_os = "macos") { Modifiers::ALT } else { Modifiers::CTRL };
+
+fn key(named: Named, modifiers: Modifiers) -> iced::Event {
+    iced::Event::Keyboard(keyboard::Event::KeyPressed {
+        key: Key::Named(named),
+        modified_key: Key::Named(named),
+        physical_key: keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified),
+        location: keyboard::Location::Standard,
+        modifiers,
+        repeat: false,
+        text: None,
+    })
+}
+
+#[test]
+fn composer_keys_edit_like_desktop() {
+    use iced_test::simulator::typewrite;
+    let mut app = demo_app("composer");
+    let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+    let _ = app.update(UiMessage::ComposerChanged(String::new()));
+    let text = |app: &BeeperGuiApp| app.pane.composer.text();
+    press(&mut app, true, typewrite("hello big world").chain([key(Named::Backspace, WORD)]));
+    assert_eq!(text(&app), "hello big ");
+    press(&mut app, true, [key(Named::Backspace, WORD)]);
+    assert_eq!(text(&app), "hello ");
+    press(&mut app, true, [key(Named::Home, Modifiers::empty()), key(Named::Delete, WORD)]);
+    assert_eq!(text(&app), " ");
+    press(&mut app, true, typewrite("a bc"));
+    let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Select(text_editor::Motion::Left)));
+    let _ = app.update(UiMessage::DeleteTo(text_editor::Motion::WordLeft, true));
+    assert_eq!(text(&app), " a b", "Ctrl+Backspace deletes only the selection");
+    press(&mut app, false, [key(Named::Enter, Modifiers::empty()), key(Named::Backspace, WORD)]);
+    assert_eq!(text(&app), " a b", "an unfocused composer ignores keys");
 }
 
 #[test]
