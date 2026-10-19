@@ -2152,10 +2152,6 @@ impl BeeperGuiApp {
             if signed_in { Self::window_settings(Size::new(1264.0, 893.0)) } else { Self::login_window_settings() };
         let st = app.store.read().unwrap();
         app.hidden = signed_in && st.settings.on("startMinimized") && st.settings.on("showTrayIcon");
-        if st.settings.on("spellcheck") {
-            let custom = st.data_dir.join("Custom Dictionary.txt");
-            std::thread::spawn(|| spell::load(custom));
-        }
         drop(st);
         settings.visible = !app.hidden;
         let (id, open) = window::open(settings);
@@ -8563,7 +8559,13 @@ pub fn write_rgba_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u
 pub static RELAUNCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn run_native_gui(store: SharedStore) -> iced::Result {
-    i18n::set(store.read().unwrap().settings.pref("appLanguage"));
+    let st = store.read().unwrap();
+    i18n::set(st.settings.pref("appLanguage"));
+    if st.settings.on("spellcheck") {
+        let custom = st.data_dir.join("Custom Dictionary.txt");
+        std::thread::spawn(|| spell::load(custom));
+    }
+    drop(st);
     let app = iced::daemon(move || BeeperGuiApp::boot(store.clone()), BeeperGuiApp::update, BeeperGuiApp::view)
         .title(BeeperGuiApp::title)
         .subscription(BeeperGuiApp::subscription)
