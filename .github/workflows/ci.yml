@@ -44,6 +44,9 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: v0.18.0
-      - uses: AnimMouse/setup-ffmpeg@0633f1f6ad34ac671f07224b3c89b00386f0c717
+      - if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - if: runner.os == 'Windows'
+        uses: AnimMouse/setup-ffmpeg@0633f1f6ad34ac671f07224b3c89b00386f0c717
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace -- --nocapture
