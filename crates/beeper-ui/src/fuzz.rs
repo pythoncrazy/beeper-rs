@@ -321,6 +321,33 @@ fn composer_keys_edit_like_desktop() {
 }
 
 #[test]
+fn emoticons_follow_the_setting() {
+    use iced_test::simulator::typewrite;
+    let mut app = demo_app("emoticons");
+    let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+    let _ = app.update(UiMessage::ComposerChanged(String::new()));
+    let text = |app: &BeeperGuiApp| app.pane.composer.text();
+    press(&mut app, true, typewrite("hi :) "));
+    assert_eq!(text(&app), "hi 🙂 ");
+    let _ = app.update(UiMessage::ComposerChanged(String::new()));
+    press(&mut app, true, typewrite("hi :) ").chain([key(Named::Backspace, Modifiers::empty())]));
+    assert_eq!(text(&app), "hi :) ", "Backspace undoes the replacement");
+    press(&mut app, true, [key(Named::Backspace, Modifiers::empty())]);
+    assert_eq!(text(&app), "hi :)");
+    press(&mut app, true, [key(Named::Home, Modifiers::empty())].into_iter().chain(typewrite(";) ")));
+    assert_eq!(text(&app), "😉 hi :)", "the replacement is at the caret");
+    press(&mut app, true, typewrite("x").chain([key(Named::Backspace, Modifiers::empty())]));
+    assert_eq!(text(&app), "😉 hi :)", "an other edit ends the undo");
+    let _ = app.update(UiMessage::ComposerChanged("`a".into()));
+    press(&mut app, true, typewrite(" :) "));
+    assert_eq!(text(&app), "`a :) ", "no replacement in code");
+    let _ = app.update(UiMessage::SetPref("keepEmoticons", 1));
+    let _ = app.update(UiMessage::ComposerChanged(String::new()));
+    press(&mut app, true, typewrite(":D "));
+    assert_eq!(text(&app), ":D ", "the setting keeps emoticons");
+}
+
+#[test]
 fn every_pref_value_renders() {
     let mut app = demo_app("prefs");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));

@@ -177,14 +177,17 @@ const EMOTICONS: [(&str, &str); 38] = [
     (":zzz ", "😴"),
 ];
 
-/// The composer text after typing the last character of `typed`, with Desktop's emoticon replacement.
-pub(crate) fn replace_emoticon(before: &str, typed: String) -> String {
-    let appended =
-        typed.len() > before.len() && typed.starts_with(before) && typed[before.len()..].chars().count() == 1;
-    match EMOTICONS.iter().find(|(e, _)| appended && typed.ends_with(e)) {
-        Some((e, emoji)) => format!("{}{emoji} ", &typed[..typed.len() - e.len()]),
-        None => typed,
+/// The text and caret after Desktop's emoticon input rule for a character typed before `caret`, if an emoticon ends
+/// there. Like the input rules of Desktop, it does not replace in code.
+pub(crate) fn replace_emoticon(text: &str, caret: usize) -> Option<(String, usize)> {
+    let head = &text[..caret];
+    let line = head.rsplit('\n').next().expect("rsplit yields a part");
+    if head.matches("```").count() % 2 == 1 || line.matches('`').count() % 2 == 1 {
+        return None;
     }
+    let (e, emoji) = EMOTICONS.iter().find(|(e, _)| head.ends_with(e))?;
+    let start = caret - e.len();
+    Some((format!("{}{emoji} {}", &head[..start], &text[caret..]), start + emoji.len() + 1))
 }
 
 /// Desktop's emoticon queries, which put an emoji first in the autocomplete.
@@ -713,9 +716,13 @@ mod tests {
 
     #[test]
     fn composer_emoji_match_desktop() {
-        assert_eq!(replace_emoticon("hi :)", "hi :) ".into()), "hi 🙂 ");
-        assert_eq!(replace_emoticon("", "hi :) ".into()), "hi :) ");
-        assert_eq!(replace_emoticon("-.-zz", "-.-zzz".into()), "😴 ");
+        assert_eq!(replace_emoticon("hi :) ", 6), Some(("hi 🙂 ".into(), 8)));
+        assert_eq!(replace_emoticon("a :) b", 5), Some(("a 🙂 b".into(), 7)));
+        assert_eq!(replace_emoticon("-.-zzz", 6), Some(("😴 ".into(), 5)));
+        assert_eq!(replace_emoticon("hi :) ", 5), None);
+        assert_eq!(replace_emoticon("`a :) ", 6), None);
+        assert_eq!(replace_emoticon("```\na :) ", 9), None);
+        assert_eq!(replace_emoticon("`a` :) ", 7), Some(("`a` 🙂 ".into(), 9)));
         let names = |q: &str| suggestions(':', q, 0).into_iter().map(|(c, _)| c).collect::<Vec<_>>().join("");
         assert!(names(")").starts_with("🙂"));
         assert_eq!(names("12"), "");
