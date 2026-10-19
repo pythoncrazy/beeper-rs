@@ -35,8 +35,12 @@ const TEXTS: [&str; 10] =
     ["", "a", "hello world", ":)", "https://example.com", "**bold** _it_", "@", "/", "ü日本 🎉", "x\ny"];
 
 /// The preferences with values, without "App language": the language is global, and other tests expect English.
-fn prefs() -> impl Iterator<Item = &'static prefs::Pref> {
-    prefs::all().map(|(_, p)| p).filter(|p| !matches!(p.control, prefs::Control::Microphone) && p.key != "appLanguage")
+/// The preferences with their settings tab.
+fn prefs() -> impl Iterator<Item = (SettingsTab, &'static prefs::Pref)> {
+    let tab = |page| *SettingsTab::ALL.iter().find(|t| t.meta().0 == page).expect("a settings tab");
+    prefs::all()
+        .filter(|(_, p)| !matches!(p.control, prefs::Control::Microphone) && p.key != "appLanguage")
+        .map(move |(page, p)| (tab(page), p))
 }
 
 fn demo_app(name: &str) -> BeeperGuiApp {
@@ -132,7 +136,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         InboxTab::SendLater,
         InboxTab::Requests,
     ]);
-    let pref = *rng.pick(&prefs().collect::<Vec<_>>());
+    let pref = rng.pick(&prefs().collect::<Vec<_>>()).1;
     let hotkeys: Vec<&str> = prefs::HOTKEYS.iter().flat_map(|(_, k)| k.iter().map(|k| k.0)).collect();
     let key = match rng.below(3) {
         0 => Key::Character(
@@ -265,13 +269,11 @@ fn run(seed: u64, steps: usize) {
 fn every_pref_value_renders() {
     let mut app = demo_app("prefs");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
-    for pref in prefs() {
+    for (tab, pref) in prefs() {
+        let _ = app.update(UiMessage::SelectSettingsTab(tab));
         for v in 0..=pref.max_value() {
             let _ = app.update(UiMessage::SetPref(pref.key, v));
-            for tab in SettingsTab::ALL {
-                let _ = app.update(UiMessage::SelectSettingsTab(tab));
-                let _ = simulator(app.view_settings());
-            }
+            let _ = simulator(app.view_settings());
             let _ = simulator(app.view_main());
         }
         let _ = app.update(UiMessage::SetPref(pref.key, pref.default_value()));
@@ -283,7 +285,9 @@ fn random_input_does_not_panic() {
     let var =
         |k, default| std::env::var(k).map_or(default, |n| n.parse().unwrap_or_else(|_| panic!("{k} is a number")));
     let (seed, steps) = (var("FUZZ_SEED", 0), var("FUZZ_STEPS", 100));
-    for seed in seed..seed + 4 {
-        run(seed, steps as usize);
-    }
+    std::thread::scope(|s| {
+        for seed in seed..seed + 4 {
+            s.spawn(move || run(seed, steps as usize));
+        }
+    });
 }
