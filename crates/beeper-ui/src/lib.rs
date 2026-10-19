@@ -1086,9 +1086,21 @@ fn preview_sender<'a>(chat: &'a Chat, m: &Message) -> Option<&'a User> {
     chat.participants.items.iter().find(|u| shown && u.id == m.sender_id)
 }
 
-fn badged<'a>(inner: El<'a>, account_id: &str, size: f32, badge: f32, mono: Option<&Palette>) -> El<'a> {
+/// The 2 px cutout around a 12 or 16 px avatar badge, clipped at its right and bottom where no avatar is.
+static BADGE_RINGS: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
+    [12, 16].map(|b| {
+        let (r, s) = (b / 2 + 2, b + 2);
+        let ring = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {s} {s}"><circle cx="{r}" cy="{r}" r="{r}" fill="currentColor"/></svg>"#
+        );
+        svg::Handle::from_memory(ring.into_bytes())
+    })
+});
+
+/// `ring` is the row color, which Desktop shows in a cutout of the avatar around the badge.
+fn badged<'a>(inner: El<'a>, account_id: &str, size: f32, badge: f32, mono: Option<&Palette>, ring: Color) -> El<'a> {
     let icon: El<'a> = match mono {
-        None => svg(brand_svg(brand_key(account_id))).width(badge).height(badge).into(),
+        None => svg(crate::style::brand_round(brand_key(account_id))).width(badge).height(badge).into(),
         Some(p) => {
             let fg = p.strong;
             let glyph = svg(crate::style::brand_badge(brand_key(account_id)))
@@ -1098,8 +1110,10 @@ fn badged<'a>(inner: El<'a>, account_id: &str, size: f32, badge: f32, mono: Opti
             container(glyph).style(fill_box(p.chip, badge / 2.0)).into()
         }
     };
+    let cutout = tinted(&BADGE_RINGS[usize::from(badge > 12.0)], badge + 2.0, ring);
     let w = size + badge / 8.0;
-    stack![inner, container(icon).width(w).height(size).align_right(w).align_bottom(size)].width(w).height(size).into()
+    let corner = |e: El<'a>| container(e).width(w).height(size).align_right(w).align_bottom(size);
+    stack![inner, corner(cutout), corner(icon)].width(w).height(size).into()
 }
 
 fn slider_style(p: &Palette) -> impl Fn(&Theme, slider::Status) -> slider::Style + use<> {
@@ -6019,7 +6033,14 @@ impl BeeperGuiApp {
                 .align_y(if compact { Center } else { iced::Alignment::Start });
             let avatar = self.chat_avatar(c, av);
             let avatar = match network_icons {
-                true => badged(avatar, &c.account_id, av, if compact { 12.0 } else { 16.0 }, (!colorize).then_some(p)),
+                true => {
+                    let ring = match (on, self.hovered_chat.as_ref() == Some(&c.id)) {
+                        (true, _) => p.selected,
+                        (false, true) => crate::style::mix(p.window, Color { a: 1.0, ..p.hover }, p.hover.a),
+                        (false, false) => p.window,
+                    };
+                    badged(avatar, &c.account_id, av, if compact { 12.0 } else { 16.0 }, (!colorize).then_some(p), ring)
+                }
                 false => avatar,
             };
             let face = stack![avatar]
