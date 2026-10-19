@@ -2163,7 +2163,7 @@ impl BeeperGuiApp {
             status_banner: String::new(),
             relaunch_toast: None,
             dnd_muted: false,
-            sidebar_width: 244.0,
+            sidebar_width: 252.0,
             dragging: false,
             main_window: None,
             settings_window: None,
@@ -2593,8 +2593,8 @@ impl BeeperGuiApp {
         let text = self.pane().composer.text();
         let line = &text[text.rfind('\n').map_or(0, |i| i + 1)..text.rfind(':').expect("an emoji query")];
         let x = 8.0 + plus + 8.0 + 14.0 + 2.0 + text_width(line, 13.0, Weight::Normal);
-        let rail = if st.settings.on("showSidebar") { 72.0 } else { 0.0 };
-        let x = x.min(self.pane().size.width / self.zoom - rail - self.sidebar_width - width - 40.0);
+        let rail = if st.settings.on("showSidebar") { 68.0 } else { 0.0 };
+        let x = x.min(self.pane().size.width / self.zoom - rail - self.sidebar_width - width - 36.0);
         Some(container(list).align_bottom(Fill).padding(Padding::ZERO.left(x).bottom(34.0)).into())
     }
 
@@ -4210,8 +4210,8 @@ impl BeeperGuiApp {
             }
             UiMessage::DragStart => self.dragging = true,
             UiMessage::DragMoved(pt) => {
-                let rail = if self.store.read().unwrap().settings.on("showSidebar") { 72.0 } else { 0.0 };
-                self.sidebar_width = (pt.x - rail).clamp(164.0, 724.0);
+                let rail = if self.store.read().unwrap().settings.on("showSidebar") { 68.0 } else { 0.0 };
+                self.sidebar_width = (pt.x - rail - 2.0).clamp(172.0, 732.0);
             }
             UiMessage::DragEnd => self.dragging = false,
             UiMessage::WindowOpened(id) => {
@@ -4705,7 +4705,7 @@ impl BeeperGuiApp {
     /// The rail, the chat list and the open chat.
     fn view_body(&self, open: bool) -> El<'_> {
         let p = &self.pal;
-        let grip = mouse_area(container(Space::new()).width(8).height(Fill))
+        let grip = mouse_area(container(Space::new()).width(5).height(Fill))
             .on_press(UiMessage::DragStart)
             .interaction(mouse::Interaction::ResizingHorizontally);
         let pane = match self.creating_chat {
@@ -4725,7 +4725,7 @@ impl BeeperGuiApp {
         };
         let rail = self.store.read().unwrap().settings.on("showSidebar");
         let rail = rail.then(|| self.view_rail());
-        let body = Row::new().push(rail).push(self.view_sidebar()).push(grip).push(right);
+        let body = Row::new().push(rail).push(self.view_sidebar()).push(stack![right, grip]);
         container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0)).into()
     }
 
@@ -4772,7 +4772,7 @@ impl BeeperGuiApp {
             )
             .on_press(UiMessage::SearchSelect(None))
         });
-        let filter_menu = self.show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 14.5, 26.0));
+        let filter_menu = self.show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 22.5, 26.0));
         let reminder_menu = self.reminder_menu.map(|at| (self.view_reminder_menu(), at.x, at.y));
         let rate_menu = self.audio.menu.map(|at| (self.view_rate_menu(), at.x, at.y));
         let chat_menu = self.chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
@@ -4875,7 +4875,7 @@ impl BeeperGuiApp {
         let st = self.store.read().unwrap();
         let chats = self.selected_chats(&st);
         let all = |f: ChatFlag| chats.iter().all(|c| has_flag(c, f));
-        let x0 = 68.0 + self.sidebar_width + 16.0;
+        let x0 = 68.0 + self.sidebar_width + 8.0;
         let cell = (self.pane().size.width - x0 - 16.0) / 6.0;
         let toggles = [
             (
@@ -5736,7 +5736,8 @@ impl BeeperGuiApp {
                 vec!["Ctrl", "N"],
             ))
             .align_y(Center)
-            .height(52);
+            .height(52)
+            .padding(Padding::ZERO.right(8.0));
         let selected = self.creating_chat.is_none().then_some(self.pane().selected_chat_id.as_deref()).flatten();
         let (pinned, rest) = self.pins_and_rows(&st);
         let counts = st.settings.on("showUnreadCount");
@@ -6042,8 +6043,8 @@ impl BeeperGuiApp {
                 .width(Fill)
                 .into()
         } else {
-            scrollable(column![pins, rows].padding(Padding::ZERO.right(bar_pad)))
-                .direction(bar())
+            scrollable(column![pins, rows].padding(Padding::ZERO.right(bar_pad + GUTTER)))
+                .direction(stable_bar())
                 .height(Fill)
                 .style(scroll_style(p.scroll))
                 .into()
