@@ -3,6 +3,7 @@ use crate::{BeeperGuiApp, UiMessage};
 use beeper_core::config::{account_network, millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::NetworkKind::*;
 use beeper_core::models::{Attachment, Chat, Message};
+use beeper_core::store::BeeperStore;
 use iced::Task;
 use std::collections::{HashMap, HashSet};
 
@@ -131,6 +132,11 @@ impl Pending {
     }
 }
 
+/// Desktop's `areNotificationsMuted`: the chat is muted, or "Enable notifications" of its account is off.
+fn muted(st: &BeeperStore, c: &Chat) -> bool {
+    c.is_muted == Some(true) || !st.settings.account(&c.account_id).notifications
+}
+
 fn wait(secs: u64, then: UiMessage) -> Task<UiMessage> {
     Task::perform(tokio::time::sleep(std::time::Duration::from_secs(secs)), move |()| then)
 }
@@ -205,10 +211,7 @@ impl BeeperGuiApp {
         let st = self.store.read().unwrap();
         let unread = st.chat_idx_by_id.get(&chat).is_some_and(|&i| {
             let c = &st.chats[i];
-            c.unread_count > 0
-                && c.is_muted != Some(true)
-                && c.is_hidden_from_inbox != Some(true)
-                && c.is_request != Some(true)
+            c.unread_count > 0 && !muted(&st, c) && c.is_hidden_from_inbox != Some(true) && c.is_request != Some(true)
         });
         let (notes, repeat) = match (self.pending.queued.get(&chat), self.pending.repeat.get(&chat)) {
             (Some(q), _) if q.0 == timer => (self.pending.queued.remove(&chat).expect("queued").1, true),
@@ -236,7 +239,7 @@ impl BeeperGuiApp {
         let Some(c) = st.chat_idx_by_id.get(&chat).map(|&i| &st.chats[i]) else { return Task::none() };
         let shown = cfg!(target_os = "linux")
             && self.pane.selected_chat_id.as_ref() != Some(&chat)
-            && c.is_muted != Some(true)
+            && !muted(&st, c)
             && c.is_hidden_from_inbox != Some(true)
             && c.is_request != Some(true)
             && st.settings.on("notifyTyping");
@@ -266,12 +269,15 @@ impl BeeperGuiApp {
     pub(crate) fn notify_chat(&mut self, c: &Chat) -> Task<UiMessage> {
         let reaction = c.preview.as_ref().filter(|p| p.message_type.as_deref() == Some("REACTION"));
         let reaction = reaction.map(|p| self.notify_message(p));
+        let st = self.store.read().unwrap();
         let request = cfg!(target_os = "linux")
             && c.is_request == Some(true)
             && !self.pending.old_chats.contains(&c.id)
             && c.last_activity.as_ref().is_some_and(|t| *t > self.booted)
-            && self.store.read().unwrap().settings.on("requestNotifications")
+            && st.settings.on("requestNotifications")
+            && st.settings.account(&c.account_id).notifications
             && self.notified.insert(c.id.clone());
+        drop(st);
         let request = request.then(|| {
             let body = crate::i18n::tr(if c.chat_type == "group" { "Group Invitation" } else { "Chat Invitation" });
             let note = Note {
@@ -288,7 +294,7 @@ impl BeeperGuiApp {
 
     /// The notification of a new message, and the code to copy, if Desktop shows one. A message with a code always
     /// shows one when "Auto copy OTP/2FA codes" is on.
-    fn notification(&mut self, m: &Message) -> Option<(Note, Option<String>)> {
+    pub(crate) fn notification(&mut self, m: &Message) -> Option<(Note, Option<String>)> {
         if !cfg!(target_os = "linux") {
             return None;
         }
@@ -307,7 +313,7 @@ impl BeeperGuiApp {
             && m.text.as_deref() != Some(beeper_core::matrix::UTD_TEXT);
         let shown = shown && otp.is_some()
             || shown
-                && chat.is_muted != Some(true)
+                && !muted(&st, chat)
                 && chat.is_hidden_from_inbox != Some(true)
                 && chat.is_request != Some(true)
                 && prefs.on("messageNotifications")
@@ -318,10 +324,14 @@ impl BeeperGuiApp {
         if !shown || !self.notified.insert(m.id.clone()) {
             return None;
         }
+        let account = prefs.account(&chat.account_id);
         let text = body(m) + if otp.is_some() { " (OTP auto copied to clipboard)" } else { "" };
         let sender = m.sender_name.as_deref().filter(|s| group && !text.starts_with(&format!("{s} ")));
-        let silent = prefs.pref(if group { "groupSound" } else { "messageSound" }) == 1;
-        let body = sender.map_or(text.clone(), |s| format!("{s}: {text}"));
+        let silent = account.silent || prefs.pref(if group { "groupSound" } else { "messageSound" }) == 1;
+        let body = match account.previews {
+            true => sender.map_or(text.clone(), |s| format!("{s}: {text}")),
+            false => "You have a new message".into(),
+        };
         Some((Note { chat: chat.id.clone(), message: m.id.clone(), title: chat.title.clone(), body, silent }, otp))
     }
 
@@ -427,6 +437,31 @@ pub fn events() -> iced::futures::stream::Empty<(u32, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn account_settings_change_notifications() {
+        use beeper_core::models::AccountProps;
+        let mut app = crate::fuzz::demo_app("account-notes");
+        let (chat, mut m) = {
+            let st = app.store.read().unwrap();
+            let c = st.chats.iter().find(|c| c.chat_type == "single" && c.account_id != "hungryserv" && !muted(&st, c));
+            let c = c.expect("a demo DM").clone();
+            let m = st.chat_msg_indices[&c.id].iter().map(|&i| &st.messages[i]).find(|m| m.is_sender != Some(true));
+            (c, m.expect("a received message").clone())
+        };
+        (m.timestamp, m.text, m.attachments) = ("2099-01-01T00:00:00.000Z".into(), Some("hi".into()), Vec::new());
+        let mut note = |app: &mut BeeperGuiApp, props: AccountProps, id: &str| {
+            let _ = app.update(UiMessage::SetAccountProps(chat.account_id.clone(), props));
+            m.id = id.into();
+            app.notification(&m).map(|(n, _)| (n.body, n.silent))
+        };
+        let on = AccountProps::default();
+        assert_eq!(note(&mut app, on, "a"), Some(("hi".into(), false)));
+        let hidden = note(&mut app, AccountProps { previews: false, silent: true, ..on }, "b");
+        assert_eq!(hidden, Some(("You have a new message".into(), true)));
+        assert_eq!(note(&mut app, AccountProps { notifications: false, ..on }, "c"), None);
+    }
 
     fn attachment(kind: &str, file: Option<&str>) -> Attachment {
         serde_json::from_value(serde_json::json!({ "type": kind, "fileName": file })).expect("attachment JSON")
