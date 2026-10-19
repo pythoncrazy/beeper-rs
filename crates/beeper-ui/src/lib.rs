@@ -2221,7 +2221,8 @@ impl BeeperGuiApp {
             .chain(&st.chats)
             .flat_map(chat_avatar_urls)
             .chain(members)
-            .chain(senders);
+            .chain(senders)
+            .chain(st.me().img_url.as_deref());
         let mut urls = Vec::new();
         for u in raw {
             if !self.avatars.contains_key(u) {
@@ -5647,9 +5648,9 @@ impl BeeperGuiApp {
         .align_x(Center)
         .width(68)
         .padding(Padding::ZERO.top(14.0));
-        let me = st.me().full_name.as_deref().expect("self name");
+        let me = st.me();
         let media = UiMessage::OpenMedia;
-        let me_btn = button(avatar(me, 36.0, p))
+        let me_btn = button(self.face(me.img_url.as_deref(), me.full_name.as_deref().expect("self name"), 36.0))
             .padding(0)
             .style(btn_style([CLEAR; 3], [p.text; 3], 18.0))
             .on_press(UiMessage::OpenSettings(SettingsTab::General));
@@ -8096,7 +8097,7 @@ impl BeeperGuiApp {
         };
         let free = container(semi("Free", 10.0).color(p.strong)).padding([4, 6]).style(fill_box(p.chip, 25.0));
         let profile = row![
-            avatar(&name, 32.0, p),
+            self.face(me.img_url.as_deref(), &name, 32.0),
             column![bold(name.clone(), 14.0).color(p.strong),]
                 .push(me.email.clone().map(|e| txt(e, 11.0).color(p.text)))
                 .width(Fill),

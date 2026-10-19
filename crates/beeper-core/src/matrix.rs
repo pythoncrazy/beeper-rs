@@ -1169,6 +1169,22 @@ async fn sync_emoji(client: &Client, store: &SharedStore) {
     st.skin_tone = tone;
 }
 
+/// Desktop's `userProfileStore`: the own name and avatar come from the Matrix profile.
+async fn sync_profile(client: &Client, store: &SharedStore) {
+    let profile = match client.account().fetch_user_profile().await {
+        Ok(r) => r.data,
+        Err(e) => return store.write().unwrap().matrix_error = Some(e.to_string()),
+    };
+    let field = |k: &str| profile.get(k).and_then(Value::as_str).map(str::to_string);
+    let mut st = store.write().unwrap();
+    let i = st.chat_idx_by_id[NOTE_CHAT_ID];
+    st.update_chat(i, |c| {
+        let me = &mut c.participants.items[0];
+        me.full_name = field("displayname").or(me.full_name.take());
+        me.img_url = field("avatar_url");
+    });
+}
+
 /// Applies Desktop's synced preferences to the settings.
 async fn sync_prefs(client: &Client, store: &SharedStore) {
     let mut events = std::collections::BTreeMap::<&'static str, Value>::new();
@@ -1459,6 +1475,7 @@ pub async fn run(store: SharedStore) {
     tokio::spawn(retry_after_backup(client.clone(), store.clone()));
     sync_emoji(&client, &store).await;
     sync_prefs(&client, &store).await;
+    sync_profile(&client, &store).await;
     store.write().unwrap().inbox_rules = global(&client, RULES).await;
     let first = !store.read().unwrap().beeper_state.first_sync_done;
     futures_util::stream::iter(client.joined_rooms())
