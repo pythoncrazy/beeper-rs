@@ -687,6 +687,30 @@ pub(crate) fn quick_reactions(st: &beeper_core::store::BeeperStore) -> Vec<Strin
 mod tests {
     use super::*;
 
+    /// emoji-mart hides the emoji that the font cannot draw, so each one is a single Twemoji glyph.
+    #[test]
+    fn every_picker_emoji_is_one_twemoji_glyph() {
+        use iced::advanced::graphics::text::cosmic_text::{
+            fontdb, Attrs, Buffer, Family, FontSystem, Metrics, Shaping,
+        };
+        let mut db = fontdb::Database::new();
+        db.load_font_data(crate::style::FONT_EMOJI.to_vec());
+        let mut fs = FontSystem::new_with_locale_and_db(String::new(), db);
+        let mut buf = Buffer::new(&mut fs, Metrics::new(24.0, 24.0));
+        let attrs = Attrs::new().family(Family::Name(EMOJI_FAMILY));
+        let bad: Vec<String> = DATA
+            .emojis
+            .iter()
+            .flat_map(|e| (0..if e.skin == 0 { 1 } else { 6 }).map(|t| e.skinned(t)))
+            .filter(|s| {
+                buf.set_text(&mut fs, s, &attrs, Shaping::Advanced, None);
+                let glyphs: Vec<u16> = buf.layout_runs().flat_map(|r| r.glyphs.iter().map(|g| g.glyph_id)).collect();
+                glyphs.len() != 1 || glyphs[0] == 0
+            })
+            .collect();
+        assert!(bad.is_empty(), "{} emoji are not one glyph: {}", bad.len(), bad.join(" "));
+    }
+
     #[test]
     fn composer_emoji_match_desktop() {
         assert_eq!(replace_emoticon("hi :)", "hi :) ".into()), "hi 🙂 ");
@@ -701,7 +725,7 @@ mod tests {
 
     #[test]
     fn data_skins_and_search_match_emoji_mart() {
-        assert_eq!(DATA.emojis.len(), 1906);
+        assert_eq!(DATA.emojis.len(), 1849);
         let thumbs = DATA.ids["+1"];
         assert_eq!(DATA.emojis[thumbs].skinned(3), "👍🏽");
         assert_eq!(DATA.emojis[DATA.ids["people_holding_hands"]].skinned(1), "🧑🏻‍🤝‍🧑🏻");

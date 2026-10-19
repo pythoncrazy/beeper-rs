@@ -48,15 +48,11 @@ people
 😬	Grimacing Face	grimacing,grimacing,face,grimace,teeth,awkward,eek,nervous	0
 😮‍💨	Face Exhaling	face_exhaling,face,exhaling,relieve,relief,tired,sigh,exhale,gasp,groan,whisper,whistle	0
 🤥	Lying Face	lying_face,lying,face,lie,pinocchio,liar,long,nose	0
-🫨	Shaking Face	shaking_face,shaking,face,dizzy,shock,blurry,earthquake	0
-🙂‍↔️	Head Shaking Horizontally	head_shaking_horizontally,head,shaking,horizontally,disapprove,indiffernt,left	0
-🙂‍↕️	Head Shaking Vertically	head_shaking_vertically,head,shaking,vertically,down,nod	0
 😌	Relieved Face	relieved,relieved,face,relaxed,phew,massage,happiness,content,pleased,whew	0
 😔	Pensive Face	pensive,pensive,face,sad,depressed,upset,dejected,sadface,sorrowful	0
 😪	Sleepy Face	sleepy,sleepy,face,tired,rest,nap,bubble,side,sleep,snot,tear	0
 🤤	Drooling Face	drooling_face,drooling,face,drool	0
 😴	Sleeping Face	sleeping,sleeping,face,tired,sleepy,night,zzz,sleep,snoring	0
-🫩	Face with Bags Under Eyes	face_with_bags_under_eyes,face,with,bags,under,eyes,tired,sleepy,exhausted	0
 😷	Face with Medical Mask	mask,face,with,medical,mask,sick,ill,disease,covid,cold,coronavirus,doctor,medicine,surgical	0
 🤒	Face with Thermometer	face_with_thermometer,face,with,thermometer,sick,temperature,cold,fever,covid,ill	0
 🤕	Face with Head-Bandage	face_with_head_bandage,face,with,head,bandage,head,bandage,injured,clumsy,hurt,bandaged,injury	0
@@ -125,8 +121,6 @@ people
 🫲	Leftwards Hand	leftwards_hand,leftwards,hand,palm,offer,left,leftward	1
 🫳	Palm Down Hand	palm_down_hand,palm,down,hand,drop,dismiss,shoo	1
 🫴	Palm Up Hand	palm_up_hand,palm,up,hand,lift,offer,demand,beckon,catch,come	1
-🫷	Leftwards Pushing Hand	leftwards_pushing_hand,leftwards,pushing,hand,highfive,high,five,pressing,stop	1
-🫸	Rightwards Pushing Hand	rightwards_pushing_hand,rightwards,pushing,hand,highfive,high,five,pressing,stop	1
 👌	Ok Hand	ok_hand,ok,hand,fingers,limbs,perfect,okay,body,sign	1
 🤌	Pinched Fingers	pinched_fingers,pinched,fingers,size,tiny,small,che,finger,gesture,hand,interrogation,ma,purse,sarcastic,vuoi	1
 🤏	Pinching Hand	pinching_hand,pinching,hand,tiny,small,size,amount,body,little	1
@@ -358,42 +352,24 @@ people
 🚶	Pedestrian	walking,pedestrian,walking,person,move,hike,walk,walker	1
 🚶‍♂️	Man Walking	man-walking,man,walking,human,feet,steps,hike,male,men,pedestrian,walk	1
 🚶‍♀️	Woman Walking	woman-walking,woman,walking,human,feet,steps,female,hike,pedestrian,walk,women	1
-🚶‍➡️	Person Walking Facing Right	person_walking_facing_right,person,walking,facing,right,peerson,exercise	1
-🚶‍♀️‍➡️	Woman Walking Facing Right	woman_walking_facing_right,woman,walking,facing,right,person,exercise	1
-🚶‍♂️‍➡️	Man Walking Facing Right	man_walking_facing_right,man,walking,facing,right,person,exercise	1
 🧍	Standing Person	standing_person,standing,person,still,stand	1
 🧍‍♂️	Man Standing	man_standing,man,standing,still,male,men,stand	1
 🧍‍♀️	Woman Standing	woman_standing,woman,standing,still,female,stand,women	1
 🧎	Kneeling Person	kneeling_person,kneeling,person,pray,respectful,kneel	1
 🧎‍♂️	Man Kneeling	man_kneeling,man,kneeling,pray,respectful,kneel,male,men	1
 🧎‍♀️	Woman Kneeling	woman_kneeling,woman,kneeling,respectful,pray,female,kneel,women	1
-🧎‍➡️	Person Kneeling Facing Right	person_kneeling_facing_right,person,kneeling,facing,right,pray	1
-🧎‍♀️‍➡️	Woman Kneeling Facing Right	woman_kneeling_facing_right,woman,kneeling,facing,right,pray,worship	1
-🧎‍♂️‍➡️	Man Kneeling Facing Right	man_kneeling_facing_right,man,kneeling,facing,right,pray,worship	1
 🧑‍🦯	Person with White Cane	person_with_probing_cane,person,with,white,cane,probing,blind,accessibility	1
-🧑‍🦯‍➡️	Person with White Cane Facing Right	person_with_white_cane_facing_right,person,with,white,cane,facing,right,walk,visually,impaired,blind	1
 👨‍🦯	Man with White Cane	man_with_probing_cane,man,with,white,cane,probing,blind,accessibility,male,men	1
-👨‍🦯‍➡️	Man with White Cane Facing Right	man_with_white_cane_facing_right,man,with,white,cane,facing,right,visually,impaired,blind,walk,stick	1
 👩‍🦯	Woman with White Cane	woman_with_probing_cane,woman,with,white,cane,probing,blind,accessibility,female,women	1
-👩‍🦯‍➡️	Woman with White Cane Facing Right	woman_with_white_cane_facing_right,woman,with,white,cane,facing,right,stick,visually,impaired,blind	1
 🧑‍🦼	Person in Motorized Wheelchair	person_in_motorized_wheelchair,person,in,motorized,wheelchair,disability,accessibility	1
-🧑‍🦼‍➡️	Person in Motorized Wheelchair Facing Right	person_in_motorized_wheelchair_facing_right,person,in,motorized,wheelchair,facing,right,accessibility,disability	1
 👨‍🦼	Man in Motorized Wheelchair	man_in_motorized_wheelchair,man,in,motorized,wheelchair,disability,accessibility,male,men	1
-👨‍🦼‍➡️	Man in Motorized Wheelchair Facing Right	man_in_motorized_wheelchair_facing_right,man,in,motorized,wheelchair,facing,right,disability,accessibility,mobility	1
 👩‍🦼	Woman in Motorized Wheelchair	woman_in_motorized_wheelchair,woman,in,motorized,wheelchair,disability,accessibility,female,women	1
-👩‍🦼‍➡️	Woman in Motorized Wheelchair Facing Right	woman_in_motorized_wheelchair_facing_right,woman,in,motorized,wheelchair,facing,right,mobility,accessibility,disability	1
 🧑‍🦽	Person in Manual Wheelchair	person_in_manual_wheelchair,person,in,manual,wheelchair,disability,accessibility	1
-🧑‍🦽‍➡️	Person in Manual Wheelchair Facing Right	person_in_manual_wheelchair_facing_right,person,in,manual,wheelchair,facing,right,mobility,accessibility,disability	1
 👨‍🦽	Man in Manual Wheelchair	man_in_manual_wheelchair,man,in,manual,wheelchair,disability,accessibility,male,men	1
-👨‍🦽‍➡️	Man in Manual Wheelchair Facing Right	man_in_manual_wheelchair_facing_right,man,in,manual,wheelchair,facing,right,mobility,accessibility,disability	1
 👩‍🦽	Woman in Manual Wheelchair	woman_in_manual_wheelchair,woman,in,manual,wheelchair,disability,accessibility,female,women	1
-👩‍🦽‍➡️	Woman in Manual Wheelchair Facing Right	woman_in_manual_wheelchair_facing_right,woman,in,manual,wheelchair,facing,right,disability,mobility,accessibility	1
 🏃	Runner	runner,runner,running,person,move,exercise,jogging,marathon,run,workout	1
 🏃‍♂️	Man Running	man-running,man,running,walking,exercise,race,male,marathon,men,racing,runner,workout	1
 🏃‍♀️	Woman Running	woman-running,woman,running,walking,exercise,race,female,boy,marathon,racing,runner,women,workout	1
-🏃‍➡️	Person Running Facing Right	person_running_facing_right,person,running,facing,right,exercise,jog	1
-🏃‍♀️‍➡️	Woman Running Facing Right	woman_running_facing_right,woman,running,facing,right,exercise,jog	1
-🏃‍♂️‍➡️	Man Running Facing Right	man_running_facing_right,man,running,facing,right,jog,exercise	1
 💃	Dancer	dancer,dancer,woman,dancing,female,girl,fun,dance,dress,red,salsa,women	1
 🕺	Man Dancing	man_dancing,man,dancing,male,boy,fun,dancer,dance,disco,men	1
 🕴️	Person in Suit Levitating	man_in_business_suit_levitating,person,in,suit,levitating,man,business,levitate,hover,jump,boy,hovering,jabsco,male,men,rude,walt	1
@@ -496,12 +472,7 @@ people
 👥	Busts in Silhouette	busts_in_silhouette,busts,in,silhouette,user,person,human,group,team,bust,people,shadows,silhouettes,two,users,contributors	0
 🫂	People Hugging	people_hugging,people,hugging,care,goodbye,hello,hug,thanks	0
 👪	Family	family,family,home,parents,child,mom,dad,father,mother,people,human,boy,female,male,man,men,woman,women	0
-🧑‍🧑‍🧒	Family: Adult, Adult, Child	family_adult_adult_child,family:,adult,,adult,,child,family,adult,kid,parents	0
-🧑‍🧑‍🧒‍🧒	Family: Adult, Adult, Child, Child	family_adult_adult_child_child,family:,adult,,adult,,child,,child,family,adult,children,parents	0
-🧑‍🧒	Family: Adult, Child	family_adult_child,family:,adult,,child,family,adult,parent,kid	0
-🧑‍🧒‍🧒	Family: Adult, Child, Child	family_adult_child_child,family:,adult,,child,,child,family,adult,parent,children	0
 👣	Footprints	footprints,footprints,feet,tracking,walking,beach,body,clothing,footprint,footsteps,print,tracks	0
-🫆	Fingerprint	fingerprint,fingerprint	0
 🤖	Robot	robot_face,robot,face,computer,machine,bot,monster	0
 😺	Grinning Cat	smiley_cat,grinning,cat,smiley,animal,cats,happy,smile,face,mouth,open,smiling	0
 😸	Grinning Cat with Smiling Eyes	smile_cat,grinning,cat,with,smiling,eyes,smile,animal,cats,eye,face,grin,happy	0
@@ -529,16 +500,13 @@ people
 ❤️‍🔥	Heart on Fire	heart_on_fire,heart,on,fire,passionate,enthusiastic,burn,love,lust,sacred	0
 ❤️‍🩹	Mending Heart	mending_heart,mending,heart,broken,bandage,wounded,bandaged,healing,healthier,improving,recovering,recuperating,unbroken,well	0
 ❤️	Red Heart	heart,red,heart,love,like,valentines,black,heavy,<3	0
-🩷	Pink Heart	pink_heart,pink,heart,valentines	0
 🧡	Orange Heart	orange_heart,orange,heart,love,like,affection,valentines	0
 💛	Yellow Heart	yellow_heart,yellow,heart,love,like,affection,valentines,bf,gold,snapchat,<3	0
 💚	Green Heart	green_heart,green,heart,love,like,affection,valentines,nct,<3	0
 💙	Blue Heart	blue_heart,blue,heart,love,like,affection,valentines,brand,neutral,<3	0
-🩵	Light Blue Heart	light_blue_heart,light,blue,heart,ice,baby	0
 💜	Purple Heart	purple_heart,purple,heart,love,like,affection,valentines,bts,emoji,<3	0
 🤎	Brown Heart	brown_heart,brown,heart,coffee	0
 🖤	Black Heart	black_heart,black,heart,evil,dark,wicked	0
-🩶	Grey Heart	grey_heart,grey,heart,silver,monochrome	0
 🤍	White Heart	white_heart,white,heart,pure	0
 💋	Kiss Mark	kiss,kiss,mark,face,lips,love,like,affection,valentines,heart,kissing,lipstick,romance	0
 💯	Hundred Points	100,hundred,points,100,score,perfect,numbers,century,exam,quiz,test,pass,full,keep,symbol	0
@@ -575,8 +543,6 @@ nature
 🐅	Tiger	tiger2,tiger,tiger2,animal,nature,roar,bengal	0
 🐆	Leopard	leopard,leopard,animal,nature,african,jaguar	0
 🐴	Horse Face	horse,horse,face,animal,brown,nature,head	0
-🫎	Moose	moose,moose,canada,sweden,sven,cool	0
-🫏	Donkey	donkey,donkey,eeyore,mule	0
 🐎	Horse	racehorse,horse,racehorse,animal,gamble,luck,equestrian,galloping,racing,speed	0
 🦄	Unicorn	unicorn_face,unicorn,face,animal,nature,mystical	0
 🦓	Zebra	zebra_face,zebra,face,animal,nature,stripes,safari,stripe	0
@@ -639,10 +605,6 @@ nature
 🦩	Flamingo	flamingo,flamingo,animal,flamboyant,tropical	0
 🦚	Peacock	peacock,peacock,animal,nature,peahen,bird,ostentatious,proud	0
 🦜	Parrot	parrot,parrot,animal,nature,bird,pirate,talk	0
-🪽	Wing	wing,wing,angel,birds,flying,fly	0
-🐦‍⬛	Black Bird	black_bird,black,bird,crow	0
-🪿	Goose	goose,goose,silly,jemima,goosebumps,honk	0
-🐦‍🔥	Phoenix	phoenix,phoenix,immortal,bird,mythtical,reborn	0
 🐸	Frog	frog,frog,animal,nature,croak,toad,face	0
 🐊	Crocodile	crocodile,crocodile,animal,nature,reptile,lizard,alligator,croc	0
 🐢	Turtle	turtle,turtle,animal,slow,nature,tortoise,terrapin	0
@@ -663,7 +625,6 @@ nature
 🐙	Octopus	octopus,octopus,animal,creature,ocean,sea,nature,beach	0
 🐚	Spiral Shell	shell,spiral,shell,nature,sea,beach,seashell	0
 🪸	Coral	coral,coral,ocean,sea,reef	0
-🪼	Jellyfish	jellyfish,jellyfish,sting,tentacles	0
 🦀	Crab	crab,crab,animal,crustacean,cancer,zodiac	0
 🦞	Lobster	lobster,lobster,animal,nature,bisque,claws,seafood	0
 🦐	Shrimp	shrimp,shrimp,animal,ocean,nature,seafood,food,prawn,shellfish,small	0
@@ -696,7 +657,6 @@ nature
 🌻	Sunflower	sunflower,sunflower,nature,plant,fall,flower,sun,yellow	0
 🌼	Blossom	blossom,blossom,nature,flowers,yellow,blossoming,flower,daisy,plant	0
 🌷	Tulip	tulip,tulip,flowers,plant,nature,summer,spring,flower	0
-🪻	Hyacinth	hyacinth,hyacinth,flower,lavender	0
 🌱	Seedling	seedling,seedling,plant,nature,grass,lawn,spring,sprout,sprouting,young,seed	0
 🪴	Potted Plant	potted_plant,potted,plant,greenery,house,boring,grow,houseplant,nurturing,useless	0
 🌲	Evergreen Tree	evergreen_tree,evergreen,tree,plant,nature,fir,pine,wood	0
@@ -713,14 +673,12 @@ nature
 🪹	Empty Nest	empty_nest,empty,nest,bird,nesting	0
 🪺	Nest with Eggs	nest_with_eggs,nest,with,eggs,bird,nesting	0
 🍄	Mushroom	mushroom,mushroom,plant,vegetable,fungus,shroom,toadstool	0
-🪾	Leafless Tree	leafless_tree,leafless,tree	0
 foods
 🍇	Grapes	grapes,grapes,fruit,food,wine,grape,plant	0
 🍈	Melon	melon,melon,fruit,nature,food,cantaloupe,honeydew,muskmelon,plant	0
 🍉	Watermelon	watermelon,watermelon,fruit,food,picnic,summer,plant	0
 🍊	Tangerine	tangerine,tangerine,food,fruit,nature,orange,mandarin,plant	0
 🍋	Lemon	lemon,lemon,fruit,nature,citrus,lemonade,plant	0
-🍋‍🟩	Lime	lime,lime,fruit,acidic,citric	0
 🍌	Banana	banana,banana,fruit,food,monkey,plant,plantain	0
 🍍	Pineapple	pineapple,pineapple,fruit,nature,food,plant	0
 🥭	Mango	mango,mango,fruit,food,tropical	0
@@ -750,10 +708,6 @@ foods
 🥜	Peanuts	peanuts,peanuts,food,nut,nuts,peanut,vegetable	0
 🫘	Beans	beans,beans,food,kidney,legume	0
 🌰	Chestnut	chestnut,chestnut,food,squirrel,acorn,nut,plant	0
-🫚	Ginger Root	ginger_root,ginger,root,spice,yellow,cooking,gingerbread	0
-🫛	Pea Pod	pea_pod,pea,pod,cozy,green	0
-🍄‍🟫	Brown Mushroom	brown_mushroom,brown,mushroom,toadstool,fungus	0
-🫜	Root Vegetable	root_vegetable,root,vegetable,radish	0
 🍞	Bread	bread,bread,food,wheat,breakfast,toast,loaf	0
 🥐	Croissant	croissant,croissant,food,bread,french,breakfast,crescent,roll	0
 🥖	Baguette Bread	baguette_bread,baguette,bread,food,french,france,bakery	0
@@ -1172,7 +1126,6 @@ objects
 🩳	Shorts	shorts,shorts,clothing,bathing,pants,suit,swim,swimsuit,underwear	0
 👙	Bikini	bikini,bikini,swimming,female,woman,girl,fashion,beach,summer,bathers,clothing,swim,swimsuit	0
 👚	Womans Clothes	womans_clothes,womans,clothes,woman,s,fashion,shopping,bags,female,blouse,clothing,pink,shirt,woman’s	0
-🪭	Folding Hand Fan	folding_hand_fan,folding,hand,fan,flamenco,hot,sensu	0
 👛	Purse	purse,purse,fashion,accessories,money,sales,shopping,clothing,coin,wallet	0
 👜	Handbag	handbag,handbag,fashion,accessory,accessories,shopping,bag,clothing,purse,women’s	0
 👝	Pouch	pouch,pouch,clutch,bag,accessories,shopping,clothing,small	0
@@ -1187,7 +1140,6 @@ objects
 👡	Womans Sandal	sandal,womans,sandal,woman,s,shoes,fashion,flip,flops,clothing,heeled,sandals,shoe,woman’s	0
 🩰	Ballet Shoes	ballet_shoes,ballet,shoes,dance,clothing,pointe,shoe	0
 👢	Womans Boots	boot,womans,boots,boot,woman,s,shoes,fashion,clothing,cowgirl,heeled,high,knee,shoe,woman’s	0
-🪮	Hair Pick	hair_pick,hair,pick,afro,comb	0
 👑	Crown	crown,crown,king,kod,leader,royalty,lord,clothing,queen,royal	0
 👒	Womans Hat	womans_hat,womans,hat,woman,s,fashion,accessories,female,lady,spring,bow,clothing,ladies,woman’s	0
 🎩	Top Hat	tophat,top,hat,tophat,magic,gentleman,classy,circus,activity,clothing,entertainment,formal,groom,wear	0
@@ -1226,9 +1178,6 @@ objects
 🪕	Banjo	banjo,banjo,music,instructment,activity,entertainment,instrument,stringed	0
 🥁	Drum	drum_with_drumsticks,drum,with,drumsticks,music,instrument,snare	0
 🪘	Long Drum	long_drum,long,drum,music,beat,conga,djembe,rhythm	0
-🪇	Maracas	maracas,maracas,music,instrument,percussion,shaker	0
-🪈	Flute	flute,flute,bamboo,music,instrument,pied,piper,recorder	0
-🪉	Harp	harp,harp,music,instrument	0
 📱	Mobile Phone	iphone,mobile,phone,iphone,technology,apple,gadgets,dial,cell,communication,smartphone,telephone,responsive,design	0
 📲	Mobile Phone with Arrow	calling,mobile,phone,with,arrow,calling,iphone,incoming,call,cell,communication,left,pointing,receive,rightwards,telephone	0
 ☎️	Telephone	phone,telephone,phone,technology,communication,dial,black,rotary	0
@@ -1361,13 +1310,11 @@ objects
 ⚖️	Balance Scale	scales,balance,scale,scales,law,fairness,weight,justice,libra,tool,zodiac	0
 🦯	White Cane	probing_cane,white,cane,probing,accessibility,blind	0
 🔗	Link	link,link,rings,url,chain,hyperlink,linked,symbol	0
-⛓️‍💥	Broken Chain	broken_chain,broken,chain,constraint,break	0
 ⛓️	Chains	chains,chains,lock,arrest,chain	0
 🪝	Hook	hook,hook,tools,catch,crook,curve,ensnare,fishing,point,selling,tool	0
 🧰	Toolbox	toolbox,toolbox,tools,diy,fix,maintainer,mechanic,chest,tool	0
 🧲	Magnet	magnet,magnet,attraction,magnetic,horseshoe	0
 🪜	Ladder	ladder,ladder,tools,climb,rung,step,tool	0
-🪏	Shovel	shovel,shovel,tool,dig	0
 ⚗️	Alembic	alembic,alembic,distilling,science,experiment,chemistry,tool	0
 🧪	Test Tube	test_tube,test,tube,chemistry,experiment,lab,science,chemist	0
 🧫	Petri Dish	petri_dish,petri,dish,bacteria,biology,culture,lab,biologist	0
@@ -1476,7 +1423,6 @@ symbols
 ☮️	Peace Symbol	peace_symbol,peace,symbol,hippie,sign	0
 🕎	Menorah	menorah_with_nine_branches,menorah,with,nine,branches,hanukkah,candles,jewish,candelabrum,candlestick,chanukiah,religion	0
 🔯	Dotted Six-Pointed Star	six_pointed_star,dotted,six,pointed,star,six,pointed,purple,square,religion,jewish,hexagram,dot,fortune,middle	0
-🪯	Khanda	khanda,khanda,sikhism,religion	0
 ♈	Aries	aries,aries,sign,purple,square,zodiac,astrology,ram	0
 ♉	Taurus	taurus,taurus,purple,square,sign,zodiac,astrology,bull,ox	0
 ♊	Gemini	gemini,gemini,sign,zodiac,purple,square,astrology,twins	0
@@ -1512,7 +1458,6 @@ symbols
 🔅	Dim Button	low_brightness,dim,button,low,brightness,sun,afternoon,warm,summer,decrease,symbol	0
 🔆	Bright Button	high_brightness,bright,button,high,brightness,sun,light,increase,symbol	0
 📶	Antenna Bars	signal_strength,antenna,bars,signal,strength,blue,square,reception,phone,internet,connection,wifi,bluetooth,bar,cell,cellular,communication,mobile,stairs,telephone	0
-🛜	Wireless	wireless,wireless,wifi,internet,contactless,signal	0
 📳	Vibration Mode	vibration_mode,vibration,mode,orange,square,phone,cell,communication,heart,mobile,silent,telephone	0
 📴	Mobile Phone off	mobile_phone_off,mobile,phone,off,mute,orange,square,silence,quiet,cell,communication,telephone	0
 ♀️	Female Sign	female_sign,female,sign,woman,women,lady,girl,symbol,venus	0
@@ -1554,7 +1499,6 @@ symbols
 ©️	Copyright	copyright,copyright,ip,license,circle,law,legal,c,sign	0
 ®️	Registered	registered,registered,alphabet,circle,r,sign	0
 ™️	Trade Mark	tm,trade,mark,tm,trademark,brand,law,legal,sign	0
-🫟	Splatter	splatter,splatter	0
 #️⃣	Hash Key	hash,hash,key,keycap,symbol,blue,square,twitter,hashtag,number,octothorpe,pound,sign	0
 *️⃣	Keycap: *	keycap_star,keycap:,*,keycap,star,asterisk	0
 0️⃣	Keycap 0	zero,keycap,0,zero,numbers,blue,square,null,digit	0
@@ -1838,7 +1782,6 @@ flags
 🇷🇸	Serbia Flag	flag-rs,serbia,flag,rs,nation,country,banner,serbian	0
 🇷🇼	Rwanda Flag	flag-rw,rwanda,flag,rw,nation,country,banner,rwandan	0
 🇸🇦	Saudi Arabia Flag	flag-sa,saudi,arabia,flag,sa,nation,country,banner,arabian	0
-🇨🇶	Sark Flag	flag-sark,sark,flag,cq,banner	0
 🇸🇧	Solomon Islands Flag	flag-sb,solomon,islands,flag,sb,nation,country,banner,island,islander	0
 🇸🇨	Seychelles Flag	flag-sc,seychelles,flag,sc,nation,country,banner,seychellois	0
 🏴󠁧󠁢󠁳󠁣󠁴󠁿	Scotland Flag	flag-scotland,scotland,flag,scottish,andrew's,cross,saltire,st	0
