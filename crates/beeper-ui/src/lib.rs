@@ -5008,7 +5008,7 @@ impl BeeperGuiApp {
                 item(tr("React…").into(), "", Some(UiMessage::React(mid.clone()))),
                 item(bookmark.into(), "", Some(UiMessage::ToggleBookmark(mid.clone()))),
             ]),
-            (m.is_unread != Some(true)).then(|| {
+            (m.is_unread != Some(true) && m.account_id != "hungryserv").then(|| {
                 vec![item(tr("Mark as Unread").into(), "", Some(UiMessage::MarkUnreadFromHere(cid, mid.clone())))]
             }),
             mine.then(|| {
