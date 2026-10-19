@@ -23,6 +23,7 @@ use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::receipt::{ReceiptThread, ReceiptType};
 use matrix_sdk::ruma::events::relation::{Annotation, Reply};
 use matrix_sdk::ruma::events::room::message::{Relation, ReplacementMetadata, RoomMessageEventContent};
+use matrix_sdk::ruma::events::room::power_levels::UserPowerLevel;
 use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::events::tag::{TagInfo, TagName};
 use matrix_sdk::ruma::events::{GlobalAccountDataEventType, RoomAccountDataEventType, StateEventType};
@@ -191,6 +192,8 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     let bot = s(&bridge["bridgebot"]);
     let me = room.own_user_id();
     let members = room.members_no_sync(RoomMemberships::JOIN).await.expect("read room members");
+    let levels = state(room, "m.room.power_levels").await;
+    let users_default = levels.and_then(|l| l["users_default"].as_i64()).unwrap_or(0).try_into().expect("power level");
     let contents: HashMap<String, Value> = states(room, StateEventType::RoomMember)
         .await
         .into_iter()
@@ -219,6 +222,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
                 cannot_message: Some(false),
                 custom_nickname: None,
                 is_network_bot: Some(contents.get(id).is_some_and(|c| c["com.beeper.bridge.is_network_bot"] == true)),
+                is_admin: Some(m.power_level() > UserPowerLevel::Int(users_default)),
             }
         })
         .collect();

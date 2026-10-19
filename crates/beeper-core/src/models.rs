@@ -192,6 +192,8 @@ pub struct User {
     pub custom_nickname: Option<String>,
     #[serde(rename = "isNetworkBot", skip_serializing_if = "Option::is_none")]
     pub is_network_bot: Option<bool>,
+    #[serde(rename = "isAdmin", skip_serializing_if = "Option::is_none")]
+    pub is_admin: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

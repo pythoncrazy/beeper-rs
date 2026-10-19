@@ -664,6 +664,7 @@ impl BeeperStore {
             cannot_message: Some(false),
             custom_nickname: None,
             is_network_bot: None,
+            is_admin: None,
         };
         let chat = Chat {
             id: NOTE_CHAT_ID.into(),
@@ -1025,6 +1026,7 @@ impl BeeperStore {
                 cannot_message: Some(false),
                 custom_nickname: None,
                 is_network_bot: None,
+                is_admin: None,
             })
             .collect();
         let merge = merge_chat_ids.map(|chat_ids| {
