@@ -1820,7 +1820,7 @@ pub fn short_title(c: &Chat) -> &str {
 }
 
 fn tinted<'a>(h: &svg::Handle, size: f32, color: Color) -> El<'a> {
-    svg(h.clone()).width(size).height(size).style(move |_, _| svg::Style { color: Some(color) }).into()
+    svg(h.clone()).width(size).height(size).opacity(color.a).style(move |_, _| svg::Style { color: Some(color) }).into()
 }
 
 static THEME_ART: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock::new(|| {
@@ -5900,10 +5900,12 @@ impl BeeperGuiApp {
             let pin_w = if pinned { 15.0 } else { 0.0 };
             let top = row![]
                 .push(pin_icon)
-                .push(ell(&title, text_w - ts_w - bell - pin_w, title_size, weight).color(p.strong))
+                .push(ell(&title, text_w - ts_w - bell - pin_w, title_size, weight).color(p.fg.scale_alpha(0.9)))
                 .push(muted.then(|| container(tinted(&BELL_OFF, 12.0, p.strong)).padding([0, 2])))
                 .push(Space::new().width(Fill))
-                .push(txt(ts, ts_size).color(p.sub).font(iced::Font { style, ..fw(Weight::Normal) }))
+                .push(
+                    txt(ts, ts_size).color(p.strong.scale_alpha(0.7)).font(iced::Font { style, ..fw(Weight::Normal) }),
+                )
                 .height(16)
                 .align_y(Center);
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
@@ -5946,7 +5948,7 @@ impl BeeperGuiApp {
                 + if expired { crate::style::text_width(tr("Reminder"), 11.0, Weight::Semibold) + 10.0 } else { 0.0 }
                 + prefix_w;
             let read = m.is_some_and(|m| m.seen.keys().any(|u| !st.is_me(u) && u != &m.sender_id));
-            let fg = if unread { p.text } else { p.sub };
+            let fg = p.fg.scale_alpha(0.63);
             let face =
                 sender.map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0));
             let badge = (expired && previews).then(|| {
@@ -5955,7 +5957,7 @@ impl BeeperGuiApp {
             });
             let preview = row![]
                 .push(badge)
-                .push(mine.then(|| tinted(&SENT[usize::from(read)], 12.0, p.sub)))
+                .push(mine.then(|| tinted(&SENT[usize::from(read)], 12.0, fg)))
                 .push(face)
                 .push(prefix.map(|s| txt(s, 13.0).color(fg)))
                 .push(media_tag.map(|(is_video, label)| -> El<'_> {
