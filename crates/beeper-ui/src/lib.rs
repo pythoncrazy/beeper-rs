@@ -1113,7 +1113,7 @@ fn badged<'a>(inner: El<'a>, account_id: &str, size: f32, badge: f32, mono: Opti
     let cutout = tinted(&BADGE_RINGS[usize::from(badge > 12.0)], badge + 2.0, ring);
     let w = size + badge / 8.0;
     let corner = |e: El<'a>| container(e).width(w).height(size).align_right(w).align_bottom(size);
-    stack![inner, corner(cutout), corner(icon)].width(w).height(size).into()
+    stack![container(inner), corner(cutout), corner(icon)].width(w).height(size).into()
 }
 
 fn slider_style(p: &Palette) -> impl Fn(&Theme, slider::Status) -> slider::Style + use<> {
@@ -5822,7 +5822,7 @@ impl BeeperGuiApp {
                 };
                 let bubble = bubble_text(&st, c, launched, now).filter(|_| previews && !on && !selecting);
                 let unread = unread.filter(|_| bubble.is_none());
-                let face = stack![self.chat_avatar(c, pin_av)]
+                let face = stack![container(self.chat_avatar(c, pin_av)).center_x(pin_av + 4.0)]
                     .push((!selecting).then(|| container(unread).width(pin_av + 4.0).align_right(pin_av + 4.0)))
                     .push(selecting.then(|| pin(checkbox(p, picked(c))).x(pin_av - 11.0).y(-5.0)))
                     .width(pin_av + 4.0)
