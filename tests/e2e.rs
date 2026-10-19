@@ -808,6 +808,10 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         [(false, false), (true, true), (false, true)]
     );
 
+    {
+        let st = store.read().unwrap();
+        assert!(st.chats.iter().all(|c| st.chat_msg_indices.contains_key(&c.id)), "every chat has a message list");
+    }
     let mut gui = BeeperGuiApp::new(store.clone());
     assert_eq!(gui.pane.selected_chat_id.as_deref(), Some("!note_self:beeper.com"));
     gui.select_chat("!wa_eric:beeper.com");
