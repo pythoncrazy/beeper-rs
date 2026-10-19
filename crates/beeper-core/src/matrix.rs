@@ -275,6 +275,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             })
         }),
         chat_theme: None,
+        notifiable: None,
         delete_modes: features.as_ref().map_or(0, |f| {
             (u8::from(f["delete_chat"] == true) * DELETE_FOR_ME)
                 | (u8::from(f["delete_chat_for_everyone"] == true) * DELETE_FOR_EVERYONE)
@@ -389,6 +390,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         reaction_key: s(&rel["key"]).expect("reaction key"),
         animated: None,
         img_url: None,
+        sort_key: sort_key(order),
     });
     let msg = Box::new(Message {
         id,
@@ -529,6 +531,9 @@ fn reaction_verb(key: &str) -> String {
     }
 }
 
+/// JavaScript's `Number.MIN_SAFE_INTEGER`, the order Beeper gives a chat with no events.
+const MIN_SAFE_INTEGER: i64 = -9_007_199_254_740_991;
+
 async fn history(room: &Room) -> Vec<TimelineEvent> {
     let mut opts = MessagesOptions::backward();
     opts.limit = HISTORY.into();
@@ -620,7 +625,11 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     let pins = global(&room.client(), "com.beeper.favourites_order").await;
     let rank = pins["Inbox"].as_array().and_then(|ids| ids.iter().position(|id| id == room.room_id().as_str()));
     let chat = chat(room, &accounts, &rules).await;
-    if !store.read().unwrap().chat_msg_indices.contains_key(&chat_id) {
+    let seen = {
+        let st = store.read().unwrap();
+        st.chat_idx_by_id.get(&chat_id).is_some_and(|&i| st.chats[i].notifiable.is_some())
+    };
+    if !seen {
         let known: HashSet<String> = events.iter().filter_map(|e| Some(e.event_id()?.to_string())).collect();
         let older =
             history(room).await.into_iter().filter(|e| e.event_id().is_some_and(|id| !known.contains(id.as_str())));
@@ -640,6 +649,9 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
         }
     }
     let done = account_data(room, "com.beeper.inbox.done").await.and_then(|d| d["at_order"].as_i64());
+    let reacted =
+        ops.iter().filter_map(|o| if let Op::React(_, _, m) = o { Some(m.sort_key.clone()) } else { None }).max();
+    let redacted = ops.iter().any(|o| matches!(o, Op::Redact(_)));
     let (members, group) = (chat.participants.total, chat.chat_type == "group");
     {
         let mut st = store.write().unwrap();
@@ -760,11 +772,15 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
             }
         }
         let idx = st.chat_idx_by_id[&chat_id];
-        let last = st.chat_msg_indices.get(&chat_id).and_then(|v| v.last()).map(|&i| st.messages[i].sort_key.clone());
-        let archived =
-            st.chats[idx].is_pinned != Some(true) && done.is_some_and(|d| last.is_none_or(|l| sort_key(d) >= l));
-        if st.chats[idx].is_archived != Some(archived) {
-            st.update_chat(idx, |c| c.is_archived = Some(archived));
+        let msgs = st.chat_msg_indices.get(&chat_id).map_or(&[][..], |v| &v[..]).iter().map(|&i| &st.messages[i]);
+        let last = msgs.clone().rev().find(|m| m.message_type.as_deref() != Some("MEMBERSHIP")).map(|m| &m.sort_key);
+        let stored = msgs.flat_map(|m| &m.reactions).map(|r| &r.sort_key).max();
+        let old = st.chats[idx].notifiable.as_ref().filter(|_| !redacted);
+        let notifiable = [old, last, reacted.as_ref(), stored].into_iter().flatten().max().cloned();
+        let notifiable = Some(notifiable.unwrap_or_else(|| sort_key(MIN_SAFE_INTEGER)));
+        let archived = st.chats[idx].is_pinned != Some(true) && done.is_some_and(|d| Some(sort_key(d)) >= notifiable);
+        if (st.chats[idx].is_archived, &st.chats[idx].notifiable) != (Some(archived), &notifiable) {
+            st.update_chat(idx, |c| (c.is_archived, c.notifiable) = (Some(archived), notifiable));
         }
     }
     sync_receipts(store, room).await;
@@ -922,8 +938,9 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                 let mut done = serde_json::json!({ "at_ts": now, "updated_ts": now });
                 if on {
                     let st = store.read().unwrap();
-                    let last = st.chat_msg_indices.get(&chat).and_then(|v| v.last());
-                    let order = last.map_or(0, |&i| st.messages[i].sort_key.parse().expect("numeric sort key"));
+                    let last = st.chat_msg_indices.get(&chat).and_then(|v| v.last()).map(|&i| &st.messages[i].sort_key);
+                    let last = last.max(st.chats[st.chat_idx_by_id[&chat]].notifiable.as_ref());
+                    let order = last.map_or(MIN_SAFE_INTEGER, |k| k.parse::<i64>().expect("numeric sort key"));
                     done["at_order"] = order.into();
                 }
                 let raw = Raw::from_json(serde_json::value::to_raw_value(&done).expect("inbox done JSON"));

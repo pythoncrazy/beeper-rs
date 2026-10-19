@@ -305,6 +305,9 @@ pub struct Chat {
     pub reminder: Option<ChatReminder>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_theme: Option<ChatThemeCustom>,
+    /// The sort key of the newest message or reaction; a newer one than the done mark unarchives the chat.
+    #[serde(rename = "lastNotifiableOrder", skip_serializing_if = "Option::is_none")]
+    pub notifiable: Option<String>,
     #[serde(rename = "isHiddenFromInbox", skip_serializing_if = "Option::is_none")]
     pub is_hidden_from_inbox: Option<bool>,
     #[serde(rename = "isRequest", skip_serializing_if = "Option::is_none")]
@@ -398,6 +401,8 @@ pub struct Reaction {
     pub animated: Option<bool>,
     #[serde(rename = "imgURL", skip_serializing_if = "Option::is_none")]
     pub img_url: Option<String>,
+    #[serde(rename = "sortKey", default, skip_serializing_if = "String::is_empty")]
+    pub sort_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

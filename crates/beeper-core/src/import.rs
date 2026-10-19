@@ -369,6 +369,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 preview,
                 reminder: None,
                 chat_theme: None,
+                notifiable: None,
                 is_request: Some(flag(&t, "isMessageRequest")),
                 network_name: str_field(&t, "networkName")
                     .or_else(|| bridge.get("network").and_then(|n| str_field(n, "displayname"))),
@@ -479,7 +480,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
         .map_err(|e| e.to_string())?;
     let mut reactions: HashMap<String, Vec<Reaction>> = HashMap::new();
     db.prepare(
-        "SELECT eventID, reactionID, senderID, description FROM mx_reactions WHERE isDeleted = 0 ORDER BY \"order\"",
+        "SELECT eventID, reactionID, senderID, description, \"order\" FROM mx_reactions WHERE isDeleted = 0 ORDER BY \"order\"",
     )
     .and_then(|mut q| {
         q.query_map([], |r| {
@@ -489,6 +490,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                 reaction_key: r.get(3)?,
                 animated: None,
                 img_url: None,
+                sort_key: crate::store::sort_key(r.get(4)?),
             };
             Ok((r.get::<_, String>(0)?, reaction))
         })?
@@ -528,6 +530,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                         reaction_key: str_field(r, "reactionKey")?,
                         animated: None,
                         img_url: None,
+                        sort_key: String::new(),
                     })
                 })
                 .collect()

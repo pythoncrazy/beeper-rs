@@ -690,6 +690,7 @@ impl BeeperStore {
             preview: None,
             reminder: None,
             chat_theme: None,
+            notifiable: None,
             is_hidden_from_inbox: None,
             is_request: None,
             network_name: None,
@@ -854,6 +855,7 @@ impl BeeperStore {
                 merged_into_chat_id: c.merged_into_chat_id.take(),
                 preview: c.preview.take(),
                 chat_theme: c.chat_theme.take(),
+                notifiable: c.notifiable.take(),
                 ..chat
             }
         });
@@ -1060,6 +1062,7 @@ impl BeeperStore {
             preview: None,
             reminder: None,
             chat_theme: None,
+            notifiable: None,
             is_hidden_from_inbox: None,
             is_request: None,
             network_name: None,
@@ -1236,6 +1239,7 @@ impl BeeperStore {
                 reaction_key: reaction_key.to_string(),
                 animated: Some(false),
                 img_url: None,
+                sort_key: String::new(),
             });
         });
         Ok((chat_id, tx_id))
