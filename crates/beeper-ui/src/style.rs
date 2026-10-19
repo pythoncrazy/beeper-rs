@@ -96,8 +96,13 @@ impl cosmic_text::Fallback for TwemojiFirst {
     fn forbidden_fallback(&self) -> &[&'static str] {
         PLATFORM.forbidden_fallback()
     }
+    /// Without a CJK locale, fontconfig gives Han characters the Japanese font, so kanji and kana match.
     fn script_fallback(&self, script: unicode_script::Script, locale: &str) -> &[&'static str] {
-        PLATFORM.script_fallback(script, locale)
+        let cjk = ["zh", "ja", "ko"].iter().any(|l| locale.starts_with(l));
+        match script {
+            unicode_script::Script::Han if !cjk => PLATFORM.script_fallback(unicode_script::Script::Hiragana, locale),
+            _ => PLATFORM.script_fallback(script, locale),
+        }
     }
 }
 
