@@ -435,7 +435,6 @@ pub enum UiMessage {
     VerifySasNow,
     SasMatch(bool),
     ClearOldMedia,
-    ExportChatJson(String),
     OpenQuickLook(String, String),
     OpenUrl(String),
     /// The result of opening a URL in the browser.
@@ -3881,14 +3880,6 @@ impl BeeperGuiApp {
                 let n = self.store.write().unwrap().clear_cached_media_older_than_days(30);
                 self.status_banner = format!("Cleared {n} cached media files");
             }
-            UiMessage::ExportChatJson(cid) => {
-                let st = self.store.read().unwrap();
-                let count = st.chat_msg_indices.get(&cid).map_or(0, Vec::len);
-                let out_path = st.data_dir.join("chat-export.json");
-                let payload = serde_json::json!({ "chatID": cid, "messageCount": count });
-                std::fs::write(&out_path, serde_json::to_vec_pretty(&payload).unwrap()).expect("write export json");
-                self.status_banner = format!("Exported {count} messages to {}", out_path.display());
-            }
             UiMessage::OpenQuickLook(title, detail) => {
                 self.quick_look_target = Some((title, detail));
             }
@@ -6791,7 +6782,6 @@ impl BeeperGuiApp {
                 },
                 UiMessage::ToggleFlag(cid.clone(), ChatFlag::Archived)
             ),
-            action(icon::DOWNLOAD, "Export", UiMessage::ExportChatJson(cid.clone())),
         ]
         .spacing(4);
         let nickname = (chat.chat_type == "single" && chat.id != NOTE_CHAT_ID).then(|| {
@@ -8301,19 +8291,6 @@ impl BeeperGuiApp {
                         Some("Remove cached media older than 30 days."),
                         None,
                         pill_btn(p, tr("Clear"), UiMessage::ClearOldMedia),
-                    ),
-                    pref_row(
-                        p,
-                        "Export current chat",
-                        None,
-                        None,
-                        pill_btn(
-                            p,
-                            "Export",
-                            UiMessage::ExportChatJson(
-                                self.pane().selected_chat_id.clone().expect("a chat is selected"),
-                            ),
-                        ),
                     ),
                     pref_row(p, "Data folder", Some(&st.data_dir.display().to_string()), None, Space::new().into()),
                 ],
