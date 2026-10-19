@@ -2301,8 +2301,7 @@ impl BeeperGuiApp {
     }
 
     fn open_settings(&mut self, tab: SettingsTab) -> Task<UiMessage> {
-        self.active_settings_tab = tab;
-        let load = self.load_devices();
+        let load = self.update(UiMessage::SelectSettingsTab(tab));
         if let Some(id) = self.settings_window {
             return Task::batch([load, window::gain_focus(id)]);
         }
@@ -3515,8 +3514,9 @@ impl BeeperGuiApp {
                 return Task::done(UiMessage::OpenUrl("https://help.beeper.com/?ref=desktop-app".into()));
             }
             UiMessage::SelectSettingsTab(t) => {
+                let top = operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
                 self.active_settings_tab = t;
-                return self.load_devices();
+                return Task::batch([top, self.load_devices()]);
             }
             UiMessage::DevicesLoaded(r) => self.devices = Some(r),
             UiMessage::MicsLoaded(r) => {
