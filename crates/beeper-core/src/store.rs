@@ -796,6 +796,7 @@ impl BeeperStore {
         let idx = self.chats.len();
         assert!(self.chat_idx_by_id.insert(chat.id.clone(), idx).is_none(), "duplicate chat {}", chat.id);
         self.chat_search_index.insert_doc(idx as u32, &chat_index_text(&chat));
+        self.chat_msg_indices.entry(chat.id.clone()).or_default();
         if let Some(loc) = &chat.local_chat_id {
             self.local_chat_idx_by_id.insert(loc.clone(), idx);
         }
