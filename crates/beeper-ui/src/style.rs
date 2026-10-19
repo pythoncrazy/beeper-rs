@@ -161,24 +161,14 @@ pub fn carets(s: &str, size: f32, width: f32, at: impl IntoIterator<Item = (usiz
 }
 
 /// CSS `text-wrap: balance`: the narrowest width that wraps `s` into as many lines as `max` does, if that is more than one.
-pub fn balanced_width(s: &str, max: f32, size: f32) -> Option<f32> {
-    thread_local!(static CACHE: RefCell<HashMap<(String, u32), Option<f32>>> = RefCell::default());
+pub fn wraps(s: &str, max: f32, size: f32) -> bool {
+    thread_local!(static CACHE: RefCell<HashMap<(String, u32), bool>> = RefCell::default());
     let key = (s.to_owned(), max.to_bits());
     if let Some(w) = CACHE.with(|c| c.borrow().get(&key).copied()) {
         return w;
     }
-    let lines = |w: f32| shape(s, size, Weight::Normal, Some(w), |b| b.layout_runs().count());
-    let n = lines(max);
-    let (mut lo, mut hi) = (max / n as f32, max);
-    while hi - lo > 0.5 {
-        let mid = (lo + hi) / 2.0;
-        if lines(mid) > n {
-            lo = mid
-        } else {
-            hi = mid
-        }
-    }
-    let w = (n > 1).then_some(hi);
+    let lines = |w| shape(s, size, Weight::Normal, w, |b| b.layout_runs().count());
+    let w = lines(Some(max)) > lines(None);
     CACHE.with(|c| c.borrow_mut().insert(key, w));
     w
 }

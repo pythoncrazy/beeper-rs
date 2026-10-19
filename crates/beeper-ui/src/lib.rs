@@ -6549,12 +6549,8 @@ impl BeeperGuiApp {
             let (mut prev_item, last) = (None, blocks.len() - 1);
             let nbsp = crate::style::text_width("\u{a0}", 13.0, Weight::Normal);
             let pad = "\u{a0}".repeat((room / nbsp).ceil() as usize);
-            let balanced = (st.settings.on("balanceText") && last == 0 && blocks[0].0.is_none())
-                .then(|| {
-                    crate::style::balanced_width(&format!("{text}{pad}"), 0.45 * self.pane().size.width - 22.0, 13.0)
-                })
-                .flatten()
-                .map(|w| w.ceil() + 1.0);
+            let max = 0.45 * self.pane().size.width - 2.0 * BUBBLE_PAD_X;
+            let full = !st.settings.on("balanceText") && crate::style::wraps(&format!("{text}{pad}"), max, 13.0);
             let body = Column::with_children(blocks.into_iter().enumerate().map(|(i, (marker, mut spans))| {
                 // iced does not draw an empty last line.
                 if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
@@ -6579,7 +6575,7 @@ impl BeeperGuiApp {
                 });
                 container(row![].push(marker).push(line)).padding(Padding::ZERO.top(gap)).into()
             }))
-            .width(balanced.map_or(Length::Shrink, Length::Fixed));
+            .width(if full { Length::Fixed(max) } else { Length::Shrink });
             parts = parts.push(
                 container(stack![body].push(time.map(|t| container(t).align_right(Fill).align_bottom(Fill))))
                     .padding([8, 11])
