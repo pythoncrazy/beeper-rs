@@ -145,15 +145,27 @@ fn visibility_key(account_id: &str) -> &str {
     }
 }
 
-/// Desktop's `accountVisibilityInAllChats`: the "Show in Inbox" option of an account.
-pub fn inbox_visibility<'a>(rules: &'a Value, account_id: &str, bridge: &str) -> &'a str {
-    let default = if matches!(bridge, "slackgo" | "discordgo") { "dmOnly" } else { "all" };
-    rules["visibility"][visibility_key(account_id)].as_str().unwrap_or(default)
+/// Desktop's `xce`: the `chat_list_rules` key and the "Show in Inbox" option of an account, or of one of its network
+/// spaces, which has only "all" and "none".
+pub fn inbox_rule<'a>(rules: &'a Value, account_id: &str, bridge: &str, network: Option<&str>) -> (String, &'a str) {
+    let vis = |key: &str| rules["visibility"][key].as_str();
+    match network.filter(|_| !matches!(bridge, "slackgo" | "whatsapp" | "telegram")) {
+        Some(n) => {
+            let key = format!("{account_id}.{n}");
+            let option = vis(&key).filter(|&o| o != "dmOnly").unwrap_or("none");
+            (key, option)
+        }
+        None => {
+            let default = if matches!(bridge, "slackgo" | "discordgo") { "dmOnly" } else { "all" };
+            let key = visibility_key(account_id);
+            (key.into(), vis(key).unwrap_or(default))
+        }
+    }
 }
 
 /// Desktop's `setInboxVisibility`.
-pub fn with_inbox_visibility(mut rules: Value, account_id: &str, option: &str) -> Value {
-    rules["visibility"][visibility_key(account_id)] = option.into();
+pub fn with_inbox_visibility(mut rules: Value, key: &str, option: &str) -> Value {
+    rules["visibility"][key] = option.into();
     rules
 }
 
@@ -165,7 +177,7 @@ pub fn hidden_from_inbox(rules: &Value, account_id: &str, bridge: &Value, group:
         }
         _ => None,
     };
-    match scoped.unwrap_or(inbox_visibility(rules, account_id, name)) {
+    match scoped.unwrap_or(inbox_rule(rules, account_id, name, None).1) {
         "all" => false,
         "none" => true,
         "dmOnly" => group && bridge["com.beeper.room_type.v2"] != "group_dm",
@@ -1520,20 +1532,26 @@ mod tests {
 
     #[test]
     fn show_in_inbox_sets_the_rule_of_the_account() {
-        use super::{hidden_from_inbox, inbox_visibility, with_inbox_visibility};
+        use super::{hidden_from_inbox, inbox_rule, with_inbox_visibility};
         use serde_json::json;
         let (tg, slack) = (json!({"com.beeper.bridge_name": "telegram"}), json!({"com.beeper.bridge_name": "slackgo"}));
         let (team, rules) = ("slackgo.T1-U1", json!({"order": ["x"]}));
-        assert_eq!(inbox_visibility(&rules, "telegram", "telegram"), "all");
-        assert_eq!(inbox_visibility(&rules, team, "slackgo"), "dmOnly");
+        assert_eq!(inbox_rule(&rules, "telegram", "telegram", None), ("telegram".into(), "all"));
+        assert_eq!(inbox_rule(&rules, team, "slackgo", None), ("slackgo.T1".into(), "dmOnly"));
+        assert_eq!(inbox_rule(&rules, "telegram", "telegram", Some("topic")).0, "telegram");
         for (option, dm, group) in [("all", false, false), ("dmOnly", false, true), ("none", true, true)] {
             let r = with_inbox_visibility(rules.clone(), "telegram", option);
-            assert_eq!((r["order"].clone(), inbox_visibility(&r, "telegram", "telegram")), (json!(["x"]), option));
+            assert_eq!((r["order"].clone(), inbox_rule(&r, "telegram", "telegram", None).1), (json!(["x"]), option));
             assert_eq!([false, true].map(|g| hidden_from_inbox(&r, "telegram", &tg, g)), [dm, group]);
         }
-        let r = with_inbox_visibility(rules, team, "none");
+        let r = with_inbox_visibility(rules.clone(), "slackgo.T1", "none");
         assert_eq!(r["visibility"], json!({"slackgo.T1": "none"}));
         assert!(hidden_from_inbox(&r, "slackgo.T1-U2", &slack, false));
+        let discord = json!({"com.beeper.bridge_name": "discordgo", "network": {"id": "G1"}});
+        assert_eq!(inbox_rule(&rules, "discordgo", "discordgo", Some("G1")), ("discordgo.G1".into(), "none"));
+        let r = with_inbox_visibility(rules, "discordgo.G1", "all");
+        assert_eq!(inbox_rule(&r, "discordgo", "discordgo", Some("G1")).1, "all");
+        assert!(!hidden_from_inbox(&r, "discordgo", &discord, true));
     }
 
     #[test]
