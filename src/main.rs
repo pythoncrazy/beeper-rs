@@ -121,6 +121,7 @@ fn main() {
         #[cfg(unix)]
         panic!("relaunch: {}", std::os::unix::process::CommandExt::exec(std::process::Command::new(exe).args(args)));
         #[cfg(not(unix))]
+        #[expect(clippy::zombie_processes, reason = "the new process outlives this one, which exits now")]
         std::process::Command::new(exe).args(args).spawn().expect("relaunch");
     }
 }
