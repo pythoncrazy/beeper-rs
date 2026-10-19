@@ -452,6 +452,8 @@ pub enum UiMessage {
     DragMoved(Point),
     DragEnd,
     WindowOpened(window::Id),
+    /// A window drew a frame, after which its screenshot has content.
+    Drawn(window::Id),
     /// A message from a chat window, handled with its pane.
     InWindow(window::Id, Box<UiMessage>),
     Relaunch,
@@ -2022,6 +2024,8 @@ pub struct BeeperGuiApp {
     pub main_window: Option<window::Id>,
     pub settings_window: Option<window::Id>,
     pub login_window: Option<window::Id>,
+    /// The window that `BEEPER_SCREENSHOT_EXIT` or `BEEPER_SCREENSHOT_SETTINGS` captures after its next frame.
+    shot: Option<window::Id>,
     pub login: Login,
     pub cloud: Arc<Cloud>,
     pub avatars: HashMap<String, Option<image::Handle>>,
@@ -2130,6 +2134,7 @@ impl BeeperGuiApp {
             main_window: None,
             settings_window: None,
             login_window: None,
+            shot: None,
             login: Login::new(source),
             cloud,
             avatars: HashMap::new(),
@@ -4105,9 +4110,14 @@ impl BeeperGuiApp {
                     "BEEPER_SCREENSHOT_EXIT"
                 };
                 if std::env::var(key).is_ok() {
-                    return window::screenshot(id).map(move |s| UiMessage::ScreenshotCaptured(id, s));
+                    self.shot = Some(id);
                 }
             }
+            UiMessage::Drawn(id) if self.shot == Some(id) => {
+                self.shot = None;
+                return window::screenshot(id).map(move |s| UiMessage::ScreenshotCaptured(id, s));
+            }
+            UiMessage::Drawn(_) => {}
             UiMessage::WindowResized(id, size) => {
                 if self.main_window == Some(id) {
                     self.pane.size = size;
@@ -4537,12 +4547,18 @@ impl BeeperGuiApp {
             .then(|| Subscription::run(notify::events).map(|(id, clicked)| UiMessage::NotificationEvent(id, clicked)));
         let tick =
             animated.then(|| iced::time::every(std::time::Duration::from_millis(20)).map(|_| UiMessage::AnimationTick));
+        let shot = self.shot.map(|_| {
+            iced::event::listen_raw(|e, _, id| {
+                matches!(e, Event::Window(window::Event::RedrawRequested(_))).then_some(UiMessage::Drawn(id))
+            })
+        });
         Subscription::batch(
             [changes, focus, keys, system]
                 .into_iter()
                 .chain(drag)
                 .chain(carousel)
                 .chain(tick)
+                .chain(shot)
                 .chain(remind)
                 .chain(notes)
                 .chain(tray)
