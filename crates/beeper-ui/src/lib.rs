@@ -5704,12 +5704,18 @@ impl BeeperGuiApp {
             let on = selected == Some(c.id.as_str());
             let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
             let muted = c.is_muted == Some(true);
-            let m = preview_message(&st, c).filter(|_| previews);
+            let draft = c
+                .draft
+                .as_ref()
+                .and_then(|d| d.text.as_deref())
+                .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
+            let m = preview_message(&st, c).filter(|_| previews && draft.is_none());
             let reaction = m.filter(|m| m.message_type.as_deref() == Some("REACTION"));
             let ts = match (self.active_tab, &c.reminder) {
                 (InboxTab::Reminders, Some(r)) => {
                     format!("{} {}", reminder_day(r.remind_at_ms), clock(r.remind_at_ms, h24))
                 }
+                _ if draft.is_some() => String::new(),
                 _ => c.last_activity.as_deref().map(|t| list_ts(t, h24)).unwrap_or_default(),
             };
             let ts_w = crate::style::text_width(&ts, ts_size, Weight::Normal) + 8.0;
@@ -5807,6 +5813,16 @@ impl BeeperGuiApp {
                         .width(text_w - reserve)
                         .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
                         .color(fg)
+                }))
+                .push(draft.filter(|_| previews).map(|t| {
+                    let label = trx("Draft:", "thread list draft preview prefix");
+                    let s =
+                        crate::style::clamped(&format!("{label} {t}"), text_w - reserve, lines, 13.0, Weight::Normal);
+                    let rest = s.strip_prefix(label).expect("the draft label fits").to_string();
+                    rich_text![span::<(), _>(label).font(fw(Weight::Semibold)).color(p.accent), span(rest).color(fg)]
+                        .size(13)
+                        .line_height(Pixels(16.0))
+                        .width(text_w - reserve)
                 }))
                 .push(Space::new().width(Fill))
                 .push(count)

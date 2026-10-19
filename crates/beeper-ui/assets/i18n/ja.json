@@ -121,6 +121,7 @@
 "Download failed: %s":["ダウンロードに失敗しました :%s"],
 "Downloaded %s":["%s をダウンロードしました"],
 "Downloading %s":["%s をダウンロードしています"],
+"Draft:":["下書き: "],
 "Drafts":["下書き"],
 "Edit your last message":["最後のメッセージを編集"],
 "Edited":["編集済み"],
