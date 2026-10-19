@@ -5573,8 +5573,10 @@ impl BeeperGuiApp {
             true => UiMessage::ToggleSelected(c.id.clone()),
             false => UiMessage::ClickChat(c.id.clone()),
         };
+        let bar_pad = if SOLID_BARS { 0.0 } else { 4.0 };
+        let inner = w - 8.0 - bar_pad - GUTTER;
         let cols = (((w - 16.0) / 80.0).floor() as usize).max(1);
-        let cell = (w - 16.0) / cols as f32;
+        let cell = inner / cols as f32;
         let previews = st.settings.on("showMessagePreviews");
         let now = now_unix_millis();
         let launched = now - self.started.elapsed().as_millis() as i64;
@@ -5640,7 +5642,7 @@ impl BeeperGuiApp {
             (false, true) => 0.0,
             (false, false) => 12.0,
         };
-        let text_w = w - 8.0 - 16.0 - av - 8.0 - 4.0 - lead;
+        let text_w = inner - 16.0 - av - 8.5 - lead;
         let frame = |key: String, dot: Option<El<'static>>, face: El<'static>, lines: [El<'static>; 2], on, select| {
             let [top, preview] = lines;
             let item = row![]
@@ -5848,7 +5850,7 @@ impl BeeperGuiApp {
                 .width(Fill)
                 .into()
         } else {
-            scrollable(column![pins, rows].padding(Padding::ZERO.right(if SOLID_BARS { 0.0 } else { 4.0 })))
+            scrollable(column![pins, rows].padding(Padding::ZERO.right(bar_pad)))
                 .direction(bar())
                 .height(Fill)
                 .style(scroll_style(p.scroll))
