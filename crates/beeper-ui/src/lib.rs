@@ -2094,6 +2094,11 @@ impl BeeperGuiApp {
             (s.theme.is_dark(false), false, first, cloud, source)
         };
         let pending = notify::Pending::new(&store.read().unwrap().chats);
+        let sidebar_width = match std::fs::read_to_string(store.read().unwrap().data_dir.join("sidebar-width")) {
+            Ok(w) => w.parse().expect("a numeric sidebar width"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 252.0,
+            Err(e) => panic!("read the sidebar width: {e}"),
+        };
         let mut app = Self {
             pane: Pane { size: Size::new(1264.0, 893.0), ..Pane::default() },
             chat_windows: Vec::new(),
@@ -2171,7 +2176,7 @@ impl BeeperGuiApp {
             status_banner: String::new(),
             relaunch_toast: None,
             dnd_muted: false,
-            sidebar_width: 252.0,
+            sidebar_width,
             dragging: false,
             main_window: None,
             settings_window: None,
@@ -4227,7 +4232,11 @@ impl BeeperGuiApp {
                 let rail = if self.store.read().unwrap().settings.on("showSidebar") { 68.0 } else { 0.0 };
                 self.sidebar_width = (pt.x - rail - 2.0).clamp(172.0, 732.0);
             }
-            UiMessage::DragEnd => self.dragging = false,
+            UiMessage::DragEnd => {
+                self.dragging = false;
+                let path = self.store.read().unwrap().data_dir.join("sidebar-width");
+                std::fs::write(path, self.sidebar_width.to_string()).expect("write the sidebar width");
+            }
             UiMessage::WindowOpened(id) => {
                 let key = if Some(id) == self.settings_window {
                     "BEEPER_SCREENSHOT_SETTINGS"
