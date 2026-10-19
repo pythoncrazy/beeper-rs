@@ -394,7 +394,7 @@ pub enum UiMessage {
     ToggleAddAccount,
     OpenAccount(Option<String>),
     SetAccountProps(String, beeper_core::models::AccountProps),
-    /// "Show in Inbox" of an account page: the account ID and the `chat_list_rules` option.
+    /// "Show in Inbox": the `chat_list_rules` key and option.
     SetInboxVisibility(String, &'static str),
     SelectSettingsTab(SettingsTab),
     SettingsQueryChanged(String),
@@ -721,6 +721,16 @@ const REMINDER_ORDERS: [&str; 4] = [
     "Order by Newest Message",
 ];
 const MENU_ITEM: f32 = 26.0;
+/// Desktop's `qL` inbox visibility options of an account, with their labels.
+const INBOX_OPTIONS: [(&str, &str); 3] = [("all", "All Messages"), ("dmOnly", "Only DMs"), ("none", "None")];
+const ACCOUNT_SUB_W: f32 = 160.0;
+
+fn inbox_label(label: &'static str) -> &'static str {
+    match label {
+        "All Messages" => tr(label),
+        _ => trx(label, "inbox visibility option"),
+    }
+}
 /// Desktop's `--chat-view-bubble-padding-x`, which also insets the message footer.
 const BUBBLE_PAD_X: f32 = 11.0;
 const SUB_MENU_W: [f32; 2] = [124.0, 257.0];
@@ -4095,13 +4105,17 @@ impl BeeperGuiApp {
                 self.account_page = id;
                 return operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
             }
-            UiMessage::SetAccountProps(id, props) => self.patch_settings(|s| {
-                s.accounts.insert(id, props);
-            }),
-            UiMessage::SetInboxVisibility(id, option) => {
+            UiMessage::SetAccountProps(id, props) => {
+                self.chat_menu = None;
+                self.patch_settings(|s| {
+                    s.accounts.insert(id, props);
+                })
+            }
+            UiMessage::SetInboxVisibility(key, option) => {
+                self.chat_menu = None;
                 let st = self.store.read().unwrap();
                 let client = st.matrix.clone().expect("Show in Inbox needs a Matrix client");
-                let rules = beeper_core::matrix::with_inbox_visibility(st.inbox_rules.clone(), &id, option);
+                let rules = beeper_core::matrix::with_inbox_visibility(st.inbox_rules.clone(), &key, option);
                 return Task::perform(
                     beeper_core::matrix::set_global(client, beeper_core::matrix::RULES, rules),
                     UiMessage::Pushed,
@@ -4718,7 +4732,7 @@ impl BeeperGuiApp {
     pub fn view_main(&self) -> El<'_> {
         let st = self.store.read().unwrap();
         // The sync task can drop a chat before StoreChanged reaches update.
-        let known = |c: &str| c.starts_with("draft:") || st.resolve_chat_idx(c).is_some();
+        let known = |c: &str| c.starts_with("draft:") || c.starts_with("account:") || st.resolve_chat_idx(c).is_some();
         let shown = self.pane().selected_chat_id.as_deref().is_some_and(known);
         let open = self.creating_chat.is_none() && shown;
         let menu_open = self.chat_menu.as_ref().is_some_and(|(c, _)| known(c));
@@ -4764,6 +4778,8 @@ impl BeeperGuiApp {
         let chat_menu = self.chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
             let (w, h) = if cid.starts_with("draft:") {
                 (124.0, 31.0)
+            } else if cid.starts_with("account:") {
+                (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + 3.0 * MENU_ITEM)
             } else {
                 (
                     233.0,
@@ -4773,7 +4789,8 @@ impl BeeperGuiApp {
                 )
             };
             let x = if at.x + w > self.pane().size.width { at.x - w } else { at.x };
-            let sub_w = self.chat_sub.map_or(0.0, |i| SUB_MENU_W[usize::from(i)]);
+            let sub_w =
+                self.chat_sub.filter(|_| !cid.starts_with("account:")).map_or(0.0, |i| SUB_MENU_W[usize::from(i)]);
             let left = x + w + sub_w > self.pane().size.width;
             (
                 self.view_chat_menu(cid, left),
@@ -5260,8 +5277,53 @@ impl BeeperGuiApp {
         }
     }
 
+    /// Desktop's account context menu (`gYe`) of a sidebar account or network space.
+    fn view_account_menu(&self, entry: &str) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read().unwrap();
+        let space = network_space(&st, entry);
+        let account = space.map_or(entry, |n| n.account_id.as_str());
+        let bridge = match account {
+            "hungryserv" => "hungryserv",
+            _ => &st.bridge_accounts.iter().find(|b| b.account_id == account).expect("a rail account").bridge_id,
+        };
+        let (key, now) =
+            beeper_core::matrix::inbox_rule(&st.inbox_rules, account, bridge, space.map(|n| n.id.as_str()));
+        let props = st.settings.account(account);
+        let muted = !props.notifications;
+        let write = st.matrix.is_some();
+        let options = INBOX_OPTIONS.iter().filter(|o| space.is_none() || o.0 != "dmOnly");
+        let sub = (self.chat_sub == Some(0)).then(|| {
+            let items = options.map(|&(o, label)| {
+                let lead = container((o == now).then(|| ic(icon::CHECK, 14.0))).width(22).into();
+                let msg = write.then(|| UiMessage::SetInboxVisibility(key.clone(), o));
+                menu_item(p, Some(lead), inbox_label(label).into(), "", msg)
+            });
+            let body = container(Column::with_children(items).padding([4, 0])).width(ACCOUNT_SUB_W);
+            body.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
+        });
+        let inbox = menu_item(p, None, tr("Show in Inbox").into(), "›", Some(UiMessage::ChatSub(Some(0))));
+        let mute = beeper_core::models::AccountProps { notifications: muted, ..props };
+        let mute = menu_item(
+            p,
+            None,
+            trx(if muted { "Unmute" } else { "Mute" }, "account context menu action").into(),
+            "",
+            Some(UiMessage::SetAccountProps(account.into(), mute)),
+        );
+        let col = column![
+            mouse_area(inbox).on_enter(UiMessage::ChatSub(Some(0))),
+            mouse_area(mute).on_enter(UiMessage::ChatSub(None))
+        ];
+        let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        row![menu].push(sub).into()
+    }
+
     fn view_chat_menu(&self, cid: &str, sub_left: bool) -> El<'_> {
         let p = &self.pal;
+        if let Some(entry) = cid.strip_prefix("account:") {
+            return self.view_account_menu(entry);
+        }
         if let Some(n) = cid.strip_prefix("draft:") {
             let delete =
                 menu_item(p, None, tr("Delete Chat").into(), "", Some(UiMessage::DeleteNewChat(n.parse().unwrap())));
@@ -5549,7 +5611,11 @@ impl BeeperGuiApp {
                 );
                 let btn =
                     badge(rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc.clone()))).into(), n, true);
-                c.push(self.tip(btn, label, hotkey(7 + i), tooltip::Position::Right))
+                let btn: El = mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{acc}"))).into();
+                match self.chat_menu {
+                    Some(_) => c.push(btn),
+                    None => c.push(self.tip(btn, label, hotkey(7 + i), tooltip::Position::Right)),
+                }
             });
         let add_label = button(add_space).padding(0).style(ghost(p, 12.0)).on_press(UiMessage::ToggleCommandPalette);
         let top = column![
@@ -8597,14 +8663,13 @@ impl BeeperGuiApp {
             )
         });
         let inbox = st.matrix.as_ref().and(bridge).map(|b| {
-            let options = [("all", "All Messages"), ("dmOnly", "Only DMs"), ("none", "None")];
-            let labels: Vec<String> = options.iter().map(|(_, l)| tr(l).to_string()).collect();
-            let now = beeper_core::matrix::inbox_visibility(&st.inbox_rules, id, &b.bridge_id);
-            let picked = labels[options.iter().position(|(o, _)| *o == now).expect("a known inbox visibility")].clone();
-            let account = id.to_string();
+            let labels: Vec<String> = INBOX_OPTIONS.iter().map(|&(_, l)| inbox_label(l).to_string()).collect();
+            let (key, now) = beeper_core::matrix::inbox_rule(&st.inbox_rules, id, &b.bridge_id, None);
+            let at = INBOX_OPTIONS.iter().position(|(o, _)| *o == now).expect("a known inbox visibility");
+            let picked = labels[at].clone();
             let pick = select(p, labels.clone(), picked, move |l| {
                 let i = labels.iter().position(|x| *x == l).expect("a listed option");
-                UiMessage::SetInboxVisibility(account.clone(), options[i].0)
+                UiMessage::SetInboxVisibility(key.clone(), INBOX_OPTIONS[i].0)
             });
             pref_row(p, tr("Show in Inbox"), None, None, pick)
         });

@@ -122,6 +122,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
     };
     let open = open.is_some();
     let accounts: Vec<String> = st.accounts.iter().map(|a| a.account_id.clone()).collect();
+    let rail = crate::rail_accounts(&st);
     drop(st);
     let chat = rng.pick(&chats).clone();
     let (mchat, msg) = rng.pick(&msgs).clone();
@@ -169,7 +170,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
     ]);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
     let hits = search_settings(&text);
-    let branch = rng.below(62);
+    let branch = rng.below(63);
     let what =
         format!("message #{branch} chat {chat} message {msg} text {text:?} pref {} key {key:?} {mods:?}", pref.key);
     let needs_msg = (7..=14).contains(&branch) || branch == 53;
@@ -238,6 +239,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
             rng.pick(&accounts).clone(),
             beeper_core::models::AccountProps { notifications: rng.coin(), previews: rng.coin(), silent: rng.coin() },
         ),
+        61 => UiMessage::OpenChatMenu(format!("account:{}", rng.pick(&rail))),
         _ => UiMessage::ToggleDnd,
     };
     (what, m)
