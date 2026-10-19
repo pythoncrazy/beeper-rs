@@ -251,6 +251,8 @@ pub enum UiMessage {
     ClickChat(String),
     ComposerChanged(String),
     ComposerEdit(text_editor::Action),
+    /// Ctrl+Backspace and Ctrl+Delete: delete the selection, or the text from the caret to the motion.
+    DeleteTo(text_editor::Motion, bool),
     /// Toggles a `format::LABELS` button on the composer selection.
     Format(usize),
     LinkDialog(Option<(String, String)>),
@@ -2893,6 +2895,13 @@ impl BeeperGuiApp {
                 let old = self.pane.composer.text();
                 self.pane.composer.perform(action);
                 return self.composer_changed(old);
+            }
+            UiMessage::DeleteTo(to, back) => {
+                if self.pane.composer.selection().is_none() {
+                    self.pane.composer.perform(text_editor::Action::Select(to));
+                }
+                let edit = if back { text_editor::Edit::Backspace } else { text_editor::Edit::Delete };
+                return self.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
             }
             UiMessage::ComposerChanged(v) => {
                 let old = self.pane.composer.text();
@@ -6685,8 +6694,22 @@ impl BeeperGuiApp {
             .placeholder(placeholder)
             .on_action(UiMessage::ComposerEdit)
             .key_binding(move |k| match k.key.as_ref() {
+                _ if !matches!(k.status, text_editor::Status::Focused { .. }) => None,
                 Key::Named(Named::Enter) if !k.modifiers.shift() => {
                     Some(text_editor::Binding::Custom(UiMessage::SubmitComposer))
+                }
+                Key::Named(key @ (Named::Backspace | Named::Delete))
+                    if k.modifiers.jump() || k.modifiers.macos_command() =>
+                {
+                    use text_editor::Motion;
+                    let back = key == Named::Backspace;
+                    let to = match (back, k.modifiers.macos_command()) {
+                        (true, false) => Motion::WordLeft,
+                        (false, false) => Motion::WordRight,
+                        (true, true) => Motion::Home,
+                        (false, true) => Motion::End,
+                    };
+                    Some(text_editor::Binding::Custom(UiMessage::DeleteTo(to, back)))
                 }
                 Key::Named(Named::ArrowUp | Named::ArrowDown) if suggesting => None,
                 Key::Named(Named::Escape) => None,
