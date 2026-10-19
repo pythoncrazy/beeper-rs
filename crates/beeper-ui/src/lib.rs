@@ -5850,7 +5850,7 @@ impl BeeperGuiApp {
                 .push(container(face).padding(Padding::ZERO.right(8.5)))
                 .push(column![top, preview].width(Fill))
                 .align_y(Center)
-                .padding(Padding::new(8.0).top(10.0).bottom(9.0).left(if selecting { 0.0 } else { 8.0 }));
+                .padding(Padding::new(8.0).top(9.0).bottom(10.0).left(if selecting { 0.0 } else { 8.0 }));
             let action =
                 (!selecting && self.hovered_chat.as_ref() == Some(&key)).then(|| match key.strip_prefix("draft:") {
                     Some(n) => Some(self.hover_btn(
@@ -5933,6 +5933,7 @@ impl BeeperGuiApp {
                 .height(16)
                 .align_y(Center);
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
+            let receipt = mine && reaction.is_none();
             let media_tag = m.and_then(media_tag);
             let body = m.and_then(preview_body);
             let show_sender = !mine
@@ -5962,7 +5963,7 @@ impl BeeperGuiApp {
             let prefix_w = prefix.as_deref().map_or(0.0, |s| crate::style::text_width(s, 13.0, Weight::Normal) + 4.0);
             let reserve = 16.0
                 + if counts { 8.0 + 6.0 * digits + at } else { at }.max(18.0)
-                + if mine { 16.0 } else { 0.0 }
+                + if receipt { 16.0 } else { 0.0 }
                 + if sender.is_some() { 16.0 } else { 0.0 }
                 + match media_tag {
                     Some((_, label)) if expired => crate::style::text_width(label, 13.0, Weight::Normal) + 4.0,
@@ -5981,7 +5982,7 @@ impl BeeperGuiApp {
             });
             let preview = row![]
                 .push(badge)
-                .push(mine.then(|| tinted(&SENT[usize::from(read)], 12.0, fg)))
+                .push(receipt.then(|| tinted(&SENT[usize::from(read)], 12.0, fg)))
                 .push(face)
                 .push(prefix.map(|s| txt(s, 13.0).color(fg)))
                 .push(media_tag.map(|(is_video, label)| -> El<'_> {
