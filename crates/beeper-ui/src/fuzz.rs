@@ -287,10 +287,11 @@ fn press(app: &mut BeeperGuiApp, focus: bool, events: impl IntoIterator<Item = i
 /// The modifier of Desktop's word deletion: Option on macOS, Ctrl elsewhere.
 const WORD: Modifiers = if cfg!(target_os = "macos") { Modifiers::ALT } else { Modifiers::CTRL };
 
-fn key(named: Named, modifiers: Modifiers) -> iced::Event {
+fn key(key: impl Into<Key>, modifiers: Modifiers) -> iced::Event {
+    let key = key.into();
     iced::Event::Keyboard(keyboard::Event::KeyPressed {
-        key: Key::Named(named),
-        modified_key: Key::Named(named),
+        key: key.clone(),
+        modified_key: key,
         physical_key: keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified),
         location: keyboard::Location::Standard,
         modifiers,
@@ -345,6 +346,45 @@ fn emoticons_follow_the_setting() {
     let _ = app.update(UiMessage::ComposerChanged(String::new()));
     press(&mut app, true, typewrite(":D "));
     assert_eq!(text(&app), ":D ", "the setting keeps emoticons");
+}
+
+#[test]
+fn composer_undo_groups_like_prosemirror() {
+    let mut app = demo_app("undo");
+    let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+    let _ = app.update(UiMessage::ComposerChanged(String::new()));
+    let text = |app: &BeeperGuiApp| app.pane.composer.text();
+    let paste = |app: &mut BeeperGuiApp, s: &str| {
+        let edit = text_editor::Edit::Paste(Arc::new(s.into()));
+        let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
+    };
+    let z = |shift: bool| {
+        key(Key::Character("z".into()), if shift { Modifiers::COMMAND | Modifiers::SHIFT } else { Modifiers::COMMAND })
+    };
+    app.pane.history = History::default();
+    paste(&mut app, "hello");
+    app.pane.history.last = None;
+    paste(&mut app, " world");
+    press(&mut app, true, [z(false)]);
+    assert_eq!(text(&app), "hello");
+    assert_eq!(app.pane.composer.cursor().position.column, 5);
+    press(&mut app, true, [z(false), z(false)]);
+    assert_eq!(text(&app), "", "the oldest group is the empty text, and an undo without history does nothing");
+    press(&mut app, true, [z(true)]);
+    assert_eq!(text(&app), "hello");
+    press(&mut app, true, [key(Key::Character("y".into()), Modifiers::COMMAND)]);
+    assert_eq!(text(&app), "hello world");
+    press(&mut app, true, [z(false)]);
+    paste(&mut app, "!");
+    press(&mut app, true, [z(true)]);
+    assert_eq!(text(&app), "hello!", "an edit clears the redo history");
+    paste(&mut app, "?");
+    let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Move(text_editor::Motion::DocumentStart)));
+    paste(&mut app, "> ");
+    press(&mut app, true, [z(false)]);
+    assert_eq!(text(&app), "hello!?", "an edit at an other place starts a group");
+    let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+    assert!(app.pane.history.undo.is_empty(), "a chat starts a new history");
 }
 
 #[test]

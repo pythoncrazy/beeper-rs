@@ -253,6 +253,8 @@ pub enum UiMessage {
     ComposerEdit(text_editor::Action),
     /// Ctrl+Backspace and Ctrl+Delete: delete the selection, or the text from the caret to the motion.
     DeleteTo(text_editor::Motion, bool),
+    /// Mod-z undoes the last composer edit group; Shift-Mod-z and Mod-y redo it.
+    Undo(bool),
     /// Toggles a `format::LABELS` button on the composer selection.
     Format(usize),
     LinkDialog(Option<(String, String)>),
@@ -1901,6 +1903,15 @@ fn group<'a>(p: &Palette, title: Option<&str>, rows: Vec<El<'a>>) -> El<'a> {
         .into()
 }
 
+/// ProseMirror's history of the composer: the texts before the edit groups, and the undone texts.
+#[derive(Default)]
+pub struct History {
+    undo: Vec<String>,
+    redo: Vec<String>,
+    /// The time and new range of the last edit; an edit later than 100 ms or not next to it starts a new group.
+    last: Option<(std::time::Instant, std::ops::Range<usize>)>,
+}
+
 /// The open chat of a window, with its composer and its menus.
 #[derive(Default)]
 pub struct Pane {
@@ -1923,6 +1934,7 @@ pub struct Pane {
     pub hovered_msg: Option<String>,
     /// The selected emoji autocomplete row.
     pub suggest: usize,
+    pub history: History,
     /// The composer text where Escape closed the emoji autocomplete.
     pub suggest_hidden: Option<String>,
     /// After an emoticon replacement: the new text, and the typed text and caret that Backspace restores.
@@ -2504,6 +2516,7 @@ impl BeeperGuiApp {
         }
         let chat = st.chats[idx].clone();
         self.pane.composer = composer_with(chat.draft.as_ref().and_then(|d| d.text.as_deref()).unwrap_or_default());
+        self.pane.history = History::default();
         self.nickname_edit_buffer = chat
             .participants
             .items
@@ -2611,8 +2624,29 @@ impl BeeperGuiApp {
         iced::exit()
     }
 
-    /// Desktop's reaction to new composer text: emoticons, the typing notice, and link previews.
-    fn composer_changed(&mut self) -> Task<UiMessage> {
+    /// Adds an edit from `old` to the history, and reacts to the new text.
+    fn composer_changed(&mut self, old: String) -> Task<UiMessage> {
+        let h = &mut self.pane.history;
+        let new = self.pane.composer.text();
+        if old != new {
+            let (head, old_end, new_end) = format::diff(&old, &new);
+            let near = |(t, r): &(std::time::Instant, std::ops::Range<usize>)| {
+                t.elapsed().as_millis() < 100 && head <= r.end && old_end >= r.start
+            };
+            if !h.last.as_ref().is_some_and(near) {
+                h.undo.push(old);
+                if h.undo.len() > 100 {
+                    h.undo.remove(0);
+                }
+            }
+            h.redo.clear();
+            h.last = Some((std::time::Instant::now(), head..new_end));
+        }
+        self.composer_effects()
+    }
+
+    /// Desktop's reaction to new composer text: the typing notice and link previews.
+    fn composer_effects(&mut self) -> Task<UiMessage> {
         self.pane.selected_msg = None;
         self.pane.link_dialog = None;
         self.pane.suggest = 0;
@@ -2862,7 +2896,7 @@ impl BeeperGuiApp {
                         let (r, _) = word.expect("a suggestion has a word");
                         let text = format!("{}{fix}{}", &old[..r.start], &old[r.end..]);
                         self.pane.composer = format::content(&text, r.start + fix.len()..r.start + fix.len());
-                        Task::batch([self.composer_changed(), focus])
+                        Task::batch([self.composer_changed(old), focus])
                     }
                     MenuEdit::Learn => match spell::learn(&old[word.expect("Learn Spelling has a word").0]) {
                         Ok(()) => focus,
@@ -2874,7 +2908,7 @@ impl BeeperGuiApp {
                     MenuEdit::Copy => Task::batch([iced::clipboard::write(sel), focus]),
                     MenuEdit::Cut => {
                         self.pane.composer.perform(text_editor::Action::Edit(text_editor::Edit::Delete));
-                        Task::batch([iced::clipboard::write(sel), self.composer_changed(), focus])
+                        Task::batch([iced::clipboard::write(sel), self.composer_changed(old), focus])
                     }
                     MenuEdit::Paste => Task::batch([
                         iced::clipboard::read().map(|t| match t {
@@ -2911,7 +2945,7 @@ impl BeeperGuiApp {
                         }
                     }
                 }
-                return self.composer_changed();
+                return self.composer_changed(old);
             }
             UiMessage::DeleteTo(to, back) => {
                 if self.pane.composer.selection().is_none() {
@@ -2920,9 +2954,22 @@ impl BeeperGuiApp {
                 let edit = if back { text_editor::Edit::Backspace } else { text_editor::Edit::Delete };
                 return self.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
             }
+            UiMessage::Undo(redo) => {
+                let h = &mut self.pane.history;
+                let (from, to) = if redo { (&mut h.redo, &mut h.undo) } else { (&mut h.undo, &mut h.redo) };
+                let Some(text) = from.pop() else { return Task::none() };
+                let now = self.pane.composer.text();
+                let at = format::diff(&text, &now).1;
+                to.push(now);
+                h.last = None;
+                self.pane.emoticon = None;
+                self.pane.composer = format::content(&text, at..at);
+                return self.composer_effects();
+            }
             UiMessage::ComposerChanged(v) => {
+                let old = self.pane.composer.text();
                 self.pane.composer = composer_with(&v);
-                return self.composer_changed();
+                return self.composer_changed(old);
             }
             UiMessage::Format(i) => {
                 let old = self.pane.composer.text();
@@ -2934,7 +2981,7 @@ impl BeeperGuiApp {
                 }
                 let (text, r) = format::toggle(i, &old, r);
                 self.pane.composer = format::content(&text, r);
-                return Task::batch([self.composer_changed(), operation::focus("composer-input")]);
+                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
             }
             UiMessage::LinkDialog(d) => {
                 let closed = d.is_none();
@@ -2950,7 +2997,7 @@ impl BeeperGuiApp {
                 let r = format::selection(&self.pane.composer).unwrap_or(caret..caret);
                 let (text, r) = format::link(&old, r, url.trim(), label.trim());
                 self.pane.composer = format::content(&text, r);
-                return Task::batch([self.composer_changed(), operation::focus("composer-input")]);
+                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
             }
             UiMessage::SubmitComposer if !self.emoji_suggestions(&self.store.read().unwrap()).is_empty() => {
                 return self.update(UiMessage::PickEmoji(self.pane.suggest));
@@ -6729,11 +6776,14 @@ impl BeeperGuiApp {
                 }
                 Key::Named(Named::ArrowUp | Named::ArrowDown) if suggesting => None,
                 Key::Named(Named::Escape) => None,
-                Key::Character(c) if k.modifiers.command() => {
-                    let i = match (c.to_ascii_lowercase().as_str(), k.modifiers.shift()) {
-                        ("b", false) => 0,
-                        ("i", false) => 1,
-                        ("x", true) => 2,
+                Key::Character(_) if k.modifiers.command() => {
+                    let i = match (k.key.to_latin(k.physical_key).map(|c| c.to_ascii_lowercase()), k.modifiers.shift())
+                    {
+                        (Some('z'), redo) => return Some(text_editor::Binding::Custom(UiMessage::Undo(redo))),
+                        (Some('y'), false) => return Some(text_editor::Binding::Custom(UiMessage::Undo(true))),
+                        (Some('b'), false) => 0,
+                        (Some('i'), false) => 1,
+                        (Some('x'), true) => 2,
                         _ => return text_editor::Binding::from_key_press(k),
                     };
                     (formats & 1 << i != 0).then_some(text_editor::Binding::Custom(UiMessage::Format(i)))
