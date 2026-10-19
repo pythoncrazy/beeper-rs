@@ -599,7 +599,7 @@ pub const BEEPER_DARK: Palette = Palette {
     input: hex(0x222223),
     send_btn: hex(0x4d4d4d),
     sent: hex(0x2a61fb),
-    sent_meta: hexa(0xffffff, 0.6),
+    sent_meta: hexa(0xffffff, 0.8),
     received: hex(0x232326),
     link_card: hex(0x282828),
     outline: hex(0x28282a),

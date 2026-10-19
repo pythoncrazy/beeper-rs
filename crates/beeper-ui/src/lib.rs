@@ -6096,7 +6096,7 @@ impl BeeperGuiApp {
                 run_start[i] = run_start[i - 1];
             }
         }
-        let mut col = Column::new().padding(Padding::new(8.0).right(8.0 + GUTTER).top(96.0).bottom(8.0));
+        let mut col = Column::new().padding(Padding::new(8.0).right(8.0 + GUTTER).top(96.0).bottom(0.0));
         let mut prev: Option<&Message> = None;
         let last_live = msgs.iter().rposition(|m| m.is_deleted != Some(true));
         let mut last_seen: HashMap<&str, (&str, &str)> = HashMap::new();
@@ -6512,7 +6512,7 @@ impl BeeperGuiApp {
                 .settings
                 .on("showTimestamps")
                 .then(|| format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1));
-            let room = ts.as_deref().map_or(0.0, |t| crate::style::text_width(t, 11.0, Weight::Normal) + 8.0);
+            let room = ts.as_deref().map_or(0.0, |t| crate::style::text_width(t, 11.0, Weight::Normal) + 4.0);
             let time = ts.map(|t| txt(t, 11.0).color(if mine { p.sent_meta } else { p.sub }));
             let me = |id: &str| id == st.beeper_state.user_id;
             let arrow =
@@ -6587,7 +6587,7 @@ impl BeeperGuiApp {
             .width(if full { Length::Fixed(max) } else { Length::Shrink });
             parts = parts.push(
                 container(stack![body].push(time.map(|t| container(t).align_right(Fill).align_bottom(Fill))))
-                    .padding([8, 11])
+                    .padding([9.0, BUBBLE_PAD_X])
                     .max_width(0.45 * self.pane().size.width)
                     .style(fill_box(bg, 17.0)),
             );
@@ -6988,7 +6988,7 @@ impl BeeperGuiApp {
             Some(r) => row![self.view_recorder(r), send],
             None => row![plus, pill, send],
         };
-        column![extras, line.spacing(8).align_y(Center).padding(8)].into()
+        column![extras, line.spacing(8).align_y(Center).padding(Padding::new(8.0).top(4.0))].into()
     }
 
     fn view_info(&self) -> El<'_> {
