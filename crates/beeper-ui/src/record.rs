@@ -357,7 +357,8 @@ mod tests {
         assert_eq!(waveform(&[0.5; 3]), [0.5; 3]);
         let levels: Vec<f32> = (0..1000).map(|i| i as f32).collect();
         assert_eq!(waveform(&levels)[..3], [0.0, 10.0, 20.0]);
-        let dir = std::env::temp_dir().join("BeeperRs_record");
+        let dir = std::env::temp_dir().join(format!("BeeperRs_record_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         let mut cfg = beeper_core::config::CentralConfig::new(dir, "127.0.0.1".into(), 23390, None);
         cfg.demo = true;
         let st = beeper_core::store::BeeperStore::from_config(cfg);
