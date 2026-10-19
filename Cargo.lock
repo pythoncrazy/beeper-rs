@@ -487,6 +487,7 @@ dependencies = [
  "arboard",
  "beeper-core",
  "iced",
+ "iced_test",
  "image",
  "rodio",
  "serde_json",

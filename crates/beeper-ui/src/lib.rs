@@ -8603,6 +8603,9 @@ fn jumbo(text: &str) -> bool {
 }
 
 #[cfg(test)]
+mod fuzz;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
