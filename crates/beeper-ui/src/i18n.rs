@@ -36,6 +36,136 @@ pub fn set(choice: u8) {
     CURRENT.store(index.unwrap_or(usize::MAX), Ordering::Relaxed);
 }
 
+/// A format of Desktop's `Intl.DateTimeFormat` with the app language.
+#[derive(Clone, Copy)]
+pub enum Date {
+    MonthDay = 2,
+    Medium,
+    Month,
+    MonthYear,
+    Numeric,
+    Am,
+    Pm,
+    Clock24,
+}
+
+/// The month names, the short month names and the [`Date`] patterns of English and of each language of [`LANGS`].
+const DATES: [[&str; 10]; 6] = [
+    [
+        "January February March April May June July August September October November December",
+        "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec",
+        "{MMMM} {d}",
+        "{MMM} {d}, {y}",
+        "{MMMM}",
+        "{MMMM} {y}",
+        "{MM}/{dd}/{y}",
+        "{h}:{mm} AM",
+        "{h}:{mm} PM",
+        "{HH}:{mm}",
+    ],
+    [
+        "Januar Februar März April Mai Juni Juli August September Oktober November Dezember",
+        "Jan. Feb. März Apr. Mai Juni Juli Aug. Sept. Okt. Nov. Dez.",
+        "{d}. {MMMM}",
+        "{d}. {MMM} {y}",
+        "{MMMM}",
+        "{MMMM} {y}",
+        "{dd}.{MM}.{y}",
+        "{h}:{mm} AM",
+        "{h}:{mm} PM",
+        "{HH}:{mm}",
+    ],
+    [
+        "enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre",
+        "ene feb mar abr may jun jul ago sept oct nov dic",
+        "{d} de {MMMM}",
+        "{d} {MMM} {y}",
+        "{MMMM}",
+        "{MMMM} de {y}",
+        "{dd}/{MM}/{y}",
+        "{h}:{mm} a.\u{a0}m.",
+        "{h}:{mm} p.\u{a0}m.",
+        "{H}:{mm}",
+    ],
+    [
+        "janvier février mars avril mai juin juillet août septembre octobre novembre décembre",
+        "janv. févr. mars avr. mai juin juil. août sept. oct. nov. déc.",
+        "{d} {MMMM}",
+        "{d} {MMM} {y}",
+        "{MMMM}",
+        "{MMMM} {y}",
+        "{dd}/{MM}/{y}",
+        "{h}:{mm} AM",
+        "{h}:{mm} PM",
+        "{HH}:{mm}",
+    ],
+    [
+        "",
+        "",
+        "{M}月{d}日",
+        "{y}年{M}月{d}日",
+        "{M}月",
+        "{y}年{M}月",
+        "{y}/{MM}/{dd}",
+        "午前{h}:{mm}",
+        "午後{h}:{mm}",
+        "{H}:{mm}",
+    ],
+    [
+        "janeiro fevereiro março abril maio junho julho agosto setembro outubro novembro dezembro",
+        "jan. fev. mar. abr. mai. jun. jul. ago. set. out. nov. dez.",
+        "{d} de {MMMM}",
+        "{d} de {MMM} de {y}",
+        "{MMMM}",
+        "{MMMM} de {y}",
+        "{dd}/{MM}/{y}",
+        "{h}:{mm} AM",
+        "{h}:{mm} PM",
+        "{HH}:{mm}",
+    ],
+];
+
+/// A local date and time in the format `f` of the app language, like Desktop's `Intl.DateTimeFormat` with `k3()`.
+pub fn date(f: Date, ymd: (i64, u32, u32), hm: (i64, i64)) -> String {
+    fill(&DATES[CURRENT.load(Ordering::Relaxed).wrapping_add(1)], f, ymd, hm)
+}
+
+/// [`date`] in English.
+pub fn en_date(f: Date, ymd: (i64, u32, u32), hm: (i64, i64)) -> String {
+    fill(&DATES[0], f, ymd, hm)
+}
+
+/// The English short name of month `m`, from 1.
+pub fn en_short_month(m: u32) -> &'static str {
+    DATES[0][1].split(' ').nth(m as usize - 1).expect("a month name")
+}
+
+fn fill(lang: &[&str; 10], f: Date, (y, m, d): (i64, u32, u32), (h, min): (i64, i64)) -> String {
+    let name = |i: usize| lang[i].split(' ').nth(m as usize - 1).expect("a month name").to_string();
+    let mut out = String::new();
+    let mut rest = lang[f as usize];
+    while let Some((head, tail)) = rest.split_once('{') {
+        let (token, tail) = tail.split_once('}').expect("a closed token");
+        out.push_str(head);
+        out.push_str(&match token {
+            "MMMM" => name(0),
+            "MMM" => name(1),
+            "M" => m.to_string(),
+            "MM" => format!("{m:02}"),
+            "d" => d.to_string(),
+            "dd" => format!("{d:02}"),
+            "y" => y.to_string(),
+            "h" => ((h + 11) % 12 + 1).to_string(),
+            "H" => h.to_string(),
+            "HH" => format!("{h:02}"),
+            "mm" => format!("{min:02}"),
+            _ => unreachable!("date token {token}"),
+        });
+        rest = tail;
+    }
+    out + rest
+}
+
 /// The current language and its translations, or `None` for English.
 fn table() -> Option<(&'static str, &'static HashMap<String, Vec<String>>)> {
     let i = CURRENT.load(Ordering::Relaxed);
@@ -128,6 +258,87 @@ mod tests {
         assert_eq!(super::sprintf("%1$s um %2$s Uhr", &[&"Gesendet", &12]), "Gesendet um 12 Uhr");
         assert_eq!(super::sprintf("%d chats, %s", &[&3, &"x"]), "3 chats, x");
         assert_eq!(super::trn("%d chat selected", "%d chats selected", 2, &[&2]), "2 chats selected");
+    }
+
+    /// The `Intl.DateTimeFormat` output of Node for 2025-10-10 09:05 and 2025-05-03 21:45, without regions.
+    #[test]
+    fn dates_match_intl() {
+        use super::Date::*;
+        let expected = [
+            [
+                "October 10",
+                "Oct 10, 2025",
+                "October",
+                "October 2025",
+                "10/10/2025",
+                "9:05 AM",
+                "09:05",
+                "9:45 PM",
+                "May 3, 2025",
+            ],
+            [
+                "10. Oktober",
+                "10. Okt. 2025",
+                "Oktober",
+                "Oktober 2025",
+                "10.10.2025",
+                "9:05 AM",
+                "09:05",
+                "9:45 PM",
+                "3. Mai 2025",
+            ],
+            [
+                "10 de octubre",
+                "10 oct 2025",
+                "octubre",
+                "octubre de 2025",
+                "10/10/2025",
+                "9:05 a.\u{a0}m.",
+                "9:05",
+                "9:45 p.\u{a0}m.",
+                "3 may 2025",
+            ],
+            [
+                "10 octobre",
+                "10 oct. 2025",
+                "octobre",
+                "octobre 2025",
+                "10/10/2025",
+                "9:05 AM",
+                "09:05",
+                "9:45 PM",
+                "3 mai 2025",
+            ],
+            [
+                "10月10日",
+                "2025年10月10日",
+                "10月",
+                "2025年10月",
+                "2025/10/10",
+                "午前9:05",
+                "9:05",
+                "午後9:45",
+                "2025年5月3日",
+            ],
+            [
+                "10 de outubro",
+                "10 de out. de 2025",
+                "outubro",
+                "outubro de 2025",
+                "10/10/2025",
+                "9:05 AM",
+                "09:05",
+                "9:45 PM",
+                "3 de mai. de 2025",
+            ],
+        ];
+        for (lang, want) in super::DATES.iter().zip(expected) {
+            let (oct, may) = (((2025, 10, 10), (9, 5)), ((2025, 5, 3), (21, 45)));
+            let got =
+                [MonthDay, Medium, Month, MonthYear, Numeric, Am, Clock24].map(|f| super::fill(lang, f, oct.0, oct.1));
+            assert_eq!(got[..], want[..7]);
+            assert_eq!([super::fill(lang, Pm, may.0, may.1), super::fill(lang, Medium, may.0, may.1)], want[7..]);
+        }
     }
 
     #[test]

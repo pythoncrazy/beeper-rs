@@ -552,20 +552,6 @@ pub fn search_settings(query: &str) -> Vec<SettingsHit> {
 
 const ZOOM_STEPS: [u16; 13] = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300];
 const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const MONTHS: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
 fn network_name(account_id: &str) -> &'static str {
     account_network(account_id).display_name
 }
@@ -582,13 +568,26 @@ pub fn format_short_ts(iso: &str, twenty_four: bool) -> String {
     clock(iso_millis(iso), twenty_four)
 }
 
+/// date-fns `h:mm a` or `HH:mm`, which Desktop formats in English.
 fn clock(ms: i64, twenty_four: bool) -> String {
+    let (f, hm) = clock_format(ms, twenty_four);
+    i18n::en_date(f, (0, 1, 1), hm)
+}
+
+/// Desktop's `Cp`: the time in the app language.
+fn local_clock(ms: i64, twenty_four: bool) -> String {
+    let (f, hm) = clock_format(ms, twenty_four);
+    i18n::date(f, (0, 1, 1), hm)
+}
+
+fn clock_format(ms: i64, twenty_four: bool) -> (i18n::Date, (i64, i64)) {
     let mins = local_millis(ms).div_euclid(60_000).rem_euclid(1440);
-    let (h, m) = (mins / 60, format!("{:02}", mins % 60));
-    if twenty_four {
-        return format!("{h:02}:{m}");
-    }
-    format!("{}:{m} {}", (h + 11) % 12 + 1, ["AM", "PM"][usize::from(h >= 12)])
+    let f = match (twenty_four, mins < 720) {
+        (true, _) => i18n::Date::Clock24,
+        (false, true) => i18n::Date::Am,
+        (false, false) => i18n::Date::Pm,
+    };
+    (f, (mins / 60, mins % 60))
 }
 
 /// The en-US `Date.toLocaleString()` of a timestamp, like "10/16/2026, 10:40:56 PM".
@@ -637,7 +636,7 @@ fn day_label(iso: &str) -> String {
         _ => {
             let ((y, m, dd), ty) = (civil_from_days(d), civil_from_days(today).0);
             let year = if y == ty { String::new() } else { format!(", {y}") };
-            format!("{}, {} {dd}{year}", &wd[..3], &MONTHS[m as usize - 1][..3])
+            format!("{}, {} {dd}{year}", &wd[..3], i18n::en_short_month(m))
         }
     }
 }
@@ -646,14 +645,12 @@ fn list_ts(iso: &str, h24: bool) -> String {
     const DAY: i64 = 86_400_000;
     let d = day_num(iso);
     let age = now_unix_millis() - millis_from_rfc3339(iso).expect("RFC 3339 timestamp");
-    let (y, m, dd) = civil_from_days(d);
-    let month = MONTHS[m as usize - 1];
     match today() - d {
-        0 => format_short_ts(iso, h24),
+        0 => local_clock(iso_millis(iso), h24),
         1 => tr("Yesterday").into(),
         _ if age < 7 * DAY => tr(WEEKDAYS[(d + 4).rem_euclid(7) as usize]).into(),
-        _ if age < 365 * DAY => format!("{month} {dd}"),
-        _ => format!("{} {dd}, {y}", &month[..3]),
+        _ if age < 365 * DAY => i18n::date(i18n::Date::MonthDay, civil_from_days(d), (0, 0)),
+        _ => i18n::date(i18n::Date::Medium, civil_from_days(d), (0, 0)),
     }
 }
 
@@ -745,10 +742,7 @@ fn reminder_day(at: i64) -> String {
         0 => tr("Today").into(),
         1 => tr("Tomorrow").into(),
         _ if (d + 3).div_euclid(7) == (t + 3).div_euclid(7) => tr(WEEKDAYS[(d + 4).rem_euclid(7) as usize]).into(),
-        _ => {
-            let (y, m, dd) = civil_from_days(d);
-            format!("{m:02}/{dd:02}/{y}")
-        }
+        _ => i18n::date(i18n::Date::Numeric, civil_from_days(d), (0, 0)),
     }
 }
 
@@ -1680,21 +1674,20 @@ fn filmstrip(size: &Size, at: usize, len: usize) -> (usize, usize) {
 fn media_group(d: i64) -> String {
     let t = today();
     let week = t - (t + 3).rem_euclid(7);
-    let (y, m, _) = civil_from_days(d);
+    let ymd = civil_from_days(d);
     match t - d {
         0 => tr("Today").into(),
         1 => tr("Yesterday").into(),
         _ if d >= week => tr("This week").into(),
         _ if d >= week - 7 => tr("Last week").into(),
-        _ if y == civil_from_days(t).0 => MONTHS[m as usize - 1].into(),
-        _ => format!("{} {y}", MONTHS[m as usize - 1]),
+        _ if ymd.0 == civil_from_days(t).0 => i18n::date(i18n::Date::Month, ymd, (0, 0)),
+        _ => i18n::date(i18n::Date::MonthYear, ymd, (0, 0)),
     }
 }
 
 /// The en-US medium date of a day, like "Oct 17, 2026".
 fn medium_date(d: i64) -> String {
-    let (y, m, dd) = civil_from_days(d);
-    format!("{} {dd}, {y}", &MONTHS[m as usize - 1][..3])
+    i18n::en_date(i18n::Date::Medium, civil_from_days(d), (0, 0))
 }
 
 /// Desktop's `formatRelativeDate`: "Today", a weekday, "Tue, Oct 7", or "Oct 7, 2025" in other years.
@@ -7397,7 +7390,8 @@ impl BeeperGuiApp {
         let body = groups.iter().fold(Column::new(), |col, (label, group)| {
             let days = group.iter().map(|&(i, _)| day_num(&st.messages[i].timestamp));
             let (lo, hi) = (days.clone().min().expect("a group has items"), days.max().expect("a group has items"));
-            let range = if lo == hi { medium_date(lo) } else { format!("{} - {}", medium_date(lo), medium_date(hi)) };
+            let full = |d| i18n::date(i18n::Date::Medium, civil_from_days(d), (0, 0));
+            let range = if lo == hi { full(lo) } else { format!("{} - {}", full(lo), full(hi)) };
             let head = column![bold(label.clone(), 15.0).line_height(Pixels(20.0)).color(p.strong), sub(range)];
             let col = col.push(container(head).padding(Padding::new(6.0).top(12.0).left(10.0).right(10.0)));
             match w.tab {
