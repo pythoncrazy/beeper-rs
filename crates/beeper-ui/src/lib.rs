@@ -6390,7 +6390,7 @@ impl BeeperGuiApp {
                     let is_video = a.attachment_type == "video";
                     let (w, h) = a.size.as_ref().map_or((240.0, 160.0), |s| {
                         let (w, h) = (s.width.unwrap_or(240) as f32, s.height.unwrap_or(160) as f32);
-                        let k = (360.0 / w).min(400.0 / h).min(1.0);
+                        let k = (0.45 * self.pane().size.width / w).min(400.0 / h).min(1.0);
                         (w * k, h * k)
                     });
                     let thumb_url = a.poster_img.clone().or_else(|| a.src_url.clone());
