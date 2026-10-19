@@ -1451,6 +1451,7 @@ mod tests {
         let last = *st.chat_msg_indices[&chat].last().unwrap();
         assert_eq!(st.messages[last].id, id);
         assert_eq!(st.chats[st.chat_idx_by_id[&chat]].preview.as_ref().unwrap().id, id);
+        drop(st);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
