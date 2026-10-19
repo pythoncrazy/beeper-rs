@@ -6119,7 +6119,7 @@ impl BeeperGuiApp {
             if day_changed {
                 let label = semi(day_label(&m.timestamp), 11.0).line_height(Pixels(14.0)).color(p.date_text);
                 let pill = container(label).padding([5, 9]).style(bordered_box(p.card, p.outline, 1.0, 12.0));
-                head = head.push(container(pill).center_x(Fill).padding([4, 0]));
+                head = head.push(container(pill).center_x(Fill).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
             }
             if Some(i) == first_unread {
                 let line =
