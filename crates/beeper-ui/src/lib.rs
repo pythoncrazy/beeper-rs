@@ -350,6 +350,8 @@ pub enum UiMessage {
     /// Open a message in the main window.
     GoToMessage(String, String),
     WindowKey(window::Id, Key, keyboard::Modifiers),
+    /// Escape in a text input, which unfocuses it.
+    InputEscape(window::Id),
     /// Save the attachments of a message, or only one of them, to the downloads folder.
     Download(String, Option<usize>),
     Downloaded(Result<String, String>),
@@ -2349,8 +2351,8 @@ impl BeeperGuiApp {
         Task::batch(tasks.collect::<Vec<_>>())
     }
 
-    /// Desktop's keys of the settings search: Ctrl F focuses it, ↑ and ↓ move through the results, and Escape clears
-    /// it. Enter is the submit of the input.
+    /// Desktop's keys of the settings window: Ctrl F focuses the search, ↑ and ↓ move through the results, and Enter is
+    /// the submit of the input. Escape in an input clears the search, and Escape elsewhere closes the window.
     fn settings_key(&mut self, key: Key, mods: keyboard::Modifiers) -> Task<UiMessage> {
         if mods.command() && key == Key::Character("f".into()) {
             return operation::focus("settings-search");
@@ -2361,7 +2363,9 @@ impl BeeperGuiApp {
         let n = search_settings(&self.settings_query).len();
         match key {
             Key::Named(Named::Escape) if self.confirm.is_some() => self.confirm = None,
-            Key::Named(Named::Escape) => return self.update(UiMessage::SettingsQueryChanged(String::new())),
+            Key::Named(Named::Escape) => {
+                return window::close(self.settings_window.expect("the settings window is open"))
+            }
             Key::Named(k @ (Named::ArrowUp | Named::ArrowDown)) if n > 0 => {
                 let step = if k == Named::ArrowDown { 1 } else { n - 1 };
                 return operation::is_focused("settings-search").then(move |on| {
@@ -3314,6 +3318,12 @@ impl BeeperGuiApp {
             UiMessage::GoToMessage(chat, mid) => {
                 let main = window::gain_focus(self.main_window.expect("the main window is open"));
                 return Task::batch([self.update(UiMessage::JumpTo(chat, mid)), main]);
+            }
+            UiMessage::InputEscape(id) if Some(id) == self.settings_window => {
+                return self.update(UiMessage::SettingsQueryChanged(String::new()));
+            }
+            UiMessage::InputEscape(id) => {
+                return self.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), keyboard::Modifiers::empty()));
             }
             UiMessage::WindowKey(id, key, mods) => {
                 if Some(id) == self.settings_window {
@@ -4463,13 +4473,18 @@ impl BeeperGuiApp {
         let focus = Subscription::run_with(StoreFeed(self.store.clone(), 1), |f| {
             feed(f.0.read().unwrap().focus_tx.subscribe(), UiMessage::FocusRequested)
         });
-        let keys = iced::event::listen_with(|e, _, id| match e {
+        let keys = iced::event::listen_with(|e, status, id| match e {
             Event::Window(window::Event::Closed) => Some(UiMessage::WindowClosed(id)),
             Event::Window(window::Event::CloseRequested) => Some(UiMessage::CloseRequested(id)),
             Event::Window(window::Event::Resized(size)) => Some(UiMessage::WindowResized(id, size)),
             Event::Window(window::Event::Focused) => Some(UiMessage::WindowFocused(true)),
             Event::Window(window::Event::Unfocused) => Some(UiMessage::WindowFocused(false)),
             Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => Some(UiMessage::Modifiers(m)),
+            Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Escape), modifiers, .. })
+                if status == iced::event::Status::Captured && modifiers.is_empty() =>
+            {
+                Some(UiMessage::InputEscape(id))
+            }
             Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
                 if modifiers.command()
                     || modifiers.control()
