@@ -120,6 +120,7 @@
 "Download failed: %s":["Échec du téléchargement : %s"],
 "Downloaded %s":["%s téléchargé"],
 "Downloading %s":["Téléchargement de %s"],
+"Draft:":["Brouillon :"],
 "Drafts":["Brouillons"],
 "Edit your last message":["Modifier votre dernier message"],
 "Edited":["Modifié"],
