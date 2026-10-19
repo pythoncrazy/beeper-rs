@@ -163,8 +163,9 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
     let branch = rng.below(60);
     let what =
         format!("message #{branch} chat {chat} message {msg} text {text:?} pref {} key {key:?} {mods:?}", pref.key);
-    let needs_msg = (7..=14).contains(&branch) || [16, 53].contains(&branch);
-    if needs_msg && !open {
+    let needs_msg = (7..=14).contains(&branch) || branch == 53;
+    let needs_chat = [16, 18].contains(&branch);
+    if (needs_msg && !open) || (needs_chat && app.pane.selected_chat_id.is_none()) {
         return (what, UiMessage::Noop);
     }
     let m = match branch {
