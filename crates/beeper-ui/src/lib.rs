@@ -394,6 +394,8 @@ pub enum UiMessage {
     ToggleAddAccount,
     OpenAccount(Option<String>),
     SetAccountProps(String, beeper_core::models::AccountProps),
+    /// "Show in Inbox" of an account page: the account ID and the `chat_list_rules` option.
+    SetInboxVisibility(String, &'static str),
     SelectSettingsTab(SettingsTab),
     SettingsQueryChanged(String),
     SettingsFocus(usize),
@@ -4096,6 +4098,15 @@ impl BeeperGuiApp {
             UiMessage::SetAccountProps(id, props) => self.patch_settings(|s| {
                 s.accounts.insert(id, props);
             }),
+            UiMessage::SetInboxVisibility(id, option) => {
+                let st = self.store.read().unwrap();
+                let client = st.matrix.clone().expect("Show in Inbox needs a Matrix client");
+                let rules = beeper_core::matrix::with_inbox_visibility(st.inbox_rules.clone(), &id, option);
+                return Task::perform(
+                    beeper_core::matrix::set_global(client, beeper_core::matrix::RULES, rules),
+                    UiMessage::Pushed,
+                );
+            }
             UiMessage::SettingsQueryChanged(q) => {
                 let n = search_settings(&q).len();
                 if n != search_settings(&self.settings_query).len() {
@@ -8542,13 +8553,14 @@ impl BeeperGuiApp {
     /// Desktop's `AccountPrefsSubView`: the account, and its notification settings.
     fn account_page(&self, st: &BeeperStore, id: &str) -> Vec<El<'_>> {
         let p = &self.pal;
-        let (network, [name, username, phone, email]) = match id {
-            "hungryserv" => {
+        let bridge = (id != "hungryserv")
+            .then(|| st.bridge_accounts.iter().find(|b| b.account_id == id).expect("the account of the page"));
+        let (network, [name, username, phone, email]) = match bridge {
+            None => {
                 let me = st.me();
                 ("Beeper".into(), [&me.full_name, &me.username, &me.phone_number, &me.email].map(Clone::clone))
             }
-            _ => {
-                let b = st.bridge_accounts.iter().find(|b| b.account_id == id).expect("the account of the page");
+            Some(b) => {
                 let r = b.remote_profile.clone().unwrap_or_default();
                 (b.network_name.clone(), [r.name, r.username, r.phone, r.email])
             }
@@ -8584,12 +8596,24 @@ impl BeeperGuiApp {
                 beeper_core::models::AccountProps { silent: o == sounds[1], ..props },
             )
         });
-        let rows = vec![
+        let inbox = st.matrix.as_ref().and(bridge).map(|b| {
+            let options = [("all", "All Messages"), ("dmOnly", "Only DMs"), ("none", "None")];
+            let labels: Vec<String> = options.iter().map(|(_, l)| tr(l).to_string()).collect();
+            let now = beeper_core::matrix::inbox_visibility(&st.inbox_rules, id, &b.bridge_id);
+            let picked = labels[options.iter().position(|(o, _)| *o == now).expect("a known inbox visibility")].clone();
+            let account = id.to_string();
+            let pick = select(p, labels.clone(), picked, move |l| {
+                let i = labels.iter().position(|x| *x == l).expect("a listed option");
+                UiMessage::SetInboxVisibility(account.clone(), options[i].0)
+            });
+            pref_row(p, tr("Show in Inbox"), None, None, pick)
+        });
+        let rows = inbox.into_iter().chain([
             toggle("Enable notifications", props.notifications, set(|q| q.notifications ^= true)),
             toggle("Show message previews", props.previews, set(|q| q.previews ^= true)),
             pref_row(p, tr("Sound"), None, None, sound),
-        ];
-        vec![head.into(), card.into(), group(p, Some(tr("Settings")), rows)]
+        ]);
+        vec![head.into(), card.into(), group(p, Some(tr("Settings")), rows.collect())]
     }
 
     fn pref_items(&self, items: &'static [prefs::Item], s: &BeeperSettings) -> Vec<El<'_>> {
