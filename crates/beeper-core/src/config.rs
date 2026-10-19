@@ -71,6 +71,7 @@ impl Default for BeeperSettings {
             hotkeys_off: Default::default(),
             reminders_order: 0,
             microphone: String::new(),
+            accounts: Default::default(),
         }
     }
 }

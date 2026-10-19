@@ -392,6 +392,8 @@ pub enum UiMessage {
     ContactsLoaded(Vec<User>),
     OpenSettings(SettingsTab),
     ToggleAddAccount,
+    OpenAccount(Option<String>),
+    SetAccountProps(String, beeper_core::models::AccountProps),
     SelectSettingsTab(SettingsTab),
     SettingsQueryChanged(String),
     SettingsFocus(usize),
@@ -1140,6 +1142,7 @@ macro_rules! svg_static {
     };
 }
 
+svg_static!(CHEVRON_LEFT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
 svg_static!(SELECT_ARROW, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M1 3.25 5 7.25 9 3.25" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
 
 fn pill_btn<'a>(p: &Palette, label: impl ToString, msg: UiMessage) -> El<'a> {
@@ -2025,6 +2028,8 @@ pub struct BeeperGuiApp {
     /// The pref that a search result opened, which flashes for 2 s.
     pref_flash: Option<(&'static str, std::time::Instant)>,
     pub adding_account: bool,
+    /// The account of Desktop's account page in Settings > Accounts.
+    pub account_page: Option<String>,
     pub show_right_panel: bool,
     pub quick_look_target: Option<(String, String)>,
     quick_open: bool,
@@ -2137,6 +2142,7 @@ impl BeeperGuiApp {
             settings_pick: None,
             pref_flash: None,
             adding_account: false,
+            account_page: None,
             show_right_panel: panel,
             quick_look_target: None,
             quick_open: false,
@@ -3589,6 +3595,7 @@ impl BeeperGuiApp {
             UiMessage::SelectSettingsTab(t) => {
                 let top = operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
                 self.active_settings_tab = t;
+                self.account_page = None;
                 return Task::batch([top, self.load_devices()]);
             }
             UiMessage::DevicesLoaded(r) => self.devices = Some(r),
@@ -4082,6 +4089,13 @@ impl BeeperGuiApp {
             }
             UiMessage::OpenSettings(tab) => return self.open_settings(tab),
             UiMessage::ToggleAddAccount => self.adding_account ^= true,
+            UiMessage::OpenAccount(id) => {
+                self.account_page = id;
+                return operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
+            }
+            UiMessage::SetAccountProps(id, props) => self.patch_settings(|s| {
+                s.accounts.insert(id, props);
+            }),
             UiMessage::SettingsQueryChanged(q) => {
                 let n = search_settings(&q).len();
                 if n != search_settings(&self.settings_query).len() {
@@ -8262,21 +8276,33 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let s = &st.settings;
         let groups: Vec<El<'_>> = match self.active_settings_tab {
+            SettingsTab::Accounts
+                if self
+                    .account_page
+                    .as_deref()
+                    .is_some_and(|id| id == "hungryserv" || st.bridge_accounts.iter().any(|b| b.account_id == id)) =>
+            {
+                self.account_page(st, self.account_page.as_deref().expect("an account page"))
+            }
             SettingsTab::Accounts => {
                 let account = |logo: &str, owner: &str, name: String, cloud: bool, sub: Option<String>| -> El<'_> {
                     let title = row![avatar(owner, 14.0, p), semi(name, 14.0).color(p.strong)]
                         .push(cloud.then(|| ic(icon::CLOUD, 13.0).color(p.sub)))
                         .spacing(4)
                         .align_y(Center);
-                    row![
+                    let line = row![
                         container(svg(brand_svg(brand_key(logo))).width(28).height(28)).center(46),
                         column![title].push(sub.map(|s| txt(s, 13.0).color(p.sub))).width(Fill),
                         ic(icon::CHEVRON_RIGHT, 16.0).color(p.strong)
                     ]
                     .spacing(8)
                     .align_y(Center)
-                    .padding(Padding::new(4.0).left(8.0).right(16.0))
-                    .into()
+                    .padding(Padding::new(4.0).left(8.0).right(16.0));
+                    button(line)
+                        .padding(0)
+                        .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
+                        .on_press(UiMessage::OpenAccount(Some(logo.into())))
+                        .into()
                 };
                 let me = st.me();
                 let rows = std::iter::once(account(
@@ -8511,6 +8537,59 @@ impl BeeperGuiApp {
         let line = container(Space::new()).width(Fill).height(1).style(fill_box(edge, 0.0));
         let card = column![head, line, Space::new().height(6)].extend(groups);
         container(card).width(Fill).padding(14).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0)).into()
+    }
+
+    /// Desktop's `AccountPrefsSubView`: the account, and its notification settings.
+    fn account_page(&self, st: &BeeperStore, id: &str) -> Vec<El<'_>> {
+        let p = &self.pal;
+        let (network, [name, username, phone, email]) = match id {
+            "hungryserv" => {
+                let me = st.me();
+                ("Beeper".into(), [&me.full_name, &me.username, &me.phone_number, &me.email].map(Clone::clone))
+            }
+            _ => {
+                let b = st.bridge_accounts.iter().find(|b| b.account_id == id).expect("the account of the page");
+                let r = b.remote_profile.clone().unwrap_or_default();
+                (b.network_name.clone(), [r.name, r.username, r.phone, r.email])
+            }
+        };
+        let back = button(tinted(&CHEVRON_LEFT, 16.0, p.strong))
+            .padding(0)
+            .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
+            .on_press(UiMessage::OpenAccount(None));
+        let title = row![svg(brand_svg(brand_key(id))).width(28).height(28), semi(network, 14.0).color(p.strong)]
+            .spacing(4)
+            .align_y(Center);
+        let head = row![back, container(title).center_x(Fill), Space::new().width(16)].align_y(Center);
+        let lines = [username.map(|u| format!("@{u}")), phone.map(|n| fmt_phone(&n)), email].into_iter().flatten();
+        let user = column![]
+            .push(name.as_deref().map(|n| container(avatar(n, 28.0, p)).padding(Padding::ZERO.bottom(8.0))))
+            .push(name.map(|n| semi(n, 14.0).color(p.strong)))
+            .extend(lines.map(|l| txt(l, 13.0).color(p.weak).into()))
+            .align_x(Center);
+        let card =
+            container(user).center_x(Fill).padding(8).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0));
+        let props = st.settings.account(id);
+        let set = |f: fn(&mut beeper_core::models::AccountProps)| {
+            let mut q = props;
+            f(&mut q);
+            UiMessage::SetAccountProps(id.into(), q)
+        };
+        let toggle = |label, on, msg| pref_row(p, tr(label), None, None, toggle_faded(p, on, Some(msg), 1.0));
+        let sounds = [tr("Default").to_string(), tr("None").to_string()];
+        let (account, picked) = (id.to_string(), sounds[usize::from(props.silent)].clone());
+        let sound = select(p, sounds.clone(), picked, move |o| {
+            UiMessage::SetAccountProps(
+                account.clone(),
+                beeper_core::models::AccountProps { silent: o == sounds[1], ..props },
+            )
+        });
+        let rows = vec![
+            toggle("Enable notifications", props.notifications, set(|q| q.notifications ^= true)),
+            toggle("Show message previews", props.previews, set(|q| q.previews ^= true)),
+            pref_row(p, tr("Sound"), None, None, sound),
+        ];
+        vec![head.into(), card.into(), group(p, Some(tr("Settings")), rows)]
     }
 
     fn pref_items(&self, items: &'static [prefs::Item], s: &BeeperSettings) -> Vec<El<'_>> {

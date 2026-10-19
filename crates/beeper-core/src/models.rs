@@ -621,7 +621,7 @@ impl BridgeAccountInfo {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RemoteProfile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -770,6 +770,26 @@ pub struct BeeperSettings {
     pub reminders_order: u8,
     /// The input device name, or empty for the system default.
     pub microphone: String,
+    /// Desktop's local `accountProps`, by account ID.
+    pub accounts: std::collections::BTreeMap<String, AccountProps>,
+}
+
+/// The notification settings of an account page, which Desktop keeps on the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AccountProps {
+    /// "Enable notifications" (`enabled_notifications`); off mutes the account.
+    pub notifications: bool,
+    /// "Show message previews" (`show_notification_previews`).
+    pub previews: bool,
+    /// The "Sound" None (`notification_sound`); Default uses the sound of the chat type.
+    pub silent: bool,
+}
+
+impl Default for AccountProps {
+    fn default() -> Self {
+        Self { notifications: true, previews: true, silent: false }
+    }
 }
 
 impl BeeperSettings {
@@ -795,6 +815,10 @@ impl BeeperSettings {
     pub fn on(&self, key: &str) -> bool {
         assert!(matches!(crate::prefs::find(key).control, crate::prefs::Control::Toggle(_)), "{key} is a toggle");
         self.pref(key) == 1
+    }
+
+    pub fn account(&self, id: &str) -> AccountProps {
+        self.accounts.get(id).copied().unwrap_or_default()
     }
 
     pub fn hotkey_on(&self, name: &str) -> bool {

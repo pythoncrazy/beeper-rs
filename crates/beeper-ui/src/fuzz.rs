@@ -43,7 +43,7 @@ fn prefs() -> impl Iterator<Item = (SettingsTab, &'static prefs::Pref)> {
         .map(move |(page, p)| (tab(page), p))
 }
 
-fn demo_app(name: &str) -> BeeperGuiApp {
+pub(crate) fn demo_app(name: &str) -> BeeperGuiApp {
     let dir = std::env::temp_dir().join(format!("beeper-rs-fuzz-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let mut config = CentralConfig::new(dir, "127.0.0.1".into(), 23391, None);
@@ -169,7 +169,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
     ]);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
     let hits = search_settings(&text);
-    let branch = rng.below(60);
+    let branch = rng.below(62);
     let what =
         format!("message #{branch} chat {chat} message {msg} text {text:?} pref {} key {key:?} {mods:?}", pref.key);
     let needs_msg = (7..=14).contains(&branch) || branch == 53;
@@ -233,6 +233,11 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         56 if !hits.is_empty() => UiMessage::PickSetting(*rng.pick(&hits)),
         57 => UiMessage::WindowFocused(rng.coin()),
         58 => UiMessage::HotkeyQuery(text),
+        59 => UiMessage::OpenAccount(rng.coin().then(|| rng.pick(&accounts).clone())),
+        60 => UiMessage::SetAccountProps(
+            rng.pick(&accounts).clone(),
+            beeper_core::models::AccountProps { notifications: rng.coin(), previews: rng.coin(), silent: rng.coin() },
+        ),
         _ => UiMessage::ToggleDnd,
     };
     (what, m)
