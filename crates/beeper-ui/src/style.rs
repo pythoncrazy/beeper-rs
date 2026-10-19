@@ -319,11 +319,15 @@ const BRANDS: [(&str, &str, &str); 20] = brands!(
     "hungryserv"
 );
 
-static BRAND_SVGS: LazyLock<HashMap<&'static str, [svg::Handle; 2]>> = LazyLock::new(|| {
+static BRAND_SVGS: LazyLock<HashMap<&'static str, [svg::Handle; 3]>> = LazyLock::new(|| {
     assert!(NETWORK_SPECS.iter().all(|n| BRANDS.iter().any(|b| b.0 == n.bridge_id)), "every network has a logo");
     BRANDS
         .iter()
-        .map(|(id, tile, badge)| (*id, [tile, badge].map(|d| svg::Handle::from_memory(d.as_bytes()))))
+        .map(|(id, tile, badge)| {
+            assert!(tile.contains(r#"rx="9.8""#), "{id} has the tile clip");
+            let round = tile.replacen(r#"rx="9.8""#, r#"rx="14""#, 1);
+            (*id, [tile.to_string(), badge.to_string(), round].map(|s| svg::Handle::from_memory(s.into_bytes())))
+        })
         .collect()
 });
 
@@ -333,6 +337,11 @@ pub fn brand_svg(bridge_id: &str) -> svg::Handle {
 
 pub fn brand_badge(bridge_id: &str) -> svg::Handle {
     BRAND_SVGS[bridge_id][1].clone()
+}
+
+/// The logo clipped to a circle, like Desktop's `.ThreadListItem-module__platformIcon .is-badge`.
+pub fn brand_round(bridge_id: &str) -> svg::Handle {
+    BRAND_SVGS[bridge_id][2].clone()
 }
 
 pub fn fill_box(bg: Color, r: impl Into<border::Radius>) -> impl Fn(&Theme) -> container::Style + Copy {
