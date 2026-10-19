@@ -27,10 +27,33 @@ fn pixmap(png_bytes: &[u8]) -> Pixmap {
     vec![(w, h, img.chunks(4).flat_map(|p| [p[3], p[0], p[1], p[2]]).collect())]
 }
 
+/// The read and unread icons: pixmaps, or PNG files where Chromium writes files (`ShouldWriteIconToFile`). Tray hosts
+/// update a file icon only when its folder and name change, so each icon has its own folder.
+enum Icons {
+    Pixmaps([Pixmap; 2]),
+    Files([std::path::PathBuf; 2]),
+}
+
+/// GNOME's AppIndicator extension downsizes file icons but not pixmaps, and Pantheon shows only file icons.
+fn file_icons() -> bool {
+    let known = ["Unity", "Deepin", "GNOME", "X-Cinnamon", "KDE", "Pantheon", "XFCE", "UKUI", "LXQt", "COSMIC"];
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    matches!(desktop.split(':').find(|d| known.contains(d)), Some("GNOME" | "Pantheon"))
+}
+
 struct Item {
     tx: tokio::sync::mpsc::UnboundedSender<Event>,
     unread: u32,
-    icons: [Pixmap; 2],
+    icons: Icons,
+}
+
+impl Item {
+    fn file(&self) -> Option<&std::path::Path> {
+        match &self.icons {
+            Icons::Files(f) => Some(&f[usize::from(self.unread > 0)]),
+            Icons::Pixmaps(_) => None,
+        }
+    }
 }
 
 #[zbus::interface(name = "org.kde.StatusNotifierItem")]
@@ -52,12 +75,19 @@ impl Item {
         "Active"
     }
     #[zbus(property)]
-    fn icon_name(&self) -> &str {
-        ""
+    fn icon_name(&self) -> String {
+        self.file().map_or(String::new(), |f| f.file_stem().expect("icon file name").to_string_lossy().into())
+    }
+    #[zbus(property)]
+    fn icon_theme_path(&self) -> String {
+        self.file().map_or(String::new(), |f| f.parent().expect("icon folder").to_string_lossy().into())
     }
     #[zbus(property)]
     fn icon_pixmap(&self) -> Pixmap {
-        self.icons[usize::from(self.unread > 0)].clone()
+        match &self.icons {
+            Icons::Pixmaps(p) => p[usize::from(self.unread > 0)].clone(),
+            Icons::Files(_) => Vec::new(),
+        }
     }
     #[zbus(property)]
     fn tool_tip(&self) -> (String, Pixmap, String, String) {
@@ -83,6 +113,8 @@ impl Item {
     fn scroll(&self, _delta: i32, _orientation: &str) {}
     #[zbus(signal)]
     async fn new_icon(e: &SignalEmitter<'_>) -> zbus::Result<()>;
+    #[zbus(signal)]
+    async fn new_icon_theme_path(e: &SignalEmitter<'_>, path: &str) -> zbus::Result<()>;
     #[zbus(signal)]
     async fn new_tool_tip(e: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
@@ -187,8 +219,17 @@ impl Drop for Registered {
 
 async fn register(tx: tokio::sync::mpsc::UnboundedSender<Event>) -> Result<Registered, String> {
     let bus = crate::notify::bus().await?.clone();
-    let icons =
-        [pixmap(include_bytes!("../assets/tray/icon.png")), pixmap(include_bytes!("../assets/tray/unread.png"))];
+    let pngs: [&[u8]; 2] = [include_bytes!("../assets/tray/icon.png"), include_bytes!("../assets/tray/unread.png")];
+    let icons = match file_icons() {
+        false => Icons::Pixmaps(pngs.map(pixmap)),
+        true => Icons::Files(std::array::from_fn(|i| {
+            let dir = std::env::temp_dir().join(format!("beeper-rs-tray-{i}"));
+            std::fs::create_dir_all(&dir).expect("create the tray icon folder");
+            let file = dir.join(format!("status_icon_{i}.png"));
+            std::fs::write(&file, pngs[i]).expect("write the tray icon");
+            file
+        })),
+    };
     let server = bus.object_server();
     server.at(ITEM, Item { tx: tx.clone(), unread: 0, icons }).await.map_err(|e| e.to_string())?;
     server.at(MENU, Menu { tx, visible: true, revision: 1 }).await.map_err(|e| e.to_string())?;
@@ -242,6 +283,9 @@ pub async fn update(unread: u32, visible: bool) -> Result<(), String> {
         let mut i = item.get_mut().await;
         if i.unread != unread {
             i.unread = unread;
+            if let Some(dir) = i.file().map(|f| f.parent().expect("icon folder").to_string_lossy().into_owned()) {
+                Item::new_icon_theme_path(item.signal_emitter(), &dir).await.map_err(|e| e.to_string())?;
+            }
             Item::new_icon(item.signal_emitter()).await.map_err(|e| e.to_string())?;
             Item::new_tool_tip(item.signal_emitter()).await.map_err(|e| e.to_string())?;
         }
