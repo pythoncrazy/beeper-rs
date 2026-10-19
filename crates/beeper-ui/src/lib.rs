@@ -5689,7 +5689,7 @@ impl BeeperGuiApp {
             let on = selected == Some(c.id.as_str());
             let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
             let muted = c.is_muted == Some(true);
-            let m = preview_message(&st, c);
+            let m = preview_message(&st, c).filter(|_| previews);
             let reaction = m.filter(|m| m.message_type.as_deref() == Some("REACTION"));
             let ts = match (self.active_tab, &c.reminder) {
                 (InboxTab::Reminders, Some(r)) => {
@@ -5765,7 +5765,7 @@ impl BeeperGuiApp {
             let fg = if unread { p.text } else { p.sub };
             let face =
                 sender.map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0));
-            let badge = expired.then(|| {
+            let badge = (expired && previews).then(|| {
                 let label = semi(tr("Reminder"), 11.0).line_height(Pixels(14.0)).color(Color::WHITE.scale_alpha(0.7));
                 container(label).padding([0, 3]).style(fill_box(ORANGE.scale_alpha(0.7), 4.0))
             });
