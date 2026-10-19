@@ -3507,6 +3507,9 @@ impl BeeperGuiApp {
                 self.new_chat_query.clear();
                 return operation::focus("new-chat-input");
             }
+            UiMessage::SelectSettingsTab(SettingsTab::Help) | UiMessage::OpenSettings(SettingsTab::Help) => {
+                return Task::done(UiMessage::OpenUrl("https://help.beeper.com/?ref=desktop-app".into()));
+            }
             UiMessage::SelectSettingsTab(t) => {
                 self.active_settings_tab = t;
                 return self.load_devices();
@@ -8301,14 +8304,7 @@ impl BeeperGuiApp {
                     pref_row(p, "Data folder", Some(&st.data_dir.display().to_string()), None, Space::new().into()),
                 ],
             )],
-            SettingsTab::Help => vec![group(
-                p,
-                None,
-                ["Help center", "Report a problem", "Join the community"]
-                    .into_iter()
-                    .map(|h| pref_row(p, tr(h), None, None, ic(icon::ARROW_UP_RIGHT, 14.0).color(p.sub).into()))
-                    .collect(),
-            )],
+            SettingsTab::Help => unreachable!("the Help tab opens the help center"),
             SettingsTab::About => {
                 let title =
                     column![bold("Beeper", 19.5).color(p.text), txt(format!("v{APP_VERSION}"), 13.0).color(p.weak)]
