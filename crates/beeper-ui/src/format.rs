@@ -67,6 +67,16 @@ pub fn position(text: &str, at: usize) -> Position {
     Position { line: text[..at].matches('\n').count(), column: at - line_start }
 }
 
+/// The common prefix length of `a` and `b`, and the ends of their different parts.
+pub fn diff(a: &str, b: &str) -> (usize, usize, usize) {
+    fn same(a: impl Iterator<Item = char>, b: impl Iterator<Item = char>) -> usize {
+        a.zip(b).take_while(|(x, y)| x == y).map(|(x, _)| x.len_utf8()).sum()
+    }
+    let head = same(a.chars(), b.chars());
+    let tail = same(a[head..].chars().rev(), b[head..].chars().rev());
+    (head, a.len() - tail, b.len() - tail)
+}
+
 /// A composer with `text` and the selection `sel`; an empty selection is the caret.
 pub fn content(text: &str, sel: Range<usize>) -> Content {
     let mut c = Content::with_text(text);
@@ -232,6 +242,15 @@ impl BeeperGuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diff_finds_the_change() {
+        assert_eq!(diff("hello world", "hello "), (6, 11, 6));
+        assert_eq!(diff("", "hello"), (0, 0, 5));
+        assert_eq!(diff("aXb", "ab"), (1, 2, 1));
+        assert_eq!(diff("hi :) ", "hi 🙂 "), (3, 5, 7));
+        assert_eq!(diff("aa", "a"), (1, 2, 1));
+    }
 
     #[test]
     fn toggles_markdown_like_desktop_marks() {
