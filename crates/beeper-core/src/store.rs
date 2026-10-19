@@ -112,7 +112,7 @@ struct Seed {
     messages: Vec<Message>,
 }
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const SCHEMA: &str = "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
      CREATE TABLE chats (id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;
      CREATE TABLE messages (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, sort_key TEXT NOT NULL, json TEXT NOT NULL) STRICT;
@@ -152,10 +152,15 @@ pub fn sort_key(seq: i64) -> String {
     }
 }
 
-/// SQL that changes the 12-digit sort keys of schema 2 to the 16-digit keys of schema 3.
+/// SQL that changes the 12-digit sort keys of schema 2 to the 16-digit keys of schema 3. It runs again for
+/// schema 4 because the demo seed kept 12-digit keys until then.
 fn widen_sort_keys() -> String {
-    let widen =
-        |x: &str| format!("CASE WHEN substr({x}, 1, 1) = '-' THEN '-9999' || substr({x}, 2) ELSE '0000' || {x} END");
+    let widen = |x: &str| {
+        format!(
+            "CASE WHEN length(ltrim({x}, '-')) = 16 THEN {x} WHEN substr({x}, 1, 1) = '-' THEN '-9999' || substr({x}, 2) \
+             ELSE '0000' || {x} END"
+        )
+    };
     let chat = |path: &str| {
         let x = format!("json_extract(json, '{path}')");
         format!("UPDATE chats SET json = json_set(json, '{path}', {}) WHERE {x} IS NOT NULL;", widen(&x))
@@ -314,6 +319,7 @@ impl BeeperStore {
                     "UPDATE assets SET json = json_set(json_remove(json, '$.local_file_path'), '$.disk_name',
                          substr(json_extract(json, '$.local_file_path'), instr(json_extract(json, '$.local_file_path'), upload_id || '_')));"
                         .to_string(),
+                    widen_sort_keys(),
                     widen_sort_keys(),
                 ];
                 for (from, sql) in (version..).zip(&steps[version as usize - 1..]) {
@@ -537,13 +543,10 @@ impl BeeperStore {
         for m in messages {
             self.push_message(serde_json::from_str(&m).expect("parse stored message"), false);
         }
-        self.next_seq = match seq {
-            Some(s) => s.parse().expect("parse stored nextSeq"),
-            None => {
-                assert!(fresh, "stored chats without a stored nextSeq");
-                1000 + self.messages.len() as i64 + self.chats.len() as i64
-            }
-        };
+        match seq {
+            Some(s) => self.next_seq = self.next_seq.max(s.parse().expect("parse stored nextSeq")),
+            None => assert!(fresh, "stored chats without a stored nextSeq"),
+        }
         self.persist_seq();
         if self.signed_in() {
             self.ensure_note_chat(&Profile::default());
@@ -575,7 +578,6 @@ impl BeeperStore {
                 self.next_seq += 1;
                 m.sort_key = sort_key(self.next_seq);
             }
-            self.next_seq = self.next_seq.max(m.sort_key.parse().expect("sort keys are numbers"));
             self.push_message(m, false);
         }
         (chats..self.chats.len()).for_each(|i| self.persist_chat(i));
@@ -809,6 +811,9 @@ impl BeeperStore {
 
     fn push_message(&mut self, mut msg: Message, persist: bool) -> usize {
         msg.sync_flags();
+        let digits = msg.sort_key.strip_prefix('-').unwrap_or(&msg.sort_key).len();
+        assert_eq!(digits, 16, "sort key {} of {} is not from sort_key", msg.sort_key, msg.id);
+        self.next_seq = self.next_seq.max(msg.sort_key.parse().expect("sort keys are numbers"));
         let idx = self.messages.len();
         assert!(self.msg_idx_by_id.insert(msg.id.clone(), idx).is_none(), "duplicate message {}", msg.id);
         self.msg_search_index.insert_doc(idx as u32, &message_index_text(&msg));
@@ -1419,7 +1424,7 @@ mod tests {
             let chat = serde_json::json!({ "preview": { "sortKey": key }, "lastReadMessageSortKey": key });
             db.execute("INSERT INTO chats VALUES (?1, ?2)", [&key, &chat.to_string()]).unwrap();
         }
-        db.execute_batch(&super::widen_sort_keys()).unwrap();
+        db.execute_batch(&super::widen_sort_keys().repeat(2)).unwrap();
         let rows = |sql: &str| -> Vec<String> {
             db.prepare(sql).unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
         };
@@ -1432,5 +1437,20 @@ mod tests {
         ] {
             assert_eq!(rows(sql), want, "{sql}");
         }
+    }
+
+    #[test]
+    fn sent_messages_come_last() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-send-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23392, None);
+        config.demo = true;
+        let mut st = super::BeeperStore::from_config(config);
+        let chat = st.messages.iter().max_by_key(|m| m.sort_key.clone()).unwrap().chat_id.clone();
+        let (_, id, _) = st.send_message(&chat, Some("hi".into()), None, None).unwrap();
+        let last = *st.chat_msg_indices[&chat].last().unwrap();
+        assert_eq!(st.messages[last].id, id);
+        assert_eq!(st.chats[st.chat_idx_by_id[&chat]].preview.as_ref().unwrap().id, id);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

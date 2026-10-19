@@ -363,7 +363,8 @@ mod tests {
 
     #[test]
     fn plays_the_next_voice_note_when_one_ends() {
-        let dir = std::env::temp_dir().join("BeeperRs_voice_autoplay");
+        let dir = std::env::temp_dir().join(format!("BeeperRs_voice_autoplay_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         let mut cfg = beeper_core::config::CentralConfig::new(dir, "127.0.0.1".into(), 23390, None);
         cfg.demo = true;
         let mut st = beeper_core::store::BeeperStore::from_config(cfg);
@@ -372,7 +373,7 @@ mod tests {
             st.upsert_message(
                 serde_json::from_value(serde_json::json!({
                     "id": format!("v{i}"), "accountID": account, "chatID": chat, "senderID": "s",
-                    "sortKey": format!("{i}"), "timestamp": "2026-01-02T03:04:05Z",
+                    "sortKey": beeper_core::store::sort_key(i as i64), "timestamp": "2026-01-02T03:04:05Z",
                     "attachments": [{ "type": "audio", "srcURL": url }],
                 }))
                 .expect("message JSON"),
