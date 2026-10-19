@@ -60,15 +60,15 @@ impl Item {
 impl Item {
     #[zbus(property)]
     fn category(&self) -> &str {
-        "Communications"
+        "ApplicationStatus"
     }
     #[zbus(property)]
     fn id(&self) -> &str {
-        "beeper"
+        "chrome_status_icon_1"
     }
     #[zbus(property)]
     fn title(&self) -> &str {
-        "Beeper"
+        ""
     }
     #[zbus(property)]
     fn status(&self) -> &str {
