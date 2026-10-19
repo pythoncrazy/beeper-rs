@@ -388,6 +388,30 @@ fn composer_undo_groups_like_prosemirror() {
 }
 
 #[test]
+fn arrow_keys_step_over_a_deleted_selected_message() {
+    let mut app = demo_app("step");
+    let chat = "!note_self:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(chat.into()));
+    let ids: Vec<String> = {
+        let st = app.store.read().unwrap();
+        st.chat_msg_indices[chat].iter().map(|&i| st.messages[i].id.clone()).collect()
+    };
+    assert!(ids.len() >= 3, "the demo chat has messages");
+    let mid = ids[ids.len() - 2].clone();
+    let _ = app.update(UiMessage::ClickMessage(mid.clone()));
+    {
+        let mut st = app.store.write().unwrap();
+        let i = st.msg_idx_by_id[&mid];
+        st.messages[i].is_deleted = Some(true);
+    }
+    let _ = app.update(UiMessage::StepMessage(true));
+    assert_eq!(app.pane.selected_msg.as_ref(), ids.last());
+    let _ = app.update(UiMessage::ClickMessage(mid));
+    let _ = app.update(UiMessage::StepMessage(false));
+    assert_eq!(app.pane.selected_msg.as_ref(), Some(&ids[ids.len() - 3]));
+}
+
+#[test]
 fn every_pref_value_renders() {
     let mut app = demo_app("prefs");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));

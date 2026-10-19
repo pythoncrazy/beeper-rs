@@ -3193,20 +3193,20 @@ impl BeeperGuiApp {
             UiMessage::StepMessage(down) => {
                 let st = self.store.read().unwrap();
                 let all = &st.chat_msg_indices[self.pane.selected_chat_id.as_deref().expect("an open chat")];
-                let ids: Vec<&str> = all
-                    .iter()
-                    .map(|&i| &st.messages[i])
-                    .filter(|m| m.is_deleted != Some(true))
-                    .map(|m| m.id.as_str())
-                    .collect();
-                let at = self.pane.selected_msg.as_deref().map(|s| ids.iter().position(|&i| i == s).expect("selected"));
+                let msgs: Vec<&Message> = all.iter().map(|&i| &st.messages[i]).collect();
+                let members = st.settings.on("membershipEvents");
+                let live = |i: &usize| msgs[*i].is_deleted != Some(true) && (members || !membership(msgs[*i]));
+                let at =
+                    self.pane.selected_msg.as_deref().map(|s| {
+                        msgs.iter().position(|m| m.id == s).expect("the selected message is in the open chat")
+                    });
                 let next = match (at, down) {
-                    (None, false) => ids.len().checked_sub(1),
+                    (None, false) => (0..msgs.len()).rev().find(live),
                     (None, true) => None,
-                    (Some(i), false) => Some(i.saturating_sub(1)),
-                    (Some(i), true) => (i + 1 < ids.len()).then_some(i + 1),
+                    (Some(i), false) => (0..i).rev().find(live).or(Some(i).filter(live)),
+                    (Some(i), true) => (i + 1..msgs.len()).find(live),
                 };
-                self.pane.selected_msg = next.map(|i| ids[i].to_string());
+                self.pane.selected_msg = next.map(|i| msgs[i].id.clone());
                 drop(st);
                 return match &self.pane.selected_msg {
                     Some(mid) => locate(format!("msg-{mid}"), "timeline", true),
