@@ -194,7 +194,7 @@ fn ell_line(s: &str, max: f32, size: f32, w: Weight) -> String {
     }
     let cut = max - text_width("…", size, w);
     let end = gs.get(gs.partition_point(|g| g.1 <= cut).wrapping_sub(1)).map_or(0, |g| g.0);
-    format!("{}…", s[..end].trim_end())
+    format!("{}…", &s[..end])
 }
 
 pub fn ell<'a>(s: &str, max: f32, size: f32, w: Weight) -> text::Text<'a> {
