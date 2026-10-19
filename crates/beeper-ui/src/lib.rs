@@ -976,7 +976,15 @@ fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
 }
 
 fn faces(chat: &Chat) -> (Vec<&User>, usize) {
-    let others: Vec<&User> = chat.participants.items.iter().filter(|u| u.is_self != Some(true)).collect();
+    let mut others: Vec<&User> = chat.participants.items.iter().filter(|u| u.is_self != Some(true)).collect();
+    let name = |u: &User| {
+        [&u.custom_nickname, &u.full_name, &u.username, &u.email, &u.phone_number]
+            .into_iter()
+            .find_map(|n| n.as_deref().filter(|n| !n.is_empty()))
+            .unwrap_or(&u.id)
+            .to_lowercase()
+    };
+    others.sort_by_cached_key(|u| (u.is_network_bot == Some(true), u.is_admin != Some(true), name(u)));
     let group = chat.chat_type == "group";
     let more = if group && others.len() > 5 { others.len() - 4 } else { 0 };
     let shown = if group { others.len() - more } else { others.len().min(1) };
@@ -2289,29 +2297,34 @@ impl BeeperGuiApp {
         fn user(u: &User) -> (Option<&str>, &str) {
             (u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default())
         }
-        if chat.img_url.is_some() {
-            let shade = fill_box(Color { a: 0.1, ..self.pal.strong }, size / 2.0);
-            return container(self.face(chat.img_url.as_deref(), &chat.title, size)).style(shade).into();
-        }
         let (shown, more) = faces(chat);
-        if chat.chat_type != "group" || shown.is_empty() {
+        let face = if chat.img_url.is_some() {
+            self.face(chat.img_url.as_deref(), &chat.title, size)
+        } else if chat.chat_type != "group" || shown.is_empty() {
             let (url, name) = shown.first().map_or((None, ""), |u| user(u));
-            return self.face(url, name, size);
-        }
-        const SLOTS: [(f32, f32, f32); 5] =
-            [(-0.14, -0.135, 0.48), (0.26, 0.08, 0.35), (-0.06, 0.28, 0.27), (0.25, -0.24, 0.215), (-0.33, 0.2, 0.2)];
-        let layers = shown.into_iter().zip(SLOTS).map(|(u, (x, y, k))| {
-            let (url, name) = user(u);
-            let d = size * k;
-            pin(self.face(url, name, d)).x(size * (0.5 + x) - d / 2.0).y(size * (0.5 + y) - d / 2.0).into()
-        });
-        let label = if more > 98 { "99+".to_string() } else { format!("+{more}") };
-        let font = size * 0.15 * if more > 9 { 0.85 } else { 1.0 };
-        let count = (more > 0).then(|| {
-            let t = container(med(label, font).color(self.pal.sub)).center_x(size * 0.3);
-            pin(t).x(size * 0.027).y(size * 0.484)
-        });
-        Stack::with_children(layers).push(count).width(size).height(size).into()
+            self.face(url, name, size)
+        } else {
+            const SLOTS: [(f32, f32, f32); 5] = [
+                (-0.14, -0.135, 0.48),
+                (0.26, 0.08, 0.35),
+                (-0.06, 0.28, 0.27),
+                (0.25, -0.24, 0.215),
+                (-0.33, 0.2, 0.2),
+            ];
+            let layers = shown.into_iter().zip(SLOTS).map(|(u, (x, y, k))| {
+                let (url, name) = user(u);
+                let d = size * k;
+                pin(self.face(url, name, d)).x(size * (0.5 + x) - d / 2.0).y(size * (0.5 + y) - d / 2.0).into()
+            });
+            let label = if more > 98 { "99+".to_string() } else { format!("+{more}") };
+            let font = size * 0.15 * if more > 9 { 0.85 } else { 1.0 };
+            let count = (more > 0).then(|| {
+                let t = container(med(label, font).color(self.pal.sub)).center_x(size * 0.3);
+                pin(t).x(size * 0.027).y(size * 0.484)
+            });
+            Stack::with_children(layers).push(count).width(size).height(size).into()
+        };
+        container(face).style(fill_box(Color { a: 0.1, ..self.pal.strong }, size / 2.0)).into()
     }
 
     fn window_settings(size: Size) -> window::Settings {
