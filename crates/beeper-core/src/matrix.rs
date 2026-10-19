@@ -985,7 +985,7 @@ pub async fn media(client: Option<Client>, src: String) -> Result<Vec<u8>, Strin
     if src.starts_with("https://") {
         return crate::cloud::http_bytes(&src).await;
     }
-    let client = client.expect("Matrix media has a client");
+    let client = client.ok_or("Not connected to Matrix")?;
     let source = match src.split_once(&format!("?{ENCRYPTED_FILE}=")) {
         Some((_, json)) => {
             let json = crate::codec::url_decode(json).ok_or("bad encrypted file info")?;
