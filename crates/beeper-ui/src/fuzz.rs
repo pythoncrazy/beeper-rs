@@ -284,6 +284,9 @@ fn press(app: &mut BeeperGuiApp, focus: bool, events: impl IntoIterator<Item = i
     }
 }
 
+/// The modifier of Desktop's word deletion: Option on macOS, Ctrl elsewhere.
+const WORD: Modifiers = if cfg!(target_os = "macos") { Modifiers::ALT } else { Modifiers::CTRL };
+
 fn key(named: Named, modifiers: Modifiers) -> iced::Event {
     iced::Event::Keyboard(keyboard::Event::KeyPressed {
         key: Key::Named(named),
@@ -303,17 +306,17 @@ fn composer_keys_edit_like_desktop() {
     let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
     let _ = app.update(UiMessage::ComposerChanged(String::new()));
     let text = |app: &BeeperGuiApp| app.pane.composer.text();
-    press(&mut app, true, typewrite("hello big world").chain([key(Named::Backspace, Modifiers::CTRL)]));
+    press(&mut app, true, typewrite("hello big world").chain([key(Named::Backspace, WORD)]));
     assert_eq!(text(&app), "hello big ");
-    press(&mut app, true, [key(Named::Backspace, Modifiers::CTRL)]);
+    press(&mut app, true, [key(Named::Backspace, WORD)]);
     assert_eq!(text(&app), "hello ");
-    press(&mut app, true, [key(Named::Home, Modifiers::empty()), key(Named::Delete, Modifiers::CTRL)]);
+    press(&mut app, true, [key(Named::Home, Modifiers::empty()), key(Named::Delete, WORD)]);
     assert_eq!(text(&app), " ");
     press(&mut app, true, typewrite("a bc"));
     let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Select(text_editor::Motion::Left)));
     let _ = app.update(UiMessage::DeleteTo(text_editor::Motion::WordLeft, true));
     assert_eq!(text(&app), " a b", "Ctrl+Backspace deletes only the selection");
-    press(&mut app, false, [key(Named::Enter, Modifiers::empty()), key(Named::Backspace, Modifiers::CTRL)]);
+    press(&mut app, false, [key(Named::Enter, Modifiers::empty()), key(Named::Backspace, WORD)]);
     assert_eq!(text(&app), " a b", "an unfocused composer ignores keys");
 }
 
