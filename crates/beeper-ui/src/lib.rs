@@ -1925,6 +1925,8 @@ pub struct Pane {
     pub suggest: usize,
     /// The composer text where Escape closed the emoji autocomplete.
     pub suggest_hidden: Option<String>,
+    /// After an emoticon replacement: the new text, and the typed text and caret that Backspace restores.
+    pub emoticon: Option<(String, String, usize)>,
     /// The first message IDs of the expanded membership event groups.
     pub open_members: HashSet<String>,
     pub size: Size,
@@ -2610,7 +2612,7 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's reaction to new composer text: emoticons, the typing notice, and link previews.
-    fn composer_changed(&mut self, old: String) -> Task<UiMessage> {
+    fn composer_changed(&mut self) -> Task<UiMessage> {
         self.pane.selected_msg = None;
         self.pane.link_dialog = None;
         self.pane.suggest = 0;
@@ -2620,11 +2622,7 @@ impl BeeperGuiApp {
         let task = notice.zip(self.pane.selected_chat_id.clone()).map(|(client, chat)| {
             Task::perform(beeper_core::matrix::typing(client, chat, !new.is_empty()), UiMessage::Pushed)
         });
-        let replaced = (!st.settings.on("keepEmoticons")).then(|| emoji::replace_emoticon(&old, new.clone()));
         drop(st);
-        if let Some(r) = replaced.filter(|r| *r != new) {
-            self.pane.composer = composer_with(&r);
-        }
         Task::batch([task.unwrap_or_else(Task::none), self.fetch_link_previews()])
     }
 
@@ -2864,7 +2862,7 @@ impl BeeperGuiApp {
                         let (r, _) = word.expect("a suggestion has a word");
                         let text = format!("{}{fix}{}", &old[..r.start], &old[r.end..]);
                         self.pane.composer = format::content(&text, r.start + fix.len()..r.start + fix.len());
-                        Task::batch([self.composer_changed(old), focus])
+                        Task::batch([self.composer_changed(), focus])
                     }
                     MenuEdit::Learn => match spell::learn(&old[word.expect("Learn Spelling has a word").0]) {
                         Ok(()) => focus,
@@ -2876,7 +2874,7 @@ impl BeeperGuiApp {
                     MenuEdit::Copy => Task::batch([iced::clipboard::write(sel), focus]),
                     MenuEdit::Cut => {
                         self.pane.composer.perform(text_editor::Action::Edit(text_editor::Edit::Delete));
-                        Task::batch([iced::clipboard::write(sel), self.composer_changed(old), focus])
+                        Task::batch([iced::clipboard::write(sel), self.composer_changed(), focus])
                     }
                     MenuEdit::Paste => Task::batch([
                         iced::clipboard::read().map(|t| match t {
@@ -2890,11 +2888,30 @@ impl BeeperGuiApp {
                     ]),
                 };
             }
-            UiMessage::ComposerEdit(action) if !action.is_edit() => self.pane.composer.perform(action),
-            UiMessage::ComposerEdit(action) => {
-                let old = self.pane.composer.text();
+            UiMessage::ComposerEdit(action) if !action.is_edit() => {
+                self.pane.emoticon = None;
                 self.pane.composer.perform(action);
-                return self.composer_changed(old);
+            }
+            UiMessage::ComposerEdit(action) => {
+                use text_editor::{Action, Edit};
+                let old = self.pane.composer.text();
+                match (action, self.pane.emoticon.take().filter(|(after, ..)| *after == old)) {
+                    (Action::Edit(Edit::Backspace), Some((_, typed, at))) => {
+                        self.pane.composer = format::content(&typed, at..at);
+                    }
+                    (action, _) => {
+                        let typed = matches!(action, Action::Edit(Edit::Insert(_)));
+                        self.pane.composer.perform(action);
+                        let text = self.pane.composer.text();
+                        let at = format::offset(&text, self.pane.composer.cursor().position);
+                        let rules = typed && !self.store.read().unwrap().settings.on("keepEmoticons");
+                        if let Some((new, caret)) = rules.then(|| emoji::replace_emoticon(&text, at)).flatten() {
+                            self.pane.composer = format::content(&new, caret..caret);
+                            self.pane.emoticon = Some((new, text, at));
+                        }
+                    }
+                }
+                return self.composer_changed();
             }
             UiMessage::DeleteTo(to, back) => {
                 if self.pane.composer.selection().is_none() {
@@ -2904,9 +2921,8 @@ impl BeeperGuiApp {
                 return self.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
             }
             UiMessage::ComposerChanged(v) => {
-                let old = self.pane.composer.text();
                 self.pane.composer = composer_with(&v);
-                return self.composer_changed(old);
+                return self.composer_changed();
             }
             UiMessage::Format(i) => {
                 let old = self.pane.composer.text();
@@ -2918,7 +2934,7 @@ impl BeeperGuiApp {
                 }
                 let (text, r) = format::toggle(i, &old, r);
                 self.pane.composer = format::content(&text, r);
-                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
+                return Task::batch([self.composer_changed(), operation::focus("composer-input")]);
             }
             UiMessage::LinkDialog(d) => {
                 let closed = d.is_none();
@@ -2934,7 +2950,7 @@ impl BeeperGuiApp {
                 let r = format::selection(&self.pane.composer).unwrap_or(caret..caret);
                 let (text, r) = format::link(&old, r, url.trim(), label.trim());
                 self.pane.composer = format::content(&text, r);
-                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
+                return Task::batch([self.composer_changed(), operation::focus("composer-input")]);
             }
             UiMessage::SubmitComposer if !self.emoji_suggestions(&self.store.read().unwrap()).is_empty() => {
                 return self.update(UiMessage::PickEmoji(self.pane.suggest));
