@@ -6901,7 +6901,7 @@ impl BeeperGuiApp {
             .style(move |_, _| text_editor::Style {
                 background: CLEAR.into(),
                 border: iced::Border::default(),
-                placeholder: p.on_secondary,
+                placeholder: p.subtle,
                 value: p.strong,
                 selection: p.accent.scale_alpha(0.45),
             });
@@ -6915,7 +6915,7 @@ impl BeeperGuiApp {
         let pill = container(row![net, input, inline].align_y(Bottom).padding(Padding::new(0.0).left(14.0).right(6.5)))
             .width(Fill)
             .style(fill_box(p.input, 18.0));
-        let plus_icon = tinted(&COMPOSER_ICONS[usize::from(self.pane().show_attach_menu)], 20.0, p.on_secondary);
+        let plus_icon = tinted(&COMPOSER_ICONS[usize::from(self.pane().show_attach_menu)], 20.0, p.muted);
         let toggle = button(container(plus_icon).center(36))
             .padding(0)
             .style(btn_style([p.input, p.hover, p.selected], [p.text; 3], 18.0))
