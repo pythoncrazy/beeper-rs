@@ -135,17 +135,37 @@ fn account_id(bridge: &Value, accounts: &[BridgeAccountInfo]) -> String {
     found.map_or(name, |a| a.account_id.clone())
 }
 
+pub const RULES: &str = "com.beeper.chat_list_rules";
+
+/// Desktop's `Xl`: the `chat_list_rules` visibility key of an account.
+fn visibility_key(account_id: &str) -> &str {
+    match account_id.starts_with("slackgo.") {
+        true => account_id.split('-').next().expect("split yields a part"),
+        false => account_id,
+    }
+}
+
+/// Desktop's `accountVisibilityInAllChats`: the "Show in Inbox" option of an account.
+pub fn inbox_visibility<'a>(rules: &'a Value, account_id: &str, bridge: &str) -> &'a str {
+    let default = if matches!(bridge, "slackgo" | "discordgo") { "dmOnly" } else { "all" };
+    rules["visibility"][visibility_key(account_id)].as_str().unwrap_or(default)
+}
+
+/// Desktop's `setInboxVisibility`.
+pub fn with_inbox_visibility(mut rules: Value, account_id: &str, option: &str) -> Value {
+    rules["visibility"][visibility_key(account_id)] = option.into();
+    rules
+}
+
 pub fn hidden_from_inbox(rules: &Value, account_id: &str, bridge: &Value, group: bool) -> bool {
     let name = bridge["com.beeper.bridge_name"].as_str().unwrap_or_default();
-    let vis = |key: &str| rules["visibility"][key].as_str().map(str::to_string);
-    let default = if matches!(name, "slackgo" | "discordgo") { "dmOnly" } else { "all" };
-    let base = vis(account_id).unwrap_or(default.into());
     let scoped = match s(&bridge["network"]["id"]) {
-        _ if name == "slackgo" => vis(account_id.split('-').next().expect("split yields a part")),
-        Some(n) if !matches!(name, "whatsapp" | "telegram") => vis(&format!("{account_id}.{n}")),
+        Some(n) if !matches!(name, "slackgo" | "whatsapp" | "telegram") => {
+            rules["visibility"][format!("{account_id}.{n}")].as_str()
+        }
         _ => None,
     };
-    match scoped.unwrap_or(base).as_str() {
+    match scoped.unwrap_or(inbox_visibility(rules, account_id, name)) {
         "all" => false,
         "none" => true,
         "dmOnly" => group && bridge["com.beeper.room_type.v2"] != "group_dm",
@@ -580,7 +600,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     let chat_id = chat_id(room).await;
     let note = chat_id == NOTE_CHAT_ID;
     let accounts = store.read().unwrap().bridge_accounts.clone();
-    let rules = global(&room.client(), "com.beeper.chat_list_rules").await;
+    let rules = store.read().unwrap().inbox_rules.clone();
     let pins = global(&room.client(), "com.beeper.favourites_order").await;
     let rank = pins["Inbox"].as_array().and_then(|ids| ids.iter().position(|id| id == room.room_id().as_str()));
     let chat = chat(room, &accounts, &rules).await;
@@ -1114,6 +1134,15 @@ async fn global(client: &Client, kind: &str) -> Value {
     raw.map_or(Value::Null, |r| r.deserialize_as().expect("account data JSON"))
 }
 
+/// Applies a change of the inbox rules to every room.
+async fn sync_rules(client: &Client, store: &SharedStore) {
+    let rules = global(client, RULES).await;
+    if std::mem::replace(&mut store.write().unwrap().inbox_rules, rules.clone()) != rules {
+        let rooms = futures_util::stream::iter(client.joined_rooms());
+        rooms.for_each_concurrent(8, |room| async move { sync_room(store, &room, Vec::new()).await }).await;
+    }
+}
+
 async fn sync_emoji(client: &Client, store: &SharedStore) {
     let recent = global(client, "io.element.recent_emoji").await;
     let recent = recent["recent_emoji"]
@@ -1418,6 +1447,7 @@ pub async fn run(store: SharedStore) {
     tokio::spawn(retry_after_backup(client.clone(), store.clone()));
     sync_emoji(&client, &store).await;
     sync_prefs(&client, &store).await;
+    store.write().unwrap().inbox_rules = global(&client, RULES).await;
     let first = !store.read().unwrap().beeper_state.first_sync_done;
     futures_util::stream::iter(client.joined_rooms())
         .for_each_concurrent(8, |room| {
@@ -1446,6 +1476,7 @@ pub async fn run(store: SharedStore) {
                         refresh_e2ee(&client, &store).await;
                         sync_emoji(&client, &store).await;
                         sync_prefs(&client, &store).await;
+                        sync_rules(&client, &store).await;
                         for id in resp.rooms.left.keys() {
                             let chat = chat_id(&client.get_room(id).expect("left room is known")).await;
                             store.write().unwrap().remove_chat(&chat);
@@ -1485,6 +1516,24 @@ mod tests {
         crate::store::BeeperStore::from_config(cfg);
         assert!(!cached.exists() && !dir.join(crate::store::LOGGED_OUT).exists(), "the next start deletes the data");
         std::fs::remove_dir_all(dir).expect("remove the test data dir");
+    }
+
+    #[test]
+    fn show_in_inbox_sets_the_rule_of_the_account() {
+        use super::{hidden_from_inbox, inbox_visibility, with_inbox_visibility};
+        use serde_json::json;
+        let (tg, slack) = (json!({"com.beeper.bridge_name": "telegram"}), json!({"com.beeper.bridge_name": "slackgo"}));
+        let (team, rules) = ("slackgo.T1-U1", json!({"order": ["x"]}));
+        assert_eq!(inbox_visibility(&rules, "telegram", "telegram"), "all");
+        assert_eq!(inbox_visibility(&rules, team, "slackgo"), "dmOnly");
+        for (option, dm, group) in [("all", false, false), ("dmOnly", false, true), ("none", true, true)] {
+            let r = with_inbox_visibility(rules.clone(), "telegram", option);
+            assert_eq!((r["order"].clone(), inbox_visibility(&r, "telegram", "telegram")), (json!(["x"]), option));
+            assert_eq!([false, true].map(|g| hidden_from_inbox(&r, "telegram", &tg, g)), [dm, group]);
+        }
+        let r = with_inbox_visibility(rules, team, "none");
+        assert_eq!(r["visibility"], json!({"slackgo.T1": "none"}));
+        assert!(hidden_from_inbox(&r, "slackgo.T1-U2", &slack, false));
     }
 
     #[test]

@@ -271,6 +271,8 @@ pub struct BeeperStore {
     pub synced_prefs: BTreeMap<&'static str, serde_json::Value>,
     /// `com.beeper.emoji_skin_tone`, 0 is the default yellow.
     pub skin_tone: u8,
+    /// The last synced [`crate::matrix::RULES`].
+    pub inbox_rules: serde_json::Value,
     next_seq: i64,
 }
 
@@ -383,6 +385,7 @@ impl BeeperStore {
             recent_emoji: Vec::new(),
             synced_prefs: BTreeMap::new(),
             skin_tone: 0,
+            inbox_rules: serde_json::Value::Null,
             next_seq: 1000,
         };
         store.load_from_sqlite_or_seed();
