@@ -47,7 +47,6 @@ pub mod icon {
     pub const PLUS: char = '\u{e13d}';
     pub const SMILE: char = '\u{e164}';
     pub const AUDIO_LINES: char = '\u{e55a}';
-    pub const ARROW_UP: char = '\u{e04a}';
     pub const AT_SIGN: char = '\u{e04e}';
     pub const SETTINGS: char = '\u{e154}';
     pub const PAINTBRUSH: char = '\u{e2e7}';
