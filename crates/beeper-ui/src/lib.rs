@@ -6243,12 +6243,12 @@ impl BeeperGuiApp {
         .align_y(Center);
         let pill = button(name_row)
             .padding(Padding::new(6.0).left(10.5).right(2.5))
-            .style(btn_style([p.elevated, p.selected, p.selected], [p.text; 3], 14.0))
+            .style(btn_style([p.window, p.selected, p.selected], [p.text; 3], 14.0))
             .on_press(UiMessage::ToggleRightPanel);
         let ring = container(self.chat_avatar(chat, 40.0)).padding(1).style(fill_box(p.card, 21.0));
         let header = stack![
             container(pill).center_x(Fill).padding(Padding::ZERO.top(44.0)),
-            container(ring).center_x(Fill).padding(Padding::ZERO.top(8.0))
+            container(ring).center_x(Fill).padding(Padding::ZERO.top(7.0))
         ];
         let rim = Color { a: 0.1, ..p.strong };
         let feedback = button(container(txt(tr("Feedback?"), 11.0)).center(Fill))
