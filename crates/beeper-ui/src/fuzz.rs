@@ -920,6 +920,41 @@ fn integrations_like_desktop() {
 }
 
 #[test]
+fn approve_connection_like_desktop() {
+    use beeper_core::connect::{ClientInfo, Outcome};
+    let mut app = demo_app("approve");
+    let ask = |app: &mut BeeperGuiApp, version: Option<&str>| {
+        let client =
+            ClientInfo { name: Some("Raycast".into()), version: version.map(String::from), ..ClientInfo::default() };
+        let (id, _, rx) = app.store.write().connect.request(client, vec!["read".into()], "raycast://oauth");
+        let _ = app.update(UiMessage::TokenRequest(id.clone(), None));
+        (id, rx)
+    };
+    let (_, mut rx) = ask(&mut app, Some("1.2"));
+    let mut sim = simulator(app.view_main());
+    for label in ["Approve connection", "Allow sensitive actions", "Expires in", "Decline", "Approve"] {
+        assert!(sim.find(label).is_ok(), "{label} shows");
+    }
+    drop(sim);
+    assert_eq!(app.token_ask.as_ref().unwrap().app, "Raycast v1.2");
+    let _ = app.update(UiMessage::TokenWrite);
+    let _ = app.update(UiMessage::TokenExpiry(Expiry(3600)));
+    let _ = app.update(UiMessage::TokenAnswer(true));
+    let token = rx.try_recv().unwrap().expect("approved");
+    let stored = app.store.read().connect.validate(&token, "", "").expect("the token works");
+    assert_eq!(stored.scopes, ["read", "write"], "Allow sensitive actions grants write");
+    assert!(stored.expires_at.unwrap() - stored.created_at == 3_600_000 && app.token_ask.is_none());
+    let (_, mut rx) = ask(&mut app, None);
+    let _ = app.update(UiMessage::TokenAnswer(false));
+    assert_eq!(rx.try_recv().unwrap(), None, "Decline rejects the request");
+    let (id, _) = ask(&mut app, None);
+    let _ = app.update(UiMessage::TokenRequest(id, Some(Outcome::Timeout)));
+    assert!(simulator(app.view_main()).find("The request has timed out.").is_ok());
+    let _ = app.update(UiMessage::TokenClose);
+    assert!(app.token_ask.is_none());
+}
+
+#[test]
 fn ai_settings_like_desktop() {
     let mut app = demo_app("ai");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::Ai));
