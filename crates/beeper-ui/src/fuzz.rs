@@ -839,6 +839,22 @@ fn devices_offer_the_app_like_desktop() {
     assert!(app.app_qr && simulator(app.view_settings()).find("Get the app").is_err(), "the button shows the QR code");
     let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::About));
     assert!(!app.app_qr, "another tab hides the QR code again");
+    let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::Devices));
+    let device = |name: &str, model: Option<&str>, kind: Option<&str>| beeper_core::matrix::DeviceInfo {
+        name: name.into(),
+        model: model.map(Into::into),
+        kind: kind.map(Into::into),
+        last_seen_ms: None,
+        verified: true,
+        current: false,
+    };
+    let _ = app.update(UiMessage::DevicesLoaded(Ok(vec![
+        device("Beeper Desktop", Some("Linux PC"), Some("computer")),
+        device("Beeper iPad", Some("iPad Air"), Some("tablet")),
+        device("beeper-rs", None, None),
+    ])));
+    let mut sim = simulator(app.view_settings());
+    assert!(sim.find("Linux PC").is_ok() && sim.find("iPad Air").is_ok(), "the device metadata model shows");
 }
 
 #[test]

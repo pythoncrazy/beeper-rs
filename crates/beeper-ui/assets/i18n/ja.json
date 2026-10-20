@@ -240,6 +240,7 @@
 "Last 30 days":["過去30日間"],
 "Last Used":["最終使用日"],
 "Last hour":["直近1時間"],
+"Last seen: %s":["最後に表示: %s"],
 "Last week":["先週"],
 "Legal Notices":["法的通知"],
 "Light":["ライト"],
