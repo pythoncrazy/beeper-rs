@@ -259,16 +259,20 @@ pub fn all() -> impl Iterator<Item = (&'static str, &'static Pref)> {
 /// Desktop's reassignable hotkeys: the name, the group and the default keys. In the keys, ", " separates the
 /// combinations, a combination without a key is a modifier for the digits 1 to 9, and "disabled" has no keys.
 pub const HOTKEYS: &[(&str, &str, &str)] = &[
+    ("Chat: Archive All Read", "Chats", "ctrl+shift+e"),
     ("Chat: Start New", "Chats", "ctrl+n"),
     ("Chat: Toggle Archive", "Chats", "ctrl+e, e"),
     ("Chat: Toggle Mark As Read", "Chats", "ctrl+shift+u"),
     ("Chat: Toggle Mute", "Chats", "ctrl+shift+m"),
     ("Chat: Toggle Pin", "Chats", "ctrl+p"),
+    ("Scroll to the bottom of a chat", "Chats", "ctrl+down"),
     ("Select Next Chat", "Chats", "ctrl+], ctrl+alt+down"),
+    ("Select Next Unread Chat", "Chats", "ctrl+u"),
     ("Select Previous Chat", "Chats", "ctrl+[, ctrl+alt+up"),
     ("Switch First 9 Chats Modifier", "Chats", "ctrl"),
     ("Toggle Chat Info", "Chats", "ctrl+shift+i"),
     ("Command Bar", "App", "ctrl+j"),
+    ("Cycle Filters", "App", "alt+tab"),
     ("Filter: All", "App", "disabled"),
     ("Filter: DMs", "App", "disabled"),
     ("Filter: Drafts", "App", "disabled"),
@@ -287,6 +291,7 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Send Feedback", "App", "ctrl+alt+/"),
     ("Settings", "App", "ctrl+,"),
     ("Switch First 9 Spaces Modifier", "App", "ctrl+alt"),
+    ("Toggle Space Bar", "App", "ctrl+s"),
     ("Zoom In", "App", "ctrl+="),
     ("Zoom Out", "App", "ctrl+-"),
     ("Download Attachments", "Messages", "ctrl+d"),
