@@ -489,6 +489,15 @@ pub enum UiMessage {
     /// Clears the chosen storage of all chats (0), the cache (1) or the open chat (2).
     ClearStorage(u8),
     StorageCleared(Result<(), String>),
+    /// The "Install to..." choice, as an index into [`MCP_TARGETS`].
+    McpTarget(usize),
+    /// Installs the Beeper MCP server in a client of [`MCP_CLIENTS`] or [`MCP_TARGETS`].
+    McpInstall(&'static str),
+    /// Copies a value of Settings > Integrations; its copy button shows a check for 2 s.
+    CopyField(u8, String),
+    CopyDone(u8),
+    JoinCommunity,
+    CommunityJoined(Result<(), String>),
     OpenQuickLook(String, String),
     OpenUrl(String),
     /// The result of opening a URL in the browser.
@@ -772,6 +781,45 @@ struct StoragePage {
     chat: Option<String>,
     /// The [`UiMessage::ClearStorage`] that runs.
     clearing: Option<u8>,
+}
+
+/// Settings > Integrations: the "Install to..." choice, the copied field, and whether the community join runs.
+#[derive(Default)]
+struct IntegrationsPage {
+    target: usize,
+    copied: Option<u8>,
+    joining: bool,
+}
+
+/// The Beeper Developer Community room of Desktop.
+const COMMUNITY_ROOM: &str = "!VRvJRVNZDbRuKAsKvK:beeper.com";
+/// Desktop's MCP clients with their own row, and the button label of each.
+const MCP_CLIENTS: [(&str, &str); 3] =
+    [("Claude Desktop", "Download Extension"), ("Cursor", "Open in Cursor"), ("VS Code", "Open in Visual Studio Code")];
+/// Desktop's other MCP clients, in the "Install to..." select.
+const MCP_TARGETS: [&str; 4] = ["Claude Code", "Codex", "Streamable HTTP", "stdio"];
+
+/// Desktop's `buildCopyValue` of an MCP client for the Desktop API at `base`.
+fn mcp_value(client: &str, base: &str) -> String {
+    let url = format!("{base}/v0/mcp");
+    match client {
+        "Claude Desktop" => "https://misc-assets.beeper.com/connect-files/BeeperDesktop.dxt".into(),
+        "Cursor" => {
+            let config = beeper_core::codec::base64_encode_standard(serde_json::json!({ "url": url }).to_string().as_bytes());
+            format!("cursor://anysphere.cursor-deeplink/mcp/install?name=beeper&config={}", beeper_core::codec::url_encode(&config))
+        }
+        "VS Code" => {
+            let config = serde_json::json!({ "name": "beeper", "type": "http", "url": url });
+            format!("vscode:mcp/install?{}", beeper_core::codec::url_encode(&config.to_string()))
+        }
+        "Claude Code" => format!("claude mcp add beeper {url} -t http -s user"),
+        "Codex" => format!("codex mcp add beeper --url {url}"),
+        "Streamable HTTP" => {
+            serde_json::to_string_pretty(&serde_json::json!({ "mcpServers": { "beeper": { "url": url } } })).unwrap()
+        }
+        "stdio" => "{\n  \"mcpServers\": {\n    \"beeper\": {\n      \"command\": \"npx\",\n      \"args\": [\n        \"-y\",\n        \"@beeper/mcp-remote\"\n      ]\n    }\n  }\n}".into(),
+        _ => unreachable!("{client} is not an MCP client"),
+    }
 }
 
 /// Desktop's label and `--color-solids-*` color of each storage type.
@@ -1415,7 +1463,24 @@ macro_rules! svg_static {
 }
 
 svg_static!(CHEVRON_LEFT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
+svg_static!(CLAUDE_LOGO, include_bytes!("../assets/integrations/claude.svg"));
+svg_static!(CURSOR_LOGO, include_bytes!("../assets/integrations/cursor.svg"));
+svg_static!(VSCODE_LOGO, include_bytes!("../assets/integrations/vscode.svg"));
+svg_static!(COPY_ICON, include_bytes!("../assets/integrations/copy.svg"));
+svg_static!(COPIED_ICON, include_bytes!("../assets/integrations/done.svg"));
 svg_static!(SELECT_ARROW, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M1 3.25 5 7.25 9 3.25" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
+
+/// Desktop's "Feedback?" button, which opens the feedback form.
+fn feedback_btn<'a>(p: &Palette) -> El<'a> {
+    let rim = Color { a: 0.1, ..p.strong };
+    button(container(txt(tr("Feedback?"), 11.0)).center(Fill))
+        .width(74)
+        .height(24)
+        .padding(0)
+        .style(bordered_btn([p.card, p.hover, p.card], [Color { a: 0.9, ..rim }; 3], rim, 1.0, 4.0))
+        .on_press(UiMessage::OpenQuickLook("Feedback".into(), FEEDBACK.into()))
+        .into()
+}
 
 fn pill_btn<'a>(p: &Palette, label: impl ToString, msg: UiMessage) -> El<'a> {
     let label = txt(label.to_string(), 13.0).line_height(1.0).wrapping(iced::widget::text::Wrapping::None);
@@ -2359,6 +2424,7 @@ pub struct BeeperGuiApp {
     /// "Get the app" in Settings > Devices shows the QR code.
     app_qr: bool,
     storage: StoragePage,
+    integrations: IntegrationsPage,
     /// The account of Desktop's account page in Settings > Accounts.
     pub account_page: Option<String>,
     pub show_right_panel: bool,
@@ -2499,6 +2565,7 @@ impl BeeperGuiApp {
             adding_account: false,
             app_qr: false,
             storage: StoragePage { ages: [1; 2], kinds: [0b1111, 0b11111], ..Default::default() },
+            integrations: IntegrationsPage::default(),
             account_page: None,
             show_right_panel: panel,
             quick_look_target: None,
@@ -4737,6 +4804,63 @@ impl BeeperGuiApp {
                 }
                 return self.scan_storage();
             }
+            UiMessage::McpTarget(i) => self.integrations.target = i,
+            UiMessage::McpInstall(client) => {
+                let value = mcp_value(client, &self.store.read().config.base_url());
+                let app = match client {
+                    "Claude Desktop" => return self.update(UiMessage::OpenUrl(value)),
+                    "Cursor" => "Cursor",
+                    "VS Code" => "Visual Studio Code",
+                    _ => {
+                        self.status_banner = tr("Command copied to clipboard! Run it in your terminal.").into();
+                        return iced::clipboard::write(value);
+                    }
+                };
+                self.status_banner = trf("Opening %s to install Beeper MCP...", &[&app]);
+                return self.update(UiMessage::OpenUrl(value));
+            }
+            UiMessage::CopyField(i, value) => {
+                self.integrations.copied = Some(i);
+                let done = Task::perform(tokio::time::sleep(std::time::Duration::from_secs(2)), move |()| {
+                    UiMessage::CopyDone(i)
+                });
+                return Task::batch([iced::clipboard::write(value), done]);
+            }
+            UiMessage::CopyDone(i) => {
+                if self.integrations.copied == Some(i) {
+                    self.integrations.copied = None;
+                }
+            }
+            UiMessage::JoinCommunity => {
+                if self.store.read().resolve_chat_idx(COMMUNITY_ROOM).is_some() {
+                    let close = window::close(self.settings_window.expect("the settings window is open"));
+                    return Task::batch([self.update(UiMessage::SelectChat(COMMUNITY_ROOM.into())), close]);
+                }
+                if !self.integrations.joining {
+                    self.integrations.joining = true;
+                    let client = self.store.read().matrix.clone();
+                    return Task::perform(
+                        beeper_core::matrix::join(client, COMMUNITY_ROOM),
+                        UiMessage::CommunityJoined,
+                    );
+                }
+            }
+            UiMessage::CommunityJoined(r) => {
+                self.integrations.joining = false;
+                match r {
+                    Ok(()) => {
+                        self.status_banner = tr("Successfully joined the Beeper community room!").into();
+                        self.banner_action = Some((self.status_banner.clone(), tr("Open"), UiMessage::JoinCommunity));
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to join community room: {e}");
+                        self.status_banner = tr(
+                            "Something went wrong while joining the Beeper Developer Community chat. Please try again.",
+                        )
+                        .into();
+                    }
+                }
+            }
             UiMessage::OpenQuickLook(title, detail) => {
                 self.quick_look_target = Some((title, detail));
             }
@@ -5337,6 +5461,8 @@ impl BeeperGuiApp {
             let mut st = self.store.write();
             f(&mut st.settings);
             st.persist_state_to_sqlite();
+            let on = st.settings.enable_pas_api;
+            st.api_on.send_if_modified(|v| std::mem::replace(v, on) != on);
         }
         self.refresh_theme_and_tray();
     }
@@ -7031,13 +7157,7 @@ impl BeeperGuiApp {
             container(pill).center_x(Fill).padding(Padding::ZERO.top(44.0)),
             container(ring).center_x(Fill).padding(Padding::ZERO.top(7.0))
         ];
-        let rim = Color { a: 0.1, ..p.strong };
-        let feedback = button(container(txt(tr("Feedback?"), 11.0)).center(Fill))
-            .width(74)
-            .height(24)
-            .padding(0)
-            .style(bordered_btn([p.card, p.hover, p.card], [Color { a: 0.9, ..rim }; 3], rim, 1.0, 4.0))
-            .on_press(UiMessage::OpenQuickLook("Feedback".into(), FEEDBACK.into()));
+        let feedback = feedback_btn(p);
         let fade = Linear::new(Radians(std::f32::consts::PI))
             .add_stop(0.0, p.card)
             .add_stop(0.75, p.card.scale_alpha(0.85))
@@ -9483,26 +9603,7 @@ impl BeeperGuiApp {
                     txt("Free plan", 12.0).color(p.sub).into(),
                 )],
             )],
-            SettingsTab::Integrations => vec![group(
-                p,
-                Some("Desktop API"),
-                vec![
-                    pref_row(
-                        p,
-                        "Enable Desktop API",
-                        Some("Local REST and WebSocket server for scripts and assistants. Restart Beeper to apply."),
-                        None,
-                        toggle(p, s.enable_pas_api, Some(UiMessage::ToggleSetting(|x| x.enable_pas_api ^= true))),
-                    ),
-                    pref_row(
-                        p,
-                        "Address",
-                        None,
-                        None,
-                        txt(format!("http://localhost:{}", s.pas_port), 12.0).color(p.sub).into(),
-                    ),
-                ],
-            )],
+            SettingsTab::Integrations => self.integrations_page(st),
             SettingsTab::Storage => vec![self.storage_page(st)],
             SettingsTab::Help => unreachable!("the Help tab opens the help center"),
             SettingsTab::About => {
@@ -9541,6 +9642,116 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `StoragePrefsSubView`.
+    /// Desktop's `BeeperConnectPrefsSubView`.
+    fn integrations_page<'a>(&'a self, st: &BeeperStore) -> Vec<El<'a>> {
+        let p = &self.pal;
+        let s = &self.integrations;
+        let base = st.config.base_url();
+        let body = |t: &str, color| txt(t.to_string(), 13.0).line_height(Pixels(16.0)).color(color);
+        let actions =
+            |buttons: Vec<El<'a>>| -> El<'a> { Row::with_children(buttons).spacing(4).padding([14, 13]).into() };
+        let copy = |i: u8, value: String| {
+            let icon = if s.copied == Some(i) { &COPIED_ICON } else { &COPY_ICON };
+            button(tinted(icon, 16.0, p.text))
+                .padding(4)
+                .style(btn_style([CLEAR; 3], [p.text; 3], 4.0))
+                .on_press(UiMessage::CopyField(i, value))
+        };
+        let community = match (st.resolve_chat_idx(COMMUNITY_ROOM).is_some(), s.joining) {
+            (true, _) => "Open Developer Community chat",
+            (false, true) => "Joining...",
+            (false, false) => "Join Developer Community chat",
+        };
+        let api = vec![
+            pref_row(
+                p,
+                tr("Allow connections"),
+                Some(tr("Allow third-party apps you approve like Claude Desktop or Raycast to integrate with Beeper Desktop.")),
+                None,
+                toggle(p, st.settings.enable_pas_api, Some(UiMessage::ToggleSetting(|x| x.enable_pas_api ^= true))),
+            ),
+            divider(p.prefs_border, 0.0),
+            actions(vec![
+                pill_btn(p, tr("Learn more"), UiMessage::OpenUrl("https://developers.beeper.com/desktop-api/".into())),
+                pill_btn(p, tr(community), UiMessage::JoinCommunity),
+            ]),
+        ];
+        let mut mcp: Vec<El<'a>> = Vec::new();
+        for ((name, label), logo) in MCP_CLIENTS.into_iter().zip([&*CLAUDE_LOGO, &*CURSOR_LOGO, &*VSCODE_LOGO]) {
+            let connect =
+                button(txt(tr(label), 13.0).font(fw(Weight::Medium)).line_height(Pixels(16.0)).color(p.accent))
+                    .padding([4, 8])
+                    .style(btn_style([CLEAR; 3], [p.accent; 3], 20.0))
+                    .on_press(UiMessage::McpInstall(name));
+            let line = row![svg(logo.clone()).width(18).height(18), semi(name, 14.0).color(p.text)].spacing(8);
+            let line = row![line.width(Fill).align_y(Center), connect]
+                .align_y(Center)
+                .padding(Padding::new(13.0).bottom(12.0));
+            mcp.extend([line.into(), divider(p.prefs_border, 0.0)]);
+        }
+        let target = MCP_TARGETS[s.target];
+        let value = mcp_value(target, &base);
+        let pick = select(p, MCP_TARGETS, target, |t| {
+            UiMessage::McpTarget(MCP_TARGETS.iter().position(|x| *x == t).expect("a listed client"))
+        });
+        mcp.push(
+            row![container(body(tr("Install to..."), p.text)).width(Fill), pick].align_y(Center).padding(13).into(),
+        );
+        let blue = if self.dark { Color::from_rgb8(10, 132, 255) } else { Color::from_rgb8(0, 122, 255) };
+        let install = matches!(target, "Claude Code" | "Codex").then(|| {
+            let label = semi(tr("Copy Command"), 11.0).line_height(Pixels(12.0)).color(Color::WHITE);
+            container(
+                button(label)
+                    .padding([4, 8])
+                    .style(btn_style([blue; 3], [Color::WHITE; 3], 4.0))
+                    .on_press(UiMessage::McpInstall(target)),
+            )
+            .padding(Padding::ZERO.bottom(8.0))
+        });
+        let hint = match target {
+            "stdio" => Some("Prefer Streamable HTTP when possible."),
+            "Claude Code" | "Codex" => Some("Run this command in your terminal:"),
+            _ => None,
+        };
+        let code = txt(value.clone(), 12.0)
+            .font(iced::Font::MONOSPACE)
+            .line_height(Pixels(16.0))
+            .color(p.text)
+            .wrapping(iced::widget::text::Wrapping::Glyph);
+        let code = stack![
+            container(code).width(Fill).padding(Padding::new(12.0).right(40.0)).style(fill_box(p.chip, 6.0)),
+            container(container(copy(0, value)).padding(8).style(fill_box(p.chip.scale_alpha(0.8), 6.0)))
+                .align_right(Fill)
+        ];
+        let hint = hint.map(|h| {
+            container(txt(tr(h), 11.0).line_height(Pixels(14.0)).color(p.weak)).padding(Padding::ZERO.bottom(4.0))
+        });
+        let details = column![].push(install).push(hint).push(container(code).padding([8, 0]));
+        let details = details.padding(Padding::new(13.0).top(0.0).bottom(14.0));
+        mcp.push(details.into());
+        mcp.push(actions(vec![pill_btn(
+            p,
+            tr("See docs for MCP"),
+            UiMessage::OpenUrl("https://developers.beeper.com/desktop-api/mcp".into()),
+        )]));
+        let endpoint = |i: u8, label: &'static str, url: String| -> El<'a> {
+            let field = container(ell(&url, 200.0, 13.0, Weight::Normal).color(p.text))
+                .width(212)
+                .padding([4, 6])
+                .style(bordered_box(p.input, p.prefs_border, 1.0, 4.0));
+            let field = row![field, copy(i, url)].spacing(4).align_y(Center);
+            row![container(body(tr(label), p.text)).width(Fill), field].spacing(12).align_y(Center).padding(13).into()
+        };
+        let advanced = vec![
+            endpoint(1, "OpenAPI spec endpoint", format!("{base}/v1/spec")),
+            divider(p.prefs_border, 0.0),
+            endpoint(2, "MCP endpoint", format!("{base}/v0/mcp")),
+        ];
+        let head = row![container(body(tr("Beeper Desktop API"), p.muted)).width(Fill), feedback_btn(p)];
+        let api = column![head.align_y(Center).padding([0, 13]), group(p, None, api)].spacing(6);
+        vec![api.into(), group(p, Some("MCP"), mcp), group(p, Some(tr("Advanced")), advanced)]
+    }
+
     fn storage_page<'a>(&'a self, st: &BeeperStore) -> El<'a> {
         let p = &self.pal;
         let s = &self.storage;

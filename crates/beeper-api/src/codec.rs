@@ -92,34 +92,8 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
     be_bytes(state)
 }
 
-const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn base64_encode_with(data: &[u8], url: bool) -> String {
-    let sym = |v: u32| match (B64[v as usize & 63], url) {
-        (b'+', true) => '-',
-        (b'/', true) => '_',
-        (c, _) => c as char,
-    };
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let n = chunk.iter().enumerate().fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
-        for i in 0..=chunk.len() {
-            out.push(sym(n >> (18 - 6 * i)));
-        }
-        if !url {
-            out.push_str(&"=="[..3 - chunk.len()]);
-        }
-    }
-    out
-}
-
-pub fn base64_encode_standard(data: &[u8]) -> String {
-    base64_encode_with(data, false)
-}
-
-pub fn base64_encode_url_nopad(data: &[u8]) -> String {
-    base64_encode_with(data, true)
-}
+use beeper_core::codec::B64;
+pub use beeper_core::codec::{base64_encode_standard, base64_encode_url_nopad};
 
 pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(input.len() * 3 / 4);

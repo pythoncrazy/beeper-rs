@@ -886,6 +886,40 @@ fn storage_clears_like_desktop() {
 }
 
 #[test]
+fn integrations_like_desktop() {
+    let mut app = demo_app("integrations");
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Integrations));
+    let mut sim = simulator(app.view_settings());
+    for label in
+        ["Allow connections", "Join Developer Community chat", "Open in Cursor", "Copy Command", "MCP endpoint"]
+    {
+        assert!(sim.find(label).is_ok(), "{label} shows");
+    }
+    let base = app.store.read().config.base_url();
+    assert!(sim.find(format!("claude mcp add beeper {base}/v0/mcp -t http -s user")).is_ok());
+    drop(sim);
+    let on = app.store.read().api_on.subscribe();
+    let _ = app.update(UiMessage::ToggleSetting(|x| x.enable_pas_api ^= true));
+    assert!(*on.borrow() && app.store.read().settings.enable_pas_api, "the toggle starts the Desktop API");
+    let _ = app.update(UiMessage::McpTarget(3));
+    assert!(simulator(app.view_settings()).find("Prefer Streamable HTTP when possible.").is_ok());
+    let _ = app.update(UiMessage::JoinCommunity);
+    assert_eq!(app.update(UiMessage::JoinCommunity).units(), 0, "a second click waits for the join");
+    let base = "http://127.0.0.1:23373";
+    assert_eq!(
+        mcp_value("Cursor", base),
+        "cursor://anysphere.cursor-deeplink/mcp/install?name=beeper&config=eyJ1cmwiOiJodHRwOi8vMTI3LjAuMC4xOjIzMzczL3YwL21jcCJ9"
+    );
+    assert_eq!(
+        mcp_value("VS Code", base),
+        "vscode:mcp/install?%7B%22name%22%3A%22beeper%22%2C%22type%22%3A%22http%22%2C%22url%22%3A%22http%3A%2F%2F127.0.0.1%3A23373%2Fv0%2Fmcp%22%7D"
+    );
+    let stdio =
+        serde_json::json!({ "mcpServers": { "beeper": { "command": "npx", "args": ["-y", "@beeper/mcp-remote"] } } });
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&mcp_value("stdio", base)).unwrap(), stdio);
+}
+
+#[test]
 fn ai_settings_like_desktop() {
     let mut app = demo_app("ai");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::Ai));

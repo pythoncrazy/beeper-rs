@@ -103,17 +103,35 @@ fn main() {
     if !store.read().config.demo {
         rt.spawn(beeper_core::matrix::run(store.clone()));
     }
-    let serve = matches!(command, Command::Serve);
-    if serve || store.read().settings.enable_pas_api {
-        let listener = rt.block_on(tokio::net::TcpListener::bind((host.as_str(), port))).unwrap_or_else(|e| {
-            panic!("bind the Desktop API to {host}:{port}: {e}. Another app uses this port. Use --port <PORT>.")
-        });
-        let server_store = store.clone();
-        if serve {
-            return rt.block_on(serve_http(listener, server_store));
-        }
-        std::thread::spawn(move || rt.block_on(serve_http(listener, server_store)));
+    let bind = move |rt: &tokio::runtime::Runtime| {
+        rt.block_on(tokio::net::TcpListener::bind((host.as_str(), port))).map_err(|e| {
+            format!("bind the Desktop API to {host}:{port}: {e}. Another app uses this port. Use --port <PORT>.")
+        })
+    };
+    if let Command::Serve = command {
+        return rt.block_on(serve_http(bind(&rt).unwrap_or_else(|e| panic!("{e}")), store));
     }
+    let mut on = {
+        let st = store.read();
+        st.api_on.send_replace(st.settings.enable_pas_api);
+        st.api_on.subscribe()
+    };
+    let server_store = store.clone();
+    std::thread::spawn(move || loop {
+        rt.block_on(on.wait_for(|on| *on)).expect("the store outlives the server");
+        match bind(&rt) {
+            Ok(listener) => rt.block_on(async {
+                tokio::select! {
+                    () = serve_http(listener, server_store.clone()) => {}
+                    off = on.wait_for(|on| !*on) => drop(off.expect("the store outlives the server")),
+                }
+            }),
+            Err(e) => {
+                eprintln!("{e}");
+                rt.block_on(on.wait_for(|on| !*on)).expect("the store outlives the server");
+            }
+        }
+    });
     beeper_ui::run_native_gui(store).expect("run native GUI");
     if beeper_ui::RELAUNCH.load(std::sync::atomic::Ordering::Relaxed) {
         let (exe, args) = (std::env::current_exe().expect("the program path"), std::env::args_os().skip(1));
