@@ -22,7 +22,13 @@ fn rpc_error(status: u16, code: i64, message: &str) -> Reply {
     ))
 }
 
-pub(super) fn handle(store: &SharedStore, cloud: &Cloud, method: &str, msg: &HttpMessage) -> Reply {
+pub(super) fn handle(
+    store: &SharedStore,
+    cloud: &Cloud,
+    method: &str,
+    msg: &HttpMessage,
+    token: Option<&str>,
+) -> Reply {
     match method {
         "OPTIONS" => return empty(StatusCode::NO_CONTENT, Vec::new()),
         "POST" => {}
@@ -54,7 +60,8 @@ pub(super) fn handle(store: &SharedStore, cloud: &Cloud, method: &str, msg: &Htt
         return rpc_error(400, -32000, &supported);
     }
     let requests = batch.iter().filter(|m| m.get("id").is_some() && m["method"].is_string());
-    let events: String = requests.map(|m| format!("event: message\ndata: {}\n\n", answer(store, cloud, m))).collect();
+    let events: String =
+        requests.map(|m| format!("event: message\ndata: {}\n\n", answer(store, cloud, m, token))).collect();
     if events.is_empty() {
         return empty(StatusCode(202), Vec::new());
     }
@@ -62,7 +69,7 @@ pub(super) fn handle(store: &SharedStore, cloud: &Cloud, method: &str, msg: &Htt
     Ok(Response { status: StatusCode::OK, headers, body: events.into_bytes() })
 }
 
-fn answer(store: &SharedStore, cloud: &Cloud, m: &Value) -> Value {
+fn answer(store: &SharedStore, cloud: &Cloud, m: &Value, token: Option<&str>) -> Value {
     let result = match m["method"].as_str().expect("a request method") {
         "initialize" => {
             let asked = m["params"]["protocolVersion"].as_str().filter(|v| VERSIONS.contains(v));
@@ -75,7 +82,7 @@ fn answer(store: &SharedStore, cloud: &Cloud, m: &Value) -> Value {
         }
         "ping" | "logging/setLevel" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": TOOLS.iter().map(|t| &t["tool"]).collect::<Vec<_>>() })),
-        "tools/call" => call(store, cloud, &m["params"]).map_err(|e| (-32603, e)),
+        "tools/call" => call(store, cloud, &m["params"], token).map_err(|e| (-32603, e)),
         _ => Err((-32601, "Method not found".into())),
     };
     match result {
@@ -95,7 +102,8 @@ fn param(v: &Value) -> String {
     }
 }
 
-fn call(store: &SharedStore, cloud: &Cloud, params: &Value) -> Result<Value, String> {
+/// Calls the route with the token of the MCP client, so the route checks its scopes.
+fn call(store: &SharedStore, cloud: &Cloud, params: &Value, token: Option<&str>) -> Result<Value, String> {
     let name = params["name"].as_str().unwrap_or_default();
     let t = TOOLS.iter().find(|t| t["tool"]["name"] == name).ok_or_else(|| format!("Unknown tool: {name}"))?;
     let mut args = params["arguments"].as_object().cloned().unwrap_or_default();
@@ -116,7 +124,9 @@ fn call(store: &SharedStore, cloud: &Cloud, params: &Value) -> Result<Value, Str
         (200, tokio::runtime::Handle::current().block_on(beeper_core::cloud::http_bytes(&target))?)
     } else {
         let headers = [("content-type", "application/json"), ("accept", "application/json")];
-        let headers = headers.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let mut headers: std::collections::HashMap<_, _> =
+            headers.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        headers.extend(token.map(|t| ("authorization".to_string(), format!("Bearer {t}"))));
         let msg = HttpMessage { start_line: format!("{method} {target} HTTP/1.1"), headers, body };
         let resp = respond(store, cloud, msg).unwrap_or_else(|e| e);
         (resp.status.0, resp.body)

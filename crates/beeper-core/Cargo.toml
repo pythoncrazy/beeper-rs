@@ -17,6 +17,7 @@ futures-util = "0.3.34"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 mime = "0.3.17"
 rustls = { version = "0.23.46", default-features = false, features = ["ring"] }
+ring = { version = "0.17.14", default-features = false }
 matrix-sdk-crypto = { version = "0.19.1", default-features = false }
 vodozemac = { version = "0.11.1", default-features = false, features = ["low-level-api"] }
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }

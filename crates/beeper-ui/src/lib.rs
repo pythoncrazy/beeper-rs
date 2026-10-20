@@ -498,6 +498,13 @@ pub enum UiMessage {
     CopyDone(u8),
     JoinCommunity,
     CommunityJoined(Result<(), String>),
+    /// A new token request of the Desktop API (no outcome), or the end of one.
+    TokenRequest(String, Option<beeper_core::connect::Outcome>),
+    TokenWrite,
+    TokenExpiry(Expiry),
+    /// Approve or Decline in the "Approve connection" dialog.
+    TokenAnswer(bool),
+    TokenClose,
     OpenQuickLook(String, String),
     OpenUrl(String),
     /// The result of opening a URL in the browser.
@@ -790,6 +797,34 @@ struct IntegrationsPage {
     copied: Option<u8>,
     joining: bool,
 }
+
+/// Desktop's "Approve connection" dialog of a token request from the Desktop API.
+struct TokenAsk {
+    id: String,
+    /// The client name and version.
+    app: String,
+    write: bool,
+    expiry: Expiry,
+    timed_out: bool,
+}
+
+/// An "Expires in" choice of a token, in seconds; 0 never expires.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Expiry(i64);
+
+impl std::fmt::Display for Expiry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            3600 => tr("1 hour"),
+            86400 => tr("1 day"),
+            604_800 => tr("1 week"),
+            2_592_000 => tr("30 days"),
+            _ => trx("Never", "access token expiry option"),
+        })
+    }
+}
+
+const EXPIRIES: [Expiry; 5] = [Expiry(3600), Expiry(86400), Expiry(604_800), Expiry(2_592_000), Expiry(0)];
 
 /// The Beeper Developer Community room of Desktop.
 const COMMUNITY_ROOM: &str = "!VRvJRVNZDbRuKAsKvK:beeper.com";
@@ -2425,6 +2460,7 @@ pub struct BeeperGuiApp {
     app_qr: bool,
     storage: StoragePage,
     integrations: IntegrationsPage,
+    token_ask: Option<TokenAsk>,
     /// The account of Desktop's account page in Settings > Accounts.
     pub account_page: Option<String>,
     pub show_right_panel: bool,
@@ -2566,6 +2602,7 @@ impl BeeperGuiApp {
             app_qr: false,
             storage: StoragePage { ages: [1; 2], kinds: [0b1111, 0b11111], ..Default::default() },
             integrations: IntegrationsPage::default(),
+            token_ask: None,
             account_page: None,
             show_right_panel: panel,
             quick_look_target: None,
@@ -4845,6 +4882,33 @@ impl BeeperGuiApp {
                     );
                 }
             }
+            UiMessage::TokenRequest(id, None) => {
+                let st = self.store.read();
+                if let Some(r) = st.connect.requests.iter().find(|r| r.id == id) {
+                    let name = r.client.name.clone().filter(|n| !n.is_empty());
+                    let name = name.unwrap_or_else(|| tr("Unknown Client").into());
+                    let version = r.client.version.as_ref().map(|v| format!("v{v}")).unwrap_or_default();
+                    let write = r.scopes.iter().any(|s| s == beeper_core::connect::WRITE);
+                    let app = format!("{name} {version}").trim_end().to_string();
+                    self.token_ask = Some(TokenAsk { id, app, write, expiry: Expiry(2_592_000), timed_out: false });
+                }
+            }
+            UiMessage::TokenRequest(id, Some(outcome)) => {
+                if let Some(a) = self.token_ask.as_mut().filter(|a| a.id == id) {
+                    a.timed_out = outcome == beeper_core::connect::Outcome::Timeout;
+                }
+            }
+            UiMessage::TokenWrite => self.token_ask.as_mut().expect("an open token request").write ^= true,
+            UiMessage::TokenExpiry(e) => self.token_ask.as_mut().expect("an open token request").expiry = e,
+            UiMessage::TokenAnswer(approve) => {
+                let a = self.token_ask.take().expect("an open token request");
+                let scopes = match a.write {
+                    true => vec![beeper_core::connect::READ.into(), beeper_core::connect::WRITE.into()],
+                    false => vec![beeper_core::connect::READ.into()],
+                };
+                self.store.write().answer_token_request(&a.id, approve.then_some((scopes, a.expiry.0)));
+            }
+            UiMessage::TokenClose => self.token_ask = None,
             UiMessage::CommunityJoined(r) => {
                 self.integrations.joining = false;
                 match r {
@@ -5479,6 +5543,9 @@ impl BeeperGuiApp {
         let focus = Subscription::run_with(StoreFeed(self.store.clone(), 1), |f| {
             feed(f.0.read().focus_tx.subscribe(), UiMessage::FocusRequested)
         });
+        let tokens = Subscription::run_with(StoreFeed(self.store.clone(), 2), |f| {
+            feed(f.0.read().connect_tx.subscribe(), |(id, outcome)| UiMessage::TokenRequest(id, outcome))
+        });
         let keys = iced::event::listen_with(|e, status, id| match e {
             Event::Window(window::Event::Closed) => Some(UiMessage::WindowClosed(id)),
             Event::Window(window::Event::CloseRequested) => Some(UiMessage::CloseRequested(id)),
@@ -5560,7 +5627,7 @@ impl BeeperGuiApp {
             })
         });
         Subscription::batch(
-            [changes, focus, keys, system]
+            [changes, focus, tokens, keys, system]
                 .into_iter()
                 .chain(drag)
                 .chain(carousel)
@@ -5741,7 +5808,88 @@ impl BeeperGuiApp {
         let carousel = self.carousel.as_ref().filter(shows).map(|c| self.view_carousel(c));
         let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q));
         let layers = stack![base].push(toast).push(menu).push(scrim).push(select).push(confirm);
-        layers.push(carousel).push(hotkeys).into()
+        let token = self.token_ask.as_ref().map(|a| self.view_token_ask(a));
+        layers.push(carousel).push(hotkeys).push(token).into()
+    }
+
+    /// Desktop's `BeeperConnectAccessTokenRequestModal`, over the main window.
+    fn view_token_ask<'a>(&'a self, a: &'a TokenAsk) -> El<'a> {
+        let p = &self.pal;
+        let sentence = tr("A third-party app <app/> wants to access your chats through Beeper Desktop API.");
+        let (before, after) = sentence.split_once("<app/>").expect("the sentence names the app");
+        let main =
+            rich_text![span::<(), _>(before), span(a.app.as_str()).font(fw(Weight::Bold)).color(p.strong), span(after)]
+                .size(15.0)
+                .line_height(Pixels(20.0))
+                .color(p.text)
+                .align_x(Center)
+                .width(Fill);
+        let button = |label: &'static str, primary: bool, msg: UiMessage| -> El<'a> {
+            let (bg, fg) = if primary { (p.accent, Color::WHITE) } else { (p.button, p.strong) };
+            let label = txt(tr(label), 13.0).font(fw(Weight::Medium)).line_height(Pixels(16.0)).color(fg);
+            button(container(label).center_y(Fill))
+                .height(32)
+                .padding([0, 12])
+                .style(bordered_btn([bg; 3], [fg; 3], if primary { bg } else { p.button_border }, 1.0, 6.0))
+                .on_press(msg)
+                .into()
+        };
+        let body: El<'a> = match a.timed_out {
+            true => {
+                let notice = column![
+                    semi(tr("The request has timed out."), 15.0).line_height(Pixels(20.0)).color(p.strong),
+                    txt(tr("To try again you will need to relaunch the third-party app or re-request login in its MCP settings."), 13.0)
+                        .line_height(Pixels(16.0))
+                        .color(p.text)
+                ]
+                .spacing(8);
+                let notice = container(notice).width(Fill).padding([8, 16]).style(fill_box(p.chip, 8.0));
+                column![notice, row![button("Close", false, UiMessage::TokenClose)]].spacing(16).into()
+            }
+            false => {
+                let label = |t: &'static str| txt(tr(t), 12.0).line_height(Pixels(15.0)).color(p.text);
+                let sensitive = column![
+                    row![label("Allow sensitive actions").width(Fill), toggle(p, a.write, Some(UiMessage::TokenWrite))]
+                        .align_y(Center)
+                        .height(38)
+                        .padding([0, 8]),
+                    container(
+                        txt(tr("Grant permission to send messages and modify your account"), 11.0)
+                            .line_height(Pixels(14.0))
+                            .color(p.sub)
+                    )
+                    .padding(Padding::new(8.0).top(0.0))
+                ];
+                let expiry = select(p, EXPIRIES, a.expiry, UiMessage::TokenExpiry);
+                let expiry = row![label("Expires in").width(Fill), expiry].align_y(Center).height(38).padding([0, 8]);
+                let rows = column![sensitive, divider(p.prefs_border, 0.0), expiry, divider(p.prefs_border, 0.0)];
+                let group =
+                    container(rows).width(Fill).padding(1).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0));
+                let buttons = row![
+                    button("Decline", false, UiMessage::TokenAnswer(false)),
+                    button("Approve", true, UiMessage::TokenAnswer(true))
+                ]
+                .spacing(8);
+                let fine = txt(tr("Only approve if you initiated this connection and trust the application."), 12.0)
+                    .line_height(Pixels(15.0))
+                    .color(p.sub)
+                    .align_x(Center)
+                    .width(Fill);
+                column![
+                    container(group).padding([8, 0]),
+                    container(buttons).padding(Padding::new(0.0).top(16.0).bottom(8.0)),
+                    fine
+                ]
+                .into()
+            }
+        };
+        let title = container(semi(tr("Approve connection"), 13.0).line_height(Pixels(16.0)).color(p.strong))
+            .center_x(Fill)
+            .padding([8, 0]);
+        let content = column![container(main).padding(Padding::new(0.0).top(32.0).bottom(16.0)), body];
+        let pane = column![title, container(content).padding([0, 16])];
+        let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.prefs_pane, 10.0));
+        mouse_area(container(pane).padding(8)).on_press(UiMessage::Noop).into()
     }
 
     /// The selected chats that still exist: the sync task can drop one before StoreChanged reaches update.

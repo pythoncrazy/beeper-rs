@@ -1,0 +1,121 @@
+
+    <div id="status" class="message">Continue in the app</div>
+    <div id="hint" class="hint" style="display:none">Having issues? Contact help@beeper.com.</div>
+    <script nonce="{{nonce}}">
+    const params = new URLSearchParams(window.location.search);
+    const redirectUri = {{redirect_uri}};
+    const state = {{state}};
+    const clientName = {{client_name}};
+    const scope = {{scope}};
+    const codeChallenge = {{code_challenge}};
+    const codeChallengeMethod = {{code_challenge_method}};
+    const resource = {{resource}};
+     let finished = false;
+     setTimeout(() => {
+       if (!finished) {
+         const hint = document.getElementById('hint');
+         if (hint) hint.style.display = 'block';
+       }
+     }, 5000);
+
+     const scopeArray = scope.split(' ').filter(s => s);
+     // Ensure 'read' is always included
+     const scopes = scopeArray.includes('read') ? scopeArray : ['read', ...scopeArray];
+
+     const requestBody = {
+       mode: 'oauth2',
+       clientInfo: {
+         name: clientName,
+         clientURI: {{client_uri}},
+         clientID: {{client_id}}
+       },
+       scopes: scopes,
+       redirectUri,
+       scope
+     };
+
+     if (state) {
+       requestBody.state = state;
+     }
+
+     if (codeChallenge) {
+       requestBody.codeChallenge = codeChallenge;
+       requestBody.codeChallengeMethod = codeChallengeMethod || 'S256';
+     }
+
+     if (resource) {
+       requestBody.resource = resource;
+     }
+
+     fetch('/oauth/authorize/callback', {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify(requestBody)
+     })
+     .then(res => res.json())
+     .then(data => {
+       finished = true;
+       const statusEl = document.getElementById('status');
+       if (data.code) {
+         try {
+           const url = new URL(redirectUri);
+           url.searchParams.set('code', data.code);
+           if (state) url.searchParams.set('state', state);
+           const navigate = () => { window.location.href = url.toString(); };
+           const connected = () => {
+             if (statusEl) statusEl.textContent = 'Beeper Desktop is connected. You can now go back to ' + clientName + '.';
+             const hint = document.getElementById('hint');
+             if (hint) hint.style.display = 'none';
+           };
+           if (url.protocol === 'http:' || url.protocol === 'https:') {
+             fetch(url, { mode: 'no-cors' }).then(connected, navigate);
+           } else {
+             if (statusEl) statusEl.textContent = 'You can now close this tab.';
+             setTimeout(navigate, 600);
+           }
+         } catch (urlError) {
+           console.error('Invalid redirect URL:', urlError);
+           if (statusEl) {
+             statusEl.textContent = 'Invalid redirect URL';
+             statusEl.classList.add('error');
+           }
+           const hint = document.getElementById('hint');
+           if (hint) hint.style.display = 'block';
+         }
+       } else if (data.error) {
+         if (statusEl) {
+           statusEl.textContent = (typeof data.error === 'object' && data.error.message) || 'Authorization denied.';
+           statusEl.classList.add('error');
+         }
+         const hint = document.getElementById('hint');
+         if (hint) hint.style.display = 'block';
+         try {
+           const url = new URL(redirectUri);
+           url.searchParams.set('error', data.error);
+           if (state) url.searchParams.set('state', state);
+           setTimeout(() => {
+             window.location.href = url.toString();
+           }, 1500);
+         } catch (urlError) {
+           console.error('Invalid redirect URL:', urlError);
+           if (statusEl) {
+             statusEl.textContent = 'Invalid redirect URL';
+             statusEl.classList.add('error');
+           }
+         }
+       } else {
+         throw new Error('Unexpected response format');
+       }
+     })
+     .catch(err => {
+       finished = true;
+       const statusEl = document.getElementById('status');
+       if (statusEl) {
+         statusEl.textContent = 'Error: ' + (err && err.message ? err.message : String(err));
+         statusEl.classList.add('error');
+       }
+       const hint = document.getElementById('hint');
+       if (hint) hint.style.display = 'block';
+     });
+    </script>
+      

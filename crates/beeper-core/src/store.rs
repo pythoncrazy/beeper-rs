@@ -7,7 +7,7 @@ use crate::matrix::{ChatFlag, Outgoing};
 use crate::models::*;
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tokio::sync::broadcast;
@@ -120,22 +120,6 @@ pub struct StoredAsset {
     pub height: Option<u32>,
     pub duration: Option<f64>,
     pub created_epoch_secs: i64,
-}
-
-#[derive(Debug, Clone)]
-pub struct OAuthClientEntry {
-    pub client_id: String,
-    pub client_name: String,
-    pub redirect_uris: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct OAuthCodeEntry {
-    pub code: String,
-    pub client_id: String,
-    pub redirect_uri: String,
-    pub code_challenge: String,
-    pub code_challenge_method: String,
 }
 
 pub const NOTE_CHAT_ID: &str = "!note_self:beeper.com";
@@ -297,9 +281,9 @@ pub struct BeeperStore {
     pub chat_search_index: InvertedIndex,
     pub assets: HashMap<String, StoredAsset>,
     assets_by_mxc: HashMap<String, String>,
-    pub oauth_clients: HashMap<String, OAuthClientEntry>,
-    pub oauth_codes: HashMap<String, OAuthCodeEntry>,
-    pub valid_tokens: BTreeSet<String>,
+    pub connect: crate::connect::Connect,
+    /// A new token request (no outcome), or the end of one.
+    pub connect_tx: broadcast::Sender<(String, Option<crate::connect::Outcome>)>,
     pub settings: BeeperSettings,
     pub ws_tx: broadcast::Sender<WsEvent>,
     pub focus_tx: broadcast::Sender<Option<String>>,
@@ -392,7 +376,6 @@ impl BeeperStore {
             config,
             db: Mutex::new(conn),
             setup_status: Self::build_setup_from_state(&beeper_state),
-            valid_tokens: BTreeSet::new(),
             beeper_state,
             verifications: HashMap::new(),
             bridge_accounts: Vec::new(),
@@ -419,8 +402,8 @@ impl BeeperStore {
                     (url.to_string(), LinkPreview { title: title.into(), summary: summary.into() })
                 })
                 .collect(),
-            oauth_clients: HashMap::new(),
-            oauth_codes: HashMap::new(),
+            connect: crate::connect::Connect::default(),
+            connect_tx: broadcast::channel(WS_CHANNEL_CAPACITY).0,
             ws_tx: broadcast::channel(WS_CHANNEL_CAPACITY).0,
             focus_tx: broadcast::channel(WS_CHANNEL_CAPACITY).0,
             api_on: tokio::sync::watch::channel(false).0,
@@ -555,9 +538,15 @@ impl BeeperStore {
         if let Some(s) = state {
             self.beeper_state = serde_json::from_str(&s).expect("parse stored state");
         }
-        if self.signed_in() {
-            self.valid_tokens.insert(self.beeper_state.access_token.clone());
-        }
+        let kv = |k| {
+            self.db
+                .lock()
+                .unwrap()
+                .query_row("SELECT value FROM kv WHERE key = ?1", [k], |r| r.get(0))
+                .optional()
+                .expect("read kv")
+        };
+        self.connect = crate::connect::Connect::load(kv(crate::connect::KEY_TOKENS), kv(crate::connect::KEY_CLIENTS));
         self.setup_status = Self::build_setup_from_state(&self.beeper_state);
         if let Some(b) = bridges {
             self.bridge_accounts = serde_json::from_str(&b).expect("parse stored bridge accounts");
@@ -608,6 +597,22 @@ impl BeeperStore {
 
     fn put_kv(&self, key: &str, value: &str) {
         self.exec("INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)", params![key, value]);
+    }
+
+    pub fn persist_connect(&mut self) {
+        let tokens = self.connect.tokens_json();
+        self.put_kv(crate::connect::KEY_TOKENS, &tokens);
+        self.put_kv(crate::connect::KEY_CLIENTS, &self.connect.clients_json());
+    }
+
+    /// Answers a token request from the "Approve connection" dialog.
+    pub fn answer_token_request(&mut self, id: &str, grant: Option<(Vec<String>, i64)>) {
+        let outcome =
+            if grant.is_some() { crate::connect::Outcome::Approved } else { crate::connect::Outcome::Rejected };
+        if self.connect.answer(id, grant) {
+            self.persist_connect();
+            self.connect_tx.send((id.to_string(), Some(outcome))).ok();
+        }
     }
 
     pub fn finish_setup(&mut self, how: Setup) {
@@ -682,7 +687,6 @@ impl BeeperStore {
             homeserver,
             ..BeeperStateRecord::default()
         };
-        self.valid_tokens.insert(self.beeper_state.access_token.clone());
         self.setup_status = Self::build_setup_from_state(&self.beeper_state);
         self.persist_state_to_sqlite();
         self.ensure_note_chat(profile);
