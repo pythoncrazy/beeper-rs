@@ -22,7 +22,7 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMA
 This repository distributes original software under the MIT License.
 This repository also includes third-party open-source assets and font files under their respective licenses:
 
-### A. Beeper Desktop API Specification (`crates/beeper-core/assets/openapi.json`)
+### A. Beeper Desktop API Specification and MCP Tools (`crates/beeper-core/assets/openapi.json`, `crates/beeper-api/assets/mcp_tools.json`)
 
 Source repository: `https://github.com/beeper/desktop-api-js`
 License: MIT License
