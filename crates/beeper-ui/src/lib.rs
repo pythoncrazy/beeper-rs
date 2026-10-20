@@ -505,6 +505,16 @@ pub enum UiMessage {
     /// Approve or Decline in the "Approve connection" dialog.
     TokenAnswer(bool),
     TokenClose,
+    /// Revoke in Approved connections, which asks first.
+    RevokeConnection(String),
+    RevokeConfirmed,
+    /// The "+" of Approved connections opens the token dialog, and Escape closes it.
+    AddToken(bool),
+    AddTokenName(String),
+    AddTokenExpiry(Expiry),
+    AddTokenWrite,
+    CreateToken,
+    CopyToken,
     OpenQuickLook(String, String),
     OpenUrl(String),
     /// The result of opening a URL in the browser.
@@ -796,6 +806,18 @@ struct IntegrationsPage {
     target: usize,
     copied: Option<u8>,
     joining: bool,
+    /// The token of the open revoke confirmation.
+    revoke: Option<String>,
+    add: Option<AddToken>,
+}
+
+/// Desktop's "Create a new token for Beeper Desktop API" dialog, with the token after Create.
+struct AddToken {
+    name: String,
+    expiry: Expiry,
+    write: bool,
+    token: Option<String>,
+    copied: bool,
 }
 
 /// Desktop's "Approve connection" dialog of a token request from the Desktop API.
@@ -946,8 +968,10 @@ const ASK_MARK_ALL_READ: u8 = 7;
 const ASK_CLEAR_STORAGE: u8 = 8;
 const ASK_CLEAR_CACHE: u8 = 9;
 const ASK_CLEAR_CHAT: u8 = 10;
+const ASK_REVOKE_CONNECTION: u8 = 11;
 /// The dialogs over the Settings window.
-const SETTINGS_DIALOGS: [u8; 4] = [ASK_LOGOUT, ASK_CLEAR_STORAGE, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT];
+const SETTINGS_DIALOGS: [u8; 5] =
+    [ASK_LOGOUT, ASK_CLEAR_STORAGE, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT, ASK_REVOKE_CONNECTION];
 /// Desktop's "Clear storage older than" choices, where 0 is any age.
 const STORAGE_DAYS: [i64; 4] = [0, 30, 90, 120];
 /// Desktop's default "Quick reaction emoji".
@@ -1503,6 +1527,33 @@ svg_static!(CURSOR_LOGO, include_bytes!("../assets/integrations/cursor.svg"));
 svg_static!(VSCODE_LOGO, include_bytes!("../assets/integrations/vscode.svg"));
 svg_static!(COPY_ICON, include_bytes!("../assets/integrations/copy.svg"));
 svg_static!(COPIED_ICON, include_bytes!("../assets/integrations/done.svg"));
+svg_static!(ADD_ICON, include_bytes!("../assets/integrations/add.svg"));
+
+/// date-fns `formatDistance` in English, as Desktop shows the age and the expiry of a connection.
+fn distance(ms: i64) -> String {
+    let n = |v: i64, unit: &str| format!("{v} {unit}{}", if v == 1 { "" } else { "s" });
+    let m = (ms.abs() as f64 / 60_000.0).round() as i64;
+    let months = (m as f64 / 43_200.0).round() as i64;
+    match m {
+        0 => "less than a minute".into(),
+        1 => "1 minute".into(),
+        2..45 => n(m, "minute"),
+        45..90 => "about 1 hour".into(),
+        90..1440 => format!("about {}", n((m as f64 / 60.0).round() as i64, "hour")),
+        1440..2520 => "1 day".into(),
+        2520..43_200 => n((m as f64 / 1440.0).round() as i64, "day"),
+        43_200..86_400 => format!("about {}", n(months, "month")),
+        _ if months < 12 => n(months, "month"),
+        _ => {
+            let (years, rest) = (months / 12, months % 12);
+            match rest {
+                0..3 => format!("about {}", n(years, "year")),
+                3..9 => format!("over {}", n(years, "year")),
+                _ => format!("almost {}", n(years + 1, "year")),
+            }
+        }
+    }
+}
 svg_static!(SELECT_ARROW, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M1 3.25 5 7.25 9 3.25" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
 
 /// Desktop's "Feedback?" button, which opens the feedback form.
@@ -2849,6 +2900,7 @@ impl BeeperGuiApp {
         let n = search_settings(&self.settings_query).len();
         match key {
             Key::Named(Named::Escape) if self.confirm.is_some() => self.confirm = None,
+            Key::Named(Named::Escape) if self.integrations.add.is_some() => self.integrations.add = None,
             Key::Named(Named::Escape) => {
                 return window::close(self.settings_window.expect("the settings window is open"))
             }
@@ -4184,6 +4236,9 @@ impl BeeperGuiApp {
                 let main = window::gain_focus(self.main_window.expect("the main window is open"));
                 return Task::batch([self.update(UiMessage::JumpTo(chat, mid)), main]);
             }
+            UiMessage::InputEscape(id) if Some(id) == self.settings_window && self.integrations.add.is_some() => {
+                self.integrations.add = None;
+            }
             UiMessage::InputEscape(id) if Some(id) == self.settings_window => {
                 return self.update(UiMessage::SettingsQueryChanged(String::new()));
             }
@@ -4909,6 +4964,39 @@ impl BeeperGuiApp {
                 self.store.write().answer_token_request(&a.id, approve.then_some((scopes, a.expiry.0)));
             }
             UiMessage::TokenClose => self.token_ask = None,
+            UiMessage::RevokeConnection(id) => {
+                (self.integrations.revoke, self.confirm) = (Some(id), Some(ASK_REVOKE_CONNECTION))
+            }
+            UiMessage::RevokeConfirmed => {
+                self.confirm = None;
+                self.store.write().revoke_token(&self.integrations.revoke.take().expect("a connection to revoke"));
+            }
+            UiMessage::AddToken(open) => {
+                self.integrations.add = open.then(|| AddToken {
+                    name: String::new(),
+                    expiry: Expiry(2_592_000),
+                    write: false,
+                    token: None,
+                    copied: false,
+                });
+                return operation::focus("token-name");
+            }
+            UiMessage::AddTokenName(name) => self.integrations.add.as_mut().expect("the token dialog").name = name,
+            UiMessage::AddTokenExpiry(e) => self.integrations.add.as_mut().expect("the token dialog").expiry = e,
+            UiMessage::AddTokenWrite => self.integrations.add.as_mut().expect("the token dialog").write ^= true,
+            UiMessage::CreateToken => {
+                let a = self.integrations.add.as_mut().expect("the token dialog");
+                let mut scopes = vec![beeper_core::connect::READ.to_string()];
+                scopes.extend(a.write.then(|| beeper_core::connect::WRITE.to_string()));
+                let client = (!a.name.is_empty())
+                    .then(|| beeper_core::connect::ClientInfo { name: Some(a.name.clone()), ..Default::default() });
+                a.token = Some(self.store.write().create_token(scopes, a.expiry.0, client));
+            }
+            UiMessage::CopyToken => {
+                let a = self.integrations.add.as_mut().expect("the token dialog");
+                a.copied = true;
+                return iced::clipboard::write(a.token.clone().expect("a created token"));
+            }
             UiMessage::CommunityJoined(r) => {
                 self.integrations.joining = false;
                 match r {
@@ -9376,7 +9464,89 @@ impl BeeperGuiApp {
         let base = container(row![left, container(right).padding(8)]).width(Fill).height(Fill);
         drop(st);
         let confirm = self.confirm.filter(|d| SETTINGS_DIALOGS.contains(d)).map(|d| self.view_confirm(d));
-        stack![base.style(fill_box(p.window, 0.0))].push(confirm).into()
+        let add = self.integrations.add.as_ref().map(|a| self.view_add_token(a));
+        stack![base.style(fill_box(p.window, 0.0))].push(add).push(confirm).into()
+    }
+
+    /// Desktop's `BeeperConnectAddTokenModal`, over the Settings window.
+    fn view_add_token<'a>(&'a self, a: &'a AddToken) -> El<'a> {
+        let p = &self.pal;
+        let label = |t: &'static str| txt(tr(t), 12.0).line_height(Pixels(15.0)).color(p.text);
+        let content: El<'a> = match &a.token {
+            None => {
+                let name = text_input("Cursor", &a.name)
+                    .id("token-name")
+                    .on_input(UiMessage::AddTokenName)
+                    .on_submit(UiMessage::CreateToken)
+                    .size(12)
+                    .width(200)
+                    .padding([4, 6])
+                    .style(outline_input(p));
+                let line = |t, control: El<'a>| -> El<'a> {
+                    row![label(t).width(Fill), control].align_y(Center).height(38).padding([0, 8]).into()
+                };
+                let expiry = select(
+                    p,
+                    [EXPIRIES[4], EXPIRIES[0], EXPIRIES[1], EXPIRIES[2], EXPIRIES[3]],
+                    a.expiry,
+                    UiMessage::AddTokenExpiry,
+                );
+                let sensitive = column![
+                    line("Allow sensitive actions", toggle(p, a.write, Some(UiMessage::AddTokenWrite))),
+                    container(
+                        txt(tr("Grant permission to send messages and modify your account"), 11.0)
+                            .line_height(Pixels(14.0))
+                            .color(p.sub)
+                    )
+                    .padding(Padding::new(8.0).top(0.0))
+                ];
+                let create = button(semi(tr("Create Access Token"), 12.0).line_height(Pixels(15.0)).color(p.accent))
+                    .padding([4, 8])
+                    .style(btn_style([p.accent.scale_alpha(0.1); 3], [p.accent; 3], 20.0))
+                    .on_press(UiMessage::CreateToken);
+                let rows = vec![
+                    line("Name (optional)", name.into()),
+                    divider(p.prefs_border, 0.0),
+                    line("Expires In", expiry),
+                    divider(p.prefs_border, 0.0),
+                    sensitive.into(),
+                    divider(p.prefs_border, 0.0),
+                    row![Space::new().width(Fill), create].padding(13).into(),
+                ];
+                group(p, Some(tr("Generate an access token to connect any client")), rows)
+            }
+            Some(token) => {
+                let note =
+                    tr("<strong>Important:</strong> This token will only be shown once, please copy and save it.");
+                let (strong, rest) = note.split_once("</strong>").expect("the note has a bold part");
+                let note =
+                    rich_text![span::<(), _>(strong.trim_start_matches("<strong>")).font(fw(Weight::Bold)), span(rest)]
+                        .size(13.0)
+                        .line_height(Pixels(16.0))
+                        .color(p.text);
+                let shown = container(semi(token.as_str(), 15.0).line_height(Pixels(20.0)).color(p.strong))
+                    .padding([8, 16])
+                    .style(fill_box(p.chip, 8.0));
+                let icon = if a.copied { &COPIED_ICON } else { &COPY_ICON };
+                let copy = row![
+                    tinted(icon, 20.0, p.accent),
+                    txt(tr(if a.copied { "Copied!" } else { "Copy" }), 13.0).color(p.accent)
+                ]
+                .spacing(4)
+                .align_y(Center)
+                .width(72);
+                let shown = mouse_area(row![shown, copy].spacing(8).align_y(Center)).on_press(UiMessage::CopyToken);
+                column![note, shown].spacing(8).align_x(Center).width(Fill).into()
+            }
+        };
+        let title = container(
+            semi(tr("Create a new token for Beeper Desktop API"), 13.0).line_height(Pixels(16.0)).color(p.strong),
+        )
+        .center_x(Fill)
+        .padding([8, 0]);
+        let pane = column![title, container(content).padding(Padding::new(16.0).top(16.0))];
+        let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.prefs_pane, 10.0));
+        mouse_area(container(pane).padding(8)).on_press(UiMessage::Noop).into()
     }
 
     fn sas_row<'a>(&self, st: &BeeperStore) -> El<'a> {
@@ -9563,6 +9733,11 @@ impl BeeperGuiApp {
                     }
                 }
             }
+            ASK_REVOKE_CONNECTION => (
+                tr("Are you sure you want to revoke this connection?").into(),
+                tr("Connected clients will lose access to Beeper Desktop API").into(),
+                vec![(tr("Revoke"), UiMessage::RevokeConfirmed)],
+            ),
             _ => unreachable!("dialog {dialog}"),
         };
         self.dialog(title, body, actions, UiMessage::Ask(None))
@@ -9890,6 +10065,54 @@ impl BeeperGuiApp {
             let field = row![field, copy(i, url)].spacing(4).align_y(Center);
             row![container(body(tr(label), p.text)).width(Fill), field].spacing(12).align_y(Center).padding(13).into()
         };
+        let mut tokens: Vec<_> = st.connect.tokens.values().collect();
+        tokens.sort_by_key(|t| t.created_at);
+        let now = now_unix_millis();
+        let connections: Vec<El<'a>> = match tokens.is_empty() {
+            true => {
+                vec![container(body(tr("Add a connection to get started"), p.sub)).center_x(Fill).padding(12).into()]
+            }
+            false => tokens
+                .into_iter()
+                .flat_map(|t| {
+                    let c = t.client_info.clone().unwrap_or_default();
+                    let name = c.name.filter(|n| !n.is_empty()).or(c.client_id);
+                    let mut name = name.unwrap_or_else(|| tr("Unnamed Client").into());
+                    name.extend(c.version.map(|v| format!(" v{v}")));
+                    let tag = t.scopes.iter().any(|s| s == beeper_core::connect::WRITE).then(|| {
+                        container(txt(tr("Sensitive actions"), 12.0).line_height(Pixels(14.0)).color(p.text))
+                            .padding([1, 4])
+                            .style(fill_box(p.chip, 4.0))
+                    });
+                    let created = distance(now - t.created_at);
+                    let when = match t.expires_at {
+                        Some(e) => trf("Created %1$s ago · Expires in %2$s", &[&created, &distance(e - now)]),
+                        None => trf("Created %s ago · Never expires", &[&created]),
+                    };
+                    let text = column![
+                        row![body(&name, p.text)].push(tag).spacing(6).align_y(Center),
+                        body(&when, p.text.scale_alpha(0.7))
+                    ];
+                    let revoke = container(pill_btn(p, tr("Revoke"), UiMessage::RevokeConnection(t.id.clone())))
+                        .padding(Padding::ZERO.right(8.0));
+                    let line =
+                        row![text.width(Fill), revoke].align_y(Center).padding(Padding::new(8.0).left(13.0).right(4.0));
+                    [divider(p.prefs_border, 0.0), line.into()]
+                })
+                .skip(1)
+                .collect(),
+        };
+        let plus = button(tinted(&ADD_ICON, 20.0, p.accent))
+            .padding(0)
+            .style(btn_style([CLEAR; 3], [p.accent; 3], 10.0))
+            .on_press(UiMessage::AddToken(true));
+        let approved = column![
+            row![container(body(tr("Approved connections"), p.muted)).width(Fill), plus]
+                .align_y(Center)
+                .padding([0, 13]),
+            group(p, None, connections)
+        ]
+        .spacing(6);
         let advanced = vec![
             endpoint(1, "OpenAPI spec endpoint", format!("{base}/v1/spec")),
             divider(p.prefs_border, 0.0),
@@ -9897,7 +10120,7 @@ impl BeeperGuiApp {
         ];
         let head = row![container(body(tr("Beeper Desktop API"), p.muted)).width(Fill), feedback_btn(p)];
         let api = column![head.align_y(Center).padding([0, 13]), group(p, None, api)].spacing(6);
-        vec![api.into(), group(p, Some("MCP"), mcp), group(p, Some(tr("Advanced")), advanced)]
+        vec![api.into(), group(p, Some("MCP"), mcp), approved.into(), group(p, Some(tr("Advanced")), advanced)]
     }
 
     fn storage_page<'a>(&'a self, st: &BeeperStore) -> El<'a> {

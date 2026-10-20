@@ -605,6 +605,23 @@ impl BeeperStore {
         self.put_kv(crate::connect::KEY_CLIENTS, &self.connect.clients_json());
     }
 
+    /// Desktop's `createToken` of Settings > Integrations: a token without a request.
+    pub fn create_token(
+        &mut self,
+        scopes: Vec<String>,
+        expires_secs: i64,
+        client: Option<crate::connect::ClientInfo>,
+    ) -> String {
+        let token = self.connect.create(scopes, expires_secs, client);
+        self.persist_connect();
+        token
+    }
+
+    pub fn revoke_token(&mut self, id: &str) {
+        assert!(self.connect.tokens.remove(id).is_some(), "revoke the unknown token {id}");
+        self.persist_connect();
+    }
+
     /// Answers a token request from the "Approve connection" dialog.
     pub fn answer_token_request(&mut self, id: &str, grant: Option<(Vec<String>, i64)>) {
         let outcome =
