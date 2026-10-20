@@ -265,6 +265,7 @@ pub enum UiMessage {
     LinkDialog(Option<(String, String)>),
     SaveLink,
     SubmitComposer,
+    SendAndArchive,
     CancelComposeMode,
     StartReply(String),
     StartEdit(String, String),
@@ -2842,13 +2843,18 @@ impl BeeperGuiApp {
         Task::batch([task.unwrap_or_else(Task::none), self.fetch_link_previews()])
     }
 
-    pub fn submit_composer(&mut self) {
+    /// Desktop's `sendMessage`: a new message moves an archived chat to the inbox, unless `archive` is set.
+    pub fn submit_composer(&mut self, archive: bool) {
         let chat_id = self.pane.selected_chat_id.clone().expect("a chat is selected");
         let text = self.pane.composer.text().trim().to_string();
         if text.is_empty() && self.pane.pasted.is_none() {
             return;
         }
         let mut st = self.store.write();
+        let idx = st.resolve_chat_idx(&chat_id).expect("chat exists");
+        if self.pane.editing_message_id.is_none() && has_flag(&st.chats[idx], ChatFlag::Archived) != archive {
+            self.set_archived(&mut st, idx, archive);
+        }
         let out = if let Some(target) = self.pane.editing_message_id.take() {
             st.edit_message(&chat_id, &target, text.clone()).expect("edit message");
             Outgoing::Edit { target, text }
@@ -3049,6 +3055,8 @@ impl BeeperGuiApp {
                 self.filters ^= 1 << FILTER_HOTKEYS.iter().position(|h| *h == f).expect("a filter hotkey");
                 None
             }
+            "Message: Send Message and Archive" => chat.map(|_| UiMessage::SendAndArchive),
+            "Send Message" | "Insert New Line" => None,
             "Minimize To Tray" => return self.set_hidden(true),
             "Quit App" => return self.quit(),
             "Reload App" => Some(UiMessage::Relaunch),
@@ -3318,6 +3326,10 @@ impl BeeperGuiApp {
                 self.pane.composer = composer_with(&v);
                 return self.composer_changed(old);
             }
+            UiMessage::Format(format::CODE) if format::selection(&self.pane.composer).is_none() => {
+                let insert = text_editor::Action::Edit(text_editor::Edit::Insert('`'));
+                return self.update(UiMessage::ComposerEdit(insert));
+            }
             UiMessage::Format(i) => {
                 let old = self.pane.composer.text();
                 let caret = format::offset(&old, self.pane.composer.cursor().position);
@@ -3350,7 +3362,19 @@ impl BeeperGuiApp {
                 return self.update(UiMessage::PickEmoji(self.pane.suggest));
             }
             UiMessage::SubmitComposer if self.recorder.is_some() => return self.send_take(),
-            UiMessage::SubmitComposer => self.submit_composer(),
+            UiMessage::SubmitComposer => self.submit_composer(false),
+            UiMessage::SendAndArchive => {
+                let cid = self.pane.selected_chat_id.clone().expect("a chat is selected");
+                let st = self.store.read();
+                let at = self.list_ids(&st).iter().position(|c| *c == cid);
+                drop(st);
+                let draft = !self.pane.composer.text().trim().is_empty() || self.pane.pasted.is_some();
+                self.submit_composer(true);
+                let list = self.list_ids(&self.store.read());
+                if let Some(at) = at.filter(|_| draft && !list.contains(&cid)) {
+                    return self.after_action("afterArchive", &list, at, true);
+                }
+            }
             UiMessage::PickEmoji(i) => {
                 let picks = self.emoji_suggestions(&self.store.read());
                 let mut text = self.pane.composer.text();
@@ -4315,7 +4339,7 @@ impl BeeperGuiApp {
                         frames,
                     });
                     if self.store.read().settings.on("autoSendGifs") {
-                        self.submit_composer();
+                        self.submit_composer(false);
                     }
                 }
                 Err(e) => self.status_banner = format!("Could not download GIF: {e}"),
@@ -7224,14 +7248,25 @@ impl BeeperGuiApp {
         let placeholder = format!("Message {} on {}", chat.title, network_name(&chat.account_id));
         let suggesting = !self.emoji_suggestions(st).is_empty();
         let formats = chat.formatting;
+        let keys = ["Message: Send Message and Archive", "Send Message", "Insert New Line"]
+            .map(|h| st.settings.hotkey_keys(h).to_string());
         let input = text_editor(&self.pane().composer)
             .id("composer-input")
             .placeholder(placeholder)
             .on_action(UiMessage::ComposerEdit)
             .key_binding(move |k| match k.key.as_ref() {
                 _ if !matches!(k.status, text_editor::Status::Focused { .. }) => None,
-                Key::Named(Named::Enter) if !k.modifiers.shift() => {
-                    Some(text_editor::Binding::Custom(UiMessage::SubmitComposer))
+                Key::Named(Named::Enter) => {
+                    let m = k.modifiers;
+                    let mods = [m.control() || m.command(), m.shift(), m.alt()];
+                    match keys.iter().position(|keys| prefs::hotkey_has(keys, mods, "enter")) {
+                        Some(0) => Some(text_editor::Binding::Custom(UiMessage::SendAndArchive)),
+                        Some(1) => Some(text_editor::Binding::Custom(UiMessage::SubmitComposer)),
+                        _ => Some(text_editor::Binding::Enter),
+                    }
+                }
+                Key::Character("`") if !k.modifiers.command() => {
+                    Some(text_editor::Binding::Custom(UiMessage::Format(format::CODE)))
                 }
                 Key::Named(key @ (Named::Backspace | Named::Delete))
                     if k.modifiers.jump() || k.modifiers.macos_command() =>
@@ -7258,7 +7293,7 @@ impl BeeperGuiApp {
                         (Some('x'), true) => 2,
                         _ => return text_editor::Binding::from_key_press(k),
                     };
-                    (formats & 1 << i != 0).then_some(text_editor::Binding::Custom(UiMessage::Format(i)))
+                    Some(text_editor::Binding::Custom(UiMessage::Format(i)))
                 }
                 _ => text_editor::Binding::from_key_press(k),
             })

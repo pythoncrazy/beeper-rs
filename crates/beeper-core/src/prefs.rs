@@ -308,19 +308,25 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Message: Quote or Edit Selected Message", "Messages", "enter"),
     ("Message: Record Audio", "Messages", "ctrl+shift+a"),
     ("Message: Send GIF", "Messages", "ctrl+shift+g"),
+    ("Message: Send Message and Archive", "Messages", "ctrl+enter"),
+    ("Insert New Line", "Composer", "alt+enter, ctrl+enter, shift+enter"),
+    ("Send Message", "Composer", "enter"),
 ];
 
 pub fn hotkey_default(name: &str) -> &'static str {
     HOTKEYS.iter().find(|h| h.0 == name).unwrap_or_else(|| panic!("unknown hotkey {name}")).2
 }
 
-/// Desktop's `di`: the keys as the settings and the menus show them.
 /// The hotkeys that Desktop's Keyboard Shortcuts list shows, but that you cannot reassign.
 pub const FIXED_HOTKEYS: &[(&str, &str, &str)] = &[
     ("Message: React", "Messages", "right"),
     ("Select Next Message", "Messages", "down"),
     ("Select Previous Message", "Messages", "up"),
     ("Unselect Chat / Select First Chat", "Chats", "escape"),
+    ("Bold Text Selection", "Composer", "ctrl+b"),
+    ("Format Text Selection as Inline Code", "Composer", "`"),
+    ("Italicize Text Selection", "Composer", "ctrl+i"),
+    ("Strikethrough Text Selection", "Composer", "ctrl+shift+x"),
 ];
 
 /// match-sorter's rank of `text` for `query`, which Desktop uses to filter and sort lists: 7 for the same text,
@@ -370,6 +376,7 @@ pub fn match_sort_keys<T>(items: impl IntoIterator<Item = T>, query: &str, keys:
     ranked.into_iter().map(|r| r.1).collect()
 }
 
+/// Desktop's `di`: the keys as the settings and the menus show them.
 pub fn hotkey_label(keys: &str) -> String {
     [
         ("+", " "),
@@ -578,8 +585,8 @@ mod tests {
             assert!(["Chats", "App", "Messages", "Composer"].contains(group), "{name}");
             assert!(HOTKEYS[..i].iter().all(|h| h.0 != *name), "{name} is unique");
             let combos = || keys.split(", ").filter(|_| *keys != "disabled");
-            for (other, _, k) in &HOTKEYS[..i] {
-                assert!(combos().all(|c| !k.split(", ").any(|x| x == c)), "{name} and {other} share {keys}");
+            for (other, g, k) in HOTKEYS[..i].iter().filter(|h| (h.1 == "Composer") == (*group == "Composer")) {
+                assert!(combos().all(|c| !k.split(", ").any(|x| x == c)), "{name} and {other} ({g}) share {keys}");
             }
         }
     }

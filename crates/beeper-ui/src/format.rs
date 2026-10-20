@@ -9,6 +9,7 @@ use iced::{Border, Center, Color, Fill, Padding, Pixels, Point, Vector};
 use std::ops::Range;
 
 pub const LINK: usize = 3;
+pub const CODE: usize = 7;
 pub const LABELS: [&str; 9] = [
     "Bold",
     "Italic",
