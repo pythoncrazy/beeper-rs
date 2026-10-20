@@ -1393,6 +1393,9 @@ fn set_verification(store: &SharedStore, state: &str, sas: Option<VerificationSa
 #[derive(Clone)]
 pub struct DeviceInfo {
     pub name: String,
+    /// `device_model` and `device_type` of Beeper's `com.beeper.device_metadata.<device ID>` account data.
+    pub model: Option<String>,
+    pub kind: Option<String>,
     pub last_seen_ms: Option<u64>,
     pub verified: bool,
     pub current: bool,
@@ -1404,8 +1407,12 @@ pub async fn devices(client: Client) -> Result<Vec<DeviceInfo>, String> {
     let mut out = Vec::new();
     for d in client.devices().await.map_err(|e| e.to_string())?.devices {
         let device = client.encryption().get_device(&me, &d.device_id).await.map_err(|e| e.to_string())?;
+        let meta = global(&client, &format!("com.beeper.device_metadata.{}", d.device_id)).await;
+        let field = |k: &str| meta[k].as_str().filter(|v| !v.is_empty()).map(str::to_string);
         out.push(DeviceInfo {
             name: d.display_name.unwrap_or_else(|| "Unknown".into()),
+            model: field("device_model"),
+            kind: field("device_type"),
             last_seen_ms: d.last_seen_ts.map(|t| t.0.into()),
             verified: device.is_some_and(|d| d.is_verified()),
             current: d.device_id == current,

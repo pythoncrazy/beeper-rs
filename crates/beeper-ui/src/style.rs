@@ -53,7 +53,6 @@ pub mod icon {
     pub const SETTINGS: char = '\u{e154}';
     pub const PAINTBRUSH: char = '\u{e2e7}';
     pub const KEYBOARD: char = '\u{e284}';
-    pub const SMARTPHONE: char = '\u{e163}';
     pub const SPARKLES: char = '\u{e412}';
     pub const PUZZLE: char = '\u{e29c}';
     pub const DATABASE: char = '\u{e0ad}';
@@ -66,8 +65,6 @@ pub mod icon {
     pub const HISTORY: char = '\u{e1f5}';
     pub const BOOKMARK: char = '\u{e060}';
     pub const MESSAGE_SQUARE: char = '\u{e117}';
-    pub const TABLET: char = '\u{e17e}';
-    pub const MONITOR: char = '\u{e11d}';
 }
 
 pub const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
