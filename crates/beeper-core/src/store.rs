@@ -303,6 +303,8 @@ pub struct BeeperStore {
     pub settings: BeeperSettings,
     pub ws_tx: broadcast::Sender<WsEvent>,
     pub focus_tx: broadcast::Sender<Option<String>>,
+    /// Whether the Desktop API server should listen.
+    pub api_on: tokio::sync::watch::Sender<bool>,
     pub link_previews: HashMap<String, LinkPreview>,
     pub matrix: Option<matrix_sdk::Client>,
     pub matrix_error: Option<String>,
@@ -421,6 +423,7 @@ impl BeeperStore {
             oauth_codes: HashMap::new(),
             ws_tx: broadcast::channel(WS_CHANNEL_CAPACITY).0,
             focus_tx: broadcast::channel(WS_CHANNEL_CAPACITY).0,
+            api_on: tokio::sync::watch::channel(false).0,
             matrix: None,
             matrix_error: None,
             sas_confirm: None,
