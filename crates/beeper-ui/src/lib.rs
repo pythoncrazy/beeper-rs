@@ -308,6 +308,9 @@ pub enum UiMessage {
     MenuEdit(MenuEdit),
     /// Select the message, or unselect it when it is selected.
     ClickMessage(String),
+    SelectMessages(Vec<String>),
+    /// Copy the text of the selected messages, with their timestamps or not.
+    CopySelected(bool),
     /// Do the "On double-clicking a message" action.
     DoubleClickMessage(String),
     /// Select the message above (`false`) or below (`true`) the selected one, as with the arrow keys.
@@ -3676,6 +3679,17 @@ impl BeeperGuiApp {
                 self.video.iter_mut().for_each(|v| v.sub = false);
                 self.pane.message_menu = Some((mid, self.cursor.get()));
             }
+            UiMessage::SelectMessages(mids) => self.pane.selected_msgs = mids,
+            UiMessage::CopySelected(stamp) => {
+                let st = self.store.read();
+                let (msgs, _) = self.timeline(&st);
+                let picked: Vec<&Message> =
+                    msgs.into_iter().filter(|m| self.pane.selected_msgs.contains(&m.id)).collect();
+                let many = picked.len() > 1;
+                let text: Vec<String> = picked.iter().map(|m| copy_text(m, stamp, many)).collect();
+                drop(st);
+                return self.update(UiMessage::CopyText(text.join("\n")));
+            }
             UiMessage::ClickMessage(mid) => {
                 let picked = self.pane.selected_msgs.contains(&mid);
                 if self.mods.shift() {
@@ -5038,15 +5052,8 @@ impl BeeperGuiApp {
                         return self.update(UiMessage::React(self.single_msg().cloned().expect("a selected message")));
                     }
                     Key::Character("c") if mods.command() && !mods.shift() && !self.pane.selected_msgs.is_empty() => {
-                        let st = self.store.read();
-                        let stamp = st.settings.on("copyTimestamps");
-                        let (msgs, _) = self.timeline(&st);
-                        let picked: Vec<&Message> =
-                            msgs.into_iter().filter(|m| self.pane.selected_msgs.contains(&m.id)).collect();
-                        let many = picked.len() > 1;
-                        let text: Vec<String> = picked.iter().map(|m| copy_text(m, stamp, many)).collect();
-                        drop(st);
-                        return self.update(UiMessage::CopyText(text.join("\n")));
+                        let stamp = self.store.read().settings.on("copyTimestamps");
+                        return self.update(UiMessage::CopySelected(stamp));
                     }
                     Key::Character("a")
                         if mods.command() && !mods.shift() && !mods.alt() && self.can_select_messages() =>
@@ -7806,7 +7813,7 @@ impl BeeperGuiApp {
         let q = self.command_palette_query.trim().to_lowercase();
         if self.cmd_bar_commands_mode {
             let cmds = self.commands(&st, self.command_palette_query.trim());
-            let header = self.cmd_submenu.as_ref().map(|m| {
+            let header = self.cmd_submenu.as_ref().filter(|m| !m.heading().is_empty()).map(|m| {
                 let heading = txt(m.heading(), 13.0).line_height(Pixels(16.0)).color(p.strong);
                 container(heading)
                     .width(Fill)

@@ -4,7 +4,7 @@ use crate::style::{bar, brand_svg, ell, fill_box, scroll_style, semi, text_width
 use crate::{has_flag, network_name, BeeperGuiApp, El, InboxTab, SettingsHit, SettingsTab, UiMessage, ASK_LOGOUT};
 use crate::{ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_MARK_ALL_READ};
 use beeper_core::matrix::ChatFlag;
-use beeper_core::models::{Chat, ThemeChoice, CHAT_UNREAD};
+use beeper_core::models::{Chat, Message, ThemeChoice, CHAT_UNREAD};
 use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
 use iced::widget::{column, container, mouse_area, row, scrollable, svg, Column, Row, Space};
@@ -85,6 +85,8 @@ pub enum SubMenu {
     History,
     /// The folders other than the open one.
     Folders,
+    /// The links of the selected messages, each an address and a title.
+    Links(Vec<(String, String)>),
 }
 
 impl SubMenu {
@@ -94,12 +96,13 @@ impl SubMenu {
             SubMenu::Remind(_) => tr("Remind Me"),
             SubMenu::History => tr("Recently viewed chats"),
             SubMenu::Folders => tr("Filter chat folders"),
+            SubMenu::Links(_) => "",
         }
     }
 
     pub(crate) fn placeholder(&self) -> String {
         match self {
-            SubMenu::FilterAccount | SubMenu::Folders => String::new(),
+            SubMenu::FilterAccount | SubMenu::Folders | SubMenu::Links(_) => String::new(),
             SubMenu::History => tr("Search chats...").into(),
             SubMenu::Remind(_) => {
                 tr("When? (try typing something like %s)").replacen("%s", "\"Monday morning at 9\"", 1)
@@ -216,6 +219,13 @@ impl BeeperGuiApp {
                 let folders = folders.into_iter().filter(|(t, _)| !open(t));
                 search(folders.map(|(t, name)| cmd("", tr(name), Some(UiMessage::SelectTab(t)))).collect())
             }
+            SubMenu::Links(links) => links
+                .iter()
+                .map(|(url, title)| {
+                    let label = if title.is_empty() { url.clone() } else { format!("{title} — {url}") };
+                    cmd("", label, Some(UiMessage::OpenUrl(url.clone())))
+                })
+                .collect(),
             SubMenu::History => {
                 let chats: Vec<&Chat> =
                     self.chat_history.iter().filter_map(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]).collect();
@@ -259,6 +269,47 @@ impl BeeperGuiApp {
         let chat = self.pane.selected_chat_id.as_deref().and_then(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]);
         let chat = chat.filter(|c| !c.id.starts_with("draft:") && !c.id.starts_with("account:"));
         let mut v = Vec::new();
+        let picked: Vec<&Message> = match chat {
+            Some(_) => self.timeline(st).0.into_iter().filter(|m| self.pane.selected_msgs.contains(&m.id)).collect(),
+            None => Vec::new(),
+        };
+        if !picked.is_empty() {
+            let e = if picked.len() == 1 { tr("Message") } else { tr("Messages") };
+            let live = picked.iter().all(|m| m.is_deleted != Some(true));
+            if let [m] = picked[..] {
+                if live && m.is_sender == Some(true) {
+                    let edit = cmd(e, trx("Edit", "message command"), hot("Message: Edit"));
+                    v.push(edit.hotkey("Message: Edit"));
+                }
+            }
+            if live {
+                v.push(cmd(e, tr("Forward"), hot("Message: Forward")).hotkey("Message: Forward"));
+            }
+            v.push(cmd(e, trx("Copy", "message command"), Some(UiMessage::CopySelected(false))));
+            v.push(cmd(e, tr("Copy with timestamps"), Some(UiMessage::CopySelected(true))));
+            let files: Vec<UiMessage> = picked
+                .iter()
+                .filter(|m| !m.attachments.is_empty() && m.is_deleted != Some(true))
+                .map(|m| UiMessage::Download(m.id.clone(), None))
+                .collect();
+            if !files.is_empty() {
+                let download = cmd(e, tr("Download attachments"), Some(UiMessage::Commands(files)));
+                v.push(download.hotkey("Download Attachments"));
+            }
+            let links: Vec<(String, String)> =
+                picked.iter().flat_map(|m| m.links.iter().map(|l| (l.url.clone(), l.title.clone()))).collect();
+            let open = match &links[..] {
+                [] => None,
+                [(url, _)] => Some(UiMessage::OpenUrl(url.clone())),
+                _ => Some(UiMessage::OpenSubMenu(SubMenu::Links(links.clone()))),
+            };
+            v.extend(open.map(|open| cmd(e, tr("Open link"), Some(open))));
+            v.push(cmd(e, tr("Unselect"), Some(UiMessage::SelectMessages(Vec::new()))));
+            if let [m] = picked[..] {
+                let reply = cmd(e, trx("Reply", "message command"), Some(UiMessage::StartReply(m.id.clone())));
+                v.push(reply.hotkey("Message: Quote & Reply"));
+            }
+        }
         if let Some(c) = chat {
             let id = || c.id.clone();
             let e = trx("Chat", "Command bar category");
