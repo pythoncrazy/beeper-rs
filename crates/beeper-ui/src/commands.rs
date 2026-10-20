@@ -1,13 +1,13 @@
 //! Desktop's command bar commands (`Efe`): the categories, the titles, the search keywords and the hotkeys.
 use crate::i18n::{tr, trx};
-use crate::style::{bar, ell, fill_box, scroll_style, semi, text_width, txt, Palette, CLEAR};
+use crate::style::{bar, brand_svg, ell, fill_box, scroll_style, semi, text_width, txt, Palette, CLEAR};
 use crate::{has_flag, network_name, BeeperGuiApp, El, InboxTab, UiMessage, ASK_LOGOUT};
 use crate::{ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_MARK_ALL_READ};
 use beeper_core::matrix::ChatFlag;
 use beeper_core::models::{Chat, ThemeChoice, CHAT_UNREAD};
 use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
-use iced::widget::{column, container, mouse_area, row, scrollable, Column, Row, Space};
+use iced::widget::{column, container, mouse_area, row, scrollable, svg, Column, Row, Space};
 use iced::{Center, Fill, Padding, Pixels};
 
 /// A command: Desktop shows a disabled command, which has no message, at 70% opacity.
@@ -15,20 +15,34 @@ pub(crate) struct Command {
     pub category: &'static str,
     pub title: String,
     pub subtitle: Option<&'static str>,
-    pub keywords: &'static [&'static str],
+    pub keywords: Vec<&'static str>,
     pub hotkey: Option<&'static str>,
+    /// The digit after the hotkey modifier, as in Desktop's account list.
+    pub digit: Option<usize>,
+    /// The account that Desktop draws with its network icon before the title.
+    pub account: Option<String>,
     /// The chat that Desktop draws in place of the title.
     pub chat: Option<String>,
     pub msg: Option<UiMessage>,
 }
 
 fn cmd(category: &'static str, title: impl Into<String>, msg: Option<UiMessage>) -> Command {
-    Command { category, title: title.into(), subtitle: None, keywords: &[], hotkey: None, chat: None, msg }
+    Command {
+        category,
+        title: title.into(),
+        subtitle: None,
+        keywords: Vec::new(),
+        hotkey: None,
+        digit: None,
+        account: None,
+        chat: None,
+        msg,
+    }
 }
 
 impl Command {
-    fn keys(self, keywords: &'static [&'static str]) -> Self {
-        Self { keywords, ..self }
+    fn keys(self, keywords: &[&'static str]) -> Self {
+        Self { keywords: keywords.to_vec(), ..self }
     }
 
     fn hotkey(self, name: &'static str) -> Self {
@@ -42,10 +56,55 @@ impl Command {
 
 const CHATS: &str = "Chats";
 pub(crate) const COMMANDS: &str = "commands";
+const SPACES: &str = "Switch First 9 Spaces Modifier";
+
+/// A command bar submenu of Desktop (`showWithSubMenu`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SubMenu {
+    FilterAccount,
+}
+
+impl SubMenu {
+    pub(crate) fn heading(self) -> &'static str {
+        match self {
+            SubMenu::FilterAccount => tr("Filter account"),
+        }
+    }
+}
 
 impl BeeperGuiApp {
+    /// Desktop's `zXe`: all accounts, then each account with its network icon.
+    fn submenu_commands(&self, st: &BeeperStore, menu: SubMenu) -> Vec<Command> {
+        match menu {
+            SubMenu::FilterAccount => {
+                let all = cmd("", tr("All Accounts"), Some(UiMessage::SelectTab(InboxTab::AllChats)));
+                let accounts = crate::rail_accounts(st).into_iter().filter(|a| crate::network_space(st, a).is_none());
+                let accounts = accounts.enumerate().map(|(i, a)| {
+                    let title = match a.as_str() {
+                        "hungryserv" => st.me().full_name.clone(),
+                        _ => st.bridge_accounts.iter().find(|b| b.account_id == a).and_then(|b| b.display_text()),
+                    };
+                    let title = title.unwrap_or_else(|| network_name(&a).into());
+                    let pick = cmd("", title, Some(UiMessage::SelectAccount(Some(a.clone()))));
+                    let pick = Command { digit: (i < 8).then_some(i + 2), ..pick.keys(&[network_name(&a)]) };
+                    Command { account: Some(a), ..pick.hotkey(SPACES) }
+                });
+                std::iter::once(Command { digit: Some(1), ..all.hotkey(SPACES) }).chain(accounts).collect()
+            }
+        }
+    }
+
     /// The commands in Desktop's order, or the ones that match `query` with the best match first.
     pub(crate) fn commands(&self, st: &BeeperStore, query: &str) -> Vec<Command> {
+        if let Some(menu) = self.cmd_submenu {
+            let v = self.submenu_commands(st, menu);
+            return match query.is_empty() {
+                true => v,
+                false => prefs::match_sort_keys(v, query, |c| {
+                    std::iter::once(c.title.clone()).chain(c.keywords.iter().map(|k| k.to_string())).collect()
+                }),
+            };
+        }
         let hot = |name: &'static str| Some(UiMessage::RunHotkey(name));
         let chat = self.pane.selected_chat_id.as_deref().and_then(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]);
         let chat = chat.filter(|c| !c.id.starts_with("draft:") && !c.id.starts_with("account:"));
@@ -194,7 +253,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_commands(&self, st: &BeeperStore, cmds: &[Command]) -> El<'_> {
         let p = &self.pal;
         let list = cmds.iter().enumerate().fold(Column::new(), |col, (i, c)| {
-            let head = (i == 0 || cmds[i - 1].category != c.category).then(|| {
+            let head = (self.cmd_submenu.is_none() && (i == 0 || cmds[i - 1].category != c.category)).then(|| {
                 let head = semi(if c.category.is_empty() { "Commands" } else { c.category }, 12.0);
                 container(head.line_height(Pixels(15.0)).color(p.sub))
                     .center_y(32)
@@ -211,15 +270,24 @@ impl BeeperGuiApp {
         let alpha = if c.msg.is_some() { 1.0 } else { 0.7 };
         let title: El<'_> = match c.chat.as_deref().and_then(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]) {
             Some(chat) => self.command_chat(p, chat),
+            None if c.account.is_some() => {
+                let logo =
+                    svg(brand_svg(crate::brand_key(c.account.as_deref().unwrap_or_default()))).width(20).height(20);
+                let logo = container(logo).padding(Padding::ZERO.left(6.0).right(14.0));
+                row![logo, semi(c.title.clone(), 13.0).line_height(Pixels(16.0)).color(p.strong)].align_y(Center).into()
+            }
             None => {
                 let title = semi(c.title.clone(), 13.0).line_height(Pixels(16.0)).color(p.strong.scale_alpha(alpha));
                 let sub = c.subtitle.map(|s| txt(s, 13.0).line_height(Pixels(16.0)).color(p.sub.scale_alpha(alpha)));
                 row![title].push(sub).spacing(4).align_y(Center).into()
             }
         };
-        let label = prefs::hotkey_label(
-            c.hotkey.map_or("disabled", |h| st.settings.hotkey_keys(h)).split(", ").next().unwrap_or(""),
-        );
+        let keys = c.hotkey.map_or("disabled", |h| st.settings.hotkey_keys(h)).split(", ").next().unwrap_or("");
+        let keys = match c.digit {
+            Some(d) if keys != "disabled" => format!("{keys}+{d}"),
+            _ => keys.to_string(),
+        };
+        let label = prefs::hotkey_label(&keys);
         let caps = (!label.is_empty()).then(|| {
             Row::with_children(label.split(' ').map(|k| {
                 let w = (text_width(k, 11.0, iced::font::Weight::Semibold) + 6.0).max(20.0);

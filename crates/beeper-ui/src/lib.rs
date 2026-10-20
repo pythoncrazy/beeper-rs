@@ -291,6 +291,7 @@ pub enum UiMessage {
     PickGif(KlipyGif),
     GifDownloaded(KlipyGif, Result<(Vec<u8>, Frames), String>),
     SetReminder(String, Option<i64>),
+    OpenSubMenu(commands::SubMenu),
     ChatSub(Option<u8>),
     CheckReminders,
     ToggleFlag(String, ChatFlag),
@@ -2179,6 +2180,7 @@ pub struct BeeperGuiApp {
     pub gif_error: Option<String>,
     pub command_palette_query: String,
     pub cmd_bar_commands_mode: bool,
+    pub cmd_submenu: Option<commands::SubMenu>,
     /// The highlighted command.
     pub cmd_index: usize,
     pub search_expanded: bool,
@@ -2316,6 +2318,7 @@ impl BeeperGuiApp {
             gif_error: None,
             command_palette_query: String::new(),
             cmd_bar_commands_mode: false,
+            cmd_submenu: None,
             cmd_index: 0,
             search_expanded: false,
             creating_chat: None,
@@ -3105,6 +3108,7 @@ impl BeeperGuiApp {
                 self.cmd_bar_commands_mode = true;
                 return open;
             }
+            "Filter By Account" => Some(UiMessage::OpenSubMenu(commands::SubMenu::FilterAccount)),
             "Cycle Filters" => {
                 self.filters = match self.filters {
                     f if f == 1 << 4 => 0,
@@ -4012,20 +4016,26 @@ impl BeeperGuiApp {
                     self.search_filters = SearchFilters::default();
                 }
                 self.show_command_palette ^= self.search_room.take().is_none() || !self.show_command_palette;
-                (self.cmd_bar_commands_mode, self.cmd_index) = (false, 0);
+                (self.cmd_bar_commands_mode, self.cmd_index, self.cmd_submenu) = (false, 0, None);
                 self.search_expanded = false;
                 if self.show_command_palette {
                     return operation::focus("cmd-palette-input");
                 }
             }
             UiMessage::SearchRoom(cid) => {
-                (self.show_command_palette, self.cmd_bar_commands_mode) = (true, false);
+                (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, false, None);
                 (self.search_room, self.chat_menu) = (Some(cid), None);
                 self.search_filters.accounts.clear();
                 return operation::focus("cmd-palette-input");
             }
             UiMessage::ToggleCommandMode => {
                 (self.cmd_bar_commands_mode, self.cmd_index) = (!self.cmd_bar_commands_mode, 0);
+                return operation::focus("cmd-palette-input");
+            }
+            UiMessage::OpenSubMenu(menu) => {
+                (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, true, Some(menu));
+                (self.search_room, self.chat_menu, self.cmd_index) = (None, None, 0);
+                self.command_palette_query.clear();
                 return operation::focus("cmd-palette-input");
             }
             UiMessage::ToggleSearchExpanded => self.search_expanded = !self.search_expanded,
@@ -7667,6 +7677,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let room = self.search_room.as_deref();
         let placeholder = match (self.cmd_bar_commands_mode, room) {
+            _ if self.cmd_submenu.is_some() => "",
             (true, _) => tr("Search commands"),
             (false, Some(_)) => tr("Search this chat"),
             (false, None) => tr("Search chats"),
@@ -7703,14 +7714,23 @@ impl BeeperGuiApp {
         .padding([2, 6])
         .style(ghost(p, 8.0))
         .on_press(UiMessage::ToggleCommandMode);
-        let inputs = row![ic(icon::SEARCH, 14.0).color(p.sub), input, mode_btn]
-            .spacing(8)
-            .align_y(Center)
-            .padding(Padding::new(6.0).left(13.0).right(8.0));
+        let inputs = match self.cmd_submenu {
+            Some(_) => row![input],
+            None => row![ic(icon::SEARCH, 14.0).color(p.sub), input, mode_btn],
+        };
+        let inputs = inputs.spacing(8).align_y(Center).padding(Padding::new(6.0).left(13.0).right(8.0));
         let q = self.command_palette_query.trim().to_lowercase();
         if self.cmd_bar_commands_mode {
             let cmds = self.commands(&st, self.command_palette_query.trim());
-            return frame(column![inputs, self.view_commands(&st, &cmds)]);
+            let header = self.cmd_submenu.map(|m| {
+                let heading = txt(m.heading(), 13.0).line_height(Pixels(16.0)).color(p.strong);
+                container(heading)
+                    .width(Fill)
+                    .center_y(44)
+                    .padding([8, 13])
+                    .style(fill_box(p.chip, iced::border::top(18)))
+            });
+            return frame(column![].push(header).push(inputs).push(self.view_commands(&st, &cmds)));
         }
         let hint =
             self.pane().selected_chat_id.as_deref().and_then(|cid| st.resolve_chat_idx(cid).map(|i| &st.chats[i])).map(
