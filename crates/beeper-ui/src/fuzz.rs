@@ -858,6 +858,34 @@ fn devices_offer_the_app_like_desktop() {
 }
 
 #[test]
+fn storage_clears_like_desktop() {
+    let mut app = demo_app("storage");
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Storage));
+    let _ = app.update(UiMessage::StorageScanned(beeper_core::storage::scan(&app.store)));
+    let mut sim = simulator(app.view_settings());
+    for label in ["Messages", "Clear storage older than", "Clear All Cache", "Storage by Chat", "Note to self"] {
+        assert!(sim.find(label).is_ok(), "{label} shows");
+    }
+    let _ = sim.click("Note to self");
+    for m in sim.into_messages() {
+        let _ = app.update(m);
+    }
+    let _ = app.update(UiMessage::StorageAge(1, 0));
+    let _ = app.update(UiMessage::Ask(Some(ASK_CLEAR_CHAT)));
+    let mut sim = simulator(app.view_settings());
+    assert!(sim.find("Clear storage for Note to self?").is_ok(), "the dialog names the chat");
+    let picked: Vec<_> = app.storage_pick(2).into_iter().cloned().collect();
+    assert!(!picked.is_empty() && picked.iter().all(|e| e.chat.as_deref() == Some(NOTE_CHAT_ID)));
+    let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    rt.block_on(beeper_core::storage::clear(app.store.clone(), picked)).unwrap();
+    let after = beeper_core::storage::scan(&app.store);
+    assert!(after.iter().all(|e| e.chat.as_deref() != Some(NOTE_CHAT_ID)), "the chat has no local data left");
+    assert!(app.store.read().chat_msg_indices[NOTE_CHAT_ID].is_empty());
+    let counts = [compact(34), compact(1234), compact(15_000), compact(2_500_000), grouped(1234567)];
+    assert_eq!(counts, ["34", "1.2K", "15K", "2.5M", "1,234,567"]);
+}
+
+#[test]
 fn ai_settings_like_desktop() {
     let mut app = demo_app("ai");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::Ai));

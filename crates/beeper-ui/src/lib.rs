@@ -54,6 +54,7 @@ use beeper_core::matrix::{ChatFlag, DeviceInfo, MediaInfo, Outgoing};
 use beeper_core::models::*;
 use beeper_core::platform::{current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind};
 use beeper_core::prefs;
+use beeper_core::storage;
 use beeper_core::store::{BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
 use iced::font::Weight;
 use iced::gradient::Linear;
@@ -479,7 +480,15 @@ pub enum UiMessage {
     LoggedOut(Result<(), String>),
     VerifySasNow,
     SasMatch(bool),
-    ClearOldMedia,
+    StorageScanned(Vec<storage::Entry>),
+    /// The age choice of the clear for all chats (0) or for the open chat (1).
+    StorageAge(usize, usize),
+    /// Toggles a type, as its index in [`storage::Kind::ALL`], for all chats (0) or for the open chat (1).
+    StorageKind(usize, usize),
+    StorageChat(String),
+    /// Clears the chosen storage of all chats (0), the cache (1) or the open chat (2).
+    ClearStorage(u8),
+    StorageCleared(Result<(), String>),
     OpenQuickLook(String, String),
     OpenUrl(String),
     /// The result of opening a URL in the browser.
@@ -734,6 +743,78 @@ fn human_size(n: u64) -> String {
     format!("{} {}", v.trim_end_matches(".0"), ["B", "KB", "MB", "GB", "TB"][i as usize])
 }
 
+/// `Intl.NumberFormat` with `notation: "compact"`, like Desktop's message counts.
+fn compact(n: u64) -> String {
+    let Some((d, unit)) = [(1e9, "B"), (1e6, "M"), (1e3, "K")].into_iter().find(|&(d, _)| n as f64 >= d) else {
+        return n.to_string();
+    };
+    let v = n as f64 / d;
+    let v = if v < 10.0 { format!("{v:.1}").trim_end_matches(".0").to_string() } else { format!("{v:.0}") };
+    format!("{v}{unit}")
+}
+
+/// `toLocaleString` of a count, with thousands separators.
+fn grouped(n: u64) -> String {
+    let s = n.to_string();
+    let digits: Vec<String> = s.as_bytes().rchunks(3).rev().map(|c| String::from_utf8_lossy(c).into()).collect();
+    digits.join(",")
+}
+
+/// Desktop's Storage page: the scan, its chart, and the filters of the clear for all chats and for the open chat.
+#[derive(Default)]
+struct StoragePage {
+    all: Option<Vec<storage::Entry>>,
+    chart: Option<svg::Handle>,
+    /// Indices into [`STORAGE_DAYS`].
+    ages: [usize; 2],
+    /// Bits of [`storage::Kind::ALL`].
+    kinds: [u8; 2],
+    chat: Option<String>,
+    /// The [`UiMessage::ClearStorage`] that runs.
+    clearing: Option<u8>,
+}
+
+/// Desktop's label and `--color-solids-*` color of each storage type.
+fn kind_meta(k: storage::Kind) -> (&'static str, Color) {
+    match k {
+        storage::Kind::Image => ("Images", Color::from_rgb8(14, 179, 239)),
+        storage::Kind::Video => ("Videos", Color::from_rgb8(235, 170, 0)),
+        storage::Kind::File => ("Other Files", ORANGE),
+        storage::Kind::Voice => ("Audio", Color::from_rgb8(25, 186, 59)),
+        storage::Kind::Message => ("Messages", Color::from_rgb8(216, 51, 202)),
+        storage::Kind::Cache => ("Cache", Color::from_rgb8(106, 75, 229)),
+    }
+}
+
+/// The stored bytes of each type that has any.
+fn storage_totals(all: &[storage::Entry]) -> Vec<(storage::Kind, u64)> {
+    let sum = |k| all.iter().filter(|e| e.kind == k).map(|e| e.bytes).sum::<u64>();
+    storage::Kind::ALL.into_iter().map(|k| (k, sum(k))).filter(|t| t.1 > 0).collect()
+}
+
+/// Desktop's ECharts storage donut, 200 px with rings from 50 to 70 px, clockwise from the top.
+fn donut(parts: &[(storage::Kind, u64)]) -> svg::Handle {
+    let total = parts.iter().map(|p| p.1).sum::<u64>() as f32;
+    let round = 2.0 * std::f32::consts::PI * 60.0;
+    let mut at = 0.0;
+    let arcs: String = parts
+        .iter()
+        .map(|&(k, bytes)| {
+            let [r, g, b, _] = kind_meta(k).1.into_rgba8();
+            let len = round * bytes as f32 / total;
+            let arc = format!(
+                r##"<circle cx="100" cy="100" r="60" fill="none" stroke="#{r:02x}{g:02x}{b:02x}" stroke-width="20" stroke-dasharray="{len} {round}" stroke-dashoffset="{}" transform="rotate(-90 100 100)"/>"##,
+                -at
+            );
+            at += len;
+            arc
+        })
+        .collect();
+    svg::Handle::from_memory(
+        format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">{arcs}</svg>"#).into_bytes(),
+    )
+}
+
 /// `dir/name`, or `dir/stem (n).ext` with the first free `n`.
 fn unused_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let (stem, ext) = match name.rsplit_once('.') {
@@ -779,6 +860,13 @@ const ASK_ARCHIVE_READ: u8 = 4;
 const ASK_ARCHIVE_ALL: u8 = 5;
 const ASK_ARCHIVE_WEEK: u8 = 6;
 const ASK_MARK_ALL_READ: u8 = 7;
+const ASK_CLEAR_STORAGE: u8 = 8;
+const ASK_CLEAR_CACHE: u8 = 9;
+const ASK_CLEAR_CHAT: u8 = 10;
+/// The dialogs over the Settings window.
+const SETTINGS_DIALOGS: [u8; 4] = [ASK_LOGOUT, ASK_CLEAR_STORAGE, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT];
+/// Desktop's "Clear storage older than" choices, where 0 is any age.
+const STORAGE_DAYS: [i64; 4] = [0, 30, 90, 120];
 /// Desktop's default "Quick reaction emoji".
 /// Wide enough for "Copy Entire Message with Timestamp" on one line.
 const MESSAGE_MENU_W: f32 = 270.0;
@@ -2270,6 +2358,7 @@ pub struct BeeperGuiApp {
     pub adding_account: bool,
     /// "Get the app" in Settings > Devices shows the QR code.
     app_qr: bool,
+    storage: StoragePage,
     /// The account of Desktop's account page in Settings > Accounts.
     pub account_page: Option<String>,
     pub show_right_panel: bool,
@@ -2409,6 +2498,7 @@ impl BeeperGuiApp {
             pref_flash: None,
             adding_account: false,
             app_qr: false,
+            storage: StoragePage { ages: [1; 2], kinds: [0b1111, 0b11111], ..Default::default() },
             account_page: None,
             show_right_panel: panel,
             quick_look_target: None,
@@ -2673,10 +2763,38 @@ impl BeeperGuiApp {
         Task::none()
     }
 
+    fn scan_storage(&self) -> Task<UiMessage> {
+        let store = self.store.clone();
+        let scan =
+            async { tokio::task::spawn_blocking(move || storage::scan(&store)).await.expect("storage scan thread") };
+        Task::perform(scan, UiMessage::StorageScanned)
+    }
+
+    /// The entries that [`UiMessage::ClearStorage`] deletes, without the cache of the clear for all chats.
+    fn storage_pick(&self, which: u8) -> Vec<&storage::Entry> {
+        let s = &self.storage;
+        let w = usize::from(which == 2);
+        let kinds: Vec<storage::Kind> = match which {
+            1 => vec![storage::Kind::Cache],
+            _ => storage::Kind::ALL
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| s.kinds[w] & 1 << i != 0)
+                .map(|k| k.1)
+                .collect(),
+        };
+        let days = if which == 1 { 0 } else { STORAGE_DAYS[s.ages[w]] };
+        let chat = s.chat.as_deref().filter(|_| which == 2);
+        storage::select(s.all.as_deref().expect("a storage scan"), &kinds, chat, days, now_unix_secs())
+    }
+
     fn load_devices(&mut self) -> Task<UiMessage> {
         if self.active_settings_tab == SettingsTab::General {
             let list = async { tokio::task::spawn_blocking(record::inputs).await.expect("input list worker thread") };
             return Task::perform(list, UiMessage::MicsLoaded);
+        }
+        if self.active_settings_tab == SettingsTab::Storage {
+            return self.scan_storage();
         }
         if self.active_settings_tab != SettingsTab::Devices {
             return Task::none();
@@ -4593,9 +4711,31 @@ impl BeeperGuiApp {
                 let tx = self.store.write().sas_confirm.take().expect("emojis are shown once");
                 tx.send(same).ok();
             }
-            UiMessage::ClearOldMedia => {
-                let n = self.store.write().clear_cached_media_older_than_days(30);
-                self.status_banner = format!("Cleared {n} cached media files");
+            UiMessage::StorageScanned(all) => {
+                self.storage.chart = Some(donut(&storage_totals(&all)));
+                self.storage.all = Some(all);
+            }
+            UiMessage::StorageAge(which, i) => self.storage.ages[which] = i,
+            UiMessage::StorageKind(which, i) => self.storage.kinds[which] ^= 1 << i,
+            UiMessage::StorageChat(id) => {
+                let s = &mut self.storage;
+                (s.chat, s.ages[1], s.kinds[1]) = ((s.chat.as_ref() != Some(&id)).then_some(id), 1, 0b11111);
+            }
+            UiMessage::ClearStorage(which) => {
+                let mut picked: Vec<storage::Entry> = self.storage_pick(which).into_iter().cloned().collect();
+                if which == 0 {
+                    picked.extend(self.storage_pick(1).into_iter().cloned());
+                }
+                (self.confirm, self.storage.clearing) = (None, Some(which));
+                return Task::perform(storage::clear(self.store.clone(), picked), UiMessage::StorageCleared);
+            }
+            UiMessage::StorageCleared(r) => {
+                self.storage.clearing = None;
+                if let Err(e) = r {
+                    eprintln!("Unable to clear storage: {e}");
+                    self.status_banner = tr("Failed to clear storage").into();
+                }
+                return self.scan_storage();
             }
             UiMessage::OpenQuickLook(title, detail) => {
                 self.quick_look_target = Some((title, detail));
@@ -5467,7 +5607,7 @@ impl BeeperGuiApp {
             },
         );
         let toast = self.view_toast(76.0);
-        let confirm = self.confirm.filter(|&d| d != ASK_LOGOUT).map(|d| self.view_confirm(d));
+        let confirm = self.confirm.filter(|d| !SETTINGS_DIALOGS.contains(d)).map(|d| self.view_confirm(d));
         let shows = |c: &&Carousel| {
             let st = self.store.read();
             !c.in_media && Some(&st.messages[st.msg_idx_by_id[&c.mid]].chat_id) == self.pane().selected_chat_id.as_ref()
@@ -8966,7 +9106,8 @@ impl BeeperGuiApp {
         .height(Fill)
         .style(fill_box(p.prefs_pane, 10.0));
         let base = container(row![left, container(right).padding(8)]).width(Fill).height(Fill);
-        let confirm = self.confirm.filter(|&d| d == ASK_LOGOUT).map(|d| self.view_confirm(d));
+        drop(st);
+        let confirm = self.confirm.filter(|d| SETTINGS_DIALOGS.contains(d)).map(|d| self.view_confirm(d));
         stack![base.style(fill_box(p.window, 0.0))].push(confirm).into()
     }
 
@@ -9121,6 +9262,38 @@ impl BeeperGuiApp {
                 let title = trn("Mark %d thread as read", "Mark %d threads as read", n, &[&n]);
                 let body = tr("Are you sure you want to mark all chats as read?").into();
                 (title, body, vec![(tr("Mark as Read"), UiMessage::MarkAllRead)])
+            }
+            ASK_CLEAR_STORAGE | ASK_CLEAR_CACHE | ASK_CLEAR_CHAT => {
+                let which = dialog - ASK_CLEAR_STORAGE;
+                let size = human_size(self.storage_pick(which).iter().map(|e| e.bytes).sum());
+                let clear = |label| vec![(tr(label), UiMessage::ClearStorage(which))];
+                match which {
+                    0 => {
+                        let days = STORAGE_DAYS[self.storage.ages[0]];
+                        let title = match days {
+                            0 => tr("Clear selected storage?").into(),
+                            _ => trn(
+                                "Clear storage older than %d day?",
+                                "Clear storage older than %d days?",
+                                days as usize,
+                                &[&days],
+                            ),
+                        };
+                        let body = "This will delete %s of local data. You can recover content by logging out and back into your accounts.";
+                        (title, trf(body, &[&size]), clear("Clear Storage"))
+                    }
+                    1 => {
+                        let body = "This will delete %s of cached files including transcoded media, link previews, and unused drafts.";
+                        (tr("Clear cache?").into(), trf(body, &[&size]), clear("Clear Cache"))
+                    }
+                    _ => {
+                        let id = self.storage.chat.as_deref().expect("an open chat");
+                        let st = self.store.read();
+                        let title = st.resolve_chat_idx(id).map_or(id.to_string(), |i| st.chats[i].title.clone());
+                        let body = "This will delete %1$s of local data from \"%2$s\". You can recover content by logging out and back into your accounts.";
+                        (trf("Clear storage for %s?", &[&title]), trf(body, &[&size, &title]), clear("Clear Storage"))
+                    }
+                }
             }
             _ => unreachable!("dialog {dialog}"),
         };
@@ -9330,20 +9503,7 @@ impl BeeperGuiApp {
                     ),
                 ],
             )],
-            SettingsTab::Storage => vec![group(
-                p,
-                None,
-                vec![
-                    pref_row(
-                        p,
-                        "Media cache",
-                        Some("Remove cached media older than 30 days."),
-                        None,
-                        pill_btn(p, tr("Clear"), UiMessage::ClearOldMedia),
-                    ),
-                    pref_row(p, "Data folder", Some(&st.data_dir.display().to_string()), None, Space::new().into()),
-                ],
-            )],
+            SettingsTab::Storage => vec![self.storage_page(st)],
             SettingsTab::Help => unreachable!("the Help tab opens the help center"),
             SettingsTab::About => {
                 let title =
@@ -9378,6 +9538,196 @@ impl BeeperGuiApp {
         };
         let banner = (!self.status_banner.is_empty()).then(|| txt(self.status_banner.clone(), 12.0).color(p.sub));
         column![].push(banner).extend(groups).spacing(28).into()
+    }
+
+    /// Desktop's `StoragePrefsSubView`.
+    fn storage_page<'a>(&'a self, st: &BeeperStore) -> El<'a> {
+        let p = &self.pal;
+        let s = &self.storage;
+        let body = |t: String, color| txt(t, 13.0).line_height(Pixels(16.0)).color(color);
+        let h4 = |t| container(body(tr(t).into(), p.muted)).padding([5, 0]);
+        let Some(all) = s.all.as_deref() else {
+            let loading = container(txt(tr("Loading..."), 14.0).color(p.muted)).center_x(Fill).padding(40);
+            return column![h4("Storage"), loading].into();
+        };
+        let totals = storage_totals(all);
+        let legend = totals.iter().map(|&(k, bytes)| {
+            let (label, color) = kind_meta(k);
+            let swatch = container(Space::new()).width(10).height(10).style(fill_box(color, 2.0));
+            let size = semi(human_size(bytes), 13.0).line_height(Pixels(16.0)).color(p.text);
+            row![swatch, column![body(tr(label).into(), p.text), Space::new().width(80)], size]
+                .spacing(8)
+                .align_y(Center)
+                .into()
+        });
+        let total = human_size(totals.iter().map(|t| t.1).sum());
+        let fg = if self.dark { Color::WHITE } else { Color::BLACK };
+        let ring = stack![
+            svg(s.chart.clone().expect("a chart for the scan")).width(200).height(200),
+            container(txt(total, 18.0).color(fg)).center(200)
+        ];
+        let legend = (!totals.is_empty()).then(|| Column::with_children(legend).spacing(8));
+        let chart = container(row![ring].push(legend).spacing(24).align_y(Center)).center_x(Fill).padding(16);
+        let card =
+            |inner: El<'a>| container(inner).width(Fill).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0));
+        let link = |label: &'static str, color: Color, size: f32, on: bool, msg| {
+            let color = if on { color } else { Color { a: 0.4, ..color } };
+            button(txt(tr(label), size).line_height(1.4).color(color))
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [color; 3], 0.0))
+                .on_press_maybe(on.then_some(msg))
+        };
+        let warning = || {
+            let warn =
+                "⚠️ This will delete local data. You can recover content by logging out and back into your accounts.";
+            container(txt(tr(warn), 12.0).line_height(1.4).color(p.muted).width(Fill).align_x(Center)).padding([0, 16])
+        };
+        let busy = matches!(s.clearing, Some(0 | 1));
+        let label = |which| if s.clearing == Some(which) { "Clearing..." } else { "Clear Storage..." };
+        let clear = column![
+            body(tr("Clear storage older than").into(), p.muted),
+            self.storage_ages(0),
+            self.storage_kinds(0, busy),
+            warning(),
+            link(label(0), p.danger, 13.0, !busy && s.kinds[0] != 0, UiMessage::Ask(Some(ASK_CLEAR_STORAGE)))
+        ]
+        .spacing(12)
+        .align_x(Center)
+        .padding(16);
+        let cached = totals.iter().any(|t| t.0 == storage::Kind::Cache);
+        let cache = row![
+            column![
+                body(tr("Clear All Cache").into(), p.text),
+                txt(tr("Clears unused previews, old drafts, and temporary data to free up space. Your messages are safe."), 13.0)
+                    .line_height(1.4)
+                    .color(p.muted)
+            ]
+            .spacing(2)
+            .width(Fill),
+            link("Clear", p.accent, 14.0, !busy && cached, UiMessage::Ask(Some(ASK_CLEAR_CACHE)))
+        ]
+        .align_y(Center)
+        .padding([12, 16]);
+        let mut rooms: Vec<(&str, [u64; 3])> = Vec::new();
+        for e in all.iter().filter(|e| e.kind != storage::Kind::Cache) {
+            let chat = e.chat.as_deref().expect("chat storage has a chat");
+            let i = rooms.iter().position(|r| r.0 == chat).unwrap_or_else(|| {
+                rooms.push((chat, [0; 3]));
+                rooms.len() - 1
+            });
+            let r = &mut rooms[i].1;
+            r[usize::from(e.kind == storage::Kind::Message)] += 1;
+            r[2] += e.bytes;
+        }
+        rooms.sort_by_key(|r| std::cmp::Reverse(r.1[2]));
+        let rooms = rooms.into_iter().filter(|r| r.1[2] > 0).take(10).enumerate().flat_map(
+            |(i, (id, [files, msgs, bytes]))| {
+                let chat = st.resolve_chat_idx(id).map(|i| &st.chats[i]);
+                let title = chat.map_or(id, |c| c.title.as_str());
+                let counts = [
+                    (files > 0).then(|| trn("%s File", "%s Files", files as usize, &[&grouped(files)])),
+                    (msgs > 0).then(|| trn("%s Message", "%s Messages", msgs as usize, &[&compact(msgs)])),
+                ];
+                let counts: Vec<String> = counts.into_iter().flatten().collect();
+                let open = s.chat.as_deref() == Some(id);
+                let chevron = svg(SELECT_ARROW.clone())
+                    .width(12)
+                    .height(12)
+                    .rotation(iced::Radians(if open { std::f32::consts::PI } else { 0.0 }))
+                    .style(move |_, _| svg::Style { color: Some(p.muted) });
+                let stats = row![
+                    txt(counts.join(" | "), 13.0).color(p.muted),
+                    semi(human_size(bytes), 13.0)
+                        .line_height(Pixels(16.0))
+                        .color(p.text)
+                        .width(80)
+                        .align_x(iced::alignment::Horizontal::Right)
+                ]
+                .spacing(16)
+                .align_y(Center);
+                let line = row![]
+                    .push(chat.map(|c| self.chat_avatar(c, 32.0, 0.0)))
+                    .push(container(ell(title, 200.0, 13.0, Weight::Normal).color(p.text)).width(Fill))
+                    .push(stats)
+                    .push(chevron)
+                    .spacing(12)
+                    .align_y(Center)
+                    .padding([12, 16]);
+                let line = button(line)
+                    .padding(0)
+                    .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
+                    .on_press(UiMessage::StorageChat(id.into()));
+                let panel = open.then(|| {
+                    let busy = s.clearing == Some(2);
+                    let panel = column![
+                        body(tr("Clear storage older than").into(), p.muted),
+                        self.storage_ages(1),
+                        self.storage_kinds(1, busy)
+                    ]
+                    .push((s.kinds[1] & 1 << 4 != 0).then(warning))
+                    .push(link(
+                        label(2),
+                        p.danger,
+                        13.0,
+                        !busy && s.kinds[1] != 0,
+                        UiMessage::Ask(Some(ASK_CLEAR_CHAT)),
+                    ))
+                    .spacing(12)
+                    .align_x(Center)
+                    .padding(Padding::new(16.0).top(12.0));
+                    column![divider(p.prefs_border, 0.0), panel].into()
+                });
+                [(i > 0).then(|| divider(p.prefs_border, 0.0)), Some(line.into()), panel].into_iter().flatten()
+            },
+        );
+        let rooms: Vec<El<'a>> = rooms.collect();
+        let by_chat = (!rooms.is_empty()).then(|| {
+            column![h4("Storage by Chat"), card(Column::with_children(rooms).into())]
+                .spacing(6)
+                .padding(Padding::ZERO.top(32.0))
+        });
+        column![h4("Storage"), chart, card(clear.into()), Space::new().height(16), card(cache.into())]
+            .push(by_chat)
+            .into()
+    }
+
+    /// Desktop's `BrandSegmentControl` of the ages, for all chats (0) or for the open chat (1).
+    fn storage_ages<'a>(&self, which: usize) -> El<'a> {
+        let p = &self.pal;
+        let segments = STORAGE_DAYS.iter().enumerate().flat_map(|(i, &d)| {
+            let label = txt(trn("%d day", "%d days", d as usize, &[&d]), 11.0).line_height(Pixels(14.0)).color(p.text);
+            let bg = if i == self.storage.ages[which] { p.chip } else { CLEAR };
+            let segment = button(label)
+                .padding([2, 8])
+                .style(btn_style([bg; 3], [p.text; 3], 20.0))
+                .on_press(UiMessage::StorageAge(which, i));
+            [(i > 0).then(|| Space::new().width(Fill).into()), Some(segment.into())].into_iter().flatten()
+        });
+        let bg = if self.dark { Color::BLACK } else { Color::WHITE };
+        let control = container(Row::with_children(segments).spacing(4).align_y(Center))
+            .padding(if which == 0 { 8 } else { 4 })
+            .width(Fill)
+            .style(fill_box(bg, 20.0));
+        if which == 0 {
+            control.into()
+        } else {
+            control.max_width(320).into()
+        }
+    }
+
+    /// Desktop's type checkboxes, the media types for all chats (0) and also Messages for the open chat (1).
+    fn storage_kinds<'a>(&self, which: usize, busy: bool) -> El<'a> {
+        let p = &self.pal;
+        let kinds = storage::Kind::ALL[..4 + which].iter().enumerate().map(|(i, &k)| {
+            let on = self.storage.kinds[which] & 1 << i != 0;
+            let label = txt(tr(kind_meta(k).0), 13.0).line_height(Pixels(16.0)).color(p.text);
+            button(row![checkbox(p, on), label].spacing(6).align_y(Center))
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
+                .on_press_maybe((!busy).then_some(UiMessage::StorageKind(which, i)))
+                .into()
+        });
+        Row::with_children(kinds).spacing(16).wrap().vertical_spacing(16).align_x(Center).into()
     }
 
     fn hotkeys_page(&self, s: &BeeperSettings) -> El<'_> {

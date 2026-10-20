@@ -7,7 +7,7 @@ use crate::matrix::{ChatFlag, Outgoing};
 use crate::models::*;
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tokio::sync::broadcast;
@@ -1458,17 +1458,47 @@ impl BeeperStore {
         }
     }
 
-    pub fn clear_cached_media_older_than_days(&mut self, days: i64) -> usize {
-        let cutoff = now_unix_secs() - days * 86_400;
-        let old: Vec<String> =
-            self.assets.values().filter(|a| a.created_epoch_secs <= cutoff).map(|a| a.upload_id.clone()).collect();
-        for id in &old {
-            let a = self.assets.remove(id).unwrap();
+    /// The id, chat, Unix seconds and stored bytes of each message.
+    pub fn message_sizes(&self) -> Vec<(String, String, i64, u64)> {
+        let db = self.db.lock().unwrap();
+        let mut q = db
+            .prepare("SELECT id, chat_id, json_extract(json, '$.timestamp'), length(json) FROM messages")
+            .expect("prepare message sizes");
+        let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, String>(2)?, r.get(3)?))).expect("sizes");
+        rows.map(|r| {
+            let (id, chat, ts, bytes) = r.expect("read a message size");
+            (id, chat, millis_from_rfc3339(&ts).expect("message timestamps are RFC 3339") / 1000, bytes)
+        })
+        .collect()
+    }
+
+    /// Drops local messages and uploaded files to free storage, like Desktop's `clearStorage`.
+    pub fn forget(&mut self, messages: &HashSet<String>, uploads: &[String]) {
+        for id in uploads {
+            let a = self.assets.remove(id).expect("a stored upload");
             self.assets_by_mxc.remove(&a.mxc_url);
-            std::fs::remove_file(self.config.assets_dir.join(&a.disk_name)).expect("remove cached media file");
+            std::fs::remove_file(self.config.assets_dir.join(&a.disk_name)).expect("remove an uploaded file");
             self.exec("DELETE FROM assets WHERE upload_id = ?1", params![id]);
         }
-        old.len()
+        if messages.is_empty() {
+            return;
+        }
+        for id in messages {
+            let i = self.msg_idx_by_id.remove(id).expect("a stored message");
+            self.msg_search_index.remove_doc(i as u32, &message_index_text(&self.messages[i]));
+            let m = &mut self.messages[i];
+            (m.is_deleted, m.text, m.html) = (Some(true), None, None);
+            m.flags |= MSG_DELETED;
+        }
+        let msgs = &self.messages;
+        for list in self.chat_msg_indices.values_mut() {
+            list.retain(|&i| !messages.contains(&msgs[i].id));
+        }
+        self.db.lock().unwrap().execute_batch("BEGIN IMMEDIATE;").expect("begin forget transaction");
+        for id in messages {
+            self.exec("DELETE FROM messages WHERE id = ?1", params![id]);
+        }
+        self.db.lock().unwrap().execute_batch("COMMIT; VACUUM;").expect("commit forget transaction");
     }
 }
 
