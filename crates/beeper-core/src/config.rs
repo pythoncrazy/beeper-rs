@@ -267,10 +267,199 @@ pub fn local_millis(utc_ms: i64) -> i64 {
     utc_ms + i64::from(chrono::Local.offset_from_utc_datetime(&at).fix().local_minus_utc()) * 1000
 }
 
+/// Desktop's `K0` for its time suggestions and typed times: chrono-node with forward dates, which tries the text and
+/// then "in " and the text, and compromise for "this weekend", which starts on Saturday at midnight. Like chrono-node,
+/// a weekday falls at noon, and a relative day keeps the time of `now`.
+pub fn parse_when<Tz: chrono::TimeZone>(text: &str, now: &chrono::DateTime<Tz>) -> Option<chrono::DateTime<Tz>> {
+    use chrono::{Datelike, Days, Months, NaiveDateTime, NaiveTime, TimeDelta};
+    const WEEKDAYS: [&str; 7] = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+    const NUMBERS: [&str; 13] =
+        ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
+    let text = text.trim().to_lowercase();
+    let mut w: Vec<String> = text.split_whitespace().map(String::from).collect();
+    if w.len() > 1 && matches!(w.last().map(String::as_str), Some("am" | "pm")) {
+        let half = w.pop()?;
+        w.last_mut()?.push_str(&half);
+    }
+    let clock = |s: &str, at: bool| -> Option<(u32, u32)> {
+        let (s, pm) = match (s.strip_suffix("am"), s.strip_suffix("pm")) {
+            (Some(s), _) => (s, Some(false)),
+            (_, Some(s)) => (s, Some(true)),
+            _ => (s, None),
+        };
+        let (h, m) = match s.split_once(':') {
+            Some((h, m)) if m.len() == 2 => (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?),
+            Some(_) => return None,
+            None => (s.parse::<u32>().ok()?, 0),
+        };
+        let h = match pm {
+            Some(pm) if (1..=12).contains(&h) => h % 12 + if pm { 12 } else { 0 },
+            Some(_) => return None,
+            None if at || s.contains(':') => h,
+            None => return None,
+        };
+        (h < 24 && m < 60).then_some((h, m))
+    };
+    let at_word = |w: &[String]| w.len() > 1 && w[w.len() - 2] == "at";
+    let mut hm = w.last().and_then(|s| match s.as_str() {
+        "noon" => Some((12, 0)),
+        "midnight" => Some((0, 0)),
+        s => clock(s, at_word(&w)),
+    });
+    if hm.is_some() {
+        if at_word(&w) {
+            w.pop();
+        }
+        w.pop();
+    }
+    let part = match w.last().map(String::as_str) {
+        Some("morning") => Some(6),
+        Some("afternoon") => Some(15),
+        Some("evening") => Some(20),
+        Some("night" | "tonight") => Some(22),
+        _ => None,
+    };
+    if let Some(h) = part {
+        if w.pop().as_deref() == Some("tonight") || w == ["this"] {
+            w.clear();
+        }
+        hm = Some(match hm {
+            Some((h0, m)) if h >= 12 && h0 < 12 => (h0 + 12, m),
+            Some(t) => t,
+            None => (h, 0),
+        });
+    }
+    let base = now.naive_local();
+    let today = base.date();
+    let wd = today.weekday().num_days_from_sunday();
+    let at_time =
+        |d: chrono::NaiveDate, (h, m): (u32, u32)| d.and_time(NaiveTime::from_hms_opt(h, m, 0).expect("a clock"));
+    let add = |n: u32, unit: &str| -> Option<NaiveDateTime> {
+        match unit.strip_suffix('s').unwrap_or(unit) {
+            "second" => base.checked_add_signed(TimeDelta::seconds(n.into())),
+            "minute" => base.checked_add_signed(TimeDelta::minutes(n.into())),
+            "hour" => base.checked_add_signed(TimeDelta::hours(n.into())),
+            "day" => base.checked_add_days(Days::new(n.into())),
+            "week" => base.checked_add_days(Days::new(7 * u64::from(n))),
+            "month" => base.checked_add_months(Months::new(n)),
+            "year" => base.checked_add_months(Months::new(n.checked_mul(12)?)),
+            _ => None,
+        }
+    };
+    let weekday = |s: &str| WEEKDAYS.iter().position(|d| *d == s).map(|t| t as u32);
+    let words: Vec<&str> = w.iter().map(String::as_str).collect();
+    let at = match words[..] {
+        [] => {
+            let at = at_time(today, hm?);
+            if at > base {
+                at
+            } else {
+                at.checked_add_days(Days::new(1))?
+            }
+        }
+        ["today"] => hm.map_or(base, |t| at_time(today, t)),
+        ["tomorrow" | "tmr"] => {
+            let day = base.checked_add_days(Days::new(1))?;
+            hm.map_or(day, |t| at_time(day.date(), t))
+        }
+        ["this", "weekend"] | ["weekend"] => {
+            let sat = today.checked_add_signed(TimeDelta::days(if wd == 0 { -1 } else { 6 - i64::from(wd) }))?;
+            at_time(sat, hm.unwrap_or((0, 0)))
+        }
+        ["next", unit @ ("week" | "month" | "year")] => {
+            let day = add(1, unit)?;
+            hm.map_or(day, |t| at_time(day.date(), t))
+        }
+        [d] | ["this", d] if weekday(d).is_some() => {
+            let t = weekday(d)?;
+            let at = at_time(today + Days::new(u64::from((t + 7 - wd) % 7)), hm.unwrap_or((12, 0)));
+            if at > base {
+                at
+            } else {
+                at.checked_add_days(Days::new(7))?
+            }
+        }
+        ["next", d] if weekday(d).is_some() => {
+            let (t, fwd) = (weekday(d)?, (weekday(d)? + 7 - wd) % 7);
+            let days = match (wd, t) {
+                (0, 0) | (6, 6) => 7,
+                (0, t) => t,
+                (6, 0) => 8,
+                (6, t) => t + 1,
+                (_, t) if t < wd && t != 0 => fwd,
+                _ => fwd + 7,
+            };
+            at_time(today + Days::new(days.into()), hm.unwrap_or((12, 0)))
+        }
+        ["in", n, unit] | [n, unit] if hm.is_none() => {
+            let n = match n {
+                "a" | "an" => 1,
+                n => NUMBERS.iter().position(|x| *x == n).map(|n| n as u32).or_else(|| n.parse().ok())?,
+            };
+            add(n, unit)?
+        }
+        _ => return None,
+    };
+    now.timezone().from_local_datetime(&at).earliest()
+}
+
+/// [`parse_when`] in local time, in Unix milliseconds.
+pub fn parse_when_millis(text: &str, now_ms: i64) -> Option<i64> {
+    let now =
+        chrono::DateTime::from_timestamp_millis(now_ms).expect("timestamp in range").with_timezone(&chrono::Local);
+    parse_when(text, &now).map(|at| at.timestamp_millis())
+}
+
 pub fn now_unix_millis() -> i64 {
     unix_now().as_millis() as i64
 }
 
 pub fn now_rfc3339_millis() -> String {
     rfc3339_from_millis(now_unix_millis())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_when;
+    use chrono::{TimeZone, Utc};
+
+    #[test]
+    fn parse_when_reads_desktops_suggestions() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 20, 15, 30, 0).unwrap();
+        let when = |s: &str| parse_when(s, &now).map(|t| t.format("%a %F %R").to_string());
+        let cases = [
+            ("In an Hour", "Tue 2026-10-20 16:30"),
+            ("In Two Hours", "Tue 2026-10-20 17:30"),
+            ("This Evening", "Tue 2026-10-20 20:00"),
+            ("Tomorrow", "Wed 2026-10-21 15:30"),
+            ("This Weekend", "Sat 2026-10-24 00:00"),
+            ("Next Week", "Tue 2026-10-27 15:30"),
+            ("next month", "Fri 2026-11-20 15:30"),
+            ("next year", "Wed 2027-10-20 15:30"),
+            ("in a minute", "Tue 2026-10-20 15:31"),
+            ("45 minutes", "Tue 2026-10-20 16:15"),
+            ("3 weeks", "Tue 2026-11-10 15:30"),
+            ("monday", "Mon 2026-10-26 12:00"),
+            ("tuesday", "Tue 2026-10-27 12:00"),
+            ("wednesday", "Wed 2026-10-21 12:00"),
+            ("next monday", "Mon 2026-10-26 12:00"),
+            ("next wednesday", "Wed 2026-10-28 12:00"),
+            ("next sunday", "Sun 2026-11-01 12:00"),
+            ("Monday morning at 9", "Mon 2026-10-26 09:00"),
+            ("friday at 5pm", "Fri 2026-10-23 17:00"),
+            ("tomorrow at 9:15 am", "Wed 2026-10-21 09:15"),
+            ("tonight", "Tue 2026-10-20 22:00"),
+            ("at 9", "Wed 2026-10-21 09:00"),
+            ("noon", "Wed 2026-10-21 12:00"),
+        ];
+        for (text, at) in cases {
+            assert_eq!(when(text).as_deref(), Some(at), "{text}");
+        }
+        for text in ["", "5", "soon", "at 25", "13pm", "in 2 hours at 9"] {
+            assert_eq!(when(text), None, "{text}");
+        }
+        let sunday = Utc.with_ymd_and_hms(2026, 10, 25, 10, 0, 0).unwrap();
+        let weekend = parse_when("This Weekend", &sunday).unwrap();
+        assert!(weekend < sunday, "on Sunday this weekend has started, so Desktop drops the suggestion");
+    }
 }

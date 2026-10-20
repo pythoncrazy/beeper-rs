@@ -47,7 +47,7 @@ use crate::style::{
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{
     account_network, civil_from_days, local_millis, millis_from_rfc3339, now_unix_millis, now_unix_secs,
-    rfc3339_from_millis, APP_VERSION,
+    parse_when_millis, rfc3339_from_millis, APP_VERSION,
 };
 use beeper_core::import::has_beeper_data;
 use beeper_core::matrix::{ChatFlag, DeviceInfo, MediaInfo, Outgoing};
@@ -793,21 +793,13 @@ fn inbox_label(label: &'static str) -> &'static str {
 /// Desktop's `--chat-view-bubble-padding-x`, which also insets the message footer.
 const BUBBLE_PAD_X: f32 = 11.0;
 const SUB_MENU_W: [f32; 2] = [124.0, 257.0];
-const REMIND_PRESETS: [&str; 5] = ["In an Hour", "In Two Hours", "This Evening", "Tomorrow", "Next Week"];
+/// Desktop's default `time_suggestion_options`.
+const TIME_SUGGESTIONS: [&str; 6] =
+    ["In an Hour", "In Two Hours", "This Evening", "Tomorrow", "This Weekend", "Next Week"];
 
-/// The UTC time of a Remind Me preset, read like Desktop's chrono-node parse with forward dates.
-fn remind_preset(k: usize, now: i64) -> i64 {
-    const HOUR: i64 = 3_600_000;
-    let evening = now - local_millis(now).rem_euclid(24 * HOUR) + 20 * HOUR;
-    match k {
-        0 => now + HOUR,
-        1 => now + 2 * HOUR,
-        2 if evening > now => evening,
-        2 => evening + 24 * HOUR,
-        3 => now + 24 * HOUR,
-        4 => now + 7 * 24 * HOUR,
-        _ => unreachable!("preset {k}"),
-    }
+/// Desktop's `wJe`: the time suggestions that fall in the future, with their times.
+fn remind_presets(now: i64) -> impl Iterator<Item = (&'static str, i64)> {
+    TIME_SUGGESTIONS.into_iter().filter_map(move |s| parse_when_millis(s, now).filter(|at| *at > now).map(|at| (s, at)))
 }
 
 fn remind_label(at: i64, h24: bool) -> String {
@@ -5491,8 +5483,7 @@ impl BeeperGuiApp {
         let item = |label: String, at: String, msg| menu_item(p, None, label, at, msg);
         let items: Vec<El> = if which == 0 {
             let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
-            let presets = REMIND_PRESETS.iter().enumerate().map(|(k, label)| {
-                let at = remind_preset(k, now);
+            let presets = remind_presets(now).map(|(label, at)| {
                 item(tr(label).into(), remind_label(at, h24), Some(UiMessage::SelectionRemind(Some(at))))
             });
             let set = chats.iter().filter(|c| c.reminder.is_some()).count();
@@ -5530,7 +5521,7 @@ impl BeeperGuiApp {
                 .flatten()
                 .collect()
         };
-        let rules = if which == 0 && items.len() > REMIND_PRESETS.len() { 11.0 - MENU_ITEM } else { 0.0 };
+        let rules = if which == 0 && chats.iter().any(|c| c.reminder.is_some()) { 11.0 - MENU_ITEM } else { 0.0 };
         let h = 8.0 + items.len() as f32 * MENU_ITEM + rules;
         let width = if which == 0 { SUB_MENU_W[1] } else { 233.0 };
         let menu = container(Column::with_children(items).padding([4, 0])).width(width).style(shadow_box(
@@ -5946,8 +5937,7 @@ impl BeeperGuiApp {
                 0 => vec![item(tr("Chat Link"), String::new(), Some(UiMessage::CopyChatLink(c.id.clone())))],
                 _ => {
                     let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
-                    let presets = REMIND_PRESETS.iter().enumerate().map(|(k, label)| {
-                        let at = remind_preset(k, now);
+                    let presets = remind_presets(now).map(|(label, at)| {
                         item(tr(label), remind_label(at, h24), Some(UiMessage::SetReminder(c.id.clone(), Some(at))))
                     });
                     let dismiss = c.reminder.is_some().then(|| UiMessage::SetReminder(c.id.clone(), None));
