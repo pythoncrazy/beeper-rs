@@ -320,6 +320,8 @@ pub fn hotkey_default(name: &str) -> &'static str {
 /// The hotkeys that Desktop's Keyboard Shortcuts list shows, but that you cannot reassign.
 pub const FIXED_HOTKEYS: &[(&str, &str, &str)] = &[
     ("Message: React", "Messages", "right"),
+    ("Multi Select Next Message", "Messages", "shift+down"),
+    ("Multi Select Previous Message", "Messages", "shift+up"),
     ("Select Next Message", "Messages", "down"),
     ("Select Previous Message", "Messages", "up"),
     ("Unselect Chat / Select First Chat", "Chats", "escape"),
