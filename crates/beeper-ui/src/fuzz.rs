@@ -425,6 +425,17 @@ fn attachments_send_like_desktop() {
 }
 
 #[test]
+fn profile_links_match_desktop() {
+    let app = demo_app("profile");
+    let st = app.store.read();
+    let links: Vec<String> = st.chats.iter().filter_map(profile_link).collect();
+    assert!(links.iter().any(|l| l.starts_with("https://www.instagram.com/") && l.ends_with('/')), "{links:?}");
+    for c in st.chats.iter().filter(|c| c.chat_type == "group" || network_name(&c.account_id) == "WhatsApp") {
+        assert_eq!(profile_link(c), None, "{} has no profile link", c.title);
+    }
+}
+
+#[test]
 fn emoticons_follow_the_setting() {
     use iced_test::simulator::typewrite;
     let mut app = demo_app("emoticons");
