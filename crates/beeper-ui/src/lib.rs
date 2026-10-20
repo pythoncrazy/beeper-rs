@@ -838,7 +838,8 @@ fn divider<'a>(color: Color, left: f32) -> El<'a> {
         .into()
 }
 
-fn avatar<'a>(name: &str, size: f32, p: &Palette) -> El<'a> {
+/// `ls` is Desktop's `--letter-spacing`; its initials also have `margin-right: -1px`.
+fn avatar<'a>(name: &str, size: f32, ls: f32, p: &Palette) -> El<'a> {
     let Some(label) = initials(name) else {
         let shade = fill_box(Color { a: 0.1, ..p.strong }, size / 2.0);
         return container(svg(EYES.clone()).width(size).height(size)).style(shade).into();
@@ -847,7 +848,8 @@ fn avatar<'a>(name: &str, size: f32, p: &Palette) -> El<'a> {
     let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, hex(top)).add_stop(1.0, hex(bottom));
     let font = crate::style::initials_font();
     let letter = |c: char| txt(c.to_string(), size * 0.5).line_height(1.0).font(font).color(Color::WHITE).into();
-    container(Row::with_children(label.chars().map(letter)).spacing(1))
+    let trail = Padding::ZERO.right((ls - 1.0).max(0.0)).left((1.0 - ls).max(0.0));
+    container(container(Row::with_children(label.chars().map(letter)).spacing(ls)).padding(trail))
         .center(size)
         .style(move |_: &Theme| container::Style {
             background: Some(Background::Gradient(Gradient::Linear(g))),
@@ -1216,7 +1218,19 @@ static SENT: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(||
 });
 
 svg_static!(SEND_ARROW, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path transform="rotate(90 10 10)" d="m6.52 10.833 4.668 4.667L10 16.666 3.333 10 10 3.333 11.188 4.5 6.52 9.166h10.146v1.667z"/></svg>"##);
-svg_static!(VIDEO_TAG, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h480q33 0 56.5 23.5T720-720v180l160-160v440L720-420v180q0 33-23.5 56.5T640-160H160Zm0-80h480v-480H160v480Zm0 0v-480 480Z"/></svg>"##);
+/// Material symbols at Desktop's `scale(1.2)` in a 12 px box.
+static MEDIA_TAGS: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
+    [
+        "M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm0-80h560v-560H200v560Zm40-80h480L570-480 450-320l-90-120-120 160Z",
+        "M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h480q33 0 56.5 23.5T720-720v180l160-160v440L720-420v180q0 33-23.5 56.5T640-160H160Zm0-80h480v-480H160v480Zm0 0v-480 480Z",
+    ]
+    .map(|d| {
+        svg::Handle::from_memory(
+            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="80 -880 800 800"><path d="{d}"/></svg>"#)
+                .into_bytes(),
+        )
+    })
+});
 
 svg_static!(EYES, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 46 46" fill="#fff"><path d="M22.1197 25.5092C23.0085 30.1093 20.937 33.1 16.2324 34.009C11.5277 34.918 8.49126 32.9143 7.60244 28.3142L6.68822 23.5827C5.7994 18.9826 7.87085 15.9919 12.5755 15.0829C17.2802 14.1738 20.3166 16.1776 21.2054 20.7777L22.1197 25.5092ZM14.8746 30.5902C15.1743 32.1411 16.6446 33.1113 18.2307 32.8049C19.8168 32.4984 20.8199 31.0503 20.5202 29.4994C20.2205 27.9485 18.7503 26.9783 17.1641 27.2847C15.578 27.5912 14.575 29.0393 14.8746 30.5902Z"/><path d="M39.1455 22.1235C40.0344 26.7236 37.9629 29.7142 33.2583 30.6233C28.5536 31.5323 25.5171 29.5286 24.6283 24.9284L23.7141 20.1969C22.8253 15.5968 24.8967 12.6061 29.6014 11.6971C34.306 10.7881 37.3425 12.7918 38.2313 17.3919L39.1455 22.1235ZM31.9005 27.2045C32.2002 28.7554 33.6704 29.7256 35.2566 29.4191C36.8427 29.1126 37.8457 27.6645 37.5461 26.1136C37.2464 24.5627 35.7761 23.5925 34.19 23.899C32.6039 24.2055 31.6008 25.6536 31.9005 27.2045Z"/></svg>"##);
 
@@ -2274,10 +2288,10 @@ impl BeeperGuiApp {
         }))
     }
 
-    fn face<'a>(&self, url: Option<&str>, name: &str, size: f32) -> El<'a> {
+    fn face<'a>(&self, url: Option<&str>, name: &str, size: f32, ls: f32) -> El<'a> {
         match url.and_then(|u| self.avatars.get(u)?.clone()) {
             Some(h) => image(h).width(size).height(size).into(),
-            None => avatar(name, size, &self.pal),
+            None => avatar(name, size, ls, &self.pal),
         }
     }
 
@@ -2289,7 +2303,7 @@ impl BeeperGuiApp {
         let faces = (chat.chat_type == "group").then(|| {
             let users = ids.iter().filter_map(|id| chat.participants.items.iter().find(|u| u.id == *id));
             let layers = users.enumerate().map(|(i, u)| {
-                pin(self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 20.0))
+                pin(self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 20.0, 0.0))
                     .x(i as f32 * 10.0)
                     .into()
             });
@@ -2316,16 +2330,16 @@ impl BeeperGuiApp {
             .into()
     }
 
-    fn chat_avatar<'a>(&self, chat: &Chat, size: f32) -> El<'a> {
+    fn chat_avatar<'a>(&self, chat: &Chat, size: f32, ls: f32) -> El<'a> {
         fn user(u: &User) -> (Option<&str>, &str) {
             (u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default())
         }
         let (shown, more) = faces(chat);
         let face = if chat.img_url.is_some() {
-            self.face(chat.img_url.as_deref(), &chat.title, size)
+            self.face(chat.img_url.as_deref(), &chat.title, size, ls)
         } else if chat.chat_type != "group" || shown.is_empty() {
             let (url, name) = shown.first().map_or((None, ""), |u| user(u));
-            self.face(url, name, size)
+            self.face(url, name, size, ls)
         } else {
             const SLOTS: [(f32, f32, f32); 5] = [
                 (-0.14, -0.135, 0.48),
@@ -2337,7 +2351,7 @@ impl BeeperGuiApp {
             let layers = shown.into_iter().zip(SLOTS).map(|(u, (x, y, k))| {
                 let (url, name) = user(u);
                 let d = size * k;
-                pin(self.face(url, name, d)).x(size * (0.5 + x) - d / 2.0).y(size * (0.5 + y) - d / 2.0).into()
+                pin(self.face(url, name, d, 0.0)).x(size * (0.5 + x) - d / 2.0).y(size * (0.5 + y) - d / 2.0).into()
             });
             let label = if more > 98 { "99+".to_string() } else { format!("+{more}") };
             let font = size * 0.15 * if more > 9 { 0.85 } else { 1.0 };
@@ -4898,7 +4912,7 @@ impl BeeperGuiApp {
         let n = chats.len();
         let step = 28.0 / 3.0;
         let avatars = chats.iter().enumerate().fold(Stack::new(), |s, (i, c)| {
-            s.push(pin(container(self.chat_avatar(c, 28.0)).style(fill_box(p.card, 14.0))).x(i as f32 * step))
+            s.push(pin(container(self.chat_avatar(c, 28.0, 0.0)).style(fill_box(p.card, 14.0))).x(i as f32 * step))
         });
         let avatars = container(avatars.width((n + 2) as f32 * step).height(28)).width(Fill).clip(true);
         let title = semi(format!("{n} chat{} selected", if n == 1 { "" } else { "s" }), 15.0).color(p.strong);
@@ -5689,7 +5703,7 @@ impl BeeperGuiApp {
         .padding(Padding::ZERO.top(14.0));
         let me = st.me();
         let media = UiMessage::OpenMedia;
-        let me_btn = button(self.face(me.img_url.as_deref(), me.full_name.as_deref().expect("self name"), 36.0))
+        let me_btn = button(self.face(me.img_url.as_deref(), me.full_name.as_deref().expect("self name"), 36.0, 0.0))
             .padding(0)
             .style(btn_style([CLEAR; 3], [p.text; 3], 18.0))
             .on_press(UiMessage::OpenSettings(SettingsTab::General));
@@ -5824,7 +5838,7 @@ impl BeeperGuiApp {
                 };
                 let bubble = bubble_text(&st, c, launched, now).filter(|_| previews && !on && !selecting);
                 let unread = unread.filter(|_| bubble.is_none());
-                let face = stack![container(self.chat_avatar(c, pin_av)).center_x(pin_av + 4.0)]
+                let face = stack![container(self.chat_avatar(c, pin_av, 1.25)).center_x(pin_av + 4.0)]
                     .push((!selecting).then(|| container(unread).width(pin_av + 4.0).align_right(pin_av + 4.0)))
                     .push(selecting.then(|| pin(checkbox(p, picked(c))).x(pin_av - 11.0).y(-5.0)))
                     .width(pin_av + 4.0)
@@ -5859,12 +5873,12 @@ impl BeeperGuiApp {
             (false, true) => 0.0,
             (false, false) => 12.0,
         };
-        let text_w = inner - 16.0 - av - 8.5 - lead;
+        let text_w = inner - 16.0 - av - 10.0 - lead;
         let frame = |key: String, dot: Option<El<'static>>, face: El<'static>, lines: [El<'static>; 2], on, select| {
             let [top, preview] = lines;
             let item = row![]
                 .push(dot)
-                .push(container(face).padding(Padding::ZERO.right(8.5)))
+                .push(container(face).width(av + 10.0))
                 .push(column![top, preview].width(Fill))
                 .align_y(Center)
                 .padding(Padding::new(8.0).top(9.0).bottom(10.0).left(if selecting { 0.0 } else { 8.0 }));
@@ -5901,7 +5915,7 @@ impl BeeperGuiApp {
             let title = ell(tr("New Chat"), text_w, title_size, if counts { Weight::Medium } else { Weight::Semibold });
             let rows =
                 [container(title.color(p.strong)).height(16).into(), Space::new().height(16 * lines as u32).into()];
-            let face = self.face(None, "", av);
+            let face = self.face(None, "", av, 1.25);
             frame(format!("draft:{n}"), dot, face, rows, self.creating_chat == Some(n), UiMessage::SelectNewChat(n))
         });
         let rows = rest.iter().fold(Column::with_children(drafts.map(El::from)), |col, c| {
@@ -5984,7 +5998,7 @@ impl BeeperGuiApp {
                 + if sender.is_some() { 16.0 } else { 0.0 }
                 + match media_tag {
                     Some((_, label)) if expired => crate::style::text_width(label, 13.0, Weight::Normal) + 4.0,
-                    Some(_) => 52.0,
+                    Some((_, label)) => crate::style::text_width(label, 10.0, Weight::Medium) + 24.0,
                     None => 0.0,
                 }
                 + if expired { crate::style::text_width(tr("Reminder"), 11.0, Weight::Semibold) + 10.0 } else { 0.0 }
@@ -5992,7 +6006,7 @@ impl BeeperGuiApp {
             let read = m.is_some_and(|m| m.seen.keys().any(|u| !st.is_me(u) && u != &m.sender_id));
             let fg = p.fg.scale_alpha(0.63);
             let face =
-                sender.map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0));
+                sender.map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0, 0.5));
             let badge = (expired && previews).then(|| {
                 let label = semi(tr("Reminder"), 11.0).line_height(Pixels(14.0)).color(Color::WHITE.scale_alpha(0.7));
                 container(label).padding([0, 3]).style(fill_box(ORANGE.scale_alpha(0.7), 4.0))
@@ -6006,13 +6020,11 @@ impl BeeperGuiApp {
                     if expired {
                         return txt(label, 13.0).color(fg).into();
                     }
-                    let glyph: El<'_> = match is_video {
-                        true => tinted(&VIDEO_TAG, 12.0, fg),
-                        false => ic(icon::IMAGE, 12.0).color(fg).into(),
-                    };
-                    container(row![glyph, med(label, 11.0).color(fg)].spacing(2).align_y(Center))
-                        .padding([1, 4])
-                        .style(fill_box(p.strong.scale_alpha(0.12), 4.0))
+                    let glyph = tinted(&MEDIA_TAGS[usize::from(is_video)], 12.0, fg);
+                    let label = med(label, 10.0).line_height(Pixels(12.0)).color(fg);
+                    container(row![glyph, container(label).padding([0, 2])].align_y(Center))
+                        .padding([1, 2])
+                        .style(fill_box(p.strong.scale_alpha(0.105), 4.0))
                         .into()
                 }))
                 .push(body.map(|b| {
@@ -6035,7 +6047,7 @@ impl BeeperGuiApp {
                 .push(count)
                 .spacing(4)
                 .align_y(if compact { Center } else { iced::Alignment::Start });
-            let avatar = self.chat_avatar(c, av);
+            let avatar = self.chat_avatar(c, av, 1.25);
             let avatar = match network_icons {
                 true => {
                     let ring = match (on, self.hovered_chat.as_ref() == Some(&c.id)) {
@@ -6248,7 +6260,7 @@ impl BeeperGuiApp {
             .padding(Padding::new(6.0).left(10.5).right(2.5))
             .style(btn_style([p.window, p.selected, p.selected], [p.text; 3], 14.0))
             .on_press(UiMessage::ToggleRightPanel);
-        let ring = container(self.chat_avatar(chat, 40.0)).padding(1).style(fill_box(p.card, 21.0));
+        let ring = container(self.chat_avatar(chat, 40.0, 0.0)).padding(1).style(fill_box(p.card, 21.0));
         let header = stack![
             container(pill).center_x(Fill).padding(Padding::ZERO.top(44.0)),
             container(ring).center_x(Fill).padding(Padding::ZERO.top(7.0))
@@ -6652,7 +6664,7 @@ impl BeeperGuiApp {
                 let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(&x.participant_id);
                 let line = row![
                     container(txt(x.reaction_key.clone(), 17.0)).padding(Padding::ZERO.right(10.0)),
-                    container(self.face(u.and_then(|u| u.img_url.as_deref()), name, 20.0))
+                    container(self.face(u.and_then(|u| u.img_url.as_deref()), name, 20.0, 0.5))
                         .padding(Padding::ZERO.right(8.0)),
                     med(name.to_string(), 13.0).color(p.text),
                 ]
@@ -6670,7 +6682,7 @@ impl BeeperGuiApp {
                     for x in reactors.iter().take(3) {
                         let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
                         let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(&x.participant_id);
-                        pill = pill.push(self.face(u.and_then(|u| u.img_url.as_deref()), name, 16.0));
+                        pill = pill.push(self.face(u.and_then(|u| u.img_url.as_deref()), name, 16.0, 0.5));
                     }
                     if n > 3 {
                         pill = pill.push(semi(format!("+{}", n - 3), 11.0).color(p.on_secondary));
@@ -6745,7 +6757,7 @@ impl BeeperGuiApp {
             if last {
                 let url =
                     chat.participants.items.iter().find(|u| u.id == m.sender_id).and_then(|u| u.img_url.as_deref());
-                self.face(url, m.sender_name.as_deref().expect("sender name"), 28.0)
+                self.face(url, m.sender_name.as_deref().expect("sender name"), 28.0, 0.0)
             } else {
                 Space::new().width(28).into()
             }
@@ -7064,7 +7076,7 @@ impl BeeperGuiApp {
             let name = u.custom_nickname.clone().or_else(|| u.full_name.clone()).expect("participant name");
             c.push(
                 row![
-                    self.face(u.img_url.as_deref(), &name, 28.0),
+                    self.face(u.img_url.as_deref(), &name, 28.0, 0.0),
                     column![txt(name, 13.0).color(p.text)]
                         .push(u.phone_number.clone().map(|ph| txt(ph, 11.0).color(p.sub)))
                 ]
@@ -7075,7 +7087,7 @@ impl BeeperGuiApp {
         let body = column![
             closable_head(p, tr("Chat Info"), 13.0, UiMessage::ToggleRightPanel),
             column![
-                self.chat_avatar(chat, 64.0),
+                self.chat_avatar(chat, 64.0, 1.25),
                 semi(chat.title.clone(), 15.0).color(p.strong),
                 txt(network_name(&chat.account_id), 12.0).color(p.sub)
             ]
@@ -7352,8 +7364,12 @@ impl BeeperGuiApp {
                     card(text, Space::new().into())
                 }
             };
-            let face =
-                container(self.chat_avatar(c, 24.0)).padding(2).style(bordered_box(CLEAR, Color::WHITE, 2.0, 14.0));
+            let face = container(self.chat_avatar(c, 24.0, 0.0)).padding(2).style(bordered_box(
+                CLEAR,
+                Color::WHITE,
+                2.0,
+                14.0,
+            ));
             let tile = stack![container(body).width(110).height(110).style(fill_box(p.outline, 8.0))]
                 .push(container(face).padding(6));
             button(tile)
@@ -7386,7 +7402,7 @@ impl BeeperGuiApp {
             .spacing(4)
             .align_y(Center);
             let line = row![
-                self.chat_avatar(c, 28.0),
+                self.chat_avatar(c, 28.0, 0.0),
                 title,
                 Space::new().width(Fill),
                 svg(brand_svg(brand_key(&c.account_id))).width(16).height(16)
@@ -7490,9 +7506,9 @@ impl BeeperGuiApp {
             true => {
                 let u = c.participants.items.iter().find(|u| u.id == m.sender_id);
                 let name = Self::sender_name(&st, m);
-                (u.map(|u| self.face(u.img_url.as_deref(), name, 28.0)), name)
+                (u.map(|u| self.face(u.img_url.as_deref(), name, 28.0, 0.0)), name)
             }
-            false => (Some(self.chat_avatar(c, 28.0)), c.title.as_str()),
+            false => (Some(self.chat_avatar(c, 28.0, 0.0)), c.title.as_str()),
         };
         let title = row![]
             .push(face)
@@ -7884,7 +7900,7 @@ impl BeeperGuiApp {
         let pills = f.picked.iter().map(|cid| -> El<'a> {
             let c = &st.chats[st.chat_idx_by_id[cid]];
             let label = semi(c.title.clone(), 14.0).line_height(Pixels(16.0)).color(p.strong);
-            let pill = row![self.chat_avatar(c, 16.0), label].spacing(4).align_y(Center);
+            let pill = row![self.chat_avatar(c, 16.0, 0.0), label].spacing(4).align_y(Center);
             container(pill).padding(Padding::new(2.0).right(8.0)).style(fill_box(shade, 20.0)).into()
         });
         let input = text_input(tr("Search name, @, or number"), &f.query)
@@ -7908,7 +7924,7 @@ impl BeeperGuiApp {
             ]
             .spacing(4)
             .align_y(Center);
-            let line = row![self.chat_avatar(c, 32.0), title, Space::new().width(Fill)]
+            let line = row![self.chat_avatar(c, 32.0, 0.0), title, Space::new().width(Fill)]
                 .push(svg(brand_svg(brand_key(&c.account_id))).width(16).height(16))
                 .spacing(8)
                 .align_y(Center);
@@ -8047,7 +8063,7 @@ impl BeeperGuiApp {
                     .find(|c| c.chat_type == "single" && c.title.eq_ignore_ascii_case(name))
                     .map(|c| c.id.clone());
                 let line = row![
-                    self.face(u.img_url.as_deref(), name, 28.0),
+                    self.face(u.img_url.as_deref(), name, 28.0, 0.0),
                     semi(name.to_string(), 13.0).color(p.strong),
                     Space::new().width(Fill),
                     ic(icon::EXPAND_MORE, 20.0).color(p.strong)
@@ -8143,7 +8159,7 @@ impl BeeperGuiApp {
         };
         let free = container(semi("Free", 10.0).color(p.strong)).padding([4, 6]).style(fill_box(p.chip, 25.0));
         let profile = row![
-            self.face(me.img_url.as_deref(), &name, 32.0),
+            self.face(me.img_url.as_deref(), &name, 32.0, 0.0),
             column![bold(name.clone(), 14.0).color(p.strong),]
                 .push(me.email.clone().map(|e| txt(e, 11.0).color(p.text)))
                 .width(Fill),
@@ -8410,7 +8426,7 @@ impl BeeperGuiApp {
             }
             SettingsTab::Accounts => {
                 let account = |logo: &str, owner: &str, name: String, cloud: bool, sub: Option<String>| -> El<'_> {
-                    let title = row![avatar(owner, 14.0, p), semi(name, 14.0).color(p.strong)]
+                    let title = row![avatar(owner, 14.0, 0.0, p), semi(name, 14.0).color(p.strong)]
                         .push(cloud.then(|| ic(icon::CLOUD, 13.0).color(p.sub)))
                         .spacing(4)
                         .align_y(Center);
@@ -8688,7 +8704,7 @@ impl BeeperGuiApp {
         let head = row![back, container(title).center_x(Fill), Space::new().width(16)].align_y(Center);
         let lines = [username.map(|u| format!("@{u}")), phone.map(|n| fmt_phone(&n)), email].into_iter().flatten();
         let user = column![]
-            .push(name.as_deref().map(|n| container(avatar(n, 28.0, p)).padding(Padding::ZERO.bottom(8.0))))
+            .push(name.as_deref().map(|n| container(avatar(n, 28.0, 0.0, p)).padding(Padding::ZERO.bottom(8.0))))
             .push(name.map(|n| semi(n, 14.0).color(p.strong)))
             .extend(lines.map(|l| txt(l, 13.0).color(p.weak).into()))
             .align_x(Center);
