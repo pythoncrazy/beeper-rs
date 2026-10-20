@@ -826,6 +826,21 @@ fn messages_select_like_desktop() {
 }
 
 #[test]
+fn devices_offer_the_app_like_desktop() {
+    let mut app = demo_app("devices");
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Devices));
+    let mut sim = simulator(app.view_settings());
+    assert!(sim.find("Take Beeper with you").is_ok());
+    let _ = sim.click("Get the app");
+    for m in sim.into_messages() {
+        let _ = app.update(m);
+    }
+    assert!(app.app_qr && simulator(app.view_settings()).find("Get the app").is_err(), "the button shows the QR code");
+    let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::About));
+    assert!(!app.app_qr, "another tab hides the QR code again");
+}
+
+#[test]
 fn every_pref_value_renders() {
     let mut app = demo_app("prefs");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));

@@ -415,6 +415,7 @@ pub enum UiMessage {
     ContactsLoaded(Vec<User>),
     OpenSettings(SettingsTab),
     ToggleAddAccount,
+    ShowAppQr,
     OpenAccount(Option<String>),
     SetAccountProps(String, beeper_core::models::AccountProps),
     /// "Show in Inbox": the `chat_list_rules` key and option.
@@ -1398,6 +1399,7 @@ svg_static!(TUNE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 2
 
 svg_static!(PIN, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21.436 7.586l-3.998-4.02c-.752-.756-2.063-.764-2.83-.006-.196.196-.35.436-.418.629-.653 1.362-1.354 2.215-2.254 2.727l-.217.105c-.968.485-2.285.979-4.719.979-.266 0-.521.052-.766.152-.484.202-.879.595-1.082 1.084-.199.484-.199 1.041 0 1.525.104.249.25.471.435.651l3.235 3.235-3.822 5.353 5.352-3.822 3.227 3.227c.186.189.406.339.656.441.247.103.503.154.766.154s.519-.052.765-.154c.498-.205.883-.592 1.08-1.078.103-.242.155-.507.155-.768 0-2.436.494-3.752.978-4.721.496-.992 1.369-1.748 2.754-2.414.271-.104.51-.256.711-.457.772-.782.768-2.051-.008-2.822zm-5.248 4.801c-.819 1.643-1.188 3.37-1.195 5.604l-7.993-7.991c2.139 0 3.814-.335 5.396-1.084l.235-.105c1.399-.699 2.468-1.893 3.388-3.834l3.924 4.051c-1.863.893-3.056 1.96-3.755 3.359z"/></svg>"##);
 
+svg_static!(QR_CODE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></svg>"##);
 svg_static!(BELL_OFF, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"/><path d="m2 2 20 20"/><path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"/></svg>"##);
 
 static COMPOSER_ICONS: std::sync::LazyLock<[svg::Handle; 9]> = std::sync::LazyLock::new(|| {
@@ -1995,6 +1997,9 @@ fn gap_below(m: &Message, next: &Message) -> f32 {
 
 static LOGO: std::sync::LazyLock<svg::Handle> =
     std::sync::LazyLock::new(|| svg::Handle::from_memory(include_bytes!("../assets/beeper.svg")));
+svg_static!(TAKE_BEEPER, include_bytes!("../assets/take_beeper.svg"));
+// Desktop's QR code of `https://www.beeper.com/download`.
+svg_static!(APP_QR, include_bytes!("../assets/app_qr.svg"));
 
 pub fn short_title(c: &Chat) -> &str {
     let first_word = c.chat_type != "group" && c.title.chars().any(char::is_alphabetic);
@@ -2240,6 +2245,8 @@ pub struct BeeperGuiApp {
     /// The pref that a search result opened, which flashes for 2 s.
     pref_flash: Option<(&'static str, std::time::Instant)>,
     pub adding_account: bool,
+    /// "Get the app" in Settings > Devices shows the QR code.
+    app_qr: bool,
     /// The account of Desktop's account page in Settings > Accounts.
     pub account_page: Option<String>,
     pub show_right_panel: bool,
@@ -2378,6 +2385,7 @@ impl BeeperGuiApp {
             settings_pick: None,
             pref_flash: None,
             adding_account: false,
+            app_qr: false,
             account_page: None,
             show_right_panel: panel,
             quick_look_target: None,
@@ -4152,7 +4160,7 @@ impl BeeperGuiApp {
             UiMessage::SelectSettingsTab(t) => {
                 let top = operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
                 self.active_settings_tab = t;
-                self.account_page = None;
+                (self.account_page, self.app_qr) = (None, false);
                 return Task::batch([top, self.load_devices()]);
             }
             UiMessage::DevicesLoaded(r) => self.devices = Some(r),
@@ -4690,6 +4698,7 @@ impl BeeperGuiApp {
             }
             UiMessage::OpenSettings(tab) => return self.open_settings(tab),
             UiMessage::ToggleAddAccount => self.adding_account ^= true,
+            UiMessage::ShowAppQr => self.app_qr = true,
             UiMessage::OpenAccount(id) => {
                 self.account_page = id;
                 return operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
@@ -8965,6 +8974,33 @@ impl BeeperGuiApp {
         pref_row(p, "Verify with another device", desc, None, control)
     }
 
+    /// Desktop's `TakeBeeperWithYou` card.
+    fn take_beeper(&self) -> El<'_> {
+        let p = &self.pal;
+        let action: El<'_> = match self.app_qr {
+            true => container(svg(APP_QR.clone()).width(108).height(108))
+                .padding(4)
+                .style(fill_box(Color::WHITE, 8.0))
+                .into(),
+            false => button(
+                row![tinted(&QR_CODE, 14.0, Color::WHITE), txt(tr("Get the app"), 11.0).color(Color::WHITE)]
+                    .spacing(2)
+                    .align_y(Center),
+            )
+            .padding([4, 8])
+            .style(btn_style([p.accent; 3], [Color::WHITE; 3], 20.0))
+            .on_press(UiMessage::ShowAppQr)
+            .into(),
+        };
+        let heading = semi(tr("Take Beeper with you"), 16.0).line_height(Pixels(20.0)).color(p.strong);
+        let card = column![svg(TAKE_BEEPER.clone()).width(58).height(48), heading, action].spacing(12).align_x(Center);
+        container(card)
+            .center_x(Fill)
+            .padding(Padding::new(8.0).top(20.0).bottom(12.0))
+            .style(fill_box(p.prefs_group, 12.0))
+            .into()
+    }
+
     fn device_list<'a>(&self, title: &'a str, list: &[&DeviceInfo]) -> El<'a> {
         let p = &self.pal;
         let rows = list.iter().enumerate().flat_map(|(i, d)| {
@@ -9223,7 +9259,7 @@ impl BeeperGuiApp {
                         self.sas_row(st),
                     ],
                 );
-                let mut out = match &self.devices {
+                let lists = match &self.devices {
                     None => Vec::new(),
                     Some(Err(e)) => vec![txt(e.clone(), 13.0).color(p.danger).into()],
                     Some(Ok(all)) => [
@@ -9236,8 +9272,8 @@ impl BeeperGuiApp {
                     .map(|(title, list)| self.device_list(title, &list))
                     .collect(),
                 };
-                out.push(encryption);
-                out
+                let page = column![self.take_beeper(), Space::new().height(8)].extend(lists);
+                vec![page.into(), encryption]
             }
             SettingsTab::Ai => Vec::new(),
             SettingsTab::BeeperPlus => vec![group(
