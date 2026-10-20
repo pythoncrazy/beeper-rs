@@ -448,6 +448,9 @@ pub enum UiMessage {
     PickFiles,
     FilesPicked(Result<Vec<std::path::PathBuf>, String>),
     FilesLoaded(Result<Vec<PendingMedia>, String>),
+    /// A file drag enters (true) or leaves a window.
+    FileHover(window::Id, bool),
+    FileDropped(window::Id, std::path::PathBuf),
     LinkPreviewLoaded(String, Result<Option<beeper_core::cloud::PagePreview>, String>),
     RemoveLinkPreview(String),
     PickEmoji(usize),
@@ -2123,6 +2126,9 @@ pub struct BeeperGuiApp {
     pub hotkey_query: String,
     /// The search text of the open Keyboard Shortcuts list, and whether the list scrolled down.
     pub hotkeys_modal: Option<String>,
+    /// Desktop's `FileDropOverlay` shows, and Shift was down at a drop, so the dropped files are sent.
+    dropping: bool,
+    drop_send: bool,
     hotkeys_scrolled: bool,
     pub show_filter_menu: bool,
     /// The chat whose context menu is open, and where it opens in the window.
@@ -2264,6 +2270,8 @@ impl BeeperGuiApp {
             selected_account_filter: None,
             hotkey_query: String::new(),
             hotkeys_modal: None,
+            dropping: false,
+            drop_send: false,
             hotkeys_scrolled: false,
             show_filter_menu: false,
             chat_menu: None,
@@ -4299,10 +4307,30 @@ impl BeeperGuiApp {
                 }
                 Err(e) => self.status_banner = e,
             },
+            UiMessage::FilesLoaded(Ok(_)) if self.pane.editing_message_id.is_some() => {
+                self.status_banner = tr("Attachments can't be added while editing a message").into();
+            }
             UiMessage::FilesLoaded(r) => match r {
-                Ok(files) => self.pane.attachments.extend(files),
+                Ok(files) => {
+                    self.pane.attachments.extend(files);
+                    if self.drop_send {
+                        self.submit_composer(false);
+                    }
+                }
                 Err(e) => self.status_banner = e,
             },
+            UiMessage::FileHover(id, on) if Some(id) == self.main_window => {
+                self.dropping = on && self.pane.selected_chat_id.is_some();
+                self.drop_send &= !on;
+            }
+            UiMessage::FileDropped(id, path)
+                if Some(id) == self.main_window && self.pane.selected_chat_id.is_some() =>
+            {
+                self.dropping = false;
+                self.drop_send |= self.mods.shift();
+                return self.update(UiMessage::FilesPicked(Ok(vec![path])));
+            }
+            UiMessage::FileHover(..) | UiMessage::FileDropped(..) => {}
             UiMessage::LinkPreviewLoaded(url, r) => {
                 let entry =
                     self.pane.composer_links.iter_mut().find(|(u, s)| *u == url && matches!(s, LinkState::Loading));
@@ -5065,6 +5093,9 @@ impl BeeperGuiApp {
             Event::Window(window::Event::Resized(size)) => Some(UiMessage::WindowResized(id, size)),
             Event::Window(window::Event::Focused) => Some(UiMessage::WindowFocused(true)),
             Event::Window(window::Event::Unfocused) => Some(UiMessage::WindowFocused(false)),
+            Event::Window(window::Event::FileHovered(_)) => Some(UiMessage::FileHover(id, true)),
+            Event::Window(window::Event::FilesHoveredLeft) => Some(UiMessage::FileHover(id, false)),
+            Event::Window(window::Event::FileDropped(path)) => Some(UiMessage::FileDropped(id, path)),
             Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => Some(UiMessage::Modifiers(m)),
             Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Escape), modifiers, .. })
                 if status == iced::event::Status::Captured && modifiers.is_empty() =>
@@ -6763,7 +6794,19 @@ impl BeeperGuiApp {
                 let right = if secondary { 112.0 } else { 82.0 };
                 container(e).align_right(Fill).align_bottom(Fill).padding(Padding::ZERO.right(right).bottom(36.0))
             });
-        let pane = stack![pane].push(picker).push(self.view_suggestions(&st));
+        let dropping = self.dropping.then(|| {
+            let hint =
+                column![bold(tr("Drop files here to attach"), 15.0), bold(tr("Hold Shift to send immediately"), 13.0)];
+            // Desktop blurs the chat 10px under a 0.2 background; iced has no backdrop blur.
+            let zone = container(hint.spacing(12).align_x(Center)).center(Fill).style(bordered_box(
+                Color { a: 0.85, ..p.card },
+                Color { a: 0.2, ..p.text },
+                10.0,
+                0.0,
+            ));
+            container(zone).padding(Padding { top: 39.0, right: 13.0, bottom: 6.5, left: 6.5 })
+        });
+        let pane = stack![pane].push(picker).push(self.view_suggestions(&st)).push(dropping);
         let shadow = Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.18), offset: Vector::ZERO, blur_radius: 20.0 };
         let card = fill_box(p.card, 10.0);
         container(pane)
