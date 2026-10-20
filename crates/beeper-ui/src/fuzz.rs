@@ -201,7 +201,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         15 => UiMessage::ComposerChanged(text),
         16 => UiMessage::SubmitComposer,
         17 => UiMessage::CancelComposeMode,
-        18 => UiMessage::StepMessage(rng.coin()),
+        18 => UiMessage::StepMessage(rng.coin(), rng.coin()),
         19 => UiMessage::OpenSettings(*rng.pick(&SettingsTab::ALL)),
         20 => UiMessage::SelectSettingsTab(*rng.pick(&SettingsTab::ALL)),
         21 => UiMessage::SettingsQueryChanged(text),
@@ -455,11 +455,64 @@ fn arrow_keys_step_over_a_deleted_selected_message() {
         let i = st.msg_idx_by_id[&mid];
         st.messages[i].is_deleted = Some(true);
     }
-    let _ = app.update(UiMessage::StepMessage(true));
-    assert_eq!(app.pane.selected_msg.as_ref(), ids.last());
+    let _ = app.update(UiMessage::StepMessage(true, false));
+    assert_eq!(app.pane.selected_msgs.last(), ids.last());
     let _ = app.update(UiMessage::ClickMessage(mid));
-    let _ = app.update(UiMessage::StepMessage(false));
-    assert_eq!(app.pane.selected_msg.as_ref(), Some(&ids[ids.len() - 3]));
+    let _ = app.update(UiMessage::StepMessage(false, false));
+    assert_eq!(app.pane.selected_msgs, [ids[ids.len() - 3].clone()]);
+}
+
+#[test]
+fn messages_select_like_desktop() {
+    let mut app = demo_app("multi");
+    let chat = "!note_self:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(chat.into()));
+    let ids: Vec<String> = {
+        let st = app.store.read();
+        st.chat_msg_indices[chat].iter().map(|&i| st.messages[i].id.clone()).collect()
+    };
+    let n = ids.len();
+    let key = |app: &mut BeeperGuiApp, k: Named, m| app.update(UiMessage::KeyPressed(Key::Named(k), m));
+    let _ = key(&mut app, Named::ArrowUp, Modifiers::empty());
+    let _ = key(&mut app, Named::ArrowUp, Modifiers::SHIFT);
+    let _ = key(&mut app, Named::ArrowUp, Modifiers::SHIFT);
+    assert_eq!(
+        app.pane.selected_msgs,
+        [ids[n - 1].as_str(), ids[n - 2].as_str(), ids[n - 3].as_str()],
+        "Shift Up adds the previous message"
+    );
+    let _ = key(&mut app, Named::ArrowDown, Modifiers::SHIFT);
+    assert_eq!(app.pane.selected_msgs.len(), 3, "Shift Down past the last message adds nothing");
+    let _ = key(&mut app, Named::ArrowUp, Modifiers::empty());
+    assert_eq!(app.pane.selected_msgs, [ids[n - 2].as_str()], "Up goes from the last selected message");
+    let _ = app.update(UiMessage::Modifiers(Modifiers::CTRL));
+    let _ = app.update(UiMessage::ClickMessage(ids[n - 2].clone()));
+    let _ = app.update(UiMessage::ClickMessage(ids[0].clone()));
+    assert_eq!(app.pane.selected_msgs, [ids[0].as_str()], "Ctrl click toggles a message");
+    let _ = app.update(UiMessage::Modifiers(Modifiers::SHIFT));
+    let _ = app.update(UiMessage::ClickMessage(ids[2].clone()));
+    assert_eq!(
+        app.pane.selected_msgs,
+        [ids[0].as_str(), ids[1].as_str(), ids[2].as_str()],
+        "Shift click adds the range"
+    );
+    let _ = app.update(UiMessage::Modifiers(Modifiers::empty()));
+    let _ = app.update(UiMessage::ClickMessage(ids[1].clone()));
+    assert_eq!(
+        app.pane.selected_msgs,
+        [ids[0].as_str(), ids[2].as_str()],
+        "a click on a selected message unselects it"
+    );
+    let _ = app.update(UiMessage::ClickMessage(ids[3].clone()));
+    assert_eq!(app.pane.selected_msgs, [ids[3].as_str()], "a click selects only the message");
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("a".into()), Modifiers::COMMAND));
+    assert_eq!(app.pane.selected_msgs, ids, "Ctrl A selects all messages");
+    let _ = key(&mut app, Named::Escape, Modifiers::empty());
+    assert!(app.pane.selected_msgs.is_empty());
+    let _ = key(&mut app, Named::Escape, Modifiers::empty());
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("a".into()), Modifiers::COMMAND));
+    let list = app.list_ids(&app.store.read());
+    assert!(app.selection == list && app.pane.selected_chat_id == list.first().cloned(), "Ctrl A selects all chats");
 }
 
 #[test]
