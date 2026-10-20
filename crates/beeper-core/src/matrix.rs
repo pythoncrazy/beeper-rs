@@ -846,6 +846,8 @@ pub enum MediaInfo {
     Image(u32, u32),
     /// A recorded voice note: its length and its waveform, with values from 0 to 1.
     Voice { ms: u64, wave: Vec<f32> },
+    /// An other file, which Matrix shows by its MIME type.
+    File,
 }
 
 pub async fn flush(store: SharedStore) -> Result<(), String> {
@@ -997,7 +999,9 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             sent(txn, sent_id.await.map_err(e)?.response.event_id);
         }
         Outgoing::Media { txn, bytes: data, name, mime, info, caption, reply_to } => {
-            use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo, BaseImageInfo};
+            use matrix_sdk::attachment::{
+                AttachmentConfig, AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo,
+            };
             use matrix_sdk::room::reply::{EnforceThread, Reply};
             let reply = reply_to
                 .map(|r| {
@@ -1022,6 +1026,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                     size,
                     waveform: Some(wave),
                 }),
+                MediaInfo::File => AttachmentInfo::File(BaseFileInfo { size }),
             };
             let caption = caption.map(matrix_sdk::ruma::events::room::message::TextMessageEventContent::plain);
             let config = AttachmentConfig::new().txn_id(txn.clone().into()).info(info).caption(caption).reply(reply);

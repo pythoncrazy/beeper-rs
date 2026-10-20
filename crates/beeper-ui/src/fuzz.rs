@@ -373,6 +373,44 @@ fn composer_enter_follows_the_hotkeys() {
 }
 
 #[test]
+fn attachments_send_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("attach");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    let mut png = Vec::new();
+    ::image::RgbaImage::new(3, 2).write_to(&mut std::io::Cursor::new(&mut png), ::image::ImageFormat::Png).unwrap();
+    let file = |name: &str, bytes: &[u8]| {
+        let path = std::env::temp_dir().join(format!("beeper-rs-{}-{name}", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let f = portal::load_file(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        PendingMedia { name: name.into(), ..f }
+    };
+    let files = vec![file("a.png", &png), file("b.pdf", b"%PDF")];
+    let _ = app.update(UiMessage::FilesLoaded(Ok(files.clone())));
+    assert!(simulator(app.view_main()).find("PDF ・ 4 B").is_ok(), "a file shows its type and size");
+    let _ = app.update(UiMessage::ComposerChanged("hi".into()));
+    let _ = app.update(UiMessage::SubmitComposer);
+    let last = |app: &BeeperGuiApp, n: usize| {
+        let st = app.store.read();
+        let ids = &st.chat_msg_indices[note];
+        let msgs = ids[ids.len() - n..].iter().map(|&i| &st.messages[i]);
+        msgs.map(|m| (m.text.clone(), m.attachments.iter().map(|a| a.attachment_type.clone()).collect())).collect()
+    };
+    let sent: Vec<(Option<String>, Vec<String>)> = last(&app, 3);
+    let want = [(Some("hi".into()), vec![]), (None, vec!["img".into()]), (None, vec!["file".into()])];
+    assert_eq!(sent, want, "the text first, then each attachment");
+    assert!(app.pane.attachments.is_empty() && app.pane.composer.text().is_empty());
+    let _ = app.update(UiMessage::FilesLoaded(Ok(files[1..].to_vec())));
+    let _ = app.update(UiMessage::ComposerChanged("cap".into()));
+    let _ = app.update(UiMessage::SubmitComposer);
+    assert_eq!(last(&app, 1), [(Some("cap".into()), vec!["file".into()])], "one attachment has the text as caption");
+    let _ = app.update(UiMessage::FilesLoaded(Ok(files)));
+    let _ = app.update(UiMessage::DiscardAttachment(0));
+    assert_eq!(app.pane.attachments.len(), 1);
+}
+
+#[test]
 fn emoticons_follow_the_setting() {
     use iced_test::simulator::typewrite;
     let mut app = demo_app("emoticons");
