@@ -269,6 +269,7 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Cycle Chats (hold shift to reverse)", "Chats", "ctrl+tab"),
     ("History: Next Chat", "Chats", "ctrl+alt+right"),
     ("History: Previous Chat", "Chats", "ctrl+alt+left"),
+    ("Open User Profile", "Chats", "ctrl+shift+o"),
     ("Scroll to the bottom of a chat", "Chats", "ctrl+down"),
     ("Select Next Chat", "Chats", "ctrl+], ctrl+alt+down"),
     ("Select Next Unread Chat", "Chats", "ctrl+u"),

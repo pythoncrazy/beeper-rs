@@ -594,6 +594,22 @@ fn network_name(account_id: &str) -> &'static str {
     account_network(account_id).display_name
 }
 
+/// Desktop's `userProfileLink`: the web profile of the other person of a chat, on the networks that have one.
+fn profile_link(c: &Chat) -> Option<String> {
+    use beeper_core::models::NetworkKind::*;
+    let u = c.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| c.chat_type == "single")?;
+    let name = u.username.as_deref().unwrap_or_default();
+    Some(match account_network(&c.account_id).kind {
+        TwitterX => format!("https://x.com/{name}"),
+        Telegram => format!("https://t.me/{name}"),
+        Instagram => format!("https://www.instagram.com/{name}/"),
+        LinkedIn => format!("https://www.linkedin.com/in/{name}/"),
+        Tumblr => format!("https://www.tumblr.com/{name}"),
+        IMessage => format!("imessage://{}", u.email.as_deref().or(u.phone_number.as_deref()).unwrap_or_default()),
+        _ => return None,
+    })
+}
+
 fn brand_key(account_id: &str) -> &'static str {
     account_network(account_id).bridge_id
 }
@@ -3107,6 +3123,11 @@ impl BeeperGuiApp {
                 None
             }
             "Chat: Send File" => chat.map(|_| UiMessage::PickFiles),
+            "Open User Profile" => {
+                let st = self.store.read();
+                let c = chat.as_deref().and_then(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]);
+                c.and_then(profile_link).map(UiMessage::OpenUrl)
+            }
             "Message: Send Message and Archive" => chat.map(|_| UiMessage::SendAndArchive),
             "Send Message" | "Insert New Line" => None,
             "Minimize To Tray" => return self.set_hidden(true),
