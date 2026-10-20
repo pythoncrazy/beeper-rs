@@ -1,4 +1,5 @@
 mod anim;
+mod commands;
 mod cursor;
 pub mod emoji;
 mod format;
@@ -365,8 +366,14 @@ pub enum UiMessage {
     Downloaded(Result<String, String>),
     AskDeleteMessage(String),
     ArchiveStale,
-    /// Archives the read chats, after Desktop's confirmation.
-    ArchiveAllRead,
+    /// Archives the inbox chats, or only the read ones, with no activity in the days, after Desktop's confirmation.
+    ArchiveAll(bool, i64),
+    MarkAllRead,
+    ToggleMaximize,
+    RunHotkey(&'static str),
+    /// Runs the messages in order.
+    Commands(Vec<UiMessage>),
+    CommandHighlight(usize),
     NicknameChanged(String),
     SaveNickname,
     ToggleFilterMenu,
@@ -723,6 +730,9 @@ const ASK_DISMISS_REMINDERS: u8 = 1;
 const ASK_DELETE_CHAT: u8 = 2;
 const ASK_DELETE_MESSAGE: u8 = 3;
 const ASK_ARCHIVE_READ: u8 = 4;
+const ASK_ARCHIVE_ALL: u8 = 5;
+const ASK_ARCHIVE_WEEK: u8 = 6;
+const ASK_MARK_ALL_READ: u8 = 7;
 /// Desktop's default "Quick reaction emoji".
 /// Wide enough for "Copy Entire Message with Timestamp" on one line.
 const MESSAGE_MENU_W: f32 = 270.0;
@@ -2127,6 +2137,8 @@ pub struct BeeperGuiApp {
     pub gif_error: Option<String>,
     pub command_palette_query: String,
     pub cmd_bar_commands_mode: bool,
+    /// The highlighted command.
+    pub cmd_index: usize,
     pub search_expanded: bool,
     pub creating_chat: Option<u32>,
     pub new_chats: Vec<u32>,
@@ -2260,6 +2272,7 @@ impl BeeperGuiApp {
             gif_error: None,
             command_palette_query: String::new(),
             cmd_bar_commands_mode: false,
+            cmd_index: 0,
             search_expanded: false,
             creating_chat: None,
             new_chats: Vec::new(),
@@ -3438,13 +3451,15 @@ impl BeeperGuiApp {
                 drop(st);
                 self.refresh_theme_and_tray();
             }
-            m @ (UiMessage::ArchiveStale | UiMessage::ArchiveAllRead) => {
+            m @ (UiMessage::ArchiveStale | UiMessage::ArchiveAll(..)) => {
                 self.confirm = None;
                 {
                     let mut st = self.store.write();
-                    let chats = match matches!(m, UiMessage::ArchiveAllRead) {
-                        true => st.inbox_chats_before(true, now_unix_millis()),
-                        false => st.stale_inbox_chats(),
+                    let chats = match m {
+                        UiMessage::ArchiveAll(read, days) => {
+                            st.inbox_chats_before(read, now_unix_millis() - days * 86_400_000)
+                        }
+                        _ => st.stale_inbox_chats(),
                     };
                     for idx in chats {
                         assert!(st.set_chat_flag(idx, ChatFlag::Archived, Some(true)));
@@ -3474,6 +3489,22 @@ impl BeeperGuiApp {
                 if let Some(at) = at.filter(|_| flag == ChatFlag::Archived && moved && selected) {
                     return self.after_action("afterArchive", &list, at, true);
                 }
+            }
+            UiMessage::MarkAllRead => {
+                self.confirm = None;
+                let mut st = self.store.write();
+                let unread: Vec<String> = self
+                    .visible_chats(&st)
+                    .iter()
+                    .filter(|c| c.flags & CHAT_UNREAD != 0)
+                    .map(|c| c.id.clone())
+                    .collect();
+                for id in unread {
+                    let idx = st.resolve_chat_idx(&id).expect("a listed chat");
+                    self.mark_read(&mut st, idx);
+                }
+                drop(st);
+                self.refresh_theme_and_tray();
             }
             UiMessage::ToggleRead(cid) => {
                 let mut st = self.store.write();
@@ -3864,7 +3895,7 @@ impl BeeperGuiApp {
                     self.search_filters = SearchFilters::default();
                 }
                 self.show_command_palette ^= self.search_room.take().is_none() || !self.show_command_palette;
-                self.cmd_bar_commands_mode = false;
+                (self.cmd_bar_commands_mode, self.cmd_index) = (false, 0);
                 self.search_expanded = false;
                 if self.show_command_palette {
                     return operation::focus("cmd-palette-input");
@@ -3877,11 +3908,17 @@ impl BeeperGuiApp {
                 return operation::focus("cmd-palette-input");
             }
             UiMessage::ToggleCommandMode => {
-                self.cmd_bar_commands_mode = !self.cmd_bar_commands_mode;
+                (self.cmd_bar_commands_mode, self.cmd_index) = (!self.cmd_bar_commands_mode, 0);
                 return operation::focus("cmd-palette-input");
             }
             UiMessage::ToggleSearchExpanded => self.search_expanded = !self.search_expanded,
-            UiMessage::CommandQueryChanged(q) => self.command_palette_query = q,
+            UiMessage::CommandQueryChanged(q) => (self.command_palette_query, self.cmd_index) = (q, 0),
+            UiMessage::CommandHighlight(i) => self.cmd_index = i,
+            UiMessage::Commands(msgs) => {
+                return Task::batch(msgs.into_iter().map(|m| self.update(m)).collect::<Vec<_>>())
+            }
+            UiMessage::RunHotkey(name) => return self.run_hotkey(name, 0),
+            UiMessage::ToggleMaximize => return window::toggle_maximize(self.main_window.expect("the main window")),
             UiMessage::JumpTo(cid, mid) => {
                 (self.show_command_palette, self.command_palette_query) = (false, String::new());
                 self.select_chat(&cid);
@@ -4728,6 +4765,25 @@ impl BeeperGuiApp {
                             return Task::none();
                         }
                         _ => {}
+                    }
+                }
+                if self.show_command_palette && self.cmd_bar_commands_mode && mods.is_empty() {
+                    let cmds = self.commands(&self.store.read(), self.command_palette_query.trim());
+                    let n = cmds.len().max(1);
+                    let step = match key.as_ref() {
+                        Key::Named(Named::ArrowDown) => Some(1),
+                        Key::Named(Named::ArrowUp) => Some(n - 1),
+                        Key::Named(Named::Enter) => {
+                            let Some(m) = cmds.into_iter().nth(self.cmd_index).and_then(|c| c.msg) else {
+                                return Task::none();
+                            };
+                            return self.update(UiMessage::Commands(vec![UiMessage::CloseModals, m]));
+                        }
+                        _ => None,
+                    };
+                    if let Some(by) = step {
+                        self.cmd_index = (self.cmd_index + by) % n;
+                        return locate(format!("cmd-{}", self.cmd_index), commands::COMMANDS, true);
                     }
                 }
                 match key.as_ref() {
@@ -7423,29 +7479,8 @@ impl BeeperGuiApp {
             .padding(Padding::new(6.0).left(13.0).right(8.0));
         let q = self.command_palette_query.trim().to_lowercase();
         if self.cmd_bar_commands_mode {
-            let cmds: [(&str, UiMessage); 4] = [
-                (tr("Create new chat"), UiMessage::NewChat),
-                (tr("Search messages in all chats"), UiMessage::ToggleCommandMode),
-                (tr("Open settings"), UiMessage::OpenSettings(self.active_settings_tab)),
-                ("Toggle chat info", UiMessage::ToggleRightPanel),
-            ];
-            let list = cmds.into_iter().filter(|(t, _)| t.to_lowercase().contains(&q)).enumerate().fold(
-                Column::new().padding([4, 6]),
-                |col, (i, (title, msg))| {
-                    let bg = if i == 0 { p.chip } else { CLEAR };
-                    col.push(
-                        button(container(semi(title, 13.0).color(p.strong)).center_y(36))
-                            .padding([0, 12])
-                            .width(Fill)
-                            .style(btn_style([bg, p.chip, p.selected], [p.strong; 3], 8.0))
-                            .on_press(msg),
-                    )
-                },
-            );
-            return frame(column![
-                inputs,
-                scrollable(list).direction(bar()).height(Fill).style(scroll_style(p.scroll))
-            ]);
+            let cmds = self.commands(&st, self.command_palette_query.trim());
+            return frame(column![inputs, self.view_commands(&st, &cmds)]);
         }
         let hint =
             self.pane().selected_chat_id.as_deref().and_then(|cid| st.resolve_chat_idx(cid).map(|i| &st.chats[i])).map(
@@ -8644,21 +8679,30 @@ impl BeeperGuiApp {
                 let delete = vec![(tr("Delete"), UiMessage::DeleteMessage(cid, mid))];
                 (tr("Delete message").into(), tr("Are you sure you want to delete this message?").into(), delete)
             }
-            ASK_ARCHIVE_READ => {
+            d @ (ASK_ARCHIVE_READ | ASK_ARCHIVE_ALL) => {
+                let read = d == ASK_ARCHIVE_READ;
+                let mask = CHAT_ARCHIVED | CHAT_PINNED | if read { CHAT_UNREAD } else { 0 };
                 let st = self.store.read();
-                let n = self
-                    .visible_chats(&st)
-                    .iter()
-                    .filter(|c| c.flags & (CHAT_UNREAD | CHAT_ARCHIVED | CHAT_PINNED) == 0)
-                    .count();
+                let n = self.visible_chats(&st).iter().filter(|c| c.flags & mask == 0).count();
                 let body = trn(
                     "This will archive %d chat and any older chats from this point in time",
                     "This will archive %d chats and any older chats from this point in time",
                     n,
                     &[&n],
                 );
-                let archive = vec![(trx("Archive", "archive confirmation button"), UiMessage::ArchiveAllRead)];
-                (tr("Archive all read chats").into(), body, archive)
+                let archive = vec![(trx("Archive", "archive confirmation button"), UiMessage::ArchiveAll(read, 0))];
+                (tr(if read { "Archive all read chats" } else { "Archive all chats" }).into(), body, archive)
+            }
+            ASK_ARCHIVE_WEEK => (
+                tr("Archive all chats older than a week").into(),
+                tr("This will also archive any other older chats from a week ago").into(),
+                vec![(trx("Archive", "archive confirmation button"), UiMessage::ArchiveAll(false, 7))],
+            ),
+            ASK_MARK_ALL_READ => {
+                let n = self.visible_chats(&self.store.read()).iter().filter(|c| c.flags & CHAT_UNREAD != 0).count();
+                let title = trn("Mark %d thread as read", "Mark %d threads as read", n, &[&n]);
+                let body = tr("Are you sure you want to mark all chats as read?").into();
+                (title, body, vec![(tr("Mark as Read"), UiMessage::MarkAllRead)])
             }
             _ => unreachable!("dialog {dialog}"),
         };

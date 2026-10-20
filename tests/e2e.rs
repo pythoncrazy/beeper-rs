@@ -1011,6 +1011,25 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let _ = gui.update(key(Named::Tab, Modifiers::CTRL));
         assert_eq!(selected(&gui), ids[2], "releasing Ctrl moves the chat to the front");
         let _ = gui.update(UiMessage::Modifiers(Modifiers::empty()));
+        let _ = gui.update(UiMessage::KeyPressed(Key::Character("j".into()), Modifiers::CTRL));
+        assert!(gui.show_command_palette && gui.cmd_bar_commands_mode, "Ctrl J opens the commands");
+        {
+            let mut sim = simulator(gui.view_main());
+            for title in ["Archive all chats", "Toggle sidebar", "Media viewer", "Report a problem", "Window"] {
+                assert!(sim.find(title).is_ok(), "the commands have {title}");
+            }
+        }
+        let _ = gui.update(UiMessage::CommandQueryChanged("sidebar".into()));
+        let _ = gui.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+        assert!(gui.sidebar_hidden && !gui.show_command_palette, "Enter runs the best match and closes the bar");
+        let _ = gui.update(UiMessage::RunHotkey("Toggle Sidebar"));
+        let _ = gui.update(UiMessage::KeyPressed(Key::Character("j".into()), Modifiers::CTRL));
+        let _ = gui.update(UiMessage::CommandQueryChanged("magnify".into()));
+        let _ = gui.update(UiMessage::KeyPressed(Key::Named(Named::ArrowDown), Modifiers::empty()));
+        assert_eq!(gui.cmd_index, 1, "Down highlights the next command");
+        let _ = gui.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+        assert!(gui.zoom < 1.0, "a keyword finds Zoom out");
+        let _ = gui.update(UiMessage::RunHotkey("Reset Zoom"));
         let _ = gui.update(UiMessage::KeyPressed(Key::Character("/".into()), Modifiers::CTRL));
         assert!(simulator(gui.view_main()).find("Unselect Chat / Select First Chat").is_ok(), "Ctrl / lists the keys");
         let _ = gui.update(UiMessage::HotkeysModal(Some("zoom".into())));
