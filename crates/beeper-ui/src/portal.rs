@@ -41,6 +41,7 @@ pub async fn open_files(_dest: String, _title: String) -> Result<Vec<PathBuf>, S
 }
 
 /// The paths of a portal Response: code 0 is a choice, 1 a cancel and 2 an error.
+#[cfg(target_os = "linux")]
 fn picked(code: u32, uris: Vec<String>) -> Result<Vec<PathBuf>, String> {
     match code {
         0 => uris.iter().map(|u| file_path(u).ok_or(format!("The file chooser gave a bad file: {u}"))).collect(),
@@ -49,6 +50,7 @@ fn picked(code: u32, uris: Vec<String>) -> Result<Vec<PathBuf>, String> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn file_path(uri: &str) -> Option<PathBuf> {
     beeper_core::codec::url_decode(uri.strip_prefix("file://")?).map(PathBuf::from)
 }
@@ -85,6 +87,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn portal_answers_give_paths() {
         assert_eq!(picked(0, vec!["file:///tmp/a%20b.txt".into()]), Ok(vec![PathBuf::from("/tmp/a b.txt")]));
         assert_eq!(picked(1, vec![]), Ok(vec![]));
