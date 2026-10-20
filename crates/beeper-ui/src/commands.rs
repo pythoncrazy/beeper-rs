@@ -21,6 +21,8 @@ pub(crate) struct Command {
     pub digit: Option<usize>,
     /// The account that Desktop draws with its network icon before the title.
     pub account: Option<String>,
+    /// Desktop's `time-suggestion`: the words on the left and the time on the right, in place of the title.
+    pub render: Option<(String, String)>,
     /// The chat that Desktop draws in place of the title.
     pub chat: Option<String>,
     pub msg: Option<UiMessage>,
@@ -35,6 +37,7 @@ fn cmd(category: &'static str, title: impl Into<String>, msg: Option<UiMessage>)
         hotkey: None,
         digit: None,
         account: None,
+        render: None,
         chat: None,
         msg,
     }
@@ -59,23 +62,108 @@ pub(crate) const COMMANDS: &str = "commands";
 const SPACES: &str = "Switch First 9 Spaces Modifier";
 
 /// A command bar submenu of Desktop (`showWithSubMenu`).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SubMenu {
     FilterAccount,
+    /// The times for a reminder on a chat.
+    Remind(String),
 }
 
 impl SubMenu {
-    pub(crate) fn heading(self) -> &'static str {
+    pub(crate) fn heading(&self) -> &'static str {
         match self {
             SubMenu::FilterAccount => tr("Filter account"),
+            SubMenu::Remind(_) => tr("Remind Me"),
+        }
+    }
+
+    pub(crate) fn placeholder(&self) -> String {
+        match self {
+            SubMenu::FilterAccount => String::new(),
+            SubMenu::Remind(_) => {
+                tr("When? (try typing something like %s)").replacen("%s", "\"Monday morning at 9\"", 1)
+            }
         }
     }
 }
 
+/// Desktop's `tGe`: the phrases that the Remind Me submenu also offers.
+const MORE_TIMES: [&str; 23] = [
+    "in an hour",
+    "tomorrow",
+    "this weekend",
+    "next monday",
+    "next week",
+    "next month",
+    "in a minute",
+    "in an hour",
+    "in a day",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "next year",
+    "next tuesday",
+    "next wednesday",
+    "next thursday",
+    "next friday",
+    "next saturday",
+    "next sunday",
+];
+
+/// Desktop's `toLocaleDateString()` and `toLocaleString()` in en-US, and the `hh:mm a` time.
+fn locale_times(at: i64) -> (String, String) {
+    let local = beeper_core::config::local_millis(at);
+    let (y, m, d) = beeper_core::config::civil_from_days(local.div_euclid(86_400_000));
+    let secs = local.div_euclid(1000).rem_euclid(86_400);
+    let (h, min, sec) = (secs / 3600, secs / 60 % 60, secs % 60);
+    let (h12, half) = ((h + 11) % 12 + 1, if h < 12 { "AM" } else { "PM" });
+    let date = format!("{m}/{d}/{y}");
+    (format!("{date}, {h12}:{min:02}:{sec:02} {half}"), format!("{date} {h12:02}:{min:02} {half}"))
+}
+
 impl BeeperGuiApp {
-    /// Desktop's `zXe`: all accounts, then each account with its network icon.
-    fn submenu_commands(&self, st: &BeeperStore, menu: SubMenu) -> Vec<Command> {
+    /// Desktop's `zXe`, all accounts and then each account with its network icon, and `qXe`, the times for a reminder.
+    fn submenu_commands(&self, st: &BeeperStore, menu: &SubMenu, query: &str) -> Vec<Command> {
+        let search = |v: Vec<Command>| match query.is_empty() {
+            true => v,
+            false => prefs::match_sort_keys(v, query, |c| {
+                std::iter::once(c.title.clone()).chain(c.keywords.iter().map(|k| k.to_string())).collect()
+            }),
+        };
         match menu {
+            SubMenu::Remind(id) => {
+                let Some(c) = st.resolve_chat_idx(id).map(|i| &st.chats[i]) else { return Vec::new() };
+                let now = beeper_core::config::now_unix_millis();
+                let count = query.parse::<u32>().ok().filter(|n| *n > 0);
+                let counted = [("minute", 100_000_000), ("hour", 1_000_000), ("day", 100_000), ("week", 10_000)];
+                let counted = counted.into_iter().filter_map(|(unit, max)| {
+                    let n = count.filter(|n| *n < max)?;
+                    Some(format!("{n} {unit}{}", if n == 1 { "" } else { "s" }))
+                });
+                let phrases = crate::TIME_SUGGESTIONS.iter().map(|s| s.to_string()).chain(counted);
+                let phrases = phrases.chain(MORE_TIMES.iter().map(|s| s.to_string())).chain([query.to_string()]);
+                let times = phrases.filter_map(|phrase| {
+                    let at = beeper_core::config::parse_when_millis(&phrase, now).filter(|at| *at > now)?;
+                    let (label, (long, short)) = (phrase.trim().to_lowercase(), locale_times(at));
+                    let msg = UiMessage::RemindIf(c.id.clone(), at, self.cmd_no_reply);
+                    Some(Command {
+                        render: Some((label.clone(), short)),
+                        ..cmd("", format!("{label} — {long}"), Some(msg))
+                    })
+                });
+                let mut seen = std::collections::HashSet::new();
+                let mut v: Vec<Command> = search(times.collect());
+                v.retain(|c| seen.insert(c.render.as_ref().map(|r| r.0.clone())));
+                v.extend(c.reminder.as_ref().map(|r| {
+                    let dismiss = cmd("", tr("dismiss reminder"), Some(UiMessage::SetReminder(c.id.clone(), None)));
+                    Command { render: Some((tr("dismiss reminder").into(), locale_times(r.remind_at_ms).1)), ..dismiss }
+                }));
+                v
+            }
             SubMenu::FilterAccount => {
                 let all = cmd("", tr("All Accounts"), Some(UiMessage::SelectTab(InboxTab::AllChats)));
                 let accounts = crate::rail_accounts(st).into_iter().filter(|a| crate::network_space(st, a).is_none());
@@ -89,21 +177,15 @@ impl BeeperGuiApp {
                     let pick = Command { digit: (i < 8).then_some(i + 2), ..pick.keys(&[network_name(&a)]) };
                     Command { account: Some(a), ..pick.hotkey(SPACES) }
                 });
-                std::iter::once(Command { digit: Some(1), ..all.hotkey(SPACES) }).chain(accounts).collect()
+                search(std::iter::once(Command { digit: Some(1), ..all.hotkey(SPACES) }).chain(accounts).collect())
             }
         }
     }
 
     /// The commands in Desktop's order, or the ones that match `query` with the best match first.
     pub(crate) fn commands(&self, st: &BeeperStore, query: &str) -> Vec<Command> {
-        if let Some(menu) = self.cmd_submenu {
-            let v = self.submenu_commands(st, menu);
-            return match query.is_empty() {
-                true => v,
-                false => prefs::match_sort_keys(v, query, |c| {
-                    std::iter::once(c.title.clone()).chain(c.keywords.iter().map(|k| k.to_string())).collect()
-                }),
-            };
+        if let Some(menu) = &self.cmd_submenu {
+            return self.submenu_commands(st, menu, query);
         }
         let hot = |name: &'static str| Some(UiMessage::RunHotkey(name));
         let chat = self.pane.selected_chat_id.as_deref().and_then(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]);
@@ -270,6 +352,12 @@ impl BeeperGuiApp {
         let alpha = if c.msg.is_some() { 1.0 } else { 0.7 };
         let title: El<'_> = match c.chat.as_deref().and_then(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]) {
             Some(chat) => self.command_chat(p, chat),
+            None if c.render.is_some() => {
+                let (left, right) = c.render.clone().unwrap_or_default();
+                let words = semi(left, 13.0).line_height(Pixels(16.0)).color(p.strong);
+                let right = semi(right, 13.0).line_height(Pixels(16.0)).color(p.strong);
+                row![words, Space::new().width(Fill), right].width(Fill).into()
+            }
             None if c.account.is_some() => {
                 let logo =
                     svg(brand_svg(crate::brand_key(c.account.as_deref().unwrap_or_default()))).width(20).height(20);
@@ -296,7 +384,8 @@ impl BeeperGuiApp {
             }))
             .spacing(4)
         });
-        let line = row![title, Space::new().width(Fill)].push(caps).spacing(8).align_y(Center);
+        let line = row![title].push(c.render.is_none().then(|| Space::new().width(Fill))).push(caps);
+        let line = line.spacing(8).align_y(Center);
         let bg = if lit { p.chip } else { CLEAR };
         let body = container(line).center_y(36).padding([0, 6]).style(fill_box(bg, 8.0));
         let body = container(body).padding([0, 6]).id(format!("cmd-{i}"));

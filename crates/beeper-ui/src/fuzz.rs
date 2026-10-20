@@ -452,6 +452,45 @@ fn filter_account_submenu_like_desktop() {
 }
 
 #[test]
+fn remind_submenu_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("remindsub");
+    let id = app.visible_chats(&app.store.read())[0].id.clone();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("l".into()), Modifiers::CTRL));
+    assert_eq!(app.cmd_submenu, Some(commands::SubMenu::Remind(id.clone())), "Ctrl L opens Remind Me");
+    let labels = |app: &BeeperGuiApp, q: &str| -> Vec<String> {
+        app.commands(&app.store.read(), q).into_iter().filter_map(|c| c.render.map(|r| r.0)).collect()
+    };
+    let all = labels(&app, "");
+    assert_eq!(all.iter().collect::<std::collections::HashSet<_>>().len(), all.len(), "no phrase shows twice");
+    assert!(all.contains(&"in two hours".into()) && all.contains(&"next sunday".into()), "{all:?}");
+    {
+        let mut sim = simulator(app.view_main());
+        assert!(sim.find("Remind Me").is_ok(), "the heading");
+        assert!(app.cmd_no_reply, "the choice starts at If no reply");
+        assert!(sim.find("Remind Me marks this chat as new at the scheduled time, if there is no reply.").is_ok());
+    }
+    let _ = app.update(UiMessage::CmdNoReply(false));
+    assert!(simulator(app.view_main()).find("Remind Me marks this chat as new at the scheduled time").is_ok());
+    let counted = labels(&app, "3");
+    for unit in ["3 minutes", "3 hours", "3 days", "3 weeks"] {
+        assert!(counted.contains(&unit.into()), "{unit} in {counted:?}");
+    }
+    let _ = app.update(UiMessage::CommandQueryChanged("friday at 5pm".into()));
+    assert_eq!(labels(&app, "friday at 5pm")[0], "friday at 5pm", "the typed time comes first");
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+    let at = parse_when_millis("friday at 5pm", now_unix_millis()).unwrap();
+    let st = app.store.read();
+    let r = st.chats[st.resolve_chat_idx(&id).unwrap()].reminder.clone().expect("a reminder");
+    assert!(r.remind_at_ms == at && !r.dismiss_on_incoming_message, "Always keeps the reminder after a reply");
+    drop(st);
+    let _ = app.update(UiMessage::OpenSubMenu(commands::SubMenu::Remind(id.clone())));
+    assert!(app.cmd_no_reply, "the choice starts at the setting");
+    assert_eq!(labels(&app, "").last().map(String::as_str), Some("dismiss reminder"));
+}
+
+#[test]
 fn profile_links_match_desktop() {
     let app = demo_app("profile");
     let st = app.store.read();
