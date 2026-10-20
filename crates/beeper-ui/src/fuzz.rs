@@ -174,10 +174,10 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
     ]);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
     let hits = search_settings(&text);
-    let branch = rng.below(63);
+    let branch = rng.below(65);
     let what =
         format!("message #{branch} chat {chat} message {msg} text {text:?} pref {} key {key:?} {mods:?}", pref.key);
-    let needs_msg = (7..=14).contains(&branch) || branch == 53;
+    let needs_msg = (7..=14).contains(&branch) || [53, 62].contains(&branch);
     let needs_chat = [16, 18].contains(&branch);
     if (needs_msg && !open) || (needs_chat && app.pane.selected_chat_id.is_none()) {
         return (what, UiMessage::Noop);
@@ -244,6 +244,8 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
             beeper_core::models::AccountProps { notifications: rng.coin(), previews: rng.coin(), silent: rng.coin() },
         ),
         61 => UiMessage::OpenChatMenu(format!("account:{}", rng.pick(&rail))),
+        62 => UiMessage::SelectMessages(vec![msg]),
+        63 => UiMessage::CopySelected(rng.coin()),
         _ => UiMessage::ToggleDnd,
     };
     (what, m)
@@ -618,6 +620,42 @@ fn media_carousel_draws() {
     let mid = app.store.read().messages.iter().find(|m| !m.attachments.is_empty()).map(|m| m.id.clone()).unwrap();
     let _ = app.update(UiMessage::OpenCarousel(mid, 0, true));
     drop(app.view(id));
+}
+
+#[test]
+fn selected_message_commands_like_desktop() {
+    let mut app = demo_app("msgcmds");
+    let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+    let linked: Vec<String> = {
+        let mut st = app.store.write();
+        let own = st.messages.iter_mut().filter(|m| m.chat_id == "!note_self:beeper.com" && m.is_sender == Some(true));
+        let linked = own.filter_map(|m| {
+            let url = m.text.as_deref()?.split_whitespace().find(|w| w.starts_with("https://"))?.to_string();
+            m.links = vec![beeper_core::models::MessageLink { url, title: "Title".into(), summary: None }];
+            Some(m.id.clone())
+        });
+        linked.collect()
+    };
+    assert!(linked.len() > 1, "the demo has links");
+    let _ = app.update(UiMessage::SelectMessages(linked[..1].to_vec()));
+    let cmds = app.commands(&app.store.read(), "");
+    let titles: Vec<&str> = cmds.iter().take_while(|c| c.category == "Message").map(|c| c.title.as_str()).collect();
+    assert_eq!(titles, ["Edit", "Forward", "Copy", "Copy with timestamps", "Open link", "Unselect", "Reply"]);
+    assert!(matches!(&cmds[4].msg, Some(UiMessage::OpenUrl(u)) if u.starts_with("https://")));
+    let _ = app.update(cmds[5].msg.clone().unwrap());
+    assert!(app.pane.selected_msgs.is_empty(), "Unselect clears the selection");
+    let _ = app.update(UiMessage::SelectMessages(linked[..2].to_vec()));
+    let cmds = app.commands(&app.store.read(), "");
+    let titles: Vec<&str> = cmds.iter().take_while(|c| c.category == "Messages").map(|c| c.title.as_str()).collect();
+    assert_eq!(titles, ["Forward", "Copy", "Copy with timestamps", "Open link", "Unselect"]);
+    let _ = app.update(UiMessage::Commands(vec![UiMessage::CloseModals, cmds[3].msg.clone().unwrap()]));
+    let rows = app.commands(&app.store.read(), "");
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter().all(|r| r.title.contains(" — https://")),
+        "{:?}",
+        rows.iter().map(|r| &r.title).collect::<Vec<_>>()
+    );
 }
 
 #[test]
