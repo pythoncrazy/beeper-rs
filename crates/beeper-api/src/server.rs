@@ -321,7 +321,7 @@ fn info(st: &BeeperStore) -> InfoResponse {
             hostname: st.config.host.clone(),
             mcp_enabled: true,
             port: st.config.port,
-            remote_access: false,
+            remote_access: st.config.remote,
             status: "ok".into(),
             base_url,
         },

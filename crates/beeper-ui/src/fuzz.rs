@@ -992,6 +992,26 @@ fn approved_connections_like_desktop() {
 }
 
 #[test]
+fn remote_access_like_desktop() {
+    let mut app = demo_app("remote");
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Integrations));
+    let _ = app.update(UiMessage::RemoteAccess(true));
+    assert!(
+        simulator(app.view_settings()).find("Enable Remote Access?").is_ok()
+            && !app.store.read().settings.remote_access
+    );
+    let _ = app.update(UiMessage::RemoteAccess(true));
+    assert!(app.store.read().settings.remote_access && app.confirm.is_none(), "Allow Remote Access turns it on");
+    assert_eq!(app.relaunch_toast, Some("Remote Access will be enabled after relaunch"));
+    let _ = app.update(UiMessage::RemoteAccess(false));
+    assert!(!app.store.read().settings.remote_access && app.confirm.is_none(), "off needs no confirmation");
+    app.store.write().config.launch_host = true;
+    let mut sim = simulator(app.view_settings());
+    let _ = sim.click("Remote Access");
+    assert!(sim.into_messages().all(|m| !matches!(m, UiMessage::RemoteAccess(_))), "--pas-hostname locks the toggle");
+}
+
+#[test]
 fn ai_settings_like_desktop() {
     let mut app = demo_app("ai");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::Ai));
