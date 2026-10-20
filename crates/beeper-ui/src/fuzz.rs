@@ -611,6 +611,16 @@ fn history_and_folder_submenus_like_desktop() {
 }
 
 #[test]
+fn media_carousel_draws() {
+    let mut app = demo_app("mediacarousel");
+    let _ = app.update(UiMessage::OpenMedia);
+    let id = app.media_window.as_ref().map(|w| w.id).expect("a media window");
+    let mid = app.store.read().messages.iter().find(|m| !m.attachments.is_empty()).map(|m| m.id.clone()).unwrap();
+    let _ = app.update(UiMessage::OpenCarousel(mid, 0, true));
+    drop(app.view(id));
+}
+
+#[test]
 fn emoticons_follow_the_setting() {
     use iced_test::simulator::typewrite;
     let mut app = demo_app("emoticons");

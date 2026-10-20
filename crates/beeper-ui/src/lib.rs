@@ -8528,6 +8528,7 @@ impl BeeperGuiApp {
             mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
                 .on_press(UiMessage::MediaMenu(false))
         });
+        drop(st);
         let carousel = self.carousel.as_ref().filter(|c| c.in_media).map(|c| self.view_carousel(c));
         let ask = w.deleting.as_ref().map(|(pairs, _)| {
             let n = pairs.len();
