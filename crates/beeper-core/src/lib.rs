@@ -6,4 +6,5 @@ pub mod matrix;
 pub mod models;
 pub mod platform;
 pub mod prefs;
+pub mod storage;
 pub mod store;
