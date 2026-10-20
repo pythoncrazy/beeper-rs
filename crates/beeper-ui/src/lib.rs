@@ -1371,6 +1371,9 @@ fn badge<'a>(p: &Palette, b: prefs::Badge) -> El<'a> {
             let tag = txt("🧪 Labs", 12.0).color(p.strong);
             container(tag).padding([1, 4]).style(fill_box(p.strong.scale_alpha(0.1), 4.0)).into()
         }
+        prefs::Badge::PlusLabs => {
+            row![badge(p, prefs::Badge::Plus), badge(p, prefs::Badge::Labs)].spacing(6).align_y(Center).into()
+        }
     }
 }
 
@@ -2082,7 +2085,16 @@ fn pref_row<'a>(
     extra: Option<El<'a>>,
     control: El<'a>,
 ) -> El<'a> {
-    let label = row![txt(title.to_string(), 13.0).color(p.text)].push(extra).spacing(6).align_y(Center);
+    let title = title.to_string();
+    let label: El<'a> = match extra {
+        None => txt(title, 13.0).color(p.text).into(),
+        Some(extra) => {
+            let space = text_width(" ", 13.0, Weight::Normal);
+            let words = title.split(' ').map(|w| txt(w.to_string(), 13.0).color(p.text).into());
+            let extra = container(extra).padding(Padding::ZERO.left(6.0 - space));
+            Row::with_children(words).push(extra).spacing(space).align_y(Center).wrap().into()
+        }
+    };
     let head = row![container(label).width(Fill), control];
     column![head.spacing(6).align_y(Center).padding(13)]
         .push(desc.map(|d| {
@@ -9275,7 +9287,7 @@ impl BeeperGuiApp {
                 let page = column![self.take_beeper(), Space::new().height(8)].extend(lists);
                 vec![page.into(), encryption]
             }
-            SettingsTab::Ai => Vec::new(),
+            SettingsTab::Ai => self.pref_items(prefs::AI, st),
             SettingsTab::BeeperPlus => vec![group(
                 p,
                 None,
@@ -9607,7 +9619,7 @@ impl BeeperGuiApp {
     fn pref_control(&self, r: &'static prefs::Pref, st: &BeeperStore) -> El<'_> {
         let s = &st.settings;
         let p = &self.pal;
-        let locked = r.badge == Some(prefs::Badge::Plus);
+        let locked = matches!(r.badge, Some(prefs::Badge::Plus | prefs::Badge::PlusLabs));
         let control = match r.control {
             prefs::Control::Toggle(_) => {
                 let v = s.pref(r.key);
@@ -9616,6 +9628,14 @@ impl BeeperGuiApp {
                 toggle_faded(p, v == 1, msg, if off { 0.5 } else { 1.0 })
             }
             prefs::Control::Select(..) => self.pref_select(r, s),
+            prefs::Control::Multi(labels) => {
+                assert!(locked, "{} is a Plus feature", r.key);
+                let shown = labels.join(", ");
+                let label = ell(&shown, 92.0, 11.0, Weight::Semibold).color(p.strong);
+                let arrow = tinted(&SELECT_ARROW, 10.0, p.strong);
+                let pill = row![container(label).width(Fill), arrow].align_y(Center).padding([0, 8]);
+                container(pill).width(140).center_y(24).style(fill_box(p.chip, 12.0)).into()
+            }
             prefs::Control::Microphone => {
                 let (system, names) = match &self.mics {
                     Some(Ok((system, names))) => (system.as_str(), names.as_slice()),

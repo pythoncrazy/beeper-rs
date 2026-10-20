@@ -39,7 +39,8 @@ const TEXTS: [&str; 10] =
 fn prefs() -> impl Iterator<Item = (SettingsTab, &'static prefs::Pref)> {
     let tab = |page| *SettingsTab::ALL.iter().find(|t| t.meta().0 == page).expect("a settings tab");
     prefs::all()
-        .filter(|(_, p)| !matches!(p.control, prefs::Control::Microphone) && p.key != "appLanguage")
+        .filter(|(_, p)| !matches!(p.control, prefs::Control::Microphone | prefs::Control::Multi(_)))
+        .filter(|(_, p)| p.key != "appLanguage")
         .map(move |(page, p)| (tab(page), p))
 }
 
@@ -838,6 +839,20 @@ fn devices_offer_the_app_like_desktop() {
     assert!(app.app_qr && simulator(app.view_settings()).find("Get the app").is_err(), "the button shows the QR code");
     let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::About));
     assert!(!app.app_qr, "another tab hides the QR code again");
+}
+
+#[test]
+fn ai_settings_like_desktop() {
+    let mut app = demo_app("ai");
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Ai));
+    let mut sim = simulator(app.view_settings());
+    for heading in ["General", "Voice Transcription", "AI Mentions"] {
+        assert!(sim.find(heading).is_ok(), "the {heading} group shows");
+    }
+    let mention = "Will send the 20 most recent messages, including sender names and any @mentioned users.";
+    assert!(sim.find(mention).is_ok() && sim.find("Requires a paid subscription.").is_ok());
+    let _ = sim.click("Whisper");
+    assert!(sim.into_messages().next().is_none(), "the Plus toggles are locked");
 }
 
 #[test]

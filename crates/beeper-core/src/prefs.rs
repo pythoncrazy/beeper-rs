@@ -6,12 +6,16 @@ pub enum Control {
     Archive(&'static Pref, &'static Pref),
     /// Desktop's `AUDIO_INPUT_DEVICE_ID`, a device name in [`crate::models::BeeperSettings::microphone`].
     Microphone,
+    /// Desktop's multiselect of a Plus feature, which shows the labels of its default values.
+    Multi(&'static [&'static str]),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Badge {
     Labs,
     Plus,
+    /// A Plus feature with Desktop's "Labs" tag.
+    PlusLabs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +45,9 @@ impl Pref {
         match self.control {
             Control::Toggle(on) => on as u8,
             Control::Select(_, i) | Control::Slider(i) => i,
-            Control::Archive(..) | Control::Microphone => unreachable!("the row {} has no value", self.key),
+            Control::Archive(..) | Control::Microphone | Control::Multi(_) => {
+                unreachable!("the row {} has no value", self.key)
+            }
         }
     }
 
@@ -50,7 +56,9 @@ impl Pref {
             Control::Toggle(_) => 1,
             Control::Select(options, _) => options.len() as u8 - 1,
             Control::Slider(_) => 100,
-            Control::Archive(..) | Control::Microphone => unreachable!("the row {} has no value", self.key),
+            Control::Archive(..) | Control::Microphone | Control::Multi(_) => {
+                unreachable!("the row {} has no value", self.key)
+            }
         }
     }
 
@@ -239,8 +247,45 @@ pub const NOTIFICATIONS: &[Item] = &[
     ]),
 ];
 
-pub const PAGES: [(&str, &[Item]); 3] =
-    [("General", GENERAL), ("Appearance", APPEARANCE), ("Notifications", NOTIFICATIONS)];
+pub const AI: &[Item] = &[
+    Item::Heading("General"),
+    Item::Group(&[Pref {
+        key: "translationLanguages",
+        label: "Translation Languages",
+        desc: Some("AI response quality may vary for less commonly spoken languages."),
+        args: &[],
+        badge: Some(Badge::PlusLabs),
+        requires: None,
+        control: Control::Multi(&[
+            "Arabic",
+            "Chinese",
+            "English",
+            "French",
+            "German",
+            "Italian",
+            "Japanese",
+            "Portuguese",
+            "Russian",
+            "Spanish",
+        ]),
+    }]),
+    Item::Heading("Voice Transcription"),
+    Item::Group(&[t(
+        "transcribeWithOpenai",
+        "Use OpenAI's Whisper model for Talk to Type and transcribing voice notes",
+        false,
+    )
+    .badge(Badge::Plus)
+    .desc("Privacy: this will send audio clips to OpenAI via our servers.")]),
+    Item::Heading("AI Mentions"),
+    Item::Group(&[t("mentionLlms", "Mention an AI to get answers and help in chat", false)
+        .badge(Badge::Plus)
+        .desc("Will send the %d most recent messages, including sender names and any @mentioned users.")
+        .args(&["20"])]),
+];
+
+pub const PAGES: [(&str, &[Item]); 4] =
+    [("General", GENERAL), ("Appearance", APPEARANCE), ("Notifications", NOTIFICATIONS), ("AI", AI)];
 
 /// The rows of the settings pages, with the page of each.
 pub fn rows() -> impl Iterator<Item = (&'static str, &'static Pref)> {
