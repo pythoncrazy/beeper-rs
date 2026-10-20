@@ -548,7 +548,7 @@ async fn set_typing(store: &SharedStore, room: &Room, ids: &Value) {
     let ids: Vec<String> = ids.as_array().expect("typing user IDs").iter().map(|i| s(i).expect("a user ID")).collect();
     let ids: Vec<String> = ids.into_iter().filter(|i| i != me).collect();
     let chat = chat_id(room).await;
-    let mut st = store.write().unwrap();
+    let mut st = store.write();
     let old = if ids.is_empty() { st.typing.remove(&chat) } else { st.typing.insert(chat.clone(), ids.clone()) };
     if old.unwrap_or_default() != ids {
         st.emit_ws("chat.typing", &chat, None, None, None);
@@ -558,7 +558,7 @@ async fn set_typing(store: &SharedStore, room: &Room, ids: &Value) {
 async fn sync_receipts(store: &SharedStore, room: &Room) {
     let chat = chat_id(room).await;
     let peers: Vec<String> = {
-        let st = store.read().unwrap();
+        let st = store.read();
         let Some(&idx) = st.chat_idx_by_id.get(&chat) else { return };
         st.chats[idx].participants.items.iter().filter(|u| u.is_self != Some(true)).map(|u| u.id.clone()).collect()
     };
@@ -574,7 +574,7 @@ async fn sync_receipts(store: &SharedStore, room: &Room) {
     if updates.is_empty() {
         return;
     }
-    let mut st = store.write().unwrap();
+    let mut st = store.write();
     let indices = st.chat_msg_indices.get(&chat).cloned().unwrap_or_default();
     for (uid, ev, ts) in updates {
         let target = indices.iter().copied().find(|&i| {
@@ -604,7 +604,7 @@ async fn sync_space(store: &SharedStore, room: &Room) {
         return;
     }
     let (Some(id), Some(name)) = (s(&bridge["network"]["id"]), s(&bridge["network"]["displayname"])) else { return };
-    let mut st = store.write().unwrap();
+    let mut st = store.write();
     let space = NetworkSpace { id, account_id: account_id(&bridge, &st.bridge_accounts), name };
     match st.network_spaces.iter().position(|n| n.id == space.id) {
         Some(i) => st.network_spaces[i] = space,
@@ -621,13 +621,13 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     }
     let chat_id = chat_id(room).await;
     let note = chat_id == NOTE_CHAT_ID;
-    let accounts = store.read().unwrap().bridge_accounts.clone();
-    let rules = store.read().unwrap().inbox_rules.clone();
+    let accounts = store.read().bridge_accounts.clone();
+    let rules = store.read().inbox_rules.clone();
     let pins = global(&room.client(), "com.beeper.favourites_order").await;
     let rank = pins["Inbox"].as_array().and_then(|ids| ids.iter().position(|id| id == room.room_id().as_str()));
     let chat = chat(room, &accounts, &rules).await;
     let seen = {
-        let st = store.read().unwrap();
+        let st = store.read();
         st.chat_idx_by_id.get(&chat_id).is_some_and(|&i| st.chats[i].notifiable.is_some())
     };
     if !seen {
@@ -637,7 +637,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
         events = older.chain(events).collect();
     }
     let (mut ops, mut non_messages) = (Vec::new(), Vec::new());
-    let hidden = store.read().unwrap().settings.on("hiddenEvents");
+    let hidden = store.read().settings.on("hiddenEvents");
     for e in &events {
         let v: Value = serde_json::from_str(e.raw().json().get()).expect("timeline event JSON");
         ops.extend(s(&v["unsigned"]["transaction_id"]).map(Op::Remove));
@@ -655,7 +655,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     let redacted = ops.iter().any(|o| matches!(o, Op::Redact(_)));
     let (members, group) = (chat.participants.total, chat.chat_type == "group");
     {
-        let mut st = store.write().unwrap();
+        let mut st = store.write();
         let old = match rank {
             Some(r) => st.pin_rank.insert(chat_id.clone(), r),
             None => st.pin_rank.remove(&chat_id),
@@ -851,7 +851,7 @@ pub enum MediaInfo {
 pub async fn flush(store: SharedStore) -> Result<(), String> {
     loop {
         let next = {
-            let mut st = store.write().unwrap();
+            let mut st = store.write();
             if st.matrix.is_none() || st.outbox.is_empty() {
                 st.pushing = false;
                 return Ok(());
@@ -859,7 +859,7 @@ pub async fn flush(store: SharedStore) -> Result<(), String> {
             st.outbox.remove(0)
         };
         if let Err(e) = push(&store, next.0, next.1).await {
-            store.write().unwrap().pushing = false;
+            store.write().pushing = false;
             return Err(e);
         }
     }
@@ -886,14 +886,14 @@ fn text_content(text: String) -> RoomMessageEventContent {
 }
 
 async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), String> {
-    let client = store.read().unwrap().matrix.clone().expect("flush checks the Matrix client");
+    let client = store.read().matrix.clone().expect("flush checks the Matrix client");
     let room = joined_room(&client, &chat).await?;
     let event = |id: String| {
-        let id = store.read().unwrap().sent.get(&id).cloned().unwrap_or(id);
+        let id = store.read().sent.get(&id).cloned().unwrap_or(id);
         OwnedEventId::try_from(id).map_err(|e| e.to_string())
     };
     let e = |x: matrix_sdk::Error| x.to_string();
-    let sent = |txn: String, id: OwnedEventId| store.write().unwrap().sent.insert(txn, id.to_string());
+    let sent = |txn: String, id: OwnedEventId| store.write().sent.insert(txn, id.to_string());
     match out {
         Outgoing::Send { txn, text, reply_to, preview } => {
             let mut content = text_content(text);
@@ -938,7 +938,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                 let now = now_unix_millis();
                 let mut done = serde_json::json!({ "at_ts": now, "updated_ts": now });
                 if on {
-                    let st = store.read().unwrap();
+                    let st = store.read();
                     let last = st.chat_msg_indices.get(&chat).and_then(|v| v.last()).map(|&i| &st.messages[i].sort_key);
                     let last = last.max(st.chats[st.chat_idx_by_id[&chat]].notifiable.as_ref());
                     let order = last.map_or(MIN_SAFE_INTEGER, |k| k.parse::<i64>().expect("numeric sort key"));
@@ -1094,7 +1094,7 @@ pub async fn thumbnail(client: Client, url: String) -> Result<Vec<u8>, String> {
 
 async fn connect(store: &SharedStore) -> Result<Client, String> {
     let (s, dir) = {
-        let st = store.read().unwrap();
+        let st = store.read();
         (st.beeper_state.clone(), st.matrix_dir())
     };
     let encryption = EncryptionSettings {
@@ -1129,7 +1129,7 @@ async fn chat_id(room: &Room) -> String {
 
 async fn has_utd(store: &SharedStore, room: &Room) -> bool {
     let chat = chat_id(room).await;
-    let st = store.read().unwrap();
+    let st = store.read();
     st.chat_msg_indices.get(&chat).into_iter().flatten().any(|&i| st.messages[i].text.as_deref() == Some(UTD_TEXT))
 }
 
@@ -1171,7 +1171,7 @@ async fn global(client: &Client, kind: &str) -> Value {
 /// Applies a change of the inbox rules to every room.
 async fn sync_rules(client: &Client, store: &SharedStore) {
     let rules = global(client, RULES).await;
-    if std::mem::replace(&mut store.write().unwrap().inbox_rules, rules.clone()) != rules {
+    if std::mem::replace(&mut store.write().inbox_rules, rules.clone()) != rules {
         let rooms = futures_util::stream::iter(client.joined_rooms());
         rooms.for_each_concurrent(8, |room| async move { sync_room(store, &room, Vec::new()).await }).await;
     }
@@ -1186,7 +1186,7 @@ async fn sync_emoji(client: &Client, store: &SharedStore) {
         .map(|e| (e[0].as_str().expect("recent emoji key").into(), e[1].as_u64().expect("recent emoji count")));
     let recent = recent.collect();
     let tone = global(client, "com.beeper.emoji_skin_tone").await["tone"].as_u64().map_or(0, |t| t as u8);
-    let mut st = store.write().unwrap();
+    let mut st = store.write();
     st.recent_emoji = recent;
     st.skin_tone = tone;
 }
@@ -1195,10 +1195,10 @@ async fn sync_emoji(client: &Client, store: &SharedStore) {
 async fn sync_profile(client: &Client, store: &SharedStore) {
     let profile = match client.account().fetch_user_profile().await {
         Ok(r) => r.data,
-        Err(e) => return store.write().unwrap().matrix_error = Some(e.to_string()),
+        Err(e) => return store.write().matrix_error = Some(e.to_string()),
     };
     let field = |k: &str| profile.get(k).and_then(Value::as_str).map(str::to_string);
-    let mut st = store.write().unwrap();
+    let mut st = store.write();
     let i = st.chat_idx_by_id[NOTE_CHAT_ID];
     st.update_chat(i, |c| {
         let me = &mut c.participants.items[0];
@@ -1219,7 +1219,7 @@ async fn sync_prefs(client: &Client, store: &SharedStore) {
             events.insert(kind, global(client, kind).await);
         }
     }
-    let mut st = store.write().unwrap();
+    let mut st = store.write();
     let mut settings = st.settings.clone();
     for (key, ad) in crate::prefs::SYNCED {
         let value = match ad {
@@ -1275,12 +1275,12 @@ async fn refresh_e2ee(client: &Client, store: &SharedStore) {
     let can_sign = client.encryption().cross_signing_status().await.is_some_and(|s| s.has_self_signing);
     if can_sign && !device.is_cross_signed_by_owner() {
         if let Err(e) = device.verify().await {
-            store.write().unwrap().matrix_error = Some(format!("Could not sign this device: {e}"));
+            store.write().matrix_error = Some(format!("Could not sign this device: {e}"));
         }
     }
     let verified = device.is_cross_signed_by_owner();
     let state = (verified, client.encryption().backups().are_enabled().await);
-    let mut st = store.write().unwrap();
+    let mut st = store.write();
     if (st.beeper_state.verified, st.beeper_state.key_backup) != state {
         (st.beeper_state.verified, st.beeper_state.key_backup) = state;
         st.persist_state_to_sqlite();
@@ -1358,14 +1358,14 @@ pub async fn import_crypto(dir: &std::path::Path, c: &DesktopCrypto) -> Result<(
 }
 
 pub async fn recover(store: SharedStore, key: String) -> Result<(), String> {
-    let client = store.read().unwrap().matrix.clone().ok_or("Matrix is not connected yet")?;
+    let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
     client.encryption().recovery().recover(key.trim()).await.map_err(|e| e.to_string())?;
     set_verification(&store, "verified", None);
     Ok(())
 }
 
 fn set_verification(store: &SharedStore, state: &str, sas: Option<VerificationSas>) {
-    let mut st = store.write().unwrap();
+    let mut st = store.write();
     if state == "verified" {
         st.beeper_state.verified = true;
         st.beeper_state.cross_signing = true;
@@ -1411,7 +1411,7 @@ pub async fn devices(client: Client) -> Result<Vec<DeviceInfo>, String> {
 
 pub async fn logout(store: SharedStore) -> Result<(), String> {
     let (client, demo, dir) = {
-        let st = store.read().unwrap();
+        let st = store.read();
         (st.matrix.clone(), st.config.demo, st.data_dir.clone())
     };
     if !demo {
@@ -1422,7 +1422,7 @@ pub async fn logout(store: SharedStore) -> Result<(), String> {
 
 pub async fn verify(store: SharedStore, confirm: oneshot::Receiver<bool>) -> Result<(), String> {
     let e = |e: &dyn std::fmt::Display| e.to_string();
-    let client = store.read().unwrap().matrix.clone().ok_or("Matrix is not connected yet")?;
+    let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
     let me = client.user_id().expect("signed-in client has a user ID").to_owned();
     let identity = client.encryption().get_user_identity(&me).await.map_err(|x| e(&x))?;
     let request = identity.ok_or("this account has no cross-signing identity")?.request_verification().await;
@@ -1484,22 +1484,22 @@ pub async fn verify(store: SharedStore, confirm: oneshot::Receiver<bool>) -> Res
 
 pub async fn run(store: SharedStore) {
     crate::cloud::install_tls();
-    let mut rx = store.read().unwrap().ws_tx.subscribe();
-    while !store.read().unwrap().signed_in() {
+    let mut rx = store.read().ws_tx.subscribe();
+    while !store.read().signed_in() {
         rx.recv().await.ok();
     }
     let client = match connect(&store).await {
         Ok(c) => c,
-        Err(e) => return store.write().unwrap().matrix_error = Some(e),
+        Err(e) => return store.write().matrix_error = Some(e),
     };
-    store.write().unwrap().matrix = Some(client.clone());
+    store.write().matrix = Some(client.clone());
     tokio::spawn(retry_undecrypted(client.clone(), store.clone()));
     tokio::spawn(retry_after_backup(client.clone(), store.clone()));
     sync_emoji(&client, &store).await;
     sync_prefs(&client, &store).await;
     sync_profile(&client, &store).await;
-    store.write().unwrap().inbox_rules = global(&client, RULES).await;
-    let first = !store.read().unwrap().beeper_state.first_sync_done;
+    store.write().inbox_rules = global(&client, RULES).await;
+    let first = !store.read().beeper_state.first_sync_done;
     futures_util::stream::iter(client.joined_rooms())
         .for_each_concurrent(8, |room| {
             let store = store.clone();
@@ -1510,7 +1510,7 @@ pub async fn run(store: SharedStore) {
         })
         .await;
     if first {
-        let mut st = store.write().unwrap();
+        let mut st = store.write();
         st.beeper_state.first_sync_done = true;
         st.persist_state_to_sqlite();
     }
@@ -1521,16 +1521,16 @@ pub async fn run(store: SharedStore) {
             let (client, store) = (client2.clone(), store.clone());
             async move {
                 match r {
-                    Err(e) => store.write().unwrap().matrix_error = Some(e.to_string()),
+                    Err(e) => store.write().matrix_error = Some(e.to_string()),
                     Ok(resp) => {
-                        store.write().unwrap().matrix_error = None;
+                        store.write().matrix_error = None;
                         refresh_e2ee(&client, &store).await;
                         sync_emoji(&client, &store).await;
                         sync_prefs(&client, &store).await;
                         sync_rules(&client, &store).await;
                         for id in resp.rooms.left.keys() {
                             let chat = chat_id(&client.get_room(id).expect("left room is known")).await;
-                            store.write().unwrap().remove_chat(&chat);
+                            store.write().remove_chat(&chat);
                         }
                         for (id, update) in resp.rooms.joined {
                             let room = client.get_room(&id).expect("synced room is known");
@@ -1560,7 +1560,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("beeper-rs-logout-{}", std::process::id()));
         let mut cfg = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23391, None);
         cfg.demo = true;
-        let store = std::sync::Arc::new(std::sync::RwLock::new(crate::store::BeeperStore::from_config(cfg.clone())));
+        let store = crate::store::StoreLock::shared(crate::store::BeeperStore::from_config(cfg.clone()));
         let cached = dir.join("media").join("cached");
         std::fs::write(&cached, "x").expect("write a cached file");
         super::logout(store).await.expect("demo logout");

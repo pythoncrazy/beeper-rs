@@ -179,7 +179,7 @@ impl BeeperGuiApp {
         }
         match msg {
             Msg::Play(mid, url, w, h) => {
-                let client = self.store.read().unwrap().matrix.clone();
+                let client = self.store.read().matrix.clone();
                 let u = url.clone();
                 self.video = Some(Video {
                     mid,

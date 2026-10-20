@@ -3,9 +3,9 @@
 
 use super::*;
 use beeper_core::config::CentralConfig;
+use beeper_core::store::StoreLock;
 use iced::mouse::{Button, ScrollDelta};
 use iced_test::simulator::{simulator, Simulator};
-use std::sync::RwLock;
 
 struct Rng(u64);
 
@@ -48,7 +48,7 @@ pub(crate) fn demo_app(name: &str) -> BeeperGuiApp {
     let _ = std::fs::remove_dir_all(&dir);
     let mut config = CentralConfig::new(dir, "127.0.0.1".into(), 23391, None);
     config.demo = true;
-    let store = Arc::new(RwLock::new(BeeperStore::from_config(config)));
+    let store = StoreLock::shared(BeeperStore::from_config(config));
     BeeperGuiApp::boot(store).0
 }
 
@@ -112,7 +112,7 @@ fn random_events(rng: &mut Rng) -> (String, Vec<iced::Event>) {
 /// A message that a user can cause, with the ids of the demo account and the messages of the open chat, and its
 /// description.
 fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
-    let st = app.store.read().unwrap();
+    let st = app.store.read();
     let chats: Vec<String> = st.chats.iter().map(|c| c.id.clone()).collect();
     let deletable: Vec<String> = st.chats.iter().filter(|c| c.delete_modes != 0).map(|c| c.id.clone()).collect();
     let open = app.pane.selected_chat_id.as_deref().and_then(|c| st.chat_msg_indices.get(c)).filter(|m| !m.is_empty());
@@ -400,14 +400,14 @@ fn arrow_keys_step_over_a_deleted_selected_message() {
     let chat = "!note_self:beeper.com";
     let _ = app.update(UiMessage::SelectChat(chat.into()));
     let ids: Vec<String> = {
-        let st = app.store.read().unwrap();
+        let st = app.store.read();
         st.chat_msg_indices[chat].iter().map(|&i| st.messages[i].id.clone()).collect()
     };
     assert!(ids.len() >= 3, "the demo chat has messages");
     let mid = ids[ids.len() - 2].clone();
     let _ = app.update(UiMessage::ClickMessage(mid.clone()));
     {
-        let mut st = app.store.write().unwrap();
+        let mut st = app.store.write();
         let i = st.msg_idx_by_id[&mid];
         st.messages[i].is_deleted = Some(true);
     }

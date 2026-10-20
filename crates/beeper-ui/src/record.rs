@@ -190,7 +190,7 @@ impl BeeperGuiApp {
             Msg::Start => {
                 let take = Arc::new(Take::default());
                 self.recorder = Some(Recorder(take.clone()));
-                let name = self.store.read().unwrap().settings.microphone.clone();
+                let name = self.store.read().settings.microphone.clone();
                 let run = async move {
                     tokio::task::spawn_blocking(move || capture(&take, &name)).await.expect("capture runs")
                 };
@@ -226,7 +226,7 @@ impl BeeperGuiApp {
             Msg::Tick => {}
             Msg::Encoded(chat, reply_to, clip, wave, Ok(bytes)) => {
                 let ms = (clip.secs() * 1000.0) as u64;
-                let mut st = self.store.write().unwrap();
+                let mut st = self.store.write();
                 let key = format!("recorded:{}", st.next_id("voice"));
                 let att = beeper_core::models::Attachment {
                     attachment_type: "audio".into(),
@@ -362,7 +362,7 @@ mod tests {
         let mut cfg = beeper_core::config::CentralConfig::new(dir, "127.0.0.1".into(), 23390, None);
         cfg.demo = true;
         let st = beeper_core::store::BeeperStore::from_config(cfg);
-        let mut app = BeeperGuiApp::new(Arc::new(std::sync::RwLock::new(st)));
+        let mut app = BeeperGuiApp::new(beeper_core::store::StoreLock::shared(st));
         let _ = app.record(Msg::Start);
         let take = app.recorder.as_ref().expect("a recording").0.clone();
         let _ = app.record(Msg::Key(Named::Space));
@@ -372,7 +372,7 @@ mod tests {
         assert!(take.paused.load(Relaxed) && app.audio.clip(TAKE).is_some_and(|c| c.secs() == 1.0));
         let _ = app.record(Msg::Key(Named::Space));
         assert!(!take.paused.load(Relaxed) && app.audio.clip(TAKE).is_none());
-        let other = app.store.read().unwrap().chats[1].id.clone();
+        let other = app.store.read().chats[1].id.clone();
         let _ = app.update(UiMessage::SelectChat(other));
         assert_eq!(app.status_banner, "Stop recording to switch chats");
         let _ = app.record(Msg::Key(Named::Escape));

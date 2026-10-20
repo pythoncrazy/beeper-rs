@@ -2150,7 +2150,7 @@ impl BeeperGuiApp {
         let os = OsKind::current();
         let display_server = os.detect_display_server(&std::env::vars().collect());
         let (theme, panel, first_chat, cloud, source) = {
-            let st = store.read().unwrap();
+            let st = store.read();
             let first = st.signed_in().then(|| NOTE_CHAT_ID.to_string());
             let s = &st.settings;
             let cloud = Arc::new(Cloud::new(&st.config.api_url, &st.config.homeserver));
@@ -2161,8 +2161,8 @@ impl BeeperGuiApp {
                 .filter(|d| has_beeper_data(d));
             (s.theme.is_dark(false), false, first, cloud, source)
         };
-        let pending = notify::Pending::new(&store.read().unwrap().chats);
-        let sidebar_width = match std::fs::read_to_string(store.read().unwrap().data_dir.join("sidebar-width")) {
+        let pending = notify::Pending::new(&store.read().chats);
+        let sidebar_width = match std::fs::read_to_string(store.read().data_dir.join("sidebar-width")) {
             Ok(w) => w.parse().expect("a numeric sidebar width"),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => 252.0,
             Err(e) => panic!("read the sidebar width: {e}"),
@@ -2270,13 +2270,13 @@ impl BeeperGuiApp {
         let signed_in = app.pane.selected_chat_id.is_some();
         let mut settings =
             if signed_in { Self::window_settings(Size::new(1264.0, 893.0)) } else { Self::login_window_settings() };
-        let st = app.store.read().unwrap();
+        let st = app.store.read();
         app.hidden = signed_in && st.settings.on("startMinimized") && st.settings.on("showTrayIcon");
         drop(st);
         settings.visible = !app.hidden;
         let (id, open) = window::open(settings);
         *(if signed_in { &mut app.main_window } else { &mut app.login_window }) = Some(id);
-        let cloud = (signed_in && !app.store.read().unwrap().config.demo).then(|| app.refresh_cloud_accounts());
+        let cloud = (signed_in && !app.store.read().config.demo).then(|| app.refresh_cloud_accounts());
         let restore = (signed_in && !app.hidden).then(|| app.restore_subwindows());
         let tasks =
             [open.map(UiMessage::WindowOpened), iced::system::theme().map(UiMessage::SystemTheme), app.load_avatars()];
@@ -2284,7 +2284,7 @@ impl BeeperGuiApp {
     }
 
     fn load_avatars(&mut self) -> Task<UiMessage> {
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let Some(client) = st.matrix.clone() else { return Task::none() };
         let selected =
             self.pane.selected_chat_id.as_ref().and_then(|id| st.chat_idx_by_id.get(id)).map(|&i| &st.chats[i]);
@@ -2440,13 +2440,13 @@ impl BeeperGuiApp {
             threads.map(|t| serde_json::json!({"windowId": format!("thread-{t}"), "type": "thread", "threadId": t}));
         let prefs = self.settings_window.map(|_| serde_json::json!({"windowId": "prefs", "type": "prefs"}));
         let state = serde_json::json!({"openSubwindows": threads.chain(prefs).collect::<Vec<_>>()});
-        let path = self.store.read().unwrap().data_dir.join("subwindow-state.json");
+        let path = self.store.read().data_dir.join("subwindow-state.json");
         std::fs::write(path, state.to_string()).expect("write the subwindow state");
     }
 
     /// Opens the windows of the last session, like Desktop's `setupSubwindowRestoreHandler`.
     fn restore_subwindows(&mut self) -> Task<UiMessage> {
-        let path = self.store.read().unwrap().data_dir.join("subwindow-state.json");
+        let path = self.store.read().data_dir.join("subwindow-state.json");
         let json = match std::fs::read_to_string(path) {
             Ok(json) => json,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Task::none(),
@@ -2457,7 +2457,7 @@ impl BeeperGuiApp {
         let tasks = open.into_iter().filter_map(|w| match w["type"].as_str().expect("a subwindow type") {
             "thread" => {
                 let id = w["threadId"].as_str().expect("a thread window has a chat").to_owned();
-                let known = self.store.read().unwrap().resolve_chat_idx(&id).is_some();
+                let known = self.store.read().resolve_chat_idx(&id).is_some();
                 known.then(|| self.update(UiMessage::OpenChatWindow(id)))
             }
             _ => Some(self.open_settings(self.active_settings_tab)),
@@ -2503,7 +2503,7 @@ impl BeeperGuiApp {
         if self.active_settings_tab != SettingsTab::Devices {
             return Task::none();
         }
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         match (st.matrix.clone(), st.config.demo) {
             (Some(client), _) => Task::perform(beeper_core::matrix::devices(client), UiMessage::DevicesLoaded),
             (None, true) => {
@@ -2527,7 +2527,7 @@ impl BeeperGuiApp {
             _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => tr("Media"),
             _ => match self.chat_windows.iter().find(|w| w.0 == id) {
                 Some((_, pane)) => {
-                    let st = self.store.read().unwrap();
+                    let st = self.store.read();
                     let chat = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
                     return chat.map_or("Beeper".into(), |i| st.chats[i].title.clone());
                 }
@@ -2546,7 +2546,7 @@ impl BeeperGuiApp {
     }
 
     pub fn refresh_theme_and_tray(&mut self) {
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         self.dark = st.settings.theme.is_dark(self.system_dark);
         self.pal = crate::style::palette(self.dark);
         self.zoom = f32::from(st.settings.zoom_percent) / 100.0;
@@ -2610,7 +2610,7 @@ impl BeeperGuiApp {
     pub fn select_chat(&mut self, chat_id: &str) {
         self.creating_chat = None;
         self.join_matrix_mode = false;
-        let mut st = self.store.write().unwrap();
+        let mut st = self.store.write();
         self.leave_chat(&mut st, Some(chat_id));
         let incognito = st.settings.on("incognito");
         let idx = st.resolve_chat_idx(chat_id).expect("selected chat exists");
@@ -2638,14 +2638,14 @@ impl BeeperGuiApp {
     }
 
     fn selected_message(&self) -> Option<Message> {
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         self.pane().selected_msg.as_ref().map(|id| st.messages[st.msg_idx_by_id[id]].clone())
     }
 
     /// The arrow keys select messages when no panel is open and the composer is empty.
     fn quick_react(&self, mid: String) -> UiMessage {
         let chat = self.pane().selected_chat_id.clone().expect("an open chat");
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         UiMessage::ToggleReaction(chat, mid, st.settings.choice("quickReactionEmoji").into())
     }
 
@@ -2687,7 +2687,7 @@ impl BeeperGuiApp {
 
     /// The newest message you can edit in the open chat.
     fn last_own_message(&self) -> Option<Message> {
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let all = &st.chat_msg_indices[self.pane().selected_chat_id.as_deref().expect("an open chat")];
         let own = all
             .iter()
@@ -2720,7 +2720,7 @@ impl BeeperGuiApp {
 
     /// Quits the app; the open chats keep their drafts.
     fn quit(&self) -> Task<UiMessage> {
-        let mut st = self.store.write().unwrap();
+        let mut st = self.store.write();
         for pane in std::iter::once(&self.pane).chain(self.chat_windows.iter().map(|w| &w.1)) {
             save_draft(&mut st, pane);
         }
@@ -2755,7 +2755,7 @@ impl BeeperGuiApp {
         self.pane.selected_msg = None;
         self.pane.link_dialog = None;
         self.pane.suggest = 0;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let new = self.pane.composer.text();
         let notice = st.matrix.clone().filter(|_| st.settings.on("typingIndicators"));
         let task = notice.zip(self.pane.selected_chat_id.clone()).map(|(client, chat)| {
@@ -2771,7 +2771,7 @@ impl BeeperGuiApp {
         if text.is_empty() && self.pane.pasted.is_none() {
             return;
         }
-        let mut st = self.store.write().unwrap();
+        let mut st = self.store.write();
         let out = if let Some(target) = self.pane.editing_message_id.take() {
             st.edit_message(&chat_id, &target, text.clone()).expect("edit message");
             Outgoing::Edit { target, text }
@@ -2825,7 +2825,7 @@ impl BeeperGuiApp {
         use beeper_core::models::NetworkKind::*;
         let urls: Vec<String> = text_urls(&self.pane.composer.text()).into_iter().map(str::to_string).collect();
         self.pane.composer_links.retain(|(u, _)| urls.contains(u));
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let chat = self.pane.selected_chat_id.as_ref().and_then(|c| st.resolve_chat_idx(c)).map(|i| &st.chats[i]);
         let kind = chat.map(|c| account_network(&c.account_id).kind);
         let can =
@@ -2846,7 +2846,7 @@ impl BeeperGuiApp {
     }
 
     fn push_outbox(&mut self) -> Task<UiMessage> {
-        match self.store.write().unwrap().start_flush() {
+        match self.store.write().start_flush() {
             true => Task::perform(beeper_core::matrix::flush(self.store.clone()), UiMessage::Pushed),
             false => Task::none(),
         }
@@ -2887,7 +2887,7 @@ impl BeeperGuiApp {
 
     pub fn step_chat(&mut self, delta: isize) {
         let next = {
-            let st = self.store.read().unwrap();
+            let st = self.store.read();
             let chats = self.visible_chats(&st);
             if chats.is_empty() {
                 return;
@@ -2923,7 +2923,7 @@ impl BeeperGuiApp {
 
     /// Desktop's `updateAppBadgeCount`: the unread chats in all chats or in the chat list, by "Badge count".
     fn badge_count(&self) -> u32 {
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let counts = |c: &Chat| {
             c.flags & (CHAT_HIDDEN | CHAT_ARCHIVED | CHAT_REQUEST) == 0
                 && c.flags & CHAT_UNREAD != 0
@@ -2974,7 +2974,7 @@ impl BeeperGuiApp {
                     self.last_click = Some((id.clone(), std::time::Instant::now()));
                     return self.update(UiMessage::SelectChat(id));
                 }
-                let msg = match self.store.read().unwrap().settings.pref("chatDoubleClick") {
+                let msg = match self.store.read().settings.pref("chatDoubleClick") {
                     1 => UiMessage::ToggleFlag(id, ChatFlag::Archived),
                     2 => UiMessage::ToggleRead(id),
                     3 => UiMessage::ToggleFlag(id, ChatFlag::Muted),
@@ -3043,7 +3043,7 @@ impl BeeperGuiApp {
                         self.pane.composer.perform(action);
                         let text = self.pane.composer.text();
                         let at = format::offset(&text, self.pane.composer.cursor().position);
-                        let rules = typed && !self.store.read().unwrap().settings.on("keepEmoticons");
+                        let rules = typed && !self.store.read().settings.on("keepEmoticons");
                         if let Some((new, caret)) = rules.then(|| emoji::replace_emoticon(&text, at)).flatten() {
                             self.pane.composer = format::content(&new, caret..caret);
                             self.pane.emoticon = Some((new, text, at));
@@ -3104,13 +3104,13 @@ impl BeeperGuiApp {
                 self.pane.composer = format::content(&text, r);
                 return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
             }
-            UiMessage::SubmitComposer if !self.emoji_suggestions(&self.store.read().unwrap()).is_empty() => {
+            UiMessage::SubmitComposer if !self.emoji_suggestions(&self.store.read()).is_empty() => {
                 return self.update(UiMessage::PickEmoji(self.pane.suggest));
             }
             UiMessage::SubmitComposer if self.recorder.is_some() => return self.send_take(),
             UiMessage::SubmitComposer => self.submit_composer(),
             UiMessage::PickEmoji(i) => {
-                let picks = self.emoji_suggestions(&self.store.read().unwrap());
+                let picks = self.emoji_suggestions(&self.store.read());
                 let mut text = self.pane.composer.text();
                 let at = text.rfind(':').expect("an emoji query");
                 text.replace_range(at.., &format!("{} ", picks[i.min(picks.len() - 1)].0));
@@ -3135,12 +3135,12 @@ impl BeeperGuiApp {
             }
             UiMessage::DeleteMessage(cid, mid) => {
                 self.confirm = None;
-                let mut st = self.store.write().unwrap();
+                let mut st = self.store.write();
                 st.delete_message(&cid, &mid).expect("delete message");
                 st.queue(&cid, Outgoing::Redact { target: mid });
             }
             UiMessage::ToggleReaction(cid, mid, key) => {
-                let mut st = self.store.write().unwrap();
+                let mut st = self.store.write();
                 let mine = st.messages[st.msg_idx_by_id[&mid]]
                     .reactions
                     .iter()
@@ -3166,21 +3166,21 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::ToggleBookmark(mid) => {
-                self.store.write().unwrap().toggle_bookmark(&mid);
+                self.store.write().toggle_bookmark(&mid);
             }
             UiMessage::MarkUnreadFromHere(cid, mid) => {
-                self.store.write().unwrap().mark_unread_from_message(&cid, &mid);
+                self.store.write().mark_unread_from_message(&cid, &mid);
                 self.refresh_theme_and_tray();
             }
             UiMessage::RetranscribeVoice(mid) => {
-                self.status_banner = self.store.write().unwrap().retranscribe_voice_note(&mid);
+                self.status_banner = self.store.write().retranscribe_voice_note(&mid);
             }
             UiMessage::VotePoll(mid, opt_id) => {
-                self.store.write().unwrap().vote_poll(&mid, &opt_id, "@self:beeper.com");
+                self.store.write().vote_poll(&mid, &opt_id, "@self:beeper.com");
             }
             UiMessage::SetReminder(cid, at) => {
                 {
-                    let mut st = self.store.write().unwrap();
+                    let mut st = self.store.write();
                     let idx = st.resolve_chat_idx(&cid).expect("chat exists");
                     self.remind(&mut st, idx, at);
                 }
@@ -3190,7 +3190,7 @@ impl BeeperGuiApp {
             UiMessage::ChatSub(sub) => self.chat_sub = sub,
             UiMessage::CheckReminders => {
                 let now = now_unix_millis();
-                let mut st = self.store.write().unwrap();
+                let mut st = self.store.write();
                 for i in 0..st.chats.len() {
                     let c = &st.chats[i];
                     let Some(at) = c.reminder.as_ref().map(|r| r.remind_at_ms).filter(|&at| at <= now) else {
@@ -3211,7 +3211,7 @@ impl BeeperGuiApp {
             }
             UiMessage::ArchiveStale => {
                 {
-                    let mut st = self.store.write().unwrap();
+                    let mut st = self.store.write();
                     for idx in st.stale_inbox_chats() {
                         assert!(st.set_chat_flag(idx, ChatFlag::Archived, Some(true)));
                     }
@@ -3219,7 +3219,7 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
             }
             UiMessage::ToggleFlag(cid, flag) => {
-                let mut st = self.store.write().unwrap();
+                let mut st = self.store.write();
                 let at = self.list_ids(&st).iter().position(|c| *c == cid);
                 let idx = st.resolve_chat_idx(&cid).expect("chat exists");
                 let moved = match flag {
@@ -3242,7 +3242,7 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::ToggleRead(cid) => {
-                let mut st = self.store.write().unwrap();
+                let mut st = self.store.write();
                 let list = self.list_ids(&st);
                 let idx = st.resolve_chat_idx(&cid).expect("chat exists");
                 let c = &st.chats[idx];
@@ -3261,7 +3261,7 @@ impl BeeperGuiApp {
             }
             UiMessage::CopyChatLink(cid) => {
                 self.chat_menu = None;
-                let st = self.store.read().unwrap();
+                let st = self.store.read();
                 let c = &st.chats[st.resolve_chat_idx(&cid).expect("chat exists")];
                 return iced::clipboard::write(format!(
                     "beeper://select-thread/{}/{}",
@@ -3281,7 +3281,7 @@ impl BeeperGuiApp {
                 self.pane.selected_msg = (self.pane.selected_msg.as_ref() != Some(&mid)).then_some(mid)
             }
             UiMessage::DoubleClickMessage(mid) => {
-                let action = self.store.read().unwrap().settings.pref("messageDoubleClick");
+                let action = self.store.read().settings.pref("messageDoubleClick");
                 return match action {
                     0 => Task::none(),
                     1 => self.update(UiMessage::React(mid)),
@@ -3296,7 +3296,7 @@ impl BeeperGuiApp {
                 };
             }
             UiMessage::StepMessage(down) => {
-                let st = self.store.read().unwrap();
+                let st = self.store.read();
                 let all = &st.chat_msg_indices[self.pane.selected_chat_id.as_deref().expect("an open chat")];
                 let msgs: Vec<&Message> = all.iter().map(|&i| &st.messages[i]).collect();
                 let members = st.settings.on("membershipEvents");
@@ -3325,7 +3325,7 @@ impl BeeperGuiApp {
             }
             UiMessage::CopyText(s) => return iced::clipboard::write(s),
             UiMessage::CopyImage(mid, ai) => {
-                let st = self.store.read().unwrap();
+                let st = self.store.read();
                 let a = &st.messages[st.msg_idx_by_id[&mid]].attachments[ai];
                 let url = a.src_url.clone().expect("an image has a source");
                 return Task::perform(beeper_core::matrix::media(st.matrix.clone(), url), UiMessage::ImageFetched);
@@ -3351,7 +3351,7 @@ impl BeeperGuiApp {
                 return self.load_media();
             }
             UiMessage::CarouselStep(next) => {
-                let (items, at) = self.carousel_items(&self.store.read().unwrap());
+                let (items, at) = self.carousel_items(&self.store.read());
                 let to = if next { at + 1 } else { at.checked_sub(1).expect("a previous image") };
                 let c = self.carousel.as_mut().expect("the carousel is open");
                 (c.mid, c.ai) = items.into_iter().nth(to).expect("a next image");
@@ -3421,7 +3421,7 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::MediaPickAll => {
-                let st = self.store.read().unwrap();
+                let st = self.store.read();
                 let w = self.media_window.as_ref().expect("the Media window is open");
                 let all = media_items(&st, w).into_iter().take(w.shown).map(|(i, k)| (st.messages[i].id.clone(), k));
                 let all = all.collect();
@@ -3434,7 +3434,7 @@ impl BeeperGuiApp {
                 return Task::batch(files.into_iter().map(|(mid, k)| self.update(UiMessage::Download(mid, Some(k)))));
             }
             UiMessage::MediaAskDelete(items) => {
-                let st = self.store.read().unwrap();
+                let st = self.store.read();
                 let mut pairs: Vec<(String, String)> = Vec::new();
                 for (mid, _) in &items {
                     let m = &st.messages[st.msg_idx_by_id[mid]];
@@ -3452,7 +3452,7 @@ impl BeeperGuiApp {
             UiMessage::MediaDelete(go) => {
                 let (pairs, skipped) = self.media_mut().deleting.take().expect("the delete dialog is open");
                 if go {
-                    let mut st = self.store.write().unwrap();
+                    let mut st = self.store.write();
                     for (cid, mid) in &pairs {
                         st.delete_message(cid, mid).expect("delete message");
                         st.queue(cid, Outgoing::Redact { target: mid.clone() });
@@ -3532,7 +3532,7 @@ impl BeeperGuiApp {
             }
             UiMessage::ForwardQuery(q) => self.forward.as_mut().expect("the forward dialog is open").query = q,
             UiMessage::ForwardSubmit => {
-                let st = self.store.read().unwrap();
+                let st = self.store.read();
                 let first = forward_chats(&st, self.forward.as_ref().expect("the forward dialog is open"));
                 let first = first.first().map(|c| c.id.clone());
                 drop(st);
@@ -3547,7 +3547,7 @@ impl BeeperGuiApp {
             UiMessage::ForwardSend => {
                 let Forward { mid, picked, .. } = self.forward.take().expect("the forward dialog is open");
                 assert!(!picked.is_empty(), "forward needs a chat");
-                let mut st = self.store.write().unwrap();
+                let mut st = self.store.write();
                 let m = st.messages[st.msg_idx_by_id[&mid]].clone();
                 for cid in &picked {
                     let (_, txn, _) = st
@@ -3562,7 +3562,7 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::Download(mid, only) => {
-                let st = self.store.read().unwrap();
+                let st = self.store.read();
                 let m = &st.messages[st.msg_idx_by_id[&mid]];
                 let files: Vec<(String, String)> = m
                     .attachments
@@ -3609,7 +3609,7 @@ impl BeeperGuiApp {
             UiMessage::NicknameChanged(v) => self.nickname_edit_buffer = v,
             UiMessage::SaveNickname => {
                 let cid = self.pane.selected_chat_id.clone().expect("a chat is selected");
-                let mut st = self.store.write().unwrap();
+                let mut st = self.store.write();
                 let idx = st.resolve_chat_idx(&cid).expect("selected chat exists");
                 let other = st.chats[idx].participants.items.iter().find(|u| u.is_self != Some(true));
                 if let Some(uid) = other.map(|u| u.id.clone()) {
@@ -3673,7 +3673,7 @@ impl BeeperGuiApp {
                     return Task::none();
                 }
                 self.creating_chat = None;
-                let st = self.store.read().unwrap();
+                let st = self.store.read();
                 let rest = self.pins_and_rows(&st).1.into_iter().map(|c| UiMessage::SelectChat(c.id.clone()));
                 let items: Vec<_> = self.new_chats.iter().map(|&n| UiMessage::SelectNewChat(n)).chain(rest).collect();
                 drop(st);
@@ -3723,7 +3723,7 @@ impl BeeperGuiApp {
             UiMessage::SelectionSet(flag, on) => {
                 self.selection_menu = None;
                 {
-                    let mut st = self.store.write().unwrap();
+                    let mut st = self.store.write();
                     for cid in std::mem::take(&mut self.selection) {
                         let idx = st.resolve_chat_idx(&cid).expect("selected chat exists");
                         if has_flag(&st.chats[idx], flag) == on {
@@ -3747,7 +3747,7 @@ impl BeeperGuiApp {
             UiMessage::SelectionRemind(at) => {
                 self.selection_menu = None;
                 {
-                    let mut st = self.store.write().unwrap();
+                    let mut st = self.store.write();
                     for cid in std::mem::take(&mut self.selection) {
                         let idx = st.resolve_chat_idx(&cid).expect("selected chat exists");
                         if at.is_some() || st.chats[idx].reminder.is_some() {
@@ -3760,7 +3760,7 @@ impl BeeperGuiApp {
             UiMessage::SelectionMenu(menu, x) => self.selection_menu = Some((menu, x)),
             UiMessage::DeleteChat(id, everyone) => {
                 self.confirm = None;
-                self.store.write().unwrap().delete_chat(&id, everyone);
+                self.store.write().delete_chat(&id, everyone);
                 return self.update(UiMessage::StoreChanged);
             }
             UiMessage::Voice(msg) => return self.voice(msg),
@@ -3774,7 +3774,7 @@ impl BeeperGuiApp {
             }
             UiMessage::DismissAllReminders => {
                 self.confirm = None;
-                let mut st = self.store.write().unwrap();
+                let mut st = self.store.write();
                 for i in 0..st.chats.len() {
                     if st.chats[i].reminder.is_some() {
                         st.set_reminder(i, None);
@@ -3804,7 +3804,7 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
             }
             UiMessage::CycleTheme => {
-                let cur = self.store.read().unwrap().settings.theme;
+                let cur = self.store.read().settings.theme;
                 let next = ThemeChoice::ALL[(ThemeChoice::ALL.iter().position(|t| *t == cur).expect("listed") + 1) % 3];
                 return self.update(UiMessage::SelectTheme(next));
             }
@@ -3816,7 +3816,7 @@ impl BeeperGuiApp {
             UiMessage::ToggleSetting(flip) => self.patch_settings(flip),
             UiMessage::CloudAccounts(Ok((email, accounts))) => {
                 let (token, uid, demo) = {
-                    let mut st = self.store.write().unwrap();
+                    let mut st = self.store.write();
                     let info = (st.beeper_state.access_token.clone(), st.beeper_state.user_id.clone(), st.config.demo);
                     if st.me().email != email {
                         let i = st.chat_idx_by_id[NOTE_CHAT_ID];
@@ -3839,7 +3839,7 @@ impl BeeperGuiApp {
             }
             UiMessage::ContactsLoaded(contacts) => {
                 if !contacts.is_empty() {
-                    self.store.write().unwrap().set_contacts(contacts);
+                    self.store.write().set_contacts(contacts);
                 }
             }
             UiMessage::CloudAccounts(Err(e)) => self.status_banner = format!("Could not load your chat accounts: {e}"),
@@ -3860,7 +3860,7 @@ impl BeeperGuiApp {
                 }
                 self.resolving_media.insert(event_id.clone(), true);
                 let (homeserver, access_token, user_id, bridge_id, login_id) = {
-                    let st = self.store.read().unwrap();
+                    let st = self.store.read();
                     let found = st.bridge_accounts.iter().find(|a| a.account_id == account_id);
                     let (bridge_id, login_id) = found.map_or_else(
                         || {
@@ -4035,7 +4035,7 @@ impl BeeperGuiApp {
                         size: g.gif_size,
                         frames,
                     });
-                    if self.store.read().unwrap().settings.on("autoSendGifs") {
+                    if self.store.read().settings.on("autoSendGifs") {
                         self.submit_composer();
                     }
                 }
@@ -4058,15 +4058,15 @@ impl BeeperGuiApp {
             UiMessage::Pushed(Err(e)) => self.status_banner = format!("Could not send to Matrix: {e}"),
             UiMessage::VerifySasNow => {
                 let (tx, rx) = tokio::sync::oneshot::channel();
-                self.store.write().unwrap().sas_confirm = Some(tx);
+                self.store.write().sas_confirm = Some(tx);
                 return Task::perform(beeper_core::matrix::verify(self.store.clone(), rx), UiMessage::Verified);
             }
             UiMessage::SasMatch(same) => {
-                let tx = self.store.write().unwrap().sas_confirm.take().expect("emojis are shown once");
+                let tx = self.store.write().sas_confirm.take().expect("emojis are shown once");
                 tx.send(same).ok();
             }
             UiMessage::ClearOldMedia => {
-                let n = self.store.write().unwrap().clear_cached_media_older_than_days(30);
+                let n = self.store.write().clear_cached_media_older_than_days(30);
                 self.status_banner = format!("Cleared {n} cached media files");
             }
             UiMessage::OpenQuickLook(title, detail) => {
@@ -4146,7 +4146,7 @@ impl BeeperGuiApp {
                 } else if self.pane.selected_msg.is_some() {
                     self.pane.selected_msg = None;
                 } else if self.pane.selected_chat_id.is_some() {
-                    self.leave_chat(&mut self.store.write().unwrap(), None);
+                    self.leave_chat(&mut self.store.write(), None);
                     self.pane.selected_chat_id = None;
                     self.pane.composer = composer_with("");
                     self.refresh_theme_and_tray();
@@ -4204,7 +4204,7 @@ impl BeeperGuiApp {
             }
             UiMessage::SetInboxVisibility(key, option) => {
                 self.chat_menu = None;
-                let st = self.store.read().unwrap();
+                let st = self.store.read();
                 let client = st.matrix.clone().expect("Show in Inbox needs a Matrix client");
                 let rules = beeper_core::matrix::with_inbox_visibility(st.inbox_rules.clone(), &key, option);
                 return Task::perform(
@@ -4254,7 +4254,7 @@ impl BeeperGuiApp {
                 if key == "appLanguage" {
                     i18n::set(v);
                 }
-                let mut st = self.store.write().unwrap();
+                let mut st = self.store.write();
                 let client = st.matrix.clone();
                 if let Some(((kind, content), c)) = beeper_core::matrix::pref_write(&mut st, key).zip(client) {
                     return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed);
@@ -4288,7 +4288,7 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::DeleteDraft(cid) => {
-                self.store.write().unwrap().patch_chat(&cid, true, None, None).expect("chat exists");
+                self.store.write().patch_chat(&cid, true, None, None).expect("chat exists");
                 if self.pane.selected_chat_id.as_ref() == Some(&cid) {
                     self.pane.composer = composer_with("");
                     self.pane.reply_to_message_id = None;
@@ -4301,12 +4301,12 @@ impl BeeperGuiApp {
             }
             UiMessage::DragStart => self.dragging = true,
             UiMessage::DragMoved(pt) => {
-                let rail = if self.store.read().unwrap().settings.on("showSidebar") { 68.0 } else { 0.0 };
+                let rail = if self.store.read().settings.on("showSidebar") { 68.0 } else { 0.0 };
                 self.sidebar_width = (pt.x - rail - 2.0).clamp(172.0, 732.0);
             }
             UiMessage::DragEnd => {
                 self.dragging = false;
-                let path = self.store.read().unwrap().data_dir.join("sidebar-width");
+                let path = self.store.read().data_dir.join("sidebar-width");
                 std::fs::write(path, self.sidebar_width.to_string()).expect("write the sidebar width");
             }
             UiMessage::WindowOpened(id) => {
@@ -4350,7 +4350,7 @@ impl BeeperGuiApp {
                 return self.set_hidden(false);
             }
             UiMessage::CloseRequested(id) => {
-                let st = self.store.read().unwrap();
+                let st = self.store.read();
                 let quit = st.settings.on("quitOnClose") || !(self.tray_up && st.settings.on("showTrayIcon"));
                 drop(st);
                 return match Some(id) == self.main_window && !quit {
@@ -4390,7 +4390,7 @@ impl BeeperGuiApp {
             }
             UiMessage::WindowClosed(id) => {
                 if let Some(w) = self.chat_windows.iter().find(|w| w.0 == id) {
-                    save_draft(&mut self.store.write().unwrap(), &w.1);
+                    save_draft(&mut self.store.write(), &w.1);
                 }
                 self.chat_windows.retain(|w| w.0 != id);
                 if Some(id) == self.settings_window {
@@ -4417,12 +4417,12 @@ impl BeeperGuiApp {
             UiMessage::StoreChanged
                 if self.login_window.is_some()
                     && self.login.screen != login::Screen::Accounts
-                    && self.store.read().unwrap().signed_in() =>
+                    && self.store.read().signed_in() =>
             {
                 self.login.screen = login::Screen::Accounts;
             }
             UiMessage::StoreChanged => {
-                let st = self.store.read().unwrap();
+                let st = self.store.read();
                 let left = self.pane.selected_chat_id.as_deref().is_some_and(|c| st.resolve_chat_idx(c).is_none());
                 self.selection.retain(|c| st.resolve_chat_idx(c).is_some());
                 drop(st);
@@ -4450,7 +4450,7 @@ impl BeeperGuiApp {
                 return self.carousel_key(&key, mods);
             }
             UiMessage::KeyPressed(key, mods) => {
-                let n = self.emoji_suggestions(&self.store.read().unwrap()).len();
+                let n = self.emoji_suggestions(&self.store.read()).len();
                 if n > 0 && mods.is_empty() {
                     let at = self.pane.suggest.min(n - 1);
                     match key.as_ref() {
@@ -4474,7 +4474,7 @@ impl BeeperGuiApp {
                         let down = key == Key::Named(Named::ArrowDown);
                         let edit = !down
                             && self.pane.selected_msg.is_none()
-                            && self.store.read().unwrap().settings.pref("upArrow") == 1;
+                            && self.store.read().settings.pref("upArrow") == 1;
                         let step = self.update(UiMessage::StepMessage(down));
                         let Some(m) = edit.then(|| self.last_own_message()).flatten() else { return step };
                         self.pane.selected_msg = Some(m.id.clone());
@@ -4531,7 +4531,7 @@ impl BeeperGuiApp {
                         ));
                     }
                     Key::Character("c") if self.pane.selected_msg.is_some() => {
-                        let stamp = self.store.read().unwrap().settings.on("copyTimestamps");
+                        let stamp = self.store.read().settings.on("copyTimestamps");
                         let text = copy_text(&self.selected_message().expect("a selected message"), stamp);
                         return self.update(UiMessage::CopyText(text));
                     }
@@ -4558,7 +4558,7 @@ impl BeeperGuiApp {
                         let i = d.parse::<usize>().expect("a digit") - 1;
                         let msg = match RAIL_VIEWS.get(i) {
                             Some(view) => view.map(UiMessage::SelectTab),
-                            None => rail_accounts(&self.store.read().unwrap())
+                            None => rail_accounts(&self.store.read())
                                 .get(i - RAIL_VIEWS.len())
                                 .map(|a| UiMessage::SelectAccount(Some(a.clone()))),
                         };
@@ -4585,12 +4585,12 @@ impl BeeperGuiApp {
                     Key::Named(Named::ArrowUp) if alt => Some("Select Previous Chat"),
                     _ => None,
                 };
-                if let Some(h) = hotkey.filter(|h| self.store.read().unwrap().settings.hotkey_on(h)) {
+                if let Some(h) = hotkey.filter(|h| self.store.read().settings.hotkey_on(h)) {
                     return self.run_hotkey(h);
                 }
             }
         }
-        if let Some(e) = self.store.write().unwrap().matrix_error.take() {
+        if let Some(e) = self.store.write().matrix_error.take() {
             self.status_banner = e;
         }
         Task::batch([self.load_avatars(), self.load_media(), self.push_outbox()])
@@ -4607,7 +4607,7 @@ impl BeeperGuiApp {
     }
 
     fn load_media(&mut self) -> Task<UiMessage> {
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let client = st.matrix.clone();
         let images = self
             .pane
@@ -4662,7 +4662,7 @@ impl BeeperGuiApp {
 
     fn patch_settings(&mut self, f: impl FnOnce(&mut BeeperSettings)) {
         {
-            let mut st = self.store.write().unwrap();
+            let mut st = self.store.write();
             f(&mut st.settings);
             st.persist_state_to_sqlite();
         }
@@ -4671,7 +4671,7 @@ impl BeeperGuiApp {
 
     pub fn subscription(&self) -> Subscription<UiMessage> {
         let changes = Subscription::run_with(StoreFeed(self.store.clone(), 0), |f| {
-            feed(f.0.read().unwrap().ws_tx.subscribe(), |e| match (e.event_type.as_str(), e.message, e.chat) {
+            feed(f.0.read().ws_tx.subscribe(), |e| match (e.event_type.as_str(), e.message, e.chat) {
                 ("message.upserted", Some(m), _) => UiMessage::Upserted(Box::new(m)),
                 ("chat.upserted", _, Some(c)) => UiMessage::ChatUpserted(Box::new(c)),
                 ("chat.typing", ..) => UiMessage::Typing(e.chat_id.expect("typing events name the chat")),
@@ -4679,7 +4679,7 @@ impl BeeperGuiApp {
             })
         });
         let focus = Subscription::run_with(StoreFeed(self.store.clone(), 1), |f| {
-            feed(f.0.read().unwrap().focus_tx.subscribe(), UiMessage::FocusRequested)
+            feed(f.0.read().focus_tx.subscribe(), UiMessage::FocusRequested)
         });
         let keys = iced::event::listen_with(|e, status, id| match e {
             Event::Window(window::Event::Closed) => Some(UiMessage::WindowClosed(id)),
@@ -4734,7 +4734,7 @@ impl BeeperGuiApp {
             })
         });
         let (rising, due) = {
-            let st = self.store.read().unwrap();
+            let st = self.store.read();
             let last = self.pane().selected_chat_id.as_ref().and_then(|c| st.chat_msg_indices.get(c)?.last());
             let rising = last.is_some_and(|&i| send_rise(&st, &st.messages[i]).is_some());
             let pending = st.chats.iter().filter(|c| !self.expired(c));
@@ -4747,7 +4747,7 @@ impl BeeperGuiApp {
         let animated = rising
             || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
             || self.pref_flash.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 2.0);
-        let tray = (cfg!(target_os = "linux") && self.store.read().unwrap().settings.on("showTrayIcon"))
+        let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
             .then(|| Subscription::run(tray::events).map(UiMessage::Tray));
         let notes = (!self.notifications.is_empty())
             .then(|| Subscription::run(notify::events).map(|(id, clicked)| UiMessage::NotificationEvent(id, clicked)));
@@ -4775,7 +4775,7 @@ impl BeeperGuiApp {
     }
 
     pub fn view(&self, id: window::Id) -> El<'_> {
-        let arrow = !self.store.read().unwrap().settings.on("pointerCursor");
+        let arrow = !self.store.read().settings.on("pointerCursor");
         self.drawing.set(self.chat_windows.iter().any(|w| w.0 == id).then_some(id));
         let el = cursor::root(self.view_window(id), arrow, &self.cursor);
         self.drawing.set(None);
@@ -4818,14 +4818,14 @@ impl BeeperGuiApp {
                 .padding(Padding::new(8.0).left(0.0))
                 .into()
         };
-        let rail = self.store.read().unwrap().settings.on("showSidebar");
+        let rail = self.store.read().settings.on("showSidebar");
         let rail = rail.then(|| self.view_rail());
         let body = Row::new().push(rail).push(self.view_sidebar()).push(stack![right, grip]);
         container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0)).into()
     }
 
     pub fn view_main(&self) -> El<'_> {
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         // The sync task can drop a chat before StoreChanged reaches update.
         let known = |c: &str| c.starts_with("draft:") || c.starts_with("account:") || st.resolve_chat_idx(c).is_some();
         let shown = self.pane().selected_chat_id.as_deref().is_some_and(known);
@@ -4911,7 +4911,11 @@ impl BeeperGuiApp {
         });
         let react = self.pane().emoji.as_ref().and_then(|pk| pk.react.as_ref()).map(|(_, at)| {
             let x = if at.x + 352.0 > self.pane().size.width { at.x - 352.0 } else { at.x };
-            (self.view_emoji_picker().expect("the picker is open"), x, at.y.min(self.pane().size.height - 435.0 - 8.0))
+            (
+                self.view_emoji_picker(&self.store.read()).expect("the picker is open"),
+                x,
+                at.y.min(self.pane().size.height - 435.0 - 8.0),
+            )
         });
         let selection_menu = self.selection_menu.map(|(i, x)| {
             let (menu, h) = self.view_selection_menu(i);
@@ -4934,7 +4938,7 @@ impl BeeperGuiApp {
         let toast = self.view_toast(76.0);
         let confirm = self.confirm.filter(|&d| d != ASK_LOGOUT).map(|d| self.view_confirm(d));
         let shows = |c: &&Carousel| {
-            let st = self.store.read().unwrap();
+            let st = self.store.read();
             !c.in_media && Some(&st.messages[st.msg_idx_by_id[&c.mid]].chat_id) == self.pane().selected_chat_id.as_ref()
         };
         let carousel = self.carousel.as_ref().filter(shows).map(|c| self.view_carousel(c));
@@ -4948,7 +4952,7 @@ impl BeeperGuiApp {
 
     fn view_selection_head(&self) -> El<'_> {
         let p = &self.pal;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let chats = self.selected_chats(&st);
         let n = chats.len();
         let step = 28.0 / 3.0;
@@ -4967,7 +4971,7 @@ impl BeeperGuiApp {
 
     fn view_selection_bar(&self) -> El<'_> {
         let p = &self.pal;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let chats = self.selected_chats(&st);
         let all = |f: ChatFlag| chats.iter().all(|c| has_flag(c, f));
         let x0 = 68.0 + self.sidebar_width + 8.0;
@@ -5041,7 +5045,7 @@ impl BeeperGuiApp {
     /// The Remind Me or More menu of the selection bar, and its height.
     fn view_selection_menu(&self, which: u8) -> (El<'_>, f32) {
         let p = &self.pal;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let chats = self.selected_chats(&st);
         let item = |label: String, at: String, msg| menu_item(p, None, label, at, msg);
         let items: Vec<El> = if which == 0 {
@@ -5099,7 +5103,7 @@ impl BeeperGuiApp {
 
     fn view_filter_menu(&self) -> El<'_> {
         let p = &self.pal;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let item = |checked: bool, glyph: char, label: String, hotkey: &'static str, bit: u8| -> El<'_> {
             let lead = row![
                 container(checked.then(|| ic(icon::CHECK, 14.0))).center_x(14),
@@ -5125,7 +5129,7 @@ impl BeeperGuiApp {
 
     fn view_reminder_menu(&self) -> El<'_> {
         let p = &self.pal;
-        let order = self.store.read().unwrap().settings.reminders_order;
+        let order = self.store.read().settings.reminders_order;
         let lead = |on: bool| Some(container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into());
         let orders = REMINDER_ORDERS
             .iter()
@@ -5181,7 +5185,7 @@ impl BeeperGuiApp {
 
     fn view_message_menu(&self, mid: &str) -> (El<'_>, f32) {
         let p = &self.pal;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let m = &st.messages[st.msg_idx_by_id[mid]];
         let (cid, mid, mine) = (m.chat_id.clone(), m.id.clone(), m.is_sender == Some(true));
         let text = m.text.clone().unwrap_or_default();
@@ -5335,7 +5339,7 @@ impl BeeperGuiApp {
         };
         match chip {
             0 => {
-                let st = self.store.read().unwrap();
+                let st = self.store.read();
                 let mut accounts: Vec<String> = std::iter::once("hungryserv".into())
                     .chain(st.accounts.iter().map(|a| a.account_id.clone()))
                     .collect();
@@ -5375,7 +5379,7 @@ impl BeeperGuiApp {
     /// Desktop's account context menu (`gYe`) of a sidebar account or network space.
     fn view_account_menu(&self, entry: &str) -> El<'_> {
         let p = &self.pal;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let space = network_space(&st, entry);
         let account = space.map_or(entry, |n| n.account_id.as_str());
         let bridge = match account {
@@ -5427,7 +5431,7 @@ impl BeeperGuiApp {
                 .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
                 .into();
         }
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
         let on = |v: Option<bool>| v == Some(true);
         let flag = |f: ChatFlag| Some(UiMessage::ToggleFlag(c.id.clone(), f));
@@ -5555,7 +5559,7 @@ impl BeeperGuiApp {
             true => (get(Some(at)).or(get(at.checked_sub(1))), get(at.checked_sub(1)).or(get(Some(at)))),
             false => (get(Some(at + 1)), get(at.checked_sub(1))),
         };
-        let pick = match self.store.read().unwrap().settings.pref(key) {
+        let pick = match self.store.read().settings.pref(key) {
             0 => next,
             1 => prev,
             2 => None,
@@ -5564,7 +5568,7 @@ impl BeeperGuiApp {
         match pick {
             Some(id) => self.update(UiMessage::SelectChat(id.clone())),
             None => {
-                self.leave_chat(&mut self.store.write().unwrap(), None);
+                self.leave_chat(&mut self.store.write(), None);
                 self.pane.selected_chat_id = None;
                 Task::none()
             }
@@ -5654,7 +5658,7 @@ impl BeeperGuiApp {
         let hotkey = |n: usize| -> Vec<&'static str> {
             ["1", "2", "3", "4", "5", "6", "7", "8", "9"].get(n).map_or(vec![], |d| vec!["Ctrl", "Alt", d])
         };
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let numbers = st.settings.on("showUnreadCount");
         let badge = |btn: El<'static>, n: usize, number: bool| -> El<'static> {
             let dot = match number && numbers {
@@ -5767,7 +5771,7 @@ impl BeeperGuiApp {
     fn view_sidebar(&self) -> El<'_> {
         let p = &self.pal;
         let w = self.sidebar_width;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let chats = self.visible_chats(&st);
         let h24 = st.settings.pref("timeFormat") == 1;
         let compact = st.settings.on("compactChatList");
@@ -6173,7 +6177,7 @@ impl BeeperGuiApp {
 
     fn view_conversation(&self) -> El<'_> {
         let p = &self.pal;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let cid = self.pane().selected_chat_id.as_deref().expect("a chat is selected");
         let chat = &st.chats[st.resolve_chat_idx(cid).expect("selected chat exists")];
         let (hide, members) = (st.settings.on("hideDeleted"), st.settings.on("membershipEvents"));
@@ -6368,7 +6372,7 @@ impl BeeperGuiApp {
             column![stack![list, overlay].width(Fill).height(Fill)].push(verify).push(self.view_composer(&st, chat));
         let secondary = st.settings.pref("secondaryComposerButton") != 6;
         let picker = self
-            .view_emoji_picker()
+            .view_emoji_picker(&st)
             .filter(|_| self.pane().emoji.as_ref().is_some_and(|pk| pk.react.is_none()))
             .map(|e| {
                 let right = if secondary { 112.0 } else { 82.0 };
@@ -7100,7 +7104,7 @@ impl BeeperGuiApp {
 
     fn view_info(&self) -> El<'_> {
         let p = &self.pal;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let cid = self.pane().selected_chat_id.clone().expect("a chat is selected");
         let chat = &st.chats[st.resolve_chat_idx(&cid).expect("selected chat exists")];
         let action = |c: char, label: &'static str, msg: UiMessage| {
@@ -7182,7 +7186,7 @@ impl BeeperGuiApp {
 
     fn view_command_palette<'a>(&'a self) -> El<'a> {
         let p = &self.pal;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let room = self.search_room.as_deref();
         let placeholder = match (self.cmd_bar_commands_mode, room) {
             (true, _) => tr("Search commands"),
@@ -7523,7 +7527,7 @@ impl BeeperGuiApp {
     }
 
     fn carousel_key(&mut self, key: &Key, mods: keyboard::Modifiers) -> Task<UiMessage> {
-        let (items, at) = self.carousel_items(&self.store.read().unwrap());
+        let (items, at) = self.carousel_items(&self.store.read());
         let c = self.carousel.clone().expect("the carousel is open");
         match key.as_ref() {
             Key::Named(Named::Escape) => self.update(UiMessage::CloseCarousel),
@@ -7561,7 +7565,7 @@ impl BeeperGuiApp {
 
     fn view_carousel<'a>(&'a self, car: &Carousel) -> El<'a> {
         let p = &self.pal;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let (mid, ai) = (car.mid.as_str(), car.ai);
         let m = &st.messages[st.msg_idx_by_id[mid]];
         let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
@@ -7666,7 +7670,7 @@ impl BeeperGuiApp {
 
     fn view_media<'a>(&'a self, w: &MediaWindow) -> El<'a> {
         let p = &self.pal;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let [file_icon, video_icon, link_icon, _, tune_icon, search_icon, done_icon] = &*MEDIA_ICONS;
         let picking = w.select || self.mods.control();
         let picked = |mid: &str, k: usize| w.picked.iter().any(|(m, i)| m == mid && *i == k);
@@ -7962,7 +7966,7 @@ impl BeeperGuiApp {
 
     fn view_forward<'a>(&'a self, f: &'a Forward) -> El<'a> {
         let p = &self.pal;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let shade = Color { a: 0.1, ..p.strong };
         let strip = |content: El<'a>, r| container(content).width(Fill).padding([8, 13]).style(fill_box(p.chip, r));
         let head = row![tinted(&MAT_FORWARD, 16.0, p.strong), txt(tr("Forward message"), 14.0).color(p.strong)];
@@ -8023,7 +8027,7 @@ impl BeeperGuiApp {
 
     fn view_new_chat(&self) -> El<'_> {
         let p = &self.pal;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let fade = Color { a: 0.4, ..Color::WHITE };
         let footer = |label: &'static str, key: &'static str| {
             let pill = container(
@@ -8186,7 +8190,7 @@ impl BeeperGuiApp {
 
     pub fn view_settings(&self) -> El<'_> {
         let p = &self.pal;
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let me = st.me();
         let name = me.full_name.clone().expect("self name");
         let hits = search_settings(&self.settings_query);
@@ -8422,7 +8426,7 @@ impl BeeperGuiApp {
                 vec![(tr("Yes"), UiMessage::DismissAllReminders)],
             ),
             ASK_DELETE_CHAT => {
-                let st = self.store.read().unwrap();
+                let st = self.store.read();
                 let id = self.delete_target.clone().expect("a chat to delete");
                 let c = &st.chats[st.resolve_chat_idx(&id).expect("the chat to delete exists")];
                 let delete = |label, everyone| (label, UiMessage::DeleteChat(id.clone(), everyone));
@@ -8443,7 +8447,7 @@ impl BeeperGuiApp {
             }
             ASK_DELETE_MESSAGE => {
                 let mid = self.delete_target.clone().expect("a message to delete");
-                let st = self.store.read().unwrap();
+                let st = self.store.read();
                 let cid = st.messages[st.msg_idx_by_id[&mid]].chat_id.clone();
                 let delete = vec![(tr("Delete"), UiMessage::DeleteMessage(cid, mid))];
                 (tr("Delete message").into(), tr("Are you sure you want to delete this message?"), delete)
@@ -8582,9 +8586,9 @@ impl BeeperGuiApp {
                 )
                 .collect()
             }
-            SettingsTab::General => self.pref_items(prefs::GENERAL, s),
-            SettingsTab::Appearance => self.pref_items(prefs::APPEARANCE, s),
-            SettingsTab::Notifications => self.pref_items(prefs::NOTIFICATIONS, s),
+            SettingsTab::General => self.pref_items(prefs::GENERAL, st),
+            SettingsTab::Appearance => self.pref_items(prefs::APPEARANCE, st),
+            SettingsTab::Notifications => self.pref_items(prefs::NOTIFICATIONS, st),
             SettingsTab::Hotkeys => vec![self.hotkeys_page(s)],
             SettingsTab::Devices => {
                 let code = text_input("Recovery code", &self.recovery_code_input)
@@ -8823,7 +8827,8 @@ impl BeeperGuiApp {
         vec![head.into(), card.into(), group(p, Some(tr("Settings")), rows.collect())]
     }
 
-    fn pref_items(&self, items: &'static [prefs::Item], s: &BeeperSettings) -> Vec<El<'_>> {
+    fn pref_items(&self, items: &'static [prefs::Item], st: &BeeperStore) -> Vec<El<'_>> {
+        let s = &st.settings;
         let p = &self.pal;
         let mut heading = None;
         let mut lead = None;
@@ -8843,7 +8848,7 @@ impl BeeperGuiApp {
                             .pref_flash
                             .filter(|(k, _)| *k == r.key)
                             .map_or(0.0, |(_, at)| 1.0 - ease_out((at.elapsed().as_secs_f32() / 2.0).min(1.0)));
-                        container(self.pref_control(r, s))
+                        container(self.pref_control(r, st))
                             .id(r.key)
                             .style(fill_box(p.accent.scale_alpha(flash), 8.0))
                             .into()
@@ -8883,7 +8888,8 @@ impl BeeperGuiApp {
         })
     }
 
-    fn pref_control(&self, r: &'static prefs::Pref, s: &BeeperSettings) -> El<'_> {
+    fn pref_control(&self, r: &'static prefs::Pref, st: &BeeperStore) -> El<'_> {
+        let s = &st.settings;
         let p = &self.pal;
         let locked = r.badge == Some(prefs::Badge::Plus);
         let control = match r.control {
@@ -8937,7 +8943,7 @@ impl BeeperGuiApp {
                 .into();
             }
             prefs::Control::Archive(scope, age) => {
-                let n = self.store.read().unwrap().stale_inbox_chats().len();
+                let n = st.stale_inbox_chats().len();
                 let (mut left, mut rest) = (Row::new(), tr("Archive __TYPE__ chats older than __DURATION__"));
                 while let Some(at) = rest.find("__") {
                     let (words, tail) = rest.split_at(at);
@@ -8986,7 +8992,7 @@ pub fn write_rgba_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u
 pub static RELAUNCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn run_native_gui(store: SharedStore) -> iced::Result {
-    let st = store.read().unwrap();
+    let st = store.read();
     i18n::set(st.settings.pref("appLanguage"));
     if st.settings.on("spellcheck") {
         let custom = st.data_dir.join("Custom Dictionary.txt");

@@ -1,6 +1,6 @@
 use beeper_core::config::CentralConfig;
 use beeper_core::models::{ThemeChoice, VerificationSas, VerificationSasEmoji, VerificationState};
-use beeper_core::store::BeeperStore;
+use beeper_core::store::{BeeperStore, StoreLock};
 use beeper_ui::{
     login::{Login, LoginMsg, Screen},
     style::{fw, ALL_FONTS},
@@ -9,7 +9,6 @@ use beeper_ui::{
 use iced::{font::Weight, Size, Theme};
 use iced_test::simulator::Simulator;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
 
 fn shot(out: &Path, name: &str, size: (f32, f32), theme: &Theme, el: El<'_>) {
     let settings = iced::Settings {
@@ -37,7 +36,7 @@ fn main() {
         real.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("beeper-rs-shots-{}", std::process::id())));
     let mut cfg = CentralConfig::new(data.clone(), "127.0.0.1".into(), 23390, None);
     cfg.demo = real.is_none();
-    let store = Arc::new(RwLock::new(BeeperStore::from_config(cfg)));
+    let store = StoreLock::shared(BeeperStore::from_config(cfg));
     let mut app = BeeperGuiApp::new(store);
     let (choice, theme) = if dark { (ThemeChoice::Dark, Theme::Dark) } else { (ThemeChoice::Light, Theme::Light) };
     let _ = app.update(UiMessage::SelectTheme(choice));
@@ -53,7 +52,7 @@ fn main() {
     shot(&out, "main_new_chat", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::DeleteNewChat(0));
     let dm = {
-        let mut st = app.store.write().unwrap();
+        let mut st = app.store.write();
         let peer =
             |c: &beeper_core::models::Chat| c.participants.items.iter().find(|u| u.is_self != Some(true)).cloned();
         let c = st.chats.iter().find(|c| c.chat_type == "single" && peer(c).is_some()).expect("a DM");
@@ -63,8 +62,8 @@ fn main() {
     };
     app.select_chat(&dm);
     shot(&out, "main_typing", (1200.0, 800.0), &theme, app.view_main());
-    app.store.write().unwrap().typing.clear();
-    app.store.write().unwrap().recent_emoji = vec![("👍".into(), 3), ("joy".into(), 2), ("❤️".into(), 1)];
+    app.store.write().typing.clear();
+    app.store.write().recent_emoji = vec![("👍".into(), 3), ("joy".into(), 2), ("❤️".into(), 1)];
     let _ = app.update(UiMessage::Emoji(beeper_ui::emoji::EmojiMsg::Pointer(0, true)));
     shot(&out, "main_emoji", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::CloseModals);
@@ -80,7 +79,7 @@ fn main() {
     shot(&out, "settings_logout", (800.0, 740.0), &theme, app.view_settings());
     let _ = app.update(UiMessage::Ask(None));
     {
-        let mut st = app.store.write().unwrap();
+        let mut st = app.store.write();
         let emojis = [
             ("🐶", "Dog"),
             ("🔑", "Key"),

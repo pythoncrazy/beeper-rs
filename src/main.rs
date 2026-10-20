@@ -3,10 +3,9 @@ use beeper_api::{client::BeeperClient, server::serve_http};
 use beeper_core::{
     config::{migrate_legacy_data_dir, CentralConfig, APP_NAME, APP_VERSION, DEFAULT_PAS_HOST, DEFAULT_PAS_PORT},
     platform::current_desktop_data_dir,
-    store::{BeeperStore, SharedStore},
+    store::{BeeperStore, SharedStore, StoreLock},
 };
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 
 const HELP: &str = "Usage: beeper-rs [OPTIONS] [COMMAND]
 
@@ -100,12 +99,12 @@ fn main() {
     if let Ok(url) = std::env::var("BEEPER_MATRIX_URL") {
         cfg.homeserver = url;
     }
-    let store: SharedStore = Arc::new(RwLock::new(BeeperStore::from_config(cfg)));
-    if !store.read().unwrap().config.demo {
+    let store: SharedStore = StoreLock::shared(BeeperStore::from_config(cfg));
+    if !store.read().config.demo {
         rt.spawn(beeper_core::matrix::run(store.clone()));
     }
     let serve = matches!(command, Command::Serve);
-    if serve || store.read().unwrap().settings.enable_pas_api {
+    if serve || store.read().settings.enable_pas_api {
         let listener = rt.block_on(tokio::net::TcpListener::bind((host.as_str(), port))).unwrap_or_else(|e| {
             panic!("bind the Desktop API to {host}:{port}: {e}. Another app uses this port. Use --port <PORT>.")
         });

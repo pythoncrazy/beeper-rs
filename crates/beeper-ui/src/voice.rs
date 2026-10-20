@@ -205,7 +205,7 @@ impl BeeperGuiApp {
                 }
                 let (chat, mid) = (t.chat.clone(), t.mid.clone());
                 audio.now = Some(Track { at: 0.0, since: None, ..audio.now.take().expect("a current track") });
-                let st = self.store.read().unwrap();
+                let st = self.store.read();
                 if !st.settings.on("autoPlayVoiceNotes") {
                     return Task::none();
                 }
@@ -224,7 +224,7 @@ impl BeeperGuiApp {
 
     /// Fetch and decode the audio of the open chat.
     pub(crate) fn load_audio(&mut self) -> Task<UiMessage> {
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let Some(client) = st.matrix.clone() else { return Task::none() };
         let chat = self.pane.selected_chat_id.as_ref().and_then(|c| st.chat_msg_indices.get(c));
         let urls: Vec<String> = chat
@@ -379,7 +379,7 @@ mod tests {
                 .expect("message JSON"),
             );
         }
-        let mut app = BeeperGuiApp::new(Arc::new(std::sync::RwLock::new(st)));
+        let mut app = BeeperGuiApp::new(beeper_core::store::StoreLock::shared(st));
         let short = Clip { samples: vec![0.0; 480].into(), peaks: vec![1.0].into() };
         for url in ["mxc://a", "mxc://b"] {
             let _ = app.voice(Msg::Loaded(url.into(), Ok(short.clone())));
@@ -392,7 +392,7 @@ mod tests {
             (t.mid.clone(), t.since.is_some())
         };
         assert_eq!(ended(&mut app), ("v1".into(), true));
-        app.store.write().unwrap().settings.set_pref("autoPlayVoiceNotes", 0);
+        app.store.write().settings.set_pref("autoPlayVoiceNotes", 0);
         assert_eq!(ended(&mut app), ("v0".into(), false));
     }
 }

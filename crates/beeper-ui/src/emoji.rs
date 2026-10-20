@@ -1,5 +1,6 @@
 use crate::style::{med, mix, txt, CLEAR};
 use crate::{BeeperGuiApp, El, UiMessage};
+use beeper_core::store::BeeperStore;
 use iced::gradient::Linear;
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{button, column, container, mouse_area, operation, row, scrollable, stack, svg, text_input, Space};
@@ -294,18 +295,18 @@ impl BeeperGuiApp {
     }
 
     /// The picker sections: frequently used (when there are any), then each category, or the search results.
-    fn emoji_sections(&self, pk: &Picker) -> Vec<(&'static str, Vec<usize>)> {
+    fn emoji_sections(&self, pk: &Picker, st: &BeeperStore) -> Vec<(&'static str, Vec<usize>)> {
         if !pk.query.trim().is_empty() {
             return vec![("Search Results", search(&pk.query))];
         }
-        let frequent = frequent_emoji(&self.store.read().unwrap());
+        let frequent = frequent_emoji(st);
         let frequent = (!frequent.is_empty()).then_some((CATEGORIES[0].1, frequent));
         let cats = DATA.categories.iter().zip(&CATEGORIES[1..]).map(|(r, (_, title))| (*title, r.clone().collect()));
         frequent.into_iter().chain(cats).collect()
     }
 
     pub(crate) fn update_emoji(&mut self, m: EmojiMsg) -> Task<UiMessage> {
-        let on_hover = self.store.read().unwrap().settings.on("emojiPickerOnHover");
+        let on_hover = self.store.read().settings.on("emojiPickerOnHover");
         match m {
             EmojiMsg::Toggle if on_hover => return Task::none(),
             EmojiMsg::Toggle if self.pane.emoji.is_some() => self.pane.emoji = None,
@@ -326,7 +327,7 @@ impl BeeperGuiApp {
             EmojiMsg::Close(g) if g == self.emoji_gen && self.emoji_hovered == [false; 2] => self.pane.emoji = None,
             EmojiMsg::Close(_) => {}
             EmojiMsg::Pick(i) => {
-                let tone = self.store.read().unwrap().skin_tone;
+                let tone = self.store.read().skin_tone;
                 if let Some((mid, _)) = self.pane.emoji.take_if(|pk| pk.react.is_some()).and_then(|pk| pk.react) {
                     let cid = self.pane.selected_chat_id.clone().expect("an open chat");
                     return self.update(UiMessage::ToggleReaction(cid, mid, DATA.emojis[i].skinned(tone)));
@@ -336,7 +337,7 @@ impl BeeperGuiApp {
             }
             EmojiMsg::Skin(t) => {
                 let client = {
-                    let mut st = self.store.write().unwrap();
+                    let mut st = self.store.write();
                     st.skin_tone = t;
                     st.matrix.clone()
                 };
@@ -351,7 +352,12 @@ impl BeeperGuiApp {
                 let pk = self.pane.emoji.as_mut().expect("the picker is open");
                 pk.query.clear();
                 let pk = self.pane.emoji.as_ref().expect("the picker is open");
-                let y = self.emoji_sections(pk).iter().take(k).map(|(_, v)| section_height(v.len())).sum();
+                let y = self
+                    .emoji_sections(pk, &self.store.read())
+                    .iter()
+                    .take(k)
+                    .map(|(_, v)| section_height(v.len()))
+                    .sum();
                 return operation::scroll_to(GRID, operation::AbsoluteOffset { x: 0.0, y });
             }
             m => {
@@ -378,11 +384,11 @@ impl BeeperGuiApp {
         operation::focus(SEARCH_INPUT)
     }
 
-    pub(crate) fn view_emoji_picker(&self) -> Option<El<'_>> {
+    pub(crate) fn view_emoji_picker(&self, st: &BeeperStore) -> Option<El<'_>> {
         let pk = self.pane().emoji.as_ref()?;
         let c = self.emoji_colors();
-        let tone = self.store.read().unwrap().skin_tone;
-        let sections = self.emoji_sections(pk);
+        let tone = st.skin_tone;
+        let sections = self.emoji_sections(pk, st);
         let tops: Vec<f32> = sections
             .iter()
             .scan(0.0, |y, (_, v)| {
@@ -393,7 +399,7 @@ impl BeeperGuiApp {
             .collect();
         let current = tops.iter().rposition(|&t| t <= pk.scroll + 1.0).expect("the first section starts at 0");
         let searching = !pk.query.trim().is_empty();
-        let frequent = usize::from(!frequent_emoji(&self.store.read().unwrap()).is_empty());
+        let frequent = usize::from(!frequent_emoji(st).is_empty());
         let nav = row((1 - frequent..CATEGORIES.len()).enumerate().map(|(k, cat)| {
             let on = !searching && k == current;
             let (fg, accent, dim) = (c.fg, c.accent, mix(c.bg, c.fg, 0.65));
