@@ -214,6 +214,8 @@ impl BeeperGuiApp {
             let id = || c.id.clone();
             let e = trx("Chat", "Command bar category");
             let flag = |f| Some(UiMessage::ToggleFlag(id(), f));
+            let remind = UiMessage::OpenSubMenu(SubMenu::Remind(id()));
+            v.push(cmd(e, tr("Remind me later"), Some(remind)).keys(&["reminder"]).hotkey("Remind Later"));
             let low = has_flag(c, ChatFlag::LowPriority);
             let low_title = if low { tr("Move to Inbox") } else { tr("Move to Low Priority") };
             v.push(
@@ -233,6 +235,7 @@ impl BeeperGuiApp {
             }
             let delete = (c.delete_modes != 0).then(|| UiMessage::AskDeleteChat(id()));
             v.push(cmd(e, trx("Delete", "chat command"), delete).keys(&["delete", "leave"]));
+            v.push(cmd(e, tr("Report as spam"), None));
             v.push(cmd(e, tr("Open in new window"), Some(UiMessage::OpenChatWindow(id()))));
         }
         v.push(
@@ -270,11 +273,25 @@ impl BeeperGuiApp {
                 let call = tr("Call %s").replacen("%s", &crate::fmt_phone(phone), 1);
                 v.push(cmd("User", call, Some(UiMessage::OpenUrl(format!("tel:{phone}")))).keys(&["phone"]));
             }
+            if let Some((c, url)) = chat.and_then(|c| Some((c, crate::profile_link(c)?))) {
+                let network = network_name(&c.account_id);
+                let title = match other.username.as_deref() {
+                    Some(u) => tr("Open %1$s on %2$s")
+                        .replacen("%1$s", &if u.starts_with('@') { u.to_string() } else { format!("@{u}") }, 1)
+                        .replacen("%2$s", network, 1),
+                    None => tr("Open in %s").replacen("%s", network, 1),
+                };
+                let open = cmd("User", title, Some(UiMessage::OpenUrl(url))).keys(&["user", "profile"]);
+                v.push(open.hotkey("Open User Profile"));
+            }
         }
         if chat.is_some() {
             let e = "Chat";
             let info = if self.show_right_panel { tr("Hide chat info") } else { tr("Show chat info") };
             v.push(cmd(e, info, Some(UiMessage::ToggleRightPanel)).hotkey("Toggle Chat Info"));
+            let file = self.pane.editing_message_id.is_none().then_some(UiMessage::PickFiles);
+            let file_keys = &["attachment", "image", "gif", "video", "document", "pdf"];
+            v.push(cmd(e, tr("Send file"), file).keys(file_keys).hotkey("Chat: Send File"));
             let gif = (self.pane.editing_message_id.is_none()).then_some(UiMessage::ToggleGifPicker);
             v.push(cmd(e, tr("Send GIF"), gif).keys(&["attachment", "image", "video"]).hotkey("Message: Send GIF"));
         }
@@ -287,6 +304,11 @@ impl BeeperGuiApp {
         if let Some(c) = chat {
             let here = cmd("", tr("Search messages in current chat"), Some(UiMessage::SearchRoom(c.id.clone())));
             v.push(here.keys(&["find", "grep"]).hotkey("Search: Room"));
+        }
+        if crate::rail_accounts(st).len() > 1 {
+            let filter =
+                cmd("Filter Chats", tr("Filter by account"), Some(UiMessage::OpenSubMenu(SubMenu::FilterAccount)));
+            v.push(filter.hotkey("Filter By Account"));
         }
         let requests = self.active_tab == InboxTab::Requests;
         let (inbox, tab) = match requests {

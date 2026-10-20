@@ -559,6 +559,24 @@ fn profile_links_match_desktop() {
 }
 
 #[test]
+fn chat_commands_like_desktop() {
+    let mut app = demo_app("chatcmds");
+    let id = app.store.read().chats.iter().find(|c| profile_link(c).is_some()).map(|c| c.id.clone()).unwrap();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let cmds = app.commands(&app.store.read(), "");
+    let titled = |t: &str| cmds.iter().find(|c| c.title == t).unwrap_or_else(|| panic!("no command {t}"));
+    assert_eq!(cmds[0].title, "Remind me later");
+    assert!(titled("Report as spam").msg.is_none(), "no network reports chats here");
+    assert_eq!(titled("Send file").hotkey, Some("Chat: Send File"));
+    assert_eq!(titled("Filter by account").category, "Filter Chats");
+    let open = cmds.iter().find(|c| c.hotkey == Some("Open User Profile")).expect("a profile command");
+    let network = network_name(&app.store.read().chats.iter().find(|c| c.id == id).unwrap().account_id);
+    assert!(open.title.starts_with("Open @") && open.title.ends_with(&format!(" on {network}")), "{}", open.title);
+    let _ = app.update(UiMessage::Commands(vec![UiMessage::CloseModals, cmds[0].msg.clone().unwrap()]));
+    assert!(app.show_command_palette && app.cmd_submenu == Some(commands::SubMenu::Remind(id)));
+}
+
+#[test]
 fn emoticons_follow_the_setting() {
     use iced_test::simulator::typewrite;
     let mut app = demo_app("emoticons");
