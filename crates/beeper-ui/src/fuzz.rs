@@ -577,6 +577,33 @@ fn chat_commands_like_desktop() {
 }
 
 #[test]
+fn history_and_folder_submenus_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("historysub");
+    let ids: Vec<String> = app.visible_chats(&app.store.read()).iter().take(3).map(|c| c.id.clone()).collect();
+    for id in &ids {
+        let _ = app.update(UiMessage::SelectChat(id.clone()));
+    }
+    let _ = app.update(UiMessage::OpenSubMenu(commands::SubMenu::History));
+    let rows = app.commands(&app.store.read(), "");
+    let chats: Vec<&str> = rows.iter().filter_map(|c| c.chat.as_deref()).collect();
+    assert_eq!(chats[..3], [&*ids[2], &*ids[1], &*ids[0]], "the most recent chat first");
+    assert_eq!((rows[0].hotkey, rows[1].hotkey), (None, Some("History: Next Chat")));
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::ArrowDown), Modifiers::empty()));
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+    assert_eq!(app.pane.selected_chat_id.as_deref(), Some(&*ids[1]));
+    let _ = app.update(UiMessage::OpenSubMenu(commands::SubMenu::Folders));
+    let titles: Vec<String> = app.commands(&app.store.read(), "").into_iter().map(|c| c.title).collect();
+    assert_eq!(titles, ["Archived", "Low Priority", "Requests"], "the open folder is not listed");
+    let _ = app.update(UiMessage::CommandQueryChanged("low".into()));
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+    assert_eq!(app.active_tab, InboxTab::LowPriority);
+    let _ = app.update(UiMessage::RunHotkey("Command Bar"));
+    let cmds = app.commands(&app.store.read(), "folder");
+    assert!(cmds[0].title == "Filter by folder type" && cmds[0].msg.is_some());
+}
+
+#[test]
 fn emoticons_follow_the_setting() {
     use iced_test::simulator::typewrite;
     let mut app = demo_app("emoticons");

@@ -81,6 +81,10 @@ pub enum SubMenu {
     FilterAccount,
     /// The times for a reminder on a chat.
     Remind(String),
+    /// The recently viewed chats.
+    History,
+    /// The folders other than the open one.
+    Folders,
 }
 
 impl SubMenu {
@@ -88,12 +92,15 @@ impl SubMenu {
         match self {
             SubMenu::FilterAccount => tr("Filter account"),
             SubMenu::Remind(_) => tr("Remind Me"),
+            SubMenu::History => tr("Recently viewed chats"),
+            SubMenu::Folders => tr("Filter chat folders"),
         }
     }
 
     pub(crate) fn placeholder(&self) -> String {
         match self {
-            SubMenu::FilterAccount => String::new(),
+            SubMenu::FilterAccount | SubMenu::Folders => String::new(),
+            SubMenu::History => tr("Search chats...").into(),
             SubMenu::Remind(_) => {
                 tr("When? (try typing something like %s)").replacen("%s", "\"Monday morning at 9\"", 1)
             }
@@ -198,6 +205,48 @@ impl BeeperGuiApp {
                 });
                 search(std::iter::once(Command { digit: Some(1), ..all.hotkey(SPACES) }).chain(accounts).collect())
             }
+            SubMenu::Folders => {
+                let folders = [
+                    (InboxTab::AllChats, "Inbox"),
+                    (InboxTab::Archived, "Archived"),
+                    (InboxTab::LowPriority, "Low Priority"),
+                    (InboxTab::Requests, "Requests"),
+                ];
+                let open = |t: &InboxTab| *t == self.active_tab && self.selected_account_filter.is_none();
+                let folders = folders.into_iter().filter(|(t, _)| !open(t));
+                search(folders.map(|(t, name)| cmd("", tr(name), Some(UiMessage::SelectTab(t)))).collect())
+            }
+            SubMenu::History => {
+                let chats: Vec<&Chat> =
+                    self.chat_history.iter().filter_map(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]).collect();
+                let at = self.pane.selected_chat_id.as_ref().and_then(|id| chats.iter().position(|c| &c.id == id));
+                let mut v: Vec<Command> = chats
+                    .iter()
+                    .map(|c| Command {
+                        chat: Some(c.id.clone()),
+                        ..cmd("", c.title.clone(), Some(UiMessage::SelectChat(c.id.clone())))
+                    })
+                    .collect();
+                let neighbor =
+                    |by: isize| at.map_or(if by > 0 { 0 } else { usize::MAX }, |a| (a as isize + by) as usize);
+                if let Some(c) = v.get_mut(neighbor(1)) {
+                    c.hotkey = Some("History: Next Chat");
+                }
+                if let Some(c) = v.get_mut(neighbor(-1)) {
+                    c.hotkey = Some("History: Previous Chat");
+                }
+                if query.is_empty() {
+                    return v;
+                }
+                prefs::match_sort_keys(v, query, |cmd| {
+                    let c = chats.iter().find(|c| Some(&c.id) == cmd.chat.as_ref()).expect("a listed chat");
+                    let people = c.participants.items.iter().take(3).filter(|u| u.is_self != Some(true));
+                    let people = people.flat_map(|u| [&u.full_name, &u.email, &u.phone_number, &u.username]);
+                    let mut keys = vec![c.title.clone(), network_name(&c.account_id).to_string()];
+                    keys.extend(people.flatten().cloned());
+                    keys
+                })
+            }
         }
     }
 
@@ -295,6 +344,8 @@ impl BeeperGuiApp {
             let gif = (self.pane.editing_message_id.is_none()).then_some(UiMessage::ToggleGifPicker);
             v.push(cmd(e, tr("Send GIF"), gif).keys(&["attachment", "image", "video"]).hotkey("Message: Send GIF"));
         }
+        let history = cmd(CHATS, tr("Open recently viewed chats"), Some(UiMessage::OpenSubMenu(SubMenu::History)));
+        v.push(history.keys(&["history"]));
         let new_chat = cmd("", tr("Create new chat"), Some(UiMessage::NewChat));
         v.push(new_chat.keys(&["compose", "create", "person", "chat"]).hotkey("Chat: Start New"));
         let join = UiMessage::Commands(vec![UiMessage::NewChat, UiMessage::ToggleJoinMatrix]);
@@ -305,6 +356,8 @@ impl BeeperGuiApp {
             let here = cmd("", tr("Search messages in current chat"), Some(UiMessage::SearchRoom(c.id.clone())));
             v.push(here.keys(&["find", "grep"]).hotkey("Search: Room"));
         }
+        let folders = (self.active_tab != InboxTab::Requests).then_some(UiMessage::OpenSubMenu(SubMenu::Folders));
+        v.push(cmd("Filter Chats", tr("Filter by folder type"), folders));
         if crate::rail_accounts(st).len() > 1 {
             let filter =
                 cmd("Filter Chats", tr("Filter by account"), Some(UiMessage::OpenSubMenu(SubMenu::FilterAccount)));
