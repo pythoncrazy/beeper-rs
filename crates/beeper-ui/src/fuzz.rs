@@ -405,9 +405,23 @@ fn attachments_send_like_desktop() {
     let _ = app.update(UiMessage::ComposerChanged("cap".into()));
     let _ = app.update(UiMessage::SubmitComposer);
     assert_eq!(last(&app, 1), [(Some("cap".into()), vec!["file".into()])], "one attachment has the text as caption");
-    let _ = app.update(UiMessage::FilesLoaded(Ok(files)));
+    let _ = app.update(UiMessage::FilesLoaded(Ok(files.clone())));
     let _ = app.update(UiMessage::DiscardAttachment(0));
     assert_eq!(app.pane.attachments.len(), 1);
+    let _ = app.update(UiMessage::DiscardAttachment(0));
+    let id = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::FileHover(id, true));
+    assert!(simulator(app.view_main()).find("Drop files here to attach").is_ok(), "a drag shows the drop zone");
+    let _ = app.update(UiMessage::Modifiers(Modifiers::SHIFT));
+    let _ = app.update(UiMessage::FileDropped(id, "/none".into()));
+    let _ = app.update(UiMessage::FilesLoaded(Ok(files[1..].to_vec())));
+    assert!(!app.dropping && app.pane.attachments.is_empty(), "a drop with Shift sends");
+    assert_eq!(last(&app, 1), [(None, vec!["file".into()])]);
+    let _ = app.update(UiMessage::Modifiers(Modifiers::empty()));
+    let _ = app.update(UiMessage::FileHover(id, true));
+    let _ = app.update(UiMessage::FileDropped(id, "/none".into()));
+    let _ = app.update(UiMessage::FilesLoaded(Ok(files[1..].to_vec())));
+    assert_eq!(app.pane.attachments.len(), 1, "a drop attaches");
 }
 
 #[test]
