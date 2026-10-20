@@ -1011,6 +1011,22 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let _ = gui.update(key(Named::Tab, Modifiers::CTRL));
         assert_eq!(selected(&gui), ids[2], "releasing Ctrl moves the chat to the front");
         let _ = gui.update(UiMessage::Modifiers(Modifiers::empty()));
+        let _ = gui.update(UiMessage::KeyPressed(Key::Character("s".into()), Modifiers::CTRL | Modifiers::ALT));
+        assert!(gui.sidebar_hidden, "Ctrl Alt S hides the sidebar");
+        let hidden = std::fs::read_to_string(store.read().data_dir.join("sidebar-hidden")).unwrap();
+        assert_eq!(hidden, "true", "the hidden sidebar stays hidden after a restart");
+        let width = gui.sidebar_width;
+        let _ = gui.update(UiMessage::DragMoved(iced::Point::new(200.0, 0.0)));
+        assert!(gui.sidebar_hidden && gui.sidebar_width == width, "a drag below Desktop's minimum keeps it hidden");
+        let _ = gui.update(UiMessage::DragMoved(iced::Point::new(400.0, 0.0)));
+        assert!(!gui.sidebar_hidden && gui.sidebar_width == 330.0, "a wider drag shows it again");
+        let main = iced::window::Id::unique();
+        gui.main_window = Some(main);
+        let _ = gui.update(UiMessage::WindowResized(main, iced::Size::new(500.0, 800.0)));
+        assert!(gui.sidebar_hidden, "a window narrower than 600 hides the sidebar");
+        let _ = gui.update(UiMessage::WindowResized(main, iced::Size::new(1264.0, 893.0)));
+        assert!(!gui.sidebar_hidden, "a wider window shows it again");
+        gui.main_window = None;
     }
     {
         let mut st = store.write();
