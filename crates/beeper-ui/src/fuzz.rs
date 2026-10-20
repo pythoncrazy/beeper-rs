@@ -425,6 +425,33 @@ fn attachments_send_like_desktop() {
 }
 
 #[test]
+fn filter_account_submenu_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("filteracc");
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("a".into()), Modifiers::CTRL | Modifiers::ALT));
+    assert_eq!(app.cmd_submenu, Some(commands::SubMenu::FilterAccount));
+    let cmds = app.commands(&app.store.read(), "");
+    assert_eq!(cmds[0].title, "All Accounts");
+    assert_eq!(cmds[1].account.as_deref(), Some("hungryserv"));
+    assert!(cmds.iter().all(|c| c.account.is_none() || c.hotkey.is_some()), "{}", cmds.len());
+    {
+        let mut sim = simulator(app.view_main());
+        assert!(sim.find("Filter account").is_ok() && sim.find("All Accounts").is_ok());
+        assert!(sim.find("Window").is_err(), "a submenu has no category headings");
+    }
+    let target = cmds.iter().find(|c| c.account.as_deref().is_some_and(|a| network_name(a) == "Telegram")).unwrap();
+    let target = target.account.clone();
+    let _ = app.update(UiMessage::CommandQueryChanged("telegram".into()));
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+    assert!(!app.show_command_palette && app.selected_account_filter == target, "the network name finds the account");
+    let _ = app.update(UiMessage::RunHotkey("Filter By Account"));
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+    assert!(app.selected_account_filter.is_none(), "All Accounts clears the filter");
+    let _ = app.update(UiMessage::RunHotkey("Command Bar"));
+    assert!(app.cmd_submenu.is_none(), "the next command bar is the normal one");
+}
+
+#[test]
 fn profile_links_match_desktop() {
     let app = demo_app("profile");
     let st = app.store.read();
