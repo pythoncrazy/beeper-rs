@@ -845,7 +845,9 @@ fn avatar<'a>(name: &str, size: f32, p: &Palette) -> El<'a> {
     };
     let &(bottom, top) = pick(name, &AVATAR_GRADIENTS);
     let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, hex(top)).add_stop(1.0, hex(bottom));
-    container(med(label, size * 0.5).color(Color::WHITE))
+    let font = crate::style::initials_font();
+    let letter = |c: char| txt(c.to_string(), size * 0.5).line_height(1.0).font(font).color(Color::WHITE).into();
+    container(Row::with_children(label.chars().map(letter)).spacing(1))
         .center(size)
         .style(move |_: &Theme| container::Style {
             background: Some(Background::Gradient(Gradient::Linear(g))),
