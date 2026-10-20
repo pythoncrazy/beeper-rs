@@ -294,6 +294,7 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Send Feedback", "App", "ctrl+alt+/"),
     ("Settings", "App", "ctrl+,"),
     ("Switch First 9 Spaces Modifier", "App", "ctrl+alt"),
+    ("Toggle Sidebar", "App", "ctrl+alt+s"),
     ("Toggle Space Bar", "App", "ctrl+s"),
     ("Zoom In", "App", "ctrl+="),
     ("Zoom Out", "App", "ctrl+-"),

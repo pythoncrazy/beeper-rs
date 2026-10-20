@@ -2140,6 +2140,8 @@ pub struct BeeperGuiApp {
     relaunch_toast: Option<&'static str>,
     pub dnd_muted: bool,
     pub sidebar_width: f32,
+    /// Desktop's local `sidebar-hidden`: hides the rail and the chat list.
+    pub sidebar_hidden: bool,
     pub dragging: bool,
     pub main_window: Option<window::Id>,
     pub settings_window: Option<window::Id>,
@@ -2177,6 +2179,11 @@ impl BeeperGuiApp {
             Ok(w) => w.parse().expect("a numeric sidebar width"),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => 252.0,
             Err(e) => panic!("read the sidebar width: {e}"),
+        };
+        let sidebar_hidden = match std::fs::read_to_string(store.read().data_dir.join("sidebar-hidden")) {
+            Ok(h) => h.parse().expect("a boolean sidebar-hidden"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => panic!("read sidebar-hidden: {e}"),
         };
         let mut app = Self {
             pane: Pane { size: Size::new(1264.0, 893.0), ..Pane::default() },
@@ -2256,6 +2263,7 @@ impl BeeperGuiApp {
             relaunch_toast: None,
             dnd_muted: false,
             sidebar_width,
+            sidebar_hidden,
             dragging: false,
             main_window: None,
             settings_window: None,
@@ -2696,9 +2704,18 @@ impl BeeperGuiApp {
         let text = self.pane().composer.text();
         let line = &text[text.rfind('\n').map_or(0, |i| i + 1)..text.rfind(':').expect("an emoji query")];
         let x = 8.0 + plus + 8.0 + 14.0 + 2.0 + text_width(line, 13.0, Weight::Normal);
-        let rail = if st.settings.on("showSidebar") { 68.0 } else { 0.0 };
-        let x = x.min(self.pane().size.width / self.zoom - rail - self.sidebar_width - width - 36.0);
+        let x = x.min(self.pane().size.width / self.zoom - self.left_width(st) - width - 36.0);
         Some(container(list).align_bottom(Fill).padding(Padding::ZERO.left(x).bottom(34.0)).into())
+    }
+
+    /// The width of the rail and the chat list.
+    fn left_width(&self, st: &BeeperStore) -> f32 {
+        let rail = if st.settings.on("showSidebar") { 68.0 } else { 0.0 };
+        if self.sidebar_hidden {
+            0.0
+        } else {
+            rail + self.sidebar_width
+        }
     }
 
     /// The newest message you can edit in the open chat.
@@ -2891,6 +2908,14 @@ impl BeeperGuiApp {
         hit(mods, &name).or_else(unshifted).map(|h| (h, 0)).or_else(hit_digit)
     }
 
+    fn set_sidebar_hidden(&mut self, hidden: bool) {
+        if self.sidebar_hidden != hidden {
+            self.sidebar_hidden = hidden;
+            let path = self.store.read().data_dir.join("sidebar-hidden");
+            std::fs::write(path, hidden.to_string()).expect("write sidebar-hidden");
+        }
+    }
+
     fn push_history(&mut self, chat_id: &str) {
         self.chat_history.retain(|c| c != chat_id);
         self.chat_history.insert(0, chat_id.to_string());
@@ -3005,6 +3030,10 @@ impl BeeperGuiApp {
                     .get(digit - RAIL_VIEWS.len())
                     .map(|a| UiMessage::SelectAccount(Some(a.clone()))),
             },
+            "Toggle Sidebar" => {
+                self.set_sidebar_hidden(!self.sidebar_hidden);
+                None
+            }
             "Toggle Space Bar" => {
                 let on = self.store.read().settings.on("showSidebar");
                 Some(UiMessage::SetPref("showSidebar", u8::from(!on)))
@@ -4485,7 +4514,11 @@ impl BeeperGuiApp {
             UiMessage::DragStart => self.dragging = true,
             UiMessage::DragMoved(pt) => {
                 let rail = if self.store.read().settings.on("showSidebar") { 68.0 } else { 0.0 };
-                self.sidebar_width = (pt.x - rail - 2.0).clamp(172.0, 732.0);
+                let width = pt.x - rail - 2.0;
+                if width >= 172.0 {
+                    self.sidebar_width = width.min(732.0);
+                }
+                self.set_sidebar_hidden(width < 172.0);
             }
             UiMessage::DragEnd => {
                 self.dragging = false;
@@ -4509,6 +4542,10 @@ impl BeeperGuiApp {
             UiMessage::Drawn(_) => {}
             UiMessage::WindowResized(id, size) => {
                 if self.main_window == Some(id) {
+                    let narrow = |s: Size| s.width / self.zoom < 600.0;
+                    if narrow(self.pane.size) != narrow(size) {
+                        self.set_sidebar_hidden(narrow(size));
+                    }
                     self.pane.size = size;
                 }
                 if let Some(w) = self.chat_windows.iter_mut().find(|w| w.0 == id) {
@@ -4914,18 +4951,17 @@ impl BeeperGuiApp {
             None => container(Space::new()).width(Fill).height(Fill).style(fill_box(p.card, 10.0)).into(),
         };
         let info = (self.show_right_panel && open).then(|| self.view_info());
+        let pad = Padding::new(8.0).left(if self.sidebar_hidden { 8.0 } else { 0.0 });
         let right: El<'_> = if self.selection.is_empty() {
-            row![container(pane).padding(Padding::new(8.0).left(0.0)).width(Fill)].push(info).into()
+            row![container(pane).padding(pad).width(Fill)].push(info).into()
         } else {
             let content = container(row![pane].push(info)).padding(8).style(fill_box(p.selected, 18.0));
-            column![self.view_selection_head(), content, self.view_selection_bar()]
-                .spacing(8)
-                .padding(Padding::new(8.0).left(0.0))
-                .into()
+            column![self.view_selection_head(), content, self.view_selection_bar()].spacing(8).padding(pad).into()
         };
         let rail = self.store.read().settings.on("showSidebar");
-        let rail = rail.then(|| self.view_rail());
-        let body = Row::new().push(rail).push(self.view_sidebar()).push(stack![right, grip]);
+        let rail = rail.then(|| self.view_rail()).filter(|_| !self.sidebar_hidden);
+        let sidebar = (!self.sidebar_hidden).then(|| self.view_sidebar());
+        let body = Row::new().push(rail).push(sidebar).push(stack![right, grip]);
         container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0)).into()
     }
 
@@ -5079,7 +5115,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let chats = self.selected_chats(&st);
         let all = |f: ChatFlag| chats.iter().all(|c| has_flag(c, f));
-        let x0 = 68.0 + self.sidebar_width + 8.0;
+        let x0 = self.left_width(&st) + 8.0;
         let cell = (self.pane().size.width - x0 - 16.0) / 6.0;
         let toggles = [
             (
