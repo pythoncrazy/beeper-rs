@@ -12,7 +12,7 @@ use beeper_core::{
         file_url_to_path, generate_os_autostart_manifest, open_url_or_path_command, path_to_file_url,
         resolve_desktop_data_dir, resolve_original_beeper_data_dir, DisplayServerKind, OsKind,
     },
-    store::{BeeperStore, Setup, SharedStore, NOTE_CHAT_ID},
+    store::{BeeperStore, Setup, SharedStore, StoreLock, NOTE_CHAT_ID},
 };
 use beeper_ui::{
     login::{Login, LoginMsg, Outcome, Screen},
@@ -27,7 +27,7 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::time::{timeout, Duration};
 
@@ -132,8 +132,8 @@ async fn spawn_e2e_beeper_instance(
         (cfg.api_url, cfg.homeserver) = (url.to_string(), url.to_string());
     }
 
-    let store: SharedStore = Arc::new(RwLock::new(BeeperStore::from_config(cfg)));
-    let token = store.read().unwrap().beeper_state.access_token.clone();
+    let store: SharedStore = StoreLock::shared(BeeperStore::from_config(cfg));
+    let token = store.read().beeper_state.access_token.clone();
     tokio::spawn(serve_http(listener, store.clone()));
 
     let client = BeeperClient::new(format!("http://127.0.0.1:{port}"), token);
@@ -405,7 +405,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let fresh = BeeperStore::from_config(CentralConfig::new(rs_dir.clone(), "127.0.0.1".into(), 23379, None));
     assert!(fresh.setup.is_none() && !fresh.signed_in() && fresh.chats.is_empty(), "a new data dir starts empty");
     assert!(!rs_dir.join("index.db").exists() && !rs_dir.join("account.db").exists(), "no Beeper files are copied");
-    let shared: SharedStore = Arc::new(RwLock::new(fresh));
+    let shared: SharedStore = StoreLock::shared(fresh);
     let mut gui = BeeperGuiApp::new(shared.clone());
     gui.login_window = Some(iced::window::Id::unique());
     gui.login = Login::new(Some(orig_dir.clone()));
@@ -417,7 +417,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert!(data.crypto.is_none(), "a Desktop without an account has no keys");
     let _ = gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Read(data.clone())))));
     assert_eq!(gui.login.screen, Screen::Welcome, "the import asks to sign in as a new device");
-    assert!(shared.read().unwrap().setup.is_none(), "nothing is imported before the sign-in");
+    assert!(shared.read().setup.is_none(), "nothing is imported before the sign-in");
     let session = MatrixSession {
         user_id: "@emile:beeper.com".into(),
         access_token: "syt_emile".into(),
@@ -438,7 +438,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let cloud = beeper_core::cloud::cloud_accounts(&bridges).expect("parse the cloud bridges");
     assert_eq!(cloud[0].display_text().as_deref(), Some("+1 415-555-0142"), "the phone comes before the username");
     let _ = gui.update(UiMessage::CloudAccounts(Ok((Some("zola@example.com".into()), cloud))));
-    assert_eq!(shared.read().unwrap().accounts.iter().map(|a| a.account_id.as_str()).collect::<Vec<_>>(), ["signal"]);
+    assert_eq!(shared.read().accounts.iter().map(|a| a.account_id.as_str()).collect::<Vec<_>>(), ["signal"]);
     for bad in [
         json!([]),
         json!({ "whatsapp": { "bridgeState": {}, "remoteState": { "w": { "state_event": "CONNECTED" } } } }),
@@ -449,7 +449,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = gui.update(UiMessage::Login(LoginMsg::Continue));
     assert!(gui.login_window.is_none() && gui.main_window.is_some(), "Continue opens the app");
     let chats = {
-        let st = shared.read().unwrap();
+        let st = shared.read();
         assert_eq!(st.setup, Some(Setup::Imported));
         assert_eq!(st.beeper_state.user_id, "@emile:beeper.com");
         assert!(st.valid_tokens.contains("syt_emile"));
@@ -511,17 +511,17 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert!(keys.windows(2).all(|w| w[0] < w[1]), "new messages sort after imported ones: {keys:?}");
     reopened.delete_message(NOTE_CHAT_ID, &sent_id).unwrap();
     drop(reopened);
-    let mut fresh_gui = BeeperGuiApp::new(Arc::new(RwLock::new(BeeperStore::from_config(CentralConfig::new(
+    let mut fresh_gui = BeeperGuiApp::new(StoreLock::shared(BeeperStore::from_config(CentralConfig::new(
         temp_dir("BeeperRs-fresh"),
         "127.0.0.1".into(),
         23379,
         None,
-    )))));
+    ))));
     fresh_gui.login = Login::new(Some(orig_dir.clone()));
     let _ = fresh_gui.update(UiMessage::Login(LoginMsg::Fresh));
     assert_eq!(fresh_gui.login.screen, Screen::Welcome);
-    assert_eq!(fresh_gui.store.read().unwrap().setup, Some(Setup::Fresh));
-    let fresh_dir = fresh_gui.store.read().unwrap().data_dir.clone();
+    assert_eq!(fresh_gui.store.read().setup, Some(Setup::Fresh));
+    let fresh_dir = fresh_gui.store.read().data_dir.clone();
     drop(fresh_gui);
     std::fs::remove_dir_all(&orig_dir).unwrap();
     std::fs::remove_dir_all(&rs_dir).unwrap();
@@ -576,8 +576,8 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert!(win_manifest.content.contains("beeper-rs.exe"));
 
     let (_, port, store, mut client) = spawn_e2e_beeper_instance("master", None).await;
-    assert_eq!(store.read().unwrap().beeper_state.user_id, "@alex:beeper.com");
-    assert_eq!(store.read().unwrap().bridge_accounts.len(), 6);
+    assert_eq!(store.read().beeper_state.user_id, "@alex:beeper.com");
+    assert_eq!(store.read().bridge_accounts.len(), 6);
 
     let info = client.info().await;
     assert_eq!(info.app.bundle_id, APP_BUNDLE_ID);
@@ -591,7 +591,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let cloud = fake_beeper_cloud().await;
     for (name, code, user) in [("login", "123456", "alex"), ("register", "654321", "newbie")] {
         let (dir, _, st, c) = spawn_e2e_beeper_instance(name, Some(&cloud)).await;
-        assert!(!st.read().unwrap().signed_in() && st.read().unwrap().chats.is_empty(), "fresh install is signed out");
+        assert!(!st.read().signed_in() && st.read().chats.is_empty(), "fresh install is signed out");
         let (status, start) = c.setup_step("start", json!({})).await;
         assert_eq!((status, &start["signInMethods"]), (StatusCode::OK, &json!(["email"])));
         let id = start["setupRequestID"].clone();
@@ -612,7 +612,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert_eq!(done["matrix"]["userID"], format!("@{user}:beeper.com"));
         assert_eq!(done["matrix"]["accessToken"], format!("syt_{user}"));
         assert_eq!(c.setup_step("start", json!({})).await.0, StatusCode::CONFLICT);
-        assert_eq!(st.read().unwrap().me().full_name.as_deref(), Some(format!("{user} Real").as_str()));
+        assert_eq!(st.read().me().full_name.as_deref(), Some(format!("{user} Real").as_str()));
         drop((st, c));
         let mut cfg = CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23380, None);
         cfg.api_url.clone_from(&cloud);
@@ -664,7 +664,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert!(accounts.iter().all(|a| a.mode == BridgeMode::Cloud && a.network_name != "Beeper"));
     let _ = login.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Session(session, profile, accounts)))));
     assert_eq!(login.login.screen, Screen::Accounts);
-    assert_eq!(login_store.read().unwrap().accounts.len(), 4);
+    assert_eq!(login_store.read().accounts.len(), 4);
     let _ = login.update(UiMessage::StoreChanged);
     assert!(login.login_window.is_some(), "the onboarding stays open until Continue");
     shows(
@@ -708,11 +708,11 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     assert_eq!(st3, StatusCode::OK);
     assert!(cleared_chat.get("draft").is_none() || cleared_chat["draft"].is_null());
 
-    let mut focus_rx = store.read().unwrap().focus_tx.subscribe();
+    let mut focus_rx = store.read().focus_tx.subscribe();
     assert_eq!(client.focus(Some("!wa_eric:beeper.com"), None, Some("Focus draft")).await, StatusCode::OK);
     assert_eq!(focus_rx.recv().await.unwrap().as_deref(), Some("!wa_eric:beeper.com"));
-    let eric_idx = store.read().unwrap().chat_idx_by_id["!wa_eric:beeper.com"];
-    let focus_draft = store.read().unwrap().chats[eric_idx].draft.clone().unwrap().text;
+    let eric_idx = store.read().chat_idx_by_id["!wa_eric:beeper.com"];
+    let focus_draft = store.read().chats[eric_idx].draft.clone().unwrap().text;
     assert_eq!(focus_draft.as_deref(), Some("Focus draft"));
     assert_eq!(client.patch_chat_draft("!wa_eric:beeper.com", None).await.0, StatusCode::OK);
     assert_eq!(client.focus(None, None, None).await, StatusCode::OK);
@@ -786,7 +786,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let search_after_del = client.search_messages("edited", None).await;
     assert!(!search_after_del.items.iter().any(|m| m.id == sent_msg_id));
 
-    let unmerge_chat = store.write().unwrap().patch_chat(&merged_chat_id, false, None, Some(None)).unwrap();
+    let unmerge_chat = store.write().patch_chat(&merged_chat_id, false, None, Some(None)).unwrap();
     assert!(unmerge_chat.merge.is_none());
 
     let legacy = |name: &str| serde_json::from_value::<ThemeChoice>(json!(name)).unwrap();
@@ -809,7 +809,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     );
 
     {
-        let st = store.read().unwrap();
+        let st = store.read();
         assert!(st.chats.iter().all(|c| st.chat_msg_indices.contains_key(&c.id)), "every chat has a message list");
     }
     let mut gui = BeeperGuiApp::new(store.clone());
@@ -914,7 +914,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::Dark));
     assert!(gui.dark);
     {
-        let st = store.read().unwrap();
+        let st = store.read();
         assert!(st.settings.on("showMessagePreviews") && st.settings.pref("timeFormat") == 0);
     }
     let _ = gui.update(UiMessage::SetPref("timeFormat", 1));
@@ -925,7 +925,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     }
     let _ = gui.update(UiMessage::Zoom(0));
     {
-        let st = store.read().unwrap();
+        let st = store.read();
         assert!(!st.settings.on("showMessagePreviews") && st.settings.pref("timeFormat") == 1);
         let stored: BeeperSettings = serde_json::from_value(serde_json::to_value(&st.settings).unwrap()).unwrap();
         assert_eq!(stored.prefs, st.settings.prefs, "prefs survive a round trip");
@@ -951,7 +951,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     }
     let _ = gui.update(UiMessage::SelectSettingsTab(SettingsTab::Accounts));
     {
-        let n = beeper_ui::login::FREE_ACCOUNTS - store.read().unwrap().bridge_accounts.len();
+        let n = beeper_ui::login::FREE_ACCOUNTS - store.read().bridge_accounts.len();
         let mut sim = simulator(gui.view_settings());
         for label in ["Beeper", "+1 415-555-0142", "Beeper · alex@beeper.com", &format!("{n} Free Accounts Remaining")]
         {
@@ -982,7 +982,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = gui.update(rail("1"));
     assert!(gui.active_tab == InboxTab::AllChats && gui.selected_account_filter.is_none());
     {
-        let mut st = store.write().unwrap();
+        let mut st = store.write();
         let account = |net: &str| st.accounts.iter().find(|a| a.account_id.contains(net)).unwrap().account_id.clone();
         let space = |id: &str, account_id, name: &str| beeper_core::store::NetworkSpace {
             id: id.into(),
@@ -1004,7 +1004,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert!(sim.find("You have no messages").is_ok(), "a server without chats is empty");
     }
     {
-        let mut st = store.write().unwrap();
+        let mut st = store.write();
         let i = st.chats.iter().position(|c| c.account_id.contains("signal")).expect("a chat of the account");
         st.chats[i].network_id = Some("g1".into());
         let shown: Vec<_> = gui.visible_chats(&st).iter().map(|c| c.id.clone()).collect();
@@ -1013,11 +1013,11 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert!(!gui.visible_chats(&st).iter().any(|c| c.id == st.chats[i].id), "the account omits the server chats");
     }
     {
-        let cid = store.read().unwrap().chats[0].id.clone();
-        let was = store.read().unwrap().chats[0].is_muted == Some(true);
-        store.write().unwrap().config.demo = false;
+        let cid = store.read().chats[0].id.clone();
+        let was = store.read().chats[0].is_muted == Some(true);
+        store.write().config.demo = false;
         let _ = gui.update(UiMessage::ToggleFlag(cid.clone(), ChatFlag::Muted));
-        let mut st = store.write().unwrap();
+        let mut st = store.write();
         st.config.demo = true;
         assert_eq!(st.chats[0].is_muted, Some(!was), "the mute toggle changes the chat");
         let queued =
@@ -1033,17 +1033,17 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert!(gui.chat_menu.as_ref().is_some_and(|(c, _)| *c == cid), "right-click opens the chat menu");
         let _ = gui.update(UiMessage::ToggleRead(cid.clone()));
         assert!(gui.chat_menu.is_none(), "a menu action closes the menu");
-        let c = store.read().unwrap().chats[0].clone();
+        let c = store.read().chats[0].clone();
         assert_eq!(c.unread_count == 0 && c.is_marked_unread != Some(true), !read, "the read toggle flips the chat");
         let _ = gui.update(UiMessage::OpenChatMenu(cid.clone()));
         let _ = gui.update(UiMessage::ChatSub(Some(1)));
         assert!(simulator(gui.view_main()).find("In an Hour").is_ok(), "Remind Me opens the presets");
         let at = beeper_core::config::now_unix_millis() + 3_600_000;
-        store.write().unwrap().config.demo = false;
+        store.write().config.demo = false;
         let _ = gui.update(UiMessage::SetReminder(cid.clone(), Some(at)));
         let _ = gui.update(UiMessage::SetReminder(cid.clone(), None));
         {
-            let mut st = store.write().unwrap();
+            let mut st = store.write();
             st.config.demo = true;
             let sent: Vec<_> = st
                 .outbox
@@ -1061,14 +1061,14 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         }
         let _ = gui.update(UiMessage::SelectTab(InboxTab::Reminders));
         let order = |gui: &BeeperGuiApp| {
-            let st = store.read().unwrap();
+            let st = store.read();
             gui.visible_chats(&st).iter().map(|c| c.reminder.as_ref().unwrap().remind_at_ms).collect::<Vec<_>>()
         };
         assert_eq!(order(&gui), [1, 2], "reminders come by least time remaining");
         let _ = gui.update(UiMessage::ReminderMenu);
         let _ = gui.update(UiMessage::OrderReminders(1));
         assert_eq!(order(&gui), [2, 1], "the display options change the order");
-        assert_eq!(store.read().unwrap().settings.reminders_order, 1);
+        assert_eq!(store.read().settings.reminders_order, 1);
         let _ = gui.update(UiMessage::OrderReminders(0));
         let _ = gui.update(UiMessage::Ask(Some(1)));
         assert!(simulator(gui.view_main()).find("Dismiss All Reminders?").is_ok());
@@ -1076,24 +1076,23 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert!(order(&gui).is_empty() && gui.confirm.is_none(), "dismiss all clears every reminder");
         let _ = gui.update(UiMessage::SelectTab(InboxTab::AllChats));
         {
-            let mut st = store.write().unwrap();
+            let mut st = store.write();
             st.chats[1].is_pinned = Some(false);
             assert!(st.set_chat_flag(1, ChatFlag::Archived, Some(true)));
             st.set_reminder(1, Some(ChatReminder { remind_at_ms: 1, dismiss_on_incoming_message: true }));
         }
         let _ = gui.update(UiMessage::CheckReminders);
-        let other = store.read().unwrap().chats[1].id.clone();
-        assert_eq!(store.read().unwrap().chats[1].is_archived, Some(false), "a due reminder unarchives the chat");
+        let other = store.read().chats[1].id.clone();
+        assert_eq!(store.read().chats[1].is_archived, Some(false), "a due reminder unarchives the chat");
         assert!(simulator(gui.view_main()).find("Reminder").is_ok(), "the chat list shows the Reminder badge");
         gui.select_chat(&other);
         gui.select_chat(&cid);
-        assert!(store.read().unwrap().chats[1].reminder.is_none(), "leaving a reminded chat dismisses the reminder");
+        assert!(store.read().chats[1].reminder.is_none(), "leaving a reminded chat dismisses the reminder");
         let _ = gui.update(UiMessage::SearchRoom(cid.clone()));
         assert!(gui.show_command_palette && gui.search_room.as_deref() == Some(cid.as_str()));
         let _ = gui.update(UiMessage::ToggleCommandPalette);
         assert!(gui.show_command_palette && gui.search_room.is_none(), "Ctrl K widens a chat search");
-        let mid =
-            store.read().unwrap().messages.iter().find(|m| m.chat_id == cid).expect("chat has messages").id.clone();
+        let mid = store.read().messages.iter().find(|m| m.chat_id == cid).expect("chat has messages").id.clone();
         let _ = gui.update(UiMessage::JumpTo(cid.clone(), mid.clone()));
         assert!(!gui.show_command_palette && gui.pane.selected_chat_id.as_deref() == Some(cid.as_str()));
         assert!(gui.flash.as_ref().is_some_and(|(id, _)| *id == mid), "a message hit flashes the message");
@@ -1108,7 +1107,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let _ = gui.update(UiMessage::ToggleCommandPalette);
         assert_eq!(gui.search_filters, SearchFilters::default(), "a new search starts without filters");
         let _ = gui.update(UiMessage::ToggleCommandPalette);
-        let other = store.read().unwrap().chats[1].id.clone();
+        let other = store.read().chats[1].id.clone();
         let _ = gui.update(UiMessage::HoverChat(cid.clone(), true));
         let _ = gui.update(UiMessage::HoverChat(other.clone(), false));
         assert_eq!(gui.hovered_chat.as_deref(), Some(cid.as_str()), "leaving another row keeps the hover");
@@ -1121,22 +1120,22 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
             assert_eq!(gui.pane.composer.text(), "draft", "a chat keeps its draft");
         }
         let _ = gui.update(UiMessage::DeleteDraft(cid.clone()));
-        let c = store.read().unwrap().chats[0].clone();
+        let c = store.read().chats[0].clone();
         assert!(c.draft.is_none() && gui.pane.composer.is_empty(), "the hover action deletes the draft");
         let note = beeper_core::store::NOTE_CHAT_ID;
-        let left = store.read().unwrap().chats.last().expect("a chat").id.clone();
+        let left = store.read().chats.last().expect("a chat").id.clone();
         assert!(left != note && left != "!wa_eric:beeper.com");
         gui.select_chat(&left);
-        store.write().unwrap().remove_chat(&left);
+        store.write().remove_chat(&left);
         let _ = simulator(gui.view_main());
         let _ = gui.update(UiMessage::StoreChanged);
-        let st = store.read().unwrap();
+        let st = store.read();
         assert!(st.resolve_chat_idx(&left).is_none() && !st.chat_msg_indices.contains_key(&left));
         assert!(st.msg_idx_by_id.values().all(|&i| st.messages[i].chat_id != left), "a left chat loses its messages");
         assert_eq!(gui.pane.selected_chat_id.as_deref(), Some(note), "leaving the open chat opens Note to self");
         drop(st);
         let doomed = {
-            let mut st = store.write().unwrap();
+            let mut st = store.write();
             let c = st.chats.last_mut().expect("a chat");
             assert!(c.id != note && c.id != "!wa_eric:beeper.com");
             c.delete_modes = DELETE_FOR_ME | DELETE_FOR_EVERYONE;
@@ -1145,9 +1144,9 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let _ = gui.update(UiMessage::OpenChatMenu(doomed.clone()));
         let _ = gui.update(UiMessage::AskDeleteChat(doomed.clone()));
         assert!(gui.chat_menu.is_none() && simulator(gui.view_main()).find("Delete for Everyone").is_ok());
-        store.write().unwrap().config.demo = false;
+        store.write().config.demo = false;
         let _ = gui.update(UiMessage::DeleteChat(doomed.clone(), true));
-        let mut st = store.write().unwrap();
+        let mut st = store.write();
         st.config.demo = true;
         let sent = matches!(st.outbox.as_slice(), [(c, Outgoing::DeleteChat { for_everyone: true })] if *c == doomed);
         assert!(sent && st.resolve_chat_idx(&doomed).is_none(), "Delete Chat asks the bridge and drops the chat");
@@ -1159,14 +1158,14 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let _ = gui.update(UiMessage::ToggleSelected(picks[1].clone()));
         assert!(simulator(gui.view_main()).find("2 chats selected").is_ok(), "Begin Selecting shows the selection bar");
         let _ = gui.update(UiMessage::SelectionSet(ChatFlag::Muted, true));
-        let st = store.read().unwrap();
+        let st = store.read();
         let muted = picks.iter().all(|id| st.chats[st.resolve_chat_idx(id).unwrap()].is_muted == Some(true));
         assert!(muted && gui.selection.is_empty(), "a selection action applies to every chat and ends the selection");
         drop(st);
         for id in &picks {
             let _ = gui.update(UiMessage::ToggleFlag(id.clone(), ChatFlag::Muted));
         }
-        store.write().unwrap().outbox.clear();
+        store.write().outbox.clear();
     }
     let _ = gui.update(rail("1"));
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));

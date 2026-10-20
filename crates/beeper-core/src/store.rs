@@ -12,7 +12,53 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tokio::sync::broadcast;
 
-pub type SharedStore = std::sync::Arc<std::sync::RwLock<BeeperStore>>;
+pub type SharedStore = std::sync::Arc<StoreLock>;
+
+thread_local!(static LOCKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+
+/// A std `RwLock` deadlocks when a thread that holds the store locks it again while a writer waits,
+/// so a nested lock on one thread panics.
+pub struct StoreLock(std::sync::RwLock<BeeperStore>);
+
+pub struct Locked<G>(G);
+
+impl StoreLock {
+    pub fn shared(store: BeeperStore) -> SharedStore {
+        std::sync::Arc::new(Self(std::sync::RwLock::new(store)))
+    }
+
+    fn hold<G>(lock: impl FnOnce() -> G) -> Locked<G> {
+        assert!(!LOCKED.replace(true), "the store is already locked on this thread");
+        Locked(lock())
+    }
+
+    pub fn read(&self) -> Locked<std::sync::RwLockReadGuard<'_, BeeperStore>> {
+        Self::hold(|| self.0.read().expect("store lock"))
+    }
+
+    pub fn write(&self) -> Locked<std::sync::RwLockWriteGuard<'_, BeeperStore>> {
+        Self::hold(|| self.0.write().expect("store lock"))
+    }
+}
+
+impl<G> Drop for Locked<G> {
+    fn drop(&mut self) {
+        LOCKED.set(false);
+    }
+}
+
+impl<G: std::ops::Deref> std::ops::Deref for Locked<G> {
+    type Target = G::Target;
+    fn deref(&self) -> &G::Target {
+        &self.0
+    }
+}
+
+impl<G: std::ops::DerefMut> std::ops::DerefMut for Locked<G> {
+    fn deref_mut(&mut self) -> &mut G::Target {
+        &mut self.0
+    }
+}
 
 pub fn tokenize(text: &str) -> Vec<String> {
     let mut out: Vec<String> =

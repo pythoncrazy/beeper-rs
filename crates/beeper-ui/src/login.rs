@@ -249,7 +249,7 @@ impl BeeperGuiApp {
     }
 
     pub fn refresh_cloud_accounts(&self) -> Task<UiMessage> {
-        let (cloud, token) = (self.cloud.clone(), self.store.read().unwrap().beeper_state.access_token.clone());
+        let (cloud, token) = (self.cloud.clone(), self.store.read().beeper_state.access_token.clone());
         Task::perform(
             async move { tokio::task::spawn_blocking(move || cloud.whoami(&token)).await.expect("whoami worker thread") },
             |r| UiMessage::CloudAccounts(r.map(|(p, a)| (p.email, a)).map_err(|e| e.message)),
@@ -290,7 +290,7 @@ impl BeeperGuiApp {
                 return self.background(move |_| read_beeper_data(&dir).map(|d| Outcome::Read(Arc::new(d))));
             }
             LoginMsg::Fresh => {
-                self.store.write().unwrap().finish_setup(Setup::Fresh);
+                self.store.write().finish_setup(Setup::Fresh);
                 self.login = Login::default();
             }
             LoginMsg::Show(s) => {
@@ -382,7 +382,7 @@ impl BeeperGuiApp {
                             l.import = Some(data);
                         }
                         Some(data) => {
-                            let dir = self.store.read().unwrap().matrix_dir();
+                            let dir = self.store.read().matrix_dir();
                             return self.background(move |_| {
                                 if let Some(c) = &data.crypto {
                                     let import = beeper_core::matrix::import_crypto(&dir, c);
@@ -393,13 +393,13 @@ impl BeeperGuiApp {
                         }
                         None => {
                             let homeserver = self.cloud.homeserver.clone();
-                            self.store.write().unwrap().sign_in(session, homeserver, &profile, accounts);
+                            self.store.write().sign_in(session, homeserver, &profile, accounts);
                             l.screen = Screen::Accounts;
                         }
                     },
                     Ok(Outcome::Imported(data, session, profile, accounts)) => {
                         let homeserver = self.cloud.homeserver.clone();
-                        let mut st = self.store.write().unwrap();
+                        let mut st = self.store.write();
                         st.import_beeper(Arc::unwrap_or_clone(data));
                         st.sign_in(session, homeserver, &profile, accounts);
                         l.screen = Screen::Accounts;
@@ -557,7 +557,7 @@ impl BeeperGuiApp {
                 .into()
             }
             Screen::Accounts => {
-                let accounts = self.store.read().unwrap().bridge_accounts.clone();
+                let accounts = self.store.read().bridge_accounts.clone();
                 let search = row![
                     ic(icon::SEARCH, 16.0).color(HINT),
                     text_input(tr("Search..."), &l.query)

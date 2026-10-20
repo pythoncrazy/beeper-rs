@@ -147,7 +147,7 @@ impl BeeperGuiApp {
     /// both only in the selected chat of a focused window and when the chat is not muted.
     pub(crate) fn message_sound(&self, m: &Message) {
         use crate::sound::{play, Sound};
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let Some(&i) = st.chat_idx_by_id.get(&m.chat_id) else { return };
         let mine = m.is_sender == Some(true);
         let hour_old = now_unix_millis() - millis_from_rfc3339(&m.timestamp).expect("RFC 3339 timestamp") > 3_600_000;
@@ -179,7 +179,7 @@ impl BeeperGuiApp {
         if let Some(code) = otp {
             return Task::batch([self.show_note(note, false), iced::clipboard::write(code)]);
         }
-        let delay = self.store.read().unwrap().settings.secs("notificationDelay");
+        let delay = self.store.read().settings.secs("notificationDelay");
         if delay == 0 {
             return self.show_note(note, true);
         }
@@ -193,7 +193,7 @@ impl BeeperGuiApp {
 
     /// Show a notification, and with `repeat` show it again after "Repeat notification if still unread after".
     fn show_note(&mut self, note: Note, repeat: bool) -> Task<UiMessage> {
-        let secs = self.store.read().unwrap().settings.secs("repeatNotification");
+        let secs = self.store.read().settings.secs("repeatNotification");
         let chat = note.chat.clone();
         let again = (repeat && secs > 0).then(|| {
             self.pending.timer += 1;
@@ -208,7 +208,7 @@ impl BeeperGuiApp {
 
     /// Desktop's `sendQueuedNotifications` and `renotifyIfUnread`.
     pub(crate) fn notify_timer(&mut self, chat: String, timer: u64) -> Task<UiMessage> {
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let unread = st.chat_idx_by_id.get(&chat).is_some_and(|&i| {
             let c = &st.chats[i];
             c.unread_count > 0 && !muted(&st, c) && c.is_hidden_from_inbox != Some(true) && c.is_request != Some(true)
@@ -231,7 +231,7 @@ impl BeeperGuiApp {
 
     /// Desktop's `showTypingNotification` for each user that starts to type.
     pub(crate) fn notify_typing(&mut self, chat: String) -> Task<UiMessage> {
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let now = st.typing.get(&chat).cloned().unwrap_or_default();
         let (before, last) = self.pending.typing.entry(chat.clone()).or_default();
         let started: Vec<String> = now.iter().filter(|u| !before.contains(u)).cloned().collect();
@@ -269,7 +269,7 @@ impl BeeperGuiApp {
     pub(crate) fn notify_chat(&mut self, c: &Chat) -> Task<UiMessage> {
         let reaction = c.preview.as_ref().filter(|p| p.message_type.as_deref() == Some("REACTION"));
         let reaction = reaction.map(|p| self.notify_message(p));
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let request = cfg!(target_os = "linux")
             && c.is_request == Some(true)
             && !self.pending.old_chats.contains(&c.id)
@@ -298,7 +298,7 @@ impl BeeperGuiApp {
         if !cfg!(target_os = "linux") {
             return None;
         }
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let chat = &st.chats[*st.chat_idx_by_id.get(&m.chat_id)?];
         let group = chat.chat_type == "group";
         let prefs = &st.settings;
@@ -338,7 +338,7 @@ impl BeeperGuiApp {
     /// Desktop's `clearShownNotifications`: close the notifications of read chats without a reminder, and of the
     /// selected chat in a focused window.
     pub(crate) fn close_notifications(&mut self) -> iced::Task<crate::UiMessage> {
-        let st = self.store.read().unwrap();
+        let st = self.store.read();
         let stale: Vec<u32> = (self.notifications.iter())
             .filter(|(_, c)| {
                 let read = |i: usize| {
@@ -444,7 +444,7 @@ mod tests {
         use beeper_core::models::AccountProps;
         let mut app = crate::fuzz::demo_app("account-notes");
         let (chat, mut m) = {
-            let st = app.store.read().unwrap();
+            let st = app.store.read();
             let c = st.chats.iter().find(|c| c.chat_type == "single" && c.account_id != "hungryserv" && !muted(&st, c));
             let c = c.expect("a demo DM").clone();
             let m = st.chat_msg_indices[&c.id].iter().map(|&i| &st.messages[i]).find(|m| m.is_sender != Some(true));

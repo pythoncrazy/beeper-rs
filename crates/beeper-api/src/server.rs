@@ -108,7 +108,7 @@ fn parse_body(msg: &HttpMessage) -> Option<Value> {
 
 pub async fn serve_http(listener: TcpListener, store: SharedStore) {
     let cloud = {
-        let cfg = &store.read().unwrap().config;
+        let cfg = &store.read().config;
         Arc::new(Cloud::new(&cfg.api_url, &cfg.homeserver))
     };
     loop {
@@ -158,17 +158,17 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
         return sign_in_step(store, cloud, step, &req);
     }
     if let ("POST", ["v1", "app", "setup", "verifications", rest @ ..]) = (method.as_str(), &segs[..]) {
-        if store.read().unwrap().matrix.is_some() {
+        if store.read().matrix.is_some() {
             return matrix_verification(store, rest);
         }
     }
-    let mut st = store.write().unwrap();
+    let mut st = store.write();
     let reply = dispatch(&mut st, &method, &segs, &req);
     if st.start_flush() {
         let s = store.clone();
         tokio::spawn(async move {
             if let Err(e) = beeper_core::matrix::flush(s.clone()).await {
-                s.write().unwrap().matrix_error = Some(e);
+                s.write().matrix_error = Some(e);
             }
         });
     }
@@ -176,7 +176,7 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
 }
 
 fn matrix_verification(store: &SharedStore, rest: &[&str]) -> Reply {
-    let mut st = store.write().unwrap();
+    let mut st = store.write();
     match rest {
         [] => {
             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -184,7 +184,7 @@ fn matrix_verification(store: &SharedStore, rest: &[&str]) -> Reply {
             let s = store.clone();
             tokio::runtime::Handle::current().spawn(async move {
                 if let Err(e) = beeper_core::matrix::verify(s.clone(), rx).await {
-                    s.write().unwrap().matrix_error = Some(e);
+                    s.write().matrix_error = Some(e);
                 }
             });
         }
@@ -355,7 +355,7 @@ fn new_verification(id: String, methods: &[&str], state: &str, qr: String) -> Ve
 
 fn sign_in_step(store: &SharedStore, cloud: &Cloud, step: &str, r: &Req) -> Reply {
     let already = || error(StatusCode::CONFLICT, "already_logged_in");
-    if store.read().unwrap().signed_in() {
+    if store.read().signed_in() {
         return Err(already());
     }
     let upstream = |e: CloudError| match e.status {
@@ -401,7 +401,7 @@ fn sign_in_step(store: &SharedStore, cloud: &Cloud, step: &str, r: &Req) -> Repl
         other => unreachable!("sign-in step {other}"),
     };
     let (session, profile, accounts) = cloud.finish(&jwt).map_err(upstream)?;
-    let mut st = store.write().unwrap();
+    let mut st = store.write();
     if st.signed_in() {
         return Err(already());
     }
@@ -1075,7 +1075,7 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
     if stream.write_all(handshake.as_bytes()).await.is_err() {
         return;
     }
-    let mut events = store.read().unwrap().ws_tx.subscribe();
+    let mut events = store.read().ws_tx.subscribe();
     let (reader, mut writer) = stream.into_split();
     let subs = Arc::new(RwLock::new(HashSet::from(["*".to_string()])));
     let reader_subs = subs.clone();
