@@ -299,6 +299,7 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Settings", "App", "ctrl+,"),
     ("Switch First 9 Spaces Modifier", "App", "ctrl+alt"),
     ("Filter By Account", "App", "ctrl+alt+a"),
+    ("Toggle Incognito Mode", "App", "disabled"),
     ("Toggle Sidebar", "App", "ctrl+alt+s"),
     ("Toggle Space Bar", "App", "ctrl+s"),
     ("Zoom In", "App", "ctrl+="),
