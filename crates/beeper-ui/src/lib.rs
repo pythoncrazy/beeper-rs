@@ -133,6 +133,9 @@ const FILTERS: [(&str, char); 8] = [
     ("Requests", icon::EMAIL),
     ("Low Priority", icon::LOW_PRIORITY_SPACE),
 ];
+/// The hotkeys of the filters before Archived.
+const FILTER_HOTKEYS: [&str; 5] =
+    ["Filter: Unread", "Filter: Drafts", "Filter: Unanswered", "Filter: DMs", "Filter: Groups"];
 const F_ARCHIVED: usize = 5;
 const F_REQUESTS: usize = 6;
 const F_LOW_PRIORITY: usize = 7;
@@ -706,6 +709,7 @@ fn menu_item<'a>(
 }
 
 pub(crate) const ISSUES_URL: &str = "https://github.com/pythoncrazy/beeper-rs/issues";
+const FEEDBACK: &str = "Tell us what to improve in beeper-rs.";
 const ORANGE: Color = Color::from_rgb8(245, 76, 3);
 const CHECKED: Color = Color::from_rgb8(14, 77, 242);
 const ASK_LOGOUT: u8 = 0;
@@ -2852,34 +2856,124 @@ impl BeeperGuiApp {
         }
     }
 
-    fn run_hotkey(&mut self, name: &str) -> Task<UiMessage> {
-        let chat = |f: ChatFlag| self.pane.selected_chat_id.clone().map(|c| UiMessage::ToggleFlag(c, f));
+    /// The hotkey with the modifiers and the key, or with the modifiers alone before the digit 1 to 9.
+    fn find_hotkey(&self, key: &Key, mods: keyboard::Modifiers) -> Option<(&'static str, usize)> {
+        let name = match key.as_ref() {
+            Key::Character(c) => c.to_lowercase(),
+            Key::Named(Named::ArrowUp) => "up".into(),
+            Key::Named(Named::ArrowDown) => "down".into(),
+            Key::Named(Named::ArrowLeft) => "left".into(),
+            Key::Named(Named::ArrowRight) => "right".into(),
+            Key::Named(Named::Enter) => "enter".into(),
+            Key::Named(Named::Tab) => "tab".into(),
+            _ => return None,
+        };
+        let digit = name.parse::<usize>().ok().filter(|d| (1..=9).contains(d));
+        let mods = [mods.control() || mods.command(), mods.shift(), mods.alt()];
+        let st = self.store.read();
+        let has = |h: &&(&str, &str, &str), key: &str| prefs::hotkey_has(st.settings.hotkey_keys(h.0), mods, key);
+        let hit = |key: &str| prefs::HOTKEYS.iter().find(|h| has(h, key)).map(|h| h.0);
+        hit(&name).map(|h| (h, 0)).or_else(|| Some((hit("")?, digit? - 1)))
+    }
+
+    fn run_hotkey(&mut self, name: &str, digit: usize) -> Task<UiMessage> {
+        let chat = self.pane.selected_chat_id.clone();
+        let flag = |f: ChatFlag| chat.clone().map(|c| UiMessage::ToggleFlag(c, f));
+        let selected = self.pane.selected_msg.clone().filter(|_| chat.is_some());
         let msg = match name {
-            "Search" => Some(UiMessage::ToggleCommandPalette),
-            "Search: Room" => self.pane.selected_chat_id.clone().map(UiMessage::SearchRoom),
-            "Settings" => Some(UiMessage::OpenSettings(self.active_settings_tab)),
+            "Chat: Start New" => Some(UiMessage::NewChat),
+            "Chat: Toggle Archive" => flag(ChatFlag::Archived),
+            "Chat: Toggle Mark As Read" => chat.map(UiMessage::ToggleRead),
+            "Chat: Toggle Mute" => flag(ChatFlag::Muted),
+            "Chat: Toggle Pin" => flag(ChatFlag::Pinned),
+            "Select Next Chat" | "Select Previous Chat" => {
+                self.step_chat(if name == "Select Next Chat" { 1 } else { -1 });
+                None
+            }
+            "Switch First 9 Chats Modifier" => {
+                let id = self.visible_chats(&self.store.read()).get(digit).map(|c| c.id.clone());
+                id.map(UiMessage::SelectChat)
+            }
             "Toggle Chat Info" => Some(UiMessage::ToggleRightPanel),
-            "Chat: Toggle Mute" => chat(ChatFlag::Muted),
-            "Chat: Toggle Pin" => chat(ChatFlag::Pinned),
-            "Chat: Toggle Archive" => chat(ChatFlag::Archived),
-            "Chat: Toggle Mark As Read" => self.pane.selected_chat_id.clone().map(UiMessage::ToggleRead),
+            "Command Bar" if self.show_command_palette => Some(UiMessage::ToggleCommandMode),
+            "Command Bar" => {
+                let open = self.update(UiMessage::ToggleCommandPalette);
+                self.cmd_bar_commands_mode = true;
+                return open;
+            }
+            "Filter: All" => {
+                self.filters = 0;
+                None
+            }
+            f if FILTER_HOTKEYS.contains(&f) => {
+                self.filters ^= 1 << FILTER_HOTKEYS.iter().position(|h| *h == f).expect("a filter hotkey");
+                None
+            }
+            "Minimize To Tray" => return self.set_hidden(true),
+            "Quit App" => return self.quit(),
+            "Reload App" => Some(UiMessage::Relaunch),
+            "Report a Problem" => Some(UiMessage::OpenUrl(ISSUES_URL.into())),
+            "Reset Zoom" => Some(UiMessage::Zoom(0)),
+            "Search" => Some(UiMessage::ToggleCommandPalette),
+            "Search: Room" => chat.map(UiMessage::SearchRoom),
+            "Select Next Account" | "Select Previous Account" => {
+                let rail = rail_accounts(&self.store.read());
+                let at = self.selected_account_filter.as_ref().and_then(|a| rail.iter().position(|r| r == a));
+                let to = match (name == "Select Next Account", at) {
+                    (true, None) => rail.first().cloned().map(Some),
+                    (true, Some(i)) => rail.get(i + 1).cloned().map(Some),
+                    (false, Some(i)) => Some(i.checked_sub(1).map(|i| rail[i].clone())),
+                    (false, None) => None,
+                };
+                to.map(UiMessage::SelectAccount)
+            }
+            "Send Feedback" => chat.map(|_| UiMessage::OpenQuickLook("Feedback".into(), FEEDBACK.into())),
+            "Settings" => Some(UiMessage::OpenSettings(self.active_settings_tab)),
+            "Switch First 9 Spaces Modifier" => match RAIL_VIEWS.get(digit) {
+                Some(view) => view.map(UiMessage::SelectTab),
+                None => rail_accounts(&self.store.read())
+                    .get(digit - RAIL_VIEWS.len())
+                    .map(|a| UiMessage::SelectAccount(Some(a.clone()))),
+            },
             "Zoom In" => Some(UiMessage::Zoom(1)),
             "Zoom Out" => Some(UiMessage::Zoom(-1)),
-            "Reset Zoom" => Some(UiMessage::Zoom(0)),
-            "Quit App" => return self.quit(),
-            "Report a Problem" => Some(UiMessage::OpenUrl(ISSUES_URL.into())),
-            "Filter: Unread" => {
-                self.filters ^= 1;
-                None
+            "Download Attachments" => selected
+                .filter(|_| self.selected_message().is_some_and(|m| !m.attachments.is_empty()))
+                .map(|m| UiMessage::Download(m, None)),
+            "Message: Edit" => {
+                let edit = self.selected_message().filter(|m| m.is_sender == Some(true));
+                let m = edit.or_else(|| self.last_own_message()).filter(|_| chat.is_some());
+                m.map(|m| {
+                    self.pane.selected_msg = Some(m.id.clone());
+                    UiMessage::StartEdit(m.id, m.text.unwrap_or_default())
+                })
             }
-            "Select Next Chat" => {
-                self.step_chat(1);
-                None
+            "Message: Forward" => {
+                match selected.filter(|_| self.selected_message().is_some_and(|m| m.is_deleted != Some(true))) {
+                    Some(m) => Some(UiMessage::Forward(m)),
+                    None => {
+                        self.status_banner = tr("Only works when messages are selected").into();
+                        None
+                    }
+                }
             }
-            "Select Previous Chat" => {
-                self.step_chat(-1);
-                None
+            "Message: Open First Link" => {
+                let text = self.selected_message().and_then(|m| m.text);
+                text.and_then(|t| {
+                    t.split_whitespace().find(|w| w.starts_with("http")).map(|u| UiMessage::OpenUrl(u.into()))
+                })
             }
+            "Message: Quick React" => selected.map(|m| self.quick_react(m)),
+            "Message: Quote & Reply" => selected.map(UiMessage::StartReply),
+            "Message: Quote or Edit Selected Message" => {
+                let empty = self.pane.composer.text().is_empty();
+                self.selected_message().and_then(|m| match m.is_sender == Some(true) {
+                    true => empty.then(|| UiMessage::StartEdit(m.id, m.text.unwrap_or_default())),
+                    false => Some(UiMessage::StartReply(m.id)),
+                })
+            }
+            "Message: Record Audio" => chat.map(|_| UiMessage::Record(record::Msg::Start)),
+            "Message: Send GIF" => chat.map(|_| UiMessage::ToggleGifPicker),
             _ => unreachable!("{name} has no action"),
         };
         msg.map_or_else(Task::none, |m| self.update(m))
@@ -4261,13 +4355,15 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::ToggleHotkey(name) => self.patch_settings(|s| {
-                if s.hotkey_on(name) {
-                    s.hotkeys_off.insert(name.to_string());
-                } else {
-                    s.hotkeys_off.remove(name);
-                }
+                match s.hotkey_keys(name) {
+                    "disabled" if prefs::hotkey_default(name) == "disabled" => {
+                        s.keybindings.insert(name.into(), "".into())
+                    }
+                    "disabled" => s.keybindings.remove(name),
+                    _ => s.keybindings.insert(name.into(), "disabled".into()),
+                };
             }),
-            UiMessage::RevertHotkeys => self.patch_settings(|s| s.hotkeys_off.clear()),
+            UiMessage::RevertHotkeys => self.patch_settings(|s| s.keybindings.clear()),
             UiMessage::HotkeyQuery(q) => self.hotkey_query = q,
             UiMessage::Zoom(step) => self.patch_settings(|s| {
                 let at = ZOOM_STEPS.iter().position(|z| *z >= s.zoom_percent).expect("zoom is in the steps");
@@ -4467,8 +4563,7 @@ impl BeeperGuiApp {
                         _ => {}
                     }
                 }
-                let (shift, alt) = (mods.shift(), mods.alt());
-                let hotkey = match key.as_ref() {
+                match key.as_ref() {
                     Key::Named(Named::Escape) => return self.update(UiMessage::CloseModals),
                     Key::Named(Named::ArrowUp | Named::ArrowDown) if mods.is_empty() && self.can_select_messages() => {
                         let down = key == Key::Named(Named::ArrowDown);
@@ -4492,101 +4587,24 @@ impl BeeperGuiApp {
                         self.forward.as_mut().expect("forward").picked.pop();
                         return Task::none();
                     }
-                    Key::Named(Named::Enter) if mods.is_empty() => {
-                        let Some(m) = self.selected_message() else { return Task::none() };
-                        return self.update(match m.is_sender == Some(true) {
-                            true => UiMessage::StartEdit(m.id.clone(), m.text.clone().unwrap_or_default()),
-                            false => UiMessage::StartReply(m.id.clone()),
-                        });
-                    }
                     Key::Named(Named::ArrowRight)
                         if mods.is_empty() && self.pane.selected_msg.is_some() && self.can_select_messages() =>
                     {
                         return self
                             .update(UiMessage::React(self.pane.selected_msg.clone().expect("a selected message")));
                     }
-                    _ if !(mods.command() || mods.control()) => None,
-                    Key::Character("F" | "f")
-                        if shift && self.selected_message().is_some_and(|m| m.is_deleted != Some(true)) =>
-                    {
-                        return self
-                            .update(UiMessage::Forward(self.pane.selected_msg.clone().expect("a selected message")));
-                    }
-                    Key::Character("R" | "r") if shift && self.pane.selected_msg.is_some() => {
-                        return self
-                            .update(self.quick_react(self.pane.selected_msg.clone().expect("a selected message")));
-                    }
-                    Key::Character("H" | "h") if shift && self.pane.selected_msg.is_some() => {
-                        let m = self.selected_message().expect("a selected message");
-                        let Some(url) =
-                            m.text.as_deref().and_then(|t| t.split_whitespace().find(|w| w.starts_with("http")))
-                        else {
-                            return Task::none();
-                        };
-                        return self.update(UiMessage::OpenUrl(url.into()));
-                    }
-                    Key::Character("r") if self.pane.selected_msg.is_some() => {
-                        return self.update(UiMessage::StartReply(
-                            self.pane.selected_msg.clone().expect("a selected message"),
-                        ));
-                    }
-                    Key::Character("c") if self.pane.selected_msg.is_some() => {
+                    Key::Character("c") if mods.command() && !mods.shift() && self.pane.selected_msg.is_some() => {
                         let stamp = self.store.read().settings.on("copyTimestamps");
                         let text = copy_text(&self.selected_message().expect("a selected message"), stamp);
                         return self.update(UiMessage::CopyText(text));
                     }
-                    Key::Character("d") if self.selected_message().is_some_and(|m| !m.attachments.is_empty()) => {
-                        let mid = self.pane.selected_msg.clone().expect("a selected message");
-                        return self.update(UiMessage::Download(mid, None));
-                    }
-                    Key::Character("t") if self.pane.selected_chat_id.is_some() => {
-                        let edit = self.selected_message().filter(|m| m.is_sender == Some(true));
-                        let Some(m) = edit.or_else(|| self.last_own_message()) else { return Task::none() };
-                        self.pane.selected_msg = Some(m.id.clone());
-                        return self.update(UiMessage::StartEdit(m.id, m.text.unwrap_or_default()));
-                    }
-                    Key::Character("v") if self.pane.selected_chat_id.is_some() => {
+                    Key::Character("v") if mods.command() && self.pane.selected_chat_id.is_some() => {
                         return Task::perform(clipboard_image(), UiMessage::Pasted);
                     }
-                    Key::Character("G" | "g") if shift && self.pane.selected_chat_id.is_some() => {
-                        return self.update(UiMessage::ToggleGifPicker);
-                    }
-                    Key::Character("j") if self.show_command_palette => {
-                        return self.update(UiMessage::ToggleCommandMode);
-                    }
-                    Key::Character(d @ ("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")) if alt => {
-                        let i = d.parse::<usize>().expect("a digit") - 1;
-                        let msg = match RAIL_VIEWS.get(i) {
-                            Some(view) => view.map(UiMessage::SelectTab),
-                            None => rail_accounts(&self.store.read())
-                                .get(i - RAIL_VIEWS.len())
-                                .map(|a| UiMessage::SelectAccount(Some(a.clone()))),
-                        };
-                        return msg.map_or_else(Task::none, |m| self.update(m));
-                    }
-                    Key::Character("n") => return self.update(UiMessage::NewChat),
-                    Key::Character("k") => Some("Search"),
-                    Key::Character("f") => Some("Search: Room"),
-                    Key::Character(",") => Some("Settings"),
-                    Key::Character("Y" | "y") if shift => Some("Filter: Unread"),
-                    Key::Character("I" | "i") if shift => Some("Toggle Chat Info"),
-                    Key::Character("M" | "m") if shift => Some("Chat: Toggle Mute"),
-                    Key::Character("U" | "u") if shift => Some("Chat: Toggle Mark As Read"),
-                    Key::Character("P" | "p") if shift => Some("Report a Problem"),
-                    Key::Character("p") => Some("Chat: Toggle Pin"),
-                    Key::Character("e") => Some("Chat: Toggle Archive"),
-                    Key::Character("q") => Some("Quit App"),
-                    Key::Character("=" | "+") => Some("Zoom In"),
-                    Key::Character("-") => Some("Zoom Out"),
-                    Key::Character("0") => Some("Reset Zoom"),
-                    Key::Character("]") => Some("Select Next Chat"),
-                    Key::Named(Named::ArrowDown) if alt => Some("Select Next Chat"),
-                    Key::Character("[") => Some("Select Previous Chat"),
-                    Key::Named(Named::ArrowUp) if alt => Some("Select Previous Chat"),
-                    _ => None,
-                };
-                if let Some(h) = hotkey.filter(|h| self.store.read().settings.hotkey_on(h)) {
-                    return self.run_hotkey(h);
+                    _ => {}
+                }
+                if let Some((h, digit)) = self.find_hotkey(&key, mods) {
+                    return self.run_hotkey(h, digit);
                 }
             }
         }
@@ -5104,7 +5122,7 @@ impl BeeperGuiApp {
     fn view_filter_menu(&self) -> El<'_> {
         let p = &self.pal;
         let st = self.store.read();
-        let item = |checked: bool, glyph: char, label: String, hotkey: &'static str, bit: u8| -> El<'_> {
+        let item = |checked: bool, glyph: char, label: String, hotkey: String, bit: u8| -> El<'_> {
             let lead = row![
                 container(checked.then(|| ic(icon::CHECK, 14.0))).center_x(14),
                 container(ic(glyph, 14.0)).padding(Padding::ZERO.left(9.0).right(4.0)),
@@ -5113,16 +5131,22 @@ impl BeeperGuiApp {
         };
         let counted = (0..F_ARCHIVED).map(|i| {
             let n = self.chats_with(&st, 1 << i).len();
-            let hotkey = if i == 0 { "Ctrl Shift Y" } else { "" };
+            let hotkey = prefs::hotkey_label(st.settings.hotkey_keys(FILTER_HOTKEYS[i]));
             item(self.filters & 1 << i != 0, FILTERS[i].1, format!("{} ({n})", tr(FILTERS[i].0)), hotkey, 1 << i)
         });
         let views = (F_ARCHIVED..FILTERS.len())
-            .map(|i| item(self.filters & 1 << i != 0, FILTERS[i].1, tr(FILTERS[i].0).into(), "", 1 << i));
+            .map(|i| item(self.filters & 1 << i != 0, FILTERS[i].1, tr(FILTERS[i].0).into(), String::new(), 1 << i));
         let col = Column::with_children(
-            std::iter::once(item(self.filters == 0, icon::INBOX, tr("All").into(), "", 0))
-                .chain(counted)
-                .chain(std::iter::once(menu_rule(p)))
-                .chain(views),
+            std::iter::once(item(
+                self.filters == 0,
+                icon::INBOX,
+                tr("All").into(),
+                prefs::hotkey_label(st.settings.hotkey_keys("Filter: All")),
+                0,
+            ))
+            .chain(counted)
+            .chain(std::iter::once(menu_rule(p)))
+            .chain(views),
         );
         container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
     }
@@ -6332,7 +6356,7 @@ impl BeeperGuiApp {
             .height(24)
             .padding(0)
             .style(bordered_btn([p.card, p.hover, p.card], [Color { a: 0.9, ..rim }; 3], rim, 1.0, 4.0))
-            .on_press(UiMessage::OpenQuickLook("Feedback".into(), "Tell us what to improve in beeper-rs.".into()));
+            .on_press(UiMessage::OpenQuickLook("Feedback".into(), FEEDBACK.into()));
         let fade = Linear::new(Radians(std::f32::consts::PI))
             .add_stop(0.0, p.card)
             .add_stop(0.75, p.card.scale_alpha(0.85))
@@ -8733,28 +8757,35 @@ impl BeeperGuiApp {
             .style(pill_style(p))
             .on_press(UiMessage::RevertHotkeys);
         let q = self.hotkey_query.to_lowercase();
-        let hotkey = |&(name, keys): &(&'static str, &'static str)| -> El<'_> {
-            let on = s.hotkey_on(name);
-            let recorder = on.then(|| {
-                container(txt(keys, 13.0).line_height(Pixels(18.0)).color(p.text))
-                    .center_x(160)
-                    .center_y(20)
-                    .style(bordered_box(CLEAR, edge, 1.0, 4.0))
+        let hotkey = |name: &'static str| -> El<'_> {
+            let keys = s.hotkey_keys(name);
+            let recorder = (keys != "disabled").then(|| {
+                let label: El<'_> = match keys {
+                    "" => txt(tr("Record Shortcut"), 11.0).color(p.muted).into(),
+                    k => txt(prefs::hotkey_label(k), 13.0).line_height(Pixels(18.0)).color(p.text).into(),
+                };
+                container(label).center_x(160).center_y(20).style(bordered_box(CLEAR, edge, 1.0, 4.0))
             });
-            row![txt(tr(name), 13.0).color(p.text).width(Fill)]
+            row![ell(tr(name), 226.0, 13.0, Weight::Normal).color(p.text).width(Fill)]
                 .push(recorder)
-                .push(toggle(p, on, Some(UiMessage::ToggleHotkey(name))))
+                .push(toggle(p, keys != "disabled", Some(UiMessage::ToggleHotkey(name))))
                 .spacing(6)
                 .align_y(Center)
                 .padding([8, 0])
                 .into()
         };
-        let groups = prefs::HOTKEYS.iter().filter_map(|(group, keys)| {
-            let rows: Vec<El<'_>> =
-                keys.iter().filter(|(n, _)| tr(n).to_lowercase().contains(&q)).map(hotkey).collect();
+        let mut shown: Vec<_> = prefs::HOTKEYS.iter().filter(|h| tr(h.0).to_lowercase().contains(&q)).collect();
+        shown.sort_by_cached_key(|h| tr(h.0).to_lowercase());
+        let order = shown.iter().fold(Vec::new(), |mut v, h| {
+            if !v.contains(&h.1) {
+                v.push(h.1);
+            }
+            v
+        });
+        let groups = order.into_iter().map(|group| {
+            let rows = shown.iter().filter(|h| h.1 == group).map(|h| hotkey(h.0));
             let head = txt(tr(group), 13.0).line_height(Pixels(16.0)).color(p.muted);
-            (!rows.is_empty())
-                .then(|| column![container(head).padding(Padding::ZERO.top(24.0).bottom(12.0))].extend(rows).into())
+            column![container(head).padding(Padding::ZERO.top(24.0).bottom(12.0))].extend(rows).into()
         });
         let head = row![search, Space::new().width(Fill), revert].align_y(Center).padding(Padding::ZERO.bottom(10.0));
         let line = container(Space::new()).width(Fill).height(1).style(fill_box(edge, 0.0));

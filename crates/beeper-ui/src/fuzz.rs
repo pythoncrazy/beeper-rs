@@ -143,7 +143,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         InboxTab::Requests,
     ]);
     let pref = rng.pick(&prefs().collect::<Vec<_>>()).1;
-    let hotkeys: Vec<&str> = prefs::HOTKEYS.iter().flat_map(|(_, k)| k.iter().map(|k| k.0)).collect();
+    let hotkeys: Vec<&str> = prefs::HOTKEYS.iter().map(|h| h.0).collect();
     let key = match rng.below(3) {
         0 => Key::Character(
             rng.pick(&["a", "e", "f", "k", "p", "u", "m", "i", "y", ",", "=", "-", "0", "[", "]"]).to_string().into(),
