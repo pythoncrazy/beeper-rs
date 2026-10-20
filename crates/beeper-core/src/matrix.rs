@@ -413,6 +413,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         poll: None,
         unresolved_media: unresolved_media(c).filter(|_| !deleted),
         edit_history: Vec::new(),
+        is_edited: None,
         links: links(c),
         seen: Default::default(),
         flags: 0,

@@ -472,6 +472,9 @@ pub struct Message {
     pub unresolved_media: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub edit_history: Vec<EditHistoryEntry>,
+    /// Desktop's `isEdited`, which a deletion sets too and which outlives the edit history.
+    #[serde(rename = "isEdited", skip_serializing_if = "Option::is_none")]
+    pub is_edited: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub links: Vec<MessageLink>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
@@ -494,13 +497,17 @@ impl Message {
         matches!(self.message_type.as_deref(), Some("MEMBERSHIP" | "HIDDEN"))
     }
 
+    pub fn edited(&self) -> bool {
+        self.is_edited == Some(true) || !self.edit_history.is_empty()
+    }
+
     pub fn sync_flags(&mut self) {
         self.flags = flag_bits(&[
             (self.is_sender == Some(true), MSG_SENDER_SELF),
             (self.is_unread == Some(true), MSG_UNREAD),
             (self.is_bookmarked == Some(true), MSG_BOOKMARKED),
             (self.attachments.iter().any(|a| a.is_voice_note == Some(true)), MSG_VOICE_NOTE),
-            (!self.edit_history.is_empty(), MSG_EDITED),
+            (self.edited(), MSG_EDITED),
             (self.is_deleted == Some(true), MSG_DELETED),
         ]);
     }
