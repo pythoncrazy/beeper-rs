@@ -1,6 +1,4 @@
-use crate::codec::{
-    base64_decode, base64_encode_standard, base64_encode_url_nopad, sha1, sha256, url_decode, url_encode,
-};
+use crate::codec::{base64_decode, base64_encode_standard, sha1, url_decode};
 use crate::http::{parse_query, read_message, read_ws_frame, write_ws_frame, HttpMessage, StatusCode};
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{
@@ -9,7 +7,7 @@ use beeper_core::config::{
 use beeper_core::matrix::{ChatFlag, Outgoing};
 use beeper_core::models::*;
 use beeper_core::platform::{path_to_file_url, OsKind};
-use beeper_core::store::{BeeperStore, InvertedIndex, OAuthClientEntry, OAuthCodeEntry, SharedStore, StoredAsset};
+use beeper_core::store::{BeeperStore, InvertedIndex, SharedStore, StoredAsset};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -18,6 +16,7 @@ use std::sync::{Arc, RwLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+mod auth;
 mod mcp;
 
 struct Response {
@@ -123,6 +122,12 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
     let mut buf = Vec::new();
     while let Some(msg) = read_message(&mut stream, &mut buf).await {
         if msg.start_line.starts_with("GET /v1/ws ") && msg.header_is("upgrade", "websocket") {
+            let refused = auth::authorize(&store.read(), auth::access_token(&msg), &[beeper_core::connect::READ]).err();
+            if let Some((status, message)) = refused {
+                let head = format!("HTTP/1.1 {status} {message}\r\nConnection: close\r\n\r\n");
+                stream.write_all(head.as_bytes()).await.ok();
+                return;
+            }
             return serve_ws(stream, buf, msg, store).await;
         }
         let close = msg.header_is("connection", "close");
@@ -150,13 +155,31 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
         .map(url_decode)
         .collect::<Option<_>>()
         .ok_or_else(|| bad("bad path"))?;
+    let segs: Vec<&str> = segs.iter().map(String::as_str).collect();
     if segs == ["v0", "mcp"] {
-        return mcp::handle(store, cloud, &method, &msg);
+        let token = auth::access_token(&msg);
+        if method != "OPTIONS" && auth::authorize(&store.read(), token, &[]).is_err() {
+            return Err(auth::mcp_refusal(&store.read(), &msg));
+        }
+        return mcp::handle(store, cloud, &method, &msg, token);
     }
     let query = parse_query(query).ok_or_else(|| bad("malformed query string"))?;
     let body = parse_body(&msg).ok_or_else(|| bad("malformed request body"))?;
     let req = Req { query, msg, body };
-    let segs: Vec<&str> = segs.iter().map(String::as_str).collect();
+    let in_query = if segs == ["v1", "assets", "serve"] { req.q("dangerouslyUseTokenInQuery") } else { None };
+    let granted = match auth::scope(&method, &segs) {
+        Some(scope) => {
+            let token = auth::access_token(&req.msg).or(in_query);
+            Some(auth::authorize(&store.read(), token, &[scope]).map_err(auth::refusal)?)
+        }
+        None => None,
+    };
+    if let Some(reply) = auth::route(store, &method, &segs, &req, granted.as_ref()) {
+        return reply;
+    }
+    if method == "POST" && segs.starts_with(&["v1", "app", "setup"]) {
+        auth::setup_origin(&req.msg)?;
+    }
     if let ("POST", ["v1", "app", "setup", step @ ("start" | "email" | "response" | "register")]) =
         (method.as_str(), &segs[..])
     {
@@ -211,9 +234,7 @@ fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply
             headers: vec![("content-type", "application/json".into())],
             body: OPENAPI_SPEC_JSON.as_bytes().to_vec(),
         }),
-        ("POST", ["oauth", "register"]) => oauth_register(st, r),
-        ("GET", ["oauth", "authorize"]) => oauth_authorize(st, r),
-        ("POST", ["oauth", "token"]) => oauth_token(st, r),
+        ("GET", []) => empty(StatusCode::FOUND, vec![("location", "/v1/info".into())]),
         ("GET", ["v1", "app", "setup"]) => ok(&st.setup_status),
         ("GET", ["v1", "app", "setup", "verifications"]) => {
             ok(&json!({ "session": st.setup_status.session, "verification": st.setup_status.session.verification }))
@@ -278,59 +299,6 @@ fn info(st: &BeeperStore) -> InfoResponse {
             base_url,
         },
     }
-}
-
-fn oauth_register(st: &mut BeeperStore, r: &Req) -> Reply {
-    let client_name = r.need("client_name")?.to_string();
-    let redirect_uris: Vec<String> = r.parse("redirect_uris")?;
-    let client_id = st.next_id("beeper_cli_client");
-    let entry = OAuthClientEntry { client_id: client_id.clone(), client_name, redirect_uris };
-    let resp = json!({
-        "client_id": client_id,
-        "client_name": entry.client_name,
-        "redirect_uris": entry.redirect_uris,
-        "token_endpoint_auth_method": "none"
-    });
-    st.oauth_clients.insert(client_id, entry);
-    Ok(json_with(StatusCode::CREATED, &resp))
-}
-
-fn oauth_authorize(st: &mut BeeperStore, r: &Req) -> Reply {
-    let (client_id, redirect_uri) = (r.need_q("client_id")?, r.need_q("redirect_uri")?);
-    if !st.oauth_clients.get(client_id).is_some_and(|c| c.redirect_uris.iter().any(|u| u == redirect_uri)) {
-        return Err(bad("invalid_client"));
-    }
-    if r.need_q("code_challenge_method")? != "S256" {
-        return Err(bad("only S256 PKCE is supported"));
-    }
-    let state = r.q("state").unwrap_or_default();
-    let code = st.next_id("auth_code");
-    st.oauth_codes.insert(
-        code.clone(),
-        OAuthCodeEntry {
-            code: code.clone(),
-            client_id: client_id.into(),
-            redirect_uri: redirect_uri.into(),
-            code_challenge: r.need_q("code_challenge")?.into(),
-            code_challenge_method: "S256".into(),
-        },
-    );
-    if r.msg.header("accept").is_some_and(|a| a.contains("application/json")) {
-        return ok(&json!({ "code": code, "state": state, "redirect_uri": redirect_uri }));
-    }
-    let sep = if redirect_uri.contains('?') { '&' } else { '?' };
-    empty(StatusCode::FOUND, vec![("location", format!("{redirect_uri}{sep}code={code}&state={}", url_encode(state)))])
-}
-
-fn oauth_token(st: &mut BeeperStore, r: &Req) -> Reply {
-    let entry = st.oauth_codes.remove(r.need("code")?).ok_or_else(|| bad("invalid_grant"))?;
-    let challenge = base64_encode_url_nopad(&sha256(r.need("code_verifier")?.as_bytes()));
-    if entry.client_id != r.need("client_id")? || challenge != entry.code_challenge {
-        return Err(bad("invalid_grant"));
-    }
-    let token = st.next_id("bp_oauth_tok");
-    st.valid_tokens.insert(token.clone());
-    ok(&json!({ "access_token": token, "token_type": "Bearer", "scope": "read write" }))
 }
 
 fn refresh_setup(st: &mut BeeperStore) {

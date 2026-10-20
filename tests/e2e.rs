@@ -452,7 +452,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let st = shared.read();
         assert_eq!(st.setup, Some(Setup::Imported));
         assert_eq!(st.beeper_state.user_id, "@emile:beeper.com");
-        assert!(st.valid_tokens.contains("syt_emile"));
+        assert_eq!(st.beeper_state.access_token, "syt_emile");
         assert_eq!(st.me().email.as_deref(), Some("zola@example.com"), "whoami updates the imported email");
         assert_eq!(st.me().full_name.as_deref(), Some("Émile Zola"));
         let title = |id: &str| st.chats[st.chat_idx_by_id[id]].title.as_str();
@@ -575,7 +575,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     );
     assert!(win_manifest.content.contains("beeper-rs.exe"));
 
-    let (_, port, store, mut client) = spawn_e2e_beeper_instance("master", None).await;
+    let (_, port, store, client) = spawn_e2e_beeper_instance("master", None).await;
     assert_eq!(store.read().beeper_state.user_id, "@alex:beeper.com");
     assert_eq!(store.read().bridge_accounts.len(), 6);
 
@@ -607,8 +607,51 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let (_, missing) = client.mcp(tool(5, "get_chat", json!({ "chatID": "nope" }))).await;
     assert_eq!(missing["error"]["message"], "404 {\"error\":\"chat_not_found\"}");
 
-    let oauth_token = client.oauth_pkce_login("Beeper Raycast E2E", "super_secret_pkce_verifier_2026_beeper_rs").await;
-    assert!(oauth_token.starts_with("bp_oauth_tok_"));
+    let mut requests = store.read().connect_tx.subscribe();
+    let approver = store.clone();
+    let approve = tokio::spawn(async move {
+        let (id, outcome) = requests.recv().await.unwrap();
+        assert!(outcome.is_none(), "the page asks for a token");
+        let scopes = approver.read().connect.requests[0].scopes.clone();
+        assert_eq!(scopes, ["read", "write"]);
+        approver.write().answer_token_request(&id, Some((scopes, 3600)));
+        assert_eq!(requests.recv().await.unwrap(), (id, Some(beeper_core::connect::Outcome::Approved)));
+    });
+    let base = format!("http://127.0.0.1:{port}");
+    let mut oauth = BeeperClient::new(&base, "");
+    let oauth_token = oauth.oauth_pkce_login("Beeper Raycast E2E", "super_secret_pkce_verifier_2026_beeper_rs").await;
+    approve.await.unwrap();
+    assert!(oauth_token.starts_with("bdapi_") && store.read().connect.tokens.len() == 1);
+    assert!(!store.write().connect.tokens_json().contains(&oauth_token), "only the hash is stored");
+    assert_eq!(oauth.list_accounts().await.len(), store.read().accounts.len(), "the approved token reads");
+    let anon = BeeperClient::new(&base, "");
+    let unauthorized = json!({ "message": "Unauthorized: Invalid or missing token", "code": "unauthorized" });
+    assert_eq!(anon.request("GET", "/v1/accounts", None).await, (StatusCode(401), unauthorized));
+    let (status, refused) = anon.mcp(rpc(9, "tools/list", json!({}))).await;
+    assert_eq!((status, &refused["id"], &refused["error"]["code"]), (StatusCode(401), &json!(9), &json!(-32000)));
+    let reader = BeeperClient::new(&base, store.write().connect.create(vec!["read".into()], 0, None));
+    let (status, refused) =
+        reader.request("POST", &format!("/v1/chats/{chat_id}/messages"), Some(json!({ "text": "x" }))).await;
+    assert_eq!(
+        (status, refused["message"].as_str()),
+        (StatusCode(403), Some("Insufficient permissions. Required scopes: write, missing: write"))
+    );
+    let (_, resource) = anon.request("GET", "/.well-known/oauth-protected-resource/v0/mcp", None).await;
+    assert_eq!(resource["resource"], format!("{base}/v0/mcp"));
+    let (_, seen) = anon.request("POST", "/oauth/introspect", Some(json!({ "token": oauth_token }))).await;
+    assert_eq!(
+        (&seen["active"], &seen["scope"], &seen["client"]["name"]),
+        (&json!(true), &json!("read write"), &json!("Beeper Raycast E2E"))
+    );
+    assert_eq!(
+        anon.request("POST", "/oauth/revoke", Some(json!({ "token": oauth_token }))).await,
+        (StatusCode::OK, json!({}))
+    );
+    assert_eq!(
+        oauth.request("GET", "/v1/accounts", None).await.1["message"],
+        "Invalid token",
+        "a revoked token is refused"
+    );
 
     assert_eq!(client.setup_step("start", json!({})).await.0, StatusCode::CONFLICT, "demo account is signed in");
     let cloud = fake_beeper_cloud().await;
@@ -641,7 +684,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         cfg.api_url.clone_from(&cloud);
         let again = BeeperStore::from_config(cfg);
         assert_eq!(again.beeper_state.access_token, format!("syt_{user}"), "sign-in survives a restart");
-        assert!(again.valid_tokens.contains(&format!("syt_{user}")) && again.chats.len() == 1);
+        assert_eq!(again.chats.len(), 1);
         drop(again);
     }
 

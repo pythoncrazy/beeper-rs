@@ -78,6 +78,14 @@ impl BeeperClient {
         self.json("GET", "/v1/info", None).await
     }
 
+    /// Any request, for its status and JSON body.
+    pub async fn request(&self, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+        let (status, bytes) = self.send(method, path, &[], body.as_ref()).await;
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    /// Desktop's OAuth flow with PKCE: the page of `/oauth/authorize` posts the request, which waits until the user
+    /// approves it in the app.
     pub async fn oauth_pkce_login(&mut self, client_name: &str, code_verifier: &str) -> String {
         assert!(code_verifier.len() >= 16, "PKCE code_verifier too short");
         let body = json!({ "client_name": client_name, "redirect_uris": [REDIRECT_URI] });
@@ -92,7 +100,21 @@ impl BeeperClient {
             ("code_challenge_method", "S256"),
             ("state", "pkce_state_1"),
         ];
-        let auth: Value = self.json("GET", &query_string("/oauth/authorize", &params), None).await;
+        let (status, page) = self.send("GET", &query_string("/oauth/authorize", &params), &[], None).await;
+        let page = String::from_utf8(page).expect("UTF-8 authorize page");
+        assert!(status == StatusCode::OK && page.contains("Continue in the app"), "authorize page: {page}");
+        let body = json!({
+            "mode": "oauth2",
+            "clientInfo": { "name": client_name, "clientID": client_id },
+            "scopes": ["read", "write"],
+            "redirectUri": REDIRECT_URI,
+            "scope": "read write",
+            "state": "pkce_state_1",
+            "codeChallenge": challenge,
+            "codeChallengeMethod": "S256"
+        });
+        let auth: Value = self.json("POST", "/oauth/authorize/callback", Some(body)).await;
+        assert_eq!(auth["state"], "pkce_state_1");
         let body = json!({
             "grant_type": "authorization_code",
             "client_id": client_id,
@@ -214,8 +236,8 @@ impl BeeperClient {
     pub async fn connect_ws(&self, chat_ids: Vec<String>) -> UnboundedReceiver<WsEvent> {
         let mut stream = TcpStream::connect(&self.host_port).await.expect("connect TCP to /v1/ws");
         let upgrade = format!(
-            "GET /v1/ws HTTP/1.1\r\nhost: {}\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n",
-            self.host_port
+            "GET /v1/ws HTTP/1.1\r\nhost: {}\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\nauthorization: Bearer {}\r\n\r\n",
+            self.host_port, self.access_token
         );
         stream.write_all(upgrade.as_bytes()).await.expect("send WS upgrade request");
         let mut leftover = Vec::new();
