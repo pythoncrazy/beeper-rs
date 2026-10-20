@@ -482,6 +482,27 @@ fn incognito_toggle_like_desktop() {
 }
 
 #[test]
+fn settings_commands_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("settingscmd");
+    let cmds = app.commands(&app.store.read(), "");
+    let settings: Vec<&str> = cmds.iter().filter(|c| c.category == "Settings").map(|c| c.title.as_str()).collect();
+    assert_eq!(settings[..4], ["Add Account", "Accounts", "Beeper Plus", "General"]);
+    assert_eq!(settings[4], "General → Incognito mode");
+    assert!(settings.contains(&"Appearance → Show sidebar") && settings.contains(&"Accounts → Telegram"));
+    assert_eq!(settings.last(), Some(&"Turn on incognito mode"));
+    let _ = app.update(UiMessage::RunHotkey("Command Bar"));
+    let _ = app.update(UiMessage::CommandQueryChanged("compact chat list".into()));
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+    assert!(app.settings_window.is_some() && app.active_settings_tab == SettingsTab::Appearance);
+    assert_eq!(app.pref_flash.map(|f| f.0), Some("compactChatList"));
+    let _ = app.update(UiMessage::RunHotkey("Command Bar"));
+    let _ = app.update(UiMessage::CommandQueryChanged("Accounts → Telegram".into()));
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+    assert!(app.active_settings_tab == SettingsTab::Accounts && app.adding_account);
+}
+
+#[test]
 fn remind_submenu_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
     let mut app = demo_app("remindsub");
