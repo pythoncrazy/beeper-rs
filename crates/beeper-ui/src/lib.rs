@@ -763,6 +763,7 @@ fn menu_item<'a>(
 }
 
 pub(crate) const ISSUES_URL: &str = "https://github.com/pythoncrazy/beeper-rs/issues";
+pub(crate) const CHANGELOG_URL: &str = "https://www.beeper.com/changelog/desktop";
 const FEEDBACK: &str = "Tell us what to improve in beeper-rs.";
 const ORANGE: Color = Color::from_rgb8(245, 76, 3);
 const CHECKED: Color = Color::from_rgb8(14, 77, 242);
@@ -9283,7 +9284,7 @@ impl BeeperGuiApp {
                         .spacing(4);
                 let head = row![svg(LOGO.clone()).width(68).height(68), title].spacing(6).align_y(Center);
                 let links = [
-                    (tr("View changelog"), UiMessage::OpenUrl("https://www.beeper.com/changelog/desktop".into())),
+                    (tr("View changelog"), UiMessage::OpenUrl(CHANGELOG_URL.into())),
                     (tr("Report a problem"), UiMessage::OpenUrl(ISSUES_URL.into())),
                     (tr("Privacy"), UiMessage::OpenUrl("https://www.beeper.com/privacy".into())),
                     (

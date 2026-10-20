@@ -601,6 +601,13 @@ fn history_and_folder_submenus_like_desktop() {
     let _ = app.update(UiMessage::RunHotkey("Command Bar"));
     let cmds = app.commands(&app.store.read(), "folder");
     assert!(cmds[0].title == "Filter by folder type" && cmds[0].msg.is_some());
+    for (query, title, to) in [
+        ("criticism", "Email feedback", "mailto:help+feedback@beeper.com"),
+        ("whats new", "View changelog", CHANGELOG_URL),
+    ] {
+        let c = app.commands(&app.store.read(), query).into_iter().next().unwrap();
+        assert!(c.title == title && matches!(c.msg, Some(UiMessage::OpenUrl(u)) if u == to), "{query}");
+    }
 }
 
 #[test]

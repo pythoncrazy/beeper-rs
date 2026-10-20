@@ -414,6 +414,17 @@ impl BeeperGuiApp {
         v.push(cmd("View", tr("Zoom out"), hot("Zoom Out")).keys(&["magnify"]).hotkey("Zoom Out"));
         let reset = hot("Reset Zoom").filter(|_| st.settings.zoom_percent != 100);
         v.push(cmd("View", tr("Reset zoom"), reset).keys(&["magnify"]).hotkey("Reset Zoom"));
+        let feedback = Some(UiMessage::OpenUrl("mailto:help+feedback@beeper.com".into()));
+        v.push(cmd("", tr("Email feedback"), feedback).keys(&[
+            "send",
+            "report",
+            "suggestion",
+            "criticism",
+            "bug",
+            "help",
+        ]));
+        let changelog = Some(UiMessage::OpenUrl(crate::CHANGELOG_URL.into()));
+        v.push(cmd("", tr("View changelog"), changelog).keys(&["whats new", "updates"]));
         for theme in ThemeChoice::ALL.into_iter().filter(|t| *t != st.settings.theme) {
             let title = match theme {
                 ThemeChoice::System => tr("Set theme to match system"),
