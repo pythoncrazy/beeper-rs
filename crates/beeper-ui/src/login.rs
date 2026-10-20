@@ -252,7 +252,7 @@ impl BeeperGuiApp {
         let (cloud, token) = (self.cloud.clone(), self.store.read().unwrap().beeper_state.access_token.clone());
         Task::perform(
             async move { tokio::task::spawn_blocking(move || cloud.whoami(&token)).await.expect("whoami worker thread") },
-            |r| UiMessage::CloudAccounts(r.map(|(_, a)| a).map_err(|e| e.message)),
+            |r| UiMessage::CloudAccounts(r.map(|(p, a)| (p.email, a)).map_err(|e| e.message)),
         )
     }
 
