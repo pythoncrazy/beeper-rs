@@ -354,10 +354,20 @@ pub fn match_rank(text: &str, query: &str) -> Option<f32> {
 
 /// The items that match `query`, the best match first and then in alphabetical order, as match-sorter does.
 pub fn match_sort<T>(items: impl IntoIterator<Item = T>, query: &str, key: impl Fn(&T) -> String) -> Vec<T> {
-    let mut ranked: Vec<(f32, String, T)> =
-        items.into_iter().filter_map(|i| Some((match_rank(&key(&i), query)?, key(&i).to_lowercase(), i))).collect();
-    ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    ranked.into_iter().map(|r| r.2).collect()
+    match_sort_keys(items, query, |i| vec![key(i)])
+}
+
+/// [`match_sort`] with several keys: the best rank of the keys, then the earliest key, then the matched value.
+pub fn match_sort_keys<T>(items: impl IntoIterator<Item = T>, query: &str, keys: impl Fn(&T) -> Vec<String>) -> Vec<T> {
+    let best = |i: &T| {
+        let ranked = keys(i).into_iter().enumerate().filter_map(|(k, v)| Some((match_rank(&v, query)?, k, v)));
+        ranked.max_by(|a, b| a.0.total_cmp(&b.0).then_with(|| b.1.cmp(&a.1)))
+    };
+    let mut ranked: Vec<_> = items.into_iter().filter_map(|i| Some((best(&i)?, i))).collect();
+    ranked.sort_by(|(a, _), (b, _)| {
+        b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)).then_with(|| a.2.to_lowercase().cmp(&b.2.to_lowercase()))
+    });
+    ranked.into_iter().map(|r| r.1).collect()
 }
 
 pub fn hotkey_label(keys: &str) -> String {
