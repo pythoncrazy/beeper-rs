@@ -1,7 +1,7 @@
 //! Desktop's command bar commands (`Efe`): the categories, the titles, the search keywords and the hotkeys.
 use crate::i18n::{tr, trx};
 use crate::style::{bar, brand_svg, ell, fill_box, scroll_style, semi, text_width, txt, Palette, CLEAR};
-use crate::{has_flag, network_name, BeeperGuiApp, El, InboxTab, UiMessage, ASK_LOGOUT};
+use crate::{has_flag, network_name, BeeperGuiApp, El, InboxTab, SettingsHit, SettingsTab, UiMessage, ASK_LOGOUT};
 use crate::{ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_MARK_ALL_READ};
 use beeper_core::matrix::ChatFlag;
 use beeper_core::models::{Chat, ThemeChoice, CHAT_UNREAD};
@@ -60,6 +60,20 @@ impl Command {
 const CHATS: &str = "Chats";
 pub(crate) const COMMANDS: &str = "commands";
 const SPACES: &str = "Switch First 9 Spaces Modifier";
+/// Desktop's `searchKeywords` of the Integrations section, after its `Preferences`.
+const INTEGRATIONS: &[&str] = &[
+    "Preferences",
+    "beeper desktop api",
+    "mcp",
+    "openapi",
+    "access token",
+    "approved connections",
+    "remote access",
+    "claude",
+    "raycast",
+    "cursor",
+    "codex",
+];
 
 /// A command bar submenu of Desktop (`showWithSubMenu`).
 #[derive(Debug, Clone, PartialEq)]
@@ -281,6 +295,31 @@ impl BeeperGuiApp {
         };
         v.push(cmd("", inbox, Some(UiMessage::SelectTab(tab))).keys(&["dm", "unknown"]));
         let prefs = &["Preferences"];
+        let settings = tr("Settings");
+        let open = |tab, then: UiMessage| Some(UiMessage::Commands(vec![UiMessage::OpenSettings(tab), then]));
+        let add = match self.adding_account {
+            true => UiMessage::SelectSettingsTab(SettingsTab::Accounts),
+            false => UiMessage::ToggleAddAccount,
+        };
+        v.push(cmd(settings, tr("Add Account"), open(SettingsTab::Accounts, add)).keys(prefs));
+        use SettingsTab as T;
+        let tabs = [T::Accounts, T::BeeperPlus, T::General, T::Ai, T::Appearance, T::Notifications, T::Hotkeys];
+        for tab in tabs.into_iter().chain([T::Storage, T::Devices, T::About, T::Help, T::Integrations]) {
+            let keys = if tab == T::Integrations { INTEGRATIONS } else { prefs };
+            let section = open(tab, UiMessage::PickSetting(SettingsHit::Section(tab, true)));
+            v.push(cmd(settings, tab.name(), section).keys(keys));
+            let rows = prefs::rows().filter(|(page, r)| *page == tab.meta().0 && !r.label.is_empty());
+            v.extend(rows.map(|(_, r)| {
+                let title = format!("{} → {}", tab.name(), crate::trs(r.label, r.args));
+                let pick = open(tab, UiMessage::PickSetting(SettingsHit::Pref(tab, r)));
+                cmd(settings, title, pick).keys(&[r.desc.unwrap_or_default(), "Preferences"])
+            }));
+        }
+        v.extend(crate::login::addable().map(|n| {
+            let title = format!("{} → {}", tr("Accounts"), n.display_name);
+            cmd(settings, title, open(T::Accounts, UiMessage::PickSetting(SettingsHit::Network(n.display_name))))
+                .keys(prefs)
+        }));
         v.push(cmd("", tr("Show settings"), hot("Settings")).keys(prefs).hotkey("Settings"));
         let incognito = st.settings.on("incognito");
         let title = tr(if incognito { "Turn off incognito mode" } else { "Turn on incognito mode" });
