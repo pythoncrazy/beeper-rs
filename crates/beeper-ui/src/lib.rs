@@ -292,6 +292,8 @@ pub enum UiMessage {
     GifDownloaded(KlipyGif, Result<(Vec<u8>, Frames), String>),
     SetReminder(String, Option<i64>),
     OpenSubMenu(commands::SubMenu),
+    CmdNoReply(bool),
+    RemindIf(String, i64, bool),
     ChatSub(Option<u8>),
     CheckReminders,
     ToggleFlag(String, ChatFlag),
@@ -1267,12 +1269,24 @@ fn select<'a, T: ToString + PartialEq + Clone + 'a>(
     selected: T,
     f: impl Fn(T) -> UiMessage + 'a,
 ) -> El<'a> {
+    sized_select(p, options, selected, f, 11.0, Padding::from([4, 8]))
+}
+
+/// A select with the arrow of Chromium's native select over its right side.
+fn sized_select<'a, T: ToString + PartialEq + Clone + 'a>(
+    p: &Palette,
+    options: impl std::borrow::Borrow<[T]> + 'a,
+    selected: T,
+    f: impl Fn(T) -> UiMessage + 'a,
+    size: f32,
+    pad: Padding,
+) -> El<'a> {
     let list = pick_list(options, Some(selected), f)
-        .text_size(11)
+        .text_size(size)
         .text_line_height(Pixels(16.0))
         .font(fw(Weight::Semibold))
         .handle(pick_list::Handle::None)
-        .padding([4, 8])
+        .padding(pad)
         .style(pick_style(p.chip, p.chip, p.strong, p.strong))
         .menu_style(pick_menu_style(p.elevated, p.selected, p.text, p.prefs_border));
     let chevron = container(tinted(&SELECT_ARROW, 10.0, p.strong)).align_right(Fill).center_y(Fill).padding([0, 8]);
@@ -2173,6 +2187,8 @@ pub struct BeeperGuiApp {
     pub command_palette_query: String,
     pub cmd_bar_commands_mode: bool,
     pub cmd_submenu: Option<commands::SubMenu>,
+    /// The Remind Me submenu's "If no reply" choice.
+    pub cmd_no_reply: bool,
     /// The highlighted command.
     pub cmd_index: usize,
     pub search_expanded: bool,
@@ -2311,6 +2327,7 @@ impl BeeperGuiApp {
             command_palette_query: String::new(),
             cmd_bar_commands_mode: false,
             cmd_submenu: None,
+            cmd_no_reply: true,
             cmd_index: 0,
             search_expanded: false,
             creating_chat: None,
@@ -3101,6 +3118,7 @@ impl BeeperGuiApp {
                 return open;
             }
             "Filter By Account" => Some(UiMessage::OpenSubMenu(commands::SubMenu::FilterAccount)),
+            "Remind Later" => chat.map(|id| UiMessage::OpenSubMenu(commands::SubMenu::Remind(id))),
             "Cycle Filters" => {
                 self.filters = match self.filters {
                     f if f == 1 << 4 => 0,
@@ -3513,15 +3531,8 @@ impl BeeperGuiApp {
             UiMessage::VotePoll(mid, opt_id) => {
                 self.store.write().vote_poll(&mid, &opt_id, "@self:beeper.com");
             }
-            UiMessage::SetReminder(cid, at) => {
-                {
-                    let mut st = self.store.write();
-                    let idx = st.resolve_chat_idx(&cid).expect("chat exists");
-                    self.remind(&mut st, idx, at);
-                }
-                self.chat_menu = None;
-                self.refresh_theme_and_tray();
-            }
+            UiMessage::SetReminder(cid, at) => self.set_reminder(&cid, at, None),
+            UiMessage::RemindIf(cid, at, no_reply) => self.set_reminder(&cid, Some(at), Some(no_reply)),
             UiMessage::ChatSub(sub) => self.chat_sub = sub,
             UiMessage::CheckReminders => {
                 let now = now_unix_millis();
@@ -4024,7 +4035,9 @@ impl BeeperGuiApp {
                 (self.cmd_bar_commands_mode, self.cmd_index) = (!self.cmd_bar_commands_mode, 0);
                 return operation::focus("cmd-palette-input");
             }
+            UiMessage::CmdNoReply(on) => self.cmd_no_reply = on,
             UiMessage::OpenSubMenu(menu) => {
+                self.cmd_no_reply = self.store.read().settings.pref("remindLaterDefault") == 0;
                 (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, true, Some(menu));
                 (self.search_room, self.chat_menu, self.cmd_index) = (None, None, 0);
                 self.command_palette_query.clear();
@@ -4149,7 +4162,7 @@ impl BeeperGuiApp {
                     for cid in std::mem::take(&mut self.selection) {
                         let idx = st.resolve_chat_idx(&cid).expect("selected chat exists");
                         if at.is_some() || st.chats[idx].reminder.is_some() {
-                            self.remind(&mut st, idx, at);
+                            self.remind(&mut st, idx, at, None);
                         }
                     }
                 }
@@ -5318,11 +5331,8 @@ impl BeeperGuiApp {
             let sub_w =
                 self.chat_sub.filter(|_| !cid.starts_with("account:")).map_or(0.0, |i| SUB_MENU_W[usize::from(i)]);
             let left = x + w + sub_w > self.pane().size.width;
-            (
-                self.view_chat_menu(cid, left),
-                if left { x - sub_w } else { x },
-                at.y.min(self.pane().size.height - h - 8.0),
-            )
+            let y = at.y.min(self.pane().size.height - h - 8.0);
+            (self.view_chat_menu(cid, left, self.pane().size.height - 8.0 - y), if left { x - sub_w } else { x }, y)
         });
         let message_menu = self.pane().message_menu.as_ref().map(|(mid, at)| {
             let (menu, h) = self.view_message_menu(mid);
@@ -5856,7 +5866,8 @@ impl BeeperGuiApp {
         row![menu].push(sub).into()
     }
 
-    fn view_chat_menu(&self, cid: &str, sub_left: bool) -> El<'_> {
+    /// The chat menu, with `room` pixels from its top to the bottom of the window.
+    fn view_chat_menu(&self, cid: &str, sub_left: bool, room: f32) -> El<'_> {
         let p = &self.pal;
         if let Some(entry) = cid.strip_prefix("account:") {
             return self.view_account_menu(entry);
@@ -5933,18 +5944,23 @@ impl BeeperGuiApp {
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         let sub = self.chat_sub.map(|i| {
             let item = |label: &str, at: String, msg| menu_item(p, None, label.into(), at, msg);
-            let items: Vec<El> = match i {
-                0 => vec![item(tr("Chat Link"), String::new(), Some(UiMessage::CopyChatLink(c.id.clone())))],
+            let (items, rules): (Vec<El>, f32) = match i {
+                0 => (vec![item(tr("Chat Link"), String::new(), Some(UiMessage::CopyChatLink(c.id.clone())))], 0.0),
                 _ => {
                     let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
                     let presets = remind_presets(now).map(|(label, at)| {
                         item(tr(label), remind_label(at, h24), Some(UiMessage::SetReminder(c.id.clone(), Some(at))))
                     });
                     let dismiss = c.reminder.is_some().then(|| UiMessage::SetReminder(c.id.clone(), None));
-                    presets.chain([menu_rule(p), item(tr("Dismiss Reminder"), String::new(), dismiss)]).collect()
+                    let custom = UiMessage::OpenSubMenu(commands::SubMenu::Remind(c.id.clone()));
+                    let custom = item(tr("Custom…"), String::new(), Some(custom));
+                    let dismiss = item(tr("Dismiss Reminder"), String::new(), dismiss);
+                    (presets.chain([menu_rule(p), custom, menu_rule(p), dismiss]).collect(), 2.0)
                 }
             };
+            let h = 8.0 + items.len() as f32 * MENU_ITEM - rules * (MENU_ITEM - 11.0);
             let top = if i == 0 { 4.0 * MENU_ITEM } else { 7.0 * MENU_ITEM + 22.0 };
+            let top = top.min(room - h).max(0.0);
             let body = container(Column::with_children(items).padding([4, 0])).width(SUB_MENU_W[usize::from(i)]);
             column![Space::new().height(top), body.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))]
         });
@@ -5971,10 +5987,20 @@ impl BeeperGuiApp {
         st.set_chat_flag(idx, ChatFlag::Archived, Some(on))
     }
 
-    /// Desktop's `setThreadReminder`: the reminder ends on a reply unless "Default for remind later" is "Always",
+    fn set_reminder(&mut self, cid: &str, at: Option<i64>, no_reply: Option<bool>) {
+        {
+            let mut st = self.store.write();
+            let idx = st.resolve_chat_idx(cid).expect("chat exists");
+            self.remind(&mut st, idx, at, no_reply);
+        }
+        self.chat_menu = None;
+        self.refresh_theme_and_tray();
+    }
+
+    /// Desktop's `setThreadReminder`: the reminder ends on a reply unless `no_reply` or else "Default for remind later" is "Always",
     /// and the chat is archived when "Archive after setting reminder on chat" is on.
-    fn remind(&self, st: &mut BeeperStore, idx: usize, at: Option<i64>) {
-        let dismiss_on_incoming_message = st.settings.pref("remindLaterDefault") == 0;
+    fn remind(&self, st: &mut BeeperStore, idx: usize, at: Option<i64>, no_reply: Option<bool>) {
+        let dismiss_on_incoming_message = no_reply.unwrap_or(st.settings.pref("remindLaterDefault") == 0);
         st.set_reminder(idx, at.map(|remind_at_ms| ChatReminder { remind_at_ms, dismiss_on_incoming_message }));
         let c = &st.chats[idx];
         if at.is_some() && st.settings.on("archiveOnReminder") && c.flags & (CHAT_PINNED | CHAT_REQUEST) == 0 {
@@ -7667,12 +7693,12 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let room = self.search_room.as_deref();
         let placeholder = match (self.cmd_bar_commands_mode, room) {
-            _ if self.cmd_submenu.is_some() => "",
-            (true, _) => tr("Search commands"),
-            (false, Some(_)) => tr("Search this chat"),
-            (false, None) => tr("Search chats"),
+            _ if self.cmd_submenu.is_some() => self.cmd_submenu.as_ref().map(|m| m.placeholder()).unwrap_or_default(),
+            (true, _) => tr("Search commands").into(),
+            (false, Some(_)) => tr("Search this chat").into(),
+            (false, None) => tr("Search chats").into(),
         };
-        let input = text_input(placeholder, &self.command_palette_query)
+        let input = text_input(&placeholder, &self.command_palette_query)
             .id("cmd-palette-input")
             .on_input(UiMessage::CommandQueryChanged)
             .size(13)
@@ -7704,7 +7730,13 @@ impl BeeperGuiApp {
         .padding([2, 6])
         .style(ghost(p, 8.0))
         .on_press(UiMessage::ToggleCommandMode);
-        let inputs = match self.cmd_submenu {
+        let no_reply = [tr("If no reply"), tr("Always")];
+        let inputs = match &self.cmd_submenu {
+            Some(commands::SubMenu::Remind(_)) => {
+                let pick = move |c: &str| UiMessage::CmdNoReply(c == no_reply[0]);
+                let pad = Padding::new(4.0).left(6.0).right(22.0);
+                row![input, sized_select(p, no_reply, no_reply[usize::from(!self.cmd_no_reply)], pick, 13.0, pad)]
+            }
             Some(_) => row![input],
             None => row![ic(icon::SEARCH, 14.0).color(p.sub), input, mode_btn],
         };
@@ -7712,7 +7744,7 @@ impl BeeperGuiApp {
         let q = self.command_palette_query.trim().to_lowercase();
         if self.cmd_bar_commands_mode {
             let cmds = self.commands(&st, self.command_palette_query.trim());
-            let header = self.cmd_submenu.map(|m| {
+            let header = self.cmd_submenu.as_ref().map(|m| {
                 let heading = txt(m.heading(), 13.0).line_height(Pixels(16.0)).color(p.strong);
                 container(heading)
                     .width(Fill)
@@ -7720,7 +7752,19 @@ impl BeeperGuiApp {
                     .padding([8, 13])
                     .style(fill_box(p.chip, iced::border::top(18)))
             });
-            return frame(column![].push(header).push(inputs).push(self.view_commands(&st, &cmds)));
+            let footer = matches!(self.cmd_submenu, Some(commands::SubMenu::Remind(_))).then(|| {
+                let note = match self.cmd_no_reply {
+                    true => tr("Remind Me marks this chat as new at the scheduled time, if there is no reply."),
+                    false => tr("Remind Me marks this chat as new at the scheduled time"),
+                };
+                let line =
+                    container(Space::new()).width(Fill).height(2).style(fill_box(p.strong.scale_alpha(0.1), 0.0));
+                let note =
+                    container(txt(note, 13.0).line_height(Pixels(16.0)).color(p.sub)).center_y(44).padding([8, 13]);
+                column![line, container(note).width(Fill).style(fill_box(p.chip, iced::border::bottom(18)))]
+            });
+            let body = column![].push(header).push(inputs).push(self.view_commands(&st, &cmds));
+            return frame(body.push(footer));
         }
         let hint =
             self.pane().selected_chat_id.as_deref().and_then(|cid| st.resolve_chat_idx(cid).map(|i| &st.chats[i])).map(
