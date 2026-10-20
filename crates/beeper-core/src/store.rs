@@ -1154,6 +1154,7 @@ impl BeeperStore {
             poll: None,
             unresolved_media: None,
             edit_history: Vec::new(),
+            is_edited: None,
             links: Vec::new(),
             seen: BTreeMap::new(),
             flags: 0,
@@ -1190,8 +1191,9 @@ impl BeeperStore {
     pub fn delete_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, &'static str> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         self.update_message(m_idx, |m| {
-            m.is_deleted = Some(true);
+            (m.is_deleted, m.is_edited) = (Some(true), Some(true));
             (m.text, m.html, m.poll) = (None, None, None);
+            m.edit_history.clear();
             m.attachments.clear();
             m.reactions.clear();
             m.links.clear();

@@ -6341,7 +6341,12 @@ impl BeeperGuiApp {
             let pill = container(body.spacing(5).align_y(iced::Bottom))
                 .padding(Padding::new(13.0).top(9.0).bottom(7.0))
                 .style(bordered_box(CLEAR, mix(p.card, p.received, 0.8), 1.0, 17.0));
-            return container(pill).align_x(if mine { Right } else { iced::Left }).width(Fill).into();
+            let side = if mine { Right } else { iced::Left };
+            let edited = m.edited().then(|| {
+                let label = txt(tr("Edited"), 11.0).line_height(Pixels(15.0)).color(p.muted);
+                container(label).padding([0.0, BUBBLE_PAD_X]).align_x(side).width(Fill)
+            });
+            return head.push(container(pill).align_x(side).width(Fill)).push(edited).into();
         }
         let group = chat.chat_type == "group";
         let selected = self.pane().selected_msg.as_ref() == Some(&m.id);
@@ -6619,14 +6624,22 @@ impl BeeperGuiApp {
         }
         let open = self.pane().expanded_history_msg_id.as_ref() == Some(&m.id);
         let label = |t: String| txt(t, 12.0).line_height(Pixels(15.0)).color(p.muted);
-        let edited = (!m.edit_history.is_empty()).then(|| {
-            let toggle = button(label(if open { tr("Hide Edits") } else { tr("Edited") }.into())).padding(0);
-            toggle.style(|_, _| button::Style::default()).on_press(UiMessage::ToggleEditHistory(m.id.clone())).into()
+        let edited = m.edited().then(|| -> El<'a> {
+            let small = |t: &str| txt(t.to_string(), 11.0).line_height(Pixels(14.0));
+            if m.edit_history.is_empty() {
+                return small(tr("Edited")).color(p.muted).into();
+            }
+            let toggle = small(if open { tr("Hide Edits") } else { tr("Edited") }).font(fw(Weight::Semibold));
+            button(toggle.color(p.accent))
+                .padding(0)
+                .style(|_, _| button::Style::default())
+                .on_press(UiMessage::ToggleEditHistory(m.id.clone()))
+                .into()
         });
         let footer: Vec<El<'a>> = status.map(|t| label(t).into()).into_iter().chain(edited).collect();
         let footer = (!footer.is_empty()).then(|| {
-            let line = footer.into_iter().enumerate().fold(Row::new(), |r, (i, t)| {
-                r.push((i > 0).then(|| container(txt("·", 12.0).color(p.muted.scale_alpha(0.8))).padding([0, 4])))
+            let line = footer.into_iter().enumerate().fold(Row::new().align_y(Center), |r, (i, t)| {
+                r.push((i > 0).then(|| container(txt("・", 12.0).color(p.muted.scale_alpha(0.8))).padding([0, 4])))
                     .push(t)
             });
             container(line).padding([0.0, BUBBLE_PAD_X])

@@ -272,6 +272,7 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         poll: None,
         unresolved_media: None,
         edit_history: Vec::new(),
+        is_edited: None,
         links: Vec::new(),
         seen: Default::default(),
         flags: 0,
@@ -298,6 +299,7 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         poll: None,
         unresolved_media: None,
         edit_history: Vec::new(),
+        is_edited: None,
         links: Vec::new(),
         seen: Default::default(),
         flags: 0,
@@ -581,6 +583,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                 .flatten()
                 .filter(|_| !deleted),
             edit_history: Vec::new(),
+            is_edited: flag(&m, "editedTimestamp").then_some(true),
             links: m
                 .get("links")
                 .and_then(Value::as_array)
