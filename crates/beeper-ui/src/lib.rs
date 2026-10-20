@@ -134,6 +134,7 @@ const FILTERS: [(&str, char); 8] = [
     ("Low Priority", icon::LOW_PRIORITY_SPACE),
 ];
 /// The hotkeys of the filters before Archived.
+const CYCLE: &str = "Cycle Chats (hold shift to reverse)";
 const FILTER_HOTKEYS: [&str; 5] =
     ["Filter: Unread", "Filter: Drafts", "Filter: Unanswered", "Filter: DMs", "Filter: Groups"];
 const F_ARCHIVED: usize = 5;
@@ -2131,6 +2132,9 @@ pub struct BeeperGuiApp {
     pub hovered_chat: Option<String>,
     pub flash: Option<(String, std::time::Instant)>,
     last_click: Option<(String, std::time::Instant)>,
+    /// The opened chats, the most recent first. While `cycling`, a selection does not reorder them.
+    chat_history: Vec<String>,
+    cycling: bool,
     pub status_banner: String,
     /// The text of Desktop's toast with a "Relaunch app" button, after a change that needs a relaunch.
     relaunch_toast: Option<&'static str>,
@@ -2265,6 +2269,8 @@ impl BeeperGuiApp {
             video: None,
             started: std::time::Instant::now(),
             last_click: None,
+            chat_history: Vec::new(),
+            cycling: false,
         };
         if let Some(id) = first_chat {
             app.select_chat(&id);
@@ -2617,6 +2623,9 @@ impl BeeperGuiApp {
     pub fn select_chat(&mut self, chat_id: &str) {
         self.creating_chat = None;
         self.join_matrix_mode = false;
+        if !self.cycling {
+            self.push_history(chat_id);
+        }
         let mut st = self.store.write();
         self.leave_chat(&mut st, Some(chat_id));
         let incognito = st.settings.on("incognito");
@@ -2874,9 +2883,35 @@ impl BeeperGuiApp {
         let digit = name.parse::<usize>().ok().filter(|d| (1..=9).contains(d));
         let mods = [mods.control() || mods.command(), mods.shift(), mods.alt()];
         let st = self.store.read();
-        let has = |h: &&(&str, &str, &str), key: &str| prefs::hotkey_has(st.settings.hotkey_keys(h.0), mods, key);
-        let hit = |key: &str| prefs::HOTKEYS.iter().find(|h| has(h, key)).map(|h| h.0);
-        hit(&name).map(|h| (h, 0)).or_else(|| Some((hit("")?, digit? - 1)))
+        let hit = |mods, key: &str| {
+            prefs::HOTKEYS.iter().find(|h| prefs::hotkey_has(st.settings.hotkey_keys(h.0), mods, key)).map(|h| h.0)
+        };
+        let unshifted = || hit([mods[0], false, mods[2]], &name).filter(|h| *h == CYCLE && mods[1]);
+        let hit_digit = || Some((hit(mods, "")?, digit? - 1));
+        hit(mods, &name).or_else(unshifted).map(|h| (h, 0)).or_else(hit_digit)
+    }
+
+    fn push_history(&mut self, chat_id: &str) {
+        self.chat_history.retain(|c| c != chat_id);
+        self.chat_history.insert(0, chat_id.to_string());
+        self.chat_history.truncate(50);
+    }
+
+    /// Selects the chat `by` steps older in the history, or the most recent chat when no chat is open.
+    fn step_history(&mut self, by: isize) -> Task<UiMessage> {
+        let st = self.store.read();
+        let list: Vec<&String> = self.chat_history.iter().filter(|c| st.resolve_chat_idx(c).is_some()).collect();
+        let at = self.pane.selected_chat_id.as_ref().map(|s| list.iter().position(|c| *c == s));
+        let to = match at {
+            Some(at) => (at.map_or(-1, |a| a as isize) + by).rem_euclid(list.len().max(1) as isize) as usize,
+            None => 0,
+        };
+        let Some(id) = list.get(to).map(|c| c.to_string()) else { return Task::none() };
+        drop(st);
+        let cycling = std::mem::replace(&mut self.cycling, true);
+        let task = self.update(UiMessage::SelectChat(id));
+        self.cycling = cycling;
+        task
     }
 
     fn run_hotkey(&mut self, name: &str, digit: usize) -> Task<UiMessage> {
@@ -2890,6 +2925,13 @@ impl BeeperGuiApp {
             "Chat: Toggle Mark As Read" => chat.map(UiMessage::ToggleRead),
             "Chat: Toggle Mute" => flag(ChatFlag::Muted),
             "Chat: Toggle Pin" => flag(ChatFlag::Pinned),
+            CYCLE => {
+                let task = self.step_history(if self.mods.shift() { -1 } else { 1 });
+                self.cycling = true;
+                return task;
+            }
+            "History: Next Chat" => return self.step_history(-1),
+            "History: Previous Chat" => return self.step_history(1),
             "Select Next Chat" | "Select Previous Chat" => {
                 self.step_chat(if name == "Select Next Chat" { 1 } else { -1 });
                 None
@@ -3537,7 +3579,15 @@ impl BeeperGuiApp {
                 return if open { Task::batch([reload, operation::focus("media-search")]) } else { reload };
             }
             UiMessage::MediaMenu(open) => self.media_mut().menu = open,
-            UiMessage::Modifiers(mods) => self.mods = mods,
+            UiMessage::Modifiers(mods) => {
+                self.mods = mods;
+                if self.cycling && !mods.control() {
+                    self.cycling = false;
+                    if let Some(c) = self.pane.selected_chat_id.clone() {
+                        self.push_history(&c);
+                    }
+                }
+            }
             UiMessage::MediaSelect(on) => {
                 let w = self.media_mut();
                 w.select = on;
