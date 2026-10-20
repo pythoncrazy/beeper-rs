@@ -232,7 +232,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         50 => UiMessage::ReminderMenu,
         51 => UiMessage::ChatSub(Some(rng.below(SUB_MENU_W.len()) as u8)),
         52 => UiMessage::ArchiveStale,
-        53 => UiMessage::Forward(msg),
+        53 => UiMessage::Forward(vec![msg]),
         54 if app.forward.is_some() => UiMessage::ForwardPick(chat),
         55 => UiMessage::SelectAccount(rng.coin().then(|| rng.pick(&accounts).clone())),
         56 if !hits.is_empty() => UiMessage::PickSetting(*rng.pick(&hits)),
@@ -595,6 +595,30 @@ fn arrow_keys_step_over_a_deleted_selected_message() {
     let _ = app.update(UiMessage::ClickMessage(mid));
     let _ = app.update(UiMessage::StepMessage(false, false));
     assert_eq!(app.pane.selected_msgs, [ids[ids.len() - 3].clone()]);
+}
+
+#[test]
+fn forward_selected_messages_like_desktop() {
+    let mut app = demo_app("fwdmany");
+    let chat = "!note_self:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(chat.into()));
+    let texts = |app: &BeeperGuiApp, cid: &str| -> Vec<Option<String>> {
+        let st = app.store.read();
+        st.chat_msg_indices[cid].iter().map(|&i| st.messages[i].text.clone()).collect()
+    };
+    let source = texts(&app, chat);
+    let n = source.len();
+    let key = |app: &mut BeeperGuiApp, k: Named, m| app.update(UiMessage::KeyPressed(Key::Named(k), m));
+    let _ = key(&mut app, Named::ArrowUp, Modifiers::empty());
+    let _ = key(&mut app, Named::ArrowUp, Modifiers::SHIFT);
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("f".into()), Modifiers::CTRL | Modifiers::SHIFT));
+    assert_eq!(app.forward.as_ref().map(|f| f.mids.len()), Some(2), "Ctrl Shift F forwards all selected messages");
+    let target = app.visible_chats(&app.store.read()).iter().find(|c| c.id != chat).unwrap().id.clone();
+    let before = texts(&app, &target).len();
+    let _ = app.update(UiMessage::ForwardPick(target.clone()));
+    let _ = app.update(UiMessage::ForwardSend);
+    let after = texts(&app, &target);
+    assert_eq!(after[before..], source[n - 2..], "the messages arrive in timeline order");
 }
 
 #[test]

@@ -322,8 +322,8 @@ pub enum UiMessage {
     CopyLink(String),
     CopyImage(String, usize),
     ImageFetched(Result<Vec<u8>, String>),
-    /// Open the forward dialog for a message.
-    Forward(String),
+    /// Open the forward dialog for messages, in timeline order.
+    Forward(Vec<String>),
     ForwardQuery(String),
     /// Add the first chat that matches the query.
     ForwardSubmit,
@@ -1794,9 +1794,9 @@ impl iced::advanced::widget::Operation<f32> for Locate {
     }
 }
 
-/// The forward dialog: the message, the picked chats, and the search text.
+/// The forward dialog: the messages in timeline order, the picked chats, and the search text.
 struct Forward {
-    mid: String,
+    mids: Vec<String>,
     picked: Vec<String>,
     query: String,
 }
@@ -3211,13 +3211,16 @@ impl BeeperGuiApp {
                 })
             }
             "Message: Forward" => {
-                match selected.filter(|_| self.selected_message().is_some_and(|m| m.is_deleted != Some(true))) {
-                    Some(m) => Some(UiMessage::Forward(m)),
-                    None => {
-                        self.status_banner = tr("Only works when messages are selected").into();
-                        None
-                    }
+                let st = self.store.read();
+                let msgs = self.timeline(&st).0.into_iter().filter(|m| self.pane.selected_msgs.contains(&m.id));
+                let msgs: Vec<&Message> = msgs.filter(|_| chat.is_some()).collect();
+                let mids = msgs.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+                let ok = !mids.is_empty() && msgs.iter().all(|m| m.is_deleted != Some(true));
+                drop(st);
+                if !ok {
+                    self.status_banner = tr("Only works when messages are selected").into();
                 }
+                ok.then_some(UiMessage::Forward(mids))
             }
             "Message: Open First Link" => {
                 let text = self.selected_message().and_then(|m| m.text);
@@ -3690,7 +3693,7 @@ impl BeeperGuiApp {
                 return match action {
                     0 => Task::none(),
                     1 => self.update(UiMessage::React(mid)),
-                    3 => self.update(UiMessage::Forward(mid)),
+                    3 => self.update(UiMessage::Forward(vec![mid])),
                     2 => {
                         self.pane.selected_msgs = vec![mid.clone()];
                         self.update(UiMessage::StartReply(mid))
@@ -3942,8 +3945,8 @@ impl BeeperGuiApp {
                     }
                 }
             }
-            UiMessage::Forward(mid) => {
-                self.forward = Some(Forward { mid, picked: Vec::new(), query: String::new() });
+            UiMessage::Forward(mids) => {
+                self.forward = Some(Forward { mids, picked: Vec::new(), query: String::new() });
                 return operation::focus("forward-input");
             }
             UiMessage::ForwardQuery(q) => self.forward.as_mut().expect("the forward dialog is open").query = q,
@@ -3961,16 +3964,18 @@ impl BeeperGuiApp {
                 return operation::focus("forward-input");
             }
             UiMessage::ForwardSend => {
-                let Forward { mid, picked, .. } = self.forward.take().expect("the forward dialog is open");
-                assert!(!picked.is_empty(), "forward needs a chat");
+                let Forward { mids, picked, .. } = self.forward.take().expect("the forward dialog is open");
+                assert!(!picked.is_empty() && !mids.is_empty(), "forward needs a chat and a message");
                 let mut st = self.store.write();
-                let m = st.messages[st.msg_idx_by_id[&mid]].clone();
                 for cid in &picked {
-                    let (_, txn, _) = st
-                        .send_message(cid, m.text.clone(), None, m.attachments.first().cloned())
-                        .expect("forward message");
-                    let (from, event, text, html) = (m.chat_id.clone(), m.id.clone(), m.text.clone(), m.html.clone());
-                    st.queue(cid, Outgoing::Forward { txn, from, event, text, html });
+                    for mid in &mids {
+                        let m = st.messages[st.msg_idx_by_id[mid]].clone();
+                        let (_, txn, _) = st
+                            .send_message(cid, m.text.clone(), None, m.attachments.first().cloned())
+                            .expect("forward message");
+                        let (from, event, text, html) = (m.chat_id, m.id, m.text, m.html);
+                        st.queue(cid, Outgoing::Forward { txn, from, event, text, html });
+                    }
                 }
                 drop(st);
                 if let [one] = picked.as_slice() {
@@ -5719,8 +5724,9 @@ impl BeeperGuiApp {
             }),
             (image && !only_image)
                 .then(|| vec![item(tr("Copy Image").into(), "", Some(UiMessage::CopyImage(mid.clone(), 0)))]),
-            (m.is_deleted != Some(true))
-                .then(|| vec![item(tr("Forward…").into(), "Ctrl Shift F", Some(UiMessage::Forward(mid.clone())))]),
+            (m.is_deleted != Some(true)).then(|| {
+                vec![item(tr("Forward…").into(), "Ctrl Shift F", Some(UiMessage::Forward(vec![mid.clone()])))]
+            }),
             (files > 0).then(|| vec![item(download, "Ctrl D", Some(UiMessage::Download(mid.clone(), None)))]),
             Some(vec![
                 item(at, "", None),
