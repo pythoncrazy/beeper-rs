@@ -414,7 +414,8 @@ pub enum UiMessage {
     HotkeyQuery(String),
     Zoom(i8),
     ToggleSetting(fn(&mut BeeperSettings)),
-    CloudAccounts(Result<Vec<BridgeAccountInfo>, String>),
+    /// The Beeper account email and the chat accounts from `whoami`.
+    CloudAccounts(Result<(Option<String>, Vec<BridgeAccountInfo>), String>),
     AvatarLoaded(String, Result<image::Handle, String>),
     MediaLoaded(String, Result<Frames, String>),
     Voice(voice::Msg),
@@ -3813,10 +3814,14 @@ impl BeeperGuiApp {
             }
             UiMessage::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
             UiMessage::ToggleSetting(flip) => self.patch_settings(flip),
-            UiMessage::CloudAccounts(Ok(accounts)) => {
+            UiMessage::CloudAccounts(Ok((email, accounts))) => {
                 let (token, uid, demo) = {
                     let mut st = self.store.write().unwrap();
                     let info = (st.beeper_state.access_token.clone(), st.beeper_state.user_id.clone(), st.config.demo);
+                    if st.me().email != email {
+                        let i = st.chat_idx_by_id[NOTE_CHAT_ID];
+                        st.update_chat(i, |c| c.participants.items[0].email = email);
+                    }
                     st.set_cloud_accounts(accounts.clone());
                     info
                 };
@@ -8223,17 +8228,23 @@ impl BeeperGuiApp {
             container(glyph).center(size).style(fill_box(fill, radius))
         };
         let free = container(semi("Free", 10.0).color(p.strong)).padding([4, 6]).style(fill_box(p.chip, 25.0));
+        // Desktop's 34 px avatar shrinks to 28.6 px beside the full width details.
+        let av = 28.6;
+        let detail_w = 231.0 - av - 16.0 - text_width("Free", 10.0, Weight::Semibold) - 12.0;
         let profile = row![
-            self.face(me.img_url.as_deref(), &name, 32.0, 0.0),
-            column![bold(name.clone(), 14.0).color(p.strong),]
-                .push(me.email.clone().map(|e| txt(e, 11.0).color(p.text)))
+            container(self.face(me.img_url.as_deref(), &name, av, 0.0)).height(34),
+            column![ell(&name, detail_w, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(p.strong)]
+                .push(
+                    me.email
+                        .as_deref()
+                        .map(|e| ell(e, detail_w, 10.0, Weight::Normal).line_height(Pixels(12.0)).color(p.strong))
+                )
                 .width(Fill),
             free
         ]
         .spacing(8)
         .align_y(Center)
-        .height(44)
-        .padding([0, 8]);
+        .padding([6, 8]);
         let nav = SettingsTab::ALL.iter().fold(Column::new(), |c, &tab| {
             let on = tab == self.active_settings_tab;
             let count = (tab == SettingsTab::Accounts).then(|| {
@@ -8252,7 +8263,7 @@ impl BeeperGuiApp {
                 button(line)
                     .padding(0)
                     .width(Fill)
-                    .style(btn_style([if on { p.nav_sel } else { CLEAR }, p.hover, p.nav_sel], [p.text; 3], 8.0))
+                    .style(btn_style([if on { p.rail } else { CLEAR }, p.hover, p.rail], [p.text; 3], 8.0))
                     .on_press(UiMessage::SelectSettingsTab(tab)),
             )
             .push((!on).then(|| {
@@ -8308,12 +8319,15 @@ impl BeeperGuiApp {
         });
         let list: El = match self.settings_query.trim().is_empty() {
             true => column![profile, nav].into(),
-            false => results.into(),
+            false => container(results).padding(Padding::ZERO.top(3)).into(),
         };
         let left = column![
             container(semi(tr("Settings"), 14.0).color(p.strong)).center_y(35).padding([0, 8]),
-            search,
-            scrollable(list).id("settings-nav").direction(bar()).height(Fill).style(scroll_style(p.scroll))
+            column![
+                search,
+                scrollable(list).id("settings-nav").direction(bar()).height(Fill).style(scroll_style(p.scroll))
+            ]
+            .spacing(5)
         ]
         .spacing(8)
         .width(270)
@@ -8330,7 +8344,7 @@ impl BeeperGuiApp {
         .style(fill_box(p.prefs_pane, 10.0));
         let base = container(row![left, container(right).padding(8)]).width(Fill).height(Fill);
         let confirm = self.confirm.filter(|&d| d == ASK_LOGOUT).map(|d| self.view_confirm(d));
-        stack![base.style(fill_box(p.frame, 0.0))].push(confirm).into()
+        stack![base.style(fill_box(p.window, 0.0))].push(confirm).into()
     }
 
     fn sas_row<'a>(&self, st: &BeeperStore) -> El<'a> {

@@ -437,7 +437,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         "remote_profile": { "username": "alex", "phone": "+1 415-555-0142", "avatar": "mxc://beeper.com/a" } } } } });
     let cloud = beeper_core::cloud::cloud_accounts(&bridges).expect("parse the cloud bridges");
     assert_eq!(cloud[0].display_text().as_deref(), Some("+1 415-555-0142"), "the phone comes before the username");
-    let _ = gui.update(UiMessage::CloudAccounts(Ok(cloud)));
+    let _ = gui.update(UiMessage::CloudAccounts(Ok((Some("zola@example.com".into()), cloud))));
     assert_eq!(shared.read().unwrap().accounts.iter().map(|a| a.account_id.as_str()).collect::<Vec<_>>(), ["signal"]);
     for bad in [
         json!([]),
@@ -453,7 +453,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert_eq!(st.setup, Some(Setup::Imported));
         assert_eq!(st.beeper_state.user_id, "@emile:beeper.com");
         assert!(st.valid_tokens.contains("syt_emile"));
-        assert_eq!(st.me().email.as_deref(), Some("emile@example.com"));
+        assert_eq!(st.me().email.as_deref(), Some("zola@example.com"), "whoami updates the imported email");
         assert_eq!(st.me().full_name.as_deref(), Some("Émile Zola"));
         let title = |id: &str| st.chats[st.chat_idx_by_id[id]].title.as_str();
         assert_eq!(title("!wa:beeper.local"), "Ana Núñez", "a single chat without a title uses the other person");
@@ -500,7 +500,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     }
     gui.select_chat("!sl:beeper.local");
     assert!(simulator(gui.view_main()).find("Click to load").is_ok());
-    assert!(simulator(gui.view_settings()).find("emile@example.com").is_ok());
+    assert!(simulator(gui.view_settings()).find("zola@example.com").is_ok());
     drop((gui, shared));
     let mut reopened = BeeperStore::from_config(CentralConfig::new(rs_dir.clone(), "127.0.0.1".into(), 23379, None));
     assert_eq!(reopened.setup, Some(Setup::Imported));
