@@ -333,6 +333,46 @@ fn composer_keys_edit_like_desktop() {
 }
 
 #[test]
+fn composer_enter_follows_the_hotkeys() {
+    use iced_test::simulator::typewrite;
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("enter");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    let _ = app.update(UiMessage::ComposerChanged(String::new()));
+    let text = |app: &BeeperGuiApp| app.pane.composer.text();
+    let archived = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        has_flag(&st.chats[st.resolve_chat_idx(note).expect("note")], ChatFlag::Archived)
+    };
+    press(
+        &mut app,
+        true,
+        typewrite("a").chain([key(Named::Enter, Modifiers::SHIFT), key(Named::Enter, Modifiers::ALT)]),
+    );
+    assert_eq!(text(&app), "a\n\n", "Shift and Alt Enter insert new lines");
+    let _ = app.update(UiMessage::ComposerChanged(String::new()));
+    let tick = || key(Key::Character("`".into()), Modifiers::empty());
+    press(&mut app, true, typewrite("b").chain([key(Named::Home, Modifiers::SHIFT), tick()]));
+    assert_eq!(text(&app), "`b`", "a backtick formats the selection as code");
+    press(&mut app, true, [tick()]);
+    assert_eq!(text(&app), "`b``", "a backtick without a selection is a backtick");
+    let _ = app.update(UiMessage::ComposerChanged("b".into()));
+    let _ = app.update(UiMessage::ToggleFlag(note.into(), ChatFlag::Pinned));
+    press(&mut app, true, [key(Named::Enter, Modifiers::CTRL)]);
+    assert!(text(&app).is_empty() && archived(&app), "Ctrl Enter sends and archives");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    press(&mut app, true, typewrite("c").chain([key(Named::Enter, Modifiers::empty())]));
+    assert!(text(&app).is_empty() && !archived(&app), "a new message moves the chat to the inbox");
+    {
+        let keys = &mut app.store.write().settings.keybindings;
+        keys.insert("Send Message".into(), "ctrl+enter".into());
+        keys.insert("Message: Send Message and Archive".into(), "disabled".into());
+    }
+    press(&mut app, true, typewrite("d").chain([key(Named::Enter, Modifiers::empty())]));
+    assert_eq!(text(&app), "d\n", "Enter inserts a new line when it does not send");
+}
+
+#[test]
 fn emoticons_follow_the_setting() {
     use iced_test::simulator::typewrite;
     let mut app = demo_app("emoticons");
