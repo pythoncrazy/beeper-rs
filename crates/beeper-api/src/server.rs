@@ -18,6 +18,8 @@ use std::sync::{Arc, RwLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+mod mcp;
+
 struct Response {
     status: StatusCode,
     headers: Vec<(&'static str, String)>,
@@ -148,6 +150,9 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
         .map(url_decode)
         .collect::<Option<_>>()
         .ok_or_else(|| bad("bad path"))?;
+    if segs == ["v0", "mcp"] {
+        return mcp::handle(store, cloud, &method, &msg);
+    }
     let query = parse_query(query).ok_or_else(|| bad("malformed query string"))?;
     let body = parse_body(&msg).ok_or_else(|| bad("malformed request body"))?;
     let req = Req { query, msg, body };
@@ -201,7 +206,7 @@ fn matrix_verification(store: &SharedStore, rest: &[&str]) -> Reply {
 fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
     match (method, path) {
         ("GET", ["v1", "info"]) => ok(&info(st)),
-        ("GET", ["v1", "openapi.json"]) => Ok(Response {
+        ("GET", ["v1", "spec"]) => Ok(Response {
             status: StatusCode::OK,
             headers: vec![("content-type", "application/json".into())],
             body: OPENAPI_SPEC_JSON.as_bytes().to_vec(),
@@ -247,7 +252,7 @@ fn info(st: &BeeperStore) -> InfoResponse {
     InfoResponse {
         app: InfoApp { bundle_id: APP_BUNDLE_ID.into(), name: APP_NAME.into(), version: APP_VERSION.into() },
         endpoints: InfoEndpoints {
-            mcp: "/v1/mcp".into(),
+            mcp: format!("{base_url}/v0/mcp"),
             oauth: InfoOAuthEndpoints {
                 authorization_endpoint: oauth("authorize"),
                 introspection_endpoint: oauth("introspect"),
@@ -256,8 +261,8 @@ fn info(st: &BeeperStore) -> InfoResponse {
                 token_endpoint: oauth("token"),
                 userinfo_endpoint: oauth("userinfo"),
             },
-            spec: "/v1/openapi.json".into(),
-            ws_events: "/v1/ws".into(),
+            spec: format!("{base_url}/v1/spec"),
+            ws_events: format!("{base_url}/v1/ws"),
         },
         platform: InfoPlatform {
             arch: std::env::consts::ARCH.into(),

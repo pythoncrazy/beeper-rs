@@ -1,0 +1,488 @@
+[
+ {
+  "method": "POST",
+  "path": "/v1/focus",
+  "tool": {
+   "name": "focus_app",
+   "description": "Focus Beeper Desktop and optionally navigate to a specific chat, message, or pre-fill draft text and attachment.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "chatID": {
+      "type": "string",
+      "description": "Optional Beeper chat ID (or local chat ID) to focus after opening the app. If omitted, only opens/focuses the app."
+     },
+     "draftAttachmentPath": {
+      "type": "string",
+      "description": "Optional draft attachment path to populate in the message input field."
+     },
+     "draftText": {
+      "type": "string",
+      "description": "Optional draft text to populate in the message input field."
+     },
+     "messageID": {
+      "type": "string",
+      "description": "Optional message ID. Jumps to that message in the chat when opening."
+     }
+    },
+    "required": []
+   },
+   "annotations": {}
+  }
+ },
+ {
+  "method": "GET",
+  "path": "/v1/search",
+  "tool": {
+   "name": "search",
+   "description": "Search for chats, participant name matches in groups, and the first page of messages in one call. Use this when the user asks for a specific chat, group, or person.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "User-typed search text. Literal word matching (NOT semantic)."
+     }
+    },
+    "required": [
+     "query"
+    ]
+   },
+   "annotations": {
+    "readOnlyHint": true
+   }
+  }
+ },
+ {
+  "method": "GET",
+  "path": "/v1/accounts",
+  "tool": {
+   "name": "get_accounts",
+   "description": "List connected accounts on this device.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "required": []
+   },
+   "annotations": {
+    "readOnlyHint": true
+   }
+  }
+ },
+ {
+  "method": "GET",
+  "path": "/v1/chats/{chatID}",
+  "tool": {
+   "name": "get_chat",
+   "description": "Get chat details: metadata, participants (limited), last activity.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "chatID": {
+      "type": "string",
+      "description": "Unique identifier of the chat."
+     },
+     "maxParticipantCount": {
+      "type": "integer",
+      "description": "Maximum number of participants to return. Use -1 for all; otherwise 0–500. Defaults to all (-1)."
+     }
+    },
+    "required": [
+     "chatID"
+    ]
+   },
+   "annotations": {
+    "readOnlyHint": true
+   }
+  }
+ },
+ {
+  "method": "POST",
+  "path": "/v1/chats/{chatID}/archive",
+  "text": true,
+  "tool": {
+   "name": "archive_chat",
+   "description": "Archive or unarchive a chat.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "chatID": {
+      "type": "string",
+      "description": "Unique identifier of the chat."
+     },
+     "archived": {
+      "type": "boolean",
+      "description": "True to archive, false to unarchive"
+     }
+    },
+    "required": [
+     "chatID"
+    ]
+   },
+   "annotations": {}
+  }
+ },
+ {
+  "method": "GET",
+  "path": "/v1/chats/search",
+  "tool": {
+   "name": "search_chats",
+   "description": "Search chats by title/network or participants using Beeper Desktop's renderer algorithm. Optional 'scope'.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "accountIDs": {
+      "type": "array",
+      "description": "Provide an array of account IDs to filter chats from specific messaging accounts only",
+      "items": {
+       "type": "string",
+       "description": "Account ID this resource belongs to."
+      }
+     },
+     "cursor": {
+      "type": "string",
+      "description": "Opaque pagination cursor; do not inspect. Use together with 'direction'."
+     },
+     "direction": {
+      "type": "string",
+      "description": "Pagination direction used with 'cursor': 'before' fetches older results, 'after' fetches newer results. Defaults to 'before' when only 'cursor' is provided.",
+      "enum": [
+       "after",
+       "before"
+      ]
+     },
+     "inbox": {
+      "type": "string",
+      "description": "Filter by inbox type: \"primary\" (non-archived, non-low-priority), \"low-priority\", or \"archive\". If not specified, shows all chats.",
+      "enum": [
+       "primary",
+       "low-priority",
+       "archive"
+      ]
+     },
+     "includeMuted": {
+      "type": "boolean",
+      "description": "Include chats marked as Muted by the user, which are usually less important. Default: true. Set to false if the user wants a more refined search."
+     },
+     "lastActivityAfter": {
+      "type": "string",
+      "description": "Provide an ISO datetime string to only retrieve chats with last activity after this time",
+      "format": "date-time"
+     },
+     "lastActivityBefore": {
+      "type": "string",
+      "description": "Provide an ISO datetime string to only retrieve chats with last activity before this time",
+      "format": "date-time"
+     },
+     "limit": {
+      "type": "integer",
+      "description": "Set the maximum number of chats to retrieve. Valid range: 1-200, default is 50"
+     },
+     "query": {
+      "type": "string",
+      "description": "Literal token search (non-semantic). Use single words users type (e.g., \"dinner\"). When multiple words provided, ALL must match. Case-insensitive."
+     },
+     "scope": {
+      "type": "string",
+      "description": "Search scope: 'titles' matches title + network; 'participants' matches participant names.",
+      "enum": [
+       "titles",
+       "participants"
+      ]
+     },
+     "type": {
+      "type": "string",
+      "description": "Specify the type of chats to retrieve: use \"single\" for direct messages, \"group\" for group chats, or \"any\" to get all types",
+      "enum": [
+       "single",
+       "group",
+       "any"
+      ]
+     },
+     "unreadOnly": {
+      "type": "boolean",
+      "description": "Set to true to only retrieve chats that have unread messages"
+     }
+    },
+    "required": []
+   },
+   "annotations": {
+    "readOnlyHint": true
+   }
+  }
+ },
+ {
+  "method": "POST",
+  "path": "/v1/chats/{chatID}/reminders",
+  "text": true,
+  "tool": {
+   "name": "set_chat_reminder",
+   "description": "Set a reminder for a chat at a specific time.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "chatID": {
+      "type": "string",
+      "description": "Unique identifier of the chat."
+     },
+     "reminder": {
+      "type": "object",
+      "description": "Reminder configuration",
+      "properties": {
+       "remindAtMs": {
+        "type": "number",
+        "description": "Unix timestamp in milliseconds when reminder should trigger"
+       },
+       "dismissOnIncomingMessage": {
+        "type": "boolean",
+        "description": "Cancel reminder if someone messages in the chat"
+       }
+      },
+      "required": [
+       "remindAtMs"
+      ]
+     }
+    },
+    "required": [
+     "chatID",
+     "reminder"
+    ]
+   },
+   "annotations": {}
+  }
+ },
+ {
+  "method": "DELETE",
+  "path": "/v1/chats/{chatID}/reminders",
+  "text": true,
+  "tool": {
+   "name": "clear_chat_reminder",
+   "description": "Clear a chat reminder.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "chatID": {
+      "type": "string",
+      "description": "Unique identifier of the chat."
+     }
+    },
+    "required": [
+     "chatID"
+    ]
+   },
+   "annotations": {
+    "idempotentHint": true
+   }
+  }
+ },
+ {
+  "method": "GET",
+  "path": "/v1/chats/{chatID}/messages",
+  "tool": {
+   "name": "list_messages",
+   "description": "List messages from a specific chat with pagination support.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "chatID": {
+      "type": "string",
+      "description": "Unique identifier of the chat."
+     },
+     "cursor": {
+      "type": "string",
+      "description": "Opaque pagination cursor; do not inspect. Use together with 'direction'."
+     },
+     "direction": {
+      "type": "string",
+      "description": "Pagination direction used with 'cursor': 'before' fetches older results, 'after' fetches newer results. Defaults to 'before' when only 'cursor' is provided.",
+      "enum": [
+       "after",
+       "before"
+      ]
+     }
+    },
+    "required": [
+     "chatID"
+    ]
+   },
+   "annotations": {
+    "readOnlyHint": true
+   }
+  }
+ },
+ {
+  "method": "GET",
+  "path": "/v1/messages/search",
+  "tool": {
+   "name": "search_messages",
+   "description": "Search messages across chats using Beeper's message index.\n- When to use: find messages by text and/or filters (chatIDs, accountIDs, chatType, media type filters, sender, date ranges).\n- CRITICAL: Query is LITERAL WORD MATCHING, NOT semantic search! Only finds messages containing these EXACT words.\n  • ✅ RIGHT: query=\"dinner\" or query=\"sick\" or query=\"error\" (single words users type)\n  • ❌ WRONG: query=\"dinner plans tonight\" or query=\"health issues\" (phrases/concepts)\n  • The query matches ALL words provided (in any order). Example: query=\"flight booking\" finds messages with both \"flight\" AND \"booking\".\n- Performance: provide chatIDs/accountIDs when known. Omitted 'query' returns results based on filters only. Partial matches enabled; 'excludeLowPriority' defaults to true.\n- Workflow tip: To search messages in specific conversations: 1) Use find-chats to get chatIDs, 2) Use search-messages with those chatIDs.\n- IMPORTANT: Chat names vary widely. ASK the user for clarification:\n  • \"Which chat do you mean by family?\" (could be \"The Smiths\", \"Mom Dad Kids\", etc.)\n  • \"What's the name of your work chat?\" (could be \"Team\", company name, project name)\n  • \"Who are the participants?\" (use scope=\"participants\" in search-chats)\nReturns: matching messages and referenced chats.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "accountIDs": {
+      "type": "array",
+      "description": "Limit search to specific account IDs.",
+      "items": {
+       "type": "string",
+       "description": "Account ID this resource belongs to."
+      }
+     },
+     "chatIDs": {
+      "type": "array",
+      "description": "Limit search to specific chat IDs.",
+      "items": {
+       "type": "string"
+      }
+     },
+     "chatType": {
+      "type": "string",
+      "description": "Filter by chat type: 'group' for group chats, 'single' for 1:1 chats.",
+      "enum": [
+       "group",
+       "single"
+      ]
+     },
+     "cursor": {
+      "type": "string",
+      "description": "Opaque pagination cursor; do not inspect. Use together with 'direction'."
+     },
+     "dateAfter": {
+      "type": "string",
+      "description": "Only include messages with timestamp strictly after this ISO 8601 datetime (e.g., '2024-07-01T00:00:00Z' or '2024-07-01T00:00:00+02:00').",
+      "format": "date-time"
+     },
+     "dateBefore": {
+      "type": "string",
+      "description": "Only include messages with timestamp strictly before this ISO 8601 datetime (e.g., '2024-07-31T23:59:59Z' or '2024-07-31T23:59:59+02:00').",
+      "format": "date-time"
+     },
+     "direction": {
+      "type": "string",
+      "description": "Pagination direction used with 'cursor': 'before' fetches older results, 'after' fetches newer results. Defaults to 'before' when only 'cursor' is provided.",
+      "enum": [
+       "after",
+       "before"
+      ]
+     },
+     "excludeLowPriority": {
+      "type": "boolean",
+      "description": "Exclude messages marked Low Priority by the user. Default: true. Set to false to include all."
+     },
+     "includeMuted": {
+      "type": "boolean",
+      "description": "Include messages in chats marked as Muted by the user, which are usually less important. Default: true. Set to false if the user wants a more refined search."
+     },
+     "limit": {
+      "type": "integer",
+      "description": "Maximum number of messages to return."
+     },
+     "mediaTypes": {
+      "type": "array",
+      "description": "Filter messages by media types. Use ['any'] for any media type, or specify exact types like ['video', 'image']. Omit for no media filtering.",
+      "items": {
+       "type": "string",
+       "enum": [
+        "any",
+        "video",
+        "image",
+        "link",
+        "file"
+       ]
+      }
+     },
+     "query": {
+      "type": "string",
+      "description": "Literal word search (NOT semantic). Finds messages containing these EXACT words in any order. Use single words users actually type, not concepts or phrases. Example: use \"dinner\" not \"dinner plans\", use \"sick\" not \"health issues\". If omitted, returns results filtered only by other parameters."
+     },
+     "sender": {
+      "anyOf": [
+       {
+        "type": "string",
+        "description": "Filter by sender: 'me' (messages sent by the authenticated user), 'others' (messages sent by others), or a specific user ID string (user.id).",
+        "enum": [
+         "me",
+         "others"
+        ]
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "description": "Filter by sender: 'me' (messages sent by the authenticated user), 'others' (messages sent by others), or a specific user ID string (user.id)."
+     }
+    },
+    "required": []
+   },
+   "annotations": {
+    "readOnlyHint": true
+   }
+  }
+ },
+ {
+  "method": "POST",
+  "path": "/v1/chats/{chatID}/messages",
+  "tool": {
+   "name": "send_message",
+   "description": "Send a text message to a specific chat. Supports replying to existing messages. Returns the sent message ID and a deeplink to the chat",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "chatID": {
+      "type": "string",
+      "description": "Unique identifier of the chat."
+     },
+     "replyToMessageID": {
+      "type": "string",
+      "description": "Provide a message ID to send this as a reply to an existing message"
+     },
+     "text": {
+      "type": "string",
+      "description": "Text content of the message you want to send. You may use markdown."
+     }
+    },
+    "required": [
+     "chatID"
+    ]
+   },
+   "annotations": {}
+  }
+ },
+ {
+  "method": "GET",
+  "path": "https://api.stainless.com/api/projects/beeper-desktop-api/docs/search",
+  "tool": {
+   "name": "search_docs",
+   "description": "Search for documentation for how to use the client to interact with the API.\nThe tool will return an array of Markdown-formatted documentation pages.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "The query to search for."
+     },
+     "language": {
+      "type": "string",
+      "description": "The language for the SDK to search for.",
+      "enum": [
+       "http",
+       "python",
+       "go",
+       "typescript",
+       "terraform",
+       "ruby",
+       "java",
+       "kotlin"
+      ]
+     }
+    },
+    "required": [
+     "query",
+     "language"
+    ]
+   },
+   "annotations": {
+    "readOnlyHint": true
+   }
+  }
+ }
+]

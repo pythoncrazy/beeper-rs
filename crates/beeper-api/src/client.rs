@@ -65,6 +65,15 @@ impl BeeperClient {
         serde_json::from_slice(&bytes).expect("parse JSON response")
     }
 
+    /// Posts a JSON-RPC message to the MCP server, and returns the first event of the reply.
+    pub async fn mcp(&self, body: Value) -> (StatusCode, Value) {
+        let accept = [("accept", "application/json, text/event-stream")];
+        let (status, bytes) = self.send("POST", "/v0/mcp", &accept, Some(&body)).await;
+        let text = String::from_utf8(bytes).expect("UTF-8 MCP reply");
+        let data = text.strip_prefix("event: message\ndata: ").map_or(text.as_str(), |d| d.split('\n').next().unwrap());
+        (status, if data.is_empty() { Value::Null } else { serde_json::from_str(data).expect("JSON-RPC reply") })
+    }
+
     pub async fn info(&self) -> InfoResponse {
         self.json("GET", "/v1/info", None).await
     }

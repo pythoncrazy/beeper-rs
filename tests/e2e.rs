@@ -582,7 +582,30 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let info = client.info().await;
     assert_eq!(info.app.bundle_id, APP_BUNDLE_ID);
     assert_eq!(info.server.port, port);
-    assert_eq!(info.endpoints.ws_events, "/v1/ws");
+    assert_eq!(info.endpoints.ws_events, format!("http://127.0.0.1:{port}/v1/ws"));
+    assert_eq!(info.endpoints.mcp, format!("http://127.0.0.1:{port}/v0/mcp"));
+
+    let rpc = |id: u32, method: &str, params: Value| json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+    let hello =
+        json!({ "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "e2e", "version": "1" } });
+    let (status, init) = client.mcp(rpc(1, "initialize", hello)).await;
+    assert_eq!((status, &init["result"]["serverInfo"]["name"]), (StatusCode::OK, &json!("beeper_desktop_api_api")));
+    let (status, _) = client.mcp(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })).await;
+    assert_eq!(status, StatusCode(202), "notifications get no reply");
+    let (_, list) = client.mcp(rpc(2, "tools/list", json!({}))).await;
+    let names: Vec<&str> =
+        list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(names.len(), 12);
+    assert!(names.contains(&"send_message") && names.contains(&"search_chats"));
+    let tool = |id, name: &str, args: Value| rpc(id, "tools/call", json!({ "name": name, "arguments": args }));
+    let (_, accounts) = client.mcp(tool(3, "get_accounts", json!({}))).await;
+    let accounts: Value = serde_json::from_str(accounts["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(accounts.as_array().unwrap().len(), store.read().accounts.len());
+    let chat_id = store.read().chats[0].id.clone();
+    let (_, messages) = client.mcp(tool(4, "list_messages", json!({ "chatID": chat_id }))).await;
+    assert!(messages["result"]["content"][0]["text"].as_str().unwrap().contains("\"items\""));
+    let (_, missing) = client.mcp(tool(5, "get_chat", json!({ "chatID": "nope" }))).await;
+    assert_eq!(missing["error"]["message"], "404 {\"error\":\"chat_not_found\"}");
 
     let oauth_token = client.oauth_pkce_login("Beeper Raycast E2E", "super_secret_pkce_verifier_2026_beeper_rs").await;
     assert!(oauth_token.starts_with("bp_oauth_tok_"));
