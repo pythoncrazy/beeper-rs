@@ -146,15 +146,20 @@ impl BeeperGuiApp {
                 });
                 let phrases = crate::TIME_SUGGESTIONS.iter().map(|s| s.to_string()).chain(counted);
                 let phrases = phrases.chain(MORE_TIMES.iter().map(|s| s.to_string())).chain([query.to_string()]);
+                let row = |label: String, at: i64, msg: UiMessage| {
+                    let (long, short) = locale_times(at);
+                    Command {
+                        render: Some((label.clone(), short)), ..cmd("", format!("{label} — {long}"), Some(msg))
+                    }
+                };
+                let remind = |at| UiMessage::RemindIf(c.id.clone(), at, self.cmd_no_reply);
+                let last = crate::last_used(st, now).map(|at| row(tr("last used").into(), at, remind(at)));
                 let times = phrases.filter_map(|phrase| {
                     let at = beeper_core::config::parse_when_millis(&phrase, now).filter(|at| *at > now)?;
-                    let (label, (long, short)) = (phrase.trim().to_lowercase(), locale_times(at));
-                    let msg = UiMessage::RemindIf(c.id.clone(), at, self.cmd_no_reply);
-                    Some(Command {
-                        render: Some((label.clone(), short)),
-                        ..cmd("", format!("{label} — {long}"), Some(msg))
-                    })
+                    let label = phrase.trim().to_lowercase();
+                    Some(row(label, at, UiMessage::Commands(vec![UiMessage::LastTime(phrase), remind(at)])))
                 });
+                let times = last.into_iter().chain(times);
                 let mut seen = std::collections::HashSet::new();
                 let mut v: Vec<Command> = search(times.collect());
                 v.retain(|c| seen.insert(c.render.as_ref().map(|r| r.0.clone())));

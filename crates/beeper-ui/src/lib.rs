@@ -293,6 +293,8 @@ pub enum UiMessage {
     SetReminder(String, Option<i64>),
     OpenSubMenu(commands::SubMenu),
     CmdNoReply(bool),
+    /// Keeps the time phrase for Desktop's "Last Used".
+    LastTime(String),
     RemindIf(String, i64, bool),
     ChatSub(Option<u8>),
     CheckReminders,
@@ -802,6 +804,23 @@ const TIME_SUGGESTIONS: [&str; 6] =
 /// Desktop's `wJe`: the time suggestions that fall in the future, with their times.
 fn remind_presets(now: i64) -> impl Iterator<Item = (&'static str, i64)> {
     TIME_SUGGESTIONS.into_iter().filter_map(move |s| parse_when_millis(s, now).filter(|at| *at > now).map(|at| (s, at)))
+}
+
+/// Desktop's `dD`: the last time phrase that set a reminder, read again now, when it falls in the future.
+fn last_used(st: &BeeperStore, now: i64) -> Option<i64> {
+    Some(&st.settings.last_time)
+        .filter(|t| !t.is_empty())
+        .and_then(|t| parse_when_millis(t, now))
+        .filter(|at| *at > now)
+}
+
+/// Desktop's "Last Used" time: `EEE dd MMM`, with the year when it is not this year, and the time.
+fn last_used_label(at: i64, h24: bool) -> String {
+    let (y, m, d) = civil_from_days(day_of(at));
+    let month = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(' ').nth(m as usize - 1).expect("a month");
+    let year = if y == civil_from_days(today()).0 { String::new() } else { format!(" {y}") };
+    let wd = WEEKDAYS[(day_of(at) + 4).rem_euclid(7) as usize];
+    format!("{} {d:02} {month}{year}, {:0>8}", &wd[..3], clock(at, h24))
 }
 
 fn remind_label(at: i64, h24: bool) -> String {
@@ -4036,6 +4055,7 @@ impl BeeperGuiApp {
                 return operation::focus("cmd-palette-input");
             }
             UiMessage::CmdNoReply(on) => self.cmd_no_reply = on,
+            UiMessage::LastTime(phrase) => self.patch_settings(|s| s.last_time = phrase),
             UiMessage::OpenSubMenu(menu) => {
                 self.cmd_no_reply = self.store.read().settings.pref("remindLaterDefault") == 0;
                 (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, true, Some(menu));
@@ -5493,9 +5513,15 @@ impl BeeperGuiApp {
         let item = |label: String, at: String, msg| menu_item(p, None, label, at, msg);
         let items: Vec<El> = if which == 0 {
             let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
-            let presets = remind_presets(now).map(|(label, at)| {
-                item(tr(label).into(), remind_label(at, h24), Some(UiMessage::SelectionRemind(Some(at))))
+            let last = last_used(&st, now).map(|at| {
+                item(tr("Last Used").into(), last_used_label(at, h24), Some(UiMessage::SelectionRemind(Some(at))))
             });
+            let presets = remind_presets(now).map(|(label, at)| {
+                let msg =
+                    UiMessage::Commands(vec![UiMessage::LastTime(label.into()), UiMessage::SelectionRemind(Some(at))]);
+                item(tr(label).into(), remind_label(at, h24), Some(msg))
+            });
+            let presets = last.into_iter().chain(presets);
             let set = chats.iter().filter(|c| c.reminder.is_some()).count();
             let dismiss = match set {
                 0 => vec![],
@@ -5948,9 +5974,14 @@ impl BeeperGuiApp {
                 0 => (vec![item(tr("Chat Link"), String::new(), Some(UiMessage::CopyChatLink(c.id.clone())))], 0.0),
                 _ => {
                     let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
+                    let set = |at| UiMessage::SetReminder(c.id.clone(), Some(at));
+                    let last =
+                        last_used(&st, now).map(|at| item(tr("Last Used"), last_used_label(at, h24), Some(set(at))));
                     let presets = remind_presets(now).map(|(label, at)| {
-                        item(tr(label), remind_label(at, h24), Some(UiMessage::SetReminder(c.id.clone(), Some(at))))
+                        let msg = UiMessage::Commands(vec![UiMessage::LastTime(label.into()), set(at)]);
+                        item(tr(label), remind_label(at, h24), Some(msg))
                     });
+                    let presets = last.into_iter().chain(presets);
                     let dismiss = c.reminder.is_some().then(|| UiMessage::SetReminder(c.id.clone(), None));
                     let custom = UiMessage::OpenSubMenu(commands::SubMenu::Remind(c.id.clone()));
                     let custom = item(tr("Custom…"), String::new(), Some(custom));

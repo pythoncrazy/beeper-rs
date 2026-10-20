@@ -788,6 +788,8 @@ pub struct BeeperSettings {
     pub microphone: String,
     /// Desktop's local `accountProps`, by account ID.
     pub accounts: std::collections::BTreeMap<String, AccountProps>,
+    /// Desktop's `time_suggestion_last_used`: the last time phrase that set a reminder, or empty.
+    pub last_time: String,
 }
 
 /// The notification settings of an account page, which Desktop keeps on the device.

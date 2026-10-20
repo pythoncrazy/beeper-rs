@@ -488,6 +488,12 @@ fn remind_submenu_like_desktop() {
     let _ = app.update(UiMessage::OpenSubMenu(commands::SubMenu::Remind(id.clone())));
     assert!(app.cmd_no_reply, "the choice starts at the setting");
     assert_eq!(labels(&app, "").last().map(String::as_str), Some("dismiss reminder"));
+    assert_eq!(app.store.read().settings.last_time, "friday at 5pm", "the phrase is kept for Last Used");
+    assert_eq!(labels(&app, "")[0], "last used");
+    let _ = app.update(UiMessage::CloseModals);
+    let _ = app.update(UiMessage::OpenChatMenu(id.clone()));
+    let _ = app.update(UiMessage::ChatSub(Some(1)));
+    assert!(simulator(app.view_main()).find("Last Used").is_ok(), "the chat menu offers the last phrase too");
 }
 
 #[test]

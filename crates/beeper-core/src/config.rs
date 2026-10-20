@@ -72,6 +72,7 @@ impl Default for BeeperSettings {
             reminders_order: 0,
             microphone: String::new(),
             accounts: Default::default(),
+            last_time: String::new(),
         }
     }
 }
