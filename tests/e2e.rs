@@ -605,7 +605,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let (_, messages) = client.mcp(tool(4, "list_messages", json!({ "chatID": chat_id }))).await;
     assert!(messages["result"]["content"][0]["text"].as_str().unwrap().contains("\"items\""));
     let (_, missing) = client.mcp(tool(5, "get_chat", json!({ "chatID": "nope" }))).await;
-    assert_eq!(missing["error"]["message"], "404 {\"error\":\"chat_not_found\"}");
+    assert_eq!(missing["error"]["message"], "404 {\"message\":\"Chat not found\",\"code\":\"NOT_FOUND\"}");
 
     let mut requests = store.read().connect_tx.subscribe();
     let approver = store.clone();
@@ -627,6 +627,10 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let anon = BeeperClient::new(&base, "");
     let unauthorized = json!({ "message": "Unauthorized: Invalid or missing token", "code": "unauthorized" });
     assert_eq!(anon.request("GET", "/v1/accounts", None).await, (StatusCode(401), unauthorized));
+    let chat = json!({ "message": "Chat not found", "code": "NOT_FOUND" });
+    assert_eq!(oauth.request("GET", "/v1/chats/nope", None).await, (StatusCode(404), chat));
+    let route = json!({ "message": "Not found", "code": "not_found" });
+    assert_eq!(oauth.request("GET", "/v1/nope", None).await, (StatusCode(404), route));
     let (status, refused) = anon.mcp(rpc(9, "tools/list", json!({}))).await;
     assert_eq!((status, &refused["id"], &refused["error"]["code"]), (StatusCode(401), &json!(9), &json!(-32000)));
     let reader = BeeperClient::new(&base, store.write().connect.create(vec!["read".into()], 0, None));
@@ -664,7 +668,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let email = json!({ "setupRequestID": id, "email": format!("{user}@example.com") });
         assert_eq!(c.setup_step("email", email).await.0, StatusCode::NO_CONTENT);
         let (bad, err) = c.setup_step("response", json!({ "setupRequestID": id, "response": "000000" })).await;
-        assert_eq!((bad, err["error"].as_str()), (StatusCode::UNAUTHORIZED, Some("invalid_sign_in_code")));
+        assert_eq!((bad, err["code"].as_str()), (StatusCode::UNAUTHORIZED, Some("invalid_sign_in_code")));
         let (_, mut done) = c.setup_step("response", json!({ "setupRequestID": id, "response": code })).await;
         if name == "register" {
             assert_eq!(

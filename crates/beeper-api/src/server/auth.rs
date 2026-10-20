@@ -16,7 +16,7 @@ const SCOPES: [&str; 2] = [READ, WRITE];
 
 /// Desktop's `{message, code}` error body.
 pub(super) fn api_error(status: u16, message: &str, code: &str) -> Response {
-    json_with(StatusCode(status), &json!({ "message": message, "code": code }))
+    super::error(StatusCode(status), message, code)
 }
 
 /// Desktop's `extractAccessToken`: a bearer token, or the `x-beeper-access-token` header.

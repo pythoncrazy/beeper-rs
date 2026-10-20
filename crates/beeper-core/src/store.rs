@@ -1162,12 +1162,12 @@ impl BeeperStore {
         new_draft: Option<ChatDraft>,
         new_merge: Option<Option<ChatMergeInfo>>,
     ) -> Result<Chat, &'static str> {
-        let idx = self.resolve_chat_idx(chat_or_local_id).ok_or("chat_not_found")?;
+        let idx = self.resolve_chat_idx(chat_or_local_id).ok_or("Chat not found")?;
         let has_content = |d: &ChatDraft| d.text.as_deref().is_some_and(|s| !s.is_empty()) || !d.attachments.is_empty();
         let draft = match new_draft {
             _ if clear_draft => None,
             Some(d) if has_content(&d) && self.chats[idx].draft.as_ref().is_some_and(has_content) => {
-                return Err("existing_draft_not_empty")
+                return Err("Cannot overwrite a non-empty draft. Clear the draft first by setting draft to null or draft.text to an empty string.")
             }
             Some(d) => Some(d).filter(has_content),
             None => self.chats[idx].draft.clone(),
@@ -1192,7 +1192,7 @@ impl BeeperStore {
         reply_to_message_id: Option<String>,
         attachment: Option<Attachment>,
     ) -> Result<(String, String, Message), &'static str> {
-        let c_idx = self.send_target(self.resolve_chat_idx(chat_or_local_id).ok_or("chat_not_found")?);
+        let c_idx = self.send_target(self.resolve_chat_idx(chat_or_local_id).ok_or("Chat not found")?);
         let (chat_id, account_id) = (self.chats[c_idx].id.clone(), self.chats[c_idx].account_id.clone());
         let msg_id = self.next_id("msg");
         let mut attachment = attachment;
@@ -1237,8 +1237,8 @@ impl BeeperStore {
     }
 
     fn message_in_chat(&self, chat_or_local_id: &str, message_id: &str) -> Result<(String, usize), &'static str> {
-        let chat_id = self.resolve_canonical_chat_id(chat_or_local_id).ok_or("chat_not_found")?;
-        let &m_idx = self.msg_idx_by_id.get(message_id).ok_or("message_not_found")?;
+        let chat_id = self.resolve_canonical_chat_id(chat_or_local_id).ok_or("Chat not found")?;
+        let &m_idx = self.msg_idx_by_id.get(message_id).ok_or("Message not found")?;
         assert_eq!(self.messages[m_idx].chat_id, chat_id, "message belongs to another chat");
         Ok((chat_id, m_idx))
     }
