@@ -1045,7 +1045,9 @@ fn bubble_text(st: &BeeperStore, c: &Chat, launched: i64, now: i64) -> Option<St
         return None;
     }
     let m = preview_message(st, c)?;
-    let text = preview_body(m).or_else(|| media_tag(m).map(|t| t.1.to_string()))?;
+    let tag =
+        || media_tag(&m.attachments).map(|(_, l, d)| d.map_or_else(|| l.to_string(), |(d, _)| format!("{l} {d}")));
+    let text = preview_body(m).or_else(tag)?;
     let first = preview_sender(c, m).and(m.sender_name.as_deref()).and_then(|n| n.split(' ').next());
     Some(first.map_or_else(|| text.clone(), |f| format!("{f}: {text}")))
 }
@@ -1074,14 +1076,69 @@ fn pin_bubble<'a>(text: &str, mention: bool, (bg, fg): (Color, Color), cell: f32
 }
 
 /// The media badge of a chat list preview: whether it is a video, and its label.
-fn media_tag(m: &Message) -> Option<(bool, &'static str)> {
-    m.attachments.iter().find_map(|a| match a.attachment_type.as_str() {
-        "img" | "video" if a.is_gif == Some(true) => Some((false, tr("GIF"))),
-        "img" => Some((false, tr("Image"))),
-        "video" => Some((true, tr("Video"))),
-        _ => None,
+/// Desktop's chat list badge for a message's attachments: a `TAG_ICONS` index, the label, and the detail that
+/// shows when the message has no text, with whether that detail is italic.
+type MediaTag = (usize, &'static str, Option<(String, bool)>);
+
+fn media_tag(attachments: &[Attachment]) -> Option<MediaTag> {
+    let [a] = attachments else {
+        return (attachments.len() > 1).then(|| (8, tr("Media"), None));
+    };
+    let file = a.file_name.as_deref().unwrap_or_default().to_lowercase();
+    let mime = a.mime_type.as_deref().unwrap_or_default().to_lowercase();
+    let name = a.file_name.clone().map(|f| (f, true));
+    let length = a.duration.map(|d| (voice::clock(d as f32), false));
+    let said = a.transcript.as_ref().map(|t| (format!("“{t}”"), false));
+    let image = a.attachment_type == "img" || mime.starts_with("image/");
+    Some(match a.attachment_type.as_str() {
+        _ if a.is_sticker == Some(true) => (0, tr("Sticker"), None),
+        _ if a.is_gif == Some(true) => (0, tr("GIF"), None),
+        _ if image => (0, tr("Image"), None),
+        "video" => (1, tr("Video"), length),
+        "audio" if a.is_voice_note == Some(true) => (2, tr("Voice Note"), said.or(length)),
+        "audio" => (3, tr("Audio File"), said.or(name)),
+        _ if file.ends_with(".vcf") || mime == "text/x-vcard" => {
+            let contact = contact_name(a.file_name.as_deref().unwrap_or_default());
+            (4, tr("Contact"), Some((contact, true)))
+        }
+        _ if mime == "text/csv" || file.ends_with(".csv") => (5, tr("CSV"), name),
+        _ if ["application/zip", "application/x-zip-compressed", "multipart/x-zip"].contains(&mime.as_str())
+            || file.ends_with(".zip") =>
+        {
+            (6, tr("ZIP"), name)
+        }
+        _ => (7, tr("Document"), name),
     })
 }
+
+/// Desktop's contact name from a vCard file name, without a leading `123.ext.` and the `.vcf`.
+fn contact_name(f: &str) -> String {
+    let rest = f.split_once('.').filter(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    let rest = rest
+        .and_then(|(_, r)| r.split_once('.'))
+        .filter(|(w, _)| !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'));
+    rest.map_or(f, |(_, r)| r).replacen(".vcf", "", 1)
+}
+
+/// Desktop's chat list badge icons: image, videocam, volume_up, audio_file, account_circle, csv, folder_zip,
+/// draft and photo_library, at its `scale(1.2)` in a 12 px box.
+static TAG_ICONS: std::sync::LazyLock<[svg::Handle; 9]> = std::sync::LazyLock::new(|| {
+    [
+        "M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm0-80h560v-560H200v560Zm40-80h480L570-480 450-320l-90-120-120 160Zm-40 80v-560 560Z",
+        "M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h480q33 0 56.5 23.5T720-720v180l160-160v440L720-420v180q0 33-23.5 56.5T640-160H160Zm0-80h480v-480H160v480Zm0 0v-480 480Z",
+        "M560-131v-82q90-26 145-100t55-168q0-94-55-168T560-749v-82q124 28 202 125.5T840-481q0 127-78 224.5T560-131ZM120-360v-240h160l200-200v640L280-360H120Zm440 40v-322q47 22 73.5 66t26.5 96q0 51-26.5 94.5T560-320ZM400-606l-86 86H200v80h114l86 86v-252ZM300-480Z",
+        "M430-200q38 0 64-26t26-64v-150h120v-80H480v155q-11-8-23.5-11.5T430-380q-38 0-64 26t-26 64q0 38 26 64t64 26ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-520v-200H240v640h480v-440H520ZM240-800v200-200 640-640Z",
+        "M234-276q51-39 114-61.5T480-360q69 0 132 22.5T726-276q35-41 54.5-93T800-480q0-133-93.5-226.5T480-800q-133 0-226.5 93.5T160-480q0 59 19.5 111t54.5 93Zm246-164q-59 0-99.5-40.5T340-580q0-59 40.5-99.5T480-720q59 0 99.5 40.5T620-580q0 59-40.5 99.5T480-440Zm0 360q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Zm0-80q53 0 100-15.5t86-44.5q-39-29-86-44.5T480-280q-53 0-100 15.5T294-220q39 29 86 44.5T480-160Zm0-360q26 0 43-17t17-43q0-26-17-43t-43-17q-26 0-43 17t-17 43q0 26 17 43t43 17Zm0-60Zm0 360Z",
+        "M230-360h120v-60H250v-120h100v-60H230q-17 0-28.5 11.5T190-560v160q0 17 11.5 28.5T230-360Zm156 0h120q17 0 28.5-11.5T546-400v-60q0-17-11.5-31.5T506-506h-60v-34h100v-60H426q-17 0-28.5 11.5T386-560v60q0 17 11.5 30.5T426-456h60v36H386v60Zm264 0h60l70-240h-60l-40 138-40-138h-60l70 240ZM160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h640q33 0 56.5 23.5T880-720v480q0 33-23.5 56.5T800-160H160Zm0-80h640v-480H160v480Zm0 0v-480 480Z",
+        "M640-480v-80h80v80h-80Zm0 80h-80v-80h80v80Zm0 80v-80h80v80h-80ZM447-640l-80-80H160v480h400v-80h80v80h160v-400H640v80h-80v-80H447ZM160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640v400q0 33-23.5 56.5T800-160H160Zm0-80v-480 480Z",
+        "M240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-520v-200H240v640h480v-440H520ZM240-800v200-200 640-640Z",
+        "M360-400h400L622-580l-92 120-62-80-108 140Zm-40 160q-33 0-56.5-23.5T240-320v-480q0-33 23.5-56.5T320-880h480q33 0 56.5 23.5T880-800v480q0 33-23.5 56.5T800-240H320Zm0-80h480v-480H320v480ZM160-80q-33 0-56.5-23.5T80-160v-560h80v560h560v80H160Zm160-720v480-480Z",
+    ]
+    .map(|d| {
+        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="80 -880 800 800"><path d="{d}"/></svg>"#);
+        svg::Handle::from_memory(svg.into_bytes())
+    })
+});
 
 fn preview_sender<'a>(chat: &'a Chat, m: &Message) -> Option<&'a User> {
     let shown = (chat.chat_type == "group" || network_bot(chat, &m.sender_id))
@@ -1218,20 +1275,6 @@ static SENT: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(||
 });
 
 svg_static!(SEND_ARROW, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path transform="rotate(90 10 10)" d="m6.52 10.833 4.668 4.667L10 16.666 3.333 10 10 3.333 11.188 4.5 6.52 9.166h10.146v1.667z"/></svg>"##);
-/// Material symbols at Desktop's `scale(1.2)` in a 12 px box.
-static MEDIA_TAGS: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
-    [
-        "M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm0-80h560v-560H200v560Zm40-80h480L570-480 450-320l-90-120-120 160Z",
-        "M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h480q33 0 56.5 23.5T720-720v180l160-160v440L720-420v180q0 33-23.5 56.5T640-160H160Zm0-80h480v-480H160v480Zm0 0v-480 480Z",
-    ]
-    .map(|d| {
-        svg::Handle::from_memory(
-            format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="80 -880 800 800"><path d="{d}"/></svg>"#)
-                .into_bytes(),
-        )
-    })
-});
-
 svg_static!(EYES, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 46 46" fill="#fff"><path d="M22.1197 25.5092C23.0085 30.1093 20.937 33.1 16.2324 34.009C11.5277 34.918 8.49126 32.9143 7.60244 28.3142L6.68822 23.5827C5.7994 18.9826 7.87085 15.9919 12.5755 15.0829C17.2802 14.1738 20.3166 16.1776 21.2054 20.7777L22.1197 25.5092ZM14.8746 30.5902C15.1743 32.1411 16.6446 33.1113 18.2307 32.8049C19.8168 32.4984 20.8199 31.0503 20.5202 29.4994C20.2205 27.9485 18.7503 26.9783 17.1641 27.2847C15.578 27.5912 14.575 29.0393 14.8746 30.5902Z"/><path d="M39.1455 22.1235C40.0344 26.7236 37.9629 29.7142 33.2583 30.6233C28.5536 31.5323 25.5171 29.5286 24.6283 24.9284L23.7141 20.1969C22.8253 15.5968 24.8967 12.6061 29.6014 11.6971C34.306 10.7881 37.3425 12.7918 38.2313 17.3919L39.1455 22.1235ZM31.9005 27.2045C32.2002 28.7554 33.6704 29.7256 35.2566 29.4191C36.8427 29.1126 37.8457 27.6645 37.5461 26.1136C37.2464 24.5627 35.7761 23.5925 34.19 23.899C32.6039 24.2055 31.6008 25.6536 31.9005 27.2045Z"/></svg>"##);
 
 static REPLY_CURVE: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
@@ -1803,13 +1846,6 @@ fn file_icon(a: &Attachment) -> &'static svg::Handle {
         _ => 0,
     };
     &FILE_ICONS[k]
-}
-
-/// Desktop's media duration, like "00:05" or "01:02:03".
-fn clip_time(secs: f64) -> String {
-    let s = secs as u64;
-    let hours = (s >= 3600).then(|| format!("{:02}:", s / 3600));
-    format!("{}{:02}:{:02}", hours.unwrap_or_default(), s % 3600 / 60, s % 60)
 }
 
 /// The chats the forward dialog offers: recent chats, or all chats that match the query.
@@ -5965,8 +6001,11 @@ impl BeeperGuiApp {
                 .align_y(Center);
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
             let receipt = mine && reaction.is_none();
-            let media_tag = m.and_then(media_tag);
-            let body = m.and_then(preview_body);
+            let media_tag = m.and_then(|m| media_tag(&m.attachments));
+            let (body, italic) = match m.and_then(preview_body) {
+                Some(t) => (Some(t), false),
+                None => media_tag.as_ref().and_then(|t| t.2.clone()).map_or((None, false), |(d, i)| (Some(d), i)),
+            };
             let show_sender = !mine
                 && reaction.is_none()
                 && (media_tag.is_some() || body.is_some())
@@ -5992,17 +6031,27 @@ impl BeeperGuiApp {
             let at = if c.unread_mentions > 0 { 12.0 } else { 0.0 };
             let prefix = first.filter(|_| media_tag.is_some()).map(|s| format!("{s}:"));
             let prefix_w = prefix.as_deref().map_or(0.0, |s| crate::style::text_width(s, 13.0, Weight::Normal) + 4.0);
-            let reserve = 16.0
-                + if counts { 8.0 + 6.0 * digits + at } else { at }.max(18.0)
-                + if receipt { 16.0 } else { 0.0 }
+            let base = 16.0 + if counts { 8.0 + 6.0 * digits + at } else { at }.max(18.0);
+            let indent = if receipt { 16.0 } else { 0.0 }
                 + if sender.is_some() { 16.0 } else { 0.0 }
-                + match media_tag {
-                    Some((_, label)) if expired => crate::style::text_width(label, 13.0, Weight::Normal) + 4.0,
-                    Some((_, label)) => crate::style::text_width(label, 10.0, Weight::Medium) + 24.0,
+                + match &media_tag {
+                    Some((_, label, _)) if expired => crate::style::text_width(label, 13.0, Weight::Normal) + 4.0,
+                    Some((_, label, _)) => crate::style::text_width(label, 10.0, Weight::Medium) + 24.0,
                     None => 0.0,
                 }
                 + if expired { crate::style::text_width(tr("Reminder"), 11.0, Weight::Semibold) + 10.0 } else { 0.0 }
                 + prefix_w;
+            let reserve = base + indent;
+            let flowed = lines > 1 && indent > 0.0;
+            let (body, second) = match body {
+                Some(b) if flowed => {
+                    let (first, rest) = crate::style::flow(&b, indent, text_w - base, lines, 13.0, Weight::Normal);
+                    (Some(first), Some(rest).filter(|r| !r.is_empty()))
+                }
+                b => (b, None),
+            };
+            let style = if italic { iced::font::Style::Italic } else { iced::font::Style::Normal };
+            let body_font = iced::Font { style, ..fw(Weight::Normal) };
             let read = m.is_some_and(|m| m.seen.keys().any(|u| !st.is_me(u) && u != &m.sender_id));
             let fg = p.fg.scale_alpha(0.63);
             let face =
@@ -6016,11 +6065,11 @@ impl BeeperGuiApp {
                 .push(receipt.then(|| tinted(&SENT[usize::from(read)], 12.0, fg)))
                 .push(face)
                 .push(prefix.map(|s| txt(s, 13.0).color(fg)))
-                .push(media_tag.map(|(is_video, label)| -> El<'_> {
+                .push(media_tag.map(|(icon, label, _)| -> El<'_> {
                     if expired {
                         return txt(label, 13.0).color(fg).into();
                     }
-                    let glyph = tinted(&MEDIA_TAGS[usize::from(is_video)], 12.0, fg);
+                    let glyph = tinted(&TAG_ICONS[icon], 12.0, fg);
                     let label = med(label, 10.0).line_height(Pixels(12.0)).color(fg);
                     container(row![glyph, container(label).padding([0, 2])].align_y(Center))
                         .padding([1, 2])
@@ -6028,9 +6077,10 @@ impl BeeperGuiApp {
                         .into()
                 }))
                 .push(body.map(|b| {
-                    clamp(&b, text_w - reserve, lines, 13.0, Weight::Normal)
+                    clamp(&b, text_w - reserve, if flowed { 1 } else { lines }, 13.0, Weight::Normal)
                         .width(text_w - reserve)
-                        .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
+                        .line_height(Pixels(16.0))
+                        .font(body_font)
                         .color(fg)
                 }))
                 .push(draft.filter(|_| previews).map(|t| {
@@ -6047,6 +6097,8 @@ impl BeeperGuiApp {
                 .push(count)
                 .spacing(4)
                 .align_y(if compact { Center } else { iced::Alignment::Start });
+            let second = second.map(|r| txt(r.to_string(), 13.0).line_height(Pixels(16.0)).font(body_font).color(fg));
+            let preview = column![preview].push(second);
             let avatar = self.chat_avatar(c, av, 1.25);
             let avatar = match network_icons {
                 true => {
@@ -7704,7 +7756,7 @@ impl BeeperGuiApp {
                         let badge = match (a.is_gif == Some(true), a.attachment_type == "video") {
                             (true, _) => Some(row![semi(tr("GIF"), 12.0)]),
                             (false, true) => {
-                                let time = a.duration.map(|d| semi(clip_time(d), 12.0));
+                                let time = a.duration.map(|d| semi(voice::clock(d as f32), 12.0));
                                 Some(row![tinted(video_icon, 12.0, Color::WHITE)].push(time).spacing(2).align_y(Center))
                             }
                             _ => None,
@@ -9033,8 +9085,26 @@ mod tests {
     }
 
     #[test]
+    fn chat_list_tags_match_desktop() {
+        let a = |t: &str, f: &str, mime: &str| Attachment {
+            attachment_type: t.into(),
+            file_name: Some(f.into()),
+            mime_type: Some(mime.into()),
+            duration: Some(65.0),
+            ..Attachment::default()
+        };
+        let tag = |v: &[Attachment]| media_tag(v).map(|(i, l, d)| (i, l, d.map(|d| d.0)));
+        let voice = Attachment { is_voice_note: Some(true), ..a("audio", "v.ogg", "audio/ogg") };
+        assert_eq!(tag(&[voice]), Some((2, "Voice Note", Some("01:05".into()))));
+        assert_eq!(tag(&[a("video", "c.mp4", "video/mp4")]), Some((1, "Video", Some("01:05".into()))));
+        assert_eq!(tag(&[a("unknown", "12.abc.Ann.vcf", "")]), Some((4, "Contact", Some("Ann".into()))));
+        assert_eq!(tag(&[a("unknown", "d.zip", "")]).map(|t| t.1), Some("ZIP"));
+        assert_eq!(tag(&[a("unknown", "d.pdf", "application/pdf")]).map(|t| t.1), Some("Document"));
+        assert_eq!(tag(&[a("img", "", ""), a("img", "", "")]), Some((8, "Media", None)));
+    }
+
+    #[test]
     fn media_window_formats_like_desktop() {
-        assert_eq!([5.0, 65.4, 3723.0].map(clip_time), ["00:05", "01:05", "01:02:03"]);
         assert_eq!(
             [file_kind(Some("application/pdf")), file_kind(Some("audio/ogg")), file_kind(None)],
             ["PDF", "Audio", "File"]

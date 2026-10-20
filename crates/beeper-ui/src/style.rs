@@ -317,6 +317,17 @@ pub fn clamped(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> Rc<str>
     })
 }
 
+/// CSS inline flow of `s` after `indent` px of inline boxes in a `max` wide box of `lines` lines: the words that
+/// fit on the first line, and the rest clamped to the other lines.
+pub fn flow(s: &str, indent: f32, max: f32, lines: usize, size: f32, w: Weight) -> (String, Rc<str>) {
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (_, gs) = glyphs(&s, size, w);
+    let width = |i: usize| gs.get(gs.partition_point(|g| g.0 <= i).wrapping_sub(1)).map_or(0.0, |g| g.1);
+    let breaks = s.match_indices(' ').map(|(i, _)| i).chain([s.len()]);
+    let fit = breaks.take_while(|&i| width(i) <= max - indent).last().unwrap_or(0);
+    (s[..fit].to_string(), clamped(s[fit..].trim_start(), max, lines - 1, size, w))
+}
+
 pub fn t<'a>(s: impl text::IntoFragment<'a>, size: f32, w: Weight) -> text::Text<'a> {
     text(s).size(size).font(fw(w)).line_height(text::LineHeight::Absolute((size * 1.24).round().into()))
 }
