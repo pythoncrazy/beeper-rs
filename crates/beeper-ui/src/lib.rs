@@ -364,6 +364,8 @@ pub enum UiMessage {
     Downloaded(Result<String, String>),
     AskDeleteMessage(String),
     ArchiveStale,
+    /// Archives the read chats, after Desktop's confirmation.
+    ArchiveAllRead,
     NicknameChanged(String),
     SaveNickname,
     ToggleFilterMenu,
@@ -716,6 +718,7 @@ const ASK_LOGOUT: u8 = 0;
 const ASK_DISMISS_REMINDERS: u8 = 1;
 const ASK_DELETE_CHAT: u8 = 2;
 const ASK_DELETE_MESSAGE: u8 = 3;
+const ASK_ARCHIVE_READ: u8 = 4;
 /// Desktop's default "Quick reaction emoji".
 /// Wide enough for "Copy Entire Message with Timestamp" on one line.
 const MESSAGE_MENU_W: f32 = 270.0;
@@ -2881,6 +2884,7 @@ impl BeeperGuiApp {
         let flag = |f: ChatFlag| chat.clone().map(|c| UiMessage::ToggleFlag(c, f));
         let selected = self.pane.selected_msg.clone().filter(|_| chat.is_some());
         let msg = match name {
+            "Chat: Archive All Read" => Some(UiMessage::Ask(Some(ASK_ARCHIVE_READ))),
             "Chat: Start New" => Some(UiMessage::NewChat),
             "Chat: Toggle Archive" => flag(ChatFlag::Archived),
             "Chat: Toggle Mark As Read" => chat.map(UiMessage::ToggleRead),
@@ -2889,6 +2893,22 @@ impl BeeperGuiApp {
             "Select Next Chat" | "Select Previous Chat" => {
                 self.step_chat(if name == "Select Next Chat" { 1 } else { -1 });
                 None
+            }
+            "Scroll to the bottom of a chat" => {
+                let text = self.pane.composer.text();
+                let end = format::offset(&text, self.pane.composer.cursor().position) == text.len();
+                return match chat.is_some() && end {
+                    true => operation::scroll_to("timeline", operation::AbsoluteOffset { x: 0.0, y: 0.0 }),
+                    false => Task::none(),
+                };
+            }
+            "Select Next Unread Chat" => {
+                let st = self.store.read();
+                let next = self
+                    .visible_chats(&st)
+                    .into_iter()
+                    .find(|c| c.flags & CHAT_UNREAD != 0 && Some(&c.id) != chat.as_ref());
+                next.map(|c| UiMessage::SelectChat(c.id.clone()))
             }
             "Switch First 9 Chats Modifier" => {
                 let id = self.visible_chats(&self.store.read()).get(digit).map(|c| c.id.clone());
@@ -2900,6 +2920,14 @@ impl BeeperGuiApp {
                 let open = self.update(UiMessage::ToggleCommandPalette);
                 self.cmd_bar_commands_mode = true;
                 return open;
+            }
+            "Cycle Filters" => {
+                self.filters = match self.filters {
+                    f if f == 1 << 4 => 0,
+                    f if f.count_ones() == 1 && f < 1 << 4 => f << 1,
+                    _ => 1,
+                };
+                None
             }
             "Filter: All" => {
                 self.filters = 0;
@@ -2935,6 +2963,10 @@ impl BeeperGuiApp {
                     .get(digit - RAIL_VIEWS.len())
                     .map(|a| UiMessage::SelectAccount(Some(a.clone()))),
             },
+            "Toggle Space Bar" => {
+                let on = self.store.read().settings.on("showSidebar");
+                Some(UiMessage::SetPref("showSidebar", u8::from(!on)))
+            }
             "Zoom In" => Some(UiMessage::Zoom(1)),
             "Zoom Out" => Some(UiMessage::Zoom(-1)),
             "Download Attachments" => selected
@@ -3303,10 +3335,15 @@ impl BeeperGuiApp {
                 drop(st);
                 self.refresh_theme_and_tray();
             }
-            UiMessage::ArchiveStale => {
+            m @ (UiMessage::ArchiveStale | UiMessage::ArchiveAllRead) => {
+                self.confirm = None;
                 {
                     let mut st = self.store.write();
-                    for idx in st.stale_inbox_chats() {
+                    let chats = match matches!(m, UiMessage::ArchiveAllRead) {
+                        true => st.inbox_chats_before(true, now_unix_millis()),
+                        false => st.stale_inbox_chats(),
+                    };
+                    for idx in chats {
                         assert!(st.set_chat_flag(idx, ChatFlag::Archived, Some(true)));
                     }
                 }
@@ -8440,13 +8477,13 @@ impl BeeperGuiApp {
                 let title = trf("Logout of %s?", &[&name.as_deref().unwrap_or(tr("this device"))]);
                 (
                     title,
-                    tr("This will disconnect all chat accounts on this device."),
+                    tr("This will disconnect all chat accounts on this device.").into(),
                     vec![(tr("Logout"), UiMessage::Logout)],
                 )
             }
             ASK_DISMISS_REMINDERS => (
                 tr("Dismiss All Reminders?").into(),
-                tr("This will remove Reminders from all of your chats."),
+                tr("This will remove Reminders from all of your chats.").into(),
                 vec![(tr("Yes"), UiMessage::DismissAllReminders)],
             ),
             ASK_DELETE_CHAT => {
@@ -8467,18 +8504,34 @@ impl BeeperGuiApp {
                         vec![delete(tr("Delete for Me"), false), delete(tr("Delete for Everyone"), true)],
                     ),
                 };
-                (format!("Delete {}", c.title), body, actions)
+                (format!("Delete {}", c.title), body.into(), actions)
             }
             ASK_DELETE_MESSAGE => {
                 let mid = self.delete_target.clone().expect("a message to delete");
                 let st = self.store.read();
                 let cid = st.messages[st.msg_idx_by_id[&mid]].chat_id.clone();
                 let delete = vec![(tr("Delete"), UiMessage::DeleteMessage(cid, mid))];
-                (tr("Delete message").into(), tr("Are you sure you want to delete this message?"), delete)
+                (tr("Delete message").into(), tr("Are you sure you want to delete this message?").into(), delete)
+            }
+            ASK_ARCHIVE_READ => {
+                let st = self.store.read();
+                let n = self
+                    .visible_chats(&st)
+                    .iter()
+                    .filter(|c| c.flags & (CHAT_UNREAD | CHAT_ARCHIVED | CHAT_PINNED) == 0)
+                    .count();
+                let body = trn(
+                    "This will archive %d chat and any older chats from this point in time",
+                    "This will archive %d chats and any older chats from this point in time",
+                    n,
+                    &[&n],
+                );
+                let archive = vec![(trx("Archive", "archive confirmation button"), UiMessage::ArchiveAllRead)];
+                (tr("Archive all read chats").into(), body, archive)
             }
             _ => unreachable!("dialog {dialog}"),
         };
-        self.dialog(title, body.into(), actions, UiMessage::Ask(None))
+        self.dialog(title, body, actions, UiMessage::Ask(None))
     }
 
     /// A confirmation dialog over a window, with its actions after Cancel.

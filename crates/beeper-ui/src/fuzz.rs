@@ -145,9 +145,11 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
     let pref = rng.pick(&prefs().collect::<Vec<_>>()).1;
     let hotkeys: Vec<&str> = prefs::HOTKEYS.iter().map(|h| h.0).collect();
     let key = match rng.below(3) {
-        0 => Key::Character(
-            rng.pick(&["a", "e", "f", "k", "p", "u", "m", "i", "y", ",", "=", "-", "0", "[", "]"]).to_string().into(),
-        ),
+        0 => {
+            let combos = prefs::HOTKEYS.iter().flat_map(|h| h.2.split(", "));
+            let keys = combos.filter_map(|c| c.rsplit('+').next().filter(|k| k.chars().count() == 1));
+            Key::Character(rng.pick(&keys.chain(["a", "1", "c", "v"]).collect::<Vec<_>>()).to_string().into())
+        }
         _ => Key::Named(*rng.pick(&[
             Named::Enter,
             Named::Escape,
@@ -165,6 +167,8 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         Modifiers::empty(),
         Modifiers::CTRL,
         Modifiers::CTRL | Modifiers::SHIFT,
+        Modifiers::CTRL | Modifiers::ALT,
+        Modifiers::CTRL | Modifiers::SHIFT | Modifiers::ALT,
         Modifiers::ALT,
         Modifiers::SHIFT,
     ]);

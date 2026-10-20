@@ -1402,7 +1402,12 @@ impl BeeperStore {
     pub fn stale_inbox_chats(&self) -> Vec<usize> {
         let only_read = self.settings.pref("archiveScope") == 1;
         let days = crate::prefs::ARCHIVE_AGE_DAYS[self.settings.pref("archiveAge") as usize];
-        let cutoff = (now_unix_secs() - days * 86_400) * 1000;
+        self.inbox_chats_before(only_read, (now_unix_secs() - days * 86_400) * 1000)
+    }
+
+    /// Desktop's archive-all state: the unarchived and unpinned chats, or only the read ones, with no activity since
+    /// `cutoff` in Unix milliseconds.
+    pub fn inbox_chats_before(&self, only_read: bool, cutoff: i64) -> Vec<usize> {
         let ms = |c: &Chat| c.last_activity.as_deref().map(|t| millis_from_rfc3339(t).expect("RFC 3339 activity"));
         (0..self.chats.len())
             .filter(|&i| {
