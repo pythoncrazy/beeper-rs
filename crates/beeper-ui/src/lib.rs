@@ -418,6 +418,9 @@ pub enum UiMessage {
     ToggleHotkey(&'static str),
     RevertHotkeys,
     HotkeyQuery(String),
+    /// Opens Desktop's Keyboard Shortcuts list with the search text, or closes it.
+    HotkeysModal(Option<String>),
+    HotkeysScrolled(bool),
     Zoom(i8),
     ToggleSetting(fn(&mut BeeperSettings)),
     /// The Beeper account email and the chat accounts from `whoami`.
@@ -1258,6 +1261,29 @@ fn pill_style(p: &Palette) -> impl Fn(&Theme, button::Status) -> button::Style +
     bordered_btn([p.button; 3], [p.strong; 3], p.button_border, 1.0, 6.0)
 }
 
+/// Desktop's `.styled-inputs input`.
+fn outline_input(p: &Palette) -> impl Fn(&Theme, text_input::Status) -> text_input::Style + use<> {
+    let (edge, text, muted, accent) = (p.neutral_border, p.text, p.muted, p.accent);
+    move |_, _| text_input::Style {
+        background: CLEAR.into(),
+        border: iced::Border { color: edge, width: 1.0, radius: 6.0.into() },
+        icon: muted,
+        placeholder: muted,
+        value: text,
+        selection: accent.scale_alpha(0.45),
+    }
+}
+
+/// The groups of `items` in the order of their first item, as Desktop's `groupBy` gives them.
+fn first_groups<T>(items: &[T], group: impl Fn(&T) -> &'static str) -> Vec<&'static str> {
+    items.iter().map(group).fold(Vec::new(), |mut v, g| {
+        if !v.contains(&g) {
+            v.push(g);
+        }
+        v
+    })
+}
+
 fn badge<'a>(p: &Palette, b: prefs::Badge) -> El<'a> {
     match b {
         prefs::Badge::Plus => {
@@ -2065,6 +2091,9 @@ pub struct BeeperGuiApp {
     pub active_tab: InboxTab,
     pub selected_account_filter: Option<String>,
     pub hotkey_query: String,
+    /// The search text of the open Keyboard Shortcuts list, and whether the list scrolled down.
+    pub hotkeys_modal: Option<String>,
+    hotkeys_scrolled: bool,
     pub show_filter_menu: bool,
     /// The chat whose context menu is open, and where it opens in the window.
     pub chat_menu: Option<(String, Point)>,
@@ -2202,6 +2231,8 @@ impl BeeperGuiApp {
             active_tab: InboxTab::AllChats,
             selected_account_filter: None,
             hotkey_query: String::new(),
+            hotkeys_modal: None,
+            hotkeys_scrolled: false,
             show_filter_menu: false,
             chat_menu: None,
             chat_sub: None,
@@ -2996,6 +3027,7 @@ impl BeeperGuiApp {
                 };
                 None
             }
+            "Keyboard Shortcuts" => Some(UiMessage::HotkeysModal(self.hotkeys_modal.is_none().then(String::new))),
             "Filter: All" => {
                 self.filters = 0;
                 None
@@ -4329,7 +4361,9 @@ impl BeeperGuiApp {
                     || self.pane.show_gif_picker
                     || self.pane.emoji.is_some()
                     || self.quick_look_target.is_some()
+                    || self.hotkeys_modal.is_some()
                 {
+                    self.hotkeys_modal = None;
                     self.show_command_palette = false;
                     self.forward = None;
                     self.show_filter_menu = false;
@@ -4481,6 +4515,15 @@ impl BeeperGuiApp {
             }),
             UiMessage::RevertHotkeys => self.patch_settings(|s| s.keybindings.clear()),
             UiMessage::HotkeyQuery(q) => self.hotkey_query = q,
+            UiMessage::HotkeysModal(q) => {
+                self.hotkeys_scrolled &= q.is_some();
+                let open = self.hotkeys_modal.is_none() && q.is_some();
+                self.hotkeys_modal = q;
+                if open {
+                    return operation::focus("hotkeys-search");
+                }
+            }
+            UiMessage::HotkeysScrolled(down) => self.hotkeys_scrolled = down,
             UiMessage::Zoom(step) => self.patch_settings(|s| {
                 let at = ZOOM_STEPS.iter().position(|z| *z >= s.zoom_percent).expect("zoom is in the steps");
                 s.zoom_percent = match step {
@@ -5083,7 +5126,9 @@ impl BeeperGuiApp {
             !c.in_media && Some(&st.messages[st.msg_idx_by_id[&c.mid]].chat_id) == self.pane().selected_chat_id.as_ref()
         };
         let carousel = self.carousel.as_ref().filter(shows).map(|c| self.view_carousel(c));
-        stack![base].push(toast).push(menu).push(scrim).push(select).push(confirm).push(carousel).into()
+        let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q));
+        let layers = stack![base].push(toast).push(menu).push(scrim).push(select).push(confirm);
+        layers.push(carousel).push(hotkeys).into()
     }
 
     /// The selected chats that still exist: the sync task can drop one before StoreChanged reaches update.
@@ -8875,27 +8920,19 @@ impl BeeperGuiApp {
 
     fn hotkeys_page(&self, s: &BeeperSettings) -> El<'_> {
         let p = &self.pal;
-        let (edge, text, muted, accent) = (p.neutral_border, p.text, p.muted, p.accent);
+        let edge = p.neutral_border;
         let search = text_input(tr("Search hotkeys..."), &self.hotkey_query)
             .on_input(UiMessage::HotkeyQuery)
             .size(13)
             .line_height(Pixels(15.0))
             .padding([4, 7])
             .width(219)
-            .style(move |_, _| text_input::Style {
-                background: CLEAR.into(),
-                border: iced::Border { color: edge, width: 1.0, radius: 6.0.into() },
-                icon: muted,
-                placeholder: muted,
-                value: text,
-                selection: accent.scale_alpha(0.45),
-            });
+            .style(outline_input(p));
         let revert = button(txt(tr("Revert all"), 13.0).line_height(Pixels(15.0)).width(Fill).align_x(Center))
             .width(100)
             .padding([4, 6])
             .style(pill_style(p))
             .on_press(UiMessage::RevertHotkeys);
-        let q = self.hotkey_query.to_lowercase();
         let hotkey = |name: &'static str| -> El<'_> {
             let keys = s.hotkey_keys(name);
             let recorder = (keys != "disabled").then(|| {
@@ -8913,15 +8950,8 @@ impl BeeperGuiApp {
                 .padding([8, 0])
                 .into()
         };
-        let mut shown: Vec<_> = prefs::HOTKEYS.iter().filter(|h| tr(h.0).to_lowercase().contains(&q)).collect();
-        shown.sort_by_cached_key(|h| tr(h.0).to_lowercase());
-        let order = shown.iter().fold(Vec::new(), |mut v, h| {
-            if !v.contains(&h.1) {
-                v.push(h.1);
-            }
-            v
-        });
-        let groups = order.into_iter().map(|group| {
+        let shown = prefs::match_sort(prefs::HOTKEYS, &self.hotkey_query, |h| tr(h.0).into());
+        let groups = first_groups(&shown, |h| h.1).into_iter().map(|group| {
             let rows = shown.iter().filter(|h| h.1 == group).map(|h| hotkey(h.0));
             let head = txt(tr(group), 13.0).line_height(Pixels(16.0)).color(p.muted);
             column![container(head).padding(Padding::ZERO.top(24.0).bottom(12.0))].extend(rows).into()
@@ -8930,6 +8960,83 @@ impl BeeperGuiApp {
         let line = container(Space::new()).width(Fill).height(1).style(fill_box(edge, 0.0));
         let card = column![head, line, Space::new().height(6)].extend(groups);
         container(card).width(Fill).padding(14).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0)).into()
+    }
+
+    /// Desktop's Keyboard Shortcuts list: the first keys of each hotkey, at the right of the window.
+    fn view_hotkeys_modal(&self, query: &str) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read();
+        let modifier_only = |k: &str| k.rsplit('+').next().is_some_and(|m| ["ctrl", "shift", "alt"].contains(&m));
+        let all =
+            prefs::HOTKEYS.iter().filter(|h| !modifier_only(h.2)).map(|h| (h.0, h.1, st.settings.hotkey_keys(h.0)));
+        let all = all.chain(prefs::FIXED_HOTKEYS.iter().copied()).map(|(n, g, k)| (n, g, k.to_string()));
+        let shown = prefs::match_sort(all, query, |h| tr(h.0).into());
+        drop(st);
+        let row = |(name, _, keys): &(&'static str, &str, String)| -> El<'_> {
+            let label = prefs::hotkey_label(keys.split(", ").next().expect("a combination"));
+            let caps: Vec<String> = match label.is_empty() {
+                true => vec![tr("Unset").into()],
+                false => label.split(' ').map(String::from).collect(),
+            };
+            let width = |k: &str| (text_width(k, 13.0, Weight::Normal) + 8.0).max(22.0);
+            let caps_w: f32 = caps.iter().map(|k| width(k) + 4.0).sum();
+            let caps = caps.into_iter().map(|k| {
+                let w = width(&k);
+                container(txt(k, 13.0).color(p.text))
+                    .center_x(w)
+                    .center_y(22)
+                    .style(fill_box(p.fg.scale_alpha(0.15), 4.0))
+            });
+            let caps = Row::with_children(caps.map(El::from)).spacing(4).padding(Padding::ZERO.right(4.0));
+            let name = ell(tr(name), 325.0 - 22.4 - 12.0 - caps_w, 13.0, Weight::Normal).color(p.text);
+            let line = row![name, Space::new().width(Fill), caps].spacing(12).align_y(Center);
+            let hover = p.fg.scale_alpha(0.05);
+            button(line)
+                .width(325)
+                .padding([4.8, 11.2])
+                .style(btn_style([CLEAR, hover, hover], [p.text; 3], 8.0))
+                .on_press(UiMessage::Noop)
+                .into()
+        };
+        let groups = first_groups(&shown, |h| h.1).into_iter().map(|group| {
+            let head = container(semi(tr(group), 13.0).color(p.text)).padding([4.8, 11.2]).width(325);
+            let rows = shown.iter().filter(|h| h.1 == group).map(row);
+            column![head].extend(rows).padding(Padding::ZERO.top(12.8)).into()
+        });
+        let empty = shown.is_empty().then(|| {
+            container(txt(tr("No results"), 16.0).color(p.fg.scale_alpha(0.35)))
+                .center_x(Fill)
+                .height(Fill)
+                .center_y(Fill)
+        });
+        let list = Column::with_children(groups).push(empty).width(Fill).align_x(Center);
+        let height = 0.8 * self.pane().size.height / self.zoom;
+        let list = scrollable(list)
+            .direction(bar())
+            .style(scroll_style(p.scroll))
+            .height(height)
+            .on_scroll(|v| UiMessage::HotkeysScrolled(v.absolute_offset().y > 20.0));
+        let search = text_input(tr("Search..."), query)
+            .id("hotkeys-search")
+            .on_input(|q| UiMessage::HotkeysModal(Some(q)))
+            .size(13)
+            .line_height(Pixels(18.2))
+            .padding([3, 6])
+            .style(outline_input(p));
+        let rule = p.fg.scale_alpha(if self.hotkeys_scrolled { 0.1 } else { 0.0 });
+        let card = column![
+            container(bold(tr("Keyboard Shortcuts"), 24.0).color(p.text)).padding([8.0, 24.0]),
+            container(search).padding(Padding { top: 4.0, right: 22.4, bottom: 10.0, left: 22.4 }),
+            container(Space::new()).width(Fill).height(1).style(fill_box(rule, 0.0)),
+            list,
+        ]
+        .width(350)
+        .padding([13, 0]);
+        let card = mouse_area(container(card).style(fill_box(p.elevated, 0.0))).on_press(UiMessage::Noop);
+        let shade = container(card).align_right(Fill).center_y(Fill).padding(Padding::ZERO.right(13.0));
+        mouse_area(shade.style(fill_box(Color::from_rgba(0.0, 0.0, 0.0, 0.4), 0.0)))
+            .on_press(UiMessage::HotkeysModal(None))
+            .into()
     }
 
     /// Desktop's `AccountPrefsSubView`: the account, and its notification settings.

@@ -1011,6 +1011,15 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         let _ = gui.update(key(Named::Tab, Modifiers::CTRL));
         assert_eq!(selected(&gui), ids[2], "releasing Ctrl moves the chat to the front");
         let _ = gui.update(UiMessage::Modifiers(Modifiers::empty()));
+        let _ = gui.update(UiMessage::KeyPressed(Key::Character("/".into()), Modifiers::CTRL));
+        assert!(simulator(gui.view_main()).find("Unselect Chat / Select First Chat").is_ok(), "Ctrl / lists the keys");
+        let _ = gui.update(UiMessage::HotkeysModal(Some("zoom".into())));
+        assert!(simulator(gui.view_main()).find("Reset Zoom").is_ok());
+        assert!(simulator(gui.view_main()).find("Command Bar").is_err(), "the search filters the list");
+        let _ = gui.update(UiMessage::HotkeysModal(Some("qqq".into())));
+        assert!(simulator(gui.view_main()).find("No results").is_ok());
+        let _ = gui.update(UiMessage::CloseModals);
+        assert!(gui.hotkeys_modal.is_none(), "Escape closes the list");
         let _ = gui.update(UiMessage::KeyPressed(Key::Character("s".into()), Modifiers::CTRL | Modifiers::ALT));
         assert!(gui.sidebar_hidden, "Ctrl Alt S hides the sidebar");
         let hidden = std::fs::read_to_string(store.read().data_dir.join("sidebar-hidden")).unwrap();

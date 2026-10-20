@@ -282,6 +282,7 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Filter: Groups", "App", "disabled"),
     ("Filter: Unanswered", "App", "disabled"),
     ("Filter: Unread", "App", "ctrl+shift+y"),
+    ("Keyboard Shortcuts", "App", "ctrl+/"),
     ("Minimize To Tray", "App", "ctrl+alt+q"),
     ("Quit App", "App", "ctrl+q"),
     ("Reload App", "App", "ctrl+shift+alt+r"),
@@ -314,6 +315,51 @@ pub fn hotkey_default(name: &str) -> &'static str {
 }
 
 /// Desktop's `di`: the keys as the settings and the menus show them.
+/// The hotkeys that Desktop's Keyboard Shortcuts list shows, but that you cannot reassign.
+pub const FIXED_HOTKEYS: &[(&str, &str, &str)] = &[
+    ("Message: React", "Messages", "right"),
+    ("Select Next Message", "Messages", "down"),
+    ("Select Previous Message", "Messages", "up"),
+    ("Unselect Chat / Select First Chat", "Chats", "escape"),
+];
+
+/// match-sorter's rank of `text` for `query`, which Desktop uses to filter and sort lists: 7 for the same text,
+/// down to 1 and a fraction for the letters in order. None does not match.
+pub fn match_rank(text: &str, query: &str) -> Option<f32> {
+    if query.chars().count() > text.chars().count() {
+        return None;
+    }
+    let (t, q) = (text.to_lowercase(), query.to_lowercase());
+    let acronym = || t.split(' ').flat_map(|w| w.split('-')).filter_map(|w| w.chars().next()).collect::<String>();
+    Some(match () {
+        _ if text == query => 7.0,
+        _ if t == q => 6.0,
+        _ if t.starts_with(&q) => 5.0,
+        _ if t.contains(&format!(" {q}")) => 4.0,
+        _ if t.contains(&q) => 3.0,
+        _ if q.chars().count() == 1 => return None,
+        _ if acronym().contains(&q) => 2.0,
+        _ => {
+            let t: Vec<char> = t.chars().collect();
+            let (mut at, mut first) = (0, None);
+            for c in q.chars() {
+                let i = at + t[at..].iter().position(|&x| x == c)?;
+                first.get_or_insert(i);
+                at = i + 1;
+            }
+            1.0 + 1.0 / (at - 1 - first.expect("a matched letter")) as f32
+        }
+    })
+}
+
+/// The items that match `query`, the best match first and then in alphabetical order, as match-sorter does.
+pub fn match_sort<T>(items: impl IntoIterator<Item = T>, query: &str, key: impl Fn(&T) -> String) -> Vec<T> {
+    let mut ranked: Vec<(f32, String, T)> =
+        items.into_iter().filter_map(|i| Some((match_rank(&key(&i), query)?, key(&i).to_lowercase(), i))).collect();
+    ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    ranked.into_iter().map(|r| r.2).collect()
+}
+
 pub fn hotkey_label(keys: &str) -> String {
     [
         ("+", " "),
@@ -526,5 +572,19 @@ mod tests {
                 assert!(combos().all(|c| !k.split(", ").any(|x| x == c)), "{name} and {other} share {keys}");
             }
         }
+    }
+
+    #[test]
+    fn match_sort_ranks_like_match_sorter() {
+        let names = ["Zoom In", "Search: Room", "Search", "Reset Zoom", "Send Feedback", "Select Next Chat"];
+        assert_eq!(match_sort(names, "zoom", |n| n.to_string()), ["Zoom In", "Reset Zoom"]);
+        let sea = ["Search", "Search: Room", "Send Feedback", "Select Next Chat"];
+        assert_eq!(match_sort(names, "sea", |n| n.to_string()), sea, "the closer letters first");
+        assert_eq!(match_sort(names, "snc", |n| n.to_string()), ["Select Next Chat", "Send Feedback"], "an acronym");
+        assert_eq!(match_sort(names, "sfk", |n| n.to_string()), ["Send Feedback"], "letters in order");
+        assert_eq!(match_sort(names, "", |n| n.to_string())[..2], ["Reset Zoom", "Search"]);
+        assert_eq!(match_rank("Search", "Search"), Some(7.0));
+        assert_eq!(match_rank("abcd", "ad"), Some(1.0 + 1.0 / 3.0));
+        assert_eq!(match_rank("ab", "x"), None);
     }
 }
