@@ -973,6 +973,12 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = gui.update(ctrl_k());
     assert!(gui.show_command_palette, "Revert all enables the hotkey again");
     let _ = gui.update(UiMessage::ToggleCommandPalette);
+    let _ = gui.update(UiMessage::SelectSettingsTab(SettingsTab::Hotkeys));
+    assert!(simulator(gui.view_settings()).find("Ctrl Shift Alt R").is_ok(), "Reload App shows Desktop's keys");
+    assert!(simulator(gui.view_settings()).find("Record Shortcut").is_err());
+    let _ = gui.update(UiMessage::ToggleHotkey("Filter: DMs"));
+    assert!(simulator(gui.view_settings()).find("Record Shortcut").is_ok(), "an enabled hotkey without keys");
+    let _ = gui.update(UiMessage::RevertHotkeys);
     let mods = iced::keyboard::Modifiers::CTRL | iced::keyboard::Modifiers::ALT;
     let rail = |d: &str| UiMessage::KeyPressed(iced::keyboard::Key::Character(d.into()), mods);
     let _ = gui.update(rail("2"));

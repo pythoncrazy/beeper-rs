@@ -256,37 +256,85 @@ pub fn all() -> impl Iterator<Item = (&'static str, &'static Pref)> {
     })
 }
 
-pub const HOTKEYS: &[(&str, &[(&str, &str)])] = &[
-    (
-        "Chats",
-        &[
-            ("Chat: Toggle Archive", "Ctrl E"),
-            ("Chat: Toggle Mark As Read", "Ctrl Shift U"),
-            ("Chat: Toggle Mute", "Ctrl Shift M"),
-            ("Chat: Toggle Pin", "Ctrl P"),
-            ("Select Next Chat", "Ctrl ], Ctrl Alt ↓"),
-            ("Select Previous Chat", "Ctrl [, Ctrl Alt ↑"),
-            ("Toggle Chat Info", "Ctrl Shift I"),
-        ],
-    ),
-    (
-        "App",
-        &[
-            ("Filter: Unread", "Ctrl Shift Y"),
-            ("Quit App", "Ctrl Q"),
-            ("Report a Problem", "Ctrl Shift P"),
-            ("Reset Zoom", "Ctrl 0"),
-            ("Search", "Ctrl K"),
-            ("Search: Room", "Ctrl F"),
-            ("Settings", "Ctrl ,"),
-            ("Zoom In", "Ctrl ="),
-            ("Zoom Out", "Ctrl -"),
-        ],
-    ),
+/// Desktop's reassignable hotkeys: the name, the group and the default keys. In the keys, ", " separates the
+/// combinations, a combination without a key is a modifier for the digits 1 to 9, and "disabled" has no keys.
+pub const HOTKEYS: &[(&str, &str, &str)] = &[
+    ("Chat: Start New", "Chats", "ctrl+n"),
+    ("Chat: Toggle Archive", "Chats", "ctrl+e, e"),
+    ("Chat: Toggle Mark As Read", "Chats", "ctrl+shift+u"),
+    ("Chat: Toggle Mute", "Chats", "ctrl+shift+m"),
+    ("Chat: Toggle Pin", "Chats", "ctrl+p"),
+    ("Select Next Chat", "Chats", "ctrl+], ctrl+alt+down"),
+    ("Select Previous Chat", "Chats", "ctrl+[, ctrl+alt+up"),
+    ("Switch First 9 Chats Modifier", "Chats", "ctrl"),
+    ("Toggle Chat Info", "Chats", "ctrl+shift+i"),
+    ("Command Bar", "App", "ctrl+j"),
+    ("Filter: All", "App", "disabled"),
+    ("Filter: DMs", "App", "disabled"),
+    ("Filter: Drafts", "App", "disabled"),
+    ("Filter: Groups", "App", "disabled"),
+    ("Filter: Unanswered", "App", "disabled"),
+    ("Filter: Unread", "App", "ctrl+shift+y"),
+    ("Minimize To Tray", "App", "ctrl+alt+q"),
+    ("Quit App", "App", "ctrl+q"),
+    ("Reload App", "App", "ctrl+shift+alt+r"),
+    ("Report a Problem", "App", "ctrl+shift+p"),
+    ("Reset Zoom", "App", "ctrl+0"),
+    ("Search", "App", "ctrl+k"),
+    ("Search: Room", "App", "ctrl+f"),
+    ("Select Next Account", "App", "ctrl+shift+]"),
+    ("Select Previous Account", "App", "ctrl+shift+["),
+    ("Send Feedback", "App", "ctrl+alt+/"),
+    ("Settings", "App", "ctrl+,"),
+    ("Switch First 9 Spaces Modifier", "App", "ctrl+alt"),
+    ("Zoom In", "App", "ctrl+="),
+    ("Zoom Out", "App", "ctrl+-"),
+    ("Download Attachments", "Messages", "ctrl+d"),
+    ("Message: Edit", "Messages", "ctrl+t"),
+    ("Message: Forward", "Messages", "ctrl+shift+f"),
+    ("Message: Open First Link", "Messages", "ctrl+shift+h"),
+    ("Message: Quick React", "Messages", "ctrl+shift+r"),
+    ("Message: Quote & Reply", "Messages", "ctrl+r"),
+    ("Message: Quote or Edit Selected Message", "Messages", "enter"),
+    ("Message: Record Audio", "Messages", "ctrl+shift+a"),
+    ("Message: Send GIF", "Messages", "ctrl+shift+g"),
 ];
 
-pub fn assert_hotkey(name: &str) {
-    assert!(HOTKEYS.iter().any(|(_, keys)| keys.iter().any(|(n, _)| *n == name)), "unknown hotkey {name}");
+pub fn hotkey_default(name: &str) -> &'static str {
+    HOTKEYS.iter().find(|h| h.0 == name).unwrap_or_else(|| panic!("unknown hotkey {name}")).2
+}
+
+/// Desktop's `di`: the keys as the settings and the menus show them.
+pub fn hotkey_label(keys: &str) -> String {
+    [
+        ("+", " "),
+        ("=", "+"),
+        ("UP", "↑"),
+        ("DOWN", "↓"),
+        ("LEFT", "←"),
+        ("RIGHT", "→"),
+        ("CTRL", "Ctrl"),
+        ("SHIFT", "Shift"),
+        ("ALT", "Alt"),
+        ("ESCAPE", "Escape"),
+        ("TAB", "Tab"),
+        ("BACKSPACE", "Backspace"),
+        ("ENTER", "Enter"),
+    ]
+    .iter()
+    .fold(if keys == "disabled" { String::new() } else { keys.to_uppercase() }, |s, (a, b)| s.replace(a, b))
+}
+
+/// Whether `keys` has the combination of the modifiers (Ctrl, Shift and Alt) and the key, which is empty for a
+/// modifier-only combination.
+pub fn hotkey_has(keys: &str, mods: [bool; 3], key: &str) -> bool {
+    keys != "disabled"
+        && keys.split(", ").filter(|k| !k.is_empty()).any(|combo| {
+            let parts: Vec<&str> = combo.split('+').collect();
+            let is_mod = |p: &str| ["ctrl", "shift", "alt"].contains(&p);
+            let last = parts.last().copied().filter(|p| !is_mod(p)).unwrap_or("");
+            mods == ["ctrl", "shift", "alt"].map(|m| parts.contains(&m)) && last == key
+        })
 }
 
 pub fn find(key: &str) -> &'static Pref {
@@ -445,6 +493,28 @@ mod tests {
             let Ad::Desktop(_, values) = ad else { continue };
             for x in 0..=p.max_value() {
                 assert_eq!(values.decode(&values.encode(x)), Some(x), "{key}");
+            }
+        }
+    }
+
+    #[test]
+    fn hotkeys_match_desktop_keys() {
+        let next = hotkey_default("Select Next Chat");
+        assert!(hotkey_has(next, [true, false, false], "]") && hotkey_has(next, [true, false, true], "down"));
+        assert!(!hotkey_has(next, [true, true, false], "]"), "Ctrl Shift ] is Select Next Account");
+        assert!(hotkey_has(hotkey_default("Reload App"), [true, true, true], "r"));
+        assert!(hotkey_has("ctrl+alt", [true, false, true], "") && !hotkey_has("ctrl+alt", [true, false, false], ""));
+        assert!(!hotkey_has("disabled", [false; 3], "") && !hotkey_has("", [false; 3], ""));
+        assert_eq!(hotkey_label("ctrl+shift+alt+r"), "Ctrl Shift Alt R");
+        assert_eq!(hotkey_label("ctrl+="), "Ctrl +");
+        assert_eq!(hotkey_label("ctrl+], ctrl+alt+down"), "Ctrl ], Ctrl Alt ↓");
+        assert_eq!(hotkey_label("disabled"), "");
+        for (i, (name, group, keys)) in HOTKEYS.iter().enumerate() {
+            assert!(["Chats", "App", "Messages", "Composer"].contains(group), "{name}");
+            assert!(HOTKEYS[..i].iter().all(|h| h.0 != *name), "{name} is unique");
+            let combos = || keys.split(", ").filter(|_| *keys != "disabled");
+            for (other, _, k) in &HOTKEYS[..i] {
+                assert!(combos().all(|c| !k.split(", ").any(|x| x == c)), "{name} and {other} share {keys}");
             }
         }
     }

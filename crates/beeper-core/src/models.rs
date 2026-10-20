@@ -780,7 +780,9 @@ pub struct BeeperSettings {
     pub enable_pas_api: bool,
     pub pas_port: u16,
     pub prefs: std::collections::BTreeMap<String, u8>,
-    pub hotkeys_off: std::collections::BTreeSet<String>,
+    /// Desktop's `keybindings`: the keys of the hotkeys that are not the default, by name. "disabled" turns a
+    /// hotkey off, and an empty value is on without keys.
+    pub keybindings: std::collections::BTreeMap<String, String>,
     pub reminders_order: u8,
     /// The input device name, or empty for the system default.
     pub microphone: String,
@@ -835,9 +837,9 @@ impl BeeperSettings {
         self.accounts.get(id).copied().unwrap_or_default()
     }
 
-    pub fn hotkey_on(&self, name: &str) -> bool {
-        crate::prefs::assert_hotkey(name);
-        !self.hotkeys_off.contains(name)
+    pub fn hotkey_keys(&self, name: &str) -> &str {
+        let default = crate::prefs::hotkey_default(name);
+        self.keybindings.get(name).map_or(default, String::as_str)
     }
 
     pub fn set_pref(&mut self, key: &str, value: u8) {
@@ -849,7 +851,7 @@ impl BeeperSettings {
         for (k, v) in &self.prefs {
             self.clone().set_pref(k, *v);
         }
-        self.hotkeys_off.iter().for_each(|h| crate::prefs::assert_hotkey(h));
+        self.keybindings.keys().for_each(|h| _ = crate::prefs::hotkey_default(h));
         assert!(self.reminders_order < 4, "reminders order {} is out of range", self.reminders_order);
         assert!((50..=300).contains(&self.zoom_percent), "zoom {}% is out of range", self.zoom_percent);
     }

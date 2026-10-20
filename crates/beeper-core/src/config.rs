@@ -68,7 +68,7 @@ impl Default for BeeperSettings {
             enable_pas_api: false,
             pas_port: DEFAULT_PAS_PORT,
             prefs: Default::default(),
-            hotkeys_off: Default::default(),
+            keybindings: Default::default(),
             reminders_order: 0,
             microphone: String::new(),
             accounts: Default::default(),
