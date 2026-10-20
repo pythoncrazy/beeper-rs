@@ -2250,6 +2250,8 @@ pub struct BeeperGuiApp {
     pub status_banner: String,
     /// The text of Desktop's toast with a "Relaunch app" button, after a change that needs a relaunch.
     relaunch_toast: Option<&'static str>,
+    /// A button of the toast, shown only while the banner still is the text it was made for.
+    banner_action: Option<(String, &'static str, UiMessage)>,
     pub dnd_muted: bool,
     pub sidebar_width: f32,
     /// Desktop's local `sidebar-hidden`: hides the rail and the chat list.
@@ -2380,6 +2382,7 @@ impl BeeperGuiApp {
             flash: None,
             status_banner: String::new(),
             relaunch_toast: None,
+            banner_action: None,
             dnd_muted: false,
             sidebar_width,
             sidebar_hidden,
@@ -3189,6 +3192,10 @@ impl BeeperGuiApp {
                     .get(digit - RAIL_VIEWS.len())
                     .map(|a| UiMessage::SelectAccount(Some(a.clone()))),
             },
+            "Toggle Incognito Mode" => {
+                let on = self.store.read().settings.on("incognito");
+                Some(UiMessage::SetPref("incognito", u8::from(!on)))
+            }
             "Toggle Sidebar" => {
                 self.set_sidebar_hidden(!self.sidebar_hidden);
                 None
@@ -4727,6 +4734,23 @@ impl BeeperGuiApp {
                     "spellcheck" | "quitOnClose" => Some("Preference changed"),
                     _ => self.relaunch_toast,
                 };
+                if key == "incognito" {
+                    let typing = self.store.read().settings.on("typingIndicators");
+                    let (text, action) = match (v != 0, typing) {
+                        (true, true) => {
+                            ("Incognito mode on. Also hide when you're typing from recipients?", "Hide typing")
+                        }
+                        (false, false) => {
+                            ("Incognito mode off. Also show when you're typing to recipients?", "Show typing")
+                        }
+                        (true, false) => ("Incognito mode on.", ""),
+                        (false, true) => ("Incognito mode off.", ""),
+                    };
+                    self.status_banner = tr(text).into();
+                    let typing = UiMessage::SetPref("typingIndicators", u8::from(!typing));
+                    let typing = UiMessage::Commands(vec![UiMessage::DismissBanner, typing]);
+                    self.banner_action = (!action.is_empty()).then(|| (self.status_banner.clone(), tr(action), typing));
+                }
                 if key == "appLanguage" {
                     i18n::set(v);
                 }
@@ -8208,7 +8232,12 @@ impl BeeperGuiApp {
         (!banner.is_empty()).then(|| {
             let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, p.sub, UiMessage::DismissBanner);
             let text = txt(banner.to_string(), 13.0).color(p.strong);
-            let relaunch = self.relaunch_toast.map(|_| pill_btn(p, tr("Relaunch app"), UiMessage::Relaunch));
+            let action = match (self.relaunch_toast, &self.banner_action) {
+                (Some(_), _) => Some((tr("Relaunch app"), UiMessage::Relaunch)),
+                (None, Some((text, label, msg))) if text == banner => Some((*label, msg.clone())),
+                _ => None,
+            };
+            let relaunch = action.map(|(label, msg)| pill_btn(p, label, msg));
             let card = row![text.wrapping(iced::widget::text::Wrapping::WordOrGlyph)].push(relaunch).push(close);
             let card = card.spacing(8).align_y(Center);
             let card = container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0));

@@ -452,6 +452,36 @@ fn filter_account_submenu_like_desktop() {
 }
 
 #[test]
+fn incognito_toggle_like_desktop() {
+    let mut app = demo_app("incognito");
+    let on = |app: &BeeperGuiApp, key| app.store.read().settings.on(key);
+    assert!(!on(&app, "incognito") && on(&app, "typingIndicators"));
+    let titles = |app: &BeeperGuiApp| app.commands(&app.store.read(), "stealth").into_iter().map(|c| c.title);
+    assert_eq!(titles(&app).next().as_deref(), Some("Turn on incognito mode"));
+    let _ = app.update(UiMessage::RunHotkey("Toggle Incognito Mode"));
+    assert!(on(&app, "incognito"));
+    assert_eq!(app.status_banner, "Incognito mode on. Also hide when you're typing from recipients?");
+    assert_eq!(titles(&app).next().as_deref(), Some("Turn off incognito mode"));
+    {
+        let mut sim = simulator(app.view_main());
+        let _ = sim.click("Hide typing").expect("the toast offers to hide typing");
+        for m in sim.into_messages() {
+            let _ = app.update(m);
+        }
+    }
+    assert!(!on(&app, "typingIndicators") && app.status_banner.is_empty());
+    let _ = app.update(UiMessage::RunHotkey("Toggle Incognito Mode"));
+    assert_eq!(app.status_banner, "Incognito mode off. Also show when you're typing to recipients?");
+    app.status_banner = "Copied".into();
+    assert!(simulator(app.view_main()).find("Show typing").is_err(), "another banner has no stale button");
+    let _ = app.update(UiMessage::SetPref("incognito", 1));
+    assert_eq!(app.status_banner, "Incognito mode on.");
+    let _ = app.update(UiMessage::SetPref("typingIndicators", 1));
+    let _ = app.update(UiMessage::SetPref("incognito", 0));
+    assert_eq!(app.status_banner, "Incognito mode off.");
+}
+
+#[test]
 fn remind_submenu_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
     let mut app = demo_app("remindsub");
