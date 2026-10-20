@@ -988,6 +988,31 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let _ = gui.update(rail("1"));
     assert!(gui.active_tab == InboxTab::AllChats && gui.selected_account_filter.is_none());
     {
+        use iced::keyboard::{key::Named, Key, Modifiers};
+        let ids: Vec<String> = gui.visible_chats(&store.read()).iter().take(3).map(|c| c.id.clone()).collect();
+        for id in &ids {
+            let _ = gui.update(UiMessage::SelectChat(id.clone()));
+        }
+        let selected = |gui: &BeeperGuiApp| gui.pane.selected_chat_id.clone().unwrap();
+        let key = |k, mods| UiMessage::KeyPressed(Key::Named(k), mods);
+        let _ = gui.update(key(Named::ArrowLeft, Modifiers::CTRL | Modifiers::ALT));
+        assert_eq!(selected(&gui), ids[1], "History: Previous Chat opens the chat before");
+        let _ = gui.update(key(Named::ArrowRight, Modifiers::CTRL | Modifiers::ALT));
+        assert_eq!(selected(&gui), ids[2], "History: Next Chat goes back");
+        let _ = gui.update(UiMessage::Modifiers(Modifiers::CTRL));
+        let _ = gui.update(key(Named::Tab, Modifiers::CTRL));
+        let _ = gui.update(key(Named::Tab, Modifiers::CTRL));
+        assert_eq!(selected(&gui), ids[0], "Ctrl Tab steps through the history without reordering it");
+        let _ = gui.update(UiMessage::Modifiers(Modifiers::CTRL | Modifiers::SHIFT));
+        let _ = gui.update(key(Named::Tab, Modifiers::CTRL | Modifiers::SHIFT));
+        assert_eq!(selected(&gui), ids[1], "Shift reverses the cycle");
+        let _ = gui.update(UiMessage::Modifiers(Modifiers::empty()));
+        let _ = gui.update(UiMessage::Modifiers(Modifiers::CTRL));
+        let _ = gui.update(key(Named::Tab, Modifiers::CTRL));
+        assert_eq!(selected(&gui), ids[2], "releasing Ctrl moves the chat to the front");
+        let _ = gui.update(UiMessage::Modifiers(Modifiers::empty()));
+    }
+    {
         let mut st = store.write();
         let account = |net: &str| st.accounts.iter().find(|a| a.account_id.contains(net)).unwrap().account_id.clone();
         let space = |id: &str, account_id, name: &str| beeper_core::store::NetworkSpace {
