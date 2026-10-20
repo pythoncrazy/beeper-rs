@@ -505,12 +505,12 @@ fn messages_select_like_desktop() {
     );
     let _ = app.update(UiMessage::ClickMessage(ids[3].clone()));
     assert_eq!(app.pane.selected_msgs, [ids[3].as_str()], "a click selects only the message");
-    let _ = app.update(UiMessage::KeyPressed(Key::Character("a".into()), Modifiers::CTRL));
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("a".into()), Modifiers::COMMAND));
     assert_eq!(app.pane.selected_msgs, ids, "Ctrl A selects all messages");
     let _ = key(&mut app, Named::Escape, Modifiers::empty());
     assert!(app.pane.selected_msgs.is_empty());
     let _ = key(&mut app, Named::Escape, Modifiers::empty());
-    let _ = app.update(UiMessage::KeyPressed(Key::Character("a".into()), Modifiers::CTRL));
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("a".into()), Modifiers::COMMAND));
     let list = app.list_ids(&app.store.read());
     assert!(app.selection == list && app.pane.selected_chat_id == list.first().cloned(), "Ctrl A selects all chats");
 }
