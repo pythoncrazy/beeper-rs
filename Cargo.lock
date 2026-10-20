@@ -486,6 +486,7 @@ version = "4.3.176"
 dependencies = [
  "arboard",
  "beeper-core",
+ "flate2",
  "iced",
  "iced_test",
  "image",

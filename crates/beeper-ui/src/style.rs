@@ -7,7 +7,9 @@ use iced::widget::{button, container, pick_list, scrollable, slider, svg, text, 
 use iced::{border, Border, Color, Shadow, Theme, Vector};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Once};
 
 pub mod icon {
@@ -114,7 +116,98 @@ pub fn ensure_fonts_loaded() {
         for bytes in ALL_FONTS {
             fs.load_font(bytes.into());
         }
+        if let Some(woff) = desktop_asars().find_map(|p| knicknack_woff(&p)) {
+            fs.load_font(woff_to_sfnt(&woff).into());
+            KNICKNACK.store(true, Ordering::Relaxed);
+        }
     });
+}
+
+/// Desktop draws avatar initials in Knicknack Bold. Its license does not let us ship it, so it loads from an
+/// installed Beeper Desktop, and the initials use Inter when there is none.
+static KNICKNACK: AtomicBool = AtomicBool::new(false);
+
+pub fn initials_font() -> Font {
+    ensure_fonts_loaded();
+    match KNICKNACK.load(Ordering::Relaxed) {
+        true => Font { family: Family::Name("Knicknack"), weight: Weight::Medium, ..Font::DEFAULT },
+        false => fw(Weight::Medium),
+    }
+}
+
+/// The `app.asar` archive of an installed Beeper Desktop: a Linux package, a running AppImage, Windows, or macOS.
+fn desktop_asars() -> impl Iterator<Item = PathBuf> {
+    let env = |k| std::env::var_os(k).map(PathBuf::from);
+    let mounts = std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten().map(|e| e.path());
+    let mounts = mounts.filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".mount_")));
+    let opt = ["/opt/beeper", "/opt/Beeper", "/opt/BeeperTexts"].map(PathBuf::from);
+    let windows =
+        env("LOCALAPPDATA").into_iter().flat_map(|l| ["BeeperTexts", "beeper"].map(|n| l.join("Programs").join(n)));
+    let mac = [Some(PathBuf::from("/")), env("HOME")].into_iter().flatten();
+    let mac =
+        mac.flat_map(|r| ["Beeper Desktop.app", "Beeper.app"].map(|a| r.join("Applications").join(a).join("Contents")));
+    let resources = opt.into_iter().chain(mounts).chain(windows).map(|d| d.join("resources"));
+    resources.chain(mac.map(|d| d.join("Resources"))).map(|d| d.join("app.asar"))
+}
+
+/// The Knicknack WOFF file in the `app.asar` archive, which is a JSON file index followed by the file contents.
+fn knicknack_woff(asar: &Path) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek};
+    let mut f = std::fs::File::open(asar).ok()?;
+    let mut head = [0u8; 16];
+    f.read_exact(&mut head).ok()?;
+    let le = |i: usize| u64::from(u32::from_le_bytes(head[i..i + 4].try_into().expect("4 bytes")));
+    let mut index = vec![0u8; usize::try_from(le(12)).ok()?];
+    f.read_exact(&mut index).ok()?;
+    let index: serde_json::Value = serde_json::from_slice(&index).ok()?;
+    let files = index["files"]["build"]["files"]["renderer"]["files"].as_object()?;
+    let (_, e) = files.iter().find(|(k, _)| k.starts_with("knicknack-bold-") && k.ends_with(".woff"))?;
+    f.seek(std::io::SeekFrom::Start(8 + le(4) + e["offset"].as_str()?.parse::<u64>().ok()?)).ok()?;
+    let mut woff = vec![0u8; usize::try_from(e["size"].as_u64()?).ok()?];
+    f.read_exact(&mut woff).ok()?;
+    Some(woff)
+}
+
+/// Unpacks a WOFF 1 font into the TrueType file that it wraps.
+fn woff_to_sfnt(woff: &[u8]) -> Vec<u8> {
+    assert_eq!(&woff[..4], b"wOFF", "a WOFF 1 font");
+    let be32 = |i: usize| u32::from_be_bytes(woff[i..i + 4].try_into().expect("4 bytes"));
+    let n = usize::from(u16::from_be_bytes([woff[12], woff[13]]));
+    let tables: Vec<(&[u8], u32, Vec<u8>)> = (0..n)
+        .map(|i| {
+            let e = 44 + 20 * i;
+            let (at, packed, full) = (be32(e + 4) as usize, be32(e + 8) as usize, be32(e + 12) as usize);
+            let raw = &woff[at..at + packed];
+            let mut data = Vec::with_capacity(full);
+            match packed < full {
+                true => std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(raw), &mut data)
+                    .map(drop)
+                    .expect("a WOFF table inflates"),
+                false => data.extend_from_slice(raw),
+            }
+            assert_eq!(data.len(), full, "the WOFF table has its stated size");
+            (&woff[e..e + 4], be32(e + 16), data)
+        })
+        .collect();
+    let shift = n.ilog2();
+    let range = 16u16 << shift;
+    let mut out = woff[4..8].to_vec();
+    for v in [n as u16, range, shift as u16, n as u16 * 16 - range] {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    let mut at = 12 + 16 * n;
+    for (tag, sum, data) in &tables {
+        out.extend_from_slice(tag);
+        for v in [*sum, at as u32, data.len() as u32] {
+            out.extend_from_slice(&v.to_be_bytes());
+        }
+        at += data.len().next_multiple_of(4);
+    }
+    for (_, _, data) in tables {
+        out.extend_from_slice(&data);
+        out.resize(out.len().next_multiple_of(4), 0);
+    }
+    out
 }
 
 pub const fn fw(weight: Weight) -> Font {
