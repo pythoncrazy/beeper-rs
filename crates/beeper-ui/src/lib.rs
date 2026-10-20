@@ -8,6 +8,7 @@ mod lift;
 pub mod login;
 mod notify;
 mod popover;
+mod portal;
 mod record;
 mod sound;
 mod spell;
@@ -289,7 +290,6 @@ pub enum UiMessage {
     GifsLoaded(Result<Vec<KlipyGif>, String>),
     PickGif(KlipyGif),
     GifDownloaded(KlipyGif, Result<(Vec<u8>, Frames), String>),
-    PasteClipboard,
     SetReminder(String, Option<i64>),
     ChatSub(Option<u8>),
     CheckReminders,
@@ -443,7 +443,11 @@ pub enum UiMessage {
     MediaResolved(String, Result<(), String>),
     Video(video::Msg),
     Pasted(Result<Option<Png>, String>),
-    DiscardPaste,
+    DiscardAttachment(usize),
+    /// Desktop's `openAttachmentPicker`.
+    PickFiles,
+    FilesPicked(Result<Vec<std::path::PathBuf>, String>),
+    FilesLoaded(Result<Vec<PendingMedia>, String>),
     LinkPreviewLoaded(String, Result<Option<beeper_core::cloud::PagePreview>, String>),
     RemoveLinkPreview(String),
     PickEmoji(usize),
@@ -2064,7 +2068,8 @@ pub struct History {
 #[derive(Default)]
 pub struct Pane {
     pub selected_chat_id: Option<String>,
-    pub pasted: Option<PendingMedia>,
+    /// Desktop's composer `attachments`.
+    pub attachments: Vec<PendingMedia>,
     pub composer_links: Vec<(String, LinkState)>,
     pub message_menu: Option<(String, Point)>,
     /// The composer context menu, with the misspelled word and its suggestions.
@@ -2876,7 +2881,7 @@ impl BeeperGuiApp {
     pub fn submit_composer(&mut self, archive: bool) {
         let chat_id = self.pane.selected_chat_id.clone().expect("a chat is selected");
         let text = self.pane.composer.text().trim().to_string();
-        if text.is_empty() && self.pane.pasted.is_none() {
+        if text.is_empty() && self.pane.attachments.is_empty() {
             return;
         }
         let mut st = self.store.write();
@@ -2884,47 +2889,56 @@ impl BeeperGuiApp {
         if self.pane.editing_message_id.is_none() && has_flag(&st.chats[idx], ChatFlag::Archived) != archive {
             self.set_archived(&mut st, idx, archive);
         }
-        let out = if let Some(target) = self.pane.editing_message_id.take() {
+        if let Some(target) = self.pane.editing_message_id.take() {
             st.edit_message(&chat_id, &target, text.clone()).expect("edit message");
-            Outgoing::Edit { target, text }
-        } else if let Some(PendingMedia { bytes, name, mime, is_gif, size, frames }) = self.pane.pasted.take() {
-            let key = format!("pasted:{}", st.next_id("img"));
-            self.media.insert(key.clone(), Some(Ok(frames)));
-            let att = Attachment {
-                attachment_type: "img".into(),
-                file_name: Some(name.clone()),
-                file_size: Some(bytes.len() as u64),
-                is_gif: Some(is_gif),
-                mime_type: Some(mime.clone()),
-                size: Some(AttachmentSize { width: Some(size.0), height: Some(size.1) }),
-                src_url: Some(key),
-                ..Default::default()
-            };
-            let reply_to = self.pane.reply_to_message_id.take();
-            let caption = (!text.is_empty()).then_some(text);
-            let (_, txn, _) =
-                st.send_message(&chat_id, caption.clone(), reply_to.clone(), Some(att)).expect("send image");
-            st.mark_chat_read(&chat_id, true);
-            Outgoing::Media { txn, bytes, name, mime, info: MediaInfo::Image(size.0, size.1), caption, reply_to }
+            st.queue(&chat_id, Outgoing::Edit { target, text });
         } else {
-            let reply_to = self.pane.reply_to_message_id.take();
-            let urls = text_urls(&text);
-            let preview = self.pane.composer_links.iter().find_map(|(u, s)| match s {
-                LinkState::Loaded(v, img) if urls.contains(&u.as_str()) => {
-                    Some((v.clone(), img.as_ref().map(|(b, _)| b.clone())))
+            let mut reply_to = self.pane.reply_to_message_id.take();
+            let files = std::mem::take(&mut self.pane.attachments);
+            let caption = (!text.is_empty() && files.len() == 1).then(|| text.clone());
+            if !text.is_empty() && caption.is_none() {
+                let urls = text_urls(&text);
+                let preview = self.pane.composer_links.iter().find_map(|(u, s)| match s {
+                    LinkState::Loaded(v, img) if urls.contains(&u.as_str()) => {
+                        Some((v.clone(), img.as_ref().map(|(b, _)| b.clone())))
+                    }
+                    _ => None,
+                });
+                let (id, txn, _) =
+                    st.send_message(&chat_id, Some(text.clone()), reply_to.clone(), None).expect("send message");
+                if let Some(link) = preview.as_ref().and_then(|(v, _)| beeper_core::matrix::link(v)) {
+                    let i = st.msg_idx_by_id[&id];
+                    st.update_message(i, |m| m.links = vec![link]);
                 }
-                _ => None,
-            });
-            let (id, txn, _) =
-                st.send_message(&chat_id, Some(text.clone()), reply_to.clone(), None).expect("send message");
-            if let Some(link) = preview.as_ref().and_then(|(v, _)| beeper_core::matrix::link(v)) {
-                let i = st.msg_idx_by_id[&id];
-                st.update_message(i, |m| m.links = vec![link]);
+                st.queue(&chat_id, Outgoing::Send { txn, text, reply_to: reply_to.take(), preview });
+            }
+            for PendingMedia { bytes, name, mime, is_gif, size, frames } in files {
+                let image = !frames.is_empty();
+                let key = format!("pasted:{}", st.next_id("img"));
+                if image {
+                    self.media.insert(key.clone(), Some(Ok(frames)));
+                }
+                let att = Attachment {
+                    attachment_type: if image { "img" } else { "file" }.into(),
+                    file_name: Some(name.clone()),
+                    file_size: Some(bytes.len() as u64),
+                    is_gif: Some(is_gif),
+                    mime_type: Some(mime.clone()),
+                    size: image.then_some(AttachmentSize { width: Some(size.0), height: Some(size.1) }),
+                    src_url: image.then_some(key),
+                    ..Default::default()
+                };
+                let (_, txn, _) =
+                    st.send_message(&chat_id, caption.clone(), reply_to.clone(), Some(att)).expect("send media");
+                let info = if image { MediaInfo::Image(size.0, size.1) } else { MediaInfo::File };
+                let caption = caption.clone();
+                st.queue(
+                    &chat_id,
+                    Outgoing::Media { txn, bytes, name, mime, info, caption, reply_to: reply_to.take() },
+                );
             }
             st.mark_chat_read(&chat_id, true);
-            Outgoing::Send { txn, text, reply_to, preview }
-        };
-        st.queue(&chat_id, out);
+        }
         self.pane.composer = composer_with("");
         self.pane.composer_links.clear();
         drop(st);
@@ -3084,6 +3098,7 @@ impl BeeperGuiApp {
                 self.filters ^= 1 << FILTER_HOTKEYS.iter().position(|h| *h == f).expect("a filter hotkey");
                 None
             }
+            "Chat: Send File" => chat.map(|_| UiMessage::PickFiles),
             "Message: Send Message and Archive" => chat.map(|_| UiMessage::SendAndArchive),
             "Send Message" | "Insert New Line" => None,
             "Minimize To Tray" => return self.set_hidden(true),
@@ -3397,7 +3412,7 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let at = self.list_ids(&st).iter().position(|c| *c == cid);
                 drop(st);
-                let draft = !self.pane.composer.text().trim().is_empty() || self.pane.pasted.is_some();
+                let draft = !self.pane.composer.text().trim().is_empty() || !self.pane.attachments.is_empty();
                 self.submit_composer(true);
                 let list = self.list_ids(&self.store.read());
                 if let Some(at) = at.filter(|_| draft && !list.contains(&cid)) {
@@ -4257,18 +4272,37 @@ impl BeeperGuiApp {
             UiMessage::Video(msg) => return self.video(msg),
             UiMessage::Pasted(r) => match r {
                 Ok(img) => {
-                    self.pane.pasted = img.map(|(png, size)| PendingMedia {
+                    self.pane.attachments.extend(img.map(|(png, size)| PendingMedia {
                         name: "image.png".into(),
                         mime: "image/png".into(),
                         is_gif: false,
                         size,
                         frames: vec![(image::Handle::from_bytes(png.clone()), 0)],
                         bytes: png,
-                    });
+                    }));
                 }
                 Err(e) => self.status_banner = e,
             },
-            UiMessage::DiscardPaste => self.pane.pasted = None,
+            UiMessage::DiscardAttachment(i) => drop(self.pane.attachments.remove(i)),
+            UiMessage::PickFiles if self.pane.editing_message_id.is_some() => {
+                self.status_banner = tr("Attachments can't be added while editing a message").into();
+            }
+            UiMessage::PickFiles => {
+                let title = tr("Open").to_string();
+                return Task::perform(portal::open_files(portal::PORTAL.into(), title), UiMessage::FilesPicked);
+            }
+            UiMessage::FilesPicked(r) => match r {
+                Ok(paths) => {
+                    let load = move || paths.iter().map(|p| portal::load_file(p)).collect();
+                    let load = async { tokio::task::spawn_blocking(load).await.expect("file load thread") };
+                    return Task::perform(load, UiMessage::FilesLoaded);
+                }
+                Err(e) => self.status_banner = e,
+            },
+            UiMessage::FilesLoaded(r) => match r {
+                Ok(files) => self.pane.attachments.extend(files),
+                Err(e) => self.status_banner = e,
+            },
             UiMessage::LinkPreviewLoaded(url, r) => {
                 let entry =
                     self.pane.composer_links.iter_mut().find(|(u, s)| *u == url && matches!(s, LinkState::Loading));
@@ -4301,7 +4335,6 @@ impl BeeperGuiApp {
                     .filter(|(u, _)| *u == url)
                     .for_each(|(_, s)| *s = LinkState::Discarded);
             }
-            UiMessage::PasteClipboard => return Task::perform(clipboard_image(), UiMessage::Pasted),
             UiMessage::Emoji(m) => return self.update_emoji(m),
             UiMessage::Upserted(m) => {
                 self.message_sound(&m);
@@ -4379,7 +4412,7 @@ impl BeeperGuiApp {
             }
             UiMessage::GifDownloaded(g, r) => match r {
                 Ok((bytes, frames)) => {
-                    self.pane.pasted = Some(PendingMedia {
+                    self.pane.attachments.push(PendingMedia {
                         bytes,
                         name: format!("{}.gif", g.id),
                         mime: "image/gif".into(),
@@ -7299,7 +7332,7 @@ impl BeeperGuiApp {
             let msg = match id {
                 0 => Some(UiMessage::Emoji(emoji::EmojiMsg::Toggle)),
                 2 => Some(UiMessage::ToggleGifPicker),
-                3 => Some(UiMessage::PasteClipboard),
+                3 => Some(UiMessage::PickFiles),
                 5 => Some(UiMessage::Record(record::Msg::Start)),
                 _ => None,
             };
@@ -7408,14 +7441,32 @@ impl BeeperGuiApp {
             Row::with_children(ids.map(&action_btn)).spacing(2).padding([0, 1]).align_y(Center)
         });
         let plus = row![toggle].push(unveiled).spacing(6).align_y(Center);
-        let ready =
-            !self.pane().composer.text().trim().is_empty() || self.pane().pasted.is_some() || self.recorder.is_some();
-        let pasted = self.pane().pasted.as_ref().map(|pm| {
-            let fg = Color { a: 0.1, ..p.text };
-            let fit = |f| image(f).height(66).content_fit(iced::ContentFit::Contain);
-            let preview =
-                container(anim::gif(&pm.frames, self.started, fit)).clip(true).style(bordered_box(CLEAR, fg, 1.0, 8.0));
-            row![removable(p, preview, UiMessage::DiscardPaste)].padding([6, 54])
+        let ready = !self.pane().composer.text().trim().is_empty()
+            || !self.pane().attachments.is_empty()
+            || self.recorder.is_some();
+        let pending = (!self.pane().attachments.is_empty()).then(|| {
+            let items = self.pane().attachments.iter().enumerate().map(|(i, pm)| {
+                let preview: El<'a> = if pm.frames.is_empty() {
+                    let ext = std::path::Path::new(&pm.name).extension().map(|e| e.to_string_lossy().to_uppercase());
+                    let meta = ext.into_iter().chain([human_size(pm.bytes.len() as u64)]).collect::<Vec<_>>();
+                    let name = clamp(&pm.name, 190.0, 2, 11.0, Weight::Semibold).line_height(Pixels(14.0));
+                    let info = column![name, txt(meta.join(" ・ "), 11.0).line_height(Pixels(14.0))].spacing(4);
+                    let icon = &FILE_ICONS[if pm.mime.starts_with("audio") { 3 } else { 0 }];
+                    let line = row![tinted(icon, 20.0, p.strong), info].spacing(8).align_y(Center);
+                    container(column![line, Space::new().width(158)])
+                        .max_width(240)
+                        .padding([8, 11])
+                        .style(fill_box(p.received, 17.0))
+                        .into()
+                } else {
+                    let fg = Color { a: 0.1, ..p.text };
+                    let fit = |f| image(f).height(66).content_fit(iced::ContentFit::Contain);
+                    let img = container(anim::gif(&pm.frames, self.started, fit)).max_width(120).clip(true);
+                    img.style(bordered_box(CLEAR, fg, 1.0, 8.0)).into()
+                };
+                removable(p, preview, UiMessage::DiscardAttachment(i))
+            });
+            Row::with_children(items).spacing(8).align_y(iced::Bottom).padding([6, 54])
         });
         let send = button(container(tinted(&SEND_ARROW, 20.0, Color::WHITE)).center(36))
             .padding(0)
@@ -7457,7 +7508,7 @@ impl BeeperGuiApp {
                 Some(removable(p, card, UiMessage::RemoveLinkPreview(u.clone())))
             });
         let links = Column::with_children(links).spacing(4).padding([2, 54]);
-        let extras = Column::new().push(banner).push(gif_picker).push(pasted).push(links);
+        let extras = Column::new().push(banner).push(gif_picker).push(pending).push(links);
         let line: Row<'a, UiMessage> = match &self.recorder {
             Some(r) => row![self.view_recorder(r), send],
             None => row![plus, pill, send],

@@ -260,6 +260,7 @@ pub fn all() -> impl Iterator<Item = (&'static str, &'static Pref)> {
 /// combinations, a combination without a key is a modifier for the digits 1 to 9, and "disabled" has no keys.
 pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Chat: Archive All Read", "Chats", "ctrl+shift+e"),
+    ("Chat: Send File", "Chats", "ctrl+o"),
     ("Chat: Start New", "Chats", "ctrl+n"),
     ("Chat: Toggle Archive", "Chats", "ctrl+e, e"),
     ("Chat: Toggle Mark As Read", "Chats", "ctrl+shift+u"),
