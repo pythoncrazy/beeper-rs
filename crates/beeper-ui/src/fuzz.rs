@@ -1815,6 +1815,27 @@ fn sidebar_view_menus_like_desktop() {
 }
 
 #[test]
+fn sidebar_overflow_menu_lists_hidden_spaces_like_desktop() {
+    let mut app = demo_app("overflow-menu");
+    let hide = |id: &str| SpaceOrder { id: id.into(), visible: false };
+    app.patch_settings(|s| s.spaces_order = vec![hide("requests"), hide("label:lbl_work")]);
+    let unread = app.store.read().chats.iter().any(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0);
+    let _ = app.update(UiMessage::OpenChatMenu(RAIL_MORE.into()));
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_chat_menu(RAIL_MORE, false, 900.0));
+        assert!(sim.find(if unread { "• Requests" } else { "Requests" }).is_ok());
+        assert!(sim.find("New Label…").is_ok() && sim.find("Edit Spaces…").is_ok());
+        let _ = sim.click("Work").expect("the hidden label");
+        sim.into_messages().collect()
+    };
+    for m in picked {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.selected_account_filter.as_deref(), Some("label:lbl_work"));
+    assert!(app.chat_menu.is_none());
+}
+
+#[test]
 fn label_inbox_rules_like_desktop() {
     let mut app = demo_app("label-inbox");
     let _ = app.update(UiMessage::OpenChatMenu("account:label:lbl_work".into()));
