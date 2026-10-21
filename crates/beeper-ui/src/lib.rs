@@ -359,7 +359,10 @@ pub enum UiMessage {
     OpenPollCreator(String),
     Poll(window::Id, PollEdit),
     /// Desktop's `CreateLabelBrowserWindow`.
-    OpenCreateLabel,
+    /// Opens the New label window with these chats picked.
+    OpenCreateLabel(Vec<String>),
+    /// Desktop's `toggleLabel` for one chat.
+    ToggleLabel(String, String, bool),
     /// Desktop's `CreateLabelBrowserWindow` for an existing label.
     EditLabel(String),
     Label(LabelEdit),
@@ -1107,7 +1110,7 @@ fn inbox_label(label: &'static str) -> &'static str {
 }
 /// Desktop's `--chat-view-bubble-padding-x`, which also insets the message footer.
 const BUBBLE_PAD_X: f32 = 11.0;
-const SUB_MENU_W: [f32; 2] = [124.0, 257.0];
+const SUB_MENU_W: [f32; 3] = [124.0, 257.0, 180.0];
 /// Desktop's default `time_suggestion_options`.
 const TIME_SUGGESTIONS: [&str; 6] =
     ["In an Hour", "In Two Hours", "This Evening", "Tomorrow", "This Weekend", "Next Week"];
@@ -4472,12 +4475,17 @@ impl BeeperGuiApp {
                 return open.chain(operation::focus(question));
             }
             UiMessage::Poll(id, edit) => return self.poll_edit(id, edit),
-            UiMessage::OpenCreateLabel => {
+            UiMessage::ToggleLabel(label, chat, add) => {
+                self.chat_menu = None;
+                self.store.write().set_label_room(&label, &chat, add);
+            }
+            UiMessage::OpenCreateLabel(chats) => {
+                self.chat_menu = None;
                 if let Some(d) = &self.label_window {
                     return window::gain_focus(d.id);
                 }
                 let (id, open) = self.open_child(Size::new(600.0, 700.0));
-                self.label_window = Some(LabelDraft::new(id));
+                self.label_window = Some(LabelDraft { chats, ..LabelDraft::new(id) });
                 return open.chain(operation::focus("label-title"));
             }
             UiMessage::EditLabel(label) => {
@@ -6542,14 +6550,17 @@ impl BeeperGuiApp {
         let chat_menu = self.chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
             let (w, h) = if cid.starts_with("draft:") {
                 (124.0, 31.0)
-            } else if cid.starts_with("account:") {
-                (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + 3.0 * MENU_ITEM)
+            } else if let Some(entry) = cid.strip_prefix("account:") {
+                let label = rail_label(&self.store.read(), entry).is_some();
+                let h = if label { 8.0 + 4.0 * MENU_ITEM + 11.0 } else { 8.0 + 3.0 * MENU_ITEM };
+                (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), h)
             } else {
                 (
                     233.0,
                     8.0 + 10.0 * MENU_ITEM
                         + 44.0
-                        + if self.selection.is_empty() { 2.0 * MENU_ITEM + 11.0 } else { 0.0 },
+                        + if self.selection.is_empty() { 2.0 * MENU_ITEM + 11.0 } else { 0.0 }
+                        + if self.store.read().feature("labels-v2").on { MENU_ITEM } else { 0.0 },
                 )
             };
             let x = if at.x + w > self.pane().size.width { at.x - w } else { at.x };
@@ -7502,6 +7513,7 @@ impl BeeperGuiApp {
         };
         let pick = |on: bool, yes, no| if on { yes } else { no };
         let selecting = self.selection.is_empty();
+        let labels = st.feature("labels-v2").on;
         let col = column![
             close_sub(column![
                 item(
@@ -7528,6 +7540,7 @@ impl BeeperGuiApp {
                     flag(ChatFlag::LowPriority)
                 ),
             ]),
+            labels.then(|| open_sub(2, trx("Label", "thread context menu submenu label"))),
             open_sub(1, tr("Remind Me")),
             close_sub(
                 column![
@@ -7554,6 +7567,19 @@ impl BeeperGuiApp {
             let item = |label: &str, at: String, msg| menu_item(p, None, label.into(), at, msg);
             let (items, rules): (Vec<El>, f32) = match i {
                 0 => (vec![item(tr("Chat Link"), String::new(), Some(UiMessage::CopyChatLink(c.id.clone())))], 0.0),
+                2 => {
+                    let mut sorted: Vec<&Label> = st.labels.iter().collect();
+                    sorted.sort_by_cached_key(|l| l.name.to_lowercase());
+                    let rows = sorted.into_iter().map(|l| {
+                        let on = c.label_ids.contains(&l.id);
+                        let lead = container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into();
+                        let msg = UiMessage::ToggleLabel(l.id.clone(), c.id.clone(), !on);
+                        menu_item(p, Some(lead), l.name.clone(), "", Some(msg))
+                    });
+                    let new =
+                        item(tr("New Label…"), String::new(), Some(UiMessage::OpenCreateLabel(vec![c.id.clone()])));
+                    (rows.chain([menu_rule(p), new]).collect(), 1.0)
+                }
                 _ => {
                     let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
                     let set = |at| UiMessage::SetReminder(c.id.clone(), Some(at));
@@ -7572,7 +7598,11 @@ impl BeeperGuiApp {
                 }
             };
             let h = 8.0 + items.len() as f32 * MENU_ITEM - rules * (MENU_ITEM - 11.0);
-            let top = if i == 0 { 4.0 * MENU_ITEM } else { 7.0 * MENU_ITEM + 22.0 };
+            let top = match i {
+                0 => 4.0 * MENU_ITEM,
+                1 if labels => 8.0 * MENU_ITEM + 22.0,
+                _ => 7.0 * MENU_ITEM + 22.0,
+            };
             let top = top.min(room - h).max(0.0);
             let body = container(Column::with_children(items).padding([4, 0])).width(SUB_MENU_W[usize::from(i)]);
             column![Space::new().height(top), body.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))]
@@ -7801,7 +7831,7 @@ impl BeeperGuiApp {
         let add_label = button(add_space)
             .padding(0)
             .style(ghost(p, 12.0))
-            .on_press_maybe(labels.on.then_some(UiMessage::OpenCreateLabel));
+            .on_press_maybe(labels.on.then(|| UiMessage::OpenCreateLabel(Vec::new())));
         let top = column![
             tab(
                 "rail-inbox",
