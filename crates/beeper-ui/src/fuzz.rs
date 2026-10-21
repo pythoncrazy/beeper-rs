@@ -1281,6 +1281,50 @@ fn zoom_keys_like_desktop() {
 }
 
 #[test]
+fn chat_theme_like_desktop() {
+    let mut app = demo_app("chat-theme");
+    let chat = app.store.read().chats[0].id.clone();
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Appearance));
+    {
+        let mut sim = simulator(app.view_settings());
+        assert!(
+            sim.find("Pick a wallpaper and bubble color").is_ok() && sim.find("Only you see your chat theme").is_ok()
+        );
+    }
+    let swatch = |id: &str| Some(Bubble::Swatch { id: id.into() });
+    let _ = app.update(UiMessage::ChatBubble(None, swatch("blue")));
+    let _ = app.update(UiMessage::ChatWallpaper(None, Wallpaper::Gradient { id: "linen".into() }));
+    let _ = app.update(UiMessage::ChatWallpaper(Some(chat.clone()), Wallpaper::None));
+    let stored = serde_json::to_value(&app.store.read().settings.chat_appearance).expect("json");
+    let want = serde_json::json!({
+        "global": { "wallpaper": { "type": "gradient", "id": "linen" }, "bubble": { "type": "swatch", "id": "blue" } },
+        "perChat": { chat.as_str(): { "wallpaper": { "type": "none" } } },
+    });
+    assert_eq!(stored, want, "the chat theme is stored like Desktop's chat_appearance");
+    let a = app.store.read().settings.chat_appearance.clone();
+    let (wallpaper, bubble) = crate::chat_theme::resolve(&a, Some(&chat), false);
+    assert!(wallpaper.is_none(), "the chat's own wallpaper wins");
+    assert_eq!(
+        bubble,
+        Some((crate::style::hex(0x3478f6), crate::style::hex(0x1a1a1a))),
+        "the default bubble color applies"
+    );
+    assert!(crate::chat_theme::resolve(&a, Some("other"), false).0.is_some(), "other chats use the default wallpaper");
+    let _ = app.update(UiMessage::SelectChat(chat.clone()));
+    let _ = simulator(app.view_main());
+    let _ = app.update(UiMessage::ChatWallpaper(Some(chat.clone()), Wallpaper::Color { id: "mint".into() }));
+    let _ = simulator(app.view_main());
+    let _ = app.update(UiMessage::ChatBubble(None, None));
+    let _ = app.update(UiMessage::ChatWallpaper(None, Wallpaper::None));
+    let a = app.store.read().settings.chat_appearance.clone();
+    assert!(a.theme(None).bubble.is_none(), "the default bubble color clears");
+    assert_eq!(
+        crate::chat_theme::paint(&a.theme(Some(&chat)).wallpaper.unwrap(), true).unwrap().0,
+        crate::chat_theme::Paint::Flat(Color::from_rgb8(71, 109, 92))
+    );
+}
+
+#[test]
 fn incognito_indicator_like_desktop() {
     let mut app = demo_app("incognito-indicator");
     let trial = serde_json::json!({ "incognito": { "started_at": "2020-01-01T00:00:00Z", "expires_at": "2999-01-01T00:00:00Z" } });
