@@ -40,20 +40,39 @@ fn empty(status: StatusCode, headers: Vec<(&'static str, String)>) -> Reply {
     Ok(Response { status, headers, body: Vec::new() })
 }
 
-fn error(status: StatusCode, error: &str) -> Response {
-    json_with(status, &json!({ "error": error }))
+/// Desktop's `BeeperConnectError` body, in its key order.
+#[derive(Serialize)]
+struct ApiError<'a> {
+    message: &'a str,
+    code: &'a str,
 }
 
-fn bad(e: &str) -> Response {
-    error(StatusCode::BAD_REQUEST, e)
+fn error(status: StatusCode, message: &str, code: &str) -> Response {
+    json_with(status, &ApiError { message, code })
 }
 
-fn missing(e: &str) -> Response {
-    error(StatusCode::NOT_FOUND, e)
+fn bad(message: &str) -> Response {
+    error(StatusCode::BAD_REQUEST, message, "VALIDATION_ERROR")
+}
+
+fn missing(message: &str) -> Response {
+    error(StatusCode::NOT_FOUND, message, "NOT_FOUND")
+}
+
+/// The required-input check of Desktop's tools.
+fn required(k: &str) -> Response {
+    error(StatusCode::BAD_REQUEST, &format!("{k} is required"), "INVALID_INPUT")
+}
+
+fn no_route() -> Response {
+    error(StatusCode::NOT_FOUND, "Not found", "not_found")
 }
 
 fn store_error(e: &'static str) -> Response {
-    error(if e == "existing_draft_not_empty" { StatusCode::CONFLICT } else { StatusCode::NOT_FOUND }, e)
+    match e.starts_with("Cannot overwrite") {
+        true => error(StatusCode::CONFLICT, e, "DRAFT_NOT_EMPTY"),
+        false => missing(e),
+    }
 }
 
 fn page<T: Serialize>(items: Vec<T>, oldest_cursor: Option<String>, newest_cursor: Option<String>) -> Reply {
@@ -72,7 +91,7 @@ impl Req {
     }
 
     fn need_q(&self, k: &str) -> Result<&str, Response> {
-        self.q(k).filter(|v| !v.trim().is_empty()).ok_or_else(|| bad(&format!("{k} is required")))
+        self.q(k).filter(|v| !v.trim().is_empty()).ok_or_else(|| required(k))
     }
 
     fn str(&self, k: &str) -> Option<&str> {
@@ -84,7 +103,7 @@ impl Req {
     }
 
     fn need(&self, k: &str) -> Result<&str, Response> {
-        self.str(k).filter(|v| !v.trim().is_empty()).ok_or_else(|| bad(&format!("{k} is required")))
+        self.str(k).filter(|v| !v.trim().is_empty()).ok_or_else(|| required(k))
     }
 
     fn parse<T: DeserializeOwned>(&self, k: &str) -> Result<T, Response> {
@@ -217,11 +236,14 @@ fn matrix_verification(store: &SharedStore, rest: &[&str]) -> Reply {
             });
         }
         [_, "sas", "confirm"] | [_, "cancel"] => {
-            let tx = st.sas_confirm.take().ok_or_else(|| missing("verification_not_found"))?;
+            let tx = st
+                .sas_confirm
+                .take()
+                .ok_or_else(|| error(StatusCode::NOT_FOUND, "Verification not found", "verification_not_found"))?;
             tx.send(rest[1] == "sas").ok();
         }
         [_, "accept"] | [_, "sas", "start"] => {}
-        _ => return Err(missing("not_found")),
+        _ => return Err(no_route()),
     }
     ok(&json!({ "session": st.setup_status.session, "verification": st.setup_status.session.verification }))
 }
@@ -240,7 +262,10 @@ fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply
             ok(&json!({ "session": st.setup_status.session, "verification": st.setup_status.session.verification }))
         }
         ("GET", ["v1", "app", "setup", "verifications", id]) => {
-            let v = st.verifications.get(*id).ok_or_else(|| missing("verification_not_found"))?;
+            let v = st
+                .verifications
+                .get(*id)
+                .ok_or_else(|| error(StatusCode::NOT_FOUND, "Verification not found", "verification_not_found"))?;
             ok(&json!({ "session": st.setup_status.session, "verification": v }))
         }
         ("POST", ["v1", "app", "setup", rest @ ..]) => setup(st, rest, r),
@@ -257,13 +282,15 @@ fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply
             ok(&asset_json(st.store_uploaded_asset(r.need("fileName")?.into(), r.need("mimeType")?.into(), &bytes)))
         }
         ("POST", ["v1", "assets", "download"]) => {
-            let (path, _) = st.resolve_asset_path(r.need("url")?).ok_or_else(|| missing("asset_not_found"))?;
+            let url = r.need("url")?;
+            let failed = || json_with(StatusCode::OK, &json!({ "error": asset_failure(url).1 }));
+            let (path, _) = st.resolve_asset_path(url).ok_or_else(failed)?;
             ok(&json!({ "srcURL": path_to_file_url(&path) }))
         }
         ("GET", ["v1", "assets", "serve"]) => serve_asset(st, r),
         ("GET", ["v1", "search"]) => unified_search(st, r),
         ("POST", ["v1", "focus"]) => focus(st, r),
-        _ => Err(missing("not_found")),
+        _ => Err(no_route()),
     }
 }
 
@@ -327,19 +354,23 @@ fn new_verification(id: String, methods: &[&str], state: &str, qr: String) -> Ve
 }
 
 fn sign_in_step(store: &SharedStore, cloud: &Cloud, step: &str, r: &Req) -> Reply {
-    let already = || error(StatusCode::CONFLICT, "already_logged_in");
+    let already = || error(StatusCode::CONFLICT, "Beeper Desktop is already signed in", "already_logged_in");
     if store.read().signed_in() {
         return Err(already());
     }
     let upstream = |e: CloudError| match e.status {
-        401 => error(StatusCode::UNAUTHORIZED, "invalid_sign_in_code"),
-        _ => error(StatusCode::BAD_GATEWAY, &e.message),
+        401 => error(StatusCode::UNAUTHORIZED, &e.message, "invalid_sign_in_code"),
+        _ => error(StatusCode(500), &e.message, "UNKNOWN_ERROR"),
     };
     let jwt = match step {
         "start" => {
             let (request, methods) = cloud.start_login().map_err(upstream)?;
             if !methods.iter().any(|m| m == "email") {
-                return Err(error(StatusCode::CONFLICT, "email_sign_in_not_supported"));
+                return Err(error(
+                    StatusCode::CONFLICT,
+                    "Email sign-in is not available right now",
+                    "email_sign_in_not_supported",
+                ));
             }
             return ok(&json!({ "setupRequestID": request, "signInMethods": methods }));
         }
@@ -422,9 +453,12 @@ fn setup(st: &mut BeeperStore, path: &[&str], r: &Req) -> Reply {
                 ["cancel"] => "cancelled",
                 ["sas", "start"] => "sas_started",
                 ["sas", "confirm"] | ["qr", "confirm-scanned"] => "verified",
-                _ => return Err(missing("not_found")),
+                _ => return Err(no_route()),
             };
-            let v = st.verifications.get_mut(*id).ok_or_else(|| missing("verification_not_found"))?;
+            let v = st
+                .verifications
+                .get_mut(*id)
+                .ok_or_else(|| error(StatusCode::NOT_FOUND, "Verification not found", "verification_not_found"))?;
             v.state = state.into();
             v.updated_at = now_rfc3339_millis();
             if state == "sas_started" {
@@ -442,12 +476,12 @@ fn setup(st: &mut BeeperStore, path: &[&str], r: &Req) -> Reply {
             st.setup_status.session.verification = (state != "cancelled").then(|| v.clone());
             ok(&json!({ "session": st.setup_status.session, "verification": v }))
         }
-        _ => Err(missing("not_found")),
+        _ => Err(no_route()),
     }
 }
 
 fn account(st: &BeeperStore, id: &str, rest: &[&str], r: &Req) -> Reply {
-    let account = st.accounts.iter().find(|a| a.account_id == id).ok_or_else(|| missing("account_not_found"))?;
+    let account = st.accounts.iter().find(|a| a.account_id == id).ok_or_else(|| missing("Account not found"))?;
     let users = st.chats.iter().filter(|c| c.account_id == id).flat_map(|c| &c.participants.items);
     match rest {
         [] => ok(account),
@@ -458,7 +492,7 @@ fn account(st: &BeeperStore, id: &str, rest: &[&str], r: &Req) -> Reply {
             ok(&json!({ "items": users.filter(hit).collect::<Vec<_>>() }))
         }
         ["contacts", "list"] => page(users.filter(|p| p.is_self != Some(true)).collect(), None, None),
-        _ => Err(missing("not_found")),
+        _ => Err(no_route()),
     }
 }
 
@@ -501,7 +535,7 @@ fn bridges(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply 
         let bridges: Vec<_> = NETWORK_SPECS.iter().map(|s| bridge_summary(st, s)).collect();
         return ok(&json!({ "bridges": bridges, "catalog": catalog }));
     };
-    let spec = network_spec(id).ok_or_else(|| missing("bridge_not_found"))?;
+    let spec = network_spec(id).ok_or_else(|| missing("Bridge not found"))?;
     let name = spec.display_name;
     let session_exists = |st: &BeeperStore, sid: &str| st.bridge_sessions.get(sid).is_some_and(|s| s.bridge_id == *id);
     match (method, rest) {
@@ -549,7 +583,7 @@ fn bridges(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply 
         ),
         ("DELETE", ["logins", login_id]) => {
             let pos = st.bridge_accounts.iter().position(|b| b.bridge_id == *id && b.login_id == *login_id);
-            st.bridge_accounts.remove(pos.ok_or_else(|| missing("login_not_found"))?);
+            st.bridge_accounts.remove(pos.ok_or_else(|| missing("Bridge login not found"))?);
             st.rebuild_accounts_from_bridges();
             st.persist_state_to_sqlite();
             ok(&json!({ "bridge": bridge_summary(st, spec) }))
@@ -634,8 +668,8 @@ fn bridges(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply 
             st.bridge_sessions.insert(sid.to_string(), session.clone());
             ok(&session)
         }
-        (_, ["login-sessions", ..]) => Err(missing("login_session_not_found")),
-        _ => Err(missing("not_found")),
+        (_, ["login-sessions", ..]) => Err(missing("Bridge login session not found")),
+        _ => Err(no_route()),
     }
 }
 
@@ -683,10 +717,10 @@ fn chats(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
         }
         ("GET", ["search"]) => search_chats(st, r),
         (_, [id, rest @ ..]) => {
-            let idx = st.resolve_chat_idx(id).ok_or_else(|| missing("chat_not_found"))?;
+            let idx = st.resolve_chat_idx(id).ok_or_else(|| missing("Chat not found"))?;
             chat(st, method, idx, id, rest, r)
         }
-        _ => Err(missing("not_found")),
+        _ => Err(no_route()),
     }
 }
 
@@ -700,7 +734,7 @@ fn create_chat(st: &mut BeeperStore, r: &Req) -> Reply {
                 .ok_or_else(|| bad("merge.chatIDs is required"))?;
             let default_chat_id = merge["defaultChatID"].as_str().map(str::to_string);
             let lead = st.resolve_chat_idx(default_chat_id.as_deref().unwrap_or(&chat_ids[0]));
-            let account = st.chats[lead.ok_or_else(|| missing("chat_not_found"))?].account_id.clone();
+            let account = st.chats[lead.ok_or_else(|| missing("Chat not found"))?].account_id.clone();
             st.create_or_start_chat(
                 &account,
                 "merged",
@@ -787,7 +821,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
         ("GET", ["messages"]) => list_messages(st, idx, r),
         ("POST", ["messages"]) => send_message(st, id, r),
         ("GET", ["messages", mid]) => {
-            ok(&st.messages[*st.msg_idx_by_id.get(*mid).ok_or_else(|| missing("message_not_found"))?])
+            ok(&st.messages[*st.msg_idx_by_id.get(*mid).ok_or_else(|| missing("Message not found"))?])
         }
         ("PUT", ["messages", mid]) => {
             let text = r.need("text")?;
@@ -811,12 +845,12 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
                 .reactions
                 .iter()
                 .find(|x| x.reaction_key == *key && st.is_me(&x.participant_id));
-            let target = mine.ok_or_else(|| missing("reaction_not_found"))?.id.clone();
+            let target = mine.ok_or_else(|| missing("Reaction not found"))?.id.clone();
             let cid = st.remove_reaction(id, mid, key).map_err(store_error)?;
             st.queue(&cid, Outgoing::Redact { target });
             ok(&json!({ "chatID": cid, "messageID": mid, "reactionKey": key, "success": true }))
         }
-        _ => Err(missing("not_found")),
+        _ => Err(no_route()),
     }
 }
 
@@ -847,8 +881,14 @@ fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
     let attachment = match &r.body["attachment"] {
         Value::Null => None,
         a => {
-            let upload_id = a["uploadID"].as_str().ok_or_else(|| bad("attachment.uploadID is required"))?;
-            let stored = st.assets.get(upload_id).ok_or_else(|| missing("upload_not_found"))?.clone();
+            let upload_id = a["uploadID"]
+                .as_str()
+                .ok_or_else(|| error(StatusCode::BAD_REQUEST, "uploadID is required", "MISSING_UPLOAD_ID"))?;
+            let stored = st.assets.get(upload_id).ok_or_else(|| {
+                let message = format!("Upload not found: {upload_id}. File may have expired.");
+                error(StatusCode::NOT_FOUND, &message, "UPLOAD_NOT_FOUND")
+            })?;
+            let stored = stored.clone();
             let mime = a["mimeType"].as_str().map_or(stored.mime_type, str::to_string);
             let kind = match mime.split('/').next() {
                 Some("image") => "img",
@@ -1004,25 +1044,40 @@ fn parse_range(header: &str, total: usize) -> Option<(usize, usize)> {
     (start <= end).then_some((start, end))
 }
 
+/// Desktop's failures of `resolveMatrixAsset` and of file URLs.
+fn asset_failure(url: &str) -> (StatusCode, &'static str) {
+    match url {
+        u if u.starts_with("file://") => (StatusCode::NOT_FOUND, "File not found"),
+        u if u.starts_with("mxc://") || u.starts_with("localmxc://") => {
+            (StatusCode::BAD_GATEWAY, "Failed to download asset: Not found")
+        }
+        _ => (StatusCode::BAD_REQUEST, "URL must be mxc:// or localmxc://"),
+    }
+}
+
 fn serve_asset(st: &BeeperStore, r: &Req) -> Reply {
-    let (path, mime) = st.resolve_asset_path(r.need_q("url")?).ok_or_else(|| missing("asset_not_found"))?;
+    let url = r.need_q("url")?;
+    let (path, mime) = st.resolve_asset_path(url).ok_or_else(|| {
+        let (status, message) = asset_failure(url);
+        error(status, message, "SERVE_ASSET_ERROR")
+    })?;
     let bytes = std::fs::read(&path).expect("read asset file");
     let mut headers = vec![("content-type", mime), ("accept-ranges", "bytes".into())];
     let Some(range) = r.msg.header("range") else {
         return Ok(Response { status: StatusCode::OK, headers, body: bytes });
     };
     let total = bytes.len();
-    let (start, end) =
-        parse_range(range, total).ok_or_else(|| error(StatusCode::RANGE_NOT_SATISFIABLE, "bad_range"))?;
+    let (start, end) = parse_range(range, total)
+        .ok_or_else(|| error(StatusCode::RANGE_NOT_SATISFIABLE, "Range Not Satisfiable", "UNKNOWN_ERROR"))?;
     headers.push(("content-range", format!("bytes {start}-{end}/{total}")));
     Ok(Response { status: StatusCode::PARTIAL_CONTENT, headers, body: bytes[start..=end].to_vec() })
 }
 
 fn focus(st: &mut BeeperStore, r: &Req) -> Reply {
     let idx = match (r.str("chatID"), r.str("messageID")) {
-        (Some(id), _) => Some(st.resolve_chat_idx(id).ok_or_else(|| missing("chat_not_found"))?),
+        (Some(id), _) => Some(st.resolve_chat_idx(id).ok_or_else(|| missing("Chat not found"))?),
         (None, Some(mid)) => {
-            let &m_idx = st.msg_idx_by_id.get(mid).ok_or_else(|| missing("message_not_found"))?;
+            let &m_idx = st.msg_idx_by_id.get(mid).ok_or_else(|| missing("Message not found"))?;
             Some(st.chat_idx_by_id[&st.messages[m_idx].chat_id])
         }
         (None, None) => None,
