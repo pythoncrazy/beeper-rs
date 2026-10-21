@@ -276,6 +276,8 @@ pub enum UiMessage {
     SelectTab(InboxTab),
     SelectAccount(Option<String>),
     SelectChat(String),
+    /// The Undo of an archive or Low Priority toast: sets the flag of the chats back, then selects them.
+    UndoFlag(ChatFlag, Vec<(String, bool)>, bool),
     ClickChat(String),
     ComposerChanged(String),
     ComposerEdit(text_editor::Action),
@@ -2684,6 +2686,16 @@ fn tinted<'a>(h: &svg::Handle, size: f32, color: Color) -> El<'a> {
     svg(h.clone()).width(size).height(size).opacity(color.a).style(move |_, _| svg::Style { color: Some(color) }).into()
 }
 
+/// Desktop's `Archive`, `Inbox` and `LowPriority` assets, which its archive and Low Priority toasts show.
+static TOAST_ICONS: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock::new(|| {
+    [
+        "M4.556 17a1.5 1.5 0 0 1-1.1-.457A1.5 1.5 0 0 1 3 15.444V5.722q0-.292.097-.525.098-.232.253-.447l1.089-1.322a1 1 0 0 1 .389-.321Q5.06 3 5.333 3h9.334q.272 0 .505.107a1 1 0 0 1 .39.32L16.65 4.75q.156.214.253.447t.097.525v9.722a1.5 1.5 0 0 1-.457 1.1 1.5 1.5 0 0 1-1.099.456zm.31-11.667h10.267l-.66-.777H5.527zm-.31 1.556v8.555h10.888V6.89zM10 14.667l3.111-3.111-1.089-1.09-1.244 1.245V8.444H9.222v3.267l-1.244-1.244-1.09 1.089z",
+        "M15.833 2.5H4.158c-.925 0-1.65.742-1.65 1.667L2.5 15.833A1.66 1.66 0 0 0 4.158 17.5h11.675c.917 0 1.667-.75 1.667-1.667V4.167c0-.925-.75-1.667-1.667-1.667m0 10H12.5c0 1.383-1.125 2.5-2.5 2.5a2.5 2.5 0 0 1-2.5-2.5H4.158V4.167h11.675z",
+        "M11.667 4.167h6.666v1.556h-6.666zm0 4.278h6.666V10h-6.666zm0 4.278h6.666v1.555h-6.666zm-10-3.5c0 2.784 2.433 5.055 5.416 5.055H7.5v1.556L10 13.5l-2.5-2.333v1.556h-.417c-2.066 0-3.75-1.572-3.75-3.5 0-1.93 1.684-3.5 3.75-3.5H10V4.167H7.083c-2.983 0-5.416 2.271-5.416 5.056",
+    ]
+    .map(|d| svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="{d}"/></svg>"#).into_bytes()))
+});
+
 static THEME_ART: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock::new(|| {
     let light = THEME_WINDOW.replace("WIN", "#f5f5f7").replace("LINE", "#d9d9de");
     let dark = THEME_WINDOW.replace("WIN", "#1f1f23").replace("LINE", "#3a3a41");
@@ -2971,6 +2983,8 @@ pub struct BeeperGuiApp {
     relaunch_toast: Option<&'static str>,
     /// A button of the toast, shown only while the banner still is the text it was made for.
     banner_action: Option<(String, &'static str, UiMessage)>,
+    /// Desktop's archive and Low Priority toasts, shown only while the banner still is their text.
+    undo_toast: Option<UndoToast>,
     pub dnd_muted: bool,
     pub sidebar_width: f32,
     /// Desktop's local `sidebar-hidden`: hides the rail and the chat list.
@@ -3118,6 +3132,7 @@ impl BeeperGuiApp {
             status_banner: String::new(),
             relaunch_toast: None,
             banner_action: None,
+            undo_toast: None,
             dnd_muted: false,
             sidebar_width,
             sidebar_hidden,
@@ -4555,10 +4570,30 @@ impl BeeperGuiApp {
                 }
                 self.refresh_theme_and_tray();
             }
+            UiMessage::UndoFlag(flag, chats, many) => {
+                (self.status_banner, self.undo_toast) = (String::new(), None);
+                {
+                    let mut st = self.store.write();
+                    for (id, on) in &chats {
+                        let idx = st.resolve_chat_idx(id).expect("an undone chat exists");
+                        match flag {
+                            ChatFlag::Archived => drop(self.set_archived(&mut st, idx, *on)),
+                            _ => drop(st.set_chat_flag(idx, flag, Some(*on))),
+                        }
+                    }
+                }
+                self.refresh_theme_and_tray();
+                let ids: Vec<String> = chats.into_iter().map(|c| c.0).collect();
+                match many {
+                    true => self.selection = ids,
+                    false => return self.update(UiMessage::SelectChat(ids[0].clone())),
+                }
+            }
             UiMessage::ToggleFlag(cid, flag) => {
                 let mut st = self.store.write();
                 let at = self.list_ids(&st).iter().position(|c| *c == cid);
                 let idx = st.resolve_chat_idx(&cid).expect("chat exists");
+                let was = has_flag(&st.chats[idx], flag);
                 let moved = match flag {
                     ChatFlag::Archived => {
                         let on = !has_flag(&st.chats[idx], flag);
@@ -4570,6 +4605,8 @@ impl BeeperGuiApp {
                 drop(st);
                 if !moved {
                     self.status_banner = tr("Pinned chats can't be archived").into();
+                } else if matches!(flag, ChatFlag::Archived | ChatFlag::LowPriority) {
+                    self.flag_toast(flag, !was, vec![(cid.clone(), was)], false);
                 }
                 self.chat_menu = None;
                 self.refresh_theme_and_tray();
@@ -5318,25 +5355,33 @@ impl BeeperGuiApp {
             }
             UiMessage::SelectionSet(flag, on) => {
                 (self.selection_menu, self.chat_menu) = (None, None);
+                let many = self.selection.len() > 1;
+                let mut undo = Vec::new();
                 {
                     let mut st = self.store.write();
                     for cid in std::mem::take(&mut self.selection) {
                         let idx = st.resolve_chat_idx(&cid).expect("selected chat exists");
-                        if has_flag(&st.chats[idx], flag) == on {
-                            continue;
-                        }
-                        let moved = match flag {
-                            ChatFlag::MarkedUnread if !on => {
-                                self.mark_read(&mut st, idx);
-                                true
-                            }
-                            ChatFlag::Archived => self.set_archived(&mut st, idx, on),
-                            _ => st.set_chat_flag(idx, flag, Some(on)),
-                        };
-                        if !moved {
-                            self.status_banner = tr("Pinned chats can't be archived").into();
+                        let moved = has_flag(&st.chats[idx], flag) != on
+                            && match flag {
+                                ChatFlag::MarkedUnread if !on => {
+                                    self.mark_read(&mut st, idx);
+                                    true
+                                }
+                                ChatFlag::Archived => {
+                                    self.set_archived(&mut st, idx, on) || {
+                                        self.status_banner = tr("Pinned chats can't be archived").into();
+                                        false
+                                    }
+                                }
+                                _ => st.set_chat_flag(idx, flag, Some(on)),
+                            };
+                        if moved || many && flag == ChatFlag::Archived {
+                            undo.push((cid, !on));
                         }
                     }
+                }
+                if matches!(flag, ChatFlag::Archived | ChatFlag::LowPriority) {
+                    self.flag_toast(flag, on, undo, many);
                 }
                 self.refresh_theme_and_tray();
             }
@@ -8086,6 +8131,36 @@ impl BeeperGuiApp {
 
     /// Desktop's `setIsArchived`: archiving marks the chat read when "Mark unread chats as read on archive" is on.
     /// Returns false for a pinned chat, which stays in the inbox.
+    /// Desktop's `showArchiveToast`, `toggleThreadArchive` and `showLowPriorityToast`: `chats` moved to `on`, with the
+    /// flag that Undo sets back. `many` is a selection of chats, which Undo selects again.
+    fn flag_toast(&mut self, flag: ChatFlag, on: bool, chats: Vec<(String, bool)>, many: bool) {
+        let n = chats.len();
+        let (text, icon, open) = match flag {
+            ChatFlag::Archived => {
+                let text = match (many, on) {
+                    (false, true) => tr("Archived").into(),
+                    (false, false) => tr("Unarchived").into(),
+                    (true, true) => trn("Archived %d chat", "Archived %d chats", n, &[&n]),
+                    (true, false) => trn("Unarchived %d chat", "Unarchived %d chats", n, &[&n]),
+                };
+                (text, (!many).then_some(0), if on { InboxTab::Archived } else { InboxTab::AllChats })
+            }
+            _ => {
+                let text = match (n, on) {
+                    (1, true) => tr("Moved to Low Priority").into(),
+                    (1, false) => tr("Moved to Inbox").into(),
+                    (_, true) => trn("Moved %d chat to Low Priority", "Moved %d chats to Low Priority", n, &[&n]),
+                    (_, false) => trn("Moved %d chat to Inbox", "Moved %d chats to Inbox", n, &[&n]),
+                };
+                (text, Some(if on { 2 } else { 1 }), if on { InboxTab::LowPriority } else { InboxTab::AllChats })
+            }
+        };
+        if n > 0 {
+            self.status_banner = text.clone();
+            self.undo_toast = Some(UndoToast { text, icon, undo: UiMessage::UndoFlag(flag, chats, many), open });
+        }
+    }
+
     fn set_archived(&self, st: &mut BeeperStore, idx: usize, on: bool) -> bool {
         if on && st.settings.on("markReadOnArchive") {
             self.mark_read(st, idx);
@@ -10480,8 +10555,29 @@ impl BeeperGuiApp {
             Some(t) => tr(t),
             None => &self.status_banner,
         };
+        let undo = self.undo_toast.as_ref().filter(|t| self.relaunch_toast.is_none() && t.text == *banner);
         (!banner.is_empty()).then(|| {
             let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, p.sub, UiMessage::DismissBanner);
+            if let Some(t) = undo {
+                let undo = |fg: Color| {
+                    let label = semi(tr("Undo"), 13.0).line_height(Pixels(18.0)).color(fg);
+                    button(label).padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0)).on_press(t.undo.clone())
+                };
+                let card: El = match t.icon {
+                    Some(i) => {
+                        let glyph = container(tinted(&TOAST_ICONS[i], 20.0, p.strong)).center_x(16).center_y(20);
+                        let text = semi(banner.to_string(), 13.0).color(p.strong);
+                        row![glyph, text, undo(p.accent), close].spacing(8).align_y(Center).into()
+                    }
+                    None => {
+                        let text = txt(banner.to_string(), 13.0).color(p.strong);
+                        row![column![text, undo(p.strong)].spacing(16), close].spacing(8).into()
+                    }
+                };
+                let card = container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0));
+                let card = mouse_area(card).on_press(UiMessage::SelectTab(t.open));
+                return container(card).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(left)).into();
+            }
             let text = txt(banner.to_string(), 13.0).color(p.strong);
             let action = match (self.relaunch_toast, &self.banner_action) {
                 (Some(_), _) => Some((tr("Relaunch app"), UiMessage::Relaunch)),
@@ -13403,6 +13499,16 @@ pub struct LabelDraft {
 }
 
 /// The Edit Spaces window: the shown spaces, then `SPACES_DIVIDER`, then the hidden spaces.
+/// Desktop's `UOe` and `HOe` toasts: an icon, strong text, an Undo `rightButton`, and a click that opens a view.
+/// Without an icon, it is the multi-chat archive toast: plain text with Undo in its `buttons` below.
+pub struct UndoToast {
+    pub text: String,
+    /// The index of the icon in `TOAST_ICONS`.
+    pub icon: Option<usize>,
+    pub undo: UiMessage,
+    pub open: InboxTab,
+}
+
 /// A press on a rail space, which Desktop's `Drop` sorts after the cursor moves 5px.
 pub struct RailDrag {
     pub id: String,
