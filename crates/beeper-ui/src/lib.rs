@@ -4327,6 +4327,7 @@ impl BeeperGuiApp {
                 let edit = if back { text_editor::Edit::Backspace } else { text_editor::Edit::Delete };
                 return self.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
             }
+            UiMessage::Undo(false) if let Some(undo) = self.shown_undo() => return self.update(undo),
             UiMessage::Undo(false) if self.queued_here() => return self.update(UiMessage::UndoSend),
             UiMessage::Undo(true) if self.queued_here() => {
                 return self.update(UiMessage::SendQueued(self.pane.selected_chat_id.clone()));
@@ -6435,7 +6436,7 @@ impl BeeperGuiApp {
                 return self.carousel_key(&key, mods);
             }
             UiMessage::KeyPressed(key, mods) => {
-                if self.queued_here()
+                if (self.queued_here() || self.shown_undo().is_some())
                     && mods.command()
                     && matches!(key.as_ref(), Key::Character(c) if c.eq_ignore_ascii_case("z"))
                 {
@@ -8159,6 +8160,12 @@ impl BeeperGuiApp {
             self.status_banner = text.clone();
             self.undo_toast = Some(UndoToast { text, icon, undo: UiMessage::UndoFlag(flag, chats, many), open });
         }
+    }
+
+    /// Desktop's `undoLastToast`: the Undo of the toast on screen.
+    fn shown_undo(&self) -> Option<UiMessage> {
+        let t = self.undo_toast.as_ref().filter(|t| self.relaunch_toast.is_none() && t.text == self.status_banner)?;
+        Some(t.undo.clone())
     }
 
     fn set_archived(&self, st: &mut BeeperStore, idx: usize, on: bool) -> bool {
@@ -10555,7 +10562,7 @@ impl BeeperGuiApp {
             Some(t) => tr(t),
             None => &self.status_banner,
         };
-        let undo = self.undo_toast.as_ref().filter(|t| self.relaunch_toast.is_none() && t.text == *banner);
+        let undo = self.undo_toast.as_ref().filter(|_| self.shown_undo().is_some());
         (!banner.is_empty()).then(|| {
             let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, p.sub, UiMessage::DismissBanner);
             if let Some(t) = undo {

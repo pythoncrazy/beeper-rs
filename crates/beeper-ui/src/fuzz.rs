@@ -1812,8 +1812,9 @@ fn archive_and_low_priority_toasts_undo_like_desktop() {
     assert_eq!(app.selection, ids, "Undo selects the chats again");
     let _ = app.update(UiMessage::SelectionSet(ChatFlag::Archived, true));
     assert!(app.status_banner == "Archived 2 chats" && app.undo_toast.as_ref().unwrap().icon.is_none());
-    undo(&mut app);
-    assert!(ids.iter().all(|id| !flag(&app, id, ChatFlag::Archived)) && app.selection == ids);
+    let _ = app.update(UiMessage::Undo(false));
+    assert!(ids.iter().all(|id| !flag(&app, id, ChatFlag::Archived)) && app.selection == ids, "Mod-z runs the Undo");
+    assert!(app.shown_undo().is_none());
 }
 
 #[test]
