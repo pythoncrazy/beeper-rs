@@ -1020,6 +1020,23 @@ impl BeeperStore {
         }
     }
 
+    /// Desktop's `createLabel`: adds the label here at once and creates its label space on the homeserver.
+    pub fn create_label(&mut self, name: &str, color: Option<u8>, icon: Option<String>, rooms: Vec<String>) -> String {
+        assert!(!name.trim().is_empty() && !rooms.is_empty(), "a label has a name and chats");
+        let label = Label { id: self.next_id("label"), name: name.trim().into(), color, icon, muted: false, rooms };
+        let id = label.id.clone();
+        self.set_label(label.clone());
+        self.queue(&id, Outgoing::CreateLabel(label));
+        id
+    }
+
+    /// Gives the label `draft` the ID of its new label space.
+    pub fn created_label(&mut self, draft: &str, id: &str) {
+        let Some(label) = self.labels.iter().find(|l| l.id == draft).cloned() else { return };
+        self.remove_label(draft);
+        self.set_label(Label { id: id.into(), ..label });
+    }
+
     pub fn remove_label(&mut self, id: &str) {
         let Some(label) = self.labels.iter().find(|l| l.id == id).cloned() else { return };
         self.set_label(Label { rooms: Vec::new(), ..label });

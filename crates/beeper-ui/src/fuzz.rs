@@ -1562,3 +1562,31 @@ fn labels_in_the_rail_like_desktop() {
     app.store.write().features.flags = serde_json::Value::Null;
     assert!(!rail_accounts(&app.store.read()).iter().any(|a| a.starts_with("label:")), "labels-v2 hides labels");
 }
+
+#[test]
+fn create_label_like_desktop() {
+    let mut app = demo_app("create-label");
+    let chats: Vec<String> =
+        app.store.read().chats.iter().filter(|c| c.label_ids.is_empty()).map(|c| c.id.clone()).take(2).collect();
+    let _ = app.update(UiMessage::OpenCreateLabel);
+    let edit = |app: &mut BeeperGuiApp, e| drop(app.update(UiMessage::Label(e)));
+    let found = |app: &BeeperGuiApp, s: &str| {
+        simulator(app.view_create_label(app.label_window.as_ref().expect("the label window"))).find(s).is_ok()
+    };
+    assert!(found(&app, "Chats") && !found(&app, "Selected"));
+    edit(&mut app, LabelEdit::Toggle(chats[0].clone()));
+    edit(&mut app, LabelEdit::Toggle(chats[1].clone()));
+    assert!(found(&app, "Selected"));
+    edit(&mut app, LabelEdit::Create);
+    assert!(app.label_window.is_some(), "a label needs a title");
+    edit(&mut app, LabelEdit::Search("zzzz".into()));
+    assert!(found(&app, "Clear search to show all selected chats") && !found(&app, "Selected"));
+    edit(&mut app, LabelEdit::Name(" Friends ".into()));
+    edit(&mut app, LabelEdit::Create);
+    let st = app.store.read();
+    let label = st.labels.iter().find(|l| l.name == "Friends").expect("the new label");
+    assert_eq!(label.rooms, chats);
+    assert_eq!(label.icon.as_deref(), Some(DEFAULT_LABEL_ICON));
+    assert!(chats.iter().all(|c| st.chats[st.chat_idx_by_id[c]].label_ids.contains(&label.id)));
+    assert_eq!(app.selected_account_filter, Some(format!("label:{}", label.id)), "the new label opens");
+}

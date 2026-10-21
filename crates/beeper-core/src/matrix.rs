@@ -681,6 +681,30 @@ async fn sync_label(store: &SharedStore, room: &Room) {
     store.write().set_label(label);
 }
 
+/// Desktop's `createLabel` and `addRoomToLabel`.
+async fn create_label(store: &SharedStore, client: &Client, label: Label) -> Result<(), String> {
+    use matrix_sdk::ruma::api::client::room::create_room::v3::{Request, RoomPreset};
+    fn raw<T>(v: Value) -> Raw<T> {
+        Raw::from_json(serde_json::value::to_raw_value(&v).expect("label JSON"))
+    }
+    let event =
+        |kind: &str, content: Value| raw(serde_json::json!({ "type": kind, "state_key": "", "content": content }));
+    let mut request = Request::new();
+    request.creation_content = Some(raw(serde_json::json!({ "type": "m.space", "com.beeper.label": true })));
+    request.initial_state = std::iter::once(event("m.room.name", serde_json::json!({ "name": label.name })))
+        .chain(label.color.map(|c| event("com.beeper.label.color", serde_json::json!({ "color_index": c }))))
+        .chain(label.icon.as_ref().map(|i| event("com.beeper.label.icon", serde_json::json!({ "icon": i }))))
+        .collect();
+    request.preset = Some(RoomPreset::PrivateChat);
+    let room = client.create_room(request).await.map_err(|e| e.to_string())?;
+    for chat in &label.rooms {
+        let via = serde_json::json!({ "via": ["beeper.com"] });
+        room.send_state_event_raw("m.space.child", chat, via).await.map_err(|e| e.to_string())?;
+    }
+    store.write().created_label(&label.id, room.room_id().as_str());
+    Ok(())
+}
+
 async fn sync_space(store: &SharedStore, room: &Room) {
     let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
     // A Slack login is one workspace, so the workspace space is the account itself.
@@ -920,6 +944,8 @@ pub enum Outgoing {
         target: String,
         answers: Vec<String>,
     },
+    /// A label space with its chats as children, like Desktop's `createLabel`. Its chat is the label ID here.
+    CreateLabel(Label),
     Read(String),
     Flag(ChatFlag, bool),
     Reminder(Option<ChatReminder>),
@@ -999,6 +1025,9 @@ fn text_content(text: String) -> RoomMessageEventContent {
 
 async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), String> {
     let client = store.read().matrix.clone().expect("flush checks the Matrix client");
+    if let Outgoing::CreateLabel(label) = out {
+        return create_label(store, &client, label).await;
+    }
     let room = joined_room(&client, &chat).await?;
     let event = |id: String| {
         let id = store.read().sent.get(&id).cloned().unwrap_or(id);
@@ -1175,6 +1204,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             let parsed_mime = mime.parse().expect("valid media mime");
             sent(txn, room.send_attachment(&name, &parsed_mime, data, config).await.map_err(e)?.event_id);
         }
+        Outgoing::CreateLabel(_) => unreachable!("a label has no room before it is created"),
     }
     Ok(())
 }

@@ -358,6 +358,9 @@ pub enum UiMessage {
     /// Desktop's `PollCreatorBrowserWindow` for a chat.
     OpenPollCreator(String),
     Poll(window::Id, PollEdit),
+    /// Desktop's `CreateLabelBrowserWindow`.
+    OpenCreateLabel,
+    Label(LabelEdit),
     /// Desktop's `PollVotesBrowserWindow` for a chat's poll message.
     OpenPollVotes(String, String),
     EndPoll(String, String),
@@ -1177,6 +1180,16 @@ fn checkbox<'a>(p: &Palette, on: bool) -> El<'a> {
     container(check).center(16).style(bordered_box(bg, ring, 1.5, 8.0)).into()
 }
 
+/// Desktop's `CheckboxPlus`: a plus until it is checked.
+fn checkbox_plus<'a>(p: &Palette, on: bool) -> El<'a> {
+    match on {
+        true => checkbox(p, true),
+        false => {
+            container(ic(icon::PLUS, 10.0).color(p.sub)).center(16).style(bordered_box(CLEAR, p.sub, 1.5, 8.0)).into()
+        }
+    }
+}
+
 fn menu_rule<'a>(p: &Palette) -> El<'a> {
     let line = container(Space::new()).width(Fill).height(1).style(fill_box(Color { a: 0.1, ..p.strong }, 0.0));
     container(line).padding([5, 8]).into()
@@ -1262,7 +1275,7 @@ static LABEL_ICONS: std::sync::LazyLock<HashMap<&str, svg::Handle>> = std::sync:
 fn label_icon<'a>(l: &Label, size: f32, fg: Color) -> El<'a> {
     let colors = l.color.and_then(|c| LABEL_COLORS.get(usize::from(c)).copied());
     let glyph = (l.icon.is_some() || colors.is_none())
-        .then(|| LABEL_ICONS.get(l.icon.as_deref().unwrap_or("3257-5964")))
+        .then(|| LABEL_ICONS.get(l.icon.as_deref().unwrap_or(DEFAULT_LABEL_ICON)))
         .flatten()
         .map(|h| tinted(h, (size * 20.0 / 28.0).round(), if colors.is_some() { Color::WHITE } else { fg }));
     container(glyph)
@@ -2784,6 +2797,7 @@ pub struct BeeperGuiApp {
     /// Desktop's `ChatThemeBrowserWindow`s and their chats.
     pub theme_windows: Vec<(window::Id, String)>,
     pub poll_windows: Vec<PollDraft>,
+    pub label_window: Option<LabelDraft>,
     /// The poll votes windows with their chats and poll messages.
     pub vote_windows: Vec<(window::Id, String, String)>,
     /// The window that `BEEPER_SCREENSHOT_EXIT` or `BEEPER_SCREENSHOT_SETTINGS` captures after its next frame.
@@ -2924,6 +2938,7 @@ impl BeeperGuiApp {
             login_window: None,
             theme_windows: Vec::new(),
             poll_windows: Vec::new(),
+            label_window: None,
             vote_windows: Vec::new(),
             shot: None,
             login: Login::new(source),
@@ -3250,6 +3265,7 @@ impl BeeperGuiApp {
             _ if Some(id) == self.settings_window => tr("Settings"),
             _ if self.theme_windows.iter().any(|w| w.0 == id) => tr("Chat Theme"),
             _ if self.poll_windows.iter().any(|w| w.id == id) => tr("New Poll"),
+            _ if self.label_window.as_ref().is_some_and(|d| d.id == id) => tr("New label"),
             _ if let Some((_, _, mid)) = self.vote_windows.iter().find(|w| w.0 == id) => {
                 let st = self.store.read();
                 let total =
@@ -4428,6 +4444,15 @@ impl BeeperGuiApp {
                 return open.chain(operation::focus(question));
             }
             UiMessage::Poll(id, edit) => return self.poll_edit(id, edit),
+            UiMessage::OpenCreateLabel => {
+                if let Some(d) = &self.label_window {
+                    return window::gain_focus(d.id);
+                }
+                let (id, open) = self.open_child(Size::new(600.0, 700.0));
+                self.label_window = Some(LabelDraft::new(id));
+                return open.chain(operation::focus("label-title"));
+            }
+            UiMessage::Label(edit) => return self.label_edit(edit),
             UiMessage::EndPoll(chat, mid) => self.store.write().end_poll(&chat, &mid),
             UiMessage::OpenPollVotes(chat, mid) => {
                 if let Some(w) = self.vote_windows.iter().find(|w| w.2 == mid) {
@@ -4753,6 +4778,13 @@ impl BeeperGuiApp {
                 }
                 if self.theme_windows.iter().any(|w| w.0 == id) || self.vote_windows.iter().any(|w| w.0 == id) {
                     return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
+                }
+                if self.label_window.as_ref().is_some_and(|d| d.id == id) {
+                    return match key {
+                        Key::Named(Named::Escape) => window::close(id),
+                        Key::Named(Named::Enter) if mods.command() => self.label_edit(LabelEdit::Create),
+                        _ => Task::none(),
+                    };
                 }
                 if self.poll_windows.iter().any(|w| w.id == id) {
                     return match key {
@@ -5968,6 +6000,7 @@ impl BeeperGuiApp {
                 self.theme_windows.retain(|w| w.0 != id);
                 self.poll_windows.retain(|w| w.id != id);
                 self.vote_windows.retain(|w| w.0 != id);
+                self.label_window = self.label_window.take().filter(|d| d.id != id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
                 } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
@@ -6364,6 +6397,8 @@ impl BeeperGuiApp {
             self.view_chat_theme(chat)
         } else if let Some(d) = self.poll_windows.iter().find(|w| w.id == id) {
             self.view_poll_creator(d)
+        } else if let Some(d) = self.label_window.as_ref().filter(|d| d.id == id) {
+            self.view_create_label(d)
         } else if let Some((_, chat, mid)) = self.vote_windows.iter().find(|w| w.0 == id) {
             self.view_poll_votes(chat, mid)
         } else {
@@ -7674,8 +7709,11 @@ impl BeeperGuiApp {
                     None => c.push(self.tip(btn, label, hotkey(7 + i), tooltip::Position::Right)),
                 }
             });
-        let add_label = button(add_space).padding(0).style(ghost(p, 12.0)).on_press(UiMessage::ToggleCommandPalette);
         let labels = st.feature("labels-v2");
+        let add_label = button(add_space)
+            .padding(0)
+            .style(ghost(p, 12.0))
+            .on_press_maybe(labels.on.then_some(UiMessage::OpenCreateLabel));
         let top = column![
             tab(
                 "rail-inbox",
@@ -11661,6 +11699,164 @@ impl BeeperGuiApp {
         }
     }
 
+    fn label_edit(&mut self, edit: LabelEdit) -> Task<UiMessage> {
+        let d = self.label_window.as_mut().expect("the label window is open");
+        match edit {
+            LabelEdit::Name(name) => d.name = name,
+            LabelEdit::Search(search) => d.search = search,
+            LabelEdit::Toggle(chat) => match d.chats.iter().position(|c| *c == chat) {
+                Some(i) => drop(d.chats.remove(i)),
+                None => d.chats.push(chat),
+            },
+            LabelEdit::More => d.more = !d.more,
+            LabelEdit::Create if d.ready() => {
+                let (id, chats) = (d.id, std::mem::take(&mut d.chats));
+                let label = self.store.write().create_label(&d.name, d.color, d.icon.clone(), chats);
+                let _ = self.update(UiMessage::SelectAccount(Some(format!("label:{label}"))));
+                return window::close(id);
+            }
+            LabelEdit::Create => {}
+        }
+        Task::none()
+    }
+
+    /// Desktop's `CreateLabel` list: the search results, or the selected, recent and other chats.
+    fn label_rows<'s>(&self, st: &'s BeeperStore, d: &LabelDraft) -> Vec<LabelRow<'s>> {
+        let picked = |c: &Chat| d.chats.contains(&c.id);
+        let shown = |c: &&Chat| c.merged_into_chat_id.is_none() && (c.flags & CHAT_LOW_PRIORITY == 0 || picked(c));
+        let mut all: Vec<&Chat> = st.chats.iter().filter(shown).collect();
+        all.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+        let q = d.search.trim().to_lowercase();
+        if !q.is_empty() {
+            let hits = all.into_iter().filter(|c| c.title.to_lowercase().contains(&q)).map(LabelRow::Chat);
+            return std::iter::once(LabelRow::Note).chain(hits).collect();
+        }
+        let recent: Vec<&Chat> = self
+            .chat_history
+            .iter()
+            .filter_map(|id| st.resolve_chat_idx(id).map(|i| &st.chats[i]))
+            .filter(shown)
+            .collect();
+        let mut rows = Vec::new();
+        let selected: Vec<&Chat> = all.iter().copied().filter(|c| picked(c)).collect();
+        if !selected.is_empty() {
+            rows.push(LabelRow::Header("Selected", None));
+            rows.extend(selected.into_iter().map(LabelRow::Chat));
+        }
+        let fresh: Vec<&Chat> = recent.iter().copied().filter(|c| !picked(c)).collect();
+        if !fresh.is_empty() {
+            rows.push(LabelRow::Header("Recent chats", (fresh.len() > 5).then_some(d.more)));
+            rows.extend(fresh.into_iter().take(if d.more { usize::MAX } else { 5 }).map(LabelRow::Chat));
+        }
+        let rest: Vec<&Chat> = all.into_iter().filter(|c| !picked(c) && !recent.iter().any(|r| r.id == c.id)).collect();
+        if !rest.is_empty() {
+            rows.push(LabelRow::Header("Chats", None));
+            rows.extend(rest.into_iter().map(LabelRow::Chat));
+        }
+        rows
+    }
+
+    fn view_create_label<'a>(&'a self, d: &'a LabelDraft) -> El<'a> {
+        let p = &self.pal;
+        let st = self.store.read();
+        let edit = UiMessage::Label;
+        let title = text_input(tr("Title"), &d.name)
+            .id("label-title")
+            .on_input(move |n| edit(LabelEdit::Name(n)))
+            .size(13)
+            .line_height(Pixels(16.0))
+            .padding([10, 8])
+            .style(input_style(p.received, p.strong, p.sub, p.accent, 18.0));
+        let explainer =
+            txt(tr("Add chats to a label to organize them and set rules"), 14.0).line_height(Pixels(18.0)).color(p.sub);
+        let search = text_input(tr("Search name, @, number, or network"), &d.search)
+            .on_input(move |q| edit(LabelEdit::Search(q)))
+            .size(13)
+            .line_height(Pixels(16.0))
+            .padding([14, 0])
+            .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
+        let clear = (!d.search.trim().is_empty())
+            .then(|| icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, edit(LabelEdit::Search(String::new()))));
+        let search = row![ic(icon::SEARCH, 16.0).color(p.sub), search]
+            .push(clear)
+            .spacing(10)
+            .align_y(Center)
+            .padding(Padding::ZERO.left(16.0).right(8.0));
+        let rows = self.label_rows(&st, d).into_iter().map(|r| -> El<'a> {
+            match r {
+                LabelRow::Note => txt(tr("Clear search to show all selected chats"), 12.0)
+                    .line_height(Pixels(15.0))
+                    .color(p.sub)
+                    .align_x(Center)
+                    .width(Fill)
+                    .into(),
+                LabelRow::Header(name, more) => {
+                    let toggle = more.map(|open| {
+                        let label = semi(if open { tr("Show less") } else { tr("Show more") }, 10.0);
+                        button(label.line_height(Pixels(12.0)).color(p.accent))
+                            .padding(0)
+                            .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                            .on_press(edit(LabelEdit::More))
+                    });
+                    row![txt(tr(name), 12.0).line_height(Pixels(15.0)).color(p.sub).width(Fill)]
+                        .push(toggle)
+                        .align_y(Center)
+                        .padding(Padding { top: 8.0, right: 13.0, bottom: 4.0, left: 13.0 })
+                        .into()
+                }
+                LabelRow::Chat(c) => {
+                    let sub = chat_search_subtitle(c);
+                    let line = row![
+                        checkbox_plus(p, d.chats.contains(&c.id)),
+                        self.chat_avatar(c, 32.0, 0.0),
+                        ell(&c.title, 260.0, 13.0, Weight::Semibold).color(p.strong),
+                        ell(&sub, 200.0, 13.0, Weight::Normal).color(p.sub),
+                    ]
+                    .spacing(8)
+                    .align_y(Center);
+                    let line = button(line)
+                        .padding([0, 5])
+                        .height(44)
+                        .width(Fill)
+                        .style(btn_style([CLEAR, p.received, p.received], [p.text; 3], 6.0))
+                        .on_press(edit(LabelEdit::Toggle(c.id.clone())));
+                    container(line).padding([0, 8]).into()
+                }
+            }
+        });
+        let list = scrollable(Column::with_children(rows)).direction(Direction::Vertical(Scrollbar::hidden()));
+        let create = row![
+            semi(tr("Create label"), 12.0).line_height(Pixels(15.0)),
+            txt("CTRL+ENTER", 10.0).line_height(Pixels(12.0)).color(Color::WHITE.scale_alpha(0.8))
+        ]
+        .spacing(4)
+        .align_y(Center);
+        let ready = d.ready();
+        let bg = if ready { p.accent } else { p.accent.scale_alpha(0.4) };
+        let fg = Color::WHITE.scale_alpha(if ready { 1.0 } else { 0.4 });
+        let create = button(create)
+            .padding([4, 8])
+            .style(btn_style([bg; 3], [fg; 3], 20.0))
+            .on_press_maybe(ready.then_some(edit(LabelEdit::Create)));
+        let shade = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
+        let footer = column![
+            container(Space::new()).width(Fill).height(2).style(fill_box(shade, 0.0)),
+            row![Space::new().width(Fill), create].padding(Padding { top: 8.0, right: 8.0, bottom: 8.0, left: 13.0 })
+        ];
+        let body = column![
+            container(title).padding(Padding { top: 16.0, right: 13.0, bottom: 0.0, left: 13.0 }),
+            container(explainer).padding(Padding { top: 8.0, right: 13.0, bottom: 0.0, left: 13.0 }),
+            search,
+            container(list).height(Fill),
+            footer,
+        ];
+        let card = container(body).height(Fill).clip(true).style(fill_box(p.card, 12.0));
+        let head = container(semi(tr("New label"), 13.0).line_height(Pixels(16.0)).color(p.strong))
+            .center_x(Fill)
+            .padding([8, 0]);
+        container(column![head, card]).padding(8).style(fill_box(p.window, 0.0)).into()
+    }
+
     /// Desktop's `ChatThemeWindow`: the title and the chat theme picker of a chat.
     fn poll_edit(&mut self, id: window::Id, edit: PollEdit) -> Task<UiMessage> {
         let i = self.poll_windows.iter().position(|d| d.id == id).expect("the poll window is open");
@@ -12225,6 +12421,52 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         .style(|a: &BeeperGuiApp, _| iced::theme::Style { background_color: a.pal.frame, text_color: a.pal.text })
         .default_font(fw(Weight::Normal));
     ALL_FONTS.into_iter().fold(app, |app, f| app.font(f)).run()
+}
+
+/// Desktop's `cR`: the icon of a new label.
+const DEFAULT_LABEL_ICON: &str = "3257-5964";
+
+/// The New label window, Desktop's `CreateLabel` state.
+pub struct LabelDraft {
+    pub id: window::Id,
+    pub name: String,
+    pub search: String,
+    /// The chats of the label, in the order they were picked.
+    pub chats: Vec<String>,
+    pub color: Option<u8>,
+    pub icon: Option<String>,
+    /// Whether "Recent chats" shows all of its chats.
+    pub more: bool,
+}
+
+impl LabelDraft {
+    fn new(id: window::Id) -> Self {
+        let (name, search, chats) = (String::new(), String::new(), Vec::new());
+        LabelDraft { id, name, search, chats, color: None, icon: Some(DEFAULT_LABEL_ICON.into()), more: false }
+    }
+
+    /// Desktop's `canSubmit`.
+    pub fn ready(&self) -> bool {
+        !self.name.trim().is_empty() && !self.chats.is_empty()
+    }
+}
+
+/// A line of the New label list.
+enum LabelRow<'a> {
+    /// "Clear search to show all selected chats".
+    Note,
+    /// A section, with whether it is expanded when it has more chats.
+    Header(&'static str, Option<bool>),
+    Chat(&'a Chat),
+}
+
+#[derive(Debug, Clone)]
+pub enum LabelEdit {
+    Name(String),
+    Search(String),
+    Toggle(String),
+    More,
+    Create,
 }
 
 /// A New Poll window, Desktop's `PollCreator` state.
