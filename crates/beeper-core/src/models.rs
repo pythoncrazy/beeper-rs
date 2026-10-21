@@ -123,6 +123,8 @@ pub struct Profile {
     pub full_name: Option<String>,
     pub username: Option<String>,
     pub email: Option<String>,
+    /// Desktop's `hasActiveSubscription`.
+    pub subscribed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

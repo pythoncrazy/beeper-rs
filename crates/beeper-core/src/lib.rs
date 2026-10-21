@@ -2,6 +2,7 @@ pub mod cloud;
 pub mod codec;
 pub mod config;
 pub mod connect;
+pub mod features;
 pub mod import;
 pub mod matrix;
 pub mod models;

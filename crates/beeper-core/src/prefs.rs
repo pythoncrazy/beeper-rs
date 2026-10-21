@@ -26,6 +26,8 @@ pub struct Pref {
     /// The values of the `%s` placeholders in the label or the description.
     pub args: &'static [&'static str],
     pub badge: Option<Badge>,
+    /// The key of Desktop's `featureFlag`, which shows, locks or hides the row.
+    pub feature: Option<&'static str>,
     /// The toggle that must be on for this row to be enabled.
     pub requires: Option<&'static str>,
     pub control: Control,
@@ -74,18 +76,38 @@ impl Pref {
         Pref { badge: Some(badge), ..self }
     }
 
+    /// A row of a Desktop feature with a Plus pill.
+    const fn plus(self, feature: &'static str) -> Self {
+        let badge = if matches!(self.badge, Some(Badge::Labs)) { Badge::PlusLabs } else { Badge::Plus };
+        Pref { badge: Some(badge), feature: Some(feature), ..self }
+    }
+
+    /// The `args` of the label, then those of the description.
+    pub fn split_args(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        self.args.split_at(self.label.matches('%').count())
+    }
+
     const fn requires(self, key: &'static str) -> Self {
         Pref { requires: Some(key), ..self }
     }
 }
 
 const fn t(key: &'static str, label: &'static str, on: bool) -> Pref {
-    Pref { key, label, desc: None, args: &[], badge: None, requires: None, control: Control::Toggle(on) }
+    Pref { key, label, desc: None, args: &[], badge: None, feature: None, requires: None, control: Control::Toggle(on) }
 }
 
 const fn s(key: &'static str, label: &'static str, options: &'static [&'static str], default: u8) -> Pref {
     assert!((default as usize) < options.len());
-    Pref { key, label, desc: None, args: &[], badge: None, requires: None, control: Control::Select(options, default) }
+    Pref {
+        key,
+        label,
+        desc: None,
+        args: &[],
+        badge: None,
+        feature: None,
+        requires: None,
+        control: Control::Select(options, default),
+    }
 }
 
 macro_rules! cmd {
@@ -97,6 +119,8 @@ macro_rules! cmd {
 const AFTER: &[&str] = &["Select next chat", "Select previous chat", "Close chat", "Do nothing"];
 pub const COMPOSER_ACTIONS: &[&str] =
     &["Emoji Picker", "Talk to Type", "Record Audio", "GIF Picker", "Add Attachment", "Send Later", "None"];
+const UNDO_SEND_DELAYS: &[&str] =
+    &["0 ms (disabled)", "750 ms", "1 second", "2 seconds", "3 seconds", "5 seconds", "10 seconds"];
 const SOUND: &[&str] = &["Default", "None"];
 
 pub const LANGUAGES: &[&str] =
@@ -109,20 +133,20 @@ pub const GENERAL: &[Item] = &[
     Item::Subtitle("These settings are for %s and aren't synced to the messaging platforms.", &["Beeper"]),
     Item::Group(&[
         t("incognito", "Incognito mode", false)
-            .badge(Badge::Plus)
+            .plus("stealth-mode")
             .desc("Incognito mode keeps chats unread even when you click on them and doesn't notify recipients you've read them. Respond or hit %s to mark a chat as read.")
             .args(const { &[cmd!("", " Shift U")] }),
-        t("typingIndicators", "Show recipients I'm typing", true).badge(Badge::Plus),
+        t("typingIndicators", "Show recipients I'm typing", true).plus("stealth-mode"),
     ]),
     Item::Group(&[s("appLanguage", "App language", LANGUAGES, 0)]),
     Item::Group(&[
-        s("remindLaterDefault", "Default for remind later", &["If no reply", "Always"], 0).badge(Badge::Plus),
-        t("archiveOnReminder", "Archive after setting reminder on chat", false).badge(Badge::Plus),
+        s("remindLaterDefault", "Default for remind later", &["If no reply", "Always"], 0).plus("remind-later"),
+        t("archiveOnReminder", "Archive after setting reminder on chat", false).plus("remind-later"),
     ]),
     Item::Group(&[
         t("markReadOnArchive", "Mark unread chats as read on archive", false),
         s("afterArchive", "After archive", AFTER, 0),
-        Pref { key: "archiveOlder", label: "", desc: None, args: &[], badge: None, requires: None, control: Control::Archive(&ARCHIVE_SCOPE, &ARCHIVE_AGE) },
+        Pref { key: "archiveOlder", label: "", desc: None, args: &[], badge: None, feature: None, requires: None, control: Control::Archive(&ARCHIVE_SCOPE, &ARCHIVE_AGE) },
     ]),
     Item::Group(&[
         s("afterMarkRead", "After mark as read/unread", AFTER, 0),
@@ -134,11 +158,16 @@ pub const GENERAL: &[Item] = &[
         ),
     ]),
     Item::Group(&[
+        s("undoSendDelay", "Allow undo send (%s) for", UNDO_SEND_DELAYS, 0)
+            .plus("undo-send")
+            .desc("Hit %s to send instantly.")
+            .args(const { &[cmd!("", " Z"), cmd!("", " Shift Z")] }),
+        t("undoOnPendingClick", "Click pending messages to undo send", false).plus("undo-send"),
         t("copyTimestamps", "Include timestamps when copying messages with %s", false).args(const { &[cmd!("", " C")] }),
         t("emojiAutocomplete", "Enable emoji autocomplete", true),
         t("autoSendGifs", "Automatically send GIFs after selection", false),
         t("autoPlayVoiceNotes", "Automatically play the next voice note", true),
-        Pref { key: "microphone", label: "Microphone", desc: None, args: &[], badge: None, requires: None, control: Control::Microphone },
+        Pref { key: "microphone", label: "Microphone", desc: None, args: &[], badge: None, feature: None, requires: None, control: Control::Microphone },
         t("keepEmoticons", "Disable automatic replacement of emoticons with emojis", false),
         t("autoCopyOtp", "Auto copy OTP/2FA codes", true).desc("If the chat is muted, you'll still be notified."),
         s("upArrow", "Press ↑ in the composer to:", &["Move focus to the message list", "Edit your last message"], 0),
@@ -147,7 +176,7 @@ pub const GENERAL: &[Item] = &[
         t("startMinimized", "Keep %s minimized on launch", false).args(&["Beeper"]),
         t("quitOnClose", "Quit %s when closing the main window", false).args(&["Beeper"]),
     ]),
-    Item::Group(&[s("sendLaterDefault", "Default for send later", &["If no reply", "Regardless"], 0).badge(Badge::Plus)]),
+    Item::Group(&[s("sendLaterDefault", "Default for send later", &["If no reply", "Regardless"], 0).plus("scheduled-message")]),
     Item::Group(&[
         t("whatsappCommunities", "Show WhatsApp Communities as separate spaces", false),
         t("telegramTopics", "Show Telegram Topics as separate spaces", false),
@@ -227,7 +256,7 @@ pub const NOTIFICATIONS: &[Item] = &[
             &["Never", "Only for sent messages", "Only for received messages", "Always"],
             0,
         ),
-        Pref { key: "soundVolume", label: "Sound effect volume", desc: None, args: &[], badge: None, requires: None, control: Control::Slider(50) },
+        Pref { key: "soundVolume", label: "Sound effect volume", desc: None, args: &[], badge: None, feature: None, requires: None, control: Control::Slider(50) },
         t("messageNotifications", "Message notifications", true),
         s("messageSound", "Sound", SOUND, 0),
         t("groupNotifications", "Group message notifications", true),
@@ -256,6 +285,7 @@ pub const AI: &[Item] = &[
         desc: Some("AI response quality may vary for less commonly spoken languages."),
         args: &[],
         badge: Some(Badge::PlusLabs),
+        feature: Some("ai-in-beeper-chats"),
         requires: None,
         control: Control::Multi(&[
             "Arabic",
@@ -276,11 +306,11 @@ pub const AI: &[Item] = &[
         "Use OpenAI's Whisper model for Talk to Type and transcribing voice notes",
         false,
     )
-    .badge(Badge::Plus)
+    .plus("talk-to-type")
     .desc("Privacy: this will send audio clips to OpenAI via our servers.")]),
     Item::Heading("AI Mentions"),
     Item::Group(&[t("mentionLlms", "Mention an AI to get answers and help in chat", false)
-        .badge(Badge::Plus)
+        .plus("ai-in-beeper-chats")
         .desc("Will send the %d most recent messages, including sender names and any @mentioned users.")
         .args(&["20"])]),
 ];
@@ -300,6 +330,16 @@ pub fn all() -> impl Iterator<Item = (&'static str, &'static Pref)> {
         Control::Archive(scope, age) => vec![(page, scope), (page, age)],
         _ => vec![(page, p)],
     })
+}
+
+/// The key of Desktop's `feature` of a hotkey, which hides the hotkey when the account does not show the feature.
+pub fn hotkey_feature(name: &str) -> Option<&'static str> {
+    match name {
+        "Toggle Incognito Mode" => Some("stealth-mode"),
+        "Remind Later" => Some("remind-later"),
+        "Message: Send Later" => Some("scheduled-message"),
+        _ => None,
+    }
 }
 
 /// Desktop's reassignable hotkeys: the name, the group and the default keys. In the keys, ", " separates the
@@ -542,6 +582,8 @@ pub const SYNCED: &[(&str, Ad)] = &[
         "messageDoubleClick",
         v("message_double_click_action", &["do_nothing", "react", "reply", "forward", "show_menu", "react_with"]),
     ),
+    ("undoSendDelay", Ad::Desktop("undo_send_delay_ms", Values::Secs(&[0, 750, 1000, 2000, 3000, 5000, 10000]))),
+    ("undoOnPendingClick", b("undo_send_on_pending_click")),
     ("copyTimestamps", b("copy_message_timestamps")),
     ("emojiAutocomplete", b("enable_emoji_autocomplete")),
     ("autoSendGifs", b("auto_send_gifs")),

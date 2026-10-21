@@ -307,6 +307,7 @@ pub struct BeeperStore {
     pub skin_tone: u8,
     /// The last synced [`crate::matrix::RULES`].
     pub inbox_rules: serde_json::Value,
+    pub features: crate::features::Flags,
     next_seq: i64,
 }
 
@@ -370,6 +371,8 @@ impl BeeperStore {
             ),
         }
         let beeper_state = if config.demo { demo_state() } else { BeeperStateRecord::default() };
+        let features =
+            if config.demo { crate::features::Flags::free_plan() } else { crate::features::Flags::default() };
         let label = |id: &str, name: &str| Label { id: id.to_string(), name: name.to_string() };
         let mut store = Self {
             data_dir: config.data_dir.clone(),
@@ -421,6 +424,7 @@ impl BeeperStore {
             synced_prefs: BTreeMap::new(),
             skin_tone: 0,
             inbox_rules: serde_json::Value::Null,
+            features,
             next_seq: 1000,
         };
         store.load_from_sqlite_or_seed();
@@ -1347,6 +1351,11 @@ impl BeeperStore {
         self.exec("DELETE FROM messages WHERE id = ?1", params![message_id]);
         self.emit_ws("message.deleted", &chat_id, Some(message_id), None, None);
         Ok(chat_id)
+    }
+
+    /// Desktop's `features[key]`.
+    pub fn feature(&self, key: &str) -> crate::features::Feature {
+        self.features.get(key, self.scheduled.len())
     }
 
     /// Desktop's `addRecentEmoji`: move `key` to the front with one more use and keep 100 entries.

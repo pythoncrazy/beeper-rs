@@ -162,6 +162,8 @@ impl Cloud {
             full_name: field(info, "fullName"),
             username: field(info, "username"),
             email: field(info, "email"),
+            subscribed: info["subscription"]["isActive"] == true
+                && matches!(info["subscription"]["planId"].as_str(), Some("PLUS" | "PLUS_PLUS")),
         };
         Ok((profile, cloud_accounts(&v["user"]["bridges"])?))
     }
