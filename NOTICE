@@ -58,6 +58,7 @@ The files in `crates/beeper-core/assets/themes/` come from the `beeper/themes` r
 - **Translations (`crates/beeper-ui/assets/i18n/*.json`)**: The files are the German, Spanish, French, Japanese and Brazilian Portuguese translations of Beeper Desktop, copied by `scripts/i18n.py`. They are property of Beeper Inc.
 - **Simple Icons (`crates/beeper-ui/assets/brands/bluesky.svg`, `snapchat.svg`)**: Simple Icons 16.35.0 (`https://simpleicons.org`), released under CC0 1.0 Universal. The license text is in `crates/beeper-ui/assets/brands/SIMPLE-ICONS-LICENSE.md`. All brand names and logos are trademarks of their owners. Their use identifies the networks only and does not imply endorsement.
 - **Unknown avatar (`EYES` SVG in `crates/beeper-ui/src/lib.rs`)**: The path data comes from the `UnknownAvatar` component of Beeper Desktop. It is property of Beeper Inc.
+- **Toast icons (`TOAST_ICONS` SVGs in `crates/beeper-ui/src/lib.rs`)**: The path data comes from the `Archive`, `Inbox` and `LowPriority` assets of Beeper Desktop. It is property of Beeper Inc.
 - **Iced (`iced`, `iced_test`)**: Copyright Héctor Ramón (`https://github.com/iced-rs/iced`), licensed under the MIT License.
 
 ## 5. Third-Party API Key

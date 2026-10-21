@@ -1777,6 +1777,46 @@ fn label_nudge_hides_after_the_first_label_like_desktop() {
 }
 
 #[test]
+fn archive_and_low_priority_toasts_undo_like_desktop() {
+    let mut app = demo_app("undo-toast");
+    let ids: Vec<String> = {
+        let st = app.store.read();
+        let chats = app.visible_chats(&st);
+        chats.iter().filter(|c| c.is_pinned != Some(true)).take(2).map(|c| c.id.clone()).collect()
+    };
+    let flag = |app: &BeeperGuiApp, id: &str, f| {
+        let st = app.store.read();
+        has_flag(&st.chats[st.resolve_chat_idx(id).unwrap()], f)
+    };
+    let undo = |app: &mut BeeperGuiApp| {
+        let picked: Vec<UiMessage> = {
+            let mut sim = simulator(app.view_main());
+            let _ = sim.click("Undo").expect("the Undo button of the toast");
+            sim.into_messages().collect()
+        };
+        for m in picked {
+            let _ = app.update(m);
+        }
+    };
+    let _ = app.update(UiMessage::ToggleFlag(ids[0].clone(), ChatFlag::Archived));
+    assert_eq!(app.status_banner, "Archived");
+    undo(&mut app);
+    assert!(!flag(&app, &ids[0], ChatFlag::Archived) && app.status_banner.is_empty());
+    assert_eq!(app.pane.selected_chat_id.as_deref(), Some(ids[0].as_str()), "Undo selects the chat");
+    app.selection = ids.clone();
+    let _ = app.update(UiMessage::SelectionSet(ChatFlag::LowPriority, true));
+    assert_eq!(app.status_banner, "Moved 2 chats to Low Priority");
+    assert!(ids.iter().all(|id| flag(&app, id, ChatFlag::LowPriority)));
+    undo(&mut app);
+    assert!(ids.iter().all(|id| !flag(&app, id, ChatFlag::LowPriority)));
+    assert_eq!(app.selection, ids, "Undo selects the chats again");
+    let _ = app.update(UiMessage::SelectionSet(ChatFlag::Archived, true));
+    assert!(app.status_banner == "Archived 2 chats" && app.undo_toast.as_ref().unwrap().icon.is_none());
+    undo(&mut app);
+    assert!(ids.iter().all(|id| !flag(&app, id, ChatFlag::Archived)) && app.selection == ids);
+}
+
+#[test]
 fn sidebar_spaces_drag_like_desktop() {
     let mut app = demo_app("rail-drag");
     let hide = SpaceOrder { id: "requests".into(), visible: false };
