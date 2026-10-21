@@ -2136,6 +2136,46 @@ fn toasts_time_out_like_desktop() {
 }
 
 #[test]
+fn email_links_and_media_items_match_desktop() {
+    assert_eq!(email("a.b+c@mail.example.com)."), Some("a.b+c@mail.example.com"));
+    assert!([email("@example.com"), email("a@b"), email("a@b.c"), email("a@b.c1"), email("ab")]
+        .iter()
+        .all(Option::is_none));
+    let mut app = demo_app("email-menu");
+    let mid = {
+        let mut st = app.store.write();
+        let chat = app.pane.selected_chat_id.clone().expect("a chat");
+        let i = *st.chat_msg_indices[&chat].last().expect("a message");
+        let m = &mut st.messages[i];
+        (m.text, m.html, m.links, m.unresolved_media) =
+            (Some("Mail a.b@example.com.".into()), None, Vec::new(), Some("{}".into()));
+        m.id.clone()
+    };
+    let click = |app: &mut BeeperGuiApp, label: &str| {
+        let _ = app.update(UiMessage::OpenMessageMenu(mid.clone()));
+        let mut sim = simulator(app.view_main());
+        let _ = sim.click(label).unwrap_or_else(|_| panic!("{label}"));
+        sim.into_messages().collect::<Vec<_>>()
+    };
+    let copy = click(&mut app, "Copy a.b@example.com");
+    assert!(
+        matches!(&copy[..], [UiMessage::MessageMenu(m)] if matches!(&**m, UiMessage::CopyText(e) if e == "a.b@example.com"))
+    );
+    let mail = click(&mut app, "Email a.b@example.com…");
+    assert!(
+        matches!(&mail[..], [UiMessage::MessageMenu(m)] if matches!(&**m, UiMessage::OpenUrl(u) if u == "mailto:a.b@example.com"))
+    );
+    assert!(
+        matches!(&click(&mut app, "Load Media")[..], [UiMessage::MessageMenu(m)] if matches!(**m, UiMessage::ResolveMedia(..)))
+    );
+    app.resolving_media.insert(mid.clone(), true);
+    let off = click(&mut app, "Load Media");
+    assert!(!off.iter().any(|m| matches!(m, UiMessage::MessageMenu(_))), "a resolving media item is disabled");
+    app.resolving_media.insert(mid.clone(), false);
+    assert_eq!(click(&mut app, "Try Loading Media Again").len(), 1);
+}
+
+#[test]
 fn errors_toast_like_desktop() {
     let mut app = demo_app("error-toast");
     let failed = UiMessage::MediaResolved("acc".into(), "$ev".into(), "{}".into(), Err("timeout".into()));
