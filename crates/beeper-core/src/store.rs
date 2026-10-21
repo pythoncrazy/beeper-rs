@@ -1457,6 +1457,12 @@ impl BeeperStore {
         self.queue(&chat_id, Outgoing::Poll { txn, poll });
     }
 
+    /// Desktop's `endPoll`: ends the own poll `message_id`, here and on the homeserver.
+    pub fn end_poll(&mut self, chat_id: &str, message_id: &str) {
+        self.update_poll(message_id, |p| p.ended = true);
+        self.queue(chat_id, Outgoing::EndPoll { target: message_id.into() });
+    }
+
     /// Desktop's `votePoll`: replaces the own answers to the poll `message_id`, here and on the homeserver.
     pub fn vote_poll(&mut self, chat_id: &str, message_id: &str, answers: Vec<String>) {
         let me = self.me().id.clone();

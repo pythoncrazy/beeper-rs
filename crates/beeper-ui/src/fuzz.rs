@@ -1372,7 +1372,7 @@ fn poll_creator_like_desktop() {
     let chat = "!tg_rust:beeper.com".to_string();
     assert!(crate::hidden_actions(&app.store.read()).contains(&6), "Create Poll is behind the plus button");
     let i = app.store.read().chat_idx_by_id[&chat];
-    let rules = PollRules { hidden_votes: false, duplicates: false, max_options: 3, max_length: 200 };
+    let rules = PollRules { hidden_votes: false, end: true, duplicates: false, max_options: 3, max_length: 200 };
     app.store.write().update_chat(i, |c| c.polls = Some(rules));
     let _ = app.update(UiMessage::OpenPollCreator(chat.clone()));
     let _ = app.update(UiMessage::OpenPollCreator(chat.clone()));
@@ -1408,6 +1408,23 @@ fn poll_creator_like_desktop() {
         assert_eq!((poll.question.as_str(), labels, poll.max_selections), ("Best editor?", vec!["Vim", "Emacs"], 2));
         assert_eq!(m.message_type.as_deref(), Some("POLL"));
     }
+    let sent = {
+        let st = app.store.read();
+        st.messages[*st.chat_msg_indices[&chat].last().expect("the sent poll")].id.clone()
+    };
+    let _ = app.update(UiMessage::SelectChat(chat.clone()));
+    let _ = app.update(UiMessage::OpenMessageMenu(sent.clone()));
+    let mut sim = simulator(app.view_main());
+    let _ = sim.click("End Poll").expect("the sender can end the poll");
+    for m in sim.into_messages() {
+        let _ = app.update(m);
+    }
+    {
+        let st = app.store.read();
+        assert!(st.messages[st.msg_idx_by_id[&sent]].poll.as_ref().expect("a poll").ended);
+    }
+    let _ = app.update(UiMessage::OpenMessageMenu(sent.clone()));
+    assert!(simulator(app.view_main()).find("End Poll").is_err(), "an ended poll has no End Poll");
     let _ = app.update(UiMessage::OpenPollCreator(chat.clone()));
     let id = app.poll_windows[0].id;
     let edit = |app: &mut BeeperGuiApp, e| drop(app.update(UiMessage::Poll(id, e)));

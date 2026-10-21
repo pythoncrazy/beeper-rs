@@ -360,6 +360,7 @@ pub enum UiMessage {
     Poll(window::Id, PollEdit),
     /// Desktop's `PollVotesBrowserWindow` for a chat's poll message.
     OpenPollVotes(String, String),
+    EndPoll(String, String),
     CopyChatLink(String),
     OpenChatMenu(String),
     OpenMessageMenu(String),
@@ -4348,6 +4349,7 @@ impl BeeperGuiApp {
                 return open.then(move |_| operation::focus(question.clone()));
             }
             UiMessage::Poll(id, edit) => return self.poll_edit(id, edit),
+            UiMessage::EndPoll(chat, mid) => self.store.write().end_poll(&chat, &mid),
             UiMessage::OpenPollVotes(chat, mid) => {
                 if let Some(w) = self.vote_windows.iter().find(|w| w.2 == mid) {
                     return window::gain_focus(w.0);
@@ -7061,6 +7063,12 @@ impl BeeperGuiApp {
                     Some(UiMessage::MarkUnreadFromHere(cid.clone(), mid.clone())),
                 )]
             }),
+            (mine
+                && m.poll.as_ref().is_some_and(|p| !p.ended)
+                && m.is_deleted != Some(true)
+                && st.feature("enable-polls").on
+                && st.chats[st.chat_idx_by_id[&cid]].polls.is_some_and(|r| r.end))
+            .then(|| vec![item("End Poll".into(), "", Some(UiMessage::EndPoll(cid.clone(), mid.clone())))]),
             self.pane().reply_thread.is_some().then(|| {
                 let jump = UiMessage::Commands(vec![
                     UiMessage::JumpTo(cid, mid.clone()),
