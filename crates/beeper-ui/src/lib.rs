@@ -2321,12 +2321,63 @@ fn member_name(u: &User) -> String {
         .unwrap_or_else(|| u.id.clone())
 }
 
-/// The Chat Info context menus: the identity header, the title, a member and a bookmark.
-const INFO_MENUS: [&str; 4] = ["info:", "copy:", "member:", "bookmark:"];
+/// Desktop's `getAltAccountThreads`: the newest direct chat with the other member on each other account, by the
+/// first of the username, phone number, email and user ID that finds any, newest first.
+fn alt_chats<'s>(st: &'s BeeperStore, chat: &Chat, u: &User) -> Vec<&'s Chat> {
+    let keys: [fn(&User) -> Option<&str>; 4] =
+        [|u| u.username.as_deref(), |u| u.phone_number.as_deref(), |u| u.email.as_deref(), |u| Some(&u.id)];
+    let other = |c: &'s Chat| c.participants.items.iter().find(|u| u.is_self != Some(true));
+    let accounts = st.accounts.iter().map(|a| &a.account_id).filter(|a| **a != chat.account_id);
+    let accounts: Vec<&String> = accounts.collect();
+    keys.iter()
+        .find_map(|key| {
+            let want = key(u)?;
+            let newest = |a: &&String| {
+                let dms = st.chats.iter().filter(|c| c.account_id == **a && c.chat_type == "single");
+                dms.filter(|c| other(c).and_then(key) == Some(want))
+                    .max_by(|x, y| x.last_activity.cmp(&y.last_activity))
+            };
+            let mut found: Vec<&Chat> = accounts.iter().filter_map(newest).collect();
+            found.sort_by(|x, y| y.last_activity.cmp(&x.last_activity));
+            (!found.is_empty()).then_some(found)
+        })
+        .unwrap_or_default()
+}
+
+/// A username with Desktop's leading `@`.
+fn handle(u: &User) -> Option<String> {
+    u.username.as_ref().map(|n| if n.starts_with('@') { n.clone() } else { format!("@{n}") })
+}
+
+/// The Chat Info context menus: the identity header, the title, a member, a bookmark and a contact detail.
+const INFO_MENUS: [&str; 5] = ["info:", "copy:", "member:", "bookmark:", "contact:"];
 
 /// The Chat Info menus. The header menus of Desktop's `$fe`: `info:<chat>` has the edit actions and
 /// `copy:<chat>`, the menu of the clicked title, adds "Copy <title>" above them.
 fn info_menu(st: &BeeperStore, key: &str, dm: impl Fn(&str) -> bool) -> Vec<Option<(String, Option<UiMessage>)>> {
+    if let Some((cid, kind)) = key.strip_prefix("contact:").and_then(|k| k.split_once(' ')) {
+        let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
+        let u = c.participants.items.iter().find(|u| u.is_self != Some(true)).expect("the other member");
+        let item = |label: String, msg| Some((label, Some(msg)));
+        return match kind {
+            "phone" => {
+                let n = u.phone_number.as_deref().expect("a phone number");
+                let shown = fmt_phone(n);
+                vec![
+                    item(format!("Call {shown}"), UiMessage::OpenUrl(format!("tel:{n}"))),
+                    item(format!("Copy {shown}"), UiMessage::CopyText(shown)),
+                ]
+            }
+            "email" => {
+                let e = u.email.clone().expect("an email");
+                vec![
+                    item(format!("Email {e}"), UiMessage::OpenUrl(format!("mailto:{e}"))),
+                    item(format!("Copy {e}"), UiMessage::CopyText(e)),
+                ]
+            }
+            _ => vec![item(tr("Copy Username").into(), UiMessage::CopyText(handle(u).expect("a username")))],
+        };
+    }
     if let Some((cid, mid)) = key.strip_prefix("bookmark:").and_then(|k| k.split_once(' ')) {
         let jump = UiMessage::JumpTo(cid.into(), mid.into());
         let remove = UiMessage::ToggleBookmark(mid.into());
@@ -2342,7 +2393,7 @@ fn info_menu(st: &BeeperStore, key: &str, dm: impl Fn(&str) -> bool) -> Vec<Opti
         let copy = |label: &'static str, text: Option<String>| {
             text.map(|t| Some((tr(label).to_string(), Some(UiMessage::CopyText(t)))))
         };
-        let username = u.username.as_ref().map(|n| if n.starts_with('@') { n.clone() } else { format!("@{n}") });
+        let username = handle(u);
         let call = u.phone_number.as_ref().map(|n| {
             Some((
                 trx("Call", "button label to start a phone call").to_string(),
@@ -7577,7 +7628,7 @@ impl BeeperGuiApp {
         // The sync task can drop a chat before StoreChanged reaches update.
         let known = |c: &str| {
             let chat = c.strip_prefix("info:").or(c.strip_prefix("copy:")).unwrap_or(c);
-            let pair = chat.strip_prefix("member:").or(chat.strip_prefix("bookmark:"));
+            let pair = ["member:", "bookmark:", "contact:"].iter().find_map(|k| chat.strip_prefix(k));
             let chat = pair.map_or(chat, |k| k.split_once(' ').map_or(k, |k| k.0));
             c == RAIL_MORE
                 || c.starts_with("draft:")
@@ -11040,7 +11091,7 @@ impl BeeperGuiApp {
             chat.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| chat.chat_type == "single");
         let contact = other.map(|u| {
             row![]
-                .push(u.username.as_ref().map(|n| meta(if n.starts_with('@') { n.clone() } else { format!("@{n}") })))
+                .push(handle(u).map(meta))
                 .push(u.phone_number.as_deref().map(|n| meta(fmt_phone(n))))
                 .push(u.email.clone().map(meta))
         });
@@ -11285,6 +11336,7 @@ impl BeeperGuiApp {
             .push(media)
             .push(bookmarks)
             .push(labels)
+            .push(other.and_then(|u| self.view_contact(&st, chat, u)))
             .push(timers)
             .push(container(note).padding(Padding::ZERO.top(8.0)))
             .push((chat.member_actions & MEMBER_LEAVE != 0).then(|| {
@@ -11447,6 +11499,51 @@ impl BeeperGuiApp {
         };
         let body = column![].push(tabs).push(grid).spacing(4).padding(8);
         Some(column![head, container(body).width(Fill).style(fill_box(Color { a: 0.1, ..p.strong }, 10.0))].into())
+    }
+
+    /// Desktop's `oPt` Contact section of a single chat: the phone number, email and username of the other member.
+    fn view_contact<'a>(&'a self, st: &BeeperStore, chat: &Chat, u: &User) -> Option<El<'a>> {
+        let p = &self.pal;
+        let details = [
+            ("Phone", u.phone_number.as_deref().map(fmt_phone), "phone"),
+            ("Email", u.email.clone(), "email"),
+            ("Username", handle(u), "username"),
+        ];
+        let mut items: Vec<El> = details
+            .into_iter()
+            .filter_map(|(title, value, kind)| {
+                let title = txt(tr(title), 13.0).line_height(Pixels(16.0)).color(p.sub);
+                let menu = UiMessage::OpenChatMenu(format!("contact:{} {kind}", chat.id));
+                let value = button(txt(value?, 13.0).line_height(Pixels(16.0)).color(p.strong))
+                    .padding(0)
+                    .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
+                    .on_press(menu.clone());
+                let value = mouse_area(value).on_right_press(menu);
+                Some(column![container(title).padding([4, 0]), container(value).padding([4, 0])].into())
+            })
+            .collect();
+        if items.is_empty() {
+            return None;
+        }
+        let alts = if u.phone_number.is_some() { alt_chats(st, chat, u) } else { Vec::new() };
+        if !alts.is_empty() {
+            let accounts: Vec<String> = st.accounts.iter().map(|a| a.account_id.clone()).collect();
+            let title = txt(tr("Message Other Accounts"), 13.0).line_height(Pixels(16.0)).color(p.sub);
+            let rows = alts.iter().map(|c| {
+                let icon = svg(crate::style::brand_svg(brand_key(&c.account_id))).width(16).height(16);
+                let name = txt(account_display_name(st, &c.account_id, &accounts), 13.0).line_height(Pixels(16.0));
+                button(row![icon, name.color(p.strong)].spacing(4).align_y(Center))
+                    .padding([4, 0])
+                    .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
+                    .on_press(UiMessage::SelectChat(c.id.clone()))
+                    .into()
+            });
+            items.push(column![container(title).padding([4, 0])].extend(rows).into());
+        }
+        let content =
+            container(Column::with_children(items).spacing(4)).padding(8).width(Fill).style(fill_box(p.chip, 10.0));
+        let head = container(txt(tr("Contact"), 11.0).line_height(Pixels(14.0)).color(p.strong)).padding(8);
+        Some(column![head, content].into())
     }
 
     /// Desktop's `Kfe` Bookmarks section: the newest bookmarks of the chat first, 15 until "Show all".
