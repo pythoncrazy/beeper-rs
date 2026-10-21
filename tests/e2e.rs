@@ -1062,8 +1062,12 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let rail = |d: &str| UiMessage::KeyPressed(iced::keyboard::Key::Character(d.into()), mods);
     let _ = gui.update(rail("2"));
     assert_eq!(gui.active_tab, InboxTab::Archived, "Ctrl Alt 2 opens Archive");
-    let _ = gui.update(rail("8"));
-    assert_eq!(gui.selected_account_filter.as_deref(), Some("hungryserv"), "Ctrl Alt 8 opens the first account");
+    let _ = gui.update(rail("7"));
+    assert_eq!(
+        gui.selected_account_filter.as_deref(),
+        Some("hungryserv"),
+        "Ctrl Alt 7 opens the first account after the six views without the label nudge"
+    );
     let _ = gui.update(rail("1"));
     assert!(gui.active_tab == InboxTab::AllChats && gui.selected_account_filter.is_none());
     {

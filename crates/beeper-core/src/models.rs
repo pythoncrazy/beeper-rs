@@ -908,6 +908,14 @@ pub struct BeeperSettings {
     pub last_time: String,
     /// Desktop's local `chat_appearance`.
     pub chat_appearance: ChatAppearance,
+    /// Desktop's local `spaces_order`: the sidebar order, and the spaces that Edit Spaces hides.
+    pub spaces_order: Vec<SpaceOrder>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpaceOrder {
+    pub id: String,
+    pub visible: bool,
 }
 
 /// Desktop's `chatAppearanceStore`: the default chat theme, and the themes of single chats.

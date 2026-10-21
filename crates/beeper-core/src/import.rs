@@ -1,7 +1,7 @@
 use crate::config::rfc3339_from_millis;
 use crate::models::{
-    Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, Reaction, ThemeChoice, User, ALL_FILES,
-    ALL_FORMATS, BEEPER_POLLS,
+    Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, Reaction, SpaceOrder, ThemeChoice, User,
+    ALL_FILES, ALL_FORMATS, BEEPER_POLLS,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
@@ -35,6 +35,7 @@ pub struct BeeperData {
     pub pin_rank: HashMap<String, usize>,
     pub recent_chat_ids: Vec<String>,
     pub theme: Option<ThemeChoice>,
+    pub spaces_order: Vec<SpaceOrder>,
 }
 
 pub fn has_beeper_data(dir: &Path) -> bool {
@@ -127,20 +128,30 @@ fn read_snapshot(dir: &Path, src_dir: &Path) -> Result<BeeperData, String> {
     let mut people = read_participants(&db).map_err(e)?;
     let chats = read_chats(&db, &mut people, &rules)?;
     let messages = read_messages(&db, &chats)?;
-    Ok(BeeperData { crypto, chats, messages, pin_rank, recent_chat_ids, theme: read_theme(&db)? })
+    let prefs = read_local_prefs(&db)?;
+    let spaces_order = prefs.as_ref().map(read_spaces_order).transpose()?.unwrap_or_default();
+    let theme = prefs.as_ref().map(read_theme).transpose()?;
+    Ok(BeeperData { crypto, chats, messages, pin_rank, recent_chat_ids, theme, spaces_order })
 }
 
-fn read_theme(db: &Connection) -> Result<Option<ThemeChoice>, String> {
+fn read_local_prefs(db: &Connection) -> Result<Option<Value>, String> {
     let prefs: Option<String> = db
         .query_row("SELECT value FROM key_values WHERE key = 'localPrefs'", [], |r| r.get(0))
         .optional()
         .map_err(|e| e.to_string())?;
-    let Some(prefs) = prefs else { return Ok(None) };
-    let prefs: Value = serde_json::from_str(&prefs).map_err(|e| format!("localPrefs JSON: {e}"))?;
+    prefs.map(|p| serde_json::from_str(&p).map_err(|e| format!("localPrefs JSON: {e}"))).transpose()
+}
+
+fn read_spaces_order(prefs: &Value) -> Result<Vec<SpaceOrder>, String> {
+    let order = prefs.get("spaces_order").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
+    serde_json::from_value(order).map_err(|e| format!("spaces_order JSON: {e}"))
+}
+
+fn read_theme(prefs: &Value) -> Result<ThemeChoice, String> {
     match prefs["native_theme_source"].as_str() {
-        Some("light") => Ok(Some(ThemeChoice::Light)),
-        Some("dark") => Ok(Some(ThemeChoice::Dark)),
-        Some("system") => Ok(Some(ThemeChoice::System)),
+        Some("light") => Ok(ThemeChoice::Light),
+        Some("dark") => Ok(ThemeChoice::Dark),
+        Some("system") => Ok(ThemeChoice::System),
         other => Err(format!("unknown Beeper Desktop theme {other:?}")),
     }
 }
@@ -611,4 +622,27 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
         m.linked_message_id = m.linked_message_id.take().filter(|l| seen.contains(l));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_prefs_follow_desktop() {
+        let db = Connection::open_in_memory().expect("an in-memory database");
+        assert_eq!(read_local_prefs(&db).map_err(|_| ()), Err(()), "a database without key_values fails");
+        db.execute_batch("CREATE TABLE key_values (key TEXT PRIMARY KEY, value TEXT)").expect("key_values");
+        assert_eq!(read_local_prefs(&db), Ok(None));
+        let prefs = r#"{"native_theme_source":"dark","spaces_order":[{"id":"inbox","visible":true},{"id":"archive","visible":false}]}"#;
+        db.execute("INSERT INTO key_values VALUES ('localPrefs', ?1)", [prefs]).expect("localPrefs");
+        let prefs = read_local_prefs(&db).expect("localPrefs").expect("a value");
+        assert!(matches!(read_theme(&prefs), Ok(ThemeChoice::Dark)));
+        let order = read_spaces_order(&prefs).expect("spaces_order");
+        assert_eq!(
+            order,
+            [SpaceOrder { id: "inbox".into(), visible: true }, SpaceOrder { id: "archive".into(), visible: false }]
+        );
+        assert_eq!(read_spaces_order(&serde_json::json!({})), Ok(Vec::new()));
+    }
 }
