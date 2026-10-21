@@ -355,6 +355,9 @@ pub enum UiMessage {
     ClearChatTheme(String),
     /// Desktop's `editChatTheme`: opens the chat theme window of a chat.
     OpenChatTheme(String),
+    /// Desktop's `PollCreatorBrowserWindow` for a chat.
+    OpenPollCreator(String),
+    Poll(window::Id, PollEdit),
     CopyChatLink(String),
     OpenChatMenu(String),
     OpenMessageMenu(String),
@@ -1795,6 +1798,8 @@ static COMPOSER_ICONS: std::sync::LazyLock<[svg::Handle; 9]> = std::sync::LazyLo
     .map(svg::Handle::from_memory)
 });
 
+svg_static!(DRAG_HANDLE, br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path fill="currentColor" d="M160-360v-80h640v80H160Zm0-160v-80h640v80H160Z"/></svg>"#);
+svg_static!(DELETE, br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path fill="currentColor" d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>"#);
 svg_static!(CHEVRON_RIGHT, br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M10.5 10 6.667 6.167 7.833 5l5 5-5 5-1.166-1.167z"/></svg>"#);
 svg_static!(POLL_ENDED, br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M4 16V4h12v12z"/></svg>"#);
 svg_static!(POLL_CHECK, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="none" stroke="#000" stroke-width="1.5" d="M4.64 7.83 6.94 10.13 11.36 5.71"/></svg>"##);
@@ -2698,6 +2703,7 @@ pub struct BeeperGuiApp {
     pub login_window: Option<window::Id>,
     /// Desktop's `ChatThemeBrowserWindow`s and their chats.
     pub theme_windows: Vec<(window::Id, String)>,
+    pub poll_windows: Vec<PollDraft>,
     /// The window that `BEEPER_SCREENSHOT_EXIT` or `BEEPER_SCREENSHOT_SETTINGS` captures after its next frame.
     shot: Option<window::Id>,
     pub login: Login,
@@ -2835,6 +2841,7 @@ impl BeeperGuiApp {
             settings_window: None,
             login_window: None,
             theme_windows: Vec::new(),
+            poll_windows: Vec::new(),
             shot: None,
             login: Login::new(source),
             cloud,
@@ -3143,6 +3150,7 @@ impl BeeperGuiApp {
         match () {
             _ if Some(id) == self.settings_window => tr("Settings"),
             _ if self.theme_windows.iter().any(|w| w.0 == id) => tr("Chat Theme"),
+            _ if self.poll_windows.iter().any(|w| w.id == id) => tr("New Poll"),
             _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => tr("Media"),
             _ => match self.chat_windows.iter().find(|w| w.0 == id) {
                 Some((_, pane)) => {
@@ -3337,8 +3345,7 @@ impl BeeperGuiApp {
         });
         let list =
             container(Column::with_children(items).padding([4, 4])).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
-        let (pri, sec) = composer_buttons(st);
-        let unveiled = ATTACH_BUTTONS.iter().filter(|&&x| Some(x) != pri && Some(x) != sec).count() as f32;
+        let unveiled = hidden_actions(st).len() as f32;
         let plus = if self.pane().show_attach_menu { 36.0 + 6.0 + 2.0 + unveiled * 30.0 - 2.0 } else { 36.0 };
         let text = self.pane().composer.text();
         let line = &text[text.rfind('\n').map_or(0, |i| i + 1)..text.rfind(':').expect("an emoji query")];
@@ -4308,6 +4315,18 @@ impl BeeperGuiApp {
                 self.theme_windows.push((id, chat));
                 return open.discard();
             }
+            UiMessage::OpenPollCreator(chat) => {
+                if let Some(d) = self.poll_windows.iter().find(|d| d.chat == chat) {
+                    return window::gain_focus(d.id);
+                }
+                let size = Size::new(400.0, 620.0);
+                let (id, open) =
+                    window::open(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
+                let question = format!("poll-{chat}");
+                self.poll_windows.push(PollDraft::new(id, chat));
+                return open.then(move |_| operation::focus(question.clone()));
+            }
+            UiMessage::Poll(id, edit) => return self.poll_edit(id, edit),
             UiMessage::MarkRead(cid) => {
                 let mut st = self.store.write();
                 let idx = st.resolve_chat_idx(&cid).expect("chat exists");
@@ -4624,6 +4643,13 @@ impl BeeperGuiApp {
                 }
                 if self.theme_windows.iter().any(|w| w.0 == id) {
                     return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
+                }
+                if self.poll_windows.iter().any(|w| w.id == id) {
+                    return match key {
+                        Key::Named(Named::Escape) => self.poll_edit(id, PollEdit::Close),
+                        Key::Named(Named::Enter) if mods.command() => self.poll_edit(id, PollEdit::Send),
+                        _ => Task::none(),
+                    };
                 }
                 if self.media_window.as_ref().is_none_or(|w| w.id != id) {
                     let key = UiMessage::KeyPressed(key, mods);
@@ -5782,6 +5808,9 @@ impl BeeperGuiApp {
                 self.tray_up = false;
                 return self.set_hidden(false);
             }
+            UiMessage::CloseRequested(id) if self.poll_windows.iter().any(|w| w.id == id) => {
+                return self.poll_edit(id, PollEdit::Close);
+            }
             UiMessage::CloseRequested(id) => {
                 let st = self.store.read();
                 let quit = st.settings.on("quitOnClose") || !(self.tray_up && st.settings.on("showTrayIcon"));
@@ -5827,6 +5856,7 @@ impl BeeperGuiApp {
                 }
                 self.chat_windows.retain(|w| w.0 != id);
                 self.theme_windows.retain(|w| w.0 != id);
+                self.poll_windows.retain(|w| w.id != id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
                 } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
@@ -6148,6 +6178,12 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
+        let poll_drag = self.poll_windows.iter().any(|d| d.dragging.is_some()).then(|| {
+            iced::event::listen_with(|e, _, id| match e {
+                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Poll(id, PollEdit::Grab(None))),
+                _ => None,
+            })
+        });
         let (rising, due) = {
             let st = self.store.read();
             let last = self.pane().selected_chat_id.as_ref().and_then(|c| st.chat_msg_indices.get(c)?.last());
@@ -6180,6 +6216,7 @@ impl BeeperGuiApp {
             [changes, focus, tokens, keys, system]
                 .into_iter()
                 .chain(drag)
+                .chain(poll_drag)
                 .chain(carousel)
                 .chain(tick)
                 .chain(shot)
@@ -6214,6 +6251,8 @@ impl BeeperGuiApp {
             self.view_login()
         } else if let Some((_, chat)) = self.theme_windows.iter().find(|w| w.0 == id) {
             self.view_chat_theme(chat)
+        } else if let Some(d) = self.poll_windows.iter().find(|w| w.id == id) {
+            self.view_poll_creator(d)
         } else {
             self.view_main()
         }
@@ -8842,6 +8881,7 @@ impl BeeperGuiApp {
                 3 => Some(UiMessage::PickFiles),
                 4 => Some(UiMessage::OpenSendLater),
                 5 => Some(UiMessage::Record(record::Msg::Start)),
+                6 => chat.polls.map(|_| UiMessage::OpenPollCreator(chat.id.clone())),
                 _ => None,
             };
             let active = (id == 2 && self.pane().picker == Some(Picker::Gif))
@@ -8975,8 +9015,10 @@ impl BeeperGuiApp {
             .style(btn_style([p.input, p.hover, p.selected], [p.text; 3], 18.0))
             .on_press(UiMessage::ToggleAttachMenu);
         let unveiled = self.pane().show_attach_menu.then(|| {
-            let ids = ATTACH_BUTTONS.into_iter().filter(|&x| Some(x) != pri && Some(x) != sec);
-            Row::with_children(ids.map(&action_btn)).spacing(2).padding([0, 1]).align_y(Center)
+            Row::with_children(hidden_actions(st).into_iter().map(&action_btn))
+                .spacing(2)
+                .padding([0, 1])
+                .align_y(Center)
         });
         let plus = row![toggle].push(unveiled).spacing(6).align_y(Center);
         let ready = !self.pane().composer.text().trim().is_empty()
@@ -9942,7 +9984,12 @@ impl BeeperGuiApp {
                 }
                 _ => ("Delete messages".to_string(), format!("Are you sure you want to delete {n} messages?")),
             };
-            self.dialog(title, body, vec![(tr("Delete"), UiMessage::MediaDelete(true))], UiMessage::MediaDelete(false))
+            self.dialog(
+                title,
+                body,
+                vec![(tr("Delete"), UiMessage::MediaDelete(true))],
+                (tr("Cancel"), UiMessage::MediaDelete(false)),
+            )
         });
         stack![base].push(self.view_toast(8.0)).push(menu).push(item_menu).push(ask).push(carousel).into()
     }
@@ -10613,16 +10660,16 @@ impl BeeperGuiApp {
             ),
             _ => unreachable!("dialog {dialog}"),
         };
-        self.dialog(title, body, actions, UiMessage::Ask(None))
+        self.dialog(title, body, actions, (tr("Cancel"), UiMessage::Ask(None)))
     }
 
-    /// A confirmation dialog over a window, with its actions after Cancel.
+    /// A confirmation dialog over a window, with its actions after the cancel button.
     fn dialog<'a>(
         &'a self,
         title: String,
         body: String,
         actions: Vec<(&'static str, UiMessage)>,
-        cancel: UiMessage,
+        (no, cancel): (&'static str, UiMessage),
     ) -> El<'a> {
         let p = &self.pal;
         let action = |(label, msg): (&'static str, UiMessage)| {
@@ -10635,7 +10682,7 @@ impl BeeperGuiApp {
         let card = column![
             bold(title, 14.0).color(p.strong),
             txt(body, 13.0).color(p.text),
-            row![Space::new().width(Fill), pill_btn(p, tr("Cancel"), cancel.clone())]
+            row![Space::new().width(Fill), pill_btn(p, no, cancel.clone())]
                 .extend(actions.into_iter().map(action))
                 .spacing(8)
         ]
@@ -11481,6 +11528,198 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `ChatThemeWindow`: the title and the chat theme picker of a chat.
+    fn poll_edit(&mut self, id: window::Id, edit: PollEdit) -> Task<UiMessage> {
+        let i = self.poll_windows.iter().position(|d| d.id == id).expect("the poll window is open");
+        let st = self.store.read();
+        let rules = st.resolve_chat_idx(&self.poll_windows[i].chat).and_then(|c| st.chats[c].polls);
+        drop(st);
+        let Some(rules) = rules else { return window::close(id) };
+        let d = &mut self.poll_windows[i];
+        let n = d.options.len();
+        match edit {
+            PollEdit::Question(q) => d.question = q,
+            PollEdit::Option(o, v) if v.is_empty() && d.options[o].1.is_empty() => {
+                if n > 2 {
+                    d.options.remove(o);
+                    return operation::focus(d.input(o.saturating_sub(1)));
+                }
+            }
+            PollEdit::Option(o, v) => {
+                let grow = o + 1 == n && !v.trim().is_empty() && rules.room(n);
+                d.options[o].1 = v;
+                if grow {
+                    d.push();
+                }
+            }
+            PollEdit::Next(_) if self.mods.command() => {}
+            PollEdit::Next(o) if o + 1 < n => return operation::focus(d.input(o + 1)),
+            PollEdit::Next(_) | PollEdit::Add if rules.room(n) => {
+                d.push();
+                return operation::focus(d.input(n));
+            }
+            PollEdit::Next(_) | PollEdit::Add => {}
+            PollEdit::Remove(o) => {
+                if n > 2 {
+                    d.options.remove(o);
+                    d.hovered = None;
+                }
+            }
+            PollEdit::Hover(o, true) => {
+                if let Some(from) = d.dragging.filter(|&g| g != o) {
+                    let moved = d.options.remove(from);
+                    d.options.insert(o, moved);
+                    d.dragging = Some(o);
+                }
+                d.hovered = Some(o);
+            }
+            PollEdit::Hover(o, false) => d.hovered = d.hovered.filter(|&h| h != o),
+            PollEdit::Grab(o) => d.dragging = o,
+            PollEdit::Multiple(on) => d.multiple = on,
+            PollEdit::Hidden(on) => d.hidden = on,
+            PollEdit::Send if d.ready(rules) => {
+                let d = self.poll_windows.remove(i);
+                let answers = d.answers();
+                self.store.write().send_poll(&d.chat, d.question.trim().into(), answers, d.multiple, d.hidden);
+                return window::close(id);
+            }
+            PollEdit::Send => {}
+            PollEdit::Close if d.discarding => d.discarding = false,
+            PollEdit::Close if d.dirty() => d.discarding = true,
+            PollEdit::Close | PollEdit::Discard(true) => return window::close(id),
+            PollEdit::Discard(false) => d.discarding = false,
+        }
+        Task::none()
+    }
+
+    /// Desktop's `PollCreator`.
+    fn view_poll_creator<'a>(&'a self, d: &'a PollDraft) -> El<'a> {
+        let p = &self.pal;
+        let st = self.store.read();
+        let rules = st.resolve_chat_idx(&d.chat).and_then(|i| st.chats[i].polls).unwrap_or(BEEPER_POLLS);
+        drop(st);
+        let id = d.id;
+        let edit = move |e| UiMessage::Poll(id, e);
+        let weak = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
+        let rule = || container(Space::new()).width(Fill).height(1).style(fill_box(weak, 0.0));
+        let card = |c: Column<'a, UiMessage>| container(c).width(Fill).clip(true).style(fill_box(p.received, 12.0));
+        let section = |label: &'static str, items: Vec<El<'a>>| {
+            column![semi(tr(label), 12.0).line_height(Pixels(15.0)).color(p.sub)].extend(items).spacing(8)
+        };
+        let question = text_input(tr("Ask a question…"), &d.question)
+            .id(format!("poll-{}", d.chat))
+            .on_input(move |q| edit(PollEdit::Question(q.chars().take(500).collect())))
+            .size(15)
+            .line_height(Pixels(20.0))
+            .padding([10, 11])
+            .style(input_style(p.received, p.strong, p.sub, p.accent, 10.0));
+        let repeats = d.repeats(rules);
+        let length = usize::from(rules.max_length);
+        let mut options = Column::new();
+        for (i, (_, value)) in d.options.iter().enumerate() {
+            let fade = if d.dragging == Some(i) { 0.5 } else { 1.0 };
+            let grab = if d.dragging.is_some() { mouse::Interaction::Grabbing } else { mouse::Interaction::Grab };
+            let handle =
+                mouse_area(tinted(&DRAG_HANDLE, 18.0, p.sub.scale_alpha(fade))).on_press(edit(PollEdit::Grab(Some(i))));
+            let input = text_input(&trf("Option %d", &[&(i + 1)]), value)
+                .id(d.input(i))
+                .on_input(move |v| edit(PollEdit::Option(i, v.chars().take(length).collect())))
+                .on_submit(edit(PollEdit::Next(i)))
+                .size(14)
+                .line_height(Pixels(18.0))
+                .padding([8, 0])
+                .style(input_style(CLEAR, p.strong.scale_alpha(fade), p.sub, p.accent, 0.0));
+            let error = repeats[i]
+                .then(|| txt(tr("This option already exists"), 11.0).line_height(Pixels(14.0)).color(p.danger));
+            let remove = (d.options.len() > 2).then(|| {
+                let red = p.danger.scale_alpha(f32::from(u8::from(d.hovered == Some(i))));
+                let hover = Color::from_rgba8(0xff, 0x14, 0x16, 0x20 as f32 / 255.0);
+                button(container(tinted(&DELETE, 16.0, red)).center(28))
+                    .padding(0)
+                    .style(btn_style([CLEAR, hover, hover], [red; 3], 14.0))
+                    .on_press(edit(PollEdit::Remove(i)))
+            });
+            let line = row![handle.interaction(grab), column![input].push(error).spacing(1).width(Fill)]
+                .push(remove)
+                .spacing(8)
+                .align_y(Center)
+                .padding([6, 10]);
+            let line =
+                mouse_area(line).on_enter(edit(PollEdit::Hover(i, true))).on_exit(edit(PollEdit::Hover(i, false)));
+            options = options.push((i > 0).then(rule)).push(line);
+        }
+        if rules.room(d.options.len()) {
+            let add = row![txt("+", 18.0).line_height(1.0), txt(tr("Add an option"), 14.0).line_height(Pixels(18.0))];
+            let add = button(add.spacing(6).align_y(Center))
+                .padding(10)
+                .width(Fill)
+                .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                .on_press(edit(PollEdit::Add));
+            options = options.push(rule()).push(add);
+        }
+        let hint = (rules.max_options > 0).then(|| {
+            let left = usize::from(rules.max_options).saturating_sub(d.answers().len());
+            let hint = match left {
+                0 => tr("You have added the maximum number of options").into(),
+                _ => trn("You can enter %d more option", "You can enter %d more options", left, &[&left]),
+            };
+            txt(hint, 11.0).line_height(Pixels(14.0)).color(p.sub)
+        });
+        let setting = |label: &'static str, on: bool, msg: fn(bool) -> PollEdit| {
+            let line = row![txt(tr(label), 14.0).line_height(Pixels(18.0)).color(p.strong).width(Fill)]
+                .push(toggle(p, on, Some(edit(msg(!on)))))
+                .spacing(10)
+                .align_y(Center)
+                .padding([10, 12]);
+            mouse_area(line).on_press(edit(msg(!on)))
+        };
+        let mut settings = column![setting("Allow multiple answers", d.multiple, PollEdit::Multiple)];
+        if rules.hidden_votes {
+            settings =
+                settings.push(rule()).push(setting("Hide results until end of poll", d.hidden, PollEdit::Hidden));
+        }
+        let body = column![
+            section("Question", vec![question.into()]),
+            section("Options", [card(options).into()].into_iter().chain(hint.map(El::from)).collect()),
+            card(settings)
+        ]
+        .spacing(14)
+        .padding(Padding { top: 10.0, right: 14.0, bottom: 96.0, left: 14.0 });
+        let ready = d.ready(rules);
+        let bg = if ready { p.accent } else { mix(p.accent, Color::WHITE, 0.55) };
+        let send = button(container(semi(tr("Send"), 14.0).line_height(Pixels(18.0))).center_x(Fill))
+            .padding(11)
+            .width(Fill)
+            .style(btn_style([bg; 3], [Color::WHITE; 3], 999.0))
+            .on_press_maybe(ready.then(|| edit(PollEdit::Send)));
+        let fade = Linear::new(Radians(0.0))
+            .add_stop(0.0, p.card)
+            .add_stop(0.55, p.card)
+            .add_stop(1.0, p.card.scale_alpha(0.0));
+        let footer = container(send).padding(Padding { top: 16.0, right: 14.0, bottom: 14.0, left: 14.0 }).style(
+            move |_: &Theme| container::Style {
+                background: Some(Background::Gradient(Gradient::Linear(fade))),
+                ..Default::default()
+            },
+        );
+        let body = scrollable(body).direction(bar()).height(Fill).style(scroll_style(p.scroll));
+        let card = container(stack![body, container(footer).align_bottom(Fill)]).style(fill_box(p.card, 12.0));
+        let title = container(semi(tr("New Poll"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
+        let window = container(column![title, card]).padding(8).style(fill_box(p.window, 0.0));
+        match d.discarding {
+            true => stack![
+                window,
+                self.dialog(
+                    tr("Discard poll?").into(),
+                    tr("Your poll draft will be deleted.").into(),
+                    vec![(tr("Discard"), edit(PollEdit::Discard(true)))],
+                    (tr("Keep editing"), edit(PollEdit::Discard(false))),
+                )
+            ]
+            .into(),
+            false => window.into(),
+        }
+    }
+
     fn view_chat_theme(&self, chat: &str) -> El<'_> {
         let p = &self.pal;
         let st = self.store.read();
@@ -11802,7 +12041,90 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
     ALL_FONTS.into_iter().fold(app, |app, f| app.font(f)).run()
 }
 
+/// A New Poll window, Desktop's `PollCreator` state.
+pub struct PollDraft {
+    pub id: window::Id,
+    pub chat: String,
+    pub question: String,
+    /// The options with the keys of their rows.
+    pub options: Vec<(u32, String)>,
+    pub multiple: bool,
+    pub hidden: bool,
+    /// The "Discard poll?" confirmation is open.
+    pub discarding: bool,
+    pub hovered: Option<usize>,
+    pub dragging: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub enum PollEdit {
+    Question(String),
+    Option(usize, String),
+    /// Enter in an option.
+    Next(usize),
+    Add,
+    Remove(usize),
+    Hover(usize, bool),
+    Grab(Option<usize>),
+    Multiple(bool),
+    Hidden(bool),
+    Send,
+    Close,
+    Discard(bool),
+}
+
+impl PollDraft {
+    fn new(id: window::Id, chat: String) -> Self {
+        let options = vec![(1, String::new()), (2, String::new())];
+        Self {
+            id,
+            chat,
+            question: String::new(),
+            options,
+            multiple: false,
+            hidden: false,
+            discarding: false,
+            hovered: None,
+            dragging: None,
+        }
+    }
+
+    fn answers(&self) -> Vec<String> {
+        self.options.iter().map(|o| o.1.trim()).filter(|a| !a.is_empty()).map(str::to_string).collect()
+    }
+
+    /// Desktop's duplicate marks: the options that repeat an earlier one.
+    fn repeats(&self, rules: PollRules) -> Vec<bool> {
+        let mut seen = HashSet::new();
+        self.options.iter().map(|o| !rules.duplicates && !o.1.trim().is_empty() && !seen.insert(o.1.trim())).collect()
+    }
+
+    fn ready(&self, rules: PollRules) -> bool {
+        !self.question.trim().is_empty() && self.answers().len() >= 2 && !self.repeats(rules).contains(&true)
+    }
+
+    fn dirty(&self) -> bool {
+        !self.question.trim().is_empty() || !self.answers().is_empty()
+    }
+
+    fn push(&mut self) {
+        let key = self.options.iter().map(|o| o.0).max().expect("a poll has options") + 1;
+        self.options.push((key, String::new()));
+    }
+
+    fn input(&self, i: usize) -> String {
+        format!("poll-{}-{}", self.chat, self.options[i].0)
+    }
+}
+
 const ATTACH_BUTTONS: [u8; 7] = [0, 3, 5, 2, 1, 4, 6];
+
+/// Desktop's `ComposerHiddenActions`: the actions behind the plus button. Create Poll needs `enable-polls`.
+fn hidden_actions(st: &BeeperStore) -> Vec<u8> {
+    let (pri, sec) = composer_buttons(st);
+    let polls = st.feature("enable-polls").on;
+    ATTACH_BUTTONS.into_iter().filter(|&x| Some(x) != pri && Some(x) != sec && (x != 6 || polls)).collect()
+}
 
 /// The composer buttons in the pill by "Primary composer action" and "Secondary composer action".
 fn composer_buttons(st: &BeeperStore) -> (Option<u8>, Option<u8>) {

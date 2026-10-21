@@ -1439,6 +1439,24 @@ impl BeeperStore {
         msg.attachments.into_iter().find_map(|a| a.transcript).unwrap()
     }
 
+    /// Desktop's `sendPoll`: a pending poll message with the options `1`, `2`, ..., and its poll start event.
+    pub fn send_poll(&mut self, chat: &str, question: String, answers: Vec<String>, multiple: bool, undisclosed: bool) {
+        assert!(answers.len() >= 2, "a poll has two options");
+        let options = answers.into_iter().enumerate();
+        let options: Vec<PollOption> =
+            options.map(|(i, label)| PollOption { id: (i + 1).to_string(), label, voter_ids: Vec::new() }).collect();
+        let max_selections = if multiple { options.len().max(2) as u32 } else { 1 };
+        let poll =
+            PollData { fallback: question.clone(), question, options, max_selections, undisclosed, ended: false };
+        let (chat_id, txn, _) = self.send_message(chat, Some(poll.question.clone()), None, None).expect("send a poll");
+        self.update_message(self.msg_idx_by_id[&txn], |m| {
+            m.html = None;
+            m.message_type = Some("POLL".into());
+            m.poll = Some(poll.clone());
+        });
+        self.queue(&chat_id, Outgoing::Poll { txn, poll });
+    }
+
     /// Desktop's `votePoll`: replaces the own answers to the poll `message_id`, here and on the homeserver.
     pub fn vote_poll(&mut self, chat_id: &str, message_id: &str, answers: Vec<String>) {
         let me = self.me().id.clone();

@@ -885,6 +885,11 @@ pub enum Outgoing {
         target: String,
         key: String,
     },
+    /// An MSC3381 poll start, like Desktop's `sendPoll`.
+    Poll {
+        txn: String,
+        poll: PollData,
+    },
     /// An MSC3381 poll response with the answer IDs.
     Vote {
         target: String,
@@ -1009,6 +1014,23 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
         Outgoing::React { txn, target, key } => {
             let content = ReactionEventContent::new(Annotation::new(event(target)?, key));
             sent(txn.clone(), room.send(content).with_transaction_id(txn.into()).await.map_err(e)?.response.event_id);
+        }
+        Outgoing::Poll { txn, poll } => {
+            let text = "org.matrix.msc1767.text";
+            let answers: Vec<Value> =
+                poll.options.iter().map(|o| serde_json::json!({ "id": o.id, text: o.label })).collect();
+            let kind = if poll.undisclosed { "undisclosed" } else { "disclosed" };
+            let content = serde_json::json!({
+                text: poll.question,
+                "org.matrix.msc3381.poll.start": {
+                    "answers": answers,
+                    "kind": format!("org.matrix.msc3381.poll.{kind}"),
+                    "max_selections": poll.max_selections,
+                    "question": { text: poll.question },
+                },
+            });
+            let id = room.send_raw("org.matrix.msc3381.poll.start", content).with_transaction_id(txn.as_str().into());
+            sent(txn, id.await.map_err(e)?.response.event_id);
         }
         Outgoing::Vote { target, answers } => {
             let content = serde_json::json!({

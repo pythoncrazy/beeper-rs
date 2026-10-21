@@ -1350,6 +1350,62 @@ fn polls_like_desktop() {
 }
 
 #[test]
+fn poll_creator_like_desktop() {
+    let mut app = demo_app("poll-creator");
+    let chat = "!tg_rust:beeper.com".to_string();
+    assert!(crate::hidden_actions(&app.store.read()).contains(&6), "Create Poll is behind the plus button");
+    let i = app.store.read().chat_idx_by_id[&chat];
+    let rules = PollRules { hidden_votes: false, duplicates: false, max_options: 3, max_length: 200 };
+    app.store.write().update_chat(i, |c| c.polls = Some(rules));
+    let _ = app.update(UiMessage::OpenPollCreator(chat.clone()));
+    let _ = app.update(UiMessage::OpenPollCreator(chat.clone()));
+    assert_eq!(app.poll_windows.len(), 1, "a chat has one poll window");
+    let id = app.poll_windows[0].id;
+    let edit = |app: &mut BeeperGuiApp, e| drop(app.update(UiMessage::Poll(id, e)));
+    let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_poll_creator(&app.poll_windows[0])).find(s).is_ok();
+    assert!(found(&app, "Add an option") && found(&app, "Allow multiple answers"));
+    assert!(!found(&app, "Hide results until end of poll"), "the network has no hidden votes");
+    edit(&mut app, PollEdit::Question("Best editor?".into()));
+    edit(&mut app, PollEdit::Option(0, "Vim".into()));
+    edit(&mut app, PollEdit::Option(1, " Vim".into()));
+    assert_eq!(app.poll_windows[0].options.len(), 3, "typing in the last option adds one");
+    assert!(found(&app, "This option already exists"));
+    let _ = app.update(UiMessage::Poll(id, PollEdit::Send));
+    assert_eq!(app.poll_windows.len(), 1, "a poll with a duplicate does not send");
+    edit(&mut app, PollEdit::Option(1, "Emacs".into()));
+    edit(&mut app, PollEdit::Option(2, "Helix".into()));
+    assert_eq!(app.poll_windows[0].options.len(), 3, "the network allows 3 options");
+    assert!(found(&app, "You have added the maximum number of options") && !found(&app, "Add an option"));
+    edit(&mut app, PollEdit::Option(2, String::new()));
+    edit(&mut app, PollEdit::Option(2, String::new()));
+    assert_eq!(app.poll_windows[0].options.len(), 2, "Backspace in an empty option removes it");
+    assert!(found(&app, "You can enter 1 more option"));
+    edit(&mut app, PollEdit::Multiple(true));
+    edit(&mut app, PollEdit::Send);
+    assert!(app.poll_windows.is_empty());
+    {
+        let st = app.store.read();
+        let m = &st.messages[*st.chat_msg_indices[&chat].last().expect("the sent poll")];
+        let poll = m.poll.as_ref().expect("a poll message");
+        let labels: Vec<&str> = poll.options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!((poll.question.as_str(), labels, poll.max_selections), ("Best editor?", vec!["Vim", "Emacs"], 2));
+        assert_eq!(m.message_type.as_deref(), Some("POLL"));
+    }
+    let _ = app.update(UiMessage::OpenPollCreator(chat.clone()));
+    let id = app.poll_windows[0].id;
+    let edit = |app: &mut BeeperGuiApp, e| drop(app.update(UiMessage::Poll(id, e)));
+    edit(&mut app, PollEdit::Question("Lunch?".into()));
+    let _ = app.update(UiMessage::CloseRequested(id));
+    assert!(app.poll_windows[0].discarding && found(&app, "Discard poll?") && found(&app, "Keep editing"));
+    edit(&mut app, PollEdit::Discard(false));
+    edit(&mut app, PollEdit::Question(String::new()));
+    edit(&mut app, PollEdit::Close);
+    assert!(!app.poll_windows[0].discarding, "an empty draft closes without a question");
+    let _ = app.update(UiMessage::WindowClosed(id));
+    assert!(app.poll_windows.is_empty());
+}
+
+#[test]
 fn chat_theme_like_desktop() {
     let mut app = demo_app("chat-theme");
     let chat = app.store.read().chats[0].id.clone();
