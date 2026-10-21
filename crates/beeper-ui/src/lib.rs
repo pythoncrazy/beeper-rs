@@ -1230,6 +1230,54 @@ fn divider<'a>(color: Color, left: f32) -> El<'a> {
         .into()
 }
 
+/// Desktop's `Dh`: the label colors, top to bottom.
+const LABEL_COLORS: [(u32, u32); 12] = [
+    (0x7E61F2, 0x5634DE),
+    (0xA791FF, 0x7D67D5),
+    (0xF86FDB, 0xD833CA),
+    (0xEF939E, 0xDF6F7C),
+    (0xFF4658, 0xEE1F34),
+    (0xFA6533, 0xDE4B19),
+    (0xFFE500, 0xD99C00),
+    (0xB4FB44, 0x6BAD16),
+    (0x6FE582, 0x45A654),
+    (0x42C6B8, 0x239084),
+    (0x29B0E1, 0x0A81AC),
+    (0x5583FC, 0x1E54E1),
+];
+
+/// Desktop's label icons by id, with the Material Symbols name and path of each.
+static LABEL_ICONS: std::sync::LazyLock<HashMap<&str, svg::Handle>> = std::sync::LazyLock::new(|| {
+    let icon = |line: &'static str| {
+        let [id, _, d] = line.split('\t').collect::<Vec<_>>()[..] else { panic!("a label icon line") };
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path fill="currentColor" d="{d}"/></svg>"#
+        );
+        (id, svg::Handle::from_memory(svg.into_bytes()))
+    };
+    include_str!("../assets/label_icons.tsv").lines().map(icon).collect()
+});
+
+/// Desktop's `LabelSpaceIcon`: the label color with its icon, or the icon alone.
+fn label_icon<'a>(l: &Label, size: f32, fg: Color) -> El<'a> {
+    let colors = l.color.and_then(|c| LABEL_COLORS.get(usize::from(c)).copied());
+    let glyph = (l.icon.is_some() || colors.is_none())
+        .then(|| LABEL_ICONS.get(l.icon.as_deref().unwrap_or("3257-5964")))
+        .flatten()
+        .map(|h| tinted(h, (size * 20.0 / 28.0).round(), if colors.is_some() { Color::WHITE } else { fg }));
+    container(glyph)
+        .center(size)
+        .style(move |_: &Theme| container::Style {
+            background: colors.map(|(top, bottom)| {
+                let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, hex(top)).add_stop(1.0, hex(bottom));
+                Background::Gradient(Gradient::Linear(g))
+            }),
+            border: border::rounded(8.0),
+            ..Default::default()
+        })
+        .into()
+}
+
 /// `ls` is Desktop's `--letter-spacing`; its initials also have `margin-right: -1px`.
 fn avatar<'a>(name: &str, size: f32, ls: f32, p: &Palette) -> El<'a> {
     let Some(label) = initials(name) else {
@@ -1939,7 +1987,18 @@ fn rail_accounts(st: &BeeperStore) -> Vec<String> {
     });
     let spaces = st.network_spaces.iter().filter(|n| accounts.contains(&n.account_id) && space_shown(st, n));
     accounts.extend(spaces.map(|n| n.id.clone()).collect::<Vec<_>>());
+    if st.feature("labels-v2").on {
+        let mut labels: Vec<&Label> = st.labels.iter().collect();
+        labels.sort_by_cached_key(|l| l.name.to_lowercase());
+        accounts.extend(labels.into_iter().map(|l| format!("label:{}", l.id)));
+    }
     accounts
+}
+
+/// Finds the label of a rail entry.
+fn rail_label<'a>(st: &'a BeeperStore, id: &str) -> Option<&'a Label> {
+    let id = id.strip_prefix("label:")?;
+    st.labels.iter().find(|l| l.id == id)
 }
 
 /// Desktop's `allSpaces`: WhatsApp Communities and Telegram Topics are spaces only when their setting is on.
@@ -1958,6 +2017,9 @@ fn network_space<'a>(st: &'a BeeperStore, id: &str) -> Option<&'a NetworkSpace> 
 
 /// Desktop's space filter: an account shows the chats that are not in one of its shown network spaces.
 fn in_rail_entry(st: &BeeperStore, id: &str, c: &Chat) -> bool {
+    if let Some(l) = rail_label(st, id) {
+        return c.label_ids.contains(&l.id);
+    }
     match network_space(st, id) {
         Some(n) => c.account_id == n.account_id && c.network_id.as_ref() == Some(&n.id),
         None => c.account_id == id && c.network_id.as_ref().is_none_or(|n| network_space(st, n).is_none()),
@@ -7588,23 +7650,32 @@ impl BeeperGuiApp {
                 let on = self.selected_account_filter.as_ref() == Some(&acc);
                 let space = network_space(&st, &acc);
                 let owner = space.map_or(acc.as_str(), |n| &n.account_id);
-                let logo: El<'static> = svg(brand_svg(brand_key(owner))).width(28).height(28).into();
+                let label = rail_label(&st, &acc);
+                let logo: El<'static> = match label {
+                    Some(l) => label_icon(l, 28.0, p.strong),
+                    None => svg(brand_svg(brand_key(owner))).width(28).height(28).into(),
+                };
                 let n = tally(&|c| {
                     in_rail_entry(&st, &acc, c) && c.flags & CHAT_HIDDEN != 0 && c.flags & CHAT_LOW_PRIORITY == 0
                 });
-                let label = space.map_or_else(
-                    || network_label(owner).to_string(),
-                    |n| format!("{} ({})", n.name, network_label(owner)),
-                );
+                let label = match (label, space) {
+                    (Some(l), _) => l.name.clone(),
+                    (None, Some(n)) => format!("{} ({})", n.name, network_label(owner)),
+                    (None, None) => network_label(owner).to_string(),
+                };
                 let btn =
                     badge(rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc.clone()))).into(), n, true);
-                let btn: El = mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{acc}"))).into();
+                let btn: El = match acc.starts_with("label:") {
+                    true => btn,
+                    false => mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{acc}"))).into(),
+                };
                 match self.chat_menu {
                     Some(_) => c.push(btn),
                     None => c.push(self.tip(btn, label, hotkey(7 + i), tooltip::Position::Right)),
                 }
             });
         let add_label = button(add_space).padding(0).style(ghost(p, 12.0)).on_press(UiMessage::ToggleCommandPalette);
+        let labels = st.feature("labels-v2");
         let top = column![
             tab(
                 "rail-inbox",
@@ -7615,7 +7686,7 @@ impl BeeperGuiApp {
                 true
             ),
             tab("rail-archive", 1, g(icon::ARCHIVE), InboxTab::Archived, 0, false),
-            tip(add_label.into(), tr("Create Label"), vec![]),
+            (labels.show && st.labels.is_empty()).then(|| tip(add_label.into(), tr("Create Label"), vec![])),
             tab("rail-reminders", 3, g(icon::SCHEDULE), InboxTab::Reminders, 0, false),
             tab("rail-send-later", 4, g(icon::SCHEDULE_SEND), InboxTab::SendLater, 0, false),
             tab("rail-requests", 5, g(icon::EMAIL), InboxTab::Requests, requests, false),
@@ -7667,9 +7738,14 @@ impl BeeperGuiApp {
             if compact { (28.0, 1, 13.0, 10.0, 40.0) } else { (46.0, 2, 14.0, 11.0, 52.0) };
         let names: Vec<&str> =
             (0..FILTERS.len()).filter(|i| self.filters & 1 << i != 0).map(|i| tr(FILTERS[i].0)).collect();
-        let heading = self.selected_account_filter.as_deref().map_or(self.active_tab.label().to_string(), |id| {
-            network_space(&st, id).map_or_else(|| network_label(id).to_string(), |n| n.name.clone())
-        });
+        let heading =
+            self.selected_account_filter.as_deref().map_or(self.active_tab.label().to_string(), |id| {
+                match (rail_label(&st, id), network_space(&st, id)) {
+                    (Some(l), _) => l.name.clone(),
+                    (None, Some(n)) => n.name.clone(),
+                    (None, None) => network_label(id).to_string(),
+                }
+            });
         let heading = semi(heading, 13.0).color(p.strong).wrapping(iced::widget::text::Wrapping::None);
         let title = column![row![heading, ic(icon::UNFOLD_MORE, 12.0).color(p.weak)].spacing(1.4).align_y(Center)]
             .push((!names.is_empty()).then(|| txt(names.join(", "), 10.0).color(p.sub)))

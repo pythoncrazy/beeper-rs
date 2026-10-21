@@ -123,7 +123,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
     };
     let open = open.is_some();
     let accounts: Vec<String> = st.accounts.iter().map(|a| a.account_id.clone()).collect();
-    let rail = crate::rail_accounts(&st);
+    let rail: Vec<String> = crate::rail_accounts(&st).into_iter().filter(|a| !a.starts_with("label:")).collect();
     drop(st);
     let chat = rng.pick(&chats).clone();
     let (mchat, msg) = rng.pick(&msgs).clone();
@@ -1537,4 +1537,28 @@ fn incognito_indicator_like_desktop() {
     assert_eq!(app.pane.selected_chat_id.as_deref(), Some(chat.as_str()), "the chat stays open");
     let _ = app.update(UiMessage::SetPref("incognitoIndicator", 0));
     assert!(!app.store.read().incognito_indicator());
+}
+
+#[test]
+fn labels_in_the_rail_like_desktop() {
+    let mut app = demo_app("label-rail");
+    let rail = rail_accounts(&app.store.read());
+    let first = rail.iter().position(|a| a.starts_with("label:")).expect("a label in the rail");
+    assert_eq!(
+        rail[first..],
+        ["label:lbl_favorite", "label:lbl_vip", "label:lbl_work"],
+        "labels follow the accounts by name"
+    );
+    let _ = app.update(UiMessage::SelectAccount(Some("label:lbl_work".into())));
+    {
+        let st = app.store.read();
+        let work = &st.labels.iter().find(|l| l.id == "lbl_work").expect("the work label").rooms;
+        let shown = app.visible_chats(&st);
+        assert!(!shown.is_empty() && shown.iter().all(|c| work.contains(&c.id)), "a label shows its chats");
+    }
+    simulator(app.view_sidebar()).find("Work").expect("the label name is the heading");
+    app.store.write().labels.iter_mut().for_each(|l| l.color = Some(40));
+    drop(simulator(app.view_rail()));
+    app.store.write().features.flags = serde_json::Value::Null;
+    assert!(!rail_accounts(&app.store.read()).iter().any(|a| a.starts_with("label:")), "labels-v2 hides labels");
 }

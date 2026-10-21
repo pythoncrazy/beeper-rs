@@ -428,16 +428,23 @@ impl BeeperStore {
         };
         store.load_from_sqlite_or_seed();
         if store.config.demo {
-            let label = |(id, name): (&str, &str)| {
+            let label = |(id, name, color, icon): (&str, &str, Option<u8>, Option<&str>)| {
                 let rooms = store.chats.iter().filter(|c| c.label_ids.iter().any(|l| l == id));
                 Label {
                     id: id.into(),
                     name: name.into(),
+                    color,
+                    icon: icon.map(Into::into),
                     rooms: rooms.map(|c| c.id.clone()).collect(),
                     ..Label::default()
                 }
             };
-            store.labels = [("lbl_favorite", "Favorites"), ("lbl_work", "Work"), ("lbl_vip", "VIP")].map(label).into();
+            let labels = [
+                ("lbl_favorite", "Favorites", Some(6), Some("3257-5950")),
+                ("lbl_work", "Work", Some(11), None),
+                ("lbl_vip", "VIP", None, None),
+            ];
+            store.labels = labels.map(label).into();
         }
         store
     }
