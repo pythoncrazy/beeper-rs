@@ -290,6 +290,7 @@
 "Expand":["Erweitern"],
 "Expires In":["Läuft ab in"],
 "Expires in":["Läuft ab in"],
+"Export all loaded messages to .txt file":["Alle geladenen Nachrichten in TXT-Datei exportieren"],
 "Failed to clear storage":["Speicher konnte nicht gelöscht werden"],
 "Failed to upload image":["Bild konnte nicht hochgeladen werden"],
 "Feedback?":["Feedback?"],

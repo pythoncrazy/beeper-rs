@@ -540,6 +540,8 @@ pub enum UiMessage {
     MessageMember(String, String),
     /// Opens a member confirmation, `ASK_MAKE_ADMIN` or `ASK_REMOVE_MEMBER`, for (chat, user).
     AskMember(u8, String, String),
+    /// Desktop's `exportLoadedMessagesAsTextFile`: the loaded messages of the open chat in a text file on the desktop.
+    ExportChat,
     /// Desktop's Add Members button of Chat Info: the Add members submenu with the members query.
     AddMembers(String),
     /// Desktop's `addParticipant`: invites the user to the chat.
@@ -1014,6 +1016,12 @@ fn locale_string(iso: &str) -> String {
     let s = ms.div_euclid(1000).rem_euclid(86_400);
     let (h, ampm) = (s / 3600, ["AM", "PM"][usize::from(s >= 43_200)]);
     format!("{mo}/{d}/{y}, {}:{:02}:{:02} {ampm}", (h + 11) % 12 + 1, s / 60 % 60, s % 60)
+}
+
+/// Desktop's `sanitize-filename`: the name without path characters, control characters and trailing dots or spaces.
+fn safe_file_name(name: &str) -> String {
+    let name: String = name.chars().filter(|c| !r#"/\?<>:*|""#.contains(*c) && !c.is_control()).collect();
+    name.trim_end_matches(['.', ' ']).into()
 }
 
 /// Desktop's Copy text of a message: its attachment label, its text and the links the text lacks.
@@ -5794,8 +5802,7 @@ impl BeeperGuiApp {
                     async move {
                         let mut last = String::new();
                         for (url, name) in files {
-                            let name: String =
-                                name.chars().filter(|c| !r#"/\?<>:*|""#.contains(*c) && !c.is_control()).collect();
+                            let name = safe_file_name(&name);
                             if name.trim_matches('.').is_empty() {
                                 return Err(format!("bad file name {name:?}"));
                             }
@@ -5884,6 +5891,19 @@ impl BeeperGuiApp {
             UiMessage::AddMembers(q) => {
                 let open = self.update(UiMessage::OpenSubMenu(commands::SubMenu::AddMembers));
                 return Task::batch([open, self.update(UiMessage::CommandQueryChanged(q))]);
+            }
+            UiMessage::ExportChat => {
+                let st = self.store.read();
+                let Some(text) = self.export_text(&st) else { return Task::none() };
+                let title = st.resolve_chat_idx(self.pane.selected_chat_id.as_deref().unwrap_or_default());
+                let title = safe_file_name(&st.chats[title.expect("an open chat")].title);
+                drop(st);
+                let home = beeper_core::platform::resolve_home_dir(&std::env::vars().collect());
+                let path = home.join(format!("Desktop/Beeper export {title} {}.txt", now_unix_millis()));
+                self.status_banner = match std::fs::write(&path, text) {
+                    Ok(()) => format!("Exported to {}", path.display()),
+                    Err(e) => format!("Export failed: {e}"),
+                };
             }
             UiMessage::AddMember(chat, user) => self.store.write().add_member(&chat, *user),
             UiMessage::CommandHighlight(i) => self.cmd_index = i,
@@ -9127,6 +9147,12 @@ impl BeeperGuiApp {
                 ..Toast::new(text)
             });
         }
+    }
+
+    /// The text of `ExportChat`: each loaded message with its time, sender, attachments, links and reactions.
+    fn export_text(&self, st: &BeeperStore) -> Option<String> {
+        let text: Vec<String> = self.timeline(st).0.into_iter().map(|m| copy_text(m, true, true)).collect();
+        (!text.is_empty()).then(|| text.join("\n"))
     }
 
     fn show(&mut self, t: Toast) {

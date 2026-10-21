@@ -291,6 +291,7 @@
 "Expand":["拡大"],
 "Expires In":["有効期限:"],
 "Expires in":["有効期限"],
+"Export all loaded messages to .txt file":["読み込まれたすべてのメッセージを .txt ファイルにエクスポート"],
 "Failed to clear storage":["ストレージのクリアに失敗しました"],
 "Failed to upload image":["画像のアップロードに失敗しました"],
 "Feedback?":["フィードバックがありますか ?"],
