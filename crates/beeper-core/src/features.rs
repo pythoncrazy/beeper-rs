@@ -35,12 +35,14 @@ impl Flags {
             "features": { "*": {
                 "undo-send": false, "stealth-mode": false, "remind-later": false, "scheduled-message": true,
                 "voice-transcription": false, "ai-in-beeper-chats": false, "enable-polls": true,
+                "labels-v2": false, "android-inbox-rewrite": true,
             } },
             "freebies": [
                 { "name": "voice-transcription", "type": "count", "default_limit": 5 },
                 { "name": "scheduled-message", "type": "count", "default_limit": 5 },
                 { "name": "remind-later", "type": "count", "default_limit": 5 },
                 { "name": "incognito", "type": "duration", "duration_days": 3 },
+                { "name": "labels", "type": "count", "default_limit": 1 },
             ],
         });
         Flags { flags, usage: Value::Null, subscribed: false }
@@ -93,6 +95,11 @@ impl Flags {
             "remind-later" | "voice-transcription" => with_free(self.flag(key), key),
             "talk-to-type" => self.flag("voice-transcription"),
             "undo-send" | "ai-in-beeper-chats" | "enable-polls" => self.flag(key),
+            "labels-v2" => {
+                let (on, inbox) = (self.flag(key).on, self.flag("android-inbox-rewrite").on);
+                let free = !on && self.free("labels").is_some();
+                Feature { show: inbox || on || free, on: on || free, upgrade: inbox && !on }
+            }
             "scheduled-message" => match (self.flag(key), self.free(key)) {
                 (f, Some((open, left))) if !f.on => Feature { show: true, on: open && (scheduled as i64) < left, ..f },
                 (f, _) => f,
@@ -130,6 +137,8 @@ mod tests {
         assert!(!f.get("ai-in-beeper-chats", 0).show, "a missing flag hides the feature");
         assert!(!f.get("enable-polls", 0).on, "a missing flag hides polls");
         assert!(Flags::free_plan().get("enable-polls", 0).on);
+        assert!(!f.get("labels-v2", 0).show, "no flag and no freebie hides labels");
+        assert_eq!(Flags::free_plan().get("labels-v2", 0), Feature { show: true, on: true, upgrade: true });
         f.subscribed = true;
         assert_eq!(f.get("scheduled-message", 0), lock, "subscribers get no free uses");
         f.usage =
