@@ -1665,3 +1665,38 @@ fn label_inbox_rules_like_desktop() {
     let _ = app.update(UiMessage::SetLabelInbox("lbl_work".into(), None));
     assert_eq!(hidden(&app), shown);
 }
+
+#[test]
+fn mute_labels_like_desktop() {
+    let mut app = demo_app("label-mute");
+    let _ = app.update(UiMessage::OpenChatMenu("account:label:lbl_work".into()));
+    let picks: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_account_menu("label:lbl_work"));
+        let _ = sim.click("Mute Label").expect("a Mute Label item");
+        sim.into_messages().collect()
+    };
+    assert!(matches!(&picks[..], [UiMessage::MuteLabel(id, true)] if id == "lbl_work"));
+    let (only, both) = {
+        let st = app.store.read();
+        let work = &st.labels.iter().find(|l| l.id == "lbl_work").expect("the work label").rooms;
+        let other = st.labels.iter().find(|l| l.id != "lbl_work").expect("a label").id.clone();
+        let only = st.chats.iter().find(|c| work.contains(&c.id) && c.is_muted != Some(true)).expect("a work chat");
+        assert!(!st.notifications_muted(only));
+        (only.id.clone(), other)
+    };
+    for m in picks {
+        let _ = app.update(m);
+    }
+    simulator(app.view_account_menu("label:lbl_work")).find("Unmute Label").expect("an Unmute Label item");
+    let muted = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.notifications_muted(&st.chats[st.chat_idx_by_id[&only]])
+    };
+    assert!(muted(&app), "a chat is muted when all its labels are muted");
+    let i = app.store.read().chat_idx_by_id[&only];
+    app.store.write().update_chat(i, |c| c.label_ids.push(both.clone()));
+    assert!(!muted(&app), "an unmuted label keeps the chat unmuted");
+    let _ = app.update(UiMessage::MuteLabel("lbl_work".into(), false));
+    app.store.write().update_chat(i, |c| c.label_ids.retain(|l| l != &both));
+    assert!(!muted(&app));
+}

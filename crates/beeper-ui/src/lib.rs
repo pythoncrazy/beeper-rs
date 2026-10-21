@@ -367,6 +367,8 @@ pub enum UiMessage {
     DeleteLabel(String),
     /// Desktop's `setLabelInboxVisibility`.
     SetLabelInbox(String, Option<&'static str>),
+    /// Desktop's `toggleMuteLabel`.
+    MuteLabel(String, bool),
     /// Desktop's `PollVotesBrowserWindow` for a chat's poll message.
     OpenPollVotes(String, String),
     EndPoll(String, String),
@@ -4008,7 +4010,7 @@ impl BeeperGuiApp {
         let counts = |c: &Chat| {
             c.flags & (CHAT_HIDDEN | CHAT_ARCHIVED | CHAT_REQUEST) == 0
                 && c.flags & CHAT_UNREAD != 0
-                && (c.unread_mentions > 0 || c.flags & CHAT_MUTED == 0)
+                && (c.unread_mentions > 0 || !st.notifications_muted(c))
         };
         let n = match st.settings.pref("badgeCount") {
             0 => 0,
@@ -4489,6 +4491,10 @@ impl BeeperGuiApp {
                 self.label_window = Some(LabelDraft::edit(id, label));
                 drop(st);
                 return open.chain(operation::focus("label-title"));
+            }
+            UiMessage::MuteLabel(id, muted) => {
+                self.chat_menu = None;
+                self.store.write().set_label_muted(&id, muted);
             }
             UiMessage::SetLabelInbox(id, inbox) => {
                 self.chat_menu = None;
@@ -7419,6 +7425,10 @@ impl BeeperGuiApp {
             let inbox = menu_item(p, None, tr("Show in Inbox").into(), "›", Some(UiMessage::ChatSub(Some(0))));
             let col = column![
                 mouse_area(inbox).on_enter(UiMessage::ChatSub(Some(0))),
+                item(
+                    tr(if l.muted { "Unmute Label" } else { "Mute Label" }),
+                    UiMessage::MuteLabel(l.id.clone(), !l.muted)
+                ),
                 menu_rule(p),
                 item(tr("Edit Label…"), UiMessage::EditLabel(l.id.clone())),
                 item(tr("Delete Label"), UiMessage::AskDeleteLabel(l.id.clone())),
@@ -7742,7 +7752,7 @@ impl BeeperGuiApp {
             c.flags & CHAT_UNREAD != 0
                 && c.flags & (CHAT_ARCHIVED | CHAT_REQUEST) == 0
                 && c.merged_into_chat_id.is_none()
-                && (c.unread_mentions > 0 || c.flags & CHAT_MUTED == 0)
+                && (c.unread_mentions > 0 || !st.notifications_muted(c))
         };
         let tally = |f: &dyn Fn(&Chat) -> bool| st.chats.iter().filter(|c| countable(c) && f(c)).count();
         let tab =
