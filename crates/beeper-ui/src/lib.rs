@@ -297,7 +297,8 @@ pub enum UiMessage {
     ToggleBookmark(String),
     MarkUnreadFromHere(String, String),
     RetranscribeVoice(String),
-    VotePoll(String, String),
+    /// The poll message and all the own answers.
+    VotePoll(String, Vec<String>),
     ToggleAttachMenu,
     TogglePicker(Picker),
     /// Desktop's `undoSend` in the open chat.
@@ -1794,6 +1795,9 @@ static COMPOSER_ICONS: std::sync::LazyLock<[svg::Handle; 9]> = std::sync::LazyLo
     .map(svg::Handle::from_memory)
 });
 
+svg_static!(CHEVRON_RIGHT, br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M10.5 10 6.667 6.167 7.833 5l5 5-5 5-1.166-1.167z"/></svg>"#);
+svg_static!(POLL_ENDED, br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M4 16V4h12v12z"/></svg>"#);
+svg_static!(POLL_CHECK, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="none" stroke="#000" stroke-width="1.5" d="M4.64 7.83 6.94 10.13 11.36 5.71"/></svg>"##);
 svg_static!(CHEVRON_DOWN, br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="m10 10.5 3.833-3.833L15 7.834l-5 5-5-5 1.167-1.167z"/></svg>"#);
 svg_static!(TRASH, br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><path fill="currentColor" d="M432 32H312l-9.4-18.7A24 24 0 0 0 281.1 0H166.8a23.72 23.72 0 0 0-21.4 13.3L136 32H16A16 16 0 0 0 0 48v32a16 16 0 0 0 16 16h416a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16zM53.2 467a48 48 0 0 0 47.9 45h245.8a48 48 0 0 0 47.9-45L416 128H32z"/></svg>"#);
 
@@ -4118,8 +4122,10 @@ impl BeeperGuiApp {
             UiMessage::RetranscribeVoice(mid) => {
                 self.status_banner = self.store.write().retranscribe_voice_note(&mid);
             }
-            UiMessage::VotePoll(mid, opt_id) => {
-                self.store.write().vote_poll(&mid, &opt_id, "@self:beeper.com");
+            UiMessage::VotePoll(mid, answers) => {
+                let mut st = self.store.write();
+                let chat = st.messages[st.msg_idx_by_id[&mid]].chat_id.clone();
+                st.vote_poll(&chat, &mid, answers);
             }
             UiMessage::SetReminder(cid, at) => self.set_reminder(&cid, at, None),
             UiMessage::RemindIf(cid, at, no_reply) => self.set_reminder(&cid, Some(at), Some(no_reply)),
@@ -6738,6 +6744,118 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `ScheduledMessages`: the canceled messages, the "Send Later" toggle, then the messages to send.
+    /// Desktop's `Poll` message, for a chat that can vote.
+    fn view_poll<'a>(
+        &'a self,
+        st: &BeeperStore,
+        chat: &Chat,
+        m: &Message,
+        poll: &PollData,
+        (bg, fg): (Color, Color),
+    ) -> El<'a> {
+        let p = &self.pal;
+        let mine = m.is_sender == Some(true);
+        let (sub, footer, fill, fill_mine, ring) = match mine {
+            true => (fg.scale_alpha(0.6), fg, fg.scale_alpha(0.22), fg.scale_alpha(0.38), fg.scale_alpha(0.85)),
+            false => (p.on_secondary, p.accent, fg.scale_alpha(0.14), fg.scale_alpha(0.24), fg.scale_alpha(0.4)),
+        };
+        let total = poll.voters();
+        let picks = poll.picks(&st.me().id);
+        let shown = !poll.undisclosed || poll.ended;
+        let multi = poll.max_selections != 1;
+        let full = multi && picks.len() >= poll.max_selections as usize;
+        let spread = if shown { total > 0 } else { !picks.is_empty() };
+        let label_alpha = if poll.ended { 0.55 } else { 1.0 };
+        let votes = trn("%d vote", "%d votes", total, &[&total]);
+        let status = match (poll.ended, multi) {
+            (true, _) => tr("Poll ended"),
+            (_, true) => tr("Select one or more options"),
+            _ => tr("Select one option"),
+        };
+        let question = if poll.question.is_empty() { tr("Poll").into() } else { poll.question.clone() };
+        let head = column![
+            semi(question, 15.0).line_height(Pixels(20.0)).color(fg),
+            row![
+                tinted(if poll.ended { &POLL_ENDED } else { &COMPOSER_ICONS[8] }, 16.0, sub),
+                txt(status, 13.0).line_height(Pixels(16.0)).color(sub)
+            ]
+            .spacing(6)
+            .align_y(Center),
+        ]
+        .spacing(4);
+        let options = poll.options.iter().map(|o| -> El<'a> {
+            let n = o.voter_ids.len();
+            let voted = picks.contains(&o.id);
+            let width = match (shown, if shown { n > 0 } else { voted }) {
+                (_, false) => 0,
+                (true, true) => u16::try_from(n * 100 / total).expect("a percentage"),
+                (false, true) => 100,
+            };
+            let bar = container(Space::new()).height(Fill).style(fill_box(if voted { fill_mine } else { fill }, 16.0));
+            let bar: El<'a> = match width {
+                0 => Space::new().into(),
+                100 => bar.width(Fill).into(),
+                w => row![bar.width(Length::FillPortion(w)), Space::new().width(Length::FillPortion(100 - w))].into(),
+            };
+            let (lf, ring) = (fg.scale_alpha(label_alpha), ring.scale_alpha(label_alpha));
+            let radius = if multi { 4.0 } else { 8.0 };
+            let check: El<'a> = match voted {
+                true => container(tinted(&POLL_CHECK, 16.0, bg)).style(fill_box(lf, radius)).into(),
+                false => {
+                    container(Space::new().width(16).height(16)).style(bordered_box(CLEAR, ring, 1.5, radius)).into()
+                }
+            };
+            let name = txt(o.label.clone(), 13.0).line_height(Pixels(16.0)).color(lf);
+            let faces = o.voter_ids.iter().rev().take(3).rev().enumerate().fold(Stack::new(), |s, (i, id)| {
+                let u = chat.participants.items.iter().find(|u| u.id == *id);
+                let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(id);
+                let face = container(self.face(u.and_then(|u| u.img_url.as_deref()), name, 20.0, 0.5))
+                    .padding(1.5)
+                    .style(fill_box(bg, 11.5));
+                s.push(container(face).padding(Padding::ZERO.left(14.0 * i as f32)))
+            });
+            let right = (shown && n > 0).then(|| {
+                row![faces, semi(n.to_string(), 13.0).line_height(Pixels(16.0)).color(fg)].spacing(6).align_y(Center)
+            });
+            let line =
+                row![row![check, name].spacing(8).align_y(Center).width(Fill)].push(right).spacing(10).align_y(Center);
+            let answers = match (multi, voted) {
+                (true, true) => picks.iter().filter(|x| **x != o.id).cloned().collect(),
+                (true, false) => picks.iter().cloned().chain([o.id.clone()]).collect(),
+                (false, true) => Vec::new(),
+                (false, false) => vec![o.id.clone()],
+            };
+            let vote = (!poll.ended && !(full && !voted)).then(|| UiMessage::VotePoll(m.id.clone(), answers));
+            let body = container(line).padding([8.0, if spread { 8.0 } else { 4.0 }]);
+            button(stack![body].push_under(bar))
+                .padding(0)
+                .width(Fill)
+                .style(btn_style([CLEAR; 3], [fg; 3], 16.0))
+                .on_press_maybe(vote)
+                .into()
+        });
+        let options = Column::with_children(options).spacing(if spread { 6 } else { 2 });
+        let foot: El<'a> = match shown {
+            true if total > 0 => row![
+                semi(votes, 13.0).line_height(Pixels(16.0)).color(footer),
+                svg(CHEVRON_RIGHT.clone()).width(16).height(16).style(move |_, _| svg::Style { color: Some(footer) })
+            ]
+            .align_y(Center)
+            .into(),
+            true => Space::new().into(),
+            false => column![]
+                .push((total > 0).then(|| semi(votes, 13.0).line_height(Pixels(16.0)).color(fg)))
+                .push(
+                    txt(tr("Results will be displayed when the poll ends"), 11.0).line_height(Pixels(14.0)).color(sub),
+                )
+                .spacing(4)
+                .into(),
+        };
+        let foot = (!shown || total > 0).then(|| container(foot).padding(Padding::ZERO.top(10.0)));
+        let body = column![head, Space::new().height(10), options].push(foot).push(Space::new().width(240));
+        container(body).padding(Padding::new(14.0).bottom(12.0)).max_width(380).style(fill_box(bg, 17.0)).into()
+    }
+
     fn view_scheduled<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
         let p = &self.pal;
         let mut all: Vec<&Scheduled> = st.scheduled.iter().filter(|s| s.chat_id == chat.id).collect();
@@ -8199,7 +8317,11 @@ impl BeeperGuiApp {
         let rise = send_rise(st, m).unwrap_or(1.0);
         let dim = move |c: Color| (if selected { brightness(c, 0.7) } else { c }).scale_alpha(rise);
         let (bg, fg) = if mine { (dim(sent), dim(sent_fg)) } else { (dim(p.received), dim(p.strong)) };
-        let text = m.text.clone().unwrap_or_default();
+        let poll = m.poll.as_ref().filter(|_| st.feature("enable-polls").on && chat.polls.is_some());
+        let text = match (&m.poll, poll) {
+            (Some(p), None) => p.fallback.clone(),
+            _ => m.text.clone().unwrap_or_default(),
+        };
         let preview = st
             .settings
             .on("loadEmbeds")
@@ -8340,36 +8462,8 @@ impl BeeperGuiApp {
             };
             parts = parts.push(content);
         }
-        if let Some(poll) = &m.poll {
-            let total = poll.options.iter().map(|o| o.voter_ids.len()).sum::<usize>().max(1);
-            let opts = poll.options.iter().fold(Column::new().spacing(4), |c, o| {
-                let voted = o.voter_ids.iter().any(|v| v == "@self:beeper.com");
-                let label = row![
-                    txt(o.label.clone(), 13.0).color(fg),
-                    Space::new().width(Fill),
-                    txt(format!("{}%", o.voter_ids.len() * 100 / total), 11.0).color(fg.scale_alpha(0.7))
-                ];
-                c.push(
-                    button(label)
-                        .padding([6, 10])
-                        .width(Fill)
-                        .style(btn_style(
-                            [
-                                if voted { fg.scale_alpha(0.22) } else { fg.scale_alpha(0.08) },
-                                fg.scale_alpha(0.15),
-                                fg.scale_alpha(0.22),
-                            ],
-                            [fg; 3],
-                            8.0,
-                        ))
-                        .on_press(UiMessage::VotePoll(m.id.clone(), o.id.clone())),
-                )
-            });
-            parts = parts.push(
-                container(column![semi(poll.question.clone(), 13.0).color(fg), opts].spacing(8).width(300))
-                    .padding([10, 11])
-                    .style(fill_box(bg, 17.0)),
-            );
+        if let Some(poll) = poll {
+            parts = parts.push(self.view_poll(st, chat, m, poll, (bg, fg)));
         }
         if m.message_type.as_deref() == Some("HIDDEN") {
             let bold = |s: String| span::<(), _>(s).font(fw(Weight::Bold));
@@ -8386,7 +8480,7 @@ impl BeeperGuiApp {
             parts = parts.push(section.style(bordered_box(CLEAR, p.chip, 2.0, 4.0)));
         } else if jumbo(&text) {
             parts = parts.push(container(txt(text.clone(), 48.0)).padding([0, 12]));
-        } else if !text.is_empty() && m.poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
+        } else if !text.is_empty() && poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
             let ts = st
                 .settings
                 .on("showTimestamps")

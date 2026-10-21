@@ -1301,6 +1301,55 @@ fn search_finds_custom_items_like_desktop() {
 }
 
 #[test]
+fn polls_like_desktop() {
+    let mut app = demo_app("polls");
+    let (chat, mid) = ("!tg_rust:beeper.com", "msg_1004");
+    let _ = app.update(UiMessage::SelectChat(chat.into()));
+    let me = app.store.read().me().id.clone();
+    let poll = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.messages[st.msg_idx_by_id[mid]].poll.clone().expect("a poll")
+    };
+    let click = |app: &BeeperGuiApp, label: &str| -> Vec<UiMessage> {
+        let mut sim = simulator(app.view_main());
+        let _ = sim.click(label).expect("the option");
+        sim.into_messages().filter(|m| matches!(m, UiMessage::VotePoll(..))).collect()
+    };
+    {
+        let mut sim = simulator(app.view_main());
+        assert!(sim.find("Select one option").is_ok() && sim.find("2 votes").is_ok());
+    }
+    for m in click(&app, "Nocturne") {
+        let _ = app.update(m);
+    }
+    assert_eq!((poll(&app).picks(&me), poll(&app).voters()), (vec!["opt_3".to_string()], 3));
+    for m in click(&app, "Nocturne") {
+        let _ = app.update(m);
+    }
+    assert!(poll(&app).picks(&me).is_empty(), "a second click takes the vote back");
+    app.store.write().update_poll(mid, |p| p.max_selections = 2);
+    for label in ["Dracula", "Nocturne"] {
+        for m in click(&app, label) {
+            let _ = app.update(m);
+        }
+    }
+    assert_eq!(poll(&app).picks(&me), ["opt_2", "opt_3"]);
+    assert!(click(&app, "Dark Purple").is_empty(), "the maximum answers are picked");
+    app.store.write().update_poll(mid, |p| p.ended = true);
+    assert!(simulator(app.view_main()).find("Poll ended").is_ok());
+    assert!(click(&app, "Dracula").is_empty(), "an ended poll takes no votes");
+    app.store.write().update_poll(mid, |p| (p.ended, p.undisclosed) = (false, true));
+    assert!(simulator(app.view_main()).find("Results will be displayed when the poll ends").is_ok());
+    let i = app.store.read().chat_idx_by_id[chat];
+    app.store.write().update_chat(i, |c| c.polls = None);
+    let mut sim = simulator(app.view_main());
+    assert!(
+        sim.find("Select one or more options").is_err() && sim.find("Nocturne").is_err(),
+        "the fallback text shows"
+    );
+}
+
+#[test]
 fn chat_theme_like_desktop() {
     let mut app = demo_app("chat-theme");
     let chat = app.store.read().chats[0].id.clone();

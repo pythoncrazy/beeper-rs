@@ -2,8 +2,9 @@ use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
     Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder, EditHistoryEntry, Message,
-    MessageLink, Reaction, User, VerificationSas, VerificationSasEmoji, VerificationState, ALL_FILES, ALL_FORMATS,
-    DELETE_FOR_EVERYONE, DELETE_FOR_ME, FILE_GIF, FILE_VOICE, FORMATS,
+    MessageLink, PollData, PollOption, PollRules, Reaction, User, VerificationSas, VerificationSasEmoji,
+    VerificationState, ALL_FILES, ALL_FORMATS, BEEPER_POLLS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, FILE_GIF, FILE_VOICE,
+    FORMATS,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -52,6 +53,9 @@ enum Op {
     },
     Redact(String),
     Remove(String),
+    /// A poll response: the poll, the voter and the answers.
+    Vote(String, String, Vec<String>),
+    EndPoll(String),
 }
 
 fn s(v: &Value) -> Option<String> {
@@ -186,6 +190,18 @@ pub fn hidden_from_inbox(rules: &Value, account_id: &str, bridge: &Value, group:
     }
 }
 
+/// Desktop's poll limits from `com.beeper.room_features`, or `None` when the room has no polls.
+fn poll_rules(f: &Value) -> Option<PollRules> {
+    let level = |k: &str| f[k].as_i64().is_some_and(|n| n > 0);
+    let limit = |k: &str| f[k].as_u64().filter(|&n| n > 0).map(|n| u16::try_from(n).unwrap_or(u16::MAX));
+    level("poll").then(|| PollRules {
+        hidden_votes: level("poll_hidden_votes"),
+        duplicates: level("poll_duplicate_options"),
+        max_options: limit("poll_max_options").unwrap_or(0),
+        max_length: limit("poll_option_max_length").unwrap_or(200),
+    })
+}
+
 async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Chat {
     let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
     let service = room.service_members().unwrap_or_default();
@@ -287,6 +303,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             let has = |kind: &str| f["file"].get(kind).is_some_and(|v| !v.is_null());
             (u8::from(has("fi.mau.gif")) * FILE_GIF) | (u8::from(has("org.matrix.msc3245.voice")) * FILE_VOICE)
         }),
+        polls: features.as_ref().map_or(Some(BEEPER_POLLS), poll_rules),
         flags: 0,
     }
 }
@@ -345,6 +362,46 @@ fn content(kind: &str, c: &Value) -> Option<(Option<String>, Vec<Attachment>, &'
     }
 }
 
+/// Desktop's `Ia`: the text of an MSC1767 text block.
+fn poll_text(v: &Value) -> String {
+    let m = &v["m.text"];
+    let plain = || m.as_array()?.iter().find(|t| t["mimetype"].is_null() || t["mimetype"] == "text/plain");
+    s(&v["org.matrix.msc1767.text"])
+        .or_else(|| s(m))
+        .or_else(|| s(&plain()?["body"]))
+        .or_else(|| s(&v["text"]))
+        .or_else(|| s(&v["body"]))
+        .unwrap_or_default()
+}
+
+/// Desktop's `handlePollStart`.
+fn poll(c: &Value) -> Option<PollData> {
+    let p =
+        [&c["org.matrix.msc3381.poll.start"], &c["m.poll.start"], &c["m.poll"]].into_iter().find(|p| p.is_object())?;
+    let answers = p["answers"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let options = answers.iter().map(|a| PollOption {
+        id: s(&a["m.id"]).or(s(&a["id"])).unwrap_or_default(),
+        label: poll_text(a),
+        voter_ids: Vec::new(),
+    });
+    Some(PollData {
+        question: poll_text(&p["question"]),
+        options: options.collect(),
+        max_selections: p["max_selections"].as_u64().filter(|&n| n > 0).map_or(1, |n| n.try_into().unwrap_or(u32::MAX)),
+        undisclosed: p["kind"].as_str().is_some_and(|k| k.contains("undisclosed")),
+        ended: false,
+        fallback: poll_text(c),
+    })
+}
+
+/// Desktop's poll response answers.
+fn poll_answers(c: &Value) -> Vec<String> {
+    let answers =
+        [&c["org.matrix.msc3381.poll.response"]["answers"], &c["m.poll.response"]["answers"], &c["m.selections"]];
+    let list = answers.into_iter().find_map(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    list.iter().filter_map(|a| a.as_str().map(str::to_string)).collect()
+}
+
 fn unresolved_media(c: &Value) -> Option<String> {
     c.get("com.beeper.unresolved_media").filter(|v| !v.is_null()).map(Value::to_string)
 }
@@ -357,6 +414,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
     let id = s(&e["event_id"]).expect("event ID");
     let kind = s(&e["type"]).expect("event type");
     let hide = || hidden.then(|| (Some(kind.clone()), Vec::new(), "HIDDEN"));
+    let poll = matches!(kind.as_str(), "org.matrix.msc3381.poll.start" | "m.poll.start").then(|| poll(c)).flatten();
     let (text, attachments, message_type) = match kind.as_str() {
         "m.room.message" | "m.sticker" | "m.room.encrypted" if deleted => (None, Vec::new(), "TEXT"),
         _ if deleted => return None,
@@ -381,6 +439,11 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
             });
         }
         "m.room.encrypted" => (Some(UTD_TEXT.into()), Vec::new(), "TEXT"),
+        "org.matrix.msc3381.poll.response" | "m.poll.response" => {
+            return Some(Op::Vote(s(&rel["event_id"])?, sender, poll_answers(c)));
+        }
+        "org.matrix.msc3381.poll.end" | "m.poll.end" => return Some(Op::EndPoll(s(&rel["event_id"])?)),
+        _ if poll.is_some() => (poll.as_ref().map(|p| p.question.clone()), Vec::new(), "POLL"),
         "m.room.member" => membership(room, e).await.map(|t| (Some(t), Vec::new(), "MEMBERSHIP")).or_else(hide)?,
         k => content(k, c).or_else(hide)?,
     };
@@ -414,7 +477,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         text,
         html: html(c),
         message_type: Some(message_type.into()),
-        poll: None,
+        poll,
         unresolved_media: unresolved_media(c).filter(|_| !deleted),
         edit_history: Vec::new(),
         is_edited: None,
@@ -704,6 +767,8 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
         for op in ops {
             match op {
                 Op::Upsert(m) => st.upsert_message(*m),
+                Op::Vote(target, voter, answers) => st.update_poll(&target, |p| p.respond(&voter, &answers)),
+                Op::EndPoll(target) => st.update_poll(&target, |p| p.ended = true),
                 Op::React(target, r, mut preview) => {
                     let target_msg = st.msg_idx_by_id.get(&target).map(|&i| &st.messages[i]);
                     let target_mine = target_msg.is_some_and(|m| m.is_sender == Some(true));
@@ -819,6 +884,11 @@ pub enum Outgoing {
         txn: String,
         target: String,
         key: String,
+    },
+    /// An MSC3381 poll response with the answer IDs.
+    Vote {
+        target: String,
+        answers: Vec<String>,
     },
     Read(String),
     Flag(ChatFlag, bool),
@@ -939,6 +1009,13 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
         Outgoing::React { txn, target, key } => {
             let content = ReactionEventContent::new(Annotation::new(event(target)?, key));
             sent(txn.clone(), room.send(content).with_transaction_id(txn.into()).await.map_err(e)?.response.event_id);
+        }
+        Outgoing::Vote { target, answers } => {
+            let content = serde_json::json!({
+                "m.relates_to": { "rel_type": "m.reference", "event_id": event(target)?.to_string() },
+                "org.matrix.msc3381.poll.response": { "answers": answers },
+            });
+            room.send_raw("org.matrix.msc3381.poll.response", content).await.map_err(e)?;
         }
         Outgoing::Read(target) => {
             room.send_single_receipt(SendReceiptType::Read, ReceiptThread::Unthreaded, event(target)?)
@@ -1616,6 +1693,45 @@ mod tests {
         let r = with_inbox_visibility(rules, "discordgo.G1", "all");
         assert_eq!(inbox_rule(&r, "discordgo", "discordgo", Some("G1")).1, "all");
         assert!(!hidden_from_inbox(&r, "discordgo", &discord, true));
+    }
+
+    #[test]
+    fn polls_follow_desktop() {
+        use super::{poll_rules, PollRules};
+        assert_eq!(poll_rules(&json!({"poll": 0, "poll_max_options": 5})), None);
+        let rules = PollRules { hidden_votes: false, duplicates: true, max_options: 5, max_length: 200 };
+        assert_eq!(poll_rules(&json!({"poll": 2, "poll_duplicate_options": 1, "poll_max_options": 5})), Some(rules));
+        use serde_json::json;
+        let start = json!({
+            "org.matrix.msc1767.text": "Lunch?\n1. Pizza\n2. Soup",
+            "org.matrix.msc3381.poll.start": {
+                "question": { "org.matrix.msc1767.text": "Lunch?" },
+                "kind": "org.matrix.msc3381.poll.undisclosed",
+                "max_selections": 2,
+                "answers": [
+                    { "id": "1", "org.matrix.msc1767.text": "Pizza" },
+                    { "m.id": "2", "m.text": [{ "mimetype": "text/html", "body": "<b>Soup</b>" }, { "body": "Soup" }] },
+                ],
+            },
+        });
+        let mut p = super::poll(&start).expect("a poll start");
+        assert_eq!((p.question.as_str(), p.max_selections, p.undisclosed), ("Lunch?", 2, true));
+        assert_eq!(
+            p.options.iter().map(|o| (o.id.as_str(), o.label.as_str())).collect::<Vec<_>>(),
+            [("1", "Pizza"), ("2", "Soup")]
+        );
+        assert_eq!(p.fallback, "Lunch?\n1. Pizza\n2. Soup");
+        let single =
+            super::poll(&json!({ "m.poll": { "question": { "m.text": "Q" }, "answers": [] } })).expect("a poll");
+        assert_eq!((single.max_selections, single.undisclosed), (1, false));
+        assert!(super::poll(&json!({ "body": "no poll" })).is_none());
+        let answers = |c| super::poll_answers(&c);
+        assert_eq!(answers(json!({ "org.matrix.msc3381.poll.response": { "answers": ["1", 2, "2"] } })), ["1", "2"]);
+        assert_eq!(answers(json!({ "m.selections": ["2"] })), ["2"]);
+        p.respond("@a:x", &["1".into(), "2".into()]);
+        p.respond("@b:x", &["1".into()]);
+        p.respond("@a:x", &["2".into(), "9".into()]);
+        assert_eq!((p.voters(), p.picks("@a:x"), p.picks("@b:x")), (2, vec!["2".to_string()], vec!["1".to_string()]));
     }
 
     #[test]

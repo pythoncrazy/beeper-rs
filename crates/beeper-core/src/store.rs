@@ -835,6 +835,7 @@ impl BeeperStore {
             delete_modes: 0,
             formatting: ALL_FORMATS,
             files: ALL_FILES,
+            polls: Some(BEEPER_POLLS),
             flags: 0,
         };
         self.push_chat(chat, true);
@@ -1209,6 +1210,7 @@ impl BeeperStore {
             delete_modes: 0,
             formatting: ALL_FORMATS,
             files: ALL_FILES,
+            polls: Some(BEEPER_POLLS),
             flags: 0,
         };
         let idx = self.push_chat(chat, true);
@@ -1437,20 +1439,18 @@ impl BeeperStore {
         msg.attachments.into_iter().find_map(|a| a.transcript).unwrap()
     }
 
-    pub fn vote_poll(&mut self, message_id: &str, option_id: &str, voter_id: &str) {
-        let m_idx = self.msg_idx_by_id[message_id];
-        self.update_message(m_idx, |m| {
-            let poll = m.poll.as_mut().expect("message has poll");
-            assert!(poll.options.iter().any(|o| o.id == option_id), "poll option {option_id} exists");
-            for opt in &mut poll.options {
-                let voted = opt.voter_ids.iter().any(|v| v == voter_id);
-                if opt.id == option_id && !voted {
-                    opt.voter_ids.push(voter_id.to_string());
-                } else if opt.id == option_id || !poll.allow_multiple {
-                    opt.voter_ids.retain(|v| v != voter_id);
-                }
-            }
-        });
+    /// Desktop's `votePoll`: replaces the own answers to the poll `message_id`, here and on the homeserver.
+    pub fn vote_poll(&mut self, chat_id: &str, message_id: &str, answers: Vec<String>) {
+        let me = self.me().id.clone();
+        self.update_poll(message_id, |p| p.respond(&me, &answers));
+        self.queue(chat_id, Outgoing::Vote { target: message_id.into(), answers });
+    }
+
+    /// Changes the poll `message_id` when it is loaded. Desktop ignores responses to other messages.
+    pub fn update_poll(&mut self, message_id: &str, f: impl FnOnce(&mut PollData)) {
+        if let Some(&i) = self.msg_idx_by_id.get(message_id).filter(|&&i| self.messages[i].poll.is_some()) {
+            self.update_message(i, |m| f(m.poll.as_mut().expect("the filter keeps polls")));
+        }
     }
 
     pub fn mark_unread_from_message(&mut self, chat_or_local_id: &str, message_id: &str) {

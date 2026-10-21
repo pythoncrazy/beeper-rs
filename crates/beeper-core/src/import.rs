@@ -1,7 +1,7 @@
 use crate::config::rfc3339_from_millis;
 use crate::models::{
     Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, Reaction, ThemeChoice, User, ALL_FILES,
-    ALL_FORMATS,
+    ALL_FORMATS, BEEPER_POLLS,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
@@ -381,6 +381,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 delete_modes: 0,
                 formatting: ALL_FORMATS,
                 files: ALL_FILES,
+                polls: Some(BEEPER_POLLS),
                 flags: 0,
                 id,
             })
