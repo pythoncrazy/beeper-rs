@@ -990,10 +990,18 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     }
     let _ = gui.update(UiMessage::SetPref("timeFormat", 1));
     let _ = gui.update(UiMessage::SetPref("showMessagePreviews", 0));
-    for (step, zoom) in [(1, 1.1), (1, 1.25), (-1, 1.1), (0, 1.0), (-1, 0.9)] {
+    for (step, zoom) in [(1, 1.1), (1, 1.2), (-1, 1.1), (0, 1.0), (-1, 0.9)] {
         let _ = gui.update(UiMessage::Zoom(step));
         assert_eq!(gui.zoom, zoom);
     }
+    for _ in 0..9 {
+        let _ = gui.update(UiMessage::Zoom(-1));
+    }
+    assert_eq!(gui.zoom, 0.4, "Desktop zooms out to 40%");
+    let _ = gui.update(UiMessage::ZoomDrag(4.0));
+    assert_eq!(gui.zoom, 0.4, "the slider zooms on release");
+    let _ = gui.update(UiMessage::ZoomRelease);
+    assert_eq!(gui.zoom, 1.4);
     let _ = gui.update(UiMessage::Zoom(0));
     {
         let st = store.read();

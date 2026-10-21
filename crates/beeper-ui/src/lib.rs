@@ -462,6 +462,9 @@ pub enum UiMessage {
     HotkeysModal(Option<String>),
     HotkeysScrolled(bool),
     Zoom(i8),
+    /// The zoom slider moved to a level from -4 to 4, in steps of 10%.
+    ZoomDrag(f32),
+    ZoomRelease,
     ToggleSetting(fn(&mut BeeperSettings)),
     /// The Beeper account email and the chat accounts from `whoami`.
     CloudAccounts(Result<(Option<String>, bool, Vec<BridgeAccountInfo>), String>),
@@ -678,7 +681,6 @@ pub fn search_settings(st: &BeeperStore, query: &str) -> Vec<SettingsHit> {
     out
 }
 
-const ZOOM_STEPS: [u16; 13] = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300];
 const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 fn network_name(account_id: &str) -> &'static str {
     account_network(account_id).display_name
@@ -1836,6 +1838,7 @@ static FILE_ICONS: std::sync::LazyLock<[svg::Handle; 4]> = std::sync::LazyLock::
 
 svg_static!(MAT_FORWARD, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="m640-280-57-56 184-184-184-184 57-56 240 240-240 240ZM80-200v-160q0-83 58.5-141.5T280-560h247L383-704l57-56 240 240-240 240-57-56 144-144H280q-50 0-85 35t-35 85v160H80Z"/></svg>"##);
 
+svg_static!(ZOOM_LEVEL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 15" fill="#000"><path d="M20.64 14.343C21.01 14.343 21.303 14.237 21.52 14.026C21.736 13.816 21.845 13.534 21.845 13.183C21.845 12.937 21.798 12.679 21.705 12.409L17.995 2.346C17.837 1.877 17.603 1.53 17.292 1.304C16.982 1.079 16.583 0.966 16.097 0.966C15.177 0.966 14.562 1.423 14.251 2.336L10.498 12.488C10.4122 12.7219 10.3675 12.9689 10.366 13.218C10.366 13.563 10.469 13.838 10.674 14.04C10.879 14.242 11.16 14.343 11.518 14.343C11.863 14.343 12.134 14.261 12.331 14.097C12.527 13.933 12.675 13.666 12.774 13.297L13.636 10.915H18.531L19.393 13.297C19.493 13.666 19.64 13.933 19.836 14.097C20.033 14.261 20.301 14.343 20.641 14.343H20.64ZM17.995 8.999H14.198L16.07 3.479H16.123L17.995 9V8.999ZM7.87 14.325C8.175 14.325 8.42 14.233 8.608 14.048C8.7018 13.9545 8.77527 13.8427 8.8238 13.7195C8.87232 13.5962 8.89486 13.4643 8.89 13.332C8.89 13.209 8.878 13.09 8.854 12.976C8.8266 12.8487 8.78846 12.7239 8.74 12.603L6.14 5.606C5.987 5.19 5.782 4.883 5.524 4.684C5.267 4.484 4.939 4.384 4.54 4.384C4.165 4.384 3.85 4.484 3.595 4.684C3.34 4.883 3.137 5.19 2.985 5.606L0.381 12.603C0.292023 12.8359 0.244637 13.0827 0.241 13.332C0.241 13.642 0.332 13.886 0.517 14.062C0.702 14.237 0.952 14.325 1.269 14.325C1.532 14.325 1.746 14.25 1.91 14.101C2.074 13.951 2.203 13.707 2.297 13.367L2.851 11.741H6.261L6.814 13.385C6.902 13.725 7.031 13.966 7.201 14.11C7.371 14.253 7.594 14.325 7.869 14.325H7.87ZM5.787 10.16H3.31L4.45 6.494H4.626L5.786 10.159L5.787 10.16Z"/></svg>"##);
 svg_static!(MAT_LINK, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="M440-280H280q-83 0-141.5-58.5T80-480q0-83 58.5-141.5T280-680h160v80H280q-50 0-85 35t-35 85q0 50 35 85t85 35h160v80ZM320-440v-80h320v80H320Zm200 160v-80h160q50 0 85-35t35-85q0-50-35-85t-85-35H520v-80h160q83 0 141.5 58.5T880-480q0 83-58.5 141.5T680-280H520Z"/></svg>"##);
 
 /// Desktop's system icon arrow-back.
@@ -2541,6 +2544,7 @@ pub struct BeeperGuiApp {
     pub system_dark: bool,
     pub dark: bool,
     pub zoom: f32,
+    zoom_drag: Option<f32>,
     pub pal: Palette,
     pub active_tab: InboxTab,
     pub selected_account_filter: Option<String>,
@@ -2698,6 +2702,7 @@ impl BeeperGuiApp {
             system_dark: false,
             dark: theme,
             zoom: 1.0,
+            zoom_drag: None,
             active_tab: InboxTab::AllChats,
             selected_account_filter: None,
             hotkey_query: String::new(),
@@ -5582,12 +5587,17 @@ impl BeeperGuiApp {
             }
             UiMessage::HotkeysScrolled(down) => self.hotkeys_scrolled = down,
             UiMessage::Zoom(step) => self.patch_settings(|s| {
-                let at = ZOOM_STEPS.iter().position(|z| *z >= s.zoom_percent).expect("zoom is in the steps");
-                s.zoom_percent = match step {
-                    0 => 100,
-                    _ => ZOOM_STEPS[at.saturating_add_signed(step as isize).min(ZOOM_STEPS.len() - 1)],
+                s.zoom_percent = if step == 0 {
+                    100
+                } else {
+                    s.zoom_percent.saturating_add_signed(10 * i16::from(step)).clamp(40, 300)
                 };
             }),
+            UiMessage::ZoomDrag(level) => self.zoom_drag = Some(level),
+            UiMessage::ZoomRelease => {
+                let level = self.zoom_drag.take().expect("the zoom slider was dragged");
+                self.patch_settings(|s| s.zoom_percent = (100.0 + 10.0 * level) as u16);
+            }
             UiMessage::HoverEnter(id) => {
                 self.quick_open &= self.pane.hovered_msg.as_ref() == Some(&id);
                 self.pane.hovered_msg = Some(id);
@@ -11174,10 +11184,71 @@ impl BeeperGuiApp {
                     })
                 }
                 prefs::Item::Theme => out.push(group(p, heading.take(), vec![theme_cards(p, s.theme)])),
+                prefs::Item::Zoom(t, args) => {
+                    out.push(group(p, heading.take(), vec![self.zoom_slider(s.zoom_percent, trs(t, args))]))
+                }
             }
         }
         assert!(lead.is_none(), "a subtitle without a heading comes before a group");
         out
+    }
+
+    fn zoom_slider(&self, percent: u16, desc: String) -> El<'_> {
+        let p = &self.pal;
+        let level = self.zoom_drag.unwrap_or(((f32::from(percent) - 100.0) / 10.0).clamp(-4.0, 4.0));
+        let (fill, edge) = (p.accent, p.prefs_group);
+        let dot = || {
+            container(Space::new()).width(8).height(8).style(move |_: &Theme| container::Style {
+                background: Some(fill.into()),
+                border: iced::Border { color: edge, width: 2.0, radius: 12.0.into() },
+                ..Default::default()
+            })
+        };
+        let ticks =
+            (0..9).fold(Row::new(), |r, i| if i == 0 { r } else { r.push(Space::new().width(Fill)) }.push(dot()));
+        let rail = container(Space::new()).width(Fill).height(4).style(fill_box(fill, 8.0));
+        let knob = container(Space::new()).width(20).height(20).style(|_: &Theme| container::Style {
+            background: Some(Color::WHITE.into()),
+            border: iced::Border { radius: 20.0.into(), ..Default::default() },
+            shadow: iced::Shadow {
+                color: Color::BLACK.scale_alpha(0.2),
+                offset: iced::Vector::new(1.0, 1.0),
+                blur_radius: 2.0,
+            },
+            ..Default::default()
+        });
+        let at = (level + 4.0) as u16;
+        let knob =
+            row![Space::new().width(Length::FillPortion(at)), knob, Space::new().width(Length::FillPortion(8 - at))];
+        let input = slider(-4.0..=4.0, level, UiMessage::ZoomDrag).on_release(UiMessage::ZoomRelease).height(20).style(
+            |_, _| slider::Style {
+                rail: slider::Rail {
+                    backgrounds: (CLEAR.into(), CLEAR.into()),
+                    width: 0.0,
+                    border: iced::Border::default(),
+                },
+                handle: slider::Handle {
+                    shape: slider::HandleShape::Circle { radius: 10.0 },
+                    background: CLEAR.into(),
+                    border_width: 0.0,
+                    border_color: CLEAR,
+                },
+            },
+        );
+        let track = stack![container(rail).center_y(20), container(ticks).center_y(20), knob, input]
+            .width(Length::FillPortion(34));
+        let icon = |size, pad: Padding| {
+            container(tinted(&ZOOM_LEVEL, size, p.weak)).padding(pad).width(Length::FillPortion(3))
+        };
+        let (first, last) = (
+            icon(14.0, Padding::ZERO.left(8.0)),
+            icon(20.0, Padding::ZERO.right(4.0)).align_x(iced::alignment::Horizontal::Right),
+        );
+        column![
+            row![first, track, last].align_y(Center).padding(16),
+            container(txt(desc, 13.0).color(p.sub)).padding(Padding::new(14.0).top(0.0).bottom(13.0))
+        ]
+        .into()
     }
 
     fn pref_select(&self, r: &'static prefs::Pref, s: &BeeperSettings) -> El<'_> {

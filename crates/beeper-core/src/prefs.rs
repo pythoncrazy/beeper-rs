@@ -40,6 +40,8 @@ pub enum Item {
     Heading(&'static str),
     Group(&'static [Pref]),
     Theme,
+    /// Desktop's zoom slider, with a text below it.
+    Zoom(&'static str, &'static [&'static str]),
 }
 
 impl Pref {
@@ -246,7 +248,7 @@ pub const APPEARANCE: &[Item] = &[
     Item::Heading("Theme"),
     Item::Theme,
     Item::Heading("Zoom"),
-    Item::Subtitle("You can use %1$s to zoom in and %2$s to zoom out.", const { &[cmd!("", " +"), cmd!("", " -")] }),
+    Item::Zoom("You can use %1$s to zoom in and %2$s to zoom out.", const { &[cmd!("", " +"), cmd!("", " -")] }),
 ];
 
 pub const NOTIFICATIONS: &[Item] = &[
