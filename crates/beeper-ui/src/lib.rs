@@ -613,6 +613,12 @@ pub enum UiMessage {
     DragStart,
     DragMoved(Point),
     DragEnd,
+    /// The cursor is over a rail space, at this point in it.
+    RailHover(String, Point),
+    RailLeave(String),
+    RailPress,
+    RailDragMoved(Point),
+    RailDragEnd,
     WindowOpened(window::Id),
     /// A window drew a frame, after which its screenshot has content.
     Drawn(window::Id),
@@ -2970,6 +2976,9 @@ pub struct BeeperGuiApp {
     /// Desktop's local `sidebar-hidden`: hides the rail and the chat list.
     pub sidebar_hidden: bool,
     pub dragging: bool,
+    /// The rail space under the cursor, and where the cursor is in it.
+    pub rail_hover: Option<(String, Point)>,
+    pub rail_drag: Option<RailDrag>,
     pub main_window: Option<window::Id>,
     pub settings_window: Option<window::Id>,
     pub login_window: Option<window::Id>,
@@ -3113,6 +3122,8 @@ impl BeeperGuiApp {
             sidebar_width,
             sidebar_hidden,
             dragging: false,
+            rail_hover: None,
+            rail_drag: None,
             main_window: None,
             settings_window: None,
             login_window: None,
@@ -6173,6 +6184,51 @@ impl BeeperGuiApp {
                 }
                 self.set_sidebar_hidden(width < 172.0);
             }
+            UiMessage::RailHover(id, at) => {
+                if let Some(order) = self.rail_drag.as_mut().filter(|d| d.id != id).and_then(|d| {
+                    let order = d.order.as_mut()?;
+                    let from = order.iter().position(|o| *o == d.id).expect("the dragged space");
+                    Some((order, from))
+                }) {
+                    let (order, from) = order;
+                    let to = order.iter().position(|o| *o == id).expect("a rail space");
+                    let item = order.remove(from);
+                    order.insert(to, item);
+                }
+                self.rail_hover = Some((id, at));
+            }
+            UiMessage::RailLeave(id) => {
+                if self.rail_hover.as_ref().is_some_and(|h| h.0 == id) {
+                    self.rail_hover = None;
+                }
+            }
+            UiMessage::RailPress => {
+                let Some((id, grab)) = self.rail_hover.clone() else { return Task::none() };
+                self.rail_drag = Some(RailDrag { id, grab, from: None, at: Point::ORIGIN, order: None });
+            }
+            UiMessage::RailDragMoved(at) => {
+                let Some(d) = self.rail_drag.as_mut() else { return Task::none() };
+                d.at = at;
+                if d.order.is_none() && at.distance(*d.from.get_or_insert(at)) > 5.0 {
+                    let st = self.store.read();
+                    let draft = self.label_window.as_ref().filter(|w| w.label.is_none());
+                    d.order = Some(draft.map_or_else(|| rail_spaces(&st), |w| draft_rail_spaces(&st, &w.name)));
+                    self.chat_menu = None;
+                }
+            }
+            UiMessage::RailDragEnd => {
+                let Some(order) = self.rail_drag.take().and_then(|d| d.order) else { return Task::none() };
+                let old = self.store.read().settings.spaces_order.clone();
+                let order: Vec<String> =
+                    order.into_iter().map(|id| if id == LABEL_DRAFT { LABEL_NUDGE.into() } else { id }).collect();
+                let shown = order.iter().map(|id| SpaceOrder {
+                    id: id.clone(),
+                    visible: old.iter().find(|o| o.id == *id).is_none_or(|o| o.visible),
+                });
+                let rest = old.iter().filter(|o| !order.contains(&o.id)).cloned();
+                let order = shown.chain(rest).collect();
+                self.patch_settings(|s| s.spaces_order = order);
+            }
             UiMessage::DragEnd => {
                 self.dragging = false;
                 let path = self.store.read().data_dir.join("sidebar-width");
@@ -6598,6 +6654,19 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
+        let rail_press = (self.rail_hover.is_some() && self.rail_drag.is_none()).then(|| {
+            iced::event::listen_with(|e, _, _| match e {
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => Some(UiMessage::RailPress),
+                _ => None,
+            })
+        });
+        let rail_drag = self.rail_drag.is_some().then(|| {
+            iced::event::listen_with(|e, _, _| match e {
+                Event::Mouse(mouse::Event::CursorMoved { position }) => Some(UiMessage::RailDragMoved(position)),
+                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::RailDragEnd),
+                _ => None,
+            })
+        });
         let poll_drag = self.poll_windows.iter().any(|d| d.dragging.is_some()).then(|| {
             iced::event::listen_with(|e, _, id| match e {
                 Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::Poll(id, PollEdit::Grab(None))),
@@ -6636,6 +6705,8 @@ impl BeeperGuiApp {
             [changes, focus, tokens, keys, system]
                 .into_iter()
                 .chain(drag)
+                .chain(rail_press)
+                .chain(rail_drag)
                 .chain(poll_drag)
                 .chain(carousel)
                 .chain(tick)
@@ -8146,12 +8217,14 @@ impl BeeperGuiApp {
 
     fn view_rail(&self) -> El<'_> {
         let p = &self.pal;
+        let drag = self.rail_drag.as_ref().filter(|d| d.order.is_some());
         let rail_btn = |glyph: El<'static>, on: bool, msg: UiMessage| {
             button(container(glyph).center(36))
                 .padding(0)
                 .style(btn_style([if on { p.rail_sel } else { CLEAR }, p.hover, p.rail_sel], [p.strong; 3], 14.0))
-                .on_press(msg)
+                .on_press_maybe(drag.is_none().then_some(msg))
         };
+        let quiet = self.chat_menu.is_some() || drag.is_some();
         let tip = |btn, label, keys| self.tip(btn, label, keys, tooltip::Position::Right);
         let hotkey = |n: usize| -> Vec<&'static str> {
             ["1", "2", "3", "4", "5", "6", "7", "8", "9"].get(n).map_or(vec![], |d| vec!["Ctrl", "Alt", d])
@@ -8183,10 +8256,7 @@ impl BeeperGuiApp {
                 let btn = badge(rail_btn(glyph, on, UiMessage::SelectTab(t)).into(), n, number);
                 let view = RAIL_VIEWS.iter().find(|v| v.1 == Some(t)).expect("a sidebar view").0;
                 let btn: El = mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{view}"))).into();
-                let btn = match self.chat_menu {
-                    Some(_) => btn,
-                    None => tip(btn, t.label(), hotkey(key)).into(),
-                };
+                let btn = if quiet { btn } else { tip(btn, t.label(), hotkey(key)).into() };
                 container(btn).id(id).into()
             };
         let requests = st.chats.iter().filter(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0).count();
@@ -8218,9 +8288,10 @@ impl BeeperGuiApp {
             };
             let btn = badge(rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc.clone()))).into(), n, true);
             let btn: El = mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{acc}"))).into();
-            match self.chat_menu {
-                Some(_) => btn,
-                None => self.tip(btn, label, hotkey(i), tooltip::Position::Right).into(),
+            if quiet {
+                btn
+            } else {
+                self.tip(btn, label, hotkey(i), tooltip::Position::Right).into()
             }
         };
         let labels = st.feature("labels-v2");
@@ -8238,38 +8309,62 @@ impl BeeperGuiApp {
             let btn: El = mouse_area(rail_btn(logo, false, UiMessage::OpenCreateLabel(Vec::new())))
                 .on_right_press(UiMessage::OpenCreateLabel(Vec::new()))
                 .into();
-            match self.chat_menu {
-                Some(_) => btn,
-                None => self.tip(btn, l.name, hotkey(i), tooltip::Position::Right).into(),
+            if quiet {
+                btn
+            } else {
+                self.tip(btn, l.name, hotkey(i), tooltip::Position::Right).into()
             }
         };
-        let ids = draft.map_or_else(|| rail_spaces(&st), |d| draft_rail_spaces(&st, &d.name));
-        let spaces = ids.into_iter().enumerate().map(|(i, id)| match id.as_str() {
-            "inbox" => tab(
-                "rail-inbox",
-                i,
-                g(icon::INBOX),
-                InboxTab::AllChats,
-                tally(&|c| c.flags & (CHAT_HIDDEN | CHAT_LOW_PRIORITY) == 0),
-                true,
-            ),
-            "archive" => tab("rail-archive", i, g(icon::ARCHIVE), InboxTab::Archived, 0, false),
-            LABEL_NUDGE => tip(add_label.take().expect("one nudge").into(), tr("Create Label"), vec![]).into(),
-            LABEL_DRAFT => draft_btn(i, draft.expect("an open Create Label")),
-            "reminders" => tab("rail-reminders", i, g(icon::SCHEDULE), InboxTab::Reminders, 0, false),
-            "scheduled" => tab("rail-send-later", i, g(icon::SCHEDULE_SEND), InboxTab::SendLater, 0, false),
-            "requests" => tab("rail-requests", i, g(icon::EMAIL), InboxTab::Requests, requests, false),
-            "low_priority" => tab(
-                "rail-low-priority",
-                i,
-                g(icon::LOW_PRIORITY_SPACE),
-                InboxTab::LowPriority,
-                tally(&|c| c.flags & CHAT_LOW_PRIORITY != 0),
-                true,
-            ),
-            _ => account(i, id),
+        let ids = match drag.and_then(|d| d.order.clone()) {
+            Some(order) => order,
+            None => draft.map_or_else(|| rail_spaces(&st), |d| draft_rail_spaces(&st, &d.name)),
+        };
+        let mut lifted = None;
+        let spaces = ids.into_iter().enumerate().map(|(i, id)| {
+            let el = match id.as_str() {
+                "inbox" => tab(
+                    "rail-inbox",
+                    i,
+                    g(icon::INBOX),
+                    InboxTab::AllChats,
+                    tally(&|c| c.flags & (CHAT_HIDDEN | CHAT_LOW_PRIORITY) == 0),
+                    true,
+                ),
+                "archive" => tab("rail-archive", i, g(icon::ARCHIVE), InboxTab::Archived, 0, false),
+                LABEL_NUDGE => tip(add_label.take().expect("one nudge").into(), tr("Create Label"), vec![]).into(),
+                LABEL_DRAFT => draft_btn(i, draft.expect("an open Create Label")),
+                "reminders" => tab("rail-reminders", i, g(icon::SCHEDULE), InboxTab::Reminders, 0, false),
+                "scheduled" => tab("rail-send-later", i, g(icon::SCHEDULE_SEND), InboxTab::SendLater, 0, false),
+                "requests" => tab("rail-requests", i, g(icon::EMAIL), InboxTab::Requests, requests, false),
+                "low_priority" => tab(
+                    "rail-low-priority",
+                    i,
+                    g(icon::LOW_PRIORITY_SPACE),
+                    InboxTab::LowPriority,
+                    tally(&|c| c.flags & CHAT_LOW_PRIORITY != 0),
+                    true,
+                ),
+                _ => account(i, id.clone()),
+            };
+            let el = match drag {
+                Some(d) if d.id == id => {
+                    lifted = Some(el);
+                    Space::new().width(36).height(36).into()
+                }
+                _ => el,
+            };
+            let hover = id.clone();
+            mouse_area(el)
+                .on_move(move |at| UiMessage::RailHover(hover.clone(), at))
+                .on_exit(UiMessage::RailLeave(id))
+                .into()
         });
-        let top = Column::with_children(spaces.collect::<Vec<_>>())
+        let top: Vec<El> = spaces.collect();
+        let lifted = lifted.zip(drag).map(|(el, d)| {
+            let (x, y) = ((d.at.x - d.grab.x).clamp(0.0, 32.0), (d.at.y - d.grab.y).max(0.0));
+            container(el).padding(Padding::ZERO.left(x).top(y))
+        });
+        let top = Column::with_children(top)
             .push(badge(
                 rail_btn(g(icon::MORE_HORIZ), false, UiMessage::OpenChatMenu(RAIL_MORE.into())).into(),
                 if hidden_spaces(&st).iter().any(|s| s == "requests") { requests } else { 0 },
@@ -8298,7 +8393,8 @@ impl BeeperGuiApp {
         .align_x(Center)
         .padding(Padding::ZERO.bottom(16.0));
         let scroll = scrollable(top).direction(Direction::Vertical(Scrollbar::hidden())).height(Fill);
-        container(column![scroll, footer].align_x(Center)).width(68).height(Fill).style(fill_box(p.rail, 0.0)).into()
+        let rail = container(column![scroll, footer].align_x(Center)).width(68).height(Fill);
+        stack![rail.style(fill_box(p.rail, 0.0))].push(lifted).into()
     }
 
     fn view_sidebar(&self) -> El<'_> {
@@ -13307,6 +13403,17 @@ pub struct LabelDraft {
 }
 
 /// The Edit Spaces window: the shown spaces, then `SPACES_DIVIDER`, then the hidden spaces.
+/// A press on a rail space, which Desktop's `Drop` sorts after the cursor moves 5px.
+pub struct RailDrag {
+    pub id: String,
+    /// Where the press was in the space, where the cursor first moved in the window, and where it is.
+    pub grab: Point,
+    pub from: Option<Point>,
+    pub at: Point,
+    /// The rail order while the space moves, or none before the drag starts.
+    pub order: Option<Vec<String>>,
+}
+
 pub struct SpacesDraft {
     pub id: window::Id,
     pub order: Vec<String>,
