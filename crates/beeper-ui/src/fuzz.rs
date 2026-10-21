@@ -1777,6 +1777,30 @@ fn label_nudge_hides_after_the_first_label_like_desktop() {
 }
 
 #[test]
+fn sidebar_spaces_drag_like_desktop() {
+    let mut app = demo_app("rail-drag");
+    let hide = SpaceOrder { id: "requests".into(), visible: false };
+    app.patch_settings(|s| s.spaces_order = vec![hide.clone()]);
+    let press = |app: &mut BeeperGuiApp, moves: &[f32]| {
+        let _ = app.update(UiMessage::RailHover("inbox".into(), Point::new(18.0, 18.0)));
+        let _ = app.update(UiMessage::RailPress);
+        for &y in moves {
+            let _ = app.update(UiMessage::RailDragMoved(Point::new(34.0, y)));
+        }
+    };
+    press(&mut app, &[32.0, 34.0]);
+    let _ = app.update(UiMessage::RailDragEnd);
+    assert_eq!(app.store.read().settings.spaces_order, std::slice::from_ref(&hide), "a click does not sort");
+    press(&mut app, &[32.0, 60.0]);
+    let _ = app.update(UiMessage::RailHover("archive".into(), Point::new(18.0, 4.0)));
+    let _ = app.view_rail();
+    let _ = app.update(UiMessage::RailDragEnd);
+    let st = app.store.read();
+    assert_eq!(rail_spaces(&st)[..2], ["archive", "inbox"]);
+    assert_eq!(st.settings.spaces_order.last(), Some(&hide), "the hidden spaces stay hidden");
+}
+
+#[test]
 fn create_label_shows_a_draft_space_like_desktop() {
     let mut app = demo_app("label-draft");
     let rail = |app: &mut BeeperGuiApp, name: &str| {
