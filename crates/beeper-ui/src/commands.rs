@@ -469,7 +469,7 @@ impl BeeperGuiApp {
         v.push(cmd("", tr("Show settings"), hot("Settings")).keys(prefs).hotkey("Settings"));
         let incognito = st.settings.on("incognito");
         let title = tr(if incognito { "Turn off incognito mode" } else { "Turn on incognito mode" });
-        let toggle = st.feature("stealth-mode").on.then_some(UiMessage::SetPref("incognito", u8::from(!incognito)));
+        let toggle = st.feature("stealth-mode").on.then_some(UiMessage::ToggleIncognito);
         v.push(cmd(tr("Settings"), title, toggle).keys(&["Preferences", "stealth"]));
         if self.hotkeys_modal.is_none() {
             let shortcuts = cmd("", tr("Show keyboard shortcuts"), hot("Keyboard Shortcuts"));

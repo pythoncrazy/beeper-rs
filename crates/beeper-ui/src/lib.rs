@@ -316,6 +316,8 @@ pub enum UiMessage {
     Notified(Result<(u32, String), String>),
     NotificationEvent(u32, bool),
     WindowFocused(bool),
+    /// Desktop's `toggleIncognitoMode` from a hotkey or the command bar, with its toast.
+    ToggleIncognito,
     /// The pointer enters or leaves the toast, which pauses its timeout like Desktop.
     ToastHover(bool),
     ToastTick,
@@ -3006,9 +3008,8 @@ pub struct BeeperGuiApp {
     /// The text of Desktop's toast with a "Relaunch app" button, after a change that needs a relaunch.
     relaunch_toast: Option<&'static str>,
     /// A button of the toast, shown only while the banner still is the text it was made for.
-    banner_action: Option<(String, &'static str, UiMessage)>,
     /// Desktop's archive and Low Priority toasts, shown only while the banner still is their text.
-    undo_toast: Option<UndoToast>,
+    toast: Option<Toast>,
     /// Desktop's action stack `Jv`: what each action did and the message that undoes it.
     undo_stack: Vec<(String, UiMessage)>,
     /// What the shown "Undo:" toast undid.
@@ -3163,8 +3164,7 @@ impl BeeperGuiApp {
             flash: None,
             status_banner: String::new(),
             relaunch_toast: None,
-            banner_action: None,
-            undo_toast: None,
+            toast: None,
             undo_stack: Vec::new(),
             undo_note: None,
             toast_clock: (String::new(), false, Duration::ZERO),
@@ -4119,8 +4119,7 @@ impl BeeperGuiApp {
             }
             "Toggle Incognito Mode" => {
                 let st = self.store.read();
-                let on = st.settings.on("incognito");
-                st.feature("stealth-mode").on.then_some(UiMessage::SetPref("incognito", u8::from(!on)))
+                st.feature("stealth-mode").on.then_some(UiMessage::ToggleIncognito)
             }
             "Toggle Sidebar" => {
                 self.set_sidebar_hidden(!self.sidebar_hidden);
@@ -4608,7 +4607,7 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
             }
             UiMessage::UndoFlag(flag, chats, many) => {
-                (self.status_banner, self.undo_toast) = (String::new(), None);
+                (self.status_banner, self.toast) = (String::new(), None);
                 {
                     let mut st = self.store.write();
                     for (id, on) in &chats {
@@ -4766,7 +4765,7 @@ impl BeeperGuiApp {
                 let depth = self.undo_stack.len();
                 let task = self.update(undo);
                 self.undo_stack.truncate(depth);
-                self.undo_toast = None;
+                self.toast = None;
                 self.status_banner = format!("{} {what}", tr("Undo:"));
                 self.undo_note = Some(what);
                 return task;
@@ -6064,8 +6063,8 @@ impl BeeperGuiApp {
                 self.integrations.joining = false;
                 match r {
                     Ok(()) => {
-                        self.status_banner = tr("Successfully joined the Beeper community room!").into();
-                        self.banner_action = Some((self.status_banner.clone(), tr("Open"), UiMessage::JoinCommunity));
+                        let text = tr("Successfully joined the Beeper community room!").into();
+                        self.show(Toast { buttons: vec![(tr("Open"), UiMessage::JoinCommunity)], ..Toast::new(text) });
                     }
                     Err(e) => {
                         eprintln!("Failed to join community room: {e}");
@@ -6270,29 +6269,39 @@ impl BeeperGuiApp {
                     SettingsHit::Section(..) => load,
                 };
             }
+            UiMessage::ToggleIncognito => {
+                let on = !self.store.read().settings.on("incognito");
+                let task = self.update(UiMessage::SetPref("incognito", u8::from(on)));
+                let typing = self.store.read().settings.on("typingIndicators");
+                let (text, action) = match (on, typing) {
+                    (true, true) => ("Incognito mode on. Also hide when you're typing from recipients?", "Hide typing"),
+                    (false, false) => {
+                        ("Incognito mode off. Also show when you're typing to recipients?", "Show typing")
+                    }
+                    (true, false) => ("Incognito mode on.", ""),
+                    (false, true) => ("Incognito mode off.", ""),
+                };
+                let undo = (tr("Undo"), UiMessage::UndoAction);
+                let typing = UiMessage::Commands(vec![
+                    UiMessage::DismissBanner,
+                    UiMessage::SetPref("typingIndicators", u8::from(!typing)),
+                ]);
+                let (buttons, right) =
+                    if action.is_empty() { (Vec::new(), Some(undo)) } else { (vec![(tr(action), typing), undo], None) };
+                self.show(Toast { buttons, right, ..Toast::new(tr(text).into()) });
+                return task;
+            }
             UiMessage::SetPref(key, v) => {
+                if key == "incognito" {
+                    let was = u8::from(self.store.read().settings.on(key));
+                    let what = if v != 0 { tr("Enable Incognito Mode") } else { tr("Disable Incognito Mode") };
+                    self.act(what.into(), UiMessage::SetPref(key, was), None);
+                }
                 self.patch_settings(|s| s.set_pref(key, v));
                 self.relaunch_toast = match key {
                     "spellcheck" | "quitOnClose" => Some("Preference changed"),
                     _ => self.relaunch_toast,
                 };
-                if key == "incognito" {
-                    let typing = self.store.read().settings.on("typingIndicators");
-                    let (text, action) = match (v != 0, typing) {
-                        (true, true) => {
-                            ("Incognito mode on. Also hide when you're typing from recipients?", "Hide typing")
-                        }
-                        (false, false) => {
-                            ("Incognito mode off. Also show when you're typing to recipients?", "Show typing")
-                        }
-                        (true, false) => ("Incognito mode on.", ""),
-                        (false, true) => ("Incognito mode off.", ""),
-                    };
-                    self.status_banner = tr(text).into();
-                    let typing = UiMessage::SetPref("typingIndicators", u8::from(!typing));
-                    let typing = UiMessage::Commands(vec![UiMessage::DismissBanner, typing]);
-                    self.banner_action = (!action.is_empty()).then(|| (self.status_banner.clone(), tr(action), typing));
-                }
                 if key == "appLanguage" {
                     i18n::set(v);
                 }
@@ -8299,8 +8308,10 @@ impl BeeperGuiApp {
         };
         if n > 0 {
             self.status_banner = text.clone();
-            let (undo, open) = (UiMessage::UndoFlag(flag, chats, many), Some(UiMessage::SelectTab(open)));
-            self.undo_toast = Some(UndoToast { text, icon, strong: icon.is_some(), undo, open });
+            let undo = (tr("Undo"), UiMessage::UndoFlag(flag, chats, many));
+            let (buttons, right) = if icon.is_some() { (Vec::new(), Some(undo)) } else { (vec![undo], None) };
+            let open = Some(UiMessage::SelectTab(open));
+            self.toast = Some(Toast { icon, strong: icon.is_some(), buttons, right, open, ..Toast::new(text) });
         }
     }
 
@@ -8316,9 +8327,18 @@ impl BeeperGuiApp {
         }
         self.undo_stack.push((what, undo));
         if let Some((text, open)) = toast {
-            self.status_banner = text.clone();
-            self.undo_toast = Some(UndoToast { text, icon: None, strong: true, undo: UiMessage::UndoAction, open });
+            self.show(Toast {
+                strong: true,
+                right: Some((tr("Undo"), UiMessage::UndoAction)),
+                open,
+                ..Toast::new(text)
+            });
         }
+    }
+
+    fn show(&mut self, t: Toast) {
+        self.status_banner = t.text.clone();
+        self.toast = Some(t);
     }
 
     /// The toast timeout runs while a window is focused and the pointer is not on the toast.
@@ -8336,8 +8356,12 @@ impl BeeperGuiApp {
 
     /// Desktop's `undoLastToast`: the Undo of the toast on screen.
     fn shown_undo(&self) -> Option<UiMessage> {
-        let t = self.undo_toast.as_ref().filter(|t| self.relaunch_toast.is_none() && t.text == self.status_banner)?;
-        Some(t.undo.clone())
+        let t = self.shown_toast()?;
+        t.buttons.iter().chain(&t.right).find(|b| b.0 == tr("Undo")).map(|b| b.1.clone())
+    }
+
+    fn shown_toast(&self) -> Option<&Toast> {
+        self.toast.as_ref().filter(|t| self.relaunch_toast.is_none() && t.text == self.status_banner)
     }
 
     fn set_archived(&self, st: &mut BeeperStore, idx: usize, on: bool) -> bool {
@@ -10736,7 +10760,6 @@ impl BeeperGuiApp {
             Some(t) => tr(t),
             None => &self.status_banner,
         };
-        let undo = self.undo_toast.as_ref().filter(|_| self.shown_undo().is_some());
         let toast = |card: El<'static>| -> El<'_> {
             let card = mouse_area(card).on_enter(UiMessage::ToastHover(true)).on_exit(UiMessage::ToastHover(false));
             container(card).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(left)).into()
@@ -10751,24 +10774,27 @@ impl BeeperGuiApp {
                 let card = row![glyph, text, close].spacing(8).align_y(Center);
                 return toast(container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0)).into());
             }
-            if let Some(t) = undo {
-                let undo = |fg: Color| {
-                    let label = semi(tr("Undo"), 13.0).line_height(Pixels(18.0)).color(fg);
-                    button(label).padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0)).on_press(t.undo.clone())
+            if let Some(t) = self.shown_toast() {
+                let btn = |(label, msg): &(&'static str, UiMessage), fg: Color| {
+                    let label = semi(*label, 13.0).line_height(Pixels(18.0)).color(fg);
+                    button(label).padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0)).on_press(msg.clone())
                 };
-                let card: El = match t.strong {
-                    true => {
-                        let glyph = t
-                            .icon
-                            .map(|i| container(tinted(&TOAST_ICONS[i], 20.0, p.strong)).center_x(16).center_y(20));
-                        let text = semi(banner.to_string(), 13.0).color(p.strong);
-                        row![].push(glyph).push(text).push(undo(p.accent)).push(close).spacing(8).align_y(Center).into()
-                    }
-                    false => {
-                        let text = txt(banner.to_string(), 13.0).color(p.strong);
-                        row![column![text, undo(p.strong)].spacing(16), close].spacing(8).into()
-                    }
+                let glyph =
+                    t.icon.map(|i| container(tinted(&TOAST_ICONS[i], 20.0, p.strong)).center_x(16).center_y(20));
+                let text = match t.strong {
+                    true => semi(banner.to_string(), 13.0),
+                    false => txt(banner.to_string(), 13.0),
                 };
+                let below = (!t.buttons.is_empty()).then(|| {
+                    let dot = || -> El { semi(" • ", 13.0).line_height(Pixels(18.0)).color(p.strong).into() };
+                    let mut buttons = t.buttons.iter().map(|b| -> El { btn(b, p.strong).into() });
+                    let first = buttons.next().expect("a button");
+                    Row::with_children(std::iter::once(first).chain(buttons.flat_map(|b| [dot(), b])))
+                });
+                let body = column![text.color(p.strong)].push(below).spacing(16);
+                let right = t.right.as_ref().map(|b| btn(b, p.accent));
+                let card = row![].push(glyph).push(body).push(right).push(close).spacing(8);
+                let card = card.align_y(if t.buttons.is_empty() { Center } else { iced::Alignment::Start });
                 let card = container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0));
                 return toast(match t.open.clone() {
                     Some(open) => mouse_area(card).on_press(open).into(),
@@ -10776,12 +10802,7 @@ impl BeeperGuiApp {
                 });
             }
             let text = txt(banner.to_string(), 13.0).color(p.strong);
-            let action = match (self.relaunch_toast, &self.banner_action) {
-                (Some(_), _) => Some((tr("Relaunch app"), UiMessage::Relaunch)),
-                (None, Some((text, label, msg))) if text == banner => Some((*label, msg.clone())),
-                _ => None,
-            };
-            let relaunch = action.map(|(label, msg)| pill_btn(p, label, msg));
+            let relaunch = self.relaunch_toast.map(|_| pill_btn(p, tr("Relaunch app"), UiMessage::Relaunch));
             let card = row![text.wrapping(iced::widget::text::Wrapping::WordOrGlyph)].push(relaunch).push(close);
             let card = card.spacing(8).align_y(Center);
             toast(container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0)).into())
@@ -13707,14 +13728,25 @@ pub struct LabelDraft {
 /// The Edit Spaces window: the shown spaces, then `SPACES_DIVIDER`, then the hidden spaces.
 /// Desktop's `UOe` and `HOe` toasts: an icon, strong text, an Undo `rightButton`, and a click that opens a view.
 /// Without an icon, it is the multi-chat archive toast: plain text with Undo in its `buttons` below.
-pub struct UndoToast {
+/// Desktop's `Toast`: a toast with buttons, which shows while `status_banner` is its text.
+pub struct Toast {
     pub text: String,
     /// The index of the icon in `TOAST_ICONS`.
     pub icon: Option<usize>,
-    /// Desktop's `textStyle: "strong"` toasts have Undo at the right; the others have it below the text.
+    /// Desktop's `textStyle: "strong"`.
     pub strong: bool,
-    pub undo: UiMessage,
+    /// Desktop's `buttons`, in a row below the text.
+    pub buttons: Vec<(&'static str, UiMessage)>,
+    /// Desktop's `rightButton`.
+    pub right: Option<(&'static str, UiMessage)>,
+    /// Desktop's `onClick`.
     pub open: Option<UiMessage>,
+}
+
+impl Toast {
+    pub fn new(text: String) -> Self {
+        Toast { text, icon: None, strong: false, buttons: Vec::new(), right: None, open: None }
+    }
 }
 
 /// A press on a rail space, which Desktop's `Drop` sorts after the cursor moves 5px.
