@@ -2129,6 +2129,40 @@ fn label_chats_from_the_chat_menu_like_desktop() {
 }
 
 #[test]
+fn chat_info_labels_like_desktop() {
+    let mut app = demo_app("chat-info-labels");
+    let chat = "!note_self:beeper.com".to_string();
+    let _ = app.update(UiMessage::SelectChat(chat.clone()));
+    let msgs: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_info());
+        assert!(sim.find("Labels").is_ok());
+        let _ = sim.click("Add to a Label").expect("an Add to a Label button");
+        sim.into_messages().collect()
+    };
+    assert!(matches!(&msgs[..], [UiMessage::OpenEditLabels(c)] if *c == chat));
+    for m in msgs {
+        let _ = app.update(m);
+    }
+    let _ = app.update(UiMessage::OpenEditLabels(chat.clone()));
+    assert_eq!(app.labels_windows.len(), 1, "one window for each chat");
+    {
+        let mut sim = simulator(app.view_edit_labels(&chat));
+        assert!(sim.find("Edit Labels").is_ok() && sim.find("Work").is_ok());
+        let _ = sim.click("New Label").expect("a New Label button");
+        assert!(
+            matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::OpenCreateLabel(c)] if c.is_empty())
+        );
+    }
+    let _ = app.update(UiMessage::SwitchLabel("lbl_work".into(), chat.clone(), true));
+    let st = app.store.read();
+    assert_eq!(st.chats[st.chat_idx_by_id[&chat]].label_ids, ["lbl_work"]);
+    drop(st);
+    assert!(app.toast.is_none() && app.undo_stack.len() == 1, "the switch has no toast but can be undone");
+    let mut sim = simulator(app.view_info());
+    assert!(sim.find("Work").is_ok() && sim.find("Add to a Label").is_err());
+}
+
+#[test]
 fn mute_labels_like_desktop() {
     let mut app = demo_app("label-mute");
     let _ = app.update(UiMessage::OpenChatMenu("account:label:lbl_work".into()));

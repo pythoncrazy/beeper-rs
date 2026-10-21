@@ -387,6 +387,10 @@ pub enum UiMessage {
     OpenCreateLabel(Vec<String>),
     /// Desktop's `toggleLabel` for one chat.
     ToggleLabel(String, String, bool),
+    /// Desktop's Edit Labels window of a chat.
+    OpenEditLabels(String),
+    /// A switch in the Edit Labels window: `toggleLabel` without the toast.
+    SwitchLabel(String, String, bool),
     /// Desktop's `Txe`: undoes the last action, with an "Undo:" toast.
     UndoAction,
     SetSpacesOrder(Vec<SpaceOrder>),
@@ -1502,6 +1506,19 @@ fn label_icon<'a>(l: &Label, size: f32, fg: Color) -> El<'a> {
     container(glyph).center(size).style(style).into()
 }
 
+/// Desktop's grouped rows on the secondary container, with 0.5px rules between them.
+fn grouped_rows<'a>(p: &Palette, rows: Vec<El<'a>>) -> El<'a> {
+    let rule = p.prefs_border;
+    let mut col = column![];
+    for (i, r) in rows.into_iter().enumerate() {
+        if i > 0 {
+            col = col.push(container(Space::new()).width(Fill).height(0.5).style(fill_box(rule, 0.0)));
+        }
+        col = col.push(r);
+    }
+    container(col).width(Fill).clip(true).style(fill_box(p.chip, 8.0)).into()
+}
+
 /// `ls` is Desktop's `--letter-spacing`; its initials also have `margin-right: -1px`.
 fn avatar<'a>(name: &str, size: f32, ls: f32, p: &Palette) -> El<'a> {
     let Some(label) = initials(name) else {
@@ -2042,6 +2059,8 @@ fn badge<'a>(p: &Palette, b: prefs::Badge) -> El<'a> {
 
 const THEME_WINDOW: &str = r##"<rect x="10" y="7" width="76" height="47" rx="4" fill="WIN"/><circle cx="15" cy="12" r="1.4" fill="#ff5f57"/><circle cx="19.5" cy="12" r="1.4" fill="#febc2e"/><circle cx="24" cy="12" r="1.4" fill="#28c840"/><rect x="36" y="16" width="24" height="3" rx="1.5" fill="LINE"/><rect x="14" y="23" width="68" height="2" rx="1" fill="LINE"/><rect x="14" y="28" width="68" height="11" rx="2.5" fill="#0d4ffb"/><circle cx="19.5" cy="33.5" r="3" fill="#fff"/><rect x="25" y="31" width="28" height="1.8" rx=".9" fill="#fff"/><rect x="25" y="34.6" width="48" height="1.5" rx=".75" fill="#bcd2ff"/><rect x="14" y="43" width="68" height="2" rx="1" fill="LINE"/><rect x="14" y="48" width="48" height="2" rx="1" fill="LINE"/>"##;
 
+// Desktop's `new_set` icon of the New Label button.
+svg_static!(NEW_LABEL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M4.3 13.953q-1.15 0-1.729-.564-.57-.571-.571-1.706V4.27q0-1.136.571-1.7Q3.15 2.001 4.3 2h7.353q1.143 0 1.714.571.579.572.579 1.7v1.67h-1.18V4.335q0-.57-.3-.864-.292-.293-.835-.293H4.314q-.55 0-.842.293c-.292.293-.293.484-.293.864v7.28q0 .573.293.865t.842.293h1.839v1.18zm3.552 3.391q-1.15 0-1.728-.571-.572-.564-.572-1.7V7.663q0-1.136.572-1.7.578-.57 1.728-.57h7.354q1.142 0 1.713.57.579.572.579 1.7v7.412q0 1.128-.579 1.699-.57.57-1.713.571zm.015-1.179h7.317q.541 0 .835-.293.3-.293.3-.864v-7.28q0-.572-.3-.865-.294-.293-.835-.293H7.867q-.55 0-.843.293-.293.294-.293.865v7.28q0 .57.293.864.293.293.843.293m4.277-2.036a.62.62 0 0 1-.176.454.6.6 0 0 1-.447.169.59.59 0 0 1-.432-.169.63.63 0 0 1-.168-.454V8.592a.63.63 0 0 1 .168-.454.57.57 0 0 1 .432-.176.6.6 0 0 1 .623.63zm-3.376-2.16a.63.63 0 0 1-.455-.17.57.57 0 0 1-.175-.431q0-.279.168-.447a.62.62 0 0 1 .462-.176h5.537a.6.6 0 0 1 .447.176.6.6 0 0 1 .175.447q0 .263-.175.432a.6.6 0 0 1-.447.168z"/></svg>"##);
 svg_static!(DRAFT_RING, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 30"><rect x=".5" y=".5" width="29" height="29" rx="7.5" fill="none" stroke="#000" stroke-dasharray="3 2"/></svg>"##);
 svg_static!(DASHED_RING, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect x="1" y="1" width="30" height="30" rx="7" fill="none" stroke="#000" stroke-width="2" stroke-dasharray="6 3" stroke-dashoffset="8.5"/></svg>"##);
 
@@ -3255,6 +3274,7 @@ pub struct BeeperGuiApp {
     pub login_window: Option<window::Id>,
     /// Desktop's `ChatThemeBrowserWindow`s and their chats.
     pub theme_windows: Vec<(window::Id, String)>,
+    pub labels_windows: Vec<(window::Id, String)>,
     pub poll_windows: Vec<PollDraft>,
     pub label_window: Option<LabelDraft>,
     pub spaces_window: Option<SpacesDraft>,
@@ -3431,6 +3451,7 @@ impl BeeperGuiApp {
             settings_window: None,
             login_window: None,
             theme_windows: Vec::new(),
+            labels_windows: Vec::new(),
             poll_windows: Vec::new(),
             label_window: None,
             group_window: None,
@@ -3765,6 +3786,7 @@ impl BeeperGuiApp {
         match () {
             _ if Some(id) == self.settings_window => tr("Settings"),
             _ if self.theme_windows.iter().any(|w| w.0 == id) => tr("Chat Theme"),
+            _ if self.labels_windows.iter().any(|w| w.0 == id) => tr("Edit Labels"),
             _ if self.poll_windows.iter().any(|w| w.id == id) => tr("New Poll"),
             _ if let Some(d) = self.label_window.as_ref().filter(|d| d.id == id) => {
                 return tr(if d.label.is_some() { "Edit label" } else { "New label" }).into();
@@ -5091,19 +5113,16 @@ impl BeeperGuiApp {
                 return open;
             }
             UiMessage::Group(e) => return self.group_edit(e),
-            UiMessage::ToggleLabel(label, chat, add) => {
+            UiMessage::ToggleLabel(label, chat, add) => self.toggle_label(label, chat, add, true),
+            UiMessage::SwitchLabel(label, chat, add) => self.toggle_label(label, chat, add, false),
+            UiMessage::OpenEditLabels(chat) => {
                 self.chat_menu = None;
-                let label = self.label_id(label);
-                let mut st = self.store.write();
-                st.set_label_room(&label, &chat, add);
-                let name = st.labels.iter().find(|l| l.id == label).expect("a toggled label").name.clone();
-                drop(st);
-                let (what, text) = match add {
-                    true => (format!("Add to {name}"), format!("Added to {name}")),
-                    false => (format!("Remove from {name}"), format!("Removed from {name}")),
-                };
-                let open = add.then(|| UiMessage::SelectAccount(Some(format!("label:{label}"))));
-                self.act(what, UiMessage::ToggleLabel(label, chat, !add), Some((text, open)));
+                if let Some(&(id, _)) = self.labels_windows.iter().find(|w| w.1 == chat) {
+                    return window::gain_focus(id);
+                }
+                let (id, open) = self.open_child(Size::new(303.0, 488.0));
+                self.labels_windows.push((id, chat));
+                return open;
             }
             UiMessage::UndoAction => {
                 let Some((what, undo)) = self.undo_stack.pop() else { return Task::none() };
@@ -5536,6 +5555,7 @@ impl BeeperGuiApp {
                     return Task::none();
                 }
                 if self.theme_windows.iter().any(|w| w.0 == id)
+                    || self.labels_windows.iter().any(|w| w.0 == id)
                     || self.vote_windows.iter().any(|w| w.0 == id)
                     || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
                     || self.group_window.as_ref().is_some_and(|d| d.id == id)
@@ -6994,6 +7014,7 @@ impl BeeperGuiApp {
                 }
                 self.chat_windows.retain(|w| w.0 != id);
                 self.theme_windows.retain(|w| w.0 != id);
+                self.labels_windows.retain(|w| w.0 != id);
                 self.poll_windows.retain(|w| w.id != id);
                 self.vote_windows.retain(|w| w.0 != id);
                 self.label_window = self.label_window.take().filter(|d| d.id != id);
@@ -7431,6 +7452,8 @@ impl BeeperGuiApp {
             self.view_login()
         } else if let Some((_, chat)) = self.theme_windows.iter().find(|w| w.0 == id) {
             self.view_chat_theme(chat)
+        } else if let Some((_, chat)) = self.labels_windows.iter().find(|w| w.0 == id) {
+            self.view_edit_labels(chat)
         } else if let Some(d) = self.poll_windows.iter().find(|w| w.id == id) {
             self.view_poll_creator(d)
         } else if let Some(d) = self.label_window.as_ref().filter(|d| d.id == id) {
@@ -8871,6 +8894,21 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `runAction`: keeps the undo of an action, and shows its `successToast` with Undo.
+    fn toggle_label(&mut self, label: String, chat: String, add: bool, toast: bool) {
+        self.chat_menu = None;
+        let label = self.label_id(label);
+        let mut st = self.store.write();
+        st.set_label_room(&label, &chat, add);
+        let name = st.labels.iter().find(|l| l.id == label).expect("a toggled label").name.clone();
+        drop(st);
+        let (what, text) = match add {
+            true => (format!("Add to {name}"), format!("Added to {name}")),
+            false => (format!("Remove from {name}"), format!("Removed from {name}")),
+        };
+        let open = add.then(|| UiMessage::SelectAccount(Some(format!("label:{label}"))));
+        self.act(what, UiMessage::ToggleLabel(label, chat, !add), toast.then_some((text, open)));
+    }
+
     fn act(&mut self, what: String, undo: UiMessage, toast: Option<(String, Option<UiMessage>)>) {
         if self.undo_stack.len() == UNDO_DEPTH {
             self.undo_stack.remove(0);
@@ -11054,6 +11092,52 @@ impl BeeperGuiApp {
             container(toolbar).center_y(46),
         ];
         let members = (chat.chat_type == "group").then(|| self.view_members(chat));
+        let feature = st.feature("labels-v2");
+        let labels = feature.show.then(|| {
+            let open = feature.on.then(|| UiMessage::OpenEditLabels(cid.clone()));
+            let mine: Vec<&Label> =
+                chat.label_ids.iter().filter_map(|id| st.labels.iter().find(|l| l.id == *id)).collect();
+            let edit = (!mine.is_empty()).then(|| {
+                button(semi(trx("Edit", "labels section button"), 11.0).line_height(Pixels(14.0)).color(p.accent))
+                    .padding(0)
+                    .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                    .on_press_maybe(open.clone())
+            });
+            let head =
+                row![txt(tr("Labels"), 11.0).line_height(Pixels(14.0)).color(p.strong), Space::new().width(Fill)]
+                    .push(edit)
+                    .align_y(iced::Bottom)
+                    .padding(8);
+            let body: El = match mine.is_empty() {
+                true => button(
+                    container(
+                        row![ic(icon::PLUS, 16.0), txt(tr("Add to a Label"), 13.0).line_height(Pixels(16.0))]
+                            .spacing(4)
+                            .align_y(Center),
+                    )
+                    .center_x(Fill),
+                )
+                .padding(8)
+                .width(Fill)
+                .style(btn_style([p.chip; 3], [p.strong; 3], 26.0))
+                .on_press_maybe(open)
+                .into(),
+                false => grouped_rows(
+                    p,
+                    mine.iter()
+                        .map(|l| {
+                            let name = ell(&l.name, 240.0, 13.0, Weight::Normal).line_height(Pixels(16.0));
+                            row![label_icon(l, 20.0, p.strong), name.color(p.strong)]
+                                .spacing(8)
+                                .padding(8)
+                                .align_y(Center)
+                                .into()
+                        })
+                        .collect(),
+                ),
+            };
+            column![head, body]
+        });
         let note = text_editor(&self.info_note)
             .placeholder("Notes")
             .on_action(UiMessage::InfoNote)
@@ -11072,6 +11156,7 @@ impl BeeperGuiApp {
         let body = column![header]
             .push(desc)
             .push(members)
+            .push(labels)
             .push(container(note).padding(Padding::ZERO.top(8.0)))
             .push((chat.member_actions & MEMBER_LEAVE != 0).then(|| {
                 let leave = button(semi(tr("Leave Chat"), 14.0).line_height(Pixels(18.0)).color(p.strong))
@@ -13990,6 +14075,61 @@ impl BeeperGuiApp {
             }
         }
         Task::none()
+    }
+
+    /// Desktop's `XLt` Edit Labels window: the chat, a New Label button and a switch for each label.
+    fn view_edit_labels<'a>(&'a self, cid: &str) -> El<'a> {
+        let p = &self.pal;
+        let st = self.store.read();
+        let Some(c) = st.resolve_chat_idx(cid).map(|i| &st.chats[i]) else { return Space::new().into() };
+        let sub = |s: String| txt(s, 11.0).line_height(Pixels(14.0)).color(Color { a: 0.6, ..p.strong });
+        let members = (c.chat_type == "group").then(|| {
+            let n = c.participants.total;
+            sub(trn("Group · %d Member", "Group · %d Members", n, &[&n]))
+        });
+        let head = column![
+            self.chat_avatar(c, 64.0, 1.25),
+            ell(&c.title, 287.0, 15.0, Weight::Semibold).line_height(Pixels(20.0)).color(p.strong)
+        ]
+        .push(members)
+        .push(sub(network_name(&c.account_id).to_string()))
+        .spacing(4)
+        .padding([8, 0])
+        .align_x(Center)
+        .width(Fill);
+        let glyph = tinted(&NEW_LABEL, 18.0, p.strong);
+        let new = button(row![glyph, txt(tr("New Label"), 13.0).line_height(Pixels(16.0))].spacing(6).align_y(Center))
+            .padding([6, 10])
+            .style(btn_style([p.chip; 3], [p.strong; 3], 20.0))
+            .on_press(UiMessage::OpenCreateLabel(Vec::new()));
+        let mut labels: Vec<&Label> = st.labels.iter().collect();
+        labels.sort_by_cached_key(|l| l.name.to_lowercase());
+        let rows = labels.iter().map(|l| {
+            let on = c.label_ids.contains(&l.id);
+            let name = ell(&l.name, 183.0, 13.0, Weight::Normal).line_height(Pixels(16.0)).color(p.strong);
+            let msg = UiMessage::SwitchLabel(l.id.clone(), c.id.clone(), !on);
+            row![label_icon(l, 28.0, p.strong), container(name).width(Fill), toggle(p, on, Some(msg))]
+                .spacing(4)
+                .padding([10, 8])
+                .align_y(Center)
+                .into()
+        });
+        let list = (!labels.is_empty()).then(|| {
+            column![
+                container(txt(tr("Labels"), 12.0).line_height(Pixels(15.0)).color(p.sub)).padding([0, 16]),
+                container(grouped_rows(p, rows.collect())).padding([0, 8]),
+            ]
+            .spacing(8)
+        });
+        let body = column![head, container(new).center_x(Fill)].push(list).spacing(8);
+        let card = container(scrollable(body).direction(bar()).style(scroll_style(p.scroll)))
+            .height(Fill)
+            .clip(true)
+            .style(fill_box(p.card, 12.0));
+        let title = container(semi(tr("Edit Labels"), 13.0).line_height(Pixels(16.0)).color(p.strong))
+            .center_x(Fill)
+            .padding([8, 0]);
+        container(column![title, card]).padding(8).style(fill_box(p.window, 0.0)).into()
     }
 
     fn view_edit_group<'a>(&'a self, d: &'a GroupDraft) -> El<'a> {
