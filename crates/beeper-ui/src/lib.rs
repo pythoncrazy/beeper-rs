@@ -1874,6 +1874,7 @@ fn badge<'a>(p: &Palette, b: prefs::Badge) -> El<'a> {
 
 const THEME_WINDOW: &str = r##"<rect x="10" y="7" width="76" height="47" rx="4" fill="WIN"/><circle cx="15" cy="12" r="1.4" fill="#ff5f57"/><circle cx="19.5" cy="12" r="1.4" fill="#febc2e"/><circle cx="24" cy="12" r="1.4" fill="#28c840"/><rect x="36" y="16" width="24" height="3" rx="1.5" fill="LINE"/><rect x="14" y="23" width="68" height="2" rx="1" fill="LINE"/><rect x="14" y="28" width="68" height="11" rx="2.5" fill="#0d4ffb"/><circle cx="19.5" cy="33.5" r="3" fill="#fff"/><rect x="25" y="31" width="28" height="1.8" rx=".9" fill="#fff"/><rect x="25" y="34.6" width="48" height="1.5" rx=".75" fill="#bcd2ff"/><rect x="14" y="43" width="68" height="2" rx="1" fill="LINE"/><rect x="14" y="48" width="48" height="2" rx="1" fill="LINE"/>"##;
 
+svg_static!(DRAFT_RING, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 30"><rect x=".5" y=".5" width="29" height="29" rx="7.5" fill="none" stroke="#000" stroke-dasharray="3 2"/></svg>"##);
 svg_static!(DASHED_RING, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect x="1" y="1" width="30" height="30" rx="7" fill="none" stroke="#000" stroke-width="2" stroke-dasharray="6 3" stroke-dashoffset="8.5"/></svg>"##);
 
 static SENT: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
@@ -2053,8 +2054,26 @@ fn all_spaces(st: &BeeperStore) -> Vec<String> {
 /// Desktop's `orderedSidebarSpaces`: the spaces of the `spaces_order` setting in its order, without the hidden
 /// ones, then the other spaces in the default order.
 fn rail_spaces(st: &BeeperStore) -> Vec<String> {
-    let mut all = all_spaces(st);
-    let order = &st.settings.spaces_order;
+    ordered_spaces(all_spaces(st), &st.settings.spaces_order)
+}
+
+/// The rail ID of Desktop's draft label, which shows while Create Label is open.
+const LABEL_DRAFT: &str = "label:draft";
+
+/// Desktop's `setDraftLabel`: the draft label named `name` is a label space, and it takes the order slot of the nudge.
+fn draft_rail_spaces(st: &BeeperStore, name: &str) -> Vec<String> {
+    let mut all: Vec<String> = all_spaces(st).into_iter().filter(|s| s != LABEL_NUDGE).collect();
+    let key = name.to_lowercase();
+    let after = |s: &String| rail_label(st, s).is_some_and(|l| l.name.to_lowercase() > key);
+    all.insert(all.iter().position(after).unwrap_or(all.len()), LABEL_DRAFT.into());
+    let order = st.settings.spaces_order.iter().map(|o| match o.id == LABEL_NUDGE {
+        true => SpaceOrder { id: LABEL_DRAFT.into(), ..o.clone() },
+        false => o.clone(),
+    });
+    ordered_spaces(all, &order.collect::<Vec<_>>())
+}
+
+fn ordered_spaces(mut all: Vec<String>, order: &[SpaceOrder]) -> Vec<String> {
     let at = |id: &str| order.iter().position(|o| o.id == id);
     all.retain(|id| at(id).is_none_or(|i| order[i].visible));
     all.sort_by_key(|id| at(id).unwrap_or(usize::MAX));
@@ -8189,7 +8208,22 @@ impl BeeperGuiApp {
             .style(ghost(p, 12.0))
             .on_press_maybe(labels.on.then(|| UiMessage::OpenCreateLabel(Vec::new())));
         let mut add_label = Some(add_label);
-        let spaces = rail_spaces(&st).into_iter().enumerate().map(|(i, id)| match id.as_str() {
+        let draft = self.label_window.as_ref().filter(|d| d.label.is_none());
+        let draft_btn = |i: usize, d: &LabelDraft| -> El<'static> {
+            let (l, fg) =
+                (Label { name: d.name.clone(), color: d.color, icon: d.icon.clone(), ..Label::default() }, p.strong);
+            let ring = svg(DRAFT_RING.clone()).width(30).height(30).style(move |_, _| svg::Style { color: Some(fg) });
+            let logo = container(stack![ring, container(label_icon(&l, 28.0, fg)).center(30)]).into();
+            let btn: El = mouse_area(rail_btn(logo, false, UiMessage::OpenCreateLabel(Vec::new())))
+                .on_right_press(UiMessage::OpenCreateLabel(Vec::new()))
+                .into();
+            match self.chat_menu {
+                Some(_) => btn,
+                None => self.tip(btn, l.name, hotkey(i), tooltip::Position::Right).into(),
+            }
+        };
+        let ids = draft.map_or_else(|| rail_spaces(&st), |d| draft_rail_spaces(&st, &d.name));
+        let spaces = ids.into_iter().enumerate().map(|(i, id)| match id.as_str() {
             "inbox" => tab(
                 "rail-inbox",
                 i,
@@ -8200,6 +8234,7 @@ impl BeeperGuiApp {
             ),
             "archive" => tab("rail-archive", i, g(icon::ARCHIVE), InboxTab::Archived, 0, false),
             LABEL_NUDGE => tip(add_label.take().expect("one nudge").into(), tr("Create Label"), vec![]).into(),
+            LABEL_DRAFT => draft_btn(i, draft.expect("an open Create Label")),
             "reminders" => tab("rail-reminders", i, g(icon::SCHEDULE), InboxTab::Reminders, 0, false),
             "scheduled" => tab("rail-send-later", i, g(icon::SCHEDULE_SEND), InboxTab::SendLater, 0, false),
             "requests" => tab("rail-requests", i, g(icon::EMAIL), InboxTab::Requests, requests, false),

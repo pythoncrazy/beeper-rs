@@ -1756,6 +1756,31 @@ fn label_nudge_hides_after_the_first_label_like_desktop() {
 }
 
 #[test]
+fn create_label_shows_a_draft_space_like_desktop() {
+    let mut app = demo_app("label-draft");
+    let rail = |app: &mut BeeperGuiApp, name: &str| {
+        let _ = app.update(UiMessage::Label(LabelEdit::Name(name.into())));
+        let _ = app.view_rail();
+        let d = app.label_window.as_ref().expect("Create Label is open");
+        draft_rail_spaces(&app.store.read(), &d.name)
+    };
+    let _ = app.update(UiMessage::OpenCreateLabel(Vec::new()));
+    let ids = rail(&mut app, "Aaa");
+    let at = ids.iter().position(|s| s == LABEL_DRAFT).expect("the draft");
+    assert!(ids[at + 1].starts_with("label:"), "the draft sorts before the other labels");
+    assert_eq!(rail(&mut app, "Zzz").last().map(String::as_str), Some(LABEL_DRAFT));
+    let ids: Vec<String> = app.store.read().labels.iter().map(|l| l.id.clone()).collect();
+    for id in &ids {
+        app.store.write().remove_label(id);
+    }
+    app.store.write().settings.ever_labeled = false;
+    let order = [LABEL_NUDGE, "inbox"].map(|id| SpaceOrder { id: id.into(), visible: true });
+    app.store.write().settings.spaces_order = order.into();
+    let ids = rail(&mut app, "Friends");
+    assert!(ids[0] == LABEL_DRAFT && !ids.iter().any(|s| s == LABEL_NUDGE), "the draft takes the slot of the nudge");
+}
+
+#[test]
 fn sidebar_menus_open_accounts_like_desktop() {
     let mut app = demo_app("rail-menus");
     let account = app.store.read().bridge_accounts[0].account_id.clone();
