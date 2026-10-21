@@ -4588,7 +4588,8 @@ impl BeeperGuiApp {
                 let order = rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st));
                 let order = order.collect();
                 drop(st);
-                self.spaces_window = Some(SpacesDraft { id, order, search: String::new(), drag: None, menu: None });
+                self.spaces_window =
+                    Some(SpacesDraft { id, order, search: String::new(), drag: None, menu: None, scrolled: false });
                 return open;
             }
             UiMessage::Spaces(e) => return self.spaces_edit(e),
@@ -12210,6 +12211,7 @@ impl BeeperGuiApp {
         let d = self.spaces_window.as_mut().expect("the Edit Spaces window is open");
         match e {
             SpacesEdit::Search(q) => d.search = q,
+            SpacesEdit::Scrolled(down) => d.scrolled = down,
             SpacesEdit::Drag(id) => d.drag = Some((id, d.order.clone())),
             SpacesEdit::Over(to) => {
                 let Some((id, _)) = &d.drag else { return Task::none() };
@@ -12362,8 +12364,15 @@ impl BeeperGuiApp {
             .push(empty)
             .extend(group(hidden))
             .padding(Padding { top: 0.0, right: 13.0, bottom: 30.0, left: 13.0 });
-        let list = scrollable(list).direction(Direction::Vertical(Scrollbar::hidden())).height(Fill);
-        let card = container(column![search, list]).height(Fill).clip(true).style(fill_box(p.card, 12.0));
+        let list = scrollable(list)
+            .direction(Direction::Vertical(Scrollbar::hidden()))
+            .height(Fill)
+            .on_scroll(move |v| edit(SpacesEdit::Scrolled(v.absolute_offset().y > 0.0)));
+        let shade = d
+            .scrolled
+            .then(|| container(Space::new()).width(Fill).height(2).style(fill_box(p.strong.scale_alpha(0.1), 0.0)));
+        let card =
+            container(column![search, stack![list].push(shade)]).height(Fill).clip(true).style(fill_box(p.card, 12.0));
         let new = st.feature("labels-v2").show.then(|| {
             let link = button(txt(tr("New Label"), 13.0).color(p.accent))
                 .padding([4, 8])
@@ -13065,6 +13074,8 @@ pub struct SpacesDraft {
     pub drag: Option<(String, Vec<String>)>,
     /// The space of the open gear menu, and where it opened.
     pub menu: Option<(String, Point)>,
+    /// Whether the list scrolled down, so the search row casts a shadow.
+    pub scrolled: bool,
 }
 
 /// The size of Desktop's Edit Spaces window.
@@ -13085,6 +13096,7 @@ pub enum SpacesEdit {
     Menu(Option<String>),
     /// A gear menu item.
     Act(Box<UiMessage>),
+    Scrolled(bool),
 }
 
 impl LabelDraft {

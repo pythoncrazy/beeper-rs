@@ -1677,6 +1677,12 @@ fn edit_spaces_like_desktop() {
         assert!(sim.find("Search Spaces").is_ok() && sim.find("New Label").is_ok());
     }
     let edit = |app: &mut BeeperGuiApp, e| drop(app.update(UiMessage::Spaces(e)));
+    let id = app.spaces_window.as_ref().unwrap().id;
+    let wheel = mouse::Event::WheelScrolled { delta: ScrollDelta::Lines { x: 0.0, y: -5.0 } };
+    for m in interact(&app, id, SPACES_SIZE, Point::new(180.0, 300.0), vec![iced::Event::Mouse(wheel)]) {
+        let _ = app.update(m);
+    }
+    assert!(app.spaces_window.as_ref().unwrap().scrolled, "the search row casts a shadow over a scrolled list");
     edit(&mut app, SpacesEdit::Drag("reminders".into()));
     edit(&mut app, SpacesEdit::Over(String::new()));
     edit(&mut app, SpacesEdit::Drop);
