@@ -955,6 +955,43 @@ fn approve_connection_like_desktop() {
 }
 
 #[test]
+fn approved_connections_like_desktop() {
+    let mut app = demo_app("connections");
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Integrations));
+    assert!(simulator(app.view_settings()).find("Add a connection to get started").is_ok());
+    let _ = app.update(UiMessage::AddToken(true));
+    let mut sim = simulator(app.view_settings());
+    for label in ["Name (optional)", "Expires In", "Allow sensitive actions", "Create Access Token"] {
+        assert!(sim.find(label).is_ok(), "{label} shows");
+    }
+    drop(sim);
+    let _ = app.update(UiMessage::AddTokenName("Script".into()));
+    let _ = app.update(UiMessage::AddTokenWrite);
+    let _ = app.update(UiMessage::AddTokenExpiry(Expiry(0)));
+    let _ = app.update(UiMessage::CreateToken);
+    let token = app.integrations.add.as_ref().unwrap().token.clone().expect("the token shows once");
+    assert!(simulator(app.view_settings()).find(token.as_str()).is_ok());
+    let stored = app.store.read().connect.validate(&token, "", "").expect("the token works");
+    assert!(stored.scopes == ["read", "write"] && stored.expires_at.is_none());
+    let _ =
+        app.update(UiMessage::WindowKey(app.settings_window.unwrap(), Key::Named(Named::Escape), Modifiers::empty()));
+    assert!(app.integrations.add.is_none() && app.settings_window.is_some(), "Escape closes only the dialog");
+    let mut sim = simulator(app.view_settings());
+    for label in ["Script", "Sensitive actions", "Created less than a minute ago · Never expires"] {
+        assert!(sim.find(label).is_ok(), "{label} shows");
+    }
+    let _ = sim.click("Revoke");
+    let msgs: Vec<_> = sim.into_messages().collect();
+    msgs.into_iter().for_each(|m| drop(app.update(m)));
+    assert!(simulator(app.view_settings()).find("Are you sure you want to revoke this connection?").is_ok());
+    let _ = app.update(UiMessage::RevokeConfirmed);
+    assert!(app.store.read().connect.validate(&token, "", "").is_err() && app.confirm.is_none());
+    assert_eq!(crate::distance(50 * 60_000), "about 1 hour");
+    assert_eq!(crate::distance(30 * 86_400_000), "about 1 month");
+    assert_eq!(crate::distance(400 * 86_400_000), "about 1 year");
+}
+
+#[test]
 fn ai_settings_like_desktop() {
     let mut app = demo_app("ai");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::Ai));
