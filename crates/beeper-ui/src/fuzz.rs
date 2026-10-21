@@ -1836,6 +1836,34 @@ fn sidebar_overflow_menu_lists_hidden_spaces_like_desktop() {
 }
 
 #[test]
+fn chat_menu_acts_on_the_selection_like_desktop() {
+    let mut app = demo_app("menu-selection");
+    let pick = |app: &BeeperGuiApp, unread: bool| {
+        let st = app.store.read();
+        let visible = app.visible_chats(&st);
+        let c = visible.iter().find(|c| c.is_pinned != Some(true) && has_flag(c, ChatFlag::MarkedUnread) == unread);
+        c.expect("a listed chat").id.clone()
+    };
+    let (unread, read) = (pick(&app, true), pick(&app, false));
+    app.selection = vec![unread.clone(), read.clone()];
+    let _ = app.update(UiMessage::OpenChatMenu(read.clone()));
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_chat_menu(&read, false, 900.0));
+        assert!(sim.find("2 chats selected").is_ok() && sim.find("Mark All as Unread").is_ok());
+        assert!(sim.find("Mark as Read").is_err() && sim.find("Pin").is_ok());
+        let _ = sim.click("Mark All as Read").expect("a Mark All as Read item");
+        sim.into_messages().collect()
+    };
+    for m in picked {
+        let _ = app.update(m);
+    }
+    let st = app.store.read();
+    let is_unread = |id: &str| has_flag(&st.chats[st.resolve_chat_idx(id).unwrap()], ChatFlag::MarkedUnread);
+    assert!(!is_unread(&unread) && !is_unread(&read));
+    assert!(app.chat_menu.is_none() && app.selection.is_empty());
+}
+
+#[test]
 fn label_inbox_rules_like_desktop() {
     let mut app = demo_app("label-inbox");
     let _ = app.update(UiMessage::OpenChatMenu("account:label:lbl_work".into()));

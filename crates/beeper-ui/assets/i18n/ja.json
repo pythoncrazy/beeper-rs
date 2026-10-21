@@ -357,6 +357,8 @@
 "Low Priority":["低優先度"],
 "MCP endpoint":["MCP エンドポイント"],
 "Mark %d thread as read":["%d件のスレッドを既読にする"],
+"Mark All as Read":["すべて既読にする"],
+"Mark All as Unread":["すべて未読にする"],
 "Mark Read":["既読にする"],
 "Mark Read/Unread":["既読/未読にする"],
 "Mark Unread":["未読にする"],

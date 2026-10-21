@@ -5270,7 +5270,7 @@ impl BeeperGuiApp {
                 self.select_chat(&id);
             }
             UiMessage::SelectionSet(flag, on) => {
-                self.selection_menu = None;
+                (self.selection_menu, self.chat_menu) = (None, None);
                 {
                     let mut st = self.store.write();
                     for cid in std::mem::take(&mut self.selection) {
@@ -6737,8 +6737,15 @@ impl BeeperGuiApp {
                         + 44.0
                         + if self.selection.is_empty() { 2.0 * MENU_ITEM + 11.0 } else { 0.0 }
                         + if st.feature("labels-v2").on { MENU_ITEM } else { 0.0 }
+                        + self.selection_rows(&st)
                         + match st.resolve_chat_idx(cid).map(|i| &st.chats[i]) {
-                            Some(c) if st.notifications_muted(c) && muted_by(&st, c).is_some() => MENU_ITEM,
+                            Some(c)
+                                if self.selection.is_empty()
+                                    && st.notifications_muted(c)
+                                    && muted_by(&st, c).is_some() =>
+                            {
+                                MENU_ITEM
+                            }
                             _ => 0.0,
                         },
                 )
@@ -6892,6 +6899,17 @@ impl BeeperGuiApp {
     }
 
     /// The selected chats that still exist: the sync task can drop one before StoreChanged reaches update.
+    /// The chat menu rows that a selection of more chats adds: the count, and both Mark All items.
+    fn selection_rows(&self, st: &BeeperStore) -> f32 {
+        let picked = self.selected_chats(st);
+        let unread = picked.iter().filter(|c| has_flag(c, ChatFlag::MarkedUnread)).count();
+        match picked.len() {
+            0 | 1 => 0.0,
+            n if (1..n).contains(&unread) => 2.0 * MENU_ITEM,
+            _ => MENU_ITEM,
+        }
+    }
+
     fn selected_chats<'s>(&self, st: &'s BeeperStore) -> Vec<&'s Chat> {
         self.selection.iter().filter_map(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]).collect()
     }
@@ -7770,45 +7788,108 @@ impl BeeperGuiApp {
         let selecting = self.selection.is_empty();
         let labels = st.feature("labels-v2").on;
         let reason = st.notifications_muted(c).then(|| muted_by(&st, c)).flatten();
+        let picked = self.selected_chats(&st);
+        let n = picked.len();
+        let reason = reason.filter(|_| n == 0);
+        let every = |f: ChatFlag| picked.iter().all(|c| has_flag(c, f));
+        let some = |f: ChatFlag| picked.iter().any(|c| has_flag(c, f));
+        let set = |f: ChatFlag, on: bool| Some(UiMessage::SelectionSet(f, on));
+        let can_archive = archived || !on(c.is_pinned);
+        let archive = match n {
+            0 => item(
+                pick(
+                    archived,
+                    trx("Unarchive", "thread context menu action"),
+                    trx("Archive", "thread context menu action"),
+                ),
+                "Ctrl E",
+                flag(ChatFlag::Archived).filter(|_| can_archive),
+            ),
+            _ => item(
+                match every(ChatFlag::Archived) {
+                    true => trx("Unarchive", "button label to unarchive selected chats"),
+                    false => trx("Archive", "button label to archive selected chats"),
+                },
+                "Ctrl E",
+                set(ChatFlag::Archived, !every(ChatFlag::Archived)).filter(|_| can_archive),
+            ),
+        };
+        let mute = match (n, st.notifications_muted(c)) {
+            (0, false) => item(trx("Mute", "thread context menu action"), "Ctrl Shift M", flag(ChatFlag::Muted)),
+            (0, true) => item(
+                trx("Unmute", "thread context menu action"),
+                "Ctrl Shift M",
+                flag(ChatFlag::Muted).filter(|_| on(c.is_muted) && reason.is_none()),
+            ),
+            _ => item(
+                pick(
+                    every(ChatFlag::Muted),
+                    trx("Unmute", "thread context menu action"),
+                    trx("Mute", "thread context menu action"),
+                ),
+                "Ctrl Shift M",
+                set(ChatFlag::Muted, !every(ChatFlag::Muted)),
+            ),
+        };
+        let read = |all: bool| match all {
+            true => item(tr("Mark as Read"), "Ctrl Shift U", set(ChatFlag::MarkedUnread, false)),
+            false => item(tr("Mark as Unread"), "Ctrl Shift U", set(ChatFlag::MarkedUnread, true)),
+        };
+        let reads: Vec<El> = match n {
+            0 => vec![item(
+                tr(pick(unread, "Mark as Read", "Mark as Unread")),
+                "Ctrl Shift U",
+                Some(UiMessage::ToggleRead(c.id.clone())),
+            )],
+            1 => vec![read(every(ChatFlag::MarkedUnread))],
+            _ => [
+                some(ChatFlag::MarkedUnread)
+                    .then(|| item(tr("Mark All as Read"), "", set(ChatFlag::MarkedUnread, false))),
+                picked
+                    .iter()
+                    .any(|c| !has_flag(c, ChatFlag::MarkedUnread))
+                    .then(|| item(tr("Mark All as Unread"), "", set(ChatFlag::MarkedUnread, true))),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        };
+        let pinned = if n == 0 { on(c.is_pinned) } else { every(ChatFlag::Pinned) };
+        let pin = match n {
+            0 => flag(ChatFlag::Pinned),
+            _ => set(ChatFlag::Pinned, !pinned),
+        };
+        let low = if n == 0 { on(c.is_low_priority) } else { every(ChatFlag::LowPriority) };
+        let low = item(
+            tr(pick(low, "Move to Inbox", "Move to Low Priority")),
+            "",
+            if n == 0 { flag(ChatFlag::LowPriority) } else { set(ChatFlag::LowPriority, !low) },
+        );
+        let heading = (n > 1).then(|| item(&trn("%d chat selected", "%d chats selected", n, &[&n]), "", None));
         let col = column![
             close_sub(
-                column![
-                    item(
-                        pick(archived, tr("Unarchive"), trx("Archive", "thread context menu action")),
-                        "Ctrl E",
-                        flag(ChatFlag::Archived).filter(|_| archived || !on(c.is_pinned))
-                    ),
-                    match st.notifications_muted(c) {
-                        false => item(tr("Mute"), "Ctrl Shift M", flag(ChatFlag::Muted)),
-                        true => item(
-                            tr("Unmute"),
-                            "Ctrl Shift M",
-                            flag(ChatFlag::Muted).filter(|_| on(c.is_muted) && reason.is_none())
+                column![]
+                    .push(heading)
+                    .push(archive)
+                    .push(mute)
+                    .push(reason.as_deref().map(|r| item(r, "", None)))
+                    .extend(reads)
+                    .push(item(
+                        pick(
+                            pinned,
+                            trx("Unpin", "thread context menu action"),
+                            trx("Pin", "thread context menu action")
                         ),
-                    },
-                ]
-                .push(reason.as_deref().map(|r| item(r, "", None)))
-                .push(item(
-                    tr(pick(unread, "Mark as Read", "Mark as Unread")),
-                    "Ctrl Shift U",
-                    Some(UiMessage::ToggleRead(c.id.clone()))
-                ))
-                .push(item(
-                    tr(pick(on(c.is_pinned), "Unpin", "Pin")),
-                    "Ctrl P",
-                    flag(ChatFlag::Pinned)
-                ))
+                        "Ctrl P",
+                        pin
+                    ))
             ),
             open_sub(0, tr("Copy")),
             close_sub(column![
                 menu_rule(p),
                 item(tr("Search…"), "Ctrl F", Some(UiMessage::SearchRoom(c.id.clone()))),
                 menu_rule(p),
-                item(
-                    tr(pick(on(c.is_low_priority), "Move to Inbox", "Move to Low Priority")),
-                    "",
-                    flag(ChatFlag::LowPriority)
-                ),
+                low,
             ]),
             labels.then(|| open_sub(2, trx("Label", "thread context menu submenu label"))),
             open_sub(1, tr("Remind Me")),
@@ -7872,7 +7953,8 @@ impl BeeperGuiApp {
                 0 => 4.0 * MENU_ITEM,
                 1 if labels => 8.0 * MENU_ITEM + 22.0,
                 _ => 7.0 * MENU_ITEM + 22.0,
-            } + if reason.is_some() { MENU_ITEM } else { 0.0 };
+            } + if reason.is_some() { MENU_ITEM } else { 0.0 }
+                + self.selection_rows(&st);
             let top = top.min(room - h).max(0.0);
             let body = container(Column::with_children(items).padding([4, 0])).width(SUB_MENU_W[usize::from(i)]);
             column![Space::new().height(top), body.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))]

@@ -356,6 +356,8 @@
 "Low Priority":["Prioridade baixa"],
 "MCP endpoint":["Endpoint do MCP"],
 "Mark %d thread as read":["Marcar %d conversa como lida", "Marcar %d conversas como lidas"],
+"Mark All as Read":["Marcar tudo como lido"],
+"Mark All as Unread":["Marcar tudo como não lido"],
 "Mark Read":["Marcar como lido"],
 "Mark Read/Unread":["Marcar como lido/não lido"],
 "Mark Unread":["Marcar como não lido"],
