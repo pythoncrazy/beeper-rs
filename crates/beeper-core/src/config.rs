@@ -33,6 +33,10 @@ pub struct CentralConfig {
     pub demo: bool,
     pub api_url: String,
     pub homeserver: String,
+    /// The `--pas-hostname` launch option, which overrides Remote Access.
+    pub launch_host: bool,
+    /// The Desktop API listens on all interfaces, and `host` is the external address.
+    pub remote: bool,
 }
 
 impl CentralConfig {
@@ -50,9 +54,17 @@ impl CentralConfig {
             profile,
             settings,
             demo: false,
+            launch_host: false,
+            remote: false,
             api_url: DEFAULT_API_URL.into(),
             homeserver: DEFAULT_HOMESERVER.into(),
         }
+    }
+
+    /// Desktop's `getDefaultExternalHostname`: the IPv4 address of the default route, else the loopback address.
+    pub fn external_host() -> String {
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").and_then(|s| s.connect("192.0.2.1:9").map(|()| s));
+        socket.and_then(|s| s.local_addr()).map_or(DEFAULT_PAS_HOST.into(), |a| a.ip().to_string())
     }
 
     pub fn base_url(&self) -> String {
@@ -66,6 +78,7 @@ impl Default for BeeperSettings {
             theme: ThemeChoice::System,
             zoom_percent: 100,
             enable_pas_api: false,
+            remote_access: false,
             pas_port: DEFAULT_PAS_PORT,
             prefs: Default::default(),
             keybindings: Default::default(),

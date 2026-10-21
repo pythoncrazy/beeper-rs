@@ -507,6 +507,8 @@ pub enum UiMessage {
     TokenClose,
     /// Revoke in Approved connections, which asks first.
     RevokeConnection(String),
+    /// The Remote Access toggle, which asks before it turns on.
+    RemoteAccess(bool),
     RevokeConfirmed,
     /// The "+" of Approved connections opens the token dialog, and Escape closes it.
     AddToken(bool),
@@ -969,9 +971,10 @@ const ASK_CLEAR_STORAGE: u8 = 8;
 const ASK_CLEAR_CACHE: u8 = 9;
 const ASK_CLEAR_CHAT: u8 = 10;
 const ASK_REVOKE_CONNECTION: u8 = 11;
+const ASK_REMOTE_ACCESS: u8 = 12;
 /// The dialogs over the Settings window.
-const SETTINGS_DIALOGS: [u8; 5] =
-    [ASK_LOGOUT, ASK_CLEAR_STORAGE, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT, ASK_REVOKE_CONNECTION];
+const SETTINGS_DIALOGS: [u8; 6] =
+    [ASK_LOGOUT, ASK_CLEAR_STORAGE, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT, ASK_REVOKE_CONNECTION, ASK_REMOTE_ACCESS];
 /// Desktop's "Clear storage older than" choices, where 0 is any age.
 const STORAGE_DAYS: [i64; 4] = [0, 30, 90, 120];
 /// Desktop's default "Quick reaction emoji".
@@ -4966,6 +4969,17 @@ impl BeeperGuiApp {
             UiMessage::TokenClose => self.token_ask = None,
             UiMessage::RevokeConnection(id) => {
                 (self.integrations.revoke, self.confirm) = (Some(id), Some(ASK_REVOKE_CONNECTION))
+            }
+            UiMessage::RemoteAccess(true) if self.confirm != Some(ASK_REMOTE_ACCESS) => {
+                self.confirm = Some(ASK_REMOTE_ACCESS);
+            }
+            UiMessage::RemoteAccess(on) => {
+                self.confirm = None;
+                self.patch_settings(|s| s.remote_access = on);
+                self.relaunch_toast = Some(match on {
+                    true => "Remote Access will be enabled after relaunch",
+                    false => "Remote Access will be disabled after relaunch",
+                });
             }
             UiMessage::RevokeConfirmed => {
                 self.confirm = None;
@@ -9738,6 +9752,11 @@ impl BeeperGuiApp {
                 tr("Connected clients will lose access to Beeper Desktop API").into(),
                 vec![(tr("Revoke"), UiMessage::RevokeConfirmed)],
             ),
+            ASK_REMOTE_ACCESS => (
+                tr("Enable Remote Access?").into(),
+                tr("This can expose the Beeper Desktop API to the public internet based on your firewall settings. Only enable if you know what you are doing.").into(),
+                vec![(tr("Allow Remote Access"), UiMessage::RemoteAccess(true))],
+            ),
             _ => unreachable!("dialog {dialog}"),
         };
         self.dialog(title, body, actions, UiMessage::Ask(None))
@@ -10113,10 +10132,28 @@ impl BeeperGuiApp {
             group(p, None, connections)
         ]
         .spacing(6);
+        let on = st.settings.remote_access;
+        let fixed = st.config.launch_host && !on;
+        let remote = pref_row(
+            p,
+            tr("Remote Access"),
+            Some(tr("When enabled, the Desktop API & MCP will be available on the public internet. Changes take effect after relaunch.")),
+            None,
+            toggle(p, on, (!fixed).then_some(UiMessage::RemoteAccess(!on))),
+        );
+        let remote: El<'a> = match fixed {
+            true => {
+                let why = trf("Hostname (%s) is set by the --pas-hostname launch option", &[&st.config.host]);
+                self.tip(remote, why, vec![], tooltip::Position::Top).into()
+            }
+            false => remote,
+        };
         let advanced = vec![
             endpoint(1, "OpenAPI spec endpoint", format!("{base}/v1/spec")),
             divider(p.prefs_border, 0.0),
             endpoint(2, "MCP endpoint", format!("{base}/v0/mcp")),
+            divider(p.prefs_border, 0.0),
+            remote,
         ];
         let head = row![container(body(tr("Beeper Desktop API"), p.muted)).width(Fill), feedback_btn(p)];
         let api = column![head.align_y(Center).padding([0, 13]), group(p, None, api)].spacing(6);

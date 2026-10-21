@@ -778,6 +778,8 @@ pub struct BeeperSettings {
     pub theme: ThemeChoice,
     pub zoom_percent: u16,
     pub enable_pas_api: bool,
+    /// Desktop's `desktop_api_remote_access`: serve the Desktop API on all interfaces from the next launch.
+    pub remote_access: bool,
     pub pas_port: u16,
     pub prefs: std::collections::BTreeMap<String, u8>,
     /// Desktop's `keybindings`: the keys of the hotkeys that are not the default, by name. "disabled" turns a

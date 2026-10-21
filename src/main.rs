@@ -61,7 +61,7 @@ fn main() {
     if frame::x11() {
         unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
     }
-    let mut host = std::env::var("BEEPER_PAS_HOST").unwrap_or_else(|_| DEFAULT_PAS_HOST.to_string());
+    let mut launch_host = std::env::var("BEEPER_PAS_HOST").ok();
     let mut port: u16 =
         std::env::var("BEEPER_PAS_PORT").map_or(DEFAULT_PAS_PORT, |v| v.parse().expect("BEEPER_PAS_PORT is a port"));
     let (mut profile, mut data_dir, mut command, mut demo) = (None, None, Command::Gui, false);
@@ -71,7 +71,7 @@ fn main() {
         match arg.as_str() {
             "serve" | "--headless" => command = Command::Serve,
             "info" => command = Command::Info,
-            "--host" | "--pas-host" => host = value(),
+            "--host" | "--pas-host" | "--pas-hostname" => launch_host = Some(value()),
             "--port" | "--pas-port" => port = value().parse().expect("--port is a port number"),
             "--profile" => profile = Some(value()),
             "--data-dir" => data_dir = Some(PathBuf::from(value())),
@@ -81,6 +81,7 @@ fn main() {
             other => panic!("unexpected argument: {other}"),
         }
     }
+    let host = launch_host.clone().unwrap_or_else(|| DEFAULT_PAS_HOST.to_string());
     let data_dir = data_dir.unwrap_or_else(|| {
         let dir = current_desktop_data_dir(profile.as_deref());
         migrate_legacy_data_dir(&dir, profile.as_deref());
@@ -92,7 +93,7 @@ fn main() {
         return println!("{}", serde_json::to_string_pretty(&info).unwrap());
     }
     let mut cfg = CentralConfig::new(data_dir, host.clone(), port, profile);
-    cfg.demo = demo;
+    (cfg.demo, cfg.launch_host) = (demo, launch_host.is_some());
     if let Ok(url) = std::env::var("BEEPER_API_URL") {
         cfg.api_url = url;
     }
@@ -100,6 +101,14 @@ fn main() {
         cfg.homeserver = url;
     }
     let store: SharedStore = StoreLock::shared(BeeperStore::from_config(cfg));
+    let host = {
+        let mut st = store.write();
+        st.config.remote = !st.config.launch_host && st.settings.remote_access;
+        match st.config.remote {
+            true => (st.config.host = CentralConfig::external_host(), "0.0.0.0".to_string()).1,
+            false => host,
+        }
+    };
     if !store.read().config.demo {
         rt.spawn(beeper_core::matrix::run(store.clone()));
     }
