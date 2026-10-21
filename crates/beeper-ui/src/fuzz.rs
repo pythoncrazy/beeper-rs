@@ -458,6 +458,11 @@ fn filter_account_submenu_like_desktop() {
 fn incognito_toggle_like_desktop() {
     let mut app = demo_app("incognito");
     let on = |app: &BeeperGuiApp, key| app.store.read().settings.on(key);
+    let _ = app.update(UiMessage::RunHotkey("Toggle Incognito Mode"));
+    assert!(!on(&app, "incognito"), "the free plan locks incognito mode");
+    let trial =
+        |ends: &str| serde_json::json!({ "incognito": { "started_at": "2020-01-01T00:00:00Z", "expires_at": ends } });
+    app.store.write().features.usage = trial("2999-01-01T00:00:00Z");
     assert!(!on(&app, "incognito") && on(&app, "typingIndicators"));
     let titles = |app: &BeeperGuiApp| app.commands(&app.store.read(), "stealth").into_iter().map(|c| c.title);
     assert_eq!(titles(&app).next().as_deref(), Some("Turn on incognito mode"));
@@ -482,6 +487,10 @@ fn incognito_toggle_like_desktop() {
     let _ = app.update(UiMessage::SetPref("typingIndicators", 1));
     let _ = app.update(UiMessage::SetPref("incognito", 0));
     assert_eq!(app.status_banner, "Incognito mode off.");
+    let _ = app.update(UiMessage::SetPref("incognito", 1));
+    assert!(app.store.read().incognito());
+    app.store.write().features.usage = trial("2020-01-04T00:00:00Z");
+    assert!(!app.store.read().incognito() && app.store.read().typing_notices(), "the trial ended");
 }
 
 #[test]
