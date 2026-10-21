@@ -234,7 +234,7 @@ pub struct KlipyGif {
     pub mp4_size: (u32, u32),
 }
 
-fn http_client() -> &'static reqwest::Client {
+pub(crate) fn http_client() -> &'static reqwest::Client {
     static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     HTTP.get_or_init(|| {
         install_tls();

@@ -295,6 +295,10 @@ pub struct BeeperStore {
     pub matrix_error: Option<String>,
     pub sas_confirm: Option<tokio::sync::oneshot::Sender<bool>>,
     pub outbox: Vec<(String, Outgoing)>,
+    /// Desktop's bookmarks room, after its history is read.
+    pub bookmarks_room: Option<String>,
+    /// The bookmarks of the bookmarks room by the event ID of the message.
+    pub bookmarks: HashMap<String, Bookmark>,
     pub pushing: bool,
     /// The Matrix IDs of sent events and created labels by their local IDs.
     pub sent: HashMap<String, String>,
@@ -416,6 +420,8 @@ impl BeeperStore {
             matrix_error: None,
             sas_confirm: None,
             outbox: Vec::new(),
+            bookmarks_room: None,
+            bookmarks: HashMap::new(),
             pushing: false,
             sent: HashMap::new(),
             typing: HashMap::new(),
@@ -1224,7 +1230,10 @@ impl BeeperStore {
         self.queue(id, Outgoing::DeleteChat { for_everyone });
     }
 
-    pub fn upsert_message(&mut self, msg: Message) {
+    pub fn upsert_message(&mut self, mut msg: Message) {
+        if self.bookmarks_room.is_some() {
+            msg.is_bookmarked = Some(self.bookmarks.contains_key(&msg.id));
+        }
         let Some(&idx) = self.msg_idx_by_id.get(&msg.id) else {
             let idx = self.push_message(msg, true);
             let m = self.messages[idx].clone();
@@ -1632,8 +1641,27 @@ impl BeeperStore {
 
     pub fn toggle_bookmark(&mut self, message_id: &str) -> bool {
         let m_idx = self.msg_idx_by_id[message_id];
-        self.update_message(m_idx, |m| m.is_bookmarked = Some(m.is_bookmarked != Some(true))).is_bookmarked
-            == Some(true)
+        let m = self.update_message(m_idx, |m| m.is_bookmarked = Some(m.is_bookmarked != Some(true)));
+        let on = m.is_bookmarked == Some(true);
+        if let Some(room) = self.bookmarks_room.clone() {
+            self.queue(&room, Outgoing::Bookmark { room: m.chat_id, target: m.id, on });
+        }
+        on
+    }
+
+    /// Desktop's `applyBookmark` for the bookmarks room events, in timeline order.
+    pub fn apply_bookmarks(&mut self, room: &str, changes: Vec<(String, Option<Bookmark>)>) {
+        self.bookmarks_room = Some(room.into());
+        for (target, b) in changes {
+            let on = b.is_some();
+            match b {
+                Some(b) => self.bookmarks.insert(target.clone(), b),
+                None => self.bookmarks.remove(&target),
+            };
+            if let Some(&i) = self.msg_idx_by_id.get(&target).filter(|&&i| self.messages[i].is_bookmarked != Some(on)) {
+                self.update_message(i, |m| m.is_bookmarked = Some(on));
+            }
+        }
     }
 
     pub fn retranscribe_voice_note(&mut self, message_id: &str) -> String {
@@ -1896,6 +1924,29 @@ mod tests {
         assert_eq!((ids(&st, &a), ids(&st, &b)), (vec![], vec!["!work".to_string()]));
         st.remove_chat("!work");
         assert!(ids(&st, &b).is_empty() && st.labels.iter().all(|l| l.id != "!work"), "a left label room drops");
+        drop(st);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn bookmarks_follow_the_bookmarks_room() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-bookmarks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23394, None);
+        config.demo = true;
+        let mut st = super::BeeperStore::from_config(config);
+        st.config.demo = false;
+        let m = st.messages[0].clone();
+        assert!(st.toggle_bookmark(&m.id) && st.outbox.is_empty(), "without the bookmarks room a bookmark is local");
+        let b = super::Bookmark { room_id: m.chat_id.clone(), event_id: "$b".into(), order: 1 };
+        st.apply_bookmarks("!bookmarks", vec![(m.id.clone(), None), ("$other".into(), Some(b.clone()))]);
+        assert_eq!(st.messages[0].is_bookmarked, Some(false), "the room removes the local bookmark");
+        st.apply_bookmarks("!bookmarks", vec![(m.id.clone(), Some(b))]);
+        assert_eq!(st.messages[0].is_bookmarked, Some(true));
+        assert!(!st.toggle_bookmark(&m.id));
+        assert!(matches!(&st.outbox[..], [(r, super::Outgoing::Bookmark { room, target, on: false })]
+            if r == "!bookmarks" && *room == m.chat_id && *target == m.id));
+        st.upsert_message(super::Message { is_bookmarked: None, ..m.clone() });
+        assert_eq!(st.messages[0].is_bookmarked, Some(false), "a synced message keeps its bookmark state");
         drop(st);
         std::fs::remove_dir_all(dir).unwrap();
     }
