@@ -469,7 +469,8 @@ pub enum UiMessage {
     /// Archives the inbox chats, or only the read ones, with no activity in the days, after Desktop's confirmation.
     ArchiveAll(bool, i64),
     MarkAllRead,
-    ToggleMaximize,
+    /// Maximizes or restores a chat window, or the main window when `None`.
+    ToggleMaximize(Option<window::Id>),
     RunHotkey(&'static str),
     /// Runs the messages in order.
     Commands(Vec<UiMessage>),
@@ -625,6 +626,8 @@ pub enum UiMessage {
     DragStart,
     DragMoved(Point),
     DragEnd,
+    /// A double click on the sidebar edge gives the sidebar its first width, like Desktop.
+    ResetSidebarWidth,
     /// The cursor is over a rail space, at this point in it.
     RailHover(String, Point),
     RailLeave(String),
@@ -2076,6 +2079,8 @@ fn rail_spaces(st: &BeeperStore) -> Vec<String> {
 }
 
 /// The rail ID of Desktop's draft label, which shows while Create Label is open.
+/// Desktop's `Jee` sidebar width of 320px, less the 68px space bar.
+const SIDEBAR_WIDTH: f32 = 252.0;
 /// Desktop's default toast timeout, counted in ticks while the toast is not paused.
 const TOAST_TIMEOUT: Duration = Duration::from_secs(5);
 const TOAST_TICK: Duration = Duration::from_millis(250);
@@ -3051,7 +3056,7 @@ impl BeeperGuiApp {
         let pending = notify::Pending::new(&store.read().chats);
         let sidebar_width = match std::fs::read_to_string(store.read().data_dir.join("sidebar-width")) {
             Ok(w) => w.parse().expect("a numeric sidebar width"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 252.0,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => SIDEBAR_WIDTH,
             Err(e) => panic!("read the sidebar width: {e}"),
         };
         let sidebar_hidden = match std::fs::read_to_string(store.read().data_dir.join("sidebar-hidden")) {
@@ -5326,7 +5331,9 @@ impl BeeperGuiApp {
                 self.chat_menu = None;
                 return self.run_hotkey(name, 0);
             }
-            UiMessage::ToggleMaximize => return window::toggle_maximize(self.main_window.expect("the main window")),
+            UiMessage::ToggleMaximize(id) => {
+                return window::toggle_maximize(id.or(self.main_window).expect("the main window"));
+            }
             UiMessage::JumpTo(cid, mid) => {
                 (self.show_command_palette, self.command_palette_query) = (false, String::new());
                 self.select_chat(&cid);
@@ -6286,6 +6293,7 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::DragStart => self.dragging = true,
+            UiMessage::ResetSidebarWidth => self.sidebar_width = SIDEBAR_WIDTH,
             UiMessage::DragMoved(pt) => {
                 let rail = if self.store.read().settings.on("showSidebar") { 68.0 } else { 0.0 };
                 let width = pt.x - rail - 2.0;
@@ -6872,6 +6880,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let grip = mouse_area(container(Space::new()).width(5).height(Fill))
             .on_press(UiMessage::DragStart)
+            .on_double_click(UiMessage::ResetSidebarWidth)
             .interaction(mouse::Interaction::ResizingHorizontally);
         let pane = match self.creating_chat {
             Some(_) => self.view_new_chat(),
@@ -9080,6 +9089,8 @@ impl BeeperGuiApp {
             .settings
             .on("feedbackWidget")
             .then(|| container(feedback).align_right(Fill).padding(Padding::ZERO.top(6.0).right(5.0)));
+        let header =
+            mouse_area(container(header).width(Fill)).on_double_click(UiMessage::ToggleMaximize(self.drawing.get()));
         let overlay = stack![fade, header].push(feedback).push(reminder);
         let verify = (st.matrix.is_some() && !st.beeper_state.verified).then(|| {
             let note = txt("Verify this device to read your encrypted messages.", 12.0).color(p.text);
