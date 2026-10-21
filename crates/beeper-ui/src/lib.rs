@@ -3017,6 +3017,22 @@ impl BeeperGuiApp {
         container(face).style(fill_box(Color { a: 0.1, ..self.pal.strong }, size / 2.0)).into()
     }
 
+    /// A window of a fixed `size` over the middle of the main window, like Desktop's `center: "parent"`.
+    fn open_child(&self, size: Size) -> (window::Id, Task<UiMessage>) {
+        let (id, open) =
+            window::open(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
+        let main = self.main_window.expect("the main window is open");
+        let offset =
+            Vector::new((self.pane.size.width - size.width) / 2.0, (self.pane.size.height - size.height) / 2.0);
+        let center = move |_| {
+            window::position(main).then(move |at| match at {
+                Some(at) => window::move_to(id, at + offset),
+                None => Task::none(),
+            })
+        };
+        (id, open.then(center))
+    }
+
     fn window_settings(size: Size) -> window::Settings {
         window::Settings {
             size,
@@ -4336,22 +4352,18 @@ impl BeeperGuiApp {
                 if let Some(&(id, _)) = self.theme_windows.iter().find(|w| w.1 == chat) {
                     return window::gain_focus(id);
                 }
-                let size = Size::new(380.0, 620.0);
-                let (id, open) =
-                    window::open(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
+                let (id, open) = self.open_child(Size::new(380.0, 620.0));
                 self.theme_windows.push((id, chat));
-                return open.discard();
+                return open;
             }
             UiMessage::OpenPollCreator(chat) => {
                 if let Some(d) = self.poll_windows.iter().find(|d| d.chat == chat) {
                     return window::gain_focus(d.id);
                 }
-                let size = Size::new(400.0, 620.0);
-                let (id, open) =
-                    window::open(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
+                let (id, open) = self.open_child(Size::new(400.0, 620.0));
                 let question = format!("poll-{chat}");
                 self.poll_windows.push(PollDraft::new(id, chat));
-                return open.then(move |_| operation::focus(question.clone()));
+                return open.chain(operation::focus(question));
             }
             UiMessage::Poll(id, edit) => return self.poll_edit(id, edit),
             UiMessage::EndPoll(chat, mid) => self.store.write().end_poll(&chat, &mid),
@@ -4359,11 +4371,9 @@ impl BeeperGuiApp {
                 if let Some(w) = self.vote_windows.iter().find(|w| w.2 == mid) {
                     return window::gain_focus(w.0);
                 }
-                let size = Size::new(342.0, 563.0);
-                let (id, open) =
-                    window::open(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
+                let (id, open) = self.open_child(Size::new(342.0, 563.0));
                 self.vote_windows.push((id, chat, mid));
-                return open.discard();
+                return open;
             }
             UiMessage::MarkRead(cid) => {
                 let mut st = self.store.write();
