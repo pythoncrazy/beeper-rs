@@ -2152,6 +2152,7 @@ fn new_chats_start_like_desktop() {
     let sam = contact(format!("contact:{account}:tel:+15550100"), "Sam Example", "+15550100");
     let bo = contact("contact:otherbridge:tel:+15550199".into(), "Bo Example", "+15550199");
     app.store.write().set_contacts(vec![sam.clone(), bo.clone()]);
+    app.create_dm.insert("otherbridge".into());
     let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
     let _ = app.update(UiMessage::NewChat);
     let n = app.creating_chat.expect("a draft");
@@ -2187,6 +2188,31 @@ fn new_chats_start_like_desktop() {
     let _ = app.update(UiMessage::DmCreated(n, Ok("!new:beeper.local".into())));
     assert!(app.new_chats.is_empty() && app.creating_chat.is_none() && app.status_banner.is_empty());
     assert_eq!(app.pending_dm.as_deref(), Some("!new:beeper.local"), "the room opens when it syncs");
+}
+
+#[test]
+fn new_chat_accounts_filter_like_desktop() {
+    let mut app = demo_app("new-chat-accounts");
+    let (tg, wa) = {
+        let st = app.store.read();
+        let of = |net: &str| st.contacts.iter().find(|u| contact_target(&u.id).0.contains(net)).expect(net).clone();
+        (of("telegram"), of("whatsapp"))
+    };
+    let name = |u: &User| u.full_name.clone().expect("a name");
+    let account = contact_target(&tg.id).0.to_string();
+    let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
+    let _ = app.update(UiMessage::NewChat);
+    let _ = app.update(UiMessage::ToggleNewChatAccounts);
+    assert!(found(&app, "Telegram") && found(&app, "WhatsApp"));
+    let _ = app.update(UiMessage::NewChatAccount(Some(account.clone())));
+    assert!(!app.new_chat_accounts_open && found(&app, &name(&tg)) && !found(&app, &name(&wa)));
+    let _ = app.update(UiMessage::Capabilities(account.clone(), Ok(serde_json::json!({ "resolve_identifier": {} }))));
+    assert!(!found(&app, &name(&tg)), "a bridge without create_dm hides its contacts");
+    let caps = serde_json::json!({ "resolve_identifier": { "create_dm": true } });
+    let _ = app.update(UiMessage::Capabilities(account, Ok(caps)));
+    assert!(found(&app, &name(&tg)));
+    let _ = app.update(UiMessage::NewChat);
+    assert!(app.new_chat_account.is_none() && found(&app, &name(&wa)), "a new draft shows all accounts");
 }
 
 #[test]

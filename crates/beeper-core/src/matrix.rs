@@ -1303,6 +1303,13 @@ impl Provision {
     }
 }
 
+/// The bridge's provisioning capabilities: `resolve_identifier` and `group_creation`.
+pub async fn capabilities(p: Provision) -> Result<Value, String> {
+    let resp = reqwest::Client::new().get(p.url("capabilities")).bearer_auth(&p.access_token).send().await;
+    let resp = resp.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
+    serde_json::from_str(&resp.text().await.map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
 pub async fn resolve_media(p: Provision, event_id: String, raw: String) -> Result<(), String> {
     p.post(&format!("resolve_media/{}", crate::codec::url_encode(&event_id)), raw).await.map(drop)
 }
