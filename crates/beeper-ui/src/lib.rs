@@ -532,6 +532,12 @@ pub enum UiMessage {
     DmCreated(Option<u32>, String, Option<String>, Result<String, String>),
     /// Desktop's `replyPrivately`: the direct chat with the sender of a message, with the message quoted.
     ReplyPrivately(String),
+    /// Desktop's member "Send Message": the direct chat with a member of a chat, as (chat, user).
+    MessageMember(String, String),
+    /// Opens a member confirmation, `ASK_MAKE_ADMIN` or `ASK_REMOVE_MEMBER`, for (chat, user).
+    AskMember(u8, String, String),
+    MakeAdmin(String, String),
+    RemoveMember(String, String),
     AskDeleteChat(String),
     AskLeaveChat(String),
     LeaveRoom(String),
@@ -1274,6 +1280,8 @@ const ASK_REVOKE_CONNECTION: u8 = 11;
 const ASK_REMOTE_ACCESS: u8 = 12;
 const ASK_DELETE_LABEL: u8 = 13;
 const ASK_LEAVE_CHAT: u8 = 14;
+const ASK_MAKE_ADMIN: u8 = 15;
+const ASK_REMOVE_MEMBER: u8 = 16;
 /// The dialogs over the Settings window.
 const SETTINGS_DIALOGS: [u8; 6] =
     [ASK_LOGOUT, ASK_CLEAR_STORAGE, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT, ASK_REVOKE_CONNECTION, ASK_REMOTE_ACCESS];
@@ -2313,12 +2321,12 @@ fn member_name(u: &User) -> String {
         .unwrap_or_else(|| u.id.clone())
 }
 
-/// The Chat Info header menus of Desktop's `$fe`: `info:<chat>` has the edit actions and `copy:<chat>`, the menu
-/// of the clicked title, adds "Copy <title>" above them.
 /// The Chat Info context menus: the identity header, the title, a member and a bookmark.
 const INFO_MENUS: [&str; 4] = ["info:", "copy:", "member:", "bookmark:"];
 
-fn info_menu(st: &BeeperStore, key: &str) -> Vec<Option<(String, Option<UiMessage>)>> {
+/// The Chat Info menus. The header menus of Desktop's `$fe`: `info:<chat>` has the edit actions and
+/// `copy:<chat>`, the menu of the clicked title, adds "Copy <title>" above them.
+fn info_menu(st: &BeeperStore, key: &str, dm: impl Fn(&str) -> bool) -> Vec<Option<(String, Option<UiMessage>)>> {
     if let Some((cid, mid)) = key.strip_prefix("bookmark:").and_then(|k| k.split_once(' ')) {
         let jump = UiMessage::JumpTo(cid.into(), mid.into());
         let remove = UiMessage::ToggleBookmark(mid.into());
@@ -2341,12 +2349,21 @@ fn info_menu(st: &BeeperStore, key: &str) -> Vec<Option<(String, Option<UiMessag
                 Some(UiMessage::OpenUrl(format!("tel:{n}"))),
             ))
         });
+        let send = dm(&c.account_id)
+            .then(|| Some((tr("Send Message").to_string(), Some(UiMessage::MessageMember(cid.into(), uid.into())))));
+        let ask = |label: &'static str, ask, on: bool| {
+            Some((tr(label).to_string(), on.then(|| UiMessage::AskMember(ask, cid.into(), uid.into()))))
+        };
         return [
             call,
+            send,
             copy("Copy Phone Number", u.phone_number.as_deref().map(fmt_phone)),
             copy("Copy Email", u.email.clone()),
             copy("Copy Username", username),
             copy("Copy Name", u.full_name.clone()),
+            Some(None),
+            Some(ask("Make Group Admin…", ASK_MAKE_ADMIN, u.is_admin != Some(true) && u.manage & MANAGE_ROLE != 0)),
+            Some(ask("Remove from Group…", ASK_REMOVE_MEMBER, u.manage & MANAGE_KICK != 0)),
         ]
         .into_iter()
         .flatten()
@@ -5885,6 +5902,26 @@ impl BeeperGuiApp {
                 let Some((account, user)) = draft.users.first().cloned() else { return Task::none() };
                 return self.open_dm(account, user, Some(n), None);
             }
+            UiMessage::MessageMember(cid, uid) => {
+                self.chat_menu = None;
+                let st = self.store.read();
+                let c = &st.chats[st.chat_idx_by_id[&cid]];
+                let user = c.participants.items.iter().find(|u| u.id == uid).cloned().expect("a member of the chat");
+                let account = c.account_id.clone();
+                drop(st);
+                return self.open_dm(account, user, None, None);
+            }
+            UiMessage::AskMember(ask, cid, uid) => {
+                (self.chat_menu, self.confirm, self.delete_target) = (None, Some(ask), Some(format!("{cid} {uid}")));
+            }
+            UiMessage::MakeAdmin(cid, uid) => {
+                self.confirm = None;
+                self.store.write().make_admin(&cid, &uid);
+            }
+            UiMessage::RemoveMember(cid, uid) => {
+                self.confirm = None;
+                self.store.write().remove_member(&cid, &uid);
+            }
             UiMessage::ReplyPrivately(mid) => {
                 let st = self.store.read();
                 let m = &st.messages[st.msg_idx_by_id[&mid]];
@@ -7596,7 +7633,7 @@ impl BeeperGuiApp {
                 let items = more_menu(&self.store.read());
                 (233.0, 8.0 + items.iter().map(|i| if i.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>())
             } else if INFO_MENUS.iter().any(|k| cid.starts_with(k)) {
-                let items = info_menu(&self.store.read(), cid);
+                let items = info_menu(&self.store.read(), cid, |a| self.can(a, "create_dm"));
                 (233.0, 8.0 + items.iter().map(|i| if i.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>())
             } else if RAIL_VIEWS.iter().any(|v| cid.strip_prefix("account:") == Some(v.0)) {
                 (233.0, 8.0 + 4.0 * MENU_ITEM)
@@ -8669,7 +8706,7 @@ impl BeeperGuiApp {
             return container(col).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
         }
         if INFO_MENUS.iter().any(|k| cid.starts_with(k)) {
-            let items = info_menu(&self.store.read(), cid).into_iter().map(|i| match i {
+            let items = info_menu(&self.store.read(), cid, |a| self.can(a, "create_dm")).into_iter().map(|i| match i {
                 Some((label, msg)) => menu_item(p, None, label, "", msg),
                 None => menu_rule(p),
             });
@@ -10981,7 +11018,7 @@ impl BeeperGuiApp {
         .padding([0, 4])
         .height(36)
         .align_y(Center);
-        let edits = info_menu(&st, &format!("info:{cid}"));
+        let edits = info_menu(&st, &format!("info:{cid}"), |a| self.can(a, "create_dm"));
         let edit = match &edits[..] {
             [Some((_, msg))] => msg.clone(),
             _ => edits.iter().flatten().any(|i| i.1.is_some()).then(|| UiMessage::OpenChatMenu(format!("info:{cid}"))),
@@ -13178,6 +13215,25 @@ impl BeeperGuiApp {
                 let title = &st.chats[st.resolve_chat_idx(&id).expect("the chat to leave exists")].title;
                 let body = trf("Are you sure you want to leave %s?", &[title]);
                 (tr("Leave chat").into(), body, vec![(tr("Leave"), UiMessage::LeaveRoom(id))])
+            }
+            ASK_MAKE_ADMIN | ASK_REMOVE_MEMBER => {
+                let target = self.delete_target.as_deref().expect("a member");
+                let (cid, uid) = target.split_once(' ').map(|(c, u)| (c.to_string(), u.to_string())).expect("chat and user");
+                let st = self.store.read();
+                let c = &st.chats[st.chat_idx_by_id[&cid]];
+                let name = member_name(c.participants.items.iter().find(|u| u.id == uid).expect("a member of the chat"));
+                match dialog {
+                    ASK_MAKE_ADMIN => (
+                        tr("Make Group Admin").into(),
+                        trf("Are you sure you want to make %s an admin of this group?", &[&name]),
+                        vec![(trx("Confirm", "make group admin confirmation button"), UiMessage::MakeAdmin(cid, uid))],
+                    ),
+                    _ => (
+                        tr("Remove from Group").into(),
+                        trf("Are you sure you want to remove %s from this group?", &[&name]),
+                        vec![(trx("Remove", "remove group participant confirmation button"), UiMessage::RemoveMember(cid, uid))],
+                    ),
+                }
             }
             ASK_DELETE_LABEL => {
                 let id = self.delete_target.clone().expect("a label to delete");

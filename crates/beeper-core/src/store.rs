@@ -828,6 +828,7 @@ impl BeeperStore {
             custom_nickname: None,
             is_network_bot: None,
             is_admin: None,
+            manage: 0,
         };
         let chat = Chat {
             id: NOTE_CHAT_ID.into(),
@@ -1083,6 +1084,26 @@ impl BeeperStore {
         let content =
             if timer == 0 { serde_json::json!({}) } else { serde_json::json!({ "type": kind, "timer": timer }) };
         self.queue(id, Outgoing::State(DISAPPEARING_TIMER, content));
+    }
+
+    /// Desktop's `removeParticipant`; the member leaves the list before the sync confirms it.
+    pub fn remove_member(&mut self, id: &str, user: &str) {
+        let idx = self.chat_idx_by_id[id];
+        self.update_chat(idx, |c| {
+            c.participants.items.retain(|u| u.id != user);
+            c.participants.total = c.participants.items.len();
+        });
+        self.queue(id, Outgoing::Kick(user.into()));
+    }
+
+    /// Desktop's `changeParticipantRole` to admin, which marks the member as an admin before the sync confirms it.
+    pub fn make_admin(&mut self, id: &str, user: &str) {
+        let idx = self.chat_idx_by_id[id];
+        self.update_chat(idx, |c| {
+            let u = c.participants.items.iter_mut().find(|u| u.id == user).expect("a member of the chat");
+            u.is_admin = Some(true);
+        });
+        self.queue(id, Outgoing::Admin(user.into()));
     }
 
     pub fn update_group(
@@ -1368,6 +1389,7 @@ impl BeeperStore {
                 custom_nickname: None,
                 is_network_bot: None,
                 is_admin: None,
+                manage: 0,
             })
             .collect();
         let merge = merge_chat_ids.map(|chat_ids| {

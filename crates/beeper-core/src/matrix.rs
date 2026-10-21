@@ -5,7 +5,7 @@ use crate::models::{
     EditHistoryEntry, Label, Message, MessageLink, PollData, PollOption, PollRules, Reaction, Timers, User,
     VerificationSas, VerificationSasEmoji, VerificationState, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_POLLS,
     BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE,
-    FORMATS, MEMBER_ACTIONS,
+    FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -216,6 +216,18 @@ fn can_send(features: Option<&Value>, levels: &Value, me: &str, k: &str) -> bool
     supported && mine >= levels["events"][k].as_i64().or(levels["state_default"].as_i64()).unwrap_or(50)
 }
 
+/// The `MANAGE_` bits of `id` for `me`: Desktop kicks members below its own power level when the room supports
+/// kicks, and changes the roles of others when it can send power levels, in Matrix rooms only of those below it.
+fn manage(levels: &Value, actions: u8, me: &str, id: &str, bridged: bool) -> u8 {
+    let power = |id: &str| levels["users"][id].as_i64().or(levels["users_default"].as_i64()).unwrap_or(0);
+    let (mine, below) = (power(me), power(id) < power(me));
+    let kick = actions & 1 << 2 != 0 && mine >= levels["kick"].as_i64().unwrap_or(50) && below;
+    let roles =
+        mine >= levels["events"]["m.room.power_levels"].as_i64().or(levels["state_default"].as_i64()).unwrap_or(50);
+    let role = roles && id != me && (bridged || below);
+    (u8::from(kick) * MANAGE_KICK) | (u8::from(role) * MANAGE_ROLE)
+}
+
 /// Desktop's `roomFeatures.disappearing_timer`; a room without features has the Beeper defaults, which have it.
 fn timers(features: Option<&Value>, levels: &Value, me: &str) -> Option<Timers> {
     let t = features.map_or(Some(&Value::Null), |f| f.get("disappearing_timer").filter(|t| t.is_object()))?;
@@ -236,6 +248,11 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     let members = room.members_no_sync(RoomMemberships::JOIN).await.expect("read room members");
     let levels = state(room, "m.room.power_levels").await.unwrap_or(Value::Null);
     let users_default = levels["users_default"].as_i64().unwrap_or(0).try_into().expect("power level");
+    let features = state(room, "com.beeper.room_features").await;
+    let member_actions = features.as_ref().map_or(ALL_MEMBER_ACTIONS, |f| {
+        let on = |k: &str| f["member_actions"][k].as_i64().is_some_and(|l| l > 0);
+        MEMBER_ACTIONS.iter().enumerate().filter(|(_, k)| on(k)).fold(0, |m, (i, _)| m | 1 << i)
+    });
     let contents: HashMap<String, Value> = states(room, StateEventType::RoomMember)
         .await
         .into_iter()
@@ -265,6 +282,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
                 custom_nickname: None,
                 is_network_bot: Some(contents.get(id).is_some_and(|c| c["com.beeper.bridge.is_network_bot"] == true)),
                 is_admin: Some(m.power_level() > UserPowerLevel::Int(users_default)),
+                manage: manage(&levels, member_actions, me.as_str(), id, !bridge.is_null()),
             }
         })
         .collect();
@@ -280,7 +298,6 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         }
     });
     let account_id = account_id(&bridge, accounts);
-    let features = state(room, "com.beeper.room_features").await;
     Chat {
         id: room.room_id().to_string(),
         is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, &bridge, !dm)),
@@ -325,10 +342,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
                 | (u8::from(f["delete_chat_for_everyone"] == true) * DELETE_FOR_EVERYONE)
         }),
         edits: edit_bits(features.as_ref(), &levels, me.as_str()),
-        member_actions: features.as_ref().map_or(ALL_MEMBER_ACTIONS, |f| {
-            let on = |k: &str| f["member_actions"][k].as_i64().is_some_and(|l| l > 0);
-            MEMBER_ACTIONS.iter().enumerate().filter(|(_, k)| on(k)).fold(0, |m, (i, _)| m | 1 << i)
-        }),
+        member_actions,
         formatting: features.as_ref().map_or(ALL_FORMATS, |f| {
             FORMATS.iter().enumerate().filter(|(_, k)| f["formatting"][**k] == 2).fold(0, |m, (i, _)| m | 1 << i)
         }),
@@ -1074,6 +1088,10 @@ pub enum Outgoing {
     Leave(bool),
     /// A state event with an empty state key.
     State(&'static str, Value),
+    /// Desktop's `removeParticipant`: a leave membership for the user.
+    Kick(String),
+    /// Desktop's `changeParticipantRole` to admin: the admin power level for the user.
+    Admin(String),
     /// Adds (true) or removes a Desktop bookmark of a message in a room. Its chat is the bookmarks room.
     Bookmark {
         room: String,
@@ -1355,6 +1373,16 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             }
         }
         Outgoing::State(kind, content) => drop(room.send_state_event_raw(kind, "", content).await.map_err(e)?),
+        Outgoing::Kick(user) => {
+            let content = serde_json::json!({ "membership": "leave" });
+            drop(room.send_state_event_raw("m.room.member", &user, content).await.map_err(e)?);
+        }
+        Outgoing::Admin(user) => {
+            let mut levels = state(&room, "m.room.power_levels").await.unwrap_or_else(|| serde_json::json!({}));
+            let native = state(&room, "m.bridge").await.is_none();
+            levels["users"][&user] = if native { 100 } else { 50 }.into();
+            drop(room.send_state_event_raw("m.room.power_levels", "", levels).await.map_err(e)?);
+        }
         Outgoing::Bookmark { room: chat, target, on } => {
             let target = event(target)?.to_string();
             let known = store.read().bookmarks.get(&target).map(|b| b.event_id.clone());
@@ -2002,6 +2030,23 @@ mod tests {
         assert_eq!(edit_bits(Some(&features), &levels, "@me:x"), 0b001, "features without a level reject the event");
         assert_eq!(edit_bits(None, &json!(null), "@me:x"), 0, "without power levels the events need 50");
         assert_eq!(edit_bits(None, &json!({ "users_default": 50 }), "@me:x"), 0b111);
+    }
+
+    #[test]
+    fn member_actions_follow_power_levels_like_desktop() {
+        use super::manage;
+        use crate::models::{ALL_MEMBER_ACTIONS, MANAGE_KICK, MANAGE_ROLE};
+        use serde_json::json;
+        let levels = json!({ "users": { "@me:x": 50, "@admin:x": 100 }, "events": { "m.room.power_levels": 100 } });
+        let both = MANAGE_KICK | MANAGE_ROLE;
+        assert_eq!(manage(&levels, ALL_MEMBER_ACTIONS, "@me:x", "@other:x", false), MANAGE_KICK);
+        assert_eq!(manage(&levels, ALL_MEMBER_ACTIONS, "@me:x", "@admin:x", false), 0, "a higher member stays");
+        assert_eq!(manage(&levels, 0, "@me:x", "@other:x", false), 0, "the room does not support kicks");
+        assert_eq!(manage(&levels, ALL_MEMBER_ACTIONS, "@admin:x", "@me:x", false), both);
+        assert_eq!(manage(&levels, ALL_MEMBER_ACTIONS, "@admin:x", "@admin:x", false), 0, "not the own user");
+        let peers = json!({ "users_default": 100, "kick": 50, "state_default": 50 });
+        assert_eq!(manage(&peers, ALL_MEMBER_ACTIONS, "@me:x", "@other:x", false), 0, "equal power in Matrix rooms");
+        assert_eq!(manage(&peers, ALL_MEMBER_ACTIONS, "@me:x", "@other:x", true), MANAGE_ROLE, "any power in bridges");
     }
 
     #[test]
