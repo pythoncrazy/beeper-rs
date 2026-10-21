@@ -19,6 +19,7 @@
 "%s File":["%s arquivo", "%s arquivos"],
 "%s Message":["%s mensagem", "%s mensagens"],
 "%s if no reply":["%s se não houver resposta"],
+"+%d more":["Mais %d"],
 "1 day":["1 dia"],
 "1 hour":["1 hora"],
 "1 week":["1 semana"],

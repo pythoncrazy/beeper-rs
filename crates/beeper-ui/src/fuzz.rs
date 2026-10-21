@@ -1322,6 +1322,20 @@ fn polls_like_desktop() {
         let m = &st.messages[st.msg_idx_by_id[mid]];
         assert_eq!((crate::message_tag(m), crate::preview_body(m)), (Some((crate::POLL_TAG, "Poll", None)), None));
     }
+    let mut sim = simulator(app.view_main());
+    let _ = sim.click("2 votes").expect("the votes button");
+    for m in sim.into_messages() {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.vote_windows.len(), 1);
+    let (id, ..) = app.vote_windows[0];
+    assert_eq!(app.title(id), "2 votes");
+    {
+        let mut sim = simulator(app.view_poll_votes(chat, mid));
+        assert!(sim.find("Which default dark theme do you prefer?").is_ok() && sim.find("Dark Purple").is_ok());
+    }
+    let _ = app.update(UiMessage::WindowClosed(id));
+    assert!(app.vote_windows.is_empty());
     for m in click(&app, "Nocturne") {
         let _ = app.update(m);
     }

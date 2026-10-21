@@ -358,6 +358,8 @@ pub enum UiMessage {
     /// Desktop's `PollCreatorBrowserWindow` for a chat.
     OpenPollCreator(String),
     Poll(window::Id, PollEdit),
+    /// Desktop's `PollVotesBrowserWindow` for a chat's poll message.
+    OpenPollVotes(String, String),
     CopyChatLink(String),
     OpenChatMenu(String),
     OpenMessageMenu(String),
@@ -2714,6 +2716,8 @@ pub struct BeeperGuiApp {
     /// Desktop's `ChatThemeBrowserWindow`s and their chats.
     pub theme_windows: Vec<(window::Id, String)>,
     pub poll_windows: Vec<PollDraft>,
+    /// The poll votes windows with their chats and poll messages.
+    pub vote_windows: Vec<(window::Id, String, String)>,
     /// The window that `BEEPER_SCREENSHOT_EXIT` or `BEEPER_SCREENSHOT_SETTINGS` captures after its next frame.
     shot: Option<window::Id>,
     pub login: Login,
@@ -2852,6 +2856,7 @@ impl BeeperGuiApp {
             login_window: None,
             theme_windows: Vec::new(),
             poll_windows: Vec::new(),
+            vote_windows: Vec::new(),
             shot: None,
             login: Login::new(source),
             cloud,
@@ -3161,6 +3166,12 @@ impl BeeperGuiApp {
             _ if Some(id) == self.settings_window => tr("Settings"),
             _ if self.theme_windows.iter().any(|w| w.0 == id) => tr("Chat Theme"),
             _ if self.poll_windows.iter().any(|w| w.id == id) => tr("New Poll"),
+            _ if let Some((_, _, mid)) = self.vote_windows.iter().find(|w| w.0 == id) => {
+                let st = self.store.read();
+                let total =
+                    st.msg_idx_by_id.get(mid).and_then(|&i| st.messages[i].poll.as_ref()).map_or(0, PollData::voters);
+                return trn("%d vote", "%d votes", total, &[&total]);
+            }
             _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => tr("Media"),
             _ => match self.chat_windows.iter().find(|w| w.0 == id) {
                 Some((_, pane)) => {
@@ -4337,6 +4348,16 @@ impl BeeperGuiApp {
                 return open.then(move |_| operation::focus(question.clone()));
             }
             UiMessage::Poll(id, edit) => return self.poll_edit(id, edit),
+            UiMessage::OpenPollVotes(chat, mid) => {
+                if let Some(w) = self.vote_windows.iter().find(|w| w.2 == mid) {
+                    return window::gain_focus(w.0);
+                }
+                let size = Size::new(342.0, 563.0);
+                let (id, open) =
+                    window::open(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
+                self.vote_windows.push((id, chat, mid));
+                return open.discard();
+            }
             UiMessage::MarkRead(cid) => {
                 let mut st = self.store.write();
                 let idx = st.resolve_chat_idx(&cid).expect("chat exists");
@@ -4651,7 +4672,7 @@ impl BeeperGuiApp {
                 if Some(id) == self.settings_window {
                     return self.settings_key(key, mods);
                 }
-                if self.theme_windows.iter().any(|w| w.0 == id) {
+                if self.theme_windows.iter().any(|w| w.0 == id) || self.vote_windows.iter().any(|w| w.0 == id) {
                     return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
                 }
                 if self.poll_windows.iter().any(|w| w.id == id) {
@@ -5867,6 +5888,7 @@ impl BeeperGuiApp {
                 self.chat_windows.retain(|w| w.0 != id);
                 self.theme_windows.retain(|w| w.0 != id);
                 self.poll_windows.retain(|w| w.id != id);
+                self.vote_windows.retain(|w| w.0 != id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
                 } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
@@ -6263,6 +6285,8 @@ impl BeeperGuiApp {
             self.view_chat_theme(chat)
         } else if let Some(d) = self.poll_windows.iter().find(|w| w.id == id) {
             self.view_poll_creator(d)
+        } else if let Some((_, chat, mid)) = self.vote_windows.iter().find(|w| w.0 == id) {
+            self.view_poll_votes(chat, mid)
         } else {
             self.view_main()
         }
@@ -6885,11 +6909,12 @@ impl BeeperGuiApp {
         });
         let options = Column::with_children(options).spacing(if spread { 6 } else { 2 });
         let foot: El<'a> = match shown {
-            true if total > 0 => row![
-                semi(votes, 13.0).line_height(Pixels(16.0)).color(footer),
-                svg(CHEVRON_RIGHT.clone()).width(16).height(16).style(move |_, _| svg::Style { color: Some(footer) })
-            ]
-            .align_y(Center)
+            true if total > 0 => button(
+                row![semi(votes, 13.0).line_height(Pixels(16.0)), tinted(&CHEVRON_RIGHT, 16.0, footer)].align_y(Center),
+            )
+            .padding(0)
+            .style(btn_style([CLEAR; 3], [footer; 3], 0.0))
+            .on_press(UiMessage::OpenPollVotes(chat.id.clone(), m.id.clone()))
             .into(),
             true => Space::new().into(),
             false => column![]
@@ -11599,6 +11624,58 @@ impl BeeperGuiApp {
             PollEdit::Discard(false) => d.discarding = false,
         }
         Task::none()
+    }
+
+    /// Desktop's `PollVotes`: the voters of each option, at most 100 each.
+    fn view_poll_votes(&self, chat: &str, mid: &str) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read();
+        let poll = st.msg_idx_by_id.get(mid).and_then(|&i| st.messages[i].poll.as_ref());
+        let Some(poll) = poll else { return container(Space::new()).style(fill_box(p.window, 0.0)).into() };
+        let people = st.resolve_chat_idx(chat).map_or(&[][..], |i| &st.chats[i].participants.items[..]);
+        let weak = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
+        let total = poll.voters();
+        let question = if poll.question.is_empty() { tr("Poll").into() } else { poll.question.clone() };
+        let mut body = column![semi(question, 17.0).line_height(Pixels(24.0)).color(p.strong)].spacing(10).padding(16);
+        for o in &poll.options {
+            let n = o.voter_ids.len();
+            let head = row![
+                semi(o.label.clone(), 15.0).line_height(Pixels(20.0)).color(p.strong).width(Fill),
+                txt(n.to_string(), 17.0).line_height(Pixels(24.0)).color(p.sub)
+            ]
+            .spacing(10)
+            .align_y(Center);
+            let mut section = column![head];
+            if n > 0 {
+                let mut voters = Column::new();
+                for (i, id) in o.voter_ids.iter().take(100).enumerate() {
+                    let u = people.iter().find(|u| u.id == *id);
+                    let name = u.and_then(|u| u.full_name.clone()).unwrap_or_else(|| id.clone());
+                    let face = self.face(u.and_then(|u| u.img_url.as_deref()), &name, 28.0, 0.5);
+                    let line = row![face, txt(name, 14.0).line_height(Pixels(18.0)).color(p.strong)].spacing(8);
+                    let last = i + 1 == n.min(100) && n <= 100;
+                    voters = voters.push(container(line.align_y(Center)).padding(Padding::new(6.0).bottom(if last {
+                        0.0
+                    } else {
+                        6.0
+                    })));
+                }
+                if n > 100 {
+                    let more = trf("+%d more", &[&(n - 100)]);
+                    voters =
+                        voters.push(container(txt(more, 14.0).line_height(Pixels(18.0)).color(p.sub)).padding([6, 0]));
+                }
+                let rule = container(Space::new()).width(Fill).height(1).style(fill_box(weak, 0.0));
+                section = section.push(Space::new().height(6)).push(rule).push(container(voters).padding([0, 8]));
+            }
+            body = body.push(container(section).width(Fill).padding(8).style(fill_box(p.received, 12.0)));
+        }
+        let card = scrollable(body).direction(bar()).height(Fill).style(scroll_style(p.scroll));
+        let card = container(card).style(fill_box(p.card, 12.0));
+        let title = trn("%d vote", "%d votes", total, &[&total]);
+        let title =
+            container(semi(title, 13.0).line_height(Pixels(16.0)).color(p.strong)).center_x(Fill).padding([8, 0]);
+        container(column![title, card]).padding(8).style(fill_box(p.window, 0.0)).into()
     }
 
     /// Desktop's `PollCreator`.
