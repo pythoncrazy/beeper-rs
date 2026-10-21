@@ -373,7 +373,6 @@ impl BeeperStore {
         let beeper_state = if config.demo { demo_state() } else { BeeperStateRecord::default() };
         let features =
             if config.demo { crate::features::Flags::free_plan() } else { crate::features::Flags::default() };
-        let label = |id: &str, name: &str| Label { id: id.to_string(), name: name.to_string() };
         let mut store = Self {
             data_dir: config.data_dir.clone(),
             setup: None,
@@ -390,7 +389,7 @@ impl BeeperStore {
             contacts: Vec::new(),
             bridge_sessions: HashMap::new(),
             accounts: Vec::new(),
-            labels: vec![label("lbl_favorite", "Favorites"), label("lbl_work", "Work"), label("lbl_vip", "VIP")],
+            labels: Vec::new(),
             chats: Vec::new(),
             chat_idx_by_id: HashMap::new(),
             local_chat_idx_by_id: HashMap::new(),
@@ -428,6 +427,18 @@ impl BeeperStore {
             next_seq: 1000,
         };
         store.load_from_sqlite_or_seed();
+        if store.config.demo {
+            let label = |(id, name): (&str, &str)| {
+                let rooms = store.chats.iter().filter(|c| c.label_ids.iter().any(|l| l == id));
+                Label {
+                    id: id.into(),
+                    name: name.into(),
+                    rooms: rooms.map(|c| c.id.clone()).collect(),
+                    ..Label::default()
+                }
+            };
+            store.labels = [("lbl_favorite", "Favorites"), ("lbl_work", "Work"), ("lbl_vip", "VIP")].map(label).into();
+        }
         store
     }
 
@@ -977,8 +988,40 @@ impl BeeperStore {
         idx
     }
 
-    pub fn upsert_chat(&mut self, chat: Chat) {
+    /// Upserts a label and the `labelIDs` of the chats that it adds or drops.
+    pub fn set_label(&mut self, label: Label) {
+        let old = self.labels.iter().position(|l| l.id == label.id);
+        let before = old.map_or_else(Vec::new, |i| self.labels[i].rooms.clone());
+        let id = label.id.clone();
+        let gone = before.iter().filter(|r| !label.rooms.contains(r));
+        let changed: Vec<String> = gone.chain(label.rooms.iter().filter(|r| !before.contains(r))).cloned().collect();
+        let rooms = label.rooms.clone();
+        match old {
+            Some(i) => self.labels[i] = label,
+            None => self.labels.push(label),
+        }
+        for chat in changed {
+            if let Some(&i) = self.chat_idx_by_id.get(&chat) {
+                let on = rooms.contains(&chat);
+                self.update_chat(i, |c| {
+                    c.label_ids.retain(|l| *l != id);
+                    if on {
+                        c.label_ids.push(id.clone());
+                    }
+                });
+            }
+        }
+    }
+
+    pub fn remove_label(&mut self, id: &str) {
+        let Some(label) = self.labels.iter().find(|l| l.id == id).cloned() else { return };
+        self.set_label(Label { rooms: Vec::new(), ..label });
+        self.labels.retain(|l| l.id != id);
+    }
+
+    pub fn upsert_chat(&mut self, mut chat: Chat) {
         let Some(&idx) = self.chat_idx_by_id.get(&chat.id) else {
+            chat.label_ids = self.labels.iter().filter(|l| l.rooms.contains(&chat.id)).map(|l| l.id.clone()).collect();
             let idx = self.push_chat(chat, true);
             let c = self.chats[idx].clone();
             return self.emit_ws("chat.upserted", &c.id, None, Some(c.clone()), None);
@@ -1001,6 +1044,7 @@ impl BeeperStore {
 
     /// Drops a chat that the user left, with its messages, and rebuilds the indices.
     pub fn remove_chat(&mut self, id: &str) {
+        self.remove_label(id);
         if !self.chat_idx_by_id.contains_key(id) {
             return;
         }
@@ -1679,6 +1723,28 @@ mod tests {
         let last = *st.chat_msg_indices[&chat].last().unwrap();
         assert_eq!(st.messages[last].id, id);
         assert_eq!(st.chats[st.chat_idx_by_id[&chat]].preview.as_ref().unwrap().id, id);
+        drop(st);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn labels_set_the_label_ids_of_their_chats() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-labels-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23393, None);
+        config.demo = true;
+        let mut st = super::BeeperStore::from_config(config);
+        let mut plain = st.chats.iter().filter(|c| c.label_ids.is_empty()).map(|c| c.id.clone());
+        let (a, b) = (plain.next().unwrap(), plain.next().unwrap());
+        let ids = |st: &super::BeeperStore, c: &str| st.chats[st.chat_idx_by_id[c]].label_ids.clone();
+        let label =
+            super::Label { id: "!work".into(), name: "Work".into(), rooms: vec![a.clone()], ..Default::default() };
+        st.set_label(label.clone());
+        assert_eq!((ids(&st, &a), ids(&st, &b)), (vec!["!work".to_string()], vec![]));
+        st.set_label(super::Label { rooms: vec![b.clone()], ..label });
+        assert_eq!((ids(&st, &a), ids(&st, &b)), (vec![], vec!["!work".to_string()]));
+        st.remove_chat("!work");
+        assert!(ids(&st, &b).is_empty() && st.labels.iter().all(|l| l.id != "!work"), "a left label room drops");
         drop(st);
         std::fs::remove_dir_all(dir).unwrap();
     }

@@ -1,8 +1,8 @@
 use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
-    Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder, EditHistoryEntry, Message,
-    MessageLink, PollData, PollOption, PollRules, Reaction, User, VerificationSas, VerificationSasEmoji,
+    Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder, EditHistoryEntry, Label,
+    Message, MessageLink, PollData, PollOption, PollRules, Reaction, User, VerificationSas, VerificationSasEmoji,
     VerificationState, ALL_FILES, ALL_FORMATS, BEEPER_POLLS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, FILE_GIF, FILE_VOICE,
     FORMATS,
 };
@@ -665,6 +665,22 @@ async fn sync_receipts(store: &SharedStore, room: &Room) {
     }
 }
 
+/// Desktop's label rooms: the name, the `com.beeper.label.*` state and the `m.space.child` chats.
+async fn sync_label(store: &SharedStore, room: &Room) {
+    let get = async |kind: &str| state(room, kind).await.unwrap_or(Value::Null);
+    let children = states(room, StateEventType::SpaceChild).await.into_iter();
+    let joined = children.filter(|v| v["content"]["via"].as_array().is_some_and(|via| !via.is_empty()));
+    let label = Label {
+        id: room.room_id().to_string(),
+        name: room.name().unwrap_or_default(),
+        color: get("com.beeper.label.color").await["color_index"].as_u64().and_then(|n| u8::try_from(n).ok()),
+        icon: s(&get("com.beeper.label.icon").await["icon"]),
+        muted: get("com.beeper.muted").await["muted"] == true,
+        rooms: joined.filter_map(|v| s(&v["state_key"])).collect(),
+    };
+    store.write().set_label(label);
+}
+
 async fn sync_space(store: &SharedStore, room: &Room) {
     let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
     // A Slack login is one workspace, so the workspace space is the account itself.
@@ -681,7 +697,11 @@ async fn sync_space(store: &SharedStore, room: &Room) {
 }
 
 async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>) {
-    if state(room, "m.room.create").await.expect("rooms have a create event")["type"].is_string() {
+    let create = state(room, "m.room.create").await.expect("rooms have a create event");
+    if create["com.beeper.label"] == true {
+        return sync_label(store, room).await;
+    }
+    if create["type"].is_string() {
         return sync_space(store, room).await;
     }
     if state(room, "com.beeper.managed").await.is_some() {
