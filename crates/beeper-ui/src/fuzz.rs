@@ -1698,6 +1698,34 @@ fn edit_spaces_like_desktop() {
         let mut sim = view(&app);
         assert!(sim.find("Work").is_ok() && sim.find("Archive").is_err());
     }
+    edit(&mut app, SpacesEdit::Search(String::new()));
+    edit(&mut app, SpacesEdit::Menu(Some("label:lbl_work".into())));
+    let picked: Vec<UiMessage> = {
+        let mut sim = view(&app);
+        assert!(
+            sim.find("Edit Label…").is_ok() && sim.find("Delete Label").is_ok() && sim.find("Edit Spaces…").is_err()
+        );
+        let _ = sim.click("Mute").expect("the label gear menu mutes");
+        sim.into_messages().collect()
+    };
+    for m in picked {
+        let _ = app.update(m);
+    }
+    assert!(app.store.read().labels.iter().any(|l| l.id == "lbl_work" && l.muted));
+    assert!(app.spaces_window.as_ref().unwrap().menu.is_none(), "an item closes the menu");
+    let account = all_spaces(&app.store.read())
+        .into_iter()
+        .find(|s| !s.starts_with("label:") && !RAIL_VIEWS.iter().any(|v| v.0 == s) && s != LABEL_NUDGE);
+    let muted = {
+        let st = app.store.read();
+        !st.settings.account(&rail_owner(&st, account.as_ref().unwrap())).notifications
+    };
+    edit(&mut app, SpacesEdit::Menu(account));
+    {
+        let mut sim = view(&app);
+        assert!(sim.find("Show in Inbox").is_ok() && sim.find(if muted { "Unmute" } else { "Mute" }).is_ok());
+        assert!(sim.find("Add/Remove Accounts…").is_err() && sim.find("Mute Space").is_err());
+    }
     edit(&mut app, SpacesEdit::NewLabel);
     assert!(app.label_window.is_some());
 }
