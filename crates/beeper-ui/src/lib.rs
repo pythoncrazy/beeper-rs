@@ -313,6 +313,9 @@ pub enum UiMessage {
     EditScheduled(String),
     FoldScheduled(bool),
     CheckScheduled,
+    /// Desktop's `showReplyThread`: shows the reply chain of the message over the timeline.
+    ShowReplies(String),
+    HideReplies,
     ToggleFlag(String, ChatFlag),
     ToggleRead(String),
     CopyChatLink(String),
@@ -1850,10 +1853,14 @@ fn in_rail_entry(st: &BeeperStore, id: &str, c: &Chat) -> bool {
     }
 }
 
-/// Desktop's `rootMessageIDs`: the first loaded message of the reply chain of `m`.
+/// Desktop's `rootMessageIDs`: the first message of the reply chain of `m`, which can be a message that is not loaded.
 fn reply_root<'s>(st: &'s BeeperStore, mut m: &'s Message) -> &'s str {
-    while let Some(&i) = m.linked_message_id.as_ref().and_then(|r| st.msg_idx_by_id.get(r)) {
-        m = &st.messages[i];
+    let mut seen = HashSet::new();
+    while let Some(r) = m.linked_message_id.as_deref().filter(|r| *r != m.id && seen.insert(&m.id)) {
+        match st.msg_idx_by_id.get(r) {
+            Some(&i) => m = &st.messages[i],
+            None => return r,
+        }
     }
     &m.id
 }
@@ -2456,6 +2463,15 @@ pub struct Pane {
     /// Desktop's `ScheduledMessages` state: collapsed and collapsible.
     pub sched_fold: (bool, bool),
     pub sched_menu: Option<(Vec<String>, bool, Point)>,
+    /// Desktop's `openReplyThread`: the message whose reply chain shows over the timeline.
+    pub reply_thread: Option<String>,
+}
+
+impl Pane {
+    /// Desktop's `getMessageSendOptions`: the quoted message, else the message of the open reply chain.
+    fn reply_target(&mut self) -> Option<String> {
+        self.reply_to_message_id.take().or_else(|| self.reply_thread.clone())
+    }
 }
 
 pub struct BeeperGuiApp {
@@ -3135,6 +3151,7 @@ impl BeeperGuiApp {
         self.pane.msg_anchor = None;
         let pending = st.scheduled.iter().any(|s| s.chat_id == chat.id && !s.canceled);
         (self.pane.send_later, self.pane.sched_fold, self.pane.sched_menu) = (None, (pending, pending), None);
+        self.pane.reply_thread = None;
         self.video = None;
         drop(st);
         self.refresh_theme_and_tray();
@@ -3317,12 +3334,12 @@ impl BeeperGuiApp {
             if !st.scheduled.iter().any(|s| s.chat_id == cid && !s.canceled) {
                 self.pane.sched_fold = (false, false);
             }
-            st.schedule(&chat_id, text, self.pane.reply_to_message_id.take(), at, no_reply);
+            st.schedule(&chat_id, text, self.pane.reply_target(), at, no_reply);
         } else if let Some(target) = self.pane.editing_message_id.take() {
             st.edit_message(&chat_id, &target, text.clone()).expect("edit message");
             st.queue(&chat_id, Outgoing::Edit { target, text });
         } else {
-            let mut reply_to = self.pane.reply_to_message_id.take();
+            let mut reply_to = self.pane.reply_target();
             let files = std::mem::take(&mut self.pane.attachments);
             let caption = (!text.is_empty() && files.len() == 1).then(|| text.clone());
             if !text.is_empty() && caption.is_none() {
@@ -3438,8 +3455,11 @@ impl BeeperGuiApp {
         let digit = name.parse::<usize>().ok().filter(|d| (1..=9).contains(d));
         let mods = [mods.control() || mods.command(), mods.shift(), mods.alt()];
         let st = self.store.read();
+        // Show Replies shares Ctrl Down with the scroll, and takes it when messages have the focus.
+        let selecting = !self.pane().selected_msgs.is_empty();
         let hit = |mods, key: &str| {
-            prefs::HOTKEYS.iter().find(|h| prefs::hotkey_has(st.settings.hotkey_keys(h.0), mods, key)).map(|h| h.0)
+            let hits = prefs::HOTKEYS.iter().filter(|h| prefs::hotkey_has(st.settings.hotkey_keys(h.0), mods, key));
+            hits.min_by_key(|h| selecting && h.0 == "Scroll to the bottom of a chat").map(|h| h.0)
         };
         let unshifted = || hit([mods[0], false, mods[2]], &name).filter(|h| *h == CYCLE && mods[1]);
         let hit_digit = || Some((hit(mods, "")?, digit? - 1));
@@ -3634,6 +3654,15 @@ impl BeeperGuiApp {
             }
             "Message: Record Audio" => chat.map(|_| UiMessage::Record(record::Msg::Start)),
             "Message: Send GIF" => chat.map(|_| UiMessage::ToggleGifPicker),
+            "Show Replies" => chat.and_then(|_| {
+                let st = self.store.read();
+                let msgs = self.timeline(&st).0;
+                self.pane.selected_msgs.iter().find_map(|id| {
+                    let m = &st.messages[st.msg_idx_by_id[id]];
+                    let replied = || msgs.iter().any(|r| r.id != m.id && reply_root(&st, r) == m.id);
+                    m.linked_message_id.clone().or_else(|| replied().then(|| m.id.clone())).map(UiMessage::ShowReplies)
+                })
+            }),
             _ => unreachable!("{name} has no action"),
         };
         msg.map_or_else(Task::none, |m| self.update(m))
@@ -4020,6 +4049,8 @@ impl BeeperGuiApp {
                 drop(st);
                 return self.update(UiMessage::StartEdit(id, text));
             }
+            UiMessage::ShowReplies(id) => (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), Some(id)),
+            UiMessage::HideReplies => (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), None),
             UiMessage::FoldScheduled(collapsed) => {
                 self.pane.sched_fold.0 = collapsed;
                 return operation::scroll_to("timeline", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
@@ -5267,6 +5298,8 @@ impl BeeperGuiApp {
                     return self.update(UiMessage::CancelComposeMode);
                 } else if !self.pane.selected_msgs.is_empty() {
                     self.pane.selected_msgs.clear();
+                } else if self.pane.reply_thread.is_some() {
+                    self.pane.reply_thread = None;
                 } else if self.pane.selected_chat_id.is_some() {
                     self.leave_chat(&mut self.store.write(), None);
                     self.pane.selected_chat_id = None;
@@ -6580,7 +6613,18 @@ impl BeeperGuiApp {
                 item(bookmark.into(), "", Some(UiMessage::ToggleBookmark(mid.clone()))),
             ]),
             (m.is_unread != Some(true) && m.account_id != "hungryserv").then(|| {
-                vec![item(tr("Mark as Unread").into(), "", Some(UiMessage::MarkUnreadFromHere(cid, mid.clone())))]
+                vec![item(
+                    tr("Mark as Unread").into(),
+                    "",
+                    Some(UiMessage::MarkUnreadFromHere(cid.clone(), mid.clone())),
+                )]
+            }),
+            self.pane().reply_thread.is_some().then(|| {
+                let jump = UiMessage::Commands(vec![
+                    UiMessage::JumpTo(cid, mid.clone()),
+                    UiMessage::SelectMessages(vec![mid.clone()]),
+                ]);
+                vec![item(tr("Jump to Message").into(), "", Some(jump))]
             }),
             mine.then(|| {
                 vec![item(tr("Delete for Everyone…").into(), "", Some(UiMessage::AskDeleteMessage(mid.clone())))]
@@ -7571,6 +7615,129 @@ impl BeeperGuiApp {
                 .filter(|m| !(hide && m.is_deleted == Some(true)) && (members || !membership(m)))
                 .collect()
         });
+        let col = self.view_messages(&st, chat, &msgs, false);
+        let col = col.push(self.view_scheduled(&st, chat));
+        let col = col.push(st.typing.get(cid).map(|ids| self.typing_bubble(chat, ids)));
+        let list = scrollable(col)
+            .id("timeline")
+            .direction(stable_bar())
+            .anchor_bottom()
+            .height(Fill)
+            .style(scroll_style(p.scroll));
+        let replies = self.pane().reply_thread.as_ref().map(|id| {
+            let root = st.msg_idx_by_id.get(id).map_or(id.as_str(), |&i| reply_root(&st, &st.messages[i]));
+            let chain: Vec<&Message> = msgs.iter().copied().filter(|m| reply_root(&st, m) == root).collect();
+            let list = scrollable(self.view_messages(&st, chat, &chain, true))
+                .direction(stable_bar())
+                .anchor_bottom()
+                .height(Fill)
+                .style(scroll_style(p.scroll));
+            // Desktop blurs the chat 8px under a 0.6 background; iced has no backdrop blur.
+            mouse_area(container(list).width(Fill).height(Fill).style(fill_box(p.card.scale_alpha(0.85), 0.0)))
+                .on_press(UiMessage::HideReplies)
+        });
+        let close = replies.is_some().then(|| -> El<'_> {
+            let close = button(ic(icon::CLOSE, 20.0).color(p.weak))
+                .padding(10)
+                .style(|_, _| button::Style::default())
+                .on_press(UiMessage::HideReplies);
+            container(close).align_right(Fill).padding(16).into()
+        });
+        let name_row = row![
+            semi(short_title(chat).to_string(), 13.0).line_height(Pixels(16.0)).color(p.fg),
+            ic(icon::CHEVRON_RIGHT, 16.0).color(p.tertiary)
+        ]
+        .spacing(2)
+        .align_y(Center);
+        let pill = button(name_row)
+            .padding(Padding::new(6.0).left(10.5).right(2.5))
+            .style(btn_style([p.window, p.selected, p.selected], [p.text; 3], 14.0))
+            .on_press(UiMessage::ToggleRightPanel);
+        let ring = container(self.chat_avatar(chat, 40.0, 0.0)).padding(1).style(fill_box(p.card, 21.0));
+        let header = stack![
+            container(pill).center_x(Fill).padding(Padding::ZERO.top(44.0)),
+            container(ring).center_x(Fill).padding(Padding::ZERO.top(7.0))
+        ];
+        let feedback = feedback_btn(p);
+        let fade = Linear::new(Radians(std::f32::consts::PI))
+            .add_stop(0.0, p.card)
+            .add_stop(0.75, p.card.scale_alpha(0.85))
+            .add_stop(1.0, p.card.scale_alpha(0.0));
+        let fade = container(Space::new()).width(Fill).height(84).style(move |_: &Theme| container::Style {
+            background: Some(Background::Gradient(Gradient::Linear(fade))),
+            ..Default::default()
+        });
+        let reminder = chat.reminder.as_ref().filter(|_| !self.expired(chat)).map(|r| {
+            let (day, time) =
+                (reminder_day(r.remind_at_ms), clock(r.remind_at_ms, st.settings.pref("timeFormat") == 1));
+            let at = if day_of(r.remind_at_ms) == today() { time.clone() } else { format!("{time} {day}") };
+            let tip = match r.dismiss_on_incoming_message {
+                true => trf("Set to remind at %s if no reply", &[&at]),
+                false => trf("Set to remind at %s", &[&at]),
+            };
+            let label = row![ic(icon::SCHEDULE, 16.0).color(ORANGE), semi(format!("{day} {time}"), 11.0).color(ORANGE)];
+            let pill = container(label.spacing(4).align_y(Center))
+                .padding(Padding { top: 2.0, right: 8.0, bottom: 2.0, left: 4.0 })
+                .style(fill_box(mix(p.card, ORANGE, 0.1), 30.0));
+            container(self.tip(pill.into(), tip, vec![], tooltip::Position::Bottom))
+                .padding(Padding::ZERO.top(9.0).left(8.0))
+        });
+        let feedback = st
+            .settings
+            .on("feedbackWidget")
+            .then(|| container(feedback).align_right(Fill).padding(Padding::ZERO.top(6.0).right(5.0)));
+        let overlay = stack![fade, header].push(feedback).push(reminder);
+        let verify = (st.matrix.is_some() && !st.beeper_state.verified).then(|| {
+            let note = txt("Verify this device to read your encrypted messages.", 12.0).color(p.text);
+            let go = pill_btn(p, tr("Verify"), UiMessage::OpenSettings(SettingsTab::Devices));
+            let bar = row![note, Space::new().width(Fill), go].align_y(Center);
+            container(bar).padding([8, 14]).style(bordered_box(p.elevated, p.outline, 1.0, 10.0))
+        });
+        let verify = verify.map(|v| container(v).padding([0, 12]));
+        let pane = column![stack![list, overlay].push(replies).push(close).width(Fill).height(Fill)]
+            .push(verify)
+            .push(self.view_composer(&st, chat));
+        let secondary = st.settings.pref("secondaryComposerButton") != 6;
+        let picker = self
+            .view_emoji_picker(&st)
+            .filter(|_| self.pane().emoji.as_ref().is_some_and(|pk| pk.react.is_none()))
+            .map(|e| {
+                let right = if secondary { 112.0 } else { 82.0 };
+                container(e).align_right(Fill).align_bottom(Fill).padding(Padding::ZERO.right(right).bottom(36.0))
+            });
+        let dropping = self.dropping.then(|| {
+            let hint =
+                column![bold(tr("Drop files here to attach"), 15.0), bold(tr("Hold Shift to send immediately"), 13.0)];
+            // Desktop blurs the chat 10px under a 0.2 background; iced has no backdrop blur.
+            let zone = container(hint.spacing(12).align_x(Center)).center(Fill).style(bordered_box(
+                Color { a: 0.85, ..p.card },
+                Color { a: 0.2, ..p.text },
+                10.0,
+                0.0,
+            ));
+            container(zone).padding(Padding { top: 39.0, right: 13.0, bottom: 6.5, left: 6.5 })
+        });
+        let pane = stack![pane].push(picker).push(self.view_suggestions(&st)).push(dropping);
+        let shadow = Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.18), offset: Vector::ZERO, blur_radius: 20.0 };
+        let card = fill_box(p.card, 10.0);
+        container(pane)
+            .width(Fill)
+            .height(Fill)
+            .clip(true)
+            .style(move |t| container::Style { shadow, ..card(t) })
+            .into()
+    }
+
+    /// Desktop's `MessageList`: the messages in timeline order. In a reply chain, the quotes, the reply lines,
+    /// the replies buttons and the unread divider do not show.
+    fn view_messages<'a>(
+        &'a self,
+        st: &BeeperStore,
+        chat: &Chat,
+        msgs: &[&Message],
+        thread: bool,
+    ) -> Column<'a, UiMessage> {
+        let p = &self.pal;
         let mut run_start: Vec<usize> = (0..msgs.len()).collect();
         for i in 1..msgs.len() {
             let (a, b) = (msgs[i - 1], msgs[i]);
@@ -7594,7 +7761,16 @@ impl BeeperGuiApp {
             }
         }
         let first_unread = msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true));
+        let first_unread = first_unread.filter(|_| !thread);
         let (h24, group) = (st.settings.pref("timeFormat") == 1, chat.chat_type == "group");
+        let roots: Vec<&str> = msgs.iter().map(|m| reply_root(st, m)).collect();
+        // Desktop's `replyCounts`: the messages of the same reply chain after each message.
+        let mut later: HashMap<&str, usize> = HashMap::new();
+        let mut counts = vec![0; msgs.len()];
+        for i in (0..msgs.len()).rev() {
+            let n = later.entry(roots[i]).or_insert(0);
+            (counts[i], *n) = (*n, *n + 1);
+        }
         for (i, m) in msgs.iter().enumerate() {
             let day_changed = prev.is_none_or(|q| day_num(&q.timestamp) != day_num(&m.timestamp));
             let mut head = Column::new().push(prev.map(|q| Space::new().height(gap_below(q, m))));
@@ -7674,9 +7850,11 @@ impl BeeperGuiApp {
             } else {
                 (Some(i) == last_live && m.is_sender == Some(true)).then(|| tr("Sent").into())
             };
-            let chained = prev.is_some_and(|q| reply_root(&st, q) == reply_root(&st, m));
-            let view = self.view_message(&st, chat, m, (first, last, chained), status, head);
-            let view = match send_rise(&st, m) {
+            let chained = i > 0 && roots[i - 1] == roots[i];
+            let split = roots.get(i + 1).is_some_and(|r| *r != roots[i]);
+            let replies = if !thread && split { counts[i] } else { 0 };
+            let view = self.view_message(st, chat, m, (first, last, chained, thread), (status, replies), head);
+            let view = match send_rise(st, m) {
                 Some(t) => lift::lift(view, 14.0 * (1.0 - t), 0.97 + 0.03 * t).into(),
                 None => view,
             };
@@ -7685,99 +7863,11 @@ impl BeeperGuiApp {
                 let a = if t < 0.2 { ease_out(t / 0.2) } else { 1.0 - ease_out((t - 0.2) / 0.8) };
                 container(Space::new()).width(Fill).height(Fill).style(fill_box(p.accent.scale_alpha(0.4 * a), 0.0))
             });
-            col = col.push(container(stack![view].push(flash)).id(format!("msg-{}", m.id)));
+            let cell = container(stack![view].push(flash));
+            col = col.push(if thread { cell } else { cell.id(format!("msg-{}", m.id)) });
             prev = Some(m);
         }
-        col = col.push(self.view_scheduled(&st, chat));
-        col = col.push(st.typing.get(cid).map(|ids| self.typing_bubble(chat, ids)));
-        let list = scrollable(col)
-            .id("timeline")
-            .direction(stable_bar())
-            .anchor_bottom()
-            .height(Fill)
-            .style(scroll_style(p.scroll));
-        let name_row = row![
-            semi(short_title(chat).to_string(), 13.0).line_height(Pixels(16.0)).color(p.fg),
-            ic(icon::CHEVRON_RIGHT, 16.0).color(p.tertiary)
-        ]
-        .spacing(2)
-        .align_y(Center);
-        let pill = button(name_row)
-            .padding(Padding::new(6.0).left(10.5).right(2.5))
-            .style(btn_style([p.window, p.selected, p.selected], [p.text; 3], 14.0))
-            .on_press(UiMessage::ToggleRightPanel);
-        let ring = container(self.chat_avatar(chat, 40.0, 0.0)).padding(1).style(fill_box(p.card, 21.0));
-        let header = stack![
-            container(pill).center_x(Fill).padding(Padding::ZERO.top(44.0)),
-            container(ring).center_x(Fill).padding(Padding::ZERO.top(7.0))
-        ];
-        let feedback = feedback_btn(p);
-        let fade = Linear::new(Radians(std::f32::consts::PI))
-            .add_stop(0.0, p.card)
-            .add_stop(0.75, p.card.scale_alpha(0.85))
-            .add_stop(1.0, p.card.scale_alpha(0.0));
-        let fade = container(Space::new()).width(Fill).height(84).style(move |_: &Theme| container::Style {
-            background: Some(Background::Gradient(Gradient::Linear(fade))),
-            ..Default::default()
-        });
-        let reminder = chat.reminder.as_ref().filter(|_| !self.expired(chat)).map(|r| {
-            let (day, time) =
-                (reminder_day(r.remind_at_ms), clock(r.remind_at_ms, st.settings.pref("timeFormat") == 1));
-            let at = if day_of(r.remind_at_ms) == today() { time.clone() } else { format!("{time} {day}") };
-            let tip = match r.dismiss_on_incoming_message {
-                true => trf("Set to remind at %s if no reply", &[&at]),
-                false => trf("Set to remind at %s", &[&at]),
-            };
-            let label = row![ic(icon::SCHEDULE, 16.0).color(ORANGE), semi(format!("{day} {time}"), 11.0).color(ORANGE)];
-            let pill = container(label.spacing(4).align_y(Center))
-                .padding(Padding { top: 2.0, right: 8.0, bottom: 2.0, left: 4.0 })
-                .style(fill_box(mix(p.card, ORANGE, 0.1), 30.0));
-            container(self.tip(pill.into(), tip, vec![], tooltip::Position::Bottom))
-                .padding(Padding::ZERO.top(9.0).left(8.0))
-        });
-        let feedback = st
-            .settings
-            .on("feedbackWidget")
-            .then(|| container(feedback).align_right(Fill).padding(Padding::ZERO.top(6.0).right(5.0)));
-        let overlay = stack![fade, header].push(feedback).push(reminder);
-        let verify = (st.matrix.is_some() && !st.beeper_state.verified).then(|| {
-            let note = txt("Verify this device to read your encrypted messages.", 12.0).color(p.text);
-            let go = pill_btn(p, tr("Verify"), UiMessage::OpenSettings(SettingsTab::Devices));
-            let bar = row![note, Space::new().width(Fill), go].align_y(Center);
-            container(bar).padding([8, 14]).style(bordered_box(p.elevated, p.outline, 1.0, 10.0))
-        });
-        let verify = verify.map(|v| container(v).padding([0, 12]));
-        let pane =
-            column![stack![list, overlay].width(Fill).height(Fill)].push(verify).push(self.view_composer(&st, chat));
-        let secondary = st.settings.pref("secondaryComposerButton") != 6;
-        let picker = self
-            .view_emoji_picker(&st)
-            .filter(|_| self.pane().emoji.as_ref().is_some_and(|pk| pk.react.is_none()))
-            .map(|e| {
-                let right = if secondary { 112.0 } else { 82.0 };
-                container(e).align_right(Fill).align_bottom(Fill).padding(Padding::ZERO.right(right).bottom(36.0))
-            });
-        let dropping = self.dropping.then(|| {
-            let hint =
-                column![bold(tr("Drop files here to attach"), 15.0), bold(tr("Hold Shift to send immediately"), 13.0)];
-            // Desktop blurs the chat 10px under a 0.2 background; iced has no backdrop blur.
-            let zone = container(hint.spacing(12).align_x(Center)).center(Fill).style(bordered_box(
-                Color { a: 0.85, ..p.card },
-                Color { a: 0.2, ..p.text },
-                10.0,
-                0.0,
-            ));
-            container(zone).padding(Padding { top: 39.0, right: 13.0, bottom: 6.5, left: 6.5 })
-        });
-        let pane = stack![pane].push(picker).push(self.view_suggestions(&st)).push(dropping);
-        let shadow = Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.18), offset: Vector::ZERO, blur_radius: 20.0 };
-        let card = fill_box(p.card, 10.0);
-        container(pane)
-            .width(Fill)
-            .height(Fill)
-            .clip(true)
-            .style(move |t| container::Style { shadow, ..card(t) })
-            .into()
+        col
     }
 
     fn view_message<'a>(
@@ -7785,8 +7875,8 @@ impl BeeperGuiApp {
         st: &BeeperStore,
         chat: &Chat,
         m: &Message,
-        (first, last, chained): (bool, bool, bool),
-        status: Option<String>,
+        (first, last, chained, thread): (bool, bool, bool, bool),
+        (status, replies): (Option<String>, usize),
         head: Column<'a, UiMessage>,
     ) -> El<'a> {
         let p = &self.pal;
@@ -7841,12 +7931,14 @@ impl BeeperGuiApp {
                 .padding(Padding::ZERO.left(11.0)),
             );
         }
-        let quote = m.linked_message_id.as_ref().and_then(|r| st.msg_idx_by_id.get(r)).map(|&i| {
+        let linked = m.linked_message_id.as_ref().filter(|_| !thread);
+        let quote = linked.and_then(|r| st.msg_idx_by_id.get(r)).map(|&i| {
             let q = &st.messages[i];
             let q_mine = q.is_sender == Some(true);
             let (edge, fill) = if q_mine { (p.sent, mix(p.card, p.sent, 0.3)) } else { (p.received, p.card) };
             let body = ell(q.text.as_deref().unwrap_or(""), 300.0, 12.0, Weight::Medium).color(p.text);
             let pill = container(body).padding(8).style(bordered_box(fill, edge, 2.0, 17.0));
+            let pill = mouse_area(pill).on_press(UiMessage::ShowReplies(q.id.clone()));
             let name = (group && !q_mine).then(|| {
                 container(semi(q.sender_name.clone().expect("sender name"), 12.0).color(p.strong)).padding([0, 11])
             });
@@ -8100,7 +8192,19 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::ToggleEditHistory(m.id.clone()))
                 .into()
         });
-        let footer: Vec<El<'a>> = status.map(|t| label(t).into()).into_iter().chain(edited).collect();
+        let replies = (replies > 0).then(|| -> El<'a> {
+            let n = trnx("%d Reply", "%d Replies", replies, "button label for replies to a message", &[&replies]);
+            button(semi(n, 10.0).line_height(Pixels(12.0)).color(p.muted))
+                .padding(0)
+                .style(|_, _| button::Style::default())
+                .on_press(UiMessage::ShowReplies(m.id.clone()))
+                .into()
+        });
+        let mut footer: Vec<El<'a>> =
+            [status.map(|t| label(t).into()), replies, edited].into_iter().flatten().collect();
+        if !mine {
+            footer.reverse();
+        }
         let footer = (!footer.is_empty()).then(|| {
             let line = footer.into_iter().enumerate().fold(Row::new().align_y(Center), |r, (i, t)| {
                 r.push((i > 0).then(|| container(txt("・", 12.0).color(p.muted.scale_alpha(0.8))).padding([0, 4])))
@@ -8276,6 +8380,16 @@ impl BeeperGuiApp {
         column![head, line].into()
     }
 
+    /// Desktop's `composeTextareaPlaceholder`.
+    fn composer_placeholder(&self, chat: &Chat) -> String {
+        let pane = self.pane();
+        let to = match (pane.send_later, pane.reply_thread.is_some() || pane.reply_to_message_id.is_some()) {
+            (Some(_), _) => "Send Later".into(),
+            (None, reply) => format!("{} {}", if reply { "Reply to" } else { "Message" }, chat.title),
+        };
+        format!("{to} on {}", network_name(&chat.account_id))
+    }
+
     fn view_composer<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {
         let p = &self.pal;
         let banner = match (&self.pane().editing_message_id, &self.pane().reply_to_message_id) {
@@ -8365,7 +8479,7 @@ impl BeeperGuiApp {
             }
         };
         let (pri, sec) = composer_buttons(st);
-        let placeholder = format!("Message {} on {}", chat.title, network_name(&chat.account_id));
+        let placeholder = self.composer_placeholder(chat);
         let suggesting = !self.emoji_suggestions(st).is_empty();
         let formats = chat.formatting;
         let keys = ["Message: Send Message and Archive", "Send Message", "Insert New Line"]

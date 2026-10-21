@@ -606,6 +606,47 @@ fn send_later_like_desktop() {
 }
 
 #[test]
+fn show_replies_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("replies");
+    let id = app.visible_chats(&app.store.read())[0].id.clone();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let mut st = app.store.write();
+    let root = st.messages[*st.chat_msg_indices[&id].last().unwrap()].id.clone();
+    let mut send =
+        |text: &str, to: Option<&String>| st.send_message(&id, Some(text.into()), to.cloned(), None).unwrap().1;
+    let one = send("first answer", Some(&root));
+    send("something else", None);
+    let two = send("second answer", Some(&root));
+    let chat = st.chats[st.resolve_chat_idx(&id).unwrap()].clone();
+    drop(st);
+    let msgs = {
+        let mut sim = simulator(app.view_main());
+        let _ = sim.click("1 Reply").expect("the replies button under the first answer");
+        sim.into_messages().collect::<Vec<_>>()
+    };
+    for m in msgs {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.pane.reply_thread.as_ref(), Some(&one));
+    let place = format!("Reply to {} on {}", chat.title, network_name(&chat.account_id));
+    assert_eq!(app.composer_placeholder(&chat), place, "the composer replies in the chain");
+    let edit = text_editor::Edit::Paste(Arc::new("third answer".into()));
+    let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
+    let _ = app.update(UiMessage::SubmitComposer);
+    let st = app.store.read();
+    assert_eq!(st.messages.last().unwrap().linked_message_id.as_ref(), Some(&one), "a send replies to the message");
+    drop(st);
+    let _ = app.update(UiMessage::CloseModals);
+    assert_eq!(app.pane.reply_thread, None, "Escape closes the replies");
+    let _ = app.update(UiMessage::SelectMessages(vec![two]));
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::ArrowDown), Modifiers::CTRL));
+    assert_eq!(app.pane.reply_thread.as_ref(), Some(&root), "Ctrl Down shows the chain of the selected message");
+    let _ = app.update(UiMessage::OpenMessageMenu(one));
+    assert!(simulator(app.view_main()).find("Jump to Message").is_ok());
+}
+
+#[test]
 fn profile_links_match_desktop() {
     let app = demo_app("profile");
     let st = app.store.read();
