@@ -3,7 +3,7 @@ use crate::style::hex;
 use beeper_core::models::{Bubble, ChatAppearance, Wallpaper};
 use iced::gradient::Linear;
 use iced::widget::{container, image, stack, svg, Space};
-use iced::{Background, Border, Color, Element, Fill, Gradient, Radians, Size, Theme};
+use iced::{Background, Border, Color, ContentFit, Element, Fill, Gradient, Radians, Size, Theme};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
@@ -182,7 +182,7 @@ pub fn fade<'a, M: 'a>(paint: Paint, size: Size) -> Element<'a, M> {
         let [r, g, b] = px.map(|v| (v * 255.0).round() as u8);
         [r, g, b, (fade_at(y) * 255.0).round() as u8]
     });
-    image(handle).into()
+    image(handle).content_fit(ContentFit::None).into()
 }
 
 /// A box filled with a wallpaper. The glow stays inside the rounded corners of a `size` box.
@@ -200,8 +200,10 @@ pub fn fill<'a, M: 'a>(paint: Paint, size: Size, radius: f32) -> Element<'a, M> 
     });
     match paint {
         Paint::Flat(_) => base.into(),
-        Paint::Gradient([_, _, g]) => {
-            stack![base, container(image(glow(g, size, radius))).width(Fill).height(Fill).clip(true)].into()
-        }
+        Paint::Gradient([_, _, g]) => stack![
+            base,
+            container(image(glow(g, size, radius)).content_fit(ContentFit::None)).width(Fill).height(Fill).clip(true)
+        ]
+        .into(),
     }
 }

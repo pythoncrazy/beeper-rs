@@ -1318,6 +1318,20 @@ fn chat_theme_like_desktop() {
     let _ = app.update(UiMessage::ChatWallpaper(None, Wallpaper::None));
     let a = app.store.read().settings.chat_appearance.clone();
     assert!(a.theme(None).bubble.is_none(), "the default bubble color clears");
+    let _ = app.update(UiMessage::OpenChatTheme(chat.clone()));
+    assert_eq!(app.theme_windows.len(), 1);
+    let _ = app.update(UiMessage::OpenChatTheme(chat.clone()));
+    assert_eq!(app.theme_windows.len(), 1, "a chat has one chat theme window");
+    {
+        let mut sim = simulator(app.view_chat_theme(&chat));
+        assert!(sim.find("Only you see your chat themes.").is_ok());
+        let _ = sim.click("Use app default").expect("the chat has its own theme");
+        for m in sim.into_messages() {
+            let _ = app.update(m);
+        }
+    }
+    assert!(app.store.read().settings.chat_appearance.per_chat.is_empty());
+    assert!(simulator(app.view_chat_theme(&chat)).find("Use app default").is_err());
     assert_eq!(
         crate::chat_theme::paint(&a.theme(Some(&chat)).wallpaper.unwrap(), true).unwrap().0,
         crate::chat_theme::Paint::Flat(Color::from_rgb8(71, 109, 92))

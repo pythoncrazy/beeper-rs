@@ -63,8 +63,8 @@ use iced::gradient::Linear;
 use iced::keyboard::{self, key::Named, Key, Modifiers};
 use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::{
-    button, column, container, image, mouse_area, operation, pick_list, pin, rich_text, row, scrollable, slider, span,
-    stack, svg, text_editor, text_input, tooltip, Column, Row, Space, Stack,
+    button, column, container, grid, image, mouse_area, operation, pick_list, pin, rich_text, row, scrollable, slider,
+    span, stack, svg, text_editor, text_input, tooltip, Column, Grid, Row, Space, Stack,
 };
 use iced::{
     border, mouse, window, Background, Bottom, Center, Color, Element, Event, Fill, Gradient, Length, Padding, Pixels,
@@ -328,6 +328,10 @@ pub enum UiMessage {
     ChatWallpaper(Option<String>, Wallpaper),
     /// Sets the bubble color of the chat theme of a chat, or of the default theme; `None` clears it.
     ChatBubble(Option<String>, Option<Bubble>),
+    /// Desktop's `clearChatTheme`: the chat uses the default chat theme again.
+    ClearChatTheme(String),
+    /// Desktop's `editChatTheme`: opens the chat theme window of a chat.
+    OpenChatTheme(String),
     CopyChatLink(String),
     OpenChatMenu(String),
     OpenMessageMenu(String),
@@ -2655,6 +2659,8 @@ pub struct BeeperGuiApp {
     pub main_window: Option<window::Id>,
     pub settings_window: Option<window::Id>,
     pub login_window: Option<window::Id>,
+    /// Desktop's `ChatThemeBrowserWindow`s and their chats.
+    pub theme_windows: Vec<(window::Id, String)>,
     /// The window that `BEEPER_SCREENSHOT_EXIT` or `BEEPER_SCREENSHOT_SETTINGS` captures after its next frame.
     shot: Option<window::Id>,
     pub login: Login,
@@ -2791,6 +2797,7 @@ impl BeeperGuiApp {
             main_window: None,
             settings_window: None,
             login_window: None,
+            theme_windows: Vec::new(),
             shot: None,
             login: Login::new(source),
             cloud,
@@ -3098,6 +3105,7 @@ impl BeeperGuiApp {
     pub fn title(&self, id: window::Id) -> String {
         match () {
             _ if Some(id) == self.settings_window => tr("Settings"),
+            _ if self.theme_windows.iter().any(|w| w.0 == id) => tr("Chat Theme"),
             _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => tr("Media"),
             _ => match self.chat_windows.iter().find(|w| w.0 == id) {
                 Some((_, pane)) => {
@@ -4227,6 +4235,17 @@ impl BeeperGuiApp {
             UiMessage::ChatBubble(chat, b) => {
                 self.patch_settings(|s| s.chat_appearance.patch(chat.as_deref(), |t| t.bubble = b))
             }
+            UiMessage::ClearChatTheme(chat) => self.patch_settings(|s| _ = s.chat_appearance.per_chat.remove(&chat)),
+            UiMessage::OpenChatTheme(chat) => {
+                if let Some(&(id, _)) = self.theme_windows.iter().find(|w| w.1 == chat) {
+                    return window::gain_focus(id);
+                }
+                let size = Size::new(380.0, 620.0);
+                let (id, open) =
+                    window::open(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
+                self.theme_windows.push((id, chat));
+                return open.discard();
+            }
             UiMessage::MarkRead(cid) => {
                 let mut st = self.store.write();
                 let idx = st.resolve_chat_idx(&cid).expect("chat exists");
@@ -4540,6 +4559,9 @@ impl BeeperGuiApp {
             UiMessage::WindowKey(id, key, mods) => {
                 if Some(id) == self.settings_window {
                     return self.settings_key(key, mods);
+                }
+                if self.theme_windows.iter().any(|w| w.0 == id) {
+                    return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
                 }
                 if self.media_window.as_ref().is_none_or(|w| w.id != id) {
                     let key = UiMessage::KeyPressed(key, mods);
@@ -5742,6 +5764,7 @@ impl BeeperGuiApp {
                     save_draft(&mut self.store.write(), &w.1);
                 }
                 self.chat_windows.retain(|w| w.0 != id);
+                self.theme_windows.retain(|w| w.0 != id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
                 } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
@@ -6127,6 +6150,8 @@ impl BeeperGuiApp {
             self.view_media(w)
         } else if Some(id) == self.login_window {
             self.view_login()
+        } else if let Some((_, chat)) = self.theme_windows.iter().find(|w| w.0 == id) {
+            self.view_chat_theme(chat)
         } else {
             self.view_main()
         }
@@ -8935,16 +8960,23 @@ impl BeeperGuiApp {
                 .align_y(Center),
             )
         });
+        let edit = button(semi(trx("Edit", "chat info edit button"), 12.0).color(p.accent))
+            .padding(0)
+            .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+            .on_press(UiMessage::OpenChatTheme(cid.clone()));
         let body = column![
             closable_head(p, tr("Chat Info"), 13.0, UiMessage::ToggleRightPanel),
-            column![
-                self.chat_avatar(chat, 64.0, 1.25),
-                semi(chat.title.clone(), 15.0).color(p.strong),
-                txt(network_name(&chat.account_id), 12.0).color(p.sub)
-            ]
-            .spacing(6)
-            .align_x(Center)
-            .width(Fill),
+            stack![
+                column![
+                    self.chat_avatar(chat, 64.0, 1.25),
+                    semi(chat.title.clone(), 15.0).color(p.strong),
+                    txt(network_name(&chat.account_id), 12.0).color(p.sub)
+                ]
+                .spacing(6)
+                .align_x(Center)
+                .width(Fill),
+                container(edit).align_right(Fill),
+            ],
             actions,
         ]
         .push(nickname)
@@ -11273,6 +11305,16 @@ impl BeeperGuiApp {
         }
     }
 
+    /// Desktop's `ChatThemeWindow`: the title and the chat theme picker of a chat.
+    fn view_chat_theme(&self, chat: &str) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read();
+        let title = container(semi(tr("Chat Theme"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
+        let card = scrollable(self.chat_theme_picker(&st, Some(chat))).direction(bar()).style(scroll_style(p.scroll));
+        let card = container(card).height(Fill).style(fill_box(p.card, 12.0));
+        container(column![title, card]).padding(8).style(fill_box(p.window, 0.0)).into()
+    }
+
     /// Desktop's `ChatAppearancePicker`: the chat theme of `chat`, or the default chat theme.
     fn chat_theme_picker(&self, st: &BeeperStore, chat: Option<&str>) -> El<'_> {
         let p = &self.pal;
@@ -11322,7 +11364,7 @@ impl BeeperGuiApp {
         }));
         let tile = |fill: El<'static>, w: Wallpaper| {
             let on = stored.wallpaper.as_ref().unwrap_or(&Wallpaper::None) == &w;
-            let fill = container(fill).width(62).height(100).padding(1).style(bordered_box(
+            let fill = container(fill).width(Fill).height(100).padding(1).style(bordered_box(
                 CLEAR,
                 p.neutral_border,
                 1.0,
@@ -11339,13 +11381,24 @@ impl BeeperGuiApp {
             let (paint, _) = chat_theme::paint(&w, self.dark).expect("a known wallpaper");
             tiles.push(tile(chat_theme::fill(paint, Size::new(60.0, 98.0), 9.0), w));
         }
+        let footer = chat.map(|c| {
+            let reset = a
+                .per_chat
+                .contains_key(c)
+                .then(|| pill_btn(p, tr("Use app default"), UiMessage::ClearChatTheme(c.into())));
+            row![txt(tr("Only you see your chat themes."), 12.0).color(p.sub), Space::new().width(Fill)]
+                .push(reset)
+                .spacing(8)
+                .align_y(Center)
+        });
         column![
             preview,
             label("Bubble color"),
             Row::with_children(swatches).wrap(),
             label("Wallpaper"),
-            Row::with_children(tiles).spacing(2).wrap().vertical_spacing(2),
+            Grid::with_children(tiles).fluid(74).spacing(2).height(grid::Sizing::EvenlyDistribute(Shrink)),
         ]
+        .push(footer)
         .spacing(12)
         .padding(16)
         .into()
