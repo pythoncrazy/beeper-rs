@@ -1636,11 +1636,22 @@ fn edit_and_delete_labels_like_desktop() {
     let _ = app.update(UiMessage::SelectAccount(Some("label:lbl_work".into())));
     let _ = app.update(UiMessage::AskDeleteLabel("lbl_work".into()));
     simulator(app.view_confirm(ASK_DELETE_LABEL)).find("Delete").expect("a Delete button");
+    app.store.write().set_label_muted("lbl_work", true);
+    app.patch_settings(|s| s.spaces_order = vec![SpaceOrder { id: "label:lbl_work".into(), visible: true }]);
     let _ = app.update(UiMessage::DeleteLabel("lbl_work".into()));
-    let st = app.store.read();
-    assert!(st.labels.iter().all(|l| l.id != "lbl_work"));
-    assert!(rooms.iter().all(|r| !st.chats[st.chat_idx_by_id[r]].label_ids.iter().any(|l| l == "lbl_work")));
+    {
+        let st = app.store.read();
+        assert!(st.labels.iter().all(|l| l.id != "lbl_work"));
+        assert!(rooms.iter().all(|r| !st.chats[st.chat_idx_by_id[r]].label_ids.iter().any(|l| l == "lbl_work")));
+    }
     assert_eq!(app.selected_account_filter, None, "the inbox opens when its label is deleted");
+    assert_eq!(app.status_banner, "Deleted \"Work\"");
+    let _ = app.update(UiMessage::Undo(false));
+    let st = app.store.read();
+    let back = st.labels.iter().find(|l| l.name == "Work").expect("Undo makes the label again");
+    assert!(back.muted && back.rooms == rooms);
+    assert!(rooms.iter().all(|r| st.chats[st.chat_idx_by_id[r]].label_ids.contains(&back.id)));
+    assert_eq!(st.settings.spaces_order[0].id, format!("label:{}", back.id), "the label keeps its place");
 }
 
 #[test]
