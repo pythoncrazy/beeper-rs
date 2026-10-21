@@ -279,7 +279,7 @@ pub enum UiMessage {
     RetranscribeVoice(String),
     VotePoll(String, String),
     ToggleAttachMenu,
-    ToggleGifPicker,
+    TogglePicker(Picker),
     Emoji(emoji::EmojiMsg),
     Upserted(Box<Message>),
     ChatUpserted(Box<Chat>),
@@ -2426,6 +2426,14 @@ pub struct History {
     last: Option<(std::time::Instant, std::ops::Range<usize>)>,
 }
 
+/// Desktop's composer pickers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Picker {
+    Gif,
+    Sticker,
+    Audio,
+}
+
 /// The open chat of a window, with its composer and its menus.
 #[derive(Default)]
 pub struct Pane {
@@ -2440,7 +2448,8 @@ pub struct Pane {
     pub selected_msgs: Vec<String>,
     pub msg_anchor: Option<String>,
     pub show_attach_menu: bool,
-    pub show_gif_picker: bool,
+    /// Desktop's `visiblePicker`.
+    pub picker: Option<Picker>,
     /// The URL and text of the formatting menu's link dialog.
     pub link_dialog: Option<(String, String)>,
     pub emoji: Option<emoji::Picker>,
@@ -3157,6 +3166,28 @@ impl BeeperGuiApp {
         self.refresh_theme_and_tray();
     }
 
+    /// Desktop's `setPicker` checks: shows a toast when the network of the open chat does not accept the picker.
+    fn supports(&mut self, kind: Picker) -> bool {
+        let st = self.store.read();
+        let chat = &st.chats
+            [st.resolve_chat_idx(self.pane().selected_chat_id.as_deref().expect("an open chat")).expect("chat exists")];
+        let (ok, toast) = match kind {
+            Picker::Gif => (chat.files & FILE_GIF != 0, "GIFs aren't supported on %s"),
+            Picker::Audio => (chat.files & FILE_VOICE != 0, "Recording audio isn't supported on %s"),
+            // The bridges with Desktop's `supportsStickers`.
+            Picker::Sticker => (
+                matches!(account_network(&chat.account_id).kind, NetworkKind::WhatsApp | NetworkKind::Telegram),
+                "Stickers aren't supported on %s",
+            ),
+        };
+        let net = network_name(&chat.account_id);
+        drop(st);
+        if !ok {
+            self.status_banner = trf(toast, &[&net]);
+        }
+        ok
+    }
+
     /// The selected message when only one message is selected.
     fn single_msg(&self) -> Option<&String> {
         Some(&self.pane().selected_msgs).filter(|s| s.len() == 1).map(|s| &s[0])
@@ -3653,7 +3684,8 @@ impl BeeperGuiApp {
                 })
             }
             "Message: Record Audio" => chat.map(|_| UiMessage::Record(record::Msg::Start)),
-            "Message: Send GIF" => chat.map(|_| UiMessage::ToggleGifPicker),
+            "Message: Send GIF" => chat.map(|_| UiMessage::TogglePicker(Picker::Gif)),
+            "Message: Send Sticker" => chat.map(|_| UiMessage::TogglePicker(Picker::Sticker)),
             "Show Replies" => chat.and_then(|_| {
                 let st = self.store.read();
                 let msgs = self.timeline(&st).0;
@@ -4973,9 +5005,10 @@ impl BeeperGuiApp {
                 self.focused = focused;
                 return self.close_notifications();
             }
-            UiMessage::ToggleGifPicker => {
-                self.pane.show_gif_picker = !self.pane.show_gif_picker;
-                if self.pane.show_gif_picker {
+            UiMessage::TogglePicker(kind) => {
+                let open = self.pane.picker != Some(kind) && self.supports(kind);
+                self.pane.picker = open.then_some(kind);
+                if open && kind == Picker::Gif {
                     self.pane.show_attach_menu = true;
                     let focus = operation::focus("gif-search-input");
                     if self.gifs.is_empty() && !self.gif_loading {
@@ -5011,7 +5044,7 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::PickGif(g) => {
-                self.pane.show_gif_picker = false;
+                self.pane.picker = None;
                 let url = g.gif_url.clone();
                 return Task::perform(
                     async move {
@@ -5266,7 +5299,7 @@ impl BeeperGuiApp {
                     || self.audio.menu.is_some()
                     || self.selection_menu.is_some()
                     || self.pane.show_attach_menu
-                    || self.pane.show_gif_picker
+                    || self.pane.picker.is_some()
                     || self.pane.emoji.is_some()
                     || self.quick_look_target.is_some()
                     || self.hotkeys_modal.is_some()
@@ -5283,7 +5316,7 @@ impl BeeperGuiApp {
                     self.audio.menu = None;
                     self.selection_menu = None;
                     self.pane.show_attach_menu = false;
-                    self.pane.show_gif_picker = false;
+                    self.pane.picker = None;
                     self.pane.emoji = None;
                     self.quick_look_target = None;
                 } else if !self.selection.is_empty() {
@@ -5336,7 +5369,7 @@ impl BeeperGuiApp {
             UiMessage::ToggleAttachMenu => {
                 self.pane.show_attach_menu = !self.pane.show_attach_menu;
                 if !self.pane.show_attach_menu {
-                    self.pane.show_gif_picker = false;
+                    self.pane.picker = None;
                 }
             }
             UiMessage::ToggleFilterMenu => self.show_filter_menu = !self.show_filter_menu,
@@ -5776,8 +5809,10 @@ impl BeeperGuiApp {
             .flat_map(|&i| &st.messages[i].attachments)
             .filter(|a| matches!(a.attachment_type.as_str(), "img" | "video"))
             .filter_map(|a| a.poster_img.clone().or_else(|| a.src_url.clone()));
-        let gif_urls =
-            self.pane.show_gif_picker.then(|| self.gifs.iter().map(|g| g.preview_url.clone())).into_iter().flatten();
+        let gif_urls = (self.pane.picker == Some(Picker::Gif))
+            .then(|| self.gifs.iter().map(|g| g.preview_url.clone()))
+            .into_iter()
+            .flatten();
         let hits = self.media_hits(&st);
         let found =
             hits.iter().flat_map(|m| &m.attachments).filter(|a| matches!(a.attachment_type.as_str(), "img" | "video"));
@@ -8407,7 +8442,7 @@ impl BeeperGuiApp {
             .align_y(Center)
             .padding([4, 16])
         });
-        let gif_picker = self.pane().show_gif_picker.then(|| {
+        let gif_picker = (self.pane().picker == Some(Picker::Gif)).then(|| {
             let search = text_input(tr("Search KLIPY..."), &self.gif_query)
                 .id("gif-search-input")
                 .on_input(UiMessage::GifQueryChanged)
@@ -8447,13 +8482,13 @@ impl BeeperGuiApp {
         let action_btn = |id: u8| -> El<'a> {
             let msg = match id {
                 0 => Some(UiMessage::Emoji(emoji::EmojiMsg::Toggle)),
-                2 => Some(UiMessage::ToggleGifPicker),
+                2 => Some(UiMessage::TogglePicker(Picker::Gif)),
                 3 => Some(UiMessage::PickFiles),
                 4 => Some(UiMessage::OpenSendLater),
                 5 => Some(UiMessage::Record(record::Msg::Start)),
                 _ => None,
             };
-            let active = (id == 2 && self.pane().show_gif_picker)
+            let active = (id == 2 && self.pane().picker == Some(Picker::Gif))
                 || (id == 0 && self.pane().emoji.as_ref().is_some_and(|pk| pk.react.is_none()));
             let color = if active { p.strong } else { p.on_secondary };
             let bg = if active { p.hover } else { CLEAR };
@@ -8647,7 +8682,10 @@ impl BeeperGuiApp {
                 Some(removable(p, card, UiMessage::RemoveLinkPreview(u.clone())))
             });
         let links = Column::with_children(links).spacing(4).padding([2, 54]);
-        let extras = Column::new().push(banner).push(gif_picker).push(pending).push(links);
+        // Desktop lists no sticker packs on Matrix accounts: its Matrix API has no `getStickerPacks`.
+        let stickers = (self.pane().picker == Some(Picker::Sticker))
+            .then(|| container(txt(tr("No sticker packs found"), 14.0).color(p.text)).center_x(Fill).center_y(200));
+        let extras = Column::new().push(banner).push(gif_picker).push(stickers).push(pending).push(links);
         let line: Row<'a, UiMessage> = match &self.recorder {
             Some(r) => row![self.view_recorder(r), send],
             None => row![plus, pill, send],

@@ -13,6 +13,10 @@ pub const CHAT_HIDDEN: u16 = 1 << 8;
 pub const CHAT_REQUEST: u16 = 1 << 9;
 pub const DELETE_FOR_ME: u8 = 1 << 0;
 pub const DELETE_FOR_EVERYONE: u8 = 1 << 1;
+/// The `com.beeper.room_features` file kinds that Desktop checks before it opens a composer picker.
+pub const FILE_GIF: u8 = 1 << 0;
+pub const FILE_VOICE: u8 = 1 << 1;
+pub const ALL_FILES: u8 = FILE_GIF | FILE_VOICE;
 /// The `com.beeper.room_features` formatting keys of Desktop's formatting menu buttons, in menu order.
 pub const FORMATS: [&str; 9] = [
     "bold",
@@ -323,12 +327,19 @@ pub struct Chat {
     /// The `FORMATS` the network fully supports, one bit each.
     #[serde(default = "all_formats")]
     pub formatting: u16,
+    /// The `FILE_` kinds the network accepts.
+    #[serde(default = "all_files")]
+    pub files: u8,
     #[serde(skip)]
     pub flags: u16,
 }
 
 fn all_formats() -> u16 {
     ALL_FORMATS
+}
+
+fn all_files() -> u8 {
+    ALL_FILES
 }
 
 fn flag_bits(bits: &[(bool, u16)]) -> u16 {

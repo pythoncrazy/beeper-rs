@@ -2,8 +2,8 @@ use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
     Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder, EditHistoryEntry, Message,
-    MessageLink, Reaction, User, VerificationSas, VerificationSasEmoji, VerificationState, ALL_FORMATS,
-    DELETE_FOR_EVERYONE, DELETE_FOR_ME, FORMATS,
+    MessageLink, Reaction, User, VerificationSas, VerificationSasEmoji, VerificationState, ALL_FILES, ALL_FORMATS,
+    DELETE_FOR_EVERYONE, DELETE_FOR_ME, FILE_GIF, FILE_VOICE, FORMATS,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -282,6 +282,10 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         }),
         formatting: features.as_ref().map_or(ALL_FORMATS, |f| {
             FORMATS.iter().enumerate().filter(|(_, k)| f["formatting"][**k] == 2).fold(0, |m, (i, _)| m | 1 << i)
+        }),
+        files: features.as_ref().map_or(ALL_FILES, |f| {
+            let has = |kind: &str| f["file"].get(kind).is_some_and(|v| !v.is_null());
+            (u8::from(has("fi.mau.gif")) * FILE_GIF) | (u8::from(has("org.matrix.msc3245.voice")) * FILE_VOICE)
         }),
         flags: 0,
     }

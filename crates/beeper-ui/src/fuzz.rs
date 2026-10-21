@@ -647,6 +647,39 @@ fn show_replies_like_desktop() {
 }
 
 #[test]
+fn pickers_check_the_network_like_desktop() {
+    let mut app = demo_app("pickers");
+    let st = app.store.read();
+    let on = |want: bool| {
+        let stickers =
+            |c: &&Chat| matches!(account_network(&c.account_id).kind, NetworkKind::WhatsApp | NetworkKind::Telegram);
+        st.chats.iter().find(|c| stickers(c) == want).unwrap().id.clone()
+    };
+    let (wa, other) = (on(true), on(false));
+    drop(st);
+    let _ = app.update(UiMessage::SelectChat(wa));
+    let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
+    assert_eq!(app.pane.picker, Some(Picker::Sticker));
+    assert!(simulator(app.view_main()).find("No sticker packs found").is_ok());
+    let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
+    assert_eq!(app.pane.picker, None, "the hotkey closes the open picker");
+    let _ = app.update(UiMessage::SelectChat(other.clone()));
+    let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
+    assert_eq!(app.pane.picker, None);
+    assert!(app.status_banner.starts_with("Stickers aren't supported on "), "{}", app.status_banner);
+    let mut st = app.store.write();
+    let i = st.resolve_chat_idx(&other).unwrap();
+    st.chats[i].files = 0;
+    drop(st);
+    let _ = app.update(UiMessage::TogglePicker(Picker::Gif));
+    assert_eq!(app.pane.picker, None);
+    assert!(app.status_banner.starts_with("GIFs aren't supported on "), "{}", app.status_banner);
+    let _ = app.update(UiMessage::Record(record::Msg::Start));
+    assert!(app.recorder.is_none());
+    assert!(app.status_banner.starts_with("Recording audio isn't supported on "), "{}", app.status_banner);
+}
+
+#[test]
 fn profile_links_match_desktop() {
     let app = demo_app("profile");
     let st = app.store.read();

@@ -407,7 +407,7 @@ impl BeeperGuiApp {
             let file = self.pane.editing_message_id.is_none().then_some(UiMessage::PickFiles);
             let file_keys = &["attachment", "image", "gif", "video", "document", "pdf"];
             v.push(cmd(e, tr("Send file"), file).keys(file_keys).hotkey("Chat: Send File"));
-            let gif = (self.pane.editing_message_id.is_none()).then_some(UiMessage::ToggleGifPicker);
+            let gif = (self.pane.editing_message_id.is_none()).then_some(UiMessage::TogglePicker(crate::Picker::Gif));
             v.push(cmd(e, tr("Send GIF"), gif).keys(&["attachment", "image", "video"]).hotkey("Message: Send GIF"));
             let later = self.pane.editing_message_id.is_none().then_some(UiMessage::OpenSendLater);
             let later = cmd(trx("Message", "Command bar category"), tr("Send later"), later);

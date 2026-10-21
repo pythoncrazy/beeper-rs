@@ -361,6 +361,7 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Message: Send GIF", "Messages", "ctrl+shift+g"),
     ("Message: Send Later", "Messages", "ctrl+shift+l"),
     ("Message: Send Message and Archive", "Messages", "ctrl+enter"),
+    ("Message: Send Sticker", "Messages", "ctrl+alt+shift+s"),
     ("Show Replies", "Messages", "ctrl+down"),
     ("Insert New Line", "Composer", "alt+enter, ctrl+enter, shift+enter"),
     ("Send Message", "Composer", "enter"),
