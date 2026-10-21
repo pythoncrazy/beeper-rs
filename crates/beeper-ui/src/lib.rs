@@ -321,6 +321,9 @@ pub enum UiMessage {
     /// The pointer enters or leaves the toast, which pauses its timeout like Desktop.
     ToastHover(bool),
     ToastTick,
+    DismissOlderToast(usize),
+    /// Desktop's toast button: the toast closes, newest or older, and its action runs.
+    ToastAction(Option<usize>, Box<UiMessage>),
     GifQueryChanged(String),
     GifsLoaded(Result<Vec<KlipyGif>, String>),
     PickGif(KlipyGif),
@@ -2217,6 +2220,8 @@ const TOAST_TIMEOUT: Duration = Duration::from_secs(5);
 /// Desktop's `Txe` shows its "Undo:" toast for a second.
 const UNDO_NOTE_TIMEOUT: Duration = Duration::from_secs(1);
 const TOAST_TICK: Duration = Duration::from_millis(250);
+/// Desktop's `toasts-list` shows the last 10 toasts.
+const TOASTS_SHOWN: usize = 10;
 const LABEL_DRAFT: &str = "label:draft";
 
 /// Desktop's `setDraftLabel`: the draft label named `name` is a label space, and it takes the order slot of the nudge.
@@ -3161,6 +3166,10 @@ pub struct BeeperGuiApp {
     /// A button of the toast, shown only while the banner still is the text it was made for.
     /// Desktop's archive and Low Priority toasts, shown only while the banner still is their text.
     toast: Option<Toast>,
+    /// The earlier toasts of Desktop's `toasts-list` that still show above the newest, each with the time it showed.
+    older_toasts: Vec<(Toast, Duration)>,
+    /// How many times the newest toast was dismissed, so that a dismissed toast does not move up.
+    toast_dismissals: u32,
     /// Desktop's action stack `Jv`: what each action did and the message that undoes it.
     undo_stack: Vec<(String, UiMessage)>,
     /// What the shown "Undo:" toast undid.
@@ -3334,6 +3343,8 @@ impl BeeperGuiApp {
             status_banner: String::new(),
             relaunch_toast: None,
             toast: None,
+            older_toasts: Vec::new(),
+            toast_dismissals: 0,
             undo_stack: Vec::new(),
             undo_note: None,
             toast_clock: (String::new(), false, Duration::ZERO),
@@ -4414,7 +4425,17 @@ impl BeeperGuiApp {
     }
 
     pub fn update(&mut self, msg: UiMessage) -> Task<UiMessage> {
+        let (shown, dismissals) = (self.stackable_toast(), self.toast_dismissals);
         let task = self.handle(msg);
+        let replaced = |t: &(Toast, Duration)| !self.status_banner.is_empty() && t.0.text != self.status_banner;
+        if let Some(t) = shown.filter(|t| dismissals == self.toast_dismissals && replaced(t)) {
+            self.older_toasts.push(t);
+            let extra = self.older_toasts.len().saturating_sub(TOASTS_SHOWN - 1);
+            self.older_toasts.drain(..extra);
+        }
+        if self.status_banner.is_empty() && self.older_toasts.is_empty() {
+            self.toast_clock.1 = false;
+        }
         if !std::mem::take(&mut self.tray_sent.1) || !cfg!(target_os = "linux") {
             return task;
         }
@@ -4568,7 +4589,9 @@ impl BeeperGuiApp {
                 let edit = if back { text_editor::Edit::Backspace } else { text_editor::Edit::Delete };
                 return self.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
             }
-            UiMessage::Undo(false) if let Some(undo) = self.shown_undo() => return self.update(undo),
+            UiMessage::Undo(false) if let Some(undo) = self.shown_undo() => {
+                return self.update(UiMessage::ToastAction(None, Box::new(undo)));
+            }
             UiMessage::Undo(false) if self.queued_here() => return self.update(UiMessage::UndoSend),
             UiMessage::Undo(true) if self.queued_here() => {
                 return self.update(UiMessage::SendQueued(self.pane.selected_chat_id.clone()));
@@ -4813,7 +4836,6 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
             }
             UiMessage::UndoFlag(flag, chats, many) => {
-                (self.status_banner, self.toast) = (String::new(), None);
                 {
                     let mut st = self.store.write();
                     for (id, on) in &chats {
@@ -6113,15 +6135,30 @@ impl BeeperGuiApp {
                 return chat.map_or_else(Task::none, |c| self.update(UiMessage::FocusRequested(Some(c))));
             }
             m @ (UiMessage::ToastHover(_) | UiMessage::ToastTick) if self.toast_clock.0 != self.status_banner => {
-                self.toast_clock = (self.status_banner.clone(), false, Duration::ZERO);
+                self.toast_clock = (self.status_banner.clone(), self.toast_clock.1, Duration::ZERO);
                 return self.update(m);
             }
             UiMessage::ToastHover(on) => self.toast_clock.1 = on,
             UiMessage::ToastTick => {
+                for t in &mut self.older_toasts {
+                    t.1 += TOAST_TICK;
+                }
+                self.older_toasts.retain(|t| t.1 < TOAST_TIMEOUT);
+                if !self.newest_toast_running() {
+                    return Task::none();
+                }
                 self.toast_clock.2 += TOAST_TICK;
                 if self.toast_clock.2 >= if self.shown_note() { UNDO_NOTE_TIMEOUT } else { TOAST_TIMEOUT } {
                     return self.update(UiMessage::DismissBanner);
                 }
+            }
+            UiMessage::DismissOlderToast(i) => _ = self.older_toasts.remove(i),
+            UiMessage::ToastAction(older, action) => {
+                let _ = match older {
+                    Some(i) => self.update(UiMessage::DismissOlderToast(i)),
+                    None => self.update(UiMessage::DismissBanner),
+                };
+                return self.update(*action);
             }
             UiMessage::WindowFocused(focused) => {
                 self.focused = focused;
@@ -6229,7 +6266,10 @@ impl BeeperGuiApp {
             UiMessage::Verified(Ok(())) => self.status_banner = tr("This device is verified.").into(),
             UiMessage::Verified(Err(e)) => self.fail(Toast::new(format!("Could not verify this device: {e}"))),
             UiMessage::Pushed(Ok(())) => {}
-            UiMessage::DismissBanner => (self.status_banner, self.relaunch_toast) = (String::new(), None),
+            UiMessage::DismissBanner => {
+                (self.status_banner, self.relaunch_toast) = (String::new(), None);
+                self.toast_dismissals += 1;
+            }
             UiMessage::Relaunch => {
                 RELAUNCH.store(true, std::sync::atomic::Ordering::Relaxed);
                 return self.quit();
@@ -8794,11 +8834,26 @@ impl BeeperGuiApp {
         self.show(Toast { error: true, ..t });
     }
 
-    /// The toast timeout runs while a window is focused and the pointer is not on the toast.
+    /// The toast timeouts run while a window is focused and the pointer is not on the toasts.
     fn toast_running(&self) -> bool {
         let hovered = self.toast_clock.0 == self.status_banner && self.toast_clock.1;
-        let sticky = self.sticky_banner.as_ref() == Some(&self.status_banner);
-        self.relaunch_toast.is_none() && !self.status_banner.is_empty() && self.focused && !hovered && !sticky
+        let shown = self.newest_toast_running() || !self.older_toasts.is_empty();
+        self.relaunch_toast.is_none() && self.focused && !hovered && shown
+    }
+
+    fn newest_toast_running(&self) -> bool {
+        !self.status_banner.is_empty() && self.sticky_banner.as_ref() != Some(&self.status_banner)
+    }
+
+    /// The newest toast and the time it showed, which moves up in Desktop's `toasts-list` when a new toast comes.
+    /// Sticky toasts and "Undo:" notes are replaced instead.
+    fn stackable_toast(&self) -> Option<(Toast, Duration)> {
+        if !self.newest_toast_running() || self.relaunch_toast.is_some() || self.shown_note() {
+            return None;
+        }
+        let t = self.shown_toast().cloned().unwrap_or_else(|| Toast::new(self.status_banner.clone()));
+        let clock = &self.toast_clock;
+        Some((t, if clock.0 == self.status_banner { clock.2 } else { Duration::ZERO }))
     }
 
     /// The "Undo:" toast of `Txe` is on screen.
@@ -11243,11 +11298,8 @@ impl BeeperGuiApp {
             Some(t) => tr(t),
             None => &self.status_banner,
         };
-        let toast = |card: El<'static>| -> El<'_> {
-            let card = mouse_area(card).on_enter(UiMessage::ToastHover(true)).on_exit(UiMessage::ToastHover(false));
-            container(card).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(left)).into()
-        };
-        (!banner.is_empty()).then(|| {
+        let older = self.older_toasts.iter().enumerate().map(|(i, t)| self.toast_card(&t.0, Some(i)));
+        let newest = (!banner.is_empty()).then(|| -> El<'_> {
             let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, p.sub, UiMessage::DismissBanner);
             if let Some(what) = self.undo_note.as_ref().filter(|_| self.shown_note()) {
                 let glyph = container(tinted(&TOAST_ICONS[3], 16.0, p.strong)).center_x(16).center_y(20);
@@ -11255,48 +11307,60 @@ impl BeeperGuiApp {
                     .size(13.0)
                     .color(p.strong);
                 let card = row![glyph, text, close].spacing(8).align_y(Center);
-                return toast(container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0)).into());
+                return container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0)).into();
             }
             if let Some(t) = self.shown_toast() {
-                let (bg, fg) = match t.error {
-                    true => (hex(0xdc362e), Color::WHITE),
-                    false => (p.card, p.strong),
-                };
-                let btn = |(label, msg): &(&'static str, UiMessage), fg: Color| {
-                    let label = semi(*label, 13.0).line_height(Pixels(18.0)).color(fg);
-                    button(label).padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0)).on_press(msg.clone())
-                };
-                let glyph = t.icon.map(|i| container(tinted(&TOAST_ICONS[i], 20.0, fg)).center_x(16).center_y(20));
-                let text = match t.strong {
-                    true => semi(banner.to_string(), 13.0),
-                    false => txt(banner.to_string(), 13.0),
-                };
-                let below = (!t.buttons.is_empty()).then(|| {
-                    let dot = || -> El { semi(" • ", 13.0).line_height(Pixels(18.0)).color(fg).into() };
-                    let mut buttons = t.buttons.iter().map(|b| -> El { btn(b, fg).into() });
-                    let first = buttons.next().expect("a button");
-                    Row::with_children(std::iter::once(first).chain(buttons.flat_map(|b| [dot(), b])))
-                });
-                let body = column![text.color(fg)].push(below).spacing(16);
-                let right = t.right.as_ref().map(|b| btn(b, p.accent));
-                let close = match t.error {
-                    true => icon_btn(p, icon::CLOSE, 14.0, 16.0, fg, UiMessage::DismissBanner),
-                    false => close,
-                };
-                let card = row![].push(glyph).push(body).push(right).push(close).spacing(8);
-                let card = card.align_y(if t.buttons.is_empty() { Center } else { iced::Alignment::Start });
-                let card = container(card).padding(8).style(shadow_box(bg, p.outline, 10.0, 15.0));
-                return toast(match t.open.clone() {
-                    Some(open) => mouse_area(card).on_press(open).into(),
-                    None => card.into(),
-                });
+                return self.toast_card(t, None);
             }
             let text = txt(banner.to_string(), 13.0).color(p.strong);
             let relaunch = self.relaunch_toast.map(|_| pill_btn(p, tr("Relaunch app"), UiMessage::Relaunch));
             let card = row![text.wrapping(iced::widget::text::Wrapping::WordOrGlyph)].push(relaunch).push(close);
             let card = card.spacing(8).align_y(Center);
-            toast(container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0)).into())
+            container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0)).into()
+        });
+        let toasts: Vec<El> = older.chain(newest).collect();
+        (!toasts.is_empty()).then(|| {
+            let list = mouse_area(Column::with_children(toasts).spacing(8))
+                .on_enter(UiMessage::ToastHover(true))
+                .on_exit(UiMessage::ToastHover(false));
+            container(list).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(left)).into()
         })
+    }
+
+    /// Desktop's `Toast`: the newest toast, or the toast at an index of `older_toasts`.
+    fn toast_card<'a>(&'a self, t: &Toast, older: Option<usize>) -> El<'a> {
+        let p = &self.pal;
+        let (bg, fg) = match t.error {
+            true => (hex(0xdc362e), Color::WHITE),
+            false => (p.card, p.strong),
+        };
+        let btn = |(label, msg): &(&'static str, UiMessage), fg: Color| {
+            let label = semi(*label, 13.0).line_height(Pixels(18.0)).color(fg);
+            let action = UiMessage::ToastAction(older, Box::new(msg.clone()));
+            button(label).padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0)).on_press(action)
+        };
+        let glyph = t.icon.map(|i| container(tinted(&TOAST_ICONS[i], 20.0, fg)).center_x(16).center_y(20));
+        let text = match t.strong {
+            true => semi(t.text.clone(), 13.0),
+            false => txt(t.text.clone(), 13.0),
+        };
+        let below = (!t.buttons.is_empty()).then(|| {
+            let dot = || -> El { semi(" • ", 13.0).line_height(Pixels(18.0)).color(fg).into() };
+            let mut buttons = t.buttons.iter().map(|b| -> El { btn(b, fg).into() });
+            let first = buttons.next().expect("a button");
+            Row::with_children(std::iter::once(first).chain(buttons.flat_map(|b| [dot(), b])))
+        });
+        let body = column![text.color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph)].push(below).spacing(16);
+        let right = t.right.as_ref().map(|b| btn(b, p.accent));
+        let dismiss = older.map_or(UiMessage::DismissBanner, UiMessage::DismissOlderToast);
+        let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, if t.error { fg } else { p.sub }, dismiss);
+        let card = row![].push(glyph).push(body).push(right).push(close).spacing(8);
+        let card = card.align_y(if t.buttons.is_empty() { Center } else { iced::Alignment::Start });
+        let card = container(card).padding(8).style(shadow_box(bg, p.outline, 10.0, 15.0));
+        match t.open.clone() {
+            Some(open) => mouse_area(card).on_press(open).into(),
+            None => card.into(),
+        }
     }
 
     fn view_media<'a>(&'a self, w: &MediaWindow) -> El<'a> {
@@ -14373,6 +14437,7 @@ pub struct NewChat {
 }
 
 /// Desktop's `Toast`, which shows while `status_banner` is its text.
+#[derive(Clone)]
 pub struct Toast {
     pub text: String,
     /// The index of the icon in `TOAST_ICONS`.

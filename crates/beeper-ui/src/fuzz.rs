@@ -1843,6 +1843,44 @@ fn archive_and_low_priority_toasts_undo_like_desktop() {
 }
 
 #[test]
+fn toasts_stack_like_desktop() {
+    let mut app = demo_app("toast-stack");
+    let ids: Vec<String> = {
+        let st = app.store.read();
+        let chats = app.visible_chats(&st);
+        chats.iter().filter(|c| c.is_pinned != Some(true)).take(2).map(|c| c.id.clone()).collect()
+    };
+    let archived = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        has_flag(&st.chats[st.resolve_chat_idx(&ids[0]).unwrap()], ChatFlag::Archived)
+    };
+    let _ = app.update(UiMessage::ToggleFlag(ids[0].clone(), ChatFlag::Archived));
+    let _ = app.update(UiMessage::ToggleFlag(ids[1].clone(), ChatFlag::LowPriority));
+    assert_eq!(app.older_toasts.iter().map(|t| t.0.text.as_str()).collect::<Vec<_>>(), ["Archived"]);
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_main());
+        sim.find("Archived").expect("the older toast");
+        let _ = sim.click("Undo").expect("the Undo button of the older toast");
+        sim.into_messages().collect()
+    };
+    for m in picked {
+        let _ = app.update(m);
+    }
+    assert!(!archived(&app) && app.older_toasts.is_empty(), "the Undo of an older toast closes it");
+    assert!(!app.status_banner.is_empty(), "the newest toast stays");
+    let _ = app.update(UiMessage::ToggleFlag(ids[0].clone(), ChatFlag::Archived));
+    let _ = app.update(UiMessage::Undo(false));
+    assert!(!archived(&app) && app.older_toasts.len() == 1, "Mod-z closes the newest toast and keeps the others");
+    let _ = app.update(UiMessage::ToastHover(true));
+    assert!(!app.toast_running(), "the toasts wait while the pointer is on them");
+    let _ = app.update(UiMessage::ToastHover(false));
+    for _ in 0..TOAST_TIMEOUT.as_millis() / TOAST_TICK.as_millis() {
+        let _ = app.update(UiMessage::ToastTick);
+    }
+    assert!(app.older_toasts.is_empty() && app.status_banner.is_empty(), "each toast closes after its timeout");
+}
+
+#[test]
 fn sidebar_spaces_drag_like_desktop() {
     let mut app = demo_app("rail-drag");
     let hide = SpaceOrder { id: "requests".into(), visible: false };
