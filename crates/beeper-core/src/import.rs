@@ -401,6 +401,8 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 formatting: ALL_FORMATS,
                 files: ALL_FILES,
                 polls: Some(BEEPER_POLLS),
+                disappearing: t.pointer("/disappearingTimer/timer").and_then(Value::as_u64).filter(|&t| t > 0),
+                timers: None,
                 flags: 0,
                 id,
             })

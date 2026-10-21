@@ -2,9 +2,9 @@ use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
     Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder, EditHistoryEntry, Label,
-    Message, MessageLink, PollData, PollOption, PollRules, Reaction, User, VerificationSas, VerificationSasEmoji,
-    VerificationState, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_POLLS, DELETE_FOR_EVERYONE, DELETE_FOR_ME,
-    EDITS, FILE_GIF, FILE_VOICE, FORMATS, MEMBER_ACTIONS,
+    Message, MessageLink, PollData, PollOption, PollRules, Reaction, Timers, User, VerificationSas,
+    VerificationSasEmoji, VerificationState, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_POLLS, DEFAULT_TIMERS,
+    DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE, FORMATS, MEMBER_ACTIONS,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -206,11 +206,24 @@ fn poll_rules(f: &Value) -> Option<PollRules> {
 /// Desktop's `canCurrentUserEdit…` as `EDITS` bits: the room features support the state event, and the power level
 /// of `me` reaches the level of the event.
 fn edit_bits(features: Option<&Value>, levels: &Value, me: &str) -> u8 {
+    EDITS.iter().enumerate().fold(0, |m, (i, k)| m | (u8::from(can_send(features, levels, me, k)) << i))
+}
+
+fn can_send(features: Option<&Value>, levels: &Value, me: &str, k: &str) -> bool {
     let mine = levels["users"][me].as_i64().or(levels["users_default"].as_i64()).unwrap_or(0);
-    EDITS.iter().enumerate().fold(0, |m, (i, k)| {
-        let supported = features.is_none_or(|f| f["state"][k]["level"].as_i64().is_some_and(|l| l > 0));
-        let needed = levels["events"][k].as_i64().or(levels["state_default"].as_i64()).unwrap_or(50);
-        m | (u8::from(supported && mine >= needed) << i)
+    let supported = features.is_none_or(|f| f["state"][k]["level"].as_i64().is_some_and(|l| l > 0));
+    supported && mine >= levels["events"][k].as_i64().or(levels["state_default"].as_i64()).unwrap_or(50)
+}
+
+/// Desktop's `roomFeatures.disappearing_timer`; a room without features has the Beeper defaults, which have it.
+fn timers(features: Option<&Value>, levels: &Value, me: &str) -> Option<Timers> {
+    let t = features.map_or(Some(&Value::Null), |f| f.get("disappearing_timer").filter(|t| t.is_object()))?;
+    Some(Timers {
+        kind: t["types"][0].as_str().unwrap_or("after_send").into(),
+        timers: t["timers"]
+            .as_array()
+            .map_or(DEFAULT_TIMERS.to_vec(), |a| a.iter().filter_map(Value::as_u64).collect()),
+        can_set: can_send(features, levels, me, DISAPPEARING_TIMER),
     })
 }
 
@@ -323,6 +336,8 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             (u8::from(has("fi.mau.gif")) * FILE_GIF) | (u8::from(has("org.matrix.msc3245.voice")) * FILE_VOICE)
         }),
         polls: features.as_ref().map_or(Some(BEEPER_POLLS), poll_rules),
+        disappearing: state(room, DISAPPEARING_TIMER).await.and_then(|t| t["timer"].as_u64()).filter(|&t| t > 0),
+        timers: timers(features.as_ref(), &levels, me.as_str()),
         flags: 0,
     }
 }
@@ -1881,6 +1896,26 @@ mod tests {
         assert_eq!(edit_bits(Some(&features), &levels, "@me:x"), 0b001, "features without a level reject the event");
         assert_eq!(edit_bits(None, &json!(null), "@me:x"), 0, "without power levels the events need 50");
         assert_eq!(edit_bits(None, &json!({ "users_default": 50 }), "@me:x"), 0b111);
+    }
+
+    #[test]
+    fn disappearing_timers_follow_room_features_like_desktop() {
+        use super::timers;
+        use crate::models::{DEFAULT_TIMERS, DISAPPEARING_TIMER};
+        use serde_json::json;
+        let levels = json!({ "users": { "@me:x": 50 }, "events": { DISAPPEARING_TIMER: 100 } });
+        let beeper = timers(None, &levels, "@me:x").expect("the Beeper defaults have timers");
+        assert!(
+            beeper.kind == "after_send" && beeper.timers == DEFAULT_TIMERS && !beeper.can_set,
+            "the event needs 100"
+        );
+        assert!(timers(Some(&json!({})), &levels, "@me:x").is_none(), "features without disappearing_timer");
+        let f = json!({
+            "disappearing_timer": { "types": ["after_read"], "timers": [3_600_000, 86_400_000] },
+            "state": { DISAPPEARING_TIMER: { "level": 2 } },
+        });
+        let t = timers(Some(&f), &json!({ "users_default": 50 }), "@me:x").expect("timers");
+        assert!(t.kind == "after_read" && t.timers == [3_600_000, 86_400_000] && t.can_set);
     }
 
     #[test]

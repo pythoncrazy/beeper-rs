@@ -382,6 +382,8 @@ pub enum UiMessage {
     InfoAll,
     InfoQuery(String),
     InfoNote(text_editor::Action),
+    /// Desktop's disappearing messages select: a chat and a timer in ms, or 0 for Off.
+    SetDisappearing(String, u64),
     Group(GroupEdit),
     /// Opens the New label window with these chats picked.
     OpenCreateLabel(Vec<String>),
@@ -1969,6 +1971,24 @@ svg_static!(VSCODE_LOGO, include_bytes!("../assets/integrations/vscode.svg"));
 svg_static!(COPY_ICON, include_bytes!("../assets/integrations/copy.svg"));
 svg_static!(COPIED_ICON, include_bytes!("../assets/integrations/done.svg"));
 svg_static!(ADD_ICON, include_bytes!("../assets/integrations/add.svg"));
+
+/// Desktop's `KJ`: date-fns `formatDistanceStrict` in English, or "Off".
+fn timer_label(ms: u64) -> String {
+    let n = |v: f64, unit: &str| {
+        let v = v.round() as u64;
+        format!("{v} {unit}{}", if v == 1 { "" } else { "s" })
+    };
+    let m = ms as f64 / 60_000.0;
+    match m {
+        _ if ms == 0 => trx("Off", "disappearing messages timer option").into(),
+        _ if m < 1.0 => n(ms as f64 / 1000.0, "second"),
+        _ if m < 60.0 => n(m, "minute"),
+        _ if m < 1440.0 => n(m / 60.0, "hour"),
+        _ if m < 43_200.0 => n(m / 1440.0, "day"),
+        _ if m < 525_600.0 => n(m / 43_200.0, "month"),
+        _ => n(m / 525_600.0, "year"),
+    }
+}
 
 /// date-fns `formatDistance` in English, as Desktop shows the age and the expiry of a connection.
 fn distance(ms: i64) -> String {
@@ -5083,6 +5103,10 @@ impl BeeperGuiApp {
                 let text = self.info_desc.take().expect("editing").text();
                 let cid = self.pane.selected_chat_id.clone().expect("a chat is selected");
                 self.store.write().update_group(&cid, None, Some(text), None);
+                return self.update(UiMessage::StoreChanged);
+            }
+            UiMessage::SetDisappearing(cid, timer) => {
+                self.store.write().set_disappearing(&cid, timer);
                 return self.update(UiMessage::StoreChanged);
             }
             UiMessage::InfoMore => self.info_more ^= true,
@@ -11138,6 +11162,44 @@ impl BeeperGuiApp {
             };
             column![head, body]
         });
+        let timers =
+            chat.timers.as_ref().filter(|_| st.feature("enable-disappearing-message-timer-config").on).map(|t| {
+                let can = t.can_set && !locked;
+                let options: Vec<String> = [0].iter().chain(&t.timers).map(|&ms| timer_label(ms)).collect();
+                let values: Vec<u64> = [0].into_iter().chain(t.timers.iter().copied()).collect();
+                let current = timer_label(chat.disappearing.unwrap_or(0));
+                let (id, fg) = (cid.clone(), if can { p.strong } else { p.sub });
+                let pick = pick_list(options.clone(), Some(current), move |l| {
+                    let i = options.iter().position(|o| *o == l).expect("a listed timer");
+                    UiMessage::SetDisappearing(id.clone(), values[i])
+                })
+                .text_size(13)
+                .text_line_height(Pixels(16.0))
+                .handle(pick_list::Handle::None)
+                .padding([8, 12])
+                .width(Fill)
+                .style(pick_style(p.chip, p.chip, fg, fg))
+                .menu_style(pick_menu_style(p.elevated, p.selected, p.text, p.prefs_border));
+                let pick: El = match can {
+                    true => pick.into(),
+                    false => container(
+                        txt(timer_label(chat.disappearing.unwrap_or(0)), 13.0).line_height(Pixels(16.0)).color(fg),
+                    )
+                    .padding([8, 12])
+                    .width(Fill)
+                    .style(fill_box(p.chip, 8.0))
+                    .into(),
+                };
+                let arrow =
+                    container(tinted(&SELECT_ARROW, 10.0, fg)).align_right(Fill).center_y(Fill).padding([0, 12]);
+                let pick = stack![pick, arrow];
+                let about = txt(tr("For added privacy, new messages disappear after the set time."), 10.0)
+                    .line_height(Pixels(12.0))
+                    .color(p.strong);
+                let head = container(txt(tr("Disappearing messages"), 11.0).line_height(Pixels(14.0)).color(p.strong))
+                    .padding(8);
+                column![head, column![pick, container(about).padding([0, 8])].spacing(4)]
+            });
         let note = text_editor(&self.info_note)
             .placeholder("Notes")
             .on_action(UiMessage::InfoNote)
@@ -11157,6 +11219,7 @@ impl BeeperGuiApp {
             .push(desc)
             .push(members)
             .push(labels)
+            .push(timers)
             .push(container(note).padding(Padding::ZERO.top(8.0)))
             .push((chat.member_actions & MEMBER_LEAVE != 0).then(|| {
                 let leave = button(semi(tr("Leave Chat"), 14.0).line_height(Pixels(18.0)).color(p.strong))

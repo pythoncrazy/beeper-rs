@@ -2128,6 +2128,11 @@ fn label_chats_from_the_chat_menu_like_desktop() {
     assert_eq!(app.label_window.as_ref().expect("the label window").chats, [chat]);
 }
 
+/// A simulator tall enough for the whole Chat Info panel.
+fn tall<'a>(el: El<'a>) -> Simulator<'a, UiMessage> {
+    Simulator::with_size(Default::default(), Size::new(1024.0, 2000.0), el)
+}
+
 #[test]
 fn chat_info_labels_like_desktop() {
     let mut app = demo_app("chat-info-labels");
@@ -2160,6 +2165,53 @@ fn chat_info_labels_like_desktop() {
     assert!(app.toast.is_none() && app.undo_stack.len() == 1, "the switch has no toast but can be undone");
     let mut sim = simulator(app.view_info());
     assert!(sim.find("Work").is_ok() && sim.find("Add to a Label").is_err());
+}
+
+#[test]
+fn chat_info_disappearing_messages_like_desktop() {
+    let mut app = demo_app("chat-info-timer");
+    let id = "!tg_rust:beeper.com".to_string();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let msgs: Vec<UiMessage> = {
+        let mut sim = tall(app.view_info());
+        assert!(sim.find("Disappearing messages").is_ok());
+        assert!(sim.find("For added privacy, new messages disappear after the set time.").is_ok());
+        sim.into_messages().collect()
+    };
+    assert!(msgs.is_empty());
+    let _ = app.update(UiMessage::SetDisappearing(id.clone(), 604_800_000));
+    let disappearing = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.chats[st.chat_idx_by_id[&id]].disappearing
+    };
+    assert_eq!(disappearing(&app), Some(604_800_000));
+    let _ = app.update(UiMessage::SetDisappearing(id.clone(), 0));
+    assert_eq!(disappearing(&app), None);
+    app.store.write().features.flags["features"]["*"]["enable-disappearing-message-timer-config"] = false.into();
+    assert!(tall(app.view_info()).find("Disappearing messages").is_err(), "the flag hides the section");
+}
+
+#[test]
+fn timer_labels_like_date_fns() {
+    let labels: Vec<String> = DEFAULT_TIMERS.iter().map(|&ms| crate::timer_label(ms)).collect();
+    assert_eq!(
+        labels,
+        [
+            "10 seconds",
+            "5 minutes",
+            "30 minutes",
+            "1 hour",
+            "4 hours",
+            "1 day",
+            "2 days",
+            "3 days",
+            "7 days",
+            "1 month",
+            "1 year",
+        ]
+    );
+    assert_eq!(crate::timer_label(7_776_000_000), "3 months");
+    assert_eq!(crate::timer_label(0), "Off");
 }
 
 #[test]
@@ -2710,9 +2762,9 @@ fn chat_info_leave_chat_like_desktop() {
         st.update_chat(i, |c| c.member_actions = actions);
     };
     set(&mut app, ALL_MEMBER_ACTIONS & !MEMBER_LEAVE);
-    assert!(simulator(app.view_info()).find("Leave Chat").is_err(), "the room does not support leaving");
+    assert!(tall(app.view_info()).find("Leave Chat").is_err(), "the room does not support leaving");
     set(&mut app, ALL_MEMBER_ACTIONS);
-    let mut sim = simulator(app.view_info());
+    let mut sim = tall(app.view_info());
     let _ = sim.click("Leave Chat").expect("a Leave Chat link");
     assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::AskLeaveChat(c)] if *c == id));
     let _ = app.update(UiMessage::AskLeaveChat(id.clone()));

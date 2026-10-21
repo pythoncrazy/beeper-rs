@@ -861,6 +861,8 @@ impl BeeperStore {
             formatting: ALL_FORMATS,
             files: ALL_FILES,
             polls: Some(BEEPER_POLLS),
+            disappearing: None,
+            timers: None,
             flags: 0,
         };
         self.push_chat(chat, true);
@@ -1067,6 +1069,16 @@ impl BeeperStore {
 
     /// Desktop's `updateGroup` from the Edit Group window: the changed title and description of a group, and its new
     /// avatar (a local URL of the image, the image and its MIME type) or `Some(None)` to remove the avatar.
+    /// Desktop's `updateThread("disappearingTimer")`: a timer in ms, or 0 for Off.
+    pub fn set_disappearing(&mut self, id: &str, timer: u64) {
+        let idx = self.chat_idx_by_id[id];
+        let kind = self.chats[idx].timers.as_ref().expect("the room has disappearing timers").kind.clone();
+        self.update_chat(idx, |c| c.disappearing = Some(timer).filter(|&t| t > 0));
+        let content =
+            if timer == 0 { serde_json::json!({}) } else { serde_json::json!({ "type": kind, "timer": timer }) };
+        self.queue(id, Outgoing::State(DISAPPEARING_TIMER, content));
+    }
+
     pub fn update_group(
         &mut self,
         id: &str,
@@ -1395,6 +1407,8 @@ impl BeeperStore {
             formatting: ALL_FORMATS,
             files: ALL_FILES,
             polls: Some(BEEPER_POLLS),
+            disappearing: None,
+            timers: None,
             flags: 0,
         };
         let idx = self.push_chat(chat, true);
