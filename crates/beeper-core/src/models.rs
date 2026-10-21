@@ -209,10 +209,23 @@ pub struct Account {
     pub user: User,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A Desktop label: a private Matrix space with `com.beeper.label` in its create event.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Label {
     pub id: String,
     pub name: String,
+    /// `com.beeper.label.color`: an index into Desktop's label colors.
+    #[serde(skip)]
+    pub color: Option<u8>,
+    /// `com.beeper.label.icon`.
+    #[serde(skip)]
+    pub icon: Option<String>,
+    /// `com.beeper.muted`.
+    #[serde(skip)]
+    pub muted: bool,
+    /// The chats of the `m.space.child` events with a `via`.
+    #[serde(skip)]
+    pub rooms: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
