@@ -6749,6 +6749,7 @@ impl BeeperGuiApp {
         let (collapsed, collapsible) = if pending.is_empty() { (false, false) } else { self.pane().sched_fold };
         let h24 = st.settings.pref("timeFormat") == 1;
         let fg = p.on_secondary;
+        let bg = if self.wallpaper_fg(st, chat, false).is_some() { p.card.scale_alpha(0.85) } else { p.card };
         let minute = |s: &Scheduled| s.send_on.div_euclid(60_000);
         let list = |v: &[&Scheduled]| -> Vec<El<'a>> {
             let rows = v.iter().enumerate().map(|(i, s)| {
@@ -6775,7 +6776,7 @@ impl BeeperGuiApp {
                         left: 8.0,
                     })
                 });
-                column![].push(date).push(self.view_scheduled_bubble(s)).into()
+                column![].push(date).push(self.view_scheduled_bubble(s, bg)).into()
             });
             rows.collect()
         };
@@ -6806,8 +6807,8 @@ impl BeeperGuiApp {
         Some(col.padding(Padding::ZERO.top(6.0)).into())
     }
 
-    /// A scheduled message like Desktop's `is-scheduled` bubble: white, with a dashed border in the text color.
-    fn view_scheduled_bubble(&self, s: &Scheduled) -> El<'_> {
+    /// A scheduled message like Desktop's `is-scheduled` bubble: `bg`, with a dashed border in the text color.
+    fn view_scheduled_bubble(&self, s: &Scheduled, bg: Color) -> El<'_> {
         let p = &self.pal;
         let fg = if s.canceled { hex(0x808080) } else { p.accent };
         let text = txt(s.text.clone(), 13.0)
@@ -6817,7 +6818,7 @@ impl BeeperGuiApp {
         let bubble = container(text)
             .padding([9.0, BUBBLE_PAD_X])
             .max_width(0.45 * self.pane().size.width)
-            .style(fill_box(p.card, 17.0));
+            .style(fill_box(bg, 17.0));
         let bubble = mouse_area(stack![bubble, dashed::dashes(fg, 17.0)])
             .on_right_press(UiMessage::ScheduledMenu(vec![s.id.clone()], true));
         row![Space::new().width(Fill), bubble].into()
@@ -8231,7 +8232,8 @@ impl BeeperGuiApp {
             let pill = container(body).padding(8).style(bordered_box(fill, edge, 2.0, 17.0));
             let pill = mouse_area(pill).on_press(UiMessage::ShowReplies(q.id.clone()));
             let name = (group && !q_mine).then(|| {
-                container(semi(q.sender_name.clone().expect("sender name"), 12.0).color(p.strong)).padding([0, 11])
+                container(semi(q.sender_name.clone().expect("sender name"), 12.0).color(on_wall.unwrap_or(p.strong)))
+                    .padding([0, 11])
             });
             let col = column![].push(name).push(pill).spacing(4);
             ((!chained).then(|| col.align_x(if q_mine { Right } else { iced::Left })), q_mine)
@@ -8533,6 +8535,7 @@ impl BeeperGuiApp {
             });
             let list = list.push((more > 0).then(|| container(txt(format!("and {more} more"), 13.0)).padding([4, 8])));
             let list = container(list).padding([2, 4]).style(bordered_box(p.menu, p.menu_border, 1.0, 6.0));
+            let ring = if on_wall.is_some() { CLEAR } else { p.card };
             let pills = keys.into_iter().fold(Row::new().spacing(2), |r, k| {
                 let reactors: Vec<_> = m.reactions.iter().filter(|x| x.reaction_key == k).collect();
                 let n = reactors.len();
@@ -8560,7 +8563,7 @@ impl BeeperGuiApp {
                 r.push(
                     button(pill)
                         .padding([6, 7])
-                        .style(bordered_btn([fill, p.selected, p.selected], [p.text; 3], p.card, 2.0, 14.0))
+                        .style(bordered_btn([fill, p.selected, p.selected], [p.text; 3], ring, 2.0, 14.0))
                         .on_press(UiMessage::ToggleReaction(chat.id.clone(), m.id.clone(), k.to_string())),
                 )
             });
@@ -8581,7 +8584,6 @@ impl BeeperGuiApp {
         };
         let parts = column![parts].push(edits).push(footer).align_x(if mine { Right } else { iced::Left });
         let tools = (self.pane().hovered_msg.as_ref() == Some(&m.id)).then(|| {
-            let muted = p.muted;
             let b = |c: char, msg: UiMessage| -> El<'a> {
                 let style = move |_: &Theme, s| button::Style {
                     text_color: match s {
@@ -8631,7 +8633,7 @@ impl BeeperGuiApp {
         let (line, head): (El<'a>, El<'a>) = match quote {
             None => (line, head.into()),
             Some((q, q_mine)) => {
-                let color = p.reply_line;
+                let color = on_wall.unwrap_or(p.reply_line);
                 let bar = || container(Space::new()).width(3).height(Fill).style(fill_box(color, 1.5));
                 let curve = svg(REPLY_CURVE[usize::from(q_mine)].clone())
                     .width(25)
