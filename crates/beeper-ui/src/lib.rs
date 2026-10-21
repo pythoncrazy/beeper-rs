@@ -3179,7 +3179,7 @@ impl BeeperGuiApp {
         }
         let mut st = self.store.write();
         self.leave_chat(&mut st, Some(chat_id));
-        let incognito = st.settings.on("incognito");
+        let incognito = st.incognito();
         let idx = st.resolve_chat_idx(chat_id).expect("selected chat exists");
         self.pane.selected_chat_id = Some(chat_id.to_string());
         if let Some(ev) = (!incognito).then(|| st.mark_chat_read(chat_id, false)).flatten() {
@@ -3326,7 +3326,7 @@ impl BeeperGuiApp {
         let Some(prev) = self.pane().selected_chat_id.as_deref().filter(|&p| Some(p) != next) else { return };
         save_draft(st, self.pane());
         let idx = st.resolve_chat_idx(prev).expect("selected chat exists");
-        if !st.settings.on("incognito") && st.chats[idx].is_marked_unread != Some(true) {
+        if !st.incognito() && st.chats[idx].is_marked_unread != Some(true) {
             st.mark_chat_read(prev, true);
         }
         if self.expired(&st.chats[idx]) {
@@ -3378,7 +3378,7 @@ impl BeeperGuiApp {
         self.pane.suggest = 0;
         let st = self.store.read();
         let new = self.pane.composer.text();
-        let notice = st.matrix.clone().filter(|_| st.settings.on("typingIndicators"));
+        let notice = st.matrix.clone().filter(|_| st.typing_notices());
         let task = notice.zip(self.pane.selected_chat_id.clone()).map(|(client, chat)| {
             Task::perform(beeper_core::matrix::typing(client, chat, !new.is_empty()), UiMessage::Pushed)
         });
@@ -3687,8 +3687,9 @@ impl BeeperGuiApp {
                     .map(|a| UiMessage::SelectAccount(Some(a.clone()))),
             },
             "Toggle Incognito Mode" => {
-                let on = self.store.read().settings.on("incognito");
-                Some(UiMessage::SetPref("incognito", u8::from(!on)))
+                let st = self.store.read();
+                let on = st.settings.on("incognito");
+                st.feature("stealth-mode").on.then_some(UiMessage::SetPref("incognito", u8::from(!on)))
             }
             "Toggle Sidebar" => {
                 self.set_sidebar_hidden(!self.sidebar_hidden);

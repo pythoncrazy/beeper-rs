@@ -1358,6 +1358,16 @@ impl BeeperStore {
         self.features.get(key, self.scheduled.len())
     }
 
+    /// Desktop's `markReadOnResponse`: incognito mode is on, and the account can use it.
+    pub fn incognito(&self) -> bool {
+        self.settings.on("incognito") && self.feature("stealth-mode").on
+    }
+
+    /// Desktop's `showTypingIndicator`: typing notices go out, unless incognito mode turned them off.
+    pub fn typing_notices(&self) -> bool {
+        !self.feature("stealth-mode").on || self.settings.on("typingIndicators")
+    }
+
     /// Desktop's `addRecentEmoji`: move `key` to the front with one more use and keep 100 entries.
     pub fn add_recent_emoji(&mut self, key: &str) {
         let n = self.recent_emoji.iter().position(|(k, _)| k == key).map_or(0, |i| self.recent_emoji.remove(i).1);
