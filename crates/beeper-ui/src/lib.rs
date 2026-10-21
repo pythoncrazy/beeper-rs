@@ -379,6 +379,8 @@ pub enum UiMessage {
     InfoDesc(Option<text_editor::Action>),
     SaveInfoDesc,
     InfoMore,
+    InfoAll,
+    InfoQuery(String),
     Group(GroupEdit),
     /// Opens the New label window with these chats picked.
     OpenCreateLabel(Vec<String>),
@@ -2266,9 +2268,42 @@ const RAIL_MORE: &str = "rail:more";
 
 /// Desktop's sidebar overflow menu (`Plt`): the hidden spaces, then New Label…, Edit Spaces… and Add/Remove Accounts…,
 /// with `None` for a separator.
+/// Desktop's `Fr`: the name of a participant.
+fn member_name(u: &User) -> String {
+    [&u.custom_nickname, &u.full_name, &u.username, &u.email]
+        .into_iter()
+        .find_map(Clone::clone)
+        .or_else(|| u.phone_number.as_deref().map(fmt_phone))
+        .unwrap_or_else(|| u.id.clone())
+}
+
 /// The Chat Info header menus of Desktop's `$fe`: `info:<chat>` has the edit actions and `copy:<chat>`, the menu
 /// of the clicked title, adds "Copy <title>" above them.
 fn info_menu(st: &BeeperStore, key: &str) -> Vec<Option<(String, Option<UiMessage>)>> {
+    if let Some((cid, uid)) = key.strip_prefix("member:").and_then(|k| k.split_once(' ')) {
+        let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
+        let u = c.participants.items.iter().find(|u| u.id == uid).expect("a member of the chat");
+        let copy = |label: &'static str, text: Option<String>| {
+            text.map(|t| Some((tr(label).to_string(), Some(UiMessage::CopyText(t)))))
+        };
+        let username = u.username.as_ref().map(|n| if n.starts_with('@') { n.clone() } else { format!("@{n}") });
+        let call = u.phone_number.as_ref().map(|n| {
+            Some((
+                trx("Call", "button label to start a phone call").to_string(),
+                Some(UiMessage::OpenUrl(format!("tel:{n}"))),
+            ))
+        });
+        return [
+            call,
+            copy("Copy Phone Number", u.phone_number.as_deref().map(fmt_phone)),
+            copy("Copy Email", u.email.clone()),
+            copy("Copy Username", username),
+            copy("Copy Name", u.full_name.clone()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+    }
     let (copy, cid) = match key.strip_prefix("copy:") {
         Some(cid) => (true, cid),
         None => (false, key.strip_prefix("info:").expect("an info menu key")),
@@ -3223,6 +3258,9 @@ pub struct BeeperGuiApp {
     /// The Chat Info group description while it is edited, and whether it shows all of its lines.
     pub info_desc: Option<text_editor::Content>,
     pub info_more: bool,
+    /// Whether the Chat Info Members section shows all of its members, and its search text.
+    pub info_all: bool,
+    pub info_query: String,
     /// The poll votes windows with their chats and poll messages.
     pub vote_windows: Vec<(window::Id, String, String)>,
     /// The window that `BEEPER_SCREENSHOT_EXIT` or `BEEPER_SCREENSHOT_SETTINGS` captures after its next frame.
@@ -3392,6 +3430,8 @@ impl BeeperGuiApp {
             group_window: None,
             info_desc: None,
             info_more: false,
+            info_all: false,
+            info_query: String::new(),
             spaces_window: None,
             vote_windows: Vec::new(),
             shot: None,
@@ -3836,7 +3876,8 @@ impl BeeperGuiApp {
         self.pane.editing_message_id = None;
         self.pane.selected_msgs.clear();
         self.pane.msg_anchor = None;
-        (self.info_desc, self.info_more) = (None, false);
+        (self.info_desc, self.info_more, self.info_all) = (None, false, false);
+        self.info_query.clear();
         let pending = st.scheduled.iter().any(|s| s.chat_id == chat.id && !s.canceled);
         (self.pane.send_later, self.pane.sched_fold, self.pane.sched_menu) = (None, (pending, pending), None);
         self.pane.reply_thread = None;
@@ -5015,6 +5056,8 @@ impl BeeperGuiApp {
                 return self.update(UiMessage::StoreChanged);
             }
             UiMessage::InfoMore => self.info_more ^= true,
+            UiMessage::InfoAll => self.info_all ^= true,
+            UiMessage::InfoQuery(q) => (self.info_all, self.info_query) = (!q.trim().is_empty(), q),
             UiMessage::OpenEditGroup(chat) => {
                 self.chat_menu = None;
                 if let Some(d) = &self.group_window {
@@ -7410,6 +7453,7 @@ impl BeeperGuiApp {
         // The sync task can drop a chat before StoreChanged reaches update.
         let known = |c: &str| {
             let chat = c.strip_prefix("info:").or(c.strip_prefix("copy:")).unwrap_or(c);
+            let chat = chat.strip_prefix("member:").map_or(chat, |k| k.split_once(' ').map_or(k, |k| k.0));
             c == RAIL_MORE
                 || c.starts_with("draft:")
                 || c.starts_with("account:")
@@ -7463,7 +7507,7 @@ impl BeeperGuiApp {
             } else if cid == RAIL_MORE {
                 let items = more_menu(&self.store.read());
                 (233.0, 8.0 + items.iter().map(|i| if i.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>())
-            } else if cid.starts_with("info:") || cid.starts_with("copy:") {
+            } else if ["info:", "copy:", "member:"].iter().any(|k| cid.starts_with(k)) {
                 let items = info_menu(&self.store.read(), cid);
                 (233.0, 8.0 + items.iter().map(|i| if i.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>())
             } else if RAIL_VIEWS.iter().any(|v| cid.strip_prefix("account:") == Some(v.0)) {
@@ -8536,7 +8580,7 @@ impl BeeperGuiApp {
             let col = Column::with_children(items).padding([4, 0]);
             return container(col).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
         }
-        if cid.starts_with("info:") || cid.starts_with("copy:") {
+        if ["info:", "copy:", "member:"].iter().any(|k| cid.starts_with(k)) {
             let items = info_menu(&self.store.read(), cid).into_iter().map(|i| match i {
                 Some((label, msg)) => menu_item(p, None, label, "", msg),
                 None => menu_rule(p),
@@ -10984,30 +11028,115 @@ impl BeeperGuiApp {
             container(Space::new().width(Fill).height(2)).style(fill_box(Color { a: 0.1, ..p.strong }, 0.0)),
             container(toolbar).center_y(46),
         ];
-        let people = chat.participants.items.iter().fold(Column::new().spacing(8), |c, u| {
-            let name = u.custom_nickname.clone().or_else(|| u.full_name.clone()).expect("participant name");
-            c.push(
-                row![
-                    self.face(u.img_url.as_deref(), &name, 28.0, 0.0),
-                    column![txt(name, 13.0).color(p.text)]
-                        .push(u.phone_number.clone().map(|ph| txt(ph, 11.0).color(p.sub)))
-                ]
-                .spacing(10)
-                .align_y(Center),
-            )
-        });
-        let body = column![header]
-            .push(desc)
-            .push(
-                column![med(format!("{} participants", chat.participants.total), 12.0).color(p.weak), people]
-                    .spacing(8)
-                    .padding(8),
-            )
-            .padding(Padding::new(8.0).top(0.0));
+        let members = (chat.chat_type == "group").then(|| self.view_members(chat));
+        let body = column![header].push(desc).push(members).padding(Padding::new(8.0).top(0.0));
         let scroll = scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill);
         container(container(column![pane_head, scroll, toolbar]).width(300).height(Fill).style(fill_box(p.card, 10.0)))
             .padding(Padding::new(8.0).left(0.0))
             .into()
+    }
+
+    /// Desktop's `YNt` Members section of a group, with its first six members and a search above more than six.
+    fn view_members<'a>(&'a self, chat: &Chat) -> El<'a> {
+        let p = &self.pal;
+        let shade = Color { a: 0.1, ..p.strong };
+        let named = |u: &User| {
+            let full = u.full_name.as_deref();
+            u.custom_nickname.is_some()
+                || u.username.is_some()
+                || full.is_some_and(|f| {
+                    !u.phone_number.as_deref().is_some_and(|n| phone_digits(f) == phone_digits(n))
+                        && u.email.as_deref() != Some(f)
+                })
+        };
+        let mut all: Vec<&User> = chat.participants.items.iter().collect();
+        all.sort_by_cached_key(|u| {
+            (u.is_self != Some(true), u.is_admin != Some(true), !named(u), member_name(u).to_lowercase())
+        });
+        let q = self.info_query.trim().to_lowercase();
+        let hit = |u: &&User| {
+            let fields = [&u.full_name, &u.custom_nickname, &u.username, &u.phone_number, &u.email];
+            q.is_empty() || fields.iter().filter_map(|f| f.as_deref()).any(|f| f.to_lowercase().contains(&q))
+        };
+        let rows: Vec<&User> = all.iter().copied().filter(hit).collect();
+        let expandable = rows.len() > 6;
+        let searchable = all.len() > 6;
+        let shown = if self.info_all { rows.len() } else { rows.len().min(6) };
+        let row = |u: &User| -> El<'a> {
+            let you = (u.is_self == Some(true))
+                .then(|| format!(" {}", trx("(You)", "tag shown next to the current user in participant list")));
+            let tag = (u.is_admin == Some(true)).then(|| trx("Admin", "group participant status tag"));
+            let tag_w = tag.map_or(0.0, |t| crate::style::text_width(t, 10.0, Weight::Semibold) + 10.0);
+            let you_w = you.as_deref().map_or(0.0, |y| crate::style::text_width(y, 13.0, Weight::Normal));
+            let name = member_name(u);
+            let label = row![ell(&name, 224.0 - tag_w - you_w, 13.0, Weight::Semibold)
+                .line_height(Pixels(16.0))
+                .color(p.strong)]
+            .push(you.map(|y| txt(y, 13.0).line_height(Pixels(16.0)).color(p.strong)));
+            let line = row![self.face(u.img_url.as_deref(), &name, 28.0, 0.0), label]
+                .push(Space::new().width(Fill))
+                .push(tag.map(|t| {
+                    container(crate::style::t(t, 10.0, Weight::Semibold).line_height(Pixels(12.0)).color(p.strong))
+                        .padding([2, 4])
+                        .style(fill_box(p.card, 4.0))
+                }))
+                .spacing(8)
+                .align_y(Center);
+            let menu = UiMessage::OpenChatMenu(format!("member:{} {}", chat.id, u.id));
+            let btn = button(line).padding(4).width(Fill).style(btn_style([CLEAR, shade, shade], [p.strong; 3], 8.0));
+            mouse_area(btn.on_press(UiMessage::Noop)).on_right_press(menu).into()
+        };
+        let search = searchable.then(|| {
+            let n = all.len();
+            let input =
+                text_input(&trn("Search %d group member", "Search %d group members", n, &[&n]), &self.info_query)
+                    .on_input(UiMessage::InfoQuery)
+                    .size(13)
+                    .line_height(Pixels(16.0))
+                    .padding([10, 12])
+                    .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
+            let clear = (!self.info_query.is_empty()).then(|| {
+                button(ic(icon::CLOSE, 20.0).color(p.sub))
+                    .padding(0)
+                    .style(btn_style([CLEAR; 3], [p.sub; 3], 0.0))
+                    .on_press(UiMessage::InfoQuery(String::new()))
+            });
+            let bar = row![ic(icon::SEARCH, 20.0).color(p.sub), input].push(clear).align_y(Center).padding([0, 8]);
+            container(bar).padding(Padding::ZERO.top(8.0))
+        });
+        let toggle_label = if self.info_all { tr("Show less") } else { tr("Show all") };
+        let toggle = expandable.then(|| {
+            let chevron: El = match self.info_all {
+                true => tinted(&MAT_EXPAND_LESS, 20.0, p.strong),
+                false => ic(icon::EXPAND_MORE, 20.0).color(p.strong).into(),
+            };
+            let face = row![semi(toggle_label, 13.0).line_height(Pixels(16.0)), chevron].align_y(Center);
+            button(container(face).center_x(Fill))
+                .padding(2)
+                .style(btn_style([CLEAR; 3], [p.strong; 3], 9999.0))
+                .on_press(UiMessage::InfoAll)
+        });
+        let list = Column::new()
+            .push(search)
+            .extend(rows[..shown].iter().map(|u| row(u)))
+            .push(toggle)
+            .spacing(6)
+            .padding(if searchable { Padding::new(8.0).top(0.0) } else { Padding::new(8.0) });
+        let less = (expandable && self.info_all).then(|| {
+            button(semi(tr("Show less"), 11.0).line_height(Pixels(14.0)).color(p.accent))
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                .on_press(UiMessage::InfoAll)
+        });
+        let head = row![txt(tr("Members"), 11.0).line_height(Pixels(14.0)).color(p.strong), Space::new().width(Fill)]
+            .push(less)
+            .align_y(Center)
+            .padding(8);
+        let head: El = match expandable {
+            true => mouse_area(head).on_press(UiMessage::InfoAll).into(),
+            false => head.into(),
+        };
+        column![head, container(list).style(fill_box(p.chip, 10.0))].into()
     }
 
     fn view_command_palette<'a>(&'a self) -> El<'a> {

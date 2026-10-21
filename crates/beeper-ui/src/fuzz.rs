@@ -2611,6 +2611,43 @@ fn chat_info_description_like_desktop() {
 }
 
 #[test]
+fn chat_info_members_like_desktop() {
+    let mut app = demo_app("chat-info-members");
+    let id = "!tg_rust:beeper.com".to_string();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let has = |app: &BeeperGuiApp, label: &str| simulator(app.view_info()).find(label).is_ok();
+    assert!(has(&app, "Members") && !has(&app, "Show all"), "three members fit");
+    {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&id).expect("the group");
+        st.update_chat(i, |c| {
+            let base = c.participants.items[0].clone();
+            let extra = (0..5).map(|n| User {
+                id: format!("@m{n}:beeper.local"),
+                full_name: Some(format!("Member {n}")),
+                phone_number: (n == 0).then(|| "+15550100".into()),
+                email: None,
+                is_self: Some(false),
+                ..base.clone()
+            });
+            c.participants.items.extend(extra);
+        });
+    }
+    assert!(has(&app, "Search 8 group members") && has(&app, "Show all"));
+    assert!(!has(&app, "Member 4"), "the section shows six members");
+    let _ = app.update(UiMessage::InfoAll);
+    assert!(has(&app, "Member 4") && has(&app, "Show less"));
+    let _ = app.update(UiMessage::InfoAll);
+    let _ = app.update(UiMessage::InfoQuery("member 4".into()));
+    assert!(has(&app, "Member 4") && !has(&app, "Member 3"), "the search filters the members");
+    let _ = app.update(UiMessage::OpenChatMenu(format!("member:{id} @m0:beeper.local")));
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find("Call").is_ok() && sim.find("Copy Phone Number").is_ok() && sim.find("Copy Email").is_err());
+    let _ = sim.click("Copy Name").expect("the menu copies the name");
+    assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::CopyText(t)] if t == "Member 0"));
+}
+
+#[test]
 fn edit_group_like_desktop() {
     let mut app = demo_app("edit-group");
     let id = "!tg_rust:beeper.com".to_string();
