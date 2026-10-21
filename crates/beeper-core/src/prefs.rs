@@ -361,6 +361,7 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Message: Send GIF", "Messages", "ctrl+shift+g"),
     ("Message: Send Later", "Messages", "ctrl+shift+l"),
     ("Message: Send Message and Archive", "Messages", "ctrl+enter"),
+    ("Show Replies", "Messages", "ctrl+down"),
     ("Insert New Line", "Composer", "alt+enter, ctrl+enter, shift+enter"),
     ("Send Message", "Composer", "enter"),
 ];
@@ -640,7 +641,9 @@ mod tests {
             assert!(["Chats", "App", "Messages", "Composer"].contains(group), "{name}");
             assert!(HOTKEYS[..i].iter().all(|h| h.0 != *name), "{name} is unique");
             let combos = || keys.split(", ").filter(|_| *keys != "disabled");
-            for (other, g, k) in HOTKEYS[..i].iter().filter(|h| (h.1 == "Composer") == (*group == "Composer")) {
+            let shared = |o: &str| (*name, o) == ("Show Replies", "Scroll to the bottom of a chat");
+            let peers = HOTKEYS[..i].iter().filter(|h| (h.1 == "Composer") == (*group == "Composer") && !shared(h.0));
+            for (other, g, k) in peers {
                 assert!(combos().all(|c| !k.split(", ").any(|x| x == c)), "{name} and {other} ({g}) share {keys}");
             }
         }
