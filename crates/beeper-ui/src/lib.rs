@@ -484,8 +484,6 @@ pub enum UiMessage {
     /// Runs the messages in order.
     Commands(Vec<UiMessage>),
     CommandHighlight(usize),
-    NicknameChanged(String),
-    SaveNickname,
     ToggleFilterMenu,
     FilterButton,
     PickFilter(u8),
@@ -2264,6 +2262,22 @@ const RAIL_MORE: &str = "rail:more";
 
 /// Desktop's sidebar overflow menu (`Plt`): the hidden spaces, then New Label…, Edit Spaces… and Add/Remove Accounts…,
 /// with `None` for a separator.
+/// The Chat Info header menus of Desktop's `$fe`: `info:<chat>` has the edit actions and `copy:<chat>`, the menu
+/// of the clicked title, adds "Copy <title>" above them.
+fn info_menu(st: &BeeperStore, key: &str) -> Vec<Option<(String, Option<UiMessage>)>> {
+    let (copy, cid) = match key.strip_prefix("copy:") {
+        Some(cid) => (true, cid),
+        None => (false, key.strip_prefix("info:").expect("an info menu key")),
+    };
+    let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
+    let group = can_edit_group(c).then(|| {
+        (tr("Edit Group").to_string(), (c.is_request != Some(true)).then(|| UiMessage::OpenEditGroup(c.id.clone())))
+    });
+    let theme = Some((tr("Chat Theme").to_string(), Some(UiMessage::OpenChatTheme(c.id.clone()))));
+    let title = copy.then(|| Some((trf("Copy %s", &[&c.title]), Some(UiMessage::CopyText(c.title.clone())))));
+    title.into_iter().chain(copy.then_some(None)).chain([group, theme].into_iter().flatten().map(Some)).collect()
+}
+
 fn more_menu(st: &BeeperStore) -> Vec<Option<(String, UiMessage)>> {
     let unread = st.chats.iter().any(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0);
     let hidden = hidden_spaces(st);
@@ -3131,7 +3145,6 @@ pub struct BeeperGuiApp {
     pub new_chat_expanded: bool,
     pub new_chat_chats_expanded: bool,
     pub join_matrix_mode: bool,
-    pub nickname_edit_buffer: String,
     pub recovery_code_input: String,
     pub devices: Option<Result<Vec<DeviceInfo>, String>>,
     pub confirm: Option<u8>,
@@ -3320,7 +3333,6 @@ impl BeeperGuiApp {
             new_chat_expanded: false,
             new_chat_chats_expanded: false,
             join_matrix_mode: false,
-            nickname_edit_buffer: String::new(),
             recovery_code_input: String::new(),
             devices: None,
             mics: None,
@@ -3811,13 +3823,6 @@ impl BeeperGuiApp {
         let chat = st.chats[idx].clone();
         self.pane.composer = composer_with(chat.draft.as_ref().and_then(|d| d.text.as_deref()).unwrap_or_default());
         self.pane.history = History::default();
-        self.nickname_edit_buffer = chat
-            .participants
-            .items
-            .iter()
-            .find(|u| u.is_self != Some(true))
-            .and_then(|u| u.custom_nickname.clone().or_else(|| u.full_name.clone()))
-            .unwrap_or_default();
         self.pane.reply_to_message_id = None;
         self.pane.editing_message_id = None;
         self.pane.selected_msgs.clear();
@@ -5576,17 +5581,6 @@ impl BeeperGuiApp {
             }
             UiMessage::AskDeleteMessage(mid) => {
                 (self.confirm, self.delete_target) = (Some(ASK_DELETE_MESSAGE), Some(mid))
-            }
-            UiMessage::NicknameChanged(v) => self.nickname_edit_buffer = v,
-            UiMessage::SaveNickname => {
-                let cid = self.pane.selected_chat_id.clone().expect("a chat is selected");
-                let mut st = self.store.write();
-                let idx = st.resolve_chat_idx(&cid).expect("selected chat exists");
-                let other = st.chats[idx].participants.items.iter().find(|u| u.is_self != Some(true));
-                if let Some(uid) = other.map(|u| u.id.clone()) {
-                    let nick = Some(self.nickname_edit_buffer.trim().to_string()).filter(|n| !n.is_empty());
-                    st.set_user_nickname(&cid, &uid, nick);
-                }
             }
             UiMessage::ToggleCommandPalette => {
                 if !self.show_command_palette {
@@ -7390,7 +7384,11 @@ impl BeeperGuiApp {
         let st = self.store.read();
         // The sync task can drop a chat before StoreChanged reaches update.
         let known = |c: &str| {
-            c == RAIL_MORE || c.starts_with("draft:") || c.starts_with("account:") || st.resolve_chat_idx(c).is_some()
+            let chat = c.strip_prefix("info:").or(c.strip_prefix("copy:")).unwrap_or(c);
+            c == RAIL_MORE
+                || c.starts_with("draft:")
+                || c.starts_with("account:")
+                || st.resolve_chat_idx(chat).is_some()
         };
         let shown = self.pane().selected_chat_id.as_deref().is_some_and(known);
         let open = self.creating_chat.is_none() && shown;
@@ -7439,6 +7437,9 @@ impl BeeperGuiApp {
                 (124.0, 31.0)
             } else if cid == RAIL_MORE {
                 let items = more_menu(&self.store.read());
+                (233.0, 8.0 + items.iter().map(|i| if i.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>())
+            } else if cid.starts_with("info:") || cid.starts_with("copy:") {
+                let items = info_menu(&self.store.read(), cid);
                 (233.0, 8.0 + items.iter().map(|i| if i.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>())
             } else if RAIL_VIEWS.iter().any(|v| cid.strip_prefix("account:") == Some(v.0)) {
                 (233.0, 8.0 + 4.0 * MENU_ITEM)
@@ -8505,6 +8506,14 @@ impl BeeperGuiApp {
         if cid == RAIL_MORE {
             let items = more_menu(&self.store.read()).into_iter().map(|i| match i {
                 Some((label, msg)) => menu_item(p, None, label, "", Some(msg)),
+                None => menu_rule(p),
+            });
+            let col = Column::with_children(items).padding([4, 0]);
+            return container(col).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
+        }
+        if cid.starts_with("info:") || cid.starts_with("copy:") {
+            let items = info_menu(&self.store.read(), cid).into_iter().map(|i| match i {
+                Some((label, msg)) => menu_item(p, None, label, "", msg),
                 None => menu_rule(p),
             });
             let col = Column::with_children(items).padding([4, 0]);
@@ -10765,45 +10774,117 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let cid = self.pane().selected_chat_id.clone().expect("a chat is selected");
         let chat = &st.chats[st.resolve_chat_idx(&cid).expect("selected chat exists")];
-        let action = |c: char, label: &'static str, msg: UiMessage| {
-            button(
-                column![ic(c, 16.0).color(p.text), txt(label, 11.0).color(p.sub)].spacing(4).align_x(Center).width(52),
-            )
-            .padding([8, 0])
-            .style(btn_style([p.hover, p.selected, p.selected], [p.text; 3], 10.0))
-            .on_press(msg)
+        let on = |v: Option<bool>| v == Some(true);
+        let flag = |f: ChatFlag| UiMessage::ToggleFlag(cid.clone(), f);
+        let pane_btn = |glyph: char, pressed: bool, label: &'static str, msg: Option<UiMessage>| -> El<'_> {
+            let (bg, fg) = if pressed { (p.accent, Color::WHITE) } else { (CLEAR, p.strong) };
+            let btn = button(container(ic(glyph, 16.0)).center(28))
+                .padding(0)
+                .style(btn_style([bg, if pressed { bg } else { p.chip }, bg], [fg; 3], 8.0))
+                .on_press_maybe(msg);
+            self.tip(btn.into(), label, vec![], tooltip::Position::Bottom).into()
         };
-        let actions = row![
-            action(
-                icon::KEEP,
-                if chat.is_pinned == Some(true) { tr("Unpin") } else { tr("Pin") },
-                UiMessage::ToggleFlag(cid.clone(), ChatFlag::Pinned)
-            ),
-            action(
+        let locked = on(chat.is_request);
+        let pane_head = row![
+            pane_btn(
                 icon::NOTIFICATIONS_OFF,
-                if chat.is_muted == Some(true) { tr("Unmute") } else { tr("Mute") },
-                UiMessage::ToggleFlag(cid.clone(), ChatFlag::Muted)
+                on(chat.is_muted),
+                tr("Mute Chat"),
+                (!locked).then(|| flag(ChatFlag::Muted))
             ),
-            action(
-                icon::ARCHIVE,
-                if chat.is_archived == Some(true) {
-                    tr("Unarchive")
-                } else {
-                    trx("Archive", "button label to archive chat")
-                },
-                UiMessage::ToggleFlag(cid.clone(), ChatFlag::Archived)
-            ),
+            pane_btn(icon::KEEP, on(chat.is_pinned), tr("Pin Chat"), Some(flag(ChatFlag::Pinned))),
+            Space::new().width(Fill),
+            pane_btn(icon::CLOSE, false, tr("Close Chat Info"), Some(UiMessage::ToggleRightPanel)),
         ]
-        .spacing(4);
-        let nickname = (chat.chat_type == "single" && chat.id != NOTE_CHAT_ID).then(|| {
-            let input = text_input("Nickname", &self.nickname_edit_buffer)
-                .on_input(UiMessage::NicknameChanged)
-                .on_submit(UiMessage::SaveNickname)
-                .size(13)
-                .padding([7, 10])
-                .style(input_style(p.input, p.strong, p.sub, p.accent, 8.0));
-            column![med("Nickname", 12.0).color(p.weak), input].spacing(6)
+        .spacing(4)
+        .padding([0, 4])
+        .height(36)
+        .align_y(Center);
+        let edits = info_menu(&st, &format!("info:{cid}"));
+        let edit = match &edits[..] {
+            [Some((_, msg))] => msg.clone(),
+            _ => edits.iter().flatten().any(|i| i.1.is_some()).then(|| UiMessage::OpenChatMenu(format!("info:{cid}"))),
+        };
+        let edit = button(semi(trx("Edit", "chat info edit button"), 11.0).color(p.accent))
+            .padding(0)
+            .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+            .on_press_maybe(edit);
+        let copy = UiMessage::OpenChatMenu(format!("copy:{cid}"));
+        let title = mouse_area(
+            button(semi(chat.title.clone(), 15.0).color(p.strong).center())
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
+                .on_press(copy.clone()),
+        )
+        .on_right_press(copy);
+        let meta = |s: String| txt(s, 11.0).color(Color { a: 0.6, ..p.strong });
+        let other =
+            chat.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| chat.chat_type == "single");
+        let contact = other.map(|u| {
+            row![]
+                .push(u.username.as_ref().map(|n| meta(if n.starts_with('@') { n.clone() } else { format!("@{n}") })))
+                .push(u.phone_number.as_deref().map(|n| meta(fmt_phone(n))))
+                .push(u.email.clone().map(meta))
         });
+        let details = column![self.chat_avatar(chat, 64.0, 1.25), title]
+            .push(contact)
+            .push(meta(network_name(&chat.account_id).to_string()))
+            .spacing(4)
+            .align_x(Center)
+            .width(Fill);
+        let header = mouse_area(stack![
+            container(details).padding(Padding::new(16.0).bottom(8.0)),
+            container(edit).align_right(Fill).padding(Padding::ZERO.top(12.0).right(8.0)),
+        ])
+        .on_right_press(UiMessage::OpenChatMenu(format!("info:{cid}")));
+        let archived = on(chat.is_archived);
+        let pinned = !archived && on(chat.is_pinned);
+        let tool = |glyph: char, fg: Color, label: &'static str, keys, msg: Option<UiMessage>| -> El<'_> {
+            let style = move |_: &Theme, s: button::Status| button::Style {
+                text_color: if matches!(s, button::Status::Disabled) { fg.scale_alpha(0.2) } else { fg },
+                ..Default::default()
+            };
+            let btn = button(container(ic(glyph, 20.0)).center_x(Fill)).padding(6).width(Fill).style(style);
+            let tip = self.tip(btn.on_press_maybe(msg).into(), label, keys, tooltip::Position::Top);
+            container(tip).center_x(Fill).into()
+        };
+        let toolbar = row![
+            tool(
+                if archived { icon::INBOX } else { icon::ARCHIVE },
+                p.strong,
+                match (pinned, archived) {
+                    (true, _) => tr("Pinned chats can't be archived"),
+                    (false, true) => trx("Unarchive", "button label to unarchive chat"),
+                    (false, false) => trx("Archive", "button label to archive chat"),
+                },
+                vec!["Ctrl", "E"],
+                (!pinned && !locked).then(|| flag(ChatFlag::Archived)),
+            ),
+            match chat.reminder.is_some() {
+                true => tool(
+                    icon::SCHEDULE,
+                    ORANGE,
+                    tr("Dismiss Reminder"),
+                    vec!["Ctrl", "L"],
+                    Some(UiMessage::SetReminder(cid.clone(), None)),
+                ),
+                false => tool(
+                    icon::SCHEDULE,
+                    p.strong,
+                    tr("Remind Me"),
+                    vec!["Ctrl", "L"],
+                    Some(UiMessage::OpenChatMenu(cid.clone())),
+                ),
+            },
+            tool(icon::SEARCH, p.strong, tr("Search"), vec!["Ctrl", "F"], Some(UiMessage::SearchRoom(cid.clone()))),
+            tool(icon::EXPAND_MORE, p.strong, tr("More Options"), vec![], Some(UiMessage::OpenChatMenu(cid.clone()))),
+        ]
+        .align_y(Center)
+        .padding([8, 12]);
+        let toolbar = column![
+            container(Space::new().width(Fill).height(2)).style(fill_box(Color { a: 0.1, ..p.strong }, 0.0)),
+            container(toolbar).center_y(46),
+        ];
         let people = chat.participants.items.iter().fold(Column::new().spacing(8), |c, u| {
             let name = u.custom_nickname.clone().or_else(|| u.full_name.clone()).expect("participant name");
             c.push(
@@ -10816,37 +10897,17 @@ impl BeeperGuiApp {
                 .align_y(Center),
             )
         });
-        let edit = button(semi(trx("Edit", "chat info edit button"), 12.0).color(p.accent))
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
-            .on_press(UiMessage::OpenChatTheme(cid.clone()));
         let body = column![
-            closable_head(p, tr("Chat Info"), 13.0, UiMessage::ToggleRightPanel),
-            stack![
-                column![
-                    self.chat_avatar(chat, 64.0, 1.25),
-                    semi(chat.title.clone(), 15.0).color(p.strong),
-                    txt(network_name(&chat.account_id), 12.0).color(p.sub)
-                ]
-                .spacing(6)
-                .align_x(Center)
-                .width(Fill),
-                container(edit).align_right(Fill),
-            ],
-            actions,
+            header,
+            column![med(format!("{} participants", chat.participants.total), 12.0).color(p.weak), people]
+                .spacing(8)
+                .padding(8),
         ]
-        .push(nickname)
-        .push(column![med(format!("{} participants", chat.participants.total), 12.0).color(p.weak), people].spacing(8))
-        .spacing(16)
-        .padding(16);
-        container(
-            container(scrollable(body).direction(bar()).style(scroll_style(p.scroll)))
-                .width(300)
-                .height(Fill)
-                .style(fill_box(p.card, 10.0)),
-        )
-        .padding(Padding::new(8.0).left(0.0))
-        .into()
+        .padding(Padding::new(8.0).top(0.0));
+        let scroll = scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill);
+        container(container(column![pane_head, scroll, toolbar]).width(300).height(Fill).style(fill_box(p.card, 10.0)))
+            .padding(Padding::new(8.0).left(0.0))
+            .into()
     }
 
     fn view_command_palette<'a>(&'a self) -> El<'a> {

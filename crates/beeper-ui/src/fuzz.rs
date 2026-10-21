@@ -2540,6 +2540,42 @@ fn reply_privately_like_desktop() {
 }
 
 #[test]
+fn chat_info_header_like_desktop() {
+    let mut app = demo_app("chat-info");
+    let id = "!tg_rust:beeper.com".to_string();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let set_edits = |app: &mut BeeperGuiApp, edits: u8| {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&id).expect("the group");
+        st.update_chat(i, |c| c.edits = edits);
+    };
+    let click = |app: &BeeperGuiApp, label: &str| -> Vec<UiMessage> {
+        let mut sim = simulator(app.view_info());
+        let _ = sim.click(label).expect(label);
+        sim.into_messages().collect()
+    };
+    set_edits(&mut app, 0);
+    assert!(matches!(&click(&app, "Edit")[..], [UiMessage::OpenChatTheme(c)] if *c == id), "one action runs at once");
+    set_edits(&mut app, ALL_EDITS);
+    let menu = format!("info:{id}");
+    assert!(matches!(&click(&app, "Edit")[..], [UiMessage::OpenChatMenu(k)] if *k == menu));
+    let _ = app.update(UiMessage::OpenChatMenu(menu));
+    {
+        let mut sim = simulator(app.view_main());
+        assert!(sim.find("Edit Group").is_ok() && sim.find("Chat Theme").is_ok());
+        assert!(sim.find("Copy Beeper Rust Core Team").is_err(), "the Edit menu has no copy item");
+    }
+    let copy = format!("copy:{id}");
+    assert!(matches!(&click(&app, "Beeper Rust Core Team")[..], [UiMessage::OpenChatMenu(k)] if *k == copy));
+    let _ = app.update(UiMessage::OpenChatMenu(copy));
+    let mut sim = simulator(app.view_main());
+    let _ = sim.click("Copy Beeper Rust Core Team").expect("the title menu copies the title");
+    assert!(
+        matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::CopyText(t)] if t == "Beeper Rust Core Team")
+    );
+}
+
+#[test]
 fn edit_group_like_desktop() {
     let mut app = demo_app("edit-group");
     let id = "!tg_rust:beeper.com".to_string();

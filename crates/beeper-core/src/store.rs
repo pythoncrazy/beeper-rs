@@ -1704,20 +1704,6 @@ impl BeeperStore {
         had_unread.then_some(last_event).flatten()
     }
 
-    pub fn set_user_nickname(&mut self, chat_or_local_id: &str, user_id: &str, nickname: Option<String>) {
-        let idx = self.resolve_chat_idx(chat_or_local_id).expect("chat exists");
-        self.update_chat(idx, |c| {
-            c.participants
-                .items
-                .iter_mut()
-                .filter(|p| p.id == user_id)
-                .for_each(|p| p.custom_nickname = nickname.clone());
-            if let (Some(nick), "single") = (&nickname, c.chat_type.as_str()) {
-                c.title = nick.clone();
-            }
-        });
-    }
-
     pub fn stale_inbox_chats(&self) -> Vec<usize> {
         let only_read = self.settings.pref("archiveScope") == 1;
         let days = crate::prefs::ARCHIVE_AGE_DAYS[self.settings.pref("archiveAge") as usize];
