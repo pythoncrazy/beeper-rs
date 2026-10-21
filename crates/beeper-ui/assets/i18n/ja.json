@@ -645,6 +645,7 @@
 "Unable to load microphones.":["マイクを読み込めません。"],
 "Unanswered":["未回答"],
 "Unarchive":["アーカイブを解除"],
+"Undo Pending Send":["保留中の送信を取り消す"],
 "Unknown":["不明"],
 "Unknown Client":["不明なクライアント"],
 "Unmute":["ミュート解除"],

@@ -1171,6 +1171,42 @@ fn a_sent_link_keeps_its_preview() {
 }
 
 #[test]
+fn undo_send_like_desktop() {
+    use iced::keyboard::{Key, Modifiers};
+    let mut app = demo_app("undo-send");
+    app.store.write().features.flags["features"]["*"]["undo-send"] = true.into();
+    let _ = app.update(UiMessage::SetPref("undoSendDelay", 1));
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let send = |app: &mut BeeperGuiApp, text: &str| {
+        let edit = text_editor::Edit::Paste(Arc::new(text.into()));
+        let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
+        let _ = app.update(UiMessage::SubmitComposer);
+        app.store.read().messages.last().unwrap().id.clone()
+    };
+    let count = |app: &BeeperGuiApp| app.store.read().chat_msg_indices[NOTE_CHAT_ID].len();
+    let before = count(&app);
+    send(&mut app, "oops");
+    assert_eq!((count(&app), app.queued.len()), (before + 1, 1), "the message waits");
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("z".into()), Modifiers::COMMAND));
+    assert_eq!(count(&app), before, "Ctrl Z takes the message back");
+    assert_eq!(app.pane.composer.text().trim(), "oops", "the composer has the text again");
+    let _ = app.update(UiMessage::SetPref("undoOnPendingClick", 1));
+    let id = send(&mut app, "");
+    let _ = app.update(UiMessage::ClickMessage(id));
+    assert_eq!((count(&app), app.pane.composer.text().trim()), (before, "oops"), "a click on the message undoes");
+    send(&mut app, "");
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("Z".into()), Modifiers::COMMAND | Modifiers::SHIFT));
+    assert!(app.queued.is_empty() && count(&app) == before + 1, "Ctrl Shift Z sends now");
+    send(&mut app, "later");
+    app.queued[0].due = 0;
+    let _ = app.update(UiMessage::SendQueued(None));
+    assert!(app.queued.is_empty(), "the delay sends");
+    app.store.write().features.flags["features"]["*"]["undo-send"] = false.into();
+    send(&mut app, "now");
+    assert!(app.queued.is_empty(), "the free plan sends at once");
+}
+
+#[test]
 fn plus_rows_follow_the_feature_flags() {
     let mut app = demo_app("features");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));

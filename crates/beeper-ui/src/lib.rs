@@ -280,6 +280,10 @@ pub enum UiMessage {
     VotePoll(String, String),
     ToggleAttachMenu,
     TogglePicker(Picker),
+    /// Desktop's `undoSend` in the open chat.
+    UndoSend,
+    /// Desktop's `sendQueuedMessages`: the sends of a chat, or the sends that are due.
+    SendQueued(Option<String>),
     Emoji(emoji::EmojiMsg),
     Upserted(Box<Message>),
     ChatUpserted(Box<Chat>),
@@ -612,6 +616,20 @@ impl SettingsHit {
             Self::Network(name) => name.into(),
         }
     }
+}
+
+/// The name of a key in the hotkey combinations.
+fn hotkey_key(key: &Key) -> Option<String> {
+    Some(match key.as_ref() {
+        Key::Character(c) => c.to_lowercase(),
+        Key::Named(Named::ArrowUp) => "up".into(),
+        Key::Named(Named::ArrowDown) => "down".into(),
+        Key::Named(Named::ArrowLeft) => "left".into(),
+        Key::Named(Named::ArrowRight) => "right".into(),
+        Key::Named(Named::Enter) => "enter".into(),
+        Key::Named(Named::Tab) => "tab".into(),
+        _ => return None,
+    })
 }
 
 /// Desktop's hotkey list hides the hotkeys of the features that the account does not show.
@@ -1196,6 +1214,17 @@ fn round_avatar(bytes: &[u8]) -> Result<image::Handle, String> {
 /// Image frames with their delays in milliseconds; a still image has one frame.
 pub type Frames = Vec<(image::Handle, u128)>;
 type Png = (Vec<u8>, (u32, u32));
+
+/// Desktop's `queuedPendingMessages`: the sends of a chat that wait for "Allow undo send", and the composer to
+/// restore on undo.
+struct Queued {
+    chat: String,
+    due: i64,
+    sends: Vec<(String, Outgoing)>,
+    text: String,
+    reply_to: Option<String>,
+    files: Vec<PendingMedia>,
+}
 
 #[derive(Clone)]
 pub struct PendingMedia {
@@ -2575,6 +2604,7 @@ pub struct BeeperGuiApp {
     reminder_menu: Option<Point>,
     audio: voice::Player,
     recorder: Option<record::Recorder>,
+    queued: Vec<Queued>,
     /// The system microphone and the other inputs, listed when General settings open.
     mics: Option<Result<(String, Vec<String>), String>>,
     pub show_command_palette: bool,
@@ -2720,6 +2750,7 @@ impl BeeperGuiApp {
             reminder_menu: None,
             audio: Default::default(),
             recorder: None,
+            queued: Vec::new(),
             selection: Vec::new(),
             selection_menu: None,
             show_command_palette: false,
@@ -3336,6 +3367,11 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's reaction to new composer text: the typing notice and link previews.
+    /// Whether the open chat has sends that wait for "Allow undo send".
+    fn queued_here(&self) -> bool {
+        self.queued.iter().any(|q| Some(&q.chat) == self.pane().selected_chat_id.as_ref())
+    }
+
     fn composer_effects(&mut self) -> Task<UiMessage> {
         self.pane.selected_msgs.clear();
         self.pane.link_dialog = None;
@@ -3383,6 +3419,11 @@ impl BeeperGuiApp {
         } else {
             let mut reply_to = self.pane.reply_target();
             let files = std::mem::take(&mut self.pane.attachments);
+            let delay =
+                st.feature("undo-send").on.then(|| prefs::UNDO_SEND_MS[usize::from(st.settings.pref("undoSendDelay"))]);
+            let delay = delay.filter(|&ms| ms > 0);
+            let restore = delay.map(|_| (text.clone(), reply_to.clone(), files.clone()));
+            let mut sends = Vec::new();
             let caption = (!text.is_empty() && files.len() == 1).then(|| text.clone());
             if !text.is_empty() && caption.is_none() {
                 let urls = text_urls(&text);
@@ -3398,7 +3439,7 @@ impl BeeperGuiApp {
                     let i = st.msg_idx_by_id[&txn];
                     st.update_message(i, |m| m.links = vec![link]);
                 }
-                st.queue(&chat_id, Outgoing::Send { txn, text, reply_to: reply_to.take(), preview });
+                sends.push((txn.clone(), Outgoing::Send { txn, text, reply_to: reply_to.take(), preview }));
             }
             for PendingMedia { bytes, name, mime, is_gif, size, frames } in files {
                 let image = !frames.is_empty();
@@ -3420,10 +3461,22 @@ impl BeeperGuiApp {
                     st.send_message(&chat_id, caption.clone(), reply_to.clone(), Some(att)).expect("send media");
                 let info = if image { MediaInfo::Image(size.0, size.1) } else { MediaInfo::File };
                 let caption = caption.clone();
-                st.queue(
-                    &chat_id,
-                    Outgoing::Media { txn, bytes, name, mime, info, caption, reply_to: reply_to.take() },
-                );
+                let out =
+                    Outgoing::Media { txn: txn.clone(), bytes, name, mime, info, caption, reply_to: reply_to.take() };
+                sends.push((txn, out));
+            }
+            // Desktop's `queuePendingMessages` sends the earlier queue of the chat first.
+            if let Some(i) = self.queued.iter().position(|q| q.chat == chat_id) {
+                for (_, out) in self.queued.remove(i).sends {
+                    st.queue(&chat_id, out);
+                }
+            }
+            match (delay, restore) {
+                (Some(ms), Some((text, reply_to, files))) => {
+                    let due = now_unix_millis() + ms;
+                    self.queued.push(Queued { chat: chat_id.clone(), due, sends, text, reply_to, files });
+                }
+                _ => sends.into_iter().for_each(|(_, out)| st.queue(&chat_id, out)),
             }
             st.mark_chat_read(&chat_id, true);
         }
@@ -3484,16 +3537,7 @@ impl BeeperGuiApp {
 
     /// The hotkey with the modifiers and the key, or with the modifiers alone before the digit 1 to 9.
     fn find_hotkey(&self, key: &Key, mods: keyboard::Modifiers) -> Option<(&'static str, usize)> {
-        let name = match key.as_ref() {
-            Key::Character(c) => c.to_lowercase(),
-            Key::Named(Named::ArrowUp) => "up".into(),
-            Key::Named(Named::ArrowDown) => "down".into(),
-            Key::Named(Named::ArrowLeft) => "left".into(),
-            Key::Named(Named::ArrowRight) => "right".into(),
-            Key::Named(Named::Enter) => "enter".into(),
-            Key::Named(Named::Tab) => "tab".into(),
-            _ => return None,
-        };
+        let name = hotkey_key(key)?;
         let digit = name.parse::<usize>().ok().filter(|d| (1..=9).contains(d));
         let mods = [mods.control() || mods.command(), mods.shift(), mods.alt()];
         let st = self.store.read();
@@ -3885,6 +3929,10 @@ impl BeeperGuiApp {
                 let edit = if back { text_editor::Edit::Backspace } else { text_editor::Edit::Delete };
                 return self.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
             }
+            UiMessage::Undo(false) if self.queued_here() => return self.update(UiMessage::UndoSend),
+            UiMessage::Undo(true) if self.queued_here() => {
+                return self.update(UiMessage::SendQueued(self.pane.selected_chat_id.clone()));
+            }
             UiMessage::Undo(redo) => {
                 let h = &mut self.pane.history;
                 let (from, to) = if redo { (&mut h.redo, &mut h.undo) } else { (&mut h.undo, &mut h.redo) };
@@ -4207,6 +4255,13 @@ impl BeeperGuiApp {
                 let text: Vec<String> = picked.iter().map(|m| copy_text(m, stamp, many)).collect();
                 drop(st);
                 return self.update(UiMessage::CopyText(text.join("\n")));
+            }
+            UiMessage::ClickMessage(mid)
+                if !self.mods.shift()
+                    && self.store.read().settings.on("undoOnPendingClick")
+                    && self.queued.iter().any(|q| q.sends.iter().any(|s| s.0 == mid)) =>
+            {
+                return self.update(UiMessage::UndoSend);
             }
             UiMessage::ClickMessage(mid) => {
                 let picked = self.pane.selected_msgs.contains(&mid);
@@ -5017,6 +5072,31 @@ impl BeeperGuiApp {
                 self.focused = focused;
                 return self.close_notifications();
             }
+            UiMessage::UndoSend => {
+                let open = self.pane.selected_chat_id.as_ref();
+                let Some(i) = self.queued.iter().position(|q| Some(&q.chat) == open) else { return Task::none() };
+                let q = self.queued.remove(i);
+                let mut st = self.store.write();
+                for (id, _) in &q.sends {
+                    st.remove_message(&q.chat, id).expect("a queued message is in its chat");
+                }
+                drop(st);
+                self.pane.composer = composer_with(&q.text);
+                (self.pane.reply_to_message_id, self.pane.attachments) = (q.reply_to, q.files);
+                return Task::batch([self.composer_effects(), operation::focus("composer-input")]);
+            }
+            UiMessage::SendQueued(chat) => {
+                let now = now_unix_millis();
+                let (send, keep) = std::mem::take(&mut self.queued)
+                    .into_iter()
+                    .partition(|q| chat.as_ref().map_or(q.due <= now, |c| q.chat == *c));
+                self.queued = keep;
+                let mut st = self.store.write();
+                for q in send.into_iter().flat_map(|q: Queued| q.sends.into_iter().map(move |s| (q.chat.clone(), s.1)))
+                {
+                    st.queue(&q.0, q.1);
+                }
+            }
             UiMessage::TogglePicker(kind) => {
                 let open = self.pane.picker != Some(kind) && self.supports(kind);
                 self.pane.picker = open.then_some(kind);
@@ -5689,6 +5769,12 @@ impl BeeperGuiApp {
                 return self.carousel_key(&key, mods);
             }
             UiMessage::KeyPressed(key, mods) => {
+                if self.queued_here()
+                    && mods.command()
+                    && matches!(key.as_ref(), Key::Character(c) if c.eq_ignore_ascii_case("z"))
+                {
+                    return self.update(UiMessage::Undo(mods.shift()));
+                }
                 let n = self.emoji_suggestions(&self.store.read()).len();
                 if n > 0 && mods.is_empty() {
                     let at = self.pane.suggest.min(n - 1);
@@ -5959,6 +6045,8 @@ impl BeeperGuiApp {
         let wait = |at: i64| std::time::Duration::from_millis((at - now_unix_millis()).max(1) as u64);
         let remind = due.0.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::CheckReminders));
         let send = due.1.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::CheckScheduled));
+        let queued = self.queued.iter().map(|q| q.due).min();
+        let queued = queued.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::SendQueued(None)));
         let animated = rising
             || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
             || self.pref_flash.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 2.0);
@@ -5982,6 +6070,7 @@ impl BeeperGuiApp {
                 .chain(shot)
                 .chain(remind)
                 .chain(send)
+                .chain(queued)
                 .chain(notes)
                 .chain(tray)
                 .chain(self.audio_ticks())
@@ -8529,12 +8618,20 @@ impl BeeperGuiApp {
         let formats = chat.formatting;
         let keys = ["Message: Send Message and Archive", "Send Message", "Insert New Line"]
             .map(|h| st.settings.hotkey_keys(h).to_string());
+        let undo = self.queued_here().then(|| st.settings.hotkey_keys("Undo Pending Send").to_string());
         let input = text_editor(&self.pane().composer)
             .id("composer-input")
             .placeholder(placeholder)
             .on_action(UiMessage::ComposerEdit)
             .key_binding(move |k| match k.key.as_ref() {
                 _ if !matches!(k.status, text_editor::Status::Focused { .. }) => None,
+                _ if undo.as_deref().zip(hotkey_key(&k.key)).is_some_and(|(keys, key)| {
+                    let m = k.modifiers;
+                    prefs::hotkey_has(keys, [m.control() || m.command(), m.shift(), m.alt()], &key)
+                }) =>
+                {
+                    Some(text_editor::Binding::Custom(UiMessage::UndoSend))
+                }
                 Key::Named(Named::Enter) => {
                     let m = k.modifiers;
                     let mods = [m.control() || m.command(), m.shift(), m.alt()];
