@@ -514,6 +514,7 @@ pub enum UiMessage {
     DeleteChat(String, bool),
     NewChatQueryChanged(String),
     ToggleNewChatExpanded,
+    ToggleNewChatChats,
     ToggleJoinMatrix,
     ContactsLoaded(Vec<User>),
     Capabilities(String, Result<serde_json::Value, String>),
@@ -822,6 +823,43 @@ fn account_option(st: &BeeperStore, account_id: &str, listed: &[String]) -> Stri
         return n.into();
     }
     format!("{n} — {} (cloud)", account_display_name(st, account_id, listed))
+}
+
+/// Desktop's `pb`: the name that sorts a person.
+fn person_name(u: &User) -> &str {
+    [&u.full_name, &u.custom_nickname, &u.username, &u.phone_number, &u.email]
+        .into_iter()
+        .find_map(|s| s.as_deref())
+        .unwrap_or(&u.id)
+}
+
+/// Desktop's `Chats` category of New Chat: the people of the chats of the accounts, once per bridge and
+/// identifier from their most recent chat, that match the query, by name.
+fn chat_people(st: &BeeperStore, accounts: &[String], only: Option<&str>, q: &str) -> Vec<(String, User)> {
+    let mut found: HashMap<String, (&Chat, &User)> = HashMap::new();
+    let chats = st.chats.iter().filter(|c| accounts.contains(&c.account_id) && only.is_none_or(|a| c.account_id == a));
+    for c in chats {
+        for u in c.participants.items.iter().filter(|u| u.is_self != Some(true)) {
+            let id = u.phone_number.as_deref().map(phone_digits);
+            let id = id.or_else(|| u.username.clone()).or_else(|| u.email.clone()).unwrap_or_else(|| u.id.clone());
+            let key = format!("{}:{id}", brand_key(&c.account_id));
+            if found.get(&key).is_none_or(|(old, _)| c.last_activity > old.last_activity) {
+                found.insert(key, (c, u));
+            }
+        }
+    }
+    let fields =
+        |u: &User| [&u.full_name, &u.custom_nickname, &u.username, &u.phone_number, &u.email].map(Clone::clone);
+    let matches =
+        |u: &User| fields(u).into_iter().flatten().chain([u.id.clone()]).any(|f| f.to_lowercase().contains(q));
+    let mut people: Vec<(String, User)> =
+        found.into_values().filter(|(_, u)| matches(u)).map(|(c, u)| (c.account_id.clone(), u.clone())).collect();
+    let rank = |u: &User| {
+        let n = person_name(u).to_lowercase();
+        (n.is_empty(), !n.starts_with(|c: char| c.is_ascii_alphabetic()), n)
+    };
+    people.sort_by_cached_key(|(_, u)| rank(u));
+    people
 }
 
 /// Desktop's `accountDisplayName`: the network, after the user when another account has the same network.
@@ -3028,6 +3066,7 @@ pub struct BeeperGuiApp {
     pub new_chat_accounts_open: bool,
     pub new_chat_query: String,
     pub new_chat_expanded: bool,
+    pub new_chat_chats_expanded: bool,
     pub join_matrix_mode: bool,
     pub nickname_edit_buffer: String,
     pub recovery_code_input: String,
@@ -3205,6 +3244,7 @@ impl BeeperGuiApp {
             new_chat_accounts_open: false,
             new_chat_query: String::new(),
             new_chat_expanded: false,
+            new_chat_chats_expanded: false,
             join_matrix_mode: false,
             nickname_edit_buffer: String::new(),
             recovery_code_input: String::new(),
@@ -5482,7 +5522,7 @@ impl BeeperGuiApp {
                 self.creating_chat = Some(id);
                 self.show_command_palette = false;
                 self.new_chat_query.clear();
-                self.new_chat_expanded = false;
+                (self.new_chat_expanded, self.new_chat_chats_expanded) = (false, false);
                 (self.new_chat_account, self.new_chat_accounts_open) = (None, false);
                 self.contact_networks = None;
                 self.join_matrix_mode = false;
@@ -5608,6 +5648,7 @@ impl BeeperGuiApp {
             }
             UiMessage::NewChatQueryChanged(q) => self.new_chat_query = q,
             UiMessage::ToggleNewChatExpanded => self.new_chat_expanded = !self.new_chat_expanded,
+            UiMessage::ToggleNewChatChats => self.new_chat_chats_expanded = !self.new_chat_chats_expanded,
             UiMessage::ToggleJoinMatrix => {
                 self.join_matrix_mode = !self.join_matrix_mode;
                 self.new_chat_query.clear();
@@ -11567,6 +11608,37 @@ impl BeeperGuiApp {
             .on_press(UiMessage::ToggleJoinMatrix);
             col = col.push(container(group_btn).padding([0, 8])).push(container(join_btn).padding([0, 8]));
         }
+        let heading = |label: &str| {
+            container(txt(label.to_string(), 12.0).color(p.sub))
+                .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0))
+        };
+        let item = |content: El<'a>, press: Option<UiMessage>| -> El<'a> {
+            let b = button(content).height(36).padding([0, 6]).width(Fill).style(ghost(p, 8.0));
+            container(b.on_press_maybe(press)).padding([0, 6]).into()
+        };
+        let people = if q.is_empty() { Vec::new() } else { chat_people(&st, &listed, account.or(picked), &q) };
+        if !people.is_empty() {
+            col = col.push(heading(tr("Chats")));
+            let limit = if self.new_chat_chats_expanded { people.len() } else { 10.min(people.len()) };
+            for (a, u) in people.iter().take(limit) {
+                let name = person_name(u);
+                let small = |s: String| txt(s, 12.0).color(Color { a: 0.7, ..p.strong });
+                let line = row![self.face(u.img_url.as_deref(), name, 28.0, 0.0)]
+                    .push(u.full_name.as_ref().map(|n| med(n.clone(), 13.0).color(p.strong)))
+                    .push(u.username.as_ref().map(|n| small(format!("@{}", n.trim_start_matches('@')))))
+                    .push(u.phone_number.as_deref().map(|n| small(fmt_phone(n))))
+                    .push(u.email.clone().map(small))
+                    .push(Space::new().width(Fill))
+                    .push(svg(crate::style::brand_svg(brand_key(a))).width(16).height(16))
+                    .spacing(6)
+                    .align_y(Center);
+                col = col.push(item(line.into(), Some(UiMessage::PickUser(a.clone(), Box::new(u.clone())))));
+            }
+            if people.len() > 10 {
+                let label = if self.new_chat_chats_expanded { tr("Show less chats") } else { tr("Show more chats") };
+                col = col.push(item(txt(label, 13.0).color(p.text).into(), Some(UiMessage::ToggleNewChatChats)));
+            }
+        }
         let any = listed.iter().any(|a| self.can(a, "contact_list") || self.can(a, "any_phone"));
         let contacts: Vec<&User> = st
             .contacts
@@ -11574,11 +11646,11 @@ impl BeeperGuiApp {
             .filter(|_| any)
             .filter(|u| u.full_name.as_deref().unwrap_or_default().to_lowercase().contains(&q))
             .collect();
+        if people.is_empty() && contacts.is_empty() {
+            col = col.push(heading(tr("No results found")));
+        }
         if !contacts.is_empty() {
-            col = col.push(
-                container(txt(tr("In your contacts"), 12.0).color(p.sub))
-                    .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0)),
-            );
+            col = col.push(heading(tr("In your contacts")));
             let limit = if self.new_chat_expanded || !q.is_empty() { contacts.len() } else { 10.min(contacts.len()) };
             let mut last_cat = None;
             for u in contacts.iter().take(limit) {
@@ -11586,10 +11658,7 @@ impl BeeperGuiApp {
                 let ch = name.chars().next().unwrap_or(' ').to_ascii_uppercase();
                 let cat = if ch.is_ascii_alphabetic() { ch.to_string() } else { tr("Others").to_string() };
                 if last_cat.as_deref() != Some(cat.as_str()) {
-                    col = col.push(
-                        container(txt(cat.clone(), 12.0).color(p.sub))
-                            .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0)),
-                    );
+                    col = col.push(heading(&cat));
                     last_cat = Some(cat);
                 }
                 let nets = self.contact_networks.as_ref().filter(|(c, _)| *c == u.id).map(|(_, n)| n);
@@ -11604,10 +11673,6 @@ impl BeeperGuiApp {
                 ]
                 .spacing(8)
                 .align_y(Center);
-                let item = |content: El<'a>, press: Option<UiMessage>| -> El<'a> {
-                    let b = button(content).height(36).padding([0, 6]).width(Fill).style(ghost(p, 8.0));
-                    container(b.on_press_maybe(press)).padding([0, 6]).into()
-                };
                 col = col.push(item(line.into(), Some(UiMessage::ToggleContact(u.id.clone()))));
                 let Some(nets) = nets else { continue };
                 if nets.iter().any(|(_, n)| n.is_none()) {
