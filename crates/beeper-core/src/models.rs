@@ -348,6 +348,8 @@ fn beeper_polls() -> Option<PollRules> {
 pub struct PollRules {
     /// `poll_hidden_votes`: a poll can hide its results until it ends.
     pub hidden_votes: bool,
+    /// `poll_end`: the sender can end a poll.
+    pub end: bool,
     /// `poll_duplicate_options`: two options can have the same text.
     pub duplicates: bool,
     /// `poll_max_options`, or 0 for no limit.
@@ -365,7 +367,7 @@ impl PollRules {
 
 /// Desktop's poll features of a Beeper room.
 pub const BEEPER_POLLS: PollRules =
-    PollRules { hidden_votes: true, duplicates: true, max_options: 20, max_length: 200 };
+    PollRules { hidden_votes: true, end: true, duplicates: true, max_options: 20, max_length: 200 };
 
 fn all_formats() -> u16 {
     ALL_FORMATS

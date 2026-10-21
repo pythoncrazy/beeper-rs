@@ -196,6 +196,7 @@ fn poll_rules(f: &Value) -> Option<PollRules> {
     let limit = |k: &str| f[k].as_u64().filter(|&n| n > 0).map(|n| u16::try_from(n).unwrap_or(u16::MAX));
     level("poll").then(|| PollRules {
         hidden_votes: level("poll_hidden_votes"),
+        end: level("poll_end"),
         duplicates: level("poll_duplicate_options"),
         max_options: limit("poll_max_options").unwrap_or(0),
         max_length: limit("poll_option_max_length").unwrap_or(200),
@@ -890,6 +891,10 @@ pub enum Outgoing {
         txn: String,
         poll: PollData,
     },
+    /// An MSC3381 poll end, like Desktop's `sendPollEnd`.
+    EndPoll {
+        target: String,
+    },
     /// An MSC3381 poll response with the answer IDs.
     Vote {
         target: String,
@@ -1031,6 +1036,14 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             });
             let id = room.send_raw("org.matrix.msc3381.poll.start", content).with_transaction_id(txn.as_str().into());
             sent(txn, id.await.map_err(e)?.response.event_id);
+        }
+        Outgoing::EndPoll { target } => {
+            let content = serde_json::json!({
+                "m.relates_to": { "rel_type": "m.reference", "event_id": event(target)?.to_string() },
+                "org.matrix.msc3381.poll.end": {},
+                "org.matrix.msc1767.text": "Poll ended",
+            });
+            room.send_raw("org.matrix.msc3381.poll.end", content).await.map_err(e)?;
         }
         Outgoing::Vote { target, answers } => {
             let content = serde_json::json!({
@@ -1721,7 +1734,7 @@ mod tests {
     fn polls_follow_desktop() {
         use super::{poll_rules, PollRules};
         assert_eq!(poll_rules(&json!({"poll": 0, "poll_max_options": 5})), None);
-        let rules = PollRules { hidden_votes: false, duplicates: true, max_options: 5, max_length: 200 };
+        let rules = PollRules { hidden_votes: false, end: false, duplicates: true, max_options: 5, max_length: 200 };
         assert_eq!(poll_rules(&json!({"poll": 2, "poll_duplicate_options": 1, "poll_max_options": 5})), Some(rules));
         use serde_json::json;
         let start = json!({
