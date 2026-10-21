@@ -223,6 +223,7 @@ pub const APPEARANCE: &[Item] = &[
         t("messageAnimations", "Enable message animations", true),
         t("balanceText", "Balance message text", false),
         t("loadEmbeds", "Load external embeds automatically", true),
+        t("incognitoIndicator", "Show incognito mode indicator", true).plus("stealth-mode").requires("incognito"),
         t("quickReactions", "Show quick reactions", true),
         s("quickReactionEmoji", "Quick reaction emoji", &["❤️", "👍", "😂", "😮", "😢", "🔥"], 0)
             .desc("Used for quick react keyboard shortcut (%s)")
@@ -578,6 +579,7 @@ const COMPOSER_VALUES: &[&str] =
 pub const SYNCED: &[(&str, Ad)] = &[
     ("incognito", b("dont_mark_as_read_until_responded")),
     ("typingIndicators", b("show_typing_indicator")),
+    ("incognitoIndicator", b("show_incognito_mode_indicator")),
     ("remindLaterDefault", v("dismiss_reminder_on_incoming_default", &["no_reply", "always"])),
     ("sendLaterDefault", v("schedule_submenu_default", &["no_reply", "always"])),
     ("archiveOnReminder", Ad::Event("com.beeper.reminder_settings", "archive_on_reminder_set")),

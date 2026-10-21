@@ -322,6 +322,7 @@ pub enum UiMessage {
     HideReplies,
     ToggleFlag(String, ChatFlag),
     ToggleRead(String),
+    MarkRead(String),
     CopyChatLink(String),
     OpenChatMenu(String),
     OpenMessageMenu(String),
@@ -4215,6 +4216,13 @@ impl BeeperGuiApp {
                 drop(st);
                 self.refresh_theme_and_tray();
             }
+            UiMessage::MarkRead(cid) => {
+                let mut st = self.store.write();
+                let idx = st.resolve_chat_idx(&cid).expect("chat exists");
+                self.mark_read(&mut st, idx);
+                drop(st);
+                self.refresh_theme_and_tray();
+            }
             UiMessage::ToggleRead(cid) => {
                 let mut st = self.store.write();
                 let list = self.list_ids(&st);
@@ -7752,6 +7760,20 @@ impl BeeperGuiApp {
         container(column![header, list].padding(Padding::ZERO.left(8.0))).width(w).height(Fill).into()
     }
 
+    /// Desktop's `IncognitoMarkAsRead`: a link below an unread chat that incognito mode keeps unread.
+    fn incognito_mark_read<'a>(&self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
+        let unread = chat.unread_count > 0 || chat.is_marked_unread == Some(true);
+        (unread && st.incognito_indicator()).then(|| {
+            let p = &self.pal;
+            let link = button(semi(tr("Mark as Read"), 11.0).line_height(Pixels(14.0)).color(p.accent))
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                .on_press(UiMessage::MarkRead(chat.id.clone()));
+            let tip = self.tip(link.into(), tr("Mark as Read"), vec!["Ctrl", "Shift", "U"], tooltip::Position::Top);
+            container(tip).center_x(Fill).padding(Padding::new(10.0).bottom(6.5).left(0.0).right(0.0)).into()
+        })
+    }
+
     fn view_conversation(&self) -> El<'_> {
         let p = &self.pal;
         let st = self.store.read();
@@ -7765,8 +7787,9 @@ impl BeeperGuiApp {
                 .collect()
         });
         let col = self.view_messages(&st, chat, &msgs, false);
-        let col = col.push(self.view_scheduled(&st, chat));
         let col = col.push(st.typing.get(cid).map(|ids| self.typing_bubble(chat, ids)));
+        let col = col.push(self.incognito_mark_read(&st, chat));
+        let col = col.push(self.view_scheduled(&st, chat));
         // Desktop's `messages-list` keeps the messages at the bottom when they do not fill the view.
         let scroller = |col| {
             let col = container(col).align_y(Bottom);
@@ -7873,6 +7896,29 @@ impl BeeperGuiApp {
             .into()
     }
 
+    /// Desktop's `UnreadDivider`: "New", or the incognito line with the days left of a free trial.
+    fn unread_divider<'a>(&self, st: &BeeperStore) -> El<'a> {
+        let p = &self.pal;
+        let hush = st.incognito_indicator();
+        let color = if hush { p.rule } else { p.accent.scale_alpha(0.35) };
+        let line = || container(Space::new()).width(Fill).height(1).style(fill_box(color, 0.0));
+        if !hush {
+            return row![line(), semi(tr("New"), 11.0).color(p.accent), line()]
+                .spacing(8)
+                .align_y(Center)
+                .padding([6, 0])
+                .into();
+        }
+        let label = txt(format!("🫣 {}", tr("Unread until you reply")), 11.0).line_height(Pixels(14.0));
+        let days = st.features.trial_days_left().map(|n| {
+            let n = n as usize;
+            let days = trn("%d more day of free incognito mode", "%d more days of free incognito mode", n, &[&n]);
+            txt(days, 11.0).line_height(Pixels(14.0)).color(p.sub)
+        });
+        let label = column![label.color(p.on_secondary)].push(days).spacing(2).align_x(Center);
+        row![line(), label, line()].spacing(10).align_y(Center).padding([12, 0]).into()
+    }
+
     /// Desktop's `MessageList`: the messages in timeline order. In a reply chain, the quotes, the reply lines,
     /// the replies buttons and the unread divider do not show.
     fn view_messages<'a>(
@@ -7925,13 +7971,7 @@ impl BeeperGuiApp {
                 head = head.push(container(pill).center_x(Fill).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
             }
             if Some(i) == first_unread {
-                let line =
-                    || container(Space::new()).width(Fill).height(1).style(fill_box(p.accent.scale_alpha(0.35), 0.0));
-                let div = row![line(), semi(tr("New"), 11.0).color(p.accent), line()]
-                    .spacing(8)
-                    .align_y(Center)
-                    .padding([6, 0]);
-                head = head.push(div);
+                head = head.push(self.unread_divider(st));
             }
             if membership(m) {
                 let s = run_start[i];

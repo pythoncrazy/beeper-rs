@@ -1363,6 +1363,11 @@ impl BeeperStore {
         self.settings.on("incognito") && self.feature("stealth-mode").on
     }
 
+    /// Desktop's `showIncognitoModeIndicator`.
+    pub fn incognito_indicator(&self) -> bool {
+        self.incognito() && self.settings.on("incognitoIndicator")
+    }
+
     /// Desktop's `showTypingIndicator`: typing notices go out, unless incognito mode turned them off.
     pub fn typing_notices(&self) -> bool {
         !self.feature("stealth-mode").on || self.settings.on("typingIndicators")
