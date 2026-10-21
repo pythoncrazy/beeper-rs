@@ -81,6 +81,8 @@ pub enum SubMenu {
     FilterAccount,
     /// The times for a reminder on a chat.
     Remind(String),
+    /// The times for Send Later: the composer's, or the scheduled messages' to reschedule.
+    Schedule(Vec<String>),
     /// The recently viewed chats.
     History,
     /// The folders other than the open one.
@@ -94,6 +96,8 @@ impl SubMenu {
         match self {
             SubMenu::FilterAccount => tr("Filter account"),
             SubMenu::Remind(_) => tr("Remind Me"),
+            SubMenu::Schedule(ids) if ids.is_empty() => tr("Send Later"),
+            SubMenu::Schedule(_) => tr("Reschedule message"),
             SubMenu::History => tr("Recently viewed chats"),
             SubMenu::Folders => tr("Filter chat folders"),
             SubMenu::Links(_) => "",
@@ -107,6 +111,7 @@ impl SubMenu {
             SubMenu::Remind(_) => {
                 tr("When? (try typing something like %s)").replacen("%s", "\"Monday morning at 9\"", 1)
             }
+            SubMenu::Schedule(_) => tr("When? (try typing something like %s)").replacen("%s", "“Monday morning”", 1),
         }
     }
 }
@@ -149,50 +154,60 @@ fn locale_times(at: i64) -> (String, String) {
     (format!("{date}, {h12}:{min:02}:{sec:02} {half}"), format!("{date} {h12:02}:{min:02} {half}"))
 }
 
+fn search(v: Vec<Command>, query: &str) -> Vec<Command> {
+    match query.is_empty() {
+        true => v,
+        false => prefs::match_sort_keys(v, query, |c| {
+            std::iter::once(c.title.clone()).chain(c.keywords.iter().map(|k| k.to_string())).collect()
+        }),
+    }
+}
+
+/// Desktop's `yle`: "last used", then the suggested and typed times that are still ahead, each once.
+fn time_commands(st: &BeeperStore, query: &str, pick: impl Fn(i64) -> UiMessage) -> Vec<Command> {
+    let now = beeper_core::config::now_unix_millis();
+    let count = query.parse::<u32>().ok().filter(|n| *n > 0);
+    let counted = [("minute", 100_000_000), ("hour", 1_000_000), ("day", 100_000), ("week", 10_000)];
+    let counted = counted.into_iter().filter_map(|(unit, max)| {
+        let n = count.filter(|n| *n < max)?;
+        Some(format!("{n} {unit}{}", if n == 1 { "" } else { "s" }))
+    });
+    let phrases = crate::TIME_SUGGESTIONS.iter().map(|s| s.to_string()).chain(counted);
+    let phrases = phrases.chain(MORE_TIMES.iter().map(|s| s.to_string())).chain([query.to_string()]);
+    let row = |label: String, at: i64, msg: UiMessage| {
+        let (long, short) = locale_times(at);
+        Command { render: Some((label.clone(), short)), ..cmd("", format!("{label} — {long}"), Some(msg)) }
+    };
+    let last = crate::last_used(st, now).map(|at| row(tr("last used").into(), at, pick(at)));
+    let times = phrases.filter_map(|phrase| {
+        let at = beeper_core::config::parse_when_millis(&phrase, now).filter(|at| *at > now)?;
+        let label = phrase.trim().to_lowercase();
+        Some(row(label, at, UiMessage::Commands(vec![UiMessage::LastTime(phrase), pick(at)])))
+    });
+    let mut seen = std::collections::HashSet::new();
+    let mut v = search(last.into_iter().chain(times).collect(), query);
+    v.retain(|c| seen.insert(c.render.as_ref().map(|r| r.0.clone())));
+    v
+}
+
 impl BeeperGuiApp {
     /// Desktop's `zXe`, all accounts and then each account with its network icon, and `qXe`, the times for a reminder.
     fn submenu_commands(&self, st: &BeeperStore, menu: &SubMenu, query: &str) -> Vec<Command> {
-        let search = |v: Vec<Command>| match query.is_empty() {
-            true => v,
-            false => prefs::match_sort_keys(v, query, |c| {
-                std::iter::once(c.title.clone()).chain(c.keywords.iter().map(|k| k.to_string())).collect()
-            }),
-        };
+        let search = |v: Vec<Command>| search(v, query);
         match menu {
             SubMenu::Remind(id) => {
                 let Some(c) = st.resolve_chat_idx(id).map(|i| &st.chats[i]) else { return Vec::new() };
-                let now = beeper_core::config::now_unix_millis();
-                let count = query.parse::<u32>().ok().filter(|n| *n > 0);
-                let counted = [("minute", 100_000_000), ("hour", 1_000_000), ("day", 100_000), ("week", 10_000)];
-                let counted = counted.into_iter().filter_map(|(unit, max)| {
-                    let n = count.filter(|n| *n < max)?;
-                    Some(format!("{n} {unit}{}", if n == 1 { "" } else { "s" }))
-                });
-                let phrases = crate::TIME_SUGGESTIONS.iter().map(|s| s.to_string()).chain(counted);
-                let phrases = phrases.chain(MORE_TIMES.iter().map(|s| s.to_string())).chain([query.to_string()]);
-                let row = |label: String, at: i64, msg: UiMessage| {
-                    let (long, short) = locale_times(at);
-                    Command {
-                        render: Some((label.clone(), short)), ..cmd("", format!("{label} — {long}"), Some(msg))
-                    }
-                };
-                let remind = |at| UiMessage::RemindIf(c.id.clone(), at, self.cmd_no_reply);
-                let last = crate::last_used(st, now).map(|at| row(tr("last used").into(), at, remind(at)));
-                let times = phrases.filter_map(|phrase| {
-                    let at = beeper_core::config::parse_when_millis(&phrase, now).filter(|at| *at > now)?;
-                    let label = phrase.trim().to_lowercase();
-                    Some(row(label, at, UiMessage::Commands(vec![UiMessage::LastTime(phrase), remind(at)])))
-                });
-                let times = last.into_iter().chain(times);
-                let mut seen = std::collections::HashSet::new();
-                let mut v: Vec<Command> = search(times.collect());
-                v.retain(|c| seen.insert(c.render.as_ref().map(|r| r.0.clone())));
+                let mut v = time_commands(st, query, |at| UiMessage::RemindIf(c.id.clone(), at, self.cmd_no_reply));
                 v.extend(c.reminder.as_ref().map(|r| {
                     let dismiss = cmd("", tr("dismiss reminder"), Some(UiMessage::SetReminder(c.id.clone(), None)));
                     Command { render: Some((tr("dismiss reminder").into(), locale_times(r.remind_at_ms).1)), ..dismiss }
                 }));
                 v
             }
+            SubMenu::Schedule(ids) => time_commands(st, query, |at| match ids.is_empty() {
+                true => UiMessage::SendLater(Some((at, self.cmd_no_reply))),
+                false => UiMessage::RescheduleTo(ids.clone(), at, self.cmd_no_reply),
+            }),
             SubMenu::FilterAccount => {
                 let all = cmd("", tr("All Accounts"), Some(UiMessage::SelectTab(InboxTab::AllChats)));
                 let accounts = crate::rail_accounts(st).into_iter().filter(|a| crate::network_space(st, a).is_none());
@@ -394,6 +409,9 @@ impl BeeperGuiApp {
             v.push(cmd(e, tr("Send file"), file).keys(file_keys).hotkey("Chat: Send File"));
             let gif = (self.pane.editing_message_id.is_none()).then_some(UiMessage::ToggleGifPicker);
             v.push(cmd(e, tr("Send GIF"), gif).keys(&["attachment", "image", "video"]).hotkey("Message: Send GIF"));
+            let later = self.pane.editing_message_id.is_none().then_some(UiMessage::OpenSendLater);
+            let later = cmd(trx("Message", "Command bar category"), tr("Send later"), later);
+            v.push(later.keys(&["schedule", "past", "future", "time"]).hotkey("Message: Send Later"));
         }
         let history = cmd(CHATS, tr("Open recently viewed chats"), Some(UiMessage::OpenSubMenu(SubMenu::History)));
         v.push(history.keys(&["history"]));

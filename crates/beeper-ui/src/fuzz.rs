@@ -551,6 +551,61 @@ fn remind_submenu_like_desktop() {
 }
 
 #[test]
+fn send_later_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("sendlater");
+    let id = app.visible_chats(&app.store.read())[0].id.clone();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let edit = text_editor::Edit::Paste(Arc::new("see you then".into()));
+    let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("l".into()), Modifiers::CTRL | Modifiers::SHIFT));
+    assert_eq!(app.cmd_submenu, Some(commands::SubMenu::Schedule(Vec::new())), "Ctrl Shift L opens Send Later");
+    assert!(app.cmd_no_reply, "the choice starts at If no reply");
+    let footer = "Send Later messages can only send if Beeper app is running (and your computer is awake)";
+    assert!(simulator(app.view_main()).find(footer).is_ok());
+    let _ = app.update(UiMessage::CommandQueryChanged("friday at 5pm".into()));
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+    let at = parse_when_millis("friday at 5pm", now_unix_millis()).unwrap();
+    assert_eq!(app.pane.send_later, Some((at, true)));
+    let when = send_day(at, false);
+    assert!(simulator(app.view_main()).find(format!("{when} if no reply")).is_ok(), "the composer banner");
+    let sent = app.store.read().messages.len();
+    let _ = app.update(UiMessage::SubmitComposer);
+    let st = app.store.read();
+    assert_eq!((st.messages.len(), app.pane.send_later), (sent, None), "nothing sends now");
+    let s = st.scheduled[0].clone();
+    assert!(s.text == "see you then" && s.send_on == at && s.send_only_on_no_response && !s.canceled);
+    drop(st);
+    {
+        let mut sim = simulator(app.view_main());
+        assert!(sim.find(format!("Send {when}")).is_ok() && sim.find("see you then").is_ok(), "the timeline");
+    }
+    let _ = app.update(UiMessage::SelectTab(InboxTab::SendLater));
+    assert_eq!(app.visible_chats(&app.store.read()).iter().map(|c| &c.id).collect::<Vec<_>>(), [&id]);
+    let _ = app.update(UiMessage::RescheduleTo(vec![s.id.clone()], at + 60_000, false));
+    assert!(!app.store.read().scheduled[0].send_only_on_no_response);
+    let _ = app.update(UiMessage::RescheduleTo(vec![s.id.clone()], at, true));
+    let mut st = app.store.write();
+    let (_, reply, _) = st.send_message(&id, Some("sure".into()), None, None).unwrap();
+    let i = st.msg_idx_by_id[&reply];
+    let m = st.update_message(i, |m| m.is_sender = Some(false));
+    drop(st);
+    let _ = app.update(UiMessage::Upserted(Box::new(m)));
+    assert!(app.store.read().scheduled[0].canceled, "a reply cancels an If no reply message");
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    assert!(simulator(app.view_main()).find("Send Later message canceled by reply.").is_ok());
+    let _ = app.update(UiMessage::Unschedule(vec![s.id.clone()]));
+    assert!(app.store.read().scheduled.is_empty());
+    app.store.write().schedule(&id, "now".into(), None, now_unix_millis() - 1, false);
+    let _ = app.update(UiMessage::CheckScheduled);
+    let st = app.store.read();
+    assert!(
+        st.scheduled.is_empty() && st.messages.last().unwrap().text.as_deref() == Some("now"),
+        "a due message sends"
+    );
+}
+
+#[test]
 fn profile_links_match_desktop() {
     let app = demo_app("profile");
     let st = app.store.read();
@@ -641,7 +696,8 @@ fn selected_message_commands_like_desktop() {
     let _ = app.update(UiMessage::SelectMessages(linked[..1].to_vec()));
     let cmds = app.commands(&app.store.read(), "");
     let titles: Vec<&str> = cmds.iter().take_while(|c| c.category == "Message").map(|c| c.title.as_str()).collect();
-    assert_eq!(titles, ["Edit", "Forward", "Copy", "Copy with timestamps", "Open link", "Unselect", "Reply"]);
+    let all = ["Edit", "Forward", "Copy", "Copy with timestamps", "Open link", "Unselect", "Reply", "Send later"];
+    assert_eq!(titles, all);
     assert!(matches!(&cmds[4].msg, Some(UiMessage::OpenUrl(u)) if u.starts_with("https://")));
     let _ = app.update(cmds[5].msg.clone().unwrap());
     assert!(app.pane.selected_msgs.is_empty(), "Unselect clears the selection");
