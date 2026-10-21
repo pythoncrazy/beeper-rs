@@ -3,7 +3,6 @@ use crate::{BeeperGuiApp, UiMessage};
 use beeper_core::config::{account_network, millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::NetworkKind::*;
 use beeper_core::models::{Attachment, Chat, Message};
-use beeper_core::store::BeeperStore;
 use iced::Task;
 use std::collections::{HashMap, HashSet};
 
@@ -132,11 +131,6 @@ impl Pending {
     }
 }
 
-/// Desktop's `areNotificationsMuted`: the chat is muted, or "Enable notifications" of its account is off.
-fn muted(st: &BeeperStore, c: &Chat) -> bool {
-    c.is_muted == Some(true) || !st.settings.account(&c.account_id).notifications
-}
-
 fn wait(secs: u64, then: UiMessage) -> Task<UiMessage> {
     Task::perform(tokio::time::sleep(std::time::Duration::from_secs(secs)), move |()| then)
 }
@@ -211,7 +205,10 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let unread = st.chat_idx_by_id.get(&chat).is_some_and(|&i| {
             let c = &st.chats[i];
-            c.unread_count > 0 && !muted(&st, c) && c.is_hidden_from_inbox != Some(true) && c.is_request != Some(true)
+            c.unread_count > 0
+                && !st.notifications_muted(c)
+                && c.is_hidden_from_inbox != Some(true)
+                && c.is_request != Some(true)
         });
         let (notes, repeat) = match (self.pending.queued.get(&chat), self.pending.repeat.get(&chat)) {
             (Some(q), _) if q.0 == timer => (self.pending.queued.remove(&chat).expect("queued").1, true),
@@ -239,7 +236,7 @@ impl BeeperGuiApp {
         let Some(c) = st.chat_idx_by_id.get(&chat).map(|&i| &st.chats[i]) else { return Task::none() };
         let shown = cfg!(target_os = "linux")
             && self.pane.selected_chat_id.as_ref() != Some(&chat)
-            && !muted(&st, c)
+            && !st.notifications_muted(c)
             && c.is_hidden_from_inbox != Some(true)
             && c.is_request != Some(true)
             && st.settings.on("notifyTyping");
@@ -313,7 +310,7 @@ impl BeeperGuiApp {
             && m.text.as_deref() != Some(beeper_core::matrix::UTD_TEXT);
         let shown = shown && otp.is_some()
             || shown
-                && !muted(&st, chat)
+                && !st.notifications_muted(chat)
                 && chat.is_hidden_from_inbox != Some(true)
                 && chat.is_request != Some(true)
                 && prefs.on("messageNotifications")
@@ -445,8 +442,11 @@ mod tests {
         let mut app = crate::fuzz::demo_app("account-notes");
         let (chat, mut m) = {
             let st = app.store.read();
-            let c = st.chats.iter().find(|c| c.chat_type == "single" && c.account_id != "hungryserv" && !muted(&st, c));
-            let c = c.expect("a demo DM").clone();
+            let c = st
+                .chats
+                .iter()
+                .find(|c| c.chat_type == "single" && c.account_id != "hungryserv" && c.label_ids.is_empty());
+            let c = c.expect("a demo DM without labels").clone();
             let m = st.chat_msg_indices[&c.id].iter().map(|&i| &st.messages[i]).find(|m| m.is_sender != Some(true));
             (c, m.expect("a received message").clone())
         };

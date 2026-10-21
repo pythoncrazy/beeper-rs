@@ -1064,6 +1064,25 @@ impl BeeperStore {
         self.queue(id, Outgoing::LabelState("com.beeper.label.inbox_visibility", content));
     }
 
+    /// Desktop's `toggleMuteLabel`.
+    pub fn set_label_muted(&mut self, id: &str, muted: bool) {
+        let label = self.labels.iter().find(|l| l.id == id).expect("a label").clone();
+        self.set_label(Label { muted, ..label });
+        self.queue(id, Outgoing::LabelState("com.beeper.muted", serde_json::json!({ "muted": muted })));
+    }
+
+    /// Desktop's `areNotificationsMuted`: the chat is muted, all labels of the chat are muted, or for a chat
+    /// without labels, "Enable notifications" of its account is off.
+    pub fn notifications_muted(&self, c: &Chat) -> bool {
+        if c.is_muted == Some(true) {
+            return true;
+        }
+        if self.feature("labels-v2").on && !c.label_ids.is_empty() {
+            return c.label_ids.iter().all(|id| self.labels.iter().any(|l| &l.id == id && l.muted));
+        }
+        !self.settings.account(&c.account_id).notifications
+    }
+
     /// Desktop's `deleteLabel`: leaves the label space.
     pub fn delete_label(&mut self, id: &str) {
         self.remove_label(id);
