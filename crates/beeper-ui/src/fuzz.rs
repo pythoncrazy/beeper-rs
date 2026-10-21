@@ -2183,7 +2183,10 @@ fn new_chats_start_like_desktop() {
     let n = app.creating_chat.expect("a draft");
     let _ = app.update(UiMessage::ToggleContact(bo.id.clone()));
     assert!(!found(&app, &label) && !found(&app, "No networks found"), "the lookup loads");
-    let _ = app.update(UiMessage::ContactNetwork(bo.id.clone(), account.clone(), Ok(None)));
+    let slot = |app: &BeeperGuiApp| {
+        app.contact_networks.as_ref().expect("the networks").1.iter().position(|(a, _)| *a == account).expect("a slot")
+    };
+    let _ = app.update(UiMessage::ContactNetwork(bo.id.clone(), slot(&app), Ok(None)));
     assert!(!found(&app, &label) && !found(&app, "No networks found"), "the other accounts reach the phone number");
     let _ = app.update(UiMessage::NewChatAccount(Some(account.clone())));
     assert!(found(&app, "No networks found"), "the other accounts are not picked");
@@ -2192,7 +2195,7 @@ fn new_chats_start_like_desktop() {
     assert!(app.contact_networks.is_none() && !found(&app, "No networks found"), "a second click collapses");
     let _ = app.update(UiMessage::ToggleContact(bo.id.clone()));
     let ghost = serde_json::json!({ "id": "199", "mxid": "@bridge_199:beeper.local", "name": "Bo Example" });
-    let _ = app.update(UiMessage::ContactNetwork(bo.id.clone(), account.clone(), Ok(Some(ghost))));
+    let _ = app.update(UiMessage::ContactNetwork(bo.id.clone(), slot(&app), Ok(Some(ghost))));
     assert!(found(&app, &label));
     let nets = &app.contact_networks.as_ref().expect("the networks").1;
     let user = nets.iter().find(|(a, _)| *a == account).and_then(|(_, u)| u.clone().flatten()).expect("a user");
@@ -2375,4 +2378,32 @@ fn new_chat_lists_chat_people_like_desktop() {
     let _ = app.update(UiMessage::NewChat);
     let _ = app.update(UiMessage::NewChatQueryChanged("zzzz".into()));
     assert!(found(&app, "No results found") && !found(&app, "Chats"));
+}
+
+#[test]
+fn new_chat_looks_up_identifiers_like_desktop() {
+    let mut app = demo_app("new-chat-lookup");
+    let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
+    assert!(typed_phone("+1 (415) 555-0177") && !typed_phone("555") && !typed_phone("call 4155550177"));
+    let _ = app.update(UiMessage::NewChat);
+    let _ = app.update(UiMessage::NewChatQueryChanged("+1 415 555 0177".into()));
+    let _ = app.update(UiMessage::LookupIdentifier("+1 415".into()));
+    assert!(app.new_chat_lookup.is_none(), "a lookup of an old query does nothing");
+    let _ = app.update(UiMessage::LookupIdentifier("+1 415 555 0177".into()));
+    let nets = &app.new_chat_lookup.as_ref().expect("a lookup").1;
+    assert!(nets.len() > 1 && nets.iter().all(|(_, n)| n.as_ref().is_some_and(Option::is_some)), "any_phone");
+    assert!(found(&app, &fmt_phone("+14155550177")) && !found(&app, "No results found"));
+    let account = rail_accounts(&app.store.read()).into_iter().next().expect("an account");
+    let caps = serde_json::json!({ "resolve_identifier": { "create_dm": true, "lookup_username": true } });
+    let _ = app.update(UiMessage::Capabilities(account.clone(), Ok(caps)));
+    let _ = app.update(UiMessage::NewChatQueryChanged("@samx".into()));
+    let _ = app.update(UiMessage::LookupIdentifier("@samx".into()));
+    let nets = &app.new_chat_lookup.as_ref().expect("a lookup").1;
+    assert!(matches!(&nets[..], [(a, None)] if *a == account), "only the account with lookup_username asks");
+    assert!(found(&app, "No results found"), "rows show when all lookups end");
+    let user = serde_json::json!({ "id": "x", "mxid": "@x_samx:beeper.local", "name": "Sam X", "identifiers": ["mailto:sam@example.com"] });
+    let _ = app.update(UiMessage::ContactNetwork("lookup:@samx".into(), 0, Ok(Some(user))));
+    assert!(found(&app, "Sam X") && found(&app, "sam@example.com"));
+    let _ = app.update(UiMessage::NewChatQueryChanged("@sam".into()));
+    assert!(app.new_chat_lookup.is_none() && !found(&app, "Sam X"), "typing drops the lookup");
 }
