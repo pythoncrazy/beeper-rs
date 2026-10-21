@@ -21,6 +21,22 @@ pub const ALL_MEMBER_ACTIONS: u8 = 31;
 pub const MEMBER_LEAVE: u8 = 1 << 3;
 pub const ALL_EDITS: u8 = (1 << EDITS.len()) - 1;
 pub const DISAPPEARING_TIMER: &str = "com.beeper.disappearing_timer";
+
+/// date-fns `formatDistanceStrict` in English, as Desktop shows a disappearing timer.
+pub fn timer_distance(ms: u64) -> String {
+    let n = |v: f64, unit: &str| {
+        let v = v.round() as u64;
+        format!("{v} {unit}{}", if v == 1 { "" } else { "s" })
+    };
+    match ms as f64 / 60_000.0 {
+        m if m < 1.0 => n(ms as f64 / 1000.0, "second"),
+        m if m < 60.0 => n(m, "minute"),
+        m if m < 1440.0 => n(m / 60.0, "hour"),
+        m if m < 43_200.0 => n(m / 1440.0, "day"),
+        m if m < 525_600.0 => n(m / 43_200.0, "month"),
+        m => n(m / 525_600.0, "year"),
+    }
+}
 /// Desktop's `qLt`: the disappearing timers in ms when the room features do not list them.
 pub const DEFAULT_TIMERS: [u64; 11] = [
     10_000,
@@ -635,6 +651,9 @@ pub struct Message {
     pub links: Vec<MessageLink>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
     pub seen: std::collections::BTreeMap<String, String>,
+    /// Desktop's `action.timer` of a `DISAPPEARING_TIMER` row: the new timer in ms, or 0 for Off.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub timer: Option<u64>,
     #[serde(skip)]
     pub flags: u16,
 }
@@ -664,7 +683,7 @@ pub struct Scheduled {
 impl Message {
     /// Desktop's silent rows, which neither preview a chat nor notify.
     pub fn silent(&self) -> bool {
-        matches!(self.message_type.as_deref(), Some("MEMBERSHIP" | "HIDDEN"))
+        matches!(self.message_type.as_deref(), Some("MEMBERSHIP" | "HIDDEN" | "DISAPPEARING_TIMER"))
     }
 
     pub fn edited(&self) -> bool {

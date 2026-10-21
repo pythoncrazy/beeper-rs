@@ -1495,6 +1495,7 @@ impl BeeperStore {
             is_edited: None,
             links: Vec::new(),
             seen: BTreeMap::new(),
+            timer: None,
             flags: 0,
         };
         let m_idx = self.push_message(msg, true);
