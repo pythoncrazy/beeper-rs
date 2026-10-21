@@ -884,6 +884,6 @@ impl BeeperSettings {
         }
         self.keybindings.keys().for_each(|h| _ = crate::prefs::hotkey_default(h));
         assert!(self.reminders_order < 4, "reminders order {} is out of range", self.reminders_order);
-        assert!((50..=300).contains(&self.zoom_percent), "zoom {}% is out of range", self.zoom_percent);
+        assert!((40..=300).contains(&self.zoom_percent), "zoom {}% is out of range", self.zoom_percent);
     }
 }

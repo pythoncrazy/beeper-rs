@@ -1269,3 +1269,13 @@ fn random_input_does_not_panic() {
         }
     });
 }
+
+#[test]
+fn zoom_keys_like_desktop() {
+    use iced::keyboard::{Key, Modifiers};
+    let mut app = demo_app("zoom-keys");
+    for (key, zoom) in [("=", 1.1), ("-", 1.0), ("-", 0.9), ("0", 1.0)] {
+        let _ = app.update(UiMessage::KeyPressed(Key::Character(key.into()), Modifiers::CTRL));
+        assert_eq!(app.zoom, zoom, "ctrl {key}");
+    }
+}
