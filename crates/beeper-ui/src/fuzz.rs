@@ -1123,6 +1123,21 @@ fn ai_settings_like_desktop() {
 }
 
 #[test]
+fn a_sent_link_keeps_its_preview() {
+    let mut app = demo_app("preview");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let url = "https://example.com/";
+    let edit = text_editor::Edit::Paste(Arc::new(format!("see {url}")));
+    let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
+    let page = serde_json::json!({ "matched_url": url, "og:title": "Example" });
+    app.pane.composer_links = vec![(url.into(), LinkState::Loaded(page, None))];
+    let _ = app.update(UiMessage::SubmitComposer);
+    let st = app.store.read();
+    let links = &st.messages.last().unwrap().links;
+    assert_eq!(links.iter().map(|l| l.title.as_str()).collect::<Vec<_>>(), ["Example"]);
+}
+
+#[test]
 fn every_pref_value_renders() {
     let mut app = demo_app("prefs");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
