@@ -4581,12 +4581,12 @@ impl BeeperGuiApp {
                 if let Some(d) = &self.spaces_window {
                     return window::gain_focus(d.id);
                 }
-                let (id, open) = self.open_child(Size::new(360.0, 560.0));
+                let (id, open) = self.open_child(SPACES_SIZE);
                 let st = self.store.read();
                 let order = rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st));
                 let order = order.collect();
                 drop(st);
-                self.spaces_window = Some(SpacesDraft { id, order, search: String::new(), drag: None });
+                self.spaces_window = Some(SpacesDraft { id, order, search: String::new(), drag: None, menu: None });
                 return open;
             }
             UiMessage::Spaces(e) => return self.spaces_edit(e),
@@ -7544,6 +7544,13 @@ impl BeeperGuiApp {
 
     /// Desktop's account context menu (`gYe`) of a sidebar account or network space.
     fn view_account_menu(&self, entry: &str) -> El<'_> {
+        let (menu, sub) = self.account_menu(entry, false);
+        row![menu].push(sub).into()
+    }
+
+    /// The menu of a sidebar space and its Show in Inbox submenu. The `gear` menu of the Edit Spaces window
+    /// (`mYe` and `gYe`) has fewer items.
+    fn account_menu(&self, entry: &str, gear: bool) -> (El<'_>, Option<El<'_>>) {
         let p = &self.pal;
         let st = self.store.read();
         if let Some(l) = rail_label(&st, entry) {
@@ -7563,21 +7570,31 @@ impl BeeperGuiApp {
                 mouse_area(menu_item(p, None, label.into(), "", Some(msg))).on_enter(UiMessage::ChatSub(None))
             };
             let inbox = menu_item(p, None, tr("Show in Inbox").into(), "›", Some(UiMessage::ChatSub(Some(0))));
-            let col = column![
-                mouse_area(inbox).on_enter(UiMessage::ChatSub(Some(0))),
-                item(
-                    tr(if l.muted { "Unmute Label" } else { "Mute Label" }),
-                    UiMessage::MuteLabel(l.id.clone(), !l.muted)
-                ),
-                menu_rule(p),
-                item(tr("Edit Spaces…"), UiMessage::OpenEditSpaces),
-                item(tr("Add/Remove Accounts…"), UiMessage::OpenSettings(SettingsTab::Accounts)),
-                menu_rule(p),
-                item(tr("Edit Label…"), UiMessage::EditLabel(l.id.clone())),
-                item(tr("Delete Label"), UiMessage::AskDeleteLabel(l.id.clone())),
-            ];
+            let inbox = mouse_area(inbox).on_enter(UiMessage::ChatSub(Some(0)));
+            let mute = if l.muted { "Unmute" } else { "Mute" };
+            let col = match gear {
+                true => column![
+                    inbox,
+                    item(trx(mute, "label context menu action"), UiMessage::MuteLabel(l.id.clone(), !l.muted)),
+                    item(tr("Edit Label…"), UiMessage::EditLabel(l.id.clone())),
+                    item(tr("Delete Label"), UiMessage::AskDeleteLabel(l.id.clone())),
+                ],
+                false => column![
+                    inbox,
+                    item(
+                        tr(if l.muted { "Unmute Label" } else { "Mute Label" }),
+                        UiMessage::MuteLabel(l.id.clone(), !l.muted)
+                    ),
+                    menu_rule(p),
+                    item(tr("Edit Spaces…"), UiMessage::OpenEditSpaces),
+                    item(tr("Add/Remove Accounts…"), UiMessage::OpenSettings(SettingsTab::Accounts)),
+                    menu_rule(p),
+                    item(tr("Edit Label…"), UiMessage::EditLabel(l.id.clone())),
+                    item(tr("Delete Label"), UiMessage::AskDeleteLabel(l.id.clone())),
+                ],
+            };
             let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
-            return row![menu].push(sub).into();
+            return (menu.into(), sub.map(Into::into));
         }
         let space = network_space(&st, entry);
         let account = space.map_or(entry, |n| n.account_id.as_str());
@@ -7602,26 +7619,31 @@ impl BeeperGuiApp {
         });
         let inbox = menu_item(p, None, tr("Show in Inbox").into(), "›", Some(UiMessage::ChatSub(Some(0))));
         let mute = beeper_core::models::AccountProps { notifications: muted, ..props };
-        let mute = menu_item(
-            p,
-            None,
-            tr(if muted { "Unmute Space" } else { "Mute Space" }).into(),
-            "",
-            Some(UiMessage::SetAccountProps(account.into(), mute)),
-        );
+        let label = match (gear, muted) {
+            (true, _) => trx(if muted { "Unmute" } else { "Mute" }, "account context menu action"),
+            (false, true) => tr("Unmute Space"),
+            (false, false) => tr("Mute Space"),
+        };
+        let mute = menu_item(p, None, label.into(), "", Some(UiMessage::SetAccountProps(account.into(), mute)));
         let accounts = UiMessage::OpenSettings(SettingsTab::Accounts);
+        let rest = column![mute].extend(
+            (!gear)
+                .then(|| {
+                    [
+                        menu_rule(p),
+                        menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
+                        menu_item(p, None, tr("Add/Remove Accounts…").into(), "", Some(accounts)),
+                    ]
+                })
+                .into_iter()
+                .flatten(),
+        );
         let col = column![
             mouse_area(inbox).on_enter(UiMessage::ChatSub(Some(0))),
-            mouse_area(column![
-                mute,
-                menu_rule(p),
-                menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
-                menu_item(p, None, tr("Add/Remove Accounts…").into(), "", Some(accounts))
-            ])
-            .on_enter(UiMessage::ChatSub(None))
+            mouse_area(rest).on_enter(UiMessage::ChatSub(None))
         ];
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
-        row![menu].push(sub).into()
+        (menu.into(), sub.map(Into::into))
     }
 
     /// The chat menu, with `room` pixels from its top to the bottom of the window.
@@ -12201,6 +12223,13 @@ impl BeeperGuiApp {
                 self.patch_settings(|s| s.spaces_order = order);
                 self.status_banner = tr("Sidebar updated").into();
             }
+            SpacesEdit::Menu(id) => (d.menu, self.chat_sub) = (id.map(|id| (id, self.cursor.get())), None),
+            SpacesEdit::Act(m) => {
+                if !matches!(*m, UiMessage::ChatSub(_)) {
+                    d.menu = None;
+                }
+                return self.update(*m);
+            }
             SpacesEdit::NewLabel => {
                 let close = window::close(d.id);
                 return Task::batch([close, self.update(UiMessage::OpenCreateLabel(Vec::new()))]);
@@ -12246,7 +12275,9 @@ impl BeeperGuiApp {
                                 && !st.settings.account(&rail_owner(&st, id)).notifications
                         }
                     };
-                    let name = row![ell(&space_name(&st, id), 220.0, 13.0, Weight::Semibold).color(p.strong)]
+                    let gear = !RAIL_VIEWS.iter().any(|v| v.0 == id) && id != LABEL_NUDGE;
+                    let room = if gear { 190.0 } else { 216.0 };
+                    let name = row![ell(&space_name(&st, id), room, 13.0, Weight::Semibold).color(p.strong)]
                         .push(muted.then(|| ic(icon::NOTIFICATIONS_OFF, 12.0).color(p.strong)))
                         .spacing(2)
                         .align_y(Center);
@@ -12255,14 +12286,17 @@ impl BeeperGuiApp {
                         .interaction(iced::mouse::Interaction::Grab)
                         .on_press(edit(SpacesEdit::Drag(id.clone())));
                     let lift = dragged == Some(id.as_str());
-                    let body = row![
-                        container(self.space_icon(&st, id)).center(20),
-                        column![name].push(sub).width(Fill),
-                        handle
-                    ]
-                    .spacing(10)
-                    .align_y(Center)
-                    .padding([6, 12]);
+                    let body =
+                        row![container(self.space_icon(&st, id)).center(20), column![name].push(sub).width(Fill),]
+                            .push(gear.then(|| {
+                                mouse_area(container(ic(icon::MORE_HORIZ, 16.0).color(p.sub)).center_x(16))
+                                    .interaction(mouse::Interaction::Pointer)
+                                    .on_press(edit(SpacesEdit::Menu(Some(id.clone()))))
+                            }))
+                            .push(handle)
+                            .spacing(10)
+                            .align_y(Center)
+                            .padding([6, 12]);
                     let fill = p.received;
                     let body = container(body).style(move |_: &Theme| container::Style {
                         background: Some(fill.into()),
@@ -12330,7 +12364,23 @@ impl BeeperGuiApp {
             .center_x(Fill)
             .padding([8, 0]);
         let window = container(column![head, card].push(new)).padding(8).style(fill_box(p.window, 0.0));
-        mouse_area(window).on_release(edit(SpacesEdit::Drop)).into()
+        let window = mouse_area(window).on_release(edit(SpacesEdit::Drop));
+        let Some((id, at)) = &d.menu else { return stack![window].into() };
+        let h = 8.0 + MENU_ITEM * if rail_label(&st, id).is_some() { 4.0 } else { 2.0 };
+        drop(st);
+        let (menu, sub) = self.account_menu(id, true);
+        let x = if at.x + 233.0 > SPACES_SIZE.width { at.x - 233.0 } else { at.x }.max(4.0);
+        let y = at.y.min(SPACES_SIZE.height - h - 8.0);
+        let sub_x = (x + 233.0).min(SPACES_SIZE.width - ACCOUNT_SUB_W - 4.0);
+        let act = |m| UiMessage::Spaces(SpacesEdit::Act(Box::new(m)));
+        let place = |m: El<'a>, x: f32| -> El<'a> {
+            let m = mouse_area(m.map(act)).on_press(UiMessage::Noop);
+            container(m).padding(Padding::ZERO.left(x).top(y)).into()
+        };
+        let close = mouse_area(container(Space::new()).width(Fill).height(Fill))
+            .on_press(edit(SpacesEdit::Menu(None)))
+            .on_right_press(edit(SpacesEdit::Menu(None)));
+        stack![window, close, place(menu, x)].push(sub.map(|s| place(s, sub_x))).into()
     }
 
     /// Desktop's `getSpaceIcon`.
@@ -13002,7 +13052,12 @@ pub struct SpacesDraft {
     pub search: String,
     /// The space that the drag handle moves, and the order before the drag.
     pub drag: Option<(String, Vec<String>)>,
+    /// The space of the open gear menu, and where it opened.
+    pub menu: Option<(String, Point)>,
 }
+
+/// The size of Desktop's Edit Spaces window.
+const SPACES_SIZE: Size = Size::new(360.0, 560.0);
 
 /// Desktop's `HIDDEN_DIVIDER_ID`.
 const SPACES_DIVIDER: &str = "__hidden_divider__";
@@ -13015,6 +13070,10 @@ pub enum SpacesEdit {
     Over(String),
     Drop,
     NewLabel,
+    /// The gear menu of a space, or no menu.
+    Menu(Option<String>),
+    /// A gear menu item.
+    Act(Box<UiMessage>),
 }
 
 impl LabelDraft {
