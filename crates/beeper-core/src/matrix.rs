@@ -1320,6 +1320,13 @@ pub async fn capabilities(p: Provision) -> Result<Value, String> {
     p.get("capabilities").await?.ok_or_else(|| "the bridge has no provisioning capabilities".into())
 }
 
+/// The bridge's `search_users`: the network users that match a name.
+pub async fn search_users(p: Provision, query: String) -> Result<Vec<Value>, String> {
+    let body = p.post("search_users", serde_json::json!({ "query": query }).to_string()).await?;
+    let v: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    Ok(v["results"].as_array().cloned().unwrap_or_default())
+}
+
 /// The bridge's `resolve_identifier`: the network user of a phone number, email or username, if there is one.
 pub async fn resolve_identifier(p: Provision, identifier: String) -> Result<Option<Value>, String> {
     p.get(&format!("resolve_identifier/{}", crate::codec::url_encode(&identifier))).await

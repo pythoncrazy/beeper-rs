@@ -2407,3 +2407,27 @@ fn new_chat_looks_up_identifiers_like_desktop() {
     let _ = app.update(UiMessage::NewChatQueryChanged("@sam".into()));
     assert!(app.new_chat_lookup.is_none() && !found(&app, "Sam X"), "typing drops the lookup");
 }
+
+#[test]
+fn new_chat_searches_connections_like_desktop() {
+    let mut app = demo_app("new-chat-connections");
+    let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
+    let account = rail_accounts(&app.store.read()).into_iter().next().expect("an account");
+    let _ = app.update(UiMessage::NewChat);
+    let _ = app.update(UiMessage::NewChatQueryChanged("dana".into()));
+    let _ = app.update(UiMessage::LookupIdentifier("dana".into()));
+    assert!(app.new_chat_search.is_none(), "no bridge can search");
+    let caps = serde_json::json!({ "resolve_identifier": { "create_dm": true, "search": true } });
+    let _ = app.update(UiMessage::Capabilities(account.clone(), Ok(caps)));
+    let _ = app.update(UiMessage::LookupIdentifier("dana".into()));
+    assert!(found(&app, "Connections") && found(&app, "Searching..."));
+    let user = |name: &str, phone: &str| serde_json::json!({ "id": name, "mxid": format!("@x_{name}:beeper.local"), "name": name, "identifiers": [format!("tel:{phone}")] });
+    let results = vec![user("Dana One", "+15550111"), user("Dana Two", "+15550111"), user("Ann Dana", "+15550112")];
+    let _ = app.update(UiMessage::SearchedUsers("dan".into(), account.clone(), Ok(results.clone())));
+    assert!(found(&app, "Searching..."), "results of an old query do nothing");
+    let _ = app.update(UiMessage::SearchedUsers("dana".into(), account, Ok(results)));
+    assert!(!found(&app, "Searching...") && found(&app, "Dana One") && found(&app, "Ann Dana"));
+    assert!(!found(&app, "Dana Two"), "one row per bridge and phone number");
+    let _ = app.update(UiMessage::NewChatQueryChanged("danae".into()));
+    assert!(app.new_chat_search.is_none() && !found(&app, "Connections"));
+}

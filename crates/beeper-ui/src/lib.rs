@@ -502,6 +502,9 @@ pub enum UiMessage {
     ContactNetwork(String, usize, Result<Option<serde_json::Value>, String>),
     /// Desktop's lookup of a typed phone number, email or username, after the user stops typing.
     LookupIdentifier(String),
+    /// The users of an account's `search_users` for a New Chat query.
+    SearchedUsers(String, String, Result<Vec<serde_json::Value>, String>),
+    ToggleNewChatResults,
     /// A click on a network of the expanded contact: the account and its user.
     PickUser(String, Box<User>),
     /// Desktop's `createChatFromDraft` for the open draft.
@@ -847,6 +850,13 @@ fn resolved_user(v: &serde_json::Value) -> User {
     }
 }
 
+/// Desktop's `SD`: a person once per bridge, by phone number, username, email or ID.
+fn person_key(account_id: &str, u: &User) -> String {
+    let id = u.phone_number.as_deref().map(phone_digits);
+    let id = id.or_else(|| u.username.clone()).or_else(|| u.email.clone()).unwrap_or_else(|| u.id.clone());
+    format!("{}:{id}", brand_key(account_id))
+}
+
 /// Desktop's `pb`: the name that sorts a person.
 fn person_name(u: &User) -> &str {
     [&u.full_name, &u.custom_nickname, &u.username, &u.phone_number, &u.email]
@@ -862,9 +872,7 @@ fn chat_people(st: &BeeperStore, accounts: &[String], only: Option<&str>, q: &st
     let chats = st.chats.iter().filter(|c| accounts.contains(&c.account_id) && only.is_none_or(|a| c.account_id == a));
     for c in chats {
         for u in c.participants.items.iter().filter(|u| u.is_self != Some(true)) {
-            let id = u.phone_number.as_deref().map(phone_digits);
-            let id = id.or_else(|| u.username.clone()).or_else(|| u.email.clone()).unwrap_or_else(|| u.id.clone());
-            let key = format!("{}:{id}", brand_key(&c.account_id));
+            let key = person_key(&c.account_id, u);
             if found.get(&key).is_none_or(|(old, _)| c.last_activity > old.last_activity) {
                 found.insert(key, (c, u));
             }
@@ -3086,6 +3094,9 @@ pub struct BeeperGuiApp {
     pub contact_networks: Option<(String, Networks)>,
     /// The networks of the typed identifier, by "lookup:" and the query.
     pub new_chat_lookup: Option<(String, Networks)>,
+    /// Desktop's `Connections` of New Chat: the query, the accounts that still search, and the users found.
+    pub new_chat_search: Option<(String, usize, People)>,
+    pub new_chat_results_expanded: bool,
     pub new_chat_account: Option<String>,
     pub new_chat_accounts_open: bool,
     pub new_chat_query: String,
@@ -3265,6 +3276,8 @@ impl BeeperGuiApp {
             resolve,
             contact_networks: None,
             new_chat_lookup: None,
+            new_chat_search: None,
+            new_chat_results_expanded: false,
             new_chat_account: None,
             new_chat_accounts_open: false,
             new_chat_query: String::new(),
@@ -5549,7 +5562,8 @@ impl BeeperGuiApp {
                 self.new_chat_query.clear();
                 (self.new_chat_expanded, self.new_chat_chats_expanded) = (false, false);
                 (self.new_chat_account, self.new_chat_accounts_open) = (None, false);
-                (self.contact_networks, self.new_chat_lookup) = (None, None);
+                (self.contact_networks, self.new_chat_lookup, self.new_chat_search) = (None, None, None);
+                self.new_chat_results_expanded = false;
                 self.join_matrix_mode = false;
                 return operation::focus("new-chat-input");
             }
@@ -5572,12 +5586,13 @@ impl BeeperGuiApp {
                 if q != self.new_chat_query.trim() || q.is_empty() {
                     return Task::none();
                 }
+                let search = self.search_users(q);
                 let phone = typed_phone(q).then(|| fmt_phone(&phone_digits(q)));
                 let email = (q.contains('@') && !q.starts_with('@')).then_some(q);
                 let named = q.as_bytes().windows(2).any(|w| w[0] == b'@' && w[1].is_ascii_alphanumeric());
                 let username = named.then_some(q);
                 if phone.is_none() && email.is_none() && username.is_none() {
-                    return Task::none();
+                    return search;
                 }
                 let st = self.store.read();
                 let only =
@@ -5589,8 +5604,17 @@ impl BeeperGuiApp {
                 let key = format!("lookup:{q}");
                 let (nets, tasks) = self.resolve_identifiers(&key, &accounts, phone.as_deref(), email, username);
                 self.new_chat_lookup = Some((key, nets));
-                return tasks;
+                return Task::batch([search, tasks]);
             }
+            UiMessage::SearchedUsers(q, account, r) => {
+                let Some((_, pending, found)) = self.new_chat_search.as_mut().filter(|(s, ..)| *s == q) else {
+                    return Task::none();
+                };
+                *pending -= 1;
+                let users = r.inspect_err(|e| eprintln!("search users failed for {account}: {e}")).unwrap_or_default();
+                found.extend(users.iter().map(|v| (account.clone(), resolved_user(v))));
+            }
+            UiMessage::ToggleNewChatResults => self.new_chat_results_expanded = !self.new_chat_results_expanded,
             UiMessage::ContactNetwork(id, slot, r) => {
                 let open = [&mut self.contact_networks, &mut self.new_chat_lookup].into_iter().flatten();
                 let Some((_, nets)) = open.into_iter().find(|(c, _)| *c == id) else {
@@ -5678,7 +5702,7 @@ impl BeeperGuiApp {
             }
             UiMessage::NewChatQueryChanged(q) => {
                 self.new_chat_query = q.clone();
-                self.new_chat_lookup = None;
+                (self.new_chat_lookup, self.new_chat_search) = (None, None);
                 let wait = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
                 return Task::perform(wait, move |()| UiMessage::LookupIdentifier(q.clone()));
             }
@@ -8626,6 +8650,25 @@ impl BeeperGuiApp {
     fn show(&mut self, t: Toast) {
         self.status_banner = t.text.clone();
         self.toast = Some(t);
+    }
+
+    /// Desktop's `searchUsers` on the accounts whose bridge has the `search` capability.
+    fn search_users(&mut self, q: &str) -> Task<UiMessage> {
+        let only = self.new_chats.iter().find(|d| Some(d.id) == self.creating_chat).and_then(|d| d.users.first());
+        let only = only.map(|(a, _)| a.clone()).or_else(|| self.new_chat_account.clone());
+        let accounts = rail_accounts(&self.store.read());
+        let accounts: Vec<String> = accounts
+            .into_iter()
+            .filter(|a| self.can(a, "create_dm") && self.can(a, "search") && only.as_ref().is_none_or(|o| o == a))
+            .collect();
+        if accounts.is_empty() {
+            return Task::none();
+        }
+        self.new_chat_search = Some((q.into(), accounts.len(), Vec::new()));
+        Task::batch(accounts.into_iter().map(|a| {
+            let (q, search) = (q.to_string(), beeper_core::matrix::search_users(self.provision(&a), q.into()));
+            Task::perform(search, move |r| UiMessage::SearchedUsers(q.clone(), a.clone(), r))
+        }))
     }
 
     /// Desktop's `ix`: the users of a phone number, email or username on the accounts. An account with `any_phone`
@@ -11721,6 +11764,28 @@ impl BeeperGuiApp {
                 col = col.push(item(txt(label, 13.0).color(p.text).into(), Some(UiMessage::ToggleNewChatChats)));
             }
         }
+        let search = self.new_chat_search.as_ref().filter(|(s, ..)| !q.is_empty() && *s == self.new_chat_query.trim());
+        if let Some((_, pending, found)) = search {
+            col = col.push(heading(tr("Connections")));
+            let mut seen = HashSet::new();
+            let mut results: Vec<&(String, User)> =
+                found.iter().filter(|(a, u)| seen.insert(person_key(a, u))).collect();
+            results.sort_by_cached_key(|(_, u)| {
+                let n = person_name(u).to_lowercase();
+                (n.is_empty(), n)
+            });
+            let limit = if self.new_chat_results_expanded { results.len() } else { 10.min(results.len()) };
+            for (a, u) in results.iter().take(limit).filter(|_| *pending == 0) {
+                col = col.push(person(a, u));
+            }
+            if *pending > 0 {
+                col = col.push(item(txt(tr("Searching..."), 13.0).color(p.sub).into(), None));
+            } else if results.len() > 10 {
+                let label =
+                    if self.new_chat_results_expanded { tr("Show less results") } else { tr("Show more results") };
+                col = col.push(item(txt(label, 13.0).color(p.text).into(), Some(UiMessage::ToggleNewChatResults)));
+            }
+        }
         let any = listed.iter().any(|a| self.can(a, "contact_list") || self.can(a, "any_phone"));
         let contacts: Vec<&User> = st
             .contacts
@@ -11728,7 +11793,11 @@ impl BeeperGuiApp {
             .filter(|_| any)
             .filter(|u| u.full_name.as_deref().unwrap_or_default().to_lowercase().contains(&q))
             .collect();
-        if lookups.is_empty() && people.is_empty() && contacts.is_empty() {
+        if lookups.is_empty()
+            && people.is_empty()
+            && search.is_none_or(|(_, n, f)| *n == 0 && f.is_empty())
+            && contacts.is_empty()
+        {
             col = col.push(heading(tr("No results found")));
         }
         if !contacts.is_empty() {
@@ -14204,6 +14273,9 @@ pub struct LabelDraft {
     /// Whether the `IconColorPicker` is open.
     pub picker: bool,
 }
+
+/// People, each with the account to reach them on.
+pub type People = Vec<(String, User)>;
 
 /// The accounts of a New Chat contact in rail order, each with the user found on it, or `None` while it resolves.
 pub type Networks = Vec<(String, Option<Option<User>>)>;
