@@ -1993,6 +1993,7 @@ macro_rules! svg_static {
 }
 
 svg_static!(CHEVRON_LEFT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
+svg_static!(CALL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M16.193 17.842q-2.605 0-5.146-1.136t-4.625-3.218q-2.083-2.084-3.219-4.625T2.068 3.717q0-.375.25-.625a.85.85 0 0 1 .625-.25h3.375q.292 0 .52.198a.76.76 0 0 1 .272.468l.541 2.917q.042.333-.02.563a.9.9 0 0 1-.23.395l-2.02 2.042q.416.77.989 1.49.573.718 1.26 1.385.645.646 1.355 1.198.708.552 1.5 1.01l1.958-1.958q.187-.188.49-.281.301-.094.593-.052l2.875.583a.97.97 0 0 1 .48.302.73.73 0 0 1 .187.49v3.375q0 .375-.25.625a.85.85 0 0 1-.625.25"/></svg>"##);
 svg_static!(ADD_ACCOUNT, include_bytes!("../assets/add_account.svg"));
 svg_static!(CLAUDE_LOGO, include_bytes!("../assets/integrations/claude.svg"));
 svg_static!(ERROR_CIRCLE, include_bytes!("../assets/settings/error_circle.svg"));
@@ -2370,6 +2371,10 @@ fn handle(u: &User) -> Option<String> {
 }
 
 /// The Chat Info context menus: the identity header, the title, a member, a bookmark and a contact detail.
+/// Desktop's user card: its width, the part of its 88 px avatar inside the card, and its height with buttons.
+const CARD_W: f32 = 200.0;
+const CARD_FACE_IN: f32 = 88.0 / 3.0;
+const CARD_H: f32 = 88.0 + 8.0 + 18.0 + 15.0 + 8.0 + 28.0 + 8.0;
 const INFO_MENUS: [&str; 5] = ["info:", "copy:", "member:", "bookmark:", "contact:"];
 
 /// The Chat Info menus. The header menus of Desktop's `$fe`: `info:<chat>` has the edit actions and
@@ -7725,7 +7730,7 @@ impl BeeperGuiApp {
         // The sync task can drop a chat before StoreChanged reaches update.
         let known = |c: &str| {
             let chat = c.strip_prefix("info:").or(c.strip_prefix("copy:")).unwrap_or(c);
-            let pair = ["member:", "bookmark:", "contact:"].iter().find_map(|k| chat.strip_prefix(k));
+            let pair = ["member:", "bookmark:", "contact:", "card:"].iter().find_map(|k| chat.strip_prefix(k));
             let chat = pair.map_or(chat, |k| k.split_once(' ').map_or(k, |k| k.0));
             c == RAIL_MORE
                 || c.starts_with("draft:")
@@ -7775,6 +7780,12 @@ impl BeeperGuiApp {
         let reminder_menu = self.reminder_menu.map(|at| (self.view_reminder_menu(), at.x, at.y));
         let rate_menu = self.audio.menu.map(|at| (self.view_rate_menu(), at.x, at.y));
         let chat_menu = self.chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
+            if let Some(key) = cid.strip_prefix("card:") {
+                let size = self.pane().size;
+                let x = (at.x - CARD_W / 2.0).clamp(8.0, size.width - CARD_W - 8.0);
+                let below = at.y + 30.0 + CARD_H <= size.height;
+                return (self.view_user_card(key), x, if below { at.y + 30.0 } else { at.y - 30.0 - CARD_H });
+            }
             let (w, h) = if cid.starts_with("draft:") {
                 (124.0, 31.0)
             } else if cid == RAIL_MORE {
@@ -8843,6 +8854,45 @@ impl BeeperGuiApp {
     }
 
     /// The chat menu, with `room` pixels from its top to the bottom of the window.
+    /// Desktop's `BrandUserHoverCard` of the member in "chat user": the avatar over the card, the name, the
+    /// username, phone number or email, and the Send Message and call buttons.
+    fn view_user_card(&self, key: &str) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read();
+        let (cid, uid) = key.split_once(' ').expect("a chat and a user");
+        let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
+        let u = c.participants.items.iter().find(|u| u.id == uid).expect("a member of the chat");
+        let bg = if self.dark { Color::BLACK } else { Color::WHITE };
+        let shade = Color { a: 0.1, ..p.strong };
+        let lifted = move |r: f32| {
+            move |_: &Theme| container::Style {
+                background: Some(bg.into()),
+                border: iced::border::rounded(r),
+                shadow: iced::Shadow { color: shade, offset: iced::Vector::new(0.0, 1.0), blur_radius: 10.0 },
+                ..Default::default()
+            }
+        };
+        let name = member_name(u);
+        let id = handle(u).or_else(|| u.phone_number.as_deref().map(fmt_phone)).or_else(|| u.email.clone());
+        let face = container(self.face(u.img_url.as_deref(), &name, 80.0, 0.0)).padding(4).style(lifted(44.0));
+        let info = column![semi(name, 14.0).line_height(Pixels(18.0)).color(p.strong).width(Fill).align_x(Center)]
+            .push(id.map(|i| txt(i, 12.0).line_height(Pixels(15.0)).color(p.sub).width(Fill).align_x(Center)));
+        let muted = btn_style([p.chip; 3], [p.strong; 3], 9999.0);
+        let actions = (u.is_self != Some(true) && self.can(&c.account_id, "create_dm")).then(|| {
+            let label = txt(tr("Send Message"), 11.0).line_height(Pixels(14.0));
+            let send = button(container(label).center_x(Fill)).padding([4, 8]).width(Fill).style(muted);
+            let call = u.phone_number.as_ref().map(|n| {
+                let open = UiMessage::Commands(vec![UiMessage::CloseModals, UiMessage::OpenUrl(format!("tel:{n}"))]);
+                button(tinted(&CALL, 20.0, p.strong)).padding(4).style(muted).on_press(open)
+            });
+            row![send.on_press(UiMessage::MessageMember(cid.into(), uid.into()))].push(call).spacing(8).align_y(Center)
+        });
+        let card = column![Space::new().height(CARD_FACE_IN), info].push(actions).spacing(8).padding([8, 11]);
+        let card = container(card).width(CARD_W).style(lifted(17.0));
+        let face = container(face).center_x(CARD_W);
+        stack![column![Space::new().height(88.0 - 8.0 - CARD_FACE_IN), card], face].into()
+    }
+
     fn view_chat_menu(&self, cid: &str, sub_left: bool, room: f32) -> El<'_> {
         let p = &self.pal;
         if cid == RAIL_MORE {
@@ -11807,8 +11857,9 @@ impl BeeperGuiApp {
                 .spacing(8)
                 .align_y(Center);
             let menu = UiMessage::OpenChatMenu(format!("member:{} {}", chat.id, u.id));
+            let card = UiMessage::OpenChatMenu(format!("card:{} {}", chat.id, u.id));
             let btn = button(line).padding(4).width(Fill).style(btn_style([CLEAR, shade, shade], [p.strong; 3], 8.0));
-            mouse_area(btn.on_press(UiMessage::Noop)).on_right_press(menu).into()
+            mouse_area(btn.on_press(card)).on_right_press(menu).into()
         };
         let search = searchable.then(|| {
             let n = all.len();
