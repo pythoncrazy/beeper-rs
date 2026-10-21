@@ -1425,6 +1425,7 @@ fn poll_creator_like_desktop() {
     }
     let _ = app.update(UiMessage::OpenMessageMenu(sent.clone()));
     assert!(simulator(app.view_main()).find("End Poll").is_err(), "an ended poll has no End Poll");
+    assert!(simulator(app.view_main()).find("Edit…").is_err(), "a poll is not edited");
     let _ = app.update(UiMessage::OpenPollCreator(chat.clone()));
     let id = app.poll_windows[0].id;
     let edit = |app: &mut BeeperGuiApp, e| drop(app.update(UiMessage::Poll(id, e)));
