@@ -372,6 +372,10 @@ pub enum UiMessage {
     OpenCreateLabel(Vec<String>),
     /// Desktop's `toggleLabel` for one chat.
     ToggleLabel(String, String, bool),
+    /// Runs the undo of an action toast, which shows no toast itself.
+    Undone(Box<UiMessage>),
+    /// Puts back the name, color, icon and chats of a label.
+    RestoreLabel(Box<Label>),
     /// Desktop's `CreateLabelBrowserWindow` for an existing label.
     EditLabel(String),
     Label(LabelEdit),
@@ -4717,8 +4721,20 @@ impl BeeperGuiApp {
             UiMessage::Spaces(e) => return self.spaces_edit(e),
             UiMessage::ToggleLabel(label, chat, add) => {
                 self.chat_menu = None;
-                self.store.write().set_label_room(&label, &chat, add);
+                let mut st = self.store.write();
+                st.set_label_room(&label, &chat, add);
+                let name = st.labels.iter().find(|l| l.id == label).expect("a toggled label").name.clone();
+                drop(st);
+                let text = if add { format!("Added to {name}") } else { format!("Removed from {name}") };
+                let open = add.then(|| UiMessage::SelectAccount(Some(format!("label:{label}"))));
+                self.action_toast(text, UiMessage::ToggleLabel(label, chat, !add), open);
             }
+            UiMessage::Undone(m) => {
+                let task = self.update(*m);
+                (self.status_banner, self.undo_toast) = (String::new(), None);
+                return task;
+            }
+            UiMessage::RestoreLabel(l) => self.store.write().update_label(&l.id, &l.name, l.color, l.icon, l.rooms),
             UiMessage::OpenCreateLabel(chats) => {
                 self.chat_menu = None;
                 if let Some(d) = &self.label_window {
@@ -8185,8 +8201,16 @@ impl BeeperGuiApp {
         };
         if n > 0 {
             self.status_banner = text.clone();
-            self.undo_toast = Some(UndoToast { text, icon, undo: UiMessage::UndoFlag(flag, chats, many), open });
+            let (undo, open) = (UiMessage::UndoFlag(flag, chats, many), Some(UiMessage::SelectTab(open)));
+            self.undo_toast = Some(UndoToast { text, icon, strong: icon.is_some(), undo, open });
         }
+    }
+
+    /// Desktop's `successToast` of an action with an undo.
+    fn action_toast(&mut self, text: String, undo: UiMessage, open: Option<UiMessage>) {
+        self.status_banner = text.clone();
+        let undo = UiMessage::Undone(Box::new(undo));
+        self.undo_toast = Some(UndoToast { text, icon: None, strong: true, undo, open });
     }
 
     /// The toast timeout runs while a window is focused and the pointer is not on the toast.
@@ -10608,19 +10632,24 @@ impl BeeperGuiApp {
                     let label = semi(tr("Undo"), 13.0).line_height(Pixels(18.0)).color(fg);
                     button(label).padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0)).on_press(t.undo.clone())
                 };
-                let card: El = match t.icon {
-                    Some(i) => {
-                        let glyph = container(tinted(&TOAST_ICONS[i], 20.0, p.strong)).center_x(16).center_y(20);
+                let card: El = match t.strong {
+                    true => {
+                        let glyph = t
+                            .icon
+                            .map(|i| container(tinted(&TOAST_ICONS[i], 20.0, p.strong)).center_x(16).center_y(20));
                         let text = semi(banner.to_string(), 13.0).color(p.strong);
-                        row![glyph, text, undo(p.accent), close].spacing(8).align_y(Center).into()
+                        row![].push(glyph).push(text).push(undo(p.accent)).push(close).spacing(8).align_y(Center).into()
                     }
-                    None => {
+                    false => {
                         let text = txt(banner.to_string(), 13.0).color(p.strong);
                         row![column![text, undo(p.strong)].spacing(16), close].spacing(8).into()
                     }
                 };
                 let card = container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0));
-                return toast(mouse_area(card).on_press(UiMessage::SelectTab(t.open)).into());
+                return toast(match t.open.clone() {
+                    Some(open) => mouse_area(card).on_press(open).into(),
+                    None => card.into(),
+                });
             }
             let text = txt(banner.to_string(), 13.0).color(p.strong);
             let action = match (self.relaunch_toast, &self.banner_action) {
@@ -12496,12 +12525,19 @@ impl BeeperGuiApp {
             LabelEdit::Icon(i) => d.icon = (d.icon.as_deref() != Some(i)).then(|| i.into()),
             LabelEdit::Create if ready => {
                 let (id, chats) = (d.id, std::mem::take(&mut d.chats));
-                if let Some(label) = &d.label {
-                    self.store.write().update_label(label, &d.name, d.color, d.icon.clone(), chats);
+                let name = d.name.trim().to_string();
+                if let Some(label) = d.label.clone() {
+                    let mut st = self.store.write();
+                    let old = st.labels.iter().find(|l| l.id == label).expect("an edited label").clone();
+                    st.update_label(&label, &name, d.color, d.icon.clone(), chats);
+                    drop(st);
+                    self.action_toast(format!("Updated {name}"), UiMessage::RestoreLabel(Box::new(old)), None);
                     return window::close(id);
                 }
-                let label = self.store.write().create_label(&d.name, d.color, d.icon.clone(), chats);
-                let _ = self.update(UiMessage::SelectAccount(Some(format!("label:{label}"))));
+                let label = self.store.write().create_label(&name, d.color, d.icon.clone(), chats);
+                let open = UiMessage::SelectAccount(Some(format!("label:{label}")));
+                let _ = self.update(open.clone());
+                self.action_toast(format!("Created {name}"), UiMessage::DeleteLabel(label), Some(open));
                 return window::close(id);
             }
             LabelEdit::Create => {}
@@ -12704,7 +12740,6 @@ impl BeeperGuiApp {
                 let order = d.order.iter().enumerate().filter(|(i, _)| *i != split);
                 let order = order.map(|(i, id)| SpaceOrder { id: id.clone(), visible: i < split }).collect();
                 self.patch_settings(|s| s.spaces_order = order);
-                self.status_banner = tr("Sidebar updated").into();
             }
             SpacesEdit::Menu(id) => (d.menu, self.chat_sub) = (id.map(|id| (id, self.cursor.get())), None),
             SpacesEdit::Act(m) => {
@@ -13548,8 +13583,10 @@ pub struct UndoToast {
     pub text: String,
     /// The index of the icon in `TOAST_ICONS`.
     pub icon: Option<usize>,
+    /// Desktop's `textStyle: "strong"` toasts have Undo at the right; the others have it below the text.
+    pub strong: bool,
     pub undo: UiMessage,
-    pub open: InboxTab,
+    pub open: Option<UiMessage>,
 }
 
 /// A press on a rail space, which Desktop's `Drop` sorts after the cursor moves 5px.

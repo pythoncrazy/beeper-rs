@@ -1052,7 +1052,7 @@ impl BeeperStore {
 
     /// Desktop's `updateLabel` from the label window: the name, color, icon and chats of the label `id`.
     pub fn update_label(&mut self, id: &str, name: &str, color: Option<u8>, icon: Option<String>, rooms: Vec<String>) {
-        assert!(!name.trim().is_empty() && !rooms.is_empty(), "a label has a name and chats");
+        assert!(!name.trim().is_empty(), "a label has a name");
         let old = self.labels.iter().find(|l| l.id == id).expect("an edited label").clone();
         let removed = old.rooms.iter().filter(|r| !rooms.contains(r)).map(|r| (r.clone(), false));
         let changes =

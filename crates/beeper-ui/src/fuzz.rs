@@ -1605,6 +1605,10 @@ fn create_label_like_desktop() {
     assert_eq!((label.color, label.icon.as_deref()), (Some(11), None), "a second pick clears the icon");
     assert!(chats.iter().all(|c| st.chats[st.chat_idx_by_id[c]].label_ids.contains(&label.id)));
     assert_eq!(app.selected_account_filter, Some(format!("label:{}", label.id)), "the new label opens");
+    assert_eq!(app.status_banner, "Created Friends");
+    drop(st);
+    let _ = app.update(UiMessage::Undo(false));
+    assert!(app.store.read().labels.iter().all(|l| l.name != "Friends") && app.selected_account_filter.is_none());
 }
 
 #[test]
@@ -1626,6 +1630,9 @@ fn edit_and_delete_labels_like_desktop() {
         assert_eq!(work.name, "Work Team");
         work.rooms.clone()
     };
+    assert_eq!(app.status_banner, "Updated Work Team");
+    let _ = app.update(UiMessage::Undo(false));
+    assert!(app.store.read().labels.iter().any(|l| l.id == "lbl_work" && l.name == "Work" && l.rooms == rooms));
     let _ = app.update(UiMessage::SelectAccount(Some("label:lbl_work".into())));
     let _ = app.update(UiMessage::AskDeleteLabel("lbl_work".into()));
     simulator(app.view_confirm(ASK_DELETE_LABEL)).find("Delete").expect("a Delete button");
@@ -1693,7 +1700,7 @@ fn edit_spaces_like_desktop() {
     assert_eq!(rail[..2], ["label:lbl_work", "inbox"]);
     assert!(!rail.iter().any(|s| s == "reminders"), "a space dropped after Hidden leaves the sidebar");
     assert_eq!(hidden_spaces(&app.store.read()), ["reminders"]);
-    assert_eq!(app.status_banner, "Sidebar updated");
+    assert!(app.status_banner.is_empty(), "Edit Spaces sorts without a toast");
     assert!(view(&app).find("No Hidden Spaces").is_err());
     edit(&mut app, SpacesEdit::Drag(SPACES_DIVIDER.into()));
     edit(&mut app, SpacesEdit::Over("label:lbl_work".into()));
@@ -2026,8 +2033,15 @@ fn label_chats_from_the_chat_menu_like_desktop() {
     };
     assert_eq!(labels(&app), ["lbl_work"]);
     assert!(app.store.read().labels.iter().any(|l| l.id == "lbl_work" && l.rooms.iter().any(|r| r == chat)));
+    assert_eq!(app.status_banner, "Added to Work");
+    let _ = app.update(app.undo_toast.as_ref().and_then(|t| t.open.clone()).expect("the toast opens the label"));
+    assert_eq!(app.selected_account_filter.as_deref(), Some("label:lbl_work"));
+    let _ = app.update(UiMessage::Undo(false));
+    assert!(labels(&app).is_empty() && app.status_banner.is_empty(), "Undo shows no toast");
+    let _ = app.update(UiMessage::ToggleLabel("lbl_work".into(), chat.into(), true));
     let _ = app.update(UiMessage::ToggleLabel("lbl_work".into(), chat.into(), false));
     assert!(labels(&app).is_empty());
+    assert!(app.status_banner == "Removed from Work" && app.undo_toast.as_ref().is_some_and(|t| t.open.is_none()));
     let _ = app.update(UiMessage::OpenCreateLabel(vec![chat.into()]));
     assert_eq!(app.label_window.as_ref().expect("the label window").chats, [chat]);
 }
