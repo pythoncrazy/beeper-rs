@@ -323,10 +323,11 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
 fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &Value) -> Result<Vec<Chat>, String> {
     let mut stmt = db
         .prepare(
-            "SELECT threadID, accountID, CAST(thread AS TEXT), timestamp FROM threads
+            "SELECT threadID, threads.accountID, CAST(thread AS TEXT), timestamp, json_extract(props, '$.note')
+             FROM threads LEFT JOIN thread_props USING (threadID)
              WHERE COALESCE(is_label, 0) = 0 AND json_extract(CAST(thread AS TEXT), '$.extra.roomType') IS NULL
              AND json_extract(CAST(thread AS TEXT), '$.extra.isNoteToSelf') IS NOT 1
-             ORDER BY rowid",
+             ORDER BY threads.rowid",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -336,12 +337,13 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 r.get::<_, Option<String>>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<i64>>(3)?,
+                r.get::<_, Option<String>>(4)?,
             ))
         })
         .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
         .map_err(|e| e.to_string())?;
     rows.into_iter()
-        .map(|(id, account, json, ts)| {
+        .map(|(id, account, json, ts, note)| {
             let t: Value = serde_json::from_str(&json).map_err(|e| format!("thread {id}: {e}"))?;
             let items = people.remove(&id).unwrap_or_default();
             let group = t.get("type").and_then(Value::as_str) == Some("group");
@@ -386,6 +388,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 preview,
                 reminder: None,
                 chat_theme: None,
+                note: note.filter(|n| !n.is_empty()),
                 notifiable: None,
                 is_request: Some(flag(&t, "isMessageRequest")),
                 network_name: str_field(&t, "networkName")

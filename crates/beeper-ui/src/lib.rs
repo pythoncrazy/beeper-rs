@@ -381,6 +381,7 @@ pub enum UiMessage {
     InfoMore,
     InfoAll,
     InfoQuery(String),
+    InfoNote(text_editor::Action),
     Group(GroupEdit),
     /// Opens the New label window with these chats picked.
     OpenCreateLabel(Vec<String>),
@@ -3261,6 +3262,8 @@ pub struct BeeperGuiApp {
     /// Whether the Chat Info Members section shows all of its members, and its search text.
     pub info_all: bool,
     pub info_query: String,
+    /// The Notes of the open chat in the Chat Info panel.
+    pub info_note: text_editor::Content,
     /// The poll votes windows with their chats and poll messages.
     pub vote_windows: Vec<(window::Id, String, String)>,
     /// The window that `BEEPER_SCREENSHOT_EXIT` or `BEEPER_SCREENSHOT_SETTINGS` captures after its next frame.
@@ -3432,6 +3435,7 @@ impl BeeperGuiApp {
             info_more: false,
             info_all: false,
             info_query: String::new(),
+            info_note: text_editor::Content::new(),
             spaces_window: None,
             vote_windows: Vec::new(),
             shot: None,
@@ -3878,6 +3882,7 @@ impl BeeperGuiApp {
         self.pane.msg_anchor = None;
         (self.info_desc, self.info_more, self.info_all) = (None, false, false);
         self.info_query.clear();
+        self.info_note = text_editor::Content::with_text(chat.note.as_deref().unwrap_or_default());
         let pending = st.scheduled.iter().any(|s| s.chat_id == chat.id && !s.canceled);
         (self.pane.send_later, self.pane.sched_fold, self.pane.sched_menu) = (None, (pending, pending), None);
         self.pane.reply_thread = None;
@@ -5057,6 +5062,17 @@ impl BeeperGuiApp {
             }
             UiMessage::InfoMore => self.info_more ^= true,
             UiMessage::InfoAll => self.info_all ^= true,
+            UiMessage::InfoNote(action) => {
+                let edit = action.is_edit();
+                self.info_note.perform(action);
+                if edit {
+                    let note = Some(self.info_note.text()).filter(|n| !n.is_empty());
+                    let mut st = self.store.write();
+                    let cid = self.pane.selected_chat_id.as_deref().expect("a chat is selected");
+                    let idx = st.resolve_chat_idx(cid).expect("selected chat exists");
+                    st.update_chat(idx, |c| c.note = note);
+                }
+            }
             UiMessage::InfoQuery(q) => (self.info_all, self.info_query) = (!q.trim().is_empty(), q),
             UiMessage::OpenEditGroup(chat) => {
                 self.chat_menu = None;
@@ -11029,7 +11045,26 @@ impl BeeperGuiApp {
             container(toolbar).center_y(46),
         ];
         let members = (chat.chat_type == "group").then(|| self.view_members(chat));
-        let body = column![header].push(desc).push(members).padding(Padding::new(8.0).top(0.0));
+        let note = text_editor(&self.info_note)
+            .placeholder("Notes")
+            .on_action(UiMessage::InfoNote)
+            .size(13)
+            .line_height(Pixels(16.0))
+            .padding([8, 11])
+            .min_height(128)
+            .max_height(self.pane().size.height / 2.0)
+            .style(move |_: &Theme, _| text_editor::Style {
+                background: p.chip.into(),
+                border: border::rounded(10),
+                placeholder: p.sub,
+                value: p.strong,
+                selection: p.accent.scale_alpha(0.3),
+            });
+        let body = column![header]
+            .push(desc)
+            .push(members)
+            .push(container(note).padding(Padding::ZERO.top(8.0)))
+            .padding(Padding::new(8.0).top(0.0));
         let scroll = scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill);
         container(container(column![pane_head, scroll, toolbar]).width(300).height(Fill).style(fill_box(p.card, 10.0)))
             .padding(Padding::new(8.0).left(0.0))

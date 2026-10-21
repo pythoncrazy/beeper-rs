@@ -2648,6 +2648,24 @@ fn chat_info_members_like_desktop() {
 }
 
 #[test]
+fn chat_info_notes_are_local_per_chat() {
+    let mut app = demo_app("chat-info-notes");
+    let (a, b) = ("!tg_rust:beeper.com".to_string(), "!note_self:beeper.com".to_string());
+    let _ = app.update(UiMessage::SelectChat(a.clone()));
+    let paste = |s: &str| text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(s.into())));
+    let _ = app.update(UiMessage::InfoNote(paste("Ask about the release")));
+    let note = |app: &BeeperGuiApp, id: &str| {
+        let st = app.store.read();
+        st.chats[st.resolve_chat_idx(id).expect("chat")].note.clone()
+    };
+    assert_eq!(note(&app, &a).as_deref(), Some("Ask about the release"));
+    let _ = app.update(UiMessage::SelectChat(b.clone()));
+    assert_eq!((app.info_note.text(), note(&app, &b)), (String::new(), None), "each chat has its own note");
+    let _ = app.update(UiMessage::SelectChat(a));
+    assert_eq!(app.info_note.text(), "Ask about the release");
+}
+
+#[test]
 fn edit_group_like_desktop() {
     let mut app = demo_app("edit-group");
     let id = "!tg_rust:beeper.com".to_string();

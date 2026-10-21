@@ -249,6 +249,9 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
                 "CREATE TABLE key_values ('key' VARCHAR NOT NULL, 'value' JSON NOT NULL, PRIMARY KEY(key));
                  CREATE TABLE threads ('threadID' VARCHAR NOT NULL, 'accountID' VARCHAR NOT NULL, 'thread' JSON NOT NULL,
                      'timestamp' INTEGER, is_label INTEGER NOT NULL DEFAULT 0, room_type TEXT, PRIMARY KEY(threadID));
+                 CREATE TABLE thread_props ('accountID' VARCHAR, 'threadID' VARCHAR NOT NULL, 'props' JSON NOT NULL,
+                     PRIMARY KEY (accountID, threadID));
+                 INSERT INTO thread_props VALUES ('local-whatsapp_ba_Xq9', '!wa:beeper.local', '{\"note\":\"Call back\"}');
                  CREATE TABLE messages ('messageID' VARCHAR NOT NULL, 'accountID' VARCHAR NOT NULL, 'timestamp' INTEGER NOT NULL,
                      'threadID' VARCHAR NOT NULL, 'message' JSON NOT NULL, PRIMARY KEY(accountID, messageID));
                  CREATE TABLE participants (account_id TEXT NOT NULL, room_id TEXT NOT NULL, id TEXT NOT NULL, full_name TEXT,
@@ -458,6 +461,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         assert_eq!(st.me().full_name.as_deref(), Some("Émile Zola"));
         let title = |id: &str| st.chats[st.chat_idx_by_id[id]].title.as_str();
         assert_eq!(title("!wa:beeper.local"), "Ana Núñez", "a single chat without a title uses the other person");
+        assert_eq!(st.chats[st.chat_idx_by_id["!wa:beeper.local"]].note.as_deref(), Some("Call back"));
         assert_eq!(title("!sl:beeper.local"), "@sl_x:beeper.local");
         assert_eq!(title("!mx:beeper.local"), "Unnamed chat");
         assert!(!st.chat_idx_by_id.contains_key("label_inbox"), "label threads are not chats");

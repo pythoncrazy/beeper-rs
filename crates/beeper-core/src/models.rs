@@ -330,6 +330,9 @@ pub struct Chat {
     pub reminder: Option<ChatReminder>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_theme: Option<ChatThemeCustom>,
+    /// Desktop's local `note` thread prop, the Notes of the Chat Info panel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     /// The sort key of the newest message or reaction; a newer one than the done mark unarchives the chat.
     #[serde(rename = "lastNotifiableOrder", skip_serializing_if = "Option::is_none")]
     pub notifiable: Option<String>,
