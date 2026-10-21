@@ -496,6 +496,11 @@ pub enum UiMessage {
     NewChat,
     SelectNewChat(u32),
     DeleteNewChat(u32),
+    /// A click on a contact in the New Chat view, by contact ID.
+    PickContact(String),
+    /// Desktop's `createChatFromDraft` for the open draft.
+    StartChat,
+    DmCreated(u32, Result<String, String>),
     AskDeleteChat(String),
     BeginSelecting(String),
     ToggleSelected(String),
@@ -793,6 +798,16 @@ fn muted_by(st: &BeeperStore, c: &Chat) -> Option<String> {
     }
     let off = !st.settings.account(&c.account_id).notifications;
     off.then(|| trf("Muted by %s", &[&network_name(&c.account_id)]))
+}
+
+/// The account and the bridge identifier of a contact ID from `contacts`.
+fn contact_target(id: &str) -> (&str, &str) {
+    id.strip_prefix("contact:").and_then(|t| t.split_once(':')).expect("a contact ID")
+}
+
+/// Desktop's `createThreadWithPhoneNumber` identifier: the digits and `+` of a phone number.
+fn phone_digits(phone: &str) -> String {
+    phone.chars().filter(|c| c.is_ascii_digit() || *c == '+').collect()
 }
 
 /// The email address that linkifyjs finds in a word, without trailing punctuation.
@@ -2972,7 +2987,9 @@ pub struct BeeperGuiApp {
     pub cmd_index: usize,
     pub search_expanded: bool,
     pub creating_chat: Option<u32>,
-    pub new_chats: Vec<u32>,
+    pub new_chats: Vec<NewChat>,
+    /// The room of a direct chat that the bridge made, to select when it syncs.
+    pub pending_dm: Option<String>,
     pub new_chat_query: String,
     pub new_chat_expanded: bool,
     pub join_matrix_mode: bool,
@@ -3139,6 +3156,7 @@ impl BeeperGuiApp {
             search_expanded: false,
             creating_chat: None,
             new_chats: Vec::new(),
+            pending_dm: None,
             new_chat_query: String::new(),
             new_chat_expanded: false,
             join_matrix_mode: false,
@@ -5410,8 +5428,8 @@ impl BeeperGuiApp {
                 self.select_chat(&cid);
             }
             UiMessage::NewChat => {
-                let id = self.new_chats.iter().max().map_or(0, |n| n + 1);
-                self.new_chats.insert(0, id);
+                let id = self.new_chats.iter().map(|d| d.id).max().map_or(0, |n| n + 1);
+                self.new_chats.insert(0, NewChat { id, users: Vec::new() });
                 return self.update(UiMessage::SelectNewChat(id));
             }
             UiMessage::SelectNewChat(id) => {
@@ -5422,8 +5440,67 @@ impl BeeperGuiApp {
                 self.join_matrix_mode = false;
                 return operation::focus("new-chat-input");
             }
+            UiMessage::PickContact(id) => {
+                let n = self.creating_chat.expect("an open draft");
+                let user = self.store.read().contacts.iter().find(|u| u.id == id).cloned().expect("a listed contact");
+                // Our accounts cannot create groups, so a pick replaces the person, like Desktop without `canCreateGroupChat`.
+                self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft").users = vec![user];
+                self.new_chat_query.clear();
+            }
+            UiMessage::StartChat => {
+                let Some(n) = self.creating_chat else { return Task::none() };
+                let draft = self.new_chats.iter().find(|d| d.id == n).expect("the open draft");
+                let Some(user) = draft.users.first().cloned().filter(|_| self.sticky_banner.is_none()) else {
+                    return Task::none();
+                };
+                let (account, key) = contact_target(&user.id);
+                let phone = user.phone_number.as_deref().map(phone_digits);
+                let found = {
+                    let st = self.store.read();
+                    let same = |u: &User| match &phone {
+                        Some(p) => u.phone_number.as_deref().map(phone_digits).as_ref() == Some(p),
+                        None => u.id == key,
+                    };
+                    let theirs = |c: &&Chat| c.participants.items.iter().any(|u| u.is_self != Some(true) && same(u));
+                    let dms = st.chats.iter().filter(|c| c.account_id == account && c.chat_type == "single");
+                    dms.filter(theirs).max_by(|a, b| a.last_activity.cmp(&b.last_activity)).map(|c| c.id.clone())
+                };
+                if let Some(id) = found {
+                    self.new_chats.retain(|d| d.id != n);
+                    self.select_chat(&id);
+                    return Task::none();
+                }
+                self.status_banner = tr("Composing chat...").into();
+                self.sticky_banner = Some(self.status_banner.clone());
+                let create = beeper_core::matrix::create_dm(self.provision(account), phone.unwrap_or(key.into()));
+                return Task::perform(create, move |r| UiMessage::DmCreated(n, r));
+            }
+            UiMessage::DmCreated(n, r) => {
+                if self.sticky_banner.take().is_some_and(|t| t == self.status_banner) {
+                    self.status_banner.clear();
+                }
+                match r {
+                    Ok(room) => {
+                        self.new_chats.retain(|d| d.id != n);
+                        let synced = self.store.read().resolve_chat_idx(&room).is_some();
+                        match synced {
+                            true => self.select_chat(&room),
+                            false => (self.creating_chat, self.pending_dm) = (None, Some(room)),
+                        }
+                    }
+                    Err(e) => {
+                        let account = self.new_chats.iter().find(|d| d.id == n).and_then(|d| d.users.first());
+                        let me = account.map(|u| self.account_user(contact_target(&u.id).0)).unwrap_or_default();
+                        let text = trf("Something went wrong %1$s (%2$s)\n%3$s", &[&"creating thread", &me, &e]);
+                        self.show(Toast {
+                            buttons: vec![(tr("Copy Error"), UiMessage::CopyText(e))],
+                            ..Toast::new(text)
+                        });
+                    }
+                }
+            }
             UiMessage::DeleteNewChat(id) => {
-                let i = self.new_chats.iter().position(|&n| n == id).expect("new chat exists");
+                let i = self.new_chats.iter().position(|d| d.id == id).expect("new chat exists");
                 self.new_chats.remove(i);
                 self.chat_menu = None;
                 if self.creating_chat != Some(id) {
@@ -5432,7 +5509,7 @@ impl BeeperGuiApp {
                 self.creating_chat = None;
                 let st = self.store.read();
                 let rest = self.pins_and_rows(&st).1.into_iter().map(|c| UiMessage::SelectChat(c.id.clone()));
-                let items: Vec<_> = self.new_chats.iter().map(|&n| UiMessage::SelectNewChat(n)).chain(rest).collect();
+                let items: Vec<_> = self.new_chats.iter().map(|d| UiMessage::SelectNewChat(d.id)).chain(rest).collect();
                 drop(st);
                 if let Some(next) = items.get(i).or(i.checked_sub(1).and_then(|j| items.get(j))) {
                     return self.update(next.clone());
@@ -5637,37 +5714,11 @@ impl BeeperGuiApp {
                     return Task::none();
                 }
                 self.resolving_media.insert(event_id.clone(), true);
-                let (homeserver, access_token, user_id, bridge_id, login_id) = {
-                    let st = self.store.read();
-                    let found = st.bridge_accounts.iter().find(|a| a.account_id == account_id);
-                    let (bridge_id, login_id) = found.map_or_else(
-                        || {
-                            let (b, l) = account_id.split_once('.').unwrap_or((&account_id, ""));
-                            (b.to_string(), l.to_string())
-                        },
-                        |a| (a.bridge_id.clone(), a.login_id.clone()),
-                    );
-                    (
-                        st.beeper_state.homeserver.clone(),
-                        st.beeper_state.access_token.clone(),
-                        st.beeper_state.user_id.clone(),
-                        bridge_id,
-                        login_id,
-                    )
-                };
+                let p = self.provision(&account_id);
                 let (eid, again) = (event_id.clone(), (account_id, raw.clone()));
                 // Like Desktop, a resolve whose edit does not arrive in 30 s fails.
                 let resolve = async move {
-                    beeper_core::matrix::resolve_media(
-                        homeserver,
-                        access_token,
-                        user_id,
-                        bridge_id,
-                        login_id,
-                        eid,
-                        raw,
-                    )
-                    .await?;
+                    beeper_core::matrix::resolve_media(p, eid, raw).await?;
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                     Ok(())
                 };
@@ -6569,6 +6620,9 @@ impl BeeperGuiApp {
                 self.login.screen = login::Screen::Accounts;
             }
             UiMessage::StoreChanged => {
+                if let Some(room) = self.pending_dm.take_if(|r| self.store.read().resolve_chat_idx(r).is_some()) {
+                    self.select_chat(&room);
+                }
                 let st = self.store.read();
                 let left = self.pane.selected_chat_id.as_deref().is_some_and(|c| st.resolve_chat_idx(c).is_none());
                 self.selection.retain(|c| st.resolve_chat_idx(c).is_some());
@@ -6664,6 +6718,18 @@ impl BeeperGuiApp {
                     }
                     Key::Named(Named::Backspace) if self.forward.as_ref().is_some_and(|f| f.query.is_empty()) => {
                         self.forward.as_mut().expect("forward").picked.pop();
+                        return Task::none();
+                    }
+                    Key::Named(Named::Enter)
+                        if mods.is_empty() && self.creating_chat.is_some() && !self.join_matrix_mode =>
+                    {
+                        return self.update(UiMessage::StartChat);
+                    }
+                    Key::Named(Named::Backspace)
+                        if self.creating_chat.is_some() && !self.join_matrix_mode && self.new_chat_query.is_empty() =>
+                    {
+                        let n = self.creating_chat.expect("an open draft");
+                        self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft").users.pop();
                         return Task::none();
                     }
                     Key::Named(Named::ArrowRight)
@@ -8377,6 +8443,34 @@ impl BeeperGuiApp {
         self.toast = Some(t);
     }
 
+    /// The bridge login of a chat account, for the bridge provisioning API.
+    fn provision(&self, account_id: &str) -> beeper_core::matrix::Provision {
+        let st = self.store.read();
+        let found = st.bridge_accounts.iter().find(|a| a.account_id == account_id);
+        let (bridge_id, login_id) = found.map_or_else(
+            || {
+                let (b, l) = account_id.split_once('.').unwrap_or((account_id, ""));
+                (b.to_string(), l.to_string())
+            },
+            |a| (a.bridge_id.clone(), a.login_id.clone()),
+        );
+        beeper_core::matrix::Provision {
+            homeserver: st.beeper_state.homeserver.clone(),
+            access_token: st.beeper_state.access_token.clone(),
+            user_id: st.beeper_state.user_id.clone(),
+            bridge_id,
+            login_id,
+        }
+    }
+
+    /// Desktop's `userDisplayText`: the user of a chat account, as the account's network shows them.
+    fn account_user(&self, account_id: &str) -> String {
+        let st = self.store.read();
+        let b = st.bridge_accounts.iter().find(|b| b.account_id == account_id);
+        let r = b.and_then(|b| b.remote_profile.clone()).unwrap_or_default();
+        [r.name, r.username, r.phone, r.email].into_iter().flatten().find(|s| !s.is_empty()).unwrap_or_default()
+    }
+
     fn fail(&mut self, t: Toast) {
         self.show(Toast { error: true, ..t });
     }
@@ -8907,12 +9001,16 @@ impl BeeperGuiApp {
             .on_right_press(UiMessage::OpenChatMenu(key));
             column![row, divider(p.divider, av + 18.0)]
         };
-        let drafts = self.new_chats.iter().map(|&n| {
+        let drafts = self.new_chats.iter().map(|d| {
+            let n = d.id;
             let dot = (!counts).then(|| container(Space::new()).width(12).into());
-            let title = ell(tr("New Chat"), text_w, title_size, if counts { Weight::Medium } else { Weight::Semibold });
+            let names: Vec<&str> = d.users.iter().map(|u| u.full_name.as_deref().unwrap_or(&u.id)).collect();
+            let title = if names.is_empty() { tr("New Chat").into() } else { names.join(", ") };
+            let title = ell(&title, text_w, title_size, if counts { Weight::Medium } else { Weight::Semibold });
             let rows =
                 [container(title.color(p.strong)).height(16).into(), Space::new().height(16 * lines as u32).into()];
-            let face = self.face(None, "", av, 1.25);
+            let face =
+                self.face(d.users.first().and_then(|u| u.img_url.as_deref()), names.first().unwrap_or(&""), av, 1.25);
             frame(format!("draft:{n}"), dot, face, rows, self.creating_chat == Some(n), UiMessage::SelectNewChat(n))
         });
         let rows = rest.iter().fold(Column::with_children(drafts.map(El::from)), |col, c| {
@@ -11227,17 +11325,17 @@ impl BeeperGuiApp {
     fn view_new_chat(&self) -> El<'_> {
         let p = &self.pal;
         let st = self.store.read();
-        let fade = Color { a: 0.4, ..Color::WHITE };
-        let footer = |label: &'static str, key: &'static str| {
-            let pill = container(
-                row![med(label, 13.0).color(fade), txt(key, 10.0).color(Color { a: 0.32, ..Color::WHITE })]
-                    .spacing(4)
-                    .align_y(Center),
-            )
-            .padding([4, 8])
-            .style(fill_box(Color { a: 0.4, ..p.accent }, 20.0));
+        let footer = |label: &'static str, key: &'static str, press: Option<UiMessage>| {
+            let a = if press.is_some() { 1.0 } else { 0.4 };
+            let label = row![med(label, 13.0), txt(key, 10.0).color(Color { a: 0.8 * a, ..Color::WHITE })];
+            let pill = button(label.spacing(4).align_y(Center))
+                .padding([4, 8])
+                .style(btn_style([Color { a, ..p.accent }; 3], [Color { a, ..Color::WHITE }; 3], 20.0))
+                .on_press_maybe(press);
             row![Space::new().width(Fill), pill].padding(Padding::new(8.0).left(13.0)).align_y(Center)
         };
+        let users = self.new_chats.iter().find(|d| Some(d.id) == self.creating_chat).map_or(&[][..], |d| &d.users);
+        let account = users.first().map(|u| contact_target(&u.id).0);
         let field = |placeholder: &'static str| {
             text_input(placeholder, &self.new_chat_query)
                 .id("new-chat-input")
@@ -11267,7 +11365,7 @@ impl BeeperGuiApp {
                 .spacing(8)
                 .align_y(Center)
                 .padding(Padding::new(6.0).left(13.0).right(8.0));
-            let body = column![head, inputs, Space::new().height(Fill), footer(tr("Join"), "ENTER")];
+            let body = column![head, inputs, Space::new().height(Fill), footer(tr("Join"), "ENTER", None)];
             return container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0)).into();
         }
         let all_acc = container(
@@ -11278,7 +11376,20 @@ impl BeeperGuiApp {
         .center_y(24)
         .padding(Padding::new(0.0).left(8.0).right(6.0))
         .style(fill_box(p.chip, 12.0));
-        let inputs = row![ic(icon::SEARCH, 16.0).color(p.sub), field(tr("Search contacts")), all_acc]
+        let shade = Color { a: 0.1, ..p.strong };
+        let pills = users.iter().map(|u| -> El<'_> {
+            let name = u.full_name.as_deref().unwrap_or(&u.id);
+            let pill =
+                row![self.face(u.img_url.as_deref(), name, 16.0, 0.0), semi(name.to_string(), 13.0).color(p.strong)];
+            container(pill.spacing(4).align_y(Center))
+                .padding(Padding::new(2.0).right(8.0))
+                .style(fill_box(shade, 20.0))
+                .into()
+        });
+        let placeholder = if users.is_empty() { tr("Search contacts") } else { "" };
+        let inputs = Row::with_children(pills).push(field(placeholder)).spacing(4).align_y(Center);
+        let inputs = row![ic(icon::SEARCH, 16.0).color(p.sub), inputs]
+            .push(users.is_empty().then_some(all_acc))
             .spacing(8)
             .align_y(Center)
             .padding(Padding::new(6.0).top(10.0).left(13.0).right(8.0));
@@ -11310,6 +11421,7 @@ impl BeeperGuiApp {
         let contacts: Vec<&User> = st
             .contacts
             .iter()
+            .filter(|u| account.is_none_or(|a| contact_target(&u.id).0 == a))
             .filter(|u| u.full_name.as_deref().unwrap_or_default().to_lowercase().contains(&q))
             .collect();
         if !contacts.is_empty() {
@@ -11330,11 +11442,6 @@ impl BeeperGuiApp {
                     );
                     last_cat = Some(cat);
                 }
-                let target = st
-                    .chats
-                    .iter()
-                    .find(|c| c.chat_type == "single" && c.title.eq_ignore_ascii_case(name))
-                    .map(|c| c.id.clone());
                 let line = row![
                     self.face(u.img_url.as_deref(), name, 28.0, 0.0),
                     semi(name.to_string(), 13.0).color(p.strong),
@@ -11350,7 +11457,7 @@ impl BeeperGuiApp {
                             .padding([0, 6])
                             .width(Fill)
                             .style(ghost(p, 8.0))
-                            .on_press_maybe(target.map(UiMessage::ExecuteCommandChat)),
+                            .on_press(UiMessage::PickContact(u.id.clone())),
                     )
                     .padding([0, 6]),
                 );
@@ -11373,7 +11480,7 @@ impl BeeperGuiApp {
         let body = column![
             inputs,
             scrollable(col).direction(bar()).height(Fill).style(scroll_style(p.scroll)),
-            footer(tr("Start chat"), "CTRL ENTER")
+            footer(tr("Start chat"), "ENTER", (!users.is_empty()).then_some(UiMessage::StartChat))
         ];
         container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0)).into()
     }
@@ -13777,10 +13884,13 @@ pub struct LabelDraft {
     pub picker: bool,
 }
 
-/// The Edit Spaces window: the shown spaces, then `SPACES_DIVIDER`, then the hidden spaces.
-/// Desktop's `UOe` and `HOe` toasts: an icon, strong text, an Undo `rightButton`, and a click that opens a view.
-/// Without an icon, it is the multi-chat archive toast: plain text with Undo in its `buttons` below.
-/// Desktop's `Toast`: a toast with buttons, which shows while `status_banner` is its text.
+/// Desktop's draft chat: a chat in the sidebar that the New Chat view makes, with the people it picked.
+pub struct NewChat {
+    pub id: u32,
+    pub users: Vec<User>,
+}
+
+/// Desktop's `Toast`, which shows while `status_banner` is its text.
 pub struct Toast {
     pub text: String,
     /// The index of the icon in `TOAST_ICONS`.
@@ -13814,6 +13924,7 @@ pub struct RailDrag {
     pub order: Option<Vec<String>>,
 }
 
+/// The Edit Spaces window: the shown spaces, then `SPACES_DIVIDER`, then the hidden spaces.
 pub struct SpacesDraft {
     pub id: window::Id,
     pub order: Vec<String>,

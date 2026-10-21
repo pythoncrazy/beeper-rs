@@ -963,7 +963,8 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     }
     let prev = gui.pane.selected_chat_id.clone().expect("a chat is selected");
     let _ = gui.update(UiMessage::NewChat);
-    assert_eq!((gui.new_chats.as_slice(), gui.creating_chat), ([1, 0].as_slice(), Some(1)), "compose adds a new chat");
+    let ids: Vec<u32> = gui.new_chats.iter().map(|d| d.id).collect();
+    assert_eq!((ids, gui.creating_chat), (vec![1, 0], Some(1)), "compose adds a new chat");
     let _ = gui.update(UiMessage::DeleteNewChat(1));
     assert_eq!(gui.creating_chat, Some(0), "deleting a new chat selects the next row");
     let _ = gui.update(UiMessage::DeleteNewChat(0));

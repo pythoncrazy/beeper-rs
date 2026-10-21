@@ -1269,33 +1269,49 @@ pub async fn media(client: Option<Client>, src: String) -> Result<Vec<u8>, Strin
     client.media().get_media_content(&request, true).await.map_err(|e| e.to_string())
 }
 
-pub async fn resolve_media(
-    homeserver: String,
-    access_token: String,
-    user_id: String,
-    bridge_id: String,
-    login_id: String,
-    event_id: String,
-    raw: String,
-) -> Result<(), String> {
-    let enc = crate::codec::url_encode;
-    let url = format!(
-        "{}/_matrix/client/unstable/com.beeper.bridge/{}/_matrix/provision/v3/resolve_media/{}?user_id={}&login_id={}",
-        homeserver.trim_end_matches('/'),
-        enc(&bridge_id),
-        enc(&event_id),
-        enc(&user_id),
-        enc(&login_id),
-    );
-    let resp = reqwest::Client::new()
-        .post(url)
-        .bearer_auth(access_token)
-        .header("content-type", "application/json")
-        .body(raw)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    resp.error_for_status().map(drop).map_err(|e| e.to_string())
+/// The session and bridge login that a bridge provisioning request acts as.
+pub struct Provision {
+    pub homeserver: String,
+    pub access_token: String,
+    pub user_id: String,
+    pub bridge_id: String,
+    pub login_id: String,
+}
+
+impl Provision {
+    fn url(&self, path: &str) -> String {
+        let enc = crate::codec::url_encode;
+        format!(
+            "{}/_matrix/client/unstable/com.beeper.bridge/{}/_matrix/provision/v3/{path}?user_id={}&login_id={}",
+            self.homeserver.trim_end_matches('/'),
+            enc(&self.bridge_id),
+            enc(&self.user_id),
+            enc(&self.login_id),
+        )
+    }
+
+    async fn post(self, path: &str, body: String) -> Result<String, String> {
+        let resp = reqwest::Client::new()
+            .post(self.url(path))
+            .bearer_auth(self.access_token)
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        resp.error_for_status().map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string())
+    }
+}
+
+pub async fn resolve_media(p: Provision, event_id: String, raw: String) -> Result<(), String> {
+    p.post(&format!("resolve_media/{}", crate::codec::url_encode(&event_id)), raw).await.map(drop)
+}
+
+/// The bridge's `create_dm`: the room of the direct chat with `identifier`, which the bridge makes when it is missing.
+pub async fn create_dm(p: Provision, identifier: String) -> Result<String, String> {
+    let body = p.post(&format!("create_dm/{}", crate::codec::url_encode(&identifier)), "{}".into()).await?;
+    let v: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    v["dm_room_mxid"].as_str().map(str::to_string).ok_or_else(|| "the bridge sent no dm_room_mxid".into())
 }
 
 pub async fn thumbnail(client: Client, url: String) -> Result<Vec<u8>, String> {

@@ -884,7 +884,7 @@ impl BeeperStore {
                         !n.is_empty() && !self.contacts.iter().any(|x| x.full_name.as_deref() == Some(n))
                     })
                 {
-                    self.contacts.push(u.clone());
+                    self.contacts.push(User { id: format!("contact:{}:{}", c.account_id, u.id), ..u.clone() });
                 }
             }
         }

@@ -2136,6 +2136,60 @@ fn toasts_time_out_like_desktop() {
 }
 
 #[test]
+fn new_chats_start_like_desktop() {
+    let mut app = demo_app("start-chat");
+    let (dm, account) = {
+        let mut st = app.store.write();
+        let i = st.chats.iter().position(|c| c.chat_type == "single" && c.participants.items.len() == 2).expect("a DM");
+        let other =
+            st.chats[i].participants.items.iter().position(|u| u.is_self != Some(true)).expect("the other person");
+        st.update_chat(i, |c| c.participants.items[other].phone_number = Some("+1 (555) 010-0".into()));
+        (st.chats[i].id.clone(), st.chats[i].account_id.clone())
+    };
+    let contact = |id: String, name: &str, phone: &str| -> User {
+        serde_json::from_value(serde_json::json!({ "id": id, "fullName": name, "phoneNumber": phone })).expect("a user")
+    };
+    let sam = contact(format!("contact:{account}:tel:+15550100"), "Sam Example", "+15550100");
+    let bo = contact("contact:otherbridge:tel:+15550199".into(), "Bo Example", "+15550199");
+    app.store.write().set_contacts(vec![sam.clone(), bo.clone()]);
+    let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
+    let _ = app.update(UiMessage::NewChat);
+    let n = app.creating_chat.expect("a draft");
+    assert!(found(&app, "Sam Example") && found(&app, "Bo Example"));
+    let _ = app.update(UiMessage::StartChat);
+    assert_eq!(app.creating_chat, Some(n), "Start chat needs a person");
+    let _ = app.update(UiMessage::NewChatQueryChanged("sam".into()));
+    let _ = app.update(UiMessage::PickContact(sam.id.clone()));
+    assert!(app.new_chat_query.is_empty() && app.new_chats[0].users.len() == 1);
+    assert!(!found(&app, "Bo Example"), "a pick keeps the contacts of its account");
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Backspace), Modifiers::empty()));
+    assert!(app.new_chats[0].users.is_empty() && found(&app, "Bo Example"), "Backspace removes the pill");
+    let _ = app.update(UiMessage::PickContact(sam.id.clone()));
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+    assert!(app.new_chats.is_empty() && app.creating_chat.is_none(), "the draft goes");
+    assert_eq!(app.pane.selected_chat_id.as_deref(), Some(dm.as_str()), "the DM with the same phone opens");
+    let _ = app.update(UiMessage::NewChat);
+    let n = app.creating_chat.expect("a draft");
+    let _ = app.update(UiMessage::PickContact(bo.id.clone()));
+    assert!(found(&app, "Bo Example"), "the draft is titled with the person");
+    let _ = app.update(UiMessage::StartChat);
+    assert_eq!(app.status_banner, "Composing chat...");
+    assert!(!app.toast_running(), "the composing toast stays");
+    let _ = app.update(UiMessage::DmCreated(n, Err("timeout".into())));
+    assert!(
+        app.status_banner.starts_with("Something went wrong creating thread (")
+            && app.status_banner.ends_with(")\ntimeout")
+    );
+    assert!(
+        matches!(&app.shown_toast().expect("a toast").buttons[..], [("Copy Error", UiMessage::CopyText(e))] if e == "timeout")
+    );
+    let _ = app.update(UiMessage::StartChat);
+    let _ = app.update(UiMessage::DmCreated(n, Ok("!new:beeper.local".into())));
+    assert!(app.new_chats.is_empty() && app.creating_chat.is_none() && app.status_banner.is_empty());
+    assert_eq!(app.pending_dm.as_deref(), Some("!new:beeper.local"), "the room opens when it syncs");
+}
+
+#[test]
 fn email_links_and_media_items_match_desktop() {
     assert_eq!(email("a.b+c@mail.example.com)."), Some("a.b+c@mail.example.com"));
     assert!([email("@example.com"), email("a@b"), email("a@b.c"), email("a@b.c1"), email("ab")]
