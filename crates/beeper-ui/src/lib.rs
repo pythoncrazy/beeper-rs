@@ -328,6 +328,9 @@ pub enum UiMessage {
     ChatWallpaper(Option<String>, Wallpaper),
     /// Sets the bubble color of the chat theme of a chat, or of the default theme; `None` clears it.
     ChatBubble(Option<String>, Option<Bubble>),
+    /// Desktop's `Choose photo`: picks a photo wallpaper for a chat, or for the default theme.
+    PickWallpaper(Option<String>),
+    WallpaperPicked(Option<String>, Result<Vec<std::path::PathBuf>, String>),
     /// Desktop's `clearChatTheme`: the chat uses the default chat theme again.
     ClearChatTheme(String),
     /// Desktop's `editChatTheme`: opens the chat theme window of a chat.
@@ -4230,12 +4233,35 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
             }
             UiMessage::ChatWallpaper(chat, w) => {
-                self.patch_settings(|s| s.chat_appearance.patch(chat.as_deref(), |t| t.wallpaper = Some(w)))
+                self.patch_settings(|s| s.chat_appearance.patch(chat.as_deref(), |t| t.wallpaper = Some(w)));
+                self.prune_wallpapers();
             }
             UiMessage::ChatBubble(chat, b) => {
                 self.patch_settings(|s| s.chat_appearance.patch(chat.as_deref(), |t| t.bubble = b))
             }
-            UiMessage::ClearChatTheme(chat) => self.patch_settings(|s| _ = s.chat_appearance.per_chat.remove(&chat)),
+            UiMessage::ClearChatTheme(chat) => {
+                self.patch_settings(|s| _ = s.chat_appearance.per_chat.remove(&chat));
+                self.prune_wallpapers();
+            }
+            UiMessage::PickWallpaper(chat) => {
+                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), true);
+                return Task::perform(pick, move |r| UiMessage::WallpaperPicked(chat.clone(), r));
+            }
+            UiMessage::WallpaperPicked(chat, r) => match r.map(|paths| paths.into_iter().next()) {
+                Ok(Some(path)) => {
+                    let dir = chat_theme::photo_dir(&self.store.read().data_dir);
+                    let ext =
+                        path.extension().map_or(String::new(), |e| format!(".{}", e.to_string_lossy().to_lowercase()));
+                    let file_name = format!("{}{ext}", beeper_core::connect::random_id());
+                    std::fs::create_dir_all(&dir).expect("create the chat wallpapers directory");
+                    match std::fs::copy(&path, dir.join(&file_name)) {
+                        Ok(_) => return self.update(UiMessage::ChatWallpaper(chat, Wallpaper::Photo { file_name })),
+                        Err(e) => self.status_banner = format!("Could not import {}: {e}", path.display()),
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => self.status_banner = e,
+            },
             UiMessage::OpenChatTheme(chat) => {
                 if let Some(&(id, _)) = self.theme_windows.iter().find(|w| w.1 == chat) {
                     return window::gain_focus(id);
@@ -5016,7 +5042,7 @@ impl BeeperGuiApp {
             }
             UiMessage::PickFiles => {
                 let title = tr("Open").to_string();
-                return Task::perform(portal::open_files(portal::PORTAL.into(), title), UiMessage::FilesPicked);
+                return Task::perform(portal::open_files(portal::PORTAL.into(), title, false), UiMessage::FilesPicked);
             }
             UiMessage::FilesPicked(r) => match r {
                 Ok(paths) => {
@@ -7870,11 +7896,12 @@ impl BeeperGuiApp {
         let fade = container(Space::new()).width(Fill).height(chat_theme::FADE).style(move |_: &Theme| {
             container::Style { background: Some(Background::Gradient(Gradient::Linear(fade))), ..Default::default() }
         });
-        let wallpaper =
-            chat_theme::resolve(&st.settings.chat_appearance, Some(cid), self.dark).0.map(|(paint, _)| paint);
-        let fade: El<'_> = match wallpaper {
+        let wallpaper = chat_theme::resolve(&st.settings.chat_appearance, Some(cid), self.dark, &st.data_dir)
+            .0
+            .map(|(paint, _)| paint);
+        let fade: El<'_> = match wallpaper.clone() {
             Some(paint) => iced::widget::responsive(move |size| {
-                container(chat_theme::fade(paint, size)).height(chat_theme::FADE).into()
+                container(chat_theme::fade(paint.clone(), size)).height(chat_theme::FADE).into()
             })
             .into(),
             None => fade.into(),
@@ -7930,7 +7957,7 @@ impl BeeperGuiApp {
             container(zone).padding(Padding { top: 39.0, right: 13.0, bottom: 6.5, left: 6.5 })
         });
         let wallpaper =
-            wallpaper.map(|paint| iced::widget::responsive(move |size| chat_theme::fill(paint, size, 10.0)));
+            wallpaper.map(|paint| iced::widget::responsive(move |size| chat_theme::fill(paint.clone(), size, 10.0)));
         let pane = stack![].push(wallpaper).push(pane).push(picker).push(self.view_suggestions(&st)).push(dropping);
         let shadow = Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.18), offset: Vector::ZERO, blur_radius: 20.0 };
         let card = fill_box(p.card, 10.0);
@@ -11292,16 +11319,33 @@ impl BeeperGuiApp {
 
     /// Desktop's `--on-wallpaper-fg` of `chat` outside of a reply chain, when its chat theme has a wallpaper.
     fn wallpaper_fg(&self, st: &BeeperStore, chat: &Chat, thread: bool) -> Option<Color> {
-        let wallpaper = chat_theme::resolve(&st.settings.chat_appearance, Some(&chat.id), self.dark).0;
+        let wallpaper = chat_theme::resolve(&st.settings.chat_appearance, Some(&chat.id), self.dark, &st.data_dir).0;
         wallpaper.filter(|_| !thread).map(|(_, fg)| fg)
     }
 
     /// The color, text color and metadata color of sent bubbles in `chat`, or in the default chat theme.
     fn sent_colors(&self, st: &BeeperStore, chat: Option<&str>) -> (Color, Color, Color) {
         let p = &self.pal;
-        match chat_theme::resolve(&st.settings.chat_appearance, chat, self.dark).1 {
+        match chat_theme::resolve(&st.settings.chat_appearance, chat, self.dark, &st.data_dir).1 {
             Some((bg, fg)) => (bg, fg, fg.scale_alpha(p.sent_meta.a)),
             None => (p.sent, p.sent_fg, p.sent_meta),
+        }
+    }
+
+    /// Desktop's `removeOrphanedWallpapers`: deletes the photos in `chat_wallpapers` that no chat theme uses.
+    fn prune_wallpapers(&self) {
+        let st = self.store.read();
+        let entries = match std::fs::read_dir(chat_theme::photo_dir(&st.data_dir)) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => panic!("read the chat wallpapers: {e}"),
+        };
+        let used: HashSet<&str> = st.settings.chat_appearance.photos().collect();
+        for entry in entries {
+            let path = entry.expect("a chat wallpaper entry").path();
+            if path.file_name().and_then(|n| n.to_str()).is_none_or(|n| !used.contains(n)) {
+                std::fs::remove_file(&path).expect("remove an unused chat wallpaper");
+            }
         }
     }
 
@@ -11320,7 +11364,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let a = &st.settings.chat_appearance;
         let stored = a.theme(chat);
-        let wallpaper = chat_theme::resolve(a, chat, self.dark).0;
+        let wallpaper = chat_theme::resolve(a, chat, self.dark, &st.data_dir).0;
         let (sent, sent_fg, _) = self.sent_colors(st, chat);
         let id = chat.map(str::to_string);
         let ring = |el: El<'static>, on: bool, radius: f32, msg: UiMessage| -> El<'static> {
@@ -11336,7 +11380,7 @@ impl BeeperGuiApp {
             container(bubble("Only you see your chat theme", sent, sent_fg)).align_right(Fill),
         ]
         .spacing(8);
-        let preview: El<'_> = match wallpaper {
+        let preview: El<'_> = match wallpaper.clone() {
             Some((paint, _)) => {
                 stack![chat_theme::fill(paint, Size::new(f32::INFINITY, 106.0), 12.0), container(lines).padding(16)]
                     .into()
@@ -11372,13 +11416,21 @@ impl BeeperGuiApp {
             ));
             ring(fill.into(), on, 10.0, UiMessage::ChatWallpaper(id.clone(), w))
         };
-        let mut tiles = vec![tile(
-            container(txt(tr("None"), 11.0).color(p.sub)).center(Fill).style(fill_box(p.card, 10.0)).into(),
-            Wallpaper::None,
-        )];
+        let blank = |label: &'static str| -> El<'static> {
+            container(txt(tr(label), 11.0).color(p.sub)).center(Fill).style(fill_box(p.card, 10.0)).into()
+        };
+        let photo = matches!(stored.wallpaper, Some(Wallpaper::Photo { .. }));
+        let photo_fill = match wallpaper.filter(|_| photo) {
+            Some((paint, _)) => chat_theme::fill(paint, Size::new(60.0, 98.0), 9.0),
+            None => blank("Photo…"),
+        };
+        let mut tiles = vec![tile(blank("None"), Wallpaper::None)];
+        let photo_fill = container(photo_fill).width(Fill).height(100).padding(1);
+        let photo_fill = photo_fill.style(bordered_box(CLEAR, p.neutral_border, 1.0, 10.0));
+        tiles.push(ring(photo_fill.into(), photo, 10.0, UiMessage::PickWallpaper(id.clone())));
         let papers = chat_theme::COLORS.iter().map(|c| Wallpaper::Color { id: c.0.into() });
         for w in papers.chain(chat_theme::GRADIENTS.iter().map(|g| Wallpaper::Gradient { id: g.0.into() })) {
-            let (paint, _) = chat_theme::paint(&w, self.dark).expect("a known wallpaper");
+            let (paint, _) = chat_theme::paint(&w, self.dark, &st.data_dir).expect("a known wallpaper");
             tiles.push(tile(chat_theme::fill(paint, Size::new(60.0, 98.0), 9.0), w));
         }
         let footer = chat.map(|c| {

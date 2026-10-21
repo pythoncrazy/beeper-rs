@@ -845,8 +845,17 @@ pub struct ChatTheme {
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Wallpaper {
     None,
-    Color { id: String },
-    Gradient { id: String },
+    Color {
+        id: String,
+    },
+    Gradient {
+        id: String,
+    },
+    /// A photo in `chat_wallpapers` of the data directory.
+    Photo {
+        #[serde(rename = "fileName")]
+        file_name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -865,6 +874,14 @@ impl ChatAppearance {
             wallpaper: part(|t| t.wallpaper.is_some()).and_then(|t| t.wallpaper.clone()),
             bubble: part(|t| t.bubble.is_some()).and_then(|t| t.bubble.clone()),
         }
+    }
+
+    /// Desktop's `referencedPhotos`: the file names of the photo wallpapers.
+    pub fn photos(&self) -> impl Iterator<Item = &str> {
+        self.global.iter().chain(self.per_chat.values()).filter_map(|t| match &t.wallpaper {
+            Some(Wallpaper::Photo { file_name }) => Some(file_name.as_str()),
+            _ => None,
+        })
     }
 
     /// Desktop's `patchConfig`: `f` changes the stored theme of the chat, or the default theme for `None`. A theme
