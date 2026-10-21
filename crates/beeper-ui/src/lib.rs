@@ -218,6 +218,25 @@ impl SettingsTab {
         tr(self.meta().0)
     }
 
+    /// Desktop's `searchKeywords` of the section.
+    pub fn keywords(self) -> &'static [&'static str] {
+        match self {
+            Self::Integrations => &[
+                "beeper desktop api",
+                "mcp",
+                "openapi",
+                "access token",
+                "approved connections",
+                "remote access",
+                "claude",
+                "raycast",
+                "cursor",
+                "codex",
+            ],
+            _ => &[],
+        }
+    }
+
     pub const fn meta(self) -> (&'static str, TabIcon, u32) {
         use TabIcon::{Glyph, Svg};
         [
@@ -620,6 +639,8 @@ pub enum SettingsHit {
     /// A section, and whether its name matches.
     Section(SettingsTab, bool),
     Pref(SettingsTab, &'static prefs::Pref),
+    /// A custom item by its name, like the theme cards.
+    Custom(SettingsTab, &'static str),
     /// A network to add an account on.
     Network(&'static str),
 }
@@ -628,7 +649,8 @@ impl SettingsHit {
     pub fn label(self) -> String {
         match self {
             Self::Section(tab, _) => tab.name().into(),
-            Self::Pref(_, r) => trs(r.label, r.split_args().0),
+            Self::Pref(_, r) => r.name.map_or_else(|| trs(r.label, r.split_args().0), |n| tr(n).into()),
+            Self::Custom(_, name) => tr(name).into(),
             Self::Network(name) => name.into(),
         }
     }
@@ -676,12 +698,20 @@ pub fn search_settings(st: &BeeperStore, query: &str) -> Vec<SettingsHit> {
                 .filter(|(page, r)| *page == tab.meta().0 && !r.label.is_empty() && shown(st, r))
                 .filter(|(_, r)| {
                     let (label, desc) = r.split_args();
-                    has(&r.desc.map_or(trs(r.label, label), |d| format!("{} {}", trs(r.label, label), trs(d, desc))))
+                    let name = r.name.map_or_else(|| trs(r.label, label), |n| tr(n).into());
+                    has(&r.desc.map_or_else(|| name.clone(), |d| format!("{name} {}", trs(d, desc))))
                 })
                 .map(|(_, r)| SettingsHit::Pref(tab, r))
+                .chain(
+                    prefs::customs()
+                        .filter(|&(page, name, keys)| {
+                            page == tab.meta().0 && (has(tr(name)) || keys.iter().any(|k| has(k)))
+                        })
+                        .map(|(_, name, _)| SettingsHit::Custom(tab, name)),
+                )
                 .collect(),
         };
-        if has(tab.name()) || !rows.is_empty() {
+        if has(tab.name()) || tab.keywords().iter().any(|k| has(k)) || !rows.is_empty() {
             out.push(SettingsHit::Section(tab, true));
             out.extend(rows);
         }
@@ -5584,15 +5614,15 @@ impl BeeperGuiApp {
             UiMessage::PickSetting(hit) => {
                 self.settings_pick = Some(hit);
                 let tab = match hit {
-                    SettingsHit::Section(t, _) | SettingsHit::Pref(t, _) => t,
+                    SettingsHit::Section(t, _) | SettingsHit::Pref(t, _) | SettingsHit::Custom(t, _) => t,
                     SettingsHit::Network(_) => SettingsTab::Accounts,
                 };
                 let load =
                     Task::batch([self.update(UiMessage::SelectSettingsTab(tab)), operation::focus("settings-search")]);
                 return match hit {
-                    SettingsHit::Pref(_, r) => {
-                        self.pref_flash = Some((r.key, std::time::Instant::now()));
-                        Task::batch([load, locate(r.key, "settings-pane", false)])
+                    SettingsHit::Pref(_, &prefs::Pref { key, .. }) | SettingsHit::Custom(_, key) => {
+                        self.pref_flash = Some((key, std::time::Instant::now()));
+                        Task::batch([load, locate(key, "settings-pane", false)])
                     }
                     SettingsHit::Network(_) => {
                         self.adding_account = true;
@@ -11266,6 +11296,15 @@ impl BeeperGuiApp {
         vec![head.into(), card.into(), group(p, Some(tr("Settings")), rows.collect())]
     }
 
+    /// A settings item with the id that search results scroll to, and the flash of a picked result.
+    fn flashing<'a>(&self, key: &'static str, el: El<'a>) -> El<'a> {
+        let flash = self
+            .pref_flash
+            .filter(|(k, _)| *k == key)
+            .map_or(0.0, |(_, at)| 1.0 - ease_out((at.elapsed().as_secs_f32() / 2.0).min(1.0)));
+        container(el).id(key).style(fill_box(self.pal.accent.scale_alpha(flash), 8.0)).into()
+    }
+
     fn pref_items(&self, items: &'static [prefs::Item], st: &BeeperStore) -> Vec<El<'_>> {
         let s = &st.settings;
         let p = &self.pal;
@@ -11273,6 +11312,7 @@ impl BeeperGuiApp {
         let mut lead = None;
         let mut out = Vec::new();
         for item in items {
+            let custom = item.custom().map(|(name, _)| name);
             match *item {
                 prefs::Item::Heading(h) => heading = Some(tr(h)),
                 prefs::Item::Subtitle(t, args) => match (heading.take(), trs(t, args)) {
@@ -11282,16 +11322,7 @@ impl BeeperGuiApp {
                     (None, t) => lead = Some(t),
                 },
                 prefs::Item::Group(rows) => {
-                    let row = |r: &'static prefs::Pref| {
-                        let flash = self
-                            .pref_flash
-                            .filter(|(k, _)| *k == r.key)
-                            .map_or(0.0, |(_, at)| 1.0 - ease_out((at.elapsed().as_secs_f32() / 2.0).min(1.0)));
-                        container(self.pref_control(r, st))
-                            .id(r.key)
-                            .style(fill_box(p.accent.scale_alpha(flash), 8.0))
-                            .into()
-                    };
+                    let row = |r: &'static prefs::Pref| self.flashing(r.key, self.pref_control(r, st));
                     let rows: Vec<El> = rows.iter().filter(|r| shown(st, r)).map(row).collect();
                     if rows.is_empty() {
                         heading = None;
@@ -11311,6 +11342,10 @@ impl BeeperGuiApp {
                 prefs::Item::Zoom(t, args) => {
                     out.push(group(p, heading.take(), vec![self.zoom_slider(s.zoom_percent, trs(t, args))]))
                 }
+            }
+            if let Some(name) = custom {
+                let el = out.pop().expect("a custom item is a group");
+                out.push(self.flashing(name, el));
             }
         }
         assert!(lead.is_none(), "a subtitle without a heading comes before a group");

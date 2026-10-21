@@ -1281,6 +1281,26 @@ fn zoom_keys_like_desktop() {
 }
 
 #[test]
+fn search_finds_custom_items_like_desktop() {
+    let mut app = demo_app("search-custom");
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
+    let hit =
+        |q: &str| search_settings(&app.store.read(), q).into_iter().find(|h| matches!(h, SettingsHit::Custom(..)));
+    assert_eq!(hit("wallpaper"), Some(SettingsHit::Custom(SettingsTab::Appearance, "Default chat theme")));
+    assert_eq!(hit("dark mode"), Some(SettingsHit::Custom(SettingsTab::Appearance, "Theme Selector")));
+    assert_eq!(hit("zoom con"), Some(SettingsHit::Custom(SettingsTab::Appearance, "Zoom Controls")));
+    let names = |q: &str| search_settings(&app.store.read(), q).into_iter().map(SettingsHit::label).collect::<Vec<_>>();
+    assert!(names("notification sound").contains(&"Group Notification Sound".to_string()));
+    assert!(names("sound effect volume").contains(&"Sound Effect Volume".to_string()));
+    let mcp = search_settings(&app.store.read(), "mcp");
+    assert_eq!(mcp.first(), Some(&SettingsHit::Section(SettingsTab::Integrations, true)), "a section keyword matches");
+    let _ = app.update(UiMessage::PickSetting(hit("wallpaper").expect("a hit")));
+    assert_eq!(app.active_settings_tab, SettingsTab::Appearance);
+    assert_eq!(app.pref_flash.map(|f| f.0), Some("Default chat theme"));
+    let _ = simulator(app.view_settings());
+}
+
+#[test]
 fn chat_theme_like_desktop() {
     let mut app = demo_app("chat-theme");
     let chat = app.store.read().chats[0].id.clone();

@@ -30,6 +30,8 @@ pub struct Pref {
     pub feature: Option<&'static str>,
     /// The toggle that must be on for this row to be enabled.
     pub requires: Option<&'static str>,
+    /// Desktop's `displayName` in search when it is not the label, like "Notification Sound" for "Sound".
+    pub name: Option<&'static str>,
     pub control: Control,
 }
 
@@ -94,10 +96,24 @@ impl Pref {
     const fn requires(self, key: &'static str) -> Self {
         Pref { requires: Some(key), ..self }
     }
+
+    const fn named(self, name: &'static str) -> Self {
+        Pref { name: Some(name), ..self }
+    }
 }
 
 const fn t(key: &'static str, label: &'static str, on: bool) -> Pref {
-    Pref { key, label, desc: None, args: &[], badge: None, feature: None, requires: None, control: Control::Toggle(on) }
+    Pref {
+        key,
+        label,
+        desc: None,
+        args: &[],
+        badge: None,
+        feature: None,
+        requires: None,
+        name: None,
+        control: Control::Toggle(on),
+    }
 }
 
 const fn s(key: &'static str, label: &'static str, options: &'static [&'static str], default: u8) -> Pref {
@@ -110,6 +126,7 @@ const fn s(key: &'static str, label: &'static str, options: &'static [&'static s
         badge: None,
         feature: None,
         requires: None,
+        name: None,
         control: Control::Select(options, default),
     }
 }
@@ -152,7 +169,7 @@ pub const GENERAL: &[Item] = &[
     Item::Group(&[
         t("markReadOnArchive", "Mark unread chats as read on archive", false),
         s("afterArchive", "After archive", AFTER, 0),
-        Pref { key: "archiveOlder", label: "", desc: None, args: &[], badge: None, feature: None, requires: None, control: Control::Archive(&ARCHIVE_SCOPE, &ARCHIVE_AGE) },
+        Pref { key: "archiveOlder", label: "", desc: None, args: &[], badge: None, feature: None, requires: None, name: None, control: Control::Archive(&ARCHIVE_SCOPE, &ARCHIVE_AGE) },
     ]),
     Item::Group(&[
         s("afterMarkRead", "After mark as read/unread", AFTER, 0),
@@ -173,7 +190,7 @@ pub const GENERAL: &[Item] = &[
         t("emojiAutocomplete", "Enable emoji autocomplete", true),
         t("autoSendGifs", "Automatically send GIFs after selection", false),
         t("autoPlayVoiceNotes", "Automatically play the next voice note", true),
-        Pref { key: "microphone", label: "Microphone", desc: None, args: &[], badge: None, feature: None, requires: None, control: Control::Microphone },
+        Pref { key: "microphone", label: "Microphone", desc: None, args: &[], badge: None, feature: None, requires: None, name: None, control: Control::Microphone },
         t("keepEmoticons", "Disable automatic replacement of emoticons with emojis", false),
         t("autoCopyOtp", "Auto copy OTP/2FA codes", true).desc("If the chat is muted, you'll still be notified."),
         s("upArrow", "Press ↑ in the composer to:", &["Move focus to the message list", "Edit your last message"], 0),
@@ -265,12 +282,12 @@ pub const NOTIFICATIONS: &[Item] = &[
             &["Never", "Only for sent messages", "Only for received messages", "Always"],
             0,
         ),
-        Pref { key: "soundVolume", label: "Sound effect volume", desc: None, args: &[], badge: None, feature: None, requires: None, control: Control::Slider(50) },
+        Pref { key: "soundVolume", label: "Sound effect volume", desc: None, args: &[], badge: None, feature: None, requires: None, name: Some("Sound Effect Volume"), control: Control::Slider(50) },
         t("messageNotifications", "Message notifications", true),
-        s("messageSound", "Sound", SOUND, 0),
+        s("messageSound", "Sound", SOUND, 0).named("Notification Sound"),
         t("groupNotifications", "Group message notifications", true),
         t("requestNotifications", "Message request notifications", true),
-        s("groupSound", "Sound", SOUND, 0),
+        s("groupSound", "Sound", SOUND, 0).named("Group Notification Sound"),
         t("notifyInFocus", "Notify when app is in focus", true),
         t("notifyReactions", "Notify when someone reacts to a message", true),
         t("notifyTyping", "Notify when someone starts typing (supported platforms only)", false),
@@ -296,6 +313,7 @@ pub const AI: &[Item] = &[
         badge: Some(Badge::PlusLabs),
         feature: Some("ai-in-beeper-chats"),
         requires: None,
+        name: None,
         control: Control::Multi(&[
             "Arabic",
             "Chinese",
@@ -328,6 +346,23 @@ pub const PAGES: [(&str, &[Item]); 4] =
     [("General", GENERAL), ("Appearance", APPEARANCE), ("Notifications", NOTIFICATIONS), ("AI", AI)];
 
 /// The rows of the settings pages, with the page of each.
+impl Item {
+    /// Desktop's `displayName` and `searchKeywords` of a custom item.
+    pub fn custom(&self) -> Option<(&'static str, &'static [&'static str])> {
+        match self {
+            Item::Theme => Some(("Theme Selector", &["light mode", "dark mode", "system mode"])),
+            Item::ChatTheme => Some(("Default chat theme", &["wallpaper", "background", "bubble color", "chat theme"])),
+            Item::Zoom(..) => Some(("Zoom Controls", &[])),
+            _ => None,
+        }
+    }
+}
+
+/// The page, the name and the search keywords of each custom item.
+pub fn customs() -> impl Iterator<Item = (&'static str, &'static str, &'static [&'static str])> {
+    PAGES.iter().flat_map(|(page, items)| items.iter().filter_map(move |i| i.custom().map(|(n, k)| (*page, n, k))))
+}
+
 pub fn rows() -> impl Iterator<Item = (&'static str, &'static Pref)> {
     PAGES.iter().flat_map(|(page, items)| {
         items.iter().flat_map(|i| if let Item::Group(prefs) = i { *prefs } else { &[] }).map(move |p| (*page, p))
