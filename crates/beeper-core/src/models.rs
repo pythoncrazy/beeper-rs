@@ -356,6 +356,13 @@ pub struct PollRules {
     pub max_length: u16,
 }
 
+impl PollRules {
+    /// Whether a poll with `n` options can have one more.
+    pub fn room(self, n: usize) -> bool {
+        self.max_options == 0 || n < usize::from(self.max_options)
+    }
+}
+
 /// Desktop's poll features of a Beeper room.
 pub const BEEPER_POLLS: PollRules =
     PollRules { hidden_votes: true, duplicates: true, max_options: 20, max_length: 200 };
