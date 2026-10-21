@@ -1657,6 +1657,52 @@ fn sidebar_follows_the_spaces_order_like_desktop() {
 }
 
 #[test]
+fn edit_spaces_like_desktop() {
+    let mut app = demo_app("edit-spaces");
+    let _ = app.update(UiMessage::OpenChatMenu("account:label:lbl_work".into()));
+    let open: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_account_menu("label:lbl_work"));
+        let _ = sim.click("Edit Spaces…").expect("an Edit Spaces item");
+        sim.into_messages().filter(|m| matches!(m, UiMessage::OpenEditSpaces)).collect()
+    };
+    for m in open {
+        let _ = app.update(m);
+    }
+    fn view(app: &BeeperGuiApp) -> Simulator<'_, UiMessage> {
+        simulator(app.view_edit_spaces(app.spaces_window.as_ref().expect("open")))
+    }
+    {
+        let mut sim = view(&app);
+        assert!(sim.find("Pinned").is_ok() && sim.find("No Hidden Spaces").is_ok() && sim.find("Work").is_ok());
+        assert!(sim.find("Search Spaces").is_ok() && sim.find("New Label").is_ok());
+    }
+    let edit = |app: &mut BeeperGuiApp, e| drop(app.update(UiMessage::Spaces(e)));
+    edit(&mut app, SpacesEdit::Drag("reminders".into()));
+    edit(&mut app, SpacesEdit::Over(String::new()));
+    edit(&mut app, SpacesEdit::Drop);
+    edit(&mut app, SpacesEdit::Drag("label:lbl_work".into()));
+    edit(&mut app, SpacesEdit::Over("inbox".into()));
+    edit(&mut app, SpacesEdit::Drop);
+    let rail = rail_spaces(&app.store.read());
+    assert_eq!(rail[..2], ["label:lbl_work", "inbox"]);
+    assert!(!rail.iter().any(|s| s == "reminders"), "a space dropped after Hidden leaves the sidebar");
+    assert_eq!(hidden_spaces(&app.store.read()), ["reminders"]);
+    assert_eq!(app.status_banner, "Sidebar updated");
+    assert!(view(&app).find("No Hidden Spaces").is_err());
+    edit(&mut app, SpacesEdit::Drag(SPACES_DIVIDER.into()));
+    edit(&mut app, SpacesEdit::Over("label:lbl_work".into()));
+    edit(&mut app, SpacesEdit::Drop);
+    assert_eq!(rail_spaces(&app.store.read())[0], "inbox", "the Inbox stays when all spaces are hidden");
+    edit(&mut app, SpacesEdit::Search("wor".into()));
+    {
+        let mut sim = view(&app);
+        assert!(sim.find("Work").is_ok() && sim.find("Archive").is_err());
+    }
+    edit(&mut app, SpacesEdit::NewLabel);
+    assert!(app.label_window.is_some());
+}
+
+#[test]
 fn label_nudge_hides_after_the_first_label_like_desktop() {
     let mut app = demo_app("label-nudge");
     let nudge = |app: &BeeperGuiApp| rail_spaces(&app.store.read()).iter().any(|s| s == LABEL_NUDGE);

@@ -359,6 +359,9 @@ pub enum UiMessage {
     OpenPollCreator(String),
     Poll(window::Id, PollEdit),
     /// Desktop's `CreateLabelBrowserWindow`.
+    /// Desktop's `EditSidebarBrowserWindow`.
+    OpenEditSpaces,
+    Spaces(SpacesEdit),
     /// Opens the New label window with these chats picked.
     OpenCreateLabel(Vec<String>),
     /// Desktop's `toggleLabel` for one chat.
@@ -2038,17 +2041,79 @@ const RAIL_VIEWS: [(&str, Option<InboxTab>); 7] = [
 ];
 const LABEL_NUDGE: &str = "create-label-nudge";
 
+/// Desktop's `allSpaces` in the default order.
+fn all_spaces(st: &BeeperStore) -> Vec<String> {
+    let nudge = st.feature("labels-v2").show && st.labels.is_empty() && !st.settings.ever_labeled;
+    let views = RAIL_VIEWS.iter().filter(|v| nudge || v.0 != LABEL_NUDGE).map(|v| v.0.to_string());
+    views.chain(rail_accounts(st)).collect()
+}
+
 /// Desktop's `orderedSidebarSpaces`: the spaces of the `spaces_order` setting in its order, without the hidden
 /// ones, then the other spaces in the default order.
 fn rail_spaces(st: &BeeperStore) -> Vec<String> {
-    let nudge = st.feature("labels-v2").show && st.labels.is_empty() && !st.settings.ever_labeled;
-    let views = RAIL_VIEWS.iter().filter(|v| nudge || v.0 != LABEL_NUDGE).map(|v| v.0.to_string());
-    let mut all: Vec<String> = views.chain(rail_accounts(st)).collect();
+    let mut all = all_spaces(st);
     let order = &st.settings.spaces_order;
     let at = |id: &str| order.iter().position(|o| o.id == id);
     all.retain(|id| at(id).is_none_or(|i| order[i].visible));
     all.sort_by_key(|id| at(id).unwrap_or(usize::MAX));
     all
+}
+
+/// The spaces that Edit Spaces hides, in the `spaces_order` order.
+fn hidden_spaces(st: &BeeperStore) -> Vec<String> {
+    let all = all_spaces(st);
+    let hidden = st.settings.spaces_order.iter().filter(|o| !o.visible && all.contains(&o.id));
+    hidden.map(|o| o.id.clone()).collect()
+}
+
+/// The account of an account or network space.
+fn rail_owner(st: &BeeperStore, id: &str) -> String {
+    network_space(st, id).map_or(id, |n| n.account_id.as_str()).to_string()
+}
+
+/// Desktop's `getSpaceName`.
+fn space_name(st: &BeeperStore, id: &str) -> String {
+    match id {
+        "inbox" => tr("Inbox").into(),
+        "archive" => trx("Archive", "archive space name").into(),
+        "reminders" => tr("Reminders").into(),
+        "requests" => tr("Requests").into(),
+        "low_priority" => tr("Low Priority").into(),
+        "scheduled" => tr("Send Later").into(),
+        LABEL_NUDGE => tr("Create Label").into(),
+        _ => match (rail_label(st, id), network_space(st, id)) {
+            (Some(l), _) if l.name.is_empty() => trx("Label", "fallback label space name").into(),
+            (Some(l), _) => l.name.clone(),
+            (None, Some(n)) => format!("{} ({})", n.name, network_label(&n.account_id)),
+            (None, None) => network_label(id).to_string(),
+        },
+    }
+}
+
+/// Desktop's `getSpaceSubtitle`: the chats, reminders, requests or scheduled messages of a space.
+fn space_subtitle(st: &BeeperStore, id: &str) -> Option<String> {
+    let count = |f: &dyn Fn(&Chat) -> bool| st.chats.iter().filter(|c| c.merged_into_chat_id.is_none() && f(c)).count();
+    let listed = |c: &Chat| c.flags & (CHAT_ARCHIVED | CHAT_LOW_PRIORITY) == 0;
+    let chats = |n: usize| trn("%d Chat", "%d Chats", n, &[&n]);
+    Some(match id {
+        "inbox" => chats(count(&|c| c.flags & (CHAT_HIDDEN | CHAT_ARCHIVED | CHAT_LOW_PRIORITY | CHAT_REQUEST) == 0)),
+        "archive" => chats(count(&|c| c.flags & CHAT_ARCHIVED != 0)),
+        "reminders" => {
+            let n = count(&|c| c.reminder.is_some());
+            trn("%d Reminder", "%d Reminders", n, &[&n])
+        }
+        "requests" => {
+            let n = count(&|c| c.flags & CHAT_REQUEST != 0);
+            trn("%d Request", "%d Requests", n, &[&n])
+        }
+        "low_priority" => {
+            let n = count(&|c| c.flags & CHAT_LOW_PRIORITY != 0);
+            trn("%d Low Priority Chat", "%d Low Priority Chats", n, &[&n])
+        }
+        "scheduled" => trn("%d Message", "%d Messages", st.scheduled.len(), &[&st.scheduled.len()]),
+        LABEL_NUDGE => return None,
+        _ => chats(count(&|c| in_rail_entry(st, id, c) && listed(c))),
+    })
 }
 
 /// The account, network and label spaces in the default order.
@@ -2859,6 +2924,7 @@ pub struct BeeperGuiApp {
     pub theme_windows: Vec<(window::Id, String)>,
     pub poll_windows: Vec<PollDraft>,
     pub label_window: Option<LabelDraft>,
+    pub spaces_window: Option<SpacesDraft>,
     /// The poll votes windows with their chats and poll messages.
     pub vote_windows: Vec<(window::Id, String, String)>,
     /// The window that `BEEPER_SCREENSHOT_EXIT` or `BEEPER_SCREENSHOT_SETTINGS` captures after its next frame.
@@ -3000,6 +3066,7 @@ impl BeeperGuiApp {
             theme_windows: Vec::new(),
             poll_windows: Vec::new(),
             label_window: None,
+            spaces_window: None,
             vote_windows: Vec::new(),
             shot: None,
             login: Login::new(source),
@@ -3329,6 +3396,7 @@ impl BeeperGuiApp {
             _ if let Some(d) = self.label_window.as_ref().filter(|d| d.id == id) => {
                 return tr(if d.label.is_some() { "Edit label" } else { "New label" }).into();
             }
+            _ if self.spaces_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Spaces"),
             _ if let Some((_, _, mid)) = self.vote_windows.iter().find(|w| w.0 == id) => {
                 let st = self.store.read();
                 let total =
@@ -4508,6 +4576,20 @@ impl BeeperGuiApp {
                 return open.chain(operation::focus(question));
             }
             UiMessage::Poll(id, edit) => return self.poll_edit(id, edit),
+            UiMessage::OpenEditSpaces => {
+                self.chat_menu = None;
+                if let Some(d) = &self.spaces_window {
+                    return window::gain_focus(d.id);
+                }
+                let (id, open) = self.open_child(Size::new(360.0, 560.0));
+                let st = self.store.read();
+                let order = rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st));
+                let order = order.collect();
+                drop(st);
+                self.spaces_window = Some(SpacesDraft { id, order, search: String::new(), drag: None });
+                return open;
+            }
+            UiMessage::Spaces(e) => return self.spaces_edit(e),
             UiMessage::ToggleLabel(label, chat, add) => {
                 self.chat_menu = None;
                 self.store.write().set_label_room(&label, &chat, add);
@@ -4875,7 +4957,10 @@ impl BeeperGuiApp {
                 if Some(id) == self.settings_window {
                     return self.settings_key(key, mods);
                 }
-                if self.theme_windows.iter().any(|w| w.0 == id) || self.vote_windows.iter().any(|w| w.0 == id) {
+                if self.theme_windows.iter().any(|w| w.0 == id)
+                    || self.vote_windows.iter().any(|w| w.0 == id)
+                    || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
+                {
                     return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
                 }
                 if self.label_window.as_ref().is_some_and(|d| d.id == id) {
@@ -6106,6 +6191,7 @@ impl BeeperGuiApp {
                 self.poll_windows.retain(|w| w.id != id);
                 self.vote_windows.retain(|w| w.0 != id);
                 self.label_window = self.label_window.take().filter(|d| d.id != id);
+                self.spaces_window = self.spaces_window.take().filter(|d| d.id != id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
                 } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
@@ -6504,6 +6590,8 @@ impl BeeperGuiApp {
             self.view_poll_creator(d)
         } else if let Some(d) = self.label_window.as_ref().filter(|d| d.id == id) {
             self.view_create_label(d)
+        } else if let Some(d) = self.spaces_window.as_ref().filter(|d| d.id == id) {
+            self.view_edit_spaces(d)
         } else if let Some((_, chat, mid)) = self.vote_windows.iter().find(|w| w.0 == id) {
             self.view_poll_votes(chat, mid)
         } else {
@@ -6588,7 +6676,7 @@ impl BeeperGuiApp {
                 (124.0, 31.0)
             } else if let Some(entry) = cid.strip_prefix("account:") {
                 let label = rail_label(&self.store.read(), entry).is_some();
-                let h = if label { 8.0 + 5.0 * MENU_ITEM + 22.0 } else { 8.0 + 4.0 * MENU_ITEM + 11.0 };
+                let h = if label { 8.0 + 6.0 * MENU_ITEM + 22.0 } else { 8.0 + 5.0 * MENU_ITEM + 11.0 };
                 (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), h)
             } else {
                 let st = self.store.read();
@@ -7482,6 +7570,7 @@ impl BeeperGuiApp {
                     UiMessage::MuteLabel(l.id.clone(), !l.muted)
                 ),
                 menu_rule(p),
+                item(tr("Edit Spaces…"), UiMessage::OpenEditSpaces),
                 item(tr("Add/Remove Accounts…"), UiMessage::OpenSettings(SettingsTab::Accounts)),
                 menu_rule(p),
                 item(tr("Edit Label…"), UiMessage::EditLabel(l.id.clone())),
@@ -7526,6 +7615,7 @@ impl BeeperGuiApp {
             mouse_area(column![
                 mute,
                 menu_rule(p),
+                menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
                 menu_item(p, None, tr("Add/Remove Accounts…").into(), "", Some(accounts))
             ])
             .on_enter(UiMessage::ChatSub(None))
@@ -12083,6 +12173,185 @@ impl BeeperGuiApp {
         }
     }
 
+    fn spaces_edit(&mut self, e: SpacesEdit) -> Task<UiMessage> {
+        let d = self.spaces_window.as_mut().expect("the Edit Spaces window is open");
+        match e {
+            SpacesEdit::Search(q) => d.search = q,
+            SpacesEdit::Drag(id) => d.drag = Some((id, d.order.clone())),
+            SpacesEdit::Over(to) => {
+                let Some((id, _)) = &d.drag else { return Task::none() };
+                let from = d.order.iter().position(|o| o == id).expect("a dragged space");
+                let to = d.order.iter().position(|o| *o == to).unwrap_or(d.order.len() - 1);
+                let item = d.order.remove(from);
+                d.order.insert(to, item);
+            }
+            SpacesEdit::Drop => {
+                let Some((_, before)) = d.drag.take() else { return Task::none() };
+                if d.order[0] == SPACES_DIVIDER && d.order.len() > 1 {
+                    let inbox = d.order.iter().position(|o| o == "inbox").unwrap_or(1);
+                    let first = d.order.remove(inbox);
+                    d.order.insert(0, first);
+                }
+                if d.order == before {
+                    return Task::none();
+                }
+                let split = d.order.iter().position(|o| o == SPACES_DIVIDER).expect("the divider");
+                let order = d.order.iter().enumerate().filter(|(i, _)| *i != split);
+                let order = order.map(|(i, id)| SpaceOrder { id: id.clone(), visible: i < split }).collect();
+                self.patch_settings(|s| s.spaces_order = order);
+                self.status_banner = tr("Sidebar updated").into();
+            }
+            SpacesEdit::NewLabel => {
+                let close = window::close(d.id);
+                return Task::batch([close, self.update(UiMessage::OpenCreateLabel(Vec::new()))]);
+            }
+        }
+        Task::none()
+    }
+
+    fn view_edit_spaces<'a>(&'a self, d: &'a SpacesDraft) -> El<'a> {
+        let p = &self.pal;
+        let st = self.store.read();
+        let edit = UiMessage::Spaces;
+        let search = text_input(tr("Search Spaces"), &d.search)
+            .on_input(move |q| edit(SpacesEdit::Search(q)))
+            .size(13)
+            .line_height(Pixels(16.0))
+            .padding([14, 0])
+            .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
+        let clear = (!d.search.trim().is_empty())
+            .then(|| icon_btn(p, icon::CLOSE, 16.0, 28.0, p.sub, edit(SpacesEdit::Search(String::new()))));
+        let search = row![ic(icon::SEARCH, 16.0).color(p.sub), search]
+            .push(clear)
+            .spacing(10)
+            .align_y(Center)
+            .padding(Padding::ZERO.left(16.0).right(8.0));
+        let q = d.search.trim().to_lowercase();
+        let split = d.order.iter().position(|o| o == SPACES_DIVIDER).expect("the divider");
+        let found = |ids: &'a [String]| -> Vec<&'a String> {
+            ids.iter().filter(|id| q.is_empty() || space_name(&st, id).to_lowercase().contains(&q)).collect()
+        };
+        let line = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.15);
+        let dragged = d.drag.as_ref().map(|(id, _)| id.as_str());
+        let group = |ids: Vec<&'a String>| -> Vec<El<'a>> {
+            let last = ids.len().saturating_sub(1);
+            ids.into_iter()
+                .enumerate()
+                .map(|(i, id)| {
+                    let (top, bottom) = (if i == 0 { 12.0 } else { 0.0 }, if i == last { 12.0 } else { 0.0 });
+                    let muted = match rail_label(&st, id) {
+                        Some(l) => l.muted,
+                        None => {
+                            !RAIL_VIEWS.iter().any(|v| v.0 == id)
+                                && !st.settings.account(&rail_owner(&st, id)).notifications
+                        }
+                    };
+                    let name = row![ell(&space_name(&st, id), 220.0, 13.0, Weight::Semibold).color(p.strong)]
+                        .push(muted.then(|| ic(icon::NOTIFICATIONS_OFF, 12.0).color(p.strong)))
+                        .spacing(2)
+                        .align_y(Center);
+                    let sub = space_subtitle(&st, id).map(|t| txt(t, 11.0).line_height(Pixels(14.0)).color(p.sub));
+                    let handle = mouse_area(container(tinted(&DRAG_HANDLE, 20.0, p.sub)).center(28))
+                        .interaction(iced::mouse::Interaction::Grab)
+                        .on_press(edit(SpacesEdit::Drag(id.clone())));
+                    let lift = dragged == Some(id.as_str());
+                    let body = row![
+                        container(self.space_icon(&st, id)).center(20),
+                        column![name].push(sub).width(Fill),
+                        handle
+                    ]
+                    .spacing(10)
+                    .align_y(Center)
+                    .padding([6, 12]);
+                    let fill = p.received;
+                    let body = container(body).style(move |_: &Theme| container::Style {
+                        background: Some(fill.into()),
+                        border: iced::Border {
+                            radius: border::Radius {
+                                top_left: top,
+                                top_right: top,
+                                bottom_right: bottom,
+                                bottom_left: bottom,
+                            },
+                            ..iced::Border::default()
+                        },
+                        shadow: if lift {
+                            Shadow {
+                                color: Color::BLACK.scale_alpha(0.15),
+                                offset: Vector::new(0.0, 4.0),
+                                blur_radius: 12.0,
+                            }
+                        } else {
+                            Shadow::default()
+                        },
+                        ..Default::default()
+                    });
+                    let rule =
+                        (i != last).then(|| container(Space::new()).width(Fill).height(1).style(fill_box(line, 0.0)));
+                    mouse_area(column![body].push(rule)).on_enter(edit(SpacesEdit::Over(id.clone()))).into()
+                })
+                .collect()
+        };
+        let header =
+            |label: &'static str| container(txt(label, 12.0).line_height(Pixels(15.0)).color(p.sub)).padding([8, 0]);
+        let hidden = found(&d.order[split + 1..]);
+        let empty = hidden.is_empty().then(|| {
+            let fill = if dragged.is_some() { CLEAR } else { p.received };
+            let msg = container(txt(tr("No Hidden Spaces"), 13.0).line_height(Pixels(16.0)).color(p.sub))
+                .center_x(Fill)
+                .center_y(56)
+                .style(move |_: &Theme| container::Style {
+                    background: Some(fill.into()),
+                    border: iced::Border {
+                        color: p.received,
+                        width: if fill == CLEAR { 1.0 } else { 0.0 },
+                        radius: 12.0.into(),
+                    },
+                    ..Default::default()
+                });
+            mouse_area(msg).on_enter(edit(SpacesEdit::Over(String::new())))
+        });
+        let list = column![header(trx("Pinned", "edit spaces section header"))]
+            .extend(group(found(&d.order[..split])))
+            .push(mouse_area(header(tr("Hidden")).width(Fill)).on_enter(edit(SpacesEdit::Over(SPACES_DIVIDER.into()))))
+            .push(empty)
+            .extend(group(hidden))
+            .padding(Padding { top: 0.0, right: 13.0, bottom: 30.0, left: 13.0 });
+        let list = scrollable(list).direction(Direction::Vertical(Scrollbar::hidden())).height(Fill);
+        let card = container(column![search, list]).height(Fill).clip(true).style(fill_box(p.card, 12.0));
+        let new = st.feature("labels-v2").show.then(|| {
+            let link = button(txt(tr("New Label"), 13.0).color(p.accent))
+                .padding([4, 8])
+                .style(btn_style([CLEAR; 3], [p.accent; 3], 8.0))
+                .on_press(edit(SpacesEdit::NewLabel));
+            container(link).center_x(Fill).padding(Padding { top: 8.0, right: 0.0, bottom: 4.0, left: 0.0 })
+        });
+        let head = container(semi(tr("Edit Spaces"), 13.0).line_height(Pixels(16.0)).color(p.strong))
+            .center_x(Fill)
+            .padding([8, 0]);
+        let window = container(column![head, card].push(new)).padding(8).style(fill_box(p.window, 0.0));
+        mouse_area(window).on_release(edit(SpacesEdit::Drop)).into()
+    }
+
+    /// Desktop's `getSpaceIcon`.
+    fn space_icon(&self, st: &BeeperStore, id: &str) -> El<'static> {
+        let p = &self.pal;
+        let glyph = |c: char, size: f32| -> El<'static> { ic(c, size).color(p.strong).into() };
+        match id {
+            "inbox" => glyph(icon::INBOX, 16.0),
+            "archive" => glyph(icon::ARCHIVE, 14.0),
+            "reminders" => glyph(icon::SCHEDULE, 14.0),
+            "requests" => glyph(icon::EMAIL, 16.0),
+            "low_priority" => glyph(icon::LOW_PRIORITY_SPACE, 12.0),
+            "scheduled" => glyph(icon::SCHEDULE_SEND, 14.0),
+            LABEL_NUDGE => glyph(icon::MAPS_UGC, 16.0),
+            _ => match rail_label(st, id) {
+                Some(l) => label_icon(l, 20.0, p.strong),
+                None => svg(brand_svg(brand_key(&rail_owner(st, id)))).width(20).height(20).into(),
+            },
+        }
+    }
+
     /// Desktop's `IconColorPicker` popover: the label colors, then the label icons.
     fn label_picker<'a>(&self, d: &LabelDraft) -> El<'a> {
         let p = &self.pal;
@@ -12724,6 +12993,28 @@ pub struct LabelDraft {
     pub more: bool,
     /// Whether the `IconColorPicker` is open.
     pub picker: bool,
+}
+
+/// The Edit Spaces window: the shown spaces, then `SPACES_DIVIDER`, then the hidden spaces.
+pub struct SpacesDraft {
+    pub id: window::Id,
+    pub order: Vec<String>,
+    pub search: String,
+    /// The space that the drag handle moves, and the order before the drag.
+    pub drag: Option<(String, Vec<String>)>,
+}
+
+/// Desktop's `HIDDEN_DIVIDER_ID`.
+const SPACES_DIVIDER: &str = "__hidden_divider__";
+
+#[derive(Debug, Clone)]
+pub enum SpacesEdit {
+    Search(String),
+    Drag(String),
+    /// The dragged space moves to this space, or to the end for an empty ID.
+    Over(String),
+    Drop,
+    NewLabel,
 }
 
 impl LabelDraft {
