@@ -2344,6 +2344,24 @@ fn export_chat_like_desktop() {
 }
 
 #[test]
+fn mute_account_command_like_desktop() {
+    let mut app = demo_app("mute-account-command");
+    let _ = app.update(UiMessage::SelectChat("!tg_rust:beeper.com".into()));
+    let account = |app: &BeeperGuiApp| {
+        let cmds = app.commands(&app.store.read(), "");
+        cmds.into_iter().find(|c| c.category == "Telegram Account").expect("the account command")
+    };
+    let mute = account(&app);
+    assert!(mute.title.starts_with("Mute account: "));
+    let _ = app.update(mute.msg.expect("an action"));
+    let st = app.store.read();
+    let a = &st.chats[st.resolve_chat_idx("!tg_rust:beeper.com").expect("the chat")].account_id;
+    assert!(!st.settings.account(a).notifications);
+    drop(st);
+    assert!(account(&app).title.starts_with("Unmute account: "));
+}
+
+#[test]
 fn chat_info_contact_like_desktop() {
     let mut app = demo_app("chat-info-contact");
     let id = "!im_jordan:beeper.com";
