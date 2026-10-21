@@ -1318,6 +1318,9 @@ fn polls_like_desktop() {
     {
         let mut sim = simulator(app.view_main());
         assert!(sim.find("Select one option").is_ok() && sim.find("2 votes").is_ok());
+        let st = app.store.read();
+        let m = &st.messages[st.msg_idx_by_id[mid]];
+        assert_eq!((crate::message_tag(m), crate::preview_body(m)), (Some((crate::POLL_TAG, "Poll", None)), None));
     }
     for m in click(&app, "Nocturne") {
         let _ = app.update(m);
