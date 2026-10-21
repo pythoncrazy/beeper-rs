@@ -1033,7 +1033,7 @@ impl BeeperStore {
 
     /// Desktop's `createLabel`: adds the label here at once and creates its label space on the homeserver.
     pub fn create_label(&mut self, name: &str, color: Option<u8>, icon: Option<String>, rooms: Vec<String>) -> String {
-        assert!(!name.trim().is_empty() && !rooms.is_empty(), "a label has a name and chats");
+        assert!(!name.trim().is_empty(), "a label has a name");
         let label =
             Label { id: self.next_id("label"), name: name.trim().into(), color, icon, rooms, ..Label::default() };
         let id = label.id.clone();

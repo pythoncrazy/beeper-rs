@@ -376,6 +376,8 @@ pub enum UiMessage {
     Undone(Box<UiMessage>),
     /// Puts back the name, color, icon and chats of a label.
     RestoreLabel(Box<Label>),
+    /// Desktop's `restoreLabel`: makes a deleted label again, in its old place in the sidebar.
+    RestoreDeletedLabel(Box<Label>, Vec<SpaceOrder>),
     /// Desktop's `CreateLabelBrowserWindow` for an existing label.
     EditLabel(String),
     Label(LabelEdit),
@@ -4734,6 +4736,21 @@ impl BeeperGuiApp {
                 (self.status_banner, self.undo_toast) = (String::new(), None);
                 return task;
             }
+            UiMessage::RestoreDeletedLabel(l, order) => {
+                let mut st = self.store.write();
+                let id = st.create_label(&l.name, l.color, l.icon.clone(), l.rooms.clone());
+                if l.inbox.is_some() {
+                    st.set_label_inbox(&id, l.inbox);
+                }
+                if l.muted {
+                    st.set_label_muted(&id, true);
+                }
+                drop(st);
+                let (old, new) = (format!("label:{}", l.id), format!("label:{id}"));
+                let order =
+                    order.into_iter().map(|o| if o.id == old { SpaceOrder { id: new.clone(), ..o } } else { o });
+                self.patch_settings(|s| s.spaces_order = order.collect());
+            }
             UiMessage::RestoreLabel(l) => self.store.write().update_label(&l.id, &l.name, l.color, l.icon, l.rooms),
             UiMessage::OpenCreateLabel(chats) => {
                 self.chat_menu = None;
@@ -4772,7 +4789,13 @@ impl BeeperGuiApp {
             }
             UiMessage::DeleteLabel(id) => {
                 self.confirm = None;
-                self.store.write().delete_label(&id);
+                let mut st = self.store.write();
+                let label = st.labels.iter().find(|l| l.id == id).expect("a deleted label").clone();
+                let order = st.settings.spaces_order.clone();
+                st.delete_label(&id);
+                drop(st);
+                let text = format!("Deleted \"{}\"", label.name);
+                self.action_toast(text, UiMessage::RestoreDeletedLabel(Box::new(label), order), None);
                 if let Some(d) = self.spaces_window.as_mut() {
                     d.order.retain(|o| *o != format!("label:{id}"));
                 }
