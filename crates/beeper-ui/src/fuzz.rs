@@ -1784,6 +1784,37 @@ fn sidebar_menus_open_accounts_like_desktop() {
 }
 
 #[test]
+fn sidebar_view_menus_like_desktop() {
+    let mut app = demo_app("view-menus");
+    let open =
+        interact(&app, app.main_window.expect("a main window"), Size::new(1440.0, 900.0), Point::new(34.0, 30.0), {
+            let right = [mouse::Event::ButtonPressed(Button::Right), mouse::Event::ButtonReleased(Button::Right)];
+            right.map(iced::Event::Mouse).to_vec()
+        });
+    for m in open {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.chat_menu.as_ref().map(|m| m.0.as_str()), Some("account:inbox"));
+    let pick = |app: &mut BeeperGuiApp, item: &str| {
+        let msgs: Vec<UiMessage> = {
+            let mut sim = simulator(app.view_account_menu("inbox"));
+            assert!(sim.find("Add/Remove Accounts…").is_ok() && sim.find("Edit Spaces…").is_ok());
+            let _ = sim.click(item).expect(item);
+            sim.into_messages().collect()
+        };
+        for m in msgs {
+            let _ = app.update(m);
+        }
+    };
+    pick(&mut app, "Hide Space Bar");
+    assert!(!app.store.read().settings.on("showSidebar") && app.chat_menu.is_none());
+    pick(&mut app, "Show Space Bar");
+    assert!(app.store.read().settings.on("showSidebar"));
+    pick(&mut app, "Settings");
+    assert!(app.settings_window.is_some() && matches!(app.active_settings_tab, SettingsTab::General));
+}
+
+#[test]
 fn label_inbox_rules_like_desktop() {
     let mut app = demo_app("label-inbox");
     let _ = app.update(UiMessage::OpenChatMenu("account:label:lbl_work".into()));

@@ -5150,7 +5150,10 @@ impl BeeperGuiApp {
             UiMessage::Commands(msgs) => {
                 return Task::batch(msgs.into_iter().map(|m| self.update(m)).collect::<Vec<_>>())
             }
-            UiMessage::RunHotkey(name) => return self.run_hotkey(name, 0),
+            UiMessage::RunHotkey(name) => {
+                self.chat_menu = None;
+                return self.run_hotkey(name, 0);
+            }
             UiMessage::ToggleMaximize => return window::toggle_maximize(self.main_window.expect("the main window")),
             UiMessage::JumpTo(cid, mid) => {
                 (self.show_command_palette, self.command_palette_query) = (false, String::new());
@@ -6683,6 +6686,8 @@ impl BeeperGuiApp {
         let chat_menu = self.chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
             let (w, h) = if cid.starts_with("draft:") {
                 (124.0, 31.0)
+            } else if RAIL_VIEWS.iter().any(|v| cid.strip_prefix("account:") == Some(v.0)) {
+                (233.0, 8.0 + 4.0 * MENU_ITEM)
             } else if cid.starts_with("account:") {
                 (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + 6.0 * MENU_ITEM + 22.0)
             } else {
@@ -7560,6 +7565,36 @@ impl BeeperGuiApp {
     fn account_menu(&self, entry: &str, gear: bool) -> (El<'_>, Option<El<'_>>) {
         let p = &self.pal;
         let st = self.store.read();
+        if RAIL_VIEWS.iter().any(|v| v.0 == entry) {
+            let keys = |name| prefs::hotkey_label(st.settings.hotkey_keys(name));
+            let bar = if st.settings.on("showSidebar") { "Hide Space Bar" } else { "Show Space Bar" };
+            let col = column![
+                menu_item(
+                    p,
+                    None,
+                    tr("Add/Remove Accounts…").into(),
+                    keys("Settings"),
+                    Some(UiMessage::OpenSettings(SettingsTab::Accounts))
+                ),
+                menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
+                menu_item(
+                    p,
+                    None,
+                    tr(bar).into(),
+                    keys("Toggle Space Bar"),
+                    Some(UiMessage::RunHotkey("Toggle Space Bar"))
+                ),
+                menu_item(
+                    p,
+                    None,
+                    tr("Settings").into(),
+                    keys("Settings"),
+                    Some(UiMessage::OpenSettings(SettingsTab::General))
+                ),
+            ];
+            let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            return (menu.into(), None);
+        }
         if let Some(l) = rail_label(&st, entry) {
             let now = l.inbox.unwrap_or("all");
             let sub = (self.chat_sub == Some(0)).then(|| {
@@ -7977,7 +8012,13 @@ impl BeeperGuiApp {
             |id: &'static str, key: usize, glyph: El<'static>, t: InboxTab, n: usize, number: bool| -> El<'static> {
                 let on = self.active_tab == t && self.selected_account_filter.is_none();
                 let btn = badge(rail_btn(glyph, on, UiMessage::SelectTab(t)).into(), n, number);
-                container(tip(btn, t.label(), hotkey(key))).id(id).into()
+                let view = RAIL_VIEWS.iter().find(|v| v.1 == Some(t)).expect("a sidebar view").0;
+                let btn: El = mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{view}"))).into();
+                let btn = match self.chat_menu {
+                    Some(_) => btn,
+                    None => tip(btn, t.label(), hotkey(key)).into(),
+                };
+                container(btn).id(id).into()
             };
         let requests = st.chats.iter().filter(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0).count();
         let g = |c: char| -> El<'static> { ic(c, 24.0).color(p.strong).into() };
