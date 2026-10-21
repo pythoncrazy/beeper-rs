@@ -72,6 +72,7 @@ use iced::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{broadcast, Semaphore};
 
 static AVATAR_SLOTS: Semaphore = Semaphore::const_new(8);
@@ -315,6 +316,9 @@ pub enum UiMessage {
     Notified(Result<(u32, String), String>),
     NotificationEvent(u32, bool),
     WindowFocused(bool),
+    /// The pointer enters or leaves the toast, which pauses its timeout like Desktop.
+    ToastHover(bool),
+    ToastTick,
     GifQueryChanged(String),
     GifsLoaded(Result<Vec<KlipyGif>, String>),
     PickGif(KlipyGif),
@@ -2066,6 +2070,9 @@ fn rail_spaces(st: &BeeperStore) -> Vec<String> {
 }
 
 /// The rail ID of Desktop's draft label, which shows while Create Label is open.
+/// Desktop's default toast timeout, counted in ticks while the toast is not paused.
+const TOAST_TIMEOUT: Duration = Duration::from_secs(5);
+const TOAST_TICK: Duration = Duration::from_millis(250);
 const LABEL_DRAFT: &str = "label:draft";
 
 /// Desktop's `setDraftLabel`: the draft label named `name` is a label space, and it takes the order slot of the nudge.
@@ -2985,6 +2992,10 @@ pub struct BeeperGuiApp {
     banner_action: Option<(String, &'static str, UiMessage)>,
     /// Desktop's archive and Low Priority toasts, shown only while the banner still is their text.
     undo_toast: Option<UndoToast>,
+    /// The toast text the timeout counts for, whether the pointer is on it, and the time it showed.
+    toast_clock: (String, bool, Duration),
+    /// A toast that stays until it is replaced, like Desktop's timeout 0.
+    sticky_banner: Option<String>,
     pub dnd_muted: bool,
     pub sidebar_width: f32,
     /// Desktop's local `sidebar-hidden`: hides the rail and the chat list.
@@ -3133,6 +3144,8 @@ impl BeeperGuiApp {
             relaunch_toast: None,
             banner_action: None,
             undo_toast: None,
+            toast_clock: (String::new(), false, Duration::ZERO),
+            sticky_banner: None,
             dnd_muted: false,
             sidebar_width,
             sidebar_hidden,
@@ -5181,6 +5194,7 @@ impl BeeperGuiApp {
                     .collect();
                 let client = st.matrix.clone();
                 self.status_banner = trf("Downloading %s", &[&files[0].1]);
+                self.sticky_banner = Some(self.status_banner.clone());
                 let dir = beeper_core::platform::resolve_home_dir(&std::env::vars().collect()).join("Downloads");
                 return Task::perform(
                     async move {
@@ -5664,6 +5678,17 @@ impl BeeperGuiApp {
             UiMessage::NotificationEvent(id, clicked) => {
                 let chat = self.notifications.remove(&id).filter(|_| clicked);
                 return chat.map_or_else(Task::none, |c| self.update(UiMessage::FocusRequested(Some(c))));
+            }
+            m @ (UiMessage::ToastHover(_) | UiMessage::ToastTick) if self.toast_clock.0 != self.status_banner => {
+                self.toast_clock = (self.status_banner.clone(), false, Duration::ZERO);
+                return self.update(m);
+            }
+            UiMessage::ToastHover(on) => self.toast_clock.1 = on,
+            UiMessage::ToastTick => {
+                self.toast_clock.2 += TOAST_TICK;
+                if self.toast_clock.2 >= TOAST_TIMEOUT {
+                    return self.update(UiMessage::DismissBanner);
+                }
             }
             UiMessage::WindowFocused(focused) => {
                 self.focused = focused;
@@ -6740,6 +6765,7 @@ impl BeeperGuiApp {
             .then(|| Subscription::run(tray::events).map(UiMessage::Tray));
         let notes = (!self.notifications.is_empty())
             .then(|| Subscription::run(notify::events).map(|(id, clicked)| UiMessage::NotificationEvent(id, clicked)));
+        let toast = self.toast_running().then(|| iced::time::every(TOAST_TICK).map(|_| UiMessage::ToastTick));
         let tick =
             animated.then(|| iced::time::every(std::time::Duration::from_millis(20)).map(|_| UiMessage::AnimationTick));
         let shot = self.shot.map(|_| {
@@ -6756,6 +6782,7 @@ impl BeeperGuiApp {
                 .chain(poll_drag)
                 .chain(carousel)
                 .chain(tick)
+                .chain(toast)
                 .chain(shot)
                 .chain(remind)
                 .chain(send)
@@ -8160,6 +8187,13 @@ impl BeeperGuiApp {
             self.status_banner = text.clone();
             self.undo_toast = Some(UndoToast { text, icon, undo: UiMessage::UndoFlag(flag, chats, many), open });
         }
+    }
+
+    /// The toast timeout runs while a window is focused and the pointer is not on the toast.
+    fn toast_running(&self) -> bool {
+        let hovered = self.toast_clock.0 == self.status_banner && self.toast_clock.1;
+        let sticky = self.sticky_banner.as_ref() == Some(&self.status_banner);
+        self.relaunch_toast.is_none() && !self.status_banner.is_empty() && self.focused && !hovered && !sticky
     }
 
     /// Desktop's `undoLastToast`: the Undo of the toast on screen.
@@ -10563,6 +10597,10 @@ impl BeeperGuiApp {
             None => &self.status_banner,
         };
         let undo = self.undo_toast.as_ref().filter(|_| self.shown_undo().is_some());
+        let toast = |card: El<'static>| -> El<'_> {
+            let card = mouse_area(card).on_enter(UiMessage::ToastHover(true)).on_exit(UiMessage::ToastHover(false));
+            container(card).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(left)).into()
+        };
         (!banner.is_empty()).then(|| {
             let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, p.sub, UiMessage::DismissBanner);
             if let Some(t) = undo {
@@ -10582,8 +10620,7 @@ impl BeeperGuiApp {
                     }
                 };
                 let card = container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0));
-                let card = mouse_area(card).on_press(UiMessage::SelectTab(t.open));
-                return container(card).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(left)).into();
+                return toast(mouse_area(card).on_press(UiMessage::SelectTab(t.open)).into());
             }
             let text = txt(banner.to_string(), 13.0).color(p.strong);
             let action = match (self.relaunch_toast, &self.banner_action) {
@@ -10594,8 +10631,7 @@ impl BeeperGuiApp {
             let relaunch = action.map(|(label, msg)| pill_btn(p, label, msg));
             let card = row![text.wrapping(iced::widget::text::Wrapping::WordOrGlyph)].push(relaunch).push(close);
             let card = card.spacing(8).align_y(Center);
-            let card = container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0));
-            container(card).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(left)).into()
+            toast(container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0)).into())
         })
     }
 

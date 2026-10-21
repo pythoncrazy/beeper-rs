@@ -2073,3 +2073,25 @@ fn mute_labels_like_desktop() {
     app.store.write().update_chat(i, |c| c.label_ids.retain(|l| l != &both));
     assert!(!muted(&app));
 }
+
+#[test]
+fn toasts_time_out_like_desktop() {
+    let mut app = demo_app("toast-timeout");
+    app.focused = true;
+    let _ = app.update(UiMessage::CopyLink("https://example.com".into()));
+    let shown = app.status_banner.clone();
+    assert!(!shown.is_empty() && app.toast_running());
+    let _ = app.update(UiMessage::ToastHover(true));
+    assert!(!app.toast_running(), "hover pauses the toast");
+    let _ = app.update(UiMessage::ToastHover(false));
+    let ticks = (TOAST_TIMEOUT.as_millis() / TOAST_TICK.as_millis()) as usize;
+    for _ in 1..ticks {
+        let _ = app.update(UiMessage::ToastTick);
+    }
+    assert_eq!(app.status_banner, shown);
+    let _ = app.update(UiMessage::ToastTick);
+    assert!(app.status_banner.is_empty() && !app.toast_running());
+    app.status_banner = "a".into();
+    app.sticky_banner = Some("a".into());
+    assert!(!app.toast_running(), "a sticky toast stays");
+}
