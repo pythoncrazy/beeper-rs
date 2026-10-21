@@ -2120,3 +2120,26 @@ fn toasts_time_out_like_desktop() {
     app.sticky_banner = Some("a".into());
     assert!(!app.toast_running(), "a sticky toast stays");
 }
+
+#[test]
+fn double_clicks_like_desktop() {
+    let mut app = demo_app("sidebar-reset");
+    let click = [mouse::Event::ButtonPressed(Button::Left), mouse::Event::ButtonReleased(Button::Left)];
+    let twice: Vec<iced::Event> = click.into_iter().chain(click).map(iced::Event::Mouse).collect();
+    let main = app.main_window.expect("a main window");
+    assert!(app.pane.selected_chat_id.is_some());
+    let header = interact(&app, main, Size::new(1440.0, 900.0), Point::new(500.0, 20.0), twice.clone());
+    assert!(matches!(&header[..], [UiMessage::ToggleMaximize(None)]), "the chat header maximizes: {header:?}");
+    let edge = interact(&app, main, Size::new(1440.0, 900.0), Point::new(68.0 + SIDEBAR_WIDTH + 1.0, 400.0), twice);
+    assert!(edge.iter().any(|m| matches!(m, UiMessage::ResetSidebarWidth)), "the sidebar edge resets: {edge:?}");
+    let _ = app.update(UiMessage::DragStart);
+    let _ = app.update(UiMessage::DragMoved(Point::new(500.0, 10.0)));
+    let _ = app.update(UiMessage::DragEnd);
+    assert!(app.sidebar_width > SIDEBAR_WIDTH);
+    let _ = app.update(UiMessage::DragStart);
+    let _ = app.update(UiMessage::ResetSidebarWidth);
+    let _ = app.update(UiMessage::DragEnd);
+    assert_eq!(app.sidebar_width, SIDEBAR_WIDTH);
+    let saved = std::fs::read_to_string(app.store.read().data_dir.join("sidebar-width")).expect("the saved width");
+    assert_eq!(saved.parse::<f32>().expect("a width"), SIDEBAR_WIDTH);
+}

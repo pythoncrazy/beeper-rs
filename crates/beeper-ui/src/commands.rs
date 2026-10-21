@@ -480,7 +480,7 @@ impl BeeperGuiApp {
         v.push(space.keys(&["hide", "show"]).hotkey("Toggle Space Bar"));
         let media = &["media", "gallery", "photos", "images", "videos", "files", "links", "docs"];
         v.push(cmd("Window", tr("Media viewer"), Some(UiMessage::OpenMedia)).keys(media));
-        v.push(cmd("Window", tr("Maximize/unmaximize"), Some(UiMessage::ToggleMaximize)));
+        v.push(cmd("Window", tr("Maximize/unmaximize"), Some(UiMessage::ToggleMaximize(None))));
         v.push(cmd("View", tr("Zoom in"), hot("Zoom In")).keys(&["magnify"]).hotkey("Zoom In"));
         v.push(cmd("View", tr("Zoom out"), hot("Zoom Out")).keys(&["magnify"]).hotkey("Zoom Out"));
         let reset = hot("Reset Zoom").filter(|_| st.settings.zoom_percent != 100);
