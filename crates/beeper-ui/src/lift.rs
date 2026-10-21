@@ -4,15 +4,22 @@ use iced::advanced::{mouse, overlay, renderer, Clipboard, Renderer as _, Shell};
 use iced::{Element, Event, Length, Rectangle, Renderer, Size, Theme, Transformation, Vector};
 
 /// Draws `content` lowered by `dy` and scaled by `scale` from its bottom right corner, like Desktop's
-/// `message-send-insert` keyframes. The layout does not change.
+/// `message-send-insert` keyframes. The layout does not change, except that a `tight` lift gives `content`
+/// its full size as the minimum size.
 pub struct Lift<'a, Message> {
     content: Element<'a, Message>,
     dy: f32,
     scale: f32,
+    tight: bool,
 }
 
 pub fn lift<'a, Message>(content: impl Into<Element<'a, Message>>, dy: f32, scale: f32) -> Lift<'a, Message> {
-    Lift { content: content.into(), dy, scale }
+    Lift { content: content.into(), dy, scale, tight: false }
+}
+
+/// Gives a scrollable its viewport as the minimum size of its content, like a CSS `min-height: 100%`.
+pub fn tight<'a, Message>(content: impl Into<Element<'a, Message>>) -> Lift<'a, Message> {
+    Lift { content: content.into(), dy: 0.0, scale: 1.0, tight: true }
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for Lift<'_, Message> {
@@ -29,7 +36,8 @@ impl<Message> Widget<Message, Theme, Renderer> for Lift<'_, Message> {
     }
 
     fn layout(&mut self, tree: &mut widget::Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
-        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
+        let tight = layout::Limits::new(limits.max(), limits.max());
+        self.content.as_widget_mut().layout(&mut tree.children[0], renderer, if self.tight { &tight } else { limits })
     }
 
     fn operate(

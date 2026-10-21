@@ -7618,20 +7618,16 @@ impl BeeperGuiApp {
         let col = self.view_messages(&st, chat, &msgs, false);
         let col = col.push(self.view_scheduled(&st, chat));
         let col = col.push(st.typing.get(cid).map(|ids| self.typing_bubble(chat, ids)));
-        let list = scrollable(col)
-            .id("timeline")
-            .direction(stable_bar())
-            .anchor_bottom()
-            .height(Fill)
-            .style(scroll_style(p.scroll));
+        // Desktop's `messages-list` keeps the messages at the bottom when they do not fill the view.
+        let scroller = |col| {
+            let col = container(col).align_y(Bottom);
+            scrollable(col).direction(stable_bar()).anchor_bottom().height(Fill).style(scroll_style(p.scroll))
+        };
+        let list = lift::tight(scroller(col).id("timeline"));
         let replies = self.pane().reply_thread.as_ref().map(|id| {
             let root = st.msg_idx_by_id.get(id).map_or(id.as_str(), |&i| reply_root(&st, &st.messages[i]));
             let chain: Vec<&Message> = msgs.iter().copied().filter(|m| reply_root(&st, m) == root).collect();
-            let list = scrollable(self.view_messages(&st, chat, &chain, true))
-                .direction(stable_bar())
-                .anchor_bottom()
-                .height(Fill)
-                .style(scroll_style(p.scroll));
+            let list = lift::tight(scroller(self.view_messages(&st, chat, &chain, true)));
             // Desktop blurs the chat 8px under a 0.6 background; iced has no backdrop blur.
             mouse_area(container(list).width(Fill).height(Fill).style(fill_box(p.card.scale_alpha(0.85), 0.0)))
                 .on_press(UiMessage::HideReplies)
