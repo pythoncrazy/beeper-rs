@@ -185,6 +185,9 @@ impl<M> Widget<M, iced::Theme, Renderer> for Live<'_> {
 
 impl BeeperGuiApp {
     pub(crate) fn record(&mut self, msg: Msg) -> Task<UiMessage> {
+        if matches!(msg, Msg::Start) && !self.supports(crate::Picker::Audio) {
+            return Task::none();
+        }
         let paused = || self.recorder.as_ref().is_some_and(|r| r.0.paused.load(Relaxed));
         match msg {
             Msg::Start => {
