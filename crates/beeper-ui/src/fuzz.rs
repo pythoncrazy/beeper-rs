@@ -174,7 +174,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         Modifiers::SHIFT,
     ]);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
-    let hits = search_settings(&text);
+    let hits = search_settings(&app.store.read(), &text);
     let branch = rng.below(65);
     let what =
         format!("message #{branch} chat {chat} message {msg} text {text:?} pref {} key {key:?} {mods:?}", pref.key);
@@ -1168,6 +1168,34 @@ fn a_sent_link_keeps_its_preview() {
     let st = app.store.read();
     let links = &st.messages.last().unwrap().links;
     assert_eq!(links.iter().map(|l| l.title.as_str()).collect::<Vec<_>>(), ["Example"]);
+}
+
+#[test]
+fn plus_rows_follow_the_feature_flags() {
+    let mut app = demo_app("features");
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
+    let clicks = |app: &BeeperGuiApp, label: &str| {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1024.0, 4000.0), app.view_settings());
+        assert!(sim.find(label).is_ok(), "{label} shows");
+        let _ = sim.click(label);
+        sim.into_messages().filter(|m| matches!(m, UiMessage::SetPref(..))).count()
+    };
+    // Rows with a Plus pill lay out each word of the label apart.
+    let undo = "pending";
+    let hit = if cfg!(target_os = "macos") {
+        "Hit ⌘ Shift Z to send instantly."
+    } else {
+        "Hit Ctrl Shift Z to send instantly."
+    };
+    assert!(simulator(app.view_settings()).find(hit).is_ok());
+    assert_eq!(clicks(&app, undo), 0, "the free plan locks undo send");
+    assert_eq!(clicks(&app, "reminder"), 1, "free reminders are left");
+    app.store.write().features.flags["features"]["*"]["undo-send"] = true.into();
+    assert_eq!(clicks(&app, undo), 1);
+    app.store.write().features.flags = serde_json::Value::Null;
+    let mut sim = simulator(app.view_settings());
+    assert!(sim.find(undo).is_err() && sim.find("Incognito").is_err(), "unknown features hide their rows");
+    assert!(!search_settings(&app.store.read(), "undo").iter().any(|h| matches!(h, SettingsHit::Pref(..))));
 }
 
 #[test]

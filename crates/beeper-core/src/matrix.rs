@@ -1192,7 +1192,8 @@ async fn sync_rules(client: &Client, store: &SharedStore) {
     }
 }
 
-async fn sync_emoji(client: &Client, store: &SharedStore) {
+/// The recent emoji, the skin tone and the feature flags of the global account data.
+async fn sync_account_data(client: &Client, store: &SharedStore) {
     let recent = global(client, "io.element.recent_emoji").await;
     let recent = recent["recent_emoji"]
         .as_array()
@@ -1201,9 +1202,11 @@ async fn sync_emoji(client: &Client, store: &SharedStore) {
         .map(|e| (e[0].as_str().expect("recent emoji key").into(), e[1].as_u64().expect("recent emoji count")));
     let recent = recent.collect();
     let tone = global(client, "com.beeper.emoji_skin_tone").await["tone"].as_u64().map_or(0, |t| t as u8);
+    let (flags, usage) = (global(client, crate::features::FLAGS).await, global(client, crate::features::USAGE).await);
     let mut st = store.write();
     st.recent_emoji = recent;
     st.skin_tone = tone;
+    (st.features.flags, st.features.usage) = (flags, usage);
 }
 
 /// Desktop's `userProfileStore`: the own name and avatar come from the Matrix profile.
@@ -1517,7 +1520,7 @@ pub async fn run(store: SharedStore) {
     store.write().matrix = Some(client.clone());
     tokio::spawn(retry_undecrypted(client.clone(), store.clone()));
     tokio::spawn(retry_after_backup(client.clone(), store.clone()));
-    sync_emoji(&client, &store).await;
+    sync_account_data(&client, &store).await;
     sync_prefs(&client, &store).await;
     sync_profile(&client, &store).await;
     store.write().inbox_rules = global(&client, RULES).await;
@@ -1547,7 +1550,7 @@ pub async fn run(store: SharedStore) {
                     Ok(resp) => {
                         store.write().matrix_error = None;
                         refresh_e2ee(&client, &store).await;
-                        sync_emoji(&client, &store).await;
+                        sync_account_data(&client, &store).await;
                         sync_prefs(&client, &store).await;
                         sync_rules(&client, &store).await;
                         for id in resp.rooms.left.keys() {

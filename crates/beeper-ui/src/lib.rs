@@ -460,7 +460,7 @@ pub enum UiMessage {
     Zoom(i8),
     ToggleSetting(fn(&mut BeeperSettings)),
     /// The Beeper account email and the chat accounts from `whoami`.
-    CloudAccounts(Result<(Option<String>, Vec<BridgeAccountInfo>), String>),
+    CloudAccounts(Result<(Option<String>, bool, Vec<BridgeAccountInfo>), String>),
     AvatarLoaded(String, Result<image::Handle, String>),
     MediaLoaded(String, Result<Frames, String>),
     Voice(voice::Msg),
@@ -608,15 +608,25 @@ impl SettingsHit {
     pub fn label(self) -> String {
         match self {
             Self::Section(tab, _) => tab.name().into(),
-            Self::Pref(_, r) => trs(r.label, r.args),
+            Self::Pref(_, r) => trs(r.label, r.split_args().0),
             Self::Network(name) => name.into(),
         }
     }
 }
 
+/// Desktop's hotkey list hides the hotkeys of the features that the account does not show.
+fn hotkey_shown(st: &BeeperStore, name: &str) -> bool {
+    prefs::hotkey_feature(name).is_none_or(|f| st.feature(f).show)
+}
+
+/// Desktop's `Rx`: a settings row of a feature shows when the account shows the feature.
+fn shown(st: &BeeperStore, r: &prefs::Pref) -> bool {
+    r.feature.is_none_or(|f| st.feature(f).show)
+}
+
 /// Desktop's settings search: each matching section, then its matching rows, then the other sections when a row
 /// matches.
-pub fn search_settings(query: &str) -> Vec<SettingsHit> {
+pub fn search_settings(st: &BeeperStore, query: &str) -> Vec<SettingsHit> {
     if query.trim().is_empty() {
         return Vec::new();
     }
@@ -629,11 +639,10 @@ pub fn search_settings(query: &str) -> Vec<SettingsHit> {
                 login::addable().filter(|n| has(n.display_name)).map(|n| SettingsHit::Network(n.display_name)).collect()
             }
             _ => prefs::rows()
-                .filter(|(page, r)| *page == tab.meta().0 && !r.label.is_empty())
+                .filter(|(page, r)| *page == tab.meta().0 && !r.label.is_empty() && shown(st, r))
                 .filter(|(_, r)| {
-                    has(&r
-                        .desc
-                        .map_or(trs(r.label, r.args), |d| format!("{} {}", trs(r.label, r.args), trs(d, r.args))))
+                    let (label, desc) = r.split_args();
+                    has(&r.desc.map_or(trs(r.label, label), |d| format!("{} {}", trs(r.label, label), trs(d, desc))))
                 })
                 .map(|(_, r)| SettingsHit::Pref(tab, r))
                 .collect(),
@@ -2353,6 +2362,8 @@ fn duration(n: usize, unit: &str) -> String {
     match unit {
         "second" | "seconds" => trn("%d second", "%d seconds", n, &[&n]),
         "seconds (disabled)" => trn("%d second (disabled)", "%d seconds (disabled)", n, &[&n]),
+        "ms" => trf("%d ms", &[&n]),
+        "ms (disabled)" => trf("%d ms (disabled)", &[&n]),
         "minute" | "minutes" => trn("%d minute", "%d minutes", n, &[&n]),
         "day" | "days" => trn("%d day", "%d days", n, &[&n]),
         "month" | "months" => trn("%d month", "%d months", n, &[&n]),
@@ -2965,7 +2976,7 @@ impl BeeperGuiApp {
         if mods.command() || mods.control() || mods.alt() {
             return self.update(UiMessage::KeyPressed(key, mods));
         }
-        let n = search_settings(&self.settings_query).len();
+        let n = search_settings(&self.store.read(), &self.settings_query).len();
         match key {
             Key::Named(Named::Escape) if self.confirm.is_some() => self.confirm = None,
             Key::Named(Named::Escape) if self.integrations.add.is_some() => self.integrations.add = None,
@@ -4793,9 +4804,10 @@ impl BeeperGuiApp {
             }
             UiMessage::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
             UiMessage::ToggleSetting(flip) => self.patch_settings(flip),
-            UiMessage::CloudAccounts(Ok((email, accounts))) => {
+            UiMessage::CloudAccounts(Ok((email, subscribed, accounts))) => {
                 let (token, uid, demo) = {
                     let mut st = self.store.write();
+                    st.features.subscribed = subscribed;
                     let info = (st.beeper_state.access_token.clone(), st.beeper_state.user_id.clone(), st.config.demo);
                     if st.me().email != email {
                         let i = st.chat_idx_by_id[NOTE_CHAT_ID];
@@ -5402,8 +5414,9 @@ impl BeeperGuiApp {
                 );
             }
             UiMessage::SettingsQueryChanged(q) => {
-                let n = search_settings(&q).len();
-                if n != search_settings(&self.settings_query).len() {
+                let st = self.store.read();
+                let n = search_settings(&st, &q).len();
+                if n != search_settings(&st, &self.settings_query).len() {
                     self.settings_focus = 0;
                     self.settings_pick = self.settings_pick.filter(|_| n > 0);
                 }
@@ -5411,7 +5424,8 @@ impl BeeperGuiApp {
             }
             UiMessage::SettingsFocus(i) => self.settings_focus = i,
             UiMessage::SettingsStep(step) => {
-                self.settings_focus = (self.settings_focus + step) % search_settings(&self.settings_query).len();
+                self.settings_focus =
+                    (self.settings_focus + step) % search_settings(&self.store.read(), &self.settings_query).len();
                 return locate(format!("hit-{}", self.settings_focus), "settings-nav", true);
             }
             UiMessage::PickSetting(hit) => {
@@ -9805,7 +9819,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let me = st.me();
         let name = me.full_name.clone().expect("self name");
-        let hits = search_settings(&self.settings_query);
+        let hits = search_settings(&st, &self.settings_query);
         let search_input = text_input(tr("Search Settings"), &self.settings_query)
             .id("settings-search")
             .on_input(UiMessage::SettingsQueryChanged)
@@ -10285,7 +10299,6 @@ impl BeeperGuiApp {
 
     fn settings_content(&self, st: &BeeperStore) -> El<'_> {
         let p = &self.pal;
-        let s = &st.settings;
         let groups: Vec<El<'_>> = match self.active_settings_tab {
             SettingsTab::Accounts
                 if self
@@ -10377,7 +10390,7 @@ impl BeeperGuiApp {
             SettingsTab::General => self.pref_items(prefs::GENERAL, st),
             SettingsTab::Appearance => self.pref_items(prefs::APPEARANCE, st),
             SettingsTab::Notifications => self.pref_items(prefs::NOTIFICATIONS, st),
-            SettingsTab::Hotkeys => vec![self.hotkeys_page(s)],
+            SettingsTab::Hotkeys => vec![self.hotkeys_page(st)],
             SettingsTab::Devices => {
                 let code = text_input("Recovery code", &self.recovery_code_input)
                     .on_input(UiMessage::RecoveryInputChanged)
@@ -10832,7 +10845,8 @@ impl BeeperGuiApp {
         Row::with_children(kinds).spacing(16).wrap().vertical_spacing(16).align_x(Center).into()
     }
 
-    fn hotkeys_page(&self, s: &BeeperSettings) -> El<'_> {
+    fn hotkeys_page(&self, st: &BeeperStore) -> El<'_> {
+        let s = &st.settings;
         let p = &self.pal;
         let edge = p.neutral_border;
         let search = text_input(tr("Search hotkeys..."), &self.hotkey_query)
@@ -10864,7 +10878,8 @@ impl BeeperGuiApp {
                 .padding([8, 0])
                 .into()
         };
-        let shown = prefs::match_sort(prefs::HOTKEYS, &self.hotkey_query, |h| tr(h.0).into());
+        let listed = prefs::HOTKEYS.iter().filter(|h| hotkey_shown(st, h.0));
+        let shown = prefs::match_sort(listed, &self.hotkey_query, |h| tr(h.0).into());
         let groups = first_groups(&shown, |h| h.1).into_iter().map(|group| {
             let rows = shown.iter().filter(|h| h.1 == group).map(|h| hotkey(h.0));
             let head = txt(tr(group), 13.0).line_height(Pixels(16.0)).color(p.muted);
@@ -10881,8 +10896,10 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let st = self.store.read();
         let modifier_only = |k: &str| k.rsplit('+').next().is_some_and(|m| ["ctrl", "shift", "alt"].contains(&m));
-        let all =
-            prefs::HOTKEYS.iter().filter(|h| !modifier_only(h.2)).map(|h| (h.0, h.1, st.settings.hotkey_keys(h.0)));
+        let all = prefs::HOTKEYS
+            .iter()
+            .filter(|h| !modifier_only(h.2) && hotkey_shown(&st, h.0))
+            .map(|h| (h.0, h.1, st.settings.hotkey_keys(h.0)));
         let all = all.chain(prefs::FIXED_HOTKEYS.iter().copied()).map(|(n, g, k)| (n, g, k.to_string()));
         let shown = prefs::match_sort(all, query, |h| tr(h.0).into());
         drop(st);
@@ -11044,7 +11061,12 @@ impl BeeperGuiApp {
                             .style(fill_box(p.accent.scale_alpha(flash), 8.0))
                             .into()
                     };
-                    let g = group(p, heading.take(), rows.iter().map(row).collect());
+                    let rows: Vec<El> = rows.iter().filter(|r| shown(st, r)).map(row).collect();
+                    if rows.is_empty() {
+                        heading = None;
+                        continue;
+                    }
+                    let g = group(p, heading.take(), rows);
                     out.push(match lead.take() {
                         Some(t) => {
                             let t = txt(t, 13.0).line_height(Pixels(18.0)).color(p.sub);
@@ -11082,17 +11104,20 @@ impl BeeperGuiApp {
     fn pref_control(&self, r: &'static prefs::Pref, st: &BeeperStore) -> El<'_> {
         let s = &st.settings;
         let p = &self.pal;
-        let locked = matches!(r.badge, Some(prefs::Badge::Plus | prefs::Badge::PlusLabs));
+        let locked = r.feature.is_some_and(|f| st.feature(f).locked());
+        let mut press = None;
         let control = match r.control {
             prefs::Control::Toggle(_) => {
                 let v = s.pref(r.key);
-                let off = r.requires.is_some_and(|k| !s.on(k));
-                let msg = (!locked && !off).then_some(UiMessage::SetPref(r.key, 1 - v));
-                toggle_faded(p, v == 1, msg, if off { 0.5 } else { 1.0 })
+                let off = r.requires.is_some_and(|k| !s.on(k)) || locked;
+                press = (!off).then_some(UiMessage::SetPref(r.key, 1 - v));
+                toggle_faded(p, v == 1 && !locked, press.clone(), if off { 0.5 } else { 1.0 })
+            }
+            prefs::Control::Select(..) if locked => {
+                stack![self.pref_select(r, s), iced::widget::opaque(Space::new().width(Fill).height(Fill))].into()
             }
             prefs::Control::Select(..) => self.pref_select(r, s),
             prefs::Control::Multi(labels) => {
-                assert!(locked, "{} is a Plus feature", r.key);
                 let shown = labels.join(", ");
                 let label = ell(&shown, 92.0, 11.0, Weight::Semibold).color(p.strong);
                 let arrow = tinted(&SELECT_ARROW, 10.0, p.strong);
@@ -11177,8 +11202,14 @@ impl BeeperGuiApp {
             }
         };
         let paid = locked.then(|| tr("Requires a paid subscription."));
-        let desc = r.desc.map(|d| [trs(d, r.args).as_str()].into_iter().chain(paid).collect::<Vec<_>>().join("\n\n"));
-        pref_row(p, trs(r.label, r.args), desc.as_deref(), r.badge.map(|b| badge(p, b)), control)
+        let (label, args) = r.split_args();
+        let desc = r.desc.map(|d| [trs(d, args).as_str()].into_iter().chain(paid).collect::<Vec<_>>().join("\n\n"));
+        let row = pref_row(p, trs(r.label, label), desc.as_deref(), r.badge.map(|b| badge(p, b)), control);
+        // Desktop's `label-wrapper` toggles the checkbox on a click anywhere in the row.
+        match press {
+            Some(m) => mouse_area(row).on_press(m).into(),
+            None => row,
+        }
     }
 }
 

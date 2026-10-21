@@ -427,6 +427,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         full_name: Some("Émile Zola".into()),
         username: Some("emile".into()),
         email: Some("emile@example.com".into()),
+        subscribed: false,
     };
     let _ = gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Imported(data, session, profile, Vec::new())))));
     assert_eq!(before, originals(&orig_dir), "Beeper Desktop files must never be modified");
@@ -437,7 +438,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         "remote_profile": { "username": "alex", "phone": "+1 415-555-0142", "avatar": "mxc://beeper.com/a" } } } } });
     let cloud = beeper_core::cloud::cloud_accounts(&bridges).expect("parse the cloud bridges");
     assert_eq!(cloud[0].display_text().as_deref(), Some("+1 415-555-0142"), "the phone comes before the username");
-    let _ = gui.update(UiMessage::CloudAccounts(Ok((Some("zola@example.com".into()), cloud))));
+    let _ = gui.update(UiMessage::CloudAccounts(Ok((Some("zola@example.com".into()), false, cloud))));
     assert_eq!(shared.read().accounts.iter().map(|a| a.account_id.as_str()).collect::<Vec<_>>(), ["signal"]);
     for bad in [
         json!([]),
@@ -840,16 +841,16 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     let unified = client.unified_search("rust").await;
     assert!(!unified["results"]["in_groups"].as_array().unwrap().is_empty());
 
-    let settings_hits = search_settings("notifications");
+    let settings_hits = search_settings(&store.read(), "notifications");
     assert_eq!(settings_hits[0], SettingsHit::Section(SettingsTab::Notifications, true));
     assert!(settings_hits.iter().any(|h| matches!(h, SettingsHit::Pref(_, r) if r.key == "groupNotifications")));
     assert_eq!(settings_hits.last(), Some(&SettingsHit::Section(SettingsTab::About, false)));
-    let emoji = search_settings("emoji autocomplete");
+    let emoji = search_settings(&store.read(), "emoji autocomplete");
     assert!(
         matches!(emoji[..2], [SettingsHit::Section(SettingsTab::General, true), SettingsHit::Pref(_, r)] if r.key == "emojiAutocomplete")
     );
-    assert_eq!(search_settings("whats")[1], SettingsHit::Network("WhatsApp"));
-    assert!(search_settings(" ").is_empty());
+    assert_eq!(search_settings(&store.read(), "whats")[1], SettingsHit::Network("WhatsApp"));
+    assert!(search_settings(&store.read(), " ").is_empty());
 
     let del_resp = client.delete_message("!im_sarah:beeper.com", &sent_msg_id).await;
     assert_eq!(del_resp["success"], true);
@@ -1320,7 +1321,7 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     }
     let _ = gui.update(UiMessage::SettingsQueryChanged("tray".to_string()));
     let _ = simulator(gui.view_settings());
-    let _ = gui.update(UiMessage::PickSetting(search_settings("tray")[1]));
+    let _ = gui.update(UiMessage::PickSetting(search_settings(&store.read(), "tray")[1]));
     assert_eq!(gui.active_settings_tab, SettingsTab::Appearance);
     assert!(simulator(gui.view_settings()).find("Show tray icon").is_ok());
     let _ = gui.update(UiMessage::SetPref("appLanguage", 2));
