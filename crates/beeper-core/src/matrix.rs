@@ -259,6 +259,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     Chat {
         id: room.room_id().to_string(),
         is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, &bridge, !dm)),
+        inbox_group: !dm && bridge["com.beeper.room_type.v2"] != "group_dm",
         is_request: Some(bridge["channel"]["com.beeper.message_request"] == true),
         network_name: s(&bridge["network"]["displayname"]),
         network_id: s(&bridge["network"]["id"]),
@@ -676,6 +677,11 @@ async fn sync_label(store: &SharedStore, room: &Room) {
         color: get("com.beeper.label.color").await["color_index"].as_u64().and_then(|n| u8::try_from(n).ok()),
         icon: s(&get("com.beeper.label.icon").await["icon"]),
         muted: get("com.beeper.muted").await["muted"] == true,
+        inbox: match get("com.beeper.label.inbox_visibility").await["visibility"].as_str() {
+            Some("dmOnly") => Some("dmOnly"),
+            Some("none") => Some("none"),
+            _ => None,
+        },
         rooms: joined.filter_map(|v| s(&v["state_key"])).collect(),
     };
     store.write().set_label(label);
@@ -950,6 +956,8 @@ pub enum Outgoing {
     EditLabel(Label, Vec<(String, bool)>),
     /// Leaves and forgets the room, like Desktop's `deleteLabel`.
     Leave,
+    /// A state event of a label space with an empty state key.
+    LabelState(&'static str, Value),
     Read(String),
     Flag(ChatFlag, bool),
     Reminder(Option<ChatReminder>),
@@ -1220,6 +1228,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                 room.send_state_event_raw("m.space.child", &chat, content).await.map_err(e)?;
             }
         }
+        Outgoing::LabelState(kind, content) => drop(room.send_state_event_raw(kind, "", content).await.map_err(e)?),
         Outgoing::Leave => {
             room.leave().await.map_err(e)?;
             if let Some(left) = client.get_room(room.room_id()) {

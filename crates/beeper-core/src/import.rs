@@ -347,6 +347,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
             let count = |k: &str| t.get(k).and_then(Value::as_u64).map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX));
             Ok(Chat {
                 is_hidden_from_inbox: Some(crate::matrix::hidden_from_inbox(rules, &account_id, bridge, group)),
+                inbox_group: group && bridge["com.beeper.room_type.v2"] != "group_dm",
                 account_id,
                 participants: ChatParticipants { has_more: false, total: items.len(), items },
                 title,

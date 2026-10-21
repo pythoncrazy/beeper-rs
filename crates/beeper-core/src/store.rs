@@ -823,6 +823,7 @@ impl BeeperStore {
         };
         let chat = Chat {
             id: NOTE_CHAT_ID.into(),
+            inbox_group: false,
             account_id: "hungryserv".into(),
             participants: ChatParticipants { has_more: false, items: vec![me], total: 1 },
             title: "Note to self".into(),
@@ -957,6 +958,7 @@ impl BeeperStore {
 
     fn push_chat(&mut self, mut chat: Chat, persist: bool) -> usize {
         chat.sync_flags();
+        chat.flags = self.label_flags(&chat);
         let idx = self.chats.len();
         assert!(self.chat_idx_by_id.insert(chat.id.clone(), idx).is_none(), "duplicate chat {}", chat.id);
         self.chat_search_index.insert_doc(idx as u32, &chat_index_text(&chat));
@@ -1001,8 +1003,10 @@ impl BeeperStore {
         let old = self.labels.iter().position(|l| l.id == label.id);
         let before = old.map_or_else(Vec::new, |i| self.labels[i].rooms.clone());
         let id = label.id.clone();
+        let rules = old.is_some_and(|i| self.labels[i].inbox != label.inbox);
         let gone = before.iter().filter(|r| !label.rooms.contains(r));
-        let changed: Vec<String> = gone.chain(label.rooms.iter().filter(|r| !before.contains(r))).cloned().collect();
+        let kept = label.rooms.iter().filter(|r| rules || !before.contains(r));
+        let changed: Vec<String> = gone.chain(kept).cloned().collect();
         let rooms = label.rooms.clone();
         match old {
             Some(i) => self.labels[i] = label,
@@ -1024,7 +1028,8 @@ impl BeeperStore {
     /// Desktop's `createLabel`: adds the label here at once and creates its label space on the homeserver.
     pub fn create_label(&mut self, name: &str, color: Option<u8>, icon: Option<String>, rooms: Vec<String>) -> String {
         assert!(!name.trim().is_empty() && !rooms.is_empty(), "a label has a name and chats");
-        let label = Label { id: self.next_id("label"), name: name.trim().into(), color, icon, muted: false, rooms };
+        let label =
+            Label { id: self.next_id("label"), name: name.trim().into(), color, icon, rooms, ..Label::default() };
         let id = label.id.clone();
         self.set_label(label.clone());
         self.queue(&id, Outgoing::CreateLabel(label));
@@ -1049,6 +1054,14 @@ impl BeeperStore {
         let label = Label { name: name.trim().into(), color, icon, rooms, ..old };
         self.set_label(label.clone());
         self.queue(id, Outgoing::EditLabel(label, changes));
+    }
+
+    /// Desktop's `setLabelInboxVisibility`: `None` shows all chats of the label in the inbox.
+    pub fn set_label_inbox(&mut self, id: &str, inbox: Option<&'static str>) {
+        let label = self.labels.iter().find(|l| l.id == id).expect("a label").clone();
+        self.set_label(Label { inbox, ..label });
+        let content = serde_json::json!({ "visibility": inbox.unwrap_or("all") });
+        self.queue(id, Outgoing::LabelState("com.beeper.label.inbox_visibility", content));
     }
 
     /// Desktop's `deleteLabel`: leaves the label space.
@@ -1150,6 +1163,7 @@ impl BeeperStore {
         let old = chat_index_text(&self.chats[idx]);
         f(&mut self.chats[idx]);
         self.chats[idx].sync_flags();
+        self.chats[idx].flags = self.label_flags(&self.chats[idx]);
         self.chat_search_index.remove_doc(idx as u32, &old);
         self.chat_search_index.insert_doc(idx as u32, &chat_index_text(&self.chats[idx]));
         self.persist_chat(idx);
@@ -1268,6 +1282,7 @@ impl BeeperStore {
         let chat = Chat {
             id: id.clone(),
             local_chat_id: Some(format!("local_{}", id.trim_start_matches('!'))),
+            inbox_group: chat_type == "group",
             account_id: account_id.to_string(),
             title,
             chat_type: chat_type.to_string(),
@@ -1443,7 +1458,17 @@ impl BeeperStore {
         Ok(chat_id)
     }
 
-    /// Desktop's `features[key]`.
+    /// Desktop's `labelInboxVisibility`: the labels of a chat override the inbox rule of its account.
+    fn label_flags(&self, c: &Chat) -> u16 {
+        if !self.feature("labels-v2").on || c.label_ids.is_empty() {
+            return c.flags;
+        }
+        let labels = self.labels.iter().filter(|l| c.label_ids.contains(&l.id));
+        let rules: Vec<&str> = labels.filter_map(|l| l.inbox).collect();
+        let hidden = rules.contains(&"none") || (rules.contains(&"dmOnly") && c.inbox_group);
+        c.flags & !CHAT_HIDDEN | if hidden { CHAT_HIDDEN } else { 0 }
+    }
+
     pub fn feature(&self, key: &str) -> crate::features::Feature {
         self.features.get(key, self.scheduled.len())
     }
