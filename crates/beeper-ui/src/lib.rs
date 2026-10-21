@@ -1180,6 +1180,19 @@ fn checkbox<'a>(p: &Palette, on: bool) -> El<'a> {
     container(check).center(16).style(bordered_box(bg, ring, 1.5, 8.0)).into()
 }
 
+/// CSS `flex-wrap` with `justify-content: space-between`: rows of `items` of `size` in `width`, 10px apart at least.
+fn spread(items: Vec<El<'_>>, size: f32, width: f32) -> El<'_> {
+    let per = ((width + 10.0) / (size + 10.0)) as usize;
+    let mut items = items.into_iter().peekable();
+    let mut rows = Column::new().spacing(12);
+    while items.peek().is_some() {
+        let line: Vec<El> = items.by_ref().take(per).collect();
+        let n = line.len() as f32;
+        rows = rows.push(Row::with_children(line).spacing((width - n * size) / (n - 1.0).max(1.0)));
+    }
+    rows.into()
+}
+
 /// Desktop's `CheckboxPlus`: a plus until it is checked.
 fn checkbox_plus<'a>(p: &Palette, on: bool) -> El<'a> {
     match on {
@@ -1259,8 +1272,8 @@ const LABEL_COLORS: [(u32, u32); 12] = [
     (0x5583FC, 0x1E54E1),
 ];
 
-/// Desktop's label icons by id, with the Material Symbols name and path of each.
-static LABEL_ICONS: std::sync::LazyLock<HashMap<&str, svg::Handle>> = std::sync::LazyLock::new(|| {
+/// Desktop's `yD`: the label icons by id, in the order of the picker.
+static LABEL_ICONS: std::sync::LazyLock<Vec<(&str, svg::Handle)>> = std::sync::LazyLock::new(|| {
     let icon = |line: &'static str| {
         let [id, _, d] = line.split('\t').collect::<Vec<_>>()[..] else { panic!("a label icon line") };
         let svg = format!(
@@ -1271,24 +1284,27 @@ static LABEL_ICONS: std::sync::LazyLock<HashMap<&str, svg::Handle>> = std::sync:
     include_str!("../assets/label_icons.tsv").lines().map(icon).collect()
 });
 
+fn label_glyph(id: &str) -> Option<&'static svg::Handle> {
+    LABEL_ICONS.iter().find(|i| i.0 == id).map(|i| &i.1)
+}
+
+/// The gradient of a label color. Desktop ignores unknown colors.
+fn label_fill(color: Option<u8>) -> Option<Background> {
+    let (top, bottom) = LABEL_COLORS.get(usize::from(color?)).copied()?;
+    let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, hex(top)).add_stop(1.0, hex(bottom));
+    Some(Background::Gradient(Gradient::Linear(g)))
+}
+
 /// Desktop's `LabelSpaceIcon`: the label color with its icon, or the icon alone.
 fn label_icon<'a>(l: &Label, size: f32, fg: Color) -> El<'a> {
-    let colors = l.color.and_then(|c| LABEL_COLORS.get(usize::from(c)).copied());
-    let glyph = (l.icon.is_some() || colors.is_none())
-        .then(|| LABEL_ICONS.get(l.icon.as_deref().unwrap_or(DEFAULT_LABEL_ICON)))
+    let fill = label_fill(l.color);
+    let glyph = (l.icon.is_some() || fill.is_none())
+        .then(|| label_glyph(l.icon.as_deref().unwrap_or(DEFAULT_LABEL_ICON)))
         .flatten()
-        .map(|h| tinted(h, (size * 20.0 / 28.0).round(), if colors.is_some() { Color::WHITE } else { fg }));
-    container(glyph)
-        .center(size)
-        .style(move |_: &Theme| container::Style {
-            background: colors.map(|(top, bottom)| {
-                let g = Linear::new(Radians(std::f32::consts::PI)).add_stop(0.0, hex(top)).add_stop(1.0, hex(bottom));
-                Background::Gradient(Gradient::Linear(g))
-            }),
-            border: border::rounded(8.0),
-            ..Default::default()
-        })
-        .into()
+        .map(|h| tinted(h, (size * 20.0 / 28.0).round(), if fill.is_some() { Color::WHITE } else { fg }));
+    let style =
+        move |_: &Theme| container::Style { background: fill, border: border::rounded(8.0), ..Default::default() };
+    container(glyph).center(size).style(style).into()
 }
 
 /// `ls` is Desktop's `--letter-spacing`; its initials also have `margin-right: -1px`.
@@ -4781,6 +4797,9 @@ impl BeeperGuiApp {
                 }
                 if self.label_window.as_ref().is_some_and(|d| d.id == id) {
                     return match key {
+                        Key::Named(Named::Escape) if self.label_window.as_ref().is_some_and(|d| d.picker) => {
+                            self.label_edit(LabelEdit::Picker(false))
+                        }
                         Key::Named(Named::Escape) => window::close(id),
                         Key::Named(Named::Enter) if mods.command() => self.label_edit(LabelEdit::Create),
                         _ => Task::none(),
@@ -11709,6 +11728,9 @@ impl BeeperGuiApp {
                 None => d.chats.push(chat),
             },
             LabelEdit::More => d.more = !d.more,
+            LabelEdit::Picker(open) => d.picker = open,
+            LabelEdit::Color(c) => d.color = (d.color != Some(c)).then_some(c),
+            LabelEdit::Icon(i) => d.icon = (d.icon.as_deref() != Some(i)).then(|| i.into()),
             LabelEdit::Create if d.ready() => {
                 let (id, chats) = (d.id, std::mem::take(&mut d.chats));
                 let label = self.store.write().create_label(&d.name, d.color, d.icon.clone(), chats);
@@ -11839,9 +11861,26 @@ impl BeeperGuiApp {
             .style(btn_style([bg; 3], [fg; 3], 20.0))
             .on_press_maybe(ready.then_some(edit(LabelEdit::Create)));
         let shade = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
+        let fill = label_fill(d.color);
+        let glyph = label_glyph(d.icon.as_deref().unwrap_or(DEFAULT_LABEL_ICON))
+            .map(|h| tinted(h, 15.0, if fill.is_some() { Color::WHITE } else { p.strong }));
+        let circle = container(glyph).center(20).style(move |_: &Theme| container::Style {
+            background: fill,
+            border: border::rounded(6.0),
+            ..Default::default()
+        });
+        let trigger = button(row![circle, ic(icon::EXPAND_MORE, 10.0).color(p.sub)].spacing(4).align_y(Center))
+            .padding(6)
+            .style(btn_style([p.received; 3], [p.sub; 3], 20.0))
+            .on_press(edit(LabelEdit::Picker(!d.picker)));
         let footer = column![
             container(Space::new()).width(Fill).height(2).style(fill_box(shade, 0.0)),
-            row![Space::new().width(Fill), create].padding(Padding { top: 8.0, right: 8.0, bottom: 8.0, left: 13.0 })
+            row![trigger, Space::new().width(Fill), create].align_y(Center).padding(Padding {
+                top: 8.0,
+                right: 8.0,
+                bottom: 8.0,
+                left: 13.0
+            })
         ];
         let body = column![
             container(title).padding(Padding { top: 16.0, right: 13.0, bottom: 0.0, left: 13.0 }),
@@ -11854,7 +11893,73 @@ impl BeeperGuiApp {
         let head = container(semi(tr("New label"), 13.0).line_height(Pixels(16.0)).color(p.strong))
             .center_x(Fill)
             .padding([8, 0]);
-        container(column![head, card]).padding(8).style(fill_box(p.window, 0.0)).into()
+        let window = container(column![head, card]).padding(8).style(fill_box(p.window, 0.0));
+        match d.picker {
+            true => stack![
+                window,
+                mouse_area(Space::new().width(Fill).height(Fill)).on_press(edit(LabelEdit::Picker(false))),
+                container(self.label_picker(d)).align_bottom(Fill).padding(Padding::ZERO.left(13.0).bottom(64.0)),
+            ]
+            .into(),
+            false => window.into(),
+        }
+    }
+
+    /// Desktop's `IconColorPicker` popover: the label colors, then the label icons.
+    fn label_picker<'a>(&self, d: &LabelDraft) -> El<'a> {
+        let p = &self.pal;
+        let edit = UiMessage::Label;
+        let shade = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
+        let colors = (0..LABEL_COLORS.len() as u8).map(|c| -> El<'a> {
+            let on = d.color == Some(c);
+            let fill = label_fill(Some(c));
+            let dot = container(Space::new()).width(16).height(16).style(move |_: &Theme| container::Style {
+                background: fill,
+                border: border::rounded(8.0),
+                ..Default::default()
+            });
+            let ring = if on { (CLEAR, p.accent) } else { (shade, CLEAR) };
+            let dot = container(dot).center(24).style(bordered_box(ring.0, ring.1, 2.0, 12.0));
+            button(dot)
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.strong; 3], 12.0))
+                .on_press(edit(LabelEdit::Color(c)))
+                .into()
+        });
+        let icons = LABEL_ICONS.iter().map(|(id, h)| -> El<'a> {
+            let on = d.icon.as_deref() == Some(*id);
+            let cell = container(tinted(h, 20.0, p.strong)).center(28).style(bordered_box(
+                if on { p.card } else { CLEAR },
+                if on { p.accent } else { CLEAR },
+                2.0,
+                8.0,
+            ));
+            button(cell)
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
+                .on_press(edit(LabelEdit::Icon(id)))
+                .into()
+        });
+        let explainer = tr("Choose a title, icon, and/or color to customize your label. This is how it will appear throughout the app.");
+        let grid = column![spread(colors.collect(), 24.0, 220.0), spread(icons.collect(), 28.0, 220.0)].spacing(12);
+        let grid = scrollable(grid).direction(Direction::Vertical(Scrollbar::hidden())).height(Shrink);
+        let body = column![txt(explainer, 13.0).line_height(Pixels(18.0)).color(p.sub), grid].spacing(12);
+        let card = p.card;
+        container(body)
+            .width(260)
+            .max_height(316)
+            .padding(20)
+            .style(move |_: &Theme| container::Style {
+                background: Some(card.into()),
+                border: iced::Border { color: Color::BLACK.scale_alpha(0.23), width: 1.0, radius: 26.0.into() },
+                shadow: Shadow {
+                    color: Color::BLACK.scale_alpha(0.35),
+                    offset: Vector::new(0.0, 16.0),
+                    blur_radius: 48.0,
+                },
+                ..Default::default()
+            })
+            .into()
     }
 
     /// Desktop's `ChatThemeWindow`: the title and the chat theme picker of a chat.
@@ -12437,12 +12542,15 @@ pub struct LabelDraft {
     pub icon: Option<String>,
     /// Whether "Recent chats" shows all of its chats.
     pub more: bool,
+    /// Whether the `IconColorPicker` is open.
+    pub picker: bool,
 }
 
 impl LabelDraft {
     fn new(id: window::Id) -> Self {
         let (name, search, chats) = (String::new(), String::new(), Vec::new());
-        LabelDraft { id, name, search, chats, color: None, icon: Some(DEFAULT_LABEL_ICON.into()), more: false }
+        let icon = Some(DEFAULT_LABEL_ICON.into());
+        LabelDraft { id, name, search, chats, color: None, icon, more: false, picker: false }
     }
 
     /// Desktop's `canSubmit`.
@@ -12466,6 +12574,11 @@ pub enum LabelEdit {
     Search(String),
     Toggle(String),
     More,
+    Picker(bool),
+    /// Picks a color, or clears the picked color.
+    Color(u8),
+    /// Picks an icon, or clears the picked icon.
+    Icon(&'static str),
     Create,
 }
 
