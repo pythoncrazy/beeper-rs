@@ -495,6 +495,8 @@ pub enum UiMessage {
     ToggleAddAccount,
     ShowAppQr,
     OpenAccount(Option<String>),
+    /// Desktop's `openManageAccountInNewWindow`.
+    OpenAccountSettings(String),
     SetAccountProps(String, beeper_core::models::AccountProps),
     /// "Show in Inbox": the `chat_list_rules` key and option.
     SetInboxVisibility(String, &'static str),
@@ -5940,6 +5942,12 @@ impl BeeperGuiApp {
             }
             UiMessage::ToggleAddAccount => self.adding_account ^= true,
             UiMessage::ShowAppQr => self.app_qr = true,
+            UiMessage::OpenAccountSettings(id) => {
+                self.chat_menu = None;
+                let open = self.open_settings(SettingsTab::Accounts);
+                self.account_page = Some(id);
+                return open;
+            }
             UiMessage::OpenAccount(id) => {
                 self.account_page = id;
                 return operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
@@ -6674,10 +6682,8 @@ impl BeeperGuiApp {
         let chat_menu = self.chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
             let (w, h) = if cid.starts_with("draft:") {
                 (124.0, 31.0)
-            } else if let Some(entry) = cid.strip_prefix("account:") {
-                let label = rail_label(&self.store.read(), entry).is_some();
-                let h = if label { 8.0 + 6.0 * MENU_ITEM + 22.0 } else { 8.0 + 5.0 * MENU_ITEM + 11.0 };
-                (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), h)
+            } else if cid.starts_with("account:") {
+                (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + 6.0 * MENU_ITEM + 22.0)
             } else {
                 let st = self.store.read();
                 (
@@ -7626,18 +7632,23 @@ impl BeeperGuiApp {
         };
         let mute = menu_item(p, None, label.into(), "", Some(UiMessage::SetAccountProps(account.into(), mute)));
         let accounts = UiMessage::OpenSettings(SettingsTab::Accounts);
-        let rest = column![mute].extend(
-            (!gear)
-                .then(|| {
-                    [
-                        menu_rule(p),
-                        menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
-                        menu_item(p, None, tr("Add/Remove Accounts…").into(), "", Some(accounts)),
-                    ]
-                })
-                .into_iter()
-                .flatten(),
-        );
+        let rest = match gear {
+            true => column![mute],
+            false => column![
+                mute,
+                menu_rule(p),
+                menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
+                menu_item(p, None, tr("Add/Remove Accounts…").into(), "", Some(accounts)),
+                menu_rule(p),
+                menu_item(
+                    p,
+                    None,
+                    tr("Account Settings…").into(),
+                    "",
+                    Some(UiMessage::OpenAccountSettings(account.into()))
+                ),
+            ],
+        };
         let col = column![
             mouse_area(inbox).on_enter(UiMessage::ChatSub(Some(0))),
             mouse_area(rest).on_enter(UiMessage::ChatSub(None))

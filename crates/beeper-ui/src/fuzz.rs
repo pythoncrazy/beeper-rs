@@ -1762,6 +1762,19 @@ fn sidebar_menus_open_accounts_like_desktop() {
         let _ = app.update(open.expect("the Accounts settings"));
         assert!(app.chat_menu.is_none() && app.settings_window.is_some());
     }
+    let _ = app.update(UiMessage::OpenChatMenu(format!("account:{account}")));
+    let open: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_account_menu(&account));
+        let _ = sim.click("Account Settings…").expect("an Account Settings item");
+        sim.into_messages().collect()
+    };
+    for m in open {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.account_page.as_deref(), Some(account.as_str()));
+    assert!(app.chat_menu.is_none() && matches!(app.active_settings_tab, SettingsTab::Accounts));
+    let mut sim = simulator(app.view_settings());
+    assert!(sim.find("Sound").is_ok(), "the account page");
 }
 
 #[test]
