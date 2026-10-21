@@ -1302,14 +1302,18 @@ fn chat_theme_like_desktop() {
     });
     assert_eq!(stored, want, "the chat theme is stored like Desktop's chat_appearance");
     let a = app.store.read().settings.chat_appearance.clone();
-    let (wallpaper, bubble) = crate::chat_theme::resolve(&a, Some(&chat), false);
+    let dir = app.store.read().data_dir.clone();
+    let (wallpaper, bubble) = crate::chat_theme::resolve(&a, Some(&chat), false, &dir);
     assert!(wallpaper.is_none(), "the chat's own wallpaper wins");
     assert_eq!(
         bubble,
         Some((crate::style::hex(0x3478f6), crate::style::hex(0x1a1a1a))),
         "the default bubble color applies"
     );
-    assert!(crate::chat_theme::resolve(&a, Some("other"), false).0.is_some(), "other chats use the default wallpaper");
+    assert!(
+        crate::chat_theme::resolve(&a, Some("other"), false, &dir).0.is_some(),
+        "other chats use the default wallpaper"
+    );
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
     let _ = simulator(app.view_main());
     let _ = app.update(UiMessage::ChatWallpaper(Some(chat.clone()), Wallpaper::Color { id: "mint".into() }));
@@ -1332,8 +1336,19 @@ fn chat_theme_like_desktop() {
     }
     assert!(app.store.read().settings.chat_appearance.per_chat.is_empty());
     assert!(simulator(app.view_chat_theme(&chat)).find("Use app default").is_err());
+    let picked = dir.join("picked.PNG");
+    ::image::RgbaImage::new(1, 1).save_with_format(&picked, ::image::ImageFormat::Png).expect("write a photo");
+    let _ = app.update(UiMessage::WallpaperPicked(Some(chat.clone()), Ok(vec![picked])));
+    let themed = app.store.read().settings.chat_appearance.clone();
+    let Some(Wallpaper::Photo { file_name }) = themed.theme(Some(&chat)).wallpaper else { panic!("a photo wallpaper") };
+    assert!(file_name.ends_with(".png") && crate::chat_theme::photo_dir(&dir).join(&file_name).exists());
+    let (wallpaper, _) = crate::chat_theme::resolve(&themed, Some(&chat), true, &dir);
+    assert!(matches!(wallpaper, Some((crate::chat_theme::Paint::Photo(..), Color::WHITE))));
+    let _ = simulator(app.view_main());
+    let _ = app.update(UiMessage::ChatWallpaper(Some(chat.clone()), Wallpaper::None));
+    assert!(!crate::chat_theme::photo_dir(&dir).join(&file_name).exists(), "an unused photo is removed");
     assert_eq!(
-        crate::chat_theme::paint(&a.theme(Some(&chat)).wallpaper.unwrap(), true).unwrap().0,
+        crate::chat_theme::paint(&a.theme(Some(&chat)).wallpaper.unwrap(), true, &dir).unwrap().0,
         crate::chat_theme::Paint::Flat(Color::from_rgb8(71, 109, 92))
     );
 }

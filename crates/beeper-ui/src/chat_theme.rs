@@ -5,6 +5,7 @@ use iced::gradient::Linear;
 use iced::widget::{container, image, stack, svg, Space};
 use iced::{Background, Border, Color, ContentFit, Element, Fill, Gradient, Radians, Size, Theme};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 /// Desktop's `mde`: the id and the color of each bubble color.
@@ -73,17 +74,30 @@ pub fn on(c: Color) -> Color {
     }
 }
 
-/// A wallpaper: a flat color, or the primary, secondary and glow colors of a gradient.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A wallpaper: a flat color, the primary, secondary and glow colors of a gradient, or a photo under a dimming
+/// color.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Paint {
     Flat(Color),
     Gradient([Color; 3]),
+    Photo(image::Handle, Color),
 }
 
-/// Desktop's `kot` and `Dot`: the paint of a wallpaper and the color of text on it.
-pub fn paint(w: &Wallpaper, dark: bool) -> Option<(Paint, Color)> {
+/// Desktop's `chat_wallpapers` directory of photo wallpapers.
+pub fn photo_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("chat_wallpapers")
+}
+
+/// Desktop's `kot`, `Dot` and `wallpaperPhotoURL`: the paint of a wallpaper and the color of text on it. A photo
+/// that is not on disk shows no wallpaper.
+pub fn paint(w: &Wallpaper, dark: bool, data_dir: &Path) -> Option<(Paint, Color)> {
     match w {
         Wallpaper::None => None,
+        Wallpaper::Photo { file_name } => {
+            let path = photo_dir(data_dir).join(file_name);
+            let dim = Color::from_rgba(0.0, 0.0, 0.0, if dark { 0.35 } else { 0.2 });
+            path.exists().then(|| (Paint::Photo(image::Handle::from_path(path), dim), Color::WHITE))
+        }
         Wallpaper::Color { id } => {
             let c = COLORS.iter().find(|c| c.0 == id)?.1;
             let c = scale(c, if dark { 0.52 } else { 1.0 });
@@ -103,13 +117,18 @@ pub fn paint(w: &Wallpaper, dark: bool) -> Option<(Paint, Color)> {
 pub type Pair = (Color, Color);
 
 /// Desktop's `resolvedThemeFor`: the wallpaper with its text color, and the color and text color of sent bubbles.
-pub fn resolve(a: &ChatAppearance, chat: Option<&str>, dark: bool) -> (Option<(Paint, Color)>, Option<Pair>) {
+pub fn resolve(
+    a: &ChatAppearance,
+    chat: Option<&str>,
+    dark: bool,
+    data_dir: &Path,
+) -> (Option<(Paint, Color)>, Option<Pair>) {
     let theme = a.theme(chat);
     let bubble = match theme.bubble {
         Some(Bubble::Swatch { id }) => BUBBLES.iter().find(|b| b.0 == id).map(|b| (hex(b.1), on(hex(b.1)))),
         Some(Bubble::Default) | None => None,
     };
-    (theme.wallpaper.and_then(|w| paint(&w, dark)), bubble)
+    (theme.wallpaper.and_then(|w| paint(&w, dark, data_dir)), bubble)
 }
 
 /// An image from `draw`, cached by `key`. Resizes make new keys, so the cache keeps at most 32 images.
@@ -161,6 +180,7 @@ pub const FADE: f32 = 84.0;
 pub fn fade<'a, M: 'a>(paint: Paint, size: Size) -> Element<'a, M> {
     let [a, b, g] = match paint {
         Paint::Gradient(colors) => colors,
+        Paint::Photo(..) => return Space::new().into(),
         Paint::Flat(c) => {
             let fade = Linear::new(Radians(std::f32::consts::PI))
                 .add_stop(0.0, c)
@@ -187,10 +207,15 @@ pub fn fade<'a, M: 'a>(paint: Paint, size: Size) -> Element<'a, M> {
 
 /// A box filled with a wallpaper. The glow stays inside the rounded corners of a `size` box.
 pub fn fill<'a, M: 'a>(paint: Paint, size: Size, radius: f32) -> Element<'a, M> {
-    let background = match paint {
-        Paint::Flat(c) => Background::Color(c),
+    let background = match &paint {
+        Paint::Photo(photo, dim) => {
+            let photo = image(photo.clone()).content_fit(ContentFit::Cover).width(Fill).height(Fill);
+            let dim = container(Space::new()).width(Fill).height(Fill).style(crate::style::fill_box(*dim, radius));
+            return stack![photo.border_radius(radius), dim].into();
+        }
+        Paint::Flat(c) => Background::Color(*c),
         Paint::Gradient([a, b, _]) => Background::Gradient(Gradient::Linear(
-            Linear::new(Radians(135f32.to_radians())).add_stop(0.0, a).add_stop(1.0, b),
+            Linear::new(Radians(135f32.to_radians())).add_stop(0.0, *a).add_stop(1.0, *b),
         )),
     };
     let base = container(Space::new()).width(Fill).height(Fill).style(move |_: &Theme| container::Style {
@@ -199,7 +224,7 @@ pub fn fill<'a, M: 'a>(paint: Paint, size: Size, radius: f32) -> Element<'a, M> 
         ..Default::default()
     });
     match paint {
-        Paint::Flat(_) => base.into(),
+        Paint::Flat(_) | Paint::Photo(..) => base.into(),
         Paint::Gradient([_, _, g]) => stack![
             base,
             container(image(glow(g, size, radius)).content_fit(ContentFit::None)).width(Fill).height(Fill).clip(true)
