@@ -380,6 +380,7 @@ pub enum UiMessage {
     SaveInfoDesc,
     InfoMore,
     InfoAll,
+    InfoBookmarks,
     InfoQuery(String),
     InfoNote(text_editor::Action),
     /// Desktop's disappearing messages select: a chat and a timer in ms, or 0 for Off.
@@ -2313,7 +2314,19 @@ fn member_name(u: &User) -> String {
 
 /// The Chat Info header menus of Desktop's `$fe`: `info:<chat>` has the edit actions and `copy:<chat>`, the menu
 /// of the clicked title, adds "Copy <title>" above them.
+/// The Chat Info context menus: the identity header, the title, a member and a bookmark.
+const INFO_MENUS: [&str; 4] = ["info:", "copy:", "member:", "bookmark:"];
+
 fn info_menu(st: &BeeperStore, key: &str) -> Vec<Option<(String, Option<UiMessage>)>> {
+    if let Some((cid, mid)) = key.strip_prefix("bookmark:").and_then(|k| k.split_once(' ')) {
+        let jump = UiMessage::JumpTo(cid.into(), mid.into());
+        let remove = UiMessage::ToggleBookmark(mid.into());
+        return vec![
+            Some((tr("Jump to Message").into(), Some(jump))),
+            None,
+            Some((tr("Remove Bookmark").into(), Some(remove))),
+        ];
+    }
     if let Some((cid, uid)) = key.strip_prefix("member:").and_then(|k| k.split_once(' ')) {
         let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
         let u = c.participants.items.iter().find(|u| u.id == uid).expect("a member of the chat");
@@ -3295,6 +3308,8 @@ pub struct BeeperGuiApp {
     pub info_more: bool,
     /// Whether the Chat Info Members section shows all of its members, and its search text.
     pub info_all: bool,
+    /// Whether the Chat Info Bookmarks show all bookmarks, not only Desktop's 15.
+    pub info_bookmarks: bool,
     pub info_query: String,
     /// The Notes of the open chat in the Chat Info panel.
     pub info_note: text_editor::Content,
@@ -3469,6 +3484,7 @@ impl BeeperGuiApp {
             info_desc: None,
             info_more: false,
             info_all: false,
+            info_bookmarks: false,
             info_query: String::new(),
             info_note: text_editor::Content::new(),
             spaces_window: None,
@@ -3916,7 +3932,7 @@ impl BeeperGuiApp {
         self.pane.editing_message_id = None;
         self.pane.selected_msgs.clear();
         self.pane.msg_anchor = None;
-        (self.info_desc, self.info_more, self.info_all) = (None, false, false);
+        (self.info_desc, self.info_more, self.info_all, self.info_bookmarks) = (None, false, false, false);
         self.info_query.clear();
         self.info_note = text_editor::Content::with_text(chat.note.as_deref().unwrap_or_default());
         let pending = st.scheduled.iter().any(|s| s.chat_id == chat.id && !s.canceled);
@@ -4827,6 +4843,7 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::ToggleBookmark(mid) => {
+                self.chat_menu = None;
                 self.store.write().toggle_bookmark(&mid);
             }
             UiMessage::MarkUnreadFromHere(cid, mid) => {
@@ -5102,6 +5119,7 @@ impl BeeperGuiApp {
             }
             UiMessage::InfoMore => self.info_more ^= true,
             UiMessage::InfoAll => self.info_all ^= true,
+            UiMessage::InfoBookmarks => self.info_bookmarks ^= true,
             UiMessage::InfoNote(action) => {
                 let edit = action.is_edit();
                 self.info_note.perform(action);
@@ -5759,7 +5777,7 @@ impl BeeperGuiApp {
                 return window::toggle_maximize(id.or(self.main_window).expect("the main window"));
             }
             UiMessage::JumpTo(cid, mid) => {
-                (self.show_command_palette, self.command_palette_query) = (false, String::new());
+                (self.show_command_palette, self.command_palette_query, self.chat_menu) = (false, String::new(), None);
                 self.select_chat(&cid);
                 let msg = format!("msg-{mid}");
                 self.flash = Some((mid, std::time::Instant::now()));
@@ -7516,7 +7534,8 @@ impl BeeperGuiApp {
         // The sync task can drop a chat before StoreChanged reaches update.
         let known = |c: &str| {
             let chat = c.strip_prefix("info:").or(c.strip_prefix("copy:")).unwrap_or(c);
-            let chat = chat.strip_prefix("member:").map_or(chat, |k| k.split_once(' ').map_or(k, |k| k.0));
+            let pair = chat.strip_prefix("member:").or(chat.strip_prefix("bookmark:"));
+            let chat = pair.map_or(chat, |k| k.split_once(' ').map_or(k, |k| k.0));
             c == RAIL_MORE
                 || c.starts_with("draft:")
                 || c.starts_with("account:")
@@ -7570,7 +7589,7 @@ impl BeeperGuiApp {
             } else if cid == RAIL_MORE {
                 let items = more_menu(&self.store.read());
                 (233.0, 8.0 + items.iter().map(|i| if i.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>())
-            } else if ["info:", "copy:", "member:"].iter().any(|k| cid.starts_with(k)) {
+            } else if INFO_MENUS.iter().any(|k| cid.starts_with(k)) {
                 let items = info_menu(&self.store.read(), cid);
                 (233.0, 8.0 + items.iter().map(|i| if i.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>())
             } else if RAIL_VIEWS.iter().any(|v| cid.strip_prefix("account:") == Some(v.0)) {
@@ -8643,7 +8662,7 @@ impl BeeperGuiApp {
             let col = Column::with_children(items).padding([4, 0]);
             return container(col).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
         }
-        if ["info:", "copy:", "member:"].iter().any(|k| cid.starts_with(k)) {
+        if INFO_MENUS.iter().any(|k| cid.starts_with(k)) {
             let items = info_menu(&self.store.read(), cid).into_iter().map(|i| match i {
                 Some((label, msg)) => menu_item(p, None, label, "", msg),
                 None => menu_rule(p),
@@ -11116,6 +11135,7 @@ impl BeeperGuiApp {
             container(toolbar).center_y(46),
         ];
         let members = (chat.chat_type == "group").then(|| self.view_members(chat));
+        let bookmarks = self.view_bookmarks(&st, chat);
         let feature = st.feature("labels-v2");
         let labels = feature.show.then(|| {
             let open = feature.on.then(|| UiMessage::OpenEditLabels(cid.clone()));
@@ -11218,6 +11238,7 @@ impl BeeperGuiApp {
         let body = column![header]
             .push(desc)
             .push(members)
+            .push(bookmarks)
             .push(labels)
             .push(timers)
             .push(container(note).padding(Padding::ZERO.top(8.0)))
@@ -11262,6 +11283,79 @@ impl BeeperGuiApp {
         let line = row![small(text, p.on_secondary).align_x(Center)].push(change).align_y(Center);
         let line = row![rule(), container(line).max_width(400), rule()].spacing(10).align_y(Center);
         container(line).padding(Padding::ZERO.bottom(6.0).left(GUTTER)).into()
+    }
+
+    /// Desktop's `Kfe` Bookmarks section: the newest bookmarks of the chat first, 15 until "Show all".
+    fn view_bookmarks<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {
+        const SHOWN: usize = 15;
+        let p = &self.pal;
+        let mut marked: Vec<&Message> = st
+            .chat_msg_indices
+            .get(&chat.id)
+            .map_or(&[][..], |v| &v[..])
+            .iter()
+            .map(|&i| &st.messages[i])
+            .filter(|m| m.is_bookmarked == Some(true) && m.is_deleted != Some(true))
+            .collect();
+        marked.sort_by_cached_key(|m| {
+            std::cmp::Reverse((st.bookmarks.get(&m.id).map_or(0, |b| b.order), m.sort_key.clone()))
+        });
+        let expandable = marked.len() > SHOWN;
+        let shown = if self.info_bookmarks { marked.len() } else { marked.len().min(SHOWN) };
+        let (h24, dim) = (st.settings.pref("timeFormat") == 1, Color { a: 0.7, ..p.strong });
+        let rows: Vec<El> = marked[..shown]
+            .iter()
+            .map(|m| {
+                let u = chat.participants.items.iter().find(|u| u.id == m.sender_id);
+                let name = u.map(member_name).or_else(|| m.sender_name.clone()).unwrap_or_else(|| m.sender_id.clone());
+                let face = self.face(u.and_then(|u| u.img_url.as_deref()), &name, 24.0, 0.0);
+                let title = row![
+                    ell(&name, 160.0, 11.0, Weight::Semibold).line_height(Pixels(14.0)).color(p.strong),
+                    txt(list_ts(&m.timestamp, h24), 10.0).line_height(Pixels(12.0)).color(dim)
+                ]
+                .spacing(6)
+                .align_y(iced::Bottom);
+                let text = preview_body(m).unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
+                let preview = ell(&text, 220.0, 11.0, Weight::Normal).line_height(Pixels(14.0)).color(dim);
+                let line = row![face, column![title, preview].spacing(2)].spacing(8).align_y(Center);
+                let btn = button(line)
+                    .padding(8)
+                    .width(Fill)
+                    .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
+                    .on_press(UiMessage::JumpTo(chat.id.clone(), m.id.clone()));
+                mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("bookmark:{} {}", chat.id, m.id))).into()
+            })
+            .collect();
+        let body: El = match rows.is_empty() {
+            true => container(
+                column![
+                    semi(tr("No Bookmarks"), 11.0).line_height(Pixels(14.0)).color(p.strong),
+                    txt(tr("Bookmarked messages will appear here."), 10.0).line_height(Pixels(12.0)).color(p.sub)
+                ]
+                .spacing(4)
+                .align_x(Center),
+            )
+            .center_x(Fill)
+            .padding([12, 8])
+            .style(fill_box(p.chip, 8.0))
+            .into(),
+            false => grouped_rows(p, rows),
+        };
+        let toggle = expandable.then(|| {
+            button(
+                semi(tr(if self.info_bookmarks { "Show less" } else { "Show all" }), 11.0)
+                    .line_height(Pixels(14.0))
+                    .color(p.accent),
+            )
+            .padding(0)
+            .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+            .on_press(UiMessage::InfoBookmarks)
+        });
+        let head = row![txt(tr("Bookmarks"), 11.0).line_height(Pixels(14.0)).color(p.strong), Space::new().width(Fill)]
+            .push(toggle)
+            .align_y(Center)
+            .padding(8);
+        column![head, body].into()
     }
 
     /// Desktop's `YNt` Members section of a group, with its first six members and a search above more than six.

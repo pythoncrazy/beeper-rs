@@ -2225,6 +2225,38 @@ fn disappearing_timer_changes_in_the_timeline_like_desktop() {
 }
 
 #[test]
+fn chat_info_bookmarks_like_desktop() {
+    let mut app = demo_app("chat-info-bookmarks");
+    let id = "!tg_rust:beeper.com".to_string();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    {
+        let mut sim = tall(app.view_info());
+        assert!(sim.find("Bookmarks").is_ok() && sim.find("No Bookmarks").is_ok());
+        assert!(sim.find("Bookmarked messages will appear here.").is_ok());
+    }
+    let (mid, date) = {
+        let st = app.store.read();
+        let m = &st.messages[st.chat_msg_indices[&id][0]];
+        (m.id.clone(), list_ts(&m.timestamp, st.settings.pref("timeFormat") == 1))
+    };
+    let _ = app.update(UiMessage::ToggleBookmark(mid.clone()));
+    let msgs: Vec<UiMessage> = {
+        let mut sim = tall(app.view_info());
+        assert!(sim.find("No Bookmarks").is_err());
+        let _ = sim.click(date.as_str()).expect("the bookmark row");
+        sim.into_messages().collect()
+    };
+    assert!(matches!(&msgs[..], [UiMessage::JumpTo(c, m)] if *c == id && *m == mid));
+    let menu = info_menu(&app.store.read(), &format!("bookmark:{id} {mid}"));
+    let labels: Vec<_> = menu.iter().map(|i| i.as_ref().map(|i| i.0.as_str())).collect();
+    assert_eq!(labels, [Some("Jump to Message"), None, Some("Remove Bookmark")]);
+    let _ = app.update(UiMessage::OpenChatMenu(format!("bookmark:{id} {mid}")));
+    let _ = app.update(menu[2].clone().and_then(|i| i.1).expect("Remove Bookmark"));
+    assert!(app.chat_menu.is_none());
+    assert!(tall(app.view_info()).find("No Bookmarks").is_ok());
+}
+
+#[test]
 fn timer_labels_like_date_fns() {
     let labels: Vec<String> = DEFAULT_TIMERS.iter().map(|&ms| crate::timer_label(ms)).collect();
     assert_eq!(
