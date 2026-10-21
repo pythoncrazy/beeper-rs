@@ -3381,10 +3381,10 @@ impl BeeperGuiApp {
                     }
                     _ => None,
                 });
-                let (id, txn, _) =
+                let (_, txn, _) =
                     st.send_message(&chat_id, Some(text.clone()), reply_to.clone(), None).expect("send message");
                 if let Some(link) = preview.as_ref().and_then(|(v, _)| beeper_core::matrix::link(v)) {
-                    let i = st.msg_idx_by_id[&id];
+                    let i = st.msg_idx_by_id[&txn];
                     st.update_message(i, |m| m.links = vec![link]);
                 }
                 st.queue(&chat_id, Outgoing::Send { txn, text, reply_to: reply_to.take(), preview });
