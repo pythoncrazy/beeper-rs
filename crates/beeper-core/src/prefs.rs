@@ -119,6 +119,8 @@ macro_rules! cmd {
 const AFTER: &[&str] = &["Select next chat", "Select previous chat", "Close chat", "Do nothing"];
 pub const COMPOSER_ACTIONS: &[&str] =
     &["Emoji Picker", "Talk to Type", "Record Audio", "GIF Picker", "Add Attachment", "Send Later", "None"];
+/// The values of "Allow undo send", in milliseconds.
+pub const UNDO_SEND_MS: &[i64] = &[0, 750, 1000, 2000, 3000, 5000, 10000];
 const UNDO_SEND_DELAYS: &[&str] =
     &["0 ms (disabled)", "750 ms", "1 second", "2 seconds", "3 seconds", "5 seconds", "10 seconds"];
 const SOUND: &[&str] = &["Default", "None"];
@@ -338,6 +340,7 @@ pub fn hotkey_feature(name: &str) -> Option<&'static str> {
         "Toggle Incognito Mode" => Some("stealth-mode"),
         "Remind Later" => Some("remind-later"),
         "Message: Send Later" => Some("scheduled-message"),
+        "Undo Pending Send" => Some("undo-send"),
         _ => None,
     }
 }
@@ -402,6 +405,7 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Message: Send Later", "Messages", "ctrl+shift+l"),
     ("Message: Send Message and Archive", "Messages", "ctrl+enter"),
     ("Message: Send Sticker", "Messages", "ctrl+alt+shift+s"),
+    ("Undo Pending Send", "Composer", "disabled"),
     ("Show Replies", "Messages", "ctrl+down"),
     ("Insert New Line", "Composer", "alt+enter, ctrl+enter, shift+enter"),
     ("Send Message", "Composer", "enter"),
@@ -582,7 +586,7 @@ pub const SYNCED: &[(&str, Ad)] = &[
         "messageDoubleClick",
         v("message_double_click_action", &["do_nothing", "react", "reply", "forward", "show_menu", "react_with"]),
     ),
-    ("undoSendDelay", Ad::Desktop("undo_send_delay_ms", Values::Secs(&[0, 750, 1000, 2000, 3000, 5000, 10000]))),
+    ("undoSendDelay", Ad::Desktop("undo_send_delay_ms", Values::Secs(UNDO_SEND_MS))),
     ("undoOnPendingClick", b("undo_send_on_pending_click")),
     ("copyTimestamps", b("copy_message_timestamps")),
     ("emojiAutocomplete", b("enable_emoji_autocomplete")),
