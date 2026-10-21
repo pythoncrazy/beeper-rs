@@ -491,6 +491,20 @@ pub struct MessageLink {
     pub summary: Option<String>,
 }
 
+/// Desktop's `ScheduledStore` entry: a Send Later message, kept on this device only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Scheduled {
+    pub id: String,
+    pub chat_id: String,
+    pub text: String,
+    pub reply_to: Option<String>,
+    pub added_on: i64,
+    pub send_on: i64,
+    pub send_only_on_no_response: bool,
+    pub canceled: bool,
+}
+
 impl Message {
     /// Desktop's silent rows, which neither preview a chat nor notify.
     pub fn silent(&self) -> bool {

@@ -1,6 +1,7 @@
 mod anim;
 mod commands;
 mod cursor;
+mod dashed;
 pub mod emoji;
 mod format;
 mod i18n;
@@ -299,6 +300,19 @@ pub enum UiMessage {
     RemindIf(String, i64, bool),
     ChatSub(Option<u8>),
     CheckReminders,
+    /// Desktop's `showWithSubMenu(SCHEDULE_MESSAGE)` for the composer.
+    OpenSendLater,
+    /// The composer's `sendLaterConfig`: the time and "If no reply".
+    SendLater(Option<(i64, bool)>),
+    /// The menu of scheduled messages at the cursor; true adds the message items.
+    ScheduledMenu(Vec<String>, bool),
+    SendNow(Vec<String>),
+    Reschedule(Vec<String>),
+    RescheduleTo(Vec<String>, i64, bool),
+    Unschedule(Vec<String>),
+    EditScheduled(String),
+    FoldScheduled(bool),
+    CheckScheduled,
     ToggleFlag(String, ChatFlag),
     ToggleRead(String),
     CopyChatLink(String),
@@ -1043,6 +1057,27 @@ fn reminder_day(at: i64) -> String {
     }
 }
 
+/// Desktop's `nextScheduledMessageTime`.
+fn next_send(st: &BeeperStore, chat_id: &str) -> Option<i64> {
+    st.scheduled.iter().filter(|s| s.chat_id == chat_id).map(|s| s.send_on).min()
+}
+
+/// Desktop's `qN`: when a Send Later message sends.
+fn send_day(at: i64, h24: bool) -> String {
+    let (d, t, time) = (day_of(at), today(), clock(at, h24));
+    match d - t {
+        0 => trf("Today at %s", &[&time]),
+        1 => trf("Tomorrow at %s", &[&time]),
+        _ if (d + 3).div_euclid(7) == (t + 3).div_euclid(7) => {
+            trf("%1$s at %2$s", &[&tr(WEEKDAYS[(d + 4).rem_euclid(7) as usize]), &time])
+        }
+        _ => {
+            let (y, m, day) = civil_from_days(d);
+            trf("%1$s at %2$s", &[&format!("{m}/{day}/{y}"), &time])
+        }
+    }
+}
+
 fn has_flag(c: &Chat, flag: ChatFlag) -> bool {
     let on = match flag {
         ChatFlag::Archived => c.is_archived,
@@ -1673,6 +1708,7 @@ static COMPOSER_ICONS: std::sync::LazyLock<[svg::Handle; 9]> = std::sync::LazyLo
     .map(svg::Handle::from_memory)
 });
 
+svg_static!(CHEVRON_DOWN, br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="m10 10.5 3.833-3.833L15 7.834l-5 5-5-5 1.167-1.167z"/></svg>"#);
 svg_static!(TRASH, br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><path fill="currentColor" d="M432 32H312l-9.4-18.7A24 24 0 0 0 281.1 0H166.8a23.72 23.72 0 0 0-21.4 13.3L136 32H16A16 16 0 0 0 0 48v32a16 16 0 0 0 16 16h416a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16zM53.2 467a48 48 0 0 0 47.9 45h245.8a48 48 0 0 0 47.9-45L416 128H32z"/></svg>"#);
 
 /// Chat row hover actions: archive, unarchive, mark read, mark unread, context menu and delete draft.
@@ -2416,6 +2452,10 @@ pub struct Pane {
     /// The first message IDs of the expanded membership event groups.
     pub open_members: HashSet<String>,
     pub size: Size,
+    pub send_later: Option<(i64, bool)>,
+    /// Desktop's `ScheduledMessages` state: collapsed and collapsible.
+    pub sched_fold: (bool, bool),
+    pub sched_menu: Option<(Vec<String>, bool, Point)>,
 }
 
 pub struct BeeperGuiApp {
@@ -3046,7 +3086,7 @@ impl BeeperGuiApp {
                             c.flags & CHAT_LOW_PRIORITY != 0 && shown(F_ARCHIVED) && shown(F_REQUESTS)
                         }
                         InboxTab::Reminders => c.reminder.is_some(),
-                        InboxTab::SendLater => false,
+                        InboxTab::SendLater => st.scheduled.iter().any(|s| s.chat_id == c.id),
                     }
                     && (!self.active_tab.filterable()
                         || filters == 0
@@ -3058,6 +3098,7 @@ impl BeeperGuiApp {
             (InboxTab::Reminders, 0) => list.sort_by_key(|c| remind_at(c)),
             (InboxTab::Reminders, 1) => list.sort_by_key(|c| std::cmp::Reverse(remind_at(c))),
             (InboxTab::Reminders, 2) => list.sort_by(|a, b| a.last_activity.cmp(&b.last_activity)),
+            (InboxTab::SendLater, _) => list.sort_by_key(|c| next_send(st, &c.id)),
             _ => list.sort_by(|a, b| b.last_activity.cmp(&a.last_activity)),
         }
         list
@@ -3092,6 +3133,8 @@ impl BeeperGuiApp {
         self.pane.editing_message_id = None;
         self.pane.selected_msgs.clear();
         self.pane.msg_anchor = None;
+        let pending = st.scheduled.iter().any(|s| s.chat_id == chat.id && !s.canceled);
+        (self.pane.send_later, self.pane.sched_fold, self.pane.sched_menu) = (None, (pending, pending), None);
         self.video = None;
         drop(st);
         self.refresh_theme_and_tray();
@@ -3257,10 +3300,25 @@ impl BeeperGuiApp {
         }
         let mut st = self.store.write();
         let idx = st.resolve_chat_idx(&chat_id).expect("chat exists");
-        if self.pane.editing_message_id.is_none() && has_flag(&st.chats[idx], ChatFlag::Archived) != archive {
+        let later = self.pane.send_later.take();
+        if self.pane.editing_message_id.is_none()
+            && later.is_none()
+            && has_flag(&st.chats[idx], ChatFlag::Archived) != archive
+        {
             self.set_archived(&mut st, idx, archive);
         }
-        if let Some(target) = self.pane.editing_message_id.take() {
+        if let Some(id) = self.pane.editing_message_id.take_if(|id| st.scheduled.iter().any(|s| s.id == *id)) {
+            st.update_scheduled(&id, |s| {
+                s.text = text;
+                true
+            });
+        } else if let Some((at, no_reply)) = later {
+            let cid = st.chats[idx].id.clone();
+            if !st.scheduled.iter().any(|s| s.chat_id == cid && !s.canceled) {
+                self.pane.sched_fold = (false, false);
+            }
+            st.schedule(&chat_id, text, self.pane.reply_to_message_id.take(), at, no_reply);
+        } else if let Some(target) = self.pane.editing_message_id.take() {
             st.edit_message(&chat_id, &target, text.clone()).expect("edit message");
             st.queue(&chat_id, Outgoing::Edit { target, text });
         } else {
@@ -3312,6 +3370,22 @@ impl BeeperGuiApp {
         }
         self.pane.composer = composer_with("");
         self.pane.composer_links.clear();
+        drop(st);
+        self.refresh_theme_and_tray();
+    }
+
+    /// Desktop's `ScheduledStore.sendMessage`: a typed message, which moves an archived chat to the inbox.
+    fn send_scheduled(&mut self, due: Vec<Scheduled>) {
+        let mut st = self.store.write();
+        for s in due {
+            let Some(idx) = st.resolve_chat_idx(&s.chat_id) else { continue };
+            if has_flag(&st.chats[idx], ChatFlag::Archived) {
+                self.set_archived(&mut st, idx, false);
+            }
+            let (_, txn, _) =
+                st.send_message(&s.chat_id, Some(s.text.clone()), s.reply_to.clone(), None).expect("send scheduled");
+            st.queue(&s.chat_id, Outgoing::Send { txn, text: s.text, reply_to: s.reply_to, preview: None });
+        }
         drop(st);
         self.refresh_theme_and_tray();
     }
@@ -3478,6 +3552,7 @@ impl BeeperGuiApp {
                 c.and_then(profile_link).map(UiMessage::OpenUrl)
             }
             "Message: Send Message and Archive" => chat.map(|_| UiMessage::SendAndArchive),
+            "Message: Send Later" => chat.map(|_| UiMessage::OpenSendLater),
             "Send Message" | "Insert New Line" => None,
             "Minimize To Tray" => return self.set_hidden(true),
             "Quit App" => return self.quit(),
@@ -3896,6 +3971,66 @@ impl BeeperGuiApp {
                 }
                 drop(st);
                 self.refresh_theme_and_tray();
+            }
+            UiMessage::OpenSendLater if self.pane.editing_message_id.is_some() => {
+                self.status_banner = tr("Send Later isn't available while editing a message").into();
+            }
+            UiMessage::OpenSendLater => {
+                if self.pane.selected_chat_id.is_some() && self.pane.attachments.is_empty() {
+                    return self.update(UiMessage::OpenSubMenu(commands::SubMenu::Schedule(Vec::new())));
+                }
+            }
+            UiMessage::SendLater(config) => {
+                self.pane.send_later = config;
+                return operation::focus("composer-input");
+            }
+            UiMessage::ScheduledMenu(ids, items) => self.pane.sched_menu = Some((ids, items, self.cursor.get())),
+            UiMessage::SendNow(ids) => {
+                self.pane.sched_menu = None;
+                let mut st = self.store.write();
+                let due: Vec<Scheduled> =
+                    ids.iter().filter_map(|id| st.scheduled.iter().find(|s| s.id == *id)).cloned().collect();
+                ids.iter().for_each(|id| st.update_scheduled(id, |_| false));
+                drop(st);
+                self.send_scheduled(due);
+            }
+            UiMessage::Reschedule(ids) => {
+                self.pane.sched_menu = None;
+                return self.update(UiMessage::OpenSubMenu(commands::SubMenu::Schedule(ids)));
+            }
+            UiMessage::RescheduleTo(ids, at, no_reply) => {
+                let mut st = self.store.write();
+                let now = now_unix_millis();
+                for id in &ids {
+                    st.update_scheduled(id, |s| {
+                        (s.canceled, s.added_on, s.send_on, s.send_only_on_no_response) = (false, now, at, no_reply);
+                        true
+                    });
+                }
+            }
+            UiMessage::Unschedule(ids) => {
+                self.pane.sched_menu = None;
+                let mut st = self.store.write();
+                ids.iter().for_each(|id| st.update_scheduled(id, |_| false));
+            }
+            UiMessage::EditScheduled(id) => {
+                self.pane.sched_menu = None;
+                let st = self.store.read();
+                let text = st.scheduled.iter().find(|s| s.id == id).expect("a scheduled message").text.clone();
+                drop(st);
+                return self.update(UiMessage::StartEdit(id, text));
+            }
+            UiMessage::FoldScheduled(collapsed) => {
+                self.pane.sched_fold.0 = collapsed;
+                return operation::scroll_to("timeline", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
+            }
+            UiMessage::CheckScheduled => {
+                let now = now_unix_millis();
+                if let Some((_, no_reply)) = self.pane.send_later.filter(|c| c.0 <= now) {
+                    self.pane.send_later = Some((now + 60_000, no_reply));
+                }
+                let due = self.store.write().take_due_scheduled(now);
+                self.send_scheduled(due);
             }
             m @ (UiMessage::ArchiveStale | UiMessage::ArchiveAll(..)) => {
                 self.confirm = None;
@@ -4396,7 +4531,18 @@ impl BeeperGuiApp {
             UiMessage::CmdNoReply(on) => self.cmd_no_reply = on,
             UiMessage::LastTime(phrase) => self.patch_settings(|s| s.last_time = phrase),
             UiMessage::OpenSubMenu(menu) => {
-                self.cmd_no_reply = self.store.read().settings.pref("remindLaterDefault") == 0;
+                let st = self.store.read();
+                self.cmd_no_reply = match &menu {
+                    commands::SubMenu::Schedule(ids) => {
+                        let initial = match ids.first() {
+                            Some(id) => st.scheduled.iter().find(|s| s.id == *id).map(|s| s.send_only_on_no_response),
+                            None => self.pane.send_later.map(|c| c.1),
+                        };
+                        initial.unwrap_or(st.settings.pref("sendLaterDefault") == 0)
+                    }
+                    _ => st.settings.pref("remindLaterDefault") == 0,
+                };
+                drop(st);
                 (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, true, Some(menu));
                 (self.search_room, self.chat_menu, self.cmd_index) = (None, None, 0);
                 self.command_palette_query.clear();
@@ -4675,6 +4821,7 @@ impl BeeperGuiApp {
             UiMessage::Video(msg) => return self.video(msg),
             UiMessage::Pasted(r) => match r {
                 Ok(img) => {
+                    self.pane.send_later = self.pane.send_later.filter(|_| img.is_none());
                     self.pane.attachments.extend(img.map(|(png, size)| PendingMedia {
                         name: "image.png".into(),
                         mime: "image/png".into(),
@@ -4707,6 +4854,7 @@ impl BeeperGuiApp {
             }
             UiMessage::FilesLoaded(r) => match r {
                 Ok(files) => {
+                    self.pane.send_later = self.pane.send_later.filter(|_| files.is_empty());
                     self.pane.attachments.extend(files);
                     if self.drop_send {
                         self.submit_composer(false);
@@ -4760,6 +4908,17 @@ impl BeeperGuiApp {
             }
             UiMessage::Emoji(m) => return self.update_emoji(m),
             UiMessage::Upserted(m) => {
+                let mut st = self.store.write();
+                let due = st.take_due_scheduled(now_unix_millis());
+                let open = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_canonical_chat_id(c));
+                if open.as_ref() == Some(&m.chat_id)
+                    && self.pane.sched_fold == (false, false)
+                    && st.scheduled.iter().any(|s| s.chat_id == m.chat_id && !s.canceled)
+                {
+                    self.pane.sched_fold = (true, true);
+                }
+                drop(st);
+                self.send_scheduled(due);
                 self.message_sound(&m);
                 let note = self.notify_message(&m);
                 return Task::batch([self.update(UiMessage::StoreChanged), note]);
@@ -4835,6 +4994,7 @@ impl BeeperGuiApp {
             }
             UiMessage::GifDownloaded(g, r) => match r {
                 Ok((bytes, frames)) => {
+                    self.pane.send_later = None;
                     self.pane.attachments.push(PendingMedia {
                         bytes,
                         name: format!("{}.gif", g.id),
@@ -5070,6 +5230,7 @@ impl BeeperGuiApp {
                     || self.chat_menu.is_some()
                     || self.pane.message_menu.is_some()
                     || self.pane.edit_menu.is_some()
+                    || self.pane.sched_menu.is_some()
                     || self.reminder_menu.is_some()
                     || self.audio.menu.is_some()
                     || self.selection_menu.is_some()
@@ -5086,6 +5247,7 @@ impl BeeperGuiApp {
                     self.chat_menu = None;
                     self.pane.message_menu = None;
                     self.pane.edit_menu = None;
+                    self.pane.sched_menu = None;
                     self.reminder_menu = None;
                     self.audio.menu = None;
                     self.selection_menu = None;
@@ -5708,12 +5870,13 @@ impl BeeperGuiApp {
             let last = self.pane().selected_chat_id.as_ref().and_then(|c| st.chat_msg_indices.get(c)?.last());
             let rising = last.is_some_and(|&i| send_rise(&st, &st.messages[i]).is_some());
             let pending = st.chats.iter().filter(|c| !self.expired(c));
-            (rising, pending.filter_map(|c| Some(c.reminder.as_ref()?.remind_at_ms)).min())
+            let send = st.scheduled.iter().filter(|s| !s.canceled).map(|s| s.send_on);
+            let send = send.chain(self.pane.send_later.map(|c| c.0)).min();
+            (rising, (pending.filter_map(|c| Some(c.reminder.as_ref()?.remind_at_ms)).min(), send))
         };
-        let remind = due.map(|at| {
-            let wait = std::time::Duration::from_millis((at - now_unix_millis()).max(1) as u64);
-            iced::time::every(wait).map(|_| UiMessage::CheckReminders)
-        });
+        let wait = |at: i64| std::time::Duration::from_millis((at - now_unix_millis()).max(1) as u64);
+        let remind = due.0.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::CheckReminders));
+        let send = due.1.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::CheckScheduled));
         let animated = rising
             || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
             || self.pref_flash.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 2.0);
@@ -5736,6 +5899,7 @@ impl BeeperGuiApp {
                 .chain(tick)
                 .chain(shot)
                 .chain(remind)
+                .chain(send)
                 .chain(notes)
                 .chain(tray)
                 .chain(self.audio_ticks())
@@ -5874,6 +6038,12 @@ impl BeeperGuiApp {
             let (menu, h) = self.view_edit_menu(word.as_ref());
             let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
             (menu, x, at.y.min(self.pane().size.height - h - 8.0))
+        });
+        let edit_menu = edit_menu.or_else(|| {
+            let (ids, items, at) = self.pane().sched_menu.as_ref()?;
+            let (menu, h) = self.view_scheduled_menu(ids, *items);
+            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
+            Some((menu, x, at.y.min(self.pane().size.height - h - 8.0)))
         });
         let react = self.pane().emoji.as_ref().and_then(|pk| pk.react.as_ref()).map(|(_, at)| {
             let x = if at.x + 352.0 > self.pane().size.width { at.x - 352.0 } else { at.x };
@@ -6241,6 +6411,134 @@ impl BeeperGuiApp {
             .width(MESSAGE_MENU_W)
             .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         (menu.into(), h)
+    }
+
+    /// Desktop's scheduled message menu: with `items`, Edit and Copy, then `Mhe`.
+    fn view_scheduled_menu(&self, ids: &[String], items: bool) -> (El<'_>, f32) {
+        let p = &self.pal;
+        let st = self.store.read();
+        let first = st.scheduled.iter().find(|s| s.id == ids[0]).expect("a scheduled message");
+        let (canceled, n, ids) = (first.canceled, ids.len(), ids.to_vec());
+        let item = |label: String, hotkey, msg: UiMessage| Some(menu_item(p, None, label, hotkey, Some(msg)));
+        let ctx = "scheduled message menu action";
+        let rows = [
+            items.then(|| item(trx("Edit...", ctx).into(), "Ctrl T", UiMessage::EditScheduled(ids[0].clone()))),
+            items.then(|| item(trx("Copy", ctx).into(), "Ctrl C", UiMessage::CopyText(first.text.clone()))),
+            items.then(|| Some(menu_rule(p))),
+            (!canceled).then(|| match n {
+                1 => item(tr("Send Message Now").into(), "", UiMessage::SendNow(ids.clone())),
+                _ => item(
+                    trn("Send %d Message Now", "Send %d Messages Now", n, &[&n]),
+                    "",
+                    UiMessage::SendNow(ids.clone()),
+                ),
+            }),
+            Some(item(tr("Reschedule").into(), "", UiMessage::Reschedule(ids.clone()))),
+            Some(item(
+                match (canceled, n) {
+                    (true, _) => trn("Remove Unsent Message", "Remove Unsent Messages", n, &[]),
+                    (false, 1) => tr("Delete Without Sending").into(),
+                    (false, _) => trn("Delete %d Message", "Delete %d Messages", n, &[&n]),
+                },
+                "",
+                UiMessage::Unschedule(ids),
+            )),
+        ];
+        let rows: Vec<El> = rows.into_iter().flatten().flatten().collect();
+        let h = 8.0 + (rows.len() - usize::from(items)) as f32 * MENU_ITEM + if items { 11.0 } else { 0.0 };
+        let menu = container(Column::with_children(rows).padding([4, 0])).width(MESSAGE_MENU_W).style(shadow_box(
+            p.menu,
+            p.menu_border,
+            6.0,
+            16.0,
+        ));
+        (menu.into(), h)
+    }
+
+    /// Desktop's `ScheduledMessages`: the canceled messages, the "Send Later" toggle, then the messages to send.
+    fn view_scheduled<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
+        let p = &self.pal;
+        let mut all: Vec<&Scheduled> = st.scheduled.iter().filter(|s| s.chat_id == chat.id).collect();
+        if all.is_empty() {
+            return None;
+        }
+        all.sort_by_key(|s| s.send_on);
+        let (canceled, pending): (Vec<&Scheduled>, Vec<&Scheduled>) = all.into_iter().partition(|s| s.canceled);
+        let (collapsed, collapsible) = if pending.is_empty() { (false, false) } else { self.pane().sched_fold };
+        let h24 = st.settings.pref("timeFormat") == 1;
+        let fg = p.on_secondary;
+        let minute = |s: &Scheduled| s.send_on.div_euclid(60_000);
+        let list = |v: &[&Scheduled]| -> Vec<El<'a>> {
+            let rows = v.iter().enumerate().map(|(i, s)| {
+                let first = i == 0 || (!s.canceled && minute(v[i - 1]) != minute(s));
+                let date = first.then(|| {
+                    let group = v.iter().filter(|o| s.canceled || minute(o) == minute(s));
+                    let ids = group.map(|o| o.id.clone()).collect();
+                    let (text, edit, weight) = match s.canceled {
+                        true => (tr("Send Later message canceled by reply.").into(), tr("Options"), Weight::Normal),
+                        false => (trf("Send %s", &[&send_day(s.send_on, h24)]), tr("Edit"), Weight::Semibold),
+                    };
+                    let edit = button(semi(edit, 11.0).line_height(Pixels(14.0)).color(p.accent))
+                        .padding(0)
+                        .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                        .on_press(UiMessage::ScheduledMenu(ids, false));
+                    let line = row![]
+                        .push((!s.canceled).then(|| tinted(&COMPOSER_ICONS[6], 12.0, fg)))
+                        .push(txt(text, 11.0).line_height(Pixels(14.0)).font(fw(weight)).color(fg))
+                        .push(edit);
+                    container(line.spacing(4).align_y(Center)).center_x(Fill).padding(Padding {
+                        top: 4.0,
+                        right: 8.0,
+                        bottom: 8.0,
+                        left: 8.0,
+                    })
+                });
+                column![].push(date).push(self.view_scheduled_bubble(s)).into()
+            });
+            rows.collect()
+        };
+        let toggle = (collapsed || collapsible).then(|| {
+            let n = pending.len();
+            let text = match collapsed && n > 1 {
+                true => trn("%d Message to Send Later", "%d Messages to Send Later", n, &[&n]),
+                false => tr("Send Later").into(),
+            };
+            let chevron = svg(CHEVRON_DOWN.clone())
+                .width(12)
+                .height(12)
+                .rotation(Radians(if collapsed { 0.0 } else { std::f32::consts::PI }))
+                .style(move |_, _| svg::Style { color: Some(fg) });
+            let label = row![
+                tinted(&COMPOSER_ICONS[6], 12.0, fg),
+                semi(text, 11.0).line_height(Pixels(14.0)).color(fg),
+                chevron
+            ];
+            let toggle = button(label.spacing(4).align_y(Center))
+                .padding([4, 8])
+                .style(bordered_btn([p.card; 3], [fg; 3], p.chip, 1.0, 100.0))
+                .on_press(UiMessage::FoldScheduled(!collapsed));
+            container(toggle).center_x(Fill).padding(Padding::ZERO.bottom(4.0))
+        });
+        let shown = if collapsed { Vec::new() } else { list(&pending) };
+        let col = Column::with_children(list(&canceled)).push(toggle).extend(shown).spacing(2);
+        Some(col.padding(Padding::ZERO.top(6.0)).into())
+    }
+
+    /// A scheduled message like Desktop's `is-scheduled` bubble: white, with a dashed border in the text color.
+    fn view_scheduled_bubble(&self, s: &Scheduled) -> El<'_> {
+        let p = &self.pal;
+        let fg = if s.canceled { hex(0x808080) } else { p.accent };
+        let text = txt(s.text.clone(), 13.0)
+            .line_height(Pixels(16.0))
+            .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+            .color(fg);
+        let bubble = container(text)
+            .padding([9.0, BUBBLE_PAD_X])
+            .max_width(0.45 * self.pane().size.width)
+            .style(fill_box(p.card, 17.0));
+        let bubble = mouse_area(stack![bubble, dashed::dashes(fg, 17.0)])
+            .on_right_press(UiMessage::ScheduledMenu(vec![s.id.clone()], true));
+        row![Space::new().width(Fill), bubble].into()
     }
 
     fn view_message_menu(&self, mid: &str) -> (El<'_>, f32) {
@@ -7055,14 +7353,18 @@ impl BeeperGuiApp {
                 .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
             let m = preview_message(&st, c).filter(|_| previews && draft.is_none());
             let reaction = m.filter(|m| m.message_type.as_deref() == Some("REACTION"));
-            let ts = match (self.active_tab, &c.reminder) {
-                (InboxTab::Reminders, Some(r)) => {
+            let next = next_send(&st, &c.id);
+            let ts = match (self.active_tab, &c.reminder, next) {
+                (InboxTab::Reminders, Some(r), _) => {
                     format!("{} {}", reminder_day(r.remind_at_ms), clock(r.remind_at_ms, h24))
                 }
+                (InboxTab::SendLater, _, Some(at)) => format!("{} {}", reminder_day(at), clock(at, h24)),
                 _ if draft.is_some() => String::new(),
                 _ => c.last_activity.as_deref().map(|t| list_ts(t, h24)).unwrap_or_default(),
             };
-            let ts_w = crate::style::text_width(&ts, ts_size, Weight::Normal) + 8.0;
+            let later = next.is_some()
+                && (draft.is_none() || matches!(self.active_tab, InboxTab::Reminders | InboxTab::SendLater));
+            let ts_w = crate::style::text_width(&ts, ts_size, Weight::Normal) + 8.0 + if later { 12.0 } else { 0.0 };
             let expired = self.expired(c);
             let reminded_last = c
                 .reminder
@@ -7084,6 +7386,7 @@ impl BeeperGuiApp {
                 .push(ell(&title, text_w - ts_w - bell - pin_w, title_size, weight).color(p.fg.scale_alpha(0.9)))
                 .push(muted.then(|| container(tinted(&BELL_OFF, 12.0, p.strong)).padding([0, 2])))
                 .push(Space::new().width(Fill))
+                .push(later.then(|| tinted(&COMPOSER_ICONS[6], 12.0, p.strong.scale_alpha(0.7))))
                 .push(
                     txt(ts, ts_size).color(p.strong.scale_alpha(0.7)).font(iced::Font { style, ..fw(Weight::Normal) }),
                 )
@@ -7385,6 +7688,7 @@ impl BeeperGuiApp {
             col = col.push(container(stack![view].push(flash)).id(format!("msg-{}", m.id)));
             prev = Some(m);
         }
+        col = col.push(self.view_scheduled(&st, chat));
         col = col.push(st.typing.get(cid).map(|ids| self.typing_bubble(chat, ids)));
         let list = scrollable(col)
             .id("timeline")
@@ -8035,6 +8339,7 @@ impl BeeperGuiApp {
                 0 => Some(UiMessage::Emoji(emoji::EmojiMsg::Toggle)),
                 2 => Some(UiMessage::ToggleGifPicker),
                 3 => Some(UiMessage::PickFiles),
+                4 => Some(UiMessage::OpenSendLater),
                 5 => Some(UiMessage::Record(record::Msg::Start)),
                 _ => None,
             };
@@ -8130,9 +8435,31 @@ impl BeeperGuiApp {
         let net = Row::new().push(net.map(|n| container(n).padding(Padding::ZERO.right(2.0)).center_y(36)));
         let inline = container(inline).padding(Padding::ZERO.left(2.0)).center_y(36);
         let input = self.with_formatting(input.into(), if st.settings.on("formattingMenu") { formats } else { 0 });
-        let pill = container(row![net, input, inline].align_y(Bottom).padding(Padding::new(0.0).left(14.0).right(6.5)))
-            .width(Fill)
-            .style(fill_box(p.input, 18.0));
+        let line = row![net, input, inline].align_y(Bottom).padding(Padding::new(0.0).left(14.0).right(6.5));
+        let pill: El<'a> = match self.pane().send_later {
+            None => container(line).width(Fill).style(fill_box(p.input, 18.0)).into(),
+            Some((at, no_reply)) => {
+                let when = send_day(at, st.settings.pref("timeFormat") == 1);
+                let when = if no_reply { trf("%s if no reply", &[&when]) } else { when };
+                let details = row![
+                    tinted(&COMPOSER_ICONS[6], 20.0, p.accent),
+                    semi(when, 11.0).line_height(Pixels(14.0)).color(p.accent),
+                    tinted(&CHEVRON_DOWN, 14.0, p.accent)
+                ];
+                let details = button(details.spacing(4).align_y(Center))
+                    .padding(0)
+                    .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                    .on_press(UiMessage::OpenSendLater);
+                let close = icon_btn(p, icon::CLOSE, 14.0, 20.0, p.accent, UiMessage::SendLater(None));
+                let blue = if p.card.r < 0.5 { hex(0x1b43aa) } else { hex(0xcbd9ff) };
+                let banner = container(row![details, Space::new().width(Fill), close].spacing(2).align_y(Center))
+                    .padding(2)
+                    .style(fill_box(blue, 20.0));
+                let body = column![container(banner).padding(Padding::new(8.0).bottom(0.0).left(12.0)), line];
+                let body = container(body).width(Fill).style(fill_box(p.card, 18.0));
+                stack![body, dashed::dashes(hex(0x808080), 18.0)].into()
+            }
+        };
         let plus_icon = tinted(&COMPOSER_ICONS[usize::from(self.pane().show_attach_menu)], 20.0, p.muted);
         let toggle = button(container(plus_icon).center(36))
             .padding(0)
@@ -8342,9 +8669,10 @@ impl BeeperGuiApp {
         .padding([2, 6])
         .style(ghost(p, 8.0))
         .on_press(UiMessage::ToggleCommandMode);
-        let no_reply = [tr("If no reply"), tr("Always")];
+        let schedule = matches!(self.cmd_submenu, Some(commands::SubMenu::Schedule(_)));
+        let no_reply = [tr("If no reply"), if schedule { tr("Regardless") } else { tr("Always") }];
         let inputs = match &self.cmd_submenu {
-            Some(commands::SubMenu::Remind(_)) => {
+            Some(commands::SubMenu::Remind(_) | commands::SubMenu::Schedule(_)) => {
                 let pick = move |c: &str| UiMessage::CmdNoReply(c == no_reply[0]);
                 let pad = Padding::new(4.0).left(6.0).right(22.0);
                 row![input, sized_select(p, no_reply, no_reply[usize::from(!self.cmd_no_reply)], pick, 13.0, pad)]
@@ -8358,16 +8686,23 @@ impl BeeperGuiApp {
             let cmds = self.commands(&st, self.command_palette_query.trim());
             let header = self.cmd_submenu.as_ref().filter(|m| !m.heading().is_empty()).map(|m| {
                 let heading = txt(m.heading(), 13.0).line_height(Pixels(16.0)).color(p.strong);
-                container(heading)
+                let clock = schedule.then(|| tinted(&COMPOSER_ICONS[6], 20.0, p.strong));
+                container(row![].push(clock).push(heading).spacing(4).align_y(Center))
                     .width(Fill)
                     .center_y(44)
                     .padding([8, 13])
                     .style(fill_box(p.chip, iced::border::top(18)))
             });
-            let footer = matches!(self.cmd_submenu, Some(commands::SubMenu::Remind(_))).then(|| {
-                let note = match self.cmd_no_reply {
-                    true => tr("Remind Me marks this chat as new at the scheduled time, if there is no reply."),
-                    false => tr("Remind Me marks this chat as new at the scheduled time"),
+            let footer = (schedule || matches!(self.cmd_submenu, Some(commands::SubMenu::Remind(_)))).then(|| {
+                let note = match (schedule, self.cmd_no_reply) {
+                    (true, _) => trf(
+                        "Send Later messages can only send if %s app is running (and your computer is awake)",
+                        &[&"Beeper"],
+                    ),
+                    (_, true) => {
+                        tr("Remind Me marks this chat as new at the scheduled time, if there is no reply.").into()
+                    }
+                    (_, false) => tr("Remind Me marks this chat as new at the scheduled time").into(),
                 };
                 let line =
                     container(Space::new()).width(Fill).height(2).style(fill_box(p.strong.scale_alpha(0.1), 0.0));

@@ -152,6 +152,7 @@ const KEY_BRIDGES: &str = "bridges";
 const KEY_SETTINGS: &str = "settings";
 const KEY_PIN_RANK: &str = "pinRank";
 const KEY_RECENT_CHATS: &str = "recentChats";
+const KEY_SCHEDULED: &str = "scheduledMessages";
 const KEY_CONTACTS: &str = "contacts";
 const KEY_SEQ: &str = "nextSeq";
 const KEY_SETUP: &str = "setup";
@@ -299,6 +300,7 @@ pub struct BeeperStore {
     pub typing: HashMap<String, Vec<String>>,
     /// `io.element.recent_emoji` keys (emoji or emoji-mart ids) with their use counts.
     pub recent_emoji: Vec<(String, u64)>,
+    pub scheduled: Vec<Scheduled>,
     /// The last synced global account data of each event in [`crate::prefs::SYNCED`].
     pub synced_prefs: BTreeMap<&'static str, serde_json::Value>,
     /// `com.beeper.emoji_skin_tone`, 0 is the default yellow.
@@ -415,6 +417,7 @@ impl BeeperStore {
             sent: HashMap::new(),
             typing: HashMap::new(),
             recent_emoji: Vec::new(),
+            scheduled: Vec::new(),
             synced_prefs: BTreeMap::new(),
             skin_tone: 0,
             inbox_rules: serde_json::Value::Null,
@@ -547,6 +550,9 @@ impl BeeperStore {
                 .expect("read kv")
         };
         self.connect = crate::connect::Connect::load(kv(crate::connect::KEY_TOKENS), kv(crate::connect::KEY_CLIENTS));
+        if let Some(s) = kv(KEY_SCHEDULED) {
+            self.scheduled = serde_json::from_str(&s).expect("parse stored scheduled messages");
+        }
         self.setup_status = Self::build_setup_from_state(&self.beeper_state);
         if let Some(b) = bridges {
             self.bridge_accounts = serde_json::from_str(&b).expect("parse stored bridge accounts");
@@ -620,6 +626,62 @@ impl BeeperStore {
     pub fn revoke_token(&mut self, id: &str) {
         assert!(self.connect.tokens.remove(id).is_some(), "revoke the unknown token {id}");
         self.persist_connect();
+    }
+
+    fn persist_scheduled(&self) {
+        self.put_kv(KEY_SCHEDULED, &serde_json::to_string(&self.scheduled).expect("serialize scheduled messages"));
+    }
+
+    /// Desktop's `scheduleCurrentDraft`.
+    pub fn schedule(&mut self, chat_id: &str, text: String, reply_to: Option<String>, send_on: i64, no_reply: bool) {
+        let chat_id = self.resolve_canonical_chat_id(chat_id).expect("schedule in a known chat");
+        let id = self.next_id("pending");
+        let added_on = crate::config::now_unix_millis();
+        let s = Scheduled {
+            id,
+            chat_id,
+            text,
+            reply_to,
+            added_on,
+            send_on,
+            send_only_on_no_response: no_reply,
+            canceled: false,
+        };
+        self.scheduled.push(s);
+        self.persist_scheduled();
+    }
+
+    /// Desktop's `updateScheduledMessage`: `f` changes the entry `id`, and removes it when it returns false.
+    pub fn update_scheduled(&mut self, id: &str, f: impl FnOnce(&mut Scheduled) -> bool) {
+        let i = self.scheduled.iter().position(|s| s.id == id).expect("a known scheduled message");
+        if !f(&mut self.scheduled[i]) {
+            self.scheduled.remove(i);
+        }
+        self.persist_scheduled();
+    }
+
+    /// Desktop's `cancelSendIfReplied` for each entry, then the entries due at `now`, which leave the store.
+    pub fn take_due_scheduled(&mut self, now: i64) -> Vec<Scheduled> {
+        let replied = |st: &Self, s: &Scheduled| {
+            let msgs = st.chat_msg_indices.get(&s.chat_id).into_iter().flatten().map(|&i| &st.messages[i]);
+            msgs.filter(|m| crate::config::millis_from_rfc3339(&m.timestamp).is_some_and(|t| t >= s.added_on))
+                .any(|m| m.is_sender != Some(true) && !m.silent())
+        };
+        let cancel: Vec<usize> = (0..self.scheduled.len())
+            .filter(|&i| {
+                let s = &self.scheduled[i];
+                s.send_only_on_no_response && !s.canceled && replied(self, s)
+            })
+            .collect();
+        cancel.iter().for_each(|&i| self.scheduled[i].canceled = true);
+        let (due, rest) =
+            std::mem::take(&mut self.scheduled).into_iter().partition(|s| !s.canceled && s.send_on <= now);
+        self.scheduled = rest;
+        let due: Vec<Scheduled> = due;
+        if !cancel.is_empty() || !due.is_empty() {
+            self.persist_scheduled();
+        }
+        due
     }
 
     /// Answers a token request from the "Approve connection" dialog.

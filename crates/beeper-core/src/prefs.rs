@@ -147,6 +147,7 @@ pub const GENERAL: &[Item] = &[
         t("startMinimized", "Keep %s minimized on launch", false).args(&["Beeper"]),
         t("quitOnClose", "Quit %s when closing the main window", false).args(&["Beeper"]),
     ]),
+    Item::Group(&[s("sendLaterDefault", "Default for send later", &["If no reply", "Regardless"], 0).badge(Badge::Plus)]),
     Item::Group(&[
         t("whatsappCommunities", "Show WhatsApp Communities as separate spaces", false),
         t("telegramTopics", "Show Telegram Topics as separate spaces", false),
@@ -358,6 +359,7 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Message: Quote or Edit Selected Message", "Messages", "enter"),
     ("Message: Record Audio", "Messages", "ctrl+shift+a"),
     ("Message: Send GIF", "Messages", "ctrl+shift+g"),
+    ("Message: Send Later", "Messages", "ctrl+shift+l"),
     ("Message: Send Message and Archive", "Messages", "ctrl+enter"),
     ("Insert New Line", "Composer", "alt+enter, ctrl+enter, shift+enter"),
     ("Send Message", "Composer", "enter"),
@@ -529,6 +531,7 @@ pub const SYNCED: &[(&str, Ad)] = &[
     ("incognito", b("dont_mark_as_read_until_responded")),
     ("typingIndicators", b("show_typing_indicator")),
     ("remindLaterDefault", v("dismiss_reminder_on_incoming_default", &["no_reply", "always"])),
+    ("sendLaterDefault", v("schedule_submenu_default", &["no_reply", "always"])),
     ("archiveOnReminder", Ad::Event("com.beeper.reminder_settings", "archive_on_reminder_set")),
     ("markReadOnArchive", Ad::Event("com.beeper.mark_read_when_archive", "enabled")),
     ("afterArchive", v("after_archive", AFTER_VALUES)),
