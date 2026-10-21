@@ -18,6 +18,7 @@ pub const EDITS: [&str; 3] = ["m.room.name", "m.room.avatar", "m.room.topic"];
 /// Desktop's `member_actions` room features.
 pub const MEMBER_ACTIONS: [&str; 5] = ["ban", "invite", "kick", "leave", "revoke_invite"];
 pub const ALL_MEMBER_ACTIONS: u8 = 31;
+pub const MEMBER_INVITE: u8 = 1 << 1;
 pub const MEMBER_KICK: u8 = 1 << 2;
 pub const MEMBER_LEAVE: u8 = 1 << 3;
 pub const ALL_EDITS: u8 = (1 << EDITS.len()) - 1;

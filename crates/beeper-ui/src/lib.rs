@@ -540,6 +540,12 @@ pub enum UiMessage {
     MessageMember(String, String),
     /// Opens a member confirmation, `ASK_MAKE_ADMIN` or `ASK_REMOVE_MEMBER`, for (chat, user).
     AskMember(u8, String, String),
+    /// Desktop's Add Members button of Chat Info: the Add members submenu with the members query.
+    AddMembers(String),
+    /// Desktop's `addParticipant`: invites the user to the chat.
+    AddMember(String, Box<User>),
+    /// Desktop's `searchCmdBarUsers` for the Add members query, after the user stops typing.
+    SearchMembers(String),
     /// Makes a member of a chat an admin (true) or a regular member, as (chat, user, admin).
     SetAdmin(String, String, bool),
     RemoveMember(String, String),
@@ -1979,6 +1985,7 @@ macro_rules! svg_static {
 }
 
 svg_static!(CHEVRON_LEFT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
+svg_static!(ADD_ACCOUNT, include_bytes!("../assets/add_account.svg"));
 svg_static!(CLAUDE_LOGO, include_bytes!("../assets/integrations/claude.svg"));
 svg_static!(ERROR_CIRCLE, include_bytes!("../assets/settings/error_circle.svg"));
 svg_static!(CURSOR_LOGO, include_bytes!("../assets/integrations/cursor.svg"));
@@ -5854,7 +5861,31 @@ impl BeeperGuiApp {
                 return operation::focus("cmd-palette-input");
             }
             UiMessage::ToggleSearchExpanded => self.search_expanded = !self.search_expanded,
-            UiMessage::CommandQueryChanged(q) => (self.command_palette_query, self.cmd_index) = (q, 0),
+            UiMessage::CommandQueryChanged(q) => {
+                (self.command_palette_query, self.cmd_index) = (q.clone(), 0);
+                if self.cmd_submenu == Some(commands::SubMenu::AddMembers) {
+                    self.new_chat_search = None;
+                    let wait = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
+                    return Task::perform(wait, move |()| UiMessage::SearchMembers(q.clone()));
+                }
+            }
+            UiMessage::SearchMembers(q) => {
+                let q = q.trim();
+                let open = self.cmd_submenu == Some(commands::SubMenu::AddMembers);
+                let chat = self.pane.selected_chat_id.clone().filter(|_| open && !q.is_empty());
+                let Some(chat) = chat.filter(|_| q == self.command_palette_query.trim()) else {
+                    return Task::none();
+                };
+                let st = self.store.read();
+                let account = st.resolve_chat_idx(&chat).map(|i| st.chats[i].account_id.clone());
+                drop(st);
+                return self.search_users(q, account);
+            }
+            UiMessage::AddMembers(q) => {
+                let open = self.update(UiMessage::OpenSubMenu(commands::SubMenu::AddMembers));
+                return Task::batch([open, self.update(UiMessage::CommandQueryChanged(q))]);
+            }
+            UiMessage::AddMember(chat, user) => self.store.write().add_member(&chat, *user),
             UiMessage::CommandHighlight(i) => self.cmd_index = i,
             UiMessage::Commands(msgs) => {
                 return Task::batch(msgs.into_iter().map(|m| self.update(m)).collect::<Vec<_>>())
@@ -5913,7 +5944,10 @@ impl BeeperGuiApp {
                 if q != self.new_chat_query.trim() || q.is_empty() {
                     return Task::none();
                 }
-                let search = self.search_users(q);
+                let only =
+                    self.new_chats.iter().find(|d| Some(d.id) == self.creating_chat).and_then(|d| d.users.first());
+                let only = only.map(|(a, _)| a.clone()).or_else(|| self.new_chat_account.clone());
+                let search = self.search_users(q, only);
                 let phone = typed_phone(q).then(|| fmt_phone(&phone_digits(q)));
                 let email = (q.contains('@') && !q.starts_with('@')).then_some(q);
                 let named = q.as_bytes().windows(2).any(|w| w[0] == b'@' && w[1].is_ascii_alphanumeric());
@@ -9100,10 +9134,8 @@ impl BeeperGuiApp {
         self.toast = Some(t);
     }
 
-    /// Desktop's `searchUsers` on the accounts whose bridge has the `search` capability.
-    fn search_users(&mut self, q: &str) -> Task<UiMessage> {
-        let only = self.new_chats.iter().find(|d| Some(d.id) == self.creating_chat).and_then(|d| d.users.first());
-        let only = only.map(|(a, _)| a.clone()).or_else(|| self.new_chat_account.clone());
+    /// Desktop's `searchUsers` on the accounts whose bridge has the `search` capability, or only on `only`.
+    fn search_users(&mut self, q: &str, only: Option<String>) -> Task<UiMessage> {
         let accounts = rail_accounts(&self.store.read());
         let accounts: Vec<String> = accounts
             .into_iter()
@@ -11715,9 +11747,19 @@ impl BeeperGuiApp {
             q.is_empty() || fields.iter().filter_map(|f| f.as_deref()).any(|f| f.to_lowercase().contains(&q))
         };
         let rows: Vec<&User> = all.iter().copied().filter(hit).collect();
-        let expandable = rows.len() > 6;
+        let invite = chat.member_actions & MEMBER_INVITE != 0;
+        let expandable = rows.len() + usize::from(invite) > 6;
         let searchable = all.len() > 6;
-        let shown = if self.info_all { rows.len() } else { rows.len().min(6) };
+        let shown = if self.info_all { rows.len() } else { rows.len().min(6 - usize::from(invite)) };
+        let add = invite.then(|| {
+            let face =
+                row![tinted(&ADD_ACCOUNT, 28.0, p.strong), semi(tr("Add Members"), 13.0).line_height(Pixels(16.0))];
+            button(face.spacing(8).align_y(Center))
+                .padding(4)
+                .width(Fill)
+                .style(btn_style([CLEAR, shade, shade], [p.strong; 3], 8.0))
+                .on_press(UiMessage::AddMembers(self.info_query.clone()))
+        });
         let row = |u: &User| -> El<'a> {
             let you = (u.is_self == Some(true))
                 .then(|| format!(" {}", trx("(You)", "tag shown next to the current user in participant list")));
@@ -11774,6 +11816,7 @@ impl BeeperGuiApp {
         });
         let list = Column::new()
             .push(search)
+            .push(add)
             .extend(rows[..shown].iter().map(|u| row(u)))
             .push(toggle)
             .spacing(6)
@@ -11854,7 +11897,10 @@ impl BeeperGuiApp {
             let cmds = self.commands(&st, self.command_palette_query.trim());
             let header = self.cmd_submenu.as_ref().filter(|m| !m.heading().is_empty()).map(|m| {
                 let heading = txt(m.heading(), 13.0).line_height(Pixels(16.0)).color(p.strong);
-                let clock = schedule.then(|| tinted(&COMPOSER_ICONS[6], 20.0, p.strong));
+                let clock = match m {
+                    commands::SubMenu::AddMembers => Some(tinted(&ADD_ACCOUNT, 20.0, p.strong)),
+                    _ => schedule.then(|| tinted(&COMPOSER_ICONS[6], 20.0, p.strong)),
+                };
                 container(row![].push(clock).push(heading).spacing(4).align_y(Center))
                     .width(Fill)
                     .center_y(44)

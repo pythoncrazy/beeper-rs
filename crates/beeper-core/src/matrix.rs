@@ -1102,6 +1102,8 @@ pub enum Outgoing {
     State(&'static str, Value),
     /// Desktop's `removeParticipant`: a leave membership for the user.
     Kick(String),
+    /// Desktop's `addParticipant`: an invite for the user.
+    Invite(String),
     /// Desktop's `changeParticipantRole`: the admin power level for the user (true), or the default one.
     Role(String, bool),
     /// Adds (true) or removes a Desktop bookmark of a message in a room. Its chat is the bookmarks room.
@@ -1385,6 +1387,10 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             }
         }
         Outgoing::State(kind, content) => drop(room.send_state_event_raw(kind, "", content).await.map_err(e)?),
+        Outgoing::Invite(user) => {
+            let user = matrix_sdk::ruma::UserId::parse(&user).expect("a Matrix user ID");
+            room.invite_user_by_id(&user).await.map_err(e)?;
+        }
         Outgoing::Kick(user) => {
             let content = serde_json::json!({ "membership": "leave" });
             drop(room.send_state_event_raw("m.room.member", &user, content).await.map_err(e)?);

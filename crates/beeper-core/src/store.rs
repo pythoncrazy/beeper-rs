@@ -1099,6 +1099,18 @@ impl BeeperStore {
         self.queue(id, Outgoing::Kick(user.into()));
     }
 
+    /// Desktop's `addParticipant`, which lists the member before the sync confirms the invite.
+    pub fn add_member(&mut self, id: &str, user: User) {
+        let idx = self.chat_idx_by_id[id];
+        let uid = user.id.clone();
+        self.update_chat(idx, |c| {
+            assert!(c.participants.items.iter().all(|u| u.id != user.id), "not a member yet");
+            c.participants.items.push(user);
+            c.participants.total = c.participants.items.len();
+        });
+        self.queue(id, Outgoing::Invite(uid));
+    }
+
     /// Desktop's `changeParticipantRole`, which marks the member before the sync confirms it.
     pub fn set_admin(&mut self, id: &str, user: &str, admin: bool) {
         let idx = self.chat_idx_by_id[id];
