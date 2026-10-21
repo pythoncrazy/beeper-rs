@@ -749,6 +749,7 @@ impl BeeperStore {
             self.settings.theme = theme;
         }
         self.settings.spaces_order = data.spaces_order;
+        self.settings.ever_labeled = data.ever_labeled;
         self.persist_state_to_sqlite();
     }
 
@@ -1001,6 +1002,10 @@ impl BeeperStore {
 
     /// Upserts a label and the `labelIDs` of the chats that it adds or drops.
     pub fn set_label(&mut self, label: Label) {
+        if !self.settings.ever_labeled {
+            self.settings.ever_labeled = true;
+            self.persist_state_to_sqlite();
+        }
         let old = self.labels.iter().position(|l| l.id == label.id);
         let before = old.map_or_else(Vec::new, |i| self.labels[i].rooms.clone());
         let id = label.id.clone();

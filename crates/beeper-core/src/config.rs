@@ -88,6 +88,7 @@ impl Default for BeeperSettings {
             last_time: String::new(),
             chat_appearance: Default::default(),
             spaces_order: Vec::new(),
+            ever_labeled: false,
         }
     }
 }

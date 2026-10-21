@@ -1657,6 +1657,25 @@ fn sidebar_follows_the_spaces_order_like_desktop() {
 }
 
 #[test]
+fn label_nudge_hides_after_the_first_label_like_desktop() {
+    let mut app = demo_app("label-nudge");
+    let nudge = |app: &BeeperGuiApp| rail_spaces(&app.store.read()).iter().any(|s| s == LABEL_NUDGE);
+    let ids: Vec<String> = app.store.read().labels.iter().map(|l| l.id.clone()).collect();
+    for id in &ids {
+        app.store.write().remove_label(id);
+    }
+    assert!(!nudge(&app), "the demo had labels");
+    app.store.write().settings.ever_labeled = false;
+    assert!(nudge(&app), "an account that never had labels");
+    let _ = app.update(UiMessage::OpenCreateLabel(vec!["!note_self:beeper.com".into()]));
+    let _ = app.update(UiMessage::Label(LabelEdit::Name("Friends".into())));
+    let _ = app.update(UiMessage::Label(LabelEdit::Create));
+    let id = app.store.read().labels[0].id.clone();
+    app.store.write().delete_label(&id);
+    assert!(app.store.read().labels.is_empty() && !nudge(&app), "the nudge stays hidden after a label");
+}
+
+#[test]
 fn sidebar_menus_open_accounts_like_desktop() {
     let mut app = demo_app("rail-menus");
     let account = app.store.read().bridge_accounts[0].account_id.clone();

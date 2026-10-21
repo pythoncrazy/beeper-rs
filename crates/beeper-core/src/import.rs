@@ -36,6 +36,7 @@ pub struct BeeperData {
     pub recent_chat_ids: Vec<String>,
     pub theme: Option<ThemeChoice>,
     pub spaces_order: Vec<SpaceOrder>,
+    pub ever_labeled: bool,
 }
 
 pub fn has_beeper_data(dir: &Path) -> bool {
@@ -131,7 +132,8 @@ fn read_snapshot(dir: &Path, src_dir: &Path) -> Result<BeeperData, String> {
     let prefs = read_local_prefs(&db)?;
     let spaces_order = prefs.as_ref().map(read_spaces_order).transpose()?.unwrap_or_default();
     let theme = prefs.as_ref().map(read_theme).transpose()?;
-    Ok(BeeperData { crypto, chats, messages, pin_rank, recent_chat_ids, theme, spaces_order })
+    let ever_labeled = prefs.as_ref().is_some_and(|p| p["has_ever_created_label"] == true);
+    Ok(BeeperData { crypto, chats, messages, pin_rank, recent_chat_ids, theme, spaces_order, ever_labeled })
 }
 
 fn read_local_prefs(db: &Connection) -> Result<Option<Value>, String> {
