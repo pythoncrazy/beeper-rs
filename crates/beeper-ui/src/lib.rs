@@ -496,8 +496,12 @@ pub enum UiMessage {
     NewChat,
     SelectNewChat(u32),
     DeleteNewChat(u32),
-    /// A click on a contact in the New Chat view, by contact ID.
-    PickContact(String),
+    /// A click on a contact in the New Chat view, by contact ID: Desktop shows the networks of the contact.
+    ToggleContact(String),
+    /// The user that `resolve_identifier` found on an account for the contact.
+    ContactNetwork(String, String, Result<Option<serde_json::Value>, String>),
+    /// A click on a network of the expanded contact: the account and its user.
+    PickUser(String, Box<User>),
     /// Desktop's `createChatFromDraft` for the open draft.
     StartChat,
     DmCreated(u32, Result<String, String>),
@@ -817,14 +821,17 @@ fn account_option(st: &BeeperStore, account_id: &str, listed: &[String]) -> Stri
     if listed.iter().filter(|a| network_label(a) == n).count() < 2 {
         return n.into();
     }
-    let user = account_user(st, account_id);
-    let shown = if user.is_empty() { n.to_string() } else { format!("{user} · {n}") };
-    format!("{n} — {shown} (cloud)")
+    format!("{n} — {} (cloud)", account_display_name(st, account_id, listed))
 }
 
-/// The account and the bridge identifier of a contact ID from `contacts`.
-fn contact_target(id: &str) -> (&str, &str) {
-    id.strip_prefix("contact:").and_then(|t| t.split_once(':')).expect("a contact ID")
+/// Desktop's `accountDisplayName`: the network, after the user when another account has the same network.
+fn account_display_name(st: &BeeperStore, account_id: &str, accounts: &[String]) -> String {
+    let n = network_label(account_id);
+    let user = account_user(st, account_id);
+    match accounts.iter().filter(|a| network_label(a) == n).count() > 1 && !user.is_empty() {
+        true => format!("{user} · {n}"),
+        false => n.into(),
+    }
 }
 
 /// Desktop's `createThreadWithPhoneNumber` identifier: the digits and `+` of a phone number.
@@ -2090,6 +2097,7 @@ static FILE_ICONS: std::sync::LazyLock<[svg::Handle; 4]> = std::sync::LazyLock::
 svg_static!(MAT_FORWARD, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="m640-280-57-56 184-184-184-184 57-56 240 240-240 240ZM80-200v-160q0-83 58.5-141.5T280-560h247L383-704l57-56 240 240-240 240-57-56 144-144H280q-50 0-85 35t-35 85v160H80Z"/></svg>"##);
 
 svg_static!(ZOOM_LEVEL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 15" fill="#000"><path d="M20.64 14.343C21.01 14.343 21.303 14.237 21.52 14.026C21.736 13.816 21.845 13.534 21.845 13.183C21.845 12.937 21.798 12.679 21.705 12.409L17.995 2.346C17.837 1.877 17.603 1.53 17.292 1.304C16.982 1.079 16.583 0.966 16.097 0.966C15.177 0.966 14.562 1.423 14.251 2.336L10.498 12.488C10.4122 12.7219 10.3675 12.9689 10.366 13.218C10.366 13.563 10.469 13.838 10.674 14.04C10.879 14.242 11.16 14.343 11.518 14.343C11.863 14.343 12.134 14.261 12.331 14.097C12.527 13.933 12.675 13.666 12.774 13.297L13.636 10.915H18.531L19.393 13.297C19.493 13.666 19.64 13.933 19.836 14.097C20.033 14.261 20.301 14.343 20.641 14.343H20.64ZM17.995 8.999H14.198L16.07 3.479H16.123L17.995 9V8.999ZM7.87 14.325C8.175 14.325 8.42 14.233 8.608 14.048C8.7018 13.9545 8.77527 13.8427 8.8238 13.7195C8.87232 13.5962 8.89486 13.4643 8.89 13.332C8.89 13.209 8.878 13.09 8.854 12.976C8.8266 12.8487 8.78846 12.7239 8.74 12.603L6.14 5.606C5.987 5.19 5.782 4.883 5.524 4.684C5.267 4.484 4.939 4.384 4.54 4.384C4.165 4.384 3.85 4.484 3.595 4.684C3.34 4.883 3.137 5.19 2.985 5.606L0.381 12.603C0.292023 12.8359 0.244637 13.0827 0.241 13.332C0.241 13.642 0.332 13.886 0.517 14.062C0.702 14.237 0.952 14.325 1.269 14.325C1.532 14.325 1.746 14.25 1.91 14.101C2.074 13.951 2.203 13.707 2.297 13.367L2.851 11.741H6.261L6.814 13.385C6.902 13.725 7.031 13.966 7.201 14.11C7.371 14.253 7.594 14.325 7.869 14.325H7.87ZM5.787 10.16H3.31L4.45 6.494H4.626L5.786 10.159L5.787 10.16Z"/></svg>"##);
+svg_static!(MAT_EXPAND_LESS, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="M480-528 296-344l-56-56 240-240 240 240-56 56-184-184Z"/></svg>"##);
 svg_static!(MAT_LINK, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="M440-280H280q-83 0-141.5-58.5T80-480q0-83 58.5-141.5T280-680h160v80H280q-50 0-85 35t-35 85q0 50 35 85t85 35h160v80ZM320-440v-80h320v80H320Zm200 160v-80h160q50 0 85-35t35-85q0-50-35-85t-85-35H520v-80h160q83 0 141.5 58.5T880-480q0 83-58.5 141.5T680-280H520Z"/></svg>"##);
 
 /// Desktop's system icon arrow-back.
@@ -3012,8 +3020,10 @@ pub struct BeeperGuiApp {
     pub new_chats: Vec<NewChat>,
     /// The room of a direct chat that the bridge made, to select when it syncs.
     pub pending_dm: Option<String>,
-    /// The chat accounts whose bridge has the `create_dm` provisioning capability.
-    pub create_dm: HashSet<String>,
+    /// The `resolve_identifier` provisioning capabilities of the chat accounts.
+    pub resolve: HashMap<String, serde_json::Value>,
+    /// The expanded New Chat contact and its networks.
+    pub contact_networks: Option<(String, Networks)>,
     pub new_chat_account: Option<String>,
     pub new_chat_accounts_open: bool,
     pub new_chat_query: String,
@@ -3118,7 +3128,10 @@ impl BeeperGuiApp {
         };
         let pending = notify::Pending::new(&store.read().chats);
         let st = store.read();
-        let create_dm = st.bridge_accounts.iter().filter(|_| st.config.demo).map(|b| b.account_id.clone()).collect();
+        let demo = serde_json::json!({ "create_dm": true, "any_phone": true });
+        let resolve =
+            st.bridge_accounts.iter().filter(|_| st.config.demo).map(|b| (b.account_id.clone(), demo.clone()));
+        let resolve = resolve.collect();
         drop(st);
         let sidebar_width = match std::fs::read_to_string(store.read().data_dir.join("sidebar-width")) {
             Ok(w) => w.parse().expect("a numeric sidebar width"),
@@ -3186,7 +3199,8 @@ impl BeeperGuiApp {
             creating_chat: None,
             new_chats: Vec::new(),
             pending_dm: None,
-            create_dm,
+            resolve,
+            contact_networks: None,
             new_chat_account: None,
             new_chat_accounts_open: false,
             new_chat_query: String::new(),
@@ -5470,29 +5484,71 @@ impl BeeperGuiApp {
                 self.new_chat_query.clear();
                 self.new_chat_expanded = false;
                 (self.new_chat_account, self.new_chat_accounts_open) = (None, false);
+                self.contact_networks = None;
                 self.join_matrix_mode = false;
                 return operation::focus("new-chat-input");
             }
-            UiMessage::PickContact(id) => {
+            UiMessage::ToggleContact(id) => {
+                if self.contact_networks.take().is_some_and(|(c, _)| c == id) {
+                    return Task::none();
+                }
+                let st = self.store.read();
+                let contact = st.contacts.iter().find(|u| u.id == id).expect("a listed contact");
+                let phone = contact.phone_number.clone().expect("contacts have a phone number");
+                let accounts: Vec<String> =
+                    rail_accounts(&st).into_iter().filter(|a| self.can(a, "create_dm")).collect();
+                drop(st);
+                let (mut nets, mut tasks) = (Vec::new(), Vec::new());
+                for a in accounts {
+                    if self.can(&a, "any_phone") {
+                        let user =
+                            User { id: phone_digits(&phone), phone_number: Some(phone.clone()), ..Default::default() };
+                        nets.push((a, Some(Some(user))));
+                    } else if self.can(&a, "lookup_phone") {
+                        let resolve = beeper_core::matrix::resolve_identifier(self.provision(&a), phone.clone());
+                        let (c, acc) = (id.clone(), a.clone());
+                        tasks.push(Task::perform(resolve, move |r| {
+                            UiMessage::ContactNetwork(c.clone(), acc.clone(), r)
+                        }));
+                        nets.push((a, None));
+                    }
+                }
+                self.contact_networks = Some((id, nets));
+                return Task::batch(tasks);
+            }
+            UiMessage::ContactNetwork(id, account, r) => {
+                let Some((_, nets)) = self.contact_networks.as_mut().filter(|(c, _)| *c == id) else {
+                    return Task::none();
+                };
+                let found = r.inspect_err(|e| eprintln!("resolve identifier failed: {e}")).ok().flatten();
+                let user = found.map(|v| User {
+                    id: v["mxid"].as_str().or(v["id"].as_str()).unwrap_or_default().into(),
+                    full_name: v["name"].as_str().map(Into::into),
+                    img_url: v["avatar_url"].as_str().map(Into::into),
+                    ..Default::default()
+                });
+                nets.iter_mut().find(|(a, _)| *a == account).expect("a resolving network").1 = Some(user);
+            }
+            UiMessage::PickUser(account, user) => {
                 let n = self.creating_chat.expect("an open draft");
-                let user = self.store.read().contacts.iter().find(|u| u.id == id).cloned().expect("a listed contact");
                 // Our accounts cannot create groups, so a pick replaces the person, like Desktop without `canCreateGroupChat`.
-                self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft").users = vec![user];
+                self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft").users = vec![(account, *user)];
                 self.new_chat_query.clear();
             }
             UiMessage::StartChat => {
                 let Some(n) = self.creating_chat else { return Task::none() };
                 let draft = self.new_chats.iter().find(|d| d.id == n).expect("the open draft");
-                let Some(user) = draft.users.first().cloned().filter(|_| self.sticky_banner.is_none()) else {
+                let Some((account, user)) = draft.users.first().cloned().filter(|_| self.sticky_banner.is_none())
+                else {
                     return Task::none();
                 };
-                let (account, key) = contact_target(&user.id);
-                let phone = user.phone_number.as_deref().map(phone_digits);
+                // Desktop's `identifierForUser` tries the Matrix ID before the phone number.
+                let phone = user.phone_number.as_deref().map(phone_digits).filter(|_| !user.id.starts_with('@'));
                 let found = {
                     let st = self.store.read();
                     let same = |u: &User| match &phone {
                         Some(p) => u.phone_number.as_deref().map(phone_digits).as_ref() == Some(p),
-                        None => u.id == key,
+                        None => u.id == user.id,
                     };
                     let theirs = |c: &&Chat| c.participants.items.iter().any(|u| u.is_self != Some(true) && same(u));
                     let dms = st.chats.iter().filter(|c| c.account_id == account && c.chat_type == "single");
@@ -5505,7 +5561,7 @@ impl BeeperGuiApp {
                 }
                 self.status_banner = tr("Composing chat...").into();
                 self.sticky_banner = Some(self.status_banner.clone());
-                let create = beeper_core::matrix::create_dm(self.provision(account), phone.unwrap_or(key.into()));
+                let create = beeper_core::matrix::create_dm(self.provision(&account), phone.unwrap_or(user.id));
                 return Task::perform(create, move |r| UiMessage::DmCreated(n, r));
             }
             UiMessage::DmCreated(n, r) => {
@@ -5524,7 +5580,7 @@ impl BeeperGuiApp {
                     Err(e) => {
                         let account = self.new_chats.iter().find(|d| d.id == n).and_then(|d| d.users.first());
                         let st = self.store.read();
-                        let me = account.map(|u| account_user(&st, contact_target(&u.id).0)).unwrap_or_default();
+                        let me = account.map(|(a, _)| account_user(&st, a)).unwrap_or_default();
                         let text = trf("Something went wrong %1$s (%2$s)\n%3$s", &[&"creating thread", &me, &e]);
                         drop(st);
                         self.show(Toast {
@@ -5736,8 +5792,7 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::Capabilities(account, r) => match r {
-                Ok(v) if v["resolve_identifier"]["create_dm"] == true => drop(self.create_dm.insert(account)),
-                Ok(_) => drop(self.create_dm.remove(&account)),
+                Ok(v) => drop(self.resolve.insert(account, v["resolve_identifier"].clone())),
                 Err(e) => eprintln!("provisioning capabilities failed: {e}"),
             },
             UiMessage::NewChatAccount(account) => {
@@ -8497,6 +8552,11 @@ impl BeeperGuiApp {
         self.toast = Some(t);
     }
 
+    /// Whether the bridge of a chat account has a `resolve_identifier` provisioning capability.
+    fn can(&self, account_id: &str, capability: &str) -> bool {
+        self.resolve.get(account_id).is_some_and(|c| c[capability] == true)
+    }
+
     /// The bridge login of a chat account, for the bridge provisioning API.
     fn provision(&self, account_id: &str) -> beeper_core::matrix::Provision {
         let st = self.store.read();
@@ -9050,13 +9110,17 @@ impl BeeperGuiApp {
         let drafts = self.new_chats.iter().map(|d| {
             let n = d.id;
             let dot = (!counts).then(|| container(Space::new()).width(12).into());
-            let names: Vec<&str> = d.users.iter().map(|u| u.full_name.as_deref().unwrap_or(&u.id)).collect();
+            let names: Vec<&str> = d.users.iter().map(|(_, u)| u.full_name.as_deref().unwrap_or(&u.id)).collect();
             let title = if names.is_empty() { tr("New Chat").into() } else { names.join(", ") };
             let title = ell(&title, text_w, title_size, if counts { Weight::Medium } else { Weight::Semibold });
             let rows =
                 [container(title.color(p.strong)).height(16).into(), Space::new().height(16 * lines as u32).into()];
-            let face =
-                self.face(d.users.first().and_then(|u| u.img_url.as_deref()), names.first().unwrap_or(&""), av, 1.25);
+            let face = self.face(
+                d.users.first().and_then(|(_, u)| u.img_url.as_deref()),
+                names.first().unwrap_or(&""),
+                av,
+                1.25,
+            );
             frame(format!("draft:{n}"), dot, face, rows, self.creating_chat == Some(n), UiMessage::SelectNewChat(n))
         });
         let rows = rest.iter().fold(Column::with_children(drafts.map(El::from)), |col, c| {
@@ -11368,7 +11432,7 @@ impl BeeperGuiApp {
         container(body).width(602).style(glow_box(p.card, Color { a: 0.18, ..p.strong }, 18.0, 84.0)).into()
     }
 
-    fn view_new_chat(&self) -> El<'_> {
+    fn view_new_chat<'a>(&'a self) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
         let footer = |label: &'static str, key: &'static str, press: Option<UiMessage>| {
@@ -11381,7 +11445,7 @@ impl BeeperGuiApp {
             row![Space::new().width(Fill), pill].padding(Padding::new(8.0).left(13.0)).align_y(Center)
         };
         let users = self.new_chats.iter().find(|d| Some(d.id) == self.creating_chat).map_or(&[][..], |d| &d.users);
-        let account = users.first().map(|u| contact_target(&u.id).0);
+        let account = users.first().map(|(a, _)| a.as_str());
         let field = |placeholder: &'static str| {
             text_input(placeholder, &self.new_chat_query)
                 .id("new-chat-input")
@@ -11414,7 +11478,8 @@ impl BeeperGuiApp {
             let body = column![head, inputs, Space::new().height(Fill), footer(tr("Join"), "ENTER", None)];
             return container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0)).into();
         }
-        let listed: Vec<String> = rail_accounts(&st).into_iter().filter(|a| self.create_dm.contains(a)).collect();
+        let all = rail_accounts(&st);
+        let listed: Vec<String> = all.iter().filter(|a| self.can(a, "create_dm")).cloned().collect();
         let logo = |a: &str| -> El<'_> { svg(crate::style::brand_svg(brand_key(a))).width(16).height(16).into() };
         let picked = self.new_chat_account.as_deref();
         let label = picked.map_or_else(|| tr("All accounts").into(), |a| account_option(&st, a, &listed));
@@ -11461,7 +11526,7 @@ impl BeeperGuiApp {
             ]
         });
         let shade = Color { a: 0.1, ..p.strong };
-        let pills = users.iter().map(|u| -> El<'_> {
+        let pills = users.iter().map(|(_, u)| -> El<'_> {
             let name = u.full_name.as_deref().unwrap_or(&u.id);
             let pill =
                 row![self.face(u.img_url.as_deref(), name, 16.0, 0.0), semi(name.to_string(), 13.0).color(p.strong)];
@@ -11502,13 +11567,11 @@ impl BeeperGuiApp {
             .on_press(UiMessage::ToggleJoinMatrix);
             col = col.push(container(group_btn).padding([0, 8])).push(container(join_btn).padding([0, 8]));
         }
+        let any = listed.iter().any(|a| self.can(a, "contact_list") || self.can(a, "any_phone"));
         let contacts: Vec<&User> = st
             .contacts
             .iter()
-            .filter(|u| {
-                let a = contact_target(&u.id).0;
-                self.create_dm.contains(a) && account.or(picked).is_none_or(|b| a == b)
-            })
+            .filter(|_| any)
             .filter(|u| u.full_name.as_deref().unwrap_or_default().to_lowercase().contains(&q))
             .collect();
         if !contacts.is_empty() {
@@ -11529,25 +11592,48 @@ impl BeeperGuiApp {
                     );
                     last_cat = Some(cat);
                 }
+                let nets = self.contact_networks.as_ref().filter(|(c, _)| *c == u.id).map(|(_, n)| n);
                 let line = row![
                     self.face(u.img_url.as_deref(), name, 28.0, 0.0),
                     semi(name.to_string(), 13.0).color(p.strong),
                     Space::new().width(Fill),
-                    ic(icon::EXPAND_MORE, 20.0).color(p.strong)
+                    match nets {
+                        Some(_) => tinted(&MAT_EXPAND_LESS, 20.0, p.strong),
+                        None => ic(icon::EXPAND_MORE, 20.0).color(p.strong).into(),
+                    }
                 ]
                 .spacing(8)
                 .align_y(Center);
-                col = col.push(
-                    container(
-                        button(line)
-                            .height(36)
-                            .padding([0, 6])
-                            .width(Fill)
-                            .style(ghost(p, 8.0))
-                            .on_press(UiMessage::PickContact(u.id.clone())),
-                    )
-                    .padding([0, 6]),
-                );
+                let item = |content: El<'a>, press: Option<UiMessage>| -> El<'a> {
+                    let b = button(content).height(36).padding([0, 6]).width(Fill).style(ghost(p, 8.0));
+                    container(b.on_press_maybe(press)).padding([0, 6]).into()
+                };
+                col = col.push(item(line.into(), Some(UiMessage::ToggleContact(u.id.clone()))));
+                let Some(nets) = nets else { continue };
+                if nets.iter().any(|(_, n)| n.is_none()) {
+                    let bone = |w: f32, r: f32| container(Space::new().width(w).height(if r > 8.0 { w } else { 16.0 }));
+                    let skeleton = row![
+                        bone(22.0, 11.0).style(fill_box(p.chip, 11.0)),
+                        bone(100.0, 5.0).style(fill_box(p.chip, 5.0))
+                    ];
+                    col = col.push(item(skeleton.spacing(8).align_y(Center).into(), None));
+                    continue;
+                }
+                let found: Vec<(&String, &User)> = nets
+                    .iter()
+                    .filter_map(|(a, n)| Some((a, n.as_ref()?.as_ref()?)))
+                    .filter(|(a, _)| account.or(picked).is_none_or(|b| *a == b))
+                    .collect();
+                if found.is_empty() {
+                    let none = semi(tr("No networks found"), 13.0).color(p.strong).width(Fill).align_x(Center);
+                    col = col.push(item(none.into(), None));
+                }
+                for (a, user) in found {
+                    let icon = container(svg(crate::style::brand_svg(brand_key(a))).width(20).height(20)).center(28);
+                    let line = row![icon, med(account_display_name(&st, a, &all), 13.0).color(p.strong)];
+                    let pick = UiMessage::PickUser(a.clone(), Box::new(user.clone()));
+                    col = col.push(item(line.spacing(8).align_y(Center).into(), Some(pick)));
+                }
             }
             if q.is_empty() && contacts.len() > 10 {
                 let label = if self.new_chat_expanded { tr("Show less contacts") } else { tr("Show more contacts") };
@@ -13972,10 +14058,14 @@ pub struct LabelDraft {
     pub picker: bool,
 }
 
+/// The accounts of a New Chat contact in rail order, each with the user found on it, or `None` while it resolves.
+pub type Networks = Vec<(String, Option<Option<User>>)>;
+
 /// Desktop's draft chat: a chat in the sidebar that the New Chat view makes, with the people it picked.
 pub struct NewChat {
     pub id: u32,
-    pub users: Vec<User>,
+    /// The picked people, each with the account to reach them on.
+    pub users: Vec<(String, User)>,
 }
 
 /// Desktop's `Toast`, which shows while `status_banner` is its text.

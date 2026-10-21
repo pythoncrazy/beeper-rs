@@ -1303,11 +1303,26 @@ impl Provision {
     }
 }
 
+impl Provision {
+    async fn get(&self, path: &str) -> Result<Option<Value>, String> {
+        let resp = reqwest::Client::new().get(self.url(path)).bearer_auth(&self.access_token).send().await;
+        let resp = resp.map_err(|e| e.to_string())?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let body = resp.error_for_status().map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string())?;
+        serde_json::from_str(&body).map(Some).map_err(|e| e.to_string())
+    }
+}
+
 /// The bridge's provisioning capabilities: `resolve_identifier` and `group_creation`.
 pub async fn capabilities(p: Provision) -> Result<Value, String> {
-    let resp = reqwest::Client::new().get(p.url("capabilities")).bearer_auth(&p.access_token).send().await;
-    let resp = resp.and_then(|r| r.error_for_status()).map_err(|e| e.to_string())?;
-    serde_json::from_str(&resp.text().await.map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    p.get("capabilities").await?.ok_or_else(|| "the bridge has no provisioning capabilities".into())
+}
+
+/// The bridge's `resolve_identifier`: the network user of a phone number, email or username, if there is one.
+pub async fn resolve_identifier(p: Provision, identifier: String) -> Result<Option<Value>, String> {
+    p.get(&format!("resolve_identifier/{}", crate::codec::url_encode(&identifier))).await
 }
 
 pub async fn resolve_media(p: Provision, event_id: String, raw: String) -> Result<(), String> {

@@ -2146,32 +2146,58 @@ fn new_chats_start_like_desktop() {
         st.update_chat(i, |c| c.participants.items[other].phone_number = Some("+1 (555) 010-0".into()));
         (st.chats[i].id.clone(), st.chats[i].account_id.clone())
     };
-    let contact = |id: String, name: &str, phone: &str| -> User {
+    let contact = |id: &str, name: &str, phone: &str| -> User {
         serde_json::from_value(serde_json::json!({ "id": id, "fullName": name, "phoneNumber": phone })).expect("a user")
     };
-    let sam = contact(format!("contact:{account}:tel:+15550100"), "Sam Example", "+15550100");
-    let bo = contact("contact:otherbridge:tel:+15550199".into(), "Bo Example", "+15550199");
+    let sam = contact("contact:a:tel:+15550100", "Sam Example", "+15550100");
+    let bo = contact("contact:b:tel:+15550199", "Bo Example", "+15550199");
     app.store.write().set_contacts(vec![sam.clone(), bo.clone()]);
-    app.create_dm.insert("otherbridge".into());
+    let label = {
+        let st = app.store.read();
+        account_display_name(&st, &account, &rail_accounts(&st))
+    };
     let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
     let _ = app.update(UiMessage::NewChat);
     let n = app.creating_chat.expect("a draft");
-    assert!(found(&app, "Sam Example") && found(&app, "Bo Example"));
+    assert!(found(&app, "Sam Example") && found(&app, "Bo Example") && !found(&app, &label));
     let _ = app.update(UiMessage::StartChat);
     assert_eq!(app.creating_chat, Some(n), "Start chat needs a person");
     let _ = app.update(UiMessage::NewChatQueryChanged("sam".into()));
-    let _ = app.update(UiMessage::PickContact(sam.id.clone()));
+    let _ = app.update(UiMessage::ToggleContact(sam.id.clone()));
+    assert!(found(&app, &label), "an account with any_phone reaches the phone number");
+    let nets = &app.contact_networks.as_ref().expect("the networks").1;
+    let user = nets.iter().find(|(a, _)| *a == account).and_then(|(_, u)| u.clone().flatten()).expect("a user");
+    assert_eq!((user.id.as_str(), user.phone_number.as_deref()), ("+15550100", Some("+15550100")));
+    let _ = app.update(UiMessage::PickUser(account.clone(), Box::new(user.clone())));
     assert!(app.new_chat_query.is_empty() && app.new_chats[0].users.len() == 1);
-    assert!(!found(&app, "Bo Example"), "a pick keeps the contacts of its account");
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Backspace), Modifiers::empty()));
-    assert!(app.new_chats[0].users.is_empty() && found(&app, "Bo Example"), "Backspace removes the pill");
-    let _ = app.update(UiMessage::PickContact(sam.id.clone()));
+    assert!(app.new_chats[0].users.is_empty(), "Backspace removes the pill");
+    let _ = app.update(UiMessage::PickUser(account.clone(), Box::new(user)));
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
     assert!(app.new_chats.is_empty() && app.creating_chat.is_none(), "the draft goes");
     assert_eq!(app.pane.selected_chat_id.as_deref(), Some(dm.as_str()), "the DM with the same phone opens");
+
+    let caps = serde_json::json!({ "resolve_identifier": { "create_dm": true, "lookup_phone": true } });
+    let _ = app.update(UiMessage::Capabilities(account.clone(), Ok(caps)));
     let _ = app.update(UiMessage::NewChat);
     let n = app.creating_chat.expect("a draft");
-    let _ = app.update(UiMessage::PickContact(bo.id.clone()));
+    let _ = app.update(UiMessage::ToggleContact(bo.id.clone()));
+    assert!(!found(&app, &label) && !found(&app, "No networks found"), "the lookup loads");
+    let _ = app.update(UiMessage::ContactNetwork(bo.id.clone(), account.clone(), Ok(None)));
+    assert!(!found(&app, &label) && !found(&app, "No networks found"), "the other accounts reach the phone number");
+    let _ = app.update(UiMessage::NewChatAccount(Some(account.clone())));
+    assert!(found(&app, "No networks found"), "the other accounts are not picked");
+    let _ = app.update(UiMessage::NewChatAccount(None));
+    let _ = app.update(UiMessage::ToggleContact(bo.id.clone()));
+    assert!(app.contact_networks.is_none() && !found(&app, "No networks found"), "a second click collapses");
+    let _ = app.update(UiMessage::ToggleContact(bo.id.clone()));
+    let ghost = serde_json::json!({ "id": "199", "mxid": "@bridge_199:beeper.local", "name": "Bo Example" });
+    let _ = app.update(UiMessage::ContactNetwork(bo.id.clone(), account.clone(), Ok(Some(ghost))));
+    assert!(found(&app, &label));
+    let nets = &app.contact_networks.as_ref().expect("the networks").1;
+    let user = nets.iter().find(|(a, _)| *a == account).and_then(|(_, u)| u.clone().flatten()).expect("a user");
+    assert_eq!(user.id, "@bridge_199:beeper.local", "a resolved user has its Matrix ID");
+    let _ = app.update(UiMessage::PickUser(account, Box::new(user)));
     assert!(found(&app, "Bo Example"), "the draft is titled with the person");
     let _ = app.update(UiMessage::StartChat);
     assert_eq!(app.status_banner, "Composing chat...");
@@ -2193,26 +2219,18 @@ fn new_chats_start_like_desktop() {
 #[test]
 fn new_chat_accounts_filter_like_desktop() {
     let mut app = demo_app("new-chat-accounts");
-    let (tg, wa) = {
-        let st = app.store.read();
-        let of = |net: &str| st.contacts.iter().find(|u| contact_target(&u.id).0.contains(net)).expect(net).clone();
-        (of("telegram"), of("whatsapp"))
-    };
-    let name = |u: &User| u.full_name.clone().expect("a name");
-    let account = contact_target(&tg.id).0.to_string();
+    let account = rail_accounts(&app.store.read()).into_iter().find(|a| a.contains("telegram")).expect("telegram");
     let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
     let _ = app.update(UiMessage::NewChat);
     let _ = app.update(UiMessage::ToggleNewChatAccounts);
     assert!(found(&app, "Telegram") && found(&app, "WhatsApp"));
     let _ = app.update(UiMessage::NewChatAccount(Some(account.clone())));
-    assert!(!app.new_chat_accounts_open && found(&app, &name(&tg)) && !found(&app, &name(&wa)));
+    assert!(!app.new_chat_accounts_open && app.new_chat_account.as_deref() == Some(account.as_str()));
     let _ = app.update(UiMessage::Capabilities(account.clone(), Ok(serde_json::json!({ "resolve_identifier": {} }))));
-    assert!(!found(&app, &name(&tg)), "a bridge without create_dm hides its contacts");
-    let caps = serde_json::json!({ "resolve_identifier": { "create_dm": true } });
-    let _ = app.update(UiMessage::Capabilities(account, Ok(caps)));
-    assert!(found(&app, &name(&tg)));
     let _ = app.update(UiMessage::NewChat);
-    assert!(app.new_chat_account.is_none() && found(&app, &name(&wa)), "a new draft shows all accounts");
+    assert!(app.new_chat_account.is_none(), "a new draft shows all accounts");
+    let _ = app.update(UiMessage::ToggleNewChatAccounts);
+    assert!(!found(&app, "Telegram") && found(&app, "WhatsApp"), "a bridge without create_dm is not listed");
 }
 
 #[test]

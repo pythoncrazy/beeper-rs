@@ -177,7 +177,7 @@ pub struct InfoServer {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct User {
     pub id: String,
     #[serde(rename = "fullName", skip_serializing_if = "Option::is_none")]
