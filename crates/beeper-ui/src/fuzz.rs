@@ -2666,6 +2666,35 @@ fn chat_info_notes_are_local_per_chat() {
 }
 
 #[test]
+fn chat_info_leave_chat_like_desktop() {
+    let mut app = demo_app("chat-info-leave");
+    let id = "!tg_rust:beeper.com".to_string();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let set = |app: &mut BeeperGuiApp, actions: u8| {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&id).expect("the group");
+        st.update_chat(i, |c| c.member_actions = actions);
+    };
+    set(&mut app, ALL_MEMBER_ACTIONS & !MEMBER_LEAVE);
+    assert!(simulator(app.view_info()).find("Leave Chat").is_err(), "the room does not support leaving");
+    set(&mut app, ALL_MEMBER_ACTIONS);
+    let mut sim = simulator(app.view_info());
+    let _ = sim.click("Leave Chat").expect("a Leave Chat link");
+    assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::AskLeaveChat(c)] if *c == id));
+    let _ = app.update(UiMessage::AskLeaveChat(id.clone()));
+    let msgs: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_confirm(ASK_LEAVE_CHAT));
+        assert!(sim.find("Are you sure you want to leave Beeper Rust Core Team?").is_ok());
+        let _ = sim.click("Leave").expect("a Leave button");
+        sim.into_messages().collect()
+    };
+    for m in msgs {
+        let _ = app.update(m);
+    }
+    assert!(app.confirm.is_none() && app.store.read().resolve_chat_idx(&id).is_none(), "the chat is gone");
+}
+
+#[test]
 fn edit_group_like_desktop() {
     let mut app = demo_app("edit-group");
     let id = "!tg_rust:beeper.com".to_string();

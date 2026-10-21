@@ -3,8 +3,8 @@ use crate::import::DesktopCrypto;
 use crate::models::{
     Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder, EditHistoryEntry, Label,
     Message, MessageLink, PollData, PollOption, PollRules, Reaction, User, VerificationSas, VerificationSasEmoji,
-    VerificationState, ALL_FILES, ALL_FORMATS, BEEPER_POLLS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, EDITS, FILE_GIF,
-    FILE_VOICE, FORMATS,
+    VerificationState, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_POLLS, DELETE_FOR_EVERYONE, DELETE_FOR_ME,
+    EDITS, FILE_GIF, FILE_VOICE, FORMATS, MEMBER_ACTIONS,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -311,6 +311,10 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
                 | (u8::from(f["delete_chat_for_everyone"] == true) * DELETE_FOR_EVERYONE)
         }),
         edits: edit_bits(features.as_ref(), &levels, me.as_str()),
+        member_actions: features.as_ref().map_or(ALL_MEMBER_ACTIONS, |f| {
+            let on = |k: &str| f["member_actions"][k].as_i64().is_some_and(|l| l > 0);
+            MEMBER_ACTIONS.iter().enumerate().filter(|(_, k)| on(k)).fold(0, |m, (i, _)| m | 1 << i)
+        }),
         formatting: features.as_ref().map_or(ALL_FORMATS, |f| {
             FORMATS.iter().enumerate().filter(|(_, k)| f["formatting"][**k] == 2).fold(0, |m, (i, _)| m | 1 << i)
         }),
@@ -967,8 +971,8 @@ pub enum Outgoing {
     CreateLabel(Label),
     /// The name, color and icon of a label, with the chats to add (true) or remove (false), like Desktop's `updateLabel`.
     EditLabel(Label, Vec<(String, bool)>),
-    /// Leaves and forgets the room, like Desktop's `deleteLabel`.
-    Leave,
+    /// Leaves the room, and forgets it for Desktop's `deleteLabel`.
+    Leave(bool),
     /// A state event with an empty state key.
     State(&'static str, Value),
     /// Uploads an image with its MIME type and makes it the room avatar, or removes the avatar.
@@ -1260,9 +1264,9 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             let content = if add { serde_json::json!({ "via": ["beeper.com"] }) } else { serde_json::json!({}) };
             room.send_state_event_raw("m.space.child", &chat, content).await.map_err(e)?;
         }
-        Outgoing::Leave => {
+        Outgoing::Leave(forget) => {
             room.leave().await.map_err(e)?;
-            if let Some(left) = client.get_room(room.room_id()) {
+            if let Some(left) = client.get_room(room.room_id()).filter(|_| forget) {
                 let _ = left.forget().await;
             }
         }

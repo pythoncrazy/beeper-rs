@@ -857,6 +857,7 @@ impl BeeperStore {
             img_url: None,
             delete_modes: 0,
             edits: 0,
+            member_actions: 0,
             formatting: ALL_FORMATS,
             files: ALL_FILES,
             polls: Some(BEEPER_POLLS),
@@ -1137,7 +1138,13 @@ impl BeeperStore {
     /// Desktop's `deleteLabel`: leaves the label space.
     pub fn delete_label(&mut self, id: &str) {
         self.remove_label(id);
-        self.queue(id, Outgoing::Leave);
+        self.queue(id, Outgoing::Leave(true));
+    }
+
+    /// Desktop's `leaveChat`: the user leaves the room.
+    pub fn leave_room(&mut self, id: &str) {
+        self.remove_chat(id);
+        self.queue(id, Outgoing::Leave(false));
     }
 
     pub fn remove_label(&mut self, id: &str) {
@@ -1384,6 +1391,7 @@ impl BeeperStore {
             participants: ChatParticipants { has_more: false, total: items.len(), items },
             delete_modes: 0,
             edits: 0,
+            member_actions: 0,
             formatting: ALL_FORMATS,
             files: ALL_FILES,
             polls: Some(BEEPER_POLLS),

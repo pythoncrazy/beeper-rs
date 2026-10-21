@@ -15,6 +15,10 @@ pub const DELETE_FOR_ME: u8 = 1 << 0;
 pub const DELETE_FOR_EVERYONE: u8 = 1 << 1;
 /// Desktop's `canCurrentUserEditTitle`, `canCurrentUserEditAvatar` and `canCurrentUserEditDescription`, by state event.
 pub const EDITS: [&str; 3] = ["m.room.name", "m.room.avatar", "m.room.topic"];
+/// Desktop's `member_actions` room features.
+pub const MEMBER_ACTIONS: [&str; 5] = ["ban", "invite", "kick", "leave", "revoke_invite"];
+pub const ALL_MEMBER_ACTIONS: u8 = 31;
+pub const MEMBER_LEAVE: u8 = 1 << 3;
 pub const ALL_EDITS: u8 = (1 << EDITS.len()) - 1;
 /// The `com.beeper.room_features` file kinds that Desktop checks before it opens a composer picker.
 pub const FILE_GIF: u8 = 1 << 0;
@@ -355,6 +359,9 @@ pub struct Chat {
     /// The `EDITS` that the user can send, one bit each.
     #[serde(default = "all_edits")]
     pub edits: u8,
+    /// The `MEMBER_ACTIONS` that the room supports, one bit each.
+    #[serde(rename = "memberActions", default = "all_member_actions")]
+    pub member_actions: u8,
     /// The `FORMATS` the network fully supports, one bit each.
     #[serde(default = "all_formats")]
     pub formatting: u16,
@@ -370,6 +377,10 @@ pub struct Chat {
 
 fn all_edits() -> u8 {
     ALL_EDITS
+}
+
+fn all_member_actions() -> u8 {
+    ALL_MEMBER_ACTIONS
 }
 
 fn beeper_polls() -> Option<PollRules> {
