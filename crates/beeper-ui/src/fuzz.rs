@@ -1279,3 +1279,29 @@ fn zoom_keys_like_desktop() {
         assert_eq!(app.zoom, zoom, "ctrl {key}");
     }
 }
+
+#[test]
+fn incognito_indicator_like_desktop() {
+    let mut app = demo_app("incognito-indicator");
+    let trial = serde_json::json!({ "incognito": { "started_at": "2020-01-01T00:00:00Z", "expires_at": "2999-01-01T00:00:00Z" } });
+    app.store.write().features.usage = trial;
+    let _ = app.update(UiMessage::SetPref("incognito", 1));
+    let chat = app.store.read().chats.iter().find(|c| c.unread_count > 0).expect("an unread chat").id.clone();
+    let _ = app.update(UiMessage::SelectChat(chat.clone()));
+    let unread = |app: &BeeperGuiApp| app.store.read().chats.iter().find(|c| c.id == chat).unwrap().unread_count;
+    assert!(unread(&app) > 0, "incognito mode keeps the chat unread");
+    {
+        let mut sim = simulator(app.view_main());
+        assert!(sim.find("🫣 Unread until you reply").is_ok() && sim.find("New").is_err());
+        let days = app.store.read().features.trial_days_left().expect("the trial is open");
+        assert!(sim.find(format!("{days} more days of free incognito mode")).is_ok());
+        let _ = sim.click("Mark as Read").expect("the link marks the chat read");
+        for m in sim.into_messages() {
+            let _ = app.update(m);
+        }
+    }
+    assert_eq!(unread(&app), 0);
+    assert_eq!(app.pane.selected_chat_id.as_deref(), Some(chat.as_str()), "the chat stays open");
+    let _ = app.update(UiMessage::SetPref("incognitoIndicator", 0));
+    assert!(!app.store.read().incognito_indicator());
+}

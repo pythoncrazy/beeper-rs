@@ -73,6 +73,15 @@ impl Flags {
         Some((left > 0, left))
     }
 
+    /// Desktop's `trialDaysLeft` of the incognito trial: the days left, rounded up, while the trial is open.
+    pub fn trial_days_left(&self) -> Option<i64> {
+        const DAY: i64 = 86_400_000;
+        let (open, _) = self.free("incognito")?;
+        let ends = self.usage["incognito"]["expires_at"].as_str()?;
+        let left = millis_from_rfc3339(ends).expect("an RFC 3339 trial end") - now_unix_secs() * 1000;
+        open.then(|| ((left + DAY - 1) / DAY).max(1))
+    }
+
     /// Desktop's `features[key]`; `scheduled` is the number of pending scheduled messages.
     pub fn get(&self, key: &str, scheduled: usize) -> Feature {
         let with_free = |f: Feature, name: &str| match self.free(name) {
