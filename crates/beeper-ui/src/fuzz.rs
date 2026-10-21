@@ -1581,12 +1581,28 @@ fn create_label_like_desktop() {
     assert!(app.label_window.is_some(), "a label needs a title");
     edit(&mut app, LabelEdit::Search("zzzz".into()));
     assert!(found(&app, "Clear search to show all selected chats") && !found(&app, "Selected"));
+    edit(&mut app, LabelEdit::Picker(true));
+    assert!(found(
+        &app,
+        "Choose a title, icon, and/or color to customize your label. This is how it will appear throughout the app."
+    ));
+    edit(&mut app, LabelEdit::Color(3));
+    edit(&mut app, LabelEdit::Color(11));
+    edit(&mut app, LabelEdit::Icon(DEFAULT_LABEL_ICON));
+    edit(&mut app, LabelEdit::Icon("3257-5950"));
+    edit(&mut app, LabelEdit::Icon("3257-5950"));
+    let _ = app.update(UiMessage::WindowKey(
+        app.label_window.as_ref().expect("open").id,
+        Key::Named(Named::Escape),
+        keyboard::Modifiers::empty(),
+    ));
+    assert!(app.label_window.as_ref().is_some_and(|d| !d.picker), "Escape closes the picker first");
     edit(&mut app, LabelEdit::Name(" Friends ".into()));
     edit(&mut app, LabelEdit::Create);
     let st = app.store.read();
     let label = st.labels.iter().find(|l| l.name == "Friends").expect("the new label");
     assert_eq!(label.rooms, chats);
-    assert_eq!(label.icon.as_deref(), Some(DEFAULT_LABEL_ICON));
+    assert_eq!((label.color, label.icon.as_deref()), (Some(11), None), "a second pick clears the icon");
     assert!(chats.iter().all(|c| st.chats[st.chat_idx_by_id[c]].label_ids.contains(&label.id)));
     assert_eq!(app.selected_account_filter, Some(format!("label:{}", label.id)), "the new label opens");
 }
