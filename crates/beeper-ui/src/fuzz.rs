@@ -1568,7 +1568,7 @@ fn create_label_like_desktop() {
     let mut app = demo_app("create-label");
     let chats: Vec<String> =
         app.store.read().chats.iter().filter(|c| c.label_ids.is_empty()).map(|c| c.id.clone()).take(2).collect();
-    let _ = app.update(UiMessage::OpenCreateLabel);
+    let _ = app.update(UiMessage::OpenCreateLabel(Vec::new()));
     let edit = |app: &mut BeeperGuiApp, e| drop(app.update(UiMessage::Label(e)));
     let found = |app: &BeeperGuiApp, s: &str| {
         simulator(app.view_create_label(app.label_window.as_ref().expect("the label window"))).find(s).is_ok()
@@ -1664,6 +1664,34 @@ fn label_inbox_rules_like_desktop() {
     assert!(hidden(&app).iter().all(|&(_, h)| h), "None hides all label chats");
     let _ = app.update(UiMessage::SetLabelInbox("lbl_work".into(), None));
     assert_eq!(hidden(&app), shown);
+}
+
+#[test]
+fn label_chats_from_the_chat_menu_like_desktop() {
+    let mut app = demo_app("chat-labels");
+    let chat = "!note_self:beeper.com";
+    let _ = app.update(UiMessage::OpenChatMenu(chat.into()));
+    let _ = app.update(UiMessage::ChatSub(Some(2)));
+    let picks: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_chat_menu(chat, false, 900.0));
+        assert!(sim.find("Label").is_ok() && sim.find("New Label…").is_ok());
+        let _ = sim.click("Work").expect("the Work label");
+        sim.into_messages().collect()
+    };
+    assert!(matches!(&picks[..], [UiMessage::ToggleLabel(l, c, true)] if l == "lbl_work" && c == chat));
+    for m in picks {
+        let _ = app.update(m);
+    }
+    let labels = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.chats[st.chat_idx_by_id[chat]].label_ids.clone()
+    };
+    assert_eq!(labels(&app), ["lbl_work"]);
+    assert!(app.store.read().labels.iter().any(|l| l.id == "lbl_work" && l.rooms.iter().any(|r| r == chat)));
+    let _ = app.update(UiMessage::ToggleLabel("lbl_work".into(), chat.into(), false));
+    assert!(labels(&app).is_empty());
+    let _ = app.update(UiMessage::OpenCreateLabel(vec![chat.into()]));
+    assert_eq!(app.label_window.as_ref().expect("the label window").chats, [chat]);
 }
 
 #[test]

@@ -958,6 +958,8 @@ pub enum Outgoing {
     Leave,
     /// A state event of a label space with an empty state key.
     LabelState(&'static str, Value),
+    /// Adds (true) or removes a chat from a label.
+    LabelChild(String, bool),
     Read(String),
     Flag(ChatFlag, bool),
     Reminder(Option<ChatReminder>),
@@ -1229,6 +1231,10 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             }
         }
         Outgoing::LabelState(kind, content) => drop(room.send_state_event_raw(kind, "", content).await.map_err(e)?),
+        Outgoing::LabelChild(chat, add) => {
+            let content = if add { serde_json::json!({ "via": ["beeper.com"] }) } else { serde_json::json!({}) };
+            room.send_state_event_raw("m.space.child", &chat, content).await.map_err(e)?;
+        }
         Outgoing::Leave => {
             room.leave().await.map_err(e)?;
             if let Some(left) = client.get_room(room.room_id()) {

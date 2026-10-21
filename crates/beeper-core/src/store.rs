@@ -1064,6 +1064,17 @@ impl BeeperStore {
         self.queue(id, Outgoing::LabelState("com.beeper.label.inbox_visibility", content));
     }
 
+    /// Desktop's `addRoomToLabel` and `removeRoomFromLabel`.
+    pub fn set_label_room(&mut self, id: &str, chat: &str, add: bool) {
+        let mut label = self.labels.iter().find(|l| l.id == id).expect("a label").clone();
+        label.rooms.retain(|r| r != chat);
+        if add {
+            label.rooms.push(chat.into());
+        }
+        self.set_label(label);
+        self.queue(id, Outgoing::LabelChild(chat.into(), add));
+    }
+
     /// Desktop's `toggleMuteLabel`.
     pub fn set_label_muted(&mut self, id: &str, muted: bool) {
         let label = self.labels.iter().find(|l| l.id == id).expect("a label").clone();
