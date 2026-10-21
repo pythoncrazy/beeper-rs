@@ -5,7 +5,7 @@ use crate::models::{
     EditHistoryEntry, Label, Message, MessageLink, PollData, PollOption, PollRules, Reaction, Timers, User,
     VerificationSas, VerificationSasEmoji, VerificationState, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_POLLS,
     BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE,
-    FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS,
+    FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -221,7 +221,7 @@ fn can_send(features: Option<&Value>, levels: &Value, me: &str, k: &str) -> bool
 fn manage(levels: &Value, actions: u8, me: &str, id: &str, bridged: bool) -> u8 {
     let power = |id: &str| levels["users"][id].as_i64().or(levels["users_default"].as_i64()).unwrap_or(0);
     let (mine, below) = (power(me), power(id) < power(me));
-    let kick = actions & 1 << 2 != 0 && mine >= levels["kick"].as_i64().unwrap_or(50) && below;
+    let kick = actions & MEMBER_KICK != 0 && mine >= levels["kick"].as_i64().unwrap_or(50) && below;
     let roles =
         mine >= levels["events"]["m.room.power_levels"].as_i64().or(levels["state_default"].as_i64()).unwrap_or(50);
     let role = roles && id != me && (bridged || below);
@@ -1102,8 +1102,8 @@ pub enum Outgoing {
     State(&'static str, Value),
     /// Desktop's `removeParticipant`: a leave membership for the user.
     Kick(String),
-    /// Desktop's `changeParticipantRole` to admin: the admin power level for the user.
-    Admin(String),
+    /// Desktop's `changeParticipantRole`: the admin power level for the user (true), or the default one.
+    Role(String, bool),
     /// Adds (true) or removes a Desktop bookmark of a message in a room. Its chat is the bookmarks room.
     Bookmark {
         room: String,
@@ -1389,10 +1389,13 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             let content = serde_json::json!({ "membership": "leave" });
             drop(room.send_state_event_raw("m.room.member", &user, content).await.map_err(e)?);
         }
-        Outgoing::Admin(user) => {
+        Outgoing::Role(user, admin) => {
             let mut levels = state(&room, "m.room.power_levels").await.unwrap_or_else(|| serde_json::json!({}));
             let native = state(&room, "m.bridge").await.is_none();
-            levels["users"][&user] = if native { 100 } else { 50 }.into();
+            match admin {
+                true => levels["users"][&user] = if native { 100 } else { 50 }.into(),
+                false => drop(levels["users"].as_object_mut().and_then(|u| u.remove(&user))),
+            }
             drop(room.send_state_event_raw("m.room.power_levels", "", levels).await.map_err(e)?);
         }
         Outgoing::Bookmark { room: chat, target, on } => {

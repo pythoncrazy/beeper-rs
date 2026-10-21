@@ -6,7 +6,9 @@ use crate::{
 };
 use crate::{ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_MARK_ALL_READ};
 use beeper_core::matrix::ChatFlag;
-use beeper_core::models::{Chat, Message, ThemeChoice, CHAT_UNREAD};
+use beeper_core::models::{
+    Chat, Message, ThemeChoice, User, CHAT_UNREAD, MANAGE_KICK, MANAGE_ROLE, MEMBER_KICK, MEMBER_LEAVE,
+};
 use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
 use iced::widget::{column, container, mouse_area, row, scrollable, svg, Column, Row, Space};
@@ -27,6 +29,8 @@ pub(crate) struct Command {
     pub render: Option<(String, String)>,
     /// The chat that Desktop draws in place of the title.
     pub chat: Option<String>,
+    /// Desktop's `CommandBarUser` in place of the title.
+    pub user: Option<User>,
     pub msg: Option<UiMessage>,
 }
 
@@ -41,6 +45,7 @@ fn cmd(category: &'static str, title: impl Into<String>, msg: Option<UiMessage>)
         account: None,
         render: None,
         chat: None,
+        user: None,
         msg,
     }
 }
@@ -91,7 +96,13 @@ pub enum SubMenu {
     Folders,
     /// The links of the selected messages, each an address and a title.
     Links(Vec<(String, String)>),
+    /// The members of the open chat to remove (`MEMBERS_KICK`), to make admins or to make regular members.
+    Members(u8),
 }
+
+pub const MEMBERS_KICK: u8 = 0;
+pub const MEMBERS_ADMIN: u8 = 1;
+pub const MEMBERS_DISMISS: u8 = 2;
 
 impl SubMenu {
     pub(crate) fn heading(&self) -> &'static str {
@@ -103,6 +114,9 @@ impl SubMenu {
             SubMenu::History => tr("Recently viewed chats"),
             SubMenu::Folders => tr("Filter chat folders"),
             SubMenu::Links(_) => "",
+            SubMenu::Members(MEMBERS_KICK) => tr("Remove member from group"),
+            SubMenu::Members(MEMBERS_ADMIN) => tr("Make group admin"),
+            SubMenu::Members(_) => tr("Dismiss group admin"),
         }
     }
 
@@ -110,6 +124,7 @@ impl SubMenu {
         match self {
             SubMenu::FilterAccount | SubMenu::Folders | SubMenu::Links(_) => String::new(),
             SubMenu::History => tr("Search chats...").into(),
+            SubMenu::Members(_) => tr("Search users...").into(),
             SubMenu::Remind(_) => {
                 tr("When? (try typing something like %s)").replacen("%s", "\"Monday morning at 9\"", 1)
             }
@@ -235,6 +250,26 @@ impl BeeperGuiApp {
                 let open = |t: &InboxTab| *t == self.active_tab && self.selected_account_filter.is_none();
                 let folders = folders.into_iter().filter(|(t, _)| !open(t));
                 search(folders.map(|(t, name)| cmd("", tr(name), Some(UiMessage::SelectTab(t)))).collect())
+            }
+            SubMenu::Members(kind) => {
+                let Some(c) = self.pane.selected_chat_id.as_deref().and_then(|id| st.resolve_chat_idx(id)) else {
+                    return Vec::new();
+                };
+                let c = &st.chats[c];
+                let listed = c.participants.items.iter().filter(|u| match *kind {
+                    MEMBERS_KICK => u.manage & MANAGE_KICK != 0,
+                    MEMBERS_ADMIN => u.manage & MANAGE_ROLE != 0 && u.is_admin != Some(true),
+                    _ => u.manage & MANAGE_ROLE != 0 && u.is_admin == Some(true),
+                });
+                let listed = listed.map(|u| {
+                    let (chat, user) = (c.id.clone(), u.id.clone());
+                    let msg = match *kind {
+                        MEMBERS_KICK => UiMessage::RemoveMember(chat, user),
+                        k => UiMessage::SetAdmin(chat, user, k == MEMBERS_ADMIN),
+                    };
+                    Command { user: Some(u.clone()), ..cmd("", crate::member_name(u), Some(msg)) }
+                });
+                search(listed.collect())
             }
             SubMenu::Links(links) => links
                 .iter()
@@ -402,8 +437,29 @@ impl BeeperGuiApp {
                 v.push(open.hotkey("Open User Profile"));
             }
         }
-        if chat.is_some() {
+        if let Some(c) = chat {
             let e = "Chat";
+            let members = |kind| Some(UiMessage::OpenSubMenu(SubMenu::Members(kind)));
+            let can = |bit| c.participants.items.iter().any(|u| u.manage & bit != 0);
+            if c.member_actions & MEMBER_KICK != 0 {
+                let kick = cmd(e, tr("Remove member from group"), members(MEMBERS_KICK).filter(|_| can(MANAGE_KICK)));
+                v.push(kick.keys(&["delete", "kick", "participant", "user"]));
+            }
+            if c.member_actions & MEMBER_LEAVE != 0 {
+                let leave = cmd(e, tr("Leave chat"), Some(UiMessage::AskLeaveChat(c.id.clone())));
+                v.push(leave.keys(&["delete", "leave"]));
+            }
+            if c.chat_type == "group" && can(MANAGE_ROLE) {
+                let keys = &["promote", "demote", "convert"];
+                v.push(cmd(e, tr("Make group admin"), members(MEMBERS_ADMIN)).keys(keys));
+                v.push(cmd(e, tr("Dismiss group admin"), members(MEMBERS_DISMISS)).keys(keys));
+            }
+            if crate::can_edit_group(c) && c.chat_type == "group" {
+                let edit = (c.is_request != Some(true)).then(|| UiMessage::OpenEditGroup(c.id.clone()));
+                let keys =
+                    &["change", "edit", "set", "update", "rename", "name", "title", "avatar", "image", "photo", "icon"];
+                v.push(cmd(e, tr("Edit group"), edit).keys(keys));
+            }
             let info = if self.show_right_panel { tr("Hide chat info") } else { tr("Show chat info") };
             v.push(cmd(e, info, Some(UiMessage::ToggleRightPanel)).hotkey("Toggle Chat Info"));
             let file = self.pane.editing_message_id.is_none().then_some(UiMessage::PickFiles);
@@ -559,6 +615,7 @@ impl BeeperGuiApp {
         let alpha = if c.msg.is_some() { 1.0 } else { 0.7 };
         let title: El<'_> = match c.chat.as_deref().and_then(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]) {
             Some(chat) => self.command_chat(p, chat),
+            None if c.user.is_some() => self.command_user(p, c.user.as_ref().expect("a user")),
             None if c.render.is_some() => {
                 let (left, right) = c.render.clone().unwrap_or_default();
                 let words = semi(left, 13.0).line_height(Pixels(16.0)).color(p.strong);
@@ -601,6 +658,16 @@ impl BeeperGuiApp {
             Some(m) => hit.on_press(UiMessage::Commands(vec![UiMessage::CloseModals, m])).into(),
             None => hit.into(),
         }
+    }
+
+    /// Desktop's `CommandBarUser`: the avatar, the name, and the username, phone number and email in small text.
+    fn command_user<'a>(&'a self, p: &Palette, u: &User) -> El<'a> {
+        let name = u.full_name.clone().unwrap_or_else(|| u.id.clone());
+        let small = [crate::handle(u), u.phone_number.as_deref().map(crate::fmt_phone), u.email.clone()];
+        let small = small.into_iter().flatten().map(|s| txt(s, 12.0).color(p.strong.scale_alpha(0.7)).into());
+        let title = row![semi(name.clone(), 13.0).line_height(Pixels(16.0)).color(p.strong)].extend(small);
+        let face = self.face(u.img_url.as_deref(), &name, 28.0, 0.0);
+        row![face, title.spacing(8).align_y(Center)].spacing(8).align_y(Center).into()
     }
 
     /// Desktop's `Ed` chat line: the avatar, the name, the network and the brand icon.

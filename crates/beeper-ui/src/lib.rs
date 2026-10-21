@@ -540,7 +540,8 @@ pub enum UiMessage {
     MessageMember(String, String),
     /// Opens a member confirmation, `ASK_MAKE_ADMIN` or `ASK_REMOVE_MEMBER`, for (chat, user).
     AskMember(u8, String, String),
-    MakeAdmin(String, String),
+    /// Makes a member of a chat an admin (true) or a regular member, as (chat, user, admin).
+    SetAdmin(String, String, bool),
     RemoveMember(String, String),
     AskDeleteChat(String),
     AskLeaveChat(String),
@@ -5980,9 +5981,9 @@ impl BeeperGuiApp {
             UiMessage::AskMember(ask, cid, uid) => {
                 (self.chat_menu, self.confirm, self.delete_target) = (None, Some(ask), Some(format!("{cid} {uid}")));
             }
-            UiMessage::MakeAdmin(cid, uid) => {
+            UiMessage::SetAdmin(cid, uid, admin) => {
                 self.confirm = None;
-                self.store.write().make_admin(&cid, &uid);
+                self.store.write().set_admin(&cid, &uid, admin);
             }
             UiMessage::RemoveMember(cid, uid) => {
                 self.confirm = None;
@@ -13395,7 +13396,7 @@ impl BeeperGuiApp {
                     ASK_MAKE_ADMIN => (
                         tr("Make Group Admin").into(),
                         trf("Are you sure you want to make %s an admin of this group?", &[&name]),
-                        vec![(trx("Confirm", "make group admin confirmation button"), UiMessage::MakeAdmin(cid, uid))],
+                        vec![(trx("Confirm", "make group admin confirmation button"), UiMessage::SetAdmin(cid, uid, true))],
                     ),
                     _ => (
                         tr("Remove from Group").into(),
