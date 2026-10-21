@@ -1422,6 +1422,7 @@ fn preview_message<'s>(st: &'s BeeperStore, c: &'s Chat) -> Option<&'s Message> 
 /// The text of a chat list preview, or a label for its links.
 fn preview_body(m: &Message) -> Option<String> {
     match m.links.len() {
+        _ if m.poll.is_some() => None,
         _ if m.html.is_some() => m.html.as_deref().map(beeper_core::codec::html_text),
         _ if m.text.as_ref().is_some_and(|t| !t.is_empty()) => m.text.clone(),
         _ if !m.attachments.is_empty() => None,
@@ -1445,8 +1446,7 @@ fn bubble_text(st: &BeeperStore, c: &Chat, launched: i64, now: i64) -> Option<St
         return None;
     }
     let m = preview_message(st, c)?;
-    let tag =
-        || media_tag(&m.attachments).map(|(_, l, d)| d.map_or_else(|| l.to_string(), |(d, _)| format!("{l} {d}")));
+    let tag = || message_tag(m).map(|(_, l, d)| d.map_or_else(|| l.to_string(), |(d, _)| format!("{l} {d}")));
     let text = preview_body(m).or_else(tag)?;
     let first = preview_sender(c, m).and(m.sender_name.as_deref()).and_then(|n| n.split(' ').next());
     Some(first.map_or_else(|| text.clone(), |f| format!("{f}: {text}")))
@@ -1479,6 +1479,16 @@ fn pin_bubble<'a>(text: &str, mention: bool, (bg, fg): (Color, Color), cell: f32
 /// Desktop's chat list badge for a message's attachments: a `TAG_ICONS` index, the label, and the detail that
 /// shows when the message has no text, with whether that detail is italic.
 type MediaTag = (usize, &'static str, Option<(String, bool)>);
+
+/// The `TAG_ICONS` index of Desktop's Poll badge, which shows the `poll-options` icon.
+const POLL_TAG: usize = 9;
+
+fn message_tag(m: &Message) -> Option<MediaTag> {
+    match m.poll {
+        Some(_) => Some((POLL_TAG, trx("Poll", "chat list badge for a poll message"), None)),
+        None => media_tag(&m.attachments),
+    }
+}
 
 fn media_tag(attachments: &[Attachment]) -> Option<MediaTag> {
     let [a] = attachments else {
@@ -7845,7 +7855,7 @@ impl BeeperGuiApp {
                 .align_y(Center);
             let mine = m.is_some_and(|m| m.is_sender == Some(true));
             let receipt = mine && reaction.is_none();
-            let media_tag = m.and_then(|m| media_tag(&m.attachments));
+            let media_tag = m.and_then(message_tag);
             let (body, italic) = match m.and_then(preview_body) {
                 Some(t) => (Some(t), false),
                 None => media_tag.as_ref().and_then(|t| t.2.clone()).map_or((None, false), |(d, i)| (Some(d), i)),
@@ -7913,7 +7923,7 @@ impl BeeperGuiApp {
                     if expired {
                         return txt(label, 13.0).color(fg).into();
                     }
-                    let glyph = tinted(&TAG_ICONS[icon], 12.0, fg);
+                    let glyph = tinted(if icon == POLL_TAG { &COMPOSER_ICONS[8] } else { &TAG_ICONS[icon] }, 12.0, fg);
                     let label = med(label, 10.0).line_height(Pixels(12.0)).color(fg);
                     container(row![glyph, container(label).padding([0, 2])].align_y(Center))
                         .padding([1, 2])
