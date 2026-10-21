@@ -2136,6 +2136,21 @@ fn toasts_time_out_like_desktop() {
 }
 
 #[test]
+fn errors_toast_like_desktop() {
+    let mut app = demo_app("error-toast");
+    let failed = UiMessage::MediaResolved("acc".into(), "$ev".into(), "{}".into(), Err("timeout".into()));
+    let _ = app.update(failed);
+    let t = app.shown_toast().expect("an error toast");
+    assert!(t.error && app.status_banner == "Could not load this media.");
+    let [(label, again)] = &t.buttons[..] else { panic!("one button") };
+    assert!(*label == "Try again" && matches!(again, UiMessage::ResolveMedia(a, e, _) if a == "acc" && e == "$ev"));
+    let _ = app.update(again.clone());
+    assert_eq!(app.resolving_media.get("$ev"), Some(&true), "Try again resolves the media again");
+    let _ = app.update(UiMessage::CopyLink("https://example.com".into()));
+    assert!(app.shown_toast().is_none_or(|t| !t.error), "a later toast is not an error");
+}
+
+#[test]
 fn double_clicks_like_desktop() {
     let mut app = demo_app("sidebar-reset");
     let click = [mouse::Event::ButtonPressed(Button::Left), mouse::Event::ButtonReleased(Button::Left)];
