@@ -1637,6 +1637,26 @@ fn edit_and_delete_labels_like_desktop() {
 }
 
 #[test]
+fn sidebar_follows_the_spaces_order_like_desktop() {
+    use beeper_core::models::SpaceOrder;
+    let mut app = demo_app("spaces-order");
+    let default = rail_spaces(&app.store.read());
+    assert_eq!(default[..2], ["inbox", "archive"]);
+    assert!(default.iter().any(|s| s == "label:lbl_work") && !default.iter().any(|s| s == LABEL_NUDGE));
+    let order =
+        [("archive", true), ("label:lbl_work", true), ("inbox", true), ("reminders", false), ("label:lbl_vip", false)];
+    app.store.write().settings.spaces_order = order.map(|(id, visible)| SpaceOrder { id: id.into(), visible }).into();
+    let rail = rail_spaces(&app.store.read());
+    assert_eq!(rail[..3], ["archive", "label:lbl_work", "inbox"]);
+    assert!(!rail.iter().any(|s| s == "reminders" || s == "label:lbl_vip"), "hidden spaces leave the sidebar");
+    assert_eq!(rail.len(), default.len() - 2, "the spaces that are not in the order follow");
+    let _ = app.run_hotkey("Switch First 9 Spaces Modifier", 1);
+    assert_eq!(app.selected_account_filter.as_deref(), Some("label:lbl_work"));
+    let _ = app.run_hotkey("Switch First 9 Spaces Modifier", 0);
+    assert_eq!((app.selected_account_filter.as_deref(), app.active_tab), (None, InboxTab::Archived));
+}
+
+#[test]
 fn sidebar_menus_open_accounts_like_desktop() {
     let mut app = demo_app("rail-menus");
     let account = app.store.read().bridge_accounts[0].account_id.clone();

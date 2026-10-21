@@ -2026,16 +2026,32 @@ fn fmt_phone(s: &str) -> String {
     }
 }
 
-const RAIL_VIEWS: [Option<InboxTab>; 7] = [
-    Some(InboxTab::AllChats),
-    Some(InboxTab::Archived),
-    None,
-    Some(InboxTab::Reminders),
-    Some(InboxTab::SendLater),
-    Some(InboxTab::Requests),
-    Some(InboxTab::LowPriority),
+/// Desktop's custom spaces by their space IDs, in the default order.
+const RAIL_VIEWS: [(&str, Option<InboxTab>); 7] = [
+    ("inbox", Some(InboxTab::AllChats)),
+    ("archive", Some(InboxTab::Archived)),
+    (LABEL_NUDGE, None),
+    ("reminders", Some(InboxTab::Reminders)),
+    ("scheduled", Some(InboxTab::SendLater)),
+    ("requests", Some(InboxTab::Requests)),
+    ("low_priority", Some(InboxTab::LowPriority)),
 ];
+const LABEL_NUDGE: &str = "create-label-nudge";
 
+/// Desktop's `orderedSidebarSpaces`: the spaces of the `spaces_order` setting in its order, without the hidden
+/// ones, then the other spaces in the default order.
+fn rail_spaces(st: &BeeperStore) -> Vec<String> {
+    let nudge = st.feature("labels-v2").show && st.labels.is_empty();
+    let views = RAIL_VIEWS.iter().filter(|v| nudge || v.0 != LABEL_NUDGE).map(|v| v.0.to_string());
+    let mut all: Vec<String> = views.chain(rail_accounts(st)).collect();
+    let order = &st.settings.spaces_order;
+    let at = |id: &str| order.iter().position(|o| o.id == id);
+    all.retain(|id| at(id).is_none_or(|i| order[i].visible));
+    all.sort_by_key(|id| at(id).unwrap_or(usize::MAX));
+    all
+}
+
+/// The account, network and label spaces in the default order.
 fn rail_accounts(st: &BeeperStore) -> Vec<String> {
     let mut accounts: Vec<String> =
         std::iter::once("hungryserv".to_string()).chain(st.accounts.iter().map(|a| a.account_id.clone())).collect();
@@ -3911,12 +3927,13 @@ impl BeeperGuiApp {
             }
             "Send Feedback" => chat.map(|_| UiMessage::OpenQuickLook("Feedback".into(), FEEDBACK.into())),
             "Settings" => Some(UiMessage::OpenSettings(self.active_settings_tab)),
-            "Switch First 9 Spaces Modifier" => match RAIL_VIEWS.get(digit) {
-                Some(view) => view.map(UiMessage::SelectTab),
-                None => rail_accounts(&self.store.read())
-                    .get(digit - RAIL_VIEWS.len())
-                    .map(|a| UiMessage::SelectAccount(Some(a.clone()))),
-            },
+            "Switch First 9 Spaces Modifier" => {
+                let space = rail_spaces(&self.store.read()).into_iter().nth(digit);
+                space.and_then(|id| match RAIL_VIEWS.iter().find(|v| v.0 == id) {
+                    Some(view) => view.1.map(UiMessage::SelectTab),
+                    None => Some(UiMessage::SelectAccount(Some(id))),
+                })
+            }
             "Toggle Incognito Mode" => {
                 let st = self.store.read();
                 let on = st.settings.on("incognito");
@@ -7848,66 +7865,66 @@ impl BeeperGuiApp {
             .style(move |_, _| svg::Style { color: Some(ring_color) });
         let add_space =
             container(stack![ring, container(ic(icon::MAPS_UGC, 24.0).color(p.strong)).center(32)]).center(36);
-        let accounts =
-            rail_accounts(&st).into_iter().enumerate().fold(Column::new().spacing(8).align_x(Center), |c, (i, acc)| {
-                let on = self.selected_account_filter.as_ref() == Some(&acc);
-                let space = network_space(&st, &acc);
-                let owner = space.map_or(acc.as_str(), |n| &n.account_id);
-                let label = rail_label(&st, &acc);
-                let logo: El<'static> = match label {
-                    Some(l) => label_icon(l, 28.0, p.strong),
-                    None => svg(brand_svg(brand_key(owner))).width(28).height(28).into(),
-                };
-                let n = tally(&|c| {
-                    in_rail_entry(&st, &acc, c) && c.flags & CHAT_HIDDEN != 0 && c.flags & CHAT_LOW_PRIORITY == 0
-                });
-                let label = match (label, space) {
-                    (Some(l), _) => l.name.clone(),
-                    (None, Some(n)) => format!("{} ({})", n.name, network_label(owner)),
-                    (None, None) => network_label(owner).to_string(),
-                };
-                let btn =
-                    badge(rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc.clone()))).into(), n, true);
-                let btn: El = mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{acc}"))).into();
-                match self.chat_menu {
-                    Some(_) => c.push(btn),
-                    None => c.push(self.tip(btn, label, hotkey(7 + i), tooltip::Position::Right)),
-                }
+        let account = |i: usize, acc: String| -> El<'_> {
+            let on = self.selected_account_filter.as_ref() == Some(&acc);
+            let space = network_space(&st, &acc);
+            let owner = space.map_or(acc.as_str(), |n| &n.account_id);
+            let label = rail_label(&st, &acc);
+            let logo: El<'static> = match label {
+                Some(l) => label_icon(l, 28.0, p.strong),
+                None => svg(brand_svg(brand_key(owner))).width(28).height(28).into(),
+            };
+            let n = tally(&|c| {
+                in_rail_entry(&st, &acc, c) && c.flags & CHAT_HIDDEN != 0 && c.flags & CHAT_LOW_PRIORITY == 0
             });
+            let label = match (label, space) {
+                (Some(l), _) => l.name.clone(),
+                (None, Some(n)) => format!("{} ({})", n.name, network_label(owner)),
+                (None, None) => network_label(owner).to_string(),
+            };
+            let btn = badge(rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc.clone()))).into(), n, true);
+            let btn: El = mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{acc}"))).into();
+            match self.chat_menu {
+                Some(_) => btn,
+                None => self.tip(btn, label, hotkey(i), tooltip::Position::Right).into(),
+            }
+        };
         let labels = st.feature("labels-v2");
         let add_label = button(add_space)
             .padding(0)
             .style(ghost(p, 12.0))
             .on_press_maybe(labels.on.then(|| UiMessage::OpenCreateLabel(Vec::new())));
-        let top = column![
-            tab(
+        let mut add_label = Some(add_label);
+        let spaces = rail_spaces(&st).into_iter().enumerate().map(|(i, id)| match id.as_str() {
+            "inbox" => tab(
                 "rail-inbox",
-                0,
+                i,
                 g(icon::INBOX),
                 InboxTab::AllChats,
                 tally(&|c| c.flags & (CHAT_HIDDEN | CHAT_LOW_PRIORITY) == 0),
-                true
+                true,
             ),
-            tab("rail-archive", 1, g(icon::ARCHIVE), InboxTab::Archived, 0, false),
-            (labels.show && st.labels.is_empty()).then(|| tip(add_label.into(), tr("Create Label"), vec![])),
-            tab("rail-reminders", 3, g(icon::SCHEDULE), InboxTab::Reminders, 0, false),
-            tab("rail-send-later", 4, g(icon::SCHEDULE_SEND), InboxTab::SendLater, 0, false),
-            tab("rail-requests", 5, g(icon::EMAIL), InboxTab::Requests, requests, false),
-            tab(
+            "archive" => tab("rail-archive", i, g(icon::ARCHIVE), InboxTab::Archived, 0, false),
+            LABEL_NUDGE => tip(add_label.take().expect("one nudge").into(), tr("Create Label"), vec![]).into(),
+            "reminders" => tab("rail-reminders", i, g(icon::SCHEDULE), InboxTab::Reminders, 0, false),
+            "scheduled" => tab("rail-send-later", i, g(icon::SCHEDULE_SEND), InboxTab::SendLater, 0, false),
+            "requests" => tab("rail-requests", i, g(icon::EMAIL), InboxTab::Requests, requests, false),
+            "low_priority" => tab(
                 "rail-low-priority",
-                6,
+                i,
                 g(icon::LOW_PRIORITY_SPACE),
                 InboxTab::LowPriority,
                 tally(&|c| c.flags & CHAT_LOW_PRIORITY != 0),
-                true
+                true,
             ),
-            accounts,
-            rail_btn(g(icon::MORE_HORIZ), false, UiMessage::OpenSettings(SettingsTab::Accounts)),
-        ]
-        .spacing(8)
-        .align_x(Center)
-        .width(68)
-        .padding(Padding::ZERO.top(14.0));
+            _ => account(i, id),
+        });
+        let top = Column::with_children(spaces.collect::<Vec<_>>())
+            .push(rail_btn(g(icon::MORE_HORIZ), false, UiMessage::OpenSettings(SettingsTab::Accounts)))
+            .spacing(8)
+            .align_x(Center)
+            .width(68)
+            .padding(Padding::ZERO.top(14.0));
         let me = st.me();
         let media = UiMessage::OpenMedia;
         let me_btn = button(self.face(me.img_url.as_deref(), me.full_name.as_deref().expect("self name"), 36.0, 0.0))
