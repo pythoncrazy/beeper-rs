@@ -373,6 +373,9 @@ pub enum UiMessage {
     /// Desktop's `EditSidebarBrowserWindow`.
     OpenEditSpaces,
     Spaces(SpacesEdit),
+    /// Desktop's `editGroup`: the Edit Group window of a chat.
+    OpenEditGroup(String),
+    Group(GroupEdit),
     /// Opens the New label window with these chats picked.
     OpenCreateLabel(Vec<String>),
     /// Desktop's `toggleLabel` for one chat.
@@ -1664,6 +1667,11 @@ fn chat_avatar_urls(chat: &Chat) -> Vec<&str> {
         Some(u) => vec![u],
         None => faces(chat).0.into_iter().filter_map(|u| u.img_url.as_deref()).collect(),
     }
+}
+
+/// Desktop's `canEditGroup`: a group whose name, avatar or description the user can change.
+fn can_edit_group(c: &Chat) -> bool {
+    c.chat_type == "group" && c.edits != 0
 }
 
 fn network_bot(chat: &Chat, user_id: &str) -> bool {
@@ -3194,6 +3202,7 @@ pub struct BeeperGuiApp {
     pub poll_windows: Vec<PollDraft>,
     pub label_window: Option<LabelDraft>,
     pub spaces_window: Option<SpacesDraft>,
+    pub group_window: Option<GroupDraft>,
     /// The poll votes windows with their chats and poll messages.
     pub vote_windows: Vec<(window::Id, String, String)>,
     /// The window that `BEEPER_SCREENSHOT_EXIT` or `BEEPER_SCREENSHOT_SETTINGS` captures after its next frame.
@@ -3361,6 +3370,7 @@ impl BeeperGuiApp {
             theme_windows: Vec::new(),
             poll_windows: Vec::new(),
             label_window: None,
+            group_window: None,
             spaces_window: None,
             vote_windows: Vec::new(),
             shot: None,
@@ -3692,6 +3702,7 @@ impl BeeperGuiApp {
                 return tr(if d.label.is_some() { "Edit label" } else { "New label" }).into();
             }
             _ if self.spaces_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Spaces"),
+            _ if self.group_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Group"),
             _ if let Some((_, _, mid)) = self.vote_windows.iter().find(|w| w.0 == id) => {
                 let st = self.store.read();
                 let total =
@@ -4974,6 +4985,20 @@ impl BeeperGuiApp {
                 return open;
             }
             UiMessage::Spaces(e) => return self.spaces_edit(e),
+            UiMessage::OpenEditGroup(chat) => {
+                self.chat_menu = None;
+                if let Some(d) = &self.group_window {
+                    return window::gain_focus(d.id);
+                }
+                let (id, open) = self.open_child(GROUP_SIZE);
+                let st = self.store.read();
+                let c = &st.chats[st.resolve_chat_idx(&chat).expect("an edited group")];
+                let (title, topic) = (c.title.clone(), composer_with(c.description.as_deref().unwrap_or_default()));
+                drop(st);
+                self.group_window = Some(GroupDraft { id, chat, title, topic, photo: None, hover: false });
+                return open;
+            }
+            UiMessage::Group(e) => return self.group_edit(e),
             UiMessage::ToggleLabel(label, chat, add) => {
                 self.chat_menu = None;
                 let label = self.label_id(label);
@@ -5421,6 +5446,7 @@ impl BeeperGuiApp {
                 if self.theme_windows.iter().any(|w| w.0 == id)
                     || self.vote_windows.iter().any(|w| w.0 == id)
                     || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
+                    || self.group_window.as_ref().is_some_and(|d| d.id == id)
                 {
                     return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
                 }
@@ -6888,6 +6914,7 @@ impl BeeperGuiApp {
                     self.confirm = None;
                 }
                 self.spaces_window = self.spaces_window.take().filter(|d| d.id != id);
+                self.group_window = self.group_window.take().filter(|d| d.id != id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
                 } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
@@ -7323,6 +7350,8 @@ impl BeeperGuiApp {
             self.view_create_label(d)
         } else if let Some(d) = self.spaces_window.as_ref().filter(|d| d.id == id) {
             self.view_edit_spaces(d)
+        } else if let Some(d) = self.group_window.as_ref().filter(|d| d.id == id) {
+            self.view_edit_group(d)
         } else if let Some((_, chat, mid)) = self.vote_windows.iter().find(|w| w.0 == id) {
             self.view_poll_votes(chat, mid)
         } else {
@@ -7433,6 +7462,11 @@ impl BeeperGuiApp {
                                 MENU_ITEM
                             }
                             _ => 0.0,
+                        }
+                        + if st.resolve_chat_idx(cid).is_some_and(|i| can_edit_group(&st.chats[i])) {
+                            MENU_ITEM
+                        } else {
+                            0.0
                         },
                 )
             };
@@ -8598,6 +8632,10 @@ impl BeeperGuiApp {
                         "Ctrl P",
                         pin
                     ))
+                    .push(can_edit_group(c).then(|| {
+                        let open = UiMessage::OpenEditGroup(c.id.clone());
+                        item(tr("Edit Group..."), "", (!on(c.is_request)).then_some(open))
+                    }))
             ),
             open_sub(0, tr("Copy")),
             close_sub(column![
@@ -8669,6 +8707,7 @@ impl BeeperGuiApp {
                 1 if labels => 8.0 * MENU_ITEM + 22.0,
                 _ => 7.0 * MENU_ITEM + 22.0,
             } + if reason.is_some() { MENU_ITEM } else { 0.0 }
+                + if can_edit_group(c) { MENU_ITEM } else { 0.0 }
                 + self.selection_rows(&st);
             let top = top.min(room - h).max(0.0);
             let body = container(Column::with_children(items).padding([4, 0])).width(SUB_MENU_W[usize::from(i)]);
@@ -13553,6 +13592,148 @@ impl BeeperGuiApp {
         }
     }
 
+    fn group_edit(&mut self, edit: GroupEdit) -> Task<UiMessage> {
+        match edit {
+            GroupEdit::Pick => {
+                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), true);
+                return Task::perform(pick, |r| UiMessage::Group(GroupEdit::Picked(r)));
+            }
+            GroupEdit::Picked(Ok(paths)) => {
+                let Some(path) = paths.into_iter().next() else { return Task::none() };
+                let url = format!("file://{}", path.display());
+                let load = async move {
+                    tokio::task::spawn_blocking(move || portal::load_file(&path)).await.expect("file load thread")
+                };
+                return Task::perform(load, move |r| UiMessage::Group(GroupEdit::Loaded(url.clone(), r)));
+            }
+            GroupEdit::Picked(Err(e)) | GroupEdit::Loaded(_, Err(e)) => self.fail(Toast::new(e)),
+            GroupEdit::Loaded(url, Ok(m)) => match (round_avatar(&m.bytes), self.group_window.as_mut()) {
+                (Ok(h), Some(d)) => d.photo = Some(Some((url, m, h))),
+                (Ok(_), None) => {}
+                (Err(_), _) => self.fail(Toast::new(tr("Failed to upload image").into())),
+            },
+            GroupEdit::Cancel => {
+                return window::close(self.group_window.as_ref().expect("the Edit Group window is open").id)
+            }
+            GroupEdit::Save => {
+                let d = self.group_window.as_mut().expect("the Edit Group window is open");
+                let (title, topic, photo) = d.changes(&self.store.read());
+                if title.is_none() && topic.is_none() && !photo {
+                    return Task::none();
+                }
+                let (id, chat) = (d.id, d.chat.clone());
+                let photo = d.photo.take().filter(|_| photo);
+                if let Some(Some((url, _, h))) = &photo {
+                    self.avatars.insert(url.clone(), Some(h.clone()));
+                }
+                let photo = photo.map(|p| p.map(|(url, m, _)| (url, m.bytes, m.mime)));
+                self.store.write().update_group(&chat, title, topic, photo);
+                return window::close(id);
+            }
+            edit => {
+                let d = self.group_window.as_mut().expect("the Edit Group window is open");
+                match edit {
+                    GroupEdit::Title(t) => d.title = t,
+                    GroupEdit::Topic(a) => d.topic.perform(a),
+                    GroupEdit::Remove => d.photo = Some(None),
+                    GroupEdit::Hover(on) => d.hover = on,
+                    _ => unreachable!("handled above"),
+                }
+            }
+        }
+        Task::none()
+    }
+
+    fn view_edit_group<'a>(&'a self, d: &'a GroupDraft) -> El<'a> {
+        let p = &self.pal;
+        let st = self.store.read();
+        let c = &st.chats[st.resolve_chat_idx(&d.chat).expect("an edited group")];
+        let can = |i: usize| c.edits & (1 << i) != 0;
+        let edit = UiMessage::Group;
+        let face = match &d.photo {
+            Some(Some((_, _, h))) => image(h.clone()).width(64).height(64).into(),
+            Some(None) => self.chat_avatar(&Chat { img_url: None, ..c.clone() }, 64.0, 0.0),
+            None => self.chat_avatar(c, 64.0, 0.0),
+        };
+        let shown = d.photo.as_ref().map_or(c.img_url.is_some(), Option::is_some);
+        let face: El<'a> = match can(1) {
+            true => {
+                let veil = d.hover.then(|| {
+                    let label = txt(trx("Edit", "group avatar edit action"), 13.0).line_height(Pixels(16.0));
+                    container(label.color(Color::WHITE)).center(64).style(fill_box(p.strong.scale_alpha(0.7), 32.0))
+                });
+                mouse_area(stack![face].push(veil))
+                    .on_enter(edit(GroupEdit::Hover(true)))
+                    .on_exit(edit(GroupEdit::Hover(false)))
+                    .on_press(edit(GroupEdit::Pick))
+                    .interaction(mouse::Interaction::Pointer)
+                    .into()
+            }
+            false => face,
+        };
+        let remove = (can(1) && shown).then(|| {
+            let label = txt(tr("Remove Photo"), 11.0).line_height(Pixels(14.0)).color(p.accent);
+            container(
+                button(label)
+                    .padding(0)
+                    .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                    .on_press(edit(GroupEdit::Remove)),
+            )
+            .center_x(Fill)
+        });
+        let title = text_input(tr("Group Title"), &d.title)
+            .on_input_maybe(can(0).then_some(move |t| edit(GroupEdit::Title(t))))
+            .font(fw(Weight::Semibold))
+            .size(15)
+            .line_height(Pixels(20.0))
+            .padding([8, 11])
+            .style(input_style(p.chip, p.strong, p.sub, p.accent, 10.0));
+        let topic = text_editor(&d.topic)
+            .placeholder(tr("Group Description"))
+            .size(13)
+            .line_height(Pixels(16.0))
+            .padding([8, 11])
+            .height(120)
+            .style(move |_: &Theme, _| text_editor::Style {
+                background: p.chip.into(),
+                border: border::rounded(10),
+                placeholder: p.sub,
+                value: p.strong,
+                selection: p.accent.scale_alpha(0.3),
+            });
+        let topic = if can(2) { topic.on_action(move |a| edit(GroupEdit::Topic(a))) } else { topic };
+        let note = tr("The group description is visible to members of this group and people invited to this group.");
+        let note = txt(note, 10.0).line_height(Pixels(12.0)).color(p.sub);
+        let (t, s, ph) = d.changes(&st);
+        let ready = t.is_some() || s.is_some() || ph;
+        let brand = |label: &'static str, primary: bool, msg: Option<UiMessage>| -> El<'a> {
+            let fg = match (msg.is_some(), primary) {
+                (false, _) => p.on_secondary,
+                (true, true) => Color::WHITE,
+                (true, false) => p.strong,
+            };
+            let gradient = primary && msg.is_some();
+            button(container(med(label, 14.0).line_height(Pixels(20.0)).color(fg)).center_x(Fill))
+                .width(Fill)
+                .padding([10, 12])
+                .style(move |_: &Theme, _| button::Style {
+                    background: Some(if gradient { login::brand_gradient() } else { p.chip.into() }),
+                    border: border::rounded(9999),
+                    ..Default::default()
+                })
+                .on_press_maybe(msg)
+                .into()
+        };
+        let buttons = row![
+            brand(trx("Cancel", "edit group modal button"), false, Some(edit(GroupEdit::Cancel))),
+            brand(trx("Save", "edit group modal button"), true, ready.then_some(edit(GroupEdit::Save))),
+        ]
+        .spacing(8);
+        let body = column![container(face).center_x(Fill)].push(remove).push(title).push(topic).push(note).spacing(8);
+        let body = column![body, Space::new().height(Fill), buttons];
+        container(body).padding(16).width(Fill).height(Fill).style(fill_box(p.card, 0.0)).into()
+    }
+
     /// Whether the open Delete Label confirm shows in the Edit Spaces window, like Desktop's modal in that window.
     fn spaces_asking(&self) -> bool {
         self.confirm == Some(ASK_DELETE_LABEL) && self.spaces_window.as_ref().is_some_and(|d| d.asking)
@@ -14505,6 +14686,48 @@ pub enum SpacesEdit {
     /// A gear menu item.
     Act(Box<UiMessage>),
     Scrolled(bool),
+}
+
+/// Desktop's Edit Group window, the `EditGroupModal` state.
+pub struct GroupDraft {
+    pub id: window::Id,
+    pub chat: String,
+    pub title: String,
+    pub topic: text_editor::Content,
+    /// The new avatar: `Some(None)` removes it, and `Some(Some(_))` is a picked image with its file URL.
+    pub photo: Option<Option<(String, PendingMedia, image::Handle)>>,
+    /// The pointer is on the avatar, so it shows "Edit".
+    pub hover: bool,
+}
+
+impl GroupDraft {
+    /// The new title and description, and whether the avatar changes.
+    fn changes(&self, st: &BeeperStore) -> (Option<String>, Option<String>, bool) {
+        let c = &st.chats[st.resolve_chat_idx(&self.chat).expect("an edited group")];
+        let topic = self.topic.text();
+        let photo = self.photo.as_ref().is_some_and(|p| p.is_some() || c.img_url.is_some());
+        (
+            (self.title != c.title).then(|| self.title.clone()),
+            (topic != c.description.as_deref().unwrap_or_default()).then_some(topic),
+            photo,
+        )
+    }
+}
+
+/// The size of Desktop's Edit Group window.
+const GROUP_SIZE: Size = Size::new(313.0, 447.0);
+
+#[derive(Clone)]
+pub enum GroupEdit {
+    Title(String),
+    Topic(text_editor::Action),
+    Pick,
+    Picked(Result<Vec<std::path::PathBuf>, String>),
+    Loaded(String, Result<PendingMedia, String>),
+    Remove,
+    Hover(bool),
+    Cancel,
+    Save,
 }
 
 impl LabelDraft {

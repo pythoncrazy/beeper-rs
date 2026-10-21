@@ -192,7 +192,7 @@ fn card_style(_: &Theme) -> container::Style {
     }
 }
 
-fn brand_gradient() -> Background {
+pub(crate) fn brand_gradient() -> Background {
     let g = Linear::new(Degrees(190.1))
         .add_stop(0.0, Color::from_rgb8(99, 83, 242))
         .add_stop(1.0, Color::from_rgb8(20, 82, 248));

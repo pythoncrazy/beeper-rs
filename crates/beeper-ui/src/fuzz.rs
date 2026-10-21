@@ -2538,3 +2538,53 @@ fn reply_privately_like_desktop() {
     assert_eq!(app.pane.selected_chat_id.as_deref(), Some(room.as_str()));
     assert!(app.pane.composer.text().starts_with(&quote), "the composer quotes the message");
 }
+
+#[test]
+fn edit_group_like_desktop() {
+    let mut app = demo_app("edit-group");
+    let id = "!tg_rust:beeper.com".to_string();
+    let set_edits = |app: &mut BeeperGuiApp, edits: u8| {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&id).expect("the group");
+        st.update_chat(i, |c| c.edits = edits);
+    };
+    let in_menu = |app: &mut BeeperGuiApp| {
+        let _ = app.update(UiMessage::OpenChatMenu(id.clone()));
+        simulator(app.view_main()).find("Edit Group...").is_ok()
+    };
+    set_edits(&mut app, 0);
+    assert!(!in_menu(&mut app), "a group without edits has no item");
+    set_edits(&mut app, ALL_EDITS);
+    assert!(in_menu(&mut app));
+    let _ = app.update(UiMessage::OpenEditGroup(id.clone()));
+    let d = app.group_window.as_ref().expect("the window opens");
+    assert!(app.chat_menu.is_none() && d.title == "Beeper Rust Core Team");
+    assert_eq!(d.changes(&app.store.read()), (None, None, false), "nothing changed yet");
+    fn view(app: &BeeperGuiApp) -> Simulator<'_, UiMessage> {
+        simulator(app.view_edit_group(app.group_window.as_ref().expect("open")))
+    }
+    assert!(view(&app).find("Remove Photo").is_err(), "no photo to remove");
+    let _ = app.update(UiMessage::Group(GroupEdit::Title("Core".into())));
+    app.group_window.as_mut().expect("open").topic = text_editor::Content::with_text("Our team");
+    let _ = app.update(UiMessage::Group(GroupEdit::Save));
+    {
+        let st = app.store.read();
+        let c = &st.chats[st.resolve_chat_idx(&id).expect("the group")];
+        assert_eq!((c.title.as_str(), c.description.as_deref()), ("Core", Some("Our team")));
+    }
+    let _ = app.update(UiMessage::WindowClosed(app.group_window.as_ref().expect("open").id));
+    assert!(app.group_window.is_none());
+    {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&id).expect("the group");
+        st.update_chat(i, |c| c.img_url = Some("mxc://x/y".into()));
+    }
+    set_edits(&mut app, 1 << 1);
+    let _ = app.update(UiMessage::OpenEditGroup(id.clone()));
+    let _ = view(&app).click("Remove Photo").expect("an avatar editor can remove the photo");
+    let _ = app.update(UiMessage::Group(GroupEdit::Remove));
+    assert_eq!(app.group_window.as_ref().expect("open").changes(&app.store.read()), (None, None, true));
+    let _ = app.update(UiMessage::Group(GroupEdit::Save));
+    let st = app.store.read();
+    assert_eq!(st.chats[st.resolve_chat_idx(&id).expect("the group")].img_url, None, "Remove Photo clears the avatar");
+}
