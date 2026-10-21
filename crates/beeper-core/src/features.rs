@@ -34,7 +34,7 @@ impl Flags {
         let flags = serde_json::json!({
             "features": { "*": {
                 "undo-send": false, "stealth-mode": false, "remind-later": false, "scheduled-message": true,
-                "voice-transcription": false, "ai-in-beeper-chats": false,
+                "voice-transcription": false, "ai-in-beeper-chats": false, "enable-polls": true,
             } },
             "freebies": [
                 { "name": "voice-transcription", "type": "count", "default_limit": 5 },
@@ -92,7 +92,7 @@ impl Flags {
             "stealth-mode" => with_free(self.flag(key), "incognito"),
             "remind-later" | "voice-transcription" => with_free(self.flag(key), key),
             "talk-to-type" => self.flag("voice-transcription"),
-            "undo-send" | "ai-in-beeper-chats" => self.flag(key),
+            "undo-send" | "ai-in-beeper-chats" | "enable-polls" => self.flag(key),
             "scheduled-message" => match (self.flag(key), self.free(key)) {
                 (f, Some((open, left))) if !f.on => Feature { show: true, on: open && (scheduled as i64) < left, ..f },
                 (f, _) => f,
@@ -128,6 +128,8 @@ mod tests {
         assert_eq!(f.get("scheduled-message", 2), lock, "each pending message takes a free use");
         assert_eq!(f.get("talk-to-type", 0), open);
         assert!(!f.get("ai-in-beeper-chats", 0).show, "a missing flag hides the feature");
+        assert!(!f.get("enable-polls", 0).on, "a missing flag hides polls");
+        assert!(Flags::free_plan().get("enable-polls", 0).on);
         f.subscribed = true;
         assert_eq!(f.get("scheduled-message", 0), lock, "subscribers get no free uses");
         f.usage =

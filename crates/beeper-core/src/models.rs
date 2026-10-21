@@ -332,9 +332,33 @@ pub struct Chat {
     /// The `FILE_` kinds the network accepts.
     #[serde(default = "all_files")]
     pub files: u8,
+    /// The poll features of the network, or `None` when it has no polls.
+    #[serde(default = "beeper_polls")]
+    pub polls: Option<PollRules>,
     #[serde(skip)]
     pub flags: u16,
 }
+
+fn beeper_polls() -> Option<PollRules> {
+    Some(BEEPER_POLLS)
+}
+
+/// The poll features of `com.beeper.room_features`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PollRules {
+    /// `poll_hidden_votes`: a poll can hide its results until it ends.
+    pub hidden_votes: bool,
+    /// `poll_duplicate_options`: two options can have the same text.
+    pub duplicates: bool,
+    /// `poll_max_options`, or 0 for no limit.
+    pub max_options: u16,
+    /// `poll_option_max_length`.
+    pub max_length: u16,
+}
+
+/// Desktop's poll features of a Beeper room.
+pub const BEEPER_POLLS: PollRules =
+    PollRules { hidden_votes: true, duplicates: true, max_options: 20, max_length: 200 };
 
 fn all_formats() -> u16 {
     ALL_FORMATS
@@ -422,6 +446,7 @@ pub struct Reaction {
 pub struct PollOption {
     pub id: String,
     pub label: String,
+    /// The voters of this option, from the latest response of each voter.
     pub voter_ids: Vec<String>,
 }
 
@@ -431,11 +456,44 @@ pub struct LinkPreview {
     pub summary: String,
 }
 
+/// Desktop's `extra.poll`, from an MSC3381 poll start event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PollData {
     pub question: String,
     pub options: Vec<PollOption>,
-    pub allow_multiple: bool,
+    /// 1 for a single answer.
+    pub max_selections: u32,
+    /// Desktop's `kind: "undisclosed"`: the results show when the poll ends.
+    #[serde(default)]
+    pub undisclosed: bool,
+    /// Desktop's `isFinal`: a poll end event refers to the poll.
+    #[serde(default)]
+    pub ended: bool,
+    /// The text of the poll start event, which Desktop shows when the chat cannot vote.
+    #[serde(default)]
+    pub fallback: String,
+}
+
+impl PollData {
+    /// Desktop's poll vote count: the number of different voters.
+    pub fn voters(&self) -> usize {
+        self.options.iter().flat_map(|o| &o.voter_ids).collect::<std::collections::HashSet<_>>().len()
+    }
+
+    /// The options that `user` voted for.
+    pub fn picks(&self, user: &str) -> Vec<String> {
+        self.options.iter().filter(|o| o.voter_ids.iter().any(|v| v == user)).map(|o| o.id.clone()).collect()
+    }
+
+    /// Desktop's `Oz`: the latest response of `user` replaces the earlier one.
+    pub fn respond(&mut self, user: &str, answers: &[String]) {
+        for o in &mut self.options {
+            o.voter_ids.retain(|v| v != user);
+            if answers.contains(&o.id) {
+                o.voter_ids.push(user.into());
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
