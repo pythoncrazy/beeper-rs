@@ -2225,6 +2225,30 @@ fn disappearing_timer_changes_in_the_timeline_like_desktop() {
 }
 
 #[test]
+fn chat_info_media_like_desktop() {
+    let mut app = demo_app("chat-info-media");
+    let _ = app.update(UiMessage::SelectChat("!sg_security:beeper.com".into()));
+    assert!(tall(app.view_info()).find("Media").is_err());
+    let _ = app.update(UiMessage::SelectChat("!im_jordan:beeper.com".into()));
+    {
+        let mut sim = tall(app.view_info());
+        assert!(sim.find("Media").is_ok() && sim.find("Show all").is_err() && sim.find("Images").is_err());
+    }
+    let _ = app.update(UiMessage::InfoMedia(Some(0)));
+    assert!(tall(app.view_info()).find("Nothing here").is_err());
+    let msgs: Vec<UiMessage> = {
+        let mut sim = tall(app.view_info());
+        let _ = sim.click("Audio").expect("the Audio tab");
+        sim.into_messages().collect()
+    };
+    assert!(matches!(&msgs[..], [UiMessage::InfoMedia(Some(2))]));
+    let _ = app.update(UiMessage::InfoMedia(Some(2)));
+    assert!(tall(app.view_info()).find("Nothing here").is_ok());
+    let _ = app.update(UiMessage::SelectChat("!im_jordan:beeper.com".into()));
+    assert!(app.info_media.is_none());
+}
+
+#[test]
 fn chat_info_bookmarks_like_desktop() {
     let mut app = demo_app("chat-info-bookmarks");
     let id = "!tg_rust:beeper.com".to_string();

@@ -381,6 +381,7 @@ pub enum UiMessage {
     InfoMore,
     InfoAll,
     InfoBookmarks,
+    InfoMedia(Option<usize>),
     InfoQuery(String),
     InfoNote(text_editor::Action),
     /// Desktop's disappearing messages select: a chat and a timer in ms, or 0 for Off.
@@ -3310,6 +3311,8 @@ pub struct BeeperGuiApp {
     pub info_all: bool,
     /// Whether the Chat Info Bookmarks show all bookmarks, not only Desktop's 15.
     pub info_bookmarks: bool,
+    /// The Media tab of the expanded Chat Info Media section, or None while it shows only the newest.
+    pub info_media: Option<usize>,
     pub info_query: String,
     /// The Notes of the open chat in the Chat Info panel.
     pub info_note: text_editor::Content,
@@ -3485,6 +3488,7 @@ impl BeeperGuiApp {
             info_more: false,
             info_all: false,
             info_bookmarks: false,
+            info_media: None,
             info_query: String::new(),
             info_note: text_editor::Content::new(),
             spaces_window: None,
@@ -3933,6 +3937,7 @@ impl BeeperGuiApp {
         self.pane.selected_msgs.clear();
         self.pane.msg_anchor = None;
         (self.info_desc, self.info_more, self.info_all, self.info_bookmarks) = (None, false, false, false);
+        self.info_media = None;
         self.info_query.clear();
         self.info_note = text_editor::Content::with_text(chat.note.as_deref().unwrap_or_default());
         let pending = st.scheduled.iter().any(|s| s.chat_id == chat.id && !s.canceled);
@@ -5120,6 +5125,7 @@ impl BeeperGuiApp {
             UiMessage::InfoMore => self.info_more ^= true,
             UiMessage::InfoAll => self.info_all ^= true,
             UiMessage::InfoBookmarks => self.info_bookmarks ^= true,
+            UiMessage::InfoMedia(tab) => self.info_media = tab,
             UiMessage::InfoNote(action) => {
                 let edit = action.is_edit();
                 self.info_note.perform(action);
@@ -11135,6 +11141,7 @@ impl BeeperGuiApp {
             container(toolbar).center_y(46),
         ];
         let members = (chat.chat_type == "group").then(|| self.view_members(chat));
+        let media = self.view_info_media(&st, chat);
         let bookmarks = self.view_bookmarks(&st, chat);
         let feature = st.feature("labels-v2");
         let labels = feature.show.then(|| {
@@ -11238,6 +11245,7 @@ impl BeeperGuiApp {
         let body = column![header]
             .push(desc)
             .push(members)
+            .push(media)
             .push(bookmarks)
             .push(labels)
             .push(timers)
@@ -11283,6 +11291,125 @@ impl BeeperGuiApp {
         let line = row![small(text, p.on_secondary).align_x(Center)].push(change).align_y(Center);
         let line = row![rule(), container(line).max_width(400), rule()].spacing(10).align_y(Center);
         container(line).padding(Padding::ZERO.bottom(6.0).left(GUTTER)).into()
+    }
+
+    /// Desktop's `n0e` Media section: the newest image, video and link messages, and when expanded all of them
+    /// by type.
+    fn view_info_media<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
+        const TILE: f32 = 130.0;
+        let p = &self.pal;
+        let mut found: Vec<&Message> = st
+            .chat_msg_indices
+            .get(&chat.id)
+            .map_or(&[][..], |v| &v[..])
+            .iter()
+            .map(|&i| &st.messages[i])
+            .filter(|m| m.is_deleted != Some(true))
+            .filter(|m| {
+                !m.links.is_empty()
+                    || m.attachments.iter().any(|a| matches!(a.attachment_type.as_str(), "img" | "video"))
+            })
+            .collect();
+        if found.is_empty() {
+            return None;
+        }
+        found.sort_by(|a, b| b.sort_key.cmp(&a.sort_key));
+        let limit = if chat.chat_type == "single" { 4 } else { 6 };
+        let expandable = found.len() > limit;
+        let shown = if self.info_media.is_some() { &found[..] } else { &found[..found.len().min(limit)] };
+        let kinds: &[&str] = match self.info_media {
+            None => &["img", "video", "audio", "unknown"],
+            Some(0) => &["img"],
+            Some(1) => &["video"],
+            Some(2) => &["audio"],
+            Some(3) => &[],
+            Some(4) => &["unknown"],
+            Some(n) => unreachable!("media tab {n}"),
+        };
+        let links = matches!(self.info_media, None | Some(3));
+        let white = Color::WHITE;
+        let sender = |m: &Message| -> El<'a> {
+            let u = chat.participants.items.iter().find(|u| u.id == m.sender_id);
+            let name = u.map(member_name).or_else(|| m.sender_name.clone()).unwrap_or_else(|| m.sender_id.clone());
+            let face = container(self.face(u.and_then(|u| u.img_url.as_deref()), &name, 20.0, 0.0))
+                .padding(2)
+                .style(shadow_box(white, CLEAR, 12.0, 8.0));
+            container(face).padding(8).into()
+        };
+        let file = |title: String, sub: El<'a>| -> El<'a> {
+            let title = txt(crate::style::clamped(&title, TILE - 16.0, 3, 10.0, Weight::Normal).to_string(), 10.0)
+                .line_height(Pixels(12.0))
+                .color(p.strong);
+            let bg = if self.dark { Color::BLACK } else { Color::WHITE };
+            container(column![title, sub]).padding(8).align_bottom(TILE).width(TILE).style(fill_box(bg, 8.0)).into()
+        };
+        let tiles: Vec<El> = shown
+            .iter()
+            .flat_map(|m| {
+                let atts = m.attachments.iter().filter(|a| kinds.contains(&a.attachment_type.as_str()));
+                let atts = atts.map(|a| match a.attachment_type.as_str() {
+                    "img" | "video" => self.thumb(a, TILE, 4.0),
+                    _ => {
+                        let kind = ell(file_kind(a.mime_type.as_deref()), TILE - 16.0, 10.0, Weight::Semibold);
+                        file(
+                            a.file_name.clone().unwrap_or_default(),
+                            kind.line_height(Pixels(12.0)).color(p.strong).into(),
+                        )
+                    }
+                });
+                let urls = m.links.iter().filter(|_| links).map(|l| {
+                    let host = l.url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(&l.url);
+                    let title = if l.title.is_empty() { host.to_string() } else { l.title.clone() };
+                    let url =
+                        ell(&l.url, TILE - 29.0, 10.0, Weight::Semibold).line_height(Pixels(12.0)).color(p.strong);
+                    file(title, row![tinted(&MEDIA_ICONS[2], 12.0, p.strong), url].align_y(Center).into())
+                });
+                atts.chain(urls).map(|tile| {
+                    let face = stack![tile, sender(m)].width(TILE).height(TILE);
+                    button(face)
+                        .padding(0)
+                        .style(btn_style([CLEAR; 3], [p.strong; 3], 4.0))
+                        .on_press(UiMessage::JumpTo(chat.id.clone(), m.id.clone()))
+                        .into()
+                })
+            })
+            .collect();
+        let grid: El = match tiles.is_empty() {
+            true => container(txt(tr("Nothing here"), 13.0).line_height(Pixels(16.0)).color(p.sub))
+                .center_x(Fill)
+                .padding([10, 0])
+                .into(),
+            false => {
+                let mut tiles = tiles.into_iter();
+                let mut rows = Column::new().spacing(8);
+                while let Some(a) = tiles.next() {
+                    rows = rows.push(row![a].push(tiles.next()).spacing(8));
+                }
+                rows.into()
+            }
+        };
+        let tabs = self.info_media.map(|at| {
+            let labels = MEDIA_KINDS.iter().map(|k| tr(k).to_string());
+            self.segments(labels, at, |i| UiMessage::InfoMedia(Some(i))).padding(Padding::new(8.0).top(0.0))
+        });
+        let toggle = if self.info_media.is_some() { None } else { Some(0) };
+        let link = expandable.then(|| {
+            let label = tr(if self.info_media.is_some() { "Show less" } else { "Show all" });
+            button(semi(label, 11.0).line_height(Pixels(14.0)).color(p.accent))
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                .on_press(UiMessage::InfoMedia(toggle))
+        });
+        let head = row![txt(tr("Media"), 11.0).line_height(Pixels(14.0)).color(p.strong), Space::new().width(Fill)]
+            .push(link)
+            .align_y(Center)
+            .padding(8);
+        let head: El = match expandable {
+            true => mouse_area(head).on_press(UiMessage::InfoMedia(toggle)).into(),
+            false => head.into(),
+        };
+        let body = column![].push(tabs).push(grid).spacing(4).padding(8);
+        Some(column![head, container(body).width(Fill).style(fill_box(Color { a: 0.1, ..p.strong }, 10.0))].into())
     }
 
     /// Desktop's `Kfe` Bookmarks section: the newest bookmarks of the chat first, 15 until "Show all".
@@ -13693,23 +13820,33 @@ impl BeeperGuiApp {
             .into()
     }
 
-    /// Desktop's `BrandSegmentControl` of the ages, for all chats (0) or for the open chat (1).
-    fn storage_ages<'a>(&self, which: usize) -> El<'a> {
+    /// Desktop's `BrandSegmentControl`: the segments spread across the width, with the selected one highlighted.
+    fn segments<'a>(
+        &self,
+        labels: impl Iterator<Item = String>,
+        at: usize,
+        msg: impl Fn(usize) -> UiMessage,
+    ) -> container::Container<'a, UiMessage> {
         let p = &self.pal;
-        let segments = STORAGE_DAYS.iter().enumerate().flat_map(|(i, &d)| {
-            let label = txt(trn("%d day", "%d days", d as usize, &[&d]), 11.0).line_height(Pixels(14.0)).color(p.text);
-            let bg = if i == self.storage.ages[which] { p.chip } else { CLEAR };
-            let segment = button(label)
-                .padding([2, 8])
-                .style(btn_style([bg; 3], [p.text; 3], 20.0))
-                .on_press(UiMessage::StorageAge(which, i));
+        let segments = labels.enumerate().flat_map(|(i, label)| {
+            let label = txt(label, 11.0).line_height(Pixels(14.0)).color(p.text);
+            let bg = if i == at { p.chip } else { CLEAR };
+            let segment = button(label).padding([2, 8]).style(btn_style([bg; 3], [p.text; 3], 20.0)).on_press(msg(i));
             [(i > 0).then(|| Space::new().width(Fill).into()), Some(segment.into())].into_iter().flatten()
         });
         let bg = if self.dark { Color::BLACK } else { Color::WHITE };
-        let control = container(Row::with_children(segments).spacing(4).align_y(Center))
-            .padding(if which == 0 { 8 } else { 4 })
+        container(Row::with_children(segments).spacing(4).align_y(Center))
+            .padding(4)
             .width(Fill)
-            .style(fill_box(bg, 20.0));
+            .style(fill_box(bg, 20.0))
+    }
+
+    /// Desktop's `BrandSegmentControl` of the ages, for all chats (0) or for the open chat (1).
+    fn storage_ages<'a>(&self, which: usize) -> El<'a> {
+        let days = STORAGE_DAYS.iter().map(|&d| trn("%d day", "%d days", d as usize, &[&d]));
+        let control = self
+            .segments(days, self.storage.ages[which], |i| UiMessage::StorageAge(which, i))
+            .padding(if which == 0 { 8 } else { 4 });
         if which == 0 {
             control.into()
         } else {
