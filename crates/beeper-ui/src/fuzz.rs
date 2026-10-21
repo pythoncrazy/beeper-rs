@@ -1721,6 +1721,13 @@ fn mute_labels_like_desktop() {
         st.notifications_muted(&st.chats[st.chat_idx_by_id[&only]])
     };
     assert!(muted(&app), "a chat is muted when all its labels are muted");
+    {
+        let mut sim = simulator(app.view_chat_menu(&only, false, 900.0));
+        sim.find("Muted by Label Work").expect("the mute reason");
+        let _ = sim.click("Unmute").expect("an Unmute item");
+        let toggles = sim.into_messages().filter(|m| matches!(m, UiMessage::ToggleFlag(..)));
+        assert_eq!(toggles.count(), 0, "a label mute is not undone from the chat");
+    }
     let i = app.store.read().chat_idx_by_id[&only];
     app.store.write().update_chat(i, |c| c.label_ids.push(both.clone()));
     assert!(!muted(&app), "an unmuted label keeps the chat unmuted");

@@ -750,6 +750,22 @@ fn network_name(account_id: &str) -> &'static str {
     account_network(account_id).display_name
 }
 
+/// Desktop's mute reason of the chat menu: all labels of the chat are muted, or for a chat without labels,
+/// notifications of its account are off.
+fn muted_by(st: &BeeperStore, c: &Chat) -> Option<String> {
+    if st.feature("labels-v2").on && !c.label_ids.is_empty() {
+        let labels: Option<Vec<&Label>> =
+            c.label_ids.iter().map(|id| st.labels.iter().find(|l| &l.id == id && l.muted)).collect();
+        return Some(match labels?[..] {
+            [l] if !l.name.trim().is_empty() => trf("Muted by Label %s", &[&l.name.trim()]),
+            [_] => tr("Muted by Label").into(),
+            ref all => trn("Muted by %d Label", "Muted by %d Labels", all.len(), &[&all.len()]),
+        });
+    }
+    let off = !st.settings.account(&c.account_id).notifications;
+    off.then(|| trf("Muted by %s", &[&network_name(&c.account_id)]))
+}
+
 /// Desktop's `userProfileLink`: the web profile of the other person of a chat, on the networks that have one.
 fn profile_link(c: &Chat) -> Option<String> {
     use beeper_core::models::NetworkKind::*;
@@ -6555,12 +6571,17 @@ impl BeeperGuiApp {
                 let h = if label { 8.0 + 4.0 * MENU_ITEM + 11.0 } else { 8.0 + 3.0 * MENU_ITEM };
                 (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), h)
             } else {
+                let st = self.store.read();
                 (
                     233.0,
                     8.0 + 10.0 * MENU_ITEM
                         + 44.0
                         + if self.selection.is_empty() { 2.0 * MENU_ITEM + 11.0 } else { 0.0 }
-                        + if self.store.read().feature("labels-v2").on { MENU_ITEM } else { 0.0 },
+                        + if st.feature("labels-v2").on { MENU_ITEM } else { 0.0 }
+                        + match st.resolve_chat_idx(cid).map(|i| &st.chats[i]) {
+                            Some(c) if st.notifications_muted(c) && muted_by(&st, c).is_some() => MENU_ITEM,
+                            _ => 0.0,
+                        },
                 )
             };
             let x = if at.x + w > self.pane().size.width { at.x - w } else { at.x };
@@ -7514,21 +7535,36 @@ impl BeeperGuiApp {
         let pick = |on: bool, yes, no| if on { yes } else { no };
         let selecting = self.selection.is_empty();
         let labels = st.feature("labels-v2").on;
+        let reason = st.notifications_muted(c).then(|| muted_by(&st, c)).flatten();
         let col = column![
-            close_sub(column![
-                item(
-                    pick(archived, tr("Unarchive"), trx("Archive", "thread context menu action")),
-                    "Ctrl E",
-                    flag(ChatFlag::Archived).filter(|_| archived || !on(c.is_pinned))
-                ),
-                item(tr(pick(on(c.is_muted), "Unmute", "Mute")), "Ctrl Shift M", flag(ChatFlag::Muted)),
-                item(
+            close_sub(
+                column![
+                    item(
+                        pick(archived, tr("Unarchive"), trx("Archive", "thread context menu action")),
+                        "Ctrl E",
+                        flag(ChatFlag::Archived).filter(|_| archived || !on(c.is_pinned))
+                    ),
+                    match st.notifications_muted(c) {
+                        false => item(tr("Mute"), "Ctrl Shift M", flag(ChatFlag::Muted)),
+                        true => item(
+                            tr("Unmute"),
+                            "Ctrl Shift M",
+                            flag(ChatFlag::Muted).filter(|_| on(c.is_muted) && reason.is_none())
+                        ),
+                    },
+                ]
+                .push(reason.as_deref().map(|r| item(r, "", None)))
+                .push(item(
                     tr(pick(unread, "Mark as Read", "Mark as Unread")),
                     "Ctrl Shift U",
                     Some(UiMessage::ToggleRead(c.id.clone()))
-                ),
-                item(tr(pick(on(c.is_pinned), "Unpin", "Pin")), "Ctrl P", flag(ChatFlag::Pinned)),
-            ]),
+                ))
+                .push(item(
+                    tr(pick(on(c.is_pinned), "Unpin", "Pin")),
+                    "Ctrl P",
+                    flag(ChatFlag::Pinned)
+                ))
+            ),
             open_sub(0, tr("Copy")),
             close_sub(column![
                 menu_rule(p),
@@ -7602,7 +7638,7 @@ impl BeeperGuiApp {
                 0 => 4.0 * MENU_ITEM,
                 1 if labels => 8.0 * MENU_ITEM + 22.0,
                 _ => 7.0 * MENU_ITEM + 22.0,
-            };
+            } + if reason.is_some() { MENU_ITEM } else { 0.0 };
             let top = top.min(room - h).max(0.0);
             let body = container(Column::with_children(items).padding([4, 0])).width(SUB_MENU_W[usize::from(i)]);
             column![Space::new().height(top), body.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))]
