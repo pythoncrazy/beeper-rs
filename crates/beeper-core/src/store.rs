@@ -299,6 +299,8 @@ pub struct BeeperStore {
     pub bookmarks_room: Option<String>,
     /// The bookmarks of the bookmarks room by the event ID of the message.
     pub bookmarks: HashMap<String, Bookmark>,
+    /// The bookmarked messages that are not loaded, as Chat Info fetched them, or None when they are unavailable.
+    pub bookmarked: HashMap<String, Option<Message>>,
     pub pushing: bool,
     /// The Matrix IDs of sent events and created labels by their local IDs.
     pub sent: HashMap<String, String>,
@@ -422,6 +424,7 @@ impl BeeperStore {
             outbox: Vec::new(),
             bookmarks_room: None,
             bookmarks: HashMap::new(),
+            bookmarked: HashMap::new(),
             pushing: false,
             sent: HashMap::new(),
             typing: HashMap::new(),
@@ -1671,6 +1674,17 @@ impl BeeperStore {
         on
     }
 
+    /// Desktop's "Remove Bookmark" in Chat Info, also for a message that is not loaded.
+    pub fn remove_bookmark(&mut self, target: &str) {
+        if self.msg_idx_by_id.contains_key(target) {
+            assert!(!self.toggle_bookmark(target), "{target} was bookmarked");
+            return;
+        }
+        let room = self.bookmarks_room.clone().expect("bookmarks of messages that are not loaded come from the room");
+        let chat = self.bookmarks[target].room_id.clone();
+        self.queue(&room, Outgoing::Bookmark { room: chat, target: target.into(), on: false });
+    }
+
     /// Desktop's `applyBookmark` for the bookmarks room events, in timeline order.
     pub fn apply_bookmarks(&mut self, room: &str, changes: Vec<(String, Option<Bookmark>)>) {
         self.bookmarks_room = Some(room.into());
@@ -1969,6 +1983,12 @@ mod tests {
             if r == "!bookmarks" && *room == m.chat_id && *target == m.id));
         st.upsert_message(super::Message { is_bookmarked: None, ..m.clone() });
         assert_eq!(st.messages[0].is_bookmarked, Some(false), "a synced message keeps its bookmark state");
+        st.remove_bookmark("$other");
+        assert!(
+            matches!(&st.outbox[1], (r, super::Outgoing::Bookmark { room, target, on: false })
+            if r == "!bookmarks" && *room == m.chat_id && target == "$other"),
+            "a message that is not loaded"
+        );
         drop(st);
         std::fs::remove_dir_all(dir).unwrap();
     }

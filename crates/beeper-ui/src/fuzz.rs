@@ -2321,6 +2321,33 @@ fn chat_info_media_like_desktop() {
 }
 
 #[test]
+fn chat_info_bookmarks_of_messages_that_are_not_loaded() {
+    let mut app = demo_app("chat-info-bookmarks-missing");
+    let id = "!tg_rust:beeper.com".to_string();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    {
+        let mut st = app.store.write();
+        let mut old = st.messages[st.chat_msg_indices[&id][0]].clone();
+        (old.id, old.text, old.html) = ("$old".into(), Some("Older bookmarked text".into()), None);
+        let mark = |order| Bookmark { room_id: id.clone(), event_id: format!("$b{order}"), order };
+        st.apply_bookmarks("!bookmarks", vec![("$old".into(), Some(mark(3))), ("$gone".into(), Some(mark(2)))]);
+        st.apply_bookmarks("!bookmarks", vec![("$wait".into(), Some(mark(1)))]);
+        st.bookmarked.extend([("$old".to_string(), Some(old)), ("$gone".to_string(), None)]);
+    }
+    {
+        let mut sim = tall(app.view_info());
+        assert!(sim.find("Older bookmarked text").is_ok());
+        assert!(sim.find("Message unavailable").is_ok() && sim.find("Loading…").is_ok());
+        assert!(sim.find("It was deleted or is no longer available.").is_ok());
+    }
+    let menu = info_menu(&app.store.read(), &format!("bookmark:{id} $old"), |_| true);
+    assert!(matches!(&menu[0], Some((_, None))), "Jump to Message needs the message in the timeline");
+    let _ = app.update(UiMessage::RemoveBookmark("$gone".into()));
+    app.store.write().apply_bookmarks("!bookmarks", vec![("$gone".into(), None)]);
+    assert!(tall(app.view_info()).find("Message unavailable").is_err());
+}
+
+#[test]
 fn chat_info_bookmarks_like_desktop() {
     let mut app = demo_app("chat-info-bookmarks");
     let id = "!tg_rust:beeper.com".to_string();
