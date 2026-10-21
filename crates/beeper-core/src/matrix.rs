@@ -946,6 +946,10 @@ pub enum Outgoing {
     },
     /// A label space with its chats as children, like Desktop's `createLabel`. Its chat is the label ID here.
     CreateLabel(Label),
+    /// The name, color and icon of a label, with the chats to add (true) or remove (false), like Desktop's `updateLabel`.
+    EditLabel(Label, Vec<(String, bool)>),
+    /// Leaves and forgets the room, like Desktop's `deleteLabel`.
+    Leave,
     Read(String),
     Flag(ChatFlag, bool),
     Reminder(Option<ChatReminder>),
@@ -1028,6 +1032,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
     if let Outgoing::CreateLabel(label) = out {
         return create_label(store, &client, label).await;
     }
+    let chat = store.read().sent.get(&chat).cloned().unwrap_or(chat);
     let room = joined_room(&client, &chat).await?;
     let event = |id: String| {
         let id = store.read().sent.get(&id).cloned().unwrap_or(id);
@@ -1205,6 +1210,22 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             sent(txn, room.send_attachment(&name, &parsed_mime, data, config).await.map_err(e)?.event_id);
         }
         Outgoing::CreateLabel(_) => unreachable!("a label has no room before it is created"),
+        Outgoing::EditLabel(label, changes) => {
+            let state = |kind: &'static str, content: Value| room.send_state_event_raw(kind, "", content);
+            state("m.room.name", serde_json::json!({ "name": label.name })).await.map_err(e)?;
+            state("com.beeper.label.color", serde_json::json!({ "color_index": label.color })).await.map_err(e)?;
+            state("com.beeper.label.icon", serde_json::json!({ "icon": label.icon })).await.map_err(e)?;
+            for (chat, add) in changes {
+                let content = if add { serde_json::json!({ "via": ["beeper.com"] }) } else { serde_json::json!({}) };
+                room.send_state_event_raw("m.space.child", &chat, content).await.map_err(e)?;
+            }
+        }
+        Outgoing::Leave => {
+            room.leave().await.map_err(e)?;
+            if let Some(left) = client.get_room(room.room_id()) {
+                let _ = left.forget().await;
+            }
+        }
     }
     Ok(())
 }
@@ -1716,7 +1737,11 @@ pub async fn run(store: SharedStore) {
                         sync_prefs(&client, &store).await;
                         sync_rules(&client, &store).await;
                         for id in resp.rooms.left.keys() {
-                            let chat = chat_id(&client.get_room(id).expect("left room is known")).await;
+                            // A forgotten room, like a deleted label, is gone from the client.
+                            let chat = match client.get_room(id) {
+                                Some(room) => chat_id(&room).await,
+                                None => id.to_string(),
+                            };
                             store.write().remove_chat(&chat);
                         }
                         for (id, update) in resp.rooms.joined {

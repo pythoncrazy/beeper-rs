@@ -360,7 +360,11 @@ pub enum UiMessage {
     Poll(window::Id, PollEdit),
     /// Desktop's `CreateLabelBrowserWindow`.
     OpenCreateLabel,
+    /// Desktop's `CreateLabelBrowserWindow` for an existing label.
+    EditLabel(String),
     Label(LabelEdit),
+    AskDeleteLabel(String),
+    DeleteLabel(String),
     /// Desktop's `PollVotesBrowserWindow` for a chat's poll message.
     OpenPollVotes(String, String),
     EndPoll(String, String),
@@ -1071,6 +1075,7 @@ const ASK_CLEAR_CACHE: u8 = 9;
 const ASK_CLEAR_CHAT: u8 = 10;
 const ASK_REVOKE_CONNECTION: u8 = 11;
 const ASK_REMOTE_ACCESS: u8 = 12;
+const ASK_DELETE_LABEL: u8 = 13;
 /// The dialogs over the Settings window.
 const SETTINGS_DIALOGS: [u8; 6] =
     [ASK_LOGOUT, ASK_CLEAR_STORAGE, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT, ASK_REVOKE_CONNECTION, ASK_REMOTE_ACCESS];
@@ -2027,6 +2032,7 @@ fn rail_accounts(st: &BeeperStore) -> Vec<String> {
 /// Finds the label of a rail entry.
 fn rail_label<'a>(st: &'a BeeperStore, id: &str) -> Option<&'a Label> {
     let id = id.strip_prefix("label:")?;
+    let id = st.sent.get(id).map_or(id, String::as_str);
     st.labels.iter().find(|l| l.id == id)
 }
 
@@ -3281,7 +3287,9 @@ impl BeeperGuiApp {
             _ if Some(id) == self.settings_window => tr("Settings"),
             _ if self.theme_windows.iter().any(|w| w.0 == id) => tr("Chat Theme"),
             _ if self.poll_windows.iter().any(|w| w.id == id) => tr("New Poll"),
-            _ if self.label_window.as_ref().is_some_and(|d| d.id == id) => tr("New label"),
+            _ if let Some(d) = self.label_window.as_ref().filter(|d| d.id == id) => {
+                return tr(if d.label.is_some() { "Edit label" } else { "New label" }).into();
+            }
             _ if let Some((_, _, mid)) = self.vote_windows.iter().find(|w| w.0 == id) => {
                 let st = self.store.read();
                 let total =
@@ -4467,6 +4475,28 @@ impl BeeperGuiApp {
                 let (id, open) = self.open_child(Size::new(600.0, 700.0));
                 self.label_window = Some(LabelDraft::new(id));
                 return open.chain(operation::focus("label-title"));
+            }
+            UiMessage::EditLabel(label) => {
+                self.chat_menu = None;
+                if let Some(d) = &self.label_window {
+                    return window::gain_focus(d.id);
+                }
+                let (id, open) = self.open_child(Size::new(600.0, 700.0));
+                let st = self.store.read();
+                let label = st.labels.iter().find(|l| l.id == label).expect("an edited label");
+                self.label_window = Some(LabelDraft::edit(id, label));
+                drop(st);
+                return open.chain(operation::focus("label-title"));
+            }
+            UiMessage::AskDeleteLabel(id) => {
+                (self.confirm, self.chat_menu, self.delete_target) = (Some(ASK_DELETE_LABEL), None, Some(id));
+            }
+            UiMessage::DeleteLabel(id) => {
+                self.confirm = None;
+                self.store.write().delete_label(&id);
+                if self.selected_account_filter.as_deref() == Some(&format!("label:{id}")) {
+                    self.selected_account_filter = None;
+                }
             }
             UiMessage::Label(edit) => return self.label_edit(edit),
             UiMessage::EndPoll(chat, mid) => self.store.write().end_poll(&chat, &mid),
@@ -7364,6 +7394,17 @@ impl BeeperGuiApp {
     fn view_account_menu(&self, entry: &str) -> El<'_> {
         let p = &self.pal;
         let st = self.store.read();
+        if let Some(l) = rail_label(&st, entry) {
+            let item = |label: &str, msg| menu_item(p, None, label.into(), "", Some(msg));
+            let col = column![
+                item(tr("Edit Label…"), UiMessage::EditLabel(l.id.clone())),
+                item(tr("Delete Label"), UiMessage::AskDeleteLabel(l.id.clone())),
+            ];
+            return container(col.padding([4, 0]))
+                .width(233)
+                .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
+                .into();
+        }
         let space = network_space(&st, entry);
         let account = space.map_or(entry, |n| n.account_id.as_str());
         let bridge = match account {
@@ -7719,10 +7760,7 @@ impl BeeperGuiApp {
                 };
                 let btn =
                     badge(rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc.clone()))).into(), n, true);
-                let btn: El = match acc.starts_with("label:") {
-                    true => btn,
-                    false => mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{acc}"))).into(),
-                };
+                let btn: El = mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{acc}"))).into();
                 match self.chat_menu {
                     Some(_) => c.push(btn),
                     None => c.push(self.tip(btn, label, hotkey(7 + i), tooltip::Position::Right)),
@@ -10775,6 +10813,16 @@ impl BeeperGuiApp {
                 };
                 (format!("Delete {}", c.title), body.into(), actions)
             }
+            ASK_DELETE_LABEL => {
+                let id = self.delete_target.clone().expect("a label to delete");
+                let st = self.store.read();
+                let name = st.labels.iter().find(|l| l.id == id).map(|l| l.name.clone()).unwrap_or_default();
+                let body = trf(
+                    "Are you sure you want to delete \"%s\"? This will remove the label from all chats.",
+                    &[&name],
+                );
+                (tr("Delete Label").into(), body, vec![(tr("Delete"), UiMessage::DeleteLabel(id))])
+            }
             ASK_DELETE_MESSAGE => {
                 let mid = self.delete_target.clone().expect("a message to delete");
                 let st = self.store.read();
@@ -11719,6 +11767,7 @@ impl BeeperGuiApp {
     }
 
     fn label_edit(&mut self, edit: LabelEdit) -> Task<UiMessage> {
+        let ready = self.label_window.as_ref().expect("the label window is open").ready(&self.store.read());
         let d = self.label_window.as_mut().expect("the label window is open");
         match edit {
             LabelEdit::Name(name) => d.name = name,
@@ -11731,8 +11780,12 @@ impl BeeperGuiApp {
             LabelEdit::Picker(open) => d.picker = open,
             LabelEdit::Color(c) => d.color = (d.color != Some(c)).then_some(c),
             LabelEdit::Icon(i) => d.icon = (d.icon.as_deref() != Some(i)).then(|| i.into()),
-            LabelEdit::Create if d.ready() => {
+            LabelEdit::Create if ready => {
                 let (id, chats) = (d.id, std::mem::take(&mut d.chats));
+                if let Some(label) = &d.label {
+                    self.store.write().update_label(label, &d.name, d.color, d.icon.clone(), chats);
+                    return window::close(id);
+                }
                 let label = self.store.write().create_label(&d.name, d.color, d.icon.clone(), chats);
                 let _ = self.update(UiMessage::SelectAccount(Some(format!("label:{label}"))));
                 return window::close(id);
@@ -11847,13 +11900,14 @@ impl BeeperGuiApp {
             }
         });
         let list = scrollable(Column::with_children(rows)).direction(Direction::Vertical(Scrollbar::hidden()));
+        let editing = d.label.is_some();
         let create = row![
-            semi(tr("Create label"), 12.0).line_height(Pixels(15.0)),
+            semi(if editing { tr("Save") } else { tr("Create label") }, 12.0).line_height(Pixels(15.0)),
             txt("CTRL+ENTER", 10.0).line_height(Pixels(12.0)).color(Color::WHITE.scale_alpha(0.8))
         ]
         .spacing(4)
         .align_y(Center);
-        let ready = d.ready();
+        let ready = d.ready(&st);
         let bg = if ready { p.accent } else { p.accent.scale_alpha(0.4) };
         let fg = Color::WHITE.scale_alpha(if ready { 1.0 } else { 0.4 });
         let create = button(create)
@@ -11890,9 +11944,8 @@ impl BeeperGuiApp {
             footer,
         ];
         let card = container(body).height(Fill).clip(true).style(fill_box(p.card, 12.0));
-        let head = container(semi(tr("New label"), 13.0).line_height(Pixels(16.0)).color(p.strong))
-            .center_x(Fill)
-            .padding([8, 0]);
+        let head = if editing { tr("Edit label") } else { tr("New label") };
+        let head = container(semi(head, 13.0).line_height(Pixels(16.0)).color(p.strong)).center_x(Fill).padding([8, 0]);
         let window = container(column![head, card]).padding(8).style(fill_box(p.window, 0.0));
         match d.picker {
             true => stack![
@@ -12534,6 +12587,8 @@ const DEFAULT_LABEL_ICON: &str = "3257-5964";
 /// The New label window, Desktop's `CreateLabel` state.
 pub struct LabelDraft {
     pub id: window::Id,
+    /// The edited label, or none for a new label.
+    pub label: Option<String>,
     pub name: String,
     pub search: String,
     /// The chats of the label, in the order they were picked.
@@ -12550,12 +12605,25 @@ impl LabelDraft {
     fn new(id: window::Id) -> Self {
         let (name, search, chats) = (String::new(), String::new(), Vec::new());
         let icon = Some(DEFAULT_LABEL_ICON.into());
-        LabelDraft { id, name, search, chats, color: None, icon, more: false, picker: false }
+        LabelDraft { id, label: None, name, search, chats, color: None, icon, more: false, picker: false }
     }
 
-    /// Desktop's `canSubmit`.
-    pub fn ready(&self) -> bool {
-        !self.name.trim().is_empty() && !self.chats.is_empty()
+    fn edit(id: window::Id, l: &Label) -> Self {
+        let (name, chats, color, icon) = (l.name.clone(), l.rooms.clone(), l.color, l.icon.clone());
+        LabelDraft { label: Some(l.id.clone()), name, chats, color, icon, ..Self::new(id) }
+    }
+
+    /// Desktop's `canSubmit`: a title and chats, and a change when the label exists.
+    pub fn ready(&self, st: &BeeperStore) -> bool {
+        let filled = !self.name.trim().is_empty() && !self.chats.is_empty();
+        let Some(id) = &self.label else { return filled };
+        let same = |o: &Label| {
+            o.name == self.name.trim()
+                && (o.color, &o.icon) == (self.color, &self.icon)
+                && o.rooms.len() == self.chats.len()
+                && self.chats.iter().all(|c| o.rooms.contains(c))
+        };
+        filled && st.labels.iter().find(|l| l.id == *id).is_some_and(|o| !same(o))
     }
 }
 

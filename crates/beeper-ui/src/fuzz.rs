@@ -123,7 +123,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
     };
     let open = open.is_some();
     let accounts: Vec<String> = st.accounts.iter().map(|a| a.account_id.clone()).collect();
-    let rail: Vec<String> = crate::rail_accounts(&st).into_iter().filter(|a| !a.starts_with("label:")).collect();
+    let rail = crate::rail_accounts(&st);
     drop(st);
     let chat = rng.pick(&chats).clone();
     let (mchat, msg) = rng.pick(&msgs).clone();
@@ -1605,4 +1605,33 @@ fn create_label_like_desktop() {
     assert_eq!((label.color, label.icon.as_deref()), (Some(11), None), "a second pick clears the icon");
     assert!(chats.iter().all(|c| st.chats[st.chat_idx_by_id[c]].label_ids.contains(&label.id)));
     assert_eq!(app.selected_account_filter, Some(format!("label:{}", label.id)), "the new label opens");
+}
+
+#[test]
+fn edit_and_delete_labels_like_desktop() {
+    let mut app = demo_app("label-menu");
+    let _ = app.update(UiMessage::OpenChatMenu("account:label:lbl_work".into()));
+    let menu = |app: &BeeperGuiApp| simulator(app.view_account_menu("label:lbl_work")).find("Edit Label…").is_ok();
+    assert!(menu(&app));
+    let _ = app.update(UiMessage::EditLabel("lbl_work".into()));
+    let ready = |app: &BeeperGuiApp| app.label_window.as_ref().expect("the label window").ready(&app.store.read());
+    assert!(!ready(&app), "an unchanged label does not save");
+    simulator(app.view_create_label(app.label_window.as_ref().expect("open"))).find("Save").expect("a Save button");
+    let _ = app.update(UiMessage::Label(LabelEdit::Name("Work Team".into())));
+    assert!(ready(&app));
+    let _ = app.update(UiMessage::Label(LabelEdit::Create));
+    let rooms = {
+        let st = app.store.read();
+        let work = st.labels.iter().find(|l| l.id == "lbl_work").expect("the work label");
+        assert_eq!(work.name, "Work Team");
+        work.rooms.clone()
+    };
+    let _ = app.update(UiMessage::SelectAccount(Some("label:lbl_work".into())));
+    let _ = app.update(UiMessage::AskDeleteLabel("lbl_work".into()));
+    simulator(app.view_confirm(ASK_DELETE_LABEL)).find("Delete").expect("a Delete button");
+    let _ = app.update(UiMessage::DeleteLabel("lbl_work".into()));
+    let st = app.store.read();
+    assert!(st.labels.iter().all(|l| l.id != "lbl_work"));
+    assert!(rooms.iter().all(|r| !st.chats[st.chat_idx_by_id[r]].label_ids.iter().any(|l| l == "lbl_work")));
+    assert_eq!(app.selected_account_filter, None, "the inbox opens when its label is deleted");
 }

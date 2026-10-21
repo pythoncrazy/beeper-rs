@@ -296,6 +296,7 @@ pub struct BeeperStore {
     pub sas_confirm: Option<tokio::sync::oneshot::Sender<bool>>,
     pub outbox: Vec<(String, Outgoing)>,
     pub pushing: bool,
+    /// The Matrix IDs of sent events and created labels by their local IDs.
     pub sent: HashMap<String, String>,
     pub typing: HashMap<String, Vec<String>>,
     /// `io.element.recent_emoji` keys (emoji or emoji-mart ids) with their use counts.
@@ -1032,9 +1033,28 @@ impl BeeperStore {
 
     /// Gives the label `draft` the ID of its new label space.
     pub fn created_label(&mut self, draft: &str, id: &str) {
+        self.sent.insert(draft.into(), id.into());
         let Some(label) = self.labels.iter().find(|l| l.id == draft).cloned() else { return };
         self.remove_label(draft);
         self.set_label(Label { id: id.into(), ..label });
+    }
+
+    /// Desktop's `updateLabel` from the label window: the name, color, icon and chats of the label `id`.
+    pub fn update_label(&mut self, id: &str, name: &str, color: Option<u8>, icon: Option<String>, rooms: Vec<String>) {
+        assert!(!name.trim().is_empty() && !rooms.is_empty(), "a label has a name and chats");
+        let old = self.labels.iter().find(|l| l.id == id).expect("an edited label").clone();
+        let removed = old.rooms.iter().filter(|r| !rooms.contains(r)).map(|r| (r.clone(), false));
+        let changes =
+            rooms.iter().filter(|r| !old.rooms.contains(r)).map(|r| (r.clone(), true)).chain(removed).collect();
+        let label = Label { name: name.trim().into(), color, icon, rooms, ..old };
+        self.set_label(label.clone());
+        self.queue(id, Outgoing::EditLabel(label, changes));
+    }
+
+    /// Desktop's `deleteLabel`: leaves the label space.
+    pub fn delete_label(&mut self, id: &str) {
+        self.remove_label(id);
+        self.queue(id, Outgoing::Leave);
     }
 
     pub fn remove_label(&mut self, id: &str) {
