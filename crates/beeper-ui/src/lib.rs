@@ -1422,6 +1422,11 @@ fn preview_message<'s>(st: &'s BeeperStore, c: &'s Chat) -> Option<&'s Message> 
     reaction.or(m)
 }
 
+/// Desktop's `canStartEditMessage` for text: an own message that is not a poll.
+fn editable(m: &Message) -> bool {
+    m.is_sender == Some(true) && m.poll.is_none()
+}
+
 /// The text of a chat list preview, or a label for its links.
 fn preview_body(m: &Message) -> Option<String> {
     match m.links.len() {
@@ -3393,7 +3398,7 @@ impl BeeperGuiApp {
         let own = all
             .iter()
             .map(|&i| &st.messages[i])
-            .rfind(|m| m.is_sender == Some(true) && m.is_deleted != Some(true) && m.attachments.is_empty());
+            .rfind(|m| editable(m) && m.is_deleted != Some(true) && m.attachments.is_empty());
         own.cloned()
     }
 
@@ -3790,7 +3795,7 @@ impl BeeperGuiApp {
                 .filter(|_| self.selected_message().is_some_and(|m| !m.attachments.is_empty()))
                 .map(|m| UiMessage::Download(m, None)),
             "Message: Edit" => {
-                let edit = self.selected_message().filter(|m| m.is_sender == Some(true));
+                let edit = self.selected_message().filter(editable);
                 let m = edit.or_else(|| self.last_own_message()).filter(|_| chat.is_some());
                 m.map(|m| {
                     self.pane.selected_msgs = vec![m.id.clone()];
@@ -3820,7 +3825,7 @@ impl BeeperGuiApp {
             "Message: Quote or Edit Selected Message" => {
                 let empty = self.pane.composer.text().is_empty();
                 self.selected_message().and_then(|m| match m.is_sender == Some(true) {
-                    true => empty.then(|| UiMessage::StartEdit(m.id, m.text.unwrap_or_default())),
+                    true => (empty && editable(&m)).then(|| UiMessage::StartEdit(m.id, m.text.unwrap_or_default())),
                     false => Some(UiMessage::StartReply(m.id)),
                 })
             }
@@ -7049,7 +7054,7 @@ impl BeeperGuiApp {
         let rows: Vec<(El, f32)> = [
             self.video_menu_rows(&mid),
             link.map(|u| vec![item(tr("Copy Link").into(), "", Some(UiMessage::CopyText(u))), rule()]),
-            (mine && !text.is_empty())
+            (editable(m) && !text.is_empty())
                 .then(|| vec![item(tr("Edit…").into(), "Ctrl T", Some(UiMessage::StartEdit(mid.clone(), text)))]),
             Some(vec![
                 item(tr("Reply…").into(), "Ctrl R", Some(UiMessage::StartReply(mid.clone()))),
