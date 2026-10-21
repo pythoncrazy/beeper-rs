@@ -819,6 +819,70 @@ pub struct BeeperSettings {
     pub accounts: std::collections::BTreeMap<String, AccountProps>,
     /// Desktop's `time_suggestion_last_used`: the last time phrase that set a reminder, or empty.
     pub last_time: String,
+    /// Desktop's local `chat_appearance`.
+    pub chat_appearance: ChatAppearance,
+}
+
+/// Desktop's `chatAppearanceStore`: the default chat theme, and the themes of single chats.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChatAppearance {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub global: Option<ChatTheme>,
+    #[serde(rename = "perChat")]
+    pub per_chat: std::collections::BTreeMap<String, ChatTheme>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChatTheme {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallpaper: Option<Wallpaper>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bubble: Option<Bubble>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Wallpaper {
+    None,
+    Color { id: String },
+    Gradient { id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Bubble {
+    Default,
+    Swatch { id: String },
+}
+
+impl ChatAppearance {
+    /// Desktop's `configFor`: each part of the theme of a chat falls back to the default theme.
+    pub fn theme(&self, chat: Option<&str>) -> ChatTheme {
+        let own = chat.and_then(|c| self.per_chat.get(c));
+        let part = |f: fn(&ChatTheme) -> bool| own.filter(|t| f(t)).or(self.global.as_ref()).filter(|t| f(t));
+        ChatTheme {
+            wallpaper: part(|t| t.wallpaper.is_some()).and_then(|t| t.wallpaper.clone()),
+            bubble: part(|t| t.bubble.is_some()).and_then(|t| t.bubble.clone()),
+        }
+    }
+
+    /// Desktop's `patchConfig`: `f` changes the stored theme of the chat, or the default theme for `None`. A theme
+    /// without parts is removed.
+    pub fn patch(&mut self, chat: Option<&str>, f: impl FnOnce(&mut ChatTheme)) {
+        let mut theme = match chat {
+            Some(c) => self.per_chat.remove(c),
+            None => self.global.take(),
+        }
+        .unwrap_or_default();
+        f(&mut theme);
+        let theme = (theme != ChatTheme::default()).then_some(theme);
+        match (chat, theme) {
+            (Some(c), Some(t)) => _ = self.per_chat.insert(c.to_string(), t),
+            (Some(_), None) => {}
+            (None, t) => self.global = t,
+        }
+    }
 }
 
 /// The notification settings of an account page, which Desktop keeps on the device.

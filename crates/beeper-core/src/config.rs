@@ -86,6 +86,7 @@ impl Default for BeeperSettings {
             microphone: String::new(),
             accounts: Default::default(),
             last_time: String::new(),
+            chat_appearance: Default::default(),
         }
     }
 }

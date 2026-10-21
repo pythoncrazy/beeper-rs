@@ -1,4 +1,5 @@
 mod anim;
+mod chat_theme;
 mod commands;
 mod cursor;
 mod dashed;
@@ -323,6 +324,10 @@ pub enum UiMessage {
     ToggleFlag(String, ChatFlag),
     ToggleRead(String),
     MarkRead(String),
+    /// Sets the wallpaper of the chat theme of a chat, or of the default theme.
+    ChatWallpaper(Option<String>, Wallpaper),
+    /// Sets the bubble color of the chat theme of a chat, or of the default theme; `None` clears it.
+    ChatBubble(Option<String>, Option<Bubble>),
     CopyChatLink(String),
     OpenChatMenu(String),
     OpenMessageMenu(String),
@@ -4216,6 +4221,12 @@ impl BeeperGuiApp {
                 drop(st);
                 self.refresh_theme_and_tray();
             }
+            UiMessage::ChatWallpaper(chat, w) => {
+                self.patch_settings(|s| s.chat_appearance.patch(chat.as_deref(), |t| t.wallpaper = Some(w)))
+            }
+            UiMessage::ChatBubble(chat, b) => {
+                self.patch_settings(|s| s.chat_appearance.patch(chat.as_deref(), |t| t.bubble = b))
+            }
             UiMessage::MarkRead(cid) => {
                 let mut st = self.store.write();
                 let idx = st.resolve_chat_idx(&cid).expect("chat exists");
@@ -7831,10 +7842,18 @@ impl BeeperGuiApp {
             .add_stop(0.0, p.card)
             .add_stop(0.75, p.card.scale_alpha(0.85))
             .add_stop(1.0, p.card.scale_alpha(0.0));
-        let fade = container(Space::new()).width(Fill).height(84).style(move |_: &Theme| container::Style {
-            background: Some(Background::Gradient(Gradient::Linear(fade))),
-            ..Default::default()
+        let fade = container(Space::new()).width(Fill).height(chat_theme::FADE).style(move |_: &Theme| {
+            container::Style { background: Some(Background::Gradient(Gradient::Linear(fade))), ..Default::default() }
         });
+        let wallpaper =
+            chat_theme::resolve(&st.settings.chat_appearance, Some(cid), self.dark).0.map(|(paint, _)| paint);
+        let fade: El<'_> = match wallpaper {
+            Some(paint) => iced::widget::responsive(move |size| {
+                container(chat_theme::fade(paint, size)).height(chat_theme::FADE).into()
+            })
+            .into(),
+            None => fade.into(),
+        };
         let reminder = chat.reminder.as_ref().filter(|_| !self.expired(chat)).map(|r| {
             let (day, time) =
                 (reminder_day(r.remind_at_ms), clock(r.remind_at_ms, st.settings.pref("timeFormat") == 1));
@@ -7885,7 +7904,9 @@ impl BeeperGuiApp {
             ));
             container(zone).padding(Padding { top: 39.0, right: 13.0, bottom: 6.5, left: 6.5 })
         });
-        let pane = stack![pane].push(picker).push(self.view_suggestions(&st)).push(dropping);
+        let wallpaper =
+            wallpaper.map(|paint| iced::widget::responsive(move |size| chat_theme::fill(paint, size, 10.0)));
+        let pane = stack![].push(wallpaper).push(pane).push(picker).push(self.view_suggestions(&st)).push(dropping);
         let shadow = Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.18), offset: Vector::ZERO, blur_radius: 20.0 };
         let card = fill_box(p.card, 10.0);
         container(pane)
@@ -7977,7 +7998,7 @@ impl BeeperGuiApp {
                 let s = run_start[i];
                 let size = run_start[s..].iter().take_while(|&&r| r == s).count();
                 let open = self.pane().open_members.contains(&msgs[s].id);
-                let dim = p.muted.scale_alpha(0.75);
+                let dim = self.wallpaper_fg(st, chat, thread).unwrap_or(p.muted).scale_alpha(0.75);
                 if size >= 3 && i == s {
                     let label = row![
                         txt(format!("{size} Membership Events"), 11.0).line_height(Pixels(14.0)).color(dim),
@@ -8065,10 +8086,13 @@ impl BeeperGuiApp {
         head: Column<'a, UiMessage>,
     ) -> El<'a> {
         let p = &self.pal;
+        let (sent, sent_fg, sent_meta) = self.sent_colors(st, Some(&chat.id));
+        let on_wall = self.wallpaper_fg(st, chat, thread);
+        let muted = on_wall.unwrap_or(p.muted);
         let mine = m.is_sender == Some(true);
         if m.is_deleted == Some(true) {
-            let (fg, italic) =
-                (mix(p.card, p.text, 0.8), iced::Font { style: iced::font::Style::Italic, ..fw(Weight::Normal) });
+            let fg = on_wall.unwrap_or(mix(p.card, p.text, 0.8));
+            let italic = iced::Font { style: iced::font::Style::Italic, ..fw(Weight::Normal) };
             let icon = svg(TRASH.clone())
                 .width(13.0 * 448.0 / 512.0)
                 .height(13)
@@ -8091,7 +8115,7 @@ impl BeeperGuiApp {
         let selected = self.pane().selected_msgs.contains(&m.id);
         let rise = send_rise(st, m).unwrap_or(1.0);
         let dim = move |c: Color| (if selected { brightness(c, 0.7) } else { c }).scale_alpha(rise);
-        let (bg, fg) = if mine { (dim(p.sent), dim(Color::WHITE)) } else { (dim(p.received), dim(p.strong)) };
+        let (bg, fg) = if mine { (dim(sent), dim(sent_fg)) } else { (dim(p.received), dim(p.strong)) };
         let text = m.text.clone().unwrap_or_default();
         let preview = st
             .settings
@@ -8120,7 +8144,7 @@ impl BeeperGuiApp {
         let quote = linked.and_then(|r| st.msg_idx_by_id.get(r)).map(|&i| {
             let q = &st.messages[i];
             let q_mine = q.is_sender == Some(true);
-            let (edge, fill) = if q_mine { (p.sent, mix(p.card, p.sent, 0.3)) } else { (p.received, p.card) };
+            let (edge, fill) = if q_mine { (sent, mix(p.card, sent, 0.3)) } else { (p.received, p.card) };
             let body = ell(q.text.as_deref().unwrap_or(""), 300.0, 12.0, Weight::Medium).color(p.text);
             let pill = container(body).padding(8).style(bordered_box(fill, edge, 2.0, 17.0));
             let pill = mouse_area(pill).on_press(UiMessage::ShowReplies(q.id.clone()));
@@ -8284,7 +8308,7 @@ impl BeeperGuiApp {
                 .on("showTimestamps")
                 .then(|| format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1));
             let room = ts.as_deref().map_or(0.0, |t| crate::style::text_width(t, 11.0, Weight::Normal) + 4.0);
-            let time = ts.map(|t| txt(t, 11.0).color(if mine { p.sent_meta } else { p.sub }));
+            let time = ts.map(|t| txt(t, 11.0).color(if mine { sent_meta } else { p.sub }));
             let me = |id: &str| id == st.beeper_state.user_id;
             let arrow =
                 || span(icon::ARROW_UP_RIGHT.to_string()).font(iced::Font::with_name("icons")).size(11.0).color(fg);
@@ -8364,11 +8388,11 @@ impl BeeperGuiApp {
             );
         }
         let open = self.pane().expanded_history_msg_id.as_ref() == Some(&m.id);
-        let label = |t: String| txt(t, 12.0).line_height(Pixels(15.0)).color(p.muted);
+        let label = |t: String| txt(t, 12.0).line_height(Pixels(15.0)).color(muted);
         let edited = m.edited().then(|| -> El<'a> {
             let small = |t: &str| txt(t.to_string(), 11.0).line_height(Pixels(14.0));
             if m.edit_history.is_empty() {
-                return small(tr("Edited")).color(p.muted).into();
+                return small(tr("Edited")).color(muted).into();
             }
             let toggle = small(if open { tr("Hide Edits") } else { tr("Edited") }).font(fw(Weight::Semibold));
             button(toggle.color(p.accent))
@@ -8379,7 +8403,7 @@ impl BeeperGuiApp {
         });
         let replies = (replies > 0).then(|| -> El<'a> {
             let n = trnx("%d Reply", "%d Replies", replies, "button label for replies to a message", &[&replies]);
-            button(semi(n, 10.0).line_height(Pixels(12.0)).color(p.muted))
+            button(semi(n, 10.0).line_height(Pixels(12.0)).color(muted))
                 .padding(0)
                 .style(|_, _| button::Style::default())
                 .on_press(UiMessage::ShowReplies(m.id.clone()))
@@ -8392,7 +8416,7 @@ impl BeeperGuiApp {
         }
         let footer = (!footer.is_empty()).then(|| {
             let line = footer.into_iter().enumerate().fold(Row::new().align_y(Center), |r, (i, t)| {
-                r.push((i > 0).then(|| container(txt("・", 12.0).color(p.muted.scale_alpha(0.8))).padding([0, 4])))
+                r.push((i > 0).then(|| container(txt("・", 12.0).color(muted.scale_alpha(0.8))).padding([0, 4])))
                     .push(t)
             });
             container(line).padding([0.0, BUBBLE_PAD_X])
@@ -9142,7 +9166,7 @@ impl BeeperGuiApp {
                     Space::new().width(Fill),
                     txt(list_ts(&m.timestamp, h24), 11.0).line_height(Pixels(7.0)).color(p.text)
                 ];
-                let (bg, fg) = if mine { (p.sent, Color::WHITE) } else { (p.received, p.strong) };
+                let (bg, fg) = if mine { (p.sent, p.sent_fg) } else { (p.received, p.strong) };
                 let body = clamped(m.text.as_deref().expect("text message"), 554.0, 3, 13.0, Weight::Normal);
                 let lower = body.to_ascii_lowercase();
                 let (mut spans, mut at): (Vec<iced::widget::text::Span<()>>, _) = (Vec::new(), 0);
@@ -11224,6 +11248,7 @@ impl BeeperGuiApp {
                     })
                 }
                 prefs::Item::Theme => out.push(group(p, heading.take(), vec![theme_cards(p, s.theme)])),
+                prefs::Item::ChatTheme => out.push(group(p, heading.take(), vec![self.chat_theme_picker(st, None)])),
                 prefs::Item::Zoom(t, args) => {
                     out.push(group(p, heading.take(), vec![self.zoom_slider(s.zoom_percent, trs(t, args))]))
                 }
@@ -11231,6 +11256,99 @@ impl BeeperGuiApp {
         }
         assert!(lead.is_none(), "a subtitle without a heading comes before a group");
         out
+    }
+
+    /// Desktop's `--on-wallpaper-fg` of `chat` outside of a reply chain, when its chat theme has a wallpaper.
+    fn wallpaper_fg(&self, st: &BeeperStore, chat: &Chat, thread: bool) -> Option<Color> {
+        let wallpaper = chat_theme::resolve(&st.settings.chat_appearance, Some(&chat.id), self.dark).0;
+        wallpaper.filter(|_| !thread).map(|(_, fg)| fg)
+    }
+
+    /// The color, text color and metadata color of sent bubbles in `chat`, or in the default chat theme.
+    fn sent_colors(&self, st: &BeeperStore, chat: Option<&str>) -> (Color, Color, Color) {
+        let p = &self.pal;
+        match chat_theme::resolve(&st.settings.chat_appearance, chat, self.dark).1 {
+            Some((bg, fg)) => (bg, fg, fg.scale_alpha(p.sent_meta.a)),
+            None => (p.sent, p.sent_fg, p.sent_meta),
+        }
+    }
+
+    /// Desktop's `ChatAppearancePicker`: the chat theme of `chat`, or the default chat theme.
+    fn chat_theme_picker(&self, st: &BeeperStore, chat: Option<&str>) -> El<'_> {
+        let p = &self.pal;
+        let a = &st.settings.chat_appearance;
+        let stored = a.theme(chat);
+        let wallpaper = chat_theme::resolve(a, chat, self.dark).0;
+        let (sent, sent_fg, _) = self.sent_colors(st, chat);
+        let id = chat.map(str::to_string);
+        let ring = |el: El<'static>, on: bool, radius: f32, msg: UiMessage| -> El<'static> {
+            let edge = if on { p.accent } else { CLEAR };
+            let el = container(el).padding(4).style(bordered_box(CLEAR, edge, 2.0, radius + 4.0));
+            mouse_area(el).on_press(msg).into()
+        };
+        let bubble = |text: &'static str, bg: Color, fg: Color| {
+            container(txt(tr(text), 13.0).color(fg)).padding([8, 12]).style(fill_box(bg, 17.0))
+        };
+        let lines = column![
+            bubble("Pick a wallpaper and bubble color", p.received, p.strong),
+            container(bubble("Only you see your chat theme", sent, sent_fg)).align_right(Fill),
+        ]
+        .spacing(8);
+        let preview: El<'_> = match wallpaper {
+            Some((paint, _)) => {
+                stack![chat_theme::fill(paint, Size::new(f32::INFINITY, 106.0), 12.0), container(lines).padding(16)]
+                    .into()
+            }
+            None => container(lines).padding(16).style(fill_box(p.card, 12.0)).into(),
+        };
+        let preview =
+            container(preview).height(106 + 2).padding(1).style(bordered_box(CLEAR, p.neutral_border, 1.0, 12.0));
+        let label = |text: &'static str| txt(tr(text), 12.0).font(fw(Weight::Medium)).color(p.sub);
+        let default = matches!(stored.bubble, None | Some(Bubble::Default));
+        let none = if chat.is_some() { Some(Bubble::Default) } else { None };
+        let sub = p.sub;
+        let cross =
+            svg(chat_theme::NO_BUBBLE.clone()).width(26).height(26).style(move |_, _| svg::Style { color: Some(sub) });
+        let mut swatches = vec![ring(
+            container(cross).padding(1).style(bordered_box(CLEAR, p.neutral_border, 1.0, 14.0)).into(),
+            default,
+            14.0,
+            UiMessage::ChatBubble(id.clone(), none),
+        )];
+        swatches.extend(chat_theme::BUBBLES.iter().map(|&(bid, c)| {
+            let on = stored.bubble == Some(Bubble::Swatch { id: bid.into() });
+            let dot = container(Space::new()).width(28).height(28).style(fill_box(hex(c), 14.0));
+            ring(dot.into(), on, 14.0, UiMessage::ChatBubble(id.clone(), Some(Bubble::Swatch { id: bid.into() })))
+        }));
+        let tile = |fill: El<'static>, w: Wallpaper| {
+            let on = stored.wallpaper.as_ref().unwrap_or(&Wallpaper::None) == &w;
+            let fill = container(fill).width(62).height(100).padding(1).style(bordered_box(
+                CLEAR,
+                p.neutral_border,
+                1.0,
+                10.0,
+            ));
+            ring(fill.into(), on, 10.0, UiMessage::ChatWallpaper(id.clone(), w))
+        };
+        let mut tiles = vec![tile(
+            container(txt(tr("None"), 11.0).color(p.sub)).center(Fill).style(fill_box(p.card, 10.0)).into(),
+            Wallpaper::None,
+        )];
+        let papers = chat_theme::COLORS.iter().map(|c| Wallpaper::Color { id: c.0.into() });
+        for w in papers.chain(chat_theme::GRADIENTS.iter().map(|g| Wallpaper::Gradient { id: g.0.into() })) {
+            let (paint, _) = chat_theme::paint(&w, self.dark).expect("a known wallpaper");
+            tiles.push(tile(chat_theme::fill(paint, Size::new(60.0, 98.0), 9.0), w));
+        }
+        column![
+            preview,
+            label("Bubble color"),
+            Row::with_children(swatches).wrap(),
+            label("Wallpaper"),
+            Row::with_children(tiles).spacing(2).wrap().vertical_spacing(2),
+        ]
+        .spacing(12)
+        .padding(16)
+        .into()
     }
 
     fn zoom_slider(&self, percent: u16, desc: String) -> El<'_> {
