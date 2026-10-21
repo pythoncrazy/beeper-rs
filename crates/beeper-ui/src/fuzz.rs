@@ -1637,6 +1637,21 @@ fn edit_and_delete_labels_like_desktop() {
 }
 
 #[test]
+fn sidebar_menus_open_accounts_like_desktop() {
+    let mut app = demo_app("rail-menus");
+    let account = app.store.read().bridge_accounts[0].account_id.clone();
+    for entry in [account.as_str(), "label:lbl_work"] {
+        let _ = app.update(UiMessage::OpenChatMenu(format!("account:{entry}")));
+        let mut sim = simulator(app.view_account_menu(entry));
+        assert!(entry.starts_with("label:") || sim.find("Mute Space").is_ok());
+        let _ = sim.click("Add/Remove Accounts…").expect("an Add/Remove Accounts item");
+        let open = sim.into_messages().find(|m| matches!(m, UiMessage::OpenSettings(SettingsTab::Accounts)));
+        let _ = app.update(open.expect("the Accounts settings"));
+        assert!(app.chat_menu.is_none() && app.settings_window.is_some());
+    }
+}
+
+#[test]
 fn label_inbox_rules_like_desktop() {
     let mut app = demo_app("label-inbox");
     let _ = app.update(UiMessage::OpenChatMenu("account:label:lbl_work".into()));

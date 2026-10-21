@@ -5832,7 +5832,10 @@ impl BeeperGuiApp {
                 self.filters = if self.filters == bit { 0 } else { bit };
                 self.show_filter_menu = false;
             }
-            UiMessage::OpenSettings(tab) => return self.open_settings(tab),
+            UiMessage::OpenSettings(tab) => {
+                self.chat_menu = None;
+                return self.open_settings(tab);
+            }
             UiMessage::ToggleAddAccount => self.adding_account ^= true,
             UiMessage::ShowAppQr => self.app_qr = true,
             UiMessage::OpenAccount(id) => {
@@ -6568,7 +6571,7 @@ impl BeeperGuiApp {
                 (124.0, 31.0)
             } else if let Some(entry) = cid.strip_prefix("account:") {
                 let label = rail_label(&self.store.read(), entry).is_some();
-                let h = if label { 8.0 + 4.0 * MENU_ITEM + 11.0 } else { 8.0 + 3.0 * MENU_ITEM };
+                let h = if label { 8.0 + 5.0 * MENU_ITEM + 22.0 } else { 8.0 + 4.0 * MENU_ITEM + 11.0 };
                 (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), h)
             } else {
                 let st = self.store.read();
@@ -7462,6 +7465,8 @@ impl BeeperGuiApp {
                     UiMessage::MuteLabel(l.id.clone(), !l.muted)
                 ),
                 menu_rule(p),
+                item(tr("Add/Remove Accounts…"), UiMessage::OpenSettings(SettingsTab::Accounts)),
+                menu_rule(p),
                 item(tr("Edit Label…"), UiMessage::EditLabel(l.id.clone())),
                 item(tr("Delete Label"), UiMessage::AskDeleteLabel(l.id.clone())),
             ];
@@ -7494,13 +7499,19 @@ impl BeeperGuiApp {
         let mute = menu_item(
             p,
             None,
-            trx(if muted { "Unmute" } else { "Mute" }, "account context menu action").into(),
+            tr(if muted { "Unmute Space" } else { "Mute Space" }).into(),
             "",
             Some(UiMessage::SetAccountProps(account.into(), mute)),
         );
+        let accounts = UiMessage::OpenSettings(SettingsTab::Accounts);
         let col = column![
             mouse_area(inbox).on_enter(UiMessage::ChatSub(Some(0))),
-            mouse_area(mute).on_enter(UiMessage::ChatSub(None))
+            mouse_area(column![
+                mute,
+                menu_rule(p),
+                menu_item(p, None, tr("Add/Remove Accounts…").into(), "", Some(accounts))
+            ])
+            .on_enter(UiMessage::ChatSub(None))
         ];
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         row![menu].push(sub).into()
