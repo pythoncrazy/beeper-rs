@@ -223,6 +223,9 @@ pub struct Label {
     /// `com.beeper.muted`.
     #[serde(skip)]
     pub muted: bool,
+    /// `com.beeper.label.inbox_visibility`: "dmOnly" or "none". Desktop shows all chats without it.
+    #[serde(skip)]
+    pub inbox: Option<&'static str>,
     /// The chats of the `m.space.child` events with a `via`.
     #[serde(skip)]
     pub rooms: Vec<String>,
@@ -327,8 +330,12 @@ pub struct Chat {
     /// The sort key of the newest message or reaction; a newer one than the done mark unarchives the chat.
     #[serde(rename = "lastNotifiableOrder", skip_serializing_if = "Option::is_none")]
     pub notifiable: Option<String>,
+    /// Whether the inbox rule of the account hides the chat.
     #[serde(rename = "isHiddenFromInbox", skip_serializing_if = "Option::is_none")]
     pub is_hidden_from_inbox: Option<bool>,
+    /// Whether "Only DMs" hides the chat: a group that is not a group DM.
+    #[serde(rename = "inboxGroup", default)]
+    pub inbox_group: bool,
     #[serde(rename = "isRequest", skip_serializing_if = "Option::is_none")]
     pub is_request: Option<bool>,
     #[serde(rename = "networkName", skip_serializing_if = "Option::is_none")]

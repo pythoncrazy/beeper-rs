@@ -365,6 +365,8 @@ pub enum UiMessage {
     Label(LabelEdit),
     AskDeleteLabel(String),
     DeleteLabel(String),
+    /// Desktop's `setLabelInboxVisibility`.
+    SetLabelInbox(String, Option<&'static str>),
     /// Desktop's `PollVotesBrowserWindow` for a chat's poll message.
     OpenPollVotes(String, String),
     EndPoll(String, String),
@@ -4488,6 +4490,10 @@ impl BeeperGuiApp {
                 drop(st);
                 return open.chain(operation::focus("label-title"));
             }
+            UiMessage::SetLabelInbox(id, inbox) => {
+                self.chat_menu = None;
+                self.store.write().set_label_inbox(&id, inbox);
+            }
             UiMessage::AskDeleteLabel(id) => {
                 (self.confirm, self.chat_menu, self.delete_target) = (Some(ASK_DELETE_LABEL), None, Some(id));
             }
@@ -7395,15 +7401,30 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let st = self.store.read();
         if let Some(l) = rail_label(&st, entry) {
-            let item = |label: &str, msg| menu_item(p, None, label.into(), "", Some(msg));
+            let now = l.inbox.unwrap_or("all");
+            let sub = (self.chat_sub == Some(0)).then(|| {
+                let items = INBOX_OPTIONS.iter().map(|&(o, label)| {
+                    let lead = container((o == now).then(|| ic(icon::CHECK, 14.0))).width(22).into();
+                    let name =
+                        if o == "none" { trx(label, "label inbox visibility option") } else { inbox_label(label) };
+                    let msg = UiMessage::SetLabelInbox(l.id.clone(), (o != "all").then_some(o));
+                    menu_item(p, Some(lead), name.into(), "", Some(msg))
+                });
+                let body = container(Column::with_children(items).padding([4, 0])).width(ACCOUNT_SUB_W);
+                body.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
+            });
+            let item = |label: &str, msg| {
+                mouse_area(menu_item(p, None, label.into(), "", Some(msg))).on_enter(UiMessage::ChatSub(None))
+            };
+            let inbox = menu_item(p, None, tr("Show in Inbox").into(), "›", Some(UiMessage::ChatSub(Some(0))));
             let col = column![
+                mouse_area(inbox).on_enter(UiMessage::ChatSub(Some(0))),
+                menu_rule(p),
                 item(tr("Edit Label…"), UiMessage::EditLabel(l.id.clone())),
                 item(tr("Delete Label"), UiMessage::AskDeleteLabel(l.id.clone())),
             ];
-            return container(col.padding([4, 0]))
-                .width(233)
-                .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
-                .into();
+            let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            return row![menu].push(sub).into();
         }
         let space = network_space(&st, entry);
         let account = space.map_or(entry, |n| n.account_id.as_str());

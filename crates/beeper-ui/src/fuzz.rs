@@ -1635,3 +1635,33 @@ fn edit_and_delete_labels_like_desktop() {
     assert!(rooms.iter().all(|r| !st.chats[st.chat_idx_by_id[r]].label_ids.iter().any(|l| l == "lbl_work")));
     assert_eq!(app.selected_account_filter, None, "the inbox opens when its label is deleted");
 }
+
+#[test]
+fn label_inbox_rules_like_desktop() {
+    let mut app = demo_app("label-inbox");
+    let _ = app.update(UiMessage::OpenChatMenu("account:label:lbl_work".into()));
+    let _ = app.update(UiMessage::ChatSub(Some(0)));
+    let picks: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_account_menu("label:lbl_work"));
+        let _ = sim.click("Only DMs").expect("the Only DMs option");
+        sim.into_messages().collect()
+    };
+    assert!(matches!(&picks[..], [UiMessage::SetLabelInbox(id, Some("dmOnly"))] if id == "lbl_work"));
+    let hidden = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        let work = st.labels.iter().find(|l| l.id == "lbl_work").expect("the work label");
+        let chats = work.rooms.iter().map(|r| &st.chats[st.chat_idx_by_id[r]]);
+        chats.map(|c| (c.inbox_group, c.flags & CHAT_HIDDEN != 0)).collect::<Vec<_>>()
+    };
+    let shown = hidden(&app);
+    assert!(!shown.is_empty() && shown.iter().all(|&(_, h)| !h));
+    for m in picks {
+        let _ = app.update(m);
+    }
+    assert!(hidden(&app).iter().all(|&(group, h)| group == h), "Only DMs hides group chats");
+    assert!(app.chat_menu.is_none());
+    let _ = app.update(UiMessage::SetLabelInbox("lbl_work".into(), Some("none")));
+    assert!(hidden(&app).iter().all(|&(_, h)| h), "None hides all label chats");
+    let _ = app.update(UiMessage::SetLabelInbox("lbl_work".into(), None));
+    assert_eq!(hidden(&app), shown);
+}
