@@ -375,6 +375,10 @@ pub enum UiMessage {
     Spaces(SpacesEdit),
     /// Desktop's `editGroup`: the Edit Group window of a chat.
     OpenEditGroup(String),
+    /// Starts editing the Chat Info group description, or edits it.
+    InfoDesc(Option<text_editor::Action>),
+    SaveInfoDesc,
+    InfoMore,
     Group(GroupEdit),
     /// Opens the New label window with these chats picked.
     OpenCreateLabel(Vec<String>),
@@ -3216,6 +3220,9 @@ pub struct BeeperGuiApp {
     pub label_window: Option<LabelDraft>,
     pub spaces_window: Option<SpacesDraft>,
     pub group_window: Option<GroupDraft>,
+    /// The Chat Info group description while it is edited, and whether it shows all of its lines.
+    pub info_desc: Option<text_editor::Content>,
+    pub info_more: bool,
     /// The poll votes windows with their chats and poll messages.
     pub vote_windows: Vec<(window::Id, String, String)>,
     /// The window that `BEEPER_SCREENSHOT_EXIT` or `BEEPER_SCREENSHOT_SETTINGS` captures after its next frame.
@@ -3383,6 +3390,8 @@ impl BeeperGuiApp {
             poll_windows: Vec::new(),
             label_window: None,
             group_window: None,
+            info_desc: None,
+            info_more: false,
             spaces_window: None,
             vote_windows: Vec::new(),
             shot: None,
@@ -3827,6 +3836,7 @@ impl BeeperGuiApp {
         self.pane.editing_message_id = None;
         self.pane.selected_msgs.clear();
         self.pane.msg_anchor = None;
+        (self.info_desc, self.info_more) = (None, false);
         let pending = st.scheduled.iter().any(|s| s.chat_id == chat.id && !s.canceled);
         (self.pane.send_later, self.pane.sched_fold, self.pane.sched_menu) = (None, (pending, pending), None);
         self.pane.reply_thread = None;
@@ -4990,6 +5000,21 @@ impl BeeperGuiApp {
                 return open;
             }
             UiMessage::Spaces(e) => return self.spaces_edit(e),
+            UiMessage::InfoDesc(None) => {
+                let st = self.store.read();
+                let cid = self.pane.selected_chat_id.as_deref().expect("a chat is selected");
+                let c = &st.chats[st.resolve_chat_idx(cid).expect("selected chat exists")];
+                self.info_desc = Some(composer_with(c.description.as_deref().unwrap_or_default()));
+                return operation::focus("info-desc");
+            }
+            UiMessage::InfoDesc(Some(action)) => self.info_desc.as_mut().expect("editing").perform(action),
+            UiMessage::SaveInfoDesc => {
+                let text = self.info_desc.take().expect("editing").text();
+                let cid = self.pane.selected_chat_id.clone().expect("a chat is selected");
+                self.store.write().update_group(&cid, None, Some(text), None);
+                return self.update(UiMessage::StoreChanged);
+            }
+            UiMessage::InfoMore => self.info_more ^= true,
             UiMessage::OpenEditGroup(chat) => {
                 self.chat_menu = None;
                 if let Some(d) = &self.group_window {
@@ -10832,8 +10857,82 @@ impl BeeperGuiApp {
             .spacing(4)
             .align_x(Center)
             .width(Fill);
+        let can_desc = chat.edits & 1 << 2 != 0;
+        let small =
+            |s: &'static str, w: Weight, c: Color| crate::style::t(s, 11.0, w).line_height(Pixels(14.0)).color(c);
+        let link = |label: &'static str, w: Weight, msg: UiMessage| {
+            button(small(label, w, p.accent)).padding(0).style(btn_style([CLEAR; 3], [p.accent; 3], 0.0)).on_press(msg)
+        };
+        let desc_head = |btn: Option<_>| {
+            row![small(tr("Group Description"), Weight::Normal, p.strong), Space::new().width(Fill)]
+                .push(btn)
+                .padding([0, 8])
+                .align_y(Center)
+        };
+        let desc: Option<El> = match (&self.info_desc, chat.description.as_deref()) {
+            _ if chat.chat_type != "group" => None,
+            (Some(content), _) => {
+                let done =
+                    link(trx("Done", "group description submit button"), Weight::Semibold, UiMessage::SaveInfoDesc);
+                let input = text_editor(content)
+                    .id("info-desc")
+                    .placeholder(tr("This description is public to the group"))
+                    .size(11)
+                    .line_height(Pixels(14.0))
+                    .padding(8)
+                    .style(move |_: &Theme, _| text_editor::Style {
+                        background: p.chip.into(),
+                        border: border::rounded(8),
+                        placeholder: p.sub,
+                        value: p.strong,
+                        selection: p.accent.scale_alpha(0.3),
+                    });
+                let input = if can_desc { input.on_action(|a| UiMessage::InfoDesc(Some(a))) } else { input };
+                Some(
+                    column![desc_head(can_desc.then_some(done)), input]
+                        .spacing(8)
+                        .padding(Padding::ZERO.top(8.0))
+                        .into(),
+                )
+            }
+            (None, None) if can_desc => Some(
+                container(link(tr("Add a description"), Weight::Semibold, UiMessage::InfoDesc(None)))
+                    .center_x(Fill)
+                    .padding(Padding::ZERO.bottom(8.0))
+                    .into(),
+            ),
+            (None, Some(d)) => {
+                let full = d.split_whitespace().collect::<Vec<_>>().join(" ");
+                let clamped = crate::style::clamped(&full, 268.0, 3, 11.0, Weight::Normal);
+                let more = *clamped != *full;
+                let shown = if self.info_more { full.clone() } else { clamped.to_string() };
+                let spans = shown.split_inclusive(' ').map(|w| match text_urls(w).first() {
+                    Some(&url) => span(w.to_string()).color(p.accent).link(url.to_string()),
+                    None => span(w.to_string()).color(p.strong),
+                });
+                let text = rich_text(spans.collect::<Vec<_>>())
+                    .size(11)
+                    .line_height(Pixels(14.0))
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                    .on_link_click(UiMessage::OpenUrl);
+                let edit =
+                    link(trx("Edit", "group description edit button"), Weight::Semibold, UiMessage::InfoDesc(None));
+                let more = more
+                    .then(|| link(trx("more", "expand group description button"), Weight::Normal, UiMessage::InfoMore));
+                let body =
+                    container(column![text].push(more).spacing(4)).padding(8).width(Fill).style(fill_box(p.chip, 8.0));
+                Some(
+                    column![desc_head(can_desc.then_some(edit)), body]
+                        .spacing(8)
+                        .padding(Padding::ZERO.top(8.0))
+                        .into(),
+                )
+            }
+            (None, None) => None,
+        };
+        let adding = can_desc && chat.chat_type == "group" && self.info_desc.is_none() && chat.description.is_none();
         let header = mouse_area(stack![
-            container(details).padding(Padding::new(16.0).bottom(8.0)),
+            container(details).padding(Padding::new(16.0).bottom(if adding { 0.0 } else { 8.0 })),
             container(edit).align_right(Fill).padding(Padding::ZERO.top(12.0).right(8.0)),
         ])
         .on_right_press(UiMessage::OpenChatMenu(format!("info:{cid}")));
@@ -10897,13 +10996,14 @@ impl BeeperGuiApp {
                 .align_y(Center),
             )
         });
-        let body = column![
-            header,
-            column![med(format!("{} participants", chat.participants.total), 12.0).color(p.weak), people]
-                .spacing(8)
-                .padding(8),
-        ]
-        .padding(Padding::new(8.0).top(0.0));
+        let body = column![header]
+            .push(desc)
+            .push(
+                column![med(format!("{} participants", chat.participants.total), 12.0).color(p.weak), people]
+                    .spacing(8)
+                    .padding(8),
+            )
+            .padding(Padding::new(8.0).top(0.0));
         let scroll = scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill);
         container(container(column![pane_head, scroll, toolbar]).width(300).height(Fill).style(fill_box(p.card, 10.0)))
             .padding(Padding::new(8.0).left(0.0))
