@@ -2068,6 +2068,38 @@ fn hidden_spaces(st: &BeeperStore) -> Vec<String> {
     hidden.map(|o| o.id.clone()).collect()
 }
 
+/// The `chat_menu` key of the sidebar overflow menu.
+const RAIL_MORE: &str = "rail:more";
+
+/// Desktop's sidebar overflow menu (`Plt`): the hidden spaces, then New Label…, Edit Spaces… and Add/Remove Accounts…,
+/// with `None` for a separator.
+fn more_menu(st: &BeeperStore) -> Vec<Option<(String, UiMessage)>> {
+    let unread = st.chats.iter().any(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0);
+    let hidden = hidden_spaces(st);
+    let mut items: Vec<_> = hidden
+        .iter()
+        .map(|id| {
+            let name = space_name(st, id);
+            let label = if id == "requests" && unread { format!("• {name}") } else { name };
+            let msg = match RAIL_VIEWS.iter().find(|v| v.0 == id).map(|v| v.1) {
+                Some(Some(tab)) => UiMessage::SelectTab(tab),
+                Some(None) => UiMessage::OpenCreateLabel(Vec::new()),
+                None => UiMessage::SelectAccount(Some(id.clone())),
+            };
+            Some((label, msg))
+        })
+        .collect();
+    if !hidden.is_empty() {
+        items.push(None);
+    }
+    if st.feature("labels-v2").show {
+        items.extend([Some((tr("New Label…").into(), UiMessage::OpenCreateLabel(Vec::new()))), None]);
+    }
+    items.push(Some((tr("Edit Spaces…").into(), UiMessage::OpenEditSpaces)));
+    items.push(Some((tr("Add/Remove Accounts…").into(), UiMessage::OpenSettings(SettingsTab::Accounts))));
+    items
+}
+
 /// The account of an account or network space.
 fn rail_owner(st: &BeeperStore, id: &str) -> String {
     network_space(st, id).map_or(id, |n| n.account_id.as_str()).to_string()
@@ -4140,12 +4172,14 @@ impl BeeperGuiApp {
     fn handle(&mut self, msg: UiMessage) -> Task<UiMessage> {
         match msg {
             UiMessage::SelectTab(tab) => {
+                self.chat_menu = None;
                 self.active_tab = tab;
                 self.selected_account_filter = None;
                 self.show_filter_menu = false;
                 self.creating_chat = None;
             }
             UiMessage::SelectAccount(acc) => {
+                self.chat_menu = None;
                 self.active_tab = InboxTab::AllChats;
                 self.selected_account_filter = acc;
                 self.creating_chat = None;
@@ -6640,7 +6674,9 @@ impl BeeperGuiApp {
     pub fn view_main(&self) -> El<'_> {
         let st = self.store.read();
         // The sync task can drop a chat before StoreChanged reaches update.
-        let known = |c: &str| c.starts_with("draft:") || c.starts_with("account:") || st.resolve_chat_idx(c).is_some();
+        let known = |c: &str| {
+            c == RAIL_MORE || c.starts_with("draft:") || c.starts_with("account:") || st.resolve_chat_idx(c).is_some()
+        };
         let shown = self.pane().selected_chat_id.as_deref().is_some_and(known);
         let open = self.creating_chat.is_none() && shown;
         let menu_open = self.chat_menu.as_ref().is_some_and(|(c, _)| known(c));
@@ -6686,6 +6722,9 @@ impl BeeperGuiApp {
         let chat_menu = self.chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
             let (w, h) = if cid.starts_with("draft:") {
                 (124.0, 31.0)
+            } else if cid == RAIL_MORE {
+                let items = more_menu(&self.store.read());
+                (233.0, 8.0 + items.iter().map(|i| if i.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>())
             } else if RAIL_VIEWS.iter().any(|v| cid.strip_prefix("account:") == Some(v.0)) {
                 (233.0, 8.0 + 4.0 * MENU_ITEM)
             } else if cid.starts_with("account:") {
@@ -7696,6 +7735,14 @@ impl BeeperGuiApp {
     /// The chat menu, with `room` pixels from its top to the bottom of the window.
     fn view_chat_menu(&self, cid: &str, sub_left: bool, room: f32) -> El<'_> {
         let p = &self.pal;
+        if cid == RAIL_MORE {
+            let items = more_menu(&self.store.read()).into_iter().map(|i| match i {
+                Some((label, msg)) => menu_item(p, None, label, "", Some(msg)),
+                None => menu_rule(p),
+            });
+            let col = Column::with_children(items).padding([4, 0]);
+            return container(col).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into();
+        }
         if let Some(entry) = cid.strip_prefix("account:") {
             return self.view_account_menu(entry);
         }
@@ -8085,7 +8132,11 @@ impl BeeperGuiApp {
             _ => account(i, id),
         });
         let top = Column::with_children(spaces.collect::<Vec<_>>())
-            .push(rail_btn(g(icon::MORE_HORIZ), false, UiMessage::OpenSettings(SettingsTab::Accounts)))
+            .push(badge(
+                rail_btn(g(icon::MORE_HORIZ), false, UiMessage::OpenChatMenu(RAIL_MORE.into())).into(),
+                if hidden_spaces(&st).iter().any(|s| s == "requests") { requests } else { 0 },
+                false,
+            ))
             .spacing(8)
             .align_x(Center)
             .width(68)
