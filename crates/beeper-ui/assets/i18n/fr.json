@@ -356,6 +356,8 @@
 "Low Priority":["Priorité faible"],
 "MCP endpoint":["Point de terminaison MCP"],
 "Mark %d thread as read":["Marquer %d fil comme lu", "Marquer %d fils comme lus"],
+"Mark All as Read":["Tout marquer comme lu"],
+"Mark All as Unread":["Tout marquer comme non lu"],
 "Mark Read":["Marquer comme lu"],
 "Mark Read/Unread":["Marquer comme lu/non lu"],
 "Mark Unread":["Marqué comme non lu"],

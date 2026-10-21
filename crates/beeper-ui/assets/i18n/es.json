@@ -357,6 +357,8 @@
 "Low Priority":["Baja prioridad"],
 "MCP endpoint":["Variable MCP"],
 "Mark %d thread as read":["Marcar %d hilo como leído", "Marcar %d hilos como leídos"],
+"Mark All as Read":["Marcar todo como leído"],
+"Mark All as Unread":["Marcar todo como no leído"],
 "Mark Read":["Marcar como leído"],
 "Mark Read/Unread":["Marcar como leído/no leído"],
 "Mark Unread":["Marcar como no leído"],
