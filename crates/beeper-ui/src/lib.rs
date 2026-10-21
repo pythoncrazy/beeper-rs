@@ -4641,8 +4641,15 @@ impl BeeperGuiApp {
                 let order = rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st));
                 let order = order.collect();
                 drop(st);
-                self.spaces_window =
-                    Some(SpacesDraft { id, order, search: String::new(), drag: None, menu: None, scrolled: false });
+                self.spaces_window = Some(SpacesDraft {
+                    id,
+                    order,
+                    search: String::new(),
+                    drag: None,
+                    menu: None,
+                    scrolled: false,
+                    asking: false,
+                });
                 return open;
             }
             UiMessage::Spaces(e) => return self.spaces_edit(e),
@@ -4681,10 +4688,16 @@ impl BeeperGuiApp {
             }
             UiMessage::AskDeleteLabel(id) => {
                 (self.confirm, self.chat_menu, self.delete_target) = (Some(ASK_DELETE_LABEL), None, Some(id));
+                if let Some(d) = self.spaces_window.as_mut() {
+                    d.asking = false;
+                }
             }
             UiMessage::DeleteLabel(id) => {
                 self.confirm = None;
                 self.store.write().delete_label(&id);
+                if let Some(d) = self.spaces_window.as_mut() {
+                    d.order.retain(|o| *o != format!("label:{id}"));
+                }
                 if self.selected_account_filter.as_deref() == Some(&format!("label:{id}")) {
                     self.selected_account_filter = None;
                 }
@@ -5012,6 +5025,10 @@ impl BeeperGuiApp {
             UiMessage::WindowKey(id, key, mods) => {
                 if Some(id) == self.settings_window {
                     return self.settings_key(key, mods);
+                }
+                if self.spaces_asking() && key == Key::Named(Named::Escape) {
+                    self.confirm = None;
+                    return Task::none();
                 }
                 if self.theme_windows.iter().any(|w| w.0 == id)
                     || self.vote_windows.iter().any(|w| w.0 == id)
@@ -6256,6 +6273,9 @@ impl BeeperGuiApp {
                 self.poll_windows.retain(|w| w.id != id);
                 self.vote_windows.retain(|w| w.0 != id);
                 self.label_window = self.label_window.take().filter(|d| d.id != id);
+                if self.spaces_asking() && self.spaces_window.as_ref().is_some_and(|d| d.id == id) {
+                    self.confirm = None;
+                }
                 self.spaces_window = self.spaces_window.take().filter(|d| d.id != id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
@@ -6825,7 +6845,8 @@ impl BeeperGuiApp {
             },
         );
         let toast = self.view_toast(76.0);
-        let confirm = self.confirm.filter(|d| !SETTINGS_DIALOGS.contains(d)).map(|d| self.view_confirm(d));
+        let confirm = self.confirm.filter(|d| !SETTINGS_DIALOGS.contains(d) && !self.spaces_asking());
+        let confirm = confirm.map(|d| self.view_confirm(d));
         let shows = |c: &&Carousel| {
             let st = self.store.read();
             !c.in_media && Some(&st.messages[st.msg_idx_by_id[&c.mid]].chat_id) == self.pane().selected_chat_id.as_ref()
@@ -12416,6 +12437,11 @@ impl BeeperGuiApp {
         }
     }
 
+    /// Whether the open Delete Label confirm shows in the Edit Spaces window, like Desktop's modal in that window.
+    fn spaces_asking(&self) -> bool {
+        self.confirm == Some(ASK_DELETE_LABEL) && self.spaces_window.as_ref().is_some_and(|d| d.asking)
+    }
+
     fn spaces_edit(&mut self, e: SpacesEdit) -> Task<UiMessage> {
         let d = self.spaces_window.as_mut().expect("the Edit Spaces window is open");
         match e {
@@ -12450,7 +12476,10 @@ impl BeeperGuiApp {
                 if !matches!(*m, UiMessage::ChatSub(_)) {
                     d.menu = None;
                 }
-                return self.update(*m);
+                let asking = matches!(*m, UiMessage::AskDeleteLabel(_));
+                let task = self.update(*m);
+                self.spaces_window.as_mut().expect("the Edit Spaces window is open").asking = asking;
+                return task;
             }
             SpacesEdit::NewLabel => {
                 let close = window::close(d.id);
@@ -12594,7 +12623,10 @@ impl BeeperGuiApp {
             .padding([8, 0]);
         let window = container(column![head, card].push(new)).padding(8).style(fill_box(p.window, 0.0));
         let window = mouse_area(window).on_release(edit(SpacesEdit::Drop));
-        let Some((id, at)) = &d.menu else { return stack![window].into() };
+        let Some((id, at)) = &d.menu else {
+            drop(st);
+            return stack![window].push(self.spaces_asking().then(|| self.view_confirm(ASK_DELETE_LABEL))).into();
+        };
         let h = 8.0 + MENU_ITEM * if rail_label(&st, id).is_some() { 4.0 } else { 2.0 };
         drop(st);
         let (menu, sub) = self.account_menu(id, true);
@@ -13285,6 +13317,8 @@ pub struct SpacesDraft {
     pub menu: Option<(String, Point)>,
     /// Whether the list scrolled down, so the search row casts a shadow.
     pub scrolled: bool,
+    /// Whether the Delete Label confirm opened from this window, so it shows here.
+    pub asking: bool,
 }
 
 /// The size of Desktop's Edit Spaces window.

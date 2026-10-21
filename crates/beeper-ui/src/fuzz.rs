@@ -1732,6 +1732,27 @@ fn edit_spaces_like_desktop() {
         assert!(sim.find("Show in Inbox").is_ok() && sim.find(if muted { "Unmute" } else { "Mute" }).is_ok());
         assert!(sim.find("Add/Remove Accounts…").is_err() && sim.find("Mute Space").is_err());
     }
+    edit(&mut app, SpacesEdit::Menu(Some("label:lbl_work".into())));
+    let ask = "Are you sure you want to delete \"Work\"? This will remove the label from all chats.";
+    let picked: Vec<UiMessage> = {
+        let mut sim = view(&app);
+        let _ = sim.click("Delete Label").expect("the label gear menu deletes");
+        sim.into_messages().collect()
+    };
+    for m in picked {
+        let _ = app.update(m);
+    }
+    assert!(simulator(app.view_main()).find(ask).is_err(), "the confirm shows in the Edit Spaces window");
+    let picked: Vec<UiMessage> = {
+        let mut sim = view(&app);
+        let _ = sim.click("Delete").expect("the confirm in the Edit Spaces window");
+        sim.into_messages().collect()
+    };
+    for m in picked {
+        let _ = app.update(m);
+    }
+    assert!(app.confirm.is_none() && !app.store.read().labels.iter().any(|l| l.id == "lbl_work"));
+    assert!(!app.spaces_window.as_ref().unwrap().order.iter().any(|o| o == "label:lbl_work"));
     edit(&mut app, SpacesEdit::NewLabel);
     assert!(app.label_window.is_some());
 }
