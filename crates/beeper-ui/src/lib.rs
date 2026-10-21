@@ -2041,7 +2041,7 @@ const LABEL_NUDGE: &str = "create-label-nudge";
 /// Desktop's `orderedSidebarSpaces`: the spaces of the `spaces_order` setting in its order, without the hidden
 /// ones, then the other spaces in the default order.
 fn rail_spaces(st: &BeeperStore) -> Vec<String> {
-    let nudge = st.feature("labels-v2").show && st.labels.is_empty();
+    let nudge = st.feature("labels-v2").show && st.labels.is_empty() && !st.settings.ever_labeled;
     let views = RAIL_VIEWS.iter().filter(|v| nudge || v.0 != LABEL_NUDGE).map(|v| v.0.to_string());
     let mut all: Vec<String> = views.chain(rail_accounts(st)).collect();
     let order = &st.settings.spaces_order;

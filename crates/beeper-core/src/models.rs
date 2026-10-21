@@ -910,6 +910,8 @@ pub struct BeeperSettings {
     pub chat_appearance: ChatAppearance,
     /// Desktop's local `spaces_order`: the sidebar order, and the spaces that Edit Spaces hides.
     pub spaces_order: Vec<SpaceOrder>,
+    /// Desktop's local `has_ever_created_label`: the Create Label nudge stays hidden after the first label.
+    pub ever_labeled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
