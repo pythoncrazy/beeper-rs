@@ -3302,9 +3302,14 @@ fn chat_info_header_like_desktop() {
         sim.into_messages().collect()
     };
     set_edits(&mut app, 0);
+    let menu = format!("info:{id}");
+    assert!(
+        matches!(&click(&app, "Edit")[..], [UiMessage::OpenChatMenu(k)] if *k == menu),
+        "Edit for Me and Chat Theme"
+    );
+    app.store.write().features.flags["features"]["*"]["personal-room-overrides"] = false.into();
     assert!(matches!(&click(&app, "Edit")[..], [UiMessage::OpenChatTheme(c)] if *c == id), "one action runs at once");
     set_edits(&mut app, ALL_EDITS);
-    let menu = format!("info:{id}");
     assert!(matches!(&click(&app, "Edit")[..], [UiMessage::OpenChatMenu(k)] if *k == menu));
     let _ = app.update(UiMessage::OpenChatMenu(menu));
     {
@@ -3489,4 +3494,70 @@ fn edit_group_like_desktop() {
     let _ = app.update(UiMessage::Group(GroupEdit::Save));
     let st = app.store.read();
     assert_eq!(st.chats[st.resolve_chat_idx(&id).expect("the group")].img_url, None, "Remove Photo clears the avatar");
+}
+
+#[test]
+fn edit_for_me_like_desktop() {
+    let mut app = demo_app("edit-for-me");
+    let id = "!tg_rust:beeper.com".to_string();
+    let room = "Beeper Rust Core Team";
+    let chat = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.chats[st.chat_idx_by_id[&id]].clone()
+    };
+    let labels = |app: &BeeperGuiApp, key: &str| -> Vec<String> {
+        info_menu(&app.store.read(), key, |_| true).into_iter().map(|i| i.map(|i| i.0).unwrap_or_default()).collect()
+    };
+    assert_eq!(labels(&app, &format!("info:{id}")), ["Edit Group", "Edit for Me", "Chat Theme"]);
+    let _ = app.update(UiMessage::OpenEditForMe(id.clone()));
+    let d = app.group_window.as_ref().expect("the window opens");
+    assert!(d.personal && d.title.is_empty());
+    assert_eq!(app.title(d.id), "Edit Chat for Me");
+    {
+        let mut sim = simulator(app.view_edit_group(d));
+        assert!(sim.find("This name and photo are only visible to you, on all your devices.").is_ok());
+        assert!(sim.find("Remove Photo").is_err(), "no personal photo to remove");
+    }
+    let _ = app.update(UiMessage::Group(GroupEdit::Title(format!("  Mine{}", "x".repeat(300)))));
+    assert_eq!(app.group_window.as_ref().expect("open").title.chars().count(), PERSONAL_NAME_MAX);
+    let _ = app.update(UiMessage::Group(GroupEdit::Title("  Mine  ".into())));
+    let _ = app.update(UiMessage::Group(GroupEdit::Save));
+    assert_eq!((chat(&app).title.as_str(), chat(&app).room_title()), ("Mine", room));
+    assert_eq!(app.toast.as_ref().expect("a toast").text, "Renamed to Mine for you");
+    assert_eq!(app.undo_stack.last().expect("an undo").0, format!("Rename {room} for you"));
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let open: Vec<UiMessage> = {
+        let mut sim = tall(app.view_info());
+        let line = format!("Originally {room}");
+        let at = sim.find(line.as_str()).expect("the room name").visible_bounds().expect("visible").center();
+        sim.point_at(at);
+        let _ = sim.simulate(
+            [mouse::Event::ButtonPressed(Button::Right), mouse::Event::ButtonReleased(Button::Right)]
+                .map(iced::Event::Mouse),
+        );
+        sim.into_messages().collect()
+    };
+    let [UiMessage::OpenChatMenu(key)] = &open[..] else { panic!("{open:?}") };
+    assert_eq!(
+        labels(&app, key),
+        [
+            format!("Copy Originally {room}"),
+            String::new(),
+            "Edit Group".into(),
+            "Edit for Me".into(),
+            "Chat Theme".into()
+        ]
+    );
+    let _ = app.update(UiMessage::UndoAction);
+    assert!(chat(&app).title == room && chat(&app).personal.is_none(), "Undo removes the name");
+    app.store.write().set_personal(&id, None, Some(Some(("mxc://x/me".into(), Vec::new(), "image/png".into()))));
+    let _ = app.update(UiMessage::WindowClosed(app.group_window.as_ref().expect("open").id));
+    let _ = app.update(UiMessage::OpenEditForMe(id.clone()));
+    let _ = simulator(app.view_edit_group(app.group_window.as_ref().expect("open")))
+        .click("Remove Photo")
+        .expect("the personal photo can be removed");
+    let _ = app.update(UiMessage::Group(GroupEdit::Remove));
+    let _ = app.update(UiMessage::Group(GroupEdit::Save));
+    assert!(chat(&app).img_url.is_none() && chat(&app).personal.is_none());
+    assert_eq!(app.toast.as_ref().expect("a toast").text, "Removed your photo for this chat");
 }

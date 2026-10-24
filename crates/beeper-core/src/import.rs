@@ -408,6 +408,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 messages: BEEPER_MESSAGES,
                 disappearing: t.pointer("/disappearingTimer/timer").and_then(Value::as_u64).filter(|&t| t > 0),
                 timers: None,
+                personal: None,
                 flags: 0,
                 id,
             })

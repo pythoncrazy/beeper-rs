@@ -875,6 +875,7 @@ impl BeeperStore {
             messages: BEEPER_MESSAGES,
             disappearing: None,
             timers: None,
+            personal: None,
             flags: 0,
         };
         self.push_chat(chat, true);
@@ -1141,15 +1142,17 @@ impl BeeperStore {
     ) {
         let idx = self.chat_idx_by_id[id];
         self.update_chat(idx, |c| {
-            if let Some(t) = &title {
-                c.title = t.clone();
-            }
             if let Some(t) = &topic {
                 c.description = Some(t.clone()).filter(|t| !t.is_empty());
             }
-            if let Some(a) = &avatar {
-                c.img_url = a.as_ref().map(|a| a.0.clone());
-            }
+            c.edit_room(|c| {
+                if let Some(t) = &title {
+                    c.title = t.clone();
+                }
+                if let Some(a) = &avatar {
+                    c.img_url = a.as_ref().map(|a| a.0.clone());
+                }
+            });
         });
         if let Some(name) = title {
             self.queue(id, Outgoing::State("m.room.name", serde_json::json!({ "name": name })));
@@ -1159,6 +1162,28 @@ impl BeeperStore {
         }
         if let Some(avatar) = avatar {
             self.queue(id, Outgoing::Avatar(avatar.map(|(_, bytes, mime)| (bytes, mime))));
+        }
+    }
+
+    /// Desktop's `setPersonalRoomName` and `setPersonalRoomAvatar`: `Some(None)` removes the name or the photo.
+    pub fn set_personal(
+        &mut self,
+        id: &str,
+        title: Option<Option<String>>,
+        avatar: Option<Option<(String, Vec<u8>, String)>>,
+    ) {
+        let idx = self.chat_idx_by_id[id];
+        self.update_chat(idx, |c| {
+            let (old_title, old_img) = c.personal_parts();
+            let img = avatar.as_ref().map_or(old_img, |a| a.as_ref().map(|a| a.0.clone()));
+            c.set_personal(title.clone().unwrap_or(old_title), img);
+        });
+        if let Some(name) = title {
+            let content = name.map_or(serde_json::json!({}), |name| serde_json::json!({ "name": name }));
+            self.queue(id, Outgoing::RoomData(PERSONAL_NAME, content));
+        }
+        if let Some(avatar) = avatar {
+            self.queue(id, Outgoing::PersonalAvatar(avatar.map(|(_, bytes, mime)| (bytes, mime))));
         }
     }
 
@@ -1468,6 +1493,7 @@ impl BeeperStore {
             messages: BEEPER_MESSAGES,
             disappearing: None,
             timers: None,
+            personal: None,
             flags: 0,
         };
         let idx = self.push_chat(chat, true);
@@ -2039,6 +2065,43 @@ mod tests {
             matches!(&st.outbox[1], (r, super::Outgoing::Bookmark { room, target, on: false })
             if r == "!bookmarks" && *room == m.chat_id && target == "$other"),
             "a message that is not loaded"
+        );
+        drop(st);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn personal_name_and_photo_like_desktop() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-personal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23395, None);
+        config.demo = true;
+        let mut st = super::BeeperStore::from_config(config);
+        st.config.demo = false;
+        let id = "!tg_rust:beeper.com";
+        let chat = |st: &super::BeeperStore| st.chats[st.chat_idx_by_id[id]].clone();
+        let (room, img) = (chat(&st).title, chat(&st).img_url);
+        let photo = ("file:///me.png".to_string(), vec![1, 2], "image/png".to_string());
+        st.set_personal(id, Some(Some("Mine".into())), Some(Some(photo)));
+        let c = chat(&st);
+        assert_eq!((c.title.as_str(), c.img_url.as_deref()), ("Mine", Some("file:///me.png")));
+        assert_eq!((c.room_title(), c.room_img_url()), (room.as_str(), img.as_deref()));
+        assert!(
+            matches!(&st.outbox[..], [(r, super::Outgoing::RoomData(super::PERSONAL_NAME, v)), (_, super::Outgoing::PersonalAvatar(Some((b, m))))]
+            if r == id && *v == serde_json::json!({ "name": "Mine" }) && *b == [1, 2] && m == "image/png")
+        );
+        st.update_group(id, Some("Team".into()), None, None);
+        let c = chat(&st);
+        assert_eq!(
+            (c.title.as_str(), c.room_title()),
+            ("Mine", "Team"),
+            "the personal name stays over a new room name"
+        );
+        st.set_personal(id, Some(None), Some(None));
+        let c = chat(&st);
+        assert_eq!((c.title.as_str(), c.img_url.as_deref(), c.personal.is_none()), ("Team", img.as_deref(), true));
+        assert!(
+            matches!(&st.outbox[3..], [(_, super::Outgoing::RoomData(super::PERSONAL_NAME, v)), (_, super::Outgoing::PersonalAvatar(None))]
+            if *v == serde_json::json!({}))
         );
         drop(st);
         std::fs::remove_dir_all(dir).unwrap();
