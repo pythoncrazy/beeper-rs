@@ -95,6 +95,7 @@
 "Archived":["Archiviert"],
 "Archived %d chat":["%d Chat archiviert", "%d Chats archiviert"],
 "Are you sure you want to delete \"%s\"? This will remove the label from all chats.":["Bist du sicher, dass du „%s“ löschen möchtest? Dadurch wird das Label aus allen Chats entfernt."],
+"Are you sure you want to delete %d message?":["Bist du sicher, dass du %d Nachricht löschen möchtest?", "Bist du sicher, dass du %d Nachrichten löschen möchtest?"],
 "Are you sure you want to delete %s?":["Möchtest du %s wirklich löschen?"],
 "Are you sure you want to delete this message?":["Bist du sicher, dass du diese Nachricht löschen möchtest?"],
 "Are you sure you want to leave %s?":["Bist du sicher, dass du %s verlassen möchtest?"],
