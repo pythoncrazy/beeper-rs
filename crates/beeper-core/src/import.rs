@@ -1,7 +1,7 @@
 use crate::config::rfc3339_from_millis;
 use crate::models::{
     Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, Reaction, SpaceOrder, ThemeChoice, User,
-    ALL_FILES, ALL_FORMATS, BEEPER_POLLS,
+    ALL_FILES, ALL_FORMATS, BEEPER_MESSAGES, BEEPER_POLLS,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
@@ -405,6 +405,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 formatting: ALL_FORMATS,
                 files: ALL_FILES,
                 polls: Some(BEEPER_POLLS),
+                messages: BEEPER_MESSAGES,
                 disappearing: t.pointer("/disappearingTimer/timer").and_then(Value::as_u64).filter(|&t| t > 0),
                 timers: None,
                 flags: 0,

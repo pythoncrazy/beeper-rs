@@ -196,7 +196,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         9 => UiMessage::DoubleClickMessage(msg),
         10 => UiMessage::StartReply(msg),
         11 => UiMessage::StartEdit(msg, text),
-        12 => UiMessage::AskDeleteMessage(msg),
+        12 => UiMessage::AskDeleteMessage(vec![msg]),
         13 => UiMessage::ToggleReaction(mchat, msg, "👍".into()),
         14 => UiMessage::ToggleBookmark(msg),
         15 => UiMessage::ComposerChanged(text),
@@ -786,16 +786,16 @@ fn selected_message_commands_like_desktop() {
     let _ = app.update(UiMessage::SelectMessages(linked[..1].to_vec()));
     let cmds = app.commands(&app.store.read(), "");
     let titles: Vec<&str> = cmds.iter().take_while(|c| c.category == "Message").map(|c| c.title.as_str()).collect();
-    let all = ["Edit", "Forward", "Copy", "Copy with timestamps", "Open link", "Unselect", "Reply", "Send later"];
-    assert_eq!(titles, all);
-    assert!(matches!(&cmds[4].msg, Some(UiMessage::OpenUrl(u)) if u.starts_with("https://")));
-    let _ = app.update(cmds[5].msg.clone().unwrap());
+    let all = ["Edit", "Delete for everyone", "Forward", "Copy", "Copy with timestamps", "Open link", "Unselect"];
+    assert_eq!(titles, [&all[..], &["Reply", "Send later"]].concat());
+    assert!(matches!(&cmds[5].msg, Some(UiMessage::OpenUrl(u)) if u.starts_with("https://")));
+    let _ = app.update(cmds[6].msg.clone().unwrap());
     assert!(app.pane.selected_msgs.is_empty(), "Unselect clears the selection");
     let _ = app.update(UiMessage::SelectMessages(linked[..2].to_vec()));
     let cmds = app.commands(&app.store.read(), "");
     let titles: Vec<&str> = cmds.iter().take_while(|c| c.category == "Messages").map(|c| c.title.as_str()).collect();
-    assert_eq!(titles, ["Forward", "Copy", "Copy with timestamps", "Open link", "Unselect"]);
-    let _ = app.update(UiMessage::Commands(vec![UiMessage::CloseModals, cmds[3].msg.clone().unwrap()]));
+    assert_eq!(titles, all[1..]);
+    let _ = app.update(UiMessage::Commands(vec![UiMessage::CloseModals, cmds[4].msg.clone().unwrap()]));
     let rows = app.commands(&app.store.read(), "");
     assert_eq!(rows.len(), 2);
     assert!(
@@ -3093,6 +3093,57 @@ fn reply_privately_like_desktop() {
     let _ = app.update(UiMessage::DmCreated(None, account, Some(quote.clone()), Ok(room.clone())));
     assert_eq!(app.pane.selected_chat_id.as_deref(), Some(room.as_str()));
     assert!(app.pane.composer.text().starts_with(&quote), "the composer quotes the message");
+}
+
+#[test]
+fn message_actions_follow_room_features_like_desktop() {
+    let mut app = demo_app("message-rules");
+    let (id, mine) = {
+        let mut st = app.store.write();
+        let i = (0..st.messages.len()).rfind(|&i| {
+            let m = &st.messages[i];
+            let plain = m.text.is_some() && m.poll.is_none() && m.attachments.is_empty();
+            plain && m.is_sender == Some(true)
+        });
+        let i = i.expect("a message of yours");
+        st.update_message(i, |m| m.timestamp = "2020-01-01T00:00:00.000Z".into());
+        (st.messages[i].chat_id.clone(), st.messages[i].id.clone())
+    };
+    let network = {
+        let st = app.store.read();
+        network_name(&st.chats[st.chat_idx_by_id[&id]].account_id)
+    };
+    let set = |app: &mut BeeperGuiApp, rules: MessageRules| {
+        let mut st = app.store.write();
+        let i = st.chat_idx_by_id[&id];
+        st.update_chat(i, |c| c.messages = rules);
+    };
+    let old = MessageRules { edit_max_age: Some(60), react: false, reply: false, ..BEEPER_MESSAGES };
+    set(&mut app, old);
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let clicked = |app: &BeeperGuiApp, label: &str| -> Vec<UiMessage> {
+        let mut sim = simulator(app.view_message_menu(&mine).0);
+        let _ = sim.click(label).expect(label);
+        sim.into_messages().collect()
+    };
+    assert!(simulator(app.view_message_menu(&mine).0).find("Reply…").is_err(), "the network has no replies");
+    assert!(clicked(&app, "Edit…").is_empty() && clicked(&app, "React…").is_empty(), "disabled like Desktop");
+    let ask = clicked(&app, "Delete for Everyone…");
+    assert!(
+        matches!(&ask[..], [UiMessage::MessageMenu(m)] if matches!(&**m, UiMessage::AskDeleteMessage(v) if v == std::slice::from_ref(&mine)))
+    );
+    assert!(app.last_own_message().is_none_or(|m| m.id != mine), "Up Arrow skips a message past edit_max_age");
+    app.pane.selected_msgs = vec![mine.clone()];
+    let titles = |app: &BeeperGuiApp| -> Vec<String> {
+        app.commands(&app.store.read(), "").into_iter().filter(|c| c.category == "Message").map(|c| c.title).collect()
+    };
+    let t = titles(&app);
+    assert!(t.contains(&"Delete for everyone".into()) && t.contains(&"Edit".into()) && !t.contains(&"Reply".into()));
+    set(&mut app, MessageRules { delete: false, ..old });
+    assert!(simulator(app.view_message_menu(&mine).0).find("Delete for Everyone…").is_err());
+    assert!(titles(&app).contains(&format!("Delete message is not supported for {network} yet")));
+    let _ = app.update(UiMessage::AskDeleteMessage(vec![mine.clone(), mine.clone()]));
+    assert!(simulator(app.view_main()).find("Are you sure you want to delete 2 messages?").is_ok());
 }
 
 #[test]

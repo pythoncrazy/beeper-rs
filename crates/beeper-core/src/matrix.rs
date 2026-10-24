@@ -2,10 +2,10 @@ use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
     timer_distance, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder,
-    EditHistoryEntry, Label, Message, MessageLink, PollData, PollOption, PollRules, Reaction, Timers, User,
-    VerificationSas, VerificationSasEmoji, VerificationState, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_POLLS,
-    BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE,
-    FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK,
+    EditHistoryEntry, Label, Message, MessageLink, MessageRules, PollData, PollOption, PollRules, Reaction, Timers,
+    User, VerificationSas, VerificationSasEmoji, VerificationState, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS,
+    BEEPER_MESSAGES, BEEPER_POLLS, BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER,
+    EDITS, FILE_GIF, FILE_VOICE, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -191,6 +191,21 @@ pub fn hidden_from_inbox(rules: &Value, account_id: &str, bridge: &Value, group:
     }
 }
 
+/// Desktop's `canStartEditMessage`, `deletionMode`, `canReact` and `supportsReply` levels from
+/// `com.beeper.room_features`.
+fn message_rules(f: &Value) -> MessageRules {
+    let level = |k: &str| f[k].as_i64().unwrap_or(0);
+    MessageRules {
+        edit: level("edit") > 0,
+        edit_max_age: f["edit_max_age"].as_u64().filter(|&s| s > 0),
+        delete: level("delete") == 2,
+        delete_max_age: f["delete_max_age"].as_u64().filter(|&s| s > 0),
+        delete_for_me: f["delete_for_me"] == true,
+        react: level("reaction") > 0,
+        reply: level("reply") > 0,
+    }
+}
+
 /// Desktop's poll limits from `com.beeper.room_features`, or `None` when the room has no polls.
 fn poll_rules(f: &Value) -> Option<PollRules> {
     let level = |k: &str| f[k].as_i64().is_some_and(|n| n > 0);
@@ -352,6 +367,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             (u8::from(has("fi.mau.gif")) * FILE_GIF) | (u8::from(has("org.matrix.msc3245.voice")) * FILE_VOICE)
         }),
         polls: features.as_ref().map_or(Some(BEEPER_POLLS), poll_rules),
+        messages: features.as_ref().map_or(BEEPER_MESSAGES, message_rules),
         disappearing: state(room, DISAPPEARING_TIMER).await.and_then(|t| t["timer"].as_u64()).filter(|&t| t > 0),
         timers: timers(features.as_ref(), &levels, me.as_str()),
         flags: 0,
@@ -2144,6 +2160,28 @@ mod tests {
         let r = with_inbox_visibility(rules, "discordgo.G1", "all");
         assert_eq!(inbox_rule(&r, "discordgo", "discordgo", Some("G1")).1, "all");
         assert!(!hidden_from_inbox(&r, "discordgo", &discord, true));
+    }
+
+    #[test]
+    fn message_rules_follow_desktop() {
+        use super::{message_rules, MessageRules};
+        use serde_json::json;
+        let line = json!({"edit": 0, "delete": 1, "reaction": 2, "reply": 2, "edit_max_age": 86400});
+        let rules = MessageRules {
+            edit: false,
+            edit_max_age: Some(86400),
+            delete: false,
+            delete_max_age: None,
+            delete_for_me: false,
+            react: true,
+            reply: true,
+        };
+        assert_eq!(message_rules(&line), rules, "partial delete is not Delete for Everyone");
+        let limited = message_rules(&json!({"edit": 1, "delete": 2, "delete_max_age": 60, "reaction": -2}));
+        assert!(limited.edit && limited.delete && !limited.react && !limited.reply);
+        assert!(MessageRules::young(Some(60), &crate::config::now_rfc3339_millis()));
+        assert!(!MessageRules::young(Some(60), "2020-01-01T00:00:00.000Z"));
+        assert!(MessageRules::young(None, "2020-01-01T00:00:00.000Z"));
     }
 
     #[test]
