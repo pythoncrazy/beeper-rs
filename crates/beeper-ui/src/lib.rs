@@ -548,7 +548,7 @@ pub enum UiMessage {
     Record(record::Msg),
     RetryMedia(String),
     ResolveMedia(String, String, String),
-    MediaResolved(String, Result<(), String>),
+    MediaResolved(String, String, String, Result<(), String>),
     Video(video::Msg),
     Pasted(Result<Option<Png>, String>),
     DiscardAttachment(usize),
@@ -4700,7 +4700,7 @@ impl BeeperGuiApp {
                     std::fs::create_dir_all(&dir).expect("create the chat wallpapers directory");
                     match std::fs::copy(&path, dir.join(&file_name)) {
                         Ok(_) => return self.update(UiMessage::ChatWallpaper(chat, Wallpaper::Photo { file_name })),
-                        Err(e) => self.status_banner = format!("Could not import {}: {e}", path.display()),
+                        Err(e) => self.fail(Toast::new(format!("Could not import {}: {e}", path.display()))),
                     }
                 }
                 Ok(None) => {}
@@ -5558,7 +5558,7 @@ impl BeeperGuiApp {
                 std::process::Command::new(exe).args(std::env::args_os().skip(1)).spawn().expect("restart beeper-rs");
                 std::process::exit(0);
             }
-            UiMessage::LoggedOut(Err(e)) => self.status_banner = format!("Could not log out: {e}"),
+            UiMessage::LoggedOut(Err(e)) => self.fail(Toast::new(format!("Could not log out: {e}"))),
             UiMessage::ToggleRightPanel => self.show_right_panel = !self.show_right_panel,
             UiMessage::ToggleMembers(id) => {
                 if !self.pane.open_members.remove(&id) {
@@ -5609,7 +5609,9 @@ impl BeeperGuiApp {
                     self.store.write().set_contacts(contacts);
                 }
             }
-            UiMessage::CloudAccounts(Err(e)) => self.status_banner = format!("Could not load your chat accounts: {e}"),
+            UiMessage::CloudAccounts(Err(e)) => {
+                self.fail(Toast::new(format!("Could not load your chat accounts: {e}")))
+            }
             UiMessage::AvatarLoaded(url, Ok(h)) => {
                 self.avatars.insert(url, Some(h));
             }
@@ -5644,7 +5646,7 @@ impl BeeperGuiApp {
                         login_id,
                     )
                 };
-                let eid = event_id.clone();
+                let (eid, again) = (event_id.clone(), (account_id, raw.clone()));
                 // Like Desktop, a resolve whose edit does not arrive in 30 s fails.
                 let resolve = async move {
                     beeper_core::matrix::resolve_media(
@@ -5660,13 +5662,17 @@ impl BeeperGuiApp {
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                     Ok(())
                 };
-                return Task::perform(resolve, move |r| UiMessage::MediaResolved(event_id, r));
+                return Task::perform(resolve, move |r| UiMessage::MediaResolved(again.0, event_id, again.1, r));
             }
-            UiMessage::MediaResolved(event_id, r) => {
-                self.resolving_media.insert(event_id, false);
+            UiMessage::MediaResolved(account_id, event_id, raw, r) => {
+                self.resolving_media.insert(event_id.clone(), false);
                 if let Err(e) = r {
                     eprintln!("resolve media failed: {e}");
-                    self.status_banner = tr("Could not load this media.").into();
+                    let again = UiMessage::ResolveMedia(account_id, event_id, raw);
+                    self.fail(Toast {
+                        buttons: vec![(tr("Try again"), again)],
+                        ..Toast::new(tr("Could not load this media.").into())
+                    });
                 }
             }
             UiMessage::Video(msg) => return self.video(msg),
@@ -5895,7 +5901,7 @@ impl BeeperGuiApp {
                         self.submit_composer(false);
                     }
                 }
-                Err(e) => self.status_banner = format!("Could not download GIF: {e}"),
+                Err(e) => self.fail(Toast::new(format!("Could not download GIF: {e}"))),
             },
             UiMessage::AnimationTick => {}
             UiMessage::RecoveryInputChanged(v) => self.recovery_code_input = v,
@@ -5904,14 +5910,14 @@ impl BeeperGuiApp {
                 return Task::perform(beeper_core::matrix::recover(self.store.clone(), key), UiMessage::Verified);
             }
             UiMessage::Verified(Ok(())) => self.status_banner = tr("This device is verified.").into(),
-            UiMessage::Verified(Err(e)) => self.status_banner = format!("Could not verify this device: {e}"),
+            UiMessage::Verified(Err(e)) => self.fail(Toast::new(format!("Could not verify this device: {e}"))),
             UiMessage::Pushed(Ok(())) => {}
             UiMessage::DismissBanner => (self.status_banner, self.relaunch_toast) = (String::new(), None),
             UiMessage::Relaunch => {
                 RELAUNCH.store(true, std::sync::atomic::Ordering::Relaxed);
                 return self.quit();
             }
-            UiMessage::Pushed(Err(e)) => self.status_banner = format!("Could not send to Matrix: {e}"),
+            UiMessage::Pushed(Err(e)) => self.fail(Toast::new(format!("Could not send to Matrix: {e}"))),
             UiMessage::VerifySasNow => {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 self.store.write().sas_confirm = Some(tx);
@@ -5943,7 +5949,7 @@ impl BeeperGuiApp {
                 self.storage.clearing = None;
                 if let Err(e) = r {
                     eprintln!("Unable to clear storage: {e}");
-                    self.status_banner = tr("Failed to clear storage").into();
+                    self.fail(Toast::new(tr("Failed to clear storage").into()));
                 }
                 return self.scan_storage();
             }
@@ -6068,10 +6074,10 @@ impl BeeperGuiApp {
                     }
                     Err(e) => {
                         eprintln!("Failed to join community room: {e}");
-                        self.status_banner = tr(
-                            "Something went wrong while joining the Beeper Developer Community chat. Please try again.",
-                        )
-                        .into();
+                        self.fail(Toast::new(
+                            tr("Something went wrong while joining the Beeper Developer Community chat. Please try again.")
+                                .into(),
+                        ));
                     }
                 }
             }
@@ -8339,6 +8345,10 @@ impl BeeperGuiApp {
     fn show(&mut self, t: Toast) {
         self.status_banner = t.text.clone();
         self.toast = Some(t);
+    }
+
+    fn fail(&mut self, t: Toast) {
+        self.show(Toast { error: true, ..t });
     }
 
     /// The toast timeout runs while a window is focused and the pointer is not on the toast.
@@ -10775,27 +10785,34 @@ impl BeeperGuiApp {
                 return toast(container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0)).into());
             }
             if let Some(t) = self.shown_toast() {
+                let (bg, fg) = match t.error {
+                    true => (hex(0xdc362e), Color::WHITE),
+                    false => (p.card, p.strong),
+                };
                 let btn = |(label, msg): &(&'static str, UiMessage), fg: Color| {
                     let label = semi(*label, 13.0).line_height(Pixels(18.0)).color(fg);
                     button(label).padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0)).on_press(msg.clone())
                 };
-                let glyph =
-                    t.icon.map(|i| container(tinted(&TOAST_ICONS[i], 20.0, p.strong)).center_x(16).center_y(20));
+                let glyph = t.icon.map(|i| container(tinted(&TOAST_ICONS[i], 20.0, fg)).center_x(16).center_y(20));
                 let text = match t.strong {
                     true => semi(banner.to_string(), 13.0),
                     false => txt(banner.to_string(), 13.0),
                 };
                 let below = (!t.buttons.is_empty()).then(|| {
-                    let dot = || -> El { semi(" • ", 13.0).line_height(Pixels(18.0)).color(p.strong).into() };
-                    let mut buttons = t.buttons.iter().map(|b| -> El { btn(b, p.strong).into() });
+                    let dot = || -> El { semi(" • ", 13.0).line_height(Pixels(18.0)).color(fg).into() };
+                    let mut buttons = t.buttons.iter().map(|b| -> El { btn(b, fg).into() });
                     let first = buttons.next().expect("a button");
                     Row::with_children(std::iter::once(first).chain(buttons.flat_map(|b| [dot(), b])))
                 });
-                let body = column![text.color(p.strong)].push(below).spacing(16);
+                let body = column![text.color(fg)].push(below).spacing(16);
                 let right = t.right.as_ref().map(|b| btn(b, p.accent));
+                let close = match t.error {
+                    true => icon_btn(p, icon::CLOSE, 14.0, 16.0, fg, UiMessage::DismissBanner),
+                    false => close,
+                };
                 let card = row![].push(glyph).push(body).push(right).push(close).spacing(8);
                 let card = card.align_y(if t.buttons.is_empty() { Center } else { iced::Alignment::Start });
-                let card = container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0));
+                let card = container(card).padding(8).style(shadow_box(bg, p.outline, 10.0, 15.0));
                 return toast(match t.open.clone() {
                     Some(open) => mouse_area(card).on_press(open).into(),
                     None => card.into(),
@@ -13741,11 +13758,13 @@ pub struct Toast {
     pub right: Option<(&'static str, UiMessage)>,
     /// Desktop's `onClick`.
     pub open: Option<UiMessage>,
+    /// Desktop's `type: "error"`.
+    pub error: bool,
 }
 
 impl Toast {
     pub fn new(text: String) -> Self {
-        Toast { text, icon: None, strong: false, buttons: Vec::new(), right: None, open: None }
+        Toast { text, icon: None, strong: false, buttons: Vec::new(), right: None, open: None, error: false }
     }
 }
 
