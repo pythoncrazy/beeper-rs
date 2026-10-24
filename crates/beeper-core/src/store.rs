@@ -855,6 +855,7 @@ impl BeeperStore {
             network_id: None,
             img_url: None,
             delete_modes: 0,
+            edits: 0,
             formatting: ALL_FORMATS,
             files: ALL_FILES,
             polls: Some(BEEPER_POLLS),
@@ -1062,12 +1063,44 @@ impl BeeperStore {
         self.queue(id, Outgoing::EditLabel(label, changes));
     }
 
+    /// Desktop's `updateGroup` from the Edit Group window: the changed title and description of a group, and its new
+    /// avatar (a local URL of the image, the image and its MIME type) or `Some(None)` to remove the avatar.
+    pub fn update_group(
+        &mut self,
+        id: &str,
+        title: Option<String>,
+        topic: Option<String>,
+        avatar: Option<Option<(String, Vec<u8>, String)>>,
+    ) {
+        let idx = self.chat_idx_by_id[id];
+        self.update_chat(idx, |c| {
+            if let Some(t) = &title {
+                c.title = t.clone();
+            }
+            if let Some(t) = &topic {
+                c.description = Some(t.clone()).filter(|t| !t.is_empty());
+            }
+            if let Some(a) = &avatar {
+                c.img_url = a.as_ref().map(|a| a.0.clone());
+            }
+        });
+        if let Some(name) = title {
+            self.queue(id, Outgoing::State("m.room.name", serde_json::json!({ "name": name })));
+        }
+        if let Some(topic) = topic {
+            self.queue(id, Outgoing::State("m.room.topic", serde_json::json!({ "topic": topic })));
+        }
+        if let Some(avatar) = avatar {
+            self.queue(id, Outgoing::Avatar(avatar.map(|(_, bytes, mime)| (bytes, mime))));
+        }
+    }
+
     /// Desktop's `setLabelInboxVisibility`: `None` shows all chats of the label in the inbox.
     pub fn set_label_inbox(&mut self, id: &str, inbox: Option<&'static str>) {
         let label = self.labels.iter().find(|l| l.id == id).expect("a label").clone();
         self.set_label(Label { inbox, ..label });
         let content = serde_json::json!({ "visibility": inbox.unwrap_or("all") });
-        self.queue(id, Outgoing::LabelState("com.beeper.label.inbox_visibility", content));
+        self.queue(id, Outgoing::State("com.beeper.label.inbox_visibility", content));
     }
 
     /// Desktop's `addRoomToLabel` and `removeRoomFromLabel`.
@@ -1085,7 +1118,7 @@ impl BeeperStore {
     pub fn set_label_muted(&mut self, id: &str, muted: bool) {
         let label = self.labels.iter().find(|l| l.id == id).expect("a label").clone();
         self.set_label(Label { muted, ..label });
-        self.queue(id, Outgoing::LabelState("com.beeper.muted", serde_json::json!({ "muted": muted })));
+        self.queue(id, Outgoing::State("com.beeper.muted", serde_json::json!({ "muted": muted })));
     }
 
     /// Desktop's `areNotificationsMuted`: the chat is muted, all labels of the chat are muted, or for a chat
@@ -1347,6 +1380,7 @@ impl BeeperStore {
             img_url: None,
             participants: ChatParticipants { has_more: false, total: items.len(), items },
             delete_modes: 0,
+            edits: 0,
             formatting: ALL_FORMATS,
             files: ALL_FILES,
             polls: Some(BEEPER_POLLS),

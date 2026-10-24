@@ -3,8 +3,8 @@ use crate::import::DesktopCrypto;
 use crate::models::{
     Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder, EditHistoryEntry, Label,
     Message, MessageLink, PollData, PollOption, PollRules, Reaction, User, VerificationSas, VerificationSasEmoji,
-    VerificationState, ALL_FILES, ALL_FORMATS, BEEPER_POLLS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, FILE_GIF, FILE_VOICE,
-    FORMATS,
+    VerificationState, ALL_FILES, ALL_FORMATS, BEEPER_POLLS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, EDITS, FILE_GIF,
+    FILE_VOICE, FORMATS,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -203,14 +203,25 @@ fn poll_rules(f: &Value) -> Option<PollRules> {
     })
 }
 
+/// Desktop's `canCurrentUserEdit…` as `EDITS` bits: the room features support the state event, and the power level
+/// of `me` reaches the level of the event.
+fn edit_bits(features: Option<&Value>, levels: &Value, me: &str) -> u8 {
+    let mine = levels["users"][me].as_i64().or(levels["users_default"].as_i64()).unwrap_or(0);
+    EDITS.iter().enumerate().fold(0, |m, (i, k)| {
+        let supported = features.is_none_or(|f| f["state"][k]["level"].as_i64().is_some_and(|l| l > 0));
+        let needed = levels["events"][k].as_i64().or(levels["state_default"].as_i64()).unwrap_or(50);
+        m | (u8::from(supported && mine >= needed) << i)
+    })
+}
+
 async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Chat {
     let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
     let service = room.service_members().unwrap_or_default();
     let bot = s(&bridge["bridgebot"]);
     let me = room.own_user_id();
     let members = room.members_no_sync(RoomMemberships::JOIN).await.expect("read room members");
-    let levels = state(room, "m.room.power_levels").await;
-    let users_default = levels.and_then(|l| l["users_default"].as_i64()).unwrap_or(0).try_into().expect("power level");
+    let levels = state(room, "m.room.power_levels").await.unwrap_or(Value::Null);
+    let users_default = levels["users_default"].as_i64().unwrap_or(0).try_into().expect("power level");
     let contents: HashMap<String, Value> = states(room, StateEventType::RoomMember)
         .await
         .into_iter()
@@ -298,6 +309,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             (u8::from(f["delete_chat"] == true) * DELETE_FOR_ME)
                 | (u8::from(f["delete_chat_for_everyone"] == true) * DELETE_FOR_EVERYONE)
         }),
+        edits: edit_bits(features.as_ref(), &levels, me.as_str()),
         formatting: features.as_ref().map_or(ALL_FORMATS, |f| {
             FORMATS.iter().enumerate().filter(|(_, k)| f["formatting"][**k] == 2).fold(0, |m, (i, _)| m | 1 << i)
         }),
@@ -956,8 +968,10 @@ pub enum Outgoing {
     EditLabel(Label, Vec<(String, bool)>),
     /// Leaves and forgets the room, like Desktop's `deleteLabel`.
     Leave,
-    /// A state event of a label space with an empty state key.
-    LabelState(&'static str, Value),
+    /// A state event with an empty state key.
+    State(&'static str, Value),
+    /// Uploads an image with its MIME type and makes it the room avatar, or removes the avatar.
+    Avatar(Option<(Vec<u8>, String)>),
     /// Adds (true) or removes a chat from a label.
     LabelChild(String, bool),
     Read(String),
@@ -1230,7 +1244,17 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                 room.send_state_event_raw("m.space.child", &chat, content).await.map_err(e)?;
             }
         }
-        Outgoing::LabelState(kind, content) => drop(room.send_state_event_raw(kind, "", content).await.map_err(e)?),
+        Outgoing::State(kind, content) => drop(room.send_state_event_raw(kind, "", content).await.map_err(e)?),
+        Outgoing::Avatar(image) => {
+            let content = match image {
+                Some((bytes, mime)) => {
+                    let mime: mime::Mime = mime.parse().expect("an image MIME type");
+                    serde_json::json!({ "url": client.media().upload(&mime, bytes, None).await.map_err(e)?.content_uri })
+                }
+                None => serde_json::json!({}),
+            };
+            room.send_state_event_raw("m.room.avatar", "", content).await.map_err(e)?;
+        }
         Outgoing::LabelChild(chat, add) => {
             let content = if add { serde_json::json!({ "via": ["beeper.com"] }) } else { serde_json::json!({}) };
             room.send_state_event_raw("m.space.child", &chat, content).await.map_err(e)?;
@@ -1839,6 +1863,19 @@ mod tests {
         crate::store::BeeperStore::from_config(cfg);
         assert!(!cached.exists() && !dir.join(crate::store::LOGGED_OUT).exists(), "the next start deletes the data");
         std::fs::remove_dir_all(dir).expect("remove the test data dir");
+    }
+
+    #[test]
+    fn group_edits_follow_room_features_and_power_levels_like_desktop() {
+        use super::edit_bits;
+        use serde_json::json;
+        let levels = json!({ "users": { "@me:x": 50 }, "events": { "m.room.avatar": 100 }, "state_default": 50 });
+        assert_eq!(edit_bits(None, &levels, "@me:x"), 0b101, "the avatar needs power 100");
+        assert_eq!(edit_bits(None, &levels, "@other:x"), 0, "users_default is 0");
+        let features = json!({ "state": { "m.room.name": { "level": 2 }, "m.room.topic": { "level": 0 } } });
+        assert_eq!(edit_bits(Some(&features), &levels, "@me:x"), 0b001, "features without a level reject the event");
+        assert_eq!(edit_bits(None, &json!(null), "@me:x"), 0, "without power levels the events need 50");
+        assert_eq!(edit_bits(None, &json!({ "users_default": 50 }), "@me:x"), 0b111);
     }
 
     #[test]
