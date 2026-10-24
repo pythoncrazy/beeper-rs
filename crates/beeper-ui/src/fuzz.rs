@@ -2205,7 +2205,7 @@ fn new_chats_start_like_desktop() {
     let _ = app.update(UiMessage::StartChat);
     assert_eq!(app.status_banner, "Composing chat...");
     assert!(!app.toast_running(), "the composing toast stays");
-    let _ = app.update(UiMessage::DmCreated(n, Err("timeout".into())));
+    let _ = app.update(UiMessage::DmCreated(Some(n), String::new(), None, Err("timeout".into())));
     assert!(
         app.status_banner.starts_with("Something went wrong creating thread (")
             && app.status_banner.ends_with(")\ntimeout")
@@ -2214,9 +2214,9 @@ fn new_chats_start_like_desktop() {
         matches!(&app.shown_toast().expect("a toast").buttons[..], [("Copy Error", UiMessage::CopyText(e))] if e == "timeout")
     );
     let _ = app.update(UiMessage::StartChat);
-    let _ = app.update(UiMessage::DmCreated(n, Ok("!new:beeper.local".into())));
+    let _ = app.update(UiMessage::DmCreated(Some(n), String::new(), None, Ok("!new:beeper.local".into())));
     assert!(app.new_chats.is_empty() && app.creating_chat.is_none() && app.status_banner.is_empty());
-    assert_eq!(app.pending_dm.as_deref(), Some("!new:beeper.local"), "the room opens when it syncs");
+    assert_eq!(app.pending_dm, Some(("!new:beeper.local".into(), None)), "the room opens when it syncs");
 }
 
 #[test]
@@ -2454,4 +2454,30 @@ fn new_chat_groups_follow_bridge_capabilities_like_desktop() {
     assert_eq!(ids(&app), ["@three:x"], "a bridge without groups replaces the person");
     let _ = app.update(UiMessage::NewChat);
     assert!(!found(&app, "New Group"), "no bridge can create groups");
+}
+
+#[test]
+fn reply_privately_like_desktop() {
+    let mut app = demo_app("reply-privately");
+    let (theirs, mine, account) = {
+        let st = app.store.read();
+        let c = st.chats.iter().find(|c| c.id == "!tg_rust:beeper.com").expect("the group");
+        let msgs = st.chat_msg_indices[&c.id].iter().map(|&i| &st.messages[i]);
+        let mut msgs = msgs.filter(|m| m.text.is_some() && m.is_deleted != Some(true));
+        let theirs = msgs
+            .clone()
+            .find(|m| m.is_sender != Some(true) && c.participants.items.iter().any(|u| u.id == m.sender_id));
+        let mine = msgs.find(|m| m.is_sender == Some(true)).map(|m| m.id.clone());
+        (theirs.expect("a message from someone").clone(), mine, c.account_id.clone())
+    };
+    let has = |app: &BeeperGuiApp, mid: &str| simulator(app.view_message_menu(mid).0).find("Reply Privately…").is_ok();
+    assert!(has(&app, &theirs.id));
+    assert!(mine.is_none_or(|m| !has(&app, &m)), "not for your own messages");
+    let _ = app.update(UiMessage::ReplyPrivately(theirs.id.clone()));
+    assert_eq!(app.status_banner, "Composing chat...");
+    let quote = format!("> {}\n", theirs.text.clone().expect("text").lines().next().expect("a line"));
+    let room = "!sg_security:beeper.com".to_string();
+    let _ = app.update(UiMessage::DmCreated(None, account, Some(quote.clone()), Ok(room.clone())));
+    assert_eq!(app.pane.selected_chat_id.as_deref(), Some(room.as_str()));
+    assert!(app.pane.composer.text().starts_with(&quote), "the composer quotes the message");
 }

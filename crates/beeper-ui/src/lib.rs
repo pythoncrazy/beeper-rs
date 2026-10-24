@@ -509,7 +509,10 @@ pub enum UiMessage {
     PickUser(String, Box<User>),
     /// Desktop's `createChatFromDraft` for the open draft.
     StartChat,
-    DmCreated(u32, Result<String, String>),
+    /// The bridge made a direct chat for a New Chat draft or for Reply Privately with this quote.
+    DmCreated(Option<u32>, String, Option<String>, Result<String, String>),
+    /// Desktop's `replyPrivately`: the direct chat with the sender of a message, with the message quoted.
+    ReplyPrivately(String),
     AskDeleteChat(String),
     BeginSelecting(String),
     ToggleSelected(String),
@@ -3086,8 +3089,8 @@ pub struct BeeperGuiApp {
     pub search_expanded: bool,
     pub creating_chat: Option<u32>,
     pub new_chats: Vec<NewChat>,
-    /// The room of a direct chat that the bridge made, to select when it syncs.
-    pub pending_dm: Option<String>,
+    /// The room of a direct chat that the bridge made, to select when it syncs, and the quote for its composer.
+    pub pending_dm: Option<(String, Option<String>)>,
     /// The bridge provisioning capabilities of the chat accounts.
     pub caps: HashMap<String, serde_json::Value>,
     /// The expanded New Chat contact and its networks.
@@ -3791,6 +3794,43 @@ impl BeeperGuiApp {
         self.video = None;
         drop(st);
         self.refresh_theme_and_tray();
+    }
+
+    /// Desktop's `createThread`: selects the most recent direct chat with the user on the account, or asks the
+    /// bridge to make one.
+    fn open_dm(&mut self, account: String, user: User, draft: Option<u32>, quote: Option<String>) -> Task<UiMessage> {
+        if self.sticky_banner.is_some() {
+            return Task::none();
+        }
+        // Desktop's `identifierForUser` tries the Matrix ID before the phone number.
+        let phone = user.phone_number.as_deref().map(phone_digits).filter(|_| !user.id.starts_with('@'));
+        let found = {
+            let st = self.store.read();
+            let same = |u: &User| match &phone {
+                Some(p) => u.phone_number.as_deref().map(phone_digits).as_ref() == Some(p),
+                None => u.id == user.id,
+            };
+            let theirs = |c: &&Chat| c.participants.items.iter().any(|u| u.is_self != Some(true) && same(u));
+            let dms = st.chats.iter().filter(|c| c.account_id == account && c.chat_type == "single");
+            dms.filter(theirs).max_by(|a, b| a.last_activity.cmp(&b.last_activity)).map(|c| c.id.clone())
+        };
+        if let Some(id) = found {
+            self.new_chats.retain(|d| Some(d.id) != draft);
+            self.select_dm(&id, quote);
+            return Task::none();
+        }
+        self.status_banner = tr("Composing chat...").into();
+        self.sticky_banner = Some(self.status_banner.clone());
+        let create = beeper_core::matrix::create_dm(self.provision(&account), phone.unwrap_or(user.id));
+        Task::perform(create, move |r| UiMessage::DmCreated(draft, account.clone(), quote.clone(), r))
+    }
+
+    /// Selects a direct chat and puts a quote before its draft, like Desktop's `replyPrivately`.
+    fn select_dm(&mut self, chat_id: &str, quote: Option<String>) {
+        self.select_chat(chat_id);
+        if let Some(q) = quote {
+            self.pane.composer = composer_with(&(q + self.pane.composer.text().as_str()));
+        }
     }
 
     /// Desktop's `setPicker` checks: shows a toast when the network of the open chat does not accept the picker.
@@ -5642,49 +5682,35 @@ impl BeeperGuiApp {
             UiMessage::StartChat => {
                 let Some(n) = self.creating_chat else { return Task::none() };
                 let draft = self.new_chats.iter().find(|d| d.id == n).expect("the open draft");
-                let Some((account, user)) = draft.users.first().cloned().filter(|_| self.sticky_banner.is_none())
-                else {
-                    return Task::none();
-                };
-                // Desktop's `identifierForUser` tries the Matrix ID before the phone number.
-                let phone = user.phone_number.as_deref().map(phone_digits).filter(|_| !user.id.starts_with('@'));
-                let found = {
-                    let st = self.store.read();
-                    let same = |u: &User| match &phone {
-                        Some(p) => u.phone_number.as_deref().map(phone_digits).as_ref() == Some(p),
-                        None => u.id == user.id,
-                    };
-                    let theirs = |c: &&Chat| c.participants.items.iter().any(|u| u.is_self != Some(true) && same(u));
-                    let dms = st.chats.iter().filter(|c| c.account_id == account && c.chat_type == "single");
-                    dms.filter(theirs).max_by(|a, b| a.last_activity.cmp(&b.last_activity)).map(|c| c.id.clone())
-                };
-                if let Some(id) = found {
-                    self.new_chats.retain(|d| d.id != n);
-                    self.select_chat(&id);
-                    return Task::none();
-                }
-                self.status_banner = tr("Composing chat...").into();
-                self.sticky_banner = Some(self.status_banner.clone());
-                let create = beeper_core::matrix::create_dm(self.provision(&account), phone.unwrap_or(user.id));
-                return Task::perform(create, move |r| UiMessage::DmCreated(n, r));
+                let Some((account, user)) = draft.users.first().cloned() else { return Task::none() };
+                return self.open_dm(account, user, Some(n), None);
             }
-            UiMessage::DmCreated(n, r) => {
+            UiMessage::ReplyPrivately(mid) => {
+                let st = self.store.read();
+                let m = &st.messages[st.msg_idx_by_id[&mid]];
+                let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
+                let sender = c.participants.items.iter().find(|u| u.id == m.sender_id).cloned().expect("the sender");
+                let quote = copy_text(m, false, false).lines().map(|l| format!("> {l}\n")).collect();
+                let account = c.account_id.clone();
+                drop(st);
+                return self.open_dm(account, sender, None, Some(quote));
+            }
+            UiMessage::DmCreated(n, account, quote, r) => {
                 if self.sticky_banner.take().is_some_and(|t| t == self.status_banner) {
                     self.status_banner.clear();
                 }
                 match r {
                     Ok(room) => {
-                        self.new_chats.retain(|d| d.id != n);
+                        self.new_chats.retain(|d| Some(d.id) != n);
                         let synced = self.store.read().resolve_chat_idx(&room).is_some();
                         match synced {
-                            true => self.select_chat(&room),
-                            false => (self.creating_chat, self.pending_dm) = (None, Some(room)),
+                            true => self.select_dm(&room, quote),
+                            false => (self.creating_chat, self.pending_dm) = (None, Some((room, quote))),
                         }
                     }
                     Err(e) => {
-                        let account = self.new_chats.iter().find(|d| d.id == n).and_then(|d| d.users.first());
                         let st = self.store.read();
-                        let me = account.map(|(a, _)| account_user(&st, a)).unwrap_or_default();
+                        let me = account_user(&st, &account);
                         let text = trf("Something went wrong %1$s (%2$s)\n%3$s", &[&"creating thread", &me, &e]);
                         drop(st);
                         self.show(Toast {
@@ -6839,8 +6865,10 @@ impl BeeperGuiApp {
                 self.login.screen = login::Screen::Accounts;
             }
             UiMessage::StoreChanged => {
-                if let Some(room) = self.pending_dm.take_if(|r| self.store.read().resolve_chat_idx(r).is_some()) {
-                    self.select_chat(&room);
+                if let Some((room, quote)) =
+                    self.pending_dm.take_if(|(r, _)| self.store.read().resolve_chat_idx(r).is_some())
+                {
+                    self.select_dm(&room, quote);
                 }
                 let st = self.store.read();
                 let left = self.pane.selected_chat_id.as_deref().is_some_and(|c| st.resolve_chat_idx(c).is_none());
@@ -8036,6 +8064,11 @@ impl BeeperGuiApp {
             })
             .into(),
         };
+        let chat = &st.chats[st.chat_idx_by_id[&cid]];
+        let others = chat.participants.items.iter().filter(|u| u.is_self != Some(true)).count();
+        let sender = chat.participants.items.iter().any(|u| u.id == m.sender_id);
+        let privately =
+            !mine && sender && others > 1 && m.is_deleted != Some(true) && self.can(&m.account_id, "create_dm");
         let rows: Vec<(El, f32)> = [
             self.video_menu_rows(&mid),
             address.map(|e| {
@@ -8061,8 +8094,10 @@ impl BeeperGuiApp {
             }),
             (editable(m) && !text.is_empty())
                 .then(|| vec![item(tr("Edit…").into(), "Ctrl T", Some(UiMessage::StartEdit(mid.clone(), text)))]),
+            Some(vec![item(tr("Reply…").into(), "Ctrl R", Some(UiMessage::StartReply(mid.clone())))]),
+            privately
+                .then(|| vec![item(tr("Reply Privately…").into(), "", Some(UiMessage::ReplyPrivately(mid.clone())))]),
             Some(vec![
-                item(tr("Reply…").into(), "Ctrl R", Some(UiMessage::StartReply(mid.clone()))),
                 item(tr("React…").into(), "", Some(UiMessage::React(mid.clone()))),
                 item(bookmark.into(), "", Some(UiMessage::ToggleBookmark(mid.clone()))),
             ]),
