@@ -1927,6 +1927,7 @@ macro_rules! svg_static {
 
 svg_static!(CHEVRON_LEFT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
 svg_static!(CLAUDE_LOGO, include_bytes!("../assets/integrations/claude.svg"));
+svg_static!(ERROR_CIRCLE, include_bytes!("../assets/settings/error_circle.svg"));
 svg_static!(CURSOR_LOGO, include_bytes!("../assets/integrations/cursor.svg"));
 svg_static!(VSCODE_LOGO, include_bytes!("../assets/integrations/vscode.svg"));
 svg_static!(COPY_ICON, include_bytes!("../assets/integrations/copy.svg"));
@@ -2298,6 +2299,17 @@ fn space_name(st: &BeeperStore, id: &str) -> String {
             (None, Some(n)) => format!("{} ({})", n.name, network_label(&n.account_id)),
             (None, None) => network_label(id).to_string(),
         },
+    }
+}
+
+/// Desktop's `remoteStatusText`: the state of a bridge login that is not connected.
+fn status_text(st: &BeeperStore, account_id: &str) -> Option<&'static str> {
+    match st.bridge_accounts.iter().find(|a| a.account_id == account_id)?.state.as_str() {
+        "TRANSIENT_DISCONNECT" => Some("Connection Interrupted"),
+        "UNKNOWN_ERROR" => Some("Disconnected"),
+        "UNCONFIGURED" => Some("Connection Required"),
+        "BAD_CREDENTIALS" => Some("Reconnect Required"),
+        _ => None,
     }
 }
 
@@ -9005,6 +9017,10 @@ impl BeeperGuiApp {
                 (None, Some(n)) => format!("{} ({})", n.name, network_label(owner)),
                 (None, None) => network_label(owner).to_string(),
             };
+            let label = match status_text(&st, owner).filter(|_| rail_label(&st, &acc).is_none()) {
+                Some(s) => format!("{label} ({s})"),
+                None => label,
+            };
             let btn = badge(rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc.clone()))).into(), n, true);
             let btn: El = mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{acc}"))).into();
             if quiet {
@@ -12458,11 +12474,16 @@ impl BeeperGuiApp {
                         .push(cloud.then(|| ic(icon::CLOUD, 13.0).color(p.sub)))
                         .spacing(4)
                         .align_y(Center);
+                    let error = status_text(st, logo).map(|s| {
+                        let circle = svg(ERROR_CIRCLE.clone()).width(14).height(14).into();
+                        self.tip(circle, s, Vec::new(), tooltip::Position::Top)
+                    });
                     let line = row![
                         container(svg(brand_svg(brand_key(logo))).width(28).height(28)).center(46),
                         column![title].push(sub.map(|s| txt(s, 13.0).color(p.sub))).width(Fill),
-                        ic(icon::CHEVRON_RIGHT, 16.0).color(p.strong)
                     ]
+                    .push(error)
+                    .push(ic(icon::CHEVRON_RIGHT, 16.0).color(p.strong))
                     .spacing(8)
                     .align_y(Center)
                     .padding(Padding::new(4.0).left(8.0).right(16.0));

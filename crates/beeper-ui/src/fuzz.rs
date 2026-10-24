@@ -1920,6 +1920,25 @@ fn sidebar_menus_open_accounts_like_desktop() {
 }
 
 #[test]
+fn account_status_like_desktop() {
+    let mut app = demo_app("account-status");
+    let account = app.store.read().bridge_accounts[0].account_id.clone();
+    assert_eq!(status_text(&app.store.read(), &account), None, "a connected login has no status");
+    for (state, text) in [
+        ("TRANSIENT_DISCONNECT", "Connection Interrupted"),
+        ("UNKNOWN_ERROR", "Disconnected"),
+        ("UNCONFIGURED", "Connection Required"),
+        ("BAD_CREDENTIALS", "Reconnect Required"),
+    ] {
+        app.store.write().bridge_accounts[0].state = state.into();
+        assert_eq!(status_text(&app.store.read(), &account), Some(text));
+    }
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Accounts));
+    let _ = simulator(app.view_settings());
+    let _ = simulator(app.view_rail());
+}
+
+#[test]
 fn sidebar_view_menus_like_desktop() {
     let mut app = demo_app("view-menus");
     let open =
