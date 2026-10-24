@@ -202,6 +202,11 @@ pub fn trf(s: &'static str, args: &[&dyn Display]) -> String {
     sprintf(tr(s), args)
 }
 
+/// `trf` for a string with a gettext context.
+pub fn trxf(s: &'static str, context: &str, args: &[&dyn Display]) -> String {
+    sprintf(trx(s, context), args)
+}
+
 /// The translation of a settings text, with its placeholders filled with `args`.
 pub fn trs(s: &'static str, args: &[&str]) -> String {
     sprintf(tr(s), &args.iter().map(|a| a as &dyn Display).collect::<Vec<_>>())
@@ -347,7 +352,7 @@ mod tests {
         let mut calls = 0;
         for file in std::fs::read_dir(dir).unwrap() {
             let src = std::fs::read_to_string(file.unwrap().path()).unwrap();
-            for (call, n) in [("trx(\"", 2), ("trnx(\"", 3)] {
+            for (call, n) in [("trx(\"", 2), ("trxf(\"", 2), ("trnx(\"", 3)] {
                 for (at, _) in src.match_indices(call).filter(|(at, _)| !src[..*at].ends_with("fn ")) {
                     let args: Vec<&str> = src[at + call.len() - 1..].split('"').skip(1).step_by(2).take(n).collect();
                     let key = format!("{}\u{4}{}", args[n - 1], args[0]);

@@ -37,7 +37,7 @@ pub mod style;
 mod video;
 mod voice;
 
-use crate::i18n::{tr, trf, trn, trnx, trs, trx};
+use crate::i18n::{tr, trf, trn, trnx, trs, trx, trxf};
 use crate::login::{Login, LoginMsg};
 
 use crate::style::{
@@ -793,6 +793,15 @@ fn muted_by(st: &BeeperStore, c: &Chat) -> Option<String> {
     }
     let off = !st.settings.account(&c.account_id).notifications;
     off.then(|| trf("Muted by %s", &[&network_name(&c.account_id)]))
+}
+
+/// The email address that linkifyjs finds in a word, without trailing punctuation.
+fn email(word: &str) -> Option<&str> {
+    let w = word.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', '"', '\'']);
+    let (local, domain) = w.split_once('@')?;
+    let ok = |s: &str, more: &str| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || more.contains(c));
+    let (host, tld) = domain.rsplit_once('.')?;
+    (ok(local, "._%+-") && ok(host, ".-") && tld.len() > 1 && tld.chars().all(char::is_alphabetic)).then_some(w)
 }
 
 /// Desktop's `userProfileLink`: the web profile of the other person of a chat, on the networks that have one.
@@ -7720,6 +7729,7 @@ impl BeeperGuiApp {
         let (cid, mid, mine) = (m.chat_id.clone(), m.id.clone(), m.is_sender == Some(true));
         let text = m.text.clone().unwrap_or_default();
         let link = m.links.first().map(|l| l.url.clone());
+        let address = text.split_whitespace().find_map(email).map(str::to_string);
         let entire = link.is_some();
         let rule = || (menu_rule(p), 11.0);
         let item = |label: String, hotkey, msg: Option<UiMessage>| {
@@ -7743,7 +7753,27 @@ impl BeeperGuiApp {
         };
         let rows: Vec<(El, f32)> = [
             self.video_menu_rows(&mid),
+            address.map(|e| {
+                vec![
+                    item(
+                        trxf("Copy %s", "message menu action to copy an email address", &[&e]),
+                        "",
+                        Some(UiMessage::CopyText(e.clone())),
+                    ),
+                    item(trf("Email %s…", &[&e]), "", Some(UiMessage::OpenUrl(format!("mailto:{e}")))),
+                    rule(),
+                ]
+            }),
             link.map(|u| vec![item(tr("Copy Link").into(), "", Some(UiMessage::CopyText(u))), rule()]),
+            m.unresolved_media.as_ref().map(|raw| {
+                let state = self.resolving_media.get(&mid);
+                let label = match state {
+                    Some(false) => trx("Try Loading Media Again", "message menu action"),
+                    _ => trx("Load Media", "message menu action"),
+                };
+                let load = UiMessage::ResolveMedia(m.account_id.clone(), mid.clone(), raw.clone());
+                vec![item(label.into(), "", (state != Some(&true)).then_some(load)), rule()]
+            }),
             (editable(m) && !text.is_empty())
                 .then(|| vec![item(tr("Edit…").into(), "Ctrl T", Some(UiMessage::StartEdit(mid.clone(), text)))]),
             Some(vec![
@@ -9647,10 +9677,15 @@ impl BeeperGuiApp {
                 [Some(s), arrow].into_iter().flatten()
             };
             let plain = |w: &str| {
-                let url = w.trim_end().starts_with("http").then(|| w.trim_end().to_string());
-                let word = span(w.trim_end().to_string()).size(13.0).color(fg).underline(url.is_some());
+                let t = w.trim_end();
+                let (linked, url) = match email(t) {
+                    Some(e) => (e, Some(format!("mailto:{e}"))),
+                    None => (t, t.starts_with("http").then(|| t.to_string())),
+                };
+                let word = span(linked.to_string()).size(13.0).color(fg).underline(url.is_some());
                 let arrow = url.is_some().then(arrow);
-                [Some(word.link_maybe(url)), arrow, w.ends_with(' ').then(|| span(" ").size(13.0))]
+                let rest = w[linked.len()..].to_string();
+                [Some(word.link_maybe(url)), arrow, (!rest.is_empty()).then(|| span(rest).size(13.0).color(fg))]
                     .into_iter()
                     .flatten()
             };
