@@ -9272,7 +9272,20 @@ impl BeeperGuiApp {
                 av,
                 1.25,
             );
-            frame(format!("draft:{n}"), dot, face, rows, self.creating_chat == Some(n), UiMessage::SelectNewChat(n))
+            let (key, on) = (format!("draft:{n}"), self.creating_chat == Some(n));
+            let picked = self.new_chat_account.as_ref().filter(|_| on);
+            let face = match d.users.first().map(|(a, _)| a).or(picked).filter(|_| network_icons) {
+                Some(account) => {
+                    let ring = match (on, self.hovered_chat.as_ref() == Some(&key)) {
+                        (true, _) => p.selected,
+                        (false, true) => crate::style::mix(p.window, Color { a: 1.0, ..p.hover }, p.hover.a),
+                        (false, false) => p.window,
+                    };
+                    badged(face, account, av, if compact { 12.0 } else { 16.0 }, (!colorize).then_some(p), ring)
+                }
+                None => face,
+            };
+            frame(key, dot, face, rows, on, UiMessage::SelectNewChat(n))
         });
         let rows = rest.iter().fold(Column::with_children(drafts.map(El::from)), |col, c| {
             let on = selected == Some(c.id.as_str());
