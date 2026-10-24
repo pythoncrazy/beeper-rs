@@ -2345,3 +2345,34 @@ fn mod_z_undoes_actions_like_desktop() {
     assert_eq!((id(&app, 0), id(&app, 1)), (first, second), "Edit Spaces shows the old order");
     assert!(app.undo_stack.is_empty());
 }
+
+#[test]
+fn new_chat_lists_chat_people_like_desktop() {
+    let mut app = demo_app("new-chat-people");
+    let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
+    let _ = app.update(UiMessage::NewChat);
+    assert!(!found(&app, "Chats"), "Desktop lists chat people only for a query");
+    let _ = app.update(UiMessage::NewChatQueryChanged("ERIC".into()));
+    assert!(found(&app, "Chats"));
+    let people = {
+        let st = app.store.read();
+        let listed: Vec<String> = rail_accounts(&st).into_iter().filter(|a| app.can(a, "create_dm")).collect();
+        chat_people(&st, &listed, None, "eric")
+    };
+    let mut keys: Vec<(&str, &str)> = people.iter().map(|(a, u)| (a.as_str(), u.id.as_str())).collect();
+    let n = keys.len();
+    keys.dedup();
+    assert!(n >= 2 && keys.len() == n, "one row per account and person");
+    let (account, eric) = people.iter().find(|(a, _)| a.contains("whatsapp")).cloned().expect("Eric on WhatsApp");
+    let dm = {
+        let st = app.store.read();
+        let dms = st.chats.iter().filter(|c| c.account_id == account && c.chat_type == "single");
+        dms.into_iter().find(|c| c.participants.items.iter().any(|u| u.id == eric.id)).expect("the DM").id.clone()
+    };
+    let _ = app.update(UiMessage::PickUser(account, Box::new(eric)));
+    let _ = app.update(UiMessage::StartChat);
+    assert_eq!(app.pane.selected_chat_id.as_deref(), Some(dm.as_str()), "the DM with the Matrix ID opens");
+    let _ = app.update(UiMessage::NewChat);
+    let _ = app.update(UiMessage::NewChatQueryChanged("zzzz".into()));
+    assert!(found(&app, "No results found") && !found(&app, "Chats"));
+}
