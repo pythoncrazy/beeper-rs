@@ -3147,6 +3147,54 @@ fn message_actions_follow_room_features_like_desktop() {
 }
 
 #[test]
+fn message_menu_speed_and_read_like_desktop() {
+    let mut app = demo_app("message-menu-items");
+    let apply = |app: &mut BeeperGuiApp, msgs: Vec<UiMessage>| msgs.into_iter().for_each(|m| drop(app.update(m)));
+    let voice = {
+        let st = app.store.read();
+        let m = st.messages.iter().find(|m| m.attachments.first().is_some_and(|a| app.playable(a)));
+        m.expect("a voice message").id.clone()
+    };
+    let _ = app.update(UiMessage::OpenMessageMenu(voice.clone()));
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_message_menu(&voice).0);
+        let _ = sim.click("Playback Speed").expect("Playback Speed");
+        sim.into_messages().collect()
+    };
+    apply(&mut app, picked);
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_main());
+        let _ = sim.click("1.5x").expect("the rate submenu");
+        sim.into_messages().collect()
+    };
+    apply(&mut app, picked);
+    assert!(app.pane.message_menu.is_none(), "a rate closes the menu");
+    let _ = app.update(UiMessage::OpenMessageMenu(voice.clone()));
+    let _ = app.update(UiMessage::Voice(crate::voice::Msg::Sub));
+    assert!(simulator(app.view_main()).find("1.5x").is_ok());
+    let _ = app.update(UiMessage::CloseModals);
+
+    let (cid, unread) = {
+        let st = app.store.read();
+        let m = st.messages.iter().filter(|m| m.is_unread == Some(true)).min_by_key(|m| &m.sort_key);
+        let m = m.expect("an unread message");
+        (m.chat_id.clone(), m.id.clone())
+    };
+    let read = |app: &BeeperGuiApp| simulator(app.view_message_menu(&unread).0).find("Mark as Read").is_ok();
+    assert!(read(&app));
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_message_menu(&unread).0);
+        let _ = sim.click("Mark as Read").expect("Mark as Read");
+        sim.into_messages().collect()
+    };
+    apply(&mut app, picked);
+    assert!(!read(&app), "the message is read");
+    let st = app.store.read();
+    let left = st.chat_msg_indices[&cid].iter().filter(|&&i| st.messages[i].is_unread == Some(true)).count();
+    assert_eq!(st.chats[st.chat_idx_by_id[&cid]].unread_count as usize, left);
+}
+
+#[test]
 fn chat_info_header_like_desktop() {
     let mut app = demo_app("chat-info");
     let id = "!tg_rust:beeper.com".to_string();

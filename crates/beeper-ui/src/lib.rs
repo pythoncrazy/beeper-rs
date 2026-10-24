@@ -299,6 +299,8 @@ pub enum UiMessage {
     ToggleReaction(String, String, String),
     ToggleBookmark(String),
     MarkUnreadFromHere(String, String),
+    /// Desktop's Mark as Read of the message menu.
+    MarkReadThrough(String, String),
     RetranscribeVoice(String),
     /// The poll message and all the own answers.
     VotePoll(String, Vec<String>),
@@ -5015,6 +5017,10 @@ impl BeeperGuiApp {
                 self.store.write().mark_unread_from_message(&cid, &mid);
                 self.refresh_theme_and_tray();
             }
+            UiMessage::MarkReadThrough(cid, mid) => {
+                self.store.write().mark_read_through(&cid, &mid);
+                self.refresh_theme_and_tray();
+            }
             UiMessage::RetranscribeVoice(mid) => {
                 self.status_banner = self.store.write().retranscribe_voice_note(&mid);
             }
@@ -5485,6 +5491,7 @@ impl BeeperGuiApp {
             }
             UiMessage::OpenMessageMenu(mid) => {
                 self.video.iter_mut().for_each(|v| v.sub = false);
+                self.audio.sub = false;
                 self.pane.message_menu = Some((mid, self.cursor.get()));
             }
             UiMessage::SelectMessages(mids) => self.pane.selected_msgs = mids,
@@ -7929,12 +7936,15 @@ impl BeeperGuiApp {
             (self.view_chat_menu(cid, left, self.pane().size.height - 8.0 - y), if left { x - sub_w } else { x }, y)
         });
         let message_menu = self.pane().message_menu.as_ref().map(|(mid, at)| {
-            let (menu, h) = self.view_message_menu(mid);
+            let (menu, h, top) = self.view_message_menu(mid);
             let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
-            let sub = self.view_speed_menu(mid);
-            let left = sub.is_some() && x + MESSAGE_MENU_W + video::SPEED_MENU_W > self.pane().size.width;
+            let (sub, sub_w) = match self.view_speed_menu(mid) {
+                Some(sub) => (Some(sub), video::SPEED_MENU_W),
+                None => (self.view_voice_speed(top), voice::rate_menu_w()),
+            };
+            let left = sub.is_some() && x + MESSAGE_MENU_W + sub_w > self.pane().size.width;
             let (x, menu) = match left {
-                true => (x - video::SPEED_MENU_W, row![].push(sub).push(menu).into()),
+                true => (x - sub_w, row![].push(sub).push(menu).into()),
                 false => (x, row![menu].push(sub).into()),
             };
             (menu, x, at.y.min(self.pane().size.height - h - 8.0))
@@ -8576,7 +8586,8 @@ impl BeeperGuiApp {
         row![Space::new().width(Fill), bubble].into()
     }
 
-    fn view_message_menu(&self, mid: &str) -> (El<'_>, f32) {
+    /// The message menu, its height and the top of its Playback Speed row.
+    fn view_message_menu(&self, mid: &str) -> (El<'_>, f32, f32) {
         let p = &self.pal;
         let st = self.store.read();
         let m = &st.messages[st.msg_idx_by_id[mid]];
@@ -8611,7 +8622,7 @@ impl BeeperGuiApp {
         let sender = chat.participants.items.iter().any(|u| u.id == m.sender_id);
         let privately =
             !mine && sender && others > 1 && m.is_deleted != Some(true) && self.can(&m.account_id, "create_dm");
-        let rows: Vec<(El, f32)> = [
+        let head: Vec<(El, f32)> = [
             self.video_menu_rows(&mid),
             address.map(|e| {
                 vec![
@@ -8646,6 +8657,10 @@ impl BeeperGuiApp {
                 item(tr("React…").into(), "", (rules.react && live).then(|| UiMessage::React(mid.clone()))),
                 item(bookmark.into(), "", Some(UiMessage::ToggleBookmark(mid.clone()))),
             ]),
+            (m.is_unread == Some(true)).then(|| {
+                let read = UiMessage::MarkReadThrough(cid.clone(), mid.clone());
+                vec![item(tr("Mark as Read").into(), "", Some(read))]
+            }),
             (m.is_unread != Some(true) && m.account_id != "hungryserv").then(|| {
                 vec![item(
                     tr("Mark as Unread").into(),
@@ -8666,11 +8681,21 @@ impl BeeperGuiApp {
                 ]);
                 vec![item(tr("Jump to Message").into(), "", Some(jump))]
             }),
-            (mine && rules.delete && live).then(|| {
-                let delete = MessageRules::young(rules.delete_max_age, &m.timestamp)
-                    .then(|| UiMessage::AskDeleteMessage(vec![mid.clone()]));
-                vec![rule(), item(tr("Delete for Everyone…").into(), "", delete)]
-            }),
+        ]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .collect();
+        let top = head.iter().map(|r| r.1).sum::<f32>() + 11.0;
+        let delete = (mine && rules.delete && live).then(|| {
+            let delete = MessageRules::young(rules.delete_max_age, &m.timestamp)
+                .then(|| UiMessage::AskDeleteMessage(vec![mid.clone()]));
+            item(tr("Delete for Everyone…").into(), "", delete)
+        });
+        let tail: Vec<(El, f32)> = self.voice_menu_row(m).into_iter().chain(delete).collect();
+        let rows: Vec<(El, f32)> = [
+            Some(head),
+            (!tail.is_empty()).then(|| std::iter::once(rule()).chain(tail).collect()),
             Some(vec![
                 rule(),
                 item(
@@ -8711,6 +8736,7 @@ impl BeeperGuiApp {
                 .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
                 .into(),
             h,
+            top,
         )
     }
 

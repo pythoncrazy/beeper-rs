@@ -1,10 +1,10 @@
 //! Desktop's audio player (`Audio.tsx`): decoding, the waveform, playback speed, and autoplay of the next
 //! voice note.
 use crate::style::{btn_style, fill_box, hidden_slider, ic, icon, semi, shadow_box, text_width, txt, CLEAR};
-use crate::{menu_item, sound, tinted, BeeperGuiApp, El, UiMessage, AVATAR_SLOTS};
+use crate::{menu_item, sound, tinted, tr, BeeperGuiApp, El, UiMessage, AVATAR_SLOTS, MENU_ITEM};
 use beeper_core::models::{Attachment, Message};
 use iced::font::Weight;
-use iced::widget::{button, column, container, row, slider, stack, svg, Column, Row, Space};
+use iced::widget::{button, column, container, mouse_area, row, slider, stack, svg, Column, Row, Space};
 use iced::{Center, Color, Pixels, Point, Subscription, Task};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
@@ -59,11 +59,13 @@ pub struct Player {
     now: Option<Track>,
     rate: f32,
     pub menu: Option<Point>,
+    /// The Playback Speed submenu of the message menu is open.
+    pub sub: bool,
 }
 
 impl Default for Player {
     fn default() -> Self {
-        Self { clips: HashMap::new(), now: None, rate: 1.0, menu: None }
+        Self { clips: HashMap::new(), now: None, rate: 1.0, menu: None, sub: false }
     }
 }
 
@@ -74,6 +76,7 @@ pub enum Msg {
     Seek(String, String, String, f32),
     SeekEnd,
     Menu,
+    Sub,
     Rate(f32),
     Tick,
 }
@@ -189,10 +192,12 @@ impl BeeperGuiApp {
             }
             Msg::SeekEnd => audio.output(),
             Msg::Menu => audio.menu = Some(self.cursor.get()),
+            Msg::Sub => audio.sub = true,
             Msg::Rate(rate) => {
                 let playing = audio.now.as_ref().is_some_and(|t| t.since.is_some());
                 audio.pause();
-                (audio.rate, audio.menu) = (rate, None);
+                (audio.rate, audio.menu, audio.sub) = (rate, None, false);
+                self.pane.message_menu = None;
                 if playing {
                     audio.now.as_mut().expect("a current track").since = Some(Instant::now());
                     audio.output();
@@ -333,12 +338,28 @@ impl BeeperGuiApp {
         let items = RATES.map(|r| {
             menu_item(p, lead(self.audio.rate == r), format!("{r}x"), "", Some(UiMessage::Voice(Msg::Rate(r))))
         });
-        let w = (10.0 + 16.0 + 22.0 + text_width("0.25x", 13.0, Weight::Normal)).max(80.0);
         container(Column::with_children(items).padding([4, 0]))
-            .width(w)
+            .width(rate_menu_w())
             .style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
             .into()
     }
+
+    /// The Playback Speed row of the message menu of a voice message.
+    pub(crate) fn voice_menu_row(&self, m: &Message) -> Option<(El<'_>, f32)> {
+        m.attachments.first().filter(|a| self.playable(a))?;
+        let open = UiMessage::Voice(Msg::Sub);
+        let row = menu_item(&self.pal, None, tr("Playback Speed").into(), "›", Some(open.clone()));
+        Some((mouse_area(row).on_enter(open).into(), MENU_ITEM))
+    }
+
+    /// The Playback Speed submenu of the message menu, `top` below the top of the menu.
+    pub(crate) fn view_voice_speed(&self, top: f32) -> Option<El<'_>> {
+        self.audio.sub.then(|| column![Space::new().height(top), self.view_rate_menu()].into())
+    }
+}
+
+pub(crate) fn rate_menu_w() -> f32 {
+    (10.0 + 16.0 + 22.0 + text_width("0.25x", 13.0, Weight::Normal)).max(80.0)
 }
 
 /// The URL of the first audio attachment of `m`, like Desktop's play queue entries.

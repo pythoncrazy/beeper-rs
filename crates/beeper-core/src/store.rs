@@ -1789,6 +1789,32 @@ impl BeeperStore {
         });
     }
 
+    /// Desktop's `markAsRead` with a message: everything up to it is read, and the receipt goes to it.
+    pub fn mark_read_through(&mut self, chat_or_local_id: &str, message_id: &str) {
+        let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id).expect("chat message exists");
+        let key = self.messages[m_idx].sort_key.clone();
+        let indices = self.chat_msg_indices[&chat_id].clone();
+        for &i in &indices {
+            if self.messages[i].sort_key <= key && self.messages[i].is_unread == Some(true) {
+                self.update_message(i, |m| m.is_unread = Some(false));
+            }
+        }
+        let left = indices.iter().filter(|&&i| self.messages[i].is_unread == Some(true)).count() as u32;
+        let idx = self.chat_idx_by_id[&chat_id];
+        if self.chats[idx].is_marked_unread == Some(true) {
+            self.queue(&chat_id, Outgoing::Flag(ChatFlag::MarkedUnread, false));
+        }
+        self.update_chat(idx, |c| {
+            c.unread_count = left;
+            c.unread_mentions = if left == 0 { 0 } else { c.unread_mentions };
+            c.is_marked_unread = Some(false);
+            c.last_read_message_sort_key = c.last_read_message_sort_key.clone().max(Some(key));
+        });
+        if message_id.starts_with('$') {
+            self.queue(&chat_id, Outgoing::Read(message_id.into()));
+        }
+    }
+
     pub fn mark_chat_read(&mut self, chat_or_local_id: &str, clear_messages: bool) -> Option<String> {
         let idx = self.resolve_chat_idx(chat_or_local_id)?;
         let chat_id = self.chats[idx].id.clone();
