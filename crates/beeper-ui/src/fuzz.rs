@@ -920,6 +920,43 @@ fn forward_selected_messages_like_desktop() {
 }
 
 #[test]
+fn forward_rows_open_the_chat_menu_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("fwd-menu");
+    let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::ArrowUp), Modifiers::empty()));
+    let _ = app.update(UiMessage::KeyPressed(Key::Character("f".into()), Modifiers::CTRL | Modifiers::SHIFT));
+    let (id, title) = {
+        let st = app.store.read();
+        let c = forward_chats(&st, app.forward.as_ref().expect("the forward picker"))[1];
+        (c.id.clone(), c.title.clone())
+    };
+    let open: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_forward(app.forward.as_ref().unwrap()));
+        let at = sim.find(title.as_str()).expect("a forward row").visible_bounds().expect("a visible row").center();
+        sim.point_at(at);
+        let _ = sim.simulate(
+            [mouse::Event::ButtonPressed(Button::Right), mouse::Event::ButtonReleased(Button::Right)]
+                .map(iced::Event::Mouse),
+        );
+        sim.into_messages().collect()
+    };
+    assert!(matches!(&open[..], [UiMessage::OpenChatMenu(c)] if *c == id), "the chat menu of the row");
+    for m in open {
+        let _ = app.update(m);
+    }
+    let outside = interact(&app, app.main_window.unwrap(), Size::new(1440.0, 900.0), Point::new(4.0, 896.0), {
+        let left = [mouse::Event::ButtonPressed(Button::Left), mouse::Event::ButtonReleased(Button::Left)];
+        left.map(iced::Event::Mouse).to_vec()
+    });
+    assert!(matches!(&outside[..], [UiMessage::CloseChatMenu]), "a click outside the menu keeps the picker");
+    for m in outside {
+        let _ = app.update(m);
+    }
+    assert!(app.chat_menu.is_none() && app.forward.is_some());
+}
+
+#[test]
 fn messages_select_like_desktop() {
     let mut app = demo_app("multi");
     let chat = "!note_self:beeper.com";
