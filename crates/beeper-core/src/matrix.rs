@@ -1535,6 +1535,18 @@ impl Provision {
     }
 }
 
+/// Desktop's `logoutCloudBridgeAccount`: delete the bridge when the login is its only one, or else log the login
+/// out of the bridge.
+pub async fn remove_account(p: Provision, api_url: String, sole: bool) -> Result<(), String> {
+    if !sole {
+        let path = format!("logout/{}", crate::codec::url_encode(&p.login_id));
+        return p.post(&path, "{}".into()).await.map(drop);
+    }
+    let url = format!("{}/bridge/{}", api_url.trim_end_matches('/'), crate::codec::url_encode(&p.bridge_id));
+    let resp = reqwest::Client::new().delete(url).bearer_auth(&p.access_token).send().await;
+    resp.map_err(|e| e.to_string())?.error_for_status().map(drop).map_err(|e| e.to_string())
+}
+
 /// The bridge's provisioning capabilities: `resolve_identifier` and `group_creation`.
 pub async fn capabilities(p: Provision) -> Result<Value, String> {
     p.get("capabilities").await?.ok_or_else(|| "the bridge has no provisioning capabilities".into())
