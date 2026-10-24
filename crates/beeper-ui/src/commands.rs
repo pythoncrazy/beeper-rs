@@ -735,6 +735,10 @@ impl BeeperGuiApp {
         let body = container(line).center_y(36).padding([0, 6]).style(fill_box(bg, 8.0));
         let body = container(body).padding([0, 6]).id(format!("cmd-{i}"));
         let hit = mouse_area(body).on_enter(UiMessage::CommandHighlight(i));
+        let hit = match c.chat.as_ref().filter(|id| st.resolve_chat_idx(id).is_some()) {
+            Some(id) => hit.on_right_press(UiMessage::OpenChatMenu(id.clone())),
+            None => hit,
+        };
         match c.msg.clone() {
             Some(m) => hit.on_press(UiMessage::Commands(vec![UiMessage::CloseModals, m])).into(),
             None => hit.into(),
