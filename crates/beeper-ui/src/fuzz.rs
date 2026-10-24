@@ -2048,7 +2048,14 @@ fn label_chats_from_the_chat_menu_like_desktop() {
     let _ = app.update(app.undo_toast.as_ref().and_then(|t| t.open.clone()).expect("the toast opens the label"));
     assert_eq!(app.selected_account_filter.as_deref(), Some("label:lbl_work"));
     let _ = app.update(UiMessage::Undo(false));
-    assert!(labels(&app).is_empty() && app.status_banner.is_empty(), "Undo shows no toast");
+    assert!(labels(&app).is_empty());
+    assert_eq!(app.status_banner, "Undo: Add to Work");
+    assert!(app.undo_toast.is_none() && app.undo_stack.is_empty(), "the undo is not an action");
+    app.focused = true;
+    for _ in 0..(UNDO_NOTE_TIMEOUT.as_millis() / TOAST_TICK.as_millis()) {
+        let _ = app.update(UiMessage::ToastTick);
+    }
+    assert!(app.status_banner.is_empty(), "the Undo: toast closes after a second");
     let _ = app.update(UiMessage::ToggleLabel("lbl_work".into(), chat.into(), true));
     let _ = app.update(UiMessage::ToggleLabel("lbl_work".into(), chat.into(), false));
     assert!(labels(&app).is_empty());
@@ -2142,4 +2149,39 @@ fn double_clicks_like_desktop() {
     assert_eq!(app.sidebar_width, SIDEBAR_WIDTH);
     let saved = std::fs::read_to_string(app.store.read().data_dir.join("sidebar-width")).expect("the saved width");
     assert_eq!(saved.parse::<f32>().expect("a width"), SIDEBAR_WIDTH);
+}
+
+#[test]
+fn mod_z_undoes_actions_like_desktop() {
+    let mut app = demo_app("undo-stack");
+    let z = |app: &mut BeeperGuiApp| {
+        let _ = app.update(UiMessage::KeyPressed(Key::Character("z".into()), Modifiers::COMMAND));
+    };
+    let order = app.store.read().settings.spaces_order.clone();
+    let _ = app.update(UiMessage::OpenEditSpaces);
+    let id = |app: &BeeperGuiApp, i: usize| app.spaces_window.as_ref().expect("Edit Spaces").order[i].clone();
+    let (first, second) = (id(&app, 0), id(&app, 1));
+    let _ = app.update(UiMessage::Spaces(SpacesEdit::Drag(second.clone())));
+    let _ = app.update(UiMessage::Spaces(SpacesEdit::Over(first.clone())));
+    let _ = app.update(UiMessage::Spaces(SpacesEdit::Drop));
+    assert_ne!(app.store.read().settings.spaces_order, order);
+    let chat = "!note_self:beeper.com";
+    let _ = app.update(UiMessage::ToggleFlag(chat.into(), ChatFlag::Muted));
+    let _ = app.update(UiMessage::SetLabelInbox("lbl_work".into(), Some("none")));
+    assert!(app.status_banner.is_empty(), "these actions have no toast");
+    let muted = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.chats[st.resolve_chat_idx(chat).expect("the chat")].is_muted == Some(true)
+    };
+    assert!(muted(&app));
+    z(&mut app);
+    assert_eq!(app.status_banner, "Undo: Set \"Work\" inbox visibility to None");
+    assert!(app.store.read().labels.iter().any(|l| l.id == "lbl_work" && l.inbox.is_none()));
+    z(&mut app);
+    assert!(!muted(&app) && app.status_banner.starts_with("Undo: Mute "));
+    z(&mut app);
+    assert_eq!(app.status_banner, "Undo: Reorder sidebar");
+    assert_eq!(app.store.read().settings.spaces_order, order);
+    assert_eq!((id(&app, 0), id(&app, 1)), (first, second), "Edit Spaces shows the old order");
+    assert!(app.undo_stack.is_empty());
 }
