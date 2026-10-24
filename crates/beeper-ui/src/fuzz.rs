@@ -2155,7 +2155,7 @@ fn double_clicks_like_desktop() {
 fn mod_z_undoes_actions_like_desktop() {
     let mut app = demo_app("undo-stack");
     let z = |app: &mut BeeperGuiApp| {
-        let _ = app.update(UiMessage::KeyPressed(Key::Character("z".into()), Modifiers::CTRL));
+        let _ = app.update(UiMessage::KeyPressed(Key::Character("z".into()), Modifiers::COMMAND));
     };
     let order = app.store.read().settings.spaces_order.clone();
     let _ = app.update(UiMessage::OpenEditSpaces);
