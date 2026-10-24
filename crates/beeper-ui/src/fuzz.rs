@@ -2074,6 +2074,57 @@ fn background_menus_like_desktop() {
 }
 
 #[test]
+fn message_requests_like_desktop() {
+    let mut app = demo_app("message-requests");
+    let dms: Vec<String> = {
+        let st = app.store.read();
+        let dm = |c: &&Chat| c.chat_type == "single" && c.id != NOTE_CHAT_ID && c.is_pinned != Some(true);
+        st.chats.iter().filter(dm).take(2).map(|c| c.id.clone()).collect()
+    };
+    for id in &dms {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(id).expect("a chat");
+        st.update_chat(idx, |c| {
+            (c.is_request, c.can_accept_request, c.delete_modes) = (Some(true), true, DELETE_FOR_ME)
+        });
+    }
+    let (first, second) = (&dms[0], &dms[1]);
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_chat_menu(first, false, 900.0));
+        assert!(sim.find("Decline message request").is_ok());
+        let _ = sim.click("Accept message request").expect("Accept message request");
+        sim.into_messages().collect()
+    };
+    for m in picked {
+        let _ = app.update(m);
+    }
+    {
+        let st = app.store.read();
+        let c = &st.chats[st.resolve_chat_idx(first).expect("the accepted chat")];
+        assert!(c.is_request == Some(false) && c.flags & CHAT_REQUEST == 0 && app.chat_menu.is_none());
+    }
+    let _ = app.update(UiMessage::ClickChat(second.clone()));
+    let heading = {
+        let st = app.store.read();
+        let c = &st.chats[st.resolve_chat_idx(second).expect("a request")];
+        let u = c.participants.items.iter().find(|u| u.is_self != Some(true)).expect("the other person");
+        let id = handle(u).or_else(|| u.phone_number.as_deref().map(fmt_phone)).or_else(|| u.email.clone());
+        format!("Accept message request from {}?", id.map_or(member_name(u), |id| format!("{} ({id})", member_name(u))))
+    };
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_conversation());
+        assert!(sim.find(heading.as_str()).is_ok(), "{heading}");
+        assert!(sim.find("Accept").is_ok());
+        let _ = sim.click("Decline").expect("Decline");
+        sim.into_messages().collect()
+    };
+    for m in picked {
+        let _ = app.update(m);
+    }
+    assert!(app.store.read().resolve_chat_idx(second).is_none(), "Decline deletes the chat");
+}
+
+#[test]
 fn sidebar_overflow_menu_lists_hidden_spaces_like_desktop() {
     let mut app = demo_app("overflow-menu");
     let hide = |id: &str| SpaceOrder { id: id.into(), visible: false };
