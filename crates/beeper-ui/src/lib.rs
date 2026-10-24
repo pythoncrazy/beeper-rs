@@ -3088,8 +3088,8 @@ pub struct BeeperGuiApp {
     pub new_chats: Vec<NewChat>,
     /// The room of a direct chat that the bridge made, to select when it syncs.
     pub pending_dm: Option<String>,
-    /// The `resolve_identifier` provisioning capabilities of the chat accounts.
-    pub resolve: HashMap<String, serde_json::Value>,
+    /// The bridge provisioning capabilities of the chat accounts.
+    pub caps: HashMap<String, serde_json::Value>,
     /// The expanded New Chat contact and its networks.
     pub contact_networks: Option<(String, Networks)>,
     /// The networks of the typed identifier, by "lookup:" and the query.
@@ -3202,7 +3202,10 @@ impl BeeperGuiApp {
         };
         let pending = notify::Pending::new(&store.read().chats);
         let st = store.read();
-        let demo = serde_json::json!({ "create_dm": true, "any_phone": true });
+        let demo = serde_json::json!({
+            "resolve_identifier": { "create_dm": true, "any_phone": true },
+            "group_creation": { "group": { "name": { "allowed": true }, "participants": { "min_length": 2 } } },
+        });
         let resolve =
             st.bridge_accounts.iter().filter(|_| st.config.demo).map(|b| (b.account_id.clone(), demo.clone()));
         let resolve = resolve.collect();
@@ -3273,7 +3276,7 @@ impl BeeperGuiApp {
             creating_chat: None,
             new_chats: Vec::new(),
             pending_dm: None,
-            resolve,
+            caps: resolve,
             contact_networks: None,
             new_chat_lookup: None,
             new_chat_search: None,
@@ -5625,8 +5628,15 @@ impl BeeperGuiApp {
             }
             UiMessage::PickUser(account, user) => {
                 let n = self.creating_chat.expect("an open draft");
-                // Our accounts cannot create groups, so a pick replaces the person, like Desktop without `canCreateGroupChat`.
-                self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft").users = vec![(account, *user)];
+                let group = self.can_group(&account);
+                let users = &mut self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft").users;
+                if !group {
+                    *users = vec![(account, *user)];
+                } else if users.iter().all(|(_, u)| u.id != user.id) {
+                    users.push((account, *user));
+                } else {
+                    return Task::none();
+                }
                 self.new_chat_query.clear();
             }
             UiMessage::StartChat => {
@@ -5892,7 +5902,7 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::Capabilities(account, r) => match r {
-                Ok(v) => drop(self.resolve.insert(account, v["resolve_identifier"].clone())),
+                Ok(v) => drop(self.caps.insert(account, v)),
                 Err(e) => eprintln!("provisioning capabilities failed: {e}"),
             },
             UiMessage::NewChatAccount(account) => {
@@ -8705,7 +8715,12 @@ impl BeeperGuiApp {
 
     /// Whether the bridge of a chat account has a `resolve_identifier` provisioning capability.
     fn can(&self, account_id: &str, capability: &str) -> bool {
-        self.resolve.get(account_id).is_some_and(|c| c[capability] == true)
+        self.caps.get(account_id).is_some_and(|c| c["resolve_identifier"][capability] == true)
+    }
+
+    /// Desktop's `canCreateGroupChat`: the bridge of a chat account has `group_creation.group`.
+    fn can_group(&self, account_id: &str) -> bool {
+        self.caps.get(account_id).is_some_and(|c| c["group_creation"]["group"].is_object())
     }
 
     /// The bridge login of a chat account, for the bridge provisioning API.
@@ -11729,7 +11744,8 @@ impl BeeperGuiApp {
             .padding([0, 11])
             .style(btn_style([CLEAR, p.chip, p.selected], [p.strong; 3], 6.0))
             .on_press(UiMessage::ToggleJoinMatrix);
-            col = col.push(container(group_btn).padding([0, 8])).push(container(join_btn).padding([0, 8]));
+            let group_btn = listed.iter().any(|a| self.can_group(a)).then(|| container(group_btn).padding([0, 8]));
+            col = col.push(group_btn).push(container(join_btn).padding([0, 8]));
         }
         let heading = |label: &str| {
             container(txt(label.to_string(), 12.0).color(p.sub))

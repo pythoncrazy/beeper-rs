@@ -2431,3 +2431,27 @@ fn new_chat_searches_connections_like_desktop() {
     let _ = app.update(UiMessage::NewChatQueryChanged("danae".into()));
     assert!(app.new_chat_search.is_none() && !found(&app, "Connections"));
 }
+
+#[test]
+fn new_chat_groups_follow_bridge_capabilities_like_desktop() {
+    let mut app = demo_app("new-chat-groups");
+    let accounts: Vec<String> = rail_accounts(&app.store.read()).into_iter().filter(|a| app.can_group(a)).collect();
+    let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
+    let _ = app.update(UiMessage::NewChat);
+    assert!(accounts.len() > 1 && found(&app, "New Group"));
+    let user = |id: &str| Box::new(User { id: id.into(), full_name: Some(id.into()), ..Default::default() });
+    let (a, b) = (accounts[0].clone(), accounts[1].clone());
+    let _ = app.update(UiMessage::PickUser(a.clone(), user("@one:x")));
+    let _ = app.update(UiMessage::PickUser(a.clone(), user("@two:x")));
+    let _ = app.update(UiMessage::PickUser(a.clone(), user("@two:x")));
+    let ids = |app: &BeeperGuiApp| app.new_chats[0].users.iter().map(|(_, u)| u.id.clone()).collect::<Vec<_>>();
+    assert_eq!(ids(&app), ["@one:x", "@two:x"], "a group bridge adds people once");
+    let single = serde_json::json!({ "resolve_identifier": { "create_dm": true } });
+    for acc in &accounts {
+        let _ = app.update(UiMessage::Capabilities(acc.clone(), Ok(single.clone())));
+    }
+    let _ = app.update(UiMessage::PickUser(b, user("@three:x")));
+    assert_eq!(ids(&app), ["@three:x"], "a bridge without groups replaces the person");
+    let _ = app.update(UiMessage::NewChat);
+    assert!(!found(&app, "New Group"), "no bridge can create groups");
+}
