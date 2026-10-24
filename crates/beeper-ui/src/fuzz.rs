@@ -470,6 +470,7 @@ fn incognito_toggle_like_desktop() {
     assert!(on(&app, "incognito"));
     assert_eq!(app.status_banner, "Incognito mode on. Also hide when you're typing from recipients?");
     assert_eq!(titles(&app).next().as_deref(), Some("Turn off incognito mode"));
+    assert!(simulator(app.view_main()).find("Undo").is_ok(), "Undo follows Hide typing");
     {
         let mut sim = simulator(app.view_main());
         let _ = sim.click("Hide typing").expect("the toast offers to hide typing");
@@ -482,10 +483,16 @@ fn incognito_toggle_like_desktop() {
     assert_eq!(app.status_banner, "Incognito mode off. Also show when you're typing to recipients?");
     app.status_banner = "Copied".into();
     assert!(simulator(app.view_main()).find("Show typing").is_err(), "another banner has no stale button");
-    let _ = app.update(UiMessage::SetPref("incognito", 1));
+    let _ = app.update(UiMessage::DismissBanner);
+    let _ = app.update(UiMessage::RunHotkey("Toggle Incognito Mode"));
     assert_eq!(app.status_banner, "Incognito mode on.");
+    let _ = app.update(UiMessage::Undo(false));
+    assert!(!on(&app, "incognito") && app.status_banner == "Undo: Enable Incognito Mode");
     let _ = app.update(UiMessage::SetPref("typingIndicators", 1));
-    let _ = app.update(UiMessage::SetPref("incognito", 0));
+    let _ = app.update(UiMessage::DismissBanner);
+    let _ = app.update(UiMessage::SetPref("incognito", 1));
+    assert!(app.status_banner.is_empty(), "Settings change incognito mode without a toast");
+    let _ = app.update(UiMessage::RunHotkey("Toggle Incognito Mode"));
     assert_eq!(app.status_banner, "Incognito mode off.");
     let _ = app.update(UiMessage::SetPref("incognito", 1));
     assert!(app.store.read().incognito());
@@ -1829,7 +1836,7 @@ fn archive_and_low_priority_toasts_undo_like_desktop() {
     assert!(ids.iter().all(|id| !flag(&app, id, ChatFlag::LowPriority)));
     assert_eq!(app.selection, ids, "Undo selects the chats again");
     let _ = app.update(UiMessage::SelectionSet(ChatFlag::Archived, true));
-    assert!(app.status_banner == "Archived 2 chats" && app.undo_toast.as_ref().unwrap().icon.is_none());
+    assert!(app.status_banner == "Archived 2 chats" && app.toast.as_ref().unwrap().icon.is_none());
     let _ = app.update(UiMessage::Undo(false));
     assert!(ids.iter().all(|id| !flag(&app, id, ChatFlag::Archived)) && app.selection == ids, "Mod-z runs the Undo");
     assert!(app.shown_undo().is_none());
@@ -2045,12 +2052,12 @@ fn label_chats_from_the_chat_menu_like_desktop() {
     assert_eq!(labels(&app), ["lbl_work"]);
     assert!(app.store.read().labels.iter().any(|l| l.id == "lbl_work" && l.rooms.iter().any(|r| r == chat)));
     assert_eq!(app.status_banner, "Added to Work");
-    let _ = app.update(app.undo_toast.as_ref().and_then(|t| t.open.clone()).expect("the toast opens the label"));
+    let _ = app.update(app.toast.as_ref().and_then(|t| t.open.clone()).expect("the toast opens the label"));
     assert_eq!(app.selected_account_filter.as_deref(), Some("label:lbl_work"));
     let _ = app.update(UiMessage::Undo(false));
     assert!(labels(&app).is_empty());
     assert_eq!(app.status_banner, "Undo: Add to Work");
-    assert!(app.undo_toast.is_none() && app.undo_stack.is_empty(), "the undo is not an action");
+    assert!(app.toast.is_none() && app.undo_stack.is_empty(), "the undo is not an action");
     app.focused = true;
     for _ in 0..(UNDO_NOTE_TIMEOUT.as_millis() / TOAST_TICK.as_millis()) {
         let _ = app.update(UiMessage::ToastTick);
@@ -2059,7 +2066,7 @@ fn label_chats_from_the_chat_menu_like_desktop() {
     let _ = app.update(UiMessage::ToggleLabel("lbl_work".into(), chat.into(), true));
     let _ = app.update(UiMessage::ToggleLabel("lbl_work".into(), chat.into(), false));
     assert!(labels(&app).is_empty());
-    assert!(app.status_banner == "Removed from Work" && app.undo_toast.as_ref().is_some_and(|t| t.open.is_none()));
+    assert!(app.status_banner == "Removed from Work" && app.toast.as_ref().is_some_and(|t| t.open.is_none()));
     let _ = app.update(UiMessage::OpenCreateLabel(vec![chat.into()]));
     assert_eq!(app.label_window.as_ref().expect("the label window").chats, [chat]);
 }
