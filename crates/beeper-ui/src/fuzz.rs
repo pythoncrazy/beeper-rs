@@ -2576,6 +2576,41 @@ fn chat_info_header_like_desktop() {
 }
 
 #[test]
+fn chat_info_description_like_desktop() {
+    let mut app = demo_app("chat-info-desc");
+    let id = "!tg_rust:beeper.com".to_string();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let set = |app: &mut BeeperGuiApp, edits: u8, desc: Option<&str>| {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&id).expect("the group");
+        st.update_chat(i, |c| (c.edits, c.description) = (edits, desc.map(Into::into)));
+    };
+    let has = |app: &BeeperGuiApp, label: &str| simulator(app.view_info()).find(label).is_ok();
+    set(&mut app, 0, None);
+    assert!(!has(&app, "Add a description") && !has(&app, "Group Description"));
+    set(&mut app, 1 << 2, None);
+    let _ = simulator(app.view_info()).click("Add a description").expect("an editor can add a description");
+    let _ = app.update(UiMessage::InfoDesc(None));
+    let _ = app.update(UiMessage::InfoDesc(Some(text_editor::Action::Edit(text_editor::Edit::Paste(
+        std::sync::Arc::new("We build https://example.com".into()),
+    )))));
+    let _ = simulator(app.view_info()).click("Done").expect("Done saves");
+    let _ = app.update(UiMessage::SaveInfoDesc);
+    assert!(app.info_desc.is_none());
+    {
+        let st = app.store.read();
+        let c = &st.chats[st.resolve_chat_idx(&id).expect("the group")];
+        assert_eq!(c.description.as_deref(), Some("We build https://example.com"));
+    }
+    assert!(has(&app, "Group Description") && has(&app, "Edit") && !has(&app, "more"), "a short description");
+    let long = ["word"; 120].join(" ");
+    set(&mut app, 0, Some(&long));
+    assert!(has(&app, "more"), "a description of more than three lines can expand");
+    let _ = app.update(UiMessage::InfoMore);
+    assert!(has(&app, "more"), "the toggle also collapses the description");
+}
+
+#[test]
 fn edit_group_like_desktop() {
     let mut app = demo_app("edit-group");
     let id = "!tg_rust:beeper.com".to_string();
