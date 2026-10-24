@@ -7867,7 +7867,16 @@ impl BeeperGuiApp {
         });
         let filter_menu = self.show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 22.5, 26.0));
         let reminder_menu = self.reminder_menu.map(|at| (self.view_reminder_menu(), at.x, at.y));
-        let rate_menu = self.audio.menu.map(|at| (self.view_rate_menu(), at.x, at.y));
+        let rate_menu = self.audio.menu.map(|at| match self.audio.pill {
+            true => {
+                let size = self.pane().size;
+                let x = at.x.min(size.width - 233.0 - voice::rate_menu_w() - 8.0);
+                let y = at.y.min(size.height - 8.0 - MENU_ITEM - 8.0);
+                let top = if self.audio.sub { y.min(size.height - 8.0 - 8.0 * MENU_ITEM - 8.0) } else { y };
+                (self.view_pill_menu(y - top), x, top)
+            }
+            false => (self.view_rate_menu(), at.x, at.y),
+        });
         let chat_menu = self.chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
             if let Some(key) = cid.strip_prefix("card:") {
                 let size = self.pane().size;
@@ -10316,7 +10325,11 @@ impl BeeperGuiApp {
                 .style(scroll_style(p.scroll))
                 .into()
         };
-        let sidebar = container(column![header, list].padding(Padding::ZERO.left(8.0))).width(w).height(Fill);
+        let pill = self.view_global_audio(&st, w - 18.0).map(|pill| {
+            container(pill).padding(Padding::ZERO.left(8.0).right(10.0).bottom(8.0)).height(Fill).align_bottom(Fill)
+        });
+        let sidebar = stack![column![header, list].padding(Padding::ZERO.left(8.0))].push(pill);
+        let sidebar = container(sidebar).width(w).height(Fill);
         mouse_area(sidebar).on_right_press(UiMessage::OpenChatMenu(SIDEBAR_MENU.into())).into()
     }
 
