@@ -7,7 +7,7 @@ use crate::{
 use crate::{ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_MARK_ALL_READ};
 use beeper_core::matrix::ChatFlag;
 use beeper_core::models::{
-    Chat, Message, ThemeChoice, User, CHAT_UNREAD, MANAGE_KICK, MANAGE_ROLE, MEMBER_KICK, MEMBER_LEAVE,
+    Chat, Message, ThemeChoice, User, CHAT_UNREAD, MANAGE_KICK, MANAGE_ROLE, MEMBER_INVITE, MEMBER_KICK, MEMBER_LEAVE,
 };
 use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
@@ -98,6 +98,8 @@ pub enum SubMenu {
     Links(Vec<(String, String)>),
     /// The members of the open chat to remove (`MEMBERS_KICK`), to make admins or to make regular members.
     Members(u8),
+    /// Desktop's `ADD_THREAD_PARTICIPANT`: the people to invite to the open chat.
+    AddMembers,
 }
 
 pub const MEMBERS_KICK: u8 = 0;
@@ -117,6 +119,7 @@ impl SubMenu {
             SubMenu::Members(MEMBERS_KICK) => tr("Remove member from group"),
             SubMenu::Members(MEMBERS_ADMIN) => tr("Make group admin"),
             SubMenu::Members(_) => tr("Dismiss group admin"),
+            SubMenu::AddMembers => tr("Add members to chat"),
         }
     }
 
@@ -124,7 +127,7 @@ impl SubMenu {
         match self {
             SubMenu::FilterAccount | SubMenu::Folders | SubMenu::Links(_) => String::new(),
             SubMenu::History => tr("Search chats...").into(),
-            SubMenu::Members(_) => tr("Search users...").into(),
+            SubMenu::Members(_) | SubMenu::AddMembers => tr("Search users...").into(),
             SubMenu::Remind(_) => {
                 tr("When? (try typing something like %s)").replacen("%s", "\"Monday morning at 9\"", 1)
             }
@@ -271,6 +274,7 @@ impl BeeperGuiApp {
                 });
                 search(listed.collect())
             }
+            SubMenu::AddMembers => self.add_member_commands(st, query),
             SubMenu::Links(links) => links
                 .iter()
                 .map(|(url, title)| {
@@ -310,6 +314,47 @@ impl BeeperGuiApp {
                 })
             }
         }
+    }
+
+    /// Desktop's `xXe`: the people of the account's other chats (`SXe`), then the users of the bridge search.
+    fn add_member_commands(&self, st: &BeeperStore, query: &str) -> Vec<Command> {
+        let Some(c) = self.pane.selected_chat_id.as_deref().and_then(|id| st.resolve_chat_idx(id)) else {
+            return Vec::new();
+        };
+        let c = &st.chats[c];
+        let row = |category, u: &User| Command {
+            user: Some(u.clone()),
+            account: Some(c.account_id.clone()),
+            ..cmd(category, crate::member_name(u), Some(UiMessage::AddMember(c.id.clone(), Box::new(u.clone()))))
+        };
+        let q = query.trim().to_lowercase();
+        let inbox = st
+            .chats
+            .iter()
+            .filter(|o| o.account_id == c.account_id && o.is_request != Some(true) && o.is_low_priority != Some(true));
+        let mut seen: std::collections::HashSet<&str> = c.participants.items.iter().map(|u| u.id.as_str()).collect();
+        let mut people: Vec<&User> = inbox
+            .flat_map(|o| &o.participants.items)
+            .filter(|u| u.is_self != Some(true) && seen.insert(&u.id))
+            .filter(|u| {
+                let fields = [&u.full_name, &u.custom_nickname, &u.username, &u.phone_number, &u.email];
+                let fields = fields.into_iter().flatten().chain(std::iter::once(&u.id));
+                q.is_empty() || fields.map(|f| f.to_lowercase()).any(|f| f.contains(&q))
+            })
+            .collect();
+        let name = |u: &User| {
+            let names = [&u.full_name, &u.custom_nickname, &u.username, &u.phone_number, &u.email];
+            names.into_iter().flatten().next().map(|n| n.to_lowercase())
+        };
+        people.sort_by_cached_key(|u| (name(u).is_none(), name(u)));
+        let mut v: Vec<Command> = people.into_iter().map(|u| row(tr("Chats"), u)).collect();
+        let found = self.new_chat_search.as_ref().filter(|(s, ..)| !q.is_empty() && s == query.trim());
+        let found = found.into_iter().flat_map(|(_, _, f)| f).filter(|(a, _)| *a == c.account_id);
+        v.extend(found.map(|(_, u)| {
+            let add = row(tr("Connections"), u);
+            Command { msg: add.msg.filter(|_| u.cannot_message != Some(true)), ..add }
+        }));
+        v
     }
 
     /// The commands in Desktop's order, or the ones that match `query` with the best match first.
@@ -441,6 +486,10 @@ impl BeeperGuiApp {
             let e = "Chat";
             let members = |kind| Some(UiMessage::OpenSubMenu(SubMenu::Members(kind)));
             let can = |bit| c.participants.items.iter().any(|u| u.manage & bit != 0);
+            if c.member_actions & MEMBER_INVITE != 0 {
+                let add = cmd(e, tr("Add members"), Some(UiMessage::OpenSubMenu(SubMenu::AddMembers)));
+                v.push(add.keys(&["participant", "user", "invite"]));
+            }
             if c.member_actions & MEMBER_KICK != 0 {
                 let kick = cmd(e, tr("Remove member from group"), members(MEMBERS_KICK).filter(|_| can(MANAGE_KICK)));
                 v.push(kick.keys(&["delete", "kick", "participant", "user"]));
@@ -598,12 +647,14 @@ impl BeeperGuiApp {
     pub(crate) fn view_commands(&self, st: &BeeperStore, cmds: &[Command]) -> El<'_> {
         let p = &self.pal;
         let list = cmds.iter().enumerate().fold(Column::new(), |col, (i, c)| {
-            let head = (self.cmd_submenu.is_none() && (i == 0 || cmds[i - 1].category != c.category)).then(|| {
-                let head = semi(if c.category.is_empty() { "Commands" } else { c.category }, 12.0);
-                container(head.line_height(Pixels(15.0)).color(p.sub))
-                    .center_y(32)
-                    .padding(Padding::ZERO.left(12.0).right(4.0))
-            });
+            let head = ((self.cmd_submenu.is_none() || !c.category.is_empty())
+                && (i == 0 || cmds[i - 1].category != c.category))
+                .then(|| {
+                    let head = semi(if c.category.is_empty() { "Commands" } else { c.category }, 12.0);
+                    container(head.line_height(Pixels(15.0)).color(p.sub))
+                        .center_y(32)
+                        .padding(Padding::ZERO.left(12.0).right(4.0))
+                });
             col.push(head).push(self.view_command(st, c, i == self.cmd_index, i))
         });
         let list = scrollable(list.padding(Padding::ZERO.bottom(6.0))).id(COMMANDS).direction(bar());
@@ -615,7 +666,7 @@ impl BeeperGuiApp {
         let alpha = if c.msg.is_some() { 1.0 } else { 0.7 };
         let title: El<'_> = match c.chat.as_deref().and_then(|id| st.resolve_chat_idx(id)).map(|i| &st.chats[i]) {
             Some(chat) => self.command_chat(p, chat),
-            None if c.user.is_some() => self.command_user(p, c.user.as_ref().expect("a user")),
+            None if c.user.is_some() => self.command_user(p, c, lit),
             None if c.render.is_some() => {
                 let (left, right) = c.render.clone().unwrap_or_default();
                 let words = semi(left, 13.0).line_height(Pixels(16.0)).color(p.strong);
@@ -648,7 +699,8 @@ impl BeeperGuiApp {
             }))
             .spacing(4)
         });
-        let line = row![title].push(c.render.is_none().then(|| Space::new().width(Fill))).push(caps);
+        let line =
+            row![title].push((c.render.is_none() && c.user.is_none()).then(|| Space::new().width(Fill))).push(caps);
         let line = line.spacing(8).align_y(Center);
         let bg = if lit { p.chip } else { CLEAR };
         let body = container(line).center_y(36).padding([0, 6]).style(fill_box(bg, 8.0));
@@ -661,13 +713,22 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `CommandBarUser`: the avatar, the name, and the username, phone number and email in small text.
-    fn command_user<'a>(&'a self, p: &Palette, u: &User) -> El<'a> {
+    fn command_user<'a>(&'a self, p: &Palette, c: &Command, lit: bool) -> El<'a> {
+        let u = c.user.as_ref().expect("a user");
         let name = u.full_name.clone().unwrap_or_else(|| u.id.clone());
         let small = [crate::handle(u), u.phone_number.as_deref().map(crate::fmt_phone), u.email.clone()];
         let small = small.into_iter().flatten().map(|s| txt(s, 12.0).color(p.strong.scale_alpha(0.7)).into());
         let title = row![semi(name.clone(), 13.0).line_height(Pixels(16.0)).color(p.strong)].extend(small);
         let face = self.face(u.img_url.as_deref(), &name, 28.0, 0.0);
-        row![face, title.spacing(8).align_y(Center)].spacing(8).align_y(Center).into()
+        let right = c.account.as_deref().map(|a| {
+            let hint = lit.then(|| {
+                let hint = semi(tr("Add to chat"), 11.0).line_height(Pixels(14.0)).color(p.strong);
+                container(hint).padding(Padding::ZERO.right(6.0))
+            });
+            row![].push(hint).push(svg(brand_svg(crate::brand_key(a))).width(16).height(16)).spacing(8).align_y(Center)
+        });
+        let main = row![face, title.spacing(8).align_y(Center)].spacing(8).align_y(Center);
+        main.push(right.map(|r| row![Space::new().width(Fill), r])).width(Fill).align_y(Center).into()
     }
 
     /// Desktop's `Ed` chat line: the avatar, the name, the network and the brand icon.

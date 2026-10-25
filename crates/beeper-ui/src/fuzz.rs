@@ -2293,6 +2293,44 @@ fn member_commands_like_desktop() {
 }
 
 #[test]
+fn add_members_like_desktop() {
+    use crate::commands::SubMenu;
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("add-members");
+    let id = "!tg_rust:beeper.com".to_string();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let msgs: Vec<UiMessage> = {
+        let mut sim = tall(app.view_info());
+        let _ = sim.click("Add Members").expect("the Add Members button");
+        sim.into_messages().collect()
+    };
+    for m in msgs {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.cmd_submenu, Some(SubMenu::AddMembers));
+    let chat = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.chats[st.resolve_chat_idx(&id).expect("the chat")].clone()
+    };
+    let account = chat(&app).account_id;
+    let cmds = app.commands(&app.store.read(), "");
+    assert!(!cmds.is_empty() && cmds.iter().all(|c| c.category == "Chats"));
+    let members: Vec<String> = chat(&app).participants.items.iter().map(|u| u.id.clone()).collect();
+    assert!(cmds.iter().all(|c| !members.contains(&c.user.as_ref().expect("a user row").id)));
+    let pick = cmds[0].user.clone().expect("a user row");
+    assert!(simulator(app.view_main()).find("Add members to chat").is_ok());
+    let found = User { id: "@found:beeper.com".into(), full_name: Some("Found".into()), ..Default::default() };
+    let _ = app.update(UiMessage::CommandQueryChanged("found".into()));
+    app.new_chat_search = Some(("found".into(), 0, vec![(account, found)]));
+    let cmds = app.commands(&app.store.read(), "found");
+    assert_eq!(cmds.iter().map(|c| (c.category, c.title.as_str())).collect::<Vec<_>>(), [("Connections", "Found")]);
+    let _ = app.update(UiMessage::CommandQueryChanged(pick.full_name.clone().expect("a name")));
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+    assert!(chat(&app).participants.items.iter().any(|u| u.id == pick.id));
+    assert!(!app.show_command_palette);
+}
+
+#[test]
 fn chat_info_contact_like_desktop() {
     let mut app = demo_app("chat-info-contact");
     let id = "!im_jordan:beeper.com";
