@@ -424,8 +424,26 @@ pub struct Chat {
     /// Desktop's `roomFeatures.disappearing_timer`, or `None` when the room has no disappearing messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timers: Option<Timers>,
+    /// The personal name or photo, which `title` and `img_url` show instead of the room's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal: Option<Box<Personal>>,
     #[serde(skip)]
     pub flags: u16,
+}
+
+/// Desktop's `PERSONAL_ROOM_NAME_EVENT_TYPE` and `PERSONAL_ROOM_AVATAR_EVENT_TYPE` (MSC4431) room account data.
+pub const PERSONAL_NAME: &str = "de.gematik.msc4431.room.name.private";
+pub const PERSONAL_AVATAR: &str = "de.gematik.msc4431.room.avatar.private";
+/// Desktop's `PERSONAL_ROOM_NAME_MAX_LENGTH`.
+pub const PERSONAL_NAME_MAX: usize = 256;
+
+/// Desktop's `personalTitle` and `personalImgURL`, with the `canonicalTitle` and `imgURL` of the room.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Personal {
+    pub title: Option<String>,
+    pub img_url: Option<String>,
+    pub room_title: String,
+    pub room_img_url: Option<String>,
 }
 
 /// Desktop's `BOOKMARK_EVENT_TYPE` and `BOOKMARK_REL_TYPE`.
@@ -546,6 +564,39 @@ fn flag_bits(bits: &[(bool, u16)]) -> u16 {
 }
 
 impl Chat {
+    /// Desktop's `canonicalTitle`: the name of the room without the personal name.
+    pub fn room_title(&self) -> &str {
+        self.personal.as_ref().map_or(&self.title, |p| &p.room_title)
+    }
+
+    pub fn room_img_url(&self) -> Option<&str> {
+        self.personal.as_ref().map_or(self.img_url.as_deref(), |p| p.room_img_url.as_deref())
+    }
+
+    /// Desktop's `personalTitle` and `personalImgURL`.
+    pub fn personal_parts(&self) -> (Option<String>, Option<String>) {
+        self.personal.as_ref().map_or((None, None), |p| (p.title.clone(), p.img_url.clone()))
+    }
+
+    /// Sets the personal name and photo, which show instead of the room's.
+    pub fn set_personal(&mut self, title: Option<String>, img_url: Option<String>) {
+        let (room_title, room_img_url) = (self.room_title().to_string(), self.room_img_url().map(str::to_string));
+        self.title = title.clone().unwrap_or_else(|| room_title.clone());
+        self.img_url = img_url.clone().or_else(|| room_img_url.clone());
+        self.personal = (title.is_some() || img_url.is_some())
+            .then(|| Box::new(Personal { title, img_url, room_title, room_img_url }));
+    }
+
+    /// Changes the name or photo of the room, under the personal ones.
+    pub fn edit_room(&mut self, f: impl FnOnce(&mut Chat)) {
+        let (title, img_url) = self.personal_parts();
+        if let Some(p) = self.personal.take() {
+            (self.title, self.img_url) = (p.room_title, p.room_img_url);
+        }
+        f(self);
+        self.set_personal(title, img_url);
+    }
+
     pub fn sync_flags(&mut self) {
         let marked = self.is_marked_unread == Some(true);
         self.flags = flag_bits(&[

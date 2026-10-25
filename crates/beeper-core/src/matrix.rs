@@ -5,7 +5,8 @@ use crate::models::{
     EditHistoryEntry, Label, Message, MessageLink, MessageRules, PollData, PollOption, PollRules, Reaction, Timers,
     User, VerificationSas, VerificationSasEmoji, VerificationState, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS,
     BEEPER_MESSAGES, BEEPER_POLLS, BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER,
-    EDITS, FILE_GIF, FILE_VOICE, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK,
+    EDITS, FILE_GIF, FILE_VOICE, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, PERSONAL_AVATAR,
+    PERSONAL_NAME,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -313,7 +314,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         }
     });
     let account_id = account_id(&bridge, accounts);
-    Chat {
+    let mut chat = Chat {
         id: room.room_id().to_string(),
         is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, &bridge, !dm)),
         inbox_group: !dm && bridge["com.beeper.room_type.v2"] != "group_dm",
@@ -370,8 +371,13 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         messages: features.as_ref().map_or(BEEPER_MESSAGES, message_rules),
         disappearing: state(room, DISAPPEARING_TIMER).await.and_then(|t| t["timer"].as_u64()).filter(|&t| t > 0),
         timers: timers(features.as_ref(), &levels, me.as_str()),
+        personal: None,
         flags: 0,
-    }
+    };
+    let name = account_data(room, PERSONAL_NAME).await.and_then(|n| s(&n["name"])).filter(|n| !n.is_empty());
+    let photo = account_data(room, PERSONAL_AVATAR).await.and_then(|a| url_field(&a["url"], &a["file"]));
+    chat.set_personal(name, photo);
+    chat
 }
 
 fn url_field(url: &Value, file: &Value) -> Option<String> {
@@ -1131,6 +1137,10 @@ pub enum Outgoing {
     },
     /// Uploads an image with its MIME type and makes it the room avatar, or removes the avatar.
     Avatar(Option<(Vec<u8>, String)>),
+    /// Sets room account data of this type.
+    RoomData(&'static str, Value),
+    /// Uploads an image with its MIME type and makes it the personal photo of the room, or removes that photo.
+    PersonalAvatar(Option<(Vec<u8>, String)>),
     /// Adds (true) or removes a chat from a label.
     LabelChild(String, bool),
     Read(String),
@@ -1450,6 +1460,28 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                 None => serde_json::json!({}),
             };
             room.send_state_event_raw("m.room.avatar", "", content).await.map_err(e)?;
+        }
+        Outgoing::RoomData(kind, content) => {
+            let raw = Raw::from_json(serde_json::value::to_raw_value(&content).expect("room account data JSON"));
+            room.set_account_data_raw(kind.into(), raw).await.map_err(e)?;
+        }
+        Outgoing::PersonalAvatar(image) => {
+            let content = match image {
+                Some((bytes, mime)) => {
+                    let info = serde_json::json!({ "mimetype": mime, "size": bytes.len() });
+                    if room.latest_encryption_state().await.map_err(e)?.is_encrypted() {
+                        let file = client.upload_encrypted_file(&mut bytes.as_slice()).await.map_err(e)?;
+                        serde_json::json!({ "file": file, "info": info })
+                    } else {
+                        let mime: mime::Mime = mime.parse().expect("an image MIME type");
+                        let url = client.media().upload(&mime, bytes, None).await.map_err(e)?.content_uri;
+                        serde_json::json!({ "url": url, "info": info })
+                    }
+                }
+                None => serde_json::json!({}),
+            };
+            let raw = Raw::from_json(serde_json::value::to_raw_value(&content).expect("personal avatar JSON"));
+            room.set_account_data_raw(PERSONAL_AVATAR.into(), raw).await.map_err(e)?;
         }
         Outgoing::LabelChild(chat, add) => {
             let content = if add { serde_json::json!({ "via": ["beeper.com"] }) } else { serde_json::json!({}) };

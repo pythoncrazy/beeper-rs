@@ -377,6 +377,10 @@ pub enum UiMessage {
     Spaces(SpacesEdit),
     /// Desktop's `editGroup`: the Edit Group window of a chat.
     OpenEditGroup(String),
+    /// Desktop's `editGroup(thread, "personal")`: the Edit Chat for Me window.
+    OpenEditForMe(String),
+    /// Desktop's `setPersonalRoomName`, which Undo can revert.
+    SetPersonalName(String, Option<String>),
     /// Starts editing the Chat Info group description, or edits it.
     InfoDesc(Option<text_editor::Action>),
     SaveInfoDesc,
@@ -2424,7 +2428,8 @@ const CARD_H: f32 = 88.0 + 8.0 + 18.0 + 15.0 + 8.0 + 28.0 + 8.0;
 const INFO_MENUS: [&str; 5] = ["info:", "copy:", "member:", "bookmark:", "contact:"];
 
 /// The Chat Info menus. The header menus of Desktop's `$fe`: `info:<chat>` has the edit actions and
-/// `copy:<chat>`, the menu of the clicked title, adds "Copy <title>" above them.
+/// `copy:<chat>`, the menu of the clicked title, adds "Copy <title>" above them. `copy:<chat>\n<text>` copies the
+/// clicked line instead.
 fn info_menu(st: &BeeperStore, key: &str, dm: impl Fn(&str) -> bool) -> Vec<Option<(String, Option<UiMessage>)>> {
     if let Some((cid, kind)) = key.strip_prefix("contact:").and_then(|k| k.split_once(' ')) {
         let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
@@ -2495,13 +2500,25 @@ fn info_menu(st: &BeeperStore, key: &str, dm: impl Fn(&str) -> bool) -> Vec<Opti
         Some(cid) => (true, cid),
         None => (false, key.strip_prefix("info:").expect("an info menu key")),
     };
+    let (cid, text) = cid.split_once('\n').map_or((cid, None), |(cid, text)| (cid, Some(text)));
     let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
     let group = can_edit_group(c).then(|| {
         (tr("Edit Group").to_string(), (c.is_request != Some(true)).then(|| UiMessage::OpenEditGroup(c.id.clone())))
     });
+    let personal =
+        can_edit_for_me(st, c).then(|| (tr("Edit for Me").to_string(), Some(UiMessage::OpenEditForMe(c.id.clone()))));
     let theme = Some((tr("Chat Theme").to_string(), Some(UiMessage::OpenChatTheme(c.id.clone()))));
-    let title = copy.then(|| Some((trf("Copy %s", &[&c.title]), Some(UiMessage::CopyText(c.title.clone())))));
-    title.into_iter().chain(copy.then_some(None)).chain([group, theme].into_iter().flatten().map(Some)).collect()
+    let text = text.unwrap_or(&c.title);
+    let title = copy.then(|| Some((trf("Copy %s", &[&text]), Some(UiMessage::CopyText(text.to_string())))));
+    let edits = [group, personal, theme].into_iter().flatten().map(Some);
+    title.into_iter().chain(copy.then_some(None)).chain(edits).collect()
+}
+
+/// Desktop's `setPersonalRoomName` gate: the feature is on or the chat has a personal name or photo, and the chat
+/// is a Matrix room that is not merged (`canSetPersonalOverrides`, `personalOverridesApply`).
+fn can_edit_for_me(st: &BeeperStore, c: &Chat) -> bool {
+    let room = c.id.starts_with('!') && c.merge.is_none() && c.merged_into_chat_id.is_none();
+    room && (st.feature("personal-room-overrides").on || c.personal.is_some())
 }
 
 /// Desktop's sidebar overflow menu (`Plt`): the hidden spaces, then New Label…, Edit Spaces… and Add/Remove Accounts…,
@@ -3992,7 +4009,9 @@ impl BeeperGuiApp {
                 return tr(if d.label.is_some() { "Edit label" } else { "New label" }).into();
             }
             _ if self.spaces_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Spaces"),
-            _ if self.group_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Group"),
+            _ if let Some(d) = self.group_window.as_ref().filter(|d| d.id == id) => {
+                return tr(if d.personal { "Edit Chat for Me" } else { "Edit Group" }).into();
+            }
             _ if let Some((_, _, mid)) = self.vote_windows.iter().find(|w| w.0 == id) => {
                 let st = self.store.read();
                 let total =
@@ -5336,11 +5355,15 @@ impl BeeperGuiApp {
                 let (id, open) = self.open_child(GROUP_SIZE);
                 let st = self.store.read();
                 let c = &st.chats[st.resolve_chat_idx(&chat).expect("an edited group")];
-                let (title, topic) = (c.title.clone(), composer_with(c.description.as_deref().unwrap_or_default()));
+                let (title, topic) =
+                    (c.room_title().to_string(), composer_with(c.description.as_deref().unwrap_or_default()));
                 drop(st);
-                self.group_window = Some(GroupDraft { id, chat, title, topic, photo: None, hover: false });
+                self.group_window =
+                    Some(GroupDraft { id, chat, title, topic, photo: None, hover: false, personal: false });
                 return open;
             }
+            UiMessage::OpenEditForMe(chat) => return self.open_edit_for_me(chat),
+            UiMessage::SetPersonalName(chat, name) => self.set_personal_name(chat, name),
             UiMessage::Group(e) => return self.group_edit(e),
             UiMessage::ToggleLabel(label, chat, add) => self.toggle_label(label, chat, add, true),
             UiMessage::SwitchLabel(label, chat, add) => self.toggle_label(label, chat, add, false),
@@ -7853,6 +7876,7 @@ impl BeeperGuiApp {
         // The sync task can drop a chat before StoreChanged reaches update.
         let known = |c: &str| {
             let chat = c.strip_prefix("info:").or(c.strip_prefix("copy:")).unwrap_or(c);
+            let chat = chat.split_once('\n').map_or(chat, |k| k.0);
             let pair = ["member:", "bookmark:", "contact:", "card:"].iter().find_map(|k| chat.strip_prefix(k));
             let chat = pair.map_or(chat, |k| k.split_once(' ').map_or(k, |k| k.0));
             c == RAIL_MORE
@@ -11602,7 +11626,10 @@ impl BeeperGuiApp {
                 .on_press(copy.clone()),
         )
         .on_right_press(copy);
-        let meta = |s: String| txt(s, 11.0).color(Color { a: 0.6, ..p.strong });
+        let meta = |s: String| {
+            let copy = UiMessage::OpenChatMenu(format!("copy:{cid}\n{s}"));
+            mouse_area(txt(s, 11.0).color(Color { a: 0.6, ..p.strong })).on_right_press(copy)
+        };
         let other =
             chat.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| chat.chat_type == "single");
         let contact = other.map(|u| {
@@ -11611,7 +11638,13 @@ impl BeeperGuiApp {
                 .push(u.phone_number.as_deref().map(|n| meta(fmt_phone(n))))
                 .push(u.email.clone().map(meta))
         });
+        let originally = chat
+            .personal
+            .as_ref()
+            .filter(|p| p.title.as_ref().is_some_and(|t| *t != p.room_title) && !p.room_title.is_empty())
+            .map(|p| meta(trf("Originally %s", &[&p.room_title])));
         let details = column![self.chat_avatar(chat, 64.0, 1.25), title]
+            .push(originally)
             .push(contact)
             .push(meta(network_name(&chat.account_id).to_string()))
             .spacing(4)
@@ -15140,6 +15173,40 @@ impl BeeperGuiApp {
         }
     }
 
+    /// Desktop's `editGroup(thread, "personal")`.
+    fn open_edit_for_me(&mut self, chat: String) -> Task<UiMessage> {
+        self.chat_menu = None;
+        if let Some(d) = &self.group_window {
+            return window::gain_focus(d.id);
+        }
+        let (id, open) = self.open_child(PERSONAL_SIZE);
+        let st = self.store.read();
+        let c = &st.chats[st.resolve_chat_idx(&chat).expect("a chat to edit for me")];
+        let title = c.personal_parts().0.unwrap_or_default();
+        drop(st);
+        let topic = text_editor::Content::new();
+        self.group_window = Some(GroupDraft { id, chat, title, topic, photo: None, hover: false, personal: true });
+        open.chain(operation::focus(PERSONAL_INPUT)).chain(operation::select_all(PERSONAL_INPUT))
+    }
+
+    /// Desktop's `setPersonalRoomName`, with its toast and Undo.
+    fn set_personal_name(&mut self, chat: String, name: Option<String>) {
+        let mut st = self.store.write();
+        let c = &st.chats[st.chat_idx_by_id[&chat]];
+        let old = c.personal_parts().0;
+        let what = match &name {
+            Some(_) => trf("Rename %s for you", &[&c.room_title()]),
+            None => trf("Remove your name for %s", &[&c.title]),
+        };
+        st.set_personal(&chat, Some(name.clone()), None);
+        drop(st);
+        let text = match &name {
+            Some(n) => trf("Renamed to %s for you", &[n]),
+            None => tr("Removed your name for this chat").into(),
+        };
+        self.act(what, UiMessage::SetPersonalName(chat, old), Some((text, None)));
+    }
+
     fn group_edit(&mut self, edit: GroupEdit) -> Task<UiMessage> {
         match edit {
             GroupEdit::Pick => {
@@ -15169,18 +15236,35 @@ impl BeeperGuiApp {
                 if title.is_none() && topic.is_none() && !photo {
                     return Task::none();
                 }
-                let (id, chat) = (d.id, d.chat.clone());
+                let (id, chat, personal) = (d.id, d.chat.clone(), d.personal);
                 let photo = d.photo.take().filter(|_| photo);
                 if let Some(Some((url, _, h))) = &photo {
                     self.avatars.insert(url.clone(), Some(h.clone()));
                 }
                 let photo = photo.map(|p| p.map(|(url, m, _)| (url, m.bytes, m.mime)));
-                self.store.write().update_group(&chat, title, topic, photo);
+                if !personal {
+                    self.store.write().update_group(&chat, title, topic, photo);
+                    return window::close(id);
+                }
+                if let Some(t) = title {
+                    let name =
+                        Some(t.trim().chars().take(PERSONAL_NAME_MAX).collect()).filter(|t: &String| !t.is_empty());
+                    let _ = self.update(UiMessage::SetPersonalName(chat.clone(), name));
+                }
+                if let Some(photo) = photo {
+                    let text = match photo {
+                        Some(_) => tr("Changed your photo for this chat"),
+                        None => tr("Removed your photo for this chat"),
+                    };
+                    self.store.write().set_personal(&chat, None, Some(photo));
+                    self.show(Toast { strong: true, ..Toast::new(text.into()) });
+                }
                 return window::close(id);
             }
             edit => {
                 let d = self.group_window.as_mut().expect("the Edit Group window is open");
                 match edit {
+                    GroupEdit::Title(t) if d.personal => d.title = t.chars().take(PERSONAL_NAME_MAX).collect(),
                     GroupEdit::Title(t) => d.title = t,
                     GroupEdit::Topic(a) => d.topic.perform(a),
                     GroupEdit::Remove => d.photo = Some(None),
@@ -15251,14 +15335,17 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let st = self.store.read();
         let c = &st.chats[st.resolve_chat_idx(&d.chat).expect("an edited group")];
-        let can = |i: usize| c.edits & (1 << i) != 0;
+        let can = |i: usize| d.personal || c.edits & (1 << i) != 0;
         let edit = UiMessage::Group;
         let face = match &d.photo {
             Some(Some((_, _, h))) => image(h.clone()).width(64).height(64).into(),
-            Some(None) => self.chat_avatar(&Chat { img_url: None, ..c.clone() }, 64.0, 0.0),
+            Some(None) => {
+                let img_url = c.room_img_url().filter(|_| d.personal).map(str::to_string);
+                self.chat_avatar(&Chat { img_url, personal: None, ..c.clone() }, 64.0, 0.0)
+            }
             None => self.chat_avatar(c, 64.0, 0.0),
         };
-        let shown = d.photo.as_ref().map_or(c.img_url.is_some(), Option::is_some);
+        let shown = d.photo.as_ref().map_or(d.initial(c).1, Option::is_some);
         let face: El<'a> = match can(1) {
             true => {
                 let veil = d.hover.then(|| {
@@ -15284,7 +15371,12 @@ impl BeeperGuiApp {
             )
             .center_x(Fill)
         });
-        let title = text_input(tr("Group Title"), &d.title)
+        let hint = match d.personal {
+            true => Some(c.room_title()).filter(|t| !t.is_empty()).unwrap_or(tr("Chat Name")),
+            false => tr("Group Title"),
+        };
+        let title = text_input(hint, &d.title)
+            .id(PERSONAL_INPUT)
             .on_input_maybe(can(0).then_some(move |t| edit(GroupEdit::Title(t))))
             .font(fw(Weight::Semibold))
             .size(15)
@@ -15305,7 +15397,11 @@ impl BeeperGuiApp {
                 selection: p.accent.scale_alpha(0.3),
             });
         let topic = if can(2) { topic.on_action(move |a| edit(GroupEdit::Topic(a))) } else { topic };
-        let note = tr("The group description is visible to members of this group and people invited to this group.");
+        let topic = (!d.personal).then_some(topic);
+        let note = match d.personal {
+            true => tr("This name and photo are only visible to you, on all your devices."),
+            false => tr("The group description is visible to members of this group and people invited to this group."),
+        };
         let note = txt(note, 10.0).line_height(Pixels(12.0)).color(p.sub);
         let (t, s, ph) = d.changes(&st);
         let ready = t.is_some() || s.is_some() || ph;
@@ -16305,17 +16401,31 @@ pub struct GroupDraft {
     pub photo: Option<Option<(String, PendingMedia, image::Handle)>>,
     /// The pointer is on the avatar, so it shows "Edit".
     pub hover: bool,
+    /// Desktop's `mode === "personal"`: the Edit Chat for Me window, which sets the personal name and photo.
+    pub personal: bool,
 }
 
 impl GroupDraft {
+    /// The name and photo that the window starts with.
+    fn initial(&self, c: &Chat) -> (String, bool) {
+        match self.personal {
+            true => {
+                let (title, img) = c.personal_parts();
+                (title.unwrap_or_default(), img.is_some())
+            }
+            false => (c.room_title().to_string(), c.room_img_url().is_some()),
+        }
+    }
+
     /// The new title and description, and whether the avatar changes.
     fn changes(&self, st: &BeeperStore) -> (Option<String>, Option<String>, bool) {
         let c = &st.chats[st.resolve_chat_idx(&self.chat).expect("an edited group")];
-        let topic = self.topic.text();
-        let photo = self.photo.as_ref().is_some_and(|p| p.is_some() || c.img_url.is_some());
+        let (title, img) = self.initial(c);
+        let topic = (!self.personal).then(|| self.topic.text());
+        let photo = self.photo.as_ref().is_some_and(|p| p.is_some() || img);
         (
-            (self.title != c.title).then(|| self.title.clone()),
-            (topic != c.description.as_deref().unwrap_or_default()).then_some(topic),
+            (self.title != title).then(|| self.title.clone()),
+            topic.filter(|t| t != c.description.as_deref().unwrap_or_default()),
             photo,
         )
     }
@@ -16323,6 +16433,9 @@ impl GroupDraft {
 
 /// The size of Desktop's Edit Group window.
 const GROUP_SIZE: Size = Size::new(313.0, 447.0);
+/// The size of Desktop's Edit Chat for Me window.
+const PERSONAL_SIZE: Size = Size::new(313.0, 358.0);
+const PERSONAL_INPUT: &str = "personal-title";
 
 #[derive(Clone)]
 pub enum GroupEdit {
