@@ -525,6 +525,8 @@ pub enum UiMessage {
     /// Desktop's `replyPrivately`: the direct chat with the sender of a message, with the message quoted.
     ReplyPrivately(String),
     AskDeleteChat(String),
+    AskLeaveChat(String),
+    LeaveRoom(String),
     BeginSelecting(String),
     ToggleSelected(String),
     SelectionSet(ChatFlag, bool),
@@ -1263,6 +1265,7 @@ const ASK_CLEAR_CHAT: u8 = 10;
 const ASK_REVOKE_CONNECTION: u8 = 11;
 const ASK_REMOTE_ACCESS: u8 = 12;
 const ASK_DELETE_LABEL: u8 = 13;
+const ASK_LEAVE_CHAT: u8 = 14;
 /// The dialogs over the Settings window.
 const SETTINGS_DIALOGS: [u8; 6] =
     [ASK_LOGOUT, ASK_CLEAR_STORAGE, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT, ASK_REVOKE_CONNECTION, ASK_REMOTE_ACCESS];
@@ -5975,6 +5978,12 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
             }
             UiMessage::SelectionMenu(menu, x) => self.selection_menu = Some((menu, x)),
+            UiMessage::AskLeaveChat(id) => (self.confirm, self.delete_target) = (Some(ASK_LEAVE_CHAT), Some(id)),
+            UiMessage::LeaveRoom(id) => {
+                self.confirm = None;
+                self.store.write().leave_room(&id);
+                return self.update(UiMessage::StoreChanged);
+            }
             UiMessage::DeleteChat(id, everyone) => {
                 self.confirm = None;
                 self.store.write().delete_chat(&id, everyone);
@@ -11064,6 +11073,13 @@ impl BeeperGuiApp {
             .push(desc)
             .push(members)
             .push(container(note).padding(Padding::ZERO.top(8.0)))
+            .push((chat.member_actions & MEMBER_LEAVE != 0).then(|| {
+                let leave = button(semi(tr("Leave Chat"), 14.0).line_height(Pixels(18.0)).color(p.strong))
+                    .padding([0, 8])
+                    .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
+                    .on_press(UiMessage::AskLeaveChat(cid.clone()));
+                container(leave).padding(Padding::ZERO.top(8.0))
+            }))
             .padding(Padding::new(8.0).top(0.0));
         let scroll = scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill);
         container(container(column![pane_head, scroll, toolbar]).width(300).height(Fill).style(fill_box(p.card, 10.0)))
@@ -12757,6 +12773,13 @@ impl BeeperGuiApp {
                     ),
                 };
                 (format!("Delete {}", c.title), body.into(), actions)
+            }
+            ASK_LEAVE_CHAT => {
+                let id = self.delete_target.clone().expect("a chat to leave");
+                let st = self.store.read();
+                let title = &st.chats[st.resolve_chat_idx(&id).expect("the chat to leave exists")].title;
+                let body = trf("Are you sure you want to leave %s?", &[title]);
+                (tr("Leave chat").into(), body, vec![(tr("Leave"), UiMessage::LeaveRoom(id))])
             }
             ASK_DELETE_LABEL => {
                 let id = self.delete_target.clone().expect("a label to delete");
