@@ -1,5 +1,5 @@
 //! Desktop's command bar commands (`Efe`): the categories, the titles, the search keywords and the hotkeys.
-use crate::i18n::{tr, trx};
+use crate::i18n::{tr, trf, trx};
 use crate::style::{bar, brand_svg, ell, fill_box, scroll_style, semi, text_width, txt, Palette, CLEAR};
 use crate::{
     has_flag, network_name, shown, BeeperGuiApp, El, InboxTab, SettingsHit, SettingsTab, UiMessage, ASK_LOGOUT,
@@ -7,7 +7,8 @@ use crate::{
 use crate::{ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_MARK_ALL_READ};
 use beeper_core::matrix::ChatFlag;
 use beeper_core::models::{
-    Chat, Message, ThemeChoice, User, CHAT_UNREAD, MANAGE_KICK, MANAGE_ROLE, MEMBER_INVITE, MEMBER_KICK, MEMBER_LEAVE,
+    AccountProps, Chat, Message, ThemeChoice, User, CHAT_UNREAD, MANAGE_KICK, MANAGE_ROLE, MEMBER_INVITE, MEMBER_KICK,
+    MEMBER_LEAVE,
 };
 use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
@@ -32,6 +33,20 @@ pub(crate) struct Command {
     /// Desktop's `CommandBarUser` in place of the title.
     pub user: Option<User>,
     pub msg: Option<UiMessage>,
+}
+
+/// A category name made at run time, kept once per text for the life of the app.
+fn interned(s: String) -> &'static str {
+    static SEEN: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().expect("the category list");
+    match seen.iter().find(|t| **t == s) {
+        Some(t) => t,
+        None => {
+            let t: &'static str = Box::leak(s.into_boxed_str());
+            seen.push(t);
+            t
+        }
+    }
 }
 
 fn cmd(category: &'static str, title: impl Into<String>, msg: Option<UiMessage>) -> Command {
@@ -517,6 +532,19 @@ impl BeeperGuiApp {
             let gif = (self.pane.editing_message_id.is_none()).then_some(UiMessage::TogglePicker(crate::Picker::Gif));
             v.push(cmd(e, tr("Send GIF"), gif).keys(&["attachment", "image", "video"]).hotkey("Message: Send GIF"));
             v.push(cmd(e, tr("Export all loaded messages to .txt file"), Some(UiMessage::ExportChat)));
+            let a = c.account_id.as_str();
+            let props = st.settings.account(a);
+            let user = match a {
+                "hungryserv" => st.me().full_name.clone().unwrap_or_default(),
+                _ => crate::account_user(st, a),
+            };
+            let mute_title = if props.notifications { tr("Mute account: %s") } else { tr("Unmute account: %s") };
+            let mute = Some(UiMessage::SetAccountProps(
+                a.into(),
+                AccountProps { notifications: !props.notifications, ..props },
+            ));
+            let category = interned(trf("%s Account", &[&crate::network_label(a)]));
+            v.push(cmd(category, mute_title.replacen("%s", &user, 1), mute));
             let later = self.pane.editing_message_id.is_none().then_some(UiMessage::OpenSendLater);
             let later = cmd(trx("Message", "Command bar category"), tr("Send later"), later);
             v.push(later.keys(&["schedule", "past", "future", "time"]).hotkey("Message: Send Later"));
