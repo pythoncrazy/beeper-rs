@@ -1542,6 +1542,18 @@ pub async fn create_dm(p: Provision, identifier: String) -> Result<String, Strin
     v["dm_room_mxid"].as_str().map(str::to_string).ok_or_else(|| "the bridge sent no dm_room_mxid".into())
 }
 
+/// The bridge's `create_group`: a new group of the given type with the users, and its name when the bridge allows
+/// one. It returns the room ID.
+pub async fn create_group(p: Provision, kind: String, name: String, users: Vec<String>) -> Result<String, String> {
+    let mut body = serde_json::json!({ "type": kind, "participants": users });
+    if !name.is_empty() {
+        body["name"] = serde_json::json!({ "name": name });
+    }
+    let body = p.post(&format!("create_group/{}", crate::codec::url_encode(&kind)), body.to_string()).await?;
+    let v: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    v["mxid"].as_str().map(str::to_string).ok_or_else(|| "the bridge sent no mxid".into())
+}
+
 pub async fn thumbnail(client: Client, url: String) -> Result<Vec<u8>, String> {
     let size = matrix_sdk::ruma::uint!(96);
     let format = MediaFormat::Thumbnail(MediaThumbnailSettings::with_method(Method::Crop, size, size));

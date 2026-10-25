@@ -534,6 +534,12 @@ pub enum UiMessage {
     StartChat,
     /// The bridge made a direct chat for a New Chat draft or for Reply Privately with this quote.
     DmCreated(Option<u32>, String, Option<String>, Result<String, String>),
+    /// The bridge made the group of a New Chat draft, by draft and account.
+    GroupCreated(u32, String, Result<String, String>),
+    /// Desktop's New Group row: the open draft becomes a group draft.
+    NewGroup,
+    /// The group name of the open draft.
+    GroupTitle(String),
     /// Desktop's `replyPrivately`: the direct chat with the sender of a message, with the message quoted.
     ReplyPrivately(String),
     /// Desktop's member "Send Message": the direct chat with a member of a chat, as (chat, user).
@@ -1703,7 +1709,11 @@ fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
 }
 
 fn faces(chat: &Chat) -> (Vec<&User>, usize) {
-    let mut others: Vec<&User> = chat.participants.items.iter().filter(|u| u.is_self != Some(true)).collect();
+    faces_of(&chat.participants.items, chat.chat_type == "group")
+}
+
+fn faces_of(users: &[User], group: bool) -> (Vec<&User>, usize) {
+    let mut others: Vec<&User> = users.iter().filter(|u| u.is_self != Some(true)).collect();
     let name = |u: &User| {
         [&u.custom_nickname, &u.full_name, &u.username, &u.email, &u.phone_number]
             .into_iter()
@@ -1712,7 +1722,6 @@ fn faces(chat: &Chat) -> (Vec<&User>, usize) {
             .to_lowercase()
     };
     others.sort_by_cached_key(|u| (u.is_network_bot == Some(true), u.is_admin != Some(true), name(u)));
-    let group = chat.chat_type == "group";
     let more = if group && others.len() > 5 { others.len() - 4 } else { 0 };
     let shown = if group { others.len() - more } else { others.len().min(1) };
     (others.into_iter().take(shown).collect(), more)
@@ -3710,13 +3719,27 @@ impl BeeperGuiApp {
     }
 
     fn chat_avatar<'a>(&self, chat: &Chat, size: f32, ls: f32) -> El<'a> {
+        let group = chat.chat_type == "group";
+        self.people_avatar(chat.img_url.as_deref(), &chat.title, group, &chat.participants.items, size, ls)
+    }
+
+    /// The avatar of a chat with this image and title, or else of its people.
+    fn people_avatar<'a>(
+        &self,
+        img: Option<&str>,
+        title: &str,
+        group: bool,
+        users: &[User],
+        size: f32,
+        ls: f32,
+    ) -> El<'a> {
         fn user(u: &User) -> (Option<&str>, &str) {
             (u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default())
         }
-        let (shown, more) = faces(chat);
-        let face = if chat.img_url.is_some() {
-            self.face(chat.img_url.as_deref(), &chat.title, size, ls)
-        } else if chat.chat_type != "group" || shown.is_empty() {
+        let (shown, more) = faces_of(users, group);
+        let face = if img.is_some() {
+            self.face(img, title, size, ls)
+        } else if !group || shown.is_empty() {
             let (url, name) = shown.first().map_or((None, ""), |u| user(u));
             self.face(url, name, size, ls)
         } else {
@@ -5936,7 +5959,7 @@ impl BeeperGuiApp {
             }
             UiMessage::NewChat => {
                 let id = self.new_chats.iter().map(|d| d.id).max().map_or(0, |n| n + 1);
-                self.new_chats.insert(0, NewChat { id, users: Vec::new() });
+                self.new_chats.insert(0, NewChat { id, users: Vec::new(), group: false, title: String::new() });
                 return self.update(UiMessage::SelectNewChat(id));
             }
             UiMessage::SelectNewChat(id) => {
@@ -6012,20 +6035,41 @@ impl BeeperGuiApp {
             UiMessage::PickUser(account, user) => {
                 let n = self.creating_chat.expect("an open draft");
                 let group = self.can_group(&account);
-                let users = &mut self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft").users;
+                let draft = self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft");
                 if !group {
-                    *users = vec![(account, *user)];
-                } else if users.iter().all(|(_, u)| u.id != user.id) {
-                    users.push((account, *user));
+                    draft.users = vec![(account, *user)];
+                } else if draft.users.iter().all(|(_, u)| u.id != user.id) {
+                    draft.users.push((account, *user));
                 } else {
                     return Task::none();
                 }
+                draft.group |= draft.users.len() > 1;
                 self.new_chat_query.clear();
+                return operation::focus("new-chat-input");
+            }
+            UiMessage::NewGroup => {
+                let n = self.creating_chat.expect("an open draft");
+                self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft").group = true;
+                return operation::focus("new-chat-input");
+            }
+            UiMessage::GroupTitle(t) => {
+                let n = self.creating_chat.expect("an open draft");
+                self.new_chats.iter_mut().find(|d| d.id == n).expect("the open draft").title = t;
             }
             UiMessage::StartChat => {
                 let Some(n) = self.creating_chat else { return Task::none() };
                 let draft = self.new_chats.iter().find(|d| d.id == n).expect("the open draft");
                 let Some((account, user)) = draft.users.first().cloned() else { return Task::none() };
+                if draft.group {
+                    let users = draft.users.iter().map(|(_, u)| u.id.clone()).collect();
+                    let named = self.caps[&account]["group_creation"]["group"]["name"]["allowed"] == true;
+                    let title = if named { draft.title.clone() } else { String::new() };
+                    self.status_banner = tr("Creating group chat...").into();
+                    self.sticky_banner = Some(self.status_banner.clone());
+                    let create =
+                        beeper_core::matrix::create_group(self.provision(&account), "group".into(), title, users);
+                    return Task::perform(create, move |r| UiMessage::GroupCreated(n, account.clone(), r));
+                }
                 return self.open_dm(account, user, Some(n), None);
             }
             UiMessage::MessageMember(cid, uid) => {
@@ -6058,30 +6102,9 @@ impl BeeperGuiApp {
                 drop(st);
                 return self.open_dm(account, sender, None, Some(quote));
             }
-            UiMessage::DmCreated(n, account, quote, r) => {
-                if self.sticky_banner.take().is_some_and(|t| t == self.status_banner) {
-                    self.status_banner.clear();
-                }
-                match r {
-                    Ok(room) => {
-                        self.new_chats.retain(|d| Some(d.id) != n);
-                        let synced = self.store.read().resolve_chat_idx(&room).is_some();
-                        match synced {
-                            true => self.select_dm(&room, quote),
-                            false => (self.creating_chat, self.pending_dm) = (None, Some((room, quote))),
-                        }
-                    }
-                    Err(e) => {
-                        let st = self.store.read();
-                        let me = account_user(&st, &account);
-                        let text = trf("Something went wrong %1$s (%2$s)\n%3$s", &[&"creating thread", &me, &e]);
-                        drop(st);
-                        self.show(Toast {
-                            buttons: vec![(tr("Copy Error"), UiMessage::CopyText(e))],
-                            ..Toast::new(text)
-                        });
-                    }
-                }
+            UiMessage::DmCreated(n, account, quote, r) => self.chat_created(n, &account, quote, r, "creating thread"),
+            UiMessage::GroupCreated(n, account, r) => {
+                self.chat_created(Some(n), &account, None, r, "creating group chat")
             }
             UiMessage::DeleteNewChat(id) => {
                 let i = self.new_chats.iter().position(|d| d.id == id).expect("new chat exists");
@@ -9203,6 +9226,37 @@ impl BeeperGuiApp {
     fn export_text(&self, st: &BeeperStore) -> Option<String> {
         let text: Vec<String> = self.timeline(st).0.into_iter().map(|m| copy_text(m, true, true)).collect();
         (!text.is_empty()).then(|| text.join("\n"))
+    }
+
+    /// The end of Desktop's `createThread` and `createGroupThread`: the new chat opens, or an error toast shows.
+    fn chat_created(
+        &mut self,
+        n: Option<u32>,
+        account: &str,
+        quote: Option<String>,
+        r: Result<String, String>,
+        action: &str,
+    ) {
+        if self.sticky_banner.take().is_some_and(|t| t == self.status_banner) {
+            self.status_banner.clear();
+        }
+        match r {
+            Ok(room) => {
+                self.new_chats.retain(|d| Some(d.id) != n);
+                let synced = self.store.read().resolve_chat_idx(&room).is_some();
+                match synced {
+                    true => self.select_dm(&room, quote),
+                    false => (self.creating_chat, self.pending_dm) = (None, Some((room, quote))),
+                }
+            }
+            Err(e) => {
+                let st = self.store.read();
+                let me = account_user(&st, account);
+                let text = trf("Something went wrong %1$s (%2$s)\n%3$s", &[&action, &me, &e]);
+                drop(st);
+                self.show(Toast { buttons: vec![(tr("Copy Error"), UiMessage::CopyText(e))], ..Toast::new(text) });
+            }
+        }
     }
 
     fn show(&mut self, t: Toast) {
@@ -12846,7 +12900,9 @@ impl BeeperGuiApp {
                 .on_press_maybe(press);
             row![Space::new().width(Fill), pill].padding(Padding::new(8.0).left(13.0)).align_y(Center)
         };
-        let users = self.new_chats.iter().find(|d| Some(d.id) == self.creating_chat).map_or(&[][..], |d| &d.users);
+        let draft = self.new_chats.iter().find(|d| Some(d.id) == self.creating_chat);
+        let users = draft.map_or(&[][..], |d| &d.users);
+        let group = draft.is_some_and(|d| d.group);
         let account = users.first().map(|(a, _)| a.as_str());
         let field = |placeholder: &'static str| {
             text_input(placeholder, &self.new_chat_query)
@@ -12881,7 +12937,10 @@ impl BeeperGuiApp {
             return container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0)).into();
         }
         let all = rail_accounts(&st);
-        let listed: Vec<String> = all.iter().filter(|a| self.can(a, "create_dm")).cloned().collect();
+        let listed: Vec<String> = match group {
+            true => all.iter().filter(|a| self.can_group(a)).cloned().collect(),
+            false => all.iter().filter(|a| self.can(a, "create_dm")).cloned().collect(),
+        };
         let logo = |a: &str| -> El<'_> { svg(crate::style::brand_svg(brand_key(a))).width(16).height(16).into() };
         let picked = self.new_chat_account.as_deref();
         let label = picked.map_or_else(|| tr("All accounts").into(), |a| account_option(&st, a, &listed));
@@ -12946,7 +13005,7 @@ impl BeeperGuiApp {
             .padding(Padding::new(6.0).top(10.0).left(13.0).right(8.0));
         let q = self.new_chat_query.trim().to_lowercase();
         let mut col = Column::new().padding(Padding::ZERO.top(3.0));
-        if q.is_empty() {
+        if q.is_empty() && !group {
             let group_btn = button(
                 row![ic(icon::GROUP, 20.0).color(p.accent), semi(tr("New Group"), 13.0).color(p.strong)]
                     .spacing(7)
@@ -12956,7 +13015,7 @@ impl BeeperGuiApp {
             .height(36)
             .padding([0, 11])
             .style(btn_style([p.chip, p.chip, p.selected], [p.strong; 3], 6.0))
-            .on_press(UiMessage::Noop);
+            .on_press(UiMessage::NewGroup);
             let join_btn = button(
                 row![tinted(&MAT_LINK, 20.0, p.accent), semi(tr("Join a Matrix room"), 13.0).color(p.strong)]
                     .spacing(7)
@@ -13050,7 +13109,8 @@ impl BeeperGuiApp {
             && search.is_none_or(|(_, n, f)| *n == 0 && f.is_empty())
             && contacts.is_empty()
         {
-            col = col.push(heading(tr("No results found")));
+            let none = if group { tr("Start typing to search for people to add") } else { tr("No results found") };
+            col = col.push(heading(none));
         }
         if !contacts.is_empty() {
             col = col.push(heading(tr("In your contacts")));
@@ -13118,13 +13178,50 @@ impl BeeperGuiApp {
                 );
             }
         }
+        let caps = account.map(|a| &self.caps[a]["group_creation"]["group"]);
+        let ready = match (group, caps) {
+            (false, _) => users.len() == 1,
+            (true, None) => false,
+            (true, Some(g)) => {
+                let fewest = g["participants"]["min_length"]
+                    .as_u64()
+                    .unwrap_or(u64::from(g["participants"]["required"] == true));
+                let named = g["name"]["required"] != true || draft.is_some_and(|d| !d.title.trim().is_empty());
+                users.len() as u64 >= fewest && named && g["avatar"]["required"] != true
+            }
+        };
+        let start = if group { tr("Start group chat") } else { tr("Start chat") };
         let body = column![
             inputs,
             scrollable(col).direction(bar()).height(Fill).style(scroll_style(p.scroll)),
-            footer(tr("Start chat"), "ENTER", (!users.is_empty()).then_some(UiMessage::StartChat))
+            footer(start, "ENTER", ready.then_some(UiMessage::StartChat))
         ];
         let panel = container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0));
-        stack![panel].push(dropdown).into()
+        let named = caps.is_some_and(|g| g["name"]["allowed"] == true);
+        let title = draft.filter(|_| group && named).map(|d| {
+            let members: Vec<User> = d.users.iter().map(|(_, u)| u.clone()).collect();
+            let face = self.people_avatar(None, "", true, &members, 28.0, 0.0);
+            let name = text_input(tr("New Group Chat"), &d.title)
+                .on_input(UiMessage::GroupTitle)
+                .width(200)
+                .size(13)
+                .padding(0)
+                .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
+            let bg = if self.dark { Color::BLACK } else { Color::WHITE };
+            container(row![face, name].spacing(8).align_y(Center)).center_x(Fill).center_y(38).style(move |_| {
+                container::Style {
+                    background: Some(bg.into()),
+                    border: iced::border::rounded(10),
+                    shadow: iced::Shadow {
+                        color: Color::from_rgba(0.0, 0.0, 0.0, 0.12),
+                        blur_radius: 10.0,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            })
+        });
+        stack![column![].push(title).push(panel).spacing(8)].push(dropdown).into()
     }
 
     fn view_quick_look<'a>(&self, title: &str, detail: &str) -> El<'a> {
@@ -15775,6 +15872,10 @@ pub struct NewChat {
     pub id: u32,
     /// The picked people, each with the account to reach them on.
     pub users: Vec<(String, User)>,
+    /// Desktop's draft `type: "group"`: from New Group, or more than one person.
+    pub group: bool,
+    /// The group name of Desktop's `GroupTitleBar`.
+    pub title: String,
 }
 
 /// Desktop's `Toast`, which shows while `status_banner` is its text.

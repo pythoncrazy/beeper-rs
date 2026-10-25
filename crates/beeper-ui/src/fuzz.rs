@@ -2389,6 +2389,40 @@ fn member_card_like_desktop() {
 }
 
 #[test]
+fn new_group_like_desktop() {
+    let mut app = demo_app("new-group");
+    let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
+    let (account, people) = {
+        let st = app.store.read();
+        let c = &st.chats[st.resolve_chat_idx("!tg_rust:beeper.com").expect("the chat")];
+        let others = c.participants.items.iter().filter(|u| u.is_self != Some(true)).cloned();
+        (c.account_id.clone(), others.collect::<Vec<User>>())
+    };
+    let _ = app.update(UiMessage::NewChat);
+    let click = |app: &mut BeeperGuiApp, label: &str| {
+        let msgs: Vec<UiMessage> = {
+            let mut sim = simulator(app.view_main());
+            let _ = sim.click(label).expect("the button");
+            sim.into_messages().collect()
+        };
+        for m in msgs {
+            let _ = app.update(m);
+        }
+    };
+    click(&mut app, "New Group");
+    assert!(app.new_chats[0].group && !found(&app, "New Group") && found(&app, "Start group chat"));
+    let _ = app.update(UiMessage::PickUser(account.clone(), Box::new(people[0].clone())));
+    let _ = app.update(UiMessage::GroupTitle("Rustaceans".into()));
+    assert_eq!(app.new_chats[0].title, "Rustaceans");
+    assert!(found(&app, "Rustaceans"), "the name bar shows when the bridge allows a name");
+    click(&mut app, "Start group chat");
+    assert!(app.sticky_banner.is_none(), "the demo bridge needs two people");
+    let _ = app.update(UiMessage::PickUser(account, Box::new(people[1].clone())));
+    click(&mut app, "Start group chat");
+    assert_eq!(app.sticky_banner.as_deref(), Some("Creating group chat..."));
+}
+
+#[test]
 fn chat_info_contact_like_desktop() {
     let mut app = demo_app("chat-info-contact");
     let id = "!im_jordan:beeper.com";
