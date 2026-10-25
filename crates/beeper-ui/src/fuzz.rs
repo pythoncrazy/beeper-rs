@@ -2258,6 +2258,45 @@ fn chat_info_member_actions_like_desktop() {
 }
 
 #[test]
+fn chat_info_contact_like_desktop() {
+    let mut app = demo_app("chat-info-contact");
+    let id = "!im_jordan:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(id.into()));
+    {
+        let mut sim = tall(app.view_info());
+        assert!(sim.find("Contact").is_ok() && sim.find("Email").is_ok() && sim.find("Username").is_ok());
+        assert!(sim.find("Phone").is_err(), "Jordan has no phone number");
+    }
+    let menu = |kind: &str| -> Vec<String> {
+        let items = info_menu(&app.store.read(), &format!("contact:{id} {kind}"), |_| true);
+        items.into_iter().flatten().map(|i| i.0).collect()
+    };
+    assert_eq!(menu("email"), ["Email jordan@example.com", "Copy jordan@example.com"]);
+    assert_eq!(menu("username"), ["Copy Username"]);
+    let _ = app.update(UiMessage::SelectChat("!tg_rust:beeper.com".into()));
+    assert!(tall(app.view_info()).find("Contact").is_err(), "groups have no Contact section");
+    let sarah = "!im_sarah:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(sarah.into()));
+    assert!(tall(app.view_info()).find("Message Other Accounts").is_err());
+    {
+        let mut st = app.store.write();
+        let other = |c: &Chat| c.participants.items.iter().position(|u| u.is_self != Some(true)).expect("a member");
+        let from = &st.chats[st.chat_idx_by_id[sarah]];
+        let user = from.participants.items[other(from)].clone();
+        let to = st.chat_idx_by_id["!sg_lena:beeper.com"];
+        let at = other(&st.chats[to]);
+        st.chats[to].participants.items[at] = user;
+    }
+    let msgs: Vec<UiMessage> = {
+        let mut sim = tall(app.view_info());
+        assert!(sim.find("Message Other Accounts").is_ok());
+        let _ = sim.click("Signal").expect("the Signal chat");
+        sim.into_messages().collect()
+    };
+    assert!(matches!(&msgs[..], [UiMessage::SelectChat(c)] if c == "!sg_lena:beeper.com"));
+}
+
+#[test]
 fn chat_info_media_like_desktop() {
     let mut app = demo_app("chat-info-media");
     let _ = app.update(UiMessage::SelectChat("!sg_security:beeper.com".into()));
