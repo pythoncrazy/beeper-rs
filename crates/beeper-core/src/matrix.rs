@@ -1,11 +1,11 @@
 use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
-    timer_distance, Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder,
+    timer_distance, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder,
     EditHistoryEntry, Label, Message, MessageLink, PollData, PollOption, PollRules, Reaction, Timers, User,
     VerificationSas, VerificationSasEmoji, VerificationState, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_POLLS,
-    DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE, FORMATS,
-    MEMBER_ACTIONS,
+    BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE,
+    FORMATS, MEMBER_ACTIONS,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -753,6 +753,77 @@ async fn create_label(store: &SharedStore, client: &Client, label: Label) -> Res
     Ok(())
 }
 
+/// Desktop's bookmark restoration: the whole bookmarks room once, then its new events.
+async fn sync_bookmarks(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
+    let events = if store.read().bookmarks_room.is_none() { all_history(room).await } else { events };
+    let me = room.own_user_id().as_str();
+    let changes = events
+        .iter()
+        .filter_map(|e| bookmark_change(&serde_json::from_str(e.raw().json().get()).expect("timeline event JSON"), me))
+        .collect();
+    store.write().apply_bookmarks(room.room_id().as_str(), changes);
+}
+
+/// Desktop's `applyBookmarkEvent` and `applyBookmarkRedaction`: the message and its new bookmark, if any.
+fn bookmark_change(e: &Value, me: &str) -> Option<(String, Option<Bookmark>)> {
+    let rel = &e["content"]["com.beeper.relates_to"];
+    if rel["rel_type"] != BOOKMARK {
+        return None;
+    }
+    let (target, room_id) = (s(&rel["event_id"])?, s(&rel["room_id"])?);
+    match e["type"].as_str()? {
+        BOOKMARK if e["sender"] == me => {
+            let order = e["unsigned"]["com.beeper.hs.order"].as_i64().unwrap_or(0);
+            Some((target, Some(Bookmark { room_id, event_id: s(&e["event_id"])?, order })))
+        }
+        "m.room.redaction" => Some((target, None)),
+        _ => None,
+    }
+}
+
+async fn all_history(room: &Room) -> Vec<TimelineEvent> {
+    let (mut events, mut from) = (Vec::new(), None);
+    loop {
+        let mut opts = MessagesOptions::backward();
+        (opts.from, opts.limit) = (from, 100u32.into());
+        let page = room.messages(opts).await.expect("load room history");
+        let done = page.chunk.is_empty() || page.end.is_none();
+        events.extend(page.chunk);
+        if done {
+            break;
+        }
+        from = page.end;
+    }
+    events.reverse();
+    events
+}
+
+/// A redaction with extra content, which `Room::redact` does not send.
+async fn redact_with(client: &Client, room: &Room, event: &str, content: Value) -> Result<(), String> {
+    let mut url = client.homeserver();
+    let txn = matrix_sdk::ruma::TransactionId::new();
+    url.path_segments_mut().expect("a base URL").pop_if_empty().extend([
+        "_matrix",
+        "client",
+        "v3",
+        "rooms",
+        room.room_id().as_str(),
+        "redact",
+        event,
+        txn.as_str(),
+    ]);
+    let token = client.access_token().ok_or("Not signed in to Matrix")?;
+    let res = crate::cloud::http_client()
+        .put(url.as_str())
+        .bearer_auth(token)
+        .header("content-type", "application/json")
+        .body(content.to_string())
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    res.error_for_status().map(drop).map_err(|e| e.to_string())
+}
+
 async fn sync_space(store: &SharedStore, room: &Room) {
     let bridge = state(room, "m.bridge").await.unwrap_or(Value::Null);
     // A Slack login is one workspace, so the workspace space is the account itself.
@@ -772,6 +843,9 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     let create = state(room, "m.room.create").await.expect("rooms have a create event");
     if create["com.beeper.label"] == true {
         return sync_label(store, room).await;
+    }
+    if create["type"] == "com.beeper.bookmarks" {
+        return sync_bookmarks(store, room, events).await;
     }
     if create["type"].is_string() {
         return sync_space(store, room).await;
@@ -1000,6 +1074,12 @@ pub enum Outgoing {
     Leave(bool),
     /// A state event with an empty state key.
     State(&'static str, Value),
+    /// Adds (true) or removes a Desktop bookmark of a message in a room. Its chat is the bookmarks room.
+    Bookmark {
+        room: String,
+        target: String,
+        on: bool,
+    },
     /// Uploads an image with its MIME type and makes it the room avatar, or removes the avatar.
     Avatar(Option<(Vec<u8>, String)>),
     /// Adds (true) or removes a chat from a label.
@@ -1275,6 +1355,22 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             }
         }
         Outgoing::State(kind, content) => drop(room.send_state_event_raw(kind, "", content).await.map_err(e)?),
+        Outgoing::Bookmark { room: chat, target, on } => {
+            let target = event(target)?.to_string();
+            let known = store.read().bookmarks.get(&target).map(|b| b.event_id.clone());
+            let rel = serde_json::json!({ "com.beeper.relates_to": { "event_id": target, "room_id": chat, "rel_type": BOOKMARK } });
+            match (on, known) {
+                (true, None) => {
+                    let id = room.send_raw(BOOKMARK, rel).await.map_err(e)?.response.event_id.to_string();
+                    store.write().bookmarks.insert(target, Bookmark { room_id: chat, event_id: id, order: 0 });
+                }
+                (false, Some(id)) => {
+                    redact_with(&client, &room, &id, rel).await?;
+                    store.write().bookmarks.remove(&target);
+                }
+                _ => {}
+            }
+        }
         Outgoing::Avatar(image) => {
             let content = match image {
                 Some((bytes, mime)) => {
@@ -1906,6 +2002,21 @@ mod tests {
         assert_eq!(edit_bits(Some(&features), &levels, "@me:x"), 0b001, "features without a level reject the event");
         assert_eq!(edit_bits(None, &json!(null), "@me:x"), 0, "without power levels the events need 50");
         assert_eq!(edit_bits(None, &json!({ "users_default": 50 }), "@me:x"), 0b111);
+    }
+
+    #[test]
+    fn bookmark_events_like_desktop() {
+        use super::bookmark_change;
+        use serde_json::json;
+        let rel = json!({ "com.beeper.relates_to": { "event_id": "$m", "room_id": "!r", "rel_type": "com.beeper.bookmark" } });
+        let ev = |kind: &str, sender: &str| json!({ "type": kind, "sender": sender, "event_id": "$b", "content": rel, "unsigned": { "com.beeper.hs.order": 7 } });
+        let (target, b) = bookmark_change(&ev("com.beeper.bookmark", "@me:x"), "@me:x").expect("a bookmark");
+        let b = b.expect("an added bookmark");
+        assert!(target == "$m" && b.room_id == "!r" && b.event_id == "$b" && b.order == 7);
+        assert!(bookmark_change(&ev("com.beeper.bookmark", "@other:x"), "@me:x").is_none(), "Desktop skips others");
+        assert_eq!(bookmark_change(&ev("m.room.redaction", "@me:x"), "@me:x"), Some(("$m".into(), None)));
+        let bare = json!({ "type": "m.room.redaction", "sender": "@me:x", "redacts": "$b", "content": {} });
+        assert!(bookmark_change(&bare, "@me:x").is_none(), "a redaction without a relation is unresolved");
     }
 
     #[test]

@@ -412,6 +412,18 @@ pub struct Chat {
     pub flags: u16,
 }
 
+/// Desktop's `BOOKMARK_EVENT_TYPE` and `BOOKMARK_REL_TYPE`.
+pub const BOOKMARK: &str = "com.beeper.bookmark";
+
+/// A `com.beeper.bookmark` event of the bookmarks room, which relates to a message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bookmark {
+    pub room_id: String,
+    pub event_id: String,
+    /// `com.beeper.hs.order`, which Desktop sorts the bookmarks of a chat by.
+    pub order: i64,
+}
+
 /// The disappearing timers of a room.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Timers {
