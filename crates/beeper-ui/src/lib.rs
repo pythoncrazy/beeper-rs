@@ -8031,10 +8031,11 @@ impl BeeperGuiApp {
             .into()
         };
         let main_menu = main_menu.or(message_menu).or(edit_menu).or(react).or(selection_menu.filter(|_| in_main));
-        let (menu, palette_menu) = match self.show_command_palette && self.chat_menu.is_some() {
-            true => (None, main_menu.map(|m| layer(m, UiMessage::CloseChatMenu))),
-            false => (main_menu.map(|m| layer(m, UiMessage::CloseModals)), None),
-        };
+        let (menu, palette_menu) =
+            match (self.show_command_palette || self.forward.is_some()) && self.chat_menu.is_some() {
+                true => (None, main_menu.map(|m| layer(m, UiMessage::CloseChatMenu))),
+                false => (main_menu.map(|m| layer(m, UiMessage::CloseModals)), None),
+            };
         let toast = self.view_toast(76.0);
         let confirm = self.confirm.filter(|d| !SETTINGS_DIALOGS.contains(d) && !self.spaces_asking());
         let confirm = confirm.map(|d| self.view_confirm(d));
@@ -13185,7 +13186,8 @@ impl BeeperGuiApp {
             let bg = if i == 0 { p.chip } else { CLEAR };
             let pick = button(line).height(36).padding([0, 6]).width(Fill);
             let pick = pick.style(btn_style([bg, p.chip, p.selected], [p.text; 3], 8.0));
-            col.push(container(pick.on_press(UiMessage::ForwardPick(c.id.clone()))).padding([0, 6]))
+            let pick = mouse_area(pick.on_press(UiMessage::ForwardPick(c.id.clone())));
+            col.push(container(pick.on_right_press(UiMessage::OpenChatMenu(c.id.clone()))).padding([0, 6]))
         });
         let ready = !f.picked.is_empty();
         let label = row![semi(tr("Forward"), 12.0), txt("CTRL ENTER", 11.0).color(Color { a: 0.8, ..Color::WHITE })];
