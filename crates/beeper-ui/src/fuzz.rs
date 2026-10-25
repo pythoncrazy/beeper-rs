@@ -2008,6 +2008,72 @@ fn sidebar_view_menus_like_desktop() {
 }
 
 #[test]
+fn background_menus_like_desktop() {
+    let mut app = demo_app("background-menus");
+    let main = app.main_window.expect("a main window");
+    let right_click = |app: &mut BeeperGuiApp, at: Point| {
+        let right = [mouse::Event::ButtonPressed(Button::Right), mouse::Event::ButtonReleased(Button::Right)];
+        for m in interact(app, main, Size::new(1440.0, 900.0), at, right.map(iced::Event::Mouse).to_vec()) {
+            let _ = app.update(m);
+        }
+        app.chat_menu.as_ref().map(|m| m.0.clone())
+    };
+    assert_eq!(right_click(&mut app, Point::new(62.0, 300.0)).as_deref(), Some("account:inbox"), "the space bar");
+    let _ = app.update(UiMessage::CloseModals);
+    assert_eq!(right_click(&mut app, Point::new(72.0, 300.0)).as_deref(), Some(SIDEBAR_MENU), "the sidebar");
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_chat_menu(SIDEBAR_MENU, false, 900.0));
+        for item in ["Add/Remove Accounts", "Hide Space Bar", "Settings"] {
+            assert!(sim.find(item).is_ok(), "{item}");
+        }
+        let _ = sim.click("Start New Chat").expect("Start New Chat");
+        sim.into_messages().collect()
+    };
+    for m in picked {
+        let _ = app.update(m);
+    }
+    assert!(app.creating_chat.is_some() && app.chat_menu.is_none());
+    let _ = app.update(UiMessage::CloseModals);
+
+    assert_eq!(right_click(&mut app, Point::new(100.0, 26.0)).as_deref(), Some("head:inbox"), "the header");
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_chat_menu("head:inbox", false, 900.0));
+        assert!(sim.find("Show in Inbox").is_err());
+        let _ = sim.click("Select Chats").expect("Select Chats");
+        sim.into_messages().collect()
+    };
+    for m in picked {
+        let _ = app.update(m);
+    }
+    assert!(app.select_mode && app.selection.is_empty() && app.chat_menu.is_none());
+    let first = app.list_ids(&app.store.read())[0].clone();
+    let _ = app.update(UiMessage::ToggleSelected(first.clone()));
+    assert!(!app.select_mode && app.selection == [first.clone()]);
+    let _ = app.update(UiMessage::ToggleSelected(first));
+    assert!(app.selection.is_empty() && !app.select_mode, "the mode ends with the last chat");
+    let _ = app.update(UiMessage::SelectAccount(Some("label:lbl_work".into())));
+    let has = |app: &BeeperGuiApp, key: &str, items: &[&str]| {
+        let mut sim = simulator(app.view_chat_menu(key, false, 900.0));
+        items.iter().all(|i| sim.find(*i).is_ok())
+    };
+    assert!(has(&app, "head:label:lbl_work", &["Select Chats", "Show in Inbox", "Edit Label...", "Delete Label"]));
+    let account = app.store.read().bridge_accounts[0].account_id.clone();
+    assert!(has(&app, &format!("head:{account}"), &["Select Chats", "Show in Inbox", "Account Settings..."]));
+    let _ = app.update(UiMessage::SelectAccount(None));
+
+    let chat = app.store.read().chats[0].id.clone();
+    let _ = app.update(UiMessage::ClickChat(chat.clone()));
+    let at = Point::new(68.0 + SIDEBAR_WIDTH + 40.0, 60.0);
+    assert_eq!(right_click(&mut app, at), Some(chat.clone()), "the chat header has the chat menu");
+    let _ = app.update(UiMessage::CloseModals);
+    let _ = app.update(UiMessage::ToggleCommandPalette);
+    let _ = app.update(UiMessage::OpenChatMenu(chat));
+    assert!(simulator(app.view_main()).find("Begin Selecting").is_ok(), "the chat menu shows over the command bar");
+    let _ = app.update(UiMessage::CloseChatMenu);
+    assert!(app.show_command_palette && app.chat_menu.is_none());
+}
+
+#[test]
 fn sidebar_overflow_menu_lists_hidden_spaces_like_desktop() {
     let mut app = demo_app("overflow-menu");
     let hide = |id: &str| SpaceOrder { id: id.into(), visible: false };
