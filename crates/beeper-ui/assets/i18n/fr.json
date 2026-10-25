@@ -290,6 +290,7 @@
 "Expand":["Etendre"],
 "Expires In":["Expire dans"],
 "Expires in":["Expire dans"],
+"Export all loaded messages to .txt file":["Exporter tous les messages chargés dans un fichier .txt"],
 "Failed to clear storage":["Échec de l’effacement du stockage"],
 "Failed to upload image":["Échec du chargement de l’image"],
 "Feedback?":["Un avis ?"],

@@ -291,6 +291,7 @@
 "Expand":["Ampliar"],
 "Expires In":["Caduca el"],
 "Expires in":["Caduca en"],
+"Export all loaded messages to .txt file":["Exportar todos los mensajes cargados a un archivo .txt"],
 "Failed to clear storage":["No se ha podido borrar el almacenamiento"],
 "Failed to upload image":["Error al cargar la imagen"],
 "Feedback?":["¿Tienes comentarios?"],

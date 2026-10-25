@@ -2331,6 +2331,19 @@ fn add_members_like_desktop() {
 }
 
 #[test]
+fn export_chat_like_desktop() {
+    let mut app = demo_app("export-chat");
+    let _ = app.update(UiMessage::SelectChat("!tg_rust:beeper.com".into()));
+    let cmds = app.commands(&app.store.read(), "");
+    let at = cmds.iter().position(|c| c.title == "Send GIF").expect("the GIF command");
+    assert_eq!(cmds[at + 1].title, "Export all loaded messages to .txt file");
+    let st = app.store.read();
+    let text = app.export_text(&st).expect("loaded messages");
+    assert!(text.starts_with('[') && text.contains("] Tulir Asokan: "));
+    assert_eq!(crate::safe_file_name("a/b: c?. "), "ab c");
+}
+
+#[test]
 fn chat_info_contact_like_desktop() {
     let mut app = demo_app("chat-info-contact");
     let id = "!im_jordan:beeper.com";
