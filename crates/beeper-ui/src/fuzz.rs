@@ -1930,6 +1930,38 @@ fn create_label_shows_a_draft_space_like_desktop() {
 }
 
 #[test]
+fn accounts_settings_rows_have_the_account_menu_like_desktop() {
+    let mut app = demo_app("prefs-account-menu");
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Accounts));
+    let account = app.store.read().bridge_accounts[0].account_id.clone();
+    let _ = app.update(UiMessage::OpenChatMenu(format!("prefs:{account}")));
+    let ask: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_settings());
+        for item in ["Show in Inbox", "Mute Space", "Edit Spaces…"] {
+            assert!(sim.find(item).is_ok(), "{item}");
+        }
+        assert!(sim.find("Account Settings…").is_err() && sim.find("Add/Remove Accounts…").is_err());
+        let _ = sim.click("Remove Account…").expect("a Remove Account item");
+        sim.into_messages().collect()
+    };
+    assert!(matches!(&ask[..], [UiMessage::AskRemoveAccount(a)] if *a == account));
+    let _ = app.update(ask.into_iter().next().unwrap());
+    assert!(app.chat_menu.is_none() && app.confirm == Some(ASK_REMOVE_ACCOUNT));
+    let mut sim = simulator(app.view_settings());
+    assert!(sim.find("Disconnect and remove the data from this account on Beeper").is_ok());
+    let _ = sim.click("Remove from All Devices").expect("the confirm button");
+    assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::RemoveAccount(a)] if *a == account));
+    let _ = app.update(UiMessage::AccountRemoved(account.clone(), Err("offline".into())));
+    let text = format!("There was an error disconnecting account {account}. offline");
+    assert!(simulator(app.view_main()).find(text.as_str()).is_ok());
+    let _ = app.update(UiMessage::Ask(None));
+    let _ = app.update(UiMessage::OpenChatMenu("prefs:hungryserv".into()));
+    let mut sim = simulator(app.view_settings());
+    let _ = sim.click("Remove Account…").expect("Desktop's Remove Account item of the Beeper account");
+    assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::CloseChatMenu]));
+}
+
+#[test]
 fn sidebar_menus_open_accounts_like_desktop() {
     let mut app = demo_app("rail-menus");
     let account = app.store.read().bridge_accounts[0].account_id.clone();

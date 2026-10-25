@@ -725,6 +725,9 @@ pub enum UiMessage {
     Tray(Result<tray::Event, String>),
     TrayFailed(String),
     WindowResized(window::Id, Size),
+    AskRemoveAccount(String),
+    RemoveAccount(String),
+    AccountRemoved(String, Result<(), String>),
     ScreenshotCaptured(window::Id, window::Screenshot),
     KeyPressed(Key, Modifiers),
     StoreChanged,
@@ -1315,9 +1318,18 @@ const ASK_DELETE_LABEL: u8 = 13;
 const ASK_LEAVE_CHAT: u8 = 14;
 const ASK_MAKE_ADMIN: u8 = 15;
 const ASK_REMOVE_MEMBER: u8 = 16;
+const ASK_REMOVE_ACCOUNT: u8 = 17;
+const SETTINGS_SIZE: Size = Size::new(793.0, 705.0);
 /// The dialogs over the Settings window.
-const SETTINGS_DIALOGS: [u8; 6] =
-    [ASK_LOGOUT, ASK_CLEAR_STORAGE, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT, ASK_REVOKE_CONNECTION, ASK_REMOTE_ACCESS];
+const SETTINGS_DIALOGS: [u8; 7] = [
+    ASK_LOGOUT,
+    ASK_CLEAR_STORAGE,
+    ASK_CLEAR_CACHE,
+    ASK_CLEAR_CHAT,
+    ASK_REVOKE_CONNECTION,
+    ASK_REMOTE_ACCESS,
+    ASK_REMOVE_ACCOUNT,
+];
 /// Desktop's "Clear storage older than" choices, where 0 is any age.
 const STORAGE_DAYS: [i64; 4] = [0, 30, 90, 120];
 /// Desktop's default "Quick reaction emoji".
@@ -2360,6 +2372,8 @@ enum SpaceMenu {
     Rail,
     Gear,
     Header,
+    /// The rows of the Accounts settings, like Desktop's `PL` with `hideSettings` and `hideAddRemoveAccounts`.
+    Prefs,
 }
 
 /// The `chat_menu` key of Desktop's sidebar background menu (`Gct`).
@@ -3431,6 +3445,7 @@ pub struct BeeperGuiApp {
     pub rail_drag: Option<RailDrag>,
     pub main_window: Option<window::Id>,
     pub settings_window: Option<window::Id>,
+    settings_size: Size,
     pub login_window: Option<window::Id>,
     /// Desktop's `ChatThemeBrowserWindow`s and their chats.
     pub theme_windows: Vec<(window::Id, String)>,
@@ -3616,6 +3631,7 @@ impl BeeperGuiApp {
             rail_drag: None,
             main_window: None,
             settings_window: None,
+            settings_size: SETTINGS_SIZE,
             login_window: None,
             theme_windows: Vec::new(),
             labels_windows: Vec::new(),
@@ -3842,7 +3858,7 @@ impl BeeperGuiApp {
         if let Some(id) = self.settings_window {
             return Task::batch([load, window::gain_focus(id)]);
         }
-        let (id, open) = window::open(Self::window_settings(Size::new(793.0, 705.0)));
+        let (id, open) = window::open(Self::window_settings(SETTINGS_SIZE));
         self.settings_window = Some(id);
         self.save_subwindows();
         Task::batch([load, open.map(UiMessage::WindowOpened)])
@@ -7003,6 +7019,23 @@ impl BeeperGuiApp {
                 self.account_page = id;
                 return operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
             }
+            UiMessage::AskRemoveAccount(id) => {
+                (self.chat_menu, self.delete_target, self.confirm) = (None, Some(id), Some(ASK_REMOVE_ACCOUNT));
+            }
+            UiMessage::RemoveAccount(id) => {
+                self.confirm = None;
+                let p = self.provision(&id);
+                let st = self.store.read();
+                let sole = st.bridge_accounts.iter().filter(|b| b.bridge_id == p.bridge_id).all(|b| b.account_id == id);
+                let removing = beeper_core::matrix::remove_account(p, st.config.api_url.clone(), sole);
+                return Task::perform(removing, move |r| UiMessage::AccountRemoved(id.clone(), r));
+            }
+            UiMessage::AccountRemoved(_, Ok(())) => return self.refresh_cloud_accounts(),
+            UiMessage::AccountRemoved(id, Err(e)) => {
+                let text = format!("There was an error disconnecting account {id}. {e}");
+                let report = UiMessage::OpenUrl(ISSUES_URL.into());
+                self.show(Toast { buttons: vec![("Report a problem", report)], ..Toast::new(text) });
+            }
             UiMessage::SetAccountProps(id, props) => {
                 self.chat_menu = None;
                 self.patch_settings(|s| {
@@ -7239,6 +7272,9 @@ impl BeeperGuiApp {
                 }
                 if let Some(w) = self.media_window.as_mut().filter(|w| w.id == id) {
                     w.size = size;
+                }
+                if self.settings_window == Some(id) {
+                    self.settings_size = size;
                 }
             }
             UiMessage::Tray(Ok(tray::Event::Up)) => {
@@ -8937,6 +8973,7 @@ impl BeeperGuiApp {
                     item(tr("Edit Label..."), UiMessage::EditLabel(l.id.clone())),
                     item(tr("Delete Label"), UiMessage::AskDeleteLabel(l.id.clone())),
                 ],
+                SpaceMenu::Prefs => unreachable!("the Accounts settings list accounts, not labels"),
                 SpaceMenu::Gear => column![
                     inbox,
                     item(trx(mute, "label context menu action"), UiMessage::MuteLabel(l.id.clone(), !l.muted)),
@@ -8996,6 +9033,18 @@ impl BeeperGuiApp {
             SpaceMenu::Gear => column![mute],
             SpaceMenu::Header => {
                 column![mute, menu_rule(p), menu_item(p, None, tr("Account Settings...").into(), "", Some(settings))]
+            }
+            SpaceMenu::Prefs => {
+                let remove = match account {
+                    "hungryserv" => UiMessage::CloseChatMenu,
+                    _ => UiMessage::AskRemoveAccount(account.into()),
+                };
+                column![
+                    mute,
+                    menu_rule(p),
+                    menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
+                    menu_item(p, None, tr("Remove Account…").into(), "", Some(remove)),
+                ]
             }
             SpaceMenu::Rail => column![
                 mute,
@@ -13663,7 +13712,19 @@ impl BeeperGuiApp {
         drop(st);
         let confirm = self.confirm.filter(|d| SETTINGS_DIALOGS.contains(d)).map(|d| self.view_confirm(d));
         let add = self.integrations.add.as_ref().map(|a| self.view_add_token(a));
-        stack![base.style(fill_box(p.window, 0.0))].push(add).push(confirm).into()
+        let menu =
+            self.chat_menu.as_ref().and_then(|(cid, at)| Some((cid.strip_prefix("prefs:")?, at))).map(|(id, at)| {
+                let (menu, sub) = self.account_menu(id, SpaceMenu::Prefs);
+                let size = self.settings_size;
+                let (w, h) = (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + 4.0 * MENU_ITEM + 11.0);
+                let (x, y) = (at.x.min(size.width - w - 8.0), at.y.min(size.height - h - 8.0));
+                let menu = container(mouse_area(row![menu].push(sub)).on_press(UiMessage::Noop))
+                    .padding(Padding::ZERO.left(x).top(y))
+                    .width(Fill)
+                    .height(Fill);
+                mouse_area(menu).on_press(UiMessage::CloseChatMenu).on_right_press(UiMessage::CloseChatMenu)
+            });
+        stack![base.style(fill_box(p.window, 0.0))].push(menu).push(add).push(confirm).into()
     }
 
     /// Desktop's `BeeperConnectAddTokenModal`, over the Settings window.
@@ -13979,6 +14040,14 @@ impl BeeperGuiApp {
                 tr("Connected clients will lose access to Beeper Desktop API").into(),
                 vec![(tr("Revoke"), UiMessage::RevokeConfirmed)],
             ),
+            ASK_REMOVE_ACCOUNT => {
+                let id = self.delete_target.clone().expect("an account to remove");
+                (
+                    "Remove Account".into(),
+                    "Disconnect and remove the data from this account on Beeper".into(),
+                    vec![("Remove from All Devices", UiMessage::RemoveAccount(id))],
+                )
+            }
             ASK_REMOTE_ACCESS => (
                 tr("Enable Remote Access?").into(),
                 tr("This can expose the Beeper Desktop API to the public internet based on your firewall settings. Only enable if you know what you are doing.").into(),
@@ -14057,11 +14126,11 @@ impl BeeperGuiApp {
                     .spacing(8)
                     .align_y(Center)
                     .padding(Padding::new(4.0).left(8.0).right(16.0));
-                    button(line)
+                    let row = button(line)
                         .padding(0)
                         .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
-                        .on_press(UiMessage::OpenAccount(Some(logo.into())))
-                        .into()
+                        .on_press(UiMessage::OpenAccount(Some(logo.into())));
+                    mouse_area(row).on_right_press(UiMessage::OpenChatMenu(format!("prefs:{logo}"))).into()
                 };
                 let me = st.me();
                 let rows = std::iter::once(account(
