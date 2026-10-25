@@ -2125,6 +2125,29 @@ fn message_requests_like_desktop() {
 }
 
 #[test]
+fn request_head_like_desktop() {
+    let mut app = demo_app("request-head");
+    let (id, url, username) = {
+        let mut st = app.store.write();
+        let i = st.chats.iter().position(|c| profile_link(c).is_some()).expect("a chat with a profile");
+        st.update_chat(i, |c| (c.is_request, c.can_accept_request) = (Some(true), true));
+        let c = &st.chats[i];
+        let u = c.participants.items.iter().find(|u| u.is_self != Some(true)).expect("the other person");
+        (c.id.clone(), profile_link(c).expect("a profile"), handle(u).expect("a username"))
+    };
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_conversation());
+        assert!(sim.find(username.as_str()).is_ok(), "{username}");
+        let _ = sim.click("View Profile").expect("View Profile");
+        sim.into_messages().collect()
+    };
+    assert!(matches!(&picked[..], [UiMessage::OpenUrl(u)] if *u == url));
+    let _ = app.update(UiMessage::AcceptRequest(id));
+    assert!(simulator(app.view_conversation()).find("View Profile").is_err(), "only requests have the header");
+}
+
+#[test]
 fn sidebar_overflow_menu_lists_hidden_spaces_like_desktop() {
     let mut app = demo_app("overflow-menu");
     let hide = |id: &str| SpaceOrder { id: id.into(), visible: false };

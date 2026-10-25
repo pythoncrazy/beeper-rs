@@ -10352,6 +10352,34 @@ impl BeeperGuiApp {
         Some(container(body).padding([0, 8]).center_x(Fill).into())
     }
 
+    /// Desktop's `F2t` at the top of a request: the chat, the username of the other person, the description and
+    /// View Profile.
+    fn view_request_head<'a>(&self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
+        if chat.is_request != Some(true) {
+            return None;
+        }
+        let p = &self.pal;
+        let other =
+            chat.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| chat.chat_type != "group");
+        let username = other
+            .and_then(|u| handle(u).or_else(|| u.phone_number.as_deref().map(fmt_phone)).or_else(|| u.email.clone()));
+        let mono = (!st.settings.on("colorizeNetworkIcons")).then_some(p);
+        let avatar = badged(self.chat_avatar(chat, 46.0, 0.0), &chat.account_id, 46.0, 16.0, mono, p.card);
+        let title = semi(chat.title.clone(), 15.0).line_height(Pixels(20.0)).color(p.strong);
+        let username = username.map(|u| txt(u, 12.0).line_height(Pixels(15.0)).color(p.sub));
+        let about = chat.description.clone().filter(|d| !d.is_empty());
+        let about = about.map(|d| txt(d, 13.0).line_height(Pixels(16.0)).color(p.sub).align_x(Center));
+        let profile = profile_link(chat).map(|url| {
+            button(semi(tr("View Profile"), 13.0).line_height(Pixels(16.0)).color(p.accent))
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                .on_press(UiMessage::OpenUrl(url))
+        });
+        let col = column![avatar, column![title].push(username).align_x(Center)].push(about).push(profile);
+        let col = col.spacing(10).align_x(Center).max_width(480).padding(Padding::new(24.0).bottom(32.0));
+        Some(container(col).center_x(Fill).into())
+    }
+
     /// Desktop's `IncognitoMarkAsRead`: a link below an unread chat that incognito mode keeps unread.
     fn incognito_mark_read<'a>(&self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
         let unread = chat.unread_count > 0 || chat.is_marked_unread == Some(true);
@@ -10544,6 +10572,7 @@ impl BeeperGuiApp {
             }
         }
         let mut col = Column::new().padding(Padding::new(8.0).right(8.0 + GUTTER).top(96.0).bottom(0.0));
+        col = col.push((!thread).then(|| self.view_request_head(st, chat)).flatten());
         let mut prev: Option<&Message> = None;
         let last_live = msgs.iter().rposition(|m| m.is_deleted != Some(true));
         let mut last_seen: HashMap<&str, (&str, &str)> = HashMap::new();
