@@ -795,6 +795,18 @@ fn bookmark_change(e: &Value, me: &str) -> Option<(String, Option<Bookmark>)> {
     }
 }
 
+/// Desktop's `hydrateMissingBookmarks` for one message that is not loaded: the event as a message, or None when
+/// the server does not give it.
+pub async fn bookmarked_message(client: Client, chat: String, target: String, account_id: String) -> Option<Message> {
+    let room = joined_room(&client, &chat).await.ok()?;
+    let event = room.event(&OwnedEventId::try_from(target).ok()?, None).await.ok()?;
+    let v: Value = serde_json::from_str(event.raw().json().get()).expect("event JSON");
+    match op(&room, &chat, &account_id, &v, false).await {
+        Some(Op::Upsert(m)) => Some(*m),
+        _ => None,
+    }
+}
+
 async fn all_history(room: &Room) -> Vec<TimelineEvent> {
     let (mut events, mut from) = (Vec::new(), None);
     loop {

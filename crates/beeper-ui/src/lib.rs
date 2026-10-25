@@ -381,6 +381,10 @@ pub enum UiMessage {
     InfoMore,
     InfoAll,
     InfoBookmarks,
+    /// Desktop's "Remove Bookmark" in Chat Info, for the event ID of a message that may not be loaded.
+    RemoveBookmark(String),
+    /// A bookmarked message that is not loaded, or None when the server does not give it.
+    BookmarkHydrated(String, Option<Box<Message>>),
     InfoMedia(Option<usize>),
     InfoQuery(String),
     InfoNote(text_editor::Action),
@@ -2379,10 +2383,10 @@ fn info_menu(st: &BeeperStore, key: &str, dm: impl Fn(&str) -> bool) -> Vec<Opti
         };
     }
     if let Some((cid, mid)) = key.strip_prefix("bookmark:").and_then(|k| k.split_once(' ')) {
-        let jump = UiMessage::JumpTo(cid.into(), mid.into());
-        let remove = UiMessage::ToggleBookmark(mid.into());
+        let jump = st.msg_idx_by_id.contains_key(mid).then(|| UiMessage::JumpTo(cid.into(), mid.into()));
+        let remove = UiMessage::RemoveBookmark(mid.into());
         return vec![
-            Some((tr("Jump to Message").into(), Some(jump))),
+            Some((tr("Jump to Message").into(), jump)),
             None,
             Some((tr("Remove Bookmark").into(), Some(remove))),
         ];
@@ -3379,6 +3383,8 @@ pub struct BeeperGuiApp {
     pub info_all: bool,
     /// Whether the Chat Info Bookmarks show all bookmarks, not only Desktop's 15.
     pub info_bookmarks: bool,
+    /// The bookmarked messages that Chat Info fetches.
+    hydrating: HashSet<String>,
     /// The Media tab of the expanded Chat Info Media section, or None while it shows only the newest.
     pub info_media: Option<usize>,
     pub info_query: String,
@@ -3556,6 +3562,7 @@ impl BeeperGuiApp {
             info_more: false,
             info_all: false,
             info_bookmarks: false,
+            hydrating: HashSet::new(),
             info_media: None,
             info_query: String::new(),
             info_note: text_editor::Content::new(),
@@ -5193,6 +5200,14 @@ impl BeeperGuiApp {
             UiMessage::InfoMore => self.info_more ^= true,
             UiMessage::InfoAll => self.info_all ^= true,
             UiMessage::InfoBookmarks => self.info_bookmarks ^= true,
+            UiMessage::RemoveBookmark(target) => {
+                self.chat_menu = None;
+                self.store.write().remove_bookmark(&target);
+            }
+            UiMessage::BookmarkHydrated(target, m) => {
+                self.hydrating.remove(&target);
+                self.store.write().bookmarked.insert(target, m.map(|m| *m));
+            }
             UiMessage::InfoMedia(tab) => self.info_media = tab,
             UiMessage::InfoNote(action) => {
                 let edit = action.is_edit();
@@ -7394,6 +7409,7 @@ impl BeeperGuiApp {
         drop(st);
         self.media.extend(urls.iter().map(|u| (u.clone(), None)));
         let audio = self.load_audio();
+        let bookmarks = self.load_bookmarks();
         Task::batch(urls.into_iter().map(|url| {
             let (client, u) = (client.clone(), url.clone());
             Task::perform(
@@ -7406,6 +7422,32 @@ impl BeeperGuiApp {
             )
         }))
         .chain(audio)
+        .chain(bookmarks)
+    }
+
+    /// Desktop's `hydrateMissingBookmarks` while Chat Info is open: fetches the bookmarked messages of the open chat
+    /// that are not loaded.
+    fn load_bookmarks(&mut self) -> Task<UiMessage> {
+        let st = self.store.read();
+        let (Some(client), Some(chat), true) =
+            (st.matrix.clone(), self.pane.selected_chat_id.clone(), self.show_right_panel)
+        else {
+            return Task::none();
+        };
+        let missing = st.bookmarks.iter().filter(|(t, b)| b.room_id == chat && !st.msg_idx_by_id.contains_key(*t));
+        let missing: Vec<String> = missing
+            .filter(|(t, _)| !st.bookmarked.contains_key(*t) && !self.hydrating.contains(*t))
+            .map(|(t, _)| t.clone())
+            .collect();
+        let account = st.resolve_chat_idx(&chat).map(|i| st.chats[i].account_id.clone());
+        drop(st);
+        let Some(account) = account else { return Task::none() };
+        self.hydrating.extend(missing.iter().cloned());
+        Task::batch(missing.into_iter().map(|t| {
+            let fetch =
+                beeper_core::matrix::bookmarked_message(client.clone(), chat.clone(), t.clone(), account.clone());
+            Task::perform(fetch, move |m| UiMessage::BookmarkHydrated(t.clone(), m.map(Box::new)))
+        }))
     }
 
     fn patch_settings(&mut self, f: impl FnOnce(&mut BeeperSettings)) {
@@ -11550,41 +11592,71 @@ impl BeeperGuiApp {
     fn view_bookmarks<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {
         const SHOWN: usize = 15;
         let p = &self.pal;
-        let mut marked: Vec<&Message> = st
-            .chat_msg_indices
-            .get(&chat.id)
-            .map_or(&[][..], |v| &v[..])
-            .iter()
-            .map(|&i| &st.messages[i])
-            .filter(|m| m.is_bookmarked == Some(true) && m.is_deleted != Some(true))
-            .collect();
-        marked.sort_by_cached_key(|m| {
-            std::cmp::Reverse((st.bookmarks.get(&m.id).map_or(0, |b| b.order), m.sort_key.clone()))
+        let loaded = st.chat_msg_indices.get(&chat.id).map_or(&[][..], |v| &v[..]).iter().map(|&i| &st.messages[i]);
+        let loaded = loaded.filter(|m| m.is_bookmarked == Some(true) && m.is_deleted != Some(true));
+        let others = st.bookmarks.iter().filter(|(t, b)| b.room_id == chat.id && !st.msg_idx_by_id.contains_key(*t));
+        let others = others.filter_map(|(t, _)| match st.bookmarked.get(t) {
+            Some(Some(m)) if m.is_deleted == Some(true) => None,
+            Some(m) => Some((t.as_str(), m.as_ref())),
+            None => Some((t.as_str(), None)),
+        });
+        let mut marked: Vec<(&str, Option<&Message>)> =
+            loaded.map(|m| (m.id.as_str(), Some(m))).chain(others).collect();
+        marked.sort_by_cached_key(|(t, m)| {
+            std::cmp::Reverse((st.bookmarks.get(*t).map_or(i64::MAX, |b| b.order), m.map(|m| m.sort_key.clone())))
         });
         let expandable = marked.len() > SHOWN;
         let shown = if self.info_bookmarks { marked.len() } else { marked.len().min(SHOWN) };
         let (h24, dim) = (st.settings.pref("timeFormat") == 1, Color { a: 0.7, ..p.strong });
         let rows: Vec<El> = marked[..shown]
             .iter()
-            .map(|m| {
-                let u = chat.participants.items.iter().find(|u| u.id == m.sender_id);
-                let name = u.map(member_name).or_else(|| m.sender_name.clone()).unwrap_or_else(|| m.sender_id.clone());
-                let face = self.face(u.and_then(|u| u.img_url.as_deref()), &name, 24.0, 0.0);
-                let title = row![
-                    ell(&name, 160.0, 11.0, Weight::Semibold).line_height(Pixels(14.0)).color(p.strong),
-                    txt(list_ts(&m.timestamp, h24), 10.0).line_height(Pixels(12.0)).color(dim)
-                ]
-                .spacing(6)
-                .align_y(iced::Bottom);
-                let text = preview_body(m).unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
-                let preview = ell(&text, 220.0, 11.0, Weight::Normal).line_height(Pixels(14.0)).color(dim);
-                let line = row![face, column![title, preview].spacing(2)].spacing(8).align_y(Center);
-                let btn = button(line)
+            .map(|&(target, m)| {
+                let menu = UiMessage::OpenChatMenu(format!("bookmark:{} {target}", chat.id));
+                let blank = || Space::new().width(24).height(24);
+                let lines = |title: El<'a>, text: &str| {
+                    let preview = ell(text, 220.0, 11.0, Weight::Normal).line_height(Pixels(14.0)).color(dim);
+                    column![title, preview].spacing(2).width(Fill)
+                };
+                let (line, jump) = match m {
+                    Some(m) => {
+                        let u = chat.participants.items.iter().find(|u| u.id == m.sender_id);
+                        let name =
+                            u.map(member_name).or_else(|| m.sender_name.clone()).unwrap_or_else(|| m.sender_id.clone());
+                        let title = row![
+                            ell(&name, 160.0, 11.0, Weight::Semibold).line_height(Pixels(14.0)).color(p.strong),
+                            txt(list_ts(&m.timestamp, h24), 10.0).line_height(Pixels(12.0)).color(dim)
+                        ]
+                        .spacing(6)
+                        .align_y(iced::Bottom);
+                        let text = preview_body(m).unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
+                        let face = self.face(u.and_then(|u| u.img_url.as_deref()), &name, 24.0, 0.0);
+                        let jump = st
+                            .msg_idx_by_id
+                            .contains_key(target)
+                            .then(|| UiMessage::JumpTo(chat.id.clone(), m.id.clone()));
+                        (row![face, lines(title.into(), &text)], jump)
+                    }
+                    None if st.bookmarked.contains_key(target) => {
+                        let title = semi(tr("Message unavailable"), 11.0).line_height(Pixels(14.0)).color(p.strong);
+                        let remove = button(ic(icon::CLOSE, 16.0).color(p.sub))
+                            .padding(4)
+                            .style(btn_style([CLEAR; 3], [p.sub; 3], 8.0))
+                            .on_press(UiMessage::RemoveBookmark(target.into()));
+                        let text = tr("It was deleted or is no longer available.");
+                        (row![blank(), lines(title.into(), text), remove], None)
+                    }
+                    None => {
+                        let title =
+                            semi(tr("Loading…"), 11.0).line_height(Pixels(14.0)).color(p.strong.scale_alpha(0.5));
+                        (row![blank(), lines(title.into(), "")], None)
+                    }
+                };
+                let btn = button(line.spacing(8).align_y(Center))
                     .padding(8)
                     .width(Fill)
                     .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
-                    .on_press(UiMessage::JumpTo(chat.id.clone(), m.id.clone()));
-                mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("bookmark:{} {}", chat.id, m.id))).into()
+                    .on_press_maybe(jump);
+                mouse_area(btn).on_right_press(menu).into()
             })
             .collect();
         let body: El = match rows.is_empty() {
