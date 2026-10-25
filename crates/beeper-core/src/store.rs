@@ -1099,14 +1099,14 @@ impl BeeperStore {
         self.queue(id, Outgoing::Kick(user.into()));
     }
 
-    /// Desktop's `changeParticipantRole` to admin, which marks the member as an admin before the sync confirms it.
-    pub fn make_admin(&mut self, id: &str, user: &str) {
+    /// Desktop's `changeParticipantRole`, which marks the member before the sync confirms it.
+    pub fn set_admin(&mut self, id: &str, user: &str, admin: bool) {
         let idx = self.chat_idx_by_id[id];
         self.update_chat(idx, |c| {
             let u = c.participants.items.iter_mut().find(|u| u.id == user).expect("a member of the chat");
-            u.is_admin = Some(true);
+            u.is_admin = Some(admin);
         });
-        self.queue(id, Outgoing::Admin(user.into()));
+        self.queue(id, Outgoing::Role(user.into(), admin));
     }
 
     pub fn update_group(

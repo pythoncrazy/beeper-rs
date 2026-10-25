@@ -2258,6 +2258,41 @@ fn chat_info_member_actions_like_desktop() {
 }
 
 #[test]
+fn member_commands_like_desktop() {
+    use crate::commands::{SubMenu, MEMBERS_ADMIN, MEMBERS_DISMISS, MEMBERS_KICK};
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("member-commands");
+    let id = "!tg_rust:beeper.com".to_string();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let cmds = app.commands(&app.store.read(), "");
+    let chat: Vec<&str> = cmds.iter().filter(|c| c.category == "Chat").map(|c| c.title.as_str()).collect();
+    let at = chat.iter().position(|t| *t == "Remove member from group").expect("the kick command");
+    let want = ["Remove member from group", "Leave chat", "Make group admin", "Dismiss group admin", "Edit group"];
+    assert_eq!(chat[at..at + 5], want);
+    assert!(chat[at + 5].ends_with("chat info"));
+    let users = |app: &mut BeeperGuiApp, kind| -> Vec<String> {
+        app.cmd_submenu = Some(SubMenu::Members(kind));
+        app.commands(&app.store.read(), "").into_iter().filter_map(|c| c.user.map(|u| u.id)).collect()
+    };
+    assert_eq!(users(&mut app, MEMBERS_KICK), ["@tulir:beeper.com", "@batuhan:beeper.com"]);
+    assert_eq!(users(&mut app, MEMBERS_DISMISS), Vec::<String>::new());
+    app.cmd_submenu = None;
+    let _ = app.update(UiMessage::RunHotkey("Command Bar"));
+    let _ = app.update(UiMessage::OpenSubMenu(SubMenu::Members(MEMBERS_ADMIN)));
+    let _ = app.update(UiMessage::CommandQueryChanged("tulir".into()));
+    assert!(simulator(app.view_main()).find("Tulir Asokan").is_ok());
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+    let _ = app.update(UiMessage::RunHotkey("Command Bar"));
+    let _ = app.update(UiMessage::OpenSubMenu(SubMenu::Members(MEMBERS_DISMISS)));
+    assert_eq!(users(&mut app, MEMBERS_DISMISS), ["@tulir:beeper.com"]);
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
+    let st = app.store.read();
+    let c = &st.chats[st.resolve_chat_idx(&id).expect("the chat")];
+    let tulir = c.participants.items.iter().find(|u| u.id == "@tulir:beeper.com").expect("tulir");
+    assert_eq!(tulir.is_admin, Some(false));
+}
+
+#[test]
 fn chat_info_contact_like_desktop() {
     let mut app = demo_app("chat-info-contact");
     let id = "!im_jordan:beeper.com";
