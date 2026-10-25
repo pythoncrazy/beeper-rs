@@ -60,6 +60,7 @@ The files in `crates/beeper-core/assets/themes/` come from the `beeper/themes` r
 - **Unknown avatar (`EYES` SVG in `crates/beeper-ui/src/lib.rs`)**: The path data comes from the `UnknownAvatar` component of Beeper Desktop. It is property of Beeper Inc.
 - **Error icon (`crates/beeper-ui/assets/settings/error_circle.svg`)**: The path data comes from the `ErrorCircle` component of Beeper Desktop. It is property of Beeper Inc.
 - **Add members icon (`crates/beeper-ui/assets/add_account.svg`)**: The path data comes from the `AddAccount` system icon of Beeper Desktop. It is property of Beeper Inc.
+- **Call icon (`CALL` SVG in `crates/beeper-ui/src/lib.rs`)**: The path data comes from the `Call` system icon of Beeper Desktop. It is property of Beeper Inc.
 - **Toast icons (`TOAST_ICONS` SVGs in `crates/beeper-ui/src/lib.rs`)**: The path data comes from the `Archive`, `Inbox`, `LowPriority` and `Undo` assets of Beeper Desktop. It is property of Beeper Inc.
 - **Iced (`iced`, `iced_test`)**: Copyright Héctor Ramón (`https://github.com/iced-rs/iced`), licensed under the MIT License.
 

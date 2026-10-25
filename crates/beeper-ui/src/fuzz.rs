@@ -2362,6 +2362,33 @@ fn mute_account_command_like_desktop() {
 }
 
 #[test]
+fn member_card_like_desktop() {
+    let mut app = demo_app("member-card");
+    let id = "!tg_rust:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(id.into()));
+    let msgs: Vec<UiMessage> = {
+        let mut sim = tall(app.view_info());
+        let _ = sim.click("Batuhan").expect("the member row");
+        sim.into_messages().collect()
+    };
+    for m in msgs {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.chat_menu.as_ref().map(|m| m.0.as_str()), Some("card:!tg_rust:beeper.com @batuhan:beeper.com"));
+    let msgs: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_main());
+        assert!(sim.find("@batuhan").is_ok());
+        let _ = sim.click("Send Message").expect("the Send Message button");
+        sim.into_messages().collect()
+    };
+    for m in msgs {
+        let _ = app.update(m);
+    }
+    assert!(app.chat_menu.is_none());
+    assert_eq!(app.sticky_banner.as_deref(), Some("Composing chat..."), "Send Message makes the direct chat");
+}
+
+#[test]
 fn chat_info_contact_like_desktop() {
     let mut app = demo_app("chat-info-contact");
     let id = "!im_jordan:beeper.com";
