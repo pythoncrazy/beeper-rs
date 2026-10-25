@@ -2225,6 +2225,39 @@ fn disappearing_timer_changes_in_the_timeline_like_desktop() {
 }
 
 #[test]
+fn chat_info_member_actions_like_desktop() {
+    let mut app = demo_app("chat-info-member-actions");
+    let id = "!tg_rust:beeper.com".to_string();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let labels = |app: &BeeperGuiApp, uid: &str| -> Vec<(String, bool)> {
+        let menu = info_menu(&app.store.read(), &format!("member:{id} {uid}"), |_| true);
+        menu.into_iter().flatten().map(|(l, m)| (l, m.is_some())).collect()
+    };
+    let tulir = labels(&app, "@tulir:beeper.com");
+    assert!(tulir.contains(&("Send Message".into(), true)));
+    assert!(tulir.ends_with(&[("Make Group Admin…".into(), true), ("Remove from Group…".into(), true)]));
+    let me = labels(&app, "@self_telegram:beeper.com");
+    assert!(me.ends_with(&[("Make Group Admin…".into(), false), ("Remove from Group…".into(), false)]));
+    let ask = |a| UiMessage::AskMember(a, id.clone(), "@tulir:beeper.com".into());
+    let _ = app.update(ask(ASK_MAKE_ADMIN));
+    let msgs: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_main());
+        assert!(sim.find("Are you sure you want to make Tulir Asokan an admin of this group?").is_ok());
+        let _ = sim.click("Confirm").expect("the confirm button");
+        sim.into_messages().collect()
+    };
+    for m in msgs {
+        let _ = app.update(m);
+    }
+    assert!(app.confirm.is_none());
+    assert!(labels(&app, "@tulir:beeper.com").contains(&("Make Group Admin…".into(), false)));
+    let _ = app.update(ask(ASK_REMOVE_MEMBER));
+    assert!(simulator(app.view_main()).find("Are you sure you want to remove Tulir Asokan from this group?").is_ok());
+    let _ = app.update(UiMessage::RemoveMember(id.clone(), "@tulir:beeper.com".into()));
+    assert!(tall(app.view_info()).find("Tulir Asokan").is_err());
+}
+
+#[test]
 fn chat_info_media_like_desktop() {
     let mut app = demo_app("chat-info-media");
     let _ = app.update(UiMessage::SelectChat("!sg_security:beeper.com".into()));
@@ -2271,7 +2304,7 @@ fn chat_info_bookmarks_like_desktop() {
         sim.into_messages().collect()
     };
     assert!(matches!(&msgs[..], [UiMessage::JumpTo(c, m)] if *c == id && *m == mid));
-    let menu = info_menu(&app.store.read(), &format!("bookmark:{id} {mid}"));
+    let menu = info_menu(&app.store.read(), &format!("bookmark:{id} {mid}"), |_| true);
     let labels: Vec<_> = menu.iter().map(|i| i.as_ref().map(|i| i.0.as_str())).collect();
     assert_eq!(labels, [Some("Jump to Message"), None, Some("Remove Bookmark")]);
     let _ = app.update(UiMessage::OpenChatMenu(format!("bookmark:{id} {mid}")));

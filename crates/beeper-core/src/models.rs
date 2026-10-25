@@ -238,7 +238,15 @@ pub struct User {
     pub is_network_bot: Option<bool>,
     #[serde(rename = "isAdmin", skip_serializing_if = "Option::is_none")]
     pub is_admin: Option<bool>,
+    /// The `MANAGE_` bits: what the power level of the own user allows on this member.
+    #[serde(default, skip_serializing)]
+    pub manage: u8,
 }
+
+/// Desktop's `participantsCurrentUserCanKick`.
+pub const MANAGE_KICK: u8 = 1;
+/// Desktop's `participantsCurrentUserCanChangePowerLevels`.
+pub const MANAGE_ROLE: u8 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
