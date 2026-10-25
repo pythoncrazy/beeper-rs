@@ -35,7 +35,7 @@ impl Flags {
             "features": { "*": {
                 "undo-send": false, "stealth-mode": false, "remind-later": false, "scheduled-message": true,
                 "voice-transcription": false, "ai-in-beeper-chats": false, "enable-polls": true,
-                "labels-v2": false, "android-inbox-rewrite": true,
+                "labels-v2": false, "android-inbox-rewrite": true, "enable-disappearing-message-timer-config": true,
             } },
             "freebies": [
                 { "name": "voice-transcription", "type": "count", "default_limit": 5 },
@@ -94,7 +94,9 @@ impl Flags {
             "stealth-mode" => with_free(self.flag(key), "incognito"),
             "remind-later" | "voice-transcription" => with_free(self.flag(key), key),
             "talk-to-type" => self.flag("voice-transcription"),
-            "undo-send" | "ai-in-beeper-chats" | "enable-polls" => self.flag(key),
+            "undo-send" | "ai-in-beeper-chats" | "enable-polls" | "enable-disappearing-message-timer-config" => {
+                self.flag(key)
+            }
             "labels-v2" => {
                 let (on, inbox) = (self.flag(key).on, self.flag("android-inbox-rewrite").on);
                 let free = !on && self.free("labels").is_some();

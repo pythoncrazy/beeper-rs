@@ -20,6 +20,21 @@ pub const MEMBER_ACTIONS: [&str; 5] = ["ban", "invite", "kick", "leave", "revoke
 pub const ALL_MEMBER_ACTIONS: u8 = 31;
 pub const MEMBER_LEAVE: u8 = 1 << 3;
 pub const ALL_EDITS: u8 = (1 << EDITS.len()) - 1;
+pub const DISAPPEARING_TIMER: &str = "com.beeper.disappearing_timer";
+/// Desktop's `qLt`: the disappearing timers in ms when the room features do not list them.
+pub const DEFAULT_TIMERS: [u64; 11] = [
+    10_000,
+    300_000,
+    1_800_000,
+    3_600_000,
+    14_400_000,
+    86_400_000,
+    172_800_000,
+    259_200_000,
+    604_800_000,
+    2_592_000_000,
+    31_536_000_000,
+];
 /// The `com.beeper.room_features` file kinds that Desktop checks before it opens a composer picker.
 pub const FILE_GIF: u8 = 1 << 0;
 pub const FILE_VOICE: u8 = 1 << 1;
@@ -371,8 +386,25 @@ pub struct Chat {
     /// The poll features of the network, or `None` when it has no polls.
     #[serde(default = "beeper_polls")]
     pub polls: Option<PollRules>,
+    /// Desktop's `disappearingTimer`: the `com.beeper.disappearing_timer` of new messages in ms.
+    #[serde(rename = "disappearingTimer", default, skip_serializing_if = "Option::is_none")]
+    pub disappearing: Option<u64>,
+    /// Desktop's `roomFeatures.disappearing_timer`, or `None` when the room has no disappearing messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timers: Option<Timers>,
     #[serde(skip)]
     pub flags: u16,
+}
+
+/// The disappearing timers of a room.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Timers {
+    /// The first `types` entry, which Desktop sets with a timer.
+    pub kind: String,
+    /// The timers in ms, without Off.
+    pub timers: Vec<u64>,
+    /// Desktop's `canChangeTimer`: the room supports the state event and the power level allows it.
+    pub can_set: bool,
 }
 
 fn all_edits() -> u8 {
