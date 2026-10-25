@@ -7,8 +7,8 @@ use crate::{
 use crate::{ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_MARK_ALL_READ};
 use beeper_core::matrix::ChatFlag;
 use beeper_core::models::{
-    AccountProps, Chat, Message, ThemeChoice, User, CHAT_UNREAD, MANAGE_KICK, MANAGE_ROLE, MEMBER_INVITE, MEMBER_KICK,
-    MEMBER_LEAVE,
+    AccountProps, Chat, Message, MessageRules, ThemeChoice, User, CHAT_UNREAD, MANAGE_KICK, MANAGE_ROLE, MEMBER_INVITE,
+    MEMBER_KICK, MEMBER_LEAVE,
 };
 use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
@@ -388,11 +388,21 @@ impl BeeperGuiApp {
         if !picked.is_empty() {
             let e = if picked.len() == 1 { tr("Message") } else { tr("Messages") };
             let live = picked.iter().all(|m| m.is_deleted != Some(true));
+            let rules = chat.expect("a chat of the picked messages").messages;
             if let [m] = picked[..] {
-                if live && m.is_sender == Some(true) {
-                    let edit = cmd(e, trx("Edit", "message command"), hot("Message: Edit"));
-                    v.push(edit.hotkey("Message: Edit"));
+                if crate::editable(m, rules) {
+                    let edit = crate::edit_open(m, rules).then(|| UiMessage::RunHotkey("Message: Edit"));
+                    v.push(cmd(e, trx("Edit", "message command"), edit).hotkey("Message: Edit"));
                 }
+            }
+            let mine: Vec<&Message> = picked.iter().copied().filter(|m| m.is_sender == Some(true)).collect();
+            if rules.delete && live && !mine.is_empty() {
+                let young = mine.iter().all(|m| MessageRules::young(rules.delete_max_age, &m.timestamp));
+                let ask = UiMessage::AskDeleteMessage(mine.iter().map(|m| m.id.clone()).collect());
+                v.push(cmd(e, tr("Delete for everyone"), young.then_some(ask)).keys(&["unsend"]));
+            } else if !rules.delete && !rules.delete_for_me {
+                let name = crate::network_name(&picked[0].account_id);
+                v.push(cmd(e, trf("Delete message is not supported for %s yet", &[&name]), None));
             }
             if live {
                 v.push(cmd(e, tr("Forward"), hot("Message: Forward")).hotkey("Message: Forward"));
@@ -417,7 +427,7 @@ impl BeeperGuiApp {
             };
             v.extend(open.map(|open| cmd(e, tr("Open link"), Some(open))));
             v.push(cmd(e, tr("Unselect"), Some(UiMessage::SelectMessages(Vec::new()))));
-            if let [m] = picked[..] {
+            if let ([m], true) = (&picked[..], rules.reply && live) {
                 let reply = cmd(e, trx("Reply", "message command"), Some(UiMessage::StartReply(m.id.clone())));
                 v.push(reply.hotkey("Message: Quote & Reply"));
             }

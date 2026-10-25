@@ -415,6 +415,9 @@ pub struct Chat {
     /// The poll features of the network, or `None` when it has no polls.
     #[serde(default = "beeper_polls")]
     pub polls: Option<PollRules>,
+    /// The edit, delete, reaction and reply features of the network.
+    #[serde(default = "beeper_messages")]
+    pub messages: MessageRules,
     /// Desktop's `disappearingTimer`: the `com.beeper.disappearing_timer` of new messages in ms.
     #[serde(rename = "disappearingTimer", default, skip_serializing_if = "Option::is_none")]
     pub disappearing: Option<u64>,
@@ -480,6 +483,50 @@ impl PollRules {
     pub fn room(self, n: usize) -> bool {
         self.max_options == 0 || n < usize::from(self.max_options)
     }
+}
+
+/// The message features of `com.beeper.room_features`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageRules {
+    /// `edit` is at least partly supported.
+    pub edit: bool,
+    /// `edit_max_age` in seconds.
+    pub edit_max_age: Option<u64>,
+    /// `delete` is fully supported.
+    pub delete: bool,
+    /// `delete_max_age` in seconds.
+    pub delete_max_age: Option<u64>,
+    /// `delete_for_me`.
+    pub delete_for_me: bool,
+    /// `reaction` is at least partly supported.
+    pub react: bool,
+    /// `reply` is at least partly supported.
+    pub reply: bool,
+}
+
+impl MessageRules {
+    /// Desktop's `Xk`: a message sent at `timestamp` is younger than `max_age`.
+    pub fn young(max_age: Option<u64>, timestamp: &str) -> bool {
+        max_age.is_none_or(|s| {
+            let sent = crate::config::millis_from_rfc3339(timestamp).expect("RFC 3339 message");
+            crate::config::now_unix_millis() - sent < s as i64 * 1000
+        })
+    }
+}
+
+/// Desktop's message features of a Beeper room.
+pub const BEEPER_MESSAGES: MessageRules = MessageRules {
+    edit: true,
+    edit_max_age: None,
+    delete: true,
+    delete_max_age: None,
+    delete_for_me: false,
+    react: true,
+    reply: true,
+};
+
+fn beeper_messages() -> MessageRules {
+    BEEPER_MESSAGES
 }
 
 /// Desktop's poll features of a Beeper room.

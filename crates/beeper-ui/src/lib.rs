@@ -497,7 +497,8 @@ pub enum UiMessage {
     /// Save the attachments of a message, or only one of them, to the downloads folder.
     Download(String, Option<usize>),
     Downloaded(Result<String, String>),
-    AskDeleteMessage(String),
+    /// Desktop's Delete for Everyone confirmation of your messages.
+    AskDeleteMessage(Vec<String>),
     ArchiveStale,
     /// Archives the inbox chats, or only the read ones, with no activity in the days, after Desktop's confirmation.
     ArchiveAll(bool, i64),
@@ -1762,8 +1763,14 @@ fn preview_message<'s>(st: &'s BeeperStore, c: &'s Chat) -> Option<&'s Message> 
 }
 
 /// Desktop's `canStartEditMessage` for text: an own message that is not a poll.
-fn editable(m: &Message) -> bool {
-    m.is_sender == Some(true) && m.poll.is_none()
+/// Desktop's `canStartEditMessage` for a message of a chat with `rules`.
+fn editable(m: &Message, rules: MessageRules) -> bool {
+    m.is_sender == Some(true) && m.poll.is_none() && rules.edit
+}
+
+/// Desktop's `canEditMessage`: the edit window of the network is still open.
+fn edit_open(m: &Message, rules: MessageRules) -> bool {
+    m.is_deleted != Some(true) && MessageRules::young(rules.edit_max_age, &m.timestamp)
 }
 
 /// The text of a chat list preview, or a label for its links.
@@ -4221,14 +4228,21 @@ impl BeeperGuiApp {
         }
     }
 
+    /// The message features of the chat of `m`.
+    fn rules(&self, m: &Message) -> MessageRules {
+        let st = self.store.read();
+        st.chats[st.chat_idx_by_id[&m.chat_id]].messages
+    }
+
     /// The newest message you can edit in the open chat.
     fn last_own_message(&self) -> Option<Message> {
         let st = self.store.read();
-        let all = &st.chat_msg_indices[self.pane().selected_chat_id.as_deref().expect("an open chat")];
-        let own = all
+        let id = self.pane().selected_chat_id.as_deref().expect("an open chat");
+        let rules = st.chats[st.chat_idx_by_id[id]].messages;
+        let own = st.chat_msg_indices[id]
             .iter()
             .map(|&i| &st.messages[i])
-            .rfind(|m| editable(m) && m.is_deleted != Some(true) && m.attachments.is_empty());
+            .rfind(|m| editable(m, rules) && edit_open(m, rules) && m.attachments.is_empty());
         own.cloned()
     }
 
@@ -4625,7 +4639,8 @@ impl BeeperGuiApp {
                 .filter(|_| self.selected_message().is_some_and(|m| !m.attachments.is_empty()))
                 .map(|m| UiMessage::Download(m, None)),
             "Message: Edit" => {
-                let edit = self.selected_message().filter(editable);
+                let edit =
+                    self.selected_message().filter(|m| editable(m, self.rules(m)) && edit_open(m, self.rules(m)));
                 let m = edit.or_else(|| self.last_own_message()).filter(|_| chat.is_some());
                 m.map(|m| {
                     self.pane.selected_msgs = vec![m.id.clone()];
@@ -4655,7 +4670,8 @@ impl BeeperGuiApp {
             "Message: Quote or Edit Selected Message" => {
                 let empty = self.pane.composer.text().is_empty();
                 self.selected_message().and_then(|m| match m.is_sender == Some(true) {
-                    true => (empty && editable(&m)).then(|| UiMessage::StartEdit(m.id, m.text.unwrap_or_default())),
+                    true => (empty && editable(&m, self.rules(&m)) && edit_open(&m, self.rules(&m)))
+                        .then(|| UiMessage::StartEdit(m.id, m.text.unwrap_or_default())),
                     false => Some(UiMessage::StartReply(m.id)),
                 })
             }
@@ -5877,8 +5893,8 @@ impl BeeperGuiApp {
                     Err(e) => trf("Download failed: %s", &[&e]),
                 }
             }
-            UiMessage::AskDeleteMessage(mid) => {
-                (self.confirm, self.delete_target) = (Some(ASK_DELETE_MESSAGE), Some(mid))
+            UiMessage::AskDeleteMessage(mids) => {
+                (self.confirm, self.delete_target) = (Some(ASK_DELETE_MESSAGE), Some(mids.join(" ")))
             }
             UiMessage::ToggleCommandPalette => {
                 if !self.show_command_palette {
@@ -8590,6 +8606,7 @@ impl BeeperGuiApp {
             .into(),
         };
         let chat = &st.chats[st.chat_idx_by_id[&cid]];
+        let (rules, live) = (chat.messages, m.is_deleted != Some(true));
         let others = chat.participants.items.iter().filter(|u| u.is_self != Some(true)).count();
         let sender = chat.participants.items.iter().any(|u| u.id == m.sender_id);
         let privately =
@@ -8617,13 +8634,16 @@ impl BeeperGuiApp {
                 let load = UiMessage::ResolveMedia(m.account_id.clone(), mid.clone(), raw.clone());
                 vec![item(label.into(), "", (state != Some(&true)).then_some(load)), rule()]
             }),
-            (editable(m) && !text.is_empty())
-                .then(|| vec![item(tr("Edit…").into(), "Ctrl T", Some(UiMessage::StartEdit(mid.clone(), text)))]),
-            Some(vec![item(tr("Reply…").into(), "Ctrl R", Some(UiMessage::StartReply(mid.clone())))]),
+            (editable(m, rules) && !text.is_empty()).then(|| {
+                let edit = edit_open(m, rules).then(|| UiMessage::StartEdit(mid.clone(), text));
+                vec![item(tr("Edit…").into(), "Ctrl T", edit)]
+            }),
+            (rules.reply && live)
+                .then(|| vec![item(tr("Reply…").into(), "Ctrl R", Some(UiMessage::StartReply(mid.clone())))]),
             privately
                 .then(|| vec![item(tr("Reply Privately…").into(), "", Some(UiMessage::ReplyPrivately(mid.clone())))]),
             Some(vec![
-                item(tr("React…").into(), "", Some(UiMessage::React(mid.clone()))),
+                item(tr("React…").into(), "", (rules.react && live).then(|| UiMessage::React(mid.clone()))),
                 item(bookmark.into(), "", Some(UiMessage::ToggleBookmark(mid.clone()))),
             ]),
             (m.is_unread != Some(true) && m.account_id != "hungryserv").then(|| {
@@ -8646,8 +8666,10 @@ impl BeeperGuiApp {
                 ]);
                 vec![item(tr("Jump to Message").into(), "", Some(jump))]
             }),
-            mine.then(|| {
-                vec![item(tr("Delete for Everyone…").into(), "", Some(UiMessage::AskDeleteMessage(mid.clone())))]
+            (mine && rules.delete && live).then(|| {
+                let delete = MessageRules::young(rules.delete_max_age, &m.timestamp)
+                    .then(|| UiMessage::AskDeleteMessage(vec![mid.clone()]));
+                vec![rule(), item(tr("Delete for Everyone…").into(), "", delete)]
             }),
             Some(vec![
                 rule(),
@@ -11039,10 +11061,13 @@ impl BeeperGuiApp {
                 };
                 button(container(ic(c, 20.0)).center(32)).padding(0).style(style).on_press(msg).into()
             };
-            let reply = b(icon::REPLY, UiMessage::StartReply(m.id.clone()));
-            let react = mouse_area(b(icon::SMILE, UiMessage::React(m.id.clone())))
-                .on_enter(UiMessage::ShowQuickReactions)
-                .into();
+            let live = m.is_deleted != Some(true);
+            let reply = (chat.messages.reply && live).then(|| b(icon::REPLY, UiMessage::StartReply(m.id.clone())));
+            let react = (chat.messages.react && live).then(|| {
+                mouse_area(b(icon::SMILE, UiMessage::React(m.id.clone())))
+                    .on_enter(UiMessage::ShowQuickReactions)
+                    .into()
+            });
             let quick =
                 (self.quick_open && st.settings.on("quickReactions")).then(|| crate::emoji::quick_reactions(st));
             let quick = quick.into_iter().flatten().map(|e| -> El<'a> {
@@ -11054,7 +11079,7 @@ impl BeeperGuiApp {
                     .on_press(msg)
                     .into()
             });
-            let all: Vec<El<'a>> = [reply, react].into_iter().chain(quick).collect();
+            let all: Vec<El<'a>> = [reply, react].into_iter().flatten().chain(quick).collect();
             match mine {
                 true => Row::with_children(all.into_iter().rev()),
                 false => Row::with_children(all),
@@ -13807,11 +13832,18 @@ impl BeeperGuiApp {
                 (tr("Delete Label").into(), body, vec![(tr("Delete"), UiMessage::DeleteLabel(id))])
             }
             ASK_DELETE_MESSAGE => {
-                let mid = self.delete_target.clone().expect("a message to delete");
                 let st = self.store.read();
-                let cid = st.messages[st.msg_idx_by_id[&mid]].chat_id.clone();
-                let delete = vec![(tr("Delete"), UiMessage::DeleteMessage(cid, mid))];
-                (tr("Delete message").into(), tr("Are you sure you want to delete this message?").into(), delete)
+                let mids: Vec<&str> = self.delete_target.as_deref().expect("messages to delete").split(' ').collect();
+                let n = mids.len();
+                let delete = mids.iter().map(|&mid| {
+                    UiMessage::DeleteMessage(st.messages[st.msg_idx_by_id[mid]].chat_id.clone(), mid.into())
+                });
+                let body = match n {
+                    1 => tr("Are you sure you want to delete this message?").into(),
+                    _ => trf("Are you sure you want to delete %s?", &[&trn("%d message", "%d messages", n, &[&n])]),
+                };
+                let delete = vec![(tr("Delete"), UiMessage::Commands(delete.collect()))];
+                (trn("Delete message", "Delete messages", n, &[]), body, delete)
             }
             d @ (ASK_ARCHIVE_READ | ASK_ARCHIVE_ALL) => {
                 let read = d == ASK_ARCHIVE_READ;
