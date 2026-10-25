@@ -341,6 +341,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             (u8::from(f["delete_chat"] == true) * DELETE_FOR_ME)
                 | (u8::from(f["delete_chat_for_everyone"] == true) * DELETE_FOR_EVERYONE)
         }),
+        can_accept_request: features.as_ref().is_some_and(|f| f["message_request"]["accept_with_button"] == 2),
         edits: edit_bits(features.as_ref(), &levels, me.as_str()),
         member_actions,
         formatting: features.as_ref().map_or(ALL_FORMATS, |f| {
@@ -1122,6 +1123,7 @@ pub enum Outgoing {
     DeleteChat {
         for_everyone: bool,
     },
+    AcceptRequest,
     /// Send the content of `event` from the `from` chat again, with the current `text` and `html`.
     Forward {
         txn: String,
@@ -1315,6 +1317,9 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             });
             let raw = Raw::from_json(serde_json::value::to_raw_value(&v).expect("reminder JSON"));
             room.set_account_data_raw(REMINDER.into(), raw).await.map_err(e)?;
+        }
+        Outgoing::AcceptRequest => {
+            room.send_raw("com.beeper.accept_message_request", serde_json::json!({})).await.map_err(e)?;
         }
         Outgoing::DeleteChat { for_everyone } => {
             let content = serde_json::json!({ "delete_for_everyone": for_everyone });

@@ -420,6 +420,7 @@ pub enum UiMessage {
     EndPoll(String, String),
     CopyChatLink(String),
     OpenChatMenu(String),
+    AcceptRequest(String),
     /// Desktop's Select Chats: toggles chat selection mode.
     ToggleSelectMode,
     /// Closes the chat menu over the command bar, which stays open.
@@ -2392,11 +2393,11 @@ fn handle(u: &User) -> Option<String> {
     u.username.as_ref().map(|n| if n.starts_with('@') { n.clone() } else { format!("@{n}") })
 }
 
-/// The Chat Info context menus: the identity header, the title, a member, a bookmark and a contact detail.
 /// Desktop's user card: its width, the part of its 88 px avatar inside the card, and its height with buttons.
 const CARD_W: f32 = 200.0;
 const CARD_FACE_IN: f32 = 88.0 / 3.0;
 const CARD_H: f32 = 88.0 + 8.0 + 18.0 + 15.0 + 8.0 + 28.0 + 8.0;
+/// The Chat Info context menus: the identity header, the title, a member, a bookmark and a contact detail.
 const INFO_MENUS: [&str; 5] = ["info:", "copy:", "member:", "bookmark:", "contact:"];
 
 /// The Chat Info menus. The header menus of Desktop's `$fe`: `info:<chat>` has the edit actions and
@@ -2507,6 +2508,12 @@ fn more_menu(st: &BeeperStore) -> Vec<Option<(String, UiMessage)>> {
     items.push(Some((tr("Edit Spaces…").into(), UiMessage::OpenEditSpaces)));
     items.push(Some((tr("Add/Remove Accounts…").into(), UiMessage::OpenSettings(SettingsTab::Accounts))));
     items
+}
+
+/// Desktop's `canAcceptRequest` and `canDeclineRequest` of a message request chat.
+fn request_answers(c: &Chat) -> (bool, bool) {
+    let request = c.is_request == Some(true);
+    (request && c.can_accept_request, request && c.delete_modes & DELETE_FOR_ME != 0)
 }
 
 /// The account of an account or network space.
@@ -6257,7 +6264,13 @@ impl BeeperGuiApp {
                 self.store.write().leave_room(&id);
                 return self.update(UiMessage::StoreChanged);
             }
+            UiMessage::AcceptRequest(id) => {
+                self.chat_menu = None;
+                self.store.write().accept_request(&id);
+                return self.update(UiMessage::StoreChanged);
+            }
             UiMessage::DeleteChat(id, everyone) => {
+                self.chat_menu = None;
                 self.confirm = None;
                 self.store.write().delete_chat(&id, everyone);
                 return self.update(UiMessage::StoreChanged);
@@ -7883,6 +7896,10 @@ impl BeeperGuiApp {
                             MENU_ITEM
                         } else {
                             0.0
+                        }
+                        + match st.resolve_chat_idx(cid).map(|i| request_answers(&st.chats[i])) {
+                            Some((false, false)) | None => 0.0,
+                            Some((a, d)) => f32::from(u8::from(a) + u8::from(d)) * MENU_ITEM + 11.0,
                         },
                 )
             };
@@ -9135,9 +9152,23 @@ impl BeeperGuiApp {
             if n == 0 { flag(ChatFlag::LowPriority) } else { set(ChatFlag::LowPriority, !low) },
         );
         let heading = (n > 1).then(|| item(&trn("%d chat selected", "%d chats selected", n, &[&n]), "", None));
+        let (accept, decline) = request_answers(c);
+        let group = c.chat_type == "group";
+        let accept = accept.then(|| {
+            let label = tr(pick(group, "Accept group invitation", "Accept message request"));
+            item(label, "", Some(UiMessage::AcceptRequest(c.id.clone())))
+        });
+        let decline = decline.then(|| {
+            let label = tr(pick(group, "Decline group invitation", "Decline message request"));
+            item(label, "", Some(UiMessage::DeleteChat(c.id.clone(), false)))
+        });
+        let answered = (accept.is_some() || decline.is_some()).then(|| menu_rule(p));
         let col = column![
             close_sub(
                 column![]
+                    .push(accept)
+                    .push(decline)
+                    .push(answered)
                     .push(heading)
                     .push(archive)
                     .push(mute)
@@ -10241,6 +10272,38 @@ impl BeeperGuiApp {
         mouse_area(sidebar).on_right_press(UiMessage::OpenChatMenu(SIDEBAR_MENU.into())).into()
     }
 
+    /// Desktop's message request box (`T2t`) under the messages, with its Decline and Accept buttons.
+    fn view_request<'a>(&self, chat: &Chat) -> Option<El<'a>> {
+        if chat.is_request != Some(true) {
+            return None;
+        }
+        let p = &self.pal;
+        let (accept, decline) = request_answers(chat);
+        let group = chat.chat_type == "group";
+        let inviter = chat.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| !group).map(|u| {
+            let id = handle(u).or_else(|| u.phone_number.as_deref().map(fmt_phone)).or_else(|| u.email.clone());
+            id.map_or_else(|| member_name(u), |id| format!("{} ({id})", member_name(u)))
+        });
+        let heading = match inviter {
+            _ if group => tr("Accept group invitation for \"__CHAT_TITLE__\"?").replace("__CHAT_TITLE__", &chat.title),
+            Some(who) => tr("Accept message request from __INVITER__?").replace("__INVITER__", &who),
+            None => tr("Accept message request?").into(),
+        };
+        let pill = |label: &str, fg: Color, msg| {
+            let label = semi(label.to_string(), 12.0).line_height(Pixels(15.0));
+            button(label).padding([4, 8]).style(btn_style([p.card; 3], [fg; 3], 100.0)).on_press(msg)
+        };
+        let id = &chat.id;
+        let buttons = row![]
+            .push(decline.then(|| pill(tr("Decline"), hex(0xdc362e), UiMessage::DeleteChat(id.clone(), false))))
+            .push(accept.then(|| pill(tr("Accept"), p.strong, UiMessage::AcceptRequest(id.clone()))))
+            .spacing(8);
+        let heading = txt(heading, 13.0).line_height(Pixels(16.0)).color(p.strong).width(Fill).align_x(Center);
+        let body = column![heading, buttons].spacing(8).align_x(Center);
+        let body = container(body).padding(12).width(Fill).max_width(388).style(fill_box(p.chip, 8.0));
+        Some(container(body).padding([0, 8]).center_x(Fill).into())
+    }
+
     /// Desktop's `IncognitoMarkAsRead`: a link below an unread chat that incognito mode keeps unread.
     fn incognito_mark_read<'a>(&self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
         let unread = chat.unread_count > 0 || chat.is_marked_unread == Some(true);
@@ -10271,6 +10334,7 @@ impl BeeperGuiApp {
         let col = col.push(st.typing.get(cid).map(|ids| self.typing_bubble(chat, ids)));
         let col = col.push(self.incognito_mark_read(&st, chat));
         let col = col.push(self.view_scheduled(&st, chat));
+        let col = col.push(self.view_request(chat));
         // Desktop's `messages-list` keeps the messages at the bottom when they do not fill the view.
         let scroller = |col| {
             let col = container(col).align_y(Bottom);

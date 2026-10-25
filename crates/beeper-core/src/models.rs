@@ -397,6 +397,9 @@ pub struct Chat {
     pub img_url: Option<String>,
     #[serde(rename = "deleteModes", default)]
     pub delete_modes: u8,
+    /// Whether the bridge accepts a message request with a button (`message_request.accept_with_button`).
+    #[serde(rename = "canAcceptRequest", default)]
+    pub can_accept_request: bool,
     /// The `EDITS` that the user can send, one bit each.
     #[serde(default = "all_edits")]
     pub edits: u8,

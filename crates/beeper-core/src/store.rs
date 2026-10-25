@@ -866,6 +866,7 @@ impl BeeperStore {
             network_id: None,
             img_url: None,
             delete_modes: 0,
+            can_accept_request: false,
             edits: 0,
             member_actions: 0,
             formatting: ALL_FORMATS,
@@ -943,6 +944,15 @@ impl BeeperStore {
         let id = self.chats[idx].id.clone();
         self.queue(&id, Outgoing::Flag(flag, value));
         true
+    }
+
+    /// Accepts a message request here at once and asks the bridge to accept it, like Desktop.
+    pub fn accept_request(&mut self, id: &str) {
+        let idx = self.chat_idx_by_id[id];
+        let c = &self.chats[idx];
+        assert!(c.is_request == Some(true) && c.can_accept_request, "{id} is not a request that can be accepted");
+        self.update_chat(idx, |c| c.is_request = Some(false));
+        self.queue(id, Outgoing::AcceptRequest);
     }
 
     /// Sets or dismisses a chat reminder here and on the homeserver.
@@ -1448,6 +1458,7 @@ impl BeeperStore {
             img_url: None,
             participants: ChatParticipants { has_more: false, total: items.len(), items },
             delete_modes: 0,
+            can_accept_request: false,
             edits: 0,
             member_actions: 0,
             formatting: ALL_FORMATS,
