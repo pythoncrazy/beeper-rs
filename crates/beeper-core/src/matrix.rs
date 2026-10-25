@@ -304,6 +304,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             })
         }),
         chat_theme: None,
+        note: None,
         notifiable: None,
         delete_modes: features.as_ref().map_or(0, |f| {
             (u8::from(f["delete_chat"] == true) * DELETE_FOR_ME)

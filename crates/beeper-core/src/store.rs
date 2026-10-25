@@ -848,6 +848,7 @@ impl BeeperStore {
             preview: None,
             reminder: None,
             chat_theme: None,
+            note: None,
             notifiable: None,
             is_hidden_from_inbox: None,
             is_request: None,
@@ -1162,6 +1163,7 @@ impl BeeperStore {
                 merged_into_chat_id: c.merged_into_chat_id.take(),
                 preview: c.preview.take(),
                 chat_theme: c.chat_theme.take(),
+                note: c.note.take(),
                 notifiable: c.notifiable.take(),
                 ..chat
             }
@@ -1372,6 +1374,7 @@ impl BeeperStore {
             preview: None,
             reminder: None,
             chat_theme: None,
+            note: None,
             notifiable: None,
             is_hidden_from_inbox: None,
             is_request: None,
