@@ -13033,12 +13033,16 @@ impl BeeperGuiApp {
         let carousel = self.carousel.as_ref().filter(|c| c.in_media).map(|c| self.view_carousel(c));
         let ask = w.deleting.as_ref().map(|(pairs, _)| {
             let n = pairs.len();
-            let (title, body) = match n {
-                1 => {
-                    (tr("Delete message").to_string(), tr("Are you sure you want to delete this message?").to_string())
-                }
-                _ => ("Delete messages".to_string(), format!("Are you sure you want to delete {n} messages?")),
+            let body = match n {
+                1 => tr("Are you sure you want to delete this message?").to_string(),
+                _ => trn(
+                    "Are you sure you want to delete %d message?",
+                    "Are you sure you want to delete %d messages?",
+                    n,
+                    &[&n],
+                ),
             };
+            let title = trn("Delete message", "Delete messages", n, &[]);
             self.dialog(
                 title,
                 body,

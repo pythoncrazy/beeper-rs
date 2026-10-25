@@ -98,6 +98,7 @@
 "Archived":["アーカイブ化"],
 "Archived %d chat":["%d件のチャットをアーカイブしました"],
 "Are you sure you want to delete \"%s\"? This will remove the label from all chats.":["「%s」を削除してもよいですか ? すべてのチャットからラベルが削除されます。"],
+"Are you sure you want to delete %d message?":["%d件のメッセージを削除してもよいですか ?"],
 "Are you sure you want to delete %s?":["%s を削除してもよいですか ?"],
 "Are you sure you want to delete this message?":["このメッセージを削除してもよいですか ?"],
 "Are you sure you want to leave %s?":["%s から退出してもよいですか？"],
