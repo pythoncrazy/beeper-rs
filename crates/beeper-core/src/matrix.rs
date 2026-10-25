@@ -1,10 +1,11 @@
 use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
-    Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder, EditHistoryEntry, Label,
-    Message, MessageLink, PollData, PollOption, PollRules, Reaction, Timers, User, VerificationSas,
-    VerificationSasEmoji, VerificationState, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_POLLS, DEFAULT_TIMERS,
-    DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE, FORMATS, MEMBER_ACTIONS,
+    timer_distance, Attachment, AttachmentSize, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder,
+    EditHistoryEntry, Label, Message, MessageLink, PollData, PollOption, PollRules, Reaction, Timers, User,
+    VerificationSas, VerificationSasEmoji, VerificationState, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_POLLS,
+    DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE, FORMATS,
+    MEMBER_ACTIONS,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -479,6 +480,14 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         "org.matrix.msc3381.poll.end" | "m.poll.end" => return Some(Op::EndPoll(s(&rel["event_id"])?)),
         _ if poll.is_some() => (poll.as_ref().map(|p| p.question.clone()), Vec::new(), "POLL"),
         "m.room.member" => membership(room, e).await.map(|t| (Some(t), Vec::new(), "MEMBERSHIP")).or_else(hide)?,
+        DISAPPEARING_TIMER if c["com.beeper.exclude_from_timeline"] == true => hide()?,
+        DISAPPEARING_TIMER => {
+            let text = match c["timer"].as_u64().unwrap_or(0) {
+                0 => "Disappearing messages turned off".into(),
+                t => format!("New messages set to disappear after {}", timer_distance(t)),
+            };
+            (Some(text), Vec::new(), "DISAPPEARING_TIMER")
+        }
         k => content(k, c).or_else(hide)?,
     };
     let profile_name = s(&c["com.beeper.per_message_profile"]["displayname"]);
@@ -517,6 +526,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         is_edited: None,
         links: links(c),
         seen: Default::default(),
+        timer: (message_type == "DISAPPEARING_TIMER").then(|| c["timer"].as_u64().unwrap_or(0)),
         flags: 0,
     });
     match reaction {

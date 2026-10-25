@@ -1972,21 +1972,12 @@ svg_static!(COPY_ICON, include_bytes!("../assets/integrations/copy.svg"));
 svg_static!(COPIED_ICON, include_bytes!("../assets/integrations/done.svg"));
 svg_static!(ADD_ICON, include_bytes!("../assets/integrations/add.svg"));
 
-/// Desktop's `KJ`: date-fns `formatDistanceStrict` in English, or "Off".
+/// Desktop's `KJ`: the timer, or "Off".
 fn timer_label(ms: u64) -> String {
-    let n = |v: f64, unit: &str| {
-        let v = v.round() as u64;
-        format!("{v} {unit}{}", if v == 1 { "" } else { "s" })
-    };
-    let m = ms as f64 / 60_000.0;
-    match m {
-        _ if ms == 0 => trx("Off", "disappearing messages timer option").into(),
-        _ if m < 1.0 => n(ms as f64 / 1000.0, "second"),
-        _ if m < 60.0 => n(m, "minute"),
-        _ if m < 1440.0 => n(m / 60.0, "hour"),
-        _ if m < 43_200.0 => n(m / 1440.0, "day"),
-        _ if m < 525_600.0 => n(m / 43_200.0, "month"),
-        _ => n(m / 525_600.0, "year"),
+    if ms == 0 {
+        trx("Off", "disappearing messages timer option").into()
+    } else {
+        timer_distance(ms)
     }
 }
 
@@ -10055,6 +10046,15 @@ impl BeeperGuiApp {
             if Some(i) == first_unread {
                 head = head.push(self.unread_divider(st));
             }
+            if let Some(timer) = m.timer {
+                let next =
+                    msgs.get(i + 1).filter(|n| n.timer.is_some() && day_num(&n.timestamp) == day_num(&m.timestamp));
+                if next.is_none_or(|n| n.sender_id != m.sender_id) {
+                    col = col.push(head.push(self.timer_notice(st, chat, m, timer, next.is_none())));
+                }
+                prev = Some(m);
+                continue;
+            }
             if membership(m) {
                 let s = run_start[i];
                 let size = run_start[s..].iter().take_while(|&&r| r == s).count();
@@ -11233,6 +11233,35 @@ impl BeeperGuiApp {
         container(container(column![pane_head, scroll, toolbar]).width(300).height(Fill).style(fill_box(p.card, 10.0)))
             .padding(Padding::new(8.0).left(0.0))
             .into()
+    }
+
+    /// Desktop's `u2t`: a disappearing timer change between two rules, with "Change Setting" on the last one.
+    fn timer_notice<'a>(&'a self, st: &BeeperStore, chat: &Chat, m: &Message, timer: u64, last: bool) -> El<'a> {
+        let p = &self.pal;
+        let who = match st.is_me(&m.sender_id) {
+            true => tr("You").to_string(),
+            false => chat
+                .participants
+                .items
+                .iter()
+                .find(|u| u.id == m.sender_id)
+                .map_or_else(|| tr("Someone").to_string(), member_name),
+        };
+        let text = match timer {
+            0 => trf("%s turned off disappearing messages.", &[&who]),
+            t => trf("%1$s set new messages to disappear after %2$s.", &[&who, &timer_distance(t)]),
+        };
+        let small = |s: String, c: Color| semi(s, 11.0).line_height(Pixels(14.0)).color(c);
+        let change = last.then(|| {
+            button(small(tr("Change Setting").into(), p.accent))
+                .padding(Padding::ZERO.left(4.0))
+                .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                .on_press(UiMessage::ToggleRightPanel)
+        });
+        let rule = || container(Space::new()).width(Fill).height(1).style(fill_box(p.outline, 0.0));
+        let line = row![small(text, p.on_secondary).align_x(Center)].push(change).align_y(Center);
+        let line = row![rule(), container(line).max_width(400), rule()].spacing(10).align_y(Center);
+        container(line).padding(Padding::ZERO.bottom(6.0).left(GUTTER)).into()
     }
 
     /// Desktop's `YNt` Members section of a group, with its first six members and a search above more than six.

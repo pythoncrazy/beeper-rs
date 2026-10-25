@@ -2192,6 +2192,39 @@ fn chat_info_disappearing_messages_like_desktop() {
 }
 
 #[test]
+fn disappearing_timer_changes_in_the_timeline_like_desktop() {
+    let mut app = demo_app("timer-notice");
+    let id = "!tg_rust:beeper.com".to_string();
+    {
+        let mut st = app.store.write();
+        let last = st.chat_msg_indices[&id].last().map(|&i| st.messages[i].clone()).expect("a message");
+        let me = st.chats[st.chat_idx_by_id[&id]].participants.items.iter().find(|u| u.is_self == Some(true));
+        let me = me.expect("the user").id.clone();
+        for (n, (sender, timer)) in
+            [(me.as_str(), 3_600_000), (me.as_str(), 604_800_000), ("@tulir:beeper.com", 0)].into_iter().enumerate()
+        {
+            st.upsert_message(Message {
+                id: format!("timer_{n}"),
+                sender_id: sender.into(),
+                sort_key: beeper_core::store::sort_key(
+                    last.sort_key.parse::<i64>().expect("a sort key") + 1 + n as i64,
+                ),
+                message_type: Some("DISAPPEARING_TIMER".into()),
+                timer: Some(timer),
+                ..last.clone()
+            });
+        }
+    }
+    let _ = app.update(UiMessage::SelectChat(id));
+    let mut sim = tall(app.view_conversation());
+    assert!(sim.find("You set new messages to disappear after 1 hour.").is_err(), "a later change by the same sender");
+    assert!(sim.find("You set new messages to disappear after 7 days.").is_ok());
+    assert!(sim.find("Tulir Asokan turned off disappearing messages.").is_ok());
+    let _ = sim.click("Change Setting").expect("Change Setting on the last change");
+    assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::ToggleRightPanel]));
+}
+
+#[test]
 fn timer_labels_like_date_fns() {
     let labels: Vec<String> = DEFAULT_TIMERS.iter().map(|&ms| crate::timer_label(ms)).collect();
     assert_eq!(
