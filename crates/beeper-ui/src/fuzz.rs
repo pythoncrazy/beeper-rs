@@ -3588,3 +3588,68 @@ fn main_window_keeps_its_state_like_desktop() {
     let title = app.store.read().chats.iter().find(|c| c.id == beeper_core::store::NOTE_CHAT_ID).unwrap().title.clone();
     assert_eq!(app.title(main), format!("Beeper | {title}"));
 }
+
+/// A new install on the sign-in window.
+fn signed_out_app(name: &str) -> BeeperGuiApp {
+    let dir = std::env::temp_dir().join("beeper-rs-fuzz").join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    let config = CentralConfig::new(dir, "127.0.0.1".into(), 23391, None);
+    let app = BeeperGuiApp::boot(StoreLock::shared(BeeperStore::from_config(config))).0;
+    assert!(app.login_window.is_some() && app.main_window.is_none(), "a new install opens the sign-in window");
+    app
+}
+
+/// Every hotkey and tray action on the sign-in window, before and after sign-in. None panics, and Ctrl+, opens the
+/// Settings window, which Desktop draws empty before sign-in.
+#[test]
+fn hotkeys_on_the_sign_in_window_like_desktop() {
+    let combo = |keys: &str| {
+        let parts: Vec<&str> = keys.split('+').collect();
+        let mods = [("ctrl", Modifiers::CTRL), ("shift", Modifiers::SHIFT), ("alt", Modifiers::ALT)];
+        let mods = mods.into_iter().filter(|(m, _)| parts.contains(m)).fold(Modifiers::empty(), |a, (_, m)| a | m);
+        let k = match *parts.last().expect("a key") {
+            "ctrl" | "shift" | "alt" => Key::Character("1".into()),
+            "up" => Key::Named(Named::ArrowUp),
+            "down" => Key::Named(Named::ArrowDown),
+            "left" => Key::Named(Named::ArrowLeft),
+            "right" => Key::Named(Named::ArrowRight),
+            "enter" => Key::Named(Named::Enter),
+            "tab" => Key::Named(Named::Tab),
+            "escape" => Key::Named(Named::Escape),
+            c => Key::Character(c.into()),
+        };
+        (k, mods)
+    };
+    let all = prefs::HOTKEYS.iter().chain(prefs::FIXED_HOTKEYS).flat_map(|h| h.2.split(", "));
+    let keys: Vec<(Key, Modifiers)> = all.filter(|k| *k != "disabled").map(combo).collect();
+    let mut signed_out = signed_out_app("sign-in-keys");
+    let mut accounts = demo_app("sign-in-accounts");
+    (accounts.login_window, accounts.main_window, accounts.pane.selected_chat_id) = (accounts.main_window, None, None);
+    accounts.login.screen = login::Screen::Accounts;
+    for app in [&mut signed_out, &mut accounts] {
+        for (key, mods) in keys.iter().cloned() {
+            for id in [app.login_window, app.settings_window].into_iter().flatten() {
+                let _ = app.update(UiMessage::WindowKey(id, key.clone(), mods));
+            }
+        }
+        for e in [tray::Event::Up, tray::Event::Activate, tray::Event::Hide, tray::Event::Show] {
+            let _ = app.update(UiMessage::Tray(Ok(e)));
+        }
+    }
+    let about = SettingsTab::About.name();
+    let blank = signed_out.settings_window.expect("Ctrl+, opens the Settings window");
+    assert!(simulator(signed_out.view(blank)).find(about).is_err(), "Desktop draws nothing in it before sign-in");
+    let settings = accounts.settings_window.expect("Ctrl+, opens the Settings window");
+    assert!(simulator(accounts.view(settings)).find(about).is_ok(), "the Accounts screen comes after sign-in");
+}
+
+/// Each hotkey with no open chat does nothing or acts on the app, like Desktop.
+#[test]
+fn hotkeys_without_an_open_chat_like_desktop() {
+    let mut app = demo_app("no-chat-keys");
+    // The composer runs Undo Pending Send itself.
+    for (name, ..) in prefs::HOTKEYS.iter().filter(|h| h.0 != "Undo Pending Send") {
+        app.pane.selected_chat_id = None;
+        let _ = app.update(UiMessage::RunHotkey(name));
+    }
+}
