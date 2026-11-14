@@ -55,7 +55,7 @@ use beeper_core::config::{
     parse_when_millis, rfc3339_from_millis, APP_VERSION,
 };
 use beeper_core::import::has_beeper_data;
-use beeper_core::matrix::{ChatFlag, DeviceInfo, MediaInfo, Outgoing};
+use beeper_core::matrix::{ChatFlag, DeviceInfo, MediaInfo, Mention, Outgoing, ROOM_MENTION};
 use beeper_core::models::*;
 use beeper_core::platform::{current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind};
 use beeper_core::prefs;
@@ -688,7 +688,8 @@ pub enum UiMessage {
     FileDropped(window::Id, std::path::PathBuf),
     LinkPreviewLoaded(String, Result<Option<beeper_core::cloud::PagePreview>, String>),
     RemoveLinkPreview(String),
-    PickEmoji(usize),
+    /// Picks a row of the composer autocomplete.
+    PickSuggestion(usize),
     AnimationTick,
     RecoveryInputChanged(String),
     VerifyRecoveryCode,
@@ -1720,6 +1721,23 @@ pub struct PendingMedia {
     pub is_gif: bool,
     pub size: (u32, u32),
     pub frames: Frames,
+}
+
+/// A row of the composer autocomplete: an emoji and its name, or a mention label, its user ID and the member.
+pub enum Suggestion {
+    Emoji(String, &'static str),
+    Mention(String, String, Option<User>),
+}
+
+/// Desktop's `xk`: the label of a mention of `u`.
+fn mention_label(u: &User) -> String {
+    let username = u.username.as_deref().map(|n| n.strip_prefix('@').unwrap_or(n));
+    [u.full_name.as_deref(), username, u.email.as_deref(), u.phone_number.as_deref()]
+        .into_iter()
+        .flatten()
+        .find(|s| !s.is_empty())
+        .unwrap_or(&u.id)
+        .to_string()
 }
 
 /// Desktop's composer `linkPreviews` entry: a `com.beeper.linkpreviews` entry and its image when loaded.
@@ -3436,6 +3454,8 @@ pub struct Pane {
     thread_list: vlist::VList,
     /// Desktop's `stopTypingTimeout`: the chat with a typing notice, and the time of the last key.
     pub typing: Option<(String, std::time::Instant)>,
+    /// The mention pills of the composer text, which Desktop sends as `mentionedUserIDs`.
+    pub mentions: Vec<Mention>,
 }
 
 /// Desktop's `TopOfThread`, which loads older messages while the top of the timeline is on screen.
@@ -4363,6 +4383,7 @@ impl BeeperGuiApp {
         self.pane.history = History::default();
         self.pane.reply_to_message_id = None;
         self.pane.editing_message_id = None;
+        self.pane.mentions.clear();
         self.pane.selected_msgs.clear();
         self.pane.msg_anchor = None;
         (self.info_desc, self.info_more, self.info_all, self.info_bookmarks) = (None, false, false, false);
@@ -4464,35 +4485,69 @@ impl BeeperGuiApp {
         UiMessage::ToggleReaction(chat, mid, st.settings.choice("quickReactionEmoji").into())
     }
 
-    /// Desktop's emoji autocomplete for the ":" word at the end of the composer.
-    fn emoji_suggestions(&self, st: &BeeperStore) -> Vec<(String, &'static str)> {
-        let text = &self.pane().composer.text();
-        let on = st.settings.on("emojiAutocomplete") && self.pane().suggest_hidden.as_ref() != Some(text);
-        let query = text.rfind(':').filter(|_| on).map(|at| &text[at + 1..]);
-        match query.filter(|q| !q.contains(char::is_whitespace)) {
-            Some(q) => emoji::suggestions(':', q, st.skin_tone),
-            None => Vec::new(),
-        }
+    /// Desktop's composer autocomplete (`TextAreaAutocomplete`) for the "@" or ":" word before the caret: the byte
+    /// offset of the trigger, and up to 8 members (`createMentionTriggerSettings`) or the emoji.
+    fn suggestions(&self, st: &BeeperStore) -> Option<(usize, Vec<Suggestion>)> {
+        let pane = self.pane();
+        let text = pane.composer.text();
+        let before = &text[..format::offset(&text, pane.composer.cursor().position)];
+        let at = before.rfind(['@', ':', '\n']).filter(|_| pane.suggest_hidden.as_ref() != Some(&text))?;
+        let query = &before[at + 1..];
+        let picks: Vec<Suggestion> = match before.as_bytes()[at] {
+            _ if query.contains(char::is_whitespace) => return None,
+            b'@' if !query.contains('@') => {
+                let chat = &st.chats[st.resolve_chat_idx(pane.selected_chat_id.as_deref()?).expect("the open chat")];
+                let key =
+                    |u: &&User| [&u.full_name, &u.username, &u.email].map(|k| k.clone().unwrap_or_default()).to_vec();
+                let room = chat.can_mention_room && !query.is_empty() && "room".starts_with(&query.to_lowercase());
+                let room = room.then(|| Suggestion::Mention("room".into(), ROOM_MENTION.into(), None));
+                let users = prefs::match_sort_keys(chat.participants.items.iter(), query, key).into_iter();
+                let users = users.map(|u| Suggestion::Mention(mention_label(u), u.id.clone(), Some(u.clone())));
+                room.into_iter().chain(users).take(8).collect()
+            }
+            b':' if st.settings.on("emojiAutocomplete") => {
+                let picks = emoji::suggestions(':', query, st.skin_tone).into_iter();
+                picks.map(|(c, name)| Suggestion::Emoji(c, name)).collect()
+            }
+            _ => return None,
+        };
+        (!picks.is_empty()).then_some((at, picks))
     }
 
-    /// The emoji autocomplete list, with its left edge at the ":" in the composer and its bottom at the text top.
+    /// The autocomplete list, with its left edge at the trigger in the composer and its bottom at the text top.
     fn view_suggestions(&self, st: &BeeperStore) -> Option<El<'_>> {
         let p = &self.pal;
-        let picks = self.emoji_suggestions(st);
-        let at = self.pane().suggest.min(picks.len().checked_sub(1)?);
-        let rows: Vec<String> = picks.iter().map(|(c, name)| format!("{c} {name}")).collect();
-        let width = rows.iter().map(|r| text_width(r, 13.0, Weight::Normal)).fold(0.0, f32::max) + 12.0;
-        let items = rows.into_iter().enumerate().map(|(i, r)| {
+        let (trigger, picks) = self.suggestions(st)?;
+        let at = self.pane().suggest.min(picks.len() - 1);
+        let label = |s: &Suggestion| match s {
+            Suggestion::Emoji(c, name) => format!("{c} {name}"),
+            Suggestion::Mention(label, ..) => format!("@{label}"),
+        };
+        let face = |s: &Suggestion| match s {
+            Suggestion::Emoji(..) => None,
+            Suggestion::Mention(_, _, Some(u)) => {
+                Some(self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 24.0, 0.0))
+            }
+            Suggestion::Mention(_, _, None) => {
+                let chat = self.pane().selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+                Some(self.chat_avatar(&st.chats[chat.expect("the open chat")], 24.0, 0.0))
+            }
+        };
+        let faces = if matches!(picks[0], Suggestion::Mention(..)) { 30.0 } else { 0.0 };
+        let width =
+            picks.iter().map(|s| text_width(&label(s), 13.0, Weight::Normal)).fold(0.0, f32::max) + 12.0 + faces;
+        let items = picks.iter().enumerate().map(|(i, s)| {
             let (bg, fg) = if i == at { (p.accent, Color::WHITE) } else { (CLEAR, p.text) };
-            let b = button(txt(r, 13.0).wrapping(iced::widget::text::Wrapping::None)).padding([4, 6]).width(width);
-            b.style(btn_style([bg; 3], [fg; 3], 4.0)).on_press(UiMessage::PickEmoji(i)).into()
+            let name = txt(label(s), 13.0).wrapping(iced::widget::text::Wrapping::None);
+            let b = button(row![].push(face(s)).push(name).spacing(6).align_y(Center)).padding([4, 6]).width(width);
+            b.style(btn_style([bg; 3], [fg; 3], 4.0)).on_press(UiMessage::PickSuggestion(i)).into()
         });
         let list =
             container(Column::with_children(items).padding([4, 4])).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         let unveiled = hidden_actions(st).len() as f32;
         let plus = if self.pane().show_attach_menu { 36.0 + 6.0 + 2.0 + unveiled * 30.0 - 2.0 } else { 36.0 };
         let text = self.pane().composer.text();
-        let line = &text[text.rfind('\n').map_or(0, |i| i + 1)..text.rfind(':').expect("an emoji query")];
+        let line = &text[text[..trigger].rfind('\n').map_or(0, |i| i + 1)..trigger];
         let x = 8.0 + plus + 8.0 + 14.0 + 2.0 + text_width(line, 13.0, Weight::Normal);
         let x = x.min(self.pane().size.width / self.zoom - self.left_width(st) - width - 36.0);
         Some(container(list).align_bottom(Fill).padding(Padding::ZERO.left(x).bottom(34.0)).into())
@@ -4620,6 +4675,12 @@ impl BeeperGuiApp {
         if text.is_empty() && self.pane.attachments.is_empty() {
             return;
         }
+        // The pills that the text still has, once for each label.
+        let mut labels = HashSet::new();
+        let mentions: Vec<Mention> = std::mem::take(&mut self.pane.mentions)
+            .into_iter()
+            .filter(|(label, _)| text.contains(&format!("@{label}")) && labels.insert(label.clone()))
+            .collect();
         let mut st = self.store.write();
         let idx = st.resolve_chat_idx(&chat_id).expect("chat exists");
         let later = self.pane.send_later.take();
@@ -4642,7 +4703,7 @@ impl BeeperGuiApp {
             st.schedule(&chat_id, text, self.pane.reply_target(), at, no_reply);
         } else if let Some(target) = self.pane.editing_message_id.take() {
             st.edit_message(&chat_id, &target, text.clone()).expect("edit message");
-            st.queue(&chat_id, Outgoing::Edit { target, text });
+            st.queue(&chat_id, Outgoing::Edit { target, text, mentions });
         } else {
             let mut reply_to = self.pane.reply_target();
             let files = std::mem::take(&mut self.pane.attachments);
@@ -4666,7 +4727,8 @@ impl BeeperGuiApp {
                     let i = st.msg_idx_by_id[&txn];
                     st.update_message(i, |m| m.links = vec![link]);
                 }
-                sends.push((txn.clone(), Outgoing::Send { txn, text, reply_to: reply_to.take(), preview }));
+                let reply_to = reply_to.take();
+                sends.push((txn.clone(), Outgoing::Send { txn, text, reply_to, preview, mentions }));
             }
             for PendingMedia { bytes, name, mime, is_gif, size, frames } in files {
                 let image = !frames.is_empty();
@@ -4723,7 +4785,8 @@ impl BeeperGuiApp {
             }
             let (_, txn, _) =
                 st.send_message(&s.chat_id, Some(s.text.clone()), s.reply_to.clone(), None).expect("send scheduled");
-            st.queue(&s.chat_id, Outgoing::Send { txn, text: s.text, reply_to: s.reply_to, preview: None });
+            let out = Outgoing::Send { txn, text: s.text, reply_to: s.reply_to, preview: None, mentions: Vec::new() };
+            st.queue(&s.chat_id, out);
         }
         drop(st);
         self.refresh_theme_and_tray();
@@ -5293,8 +5356,8 @@ impl BeeperGuiApp {
                 self.pane.composer = format::content(&text, r);
                 return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
             }
-            UiMessage::SubmitComposer if !self.emoji_suggestions(&self.store.read()).is_empty() => {
-                return self.update(UiMessage::PickEmoji(self.pane.suggest));
+            UiMessage::SubmitComposer if self.suggestions(&self.store.read()).is_some() => {
+                return self.update(UiMessage::PickSuggestion(self.pane.suggest));
             }
             UiMessage::SubmitComposer if self.recorder.is_some() => return self.send_take(),
             UiMessage::SubmitComposer => {
@@ -5315,12 +5378,19 @@ impl BeeperGuiApp {
                 }
                 return stop;
             }
-            UiMessage::PickEmoji(i) => {
-                let picks = self.emoji_suggestions(&self.store.read());
+            UiMessage::PickSuggestion(i) => {
+                let (at, picks) = self.suggestions(&self.store.read()).expect("an open autocomplete");
                 let mut text = self.pane.composer.text();
-                let at = text.rfind(':').expect("an emoji query");
-                text.replace_range(at.., &format!("{} ", picks[i.min(picks.len() - 1)].0));
-                self.pane.composer = composer_with(&text);
+                let caret = format::offset(&text, self.pane.composer.cursor().position);
+                let pick = match &picks[i.min(picks.len() - 1)] {
+                    Suggestion::Emoji(c, _) => format!("{c} "),
+                    Suggestion::Mention(label, id, _) => {
+                        self.pane.mentions.push((label.clone(), id.clone()));
+                        format!("@{label} ")
+                    }
+                };
+                text.replace_range(at..caret, &pick);
+                self.pane.composer = format::content(&text, at + pick.len()..at + pick.len());
                 return operation::focus("composer-input");
             }
             UiMessage::CancelComposeMode => {
@@ -7828,7 +7898,7 @@ impl BeeperGuiApp {
                 if z && (self.queued_here() || self.shown_undo().is_some()) {
                     return self.update(UiMessage::Undo(mods.shift()));
                 }
-                let n = self.emoji_suggestions(&self.store.read()).len();
+                let n = self.suggestions(&self.store.read()).map_or(0, |(_, picks)| picks.len());
                 if n > 0 && mods.is_empty() {
                     let at = self.pane.suggest.min(n - 1);
                     match key.as_ref() {
@@ -7837,7 +7907,7 @@ impl BeeperGuiApp {
                             self.pane.suggest = if down { (at + 1) % n } else { (at + n - 1) % n };
                             return Task::none();
                         }
-                        Key::Named(Named::Tab) => return self.update(UiMessage::PickEmoji(at)),
+                        Key::Named(Named::Tab) => return self.update(UiMessage::PickSuggestion(at)),
                         Key::Named(Named::Escape) => {
                             self.pane.suggest_hidden = Some(self.pane.composer.text());
                             return Task::none();
@@ -11987,7 +12057,7 @@ impl BeeperGuiApp {
         };
         let (pri, sec) = composer_buttons(st);
         let placeholder = self.composer_placeholder(chat);
-        let suggesting = !self.emoji_suggestions(st).is_empty();
+        let suggesting = self.suggestions(st).is_some();
         let formats = chat.formatting;
         let keys = ["Message: Send Message and Archive", "Send Message", "Insert New Line"]
             .map(|h| st.settings.hotkey_keys(h).to_string());

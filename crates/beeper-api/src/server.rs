@@ -1117,7 +1117,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
         ("PUT", ["messages", mid]) => {
             let text = r.need("text")?;
             let (cid, msg) = st.edit_message(id, mid, text.into()).map_err(store_error)?;
-            st.queue(&cid, Outgoing::Edit { target: msg.id.clone(), text: text.into() });
+            st.queue(&cid, Outgoing::Edit { target: msg.id.clone(), text: text.into(), mentions: Vec::new() });
             ok(&json!({ "chatID": cid, "messageID": msg.id, "success": true }))
         }
         ("DELETE", ["messages", mid]) => {
@@ -1205,7 +1205,10 @@ fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
     }
     let (chat_id, pending, _) = st.send_message(id, text.clone(), reply_to.clone(), attachment).map_err(store_error)?;
     if let Some(text) = text {
-        st.queue(&chat_id, Outgoing::Send { txn: pending.clone(), text, reply_to, preview: None });
+        st.queue(
+            &chat_id,
+            Outgoing::Send { txn: pending.clone(), text, reply_to, preview: None, mentions: Vec::new() },
+        );
     }
     Ok(json_with(StatusCode::CREATED, &json!({ "chatID": chat_id, "pendingMessageID": pending })))
 }

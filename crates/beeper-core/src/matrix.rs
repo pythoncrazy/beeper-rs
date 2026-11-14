@@ -28,12 +28,12 @@ use matrix_sdk::ruma::events::room::message::{Relation, ReplacementMetadata, Roo
 use matrix_sdk::ruma::events::room::power_levels::UserPowerLevel;
 use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::events::tag::{TagInfo, TagName};
-use matrix_sdk::ruma::events::{GlobalAccountDataEventType, RoomAccountDataEventType, StateEventType};
+use matrix_sdk::ruma::events::{GlobalAccountDataEventType, Mentions, RoomAccountDataEventType, StateEventType};
 use matrix_sdk::ruma::serde::Raw;
-use matrix_sdk::ruma::OwnedEventId;
+use matrix_sdk::ruma::{OwnedEventId, OwnedUserId};
 use matrix_sdk::{Client, LoopCtrl, Room, RoomMemberships, SessionMeta, SessionTokens};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use tokio::sync::oneshot;
 
 pub const UTD_TEXT: &str = "Waiting for message";
@@ -384,14 +384,20 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         older: Older::Unknown,
         is_read_only: tombstone.is_some() || read_only(&levels, me.as_str()),
         replacement_room: tombstone.and_then(|t| s(&t["replacement_room"])),
+        can_mention_room: features.as_ref().is_none_or(|f| f["formatting"]["at_room_mention"].as_i64() >= Some(1))
+            && power(&levels, me.as_str()) >= levels["notifications"]["room"].as_i64().unwrap_or(50),
         flags: 0,
     }
 }
 
 /// Desktop's `isReadOnly` from `m.room.power_levels`: your level is below the level of `m.room.message`.
 fn read_only(levels: &Value, me: &str) -> bool {
-    let mine = levels["users"][me].as_i64().or(levels["users_default"].as_i64()).unwrap_or(0);
-    mine < levels["events"]["m.room.message"].as_i64().or(levels["events_default"].as_i64()).unwrap_or(0)
+    power(levels, me) < levels["events"]["m.room.message"].as_i64().or(levels["events_default"].as_i64()).unwrap_or(0)
+}
+
+/// The power level of `user` in `m.room.power_levels`.
+fn power(levels: &Value, user: &str) -> i64 {
+    levels["users"][user].as_i64().or(levels["users_default"].as_i64()).unwrap_or(0)
 }
 
 fn url_field(url: &Value, file: &Value) -> Option<String> {
@@ -1133,6 +1139,12 @@ pub enum ChatFlag {
     MarkedUnread,
 }
 
+/// A mention pill of the composer: the label after "@" and the user ID, or [`ROOM_MENTION`] for "@room".
+pub type Mention = (String, String);
+
+/// Desktop's ID of the "@room" mention.
+pub const ROOM_MENTION: &str = "@room";
+
 pub enum Outgoing {
     Send {
         txn: String,
@@ -1140,10 +1152,12 @@ pub enum Outgoing {
         reply_to: Option<String>,
         /// A link preview with the `og:image:type` of its image.
         preview: Option<crate::cloud::PagePreview>,
+        mentions: Vec<Mention>,
     },
     Edit {
         target: String,
         text: String,
+        mentions: Vec<Mention>,
     },
     Redact {
         target: String,
@@ -1264,11 +1278,40 @@ pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) -> Resul
     joined_room(&client, &chat).await?.typing_notice(on).await.map_err(|e| e.to_string())
 }
 
-fn text_content(text: String) -> RoomMessageEventContent {
-    match crate::codec::markdown_html(&text) {
+/// Desktop's `formatMessage`: the text, its HTML with a `matrix.to` link for each user mention, and `m.mentions` with
+/// the mentioned users, the sender of `reply_to`, and "@room".
+fn text_content(text: String, mentions: &[Mention], reply_to: Option<&str>) -> Result<RoomMessageEventContent, String> {
+    let users: Vec<&Mention> = mentions.iter().filter(|m| m.1 != ROOM_MENTION).collect();
+    let ids: Result<BTreeSet<OwnedUserId>, _> =
+        users.iter().map(|m| m.1.as_str()).chain(reply_to).map(OwnedUserId::try_from).collect();
+    let mut m = Mentions::with_user_ids(ids.map_err(|e| e.to_string())?);
+    m.room = mentions.iter().any(|m| m.1 == ROOM_MENTION);
+    let mut content = match crate::codec::markdown_html(&mention_links(&text, &users)) {
         Some(html) => RoomMessageEventContent::text_html(text, html),
         None => RoomMessageEventContent::text_plain(text),
+    };
+    content.mentions = Some(m);
+    Ok(content)
+}
+
+/// The Markdown of Desktop's mention pills: each "@label" of `users` becomes `[@label](https://matrix.to/#/id)`, the
+/// longest label first.
+fn mention_links(text: &str, users: &[&Mention]) -> String {
+    let (mut md, mut rest) = (String::with_capacity(text.len()), text);
+    while let Some(i) = rest.find('@') {
+        md.push_str(&rest[..i]);
+        rest = &rest[i + 1..];
+        match users.iter().filter(|m| rest.starts_with(m.0.as_str())).max_by_key(|m| m.0.len()) {
+            Some((label, id)) => {
+                let escaped: String =
+                    label.chars().flat_map(|c| "\\[]*_`~".contains(c).then_some('\\').into_iter().chain([c])).collect();
+                md.push_str(&format!("[@{escaped}](https://matrix.to/#/{id})"));
+                rest = &rest[label.len()..];
+            }
+            None => md.push('@'),
+        }
     }
+    md + rest
 }
 
 async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), String> {
@@ -1285,8 +1328,13 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
     let e = |x: matrix_sdk::Error| x.to_string();
     let sent = |txn: String, id: OwnedEventId| store.write().sent.insert(txn, id.to_string());
     match out {
-        Outgoing::Send { txn, text, reply_to, preview } => {
-            let mut content = text_content(text);
+        Outgoing::Send { txn, text, reply_to, preview, mentions } => {
+            let sender = reply_to.as_ref().and_then(|r| {
+                let st = store.read();
+                let m = &st.messages[*st.msg_idx_by_id.get(r)?];
+                (!st.is_me(&m.sender_id)).then(|| m.sender_id.clone())
+            });
+            let mut content = text_content(text, &mentions, sender.as_deref())?;
             content.relates_to =
                 reply_to.map(|r| event(r).map(|id| Relation::Reply(Reply::with_event_id(id)))).transpose()?;
             let mut content = serde_json::to_value(content).expect("message JSON");
@@ -1307,8 +1355,10 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             let id = room.send_raw("m.room.message", content).with_transaction_id(txn.as_str().into());
             sent(txn, id.await.map_err(e)?.response.event_id);
         }
-        Outgoing::Edit { target, text } => {
-            let content = text_content(text).make_replacement(ReplacementMetadata::new(event(target)?, None));
+        Outgoing::Edit { target, text, mentions } => {
+            let content = text_content(text, &mentions, None)?;
+            let mentions = content.mentions.clone();
+            let content = content.make_replacement(ReplacementMetadata::new(event(target)?, mentions));
             room.send(content).await.map_err(e)?;
         }
         Outgoing::Redact { target } => {
@@ -1864,7 +1914,7 @@ fn unpickle_secret(pickle: &str) -> Result<String, String> {
 }
 
 pub async fn import_crypto(dir: &std::path::Path, c: &DesktopCrypto) -> Result<(), String> {
-    use matrix_sdk::ruma::{DeviceKeyAlgorithm, OwnedRoomId, OwnedUserId};
+    use matrix_sdk::ruma::{DeviceKeyAlgorithm, OwnedRoomId};
     use matrix_sdk_crypto::olm::SenderData;
     use matrix_sdk_crypto::olm::{InboundGroupSession, PickledInboundGroupSession, PrivateCrossSigningIdentity};
     use matrix_sdk_crypto::store::types::{BackupDecryptionKey, Changes};
@@ -2309,6 +2359,23 @@ mod tests {
         assert_eq!(edit_bits(Some(&features), &levels, "@me:x"), 0b001, "features without a level reject the event");
         assert_eq!(edit_bits(None, &json!(null), "@me:x"), 0, "without power levels the events need 50");
         assert_eq!(edit_bits(None, &json!({ "users_default": 50 }), "@me:x"), 0b111);
+    }
+
+    #[test]
+    fn mentions_link_like_desktop() {
+        let (ann, anna) = (("Ann".to_string(), "@a:x".to_string()), ("Anna B".to_string(), "@b:x".to_string()));
+        let links = super::mention_links("hi @Anna B and @Ann, mail a@b", &[&ann, &anna]);
+        assert_eq!(links, "hi [@Anna B](https://matrix.to/#/@b:x) and [@Ann](https://matrix.to/#/@a:x), mail a@b");
+        let odd = ("[x]".to_string(), "@c:x".to_string());
+        assert_eq!(super::mention_links("@[x]", &[&odd]), "[@\\[x\\]](https://matrix.to/#/@c:x)");
+        let room = ("room".to_string(), super::ROOM_MENTION.to_string());
+        let c = super::text_content("@Ann @room".into(), &[ann, room], Some("@r:x")).unwrap();
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v["m.mentions"], serde_json::json!({ "user_ids": ["@a:x", "@r:x"], "room": true }));
+        assert_eq!(v["formatted_body"], "<a href=\"https://matrix.to/#/@a:x\">@Ann</a> @room");
+        assert_eq!(v["body"], "@Ann @room");
+        let plain = serde_json::to_value(super::text_content("hi".into(), &[], None).unwrap()).unwrap();
+        assert_eq!(plain["m.mentions"], serde_json::json!({}), "Desktop always sends m.mentions");
     }
 
     #[test]

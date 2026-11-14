@@ -895,6 +895,7 @@ impl BeeperStore {
             older: Older::Unknown,
             is_read_only: false,
             replacement_room: None,
+            can_mention_room: false,
             flags: 0,
         };
         self.push_chat(chat, true);
@@ -1497,6 +1498,7 @@ impl BeeperStore {
             older: Older::Unknown,
             is_read_only: false,
             replacement_room: None,
+            can_mention_room: false,
             flags: 0,
         };
         let idx = self.push_chat(chat, true);
