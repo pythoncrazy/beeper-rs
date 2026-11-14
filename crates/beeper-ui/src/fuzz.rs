@@ -2485,6 +2485,66 @@ fn label_settings_like_desktop() {
 }
 
 #[test]
+fn chat_list_mutes_receipts_and_errors_like_desktop() {
+    let mut app = demo_app("list-states");
+    let (id, account) = {
+        let st = app.store.read();
+        let free = |c: &&Chat| {
+            let bridged = st.bridge_accounts.iter().any(|b| b.account_id == c.account_id);
+            bridged && c.is_muted != Some(true) && c.label_ids.is_empty() && c.flags & CHAT_ARCHIVED == 0
+        };
+        let c = st.chats.iter().find(free).expect("an unmuted chat");
+        (c.id.clone(), c.account_id.clone())
+    };
+    let state = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        let c = &st.chats[st.resolve_chat_idx(&id).expect("the chat")];
+        (app.list_muted(&st, c), app.list_quiet(&st, c))
+    };
+    assert_eq!(state(&app), (false, false));
+    let props = app.store.read().settings.account(&account);
+    let _ = app.update(UiMessage::SetAccountProps(
+        account.clone(),
+        beeper_core::models::AccountProps { notifications: false, ..props },
+    ));
+    assert_eq!(state(&app), (true, true), "a muted account mutes its rows");
+    let idx = app.store.read().resolve_chat_idx(&id).expect("the chat");
+    app.store.write().update_chat(idx, |c| c.unread_mentions = 1);
+    assert_eq!(state(&app), (true, false), "a mention keeps the count blue");
+    let _ = app.update(UiMessage::SetAccountProps(account.clone(), props));
+    app.store.write().update_chat(idx, |c| c.is_archived = Some(true));
+    assert_eq!(state(&app), (false, true), "archived rows are grey");
+
+    let st = app.store.read();
+    let has_messages = |c: &&Chat| st.chat_msg_indices.get(&c.id).is_some_and(|v| !v.is_empty());
+    let mut c = st.chats.iter().filter(has_messages).find(|c| c.chat_type == "group").expect("a group").clone();
+    let extra = User { id: "@extra:beeper.local".into(), ..c.participants.items[0].clone() };
+    c.participants.items.push(extra);
+    let me = st.me().id.clone();
+    let others: Vec<String> =
+        c.participants.items.iter().filter(|u| !st.is_me(&u.id) && u.id != me).map(|u| u.id.clone()).collect();
+    let mut m = st.messages[st.chat_msg_indices[&c.id][0]].clone();
+    (m.id, m.sender_id, m.seen) = ("$event".into(), me, Default::default());
+    assert_eq!(receipt_tip(&st, &c, &m).as_deref(), Some("Sent"));
+    m.seen.insert(others[0].clone(), String::new());
+    assert_eq!(receipt_tip(&st, &c, &m), Some(format!("Seen by 1 of {}", others.len())));
+    m.id = "msg_1_1".into();
+    assert!(!pending(&st, &m), "the demo has no homeserver");
+    drop(st);
+
+    assert_eq!(space_error(&app.store.read(), &account), None);
+    app.store
+        .write()
+        .bridge_accounts
+        .iter_mut()
+        .filter(|b| b.account_id == account)
+        .for_each(|b| b.state = "UNKNOWN_ERROR".into());
+    assert_eq!(space_error(&app.store.read(), &account), Some("Disconnected"), "the rail shows the error badge");
+    assert_eq!(space_error(&app.store.read(), "label:lbl_work"), None);
+    assert_eq!([unread_label(999), unread_label(1000)], ["999", "999+"]);
+}
+
+#[test]
 fn message_requests_like_desktop() {
     let mut app = demo_app("message-requests");
     let dms: Vec<String> = {
