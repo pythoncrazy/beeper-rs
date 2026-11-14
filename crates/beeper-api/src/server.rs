@@ -896,16 +896,6 @@ fn account(st: &BeeperStore, id: &str, rest: &[&str], r: &Req) -> Reply {
     }
 }
 
-fn bridge_summary(st: &BeeperStore, spec: &NetworkSpec) -> BridgeSummary {
-    let logins: Vec<_> = st.bridge_accounts.iter().filter(|b| b.bridge_id == spec.bridge_id).cloned().collect();
-    BridgeSummary {
-        bridge_id: spec.bridge_id.into(),
-        bridge_type: spec.bridge_type.into(),
-        is_running: !logins.is_empty(),
-        logins,
-    }
-}
-
 fn login_step(id: &str, step_type: &str, instructions: Option<String>) -> BridgeLoginStep {
     BridgeLoginStep {
         step_id: id.into(),
@@ -920,25 +910,12 @@ fn login_step(id: &str, step_type: &str, instructions: Option<String>) -> Bridge
 
 fn bridge_get(st: &BeeperStore, path: &[&str]) -> Reply {
     let [id, rest @ ..] = path else {
-        let catalog: Vec<Value> = NETWORK_SPECS
-            .iter()
-            .map(|s| {
-                json!({
-                    "bridgeID": s.bridge_id,
-                    "bridgeType": s.bridge_type,
-                    "displayName": s.display_name,
-                    "supportsOnDevice": s.supports_on_device,
-                    "supportsCloud": s.supports_cloud
-                })
-            })
-            .collect();
-        let bridges: Vec<_> = NETWORK_SPECS.iter().map(|s| bridge_summary(st, s)).collect();
-        return ok(&json!({ "bridges": bridges, "catalog": catalog }));
+        return ok(&json!({ "items": NETWORK_SPECS.iter().map(|s| view::bridge(st, s)).collect::<Vec<_>>() }));
     };
     let spec = network_spec(id).ok_or_else(|| missing("Bridge not found"))?;
     let name = spec.display_name;
     match rest {
-        [] => ok(&bridge_summary(st, spec)),
+        [] => ok(&view::bridge(st, spec)),
         ["capabilities"] => ok(&json!({
             "bridgeID": spec.bridge_id,
             "bridgeType": spec.bridge_type,
@@ -975,11 +952,13 @@ fn bridge_get(st: &BeeperStore, path: &[&str]) -> Reply {
             .take(if spec.supports_on_device { 4 } else { 3 })
             .map(|(id, name, d)| BridgeLoginFlow { id: id.into(), name, description: Some(d.into()) })
             .collect();
-            ok(&json!({ "bridgeID": spec.bridge_id, "bridgeType": spec.bridge_type, "flows": flows }))
+            ok(&json!({ "items": flows }))
         }
-        ["logins"] => ok(
-            &json!({ "bridgeID": spec.bridge_id, "bridgeType": spec.bridge_type, "logins": bridge_summary(st, spec).logins }),
-        ),
+        ["logins"] => ok(&json!({ "items": view::logins(st, spec.bridge_id) })),
+        ["logins", login_id] => {
+            let login = view::logins(st, spec.bridge_id).into_iter().find(|l| l.login_id == *login_id);
+            ok(&login.ok_or_else(|| missing("Bridge login not found"))?)
+        }
         ["login-sessions", sid] => {
             let session = st.bridge_sessions.get(*sid).filter(|s| s.bridge_id == *id);
             ok(session.ok_or_else(|| missing("Bridge login session not found"))?)
@@ -999,7 +978,7 @@ fn bridges(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply 
             st.bridge_accounts.remove(pos.ok_or_else(|| missing("Bridge login not found"))?);
             st.rebuild_accounts_from_bridges();
             st.persist_state_to_sqlite();
-            ok(&json!({ "bridge": bridge_summary(st, spec) }))
+            ok(&json!({ "bridge": view::bridge(st, spec) }))
         }
         ("POST", ["login-sessions"]) => {
             let session_id = st.next_id("lsess");
@@ -1048,7 +1027,7 @@ fn bridges(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply 
         }
         ("DELETE", ["login-sessions", sid]) if session_exists(st, sid) => {
             st.bridge_sessions.remove(*sid);
-            ok(&json!({ "cancelled": true }))
+            ok(&json!({ "bridgeID": spec.bridge_id, "loginSessionID": sid, "status": "cancelled" }))
         }
         ("POST", ["login-sessions", sid, "steps", _]) if session_exists(st, sid) => {
             let mode: BridgeMode = r.parse("mode")?;

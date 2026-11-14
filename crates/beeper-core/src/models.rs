@@ -1057,16 +1057,6 @@ pub struct RemoteProfile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeSummary {
-    #[serde(rename = "bridgeID")]
-    pub bridge_id: String,
-    pub bridge_type: String,
-    pub is_running: bool,
-    pub logins: Vec<BridgeAccountInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BridgeLoginFlow {
     pub id: String,
     pub name: String,

@@ -620,6 +620,20 @@ async fn lifecycle() {
 
     let (_, _, pages, pager) = spawn_e2e_beeper_instance("pages", None).await;
     let (_, accounts) = pager.request("GET", "/v1/accounts", None).await;
+    let (_, bridges) = pager.request("GET", "/v1/bridges", None).await;
+    let whatsapp = bridges["items"].as_array().unwrap().iter().find(|b| b["id"] == "whatsapp").unwrap();
+    assert_eq!(
+        (&whatsapp["status"], &whatsapp["accounts"][0]["accountID"]),
+        (&json!("connected"), &json!("acc_whatsapp"))
+    );
+    let (_, logins) = pager.request("GET", "/v1/bridges/whatsapp/logins", None).await;
+    assert_eq!(logins["items"][0]["accountIDs"], json!(["acc_whatsapp"]));
+    let (_, login) = pager.request("GET", "/v1/bridges/whatsapp/logins/login_whatsapp_01", None).await;
+    assert_eq!(
+        (&login["status"], &login["removeScopes"]),
+        (&json!("connected"), &json!(["current-device", "all-devices"]))
+    );
+    assert!(pager.request("GET", "/v1/bridges/whatsapp/login-flows", None).await.1["items"].is_array());
     assert_eq!(accounts[0]["bridge"], json!({ "id": "whatsapp", "type": "whatsapp", "provider": "local" }));
     let account = &accounts[2];
     assert_eq!(
