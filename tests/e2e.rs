@@ -140,8 +140,20 @@ async fn spawn_e2e_beeper_instance(
     (data_dir, port, store, client)
 }
 
-#[tokio::test]
-async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui() {
+/// Runs on a thread with the 8 MiB stack of the app's main thread: the debug build of `BeeperGuiApp::update` needs more
+/// than the 2 MiB of a test thread.
+#[test]
+fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui() {
+    let run = || {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime").block_on(lifecycle())
+    };
+    let test = std::thread::Builder::new().stack_size(8 << 20).spawn(run).expect("start the test thread");
+    if let Err(panic) = test.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+async fn lifecycle() {
     std::env::set_var("ICED_TEST_BACKEND", "tiny-skia");
 
     let fs = iced_test::renderer::graphics::text::font_system();
