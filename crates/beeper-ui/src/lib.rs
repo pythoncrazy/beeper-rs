@@ -3336,13 +3336,16 @@ fn duration(n: usize, unit: &str) -> String {
     }
 }
 
-/// Saves the composer text of the chat open in `pane` as its draft, unless the composer edits a message.
+/// Saves the composer text of the chat open in `pane` as its draft, or the stashed text when the composer edits a
+/// message.
 fn save_draft(st: &mut BeeperStore, pane: &Pane) {
-    let Some(chat) = pane.selected_chat_id.as_deref().filter(|_| pane.editing_message_id.is_none()) else { return };
-    let text = pane.composer.text().trim().to_string();
+    let Some(chat) = pane.selected_chat_id.as_deref() else { return };
+    let text = pane.stash.as_ref().map_or_else(|| pane.composer.text(), |s| s.text.clone());
+    let reply = pane.stash.as_ref().map_or(&pane.reply_to_message_id, |s| &s.reply_to);
+    let text = text.trim().to_string();
     let draft = (!text.is_empty()).then(|| ChatDraft {
         text: Some(text),
-        reply_to_message_id: pane.reply_to_message_id.clone(),
+        reply_to_message_id: reply.clone(),
         attachments: Vec::new(),
     });
     st.patch_chat(chat, true, None, None).expect("clear draft");
@@ -3456,6 +3459,8 @@ pub struct Pane {
     pub typing: Option<(String, std::time::Instant)>,
     /// The mention pills of the composer text, which Desktop sends as `mentionedUserIDs`.
     pub mentions: Vec<Mention>,
+    /// Desktop's `pendingMessageDraft`: the composer state that an edit puts aside. Set while `editing_message_id` is.
+    pub stash: Option<Stash>,
 }
 
 /// Desktop's `TopOfThread`, which loads older messages while the top of the timeline is on screen.
@@ -3470,7 +3475,40 @@ pub struct TopOfThread {
     tries: u32,
 }
 
+/// The composer state that Desktop's `saveDraft` keeps while you edit a message.
+pub struct Stash {
+    text: String,
+    reply_to: Option<String>,
+    attachments: Vec<PendingMedia>,
+    links: Vec<(String, LinkState)>,
+    send_later: Option<(i64, bool)>,
+}
+
 impl Pane {
+    /// Desktop's `startEditMessageCommon`: puts the composer state aside, unless an edit already did, and edits `mid`.
+    fn start_edit(&mut self, mid: String, text: &str) {
+        if self.editing_message_id.is_none() {
+            self.stash = Some(Stash {
+                text: self.composer.text(),
+                reply_to: self.reply_to_message_id.take(),
+                attachments: std::mem::take(&mut self.attachments),
+                links: std::mem::take(&mut self.composer_links),
+                send_later: self.send_later.take(),
+            });
+        }
+        self.editing_message_id = Some(mid);
+        self.composer = composer_with(text);
+    }
+
+    /// Desktop's `restoreDraftState`: ends the edit and puts the composer state back.
+    fn end_edit(&mut self) {
+        let s = self.stash.take().expect("an edit stashed the composer");
+        self.editing_message_id = None;
+        self.composer = composer_with(&s.text);
+        (self.reply_to_message_id, self.attachments, self.composer_links) = (s.reply_to, s.attachments, s.links);
+        self.send_later = s.send_later;
+    }
+
     /// Desktop's `getMessageSendOptions`: the quoted message, else the message of the open reply chain.
     fn reply_target(&mut self) -> Option<String> {
         self.reply_to_message_id.take().or_else(|| self.reply_thread.clone())
@@ -4382,7 +4420,7 @@ impl BeeperGuiApp {
         self.pane.composer = composer_with(chat.draft.as_ref().and_then(|d| d.text.as_deref()).unwrap_or_default());
         self.pane.history = History::default();
         self.pane.reply_to_message_id = None;
-        self.pane.editing_message_id = None;
+        (self.pane.editing_message_id, self.pane.stash) = (None, None);
         self.pane.mentions.clear();
         self.pane.selected_msgs.clear();
         self.pane.msg_anchor = None;
@@ -4683,6 +4721,7 @@ impl BeeperGuiApp {
             .collect();
         let mut st = self.store.write();
         let idx = st.resolve_chat_idx(&chat_id).expect("chat exists");
+        let edit = self.pane.editing_message_id.is_some();
         let later = self.pane.send_later.take();
         if self.pane.editing_message_id.is_none()
             && later.is_none()
@@ -4769,8 +4808,12 @@ impl BeeperGuiApp {
             }
             st.mark_chat_read(&chat_id, true);
         }
-        self.pane.composer = composer_with("");
-        self.pane.composer_links.clear();
+        if edit {
+            self.pane.end_edit();
+        } else {
+            self.pane.composer = composer_with("");
+            self.pane.composer_links.clear();
+        }
         drop(st);
         self.refresh_theme_and_tray();
     }
@@ -5393,20 +5436,17 @@ impl BeeperGuiApp {
                 self.pane.composer = format::content(&text, at + pick.len()..at + pick.len());
                 return operation::focus("composer-input");
             }
-            UiMessage::CancelComposeMode => {
-                self.pane.reply_to_message_id = None;
-                self.pane.editing_message_id = None;
-                self.pane.composer = composer_with("");
-            }
+            UiMessage::CancelComposeMode if self.pane.editing_message_id.is_some() => self.pane.end_edit(),
+            UiMessage::CancelComposeMode => self.pane.reply_to_message_id = None,
             UiMessage::StartReply(mid) => {
-                self.pane.editing_message_id = None;
+                if self.pane.editing_message_id.is_some() {
+                    self.pane.end_edit();
+                }
                 self.pane.reply_to_message_id = Some(mid);
                 return operation::focus("composer-input");
             }
             UiMessage::StartEdit(mid, old_txt) => {
-                self.pane.reply_to_message_id = None;
-                self.pane.editing_message_id = Some(mid);
-                self.pane.composer = composer_with(&old_txt);
+                self.pane.start_edit(mid, &old_txt);
                 return operation::focus("composer-input");
             }
             UiMessage::DeleteMessage(cid, mid) => {

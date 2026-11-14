@@ -601,6 +601,38 @@ fn closing_the_main_window_hides_it_like_desktop() {
 }
 
 #[test]
+fn an_edit_keeps_the_draft_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("editdraft");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    let (_, own, _) = app.store.write().send_message(note, Some("old".into()), None, None).unwrap();
+    let _ = app.update(UiMessage::ComposerChanged("my draft".into()));
+    let _ = app.update(UiMessage::StartReply(own.clone()));
+    let state = |app: &BeeperGuiApp| (app.pane.composer.text(), app.pane.reply_to_message_id.clone());
+    let draft = ("my draft".to_string(), Some(own.clone()));
+    let _ = app.update(UiMessage::StartEdit(own.clone(), "old".into()));
+    assert_eq!(state(&app), ("old".into(), None), "the edit puts the draft aside");
+    let _ = app.update(UiMessage::CancelComposeMode);
+    assert_eq!(state(&app), draft, "a canceled edit gives the draft back");
+    let _ = app.update(UiMessage::StartEdit(own.clone(), "old".into()));
+    let _ = app.update(UiMessage::ComposerChanged("new".into()));
+    let _ = app.update(UiMessage::SubmitComposer);
+    assert_eq!(state(&app), draft, "a sent edit gives the draft back");
+    let st = app.store.read();
+    assert_eq!(st.messages[st.msg_idx_by_id[&own]].text.as_deref(), Some("new"));
+    drop(st);
+    let _ = app.update(UiMessage::CancelComposeMode);
+    assert_eq!(state(&app), (draft.0.clone(), None), "the close button removes only the quoted message");
+    let _ = app.update(UiMessage::StartReply(own.clone()));
+    let _ = app.update(UiMessage::StartEdit(own.clone(), "new".into()));
+    let other = app.visible_chats(&app.store.read()).into_iter().find(|c| c.id != note).unwrap().id.clone();
+    let _ = app.update(UiMessage::SelectChat(other));
+    let st = app.store.read();
+    let saved = st.chats[st.resolve_chat_idx(note).unwrap()].draft.clone().expect("a draft");
+    assert_eq!((saved.text, saved.reply_to_message_id), (Some(draft.0), draft.1), "a left edit saves the draft");
+}
+
+#[test]
 fn remind_submenu_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
     let mut app = demo_app("remindsub");
