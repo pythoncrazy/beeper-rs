@@ -2913,6 +2913,37 @@ fn request_rows_like_desktop() {
 }
 
 #[test]
+fn label_menu_labels_the_selection_like_desktop() {
+    let mut app = demo_app("label-selection");
+    let ids: Vec<String> = {
+        let st = app.store.read();
+        let free = |c: &&Chat| c.label_ids.is_empty() && c.id != NOTE_CHAT_ID && c.flags & CHAT_ARCHIVED == 0;
+        st.chats.iter().filter(free).take(2).map(|c| c.id.clone()).collect()
+    };
+    for id in &ids {
+        let _ = app.update(UiMessage::ToggleSelected(id.clone()));
+    }
+    let _ = app.update(UiMessage::OpenChatMenu(ids[0].clone()));
+    let _ = app.update(UiMessage::ChatSub(Some(2)));
+    let picks: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_chat_menu(&ids[0], false, 900.0));
+        let _ = sim.click("Work").expect("the Work label");
+        sim.into_messages().collect()
+    };
+    assert!(matches!(&picks[..], [UiMessage::ToggleLabel(l, c, true)] if l == "lbl_work" && *c == ids));
+    for m in picks {
+        let _ = app.update(m);
+    }
+    let labeled = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        ids.iter().filter(|id| st.chats[st.chat_idx_by_id[*id]].label_ids.iter().any(|l| l == "lbl_work")).count()
+    };
+    assert_eq!(labeled(&app), 2, "the label goes on every selected chat");
+    let _ = app.update(UiMessage::Undo(false));
+    assert_eq!(labeled(&app), 0);
+}
+
+#[test]
 fn message_requests_like_desktop() {
     let mut app = demo_app("message-requests");
     let dms: Vec<String> = {
@@ -3080,7 +3111,7 @@ fn label_chats_from_the_chat_menu_like_desktop() {
         let _ = sim.click("Work").expect("the Work label");
         sim.into_messages().collect()
     };
-    assert!(matches!(&picks[..], [UiMessage::ToggleLabel(l, c, true)] if l == "lbl_work" && c == chat));
+    assert!(matches!(&picks[..], [UiMessage::ToggleLabel(l, c, true)] if l == "lbl_work" && c == &[chat]));
     for m in picks {
         let _ = app.update(m);
     }
@@ -3102,8 +3133,8 @@ fn label_chats_from_the_chat_menu_like_desktop() {
         let _ = app.update(UiMessage::ToastTick);
     }
     assert!(app.status_banner.is_empty(), "the Undo: toast closes after a second");
-    let _ = app.update(UiMessage::ToggleLabel("lbl_work".into(), chat.into(), true));
-    let _ = app.update(UiMessage::ToggleLabel("lbl_work".into(), chat.into(), false));
+    let _ = app.update(UiMessage::ToggleLabel("lbl_work".into(), vec![chat.into()], true));
+    let _ = app.update(UiMessage::ToggleLabel("lbl_work".into(), vec![chat.into()], false));
     assert!(labels(&app).is_empty());
     assert!(app.status_banner == "Removed from Work" && app.toast.as_ref().is_some_and(|t| t.open.is_none()));
     let _ = app.update(UiMessage::OpenCreateLabel(vec![chat.into()]));

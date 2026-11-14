@@ -445,8 +445,8 @@ pub enum UiMessage {
     Group(GroupEdit),
     /// Opens the New label window with these chats picked.
     OpenCreateLabel(Vec<String>),
-    /// Desktop's `toggleLabel` for one chat.
-    ToggleLabel(String, String, bool),
+    /// Desktop's `toggleLabel` for the chats of a menu: the clicked chat, or the selected chats.
+    ToggleLabel(String, Vec<String>, bool),
     /// Desktop's Edit Labels window of a chat.
     OpenEditLabels(String),
     /// A switch in the Edit Labels window: `toggleLabel` without the toast.
@@ -5937,7 +5937,7 @@ impl BeeperGuiApp {
             }
             UiMessage::Group(e) => return self.group_edit(e),
             UiMessage::ToggleLabel(label, chat, add) => self.toggle_label(label, chat, add, true),
-            UiMessage::SwitchLabel(label, chat, add) => self.toggle_label(label, chat, add, false),
+            UiMessage::SwitchLabel(label, chat, add) => self.toggle_label(label, vec![chat], add, false),
             UiMessage::OpenEditLabels(chat) => {
                 self.chat_menu = None;
                 if let Some(&(id, _)) = self.labels_windows.iter().find(|w| w.1 == chat) {
@@ -10182,16 +10182,19 @@ impl BeeperGuiApp {
             let (items, rules): (Vec<El>, f32) = match i {
                 0 => (vec![item(tr("Chat Link"), String::new(), Some(UiMessage::CopyChatLink(c.id.clone())))], 0.0),
                 2 => {
+                    let targets: Vec<String> = match picked.is_empty() {
+                        true => vec![c.id.clone()],
+                        false => picked.iter().map(|c| c.id.clone()).collect(),
+                    };
                     let mut sorted: Vec<&Label> = st.labels.iter().collect();
                     sorted.sort_by_cached_key(|l| l.name.to_lowercase());
                     let rows = sorted.into_iter().map(|l| {
                         let on = c.label_ids.contains(&l.id);
                         let lead = container(on.then(|| ic(icon::CHECK, 14.0))).width(22).into();
-                        let msg = UiMessage::ToggleLabel(l.id.clone(), c.id.clone(), !on);
+                        let msg = UiMessage::ToggleLabel(l.id.clone(), targets.clone(), !on);
                         menu_item(p, Some(lead), l.name.clone(), "", Some(msg))
                     });
-                    let new =
-                        item(tr("New Label…"), String::new(), Some(UiMessage::OpenCreateLabel(vec![c.id.clone()])));
+                    let new = item(tr("New Label…"), String::new(), Some(UiMessage::OpenCreateLabel(targets.clone())));
                     (rows.chain([menu_rule(p), new]).collect(), 1.0)
                 }
                 _ => {
@@ -10278,11 +10281,16 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `runAction`: keeps the undo of an action, and shows its `successToast` with Undo.
-    fn toggle_label(&mut self, label: String, chat: String, add: bool, toast: bool) {
+    fn toggle_label(&mut self, label: String, chats: Vec<String>, add: bool, toast: bool) {
         self.chat_menu = None;
         let label = self.label_id(label);
         let mut st = self.store.write();
-        st.set_label_room(&label, &chat, add);
+        let has =
+            |st: &BeeperStore, c: &str| st.chats[st.resolve_chat_idx(c).expect("a chat")].label_ids.contains(&label);
+        let chats: Vec<String> = chats.into_iter().filter(|c| has(&st, c) != add).collect();
+        for chat in &chats {
+            st.set_label_room(&label, chat, add);
+        }
         let name = st.labels.iter().find(|l| l.id == label).expect("a toggled label").name.clone();
         drop(st);
         let (what, text) = match add {
@@ -10290,7 +10298,7 @@ impl BeeperGuiApp {
             false => (format!("Remove from {name}"), format!("Removed from {name}")),
         };
         let open = add.then(|| UiMessage::SelectAccount(Some(format!("label:{label}"))));
-        self.act(what, UiMessage::ToggleLabel(label, chat, !add), toast.then_some((text, open)));
+        self.act(what, UiMessage::ToggleLabel(label, chats, !add), toast.then_some((text, open)));
     }
 
     fn act(&mut self, what: String, undo: UiMessage, toast: Option<(String, Option<UiMessage>)>) {
