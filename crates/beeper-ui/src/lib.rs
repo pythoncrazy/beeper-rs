@@ -1290,10 +1290,21 @@ fn menu_item<'a>(
         .push(lead)
         .push(txt(label, 13.0))
         .push(Space::new().width(Fill))
-        .push(txt(hotkey, 13.0).color(Color { a: 0.5, ..p.strong }))
-        .align_y(Center);
+        .push(txt(hotkey, 13.0).color(Color { a: 0.5, ..p.strong }));
+    menu_line(p, line, msg)
+}
+
+/// A menu row with the content `line`. Without a message it is greyed out.
+fn menu_line<'a>(p: &Palette, line: Row<'a, UiMessage>, msg: Option<UiMessage>) -> El<'a> {
     let style = btn_style([CLEAR, p.accent, p.accent], [p.text, Color::WHITE, Color::WHITE], 4.0);
+    let line = line.align_y(Center);
     container(button(line).padding([3.125, 8.0]).width(Fill).style(style).on_press_maybe(msg)).padding([2, 5]).into()
+}
+
+/// Desktop's `menu-item section-header`: a grey heading row of a menu, as high as a menu row.
+fn menu_heading<'a>(p: &Palette, label: String) -> El<'a> {
+    let label = med(label, 11.0).color(p.weak).wrapping(iced::widget::text::Wrapping::None);
+    container(label).padding([0, 13]).center_y(MENU_ITEM).width(Fill).clip(true).into()
 }
 
 pub(crate) const ISSUES_URL: &str = "https://github.com/pythoncrazy/beeper-rs/issues";
@@ -2374,7 +2385,12 @@ enum SpaceMenu {
     Header,
     /// The rows of the Accounts settings, like Desktop's `PL` with `hideSettings` and `hideAddRemoveAccounts`.
     Prefs,
+    /// The Space Options submenu of the space sheet (`sfe`), which keeps `chat_sub` at `Some(1)` while it is open.
+    Options,
 }
+
+/// The `chat_menu` key of Desktop's space sheet (`zft`), which opens from the sidebar header title.
+const SPACE_SHEET: &str = "space:sheet";
 
 /// The `chat_menu` key of Desktop's sidebar background menu (`Gct`).
 const SIDEBAR_MENU: &str = "sidebar:menu";
@@ -2514,12 +2530,7 @@ fn more_menu(st: &BeeperStore) -> Vec<Option<(String, UiMessage)>> {
         .map(|id| {
             let name = space_name(st, id);
             let label = if id == "requests" && unread { format!("• {name}") } else { name };
-            let msg = match RAIL_VIEWS.iter().find(|v| v.0 == id).map(|v| v.1) {
-                Some(Some(tab)) => UiMessage::SelectTab(tab),
-                Some(None) => UiMessage::OpenCreateLabel(Vec::new()),
-                None => UiMessage::SelectAccount(Some(id.clone())),
-            };
-            Some((label, msg))
+            Some((label, space_msg(id)))
         })
         .collect();
     if !hidden.is_empty() {
@@ -2531,6 +2542,15 @@ fn more_menu(st: &BeeperStore) -> Vec<Option<(String, UiMessage)>> {
     items.push(Some((tr("Edit Spaces…").into(), UiMessage::OpenEditSpaces)));
     items.push(Some((tr("Add/Remove Accounts…").into(), UiMessage::OpenSettings(SettingsTab::Accounts))));
     items
+}
+
+/// Desktop's `selectSpace` for a menu row of the space `id`. The Create Label space opens Create Label.
+fn space_msg(id: &str) -> UiMessage {
+    match RAIL_VIEWS.iter().find(|v| v.0 == id).map(|v| v.1) {
+        Some(Some(tab)) => UiMessage::SelectTab(tab),
+        Some(None) => UiMessage::OpenCreateLabel(Vec::new()),
+        None => UiMessage::SelectAccount(Some(id.into())),
+    }
 }
 
 /// Desktop's `canAcceptRequest` and `canDeclineRequest` of a message request chat.
@@ -7857,6 +7877,7 @@ impl BeeperGuiApp {
             let chat = pair.map_or(chat, |k| k.split_once(' ').map_or(k, |k| k.0));
             c == RAIL_MORE
                 || c == SIDEBAR_MENU
+                || c == SPACE_SHEET
                 || c.starts_with("draft:")
                 || c.starts_with("account:")
                 || c.starts_with("head:")
@@ -7919,6 +7940,11 @@ impl BeeperGuiApp {
                 let x = (at.x - CARD_W / 2.0).clamp(8.0, size.width - CARD_W - 8.0);
                 let below = at.y + 30.0 + CARD_H <= size.height;
                 return (self.view_user_card(key), x, if below { at.y + 30.0 } else { at.y - 30.0 - CARD_H });
+            }
+            if cid == SPACE_SHEET {
+                let (sheet, w, h) = self.view_space_sheet();
+                let x = if at.x + w > self.pane().size.width { at.x - w } else { at.x };
+                return (sheet, x, at.y.min(self.pane().size.height - h - 8.0));
             }
             let (w, h) = if cid.starts_with("draft:") {
                 (124.0, 31.0)
@@ -8899,6 +8925,128 @@ impl BeeperGuiApp {
         row![menu].push(sub).into()
     }
 
+    /// Desktop's `kS`: the items of a label space menu, after an empty `lead` of that width.
+    fn label_items<'a>(&self, l: &Label, lead: f32) -> Vec<El<'a>> {
+        let p = &self.pal;
+        let blank = || Some(Space::new().width(lead).into());
+        let mute = trx(if l.muted { "Unmute" } else { "Mute" }, "label context menu action");
+        let heading = (!l.name.is_empty()).then(|| menu_heading(p, l.name.clone()));
+        let items = [
+            menu_item(p, blank(), mute.into(), "", Some(UiMessage::MuteLabel(l.id.clone(), !l.muted))),
+            menu_item(p, blank(), tr("Label Settings").into(), "", Some(UiMessage::EditLabel(l.id.clone()))),
+        ];
+        heading.into_iter().chain(items).collect()
+    }
+
+    /// Desktop's space sheet (`zft`): the shown spaces with a check on the selected one, then the hidden spaces. The
+    /// Space Options of an account space or the items of a label space follow, then the space actions. Returns the
+    /// sheet, its width and its height.
+    fn view_space_sheet(&self) -> (El<'_>, f32, f32) {
+        let p = &self.pal;
+        let st = self.store.read();
+        let requests = st.chats.iter().any(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0);
+        let blank = || Some(Space::new().width(22).into());
+        let space = |id: &String| -> El<'_> {
+            let view = RAIL_VIEWS.iter().find(|v| v.0 == id);
+            let label = rail_label(&st, id);
+            let owner = rail_owner(&st, id);
+            let on = match view {
+                Some(v) => self.selected_account_filter.is_none() && v.1 == Some(self.active_tab),
+                None => self.selected_account_filter.as_ref() == Some(id),
+            };
+            let glyph: El = match (view, label) {
+                (Some(v), _) => {
+                    let (g, size) = match v.0 {
+                        "inbox" => (icon::INBOX, 13.0),
+                        "archive" => (icon::ARCHIVE, 12.0),
+                        "reminders" => (icon::SCHEDULE, 12.0),
+                        "scheduled" => (icon::SCHEDULE_SEND, 12.0),
+                        "requests" => (icon::EMAIL, 12.0),
+                        "low_priority" => (icon::LOW_PRIORITY_SPACE, 12.0),
+                        _ => (icon::MAPS_UGC, 12.0),
+                    };
+                    let dot = (v.0 == "requests" && requests).then(|| {
+                        let dot = container(Space::new()).width(6).height(6);
+                        container(dot.style(bordered_box(p.accent, p.text, 1.0, 3.0))).align_right(16)
+                    });
+                    stack![container(ic(g, size)).center(14)].push(dot).into()
+                }
+                (None, Some(l)) => label_icon(l, 14.0, p.strong),
+                (None, None) => svg(brand_svg(brand_key(&owner))).width(14).height(14).into(),
+            };
+            let muted = match (view, label) {
+                (Some(_), _) => false,
+                (None, Some(l)) => l.muted,
+                (None, None) => !st.settings.account(&owner).notifications,
+            };
+            let status = (view.is_none() && label.is_none()).then(|| status_text(&st, &owner)).flatten();
+            let badge = status.map(|s| container(semi(tr(s), 10.0)).padding([2, 6]).style(fill_box(p.chip, 9.0)));
+            let line = row![
+                container(on.then(|| ic(icon::CHECK, 14.0))).width(22),
+                glyph,
+                Space::new().width(6),
+                txt(space_name(&st, id), 13.0),
+                Space::new().width(4)
+            ]
+            .push(muted.then(|| ic(icon::NOTIFICATIONS_OFF, 12.0)))
+            .push(Space::new().width(Fill))
+            .push(badge);
+            menu_line(p, line, Some(space_msg(id)))
+        };
+        let shown: Vec<El> = rail_spaces(&st).iter().map(space).collect();
+        let hidden: Vec<El> = hidden_spaces(&st).iter().map(space).collect();
+        let rules = 1 + usize::from(!shown.is_empty() && !hidden.is_empty());
+        let mut top: Vec<El> = shown;
+        if rules == 2 {
+            top.push(menu_rule(p));
+        }
+        top.extend(hidden);
+        top.push(menu_rule(p));
+        let mut h = (top.len() - rules) as f32 * MENU_ITEM + rules as f32 * 11.0;
+        let entry = self.selected_account_filter.as_deref();
+        let options = match entry.map(|e| (e, rail_label(&st, e))) {
+            Some((_, Some(l))) => {
+                let items = self.label_items(l, 22.0);
+                h += items.len() as f32 * MENU_ITEM + 11.0;
+                top.extend(items.into_iter().chain([menu_rule(p)]));
+                None
+            }
+            Some((e, None)) => Some(e),
+            None => None,
+        };
+        let open = UiMessage::ChatSub(Some(1));
+        let item = menu_item(p, blank(), tr("Space Options").into(), "›", Some(open.clone()));
+        let options_item = options.map(|_| mouse_area(item).on_enter(open));
+        let options_top = h;
+        let labels = st.feature("labels-v2").show;
+        let rest = column![menu_item(p, blank(), tr("Select Chats").into(), "", Some(UiMessage::ToggleSelectMode))]
+            .push(labels.then(|| {
+                menu_item(p, blank(), tr("New Label").into(), "", Some(UiMessage::OpenCreateLabel(Vec::new())))
+            }))
+            .push(menu_rule(p))
+            .push(menu_item(p, blank(), tr("Edit Spaces...").into(), "", Some(UiMessage::OpenEditSpaces)))
+            .push(menu_item(
+                p,
+                blank(),
+                tr("Add/Remove Accounts...").into(),
+                "",
+                Some(UiMessage::OpenSettings(SettingsTab::Accounts)),
+            ));
+        h += 8.0 + f32::from(u8::from(options.is_some()) + 3 + u8::from(labels)) * MENU_ITEM + 11.0;
+        let top = mouse_area(Column::with_children(top)).on_enter(UiMessage::ChatSub(None));
+        let rest = mouse_area(rest).on_enter(UiMessage::ChatSub(None));
+        let sheet = column![top].push(options_item).push(rest).padding([4, 0]);
+        let sheet = container(sheet).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        drop(st);
+        let sub = options.filter(|_| self.chat_sub.is_some()).map(|e| {
+            let (menu, sub) = self.account_menu(e, SpaceMenu::Options);
+            column![Space::new().height(options_top), row![menu].push(sub)]
+        });
+        let w =
+            233.0 + sub.as_ref().map_or(0.0, |_| 233.0 + if self.chat_sub == Some(0) { ACCOUNT_SUB_W } else { 0.0 });
+        (row![sheet].push(sub).into(), w, h)
+    }
+
     /// The menu of a sidebar space and its Show in Inbox submenu. The gear menu of the Edit Spaces window
     /// (`mYe` and `gYe`) has fewer items, and the sidebar header menu (`Ede` with `Ide` or `Ade`) starts with
     /// Select Chats.
@@ -8974,7 +9122,7 @@ impl BeeperGuiApp {
                     item(tr("Edit Label..."), UiMessage::EditLabel(l.id.clone())),
                     item(tr("Delete Label"), UiMessage::AskDeleteLabel(l.id.clone())),
                 ],
-                SpaceMenu::Prefs => unreachable!("the Accounts settings list accounts, not labels"),
+                SpaceMenu::Prefs | SpaceMenu::Options => unreachable!("only account spaces have these menus"),
                 SpaceMenu::Gear => column![
                     inbox,
                     item(trx(mute, "label context menu action"), UiMessage::MuteLabel(l.id.clone(), !l.muted)),
@@ -9032,7 +9180,7 @@ impl BeeperGuiApp {
         let settings = UiMessage::OpenAccountSettings(account.into());
         let rest = match kind {
             SpaceMenu::Gear => column![mute],
-            SpaceMenu::Header => {
+            SpaceMenu::Header | SpaceMenu::Options => {
                 column![mute, menu_rule(p), menu_item(p, None, tr("Account Settings...").into(), "", Some(settings))]
             }
             SpaceMenu::Prefs => {
@@ -9059,7 +9207,7 @@ impl BeeperGuiApp {
         let col = column![
             select,
             mouse_area(inbox).on_enter(UiMessage::ChatSub(Some(0))),
-            mouse_area(rest).on_enter(UiMessage::ChatSub(None))
+            mouse_area(rest).on_enter(UiMessage::ChatSub((kind == SpaceMenu::Options).then_some(1)))
         ];
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         (menu.into(), sub.map(Into::into))
@@ -9962,7 +10110,9 @@ impl BeeperGuiApp {
         let entry = self.selected_account_filter.clone().unwrap_or_else(|| {
             RAIL_VIEWS.iter().find(|v| v.1 == Some(self.active_tab)).expect("a sidebar view").0.to_string()
         });
-        let title = mouse_area(title).on_right_press(UiMessage::OpenChatMenu(format!("head:{entry}")));
+        let title = mouse_area(title)
+            .on_press(UiMessage::OpenChatMenu(SPACE_SHEET.into()))
+            .on_right_press(UiMessage::OpenChatMenu(format!("head:{entry}")));
         let title = container(title).width(Fill).clip(true);
         let head_btn = |c: char, size: f32, [l, r]: [f32; 2], msg: UiMessage| {
             button(container(ic(c, size).color(p.strong)).padding(Padding::ZERO.left(l).right(r).top(2.0)).center_y(26))
