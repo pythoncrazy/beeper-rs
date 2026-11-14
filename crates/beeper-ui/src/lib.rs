@@ -451,6 +451,7 @@ pub enum UiMessage {
     SwitchLabel(String, String, bool),
     /// Desktop's `Txe`: undoes the last action, with an "Undo:" toast.
     UndoAction,
+    FloatRail(bool),
     SetSpacesOrder(Vec<SpaceOrder>),
     /// Puts back the name, color, icon and chats of a label.
     RestoreLabel(Box<Label>),
@@ -3720,6 +3721,8 @@ pub struct BeeperGuiApp {
     sticky_banner: Option<String>,
     pub dnd_muted: bool,
     pub sidebar_width: f32,
+    /// Whether the hidden space bar floats over the chat list, like Desktop's `account-switcher--floating`.
+    rail_float: bool,
     /// Desktop's local `sidebar-hidden`: hides the rail and the chat list.
     pub sidebar_hidden: bool,
     pub dragging: bool,
@@ -3916,6 +3919,7 @@ impl BeeperGuiApp {
             sticky_banner: None,
             dnd_muted: false,
             sidebar_width,
+            rail_float: false,
             sidebar_hidden,
             dragging: false,
             rail_hover: None,
@@ -4637,18 +4641,22 @@ impl BeeperGuiApp {
         let text = self.pane().composer.text();
         let line = &text[text[..trigger].rfind('\n').map_or(0, |i| i + 1)..trigger];
         let x = 8.0 + plus + 8.0 + 14.0 + 2.0 + text_width(line, 13.0, Weight::Normal);
-        let x = x.min(self.pane().size.width / self.zoom - self.left_width(st) - width - 36.0);
+        let x = x.min(self.pane().size.width / self.zoom - self.left_width() - width - 36.0);
         Some(container(list).align_bottom(Fill).padding(Padding::ZERO.left(x).bottom(34.0)).into())
     }
 
-    /// The width of the rail and the chat list.
-    fn left_width(&self, st: &BeeperStore) -> f32 {
-        let rail = if st.settings.on("showSidebar") { 68.0 } else { 0.0 };
+    /// The width of the rail and the chat list. Desktop keeps it when the space bar hides.
+    fn left_width(&self) -> f32 {
         if self.sidebar_hidden {
             0.0
         } else {
-            rail + self.sidebar_width
+            68.0 + self.sidebar_width
         }
+    }
+
+    /// The width of the chat list: Desktop's `threads` width, which takes the space of a hidden space bar.
+    fn list_width(&self, st: &BeeperStore) -> f32 {
+        self.sidebar_width + if st.settings.on("showSidebar") { 0.0 } else { 68.0 }
     }
 
     /// The message features of the chat of `m`.
@@ -7795,9 +7803,9 @@ impl BeeperGuiApp {
             }
             UiMessage::DragStart => self.dragging = true,
             UiMessage::ResetSidebarWidth => self.sidebar_width = SIDEBAR_WIDTH,
+            UiMessage::FloatRail(on) => self.rail_float = on,
             UiMessage::DragMoved(pt) => {
-                let rail = if self.store.read().settings.on("showSidebar") { 68.0 } else { 0.0 };
-                let width = pt.x - rail - 2.0;
+                let width = pt.x - 68.0 - 2.0;
                 if width >= 172.0 {
                     self.sidebar_width = width.min(732.0);
                 }
@@ -8458,11 +8466,31 @@ impl BeeperGuiApp {
             let content = container(row![pane].push(info)).padding(8).style(fill_box(p.selected, 18.0));
             column![self.view_selection_head(), content, self.view_selection_bar()].spacing(8).padding(pad).into()
         };
-        let rail = self.store.read().settings.on("showSidebar");
-        let rail = rail.then(|| self.view_rail()).filter(|_| !self.sidebar_hidden);
+        let shown = self.store.read().settings.on("showSidebar");
+        let rail = (shown && !self.sidebar_hidden).then(|| self.view_rail());
         let sidebar = (!self.sidebar_hidden).then(|| self.view_sidebar());
         let body = Row::new().push(rail).push(sidebar).push(stack![right, grip]);
-        container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0)).into()
+        let body = container(body).width(Fill).height(Fill).style(fill_box(p.window, 0.0));
+        // Desktop's `hoveringTrigger`: with the space bar hidden, the 20px at the left edge slide it in over the list.
+        let float = (!shown && !self.sidebar_hidden).then(|| -> El<'_> {
+            match self.rail_float {
+                true => {
+                    let rail = container(self.view_rail()).height(Fill).style(|_: &Theme| container::Style {
+                        shadow: Shadow {
+                            color: Color::BLACK.scale_alpha(0.2),
+                            offset: Vector::ZERO,
+                            blur_radius: 16.0,
+                        },
+                        ..Default::default()
+                    });
+                    // Over the space bar, so its buttons do not hide the pointer from the area.
+                    let watch = mouse_area(Space::new().width(68).height(Fill)).on_exit(UiMessage::FloatRail(false));
+                    stack![rail, watch].into()
+                }
+                false => mouse_area(Space::new().width(20).height(Fill)).on_enter(UiMessage::FloatRail(true)).into(),
+            }
+        });
+        stack![body].push(float).into()
     }
 
     pub fn view_main<'a>(&'a self) -> El<'a> {
@@ -8798,7 +8826,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let chats = self.selected_chats(&st);
         let all = |f: ChatFlag| chats.iter().all(|c| has_flag(c, f));
-        let x0 = self.left_width(&st) + 8.0;
+        let x0 = self.left_width() + 8.0;
         let cell = (self.pane().size.width - x0 - 16.0) / 6.0;
         let toggles = [
             (
@@ -10735,8 +10763,8 @@ impl BeeperGuiApp {
 
     fn view_sidebar(&self) -> El<'_> {
         let p = &self.pal;
-        let w = self.sidebar_width;
         let st = self.store.read();
+        let w = self.list_width(&st);
         let chats = self.visible_chats(&st);
         let h24 = st.settings.pref("timeFormat") == 1;
         let compact = st.settings.on("compactChatList");
@@ -10744,16 +10772,25 @@ impl BeeperGuiApp {
             if compact { (28.0, 1, 13.0, 10.0, 40.0) } else { (46.0, 2, 14.0, 11.0, 52.0) };
         let names: Vec<&str> =
             (0..FILTERS.len()).filter(|i| self.filters & 1 << i != 0).map(|i| tr(FILTERS[i].0)).collect();
-        let heading =
-            self.selected_account_filter.as_deref().map_or(self.active_tab.label().to_string(), |id| {
-                match (rail_label(&st, id), network_space(&st, id)) {
-                    (Some(l), _) => l.name.clone(),
-                    (None, Some(n)) => n.name.clone(),
-                    (None, None) => network_label(id).to_string(),
-                }
-            });
+        let heading = self
+            .selected_account_filter
+            .as_deref()
+            .map_or(self.active_tab.label().to_string(), |id| space_name(&st, id));
         let heading = semi(heading, 13.0).color(p.strong).wrapping(iced::widget::text::Wrapping::None);
-        let title = column![row![heading, ic(icon::UNFOLD_MORE, 12.0).color(p.weak)].spacing(1.4).align_y(Center)]
+        // Desktop's space icon before the title when the space bar is hidden: a label with a color, a network space,
+        // or an account with another account on its network.
+        let shown = st.settings.on("showSidebar");
+        let space_icon = self.selected_account_filter.as_deref().filter(|_| !shown).and_then(|id| -> Option<El<'_>> {
+            if let Some(l) = rail_label(&st, id) {
+                return l.color.is_some().then(|| label_icon(l, 16.0, p.strong));
+            }
+            let owner = rail_owner(&st, id);
+            let twins = st.accounts.iter().filter(|a| brand_key(&a.account_id) == brand_key(&owner)).count() > 1;
+            let icon = svg(brand_svg(brand_key(&owner))).width(16).height(16);
+            (network_space(&st, id).is_some() || twins).then(|| icon.into())
+        });
+        let line = row![].push(space_icon.map(|i| container(i).padding(Padding::ZERO.right(4.0)))).push(heading);
+        let title = column![line.push(ic(icon::UNFOLD_MORE, 12.0).color(p.weak)).spacing(1.4).align_y(Center)]
             .push((!names.is_empty()).then(|| txt(names.join(", "), 10.0).color(p.sub)))
             .padding([0, 8]);
         let entry = self.selected_account_filter.clone().unwrap_or_else(|| {

@@ -1153,12 +1153,15 @@ async fn lifecycle() {
     let _ = gui.update(UiMessage::SelectAccount(Some("c1".into())));
     assert!(simulator(gui.view_main()).find("Community").is_err(), "WhatsApp Communities are not spaces by default");
     let _ = gui.update(UiMessage::SetPref("whatsappCommunities", 1));
-    assert!(simulator(gui.view_main()).find("Community").is_ok(), "the setting shows WhatsApp Communities as spaces");
+    assert!(
+        simulator(gui.view_main()).find("Community (WhatsApp)").is_ok(),
+        "the setting shows WhatsApp Communities as spaces"
+    );
     let _ = gui.update(UiMessage::SetPref("whatsappCommunities", 0));
     let _ = gui.update(UiMessage::SelectAccount(Some("g1".into())));
     {
         let mut sim = simulator(gui.view_main());
-        assert!(sim.find("Guild").is_ok(), "the header shows the server name");
+        assert!(sim.find("Guild (Signal)").is_ok(), "the header shows the server name and its network");
         assert!(sim.find("You have no messages").is_ok(), "a server without chats is empty");
     }
     {

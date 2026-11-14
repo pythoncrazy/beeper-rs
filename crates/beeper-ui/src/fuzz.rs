@@ -2802,6 +2802,51 @@ fn pinned_grid_and_range_selection_like_desktop() {
 }
 
 #[test]
+fn hidden_space_bar_floats_like_desktop() {
+    let mut app = demo_app("float-rail");
+    let main = app.main_window.expect("a main window");
+    assert_eq!(app.list_width(&app.store.read()), SIDEBAR_WIDTH);
+    let _ = app.update(UiMessage::RunHotkey("Toggle Space Bar"));
+    assert!(!app.store.read().settings.on("showSidebar"));
+    assert_eq!(app.list_width(&app.store.read()), SIDEBAR_WIDTH + 68.0, "the list takes the width of the space bar");
+    let hover = |app: &BeeperGuiApp, xs: &[f32]| {
+        let moved =
+            xs.iter().map(|&x| iced::Event::Mouse(mouse::Event::CursorMoved { position: Point::new(x, 300.0) }));
+        interact(app, main, Size::new(1440.0, 900.0), Point::new(xs[0], 300.0), moved.collect())
+    };
+    assert!(!hover(&app, &[100.0]).iter().any(|m| matches!(m, UiMessage::FloatRail(true))));
+    let msgs = hover(&app, &[5.0]);
+    assert!(msgs.iter().any(|m| matches!(m, UiMessage::FloatRail(true))), "the left edge slides the space bar in");
+    let _ = app.update(UiMessage::FloatRail(true));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(main));
+    for x in [30.0, 200.0] {
+        sim.point_at(Point::new(x, 300.0));
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: Point::new(x, 300.0) })]);
+    }
+    let msgs: Vec<UiMessage> = sim.into_messages().collect();
+    assert!(msgs.iter().any(|m| matches!(m, UiMessage::FloatRail(false))), "leaving the space bar hides it");
+    let account = {
+        let mut st = app.store.write();
+        let kind = |a: &str| account_network(a).kind;
+        let other =
+            |b: &&BridgeAccountInfo| !matches!(kind(&b.account_id), NetworkKind::WhatsApp | NetworkKind::Telegram);
+        let account = st.bridge_accounts.iter().find(other).expect("a network with spaces").account_id.clone();
+        st.network_spaces.push(NetworkSpace {
+            id: "!acme:beeper.local".into(),
+            account_id: account.clone(),
+            name: "Acme".into(),
+        });
+        account
+    };
+    let _ = app.update(UiMessage::SelectAccount(Some("!acme:beeper.local".into())));
+    let title = format!("Acme ({})", network_label(&account));
+    assert!(
+        simulator(app.view_sidebar()).find(title.as_str()).is_ok(),
+        "the header names the network space and its network"
+    );
+}
+
+#[test]
 fn message_requests_like_desktop() {
     let mut app = demo_app("message-requests");
     let dms: Vec<String> = {
