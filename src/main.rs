@@ -27,10 +27,11 @@ Environment:
   BEEPER_MATRIX_URL   Matrix homeserver (default https://matrix.beeper.com)";
 
 #[cfg(target_os = "linux")]
-mod frame {
-    use wayland_client::globals::{Global, GlobalListContents as G};
+mod display {
+    use wayland_client::globals::GlobalListContents as G;
     use wayland_client::protocol::wl_registry::{Event as E, WlRegistry as R};
     use wayland_client::{Connection as C, Dispatch, QueueHandle as Q};
+    use x11rb::connection::RequestConnection;
 
     struct Probe;
 
@@ -38,15 +39,31 @@ mod frame {
         fn event(_: &mut Self, _: &R, _: E, _: &G, _: &C, _: &Q<Self>) {}
     }
 
-    pub fn x11() -> bool {
-        let set = ["DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"].map(std::env::var_os);
-        let ssd = || {
-            let c = C::connect_to_env().ok()?;
+    /// Picks the window system and the renderer. It sets environment variables, so call it before any thread starts.
+    /// It uses X11 when the Wayland compositor does not draw window frames. It uses tiny-skia when the display
+    /// cannot show GPU frames, because wgpu then loads every Vulkan driver and renders on the CPU with lavapipe.
+    pub fn setup() {
+        let wayland = C::connect_to_env().ok().and_then(|c| {
             let (globals, _) = wayland_client::globals::registry_queue_init::<Probe>(&c).ok()?;
-            let has = |l: &[Global]| l.iter().any(|g| g.interface.starts_with("zxdg_decoration"));
-            Some(globals.contents().with_list(has))
+            Some(globals.contents().with_list(|l| l.iter().map(|g| g.interface.clone()).collect::<Vec<_>>()))
+        });
+        let has = |interface: &str| wayland.iter().flatten().any(|g| g.starts_with(interface));
+        let set = ["DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"].map(std::env::var_os);
+        let x11 = set.map(|v| v.is_some()) == [true, true, false] && !has("zxdg_decoration");
+        if x11 {
+            unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
+        }
+        let gpu_display = match wayland.is_some() && !x11 {
+            true => has("zwp_linux_dmabuf_v1"),
+            false => x11rb::connect(None).is_ok_and(|(c, _)| {
+                ["DRI3", "NV-GLX"].iter().any(|e| c.extension_information(e).is_ok_and(|i| i.is_some()))
+            }),
         };
-        set.map(|v| v.is_some()) == [true, true, false] && ssd().is_none_or(|s| !s)
+        let render_node = std::fs::read_dir("/dev/dri")
+            .is_ok_and(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("renderD")));
+        if std::env::var_os("ICED_BACKEND").is_none() && !(gpu_display && render_node) {
+            unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia") };
+        }
     }
 }
 
@@ -57,10 +74,6 @@ enum Command {
 }
 
 fn main() {
-    #[cfg(target_os = "linux")]
-    if frame::x11() {
-        unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
-    }
     let mut launch_host = std::env::var("BEEPER_PAS_HOST").ok();
     let mut port: u16 =
         std::env::var("BEEPER_PAS_PORT").map_or(DEFAULT_PAS_PORT, |v| v.parse().expect("BEEPER_PAS_PORT is a port"));
@@ -80,6 +93,10 @@ fn main() {
             "--help" | "-h" => return println!("{HELP}"),
             other => panic!("unexpected argument: {other}"),
         }
+    }
+    #[cfg(target_os = "linux")]
+    if let Command::Gui = command {
+        display::setup();
     }
     let host = launch_host.clone().unwrap_or_else(|| DEFAULT_PAS_HOST.to_string());
     let data_dir = data_dir.unwrap_or_else(|| {
