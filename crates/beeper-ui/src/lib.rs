@@ -3535,7 +3535,11 @@ struct Memo {
     generation: std::cell::Cell<u64>,
     /// The chat list by tab, filters and account, as indices of `chats`.
     lists: std::cell::RefCell<HashMap<ListKey, Rc<[usize]>>>,
+    /// The last chat list of each tab, filters and account, from any store generation, where the next sort starts.
+    last: std::cell::RefCell<HashMap<ListKey, Rc<[usize]>>>,
     counts: std::cell::RefCell<HashMap<String, usize>>,
+    /// The virtual list keys of the chat rows by tab, filters and account.
+    keys: std::cell::RefCell<HashMap<ListKey, Rc<[u64]>>>,
     /// All chats newest first, and the lowercase title and search subtitle of each chat.
     words: std::cell::RefCell<Option<Words>>,
     /// The command bar finds for a query, its filters and its room.
@@ -4340,15 +4344,29 @@ impl BeeperGuiApp {
 
     /// The chats of the list with `filters`, computed once for each store generation.
     fn chats_with<'a>(&self, st: &'a BeeperStore, filters: u8) -> Vec<&'a Chat> {
-        let Some(memo) = self.memo() else { return self.sorted_chats(st, filters) };
         let key = (self.active_tab, filters, self.selected_account_filter.clone());
-        let known = memo.lists.borrow().get(&key).cloned();
+        let memo = self.memo();
+        let known = memo.and_then(|m| m.lists.borrow().get(&key).cloned());
         let order = known.unwrap_or_else(|| {
-            let order: Rc<[usize]> = self.sorted_chats(st, filters).iter().map(|c| st.chat_idx_by_id[&c.id]).collect();
-            memo.lists.borrow_mut().insert(key, order.clone());
+            let last = self.memo.last.borrow().get(&key).cloned().unwrap_or_else(|| Rc::new([]));
+            let order: Rc<[usize]> = self.sorted_chats(st, filters, &last).into();
+            if let Some(m) = memo {
+                m.lists.borrow_mut().insert(key.clone(), order.clone());
+                m.last.borrow_mut().insert(key, order.clone());
+            }
             order
         });
         order.iter().map(|&i| &st.chats[i]).collect()
+    }
+
+    /// The virtual list keys of the chat rows of the list, made once for each store generation.
+    fn row_keys(&self, rest: &[&Chat]) -> Rc<[u64]> {
+        let make = || rest.iter().map(|c| vlist::key(&c.id)).collect();
+        let Some(memo) = self.memo() else { return make() };
+        let key = (self.active_tab, self.filters, self.selected_account_filter.clone());
+        let keys = memo.keys.borrow_mut().entry(key).or_insert_with(make).clone();
+        assert_eq!(keys.len(), rest.len(), "the memo has the keys of the same rows");
+        keys
     }
 
     /// A count of chats, computed once for each store generation.
@@ -4368,46 +4386,51 @@ impl BeeperGuiApp {
         if self.memo.generation.replace(generation) != generation {
             self.memo.lists.borrow_mut().clear();
             self.memo.counts.borrow_mut().clear();
+            self.memo.keys.borrow_mut().clear();
             self.memo.words.take();
             self.memo.hits.take();
         }
         Some(&self.memo)
     }
 
-    fn sorted_chats<'a>(&self, st: &'a BeeperStore, filters: u8) -> Vec<&'a Chat> {
-        let mut list: Vec<&Chat> = st
-            .chats
-            .iter()
-            .filter(|c| {
-                let on = |i: usize| filters & 1 << i != 0;
-                let shown = |i: usize| on(i) || !filter_hit(i, c, st);
-                c.merged_into_chat_id.is_none()
-                    && self.selected_account_filter.as_ref().is_none_or(|a| in_rail_entry(st, a, c))
-                    && match self.active_tab {
-                        InboxTab::AllChats => {
-                            let hidden = if self.selected_account_filter.is_some() { 0 } else { CHAT_HIDDEN };
-                            c.flags & hidden == 0 && shown(F_ARCHIVED) && shown(F_LOW_PRIORITY) && shown(F_REQUESTS)
-                        }
-                        InboxTab::Requests => c.flags & CHAT_REQUEST != 0,
-                        InboxTab::Archived => c.flags & CHAT_ARCHIVED != 0 && shown(F_REQUESTS),
-                        InboxTab::LowPriority => {
-                            c.flags & CHAT_LOW_PRIORITY != 0 && shown(F_ARCHIVED) && shown(F_REQUESTS)
-                        }
-                        InboxTab::Reminders => c.reminder.is_some(),
-                        InboxTab::SendLater => st.scheduled.iter().any(|s| s.chat_id == c.id),
+    /// The chat indices of the list with `filters` in list order. The sort starts from `last`, the order of an
+    /// older store generation, which it changes little, and its keys end with the chat index, so the order does not
+    /// depend on `last`.
+    fn sorted_chats(&self, st: &BeeperStore, filters: u8, last: &[usize]) -> Vec<usize> {
+        let keep = |c: &Chat| {
+            let on = |i: usize| filters & 1 << i != 0;
+            let shown = |i: usize| on(i) || !filter_hit(i, c, st);
+            c.merged_into_chat_id.is_none()
+                && self.selected_account_filter.as_ref().is_none_or(|a| in_rail_entry(st, a, c))
+                && match self.active_tab {
+                    InboxTab::AllChats => {
+                        let hidden = if self.selected_account_filter.is_some() { 0 } else { CHAT_HIDDEN };
+                        c.flags & hidden == 0 && shown(F_ARCHIVED) && shown(F_LOW_PRIORITY) && shown(F_REQUESTS)
                     }
-                    && (!self.active_tab.filterable()
-                        || filters == 0
-                        || (0..FILTERS.len()).any(|i| on(i) && filter_hit(i, c, st)))
-            })
+                    InboxTab::Requests => c.flags & CHAT_REQUEST != 0,
+                    InboxTab::Archived => c.flags & CHAT_ARCHIVED != 0 && shown(F_REQUESTS),
+                    InboxTab::LowPriority => c.flags & CHAT_LOW_PRIORITY != 0 && shown(F_ARCHIVED) && shown(F_REQUESTS),
+                    InboxTab::Reminders => c.reminder.is_some(),
+                    InboxTab::SendLater => st.scheduled.iter().any(|s| s.chat_id == c.id),
+                }
+                && (!self.active_tab.filterable()
+                    || filters == 0
+                    || (0..FILTERS.len()).any(|i| on(i) && filter_hit(i, c, st)))
+        };
+        let keep: Vec<bool> = st.chats.iter().map(keep).collect();
+        let mut seen = vec![false; keep.len()];
+        let mut list: Vec<usize> = (last.iter().copied())
+            .filter(|&i| keep.get(i) == Some(&true) && !std::mem::replace(&mut seen[i], true))
             .collect();
-        let remind_at = |c: &Chat| c.reminder.as_ref().map_or(0, |r| r.remind_at_ms);
+        list.extend((0..keep.len()).filter(|&i| keep[i] && !seen[i]));
+        let remind_at = |i: usize| st.chats[i].reminder.as_ref().map_or(0, |r| r.remind_at_ms);
+        let activity = |i: usize| &st.chats[i].last_activity;
         match (self.active_tab, st.settings.reminders_order) {
-            (InboxTab::Reminders, 0) => list.sort_by_key(|c| remind_at(c)),
-            (InboxTab::Reminders, 1) => list.sort_by_key(|c| std::cmp::Reverse(remind_at(c))),
-            (InboxTab::Reminders, 2) => list.sort_by(|a, b| a.last_activity.cmp(&b.last_activity)),
-            (InboxTab::SendLater, _) => list.sort_by_key(|c| next_send(st, &c.id)),
-            _ => list.sort_by(|a, b| b.last_activity.cmp(&a.last_activity)),
+            (InboxTab::Reminders, 0) => list.sort_by_key(|&i| (remind_at(i), i)),
+            (InboxTab::Reminders, 1) => list.sort_by_key(|&i| (std::cmp::Reverse(remind_at(i)), i)),
+            (InboxTab::Reminders, 2) => list.sort_by_key(|&i| (activity(i), i)),
+            (InboxTab::SendLater, _) => list.sort_by_key(|&i| (next_send(st, &st.chats[i].id), i)),
+            _ => list.sort_by_key(|&i| (std::cmp::Reverse(activity(i)), i)),
         }
         list
     }
@@ -11111,7 +11134,7 @@ impl BeeperGuiApp {
             let keys: Vec<u64> = (0..tiles)
                 .map(|i| vlist::key(("pins", i)))
                 .chain(self.new_chats.iter().map(|d| vlist::key(("draft", d.id))))
-                .chain(rest.iter().map(|c| vlist::key(&c.id)))
+                .chain(self.row_keys(&rest).iter().copied())
                 .collect();
             let estimate = if compact { 52.0 } else { 68.0 };
             let rows = self.chat_list.view(&keys, false, estimate, UiMessage::Relist, |i| match i {

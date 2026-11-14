@@ -1340,6 +1340,43 @@ fn command_bar_searches_once_for_each_query() {
     assert!(first.0.windows(2).all(|w| st.messages[w[0]].sort_key > st.messages[w[1]].sort_key), "newest first");
 }
 
+/// The work of an event does not grow with the account: a hover over a list of 2,000 chats builds as many widgets
+/// as a hover over a list of 200 chats.
+#[test]
+fn a_hover_builds_as_many_widgets_with_2000_chats_as_with_200() {
+    struct Count(Arc<std::sync::atomic::AtomicUsize>);
+    impl iced_test::selector::Selector for Count {
+        type Output = ();
+        fn select(&mut self, _: iced_test::selector::Candidate<'_>) -> Option<()> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
+        fn description(&self) -> String {
+            "every widget".into()
+        }
+    }
+    let widgets = |n: usize| {
+        let mut app = demo_app(&format!("scale-{n}"));
+        {
+            let mut st = app.store.write();
+            let chat = st.chats.iter().find(|c| c.flags & CHAT_PINNED == 0).expect("a chat").clone();
+            for i in 0..n {
+                let at = Some(format!("2001-01-01T00:00:{:02}.000Z", i % 60));
+                let (id, title) = (format!("!scale{i}:beeper.local"), format!("Scale {i}"));
+                st.upsert_chat(Chat { id, title, last_activity: at, ..chat.clone() });
+            }
+        }
+        let first = app.visible_chats(&app.store.read())[0].id.clone();
+        let _ = app.update(UiMessage::HoverChat(first, true));
+        let id = app.main_window.expect("a main window");
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id));
+        assert!(sim.find(Count(count.clone())).is_err(), "the count selects no widget");
+        count.load(std::sync::atomic::Ordering::Relaxed)
+    };
+    assert_eq!(widgets(2000), widgets(200), "the widgets of a view do not grow with the chats");
+}
+
 #[test]
 fn forward_rows_open_the_chat_menu_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
