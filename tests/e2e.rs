@@ -1391,14 +1391,23 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         }
         let run_gui = |port: &str, hide: &str, envs: &[(&str, &str)]| {
             let data = temp_dir(&format!("BeeperRs_gui_{port}"));
-            let status = std::process::Command::new(bin_exe)
+            let mut gui = std::process::Command::new(bin_exe)
                 .args(["--data-dir", data.to_str().unwrap(), "--port", port])
                 .args(envs.iter().any(|e| e.0 == "WAYLAND_DISPLAY").then_some("--demo"))
                 .env_remove(hide)
-                .env("ICED_BACKEND", "tiny-skia")
+                .env_remove("ICED_BACKEND")
                 .envs(envs.iter().copied())
-                .status()
+                .spawn()
                 .expect("run beeper-rs GUI");
+            let maps = format!("/proc/{}/maps", gui.id());
+            let status = loop {
+                let libs = std::fs::read_to_string(&maps).expect("read the memory map of the GUI");
+                assert!(!libs.contains("libvulkan"), "the GUI loads Vulkan on a display without a GPU");
+                match gui.try_wait().expect("wait for the GUI") {
+                    Some(status) => break status,
+                    None => std::thread::sleep(std::time::Duration::from_millis(10)),
+                }
+            };
             std::fs::remove_dir_all(&data).expect("remove GUI data dir");
             status
         };
