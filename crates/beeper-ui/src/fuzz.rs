@@ -1042,6 +1042,56 @@ fn long_lists_build_only_the_rows_near_the_viewport() {
     assert!(view(&app).find(first).is_ok(), "a jump builds the message that it shows");
 }
 
+/// Desktop loads the images of the rows that its lists render: a view asks for the media that it shows, and the next
+/// frame starts the loads, so an update does not scan every message of the chat.
+#[test]
+fn views_load_only_the_media_that_they_show() {
+    let mut app = demo_app("lazy-media");
+    let (chat, msg) = {
+        let st = app.store.read();
+        let has_msgs = |c: &&Chat| st.chat_msg_indices.get(&c.id).is_some_and(|m| !m.is_empty());
+        let c = st.chats.iter().filter(|c| c.flags & CHAT_PINNED == 0).find(has_msgs).expect("a chat").clone();
+        (c.clone(), st.messages[st.chat_msg_indices[&c.id][0]].clone())
+    };
+    let url = "https://example.com/old.png";
+    {
+        let mut st = app.store.write();
+        let img = Attachment {
+            attachment_type: "img".into(),
+            src_url: Some(url.into()),
+            file_name: Some("old.png".into()),
+            ..Default::default()
+        };
+        let at = "2001-01-01T00:00:00.000Z".to_string();
+        let old = Message {
+            id: "$old".into(),
+            text: None,
+            attachments: vec![img],
+            sort_key: format!("{:016}", 500),
+            ..msg.clone()
+        };
+        st.upsert_message(Message { timestamp: at.clone(), ..old });
+        for i in 0..100 {
+            let (id, text, sort_key) =
+                (format!("$text{i:03}"), Some(format!("Line {i:03}")), format!("{:016}", 1000 + i));
+            st.upsert_message(Message { id, text, sort_key, timestamp: at.clone(), ..msg.clone() });
+        }
+    }
+    app.select_chat(&chat.id);
+    let _ = app.update(UiMessage::Noop);
+    assert!(!app.media.contains_key(url), "an update does not load the media of a message that no view shows");
+    let _ = app.update(UiMessage::JumpTo(chat.id.clone(), "$old".into()));
+    let id = app.main_window.expect("a main window");
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id));
+    let _ = sim.simulate([iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now()))]);
+    let msgs: Vec<UiMessage> = sim.into_messages().collect();
+    assert!(msgs.iter().any(|m| matches!(m, UiMessage::LoadWanted)), "the frame asks to load the shown media");
+    for m in msgs {
+        let _ = app.update(m);
+    }
+    assert!(app.media.contains_key(url), "the shown media loads");
+}
+
 #[test]
 fn forward_rows_open_the_chat_menu_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};

@@ -38,6 +38,7 @@ pub mod style;
 mod video;
 mod vlist;
 mod voice;
+mod wants;
 
 use crate::i18n::{tr, trf, trn, trnx, trs, trx, trxf};
 use crate::login::{Login, LoginMsg};
@@ -301,6 +302,8 @@ pub enum UiMessage {
     Noop,
     /// A virtual list must build other rows.
     Relist,
+    /// A view shows avatars or media that no task loads yet.
+    LoadWanted,
     DismissBanner,
     SelectTab(InboxTab),
     SelectAccount(Option<String>),
@@ -1787,10 +1790,6 @@ fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
     Ok(frames.into_iter().map(frame).collect())
 }
 
-fn faces(chat: &Chat) -> (Vec<&User>, usize) {
-    faces_of(&chat.participants.items, chat.chat_type == "group")
-}
-
 fn faces_of(users: &[User], group: bool) -> (Vec<&User>, usize) {
     let mut others: Vec<&User> = users.iter().filter(|u| u.is_self != Some(true)).collect();
     let name = |u: &User| {
@@ -1804,13 +1803,6 @@ fn faces_of(users: &[User], group: bool) -> (Vec<&User>, usize) {
     let more = if group && others.len() > 5 { others.len() - 4 } else { 0 };
     let shown = if group { others.len() - more } else { others.len().min(1) };
     (others.into_iter().take(shown).collect(), more)
-}
-
-fn chat_avatar_urls(chat: &Chat) -> Vec<&str> {
-    match chat.img_url.as_deref() {
-        Some(u) => vec![u],
-        None => faces(chat).0.into_iter().filter_map(|u| u.img_url.as_deref()).collect(),
-    }
 }
 
 /// Desktop's `canEditGroup`: a group whose name, avatar or description the user can change.
@@ -3578,6 +3570,7 @@ pub struct BeeperGuiApp {
     pub login: Login,
     pub cloud: Arc<Cloud>,
     pub avatars: HashMap<String, Option<image::Handle>>,
+    wants: wants::Wants,
     pub media: HashMap<String, Option<Result<Frames, String>>>,
     pub resolving_media: HashMap<String, bool>,
     video: Option<video::Video>,
@@ -3760,6 +3753,7 @@ impl BeeperGuiApp {
             login: Login::new(source),
             cloud,
             avatars: HashMap::new(),
+            wants: wants::Wants::default(),
             media: HashMap::new(),
             resolving_media: HashMap::new(),
             video: None,
@@ -3793,35 +3787,12 @@ impl BeeperGuiApp {
         (app, Task::batch(tasks.into_iter().chain(cloud).chain(restore).chain(link)))
     }
 
+    /// Starts the loads of the avatars that a view asked for, when a client can load them.
     fn load_avatars(&mut self) -> Task<UiMessage> {
-        let st = self.store.read();
-        let Some(client) = st.matrix.clone() else { return Task::none() };
-        let selected =
-            self.pane.selected_chat_id.as_ref().and_then(|id| st.chat_idx_by_id.get(id)).map(|&i| &st.chats[i]);
-        let members = selected.into_iter().flat_map(|c| &c.participants.items).filter_map(|u| u.img_url.as_deref());
-        let visible = self.visible_chats(&st);
-        let senders = visible.iter().copied().chain(st.chats.iter()).filter_map(|c| {
-            let &i = st.chat_msg_indices.get(&c.id)?.last()?;
-            preview_sender(c, &st.messages[i])?.img_url.as_deref()
-        });
-        let recents = st.recent_chat_ids.iter().filter_map(|id| st.chat_idx_by_id.get(id).map(|&i| &st.chats[i]));
-        let raw = visible
-            .iter()
-            .copied()
-            .chain(recents)
-            .chain(&st.chats)
-            .flat_map(chat_avatar_urls)
-            .chain(members)
-            .chain(senders)
-            .chain(st.me().img_url.as_deref());
-        let mut urls = Vec::new();
-        for u in raw {
-            if !self.avatars.contains_key(u) {
-                self.avatars.insert(u.to_string(), None);
-                urls.push(u.to_string());
-            }
-        }
-        drop(st);
+        let Some(client) = self.store.read().matrix.clone() else { return Task::none() };
+        let urls = std::mem::take(&mut *self.wants.avatars.borrow_mut());
+        let urls: Vec<String> = urls.into_iter().filter(|u| !self.avatars.contains_key(u)).collect();
+        self.avatars.extend(urls.iter().map(|u| (u.clone(), None)));
         Task::batch(urls.into_iter().map(|url| {
             let (client, u) = (client.clone(), url.clone());
             Task::perform(
@@ -3836,7 +3807,14 @@ impl BeeperGuiApp {
     }
 
     fn face<'a>(&self, url: Option<&str>, name: &str, size: f32, ls: f32) -> El<'a> {
-        match url.and_then(|u| self.avatars.get(u)?.clone()) {
+        let loaded = url.and_then(|u| match self.avatars.get(u) {
+            Some(h) => h.clone(),
+            None => {
+                self.wants.ask(&self.wants.avatars, u);
+                None
+            }
+        });
+        match loaded {
             Some(h) => image(h).width(size).height(size).into(),
             None => avatar(name, size, ls, &self.pal),
         }
@@ -7234,6 +7212,7 @@ impl BeeperGuiApp {
             }
             UiMessage::Noop => {}
             UiMessage::Relist => return Task::none(),
+            UiMessage::LoadWanted => return Task::batch([self.load_avatars(), self.load_media()]),
             UiMessage::OpenUrl(url) => {
                 let (cmd, args) = open_url_or_path_command(self.os, &url);
                 let open = move || match std::process::Command::new(&cmd).args(args).status() {
@@ -7804,6 +7783,17 @@ impl BeeperGuiApp {
         Task::batch([self.load_avatars(), self.load_media(), self.push_outbox()])
     }
 
+    /// The media at `url`. A view that shows a URL that no task loads asks for it.
+    fn media_at(&self, url: &str) -> Option<&Result<Frames, String>> {
+        match self.media.get(url) {
+            Some(m) => m.as_ref(),
+            None => {
+                self.wants.ask(&self.wants.media, url);
+                None
+            }
+        }
+    }
+
     fn media_mut(&mut self) -> &mut MediaWindow {
         self.media_window.as_mut().expect("the Media window is open")
     }
@@ -7814,46 +7804,13 @@ impl BeeperGuiApp {
         self.load_media()
     }
 
+    /// Starts the loads of the media that a view asked for, when a client or HTTPS can load them.
     fn load_media(&mut self) -> Task<UiMessage> {
-        let st = self.store.read();
-        let client = st.matrix.clone();
-        let images = self
-            .pane
-            .selected_chat_id
-            .as_ref()
-            .and_then(|chat| st.chat_msg_indices.get(chat))
-            .into_iter()
-            .flatten()
-            .flat_map(|&i| &st.messages[i].attachments)
-            .filter(|a| matches!(a.attachment_type.as_str(), "img" | "video"))
-            .filter_map(|a| a.poster_img.clone().or_else(|| a.src_url.clone()));
-        let gif_urls = (self.pane.picker == Some(Picker::Gif))
-            .then(|| self.gifs.iter().map(|g| g.preview_url.clone()))
-            .into_iter()
-            .flatten();
-        let hits = self.media_hits(&st);
-        let found =
-            hits.iter().flat_map(|m| &m.attachments).filter(|a| matches!(a.attachment_type.as_str(), "img" | "video"));
-        let found = found.filter_map(|a| a.poster_img.clone().or_else(|| a.src_url.clone()));
-        let tiles = self.media_window.iter().filter(|w| w.tab == 0);
-        let tiles = tiles.flat_map(|w| media_items(&st, w).into_iter().take(w.shown));
-        let shown = match &self.carousel {
-            Some(c) if c.in_media => {
-                let (items, at) = self.carousel_items(&st);
-                let size = self.media_window.as_ref().expect("the Media window is open").size;
-                let (start, end) = filmstrip(&size, at, items.len());
-                items[start..end].to_vec()
-            }
-            c => c.iter().map(|c| (c.mid.clone(), c.ai)).collect(),
-        };
-        let shown = shown.into_iter().map(|(m, k)| (st.msg_idx_by_id[&m], k));
-        let viewer = tiles.chain(shown).filter_map(|(i, k)| {
-            let a = &st.messages[i].attachments[k];
-            a.poster_img.clone().or_else(|| a.src_url.clone())
-        });
-        let loadable = |u: &String| !self.media.contains_key(u) && (client.is_some() || u.starts_with("https://"));
-        let urls: HashSet<String> = images.chain(gif_urls).chain(found).chain(viewer).filter(loadable).collect();
-        drop(st);
+        let client = self.store.read().matrix.clone();
+        let loadable = |u: &String| client.is_some() || u.starts_with("https://");
+        let (urls, rest) = std::mem::take(&mut *self.wants.media.borrow_mut()).into_iter().partition(loadable);
+        *self.wants.media.borrow_mut() = rest;
+        let urls: Vec<String> = urls.into_iter().filter(|u| !self.media.contains_key(u)).collect();
         self.media.extend(urls.iter().map(|u| (u.clone(), None)));
         let audio = self.load_audio();
         let bookmarks = self.load_bookmarks();
@@ -8060,10 +8017,11 @@ impl BeeperGuiApp {
         self.drawing.set(self.chat_windows.iter().any(|w| w.0 == id).then_some(id));
         let el = cursor::root(self.view_window(id), arrow, &self.cursor);
         self.drawing.set(None);
-        match self.chat_windows.iter().any(|w| w.0 == id) {
+        let el = match self.chat_windows.iter().any(|w| w.0 == id) {
             true => Element::from(el).map(move |m| UiMessage::InWindow(id, Box::new(m))),
             false => el.into(),
-        }
+        };
+        self.wants.watch(el, UiMessage::LoadWanted)
     }
 
     fn view_window(&self, id: window::Id) -> El<'_> {
@@ -11293,7 +11251,7 @@ impl BeeperGuiApp {
                         .style(fill_box(Color::BLACK.scale_alpha(alpha), 17.0))
                         .into()
                     };
-                    let base: El<'_> = match thumb_url.as_ref().and_then(|u| self.media.get(u)?.as_ref()) {
+                    let base: El<'_> = match thumb_url.as_ref().and_then(|u| self.media_at(u)) {
                         Some(Ok(frames)) => {
                             anim::gif(frames, self.started, move |f| image(f).width(w).height(h).border_radius(17.0))
                         }
@@ -11306,28 +11264,27 @@ impl BeeperGuiApp {
                             .style(fill_box(p.link_card, 17.0))
                             .into(),
                     };
-                    let (slot, press): (El<'_>, _) = if let Some(raw) =
-                        m.unresolved_media.as_ref().filter(|_| !is_video)
-                    {
-                        let failed = self.resolving_media.get(&m.id) == Some(&false);
-                        let (label, alpha) = match failed {
-                            true => (tr("Could not load. Click to try again"), 0.45),
-                            false => (tr("Click to load"), 0.25),
+                    let (slot, press): (El<'_>, _) =
+                        if let Some(raw) = m.unresolved_media.as_ref().filter(|_| !is_video) {
+                            let failed = self.resolving_media.get(&m.id) == Some(&false);
+                            let (label, alpha) = match failed {
+                                true => (tr("Could not load. Click to try again"), 0.45),
+                                false => (tr("Click to load"), 0.25),
+                            };
+                            (
+                                stack![base, pill(label, alpha)].into(),
+                                UiMessage::ResolveMedia(m.account_id.clone(), m.id.clone(), raw.clone()),
+                            )
+                        } else if thumb_url.as_ref().and_then(|u| self.media_at(u)).is_some_and(Result::is_err) {
+                            (base, UiMessage::RetryMedia(thumb_url.expect("a failed media has a URL")))
+                        } else if let Some(src) = a.src_url.as_ref().filter(|_| is_video && a.is_gif != Some(true)) {
+                            parts = parts.push(self.view_video(&m.id, src, base, w, h));
+                            continue;
+                        } else if is_video && a.is_gif != Some(true) {
+                            (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))
+                        } else {
+                            (base, UiMessage::OpenCarousel(m.id.clone(), ai, false))
                         };
-                        (
-                            stack![base, pill(label, alpha)].into(),
-                            UiMessage::ResolveMedia(m.account_id.clone(), m.id.clone(), raw.clone()),
-                        )
-                    } else if thumb_url.as_ref().and_then(|u| self.media.get(u)?.as_ref()).is_some_and(Result::is_err) {
-                        (base, UiMessage::RetryMedia(thumb_url.expect("a failed media has a URL")))
-                    } else if let Some(src) = a.src_url.as_ref().filter(|_| is_video && a.is_gif != Some(true)) {
-                        parts = parts.push(self.view_video(&m.id, src, base, w, h));
-                        continue;
-                    } else if is_video && a.is_gif != Some(true) {
-                        (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))
-                    } else {
-                        (base, UiMessage::OpenCarousel(m.id.clone(), ai, false))
-                    };
                     button(slot).padding(0).style(btn_style([CLEAR; 3], [p.text; 3], 17.0)).on_press(press).into()
                 }
                 _ => {
@@ -11707,7 +11664,7 @@ impl BeeperGuiApp {
                 let items = self.gifs.iter().map(|g| {
                     let (pw, ph) = g.preview_size;
                     let w = (215.0 * pw as f32 / ph.max(1) as f32).round().max(48.0);
-                    let cell: El<'a> = match self.media.get(&g.preview_url).and_then(|v| v.as_ref()) {
+                    let cell: El<'a> = match self.media_at(&g.preview_url) {
                         Some(Ok(frames)) => anim::gif(frames, self.started, move |f| {
                             image(f).width(w).height(215).content_fit(iced::ContentFit::Cover)
                         }),
@@ -12922,17 +12879,15 @@ impl BeeperGuiApp {
             };
             let thumb = m.attachments.iter().find(|a| matches!(a.attachment_type.as_str(), "img" | "video"));
             let body: El<'_> = match (thumb, m.links.first(), m.attachments.first()) {
-                (Some(a), _, _) => {
-                    match a.poster_img.as_ref().or(a.src_url.as_ref()).and_then(|u| self.media.get(u)?.as_ref()) {
-                        Some(Ok(frames)) => image(frames[0].0.clone())
-                            .width(Fill)
-                            .height(Fill)
-                            .content_fit(iced::ContentFit::Cover)
-                            .border_radius(8.0)
-                            .into(),
-                        _ => Space::new().into(),
-                    }
-                }
+                (Some(a), _, _) => match a.poster_img.as_ref().or(a.src_url.as_ref()).and_then(|u| self.media_at(u)) {
+                    Some(Ok(frames)) => image(frames[0].0.clone())
+                        .width(Fill)
+                        .height(Fill)
+                        .content_fit(iced::ContentFit::Cover)
+                        .border_radius(8.0)
+                        .into(),
+                    _ => Space::new().into(),
+                },
                 (None, Some(l), _) => {
                     let host = l.url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(&l.url);
                     let title = if l.title.is_empty() { host.to_string() } else { l.title.clone() };
@@ -13061,7 +13016,7 @@ impl BeeperGuiApp {
     /// The square cover crop of an image or video poster, or an empty tile while it loads.
     fn thumb<'a>(&self, a: &Attachment, size: f32, r: f32) -> El<'a> {
         let url = a.poster_img.as_ref().or(a.src_url.as_ref());
-        match url.and_then(|u| self.media.get(u)?.as_ref()) {
+        match url.and_then(|u| self.media_at(u)) {
             Some(Ok(frames)) => image(frames[0].0.clone())
                 .width(size)
                 .height(size)
@@ -13118,7 +13073,7 @@ impl BeeperGuiApp {
             stack![container(title).center_x(Fill).center_y(34), container(controls).align_right(Fill).center_y(34)];
         let url = a.poster_img.as_ref().or(a.src_url.as_ref());
         let turn = iced::Radians(-std::f32::consts::FRAC_PI_2 * f32::from(car.turns));
-        let shown: El<'a> = match url.and_then(|u| self.media.get(u)?.as_ref()) {
+        let shown: El<'a> = match url.and_then(|u| self.media_at(u)) {
             Some(Ok(frames)) => anim::gif(frames, self.started, move |f| {
                 image(f).content_fit(iced::ContentFit::ScaleDown).rotation(iced::Rotation::Solid(turn))
             }),
