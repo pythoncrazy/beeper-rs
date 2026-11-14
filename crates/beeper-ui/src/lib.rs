@@ -7,6 +7,7 @@ mod deeplink;
 pub mod emoji;
 mod format;
 mod i18n;
+mod images;
 mod lift;
 pub mod login;
 mod notify;
@@ -500,7 +501,8 @@ pub enum UiMessage {
     /// Copy a link and say so, like Desktop's Media window.
     CopyLink(String),
     CopyImage(String, usize),
-    ImageFetched(Result<Vec<u8>, String>),
+    /// The width, the height and the RGBA pixels of an image to copy.
+    ImageFetched(Result<(usize, usize, Vec<u8>), String>),
     /// Open the forward dialog for messages, in timeline order.
     Forward(Vec<String>),
     ForwardQuery(String),
@@ -1811,12 +1813,17 @@ fn run_ffmpeg(bytes: &[u8], args: &[&str]) -> Result<Vec<u8>, String> {
 
 fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
     use ::image::AnimationDecoder;
+    // A decode here, on a worker thread, keeps the full size decode out of the first frame that draws the image.
+    let still = |bytes: &[u8]| -> Result<Frames, String> {
+        let px = ::image::load_from_memory(bytes).map_err(|e| format!("Could not decode the image: {e}"))?;
+        let px = px.into_rgba8();
+        Ok(vec![(image::Handle::from_rgba(px.width(), px.height(), px.into_raw()), 0)])
+    };
     if bytes.get(4..8) == Some(b"ftyp") {
-        let png = run_ffmpeg(&bytes, &["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"])?;
-        return Ok(vec![(image::Handle::from_bytes(png), 0)]);
+        return still(&run_ffmpeg(&bytes, &["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"])?);
     }
     if !bytes.starts_with(b"GIF8") {
-        return Ok(vec![(image::Handle::from_bytes(bytes), 0)]);
+        return still(&bytes);
     }
     let gif = ::image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
     let frames = gif.into_frames().collect_frames().map_err(|e| format!("Could not decode the GIF: {e}"))?;
@@ -3692,9 +3699,9 @@ pub struct BeeperGuiApp {
     shot: Option<window::Id>,
     pub login: Login,
     pub cloud: Arc<Cloud>,
-    pub avatars: HashMap<String, Option<image::Handle>>,
+    pub avatars: images::Images<image::Handle>,
     wants: wants::Wants,
-    pub media: HashMap<String, Option<Result<Frames, String>>>,
+    pub media: images::Images<Result<Frames, String>>,
     pub resolving_media: HashMap<String, bool>,
     video: Option<video::Video>,
     started: std::time::Instant,
@@ -3876,9 +3883,9 @@ impl BeeperGuiApp {
             shot: None,
             login: Login::new(source),
             cloud,
-            avatars: HashMap::new(),
+            avatars: images::Images::new(64 << 20),
             wants: wants::Wants::default(),
-            media: HashMap::new(),
+            media: images::Images::new(512 << 20),
             resolving_media: HashMap::new(),
             video: None,
             started: std::time::Instant::now(),
@@ -6031,13 +6038,20 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let a = &st.messages[st.msg_idx_by_id[&mid]].attachments[ai];
                 let url = a.src_url.clone().expect("an image has a source");
-                return Task::perform(beeper_core::matrix::media(st.matrix.clone(), url), UiMessage::ImageFetched);
+                let fetch = beeper_core::matrix::media(st.matrix.clone(), url);
+                let decode = async move {
+                    let bytes = fetch.await?;
+                    let decode = move || {
+                        let px = ::image::load_from_memory(&bytes).map_err(|e| e.to_string())?.into_rgba8();
+                        Ok((px.width() as usize, px.height() as usize, px.into_raw()))
+                    };
+                    tokio::task::spawn_blocking(decode).await.expect("image decode task")
+                };
+                return Task::perform(decode, UiMessage::ImageFetched);
             }
             UiMessage::ImageFetched(r) => {
-                let copy = |bytes: Vec<u8>, c: &mut Option<arboard::Clipboard>| -> Result<(), String> {
-                    let px = ::image::load_from_memory(&bytes).map_err(|e| e.to_string())?.into_rgba8();
-                    let (width, height) = (px.width() as usize, px.height() as usize);
-                    let img = arboard::ImageData { width, height, bytes: px.into_raw().into() };
+                let copy = |(width, height, px): (usize, usize, Vec<u8>), c: &mut Option<arboard::Clipboard>| {
+                    let img = arboard::ImageData { width, height, bytes: px.into() };
                     let c = match c {
                         Some(c) => c,
                         None => c.insert(arboard::Clipboard::new().map_err(|e| e.to_string())?),
@@ -17573,7 +17587,11 @@ mod tests {
         assert_eq!(frames.iter().map(|f| f.1).collect::<Vec<_>>(), [50, 100]);
         assert_eq!(anim::frame(&frames, 60), (&frames[1].0, 90));
         assert_eq!(anim::frame(&frames, 160), (&frames[0].0, 40));
-        assert_eq!(decode_media(b"\x89PNG".to_vec()).unwrap().len(), 1);
+        let mut png = std::io::Cursor::new(Vec::new());
+        ::image::RgbaImage::new(3, 2).write_to(&mut png, ::image::ImageFormat::Png).unwrap();
+        let still = decode_media(png.into_inner()).unwrap();
+        assert!(matches!(still[..], [(image::Handle::Rgba { width: 3, height: 2, .. }, 0)]), "a still is decoded");
+        assert!(decode_media(b"\x89PNG".to_vec()).is_err(), "a broken still fails to load");
     }
 
     #[test]
