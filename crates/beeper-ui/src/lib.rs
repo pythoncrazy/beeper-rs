@@ -174,6 +174,15 @@ fn composer_with(text: &str) -> text_editor::Content {
     format::content(text, text.len()..text.len())
 }
 
+/// Desktop's `getComposerUnavailableNotice`: the reason that the chat has no composer, under the last message. An
+/// upgraded chat whose new room is in the list shows a link in place of the composer.
+fn unavailable(st: &BeeperStore, chat: &Chat) -> Option<&'static str> {
+    match &chat.replacement_room {
+        Some(room) => st.resolve_chat_idx(room).is_none().then_some("Chat was upgraded."),
+        None => chat.is_read_only.then_some("Messaging isn't available in this chat"),
+    }
+}
+
 fn filter_hit(i: usize, c: &Chat, st: &BeeperStore) -> bool {
     match i {
         0 => c.flags & CHAT_UNREAD != 0,
@@ -10813,6 +10822,11 @@ impl BeeperGuiApp {
         let col = col.push(self.incognito_mark_read(&st, chat));
         let col = col.push(self.view_scheduled(&st, chat));
         let col = col.push(self.view_request(chat));
+        let col = col.push(unavailable(&st, chat).map(|t| {
+            container(txt(tr(t), 13.0).line_height(Pixels(16.0)).color(p.sub).align_x(Center))
+                .center_x(Fill)
+                .center_y(52)
+        }));
         // Desktop's `messages-list` keeps the messages at the bottom when they do not fill the view.
         let scroller = |col| {
             let col = container(col).align_y(Bottom);
@@ -10897,9 +10911,27 @@ impl BeeperGuiApp {
             container(bar).padding([8, 14]).style(bordered_box(p.elevated, p.chip, 1.0, 10.0))
         });
         let verify = verify.map(|v| container(v).padding([0, 12]));
+        // Desktop's `ThreadComposerDisabled` of an upgraded chat: a link to the new chat in place of the composer.
+        let upgraded = chat.replacement_room.as_deref().and_then(|r| st.resolve_chat_idx(r)).map(|i| -> El<'_> {
+            let part = |t: String, c: Color| txt(t, 13.0).line_height(Pixels(16.0)).color(c);
+            let link = row![
+                part(format!("{} ", tr("Chat was upgraded.")), p.sub),
+                part(tr("Click here to follow the conversation").to_string(), p.text),
+                part(".".into(), p.sub)
+            ];
+            let link = button(container(link).center_x(Fill).center_y(36))
+                .padding(8)
+                .style(btn_style([CLEAR; 3], [p.sub; 3], 0.0))
+                .on_press(UiMessage::SelectChat(st.chats[i].id.clone()));
+            container(link).style(fill_box(p.card, 0.0)).into()
+        });
+        let composer = match upgraded {
+            Some(link) => Some(link),
+            None => unavailable(&st, chat).is_none().then(|| self.view_composer(&st, chat)),
+        };
         let pane = column![stack![list, overlay].push(replies).push(close).width(Fill).height(Fill)]
             .push(verify)
-            .push(self.view_composer(&st, chat));
+            .push(composer);
         let secondary = st.settings.pref("secondaryComposerButton") != 6;
         let picker = self
             .view_emoji_picker(&st)
