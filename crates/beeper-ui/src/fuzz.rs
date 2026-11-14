@@ -823,6 +823,62 @@ fn profile_links_match_desktop() {
 }
 
 #[test]
+fn mentions_like_desktop() {
+    let mut app = demo_app("mentions");
+    let chat = {
+        let st = app.store.read();
+        app.visible_chats(&st).into_iter().find(|c| c.participants.items.len() > 2).unwrap().clone()
+    };
+    let (id, ann) =
+        (chat.id.clone(), chat.participants.items.iter().find(|u| u.is_self != Some(true)).unwrap().clone());
+    let label = mention_label(&ann);
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let _ = app.update(UiMessage::ComposerChanged("hi @".into()));
+    let rows = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        let rows = app.suggestions(&st).map_or_else(Vec::new, |(_, rows)| rows);
+        rows.into_iter()
+            .map(|s| match s {
+                Suggestion::Mention(label, id, _) => (label, id),
+                Suggestion::Emoji(..) => panic!("an emoji row for @"),
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(rows(&app).len(), chat.participants.items.len().min(8), "an empty query lists the members");
+    assert!(simulator(app.view_main()).find(format!("@{label}")).is_ok(), "the list shows the members");
+    let _ = app.update(UiMessage::ComposerChanged(format!("hi @{}", &label[..2])));
+    assert!(rows(&app).iter().all(|(_, id)| *id != ROOM_MENTION), "the chat cannot mention the room");
+    let at = rows(&app).iter().position(|(_, id)| *id == ann.id).unwrap();
+    let _ = app.update(UiMessage::PickSuggestion(at));
+    assert_eq!(app.pane.composer.text(), format!("hi @{label} "));
+    assert_eq!(app.pane.mentions, [(label.clone(), ann.id.clone())]);
+    let _ = app.update(UiMessage::ComposerChanged(format!("hi @{label} @ro")));
+    assert!(rows(&app).iter().all(|(_, id)| *id != ROOM_MENTION), "the chat cannot mention the room");
+    {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&id).unwrap();
+        st.update_chat(i, |c| c.can_mention_room = true);
+        st.config.demo = false;
+    }
+    assert_eq!(rows(&app)[0], ("room".to_string(), ROOM_MENTION.to_string()), "\"@room\" comes first");
+    let _ = app.update(UiMessage::SubmitComposer);
+    assert_eq!(app.pane.composer.text(), format!("hi @{label} @room "), "Enter picks the row");
+    let _ = app.update(UiMessage::SubmitComposer);
+    let st = app.store.read();
+    let sent = st.outbox.iter().find_map(|(_, o)| match o {
+        Outgoing::Send { text, mentions, .. } => Some((text.clone(), mentions.clone())),
+        _ => None,
+    });
+    let want = vec![(label.clone(), ann.id.clone()), ("room".to_string(), ROOM_MENTION.to_string())];
+    assert_eq!(sent, Some((format!("hi @{label} @room"), want)), "the send has the pills");
+    drop(st);
+    let _ = app.update(UiMessage::ComposerChanged("a :smile".into()));
+    let _ = app.update(UiMessage::PickSuggestion(0));
+    let text = app.pane.composer.text();
+    assert!(text.starts_with("a ") && !text.contains(':') && text.ends_with(' '), "an emoji replaces its query");
+}
+
+#[test]
 fn chat_commands_like_desktop() {
     let mut app = demo_app("chatcmds");
     let id = app.store.read().chats.iter().find(|c| profile_link(c).is_some()).map(|c| c.id.clone()).unwrap();

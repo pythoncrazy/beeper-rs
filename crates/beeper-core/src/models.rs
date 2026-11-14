@@ -434,6 +434,9 @@ pub struct Chat {
     /// Desktop's `extra.replacementRoomID`: the room of the `m.room.tombstone` of the chat.
     #[serde(rename = "replacementRoomID", default, skip_serializing_if = "Option::is_none")]
     pub replacement_room: Option<String>,
+    /// Desktop's `canMentionRoom` with the room's `at_room_mention` feature: the composer offers "@room".
+    #[serde(rename = "canMentionRoom", default)]
+    pub can_mention_room: bool,
     #[serde(skip)]
     pub flags: u16,
 }
