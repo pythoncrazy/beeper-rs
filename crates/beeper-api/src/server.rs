@@ -29,9 +29,12 @@ struct Response {
 
 type Reply = Result<Response, Response>;
 
+/// The `Content-Type` of `res.json` in Express.
+const JSON: &str = "application/json; charset=utf-8";
+
 fn json_with<T: Serialize + ?Sized>(status: StatusCode, value: &T) -> Response {
     let body = serde_json::to_vec(value).expect("serialize JSON response");
-    Response { status, headers: vec![("content-type", "application/json".into())], body }
+    Response { status, headers: vec![("content-type", JSON.into())], body }
 }
 
 fn ok<T: Serialize + ?Sized>(value: &T) -> Reply {
@@ -225,7 +228,7 @@ fn parse_body(msg: &HttpMessage) -> Option<Value> {
         _ if msg.body.is_empty() => Value::Null,
         Some(ct) if ct.starts_with("application/json") => serde_json::from_slice(&msg.body).ok()?,
         Some(ct) if ct.starts_with("application/x-www-form-urlencoded") => {
-            Value::Object(parse_query(std::str::from_utf8(&msg.body).ok()?)?)
+            Value::Object(parse_query(std::str::from_utf8(&msg.body).ok()?))
         }
         _ => Value::Null,
     })
@@ -280,7 +283,8 @@ fn preflight(origin: String) -> Response {
         EXPOSE_HEADERS,
         ("Content-Length", "0"),
     ];
-    let mut cors = vec![("Access-Control-Allow-Origin", origin), ("Vary", "Origin".into())];
+    let mut cors =
+        vec![("X-Powered-By", "Express".into()), ("Access-Control-Allow-Origin", origin), ("Vary", "Origin".into())];
     cors.extend(headers.map(|(k, v)| (k, v.into())));
     Response { status: StatusCode::NO_CONTENT, headers: cors, body: Vec::new() }
 }
@@ -289,7 +293,7 @@ fn preflight(origin: String) -> Response {
 /// conditional GET of a fresh body with 304.
 fn express(resp: Response, origin: Option<String>, if_none_match: Option<&str>) -> Response {
     let Response { mut status, headers: route, mut body } = resp;
-    let mut headers = Vec::new();
+    let mut headers = vec![("X-Powered-By", "Express".into())];
     if let Some(origin) = origin {
         headers.extend([("Access-Control-Allow-Origin", origin), ("Vary", "Origin".into())]);
         headers.push((EXPOSE_HEADERS.0, EXPOSE_HEADERS.1.into()));
@@ -313,11 +317,51 @@ fn express(resp: Response, origin: Option<String>, if_none_match: Option<&str>) 
     Response { status, headers, body }
 }
 
-async fn write_response(stream: &mut TcpStream, resp: Response) -> bool {
-    let mut head = format!("HTTP/1.1 {} \r\nX-Powered-By: Express\r\n", resp.status.0);
+/// The `keepAliveTimeout` of Desktop's server.
+const KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(360);
+
+/// Node keeps an HTTP/1.1 connection open unless the client asks to close it, and an HTTP/1.0 connection only when
+/// the client asks to keep it open.
+fn keep_alive(msg: &HttpMessage) -> bool {
+    let asks =
+        |t: &str| msg.header("connection").is_some_and(|c| c.split(',').any(|v| v.trim().eq_ignore_ascii_case(t)));
+    if msg.start_line.ends_with(" HTTP/1.0") {
+        asks("keep-alive")
+    } else {
+        !asks("close")
+    }
+}
+
+/// The checks of Node's HTTP parser on a request line, and the `Host` header that HTTP/1.1 needs.
+fn valid_request(msg: &HttpMessage) -> bool {
+    let [method, target, version] = msg.start_line.split(' ').collect::<Vec<_>>()[..] else { return false };
+    let digit = |s: &str| s.len() == 1 && s.bytes().all(|b| b.is_ascii_digit());
+    let version_ok =
+        version.strip_prefix("HTTP/").and_then(|v| v.split_once('.')).is_some_and(|(a, b)| digit(a) && digit(b));
+    let method_ok = !method.is_empty() && method.bytes().all(|b| b.is_ascii_uppercase() || b == b'-');
+    method_ok && !target.is_empty() && version_ok && (version != "HTTP/1.1" || msg.header("host").is_some())
+}
+
+/// Desktop's PAS gives these paths to the API server, and ends all other requests with an empty 200.
+fn api_path(msg: &HttpMessage) -> bool {
+    const ROOTS: [&str; 8] = [".well-known", "oauth", "register", "v0", "v1", "_matrix", "deeplink", "focus"];
+    let target = msg.start_line.split(' ').nth(1).expect("a valid request line");
+    let Some(rest) = target.strip_prefix('/') else { return false };
+    let end = rest.find(['/', '?']).unwrap_or(rest.len());
+    match &rest[..end] {
+        "" => !rest.starts_with('/'),
+        root => ROOTS.contains(&root),
+    }
+}
+
+async fn write_response(stream: &mut TcpStream, resp: Response, keep_alive: bool, with_body: bool) -> bool {
+    let mut head = format!("HTTP/1.1 {} {}\r\n", resp.status.0, resp.status.reason());
     resp.headers.iter().for_each(|(k, v)| write!(head, "{k}: {v}\r\n").unwrap());
-    write!(head, "Date: {}\r\n\r\n", http_date(beeper_core::config::now_unix_secs())).unwrap();
-    stream.write_all(&[head.into_bytes(), resp.body].concat()).await.is_ok()
+    let connection = if keep_alive { "keep-alive\r\nKeep-Alive: timeout=360" } else { "close" };
+    write!(head, "Date: {}\r\nConnection: {connection}\r\n\r\n", http_date(beeper_core::config::now_unix_secs()))
+        .unwrap();
+    let body = if with_body { resp.body } else { Vec::new() };
+    stream.write_all(&[head.into_bytes(), body].concat()).await.is_ok()
 }
 
 /// Closes a connection after the server refuses a request: the server discards the rest of the request until the
@@ -338,26 +382,37 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
             origin = cors_origin(head);
             body_limit(head)
         };
-        let msg = match read_message(&mut stream, &mut buf, limit).await {
+        let Ok(read) = tokio::time::timeout(KEEP_ALIVE, read_message(&mut stream, &mut buf, limit)).await else {
+            return;
+        };
+        let read = read.and_then(|msg| if valid_request(&msg) { Ok(msg) } else { Err(Some(StatusCode::BAD_REQUEST)) });
+        let mut msg = match read {
             Ok(msg) => msg,
             Err(None) => return,
             Err(Some(StatusCode::PAYLOAD_TOO_LARGE)) => {
                 let resp = error(StatusCode::PAYLOAD_TOO_LARGE, "request entity too large", "UNKNOWN_ERROR");
-                let mut resp = express(resp, origin, None);
-                resp.headers.push(("connection", "close".into()));
-                write_response(&mut stream, resp).await;
+                write_response(&mut stream, express(resp, origin, None), false, true).await;
                 let (mut reader, mut writer) = stream.split();
                 linger(&mut writer, &mut reader).await;
                 return;
             }
             Err(Some(status)) => {
-                assert_eq!(status, StatusCode::BAD_REQUEST, "the parser refuses with 400 or 413");
-                stream.write_all(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n").await.ok();
+                let head = format!("HTTP/1.1 {} {}\r\nConnection: close\r\n\r\n", status.0, status.reason());
+                stream.write_all(head.as_bytes()).await.ok();
                 let (mut reader, mut writer) = stream.split();
                 linger(&mut writer, &mut reader).await;
                 return;
             }
         };
+        let keep_alive = keep_alive(&msg);
+        if !api_path(&msg) {
+            let empty =
+                Response { status: StatusCode::OK, headers: vec![("Content-Length", "0".into())], body: Vec::new() };
+            if !write_response(&mut stream, empty, keep_alive, true).await || !keep_alive {
+                return;
+            }
+            continue;
+        }
         if msg.start_line.starts_with("GET /v1/ws ") && msg.header_is("upgrade", "websocket") {
             let refused = auth::authorize(&store.read(), auth::access_token(&msg), &[beeper_core::connect::READ]).err();
             if let Some((status, message)) = refused {
@@ -367,12 +422,16 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
             }
             return serve_ws(stream, buf, msg, store).await;
         }
-        let close = msg.header_is("connection", "close");
+        // Express answers HEAD with the response of GET, without the body.
+        let head_only = msg.method() == "HEAD";
+        if head_only {
+            msg.start_line.replace_range(..4, "GET");
+        }
         let resp = match origin {
             Some(origin) if msg.method() == "OPTIONS" => preflight(origin),
             origin => {
-                let if_none_match = ["GET", "HEAD"].contains(&msg.method()).then(|| msg.header("if-none-match"));
-                let if_none_match = if_none_match.flatten().map(String::from);
+                let if_none_match = (msg.method() == "GET").then(|| msg.header("if-none-match")).flatten();
+                let if_none_match = if_none_match.map(String::from);
                 let (store, cloud) = (store.clone(), cloud.clone());
                 let resp = tokio::task::spawn_blocking(move || respond(&store, &cloud, msg).unwrap_or_else(|e| e))
                     .await
@@ -380,7 +439,7 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
                 express(resp, origin, if_none_match.as_deref())
             }
         };
-        if !write_response(&mut stream, resp).await || close {
+        if !write_response(&mut stream, resp, keep_alive, !head_only).await || !keep_alive {
             return;
         }
     }
@@ -388,7 +447,7 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
 
 fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     let mut parts = msg.start_line.split(' ');
-    let (Some(method), Some(target)) = (parts.next(), parts.next()) else { return Err(bad("malformed request line")) };
+    let (method, target) = (parts.next().expect("a method"), parts.next().expect("a request target"));
     let method = method.to_string();
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let segs: Vec<String> = path
@@ -405,7 +464,7 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
         }
         return mcp::handle(store, cloud, &method, &msg, token);
     }
-    let query = parse_query(query).ok_or_else(|| bad("malformed query string"))?;
+    let query = parse_query(query);
     let body = parse_body(&msg).ok_or_else(|| bad("malformed request body"))?;
     let req = Req { query, msg, body };
     let in_query = if segs == ["v1", "assets", "serve"] { req.q("dangerouslyUseTokenInQuery") } else { None };
@@ -476,7 +535,7 @@ fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply
         ("GET", ["v1", "info"]) => ok(&info(st)),
         ("GET", ["v1", "spec"]) => Ok(Response {
             status: StatusCode::OK,
-            headers: vec![("content-type", "application/json".into())],
+            headers: vec![("content-type", JSON.into())],
             body: OPENAPI_SPEC_JSON.as_bytes().to_vec(),
         }),
         ("GET", []) => empty(StatusCode::FOUND, vec![("location", "/v1/info".into())]),
