@@ -590,6 +590,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         links: links(c),
         seen: Default::default(),
         timer: (message_type == "DISAPPEARING_TIMER").then(|| c["timer"].as_u64().unwrap_or(0)),
+        send_error: None,
         flags: match c["m.mentions"]["user_ids"].as_array() {
             Some(ids) if ids.iter().any(|u| u == room.own_user_id().as_str()) => MSG_MENTION,
             _ => 0,
@@ -1143,7 +1144,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     sync_receipts(store, room).await;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ChatFlag {
     Archived,
     Pinned,
@@ -1158,6 +1159,8 @@ pub type Mention = (String, String);
 /// Desktop's ID of the "@room" mention.
 pub const ROOM_MENTION: &str = "@room";
 
+/// A change for the homeserver. The outbox table of the store keeps it until the homeserver takes it.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Outgoing {
     Send {
         txn: String,
@@ -1201,7 +1204,7 @@ pub enum Outgoing {
     /// Leaves the room, and forgets it for Desktop's `deleteLabel`.
     Leave(bool),
     /// A state event with an empty state key.
-    State(&'static str, Value),
+    State(String, Value),
     /// Desktop's `removeParticipant`: a leave membership for the user.
     Kick(String),
     /// Desktop's `addParticipant`: an invite for the user.
@@ -1235,6 +1238,8 @@ pub enum Outgoing {
     },
     Media {
         txn: String,
+        /// The `bytes` column of the outbox row keeps the file.
+        #[serde(skip)]
         bytes: Vec<u8>,
         name: String,
         mime: String,
@@ -1244,6 +1249,7 @@ pub enum Outgoing {
     },
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum MediaInfo {
     /// The width and height of an image.
     Image(u32, u32),
@@ -1253,19 +1259,38 @@ pub enum MediaInfo {
     File,
 }
 
+impl Outgoing {
+    /// The local echo that the change sends, or the message that it edits.
+    pub fn message(&self) -> Option<&str> {
+        match self {
+            Outgoing::Send { txn, .. }
+            | Outgoing::Poll { txn, .. }
+            | Outgoing::Forward { txn, .. }
+            | Outgoing::Media { txn, .. } => Some(txn),
+            Outgoing::Edit { target, .. } => Some(target),
+            _ => None,
+        }
+    }
+}
+
+/// Pushes the outbox to the homeserver. A message that fails keeps an error, like Desktop's failed echoes. Other
+/// changes that fail are dropped, and the error comes back.
 pub async fn flush(store: SharedStore) -> Result<(), String> {
     loop {
-        let next = {
-            let mut st = store.write();
-            if st.matrix.is_none() || st.outbox.is_empty() {
+        let Some((row, chat, out)) = store.write().next_outgoing() else { return Ok(()) };
+        // A failed change waits for Retry only with a local echo that shows the error.
+        let message = out.message().filter(|id| store.read().msg_idx_by_id.contains_key(*id)).map(str::to_string);
+        let retry = !matches!(out, Outgoing::Edit { .. });
+        let r = push(&store, chat, out).await;
+        let mut st = store.write();
+        match (r, message) {
+            (Ok(()), message) => st.pushed(row, message.as_deref(), None),
+            (Err(e), Some(message)) => st.pushed(row, Some(&message), Some((e, retry))),
+            (Err(e), None) => {
+                st.pushed(row, None, None);
                 st.pushing = false;
-                return Ok(());
+                return Err(e);
             }
-            st.outbox.remove(0)
-        };
-        if let Err(e) = push(&store, next.0, next.1).await {
-            store.write().pushing = false;
-            return Err(e);
         }
     }
 }
@@ -1534,7 +1559,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                 room.send_state_event_raw("m.space.child", &chat, content).await.map_err(e)?;
             }
         }
-        Outgoing::State(kind, content) => drop(room.send_state_event_raw(kind, "", content).await.map_err(e)?),
+        Outgoing::State(kind, content) => drop(room.send_state_event_raw(&kind, "", content).await.map_err(e)?),
         Outgoing::Invite(user) => {
             let user = matrix_sdk::ruma::UserId::parse(&user).expect("a Matrix user ID");
             room.invite_user_by_id(&user).await.map_err(e)?;
@@ -2341,12 +2366,16 @@ mod tests {
     async fn stub_store(dir: &std::path::Path, url: &str) -> crate::store::SharedStore {
         crate::cloud::install_tls();
         let cfg = crate::config::CentralConfig::new(dir.into(), "127.0.0.1".into(), 23392, None);
-        let store = crate::store::StoreLock::shared(crate::store::BeeperStore::from_config(cfg));
-        {
-            let s = &mut store.write().beeper_state;
+        let mut st = crate::store::BeeperStore::from_config(cfg.clone());
+        if !st.signed_in() {
+            let s = &mut st.beeper_state;
             (s.homeserver, s.user_id, s.device_id, s.access_token) =
                 (url.into(), "@me:x".into(), "DEV".into(), "token".into());
+            st.persist_state_to_sqlite();
+            // A signed-in start adds the note chat of the user.
+            st = crate::store::BeeperStore::from_config(cfg);
         }
+        let store = crate::store::StoreLock::shared(st);
         let client = super::connect(&store).await.expect("connect to the stub homeserver");
         client.sync_once(super::SyncSettings::default()).await.expect("sync with the stub homeserver");
         store.write().matrix = Some(client);
@@ -2583,6 +2612,65 @@ mod tests {
         let users = tokio::task::spawn_blocking(move || cloud.contacts("token", "@me:x", &accounts)).await.unwrap();
         let users: Vec<_> = users.iter().map(|u| (u.full_name.as_deref(), u.phone_number.as_deref())).collect();
         assert_eq!(users, [(Some("Sam"), Some("+15550100"))]);
+    }
+
+    #[tokio::test]
+    async fn failed_sends_stay_in_the_outbox_for_retry_like_desktop() {
+        use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+        let fail = std::sync::Arc::new(AtomicBool::new(true));
+        let failing = fail.clone();
+        let url = stub_homeserver(move |_, path, _| match path.split('?').next().expect("a path") {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t0", "chunk": [] })),
+            p if p.contains("/send/m.room.message/") && failing.load(Relaxed) => {
+                (403, json!({ "errcode": "M_FORBIDDEN", "error": "stub refusal" }))
+            }
+            p if p.contains("/send/m.room.message/") => (200, json!({ "event_id": "$sent" })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let dir = std::env::temp_dir().join(format!("beeper-rs-outbox-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = stub_store(&dir, &url).await;
+        let room = store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).unwrap();
+        super::sync_room(&store, &room, Vec::new()).await;
+        let txn = {
+            let mut st = store.write();
+            let (_, txn, _) = st.send_message("!room:x", Some("hi".into()), None, None).expect("a local echo");
+            let out = super::Outgoing::Send {
+                txn: txn.clone(),
+                text: "hi".into(),
+                reply_to: None,
+                preview: None,
+                mentions: Vec::new(),
+            };
+            st.queue("!room:x", out);
+            txn
+        };
+        let error = |store: &crate::store::SharedStore| {
+            let mut st = store.write();
+            (st.messages[st.msg_idx_by_id[&txn]].send_error.clone(), st.outbox.len(), st.start_flush())
+        };
+        assert!(store.write().start_flush());
+        super::flush(store.clone()).await.expect("a failed message is not a flush error");
+        let (e, queued, again) = error(&store);
+        let e = e.expect("the local echo keeps the error");
+        assert!(e.message.contains("stub refusal") && !e.retrying, "{e:?}");
+        assert_eq!((queued, again), (1, false), "the send waits in the outbox for Retry");
+        drop(store);
+        let store = stub_store(&dir, &url).await;
+        assert_eq!(error(&store).0.map(|e| e.retrying), Some(false), "the error and the outbox persist");
+        fail.store(false, Relaxed);
+        store.write().retry_send(&txn);
+        assert!(store.write().start_flush());
+        super::flush(store.clone()).await.expect("the retry goes through");
+        assert_eq!(error(&store), (None, 0, false), "the homeserver took the message");
+        drop(store);
+        let cfg = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23392, None);
+        assert!(crate::store::BeeperStore::from_config(cfg).outbox.is_empty(), "the outbox row is gone");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

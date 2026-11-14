@@ -835,8 +835,18 @@ pub struct Message {
     /// Desktop's `action.timer` of a `DISAPPEARING_TIMER` row: the new timer in ms, or 0 for Off.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub timer: Option<u64>,
+    /// Desktop's `sendStatus` of a message that the homeserver did not take: `isErrored`, or `isRetrying` again.
+    #[serde(rename = "sendError", skip_serializing_if = "Option::is_none", default)]
+    pub send_error: Option<SendError>,
     #[serde(skip)]
     pub flags: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SendError {
+    /// The reason, which the error tooltip shows.
+    pub message: String,
+    pub retrying: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

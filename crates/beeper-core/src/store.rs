@@ -153,7 +153,7 @@ struct Seed {
     messages: Vec<Message>,
 }
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 const SCHEMA: &str = "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
      CREATE TABLE chats (id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;
      CREATE TABLE assets (upload_id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;";
@@ -186,6 +186,9 @@ fn messages_schema() -> String {
         new = text("new")
     )
 }
+/// Schema 6 adds the outbox: the JSON of each `Outgoing`, and the file of a media message.
+const OUTBOX: &str =
+    "CREATE TABLE outbox (id INTEGER PRIMARY KEY, chat_id TEXT NOT NULL, json TEXT NOT NULL, bytes BLOB) STRICT;";
 const KEY_STATE: &str = "state";
 const KEY_BRIDGES: &str = "bridges";
 const KEY_SETTINGS: &str = "settings";
@@ -339,7 +342,8 @@ pub struct BeeperStore {
     /// Desktop's `isSyncing`: the app is connected to Matrix and waits for its first sync.
     pub syncing: bool,
     pub sas_confirm: Option<tokio::sync::oneshot::Sender<bool>>,
-    pub outbox: Vec<(String, Outgoing)>,
+    /// The changes for the homeserver, with their outbox row and chat, in the order of the rows.
+    pub outbox: Vec<(i64, String, Outgoing)>,
     /// Desktop's bookmarks room, after its history is read.
     pub bookmarks_room: Option<String>,
     /// The bookmarks of the bookmarks room by the event ID of the message.
@@ -403,7 +407,7 @@ impl BeeperStore {
         match version {
             0 => conn
                 .execute_batch(&format!(
-                    "BEGIN; {SCHEMA} {} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;",
+                    "BEGIN; {SCHEMA} {} {OUTBOX} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;",
                     messages_schema()
                 ))
                 .expect("create beeper-rs schema"),
@@ -421,6 +425,7 @@ impl BeeperStore {
                          DROP TABLE messages_v4;",
                         messages_schema()
                     ),
+                    OUTBOX.to_string(),
                 ];
                 for (from, sql) in (version..).zip(&steps[version as usize - 1..]) {
                     conn.execute_batch(&format!("BEGIN; {sql} PRAGMA user_version = {}; COMMIT;", from + 1))
@@ -678,6 +683,7 @@ impl BeeperStore {
         for m in messages {
             self.push_message(serde_json::from_str(&m).expect("parse stored message"), false);
         }
+        self.outbox = self.outbox_rows(None);
         match seq {
             Some(s) => self.next_seq = self.next_seq.max(s.parse().expect("parse stored nextSeq")),
             None => assert!(fresh, "stored chats without a stored nextSeq"),
@@ -986,9 +992,78 @@ impl BeeperStore {
     }
 
     pub fn queue(&mut self, chat_id: &str, out: Outgoing) {
-        if !self.config.demo {
-            self.outbox.push((chat_id.into(), out));
+        if self.config.demo {
+            return;
         }
+        let bytes = match &out {
+            Outgoing::Media { bytes, .. } => Some(bytes.as_slice()),
+            _ => None,
+        };
+        let json = serde_json::to_string(&out).expect("outgoing JSON");
+        self.exec("INSERT INTO outbox (chat_id, json, bytes) VALUES (?1, ?2, ?3)", params![chat_id, json, bytes]);
+        let row = self.db.lock().unwrap().last_insert_rowid();
+        self.outbox.push((row, chat_id.into(), out));
+    }
+
+    /// The outbox row `id`, or all rows in order.
+    fn outbox_rows(&self, id: Option<i64>) -> Vec<(i64, String, Outgoing)> {
+        let db = self.db.lock().unwrap();
+        let mut q =
+            db.prepare_cached("SELECT id, chat_id, json, bytes FROM outbox WHERE ?1 IN (id, 0) ORDER BY id").unwrap();
+        let rows = q.query_map([id.unwrap_or(0)], |r| {
+            let mut out: Outgoing = serde_json::from_str(&r.get::<_, String>(2)?).expect("parse a stored change");
+            if let Outgoing::Media { bytes, .. } = &mut out {
+                *bytes = r.get(3)?;
+            }
+            Ok((r.get(0)?, r.get(1)?, out))
+        });
+        rows.expect("read the outbox").map(|r| r.expect("read an outbox row")).collect()
+    }
+
+    /// A message of the change failed and waits for Retry.
+    fn waits_for_retry(&self, out: &Outgoing) -> bool {
+        let m = out.message().and_then(|id| self.msg_idx_by_id.get(id)).map(|&i| &self.messages[i]);
+        m.and_then(|m| m.send_error.as_ref()).is_some_and(|e| !e.retrying)
+    }
+
+    /// The next change for the homeserver. At the end of the outbox the push stops.
+    pub fn next_outgoing(&mut self) -> Option<(i64, String, Outgoing)> {
+        let next = self.outbox.iter().position(|o| !self.waits_for_retry(&o.2)).filter(|_| self.matrix.is_some());
+        self.pushing = next.is_some();
+        next.map(|i| self.outbox.remove(i))
+    }
+
+    /// Ends the push of an outbox row, a change for `message`. A failed message keeps the error, and a failed send
+    /// goes back into the outbox for Retry, like Desktop's failed echoes.
+    pub fn pushed(&mut self, row: i64, message: Option<&str>, error: Option<(String, bool)>) {
+        match error.as_ref().is_some_and(|e| e.1) {
+            true => {
+                let o = self.outbox_rows(Some(row)).pop().expect("the outbox row of the push");
+                let at = self.outbox.partition_point(|x| x.0 < row);
+                self.outbox.insert(at, o);
+            }
+            false => self.exec("DELETE FROM outbox WHERE id = ?1", params![row]),
+        }
+        let error = error.map(|(message, _)| SendError { message, retrying: false });
+        if let Some(&i) = message.and_then(|id| self.msg_idx_by_id.get(id)) {
+            if self.messages[i].send_error != error {
+                self.update_message(i, |m| m.send_error = error);
+            }
+        }
+    }
+
+    /// Desktop's `retryErroredMessage`.
+    pub fn retry_send(&mut self, id: &str) {
+        let i = self.msg_idx_by_id[id];
+        self.update_message(i, |m| m.send_error.as_mut().expect("a failed message").retrying = true);
+    }
+
+    /// Desktop's `removeErroredMessage` for a send that the homeserver did not take: the local echo and its change.
+    pub fn remove_unsent(&mut self, id: &str) {
+        let i = self.outbox.iter().position(|o| o.2.message() == Some(id)).expect("a failed send in the outbox");
+        let (row, chat, _) = self.outbox.remove(i);
+        self.exec("DELETE FROM outbox WHERE id = ?1", params![row]);
+        self.remove_message(&chat, id).expect("remove the local echo");
     }
 
     /// Sets a chat flag here and on the homeserver. `None` toggles the flag.
@@ -1033,7 +1108,7 @@ impl BeeperStore {
 
     /// Whether `start_flush` starts a flush.
     pub fn can_flush(&self) -> bool {
-        !self.pushing && self.matrix.is_some() && !self.outbox.is_empty()
+        !self.pushing && self.matrix.is_some() && self.outbox.iter().any(|o| !self.waits_for_retry(&o.2))
     }
 
     pub fn start_flush(&mut self) -> bool {
@@ -1184,7 +1259,7 @@ impl BeeperStore {
         self.update_chat(idx, |c| c.disappearing = Some(timer).filter(|&t| t > 0));
         let content =
             if timer == 0 { serde_json::json!({}) } else { serde_json::json!({ "type": kind, "timer": timer }) };
-        self.queue(id, Outgoing::State(DISAPPEARING_TIMER, content));
+        self.queue(id, Outgoing::State(DISAPPEARING_TIMER.into(), content));
     }
 
     /// Desktop's `removeParticipant`; the member leaves the list before the sync confirms it.
@@ -1239,10 +1314,10 @@ impl BeeperStore {
             }
         });
         if let Some(name) = title {
-            self.queue(id, Outgoing::State("m.room.name", serde_json::json!({ "name": name })));
+            self.queue(id, Outgoing::State("m.room.name".into(), serde_json::json!({ "name": name })));
         }
         if let Some(topic) = topic {
-            self.queue(id, Outgoing::State("m.room.topic", serde_json::json!({ "topic": topic })));
+            self.queue(id, Outgoing::State("m.room.topic".into(), serde_json::json!({ "topic": topic })));
         }
         if let Some(avatar) = avatar {
             self.queue(id, Outgoing::Avatar(avatar.map(|(_, bytes, mime)| (bytes, mime))));
@@ -1254,7 +1329,7 @@ impl BeeperStore {
         let label = self.labels.iter().find(|l| l.id == id).expect("a label").clone();
         self.set_label(Label { inbox, ..label });
         let content = serde_json::json!({ "visibility": inbox.unwrap_or("all") });
-        self.queue(id, Outgoing::State("com.beeper.label.inbox_visibility", content));
+        self.queue(id, Outgoing::State("com.beeper.label.inbox_visibility".into(), content));
     }
 
     /// Desktop's `addRoomToLabel` and `removeRoomFromLabel`.
@@ -1272,7 +1347,7 @@ impl BeeperStore {
     pub fn set_label_muted(&mut self, id: &str, muted: bool) {
         let label = self.labels.iter().find(|l| l.id == id).expect("a label").clone();
         self.set_label(Label { muted, ..label });
-        self.queue(id, Outgoing::State("com.beeper.muted", serde_json::json!({ "muted": muted })));
+        self.queue(id, Outgoing::State("com.beeper.muted".into(), serde_json::json!({ "muted": muted })));
     }
 
     /// Desktop's `areNotificationsMuted`: the chat is muted, all labels of the chat are muted, or for a chat
@@ -1368,7 +1443,8 @@ impl BeeperStore {
         self.exec("DELETE FROM chats WHERE id = ?1", params![id]);
         self.recent_chat_ids.retain(|c| c != id);
         self.typing.remove(id);
-        self.outbox.retain(|(c, _)| c != id);
+        self.outbox.retain(|(_, c, _)| c != id);
+        self.exec("DELETE FROM outbox WHERE chat_id = ?1", params![id]);
         self.emit_ws("chat.deleted", id, None, None, None);
     }
 
@@ -1662,6 +1738,7 @@ impl BeeperStore {
             links: Vec::new(),
             seen: BTreeMap::new(),
             timer: None,
+            send_error: None,
             flags: 0,
         };
         let m_idx = self.push_message(msg, true);
@@ -2152,6 +2229,38 @@ mod tests {
     }
 
     #[test]
+    fn schema_5_migrates_to_the_outbox() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-schema-5-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23397, None);
+        config.demo = true;
+        let ids = |st: &super::BeeperStore| -> HashSet<String> {
+            st.search_messages("borr").into_iter().map(|i| st.messages[i].id.clone()).collect()
+        };
+        let want = ids(&super::BeeperStore::from_config(config.clone()));
+        assert_eq!(want.len(), 2);
+        // Schema 5 is schema 6 without the outbox table.
+        rusqlite::Connection::open(&config.db_path)
+            .unwrap()
+            .execute_batch("DROP TABLE outbox; PRAGMA user_version = 5;")
+            .unwrap();
+        let mut st = super::BeeperStore::from_config(config.clone());
+        assert_eq!(ids(&st), want, "the message search stays");
+        st.config.demo = false;
+        st.queue(super::NOTE_CHAT_ID, super::Outgoing::Flag(crate::matrix::ChatFlag::Muted, true));
+        drop(st);
+        let st = super::BeeperStore::from_config(config);
+        let version: i64 = st.db.lock().unwrap().query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+        assert!(
+            matches!(&st.outbox[..], [(_, c, super::Outgoing::Flag(crate::matrix::ChatFlag::Muted, true))] if c == super::NOTE_CHAT_ID),
+            "the new outbox keeps a change"
+        );
+        drop(st);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn a_removed_chat_leaves_the_other_chats_intact() {
         let dir = std::env::temp_dir().join(format!("beeper-rs-remove-chat-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2254,13 +2363,13 @@ mod tests {
         st.apply_bookmarks("!bookmarks", vec![(m.id.clone(), Some(b))]);
         assert_eq!(st.messages[0].is_bookmarked, Some(true));
         assert!(!st.toggle_bookmark(&m.id));
-        assert!(matches!(&st.outbox[..], [(r, super::Outgoing::Bookmark { room, target, on: false })]
+        assert!(matches!(&st.outbox[..], [(_, r, super::Outgoing::Bookmark { room, target, on: false })]
             if r == "!bookmarks" && *room == m.chat_id && *target == m.id));
         st.upsert_message(super::Message { is_bookmarked: None, ..m.clone() });
         assert_eq!(st.messages[0].is_bookmarked, Some(false), "a synced message keeps its bookmark state");
         st.remove_bookmark("$other");
         assert!(
-            matches!(&st.outbox[1], (r, super::Outgoing::Bookmark { room, target, on: false })
+            matches!(&st.outbox[1], (_, r, super::Outgoing::Bookmark { room, target, on: false })
             if r == "!bookmarks" && *room == m.chat_id && target == "$other"),
             "a message that is not loaded"
         );
