@@ -744,6 +744,49 @@ fn send_later_like_desktop() {
 }
 
 #[test]
+fn drafts_keep_the_composer_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("drafts");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    let (_, own, _) = app.store.write().send_message(note, Some("old".into()), None, None).unwrap();
+    let path = std::env::temp_dir().join(format!("beeper-rs-{}-draft.pdf", std::process::id()));
+    std::fs::write(&path, b"%PDF").unwrap();
+    let file = PendingMedia { name: "b.pdf".into(), ..portal::load_file(&path).unwrap() };
+    std::fs::remove_file(path).unwrap();
+    let _ = app.update(UiMessage::FilesLoaded(Ok(vec![file])));
+    let text = " see https://example.com ";
+    let _ = app.update(UiMessage::ComposerChanged(text.into()));
+    let _ = app.update(UiMessage::StartReply(own.clone()));
+    let later = (now_unix_millis() + 3_600_000, true);
+    let _ = app.update(UiMessage::SendLater(Some(later)));
+    let _ = app.update(UiMessage::RemoveLinkPreview("https://example.com".into()));
+    assert!(app.pane.draft_due, "a change starts the save timer");
+    let saved = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.chats[st.resolve_chat_idx(note).unwrap()].draft.clone().expect("a draft")
+    };
+    let _ = app.update(UiMessage::SaveDrafts);
+    let draft = saved(&app);
+    assert!(!app.pane.draft_due, "the timer saves the draft without a chat change");
+    assert_eq!(draft.text.as_deref(), Some(text), "the draft keeps the spaces");
+    assert_eq!((draft.reply_to_message_id.as_ref(), draft.send_later), (Some(&own), Some(later)));
+    assert_eq!(draft.discarded_links, ["https://example.com"]);
+    assert_eq!(draft.attachments.len(), 1);
+    let _ = app.update(UiMessage::ComposerChanged(format!("{text}!")));
+    let _ = app.update(UiMessage::SaveDrafts);
+    assert_eq!(saved(&app).attachments, draft.attachments, "a saved attachment is not stored again");
+    let other = app.visible_chats(&app.store.read()).into_iter().find(|c| c.id != note).unwrap().id.clone();
+    let _ = app.update(UiMessage::SelectChat(other));
+    assert!(app.pane.attachments.is_empty(), "the attachments stay with their chat");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    let pane = &app.pane;
+    assert_eq!((pane.composer.text(), pane.reply_to_message_id.as_ref()), (format!("{text}!"), Some(&own)));
+    assert_eq!(pane.send_later, Some(later));
+    assert_eq!(pane.attachments.iter().map(|a| (a.name.as_str(), a.bytes.len())).collect::<Vec<_>>(), [("b.pdf", 4)]);
+    assert!(matches!(pane.composer_links[..], [(_, LinkState::Discarded)]), "a removed preview stays removed");
+}
+
+#[test]
 fn show_replies_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
     let mut app = demo_app("replies");

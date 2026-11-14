@@ -289,7 +289,7 @@ pub struct ChatParticipants {
     pub total: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatDraftAttachment {
     #[serde(rename = "uploadID")]
     pub upload_id: String,
@@ -299,7 +299,7 @@ pub struct ChatDraftAttachment {
     pub mime_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChatDraft {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
@@ -307,6 +307,12 @@ pub struct ChatDraft {
     pub attachments: Vec<ChatDraftAttachment>,
     #[serde(rename = "replyToMessageID", skip_serializing_if = "Option::is_none")]
     pub reply_to_message_id: Option<String>,
+    /// Desktop's draft `send_later`: the Unix milliseconds to send at, and "if no reply".
+    #[serde(rename = "sendLater", skip_serializing_if = "Option::is_none", default)]
+    pub send_later: Option<(i64, bool)>,
+    /// The links whose preview you removed. Desktop keeps them as `{ matched_url }` link previews.
+    #[serde(rename = "discardedLinks", skip_serializing_if = "Vec::is_empty", default)]
+    pub discarded_links: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
