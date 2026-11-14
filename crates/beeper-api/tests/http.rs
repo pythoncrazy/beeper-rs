@@ -107,6 +107,52 @@ async fn websocket_frames_over_64_kb_close_with_1009() {
     }
 }
 
+#[tokio::test]
+async fn repeated_and_bracket_query_keys_are_arrays() {
+    use beeper_api::codec::url_encode;
+    use serde_json::{json, Value};
+    let query = beeper_api::http::parse_query("a=1&a=2&b%5B%5D=3&b[]=4&c[]=5&d=x").unwrap();
+    assert_eq!(Value::Object(query), json!({ "a": ["1", "2"], "b": ["3", "4"], "c": ["5"], "d": "x" }));
+    let (port, token) = server("query").await;
+    let get = |target: String| {
+        let request =
+            format!("GET {target} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\nconnection: close\r\n\r\n");
+        async move {
+            let out = text(port, &request).await;
+            let body: Value = serde_json::from_str(out.split_once("\r\n\r\n").unwrap().1).expect("a JSON body");
+            body["items"]
+                .as_array()
+                .expect("items")
+                .iter()
+                .map(|i| (i["accountID"].clone(), i["chatID"].clone()))
+                .collect::<Vec<_>>()
+        }
+    };
+    let all = get("/v1/chats".into()).await;
+    let mut accounts: Vec<&str> = all.iter().map(|(a, _)| a.as_str().unwrap()).collect();
+    accounts.sort();
+    accounts.dedup();
+    assert!(accounts.len() >= 2, "the demo has chats on several accounts");
+    let (a, b) = (url_encode(accounts[0]), url_encode(accounts[1]));
+    let (a, b) = (a.as_str(), b.as_str());
+    let both = all.iter().filter(|(x, _)| x == accounts[0] || x == accounts[1]).count();
+    for form in [format!("accountIDs={a}&accountIDs={b}"), format!("accountIDs[]={a}&accountIDs[]={b}")] {
+        assert_eq!(get(format!("/v1/chats?{form}")).await.len(), both, "{form}");
+    }
+    assert_eq!(
+        get(format!("/v1/chats?accountIDs[]={a}")).await.len(),
+        all.iter().filter(|(x, _)| x == accounts[0]).count()
+    );
+
+    let found = get("/v1/messages/search?limit=100".into()).await;
+    let mut chats: Vec<&str> = found.iter().map(|(_, c)| c.as_str().unwrap()).collect();
+    chats.sort();
+    chats.dedup();
+    let both = found.iter().filter(|(_, x)| x == chats[0] || x == chats[1]).count();
+    let (c, d) = (url_encode(chats[0]), url_encode(chats[1]));
+    assert_eq!(get(format!("/v1/messages/search?limit=100&chatIDs={c}&chatIDs={d}")).await.len(), both);
+}
+
 /// The head of a response without the `Date` header, and the body.
 fn without_date(out: &str) -> (String, &str) {
     let (head, body) = out.split_once("\r\n\r\n").expect("a response head");
