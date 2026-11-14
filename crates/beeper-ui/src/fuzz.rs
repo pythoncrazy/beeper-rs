@@ -1686,7 +1686,7 @@ fn create_label_like_desktop() {
 fn edit_and_delete_labels_like_desktop() {
     let mut app = demo_app("label-menu");
     let _ = app.update(UiMessage::OpenChatMenu("account:label:lbl_work".into()));
-    let menu = |app: &BeeperGuiApp| simulator(app.view_account_menu("label:lbl_work")).find("Edit Label…").is_ok();
+    let menu = |app: &BeeperGuiApp| simulator(app.view_account_menu("label:lbl_work")).find("Label Settings").is_ok();
     assert!(menu(&app));
     let _ = app.update(UiMessage::EditLabel("lbl_work".into()));
     let ready = |app: &BeeperGuiApp| app.label_window.as_ref().expect("the label window").ready(&app.store.read());
@@ -1705,7 +1705,8 @@ fn edit_and_delete_labels_like_desktop() {
     let _ = app.update(UiMessage::Undo(false));
     assert!(app.store.read().labels.iter().any(|l| l.id == "lbl_work" && l.name == "Work" && l.rooms == rooms));
     let _ = app.update(UiMessage::SelectAccount(Some("label:lbl_work".into())));
-    let _ = app.update(UiMessage::AskDeleteLabel("lbl_work".into()));
+    let _ = app.update(UiMessage::OpenLabelSettings("lbl_work".into()));
+    let _ = app.update(UiMessage::LabelPane(app.label_settings[0].id, LabelPane::Delete));
     simulator(app.view_confirm(ASK_DELETE_LABEL)).find("Delete").expect("a Delete button");
     app.store.write().set_label_muted("lbl_work", true);
     app.patch_settings(|s| s.spaces_order = vec![SpaceOrder { id: "label:lbl_work".into(), visible: true }]);
@@ -1798,7 +1799,9 @@ fn edit_spaces_like_desktop() {
     let picked: Vec<UiMessage> = {
         let mut sim = view(&app);
         assert!(
-            sim.find("Edit Label…").is_ok() && sim.find("Delete Label").is_ok() && sim.find("Edit Spaces…").is_err()
+            sim.find("Label Settings").is_ok()
+                && sim.find("Delete Label").is_err()
+                && sim.find("Edit Spaces…").is_err()
         );
         let _ = sim.click("Mute").expect("the label gear menu mutes");
         sim.into_messages().collect()
@@ -1821,26 +1824,8 @@ fn edit_spaces_like_desktop() {
         assert!(sim.find("Show in Inbox").is_ok() && sim.find(if muted { "Unmute" } else { "Mute" }).is_ok());
         assert!(sim.find("Add/Remove Accounts…").is_err() && sim.find("Mute Space").is_err());
     }
-    edit(&mut app, SpacesEdit::Menu(Some("label:lbl_work".into())));
-    let ask = "Are you sure you want to delete \"Work\"? This will remove the label from all chats.";
-    let picked: Vec<UiMessage> = {
-        let mut sim = view(&app);
-        let _ = sim.click("Delete Label").expect("the label gear menu deletes");
-        sim.into_messages().collect()
-    };
-    for m in picked {
-        let _ = app.update(m);
-    }
-    assert!(simulator(app.view_main()).find(ask).is_err(), "the confirm shows in the Edit Spaces window");
-    let picked: Vec<UiMessage> = {
-        let mut sim = view(&app);
-        let _ = sim.click("Delete").expect("the confirm in the Edit Spaces window");
-        sim.into_messages().collect()
-    };
-    for m in picked {
-        let _ = app.update(m);
-    }
-    assert!(app.confirm.is_none() && !app.store.read().labels.iter().any(|l| l.id == "lbl_work"));
+    let _ = app.update(UiMessage::DeleteLabel("lbl_work".into()));
+    assert!(!app.store.read().labels.iter().any(|l| l.id == "lbl_work"));
     assert!(!app.spaces_window.as_ref().unwrap().order.iter().any(|o| o == "label:lbl_work"));
     edit(&mut app, SpacesEdit::NewLabel);
     assert!(app.label_window.is_some());
@@ -2152,7 +2137,10 @@ fn background_menus_like_desktop() {
         let mut sim = simulator(app.view_chat_menu(key, false, 900.0));
         items.iter().all(|i| sim.find(*i).is_ok())
     };
-    assert!(has(&app, "head:label:lbl_work", &["Select Chats", "Show in Inbox", "Edit Label...", "Delete Label"]));
+    assert!(has(&app, "head:label:lbl_work", &["Work", "Mute", "Label Settings", "Select Chats"]));
+    assert!(
+        !has(&app, "head:label:lbl_work", &["Show in Inbox"]) && !has(&app, "head:label:lbl_work", &["Delete Label"])
+    );
     let account = app.store.read().bridge_accounts[0].account_id.clone();
     assert!(has(&app, &format!("head:{account}"), &["Select Chats", "Show in Inbox", "Account Settings..."]));
     let _ = app.update(UiMessage::SelectAccount(None));
@@ -2384,14 +2372,17 @@ fn chat_menu_acts_on_the_selection_like_desktop() {
 #[test]
 fn label_inbox_rules_like_desktop() {
     let mut app = demo_app("label-inbox");
-    let _ = app.update(UiMessage::OpenChatMenu("account:label:lbl_work".into()));
-    let _ = app.update(UiMessage::ChatSub(Some(0)));
+    let _ = app.update(UiMessage::OpenLabelSettings("lbl_work".into()));
+    let w = app.label_settings[0].id;
+    let _ = app.update(UiMessage::LabelPane(w, LabelPane::Menu(true)));
     let picks: Vec<UiMessage> = {
-        let mut sim = simulator(app.view_account_menu("label:lbl_work"));
+        let mut sim = simulator(app.view_window(w));
         let _ = sim.click("Only DMs").expect("the Only DMs option");
         sim.into_messages().collect()
     };
-    assert!(matches!(&picks[..], [UiMessage::SetLabelInbox(id, Some("dmOnly"))] if id == "lbl_work"));
+    assert!(
+        matches!(&picks[..], [UiMessage::Commands(m)] if matches!(&m[1], UiMessage::SetLabelInbox(id, Some("dmOnly")) if id == "lbl_work"))
+    );
     let hidden = |app: &BeeperGuiApp| {
         let st = app.store.read();
         let work = st.labels.iter().find(|l| l.id == "lbl_work").expect("the work label");
@@ -2898,7 +2889,8 @@ fn mute_labels_like_desktop() {
     let _ = app.update(UiMessage::OpenChatMenu("account:label:lbl_work".into()));
     let picks: Vec<UiMessage> = {
         let mut sim = simulator(app.view_account_menu("label:lbl_work"));
-        let _ = sim.click("Mute Label").expect("a Mute Label item");
+        assert!(sim.find("Edit Spaces…").is_ok() && sim.find("Delete Label").is_err());
+        let _ = sim.click("Mute").expect("a Mute item");
         sim.into_messages().collect()
     };
     assert!(matches!(&picks[..], [UiMessage::MuteLabel(id, true)] if id == "lbl_work"));
@@ -2913,7 +2905,7 @@ fn mute_labels_like_desktop() {
     for m in picks {
         let _ = app.update(m);
     }
-    simulator(app.view_account_menu("label:lbl_work")).find("Unmute Label").expect("an Unmute Label item");
+    simulator(app.view_account_menu("label:lbl_work")).find("Unmute").expect("an Unmute item");
     let muted = |app: &BeeperGuiApp| {
         let st = app.store.read();
         st.notifications_muted(&st.chats[st.chat_idx_by_id[&only]])
