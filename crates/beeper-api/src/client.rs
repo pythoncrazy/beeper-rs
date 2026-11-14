@@ -132,20 +132,6 @@ impl BeeperClient {
         (status, if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).expect("setup step JSON") })
     }
 
-    pub async fn verify_recovery_key(&self, recovery_key: &str) -> Value {
-        let body = json!({ "recoveryKey": recovery_key });
-        self.json("POST", "/v1/app/setup/verification/recovery-key", Some(body)).await
-    }
-
-    pub async fn verify_device_sas(&self) -> Value {
-        let started: Value = self.json("POST", "/v1/app/setup/verifications", None).await;
-        let base =
-            format!("/v1/app/setup/verifications/{}", started["verification"]["verificationID"].as_str().unwrap());
-        let sas: Value = self.json("POST", &format!("{base}/sas/start"), None).await;
-        assert!(!sas["verification"]["sas"]["emojis"].as_array().expect("emojis array").is_empty());
-        self.json("POST", &format!("{base}/sas/confirm"), None).await
-    }
-
     pub async fn connect_bridge_session(&self, bridge_id: &str, flow_id: &str, mode: &str) -> BridgeLoginSession {
         let base = format!("/v1/bridges/{bridge_id}/login-sessions");
         let sess: BridgeLoginSession = self.json("POST", &base, Some(json!({ "flowID": flow_id }))).await;

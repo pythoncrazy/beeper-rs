@@ -296,7 +296,6 @@ pub struct BeeperStore {
     db: Mutex<Connection>,
     pub beeper_state: BeeperStateRecord,
     pub setup_status: SetupStatusResponse,
-    pub verifications: HashMap<String, VerificationState>,
     pub bridge_accounts: Vec<BridgeAccountInfo>,
     /// Position of each pinned chat in the `com.beeper.favourites_order` account data.
     pub pin_rank: HashMap<String, usize>,
@@ -441,7 +440,6 @@ impl BeeperStore {
             db: Mutex::new(conn),
             setup_status: Self::build_setup_from_state(&beeper_state),
             beeper_state,
-            verifications: HashMap::new(),
             bridge_accounts: Vec::new(),
             pin_rank: HashMap::new(),
             recent_chat_ids: Vec::new(),

@@ -676,6 +676,8 @@ async fn lifecycle() {
     for (name, code, user) in [("login", "123456", "alex"), ("register", "654321", "newbie")] {
         let (dir, _, st, c) = spawn_e2e_beeper_instance(name, Some(&cloud)).await;
         assert!(!st.read().signed_in() && st.read().chats.is_empty(), "fresh install is signed out");
+        let login = json!({ "message": "Sign in to Beeper Desktop first", "code": "needs_login" });
+        assert_eq!(c.setup_step("verification/recovery-key/reset", json!({})).await, (StatusCode::CONFLICT, login));
         let (status, start) = c.setup_step("start", json!({})).await;
         assert_eq!((status, &start["signInMethods"]), (StatusCode::OK, &json!(["email"])));
         let id = start["setupRequestID"].clone();
@@ -780,13 +782,11 @@ async fn lifecycle() {
     assert_eq!(login.status_banner, "Something went wrong: offline");
     drop((login, login_store));
 
-    let sas_verified = client.verify_device_sas().await;
-    assert_eq!(sas_verified["session"]["state"], "ready");
-    assert_eq!(sas_verified["session"]["e2ee"]["verified"], true);
-    assert_eq!(sas_verified["verification"]["state"], "verified");
-
-    let rk_verified = client.verify_recovery_key(DEFAULT_RECOVERY_CODE).await;
-    assert_eq!(rk_verified["session"]["e2ee"]["verified"], true);
+    let not_connected = json!({ "message": "Matrix is not connected yet", "code": "UNKNOWN_ERROR" });
+    assert_eq!(client.setup_step("verifications", json!({})).await, (StatusCode(500), not_connected));
+    let ready = json!({ "message": "Beeper Desktop is already set up", "code": "already_ready" });
+    let key = json!({ "recoveryKey": DEFAULT_RECOVERY_CODE });
+    assert_eq!(client.setup_step("verification/recovery-key", key).await, (StatusCode::CONFLICT, ready));
 
     let bridge_sess = client.connect_bridge_session("linkedin", "user_input_login", "on_device").await;
     assert_eq!(bridge_sess.step.step_type, "complete");

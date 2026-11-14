@@ -153,6 +153,23 @@ pub struct BeeperStateRecord {
     pub secrets: BeeperStateSecrets,
 }
 
+impl BeeperStateRecord {
+    /// Desktop's `getAppState`: the next setup step of the account.
+    pub fn app_state(&self) -> &'static str {
+        let s = &self.secrets;
+        let secrets = [&s.master_key, &s.self_signing_key, &s.user_signing_key, &s.megolm_backup_key];
+        match self {
+            r if r.user_id.is_empty() && r.device_id.is_empty() && r.access_token.is_empty() => "needs-login",
+            r if !r.initialized => "initializing",
+            r if !r.cross_signing => "needs-cross-signing-setup",
+            r if !r.verified => "needs-verification",
+            r if secrets.iter().any(|k| k.is_empty()) || !r.key_backup => "needs-secrets",
+            r if !r.first_sync_done => "needs-first-sync",
+            _ => "ready",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct MatrixSession {
     pub user_id: String,
