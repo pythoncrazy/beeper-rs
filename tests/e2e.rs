@@ -1,6 +1,6 @@
 use beeper_api::{
     client::BeeperClient,
-    http::{read_message, StatusCode},
+    http::{query_string, read_message, StatusCode},
     server::serve_http,
 };
 use beeper_core::{
@@ -607,6 +607,96 @@ async fn lifecycle() {
         assert!(!chats.expect("a GET shares the store lock with the UI").items.is_empty());
     }
 
+    let (_, _, pages, pager) = spawn_e2e_beeper_instance("pages", None).await;
+    let (mut listed, mut cursor) = (Vec::new(), None::<String>);
+    loop {
+        let path = match &cursor {
+            None => "/v1/chats?limit=4".to_string(),
+            Some(c) => query_string("/v1/chats", &[("limit", "4"), ("cursor", c)]),
+        };
+        let (_, page) = pager.request("GET", &path, None).await;
+        let items = page["items"].as_array().unwrap();
+        listed.extend(items.iter().map(|c| (c["lastActivity"].clone(), c["id"].as_str().unwrap().to_string())));
+        if page["hasMore"] == false {
+            break;
+        }
+        assert_eq!(items.len(), 4);
+        cursor = Some(page["oldestCursor"].as_str().unwrap().to_string());
+    }
+    let ids: Vec<&String> = listed.iter().map(|(_, id)| id).collect();
+    let all: Vec<String> = pages.read().chats.iter().map(|c| c.id.clone()).collect();
+    assert_eq!((ids.len(), ids.iter().collect::<std::collections::HashSet<_>>().len()), (all.len(), all.len()));
+    assert!(listed.windows(2).all(|w| w[0].0.as_str() >= w[1].0.as_str()), "newest activity first: {listed:?}");
+    let (_, first) = pager.request("GET", "/v1/chats", None).await;
+    assert_eq!((first["items"].as_array().unwrap().len(), &first["hasMore"]), (all.len().min(25), &json!(false)));
+    let (_, two) = pager.request("GET", "/v1/chats?accountIDs=acc_whatsapp&accountIDs=acc_telegram", None).await;
+    let wanted =
+        pages.read().chats.iter().filter(|c| ["acc_whatsapp", "acc_telegram"].contains(&&*c.account_id)).count();
+    assert!(wanted > 0 && two["items"].as_array().unwrap().len() == wanted);
+    for bad in ["limit=0", "limit=201", "cursor=nope", "direction=up"] {
+        assert_eq!(pager.request("GET", &format!("/v1/chats?{bad}"), None).await.0, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let weekly = "!tg_weekly:beeper.com";
+    for n in 0..22 {
+        pager.send_message(weekly, Some(&format!("Page message {n}")), None, None).await;
+    }
+    let url = |q: &str| format!("/v1/chats/{weekly}/messages?{q}");
+    let keys = |p: &Value| -> Vec<String> {
+        p["items"].as_array().unwrap().iter().map(|m| m["sortKey"].as_str().unwrap().to_string()).collect()
+    };
+    let (_, newest) = pager.request("GET", &url(""), None).await;
+    let newest_keys = keys(&newest);
+    assert_eq!((newest_keys.len(), &newest["hasMore"]), (20, &json!(true)));
+    assert!(newest_keys.is_sorted_by(|a, b| a > b), "newest first");
+    assert_eq!(newest["items"][0]["text"], "Page message 21");
+    assert_eq!(newest["oldestCursor"].as_str(), newest_keys.last().map(String::as_str));
+    let (_, older) =
+        pager.request("GET", &url(&format!("cursor={}", newest["oldestCursor"].as_str().unwrap())), None).await;
+    assert_eq!((keys(&older).len(), &older["hasMore"]), (3, &json!(false)));
+    let (_, newer) = pager.request("GET", &url(&format!("cursor={}&direction=after", newest_keys[2])), None).await;
+    assert_eq!(keys(&newer), newest_keys[..2]);
+    let (_, hits) = pager.request("GET", "/v1/messages/search?query=page&limit=5", None).await;
+    assert_eq!((keys(&hits), &hits["hasMore"]), (newest_keys[..5].to_vec(), &json!(true)));
+    assert_eq!(hits["chats"][weekly]["id"], weekly, "the chats of the messages");
+    let next =
+        query_string("/v1/messages/search", &[("query", "page"), ("cursor", hits["oldestCursor"].as_str().unwrap())]);
+    let rest = keys(&pager.request("GET", &next, None).await.1);
+    assert_eq!((rest.len(), &rest[..15]), (17, &newest_keys[5..]), "the other 17 page messages");
+    let (_, local) = pager.request("GET", "/v1/messages/search?chatIDs=local_x1&limit=20", None).await;
+    assert_eq!(keys(&local), newest_keys, "a local chat ID and no query");
+    let media = "/v1/messages/search?mediaTypes=image&mediaTypes=file";
+    let kinds: Vec<Value> = pager.request("GET", media, None).await.1["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["attachments"].clone())
+        .collect();
+    let wanted = |a: &Value| a.as_array().unwrap().iter().any(|a| a["type"] == "img" || a["type"] == "unknown");
+    assert!(kinds.len() == 6 && kinds.iter().all(wanted), "{kinds:?}");
+    let (_, muted) = pager.request("GET", "/v1/messages/search?accountIDs=acc_imessage&includeMuted=false", None).await;
+    assert!(muted["items"].as_array().unwrap().iter().all(|m| m["chatID"] != "!im_sarah:beeper.com"));
+    let (_, late) = pager.request("GET", "/v1/messages/search?dateAfter=2100-01-01T00:00:00%2B02:00", None).await;
+    assert_eq!(late["items"], json!([]));
+    for bad in [
+        "limit=21",
+        "mediaTypes=audio",
+        "chatType=dm",
+        "dateAfter=2026-02-01T00:00:00Z&dateBefore=2026-01-01T00:00:00Z",
+    ] {
+        let status = pager.request("GET", &format!("/v1/messages/search?{bad}"), None).await.0;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    assert_eq!(pager.request("GET", "/v1/messages/search?chatIDs=nope", None).await.0, StatusCode::NOT_FOUND);
+    let titles = |p: &Value| -> Vec<String> {
+        p["items"].as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap().to_string()).collect()
+    };
+    let (_, by_title) = pager.request("GET", "/v1/chats/search?query=eric", None).await;
+    assert_eq!(titles(&by_title), ["Eric Migicovsky"], "the default scope matches titles");
+    let (_, by_people) = pager.request("GET", "/v1/chats/search?query=eric&scope=participants", None).await;
+    assert_eq!(titles(&by_people).len(), 2, "{by_people}");
+    let (_, rust) = pager.request("GET", "/v1/chats/search?query=rust&accountIDs=acc_signal", None).await;
+    assert_eq!(rust["items"], json!([]));
+
     let rpc = |id: u32, method: &str, params: Value| json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
     let hello =
         json!({ "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "e2e", "version": "1" } });
@@ -905,8 +995,8 @@ async fn lifecycle() {
     let search_res = client.search_messages("edited", None).await;
     assert!(search_res.items.iter().any(|m| m.id == sent_msg_id));
 
-    let audio_res = client.search_messages("", Some("audio")).await;
-    assert!(!audio_res.items.is_empty());
+    let media_res = client.search_messages("", Some("any")).await;
+    assert!(!media_res.items.is_empty() && media_res.items.iter().all(|m| !m.attachments.is_empty()));
 
     let unified = client.unified_search("rust").await;
     assert!(!unified["results"]["in_groups"].as_array().unwrap().is_empty());

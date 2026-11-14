@@ -7,7 +7,7 @@ use crate::matrix::{ChatFlag, Outgoing};
 use crate::models::*;
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -266,6 +266,12 @@ fn demo_state() -> BeeperStateRecord {
     }
 }
 
+/// The key of a chat in `chat_order`: the last activity in Unix milliseconds (0 without activity) and the chat ID.
+pub fn activity_key(c: &Chat) -> (i64, String) {
+    let ms = c.last_activity.as_deref().map(|t| millis_from_rfc3339(t).expect("RFC 3339 activity"));
+    (ms.unwrap_or(0), c.id.clone())
+}
+
 fn chat_index_text(c: &Chat) -> String {
     let people = c
         .participants
@@ -308,6 +314,8 @@ pub struct BeeperStore {
     pub labels: Vec<Label>,
     pub chats: Vec<Chat>,
     pub chat_idx_by_id: HashMap<String, usize>,
+    /// The `activity_key` of each chat, for Desktop's chat order `ORDER BY timestamp DESC`.
+    pub chat_order: BTreeSet<(i64, String)>,
     local_chat_idx_by_id: HashMap<String, usize>,
     pub messages: Vec<Message>,
     pub msg_idx_by_id: HashMap<String, usize>,
@@ -451,6 +459,7 @@ impl BeeperStore {
             labels: Vec::new(),
             chats: Vec::new(),
             chat_idx_by_id: HashMap::new(),
+            chat_order: BTreeSet::new(),
             local_chat_idx_by_id: HashMap::new(),
             messages: Vec::new(),
             msg_idx_by_id: HashMap::new(),
@@ -1053,6 +1062,7 @@ impl BeeperStore {
         chat.flags = self.label_flags(&chat);
         let idx = self.chats.len();
         assert!(self.chat_idx_by_id.insert(chat.id.clone(), idx).is_none(), "duplicate chat {}", chat.id);
+        self.chat_order.insert(activity_key(&chat));
         self.chat_search_index.insert_doc(idx as u32, &chat_index_text(&chat));
         self.chat_msg_indices.entry(chat.id.clone()).or_default();
         if let Some(loc) = &chat.local_chat_id {
@@ -1078,8 +1088,10 @@ impl BeeperStore {
         let c_idx = self.chat_idx_by_id[&msg.chat_id];
         let chat = &mut self.chats[c_idx];
         if !msg.silent() && chat.preview.as_ref().is_none_or(|p| p.sort_key <= msg.sort_key) {
+            self.chat_order.remove(&activity_key(chat));
             chat.last_activity = Some(msg.timestamp.clone());
             chat.preview = Some(msg.clone());
+            self.chat_order.insert(activity_key(chat));
         }
         self.messages.push(msg);
         if persist {
@@ -1310,7 +1322,9 @@ impl BeeperStore {
     pub fn remove_chat(&mut self, id: &str) {
         self.remove_label(id);
         let Some(idx) = self.chat_idx_by_id.remove(id) else { return };
-        if let Some(local) = self.chats.remove(idx).local_chat_id {
+        let chat = self.chats.remove(idx);
+        assert!(self.chat_order.remove(&activity_key(&chat)), "chat {id} is in the chat order");
+        if let Some(local) = chat.local_chat_id {
             self.local_chat_idx_by_id.remove(&local);
         }
         for i in self.chat_idx_by_id.values_mut().chain(self.local_chat_idx_by_id.values_mut()).filter(|i| **i > idx) {
@@ -1384,8 +1398,10 @@ impl BeeperStore {
     }
 
     pub fn update_chat(&mut self, idx: usize, f: impl FnOnce(&mut Chat)) -> Chat {
-        let old = chat_index_text(&self.chats[idx]);
+        let (old, old_key) = (chat_index_text(&self.chats[idx]), activity_key(&self.chats[idx]));
         f(&mut self.chats[idx]);
+        assert!(self.chat_order.remove(&old_key), "chat {} is in the chat order", old_key.1);
+        self.chat_order.insert(activity_key(&self.chats[idx]));
         self.chats[idx].sync_flags();
         self.chats[idx].flags = self.label_flags(&self.chats[idx]);
         self.chat_search_index.remove_doc(idx as u32, &old);
