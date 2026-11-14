@@ -733,6 +733,9 @@ pub enum UiMessage {
     /// Desktop's `retryErroredMessage` and `removeErroredMessage` of a failed send.
     RetrySend(String),
     RemoveUnsent(String),
+    /// The timeline moved, and is above its bottom (true) or at it.
+    TimelineScrolled(bool),
+    ScrollToBottom,
     /// The top of the timeline came on screen (true) or went off screen.
     TopShown(bool),
     LoadOlder,
@@ -3693,6 +3696,8 @@ pub struct Pane {
     pub stash: Option<Stash>,
     /// The composer changed after the last save of the draft. Desktop saves it at most every 5 seconds.
     pub draft_due: bool,
+    /// Desktop's `ScrollToBottom`: whether you scrolled up from the bottom of the timeline, and since when.
+    pub scrolled_up: Option<(bool, std::time::Instant)>,
 }
 
 /// Desktop's `TopOfThread`, which loads older messages while the top of the timeline is on screen.
@@ -4763,6 +4768,7 @@ impl BeeperGuiApp {
         self.pane.composer_links = draft.discarded_links.into_iter().map(|u| (u, LinkState::Discarded)).collect();
         (self.pane.history, self.pane.draft_due) = (History::default(), false);
         self.pane.timeline.forget_reveal();
+        self.pane.scrolled_up = None;
         self.pane.reply_to_message_id = draft.reply_to_message_id;
         (self.pane.editing_message_id, self.pane.stash) = (None, None);
         self.pane.mentions.clear();
@@ -7731,6 +7737,10 @@ impl BeeperGuiApp {
                 return self.push_outbox();
             }
             UiMessage::RemoveUnsent(id) => self.store.write().remove_unsent(&id),
+            UiMessage::TimelineScrolled(up) => self.timeline_scrolled(up),
+            UiMessage::ScrollToBottom => {
+                return operation::scroll_to("timeline", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
+            }
             UiMessage::TopShown(shown) => {
                 self.pane.top.shown = shown;
                 return self.load_older();
@@ -8803,6 +8813,7 @@ impl BeeperGuiApp {
         let queued = queued.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::SendQueued(None)));
         let animated = rising
             || self.pane.top.loading.is_some()
+            || self.pane.scrolled_up.is_some_and(|s| s.1.elapsed().as_secs_f32() < 0.2)
             || self.chat_windows.iter().any(|w| w.1.top.loading.is_some())
             || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
             || self.pref_flash.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 2.0);
@@ -11795,6 +11806,11 @@ impl BeeperGuiApp {
             let col = container(col).align_y(Bottom);
             scrollable(col).direction(stable_bar()).anchor_bottom().height(Fill).style(scroll_style(p.scroll))
         };
+        // Desktop's `processScroll`: the timeline is pinned to its bottom until you scroll up. A sensor at the bottom
+        // tells it without a message for each scroll step, which would build the view again.
+        let bottom = iced::widget::sensor(Space::new()).key(chat.id.clone()).anticipate(1);
+        let col =
+            col.push(bottom.on_show(|_| UiMessage::TimelineScrolled(false)).on_hide(UiMessage::TimelineScrolled(true)));
         let list = lift::tight(scroller(col).id("timeline"));
         let replies = self.pane().reply_thread.as_ref().map(|id| {
             let root = st.msg_idx_by_id.get(id).map_or(id.as_str(), |&i| reply_root(&st, &st.messages[i]));
@@ -11892,7 +11908,8 @@ impl BeeperGuiApp {
             Some(link) => Some(link),
             None => unavailable(&st, chat).is_none().then(|| self.view_composer(&st, chat)),
         };
-        let pane = column![stack![list, overlay].push(replies).push(close).width(Fill).height(Fill)]
+        let jump = self.view_scroll_to_bottom(&st, chat);
+        let pane = column![stack![list, overlay].push(jump).push(replies).push(close).width(Fill).height(Fill)]
             .push(verify)
             .push(composer);
         let secondary = st.settings.pref("secondaryComposerButton") != 6;
@@ -11972,6 +11989,55 @@ impl BeeperGuiApp {
             .on_show(|_| UiMessage::TopShown(true))
             .on_hide(UiMessage::TopShown(false))
             .into()
+    }
+
+    /// Starts the fade of Desktop's `ScrollToBottom` when the timeline leaves its bottom (`up`) or comes back to it.
+    fn timeline_scrolled(&mut self, up: bool) {
+        if self.pane.scrolled_up.is_none_or(|s| s.0 != up) {
+            self.pane.scrolled_up = Some((up, std::time::Instant::now()));
+        }
+    }
+
+    /// Desktop's `ScrollToBottom` over the bottom of the timeline when you scrolled up: a circle with a chevron, or
+    /// the count of unread messages with the hotkey. It fades in 50 ms after you scroll up, over 0.15 s.
+    fn view_scroll_to_bottom<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
+        let p = &self.pal;
+        let (up, since) = self.pane().scrolled_up?;
+        let t = since.elapsed().as_secs_f32();
+        let shown = up && self.pane().editing_message_id.is_none();
+        let alpha = if shown { ((t - 0.05) / 0.15).clamp(0.0, 1.0) } else { 1.0 - (t / 0.15).clamp(0.0, 1.0) };
+        if alpha == 0.0 {
+            return None;
+        }
+        let fade = move |c: Color| c.scale_alpha(alpha);
+        let n = chat.unread_count as usize;
+        let body: El<'a> = if n > 0 {
+            let count = if n >= 1000 { "999+".to_string() } else { n.to_string() };
+            let count = semi(count, 13.0).line_height(Pixels(16.0)).color(fade(Color::WHITE)).center();
+            let count = container(count.width(Length::Shrink)).padding([0, 4]).style(fill_box(fade(p.accent), 20.0));
+            let label = semi(trn("New Message", "New Messages", n, &[]), 13.0).line_height(Pixels(16.0));
+            let keys = prefs::hotkey_label(st.settings.hotkey_keys("Scroll to the bottom of a chat"));
+            let keys = keys.split(' ').map(|k| -> El<'a> {
+                semi(k.to_string(), 13.0).line_height(Pixels(16.0)).color(fade(p.accent)).center().into()
+            });
+            let keys = Row::with_children(keys);
+            row![count, label.color(fade(p.accent)), keys].spacing(7).align_y(Center).into()
+        } else {
+            let chevron = tinted(&CHEVRON_DOWN, 20.0, fade(p.strong).scale_alpha(0.8));
+            container(chevron).center(20).into()
+        };
+        let shadow =
+            Shadow { color: fade(Color::from_rgba(0.0, 0.0, 0.0, 0.15)), offset: Vector::ZERO, blur_radius: 20.0 };
+        let style = button::Style {
+            background: Some(fade(p.card).into()),
+            border: border::rounded(30),
+            shadow,
+            ..Default::default()
+        };
+        let button =
+            button(body).padding(4).style(move |_, _| style).on_press_maybe(shown.then_some(UiMessage::ScrollToBottom));
+        let at = container(button).center_x(Fill).align_bottom(Fill);
+        Some(at.padding(Padding::ZERO.bottom(21.0 + 6.5)).into())
     }
 
     /// Desktop's `MessageList`: the messages in timeline order. In a reply chain, the quotes, the reply lines,

@@ -2065,6 +2065,49 @@ fn own_messages_show_their_send_status_like_desktop() {
 }
 
 #[test]
+fn scroll_to_bottom_shows_when_you_scroll_up_like_desktop() {
+    let mut app = demo_app("scroll-to-bottom");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    {
+        let mut st = app.store.write();
+        for n in 0..40 {
+            st.send_message(NOTE_CHAT_ID, Some(format!("line {n}")), None, None).expect("a demo send");
+        }
+        let i = st.chat_idx_by_id[NOTE_CHAT_ID];
+        st.update_chat(i, |c| c.unread_count = 2);
+    }
+    // The sensor at the bottom of the timeline tells when the timeline leaves its bottom and comes back.
+    let scroll = |app: &BeeperGuiApp, y: f32| {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view_main());
+        sim.point_at(Point::new(900.0, 450.0));
+        let redraw = || iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now()));
+        let wheel = iced::Event::Mouse(mouse::Event::WheelScrolled { delta: ScrollDelta::Pixels { x: 0.0, y } });
+        let _ = sim.simulate([redraw(), wheel, redraw()]);
+        let ups = sim.into_messages().filter_map(|m| match m {
+            UiMessage::TimelineScrolled(up) => Some(up),
+            _ => None,
+        });
+        ups.collect::<Vec<bool>>()
+    };
+    assert_eq!(scroll(&app, 0.0), [false], "the timeline opens at its bottom");
+    assert_eq!(scroll(&app, 300.0), [false, true], "a scroll up leaves the bottom");
+    let fade = || std::thread::sleep(std::time::Duration::from_millis(250));
+    assert!(simulator(app.view_main()).find("New Messages").is_err(), "the bottom of the timeline shows");
+    let _ = app.update(UiMessage::TimelineScrolled(true));
+    fade();
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find("2").is_ok() && sim.find("Ctrl").is_ok() && sim.find("↓").is_ok(), "the pill shows the hotkey");
+    let _ = sim.click("New Messages");
+    assert!(matches!(sim.into_messages().last(), Some(UiMessage::ScrollToBottom)));
+    let _ = app.update(UiMessage::TimelineScrolled(false));
+    fade();
+    assert!(simulator(app.view_main()).find("New Messages").is_err(), "at the bottom the pill goes away");
+    let _ = app.update(UiMessage::TimelineScrolled(true));
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    assert!(app.pane.scrolled_up.is_none(), "another chat opens at its bottom");
+}
+
+#[test]
 fn plus_rows_follow_the_feature_flags() {
     let mut app = demo_app("features");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
