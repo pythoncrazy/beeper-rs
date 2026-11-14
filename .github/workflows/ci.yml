@@ -3,10 +3,19 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", LICENSE, NOTICE]
   pull_request:
+    paths-ignore: ["**.md", LICENSE, NOTICE]
+
+# A new push to a pull request cancels the older run of the pull request.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
 
 env:
-  SCCACHE_GHA_ENABLED: "true"
+  # Swatinem/rust-cache keeps the dependencies in target/. The sccache of .cargo/config.toml is for local builds only:
+  # on Windows it expands the cargo argfile and starts rustc with more than the 32767 characters that Windows permits.
+  RUSTC_WRAPPER: ""
 
 jobs:
   check-and-test:
@@ -16,15 +25,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: mozilla-actions/sccache-action@v0.0.11
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
-          version: v0.18.0
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: rui314/setup-mold@10ca16bf91dc22e05ebdc935cad9c75ea248f621
         with:
           mold-version: 3.0.0
           make-default: false
       - name: Linux dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev weston xvfb
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev weston xvfb
       - uses: AnimMouse/setup-ffmpeg@0633f1f6ad34ac671f07224b3c89b00386f0c717
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
@@ -46,15 +55,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - if: runner.os == 'macOS'
-        uses: mozilla-actions/sccache-action@v0.0.11
-        with:
-          version: v0.18.0
-      # sccache expands the cargo argfile and spawns rustc with more than the 32767 characters that Windows permits.
-      - if: runner.os == 'Windows'
-        run: echo "RUSTC_WRAPPER=" >> $env:GITHUB_ENV
-      - if: runner.os == 'Windows'
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - if: runner.os == 'macOS'
