@@ -149,8 +149,9 @@ fn read_spaces_order(prefs: &Value) -> Result<Vec<SpaceOrder>, String> {
     serde_json::from_value(order).map_err(|e| format!("spaces_order JSON: {e}"))
 }
 
+/// Desktop's `nativeThemeSource`: Desktop writes the key only when the user changes the theme.
 fn read_theme(prefs: &Value) -> Result<ThemeChoice, String> {
-    match prefs["native_theme_source"].as_str() {
+    match prefs.get("native_theme_source").map_or(Some("system"), Value::as_str) {
         Some("light") => Ok(ThemeChoice::Light),
         Some("dark") => Ok(ThemeChoice::Dark),
         Some("system") => Ok(ThemeChoice::System),
@@ -660,5 +661,8 @@ mod tests {
             [SpaceOrder { id: "inbox".into(), visible: true }, SpaceOrder { id: "archive".into(), visible: false }]
         );
         assert_eq!(read_spaces_order(&serde_json::json!({})), Ok(Vec::new()));
+        let unchanged = serde_json::json!({ "app_locale": "en" });
+        assert!(matches!(read_theme(&unchanged), Ok(ThemeChoice::System)), "Desktop's default theme is system");
+        assert!(read_theme(&serde_json::json!({ "native_theme_source": 1 })).is_err());
     }
 }
