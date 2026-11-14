@@ -244,3 +244,14 @@ async fn the_transport_behaves_like_node() {
     stream.read_to_string(&mut out).await.unwrap();
     assert!(out.starts_with("HTTP/1.1 200 OK\r\n") && out.ends_with("{\"active\":false}"), "{out}");
 }
+
+#[tokio::test]
+async fn json_keys_keep_the_order_of_desktop() {
+    let (port, _) = server("order").await;
+    let get = "GET /.well-known/oauth-authorization-server HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
+    let base = format!("http://127.0.0.1:{port}");
+    let expected = format!(
+        "{{\"issuer\":\"{base}\",\"authorization_endpoint\":\"{base}/oauth/authorize\",\"token_endpoint\":\"{base}/oauth/token\",\"revocation_endpoint\":\"{base}/oauth/revoke\",\"userinfo_endpoint\":\"{base}/oauth/userinfo\",\"registration_endpoint\":\"{base}/oauth/register\",\"grant_types_supported\":[\"authorization_code\"],\"token_endpoint_auth_methods_supported\":[\"none\"],\"response_types_supported\":[\"code\"],\"scopes_supported\":[\"read\",\"write\"],\"code_challenge_methods_supported\":[\"S256\"],\"service_documentation\":\"{base}/v1/spec\"}}"
+    );
+    assert_eq!(text(port, get).await.split_once("\r\n\r\n").unwrap().1, expected);
+}
