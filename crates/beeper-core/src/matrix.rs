@@ -158,7 +158,7 @@ fn visibility_key(account_id: &str) -> &str {
 /// Desktop's `xce`: the `chat_list_rules` key and the "Show in Inbox" option of an account, or of one of its network
 /// spaces, which has only "all" and "none".
 pub fn inbox_rule<'a>(rules: &'a Value, account_id: &str, bridge: &str, network: Option<&str>) -> (String, &'a str) {
-    let vis = |key: &str| rules["visibility"][key].as_str();
+    let vis = |key: &str| visibility(rules, key);
     match network.filter(|_| !matches!(bridge, "slackgo" | "whatsapp" | "telegram")) {
         Some(n) => {
             let key = format!("{account_id}.{n}");
@@ -173,6 +173,12 @@ pub fn inbox_rule<'a>(rules: &'a Value, account_id: &str, bridge: &str, network:
     }
 }
 
+/// The `chat_list_rules` option of `key`. Desktop's `YH` skips the values that it does not know, so a newer client
+/// cannot break the inbox.
+fn visibility<'a>(rules: &'a Value, key: &str) -> Option<&'a str> {
+    rules["visibility"][key].as_str().filter(|v| matches!(*v, "all" | "dmOnly" | "none"))
+}
+
 /// Desktop's `setInboxVisibility`.
 pub fn with_inbox_visibility(mut rules: Value, key: &str, option: &str) -> Value {
     rules["visibility"][key] = option.into();
@@ -183,7 +189,7 @@ pub fn hidden_from_inbox(rules: &Value, account_id: &str, bridge: &Value, group:
     let name = bridge["com.beeper.bridge_name"].as_str().unwrap_or_default();
     let scoped = match s(&bridge["network"]["id"]) {
         Some(n) if !matches!(name, "slackgo" | "whatsapp" | "telegram") => {
-            rules["visibility"][format!("{account_id}.{n}")].as_str()
+            visibility(rules, &format!("{account_id}.{n}"))
         }
         _ => None,
     };
@@ -2364,6 +2370,8 @@ mod tests {
             assert_eq!((r["order"].clone(), inbox_rule(&r, "telegram", "telegram", None).1), (json!(["x"]), option));
             assert_eq!([false, true].map(|g| hidden_from_inbox(&r, "telegram", &tg, g)), [dm, group]);
         }
+        let newer = with_inbox_visibility(rules.clone(), "telegram", "mentionsOnly");
+        assert!(!hidden_from_inbox(&newer, "telegram", &tg, true), "Desktop skips an option that it does not know");
         let r = with_inbox_visibility(rules.clone(), "slackgo.T1", "none");
         assert_eq!(r["visibility"], json!({"slackgo.T1": "none"}));
         assert!(hidden_from_inbox(&r, "slackgo.T1-U2", &slack, false));
