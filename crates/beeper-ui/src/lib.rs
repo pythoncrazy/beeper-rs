@@ -3,6 +3,7 @@ mod chat_theme;
 mod commands;
 mod cursor;
 mod dashed;
+mod deeplink;
 pub mod emoji;
 mod format;
 mod i18n;
@@ -744,6 +745,8 @@ pub enum UiMessage {
     FocusRequested(Option<String>),
     /// Desktop's `second-instance` event with the arguments of the later launch.
     SecondInstance(Vec<String>),
+    /// A room that a `beeper://join-matrix-room` link joined.
+    RoomJoined(Result<String, String>),
     Login(LoginMsg),
 }
 
@@ -3708,9 +3711,11 @@ impl BeeperGuiApp {
         *(if signed_in { &mut app.main_window } else { &mut app.login_window }) = Some(id);
         let cloud = (signed_in && !app.store.read().config.demo).then(|| app.refresh_cloud_accounts());
         let restore = (signed_in && !app.hidden).then(|| app.restore_subwindows());
+        let link = app.store.write().config.link.take();
+        let link = link.map(|l| app.open_link(&l));
         let tasks =
             [open.map(UiMessage::WindowOpened), iced::system::theme().map(UiMessage::SystemTheme), app.load_avatars()];
-        (app, Task::batch(tasks.into_iter().chain(cloud).chain(restore)))
+        (app, Task::batch(tasks.into_iter().chain(cloud).chain(restore).chain(link)))
     }
 
     fn load_avatars(&mut self) -> Task<UiMessage> {
@@ -5543,11 +5548,7 @@ impl BeeperGuiApp {
                 self.chat_menu = None;
                 let st = self.store.read();
                 let c = &st.chats[st.resolve_chat_idx(&cid).expect("chat exists")];
-                return iced::clipboard::write(format!(
-                    "beeper://select-thread/{}/{}",
-                    c.account_id,
-                    encode_uri_component(&c.id)
-                ));
+                return iced::clipboard::write(deeplink::chat_link(&c.account_id, &c.id));
             }
             UiMessage::CloseChatMenu => self.chat_menu = None,
             UiMessage::OpenChatMenu(cid) => {
@@ -6832,10 +6833,9 @@ impl BeeperGuiApp {
                 if !self.integrations.joining {
                     self.integrations.joining = true;
                     let client = self.store.read().matrix.clone();
-                    return Task::perform(
-                        beeper_core::matrix::join(client, COMMUNITY_ROOM),
-                        UiMessage::CommunityJoined,
-                    );
+                    return Task::perform(beeper_core::matrix::join(client, COMMUNITY_ROOM.into()), |r| {
+                        UiMessage::CommunityJoined(r.map(drop))
+                    });
                 }
             }
             UiMessage::TokenRequest(id, None) => {
@@ -7445,10 +7445,8 @@ impl BeeperGuiApp {
                 let focus = window::gain_focus(self.main_window.or(self.login_window).expect("a window is open"));
                 return Task::batch([focus, self.load_avatars(), self.load_media(), self.close_notifications()]);
             }
-            UiMessage::SecondInstance(_) if self.main_window.is_none() => {
-                return window::gain_focus(self.login_window.expect("a window is open"));
-            }
-            UiMessage::SecondInstance(_) => return self.set_hidden(false),
+            UiMessage::SecondInstance(args) => return self.second_instance(args),
+            UiMessage::RoomJoined(r) => self.room_joined(r),
             UiMessage::Login(m) => return self.update_login(m),
             UiMessage::KeyPressed(Key::Named(k @ (Named::Enter | Named::Escape)), m)
                 if self.recorder.is_some() && m.is_empty() =>
@@ -16357,6 +16355,11 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
     if st.settings.on("spellcheck") {
         let custom = st.data_dir.join("Custom Dictionary.txt");
         std::thread::spawn(|| spell::load(custom));
+    }
+    // Only the default data dir registers, so that test and profile launches do not take the links.
+    #[cfg(target_os = "linux")]
+    if st.config.profile.is_none() && st.data_dir == beeper_core::platform::current_desktop_data_dir(None) {
+        std::thread::spawn(|| deeplink::register().unwrap_or_else(|e| eprintln!("register beeper:// links: {e}")));
     }
     drop(st);
     let app = iced::daemon(move || BeeperGuiApp::boot(store.clone()), BeeperGuiApp::update, BeeperGuiApp::view)

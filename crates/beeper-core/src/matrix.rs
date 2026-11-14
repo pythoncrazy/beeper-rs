@@ -1194,10 +1194,12 @@ async fn joined_room(client: &matrix_sdk::Client, chat: &str) -> Result<Room, St
     Err(format!("{chat} is not a joined Matrix room"))
 }
 
-pub async fn join(client: Option<matrix_sdk::Client>, room: &'static str) -> Result<(), String> {
-    let room = matrix_sdk::ruma::RoomOrAliasId::parse(room).expect("a valid room ID");
+/// Joins a room by its ID or alias, and returns the room ID.
+pub async fn join(client: Option<matrix_sdk::Client>, room: String) -> Result<String, String> {
+    let room = matrix_sdk::ruma::RoomOrAliasId::parse(room).map_err(|e| e.to_string())?;
     let client = client.ok_or("Not connected to Matrix")?;
-    client.join_room_by_id_or_alias(&room, &[]).await.map(drop).map_err(|e| e.to_string())
+    let room = client.join_room_by_id_or_alias(&room, &[]).await.map_err(|e| e.to_string())?;
+    Ok(room.room_id().to_string())
 }
 
 pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) -> Result<(), String> {

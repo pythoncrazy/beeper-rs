@@ -1,4 +1,4 @@
-use crate::config::{resolve_data_dir_for_os, resolve_original_data_dir_for_os, APP_BUNDLE_ID};
+use crate::config::{resolve_data_dir_for_os, resolve_original_data_dir_for_os};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -147,49 +147,6 @@ pub fn forward_launches(first: std::os::unix::net::UnixListener, tx: tokio::sync
             }
         }
     });
-}
-
-#[derive(Debug, Clone)]
-pub struct OsAutostartManifest {
-    pub os: OsKind,
-    pub config_path: PathBuf,
-    pub content: String,
-    pub desktop_entry_path: Option<PathBuf>,
-    pub desktop_entry_content: Option<String>,
-}
-
-pub fn generate_os_autostart_manifest(os: OsKind, home_dir: &Path, bin_path: &Path) -> OsAutostartManifest {
-    let bin_str = bin_path.to_str().expect("valid UTF-8 binary path");
-    assert!(!bin_str.is_empty(), "binary path must not be empty");
-    match os {
-        OsKind::MacOs => OsAutostartManifest {
-            os,
-            config_path: home_dir.join(format!("Library/LaunchAgents/{APP_BUNDLE_ID}.plist")),
-            content: format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>Label</key><string>{APP_BUNDLE_ID}</string><key>ProgramArguments</key><array><string>{bin_str}</string></array><key>RunAtLoad</key><true/></dict></plist>\n"
-            ),
-            desktop_entry_path: None,
-            desktop_entry_content: None,
-        },
-        OsKind::Linux => OsAutostartManifest {
-            os,
-            config_path: home_dir.join(".config/systemd/user/beeper-desktop.service"),
-            content: format!(
-                "[Unit]\nDescription=Beeper Desktop\nAfter=graphical-session.target\n\n[Service]\nExecStart={bin_str}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n"
-            ),
-            desktop_entry_path: Some(home_dir.join(".local/share/applications/beeper-desktop.desktop")),
-            desktop_entry_content: Some(format!(
-                "[Desktop Entry]\nType=Application\nName=Beeper\nExec={bin_str} %u\nTerminal=false\nCategories=Network;InstantMessaging;Chat;\nMimeType=x-scheme-handler/beeper;\nStartupWMClass={APP_BUNDLE_ID}\n"
-            )),
-        },
-        OsKind::Windows => OsAutostartManifest {
-            os,
-            config_path: home_dir.join("AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/Beeper.cmd"),
-            content: format!("@echo off\r\nstart \"\" \"{bin_str}\"\r\n"),
-            desktop_entry_path: None,
-            desktop_entry_content: None,
-        },
-    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

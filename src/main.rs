@@ -21,6 +21,7 @@ Options:
   --data-dir <DIR>
   --demo        Start with demo chats instead of a signed-out account
   --headless
+  beeper://...  Open a Beeper link, in the running instance if there is one
 
 Environment:
   BEEPER_API_URL      Beeper cloud API (default https://api.beeper.com)
@@ -77,7 +78,7 @@ fn main() {
     let mut launch_host = std::env::var("BEEPER_PAS_HOST").ok();
     let mut port: u16 =
         std::env::var("BEEPER_PAS_PORT").map_or(DEFAULT_PAS_PORT, |v| v.parse().expect("BEEPER_PAS_PORT is a port"));
-    let (mut profile, mut data_dir, mut command, mut demo) = (None, None, Command::Gui, false);
+    let (mut profile, mut data_dir, mut command, mut demo, mut link) = (None, None, Command::Gui, false, None);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().unwrap_or_else(|| panic!("missing value for {arg}"));
@@ -91,6 +92,7 @@ fn main() {
             "--demo" => demo = true,
             "--version" | "-V" => return println!("{APP_NAME} {APP_VERSION}"),
             "--help" | "-h" => return println!("{HELP}"),
+            l if l.starts_with("beeper://") => link = Some(arg.clone()),
             other => panic!("unexpected argument: {other}"),
         }
     }
@@ -119,7 +121,7 @@ fn main() {
         return eprintln!("Quitting because another instance is running");
     }
     let mut cfg = CentralConfig::new(data_dir, host.clone(), port, profile);
-    (cfg.demo, cfg.launch_host) = (demo, launch_host.is_some());
+    (cfg.demo, cfg.launch_host, cfg.link) = (demo, launch_host.is_some(), link);
     if let Ok(url) = std::env::var("BEEPER_API_URL") {
         cfg.api_url = url;
     }
