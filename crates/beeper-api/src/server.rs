@@ -1,5 +1,7 @@
 use crate::codec::{base64_decode, base64_encode_standard, sha1, url_decode};
-use crate::http::{parse_query, read_message, read_ws_frame, write_ws_frame, HttpMessage, StatusCode};
+use crate::http::{
+    http_date, parse_query, read_message, read_ws_frame, weak_etag, write_ws_frame, HttpMessage, StatusCode,
+};
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{
     network_spec, now_rfc3339_millis, APP_BUNDLE_ID, APP_NAME, APP_VERSION, NETWORK_SPECS, OPENAPI_SPEC_JSON,
@@ -235,9 +237,7 @@ pub async fn serve_http(listener: TcpListener, store: SharedStore) {
 /// The limits of Desktop's body parsers: 64 KB for OAuth and setup, 100 MB for JSON uploads, 500 MB for multipart
 /// uploads, and 10 MB for the other routes.
 fn body_limit(head: &HttpMessage) -> usize {
-    let path = head.start_line.split(' ').nth(1).unwrap_or_default();
-    let path = path.split('?').next().expect("a first item");
-    match path.split('/').filter(|s| !s.is_empty()).collect::<Vec<_>>()[..] {
+    match head.path().split('/').filter(|s| !s.is_empty()).collect::<Vec<_>>()[..] {
         ["oauth", ..] | ["register"] | ["v1", "app", "setup", ..] => 64 << 10,
         ["v1", "assets", "upload"] if head.header("content-type").is_some_and(|t| t.contains("application/json")) => {
             100 << 20
@@ -247,10 +247,68 @@ fn body_limit(head: &HttpMessage) -> usize {
     }
 }
 
+/// The origin of a request that Desktop's CORS allows: an `http:` or `https:` origin, on all routes except
+/// `/focus` and `/deeplink`.
+fn cors_origin(head: &HttpMessage) -> Option<String> {
+    let origin = head.header("origin")?;
+    let blocked = ["/focus", "/deeplink"]
+        .iter()
+        .any(|p| head.path().strip_prefix(p).is_some_and(|rest| rest.is_empty() || rest.starts_with('/')));
+    let web = url::Url::parse(origin).is_ok_and(|u| matches!(u.scheme(), "http" | "https"));
+    (web && !blocked).then(|| origin.into())
+}
+
+const EXPOSE_HEADERS: (&str, &str) = ("Access-Control-Expose-Headers", "WWW-Authenticate,X-Beeper-Desktop-Version");
+
+/// The answer of the `cors` package to a preflight request.
+fn preflight(origin: String) -> Response {
+    let headers = [
+        ("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS"),
+        (
+            "Access-Control-Allow-Headers",
+            "Authorization,Content-Type,MCP-Protocol-Version,X-Beeper-Access-Token,X-Stainless-MCP",
+        ),
+        ("Access-Control-Max-Age", "600"),
+        EXPOSE_HEADERS,
+        ("Content-Length", "0"),
+    ];
+    let mut cors = vec![("Access-Control-Allow-Origin", origin), ("Vary", "Origin".into())];
+    cors.extend(headers.map(|(k, v)| (k, v.into())));
+    Response { status: StatusCode::NO_CONTENT, headers: cors, body: Vec::new() }
+}
+
+/// Adds the headers of the CORS and version middleware of Desktop, and the `ETag` of Express, which answers a
+/// conditional GET of a fresh body with 304.
+fn express(resp: Response, origin: Option<String>, if_none_match: Option<&str>) -> Response {
+    let Response { mut status, headers: route, mut body } = resp;
+    let mut headers = Vec::new();
+    if let Some(origin) = origin {
+        headers.extend([("Access-Control-Allow-Origin", origin), ("Vary", "Origin".into())]);
+        headers.push((EXPOSE_HEADERS.0, EXPOSE_HEADERS.1.into()));
+    }
+    headers.push(("X-Beeper-Desktop-Version", APP_VERSION.into()));
+    let sent = route
+        .iter()
+        .any(|(k, v)| *k == "content-type" && ["application/json", "text/html"].iter().any(|t| v.starts_with(t)));
+    headers.extend(route);
+    let tag = sent.then(|| weak_etag(&body));
+    let fresh = tag.as_ref().is_some_and(|tag| if_none_match.is_some_and(|m| m.split(',').any(|t| t.trim() == tag)));
+    if fresh && status.0 / 100 == 2 {
+        status = StatusCode::NOT_MODIFIED;
+        headers.retain(|(k, _)| *k != "content-type");
+        body.clear();
+    }
+    if ![StatusCode::NO_CONTENT, StatusCode::NOT_MODIFIED].contains(&status) {
+        headers.push(("Content-Length", body.len().to_string()));
+    }
+    headers.extend(tag.map(|tag| ("ETag", tag)));
+    Response { status, headers, body }
+}
+
 async fn write_response(stream: &mut TcpStream, resp: Response) -> bool {
-    let mut head = format!("HTTP/1.1 {} \r\ncontent-length: {}\r\n", resp.status.0, resp.body.len());
+    let mut head = format!("HTTP/1.1 {} \r\nX-Powered-By: Express\r\n", resp.status.0);
     resp.headers.iter().for_each(|(k, v)| write!(head, "{k}: {v}\r\n").unwrap());
-    head.push_str("\r\n");
+    write!(head, "Date: {}\r\n\r\n", http_date(beeper_core::config::now_unix_secs())).unwrap();
     stream.write_all(&[head.into_bytes(), resp.body].concat()).await.is_ok()
 }
 
@@ -267,11 +325,17 @@ const LINGER: std::time::Duration = std::time::Duration::from_secs(30);
 async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc<Cloud>) {
     let mut buf = Vec::new();
     loop {
-        let msg = match read_message(&mut stream, &mut buf, body_limit).await {
+        let mut origin = None;
+        let limit = |head: &HttpMessage| {
+            origin = cors_origin(head);
+            body_limit(head)
+        };
+        let msg = match read_message(&mut stream, &mut buf, limit).await {
             Ok(msg) => msg,
             Err(None) => return,
             Err(Some(StatusCode::PAYLOAD_TOO_LARGE)) => {
-                let mut resp = error(StatusCode::PAYLOAD_TOO_LARGE, "request entity too large", "UNKNOWN_ERROR");
+                let resp = error(StatusCode::PAYLOAD_TOO_LARGE, "request entity too large", "UNKNOWN_ERROR");
+                let mut resp = express(resp, origin, None);
                 resp.headers.push(("connection", "close".into()));
                 write_response(&mut stream, resp).await;
                 let (mut reader, mut writer) = stream.split();
@@ -296,10 +360,18 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
             return serve_ws(stream, buf, msg, store).await;
         }
         let close = msg.header_is("connection", "close");
-        let (store, cloud) = (store.clone(), cloud.clone());
-        let resp = tokio::task::spawn_blocking(move || respond(&store, &cloud, msg).unwrap_or_else(|e| e))
-            .await
-            .expect("request handler panicked");
+        let resp = match origin {
+            Some(origin) if msg.method() == "OPTIONS" => preflight(origin),
+            origin => {
+                let if_none_match = ["GET", "HEAD"].contains(&msg.method()).then(|| msg.header("if-none-match"));
+                let if_none_match = if_none_match.flatten().map(String::from);
+                let (store, cloud) = (store.clone(), cloud.clone());
+                let resp = tokio::task::spawn_blocking(move || respond(&store, &cloud, msg).unwrap_or_else(|e| e))
+                    .await
+                    .expect("request handler panicked");
+                express(resp, origin, if_none_match.as_deref())
+            }
+        };
         if !write_response(&mut stream, resp).await || close {
             return;
         }
