@@ -3559,3 +3559,21 @@ fn a_later_launch_shows_the_window_like_desktop() {
     let _ = app.update(UiMessage::SecondInstance(vec!["--demo".into()]));
     assert!(!app.hidden, "Desktop's second-instance event shows the main window");
 }
+
+#[test]
+fn main_window_keeps_its_state_like_desktop() {
+    let mut app = demo_app("windowstate");
+    let s = app.main_window_settings();
+    assert_eq!((s.size, s.min_size, s.maximized), (Size::new(1200.0, 800.0), Some(Size::new(330.0, 400.0)), false));
+    assert!(matches!(s.position, window::Position::Centered));
+    let path = app.store.read().data_dir.join("window.json");
+    write_window_state(&path, false, Size::new(900.0, 700.0), Some(Point::new(40.0, 30.0)));
+    write_window_state(&path, true, Size::new(1440.0, 900.0), Some(Point::new(0.0, 0.0)));
+    let s = app.main_window_settings();
+    assert_eq!((s.size, s.maximized), (Size::new(900.0, 700.0), true), "a maximized window keeps its old bounds");
+    assert!(matches!(s.position, window::Position::Specific(p) if p == Point::new(40.0, 30.0)));
+    let main = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
+    let title = app.store.read().chats.iter().find(|c| c.id == beeper_core::store::NOTE_CHAT_ID).unwrap().title.clone();
+    assert_eq!(app.title(main), format!("Beeper | {title}"));
+}

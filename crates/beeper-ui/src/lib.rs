@@ -3549,7 +3549,7 @@ impl BeeperGuiApp {
             Err(e) => panic!("read sidebar-hidden: {e}"),
         };
         let mut app = Self {
-            pane: Pane { size: Size::new(1264.0, 893.0), ..Pane::default() },
+            pane: Pane { size: MAIN_SIZE, ..Pane::default() },
             chat_windows: Vec::new(),
             drawing: Default::default(),
             store,
@@ -3698,8 +3698,7 @@ impl BeeperGuiApp {
     pub fn boot(store: SharedStore) -> (Self, Task<UiMessage>) {
         let mut app = Self::new(store);
         let signed_in = app.pane.selected_chat_id.is_some();
-        let mut settings =
-            if signed_in { Self::window_settings(Size::new(1264.0, 893.0)) } else { Self::login_window_settings() };
+        let mut settings = if signed_in { app.main_window_settings() } else { Self::login_window_settings() };
         let st = app.store.read();
         app.hidden = signed_in && st.settings.on("startMinimized");
         drop(st);
@@ -3861,10 +3860,35 @@ impl BeeperGuiApp {
         (id, open.then(center))
     }
 
+    /// Desktop's `windowStateKeeper("main")`: the main window opens with the bounds and the maximized state of
+    /// `window.json`, else centered with the default size.
+    fn main_window_settings(&self) -> window::Settings {
+        let state = read_window_state(&self.store.read().data_dir.join("window.json"));
+        let main = &state["windowState"]["main"];
+        let num = |key: &str| main[key].as_f64().map(|v| v as f32);
+        let size = num("width").zip(num("height")).map_or(MAIN_SIZE, |(w, h)| Size::new(w, h));
+        let at = num("x").zip(num("y")).map(|(x, y)| window::Position::Specific(Point::new(x, y)));
+        let maximized = main["isMaximized"] == true;
+        window::Settings {
+            position: at.unwrap_or(window::Position::Centered),
+            maximized,
+            ..Self::window_settings(size)
+        }
+    }
+
+    /// Saves the state of the main window to `window.json`. A maximized window keeps the bounds from before.
+    fn save_main_window(&self) -> Task<UiMessage> {
+        let Some(id) = self.main_window else { return Task::none() };
+        let path = self.store.read().data_dir.join("window.json");
+        let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (max, size)));
+        let state = state.then(move |(max, size)| window::position(id).map(move |at| (max, size, at)));
+        state.map(move |(max, size, at)| write_window_state(&path, max, size, at)).discard()
+    }
+
     fn window_settings(size: Size) -> window::Settings {
         window::Settings {
             size,
-            min_size: Some(Size::new(640.0, 480.0)),
+            min_size: Some(Size::new(330.0, 400.0)),
             exit_on_close_request: false,
             icon: Some({
                 let img =
@@ -4035,7 +4059,12 @@ impl BeeperGuiApp {
                     let chat = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
                     return chat.map_or("Beeper".into(), |i| st.chats[i].title.clone());
                 }
-                None => "Beeper",
+                None => {
+                    let st = self.store.read();
+                    let chat = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+                    let title = chat.map(|i| st.chats[i].title.trim()).filter(|t| !t.is_empty());
+                    return title.map_or("Beeper".into(), |t| format!("Beeper | {t}"));
+                }
             },
         }
         .into()
@@ -4323,7 +4352,7 @@ impl BeeperGuiApp {
         }
         drop(st);
         self.save_subwindows();
-        iced::exit()
+        self.save_main_window().chain(iced::exit())
     }
 
     /// Adds an edit from `old` to the history, and reacts to the new text.
@@ -4820,7 +4849,8 @@ impl BeeperGuiApp {
         match hidden {
             true => {
                 let subs = self.sub_windows().into_iter().map(|w| window::set_mode(w, window::Mode::Hidden));
-                Task::batch(subs).chain(window::set_mode(id, window::Mode::Hidden))
+                let hide = Task::batch(subs).chain(window::set_mode(id, window::Mode::Hidden));
+                self.save_main_window().chain(hide)
             }
             false => window::set_mode(id, window::Mode::Windowed).chain(window::gain_focus(id)),
         }
@@ -7343,9 +7373,10 @@ impl BeeperGuiApp {
             // Desktop hides the main window on close, with or without the tray: a later launch shows it again.
             UiMessage::CloseRequested(id) => {
                 let quit = self.store.read().settings.on("quitOnClose");
-                return match Some(id) == self.main_window && !quit {
-                    true => self.set_hidden(true),
-                    false => window::close(id),
+                return match (Some(id) == self.main_window, quit) {
+                    (true, false) => self.set_hidden(true),
+                    (true, true) => self.save_main_window().chain(window::close(id)),
+                    (false, _) => window::close(id),
                 };
             }
             UiMessage::InWindow(id, msg) => {
@@ -7399,6 +7430,7 @@ impl BeeperGuiApp {
                     self.media_window = None;
                     self.carousel = self.carousel.take().filter(|c| !c.in_media);
                 } else if [self.main_window, self.login_window].contains(&Some(id)) {
+                    self.main_window = None;
                     return self.quit();
                 }
                 self.save_subwindows();
@@ -16346,6 +16378,31 @@ impl BeeperGuiApp {
 pub fn write_rgba_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u8]) {
     let (rgba8, png) = (::image::ExtendedColorType::Rgba8, ::image::ImageFormat::Png);
     ::image::save_buffer_with_format(path, rgba, width, height, rgba8, png).expect("write png");
+}
+
+/// Desktop's default size of the main window (`Wg` and `jg`).
+const MAIN_SIZE: Size = Size::new(1200.0, 800.0);
+
+/// Desktop's `window.json`, or an empty state before the first save.
+fn read_window_state(path: &std::path::Path) -> serde_json::Value {
+    match std::fs::read_to_string(path) {
+        Ok(json) => serde_json::from_str(&json).expect("a valid window state"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(e) => panic!("read {}: {e}", path.display()),
+    }
+}
+
+fn write_window_state(path: &std::path::Path, maximized: bool, size: Size, at: Option<Point>) {
+    let mut state = read_window_state(path);
+    let main = &mut state["windowState"]["main"];
+    if !maximized {
+        *main = serde_json::json!({ "width": size.width, "height": size.height });
+        if let Some(at) = at {
+            (main["x"], main["y"]) = (at.x.into(), at.y.into());
+        }
+    }
+    main["isMaximized"] = maximized.into();
+    std::fs::write(path, state.to_string()).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
 }
 
 /// "Relaunch app" closed the app; `main` starts it again.
