@@ -897,6 +897,25 @@ fn chat_commands_like_desktop() {
 }
 
 #[test]
+fn composer_actions_follow_the_chat_like_desktop() {
+    let app = demo_app("actions");
+    let st = app.store.read();
+    let mut chat = app.visible_chats(&st)[0].clone();
+    let net = network_name(&chat.account_id);
+    let send = Some("Chat: Send File");
+    assert_eq!(composer_action(&st, &chat, 3, false), ("Add Attachment".into(), send, true));
+    assert_eq!(
+        composer_action(&st, &chat, 3, true),
+        ("Add Attachment (Unavailable while editing)".into(), None, false)
+    );
+    assert_eq!(composer_action(&st, &chat, 4, false), ("Send Later".into(), Some("Message: Send Later"), true));
+    (chat.files, chat.polls) = (0, None);
+    assert_eq!(composer_action(&st, &chat, 2, false), (format!("Add GIF (Unavailable for {net})"), None, false));
+    assert!(!composer_action(&st, &chat, 5, false).2, "the chat takes no voice notes");
+    assert_eq!(composer_action(&st, &chat, 6, false), (format!("Create Poll (Unavailable for {net})"), None, false));
+}
+
+#[test]
 fn history_and_folder_submenus_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
     let mut app = demo_app("historysub");
