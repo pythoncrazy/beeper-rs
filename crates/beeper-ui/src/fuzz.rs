@@ -180,7 +180,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
     let what =
         format!("message #{branch} chat {chat} message {msg} text {text:?} pref {} key {key:?} {mods:?}", pref.key);
     let needs_msg = (7..=14).contains(&branch) || [53, 62].contains(&branch);
-    let needs_chat = [16, 18].contains(&branch);
+    let needs_chat = [16, 18, 63].contains(&branch);
     if (needs_msg && !open) || (needs_chat && app.pane.selected_chat_id.is_none()) {
         return (what, UiMessage::Noop);
     }
@@ -2667,6 +2667,21 @@ fn chat_list_mutes_receipts_and_errors_like_desktop() {
     assert_eq!(space_error(&app.store.read(), &account), Some("Disconnected"), "the rail shows the error badge");
     assert_eq!(space_error(&app.store.read(), "label:lbl_work"), None);
     assert_eq!([unread_label(999), unread_label(1000)], ["999", "999+"]);
+}
+
+#[test]
+fn another_chat_drops_the_pending_reveal() {
+    let mut app = demo_app("pending-reveal");
+    let chats: Vec<String> = {
+        let st = app.store.read();
+        let has_messages = |c: &&Chat| st.chat_msg_indices.get(&c.id).is_some_and(|v| !v.is_empty());
+        st.chats.iter().filter(has_messages).take(2).map(|c| c.id.clone()).collect()
+    };
+    let _ = app.update(UiMessage::SelectChat(chats[0].clone()));
+    let _ = app.update(UiMessage::StepMessage(false, false));
+    assert!(!app.pane.selected_msgs.is_empty(), "a step selects and reveals a message");
+    let _ = app.update(UiMessage::SelectChat(chats[1].clone()));
+    drop(simulator(app.view_conversation()));
 }
 
 #[test]
