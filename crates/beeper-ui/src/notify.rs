@@ -2,7 +2,7 @@
 use crate::{BeeperGuiApp, UiMessage};
 use beeper_core::config::{account_network, millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::NetworkKind::*;
-use beeper_core::models::{Attachment, Chat, Message};
+use beeper_core::models::{Attachment, Chat, Message, MSG_MENTION};
 use iced::Task;
 use std::collections::{HashMap, HashSet};
 
@@ -188,14 +188,14 @@ impl BeeperGuiApp {
     /// Show a notification, and with `repeat` show it again after "Repeat notification if still unread after".
     fn show_note(&mut self, note: Note, repeat: bool) -> Task<UiMessage> {
         let secs = self.store.read().settings.secs("repeatNotification");
-        let chat = note.chat.clone();
+        let (chat, message) = (note.chat.clone(), note.message.clone());
         let again = (repeat && secs > 0).then(|| {
             self.pending.timer += 1;
             self.pending.repeat.insert(chat.clone(), (self.pending.timer, note.clone()));
             wait(secs, UiMessage::NotifyTimer(chat.clone(), self.pending.timer))
         });
         let show = Task::perform(show(note.title, note.body, note.silent), move |r| {
-            UiMessage::Notified(r.map(|id| (id, chat)))
+            UiMessage::Notified(r.map(|id| (id, (chat, message))))
         });
         Task::batch([show].into_iter().chain(again))
     }
@@ -310,7 +310,7 @@ impl BeeperGuiApp {
             && m.text.as_deref() != Some(beeper_core::matrix::UTD_TEXT);
         let shown = shown && otp.is_some()
             || shown
-                && !st.notifications_muted(chat)
+                && (!st.notifications_muted(chat) || m.flags & MSG_MENTION != 0)
                 && chat.is_hidden_from_inbox != Some(true)
                 && chat.is_request != Some(true)
                 && prefs.on("messageNotifications")
@@ -332,12 +332,20 @@ impl BeeperGuiApp {
         Some((Note { chat: chat.id.clone(), message: m.id.clone(), title: chat.title.clone(), body, silent }, otp))
     }
 
+    /// Desktop's notification click: jumps to the message, then shows the window.
+    pub(crate) fn notification_event(&mut self, id: u32, clicked: bool) -> Task<UiMessage> {
+        let Some((chat, msg)) = self.notifications.remove(&id).filter(|_| clicked) else { return Task::none() };
+        let focus = self.update(UiMessage::FocusRequested(Some(chat.clone())));
+        let jump = (!msg.is_empty()).then(|| self.update(UiMessage::JumpTo(chat, msg)));
+        Task::batch([focus, self.set_hidden(false)].into_iter().chain(jump))
+    }
+
     /// Desktop's `clearShownNotifications`: close the notifications of read chats without a reminder, and of the
     /// selected chat in a focused window.
     pub(crate) fn close_notifications(&mut self) -> iced::Task<crate::UiMessage> {
         let st = self.store.read();
         let stale: Vec<u32> = (self.notifications.iter())
-            .filter(|(_, c)| {
+            .filter(|(_, (c, _))| {
                 let read = |i: usize| {
                     let c = &st.chats[i];
                     c.unread_count == 0 && c.is_marked_unread != Some(true) && c.reminder.is_none()
@@ -451,16 +459,27 @@ mod tests {
             (c, m.expect("a received message").clone())
         };
         (m.timestamp, m.text, m.attachments) = ("2099-01-01T00:00:00.000Z".into(), Some("hi".into()), Vec::new());
-        let mut note = |app: &mut BeeperGuiApp, props: AccountProps, id: &str| {
+        let note = |app: &mut BeeperGuiApp, props: AccountProps, m: &mut Message, id: &str| {
             let _ = app.update(UiMessage::SetAccountProps(chat.account_id.clone(), props));
             m.id = id.into();
-            app.notification(&m).map(|(n, _)| (n.body, n.silent))
+            app.notification(m).map(|(n, _)| (n.body, n.silent))
         };
         let on = AccountProps::default();
-        assert_eq!(note(&mut app, on, "a"), Some(("hi".into(), false)));
-        let hidden = note(&mut app, AccountProps { previews: false, silent: true, ..on }, "b");
+        assert_eq!(note(&mut app, on, &mut m, "a"), Some(("hi".into(), false)));
+        let hidden = note(&mut app, AccountProps { previews: false, silent: true, ..on }, &mut m, "b");
         assert_eq!(hidden, Some(("You have a new message".into(), true)));
-        assert_eq!(note(&mut app, AccountProps { notifications: false, ..on }, "c"), None);
+        assert_eq!(note(&mut app, AccountProps { notifications: false, ..on }, &mut m, "c"), None);
+        m.flags |= MSG_MENTION;
+        let mention = note(&mut app, AccountProps { notifications: false, ..on }, &mut m, "d");
+        assert_eq!(mention, Some(("hi".into(), false)), "a mention notifies through the mute");
+        let mid = {
+            let st = app.store.read();
+            st.messages[st.chat_msg_indices[&chat.id][0]].id.clone()
+        };
+        app.notifications.insert(7, (chat.id.clone(), mid.clone()));
+        let _ = app.update(UiMessage::NotificationEvent(7, true));
+        assert_eq!(app.pane.selected_chat_id.as_ref(), Some(&chat.id));
+        assert_eq!(app.flash.as_ref().map(|f| &f.0), Some(&mid), "a click jumps to the message");
     }
 
     fn attachment(kind: &str, file: Option<&str>) -> Attachment {
