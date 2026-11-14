@@ -27,7 +27,8 @@ pub(super) fn access_token(msg: &HttpMessage) -> Option<&str> {
     }
 }
 
-/// The scope that a route needs, or `None` for the routes that are open to all.
+/// The scope that a route needs, or `None` for the routes that are open to all and for the setup routes, which
+/// check the token themselves.
 pub(super) fn scope(method: &str, segs: &[&str]) -> Option<&'static str> {
     match (method, segs) {
         (_, [] | ["v1", "info" | "spec"] | [".well-known", ..] | ["register"] | ["v1", "app", "setup", ..]) => None,
