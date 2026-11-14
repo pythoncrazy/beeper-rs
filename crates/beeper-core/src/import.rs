@@ -13,7 +13,8 @@ const SNAPSHOT_FILES: [&str; 4] = ["index.db", "index.db-wal", "account.db", "ac
 #[derive(Debug, Clone)]
 pub struct DesktopCrypto {
     pub user_id: String,
-    pub backup_version: String,
+    /// The version of the key backup, or `None` when the user has no key backup.
+    pub backup_version: Option<String>,
     pub group_sessions: Vec<GroupSessionRow>,
     pub secrets: Vec<(String, String)>,
 }
@@ -170,8 +171,11 @@ fn read_crypto(db: &Connection) -> rusqlite::Result<Option<DesktopCrypto>> {
     };
     let account = format!("{user_id}/{device_id}");
     let text = |b: Vec<u8>| String::from_utf8(b).expect("libolm pickles are base64 text");
-    let backup_version =
-        db.query_row("SELECT key_backup_version FROM crypto_account WHERE account_id = ?1", [&account], |r| r.get(0))?;
+    let backup_version = db.query_row(
+        "SELECT NULLIF(key_backup_version, '') FROM crypto_account WHERE account_id = ?1",
+        [&account],
+        |r| r.get(0),
+    )?;
     let group_sessions = db
         .prepare(
             "SELECT room_id, sender_key, signing_key, session, shared_history IS 1
@@ -666,5 +670,32 @@ mod tests {
         let unchanged = serde_json::json!({ "app_locale": "en" });
         assert!(matches!(read_theme(&unchanged), Ok(ThemeChoice::System)), "Desktop's default theme is system");
         assert!(read_theme(&serde_json::json!({ "native_theme_source": 1 })).is_err());
+    }
+
+    /// A Desktop user who never set up a recovery key has no secrets and no key backup.
+    #[tokio::test]
+    async fn keys_without_secrets_import() {
+        use matrix_sdk_crypto::store::CryptoStore;
+        let db = Connection::open_in_memory().expect("an in-memory database");
+        db.execute_batch(
+            "CREATE TABLE account (user_id TEXT, device_id TEXT);
+             INSERT INTO account VALUES ('@alex:beeper.com', 'DESKTOP');
+             CREATE TABLE crypto_account (account_id TEXT, key_backup_version TEXT NOT NULL DEFAULT '');
+             INSERT INTO crypto_account (account_id) VALUES ('@alex:beeper.com/DESKTOP');
+             CREATE TABLE crypto_megolm_inbound_session
+                 (account_id TEXT, room_id TEXT, sender_key TEXT, signing_key TEXT, session BLOB, shared_history BOOLEAN);
+             CREATE TABLE crypto_secrets (account_id TEXT, name TEXT, secret BLOB);",
+        )
+        .expect("the Desktop crypto tables");
+        let c = read_crypto(&db).expect("read the keys").expect("an account");
+        assert_eq!((c.backup_version.as_deref(), c.secrets.len()), (None, 0));
+        let dir = std::env::temp_dir().join(format!("beeper-rs-import-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::matrix::import_crypto(&dir, &c).await.expect("the import keeps what Desktop has");
+        let store = matrix_sdk::SqliteCryptoStore::open(&dir, None).await.expect("the crypto store");
+        let keys = store.load_backup_keys().await.expect("the backup keys");
+        assert!(keys.backup_version.is_none() && keys.decryption_key.is_none());
+        // Windows keeps the crypto store open while the pool of the SDK closes, so the next run removes it.
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

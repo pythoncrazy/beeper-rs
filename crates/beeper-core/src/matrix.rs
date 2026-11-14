@@ -1887,7 +1887,7 @@ pub async fn import_crypto(dir: &std::path::Path, c: &DesktopCrypto) -> Result<(
                 forwarder_data: None,
                 room_id: g.room_id.parse::<OwnedRoomId>().map_err(|x| e(&x))?,
                 imported: true,
-                backed_up: true,
+                backed_up: c.backup_version.is_some(),
                 history_visibility: None,
                 algorithm: EventEncryptionAlgorithm::MegolmV1AesSha2,
                 shared_history: g.shared_history,
@@ -1895,10 +1895,8 @@ pub async fn import_crypto(dir: &std::path::Path, c: &DesktopCrypto) -> Result<(
             .map_err(|x| e(&x))?,
         );
     }
-    let secret = |name: &str| {
-        let (_, v) = c.secrets.iter().find(|(n, _)| n == name).ok_or(format!("Desktop has no {name} secret"))?;
-        unpickle_secret(v)
-    };
+    // Desktop keeps only the secrets it has: a user without a recovery key has none, and verifies this device later.
+    let secret = |name: &str| c.secrets.iter().find(|(n, _)| n == name).map(|(_, v)| unpickle_secret(v)).transpose();
     let user: OwnedUserId = c.user_id.parse().map_err(|x| e(&x))?;
     let identity = PrivateCrossSigningIdentity::empty(&user);
     let (master, self_signing, user_signing) = (
@@ -1907,15 +1905,15 @@ pub async fn import_crypto(dir: &std::path::Path, c: &DesktopCrypto) -> Result<(
         secret("m.cross_signing.user_signing")?,
     );
     identity
-        .import_secrets_unchecked(Some(&master), Some(&self_signing), Some(&user_signing))
+        .import_secrets_unchecked(master.as_deref(), self_signing.as_deref(), user_signing.as_deref())
         .await
         .map_err(|x| e(&x))?;
-    let backup = BackupDecryptionKey::from_base64(&secret("m.megolm_backup.v1")?).map_err(|x| e(&x))?;
+    let backup = secret("m.megolm_backup.v1")?.map(|k| BackupDecryptionKey::from_base64(&k)).transpose();
     let store = matrix_sdk::SqliteCryptoStore::open(dir, None).await.map_err(|x| e(&x))?;
     let changes = Changes {
         private_identity: Some(identity),
-        backup_version: Some(c.backup_version.clone()),
-        backup_decryption_key: Some(backup),
+        backup_version: c.backup_version.clone(),
+        backup_decryption_key: backup.map_err(|x| e(&x))?,
         inbound_group_sessions: groups,
         ..Default::default()
     };
