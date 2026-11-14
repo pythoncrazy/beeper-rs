@@ -1,31 +1,150 @@
 #![recursion_limit = "256"]
 use beeper_api::{client::BeeperClient, server::serve_http};
 use beeper_core::{
-    config::{migrate_legacy_data_dir, CentralConfig, APP_NAME, APP_VERSION, DEFAULT_PAS_HOST, DEFAULT_PAS_PORT},
+    config::{migrate_legacy_data_dir, CentralConfig, APP_VERSION, DEFAULT_PAS_HOST, DEFAULT_PAS_PORT, SERVER_ENVS},
     platform::current_desktop_data_dir,
     store::{BeeperStore, SharedStore, StoreLock},
 };
-use std::path::PathBuf;
+use std::{ops::RangeInclusive, path::PathBuf};
+use tokio::{net::TcpListener, runtime::Runtime};
 
-const HELP: &str = "Usage: beeper-rs [OPTIONS] [COMMAND]
+const BIN: &str = env!("CARGO_BIN_NAME");
+const USAGE: &str = concat!("USAGE\n  $ ", env!("CARGO_BIN_NAME"), " [COMMAND] [FLAGS] [LINK]");
+const ARGUMENTS: &str = "ARGUMENTS
+  LINK  A beeper:// link to open, in the running instance if there is one";
+const ENVIRONMENT: &str = "ENVIRONMENT
+  BEEPER_API_URL     Beeper cloud API (default: https://api.beeper.com)
+  BEEPER_MATRIX_URL  Matrix homeserver (default: https://matrix.beeper.com)";
 
-Commands:
-  serve         Run only the Desktop API server (same as --headless)
-                The GUI starts the Desktop API only when Settings > Enable Desktop API is on
-  info          Print /v1/info from the server at --host and --port
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+enum Command {
+    #[default]
+    Gui,
+    Serve,
+    Info,
+    Help,
+    Version,
+}
 
-Options:
-  --host <HOST>
-  --port <PORT>
-  --profile <PROFILE>
-  --data-dir <DIR>
-  --demo        Start with demo chats instead of a signed-out account
-  --headless
-  beeper://...  Open a Beeper link, in the running instance if there is one
+#[derive(Debug, Default, PartialEq)]
+struct Args {
+    command: Command,
+    host: Option<String>,
+    port: Option<u16>,
+    profile: Option<String>,
+    data_dir: Option<PathBuf>,
+    /// The domain of the Beeper cloud that `--server-env` selects.
+    domain: Option<&'static str>,
+    demo: bool,
+    /// A `beeper://` link to open, in the running instance if there is one.
+    link: Option<String>,
+}
 
-Environment:
-  BEEPER_API_URL      Beeper cloud API (default https://api.beeper.com)
-  BEEPER_MATRIX_URL   Matrix homeserver (default https://matrix.beeper.com)";
+const COMMANDS: [(&str, Command, &str); 3] = [
+    ("help", Command::Help, "Show this help"),
+    ("info", Command::Info, "Print /v1/info from the server at --host and --port"),
+    ("serve", Command::Serve, "Run only the Desktop API server (the app runs it only when Enable Desktop API is on)"),
+];
+
+type Set = fn(&mut Args, &str) -> Result<(), String>;
+
+/// The flags: the names, whether the flag takes a value, the help, and the setter. The first long name shows in the
+/// help. Desktop's launchers give a value as `--name=value`, and people give it as `--name value`. Both are valid.
+#[rustfmt::skip]
+#[expect(clippy::unit_arg, reason = "a setter assigns the field in its `Ok`")]
+const FLAGS: [(&[&str], bool, &str, Set); 9] = [
+    (&["-h", "--help"], false, "Show this help", |a, _| Ok(a.command = Command::Help)),
+    (&["-V", "--version"], false, "Show the version", |a, _| Ok(a.command = Command::Version)),
+    (&["--data-dir"], true, "Data folder (default: beeper-rs[-<profile>] in the config folder)", |a, v| Ok(a.data_dir = Some(v.into()))),
+    (&["--demo"], false, "Start with demo chats instead of a signed-out account", |a, _| Ok(a.demo = true)),
+    (&["--headless"], false, "Same as serve", |a, _| Ok(a.command = Command::Serve)),
+    (&["--host", "--pas-host", "--pas-hostname"], true, "Desktop API host (default: 127.0.0.1)", |a, v| Ok(a.host = Some(v.into()))),
+    (&["--port", "--pas-port"], true, "Desktop API port (default: the first free port from 23373 to 23423)", |a, v| {
+        let port = v.parse().ok().filter(|p| *p > 0);
+        Ok(a.port = Some(port.ok_or(format!("Parsing --port: Expected an integer from 1 to 65535 but received: {v}"))?))
+    }),
+    (&["--profile"], true, "Profile name, which selects the data folder", |a, v| Ok(a.profile = Some(v.into()))),
+    (&["--server-env"], true, "Beeper cloud: production, staging, dev, or local (default: production)", |a, v| {
+        let names = SERVER_ENVS.map(|e| e.0).join(", ");
+        let domain = SERVER_ENVS.iter().find(|e| e.0 == v).map(|e| e.1);
+        Ok(a.domain = Some(domain.ok_or(format!("Expected --server-env={v} to be one of: {names}"))?))
+    }),
+];
+
+fn flag(name: &str) -> Option<&'static (&'static [&'static str], bool, &'static str, Set)> {
+    FLAGS.iter().find(|f| f.0.contains(&name))
+}
+
+/// Reads the command line like oclif: a usage error exits with 2, and an unknown command exits with 127.
+fn parse(argv: impl IntoIterator<Item = String>) -> Result<Args, (String, i32)> {
+    let mut args = Args::default();
+    let mut argv = argv.into_iter().peekable();
+    while let Some(arg) = argv.next() {
+        if arg.starts_with("beeper://") {
+            args.link = Some(arg);
+            continue;
+        }
+        if !arg.starts_with('-') {
+            let command = COMMANDS.iter().find(|c| c.0 == arg).map(|c| c.1);
+            match (args.command, command) {
+                (Command::Gui, Some(command)) => args.command = command,
+                (Command::Gui, None) => return Err((format!("{arg} is not a {BIN} command."), 127)),
+                _ => return Err((format!("Unexpected argument: {arg}"), 2)),
+            }
+            continue;
+        }
+        let (name, inline) = arg.split_once('=').map_or((arg.as_str(), None), |(n, v)| (n, Some(v.to_string())));
+        let &(_, takes_value, _, set) = flag(name).ok_or((format!("Nonexistent flag: {arg}"), 2))?;
+        let value = match (takes_value, inline) {
+            (false, None) => String::new(),
+            (false, Some(_)) => return Err((format!("Nonexistent flag: {arg}"), 2)),
+            (true, inline) => inline
+                .or_else(|| argv.next_if(|v| flag(v.split_once('=').map_or(v, |p| p.0)).is_none()))
+                .filter(|v| !v.is_empty())
+                .ok_or((format!("Flag {name} expects a value"), 2))?,
+        };
+        set(&mut args, &value).map_err(|e| (e, 2))?;
+    }
+    Ok(args)
+}
+
+/// The help in oclif's layout.
+fn help() -> String {
+    let commands = COMMANDS.map(|(name, _, text)| format!("  {name:<6} {text}")).join("\n");
+    let flags = FLAGS.map(|(names, value, text, _)| {
+        let (short, long): (Vec<&str>, Vec<&str>) = names.iter().partition(|n| !n.starts_with("--"));
+        let short = short.first().map_or("    ".into(), |s| format!("{s}, "));
+        let head = format!("{short}{}{}", long[0], if value { "=<value>" } else { "" });
+        let aliases = match long[1..] {
+            [] => String::new(),
+            ref aliases => format!("\n{:28}Aliases: {}", "", aliases.join(", ")),
+        };
+        format!("  {head:<26}{text}{aliases}")
+    });
+    let flags = flags.join("\n");
+    format!(
+        "Beeper chat app and Desktop API server\n\n{USAGE}\n\n{ARGUMENTS}\n\nCOMMANDS\n{commands}\n\nFLAGS\n{flags}\n\n{ENVIRONMENT}"
+    )
+}
+
+/// The version in oclif's layout, with the Node names of the platform and the CPU.
+fn version() -> String {
+    let node = |s: &'static str| {
+        let names = [("macos", "darwin"), ("windows", "win32"), ("x86_64", "x64"), ("aarch64", "arm64")];
+        names.iter().find(|n| n.0 == s).map_or(s, |n| n.1)
+    };
+    format!("{BIN}/{APP_VERSION} {}-{}", node(std::env::consts::OS), node(std::env::consts::ARCH))
+}
+
+/// Desktop's `getPort`: binds the first free port of `ports`, else a random free port.
+fn bind_free(rt: &Runtime, host: &str, ports: RangeInclusive<u16>) -> std::io::Result<TcpListener> {
+    let bind = |port| rt.block_on(TcpListener::bind((host, port)));
+    let busy = |r: &std::io::Result<_>| {
+        r.as_ref()
+            .is_err_and(|e| matches!(e.kind(), std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied))
+    };
+    ports.map(bind).find(|r| !busy(r)).unwrap_or_else(|| bind(0))
+}
 
 #[cfg(target_os = "linux")]
 mod display {
@@ -71,39 +190,25 @@ mod display {
 /// Tokio starts one worker for each CPU. A chat client does not need more than a few.
 const MAX_WORKERS: usize = 4;
 
-enum Command {
-    Gui,
-    Serve,
-    Info,
-}
-
 fn main() {
-    let mut launch_host = std::env::var("BEEPER_PAS_HOST").ok();
-    let mut port: u16 =
-        std::env::var("BEEPER_PAS_PORT").map_or(DEFAULT_PAS_PORT, |v| v.parse().expect("BEEPER_PAS_PORT is a port"));
-    let (mut profile, mut data_dir, mut command, mut demo, mut link) = (None, None, Command::Gui, false, None);
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        let mut value = || args.next().unwrap_or_else(|| panic!("missing value for {arg}"));
-        match arg.as_str() {
-            "serve" | "--headless" => command = Command::Serve,
-            "info" => command = Command::Info,
-            "--host" | "--pas-host" | "--pas-hostname" => launch_host = Some(value()),
-            "--port" | "--pas-port" => port = value().parse().expect("--port is a port number"),
-            "--profile" => profile = Some(value()),
-            "--data-dir" => data_dir = Some(PathBuf::from(value())),
-            "--demo" => demo = true,
-            "--version" | "-V" => return println!("{APP_NAME} {APP_VERSION}"),
-            "--help" | "-h" => return println!("{HELP}"),
-            l if l.starts_with("beeper://") => link = Some(arg.clone()),
-            other => panic!("unexpected argument: {other}"),
-        }
+    let env = |key: &str, flag: &str| std::env::var(key).ok().map(|v| format!("{flag}={v}"));
+    let argv = [env("BEEPER_PAS_HOST", "--host"), env("BEEPER_PAS_PORT", "--port")].into_iter().flatten();
+    let Args { command, host: launch_host, port, profile, data_dir, domain, demo, link } =
+        parse(argv.chain(std::env::args().skip(1))).unwrap_or_else(|(error, code)| {
+            eprintln!("Error: {error}\nSee more help with --help\n\n{USAGE}");
+            std::process::exit(code)
+        });
+    match command {
+        Command::Help => return println!("{}", help()),
+        Command::Version => return println!("{}", version()),
+        Command::Gui | Command::Serve | Command::Info => {}
     }
     #[cfg(target_os = "linux")]
     if let Command::Gui = command {
         display::setup();
     }
     let host = launch_host.clone().unwrap_or_else(|| DEFAULT_PAS_HOST.to_string());
+    let ports = port.map_or(DEFAULT_PAS_PORT..=DEFAULT_PAS_PORT + 50, |p| p..=p);
     let data_dir = data_dir.unwrap_or_else(|| {
         let dir = current_desktop_data_dir(profile.as_deref());
         migrate_legacy_data_dir(&dir, profile.as_deref());
@@ -114,7 +219,7 @@ fn main() {
     // The GUI, the Desktop API and Matrix share this runtime until the process exits.
     let rt: &'static tokio::runtime::Runtime = Box::leak(Box::new(rt.expect("build tokio runtime")));
     if let Command::Info = command {
-        let info = rt.block_on(BeeperClient::new(format!("http://{host}:{port}"), "").info());
+        let info = rt.block_on(BeeperClient::new(format!("http://{host}:{}", ports.start()), "").info());
         return println!("{}", serde_json::to_string_pretty(&info).unwrap());
     }
     #[cfg(target_os = "linux")]
@@ -126,8 +231,11 @@ fn main() {
     if let Some(None) = first {
         return eprintln!("Quitting because another instance is running");
     }
-    let mut cfg = CentralConfig::new(data_dir, host.clone(), port, profile);
+    let mut cfg = CentralConfig::new(data_dir, host.clone(), *ports.start(), profile);
     (cfg.demo, cfg.launch_host, cfg.link) = (demo, launch_host.is_some(), link);
+    if let Some(domain) = domain {
+        (cfg.api_url, cfg.homeserver) = (format!("https://api.{domain}"), format!("https://matrix.{domain}"));
+    }
     if let Ok(url) = std::env::var("BEEPER_API_URL") {
         cfg.api_url = url;
     }
@@ -150,13 +258,18 @@ fn main() {
     if !store.read().config.demo {
         rt.spawn(beeper_core::matrix::run(store.clone()));
     }
-    let bind = move || {
-        rt.block_on(tokio::net::TcpListener::bind((host.as_str(), port))).map_err(|e| {
-            format!("bind the Desktop API to {host}:{port}: {e}. Another app uses this port. Use --port <PORT>.")
-        })
+    let bind = move |store: &SharedStore| {
+        let listener =
+            bind_free(rt, &host, ports.clone()).map_err(|e| format!("bind the Desktop API to {host}: {e}"))?;
+        store.write().config.port = listener.local_addr().expect("a bound listener has an address").port();
+        Ok::<_, String>(listener)
     };
     if let Command::Serve = command {
-        return rt.block_on(serve_http(bind().unwrap_or_else(|e| panic!("{e}")), store));
+        let listener = bind(&store).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1)
+        });
+        return rt.block_on(serve_http(listener, store));
     }
     let mut on = {
         let st = store.read();
@@ -166,7 +279,7 @@ fn main() {
     let server_store = store.clone();
     std::thread::spawn(move || loop {
         rt.block_on(on.wait_for(|on| *on)).expect("the store outlives the server");
-        match bind() {
+        match bind(&server_store) {
             Ok(listener) => rt.block_on(async {
                 tokio::select! {
                     () = serve_http(listener, server_store.clone()) => {}
@@ -188,5 +301,80 @@ fn main() {
         #[cfg(not(unix))]
         #[expect(clippy::zombie_processes, reason = "the new process outlives this one, which exits now")]
         std::process::Command::new(exe).args(args).spawn().expect("relaunch");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(argv: &[&str]) -> Result<Args, (String, i32)> {
+        parse(argv.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn parse_reads_both_value_forms() {
+        let want = Args {
+            command: Command::Serve,
+            host: Some("127.0.0.1".into()),
+            port: Some(23471),
+            data_dir: Some("/tmp/d".into()),
+            domain: Some("beeper-staging.com"),
+            ..Args::default()
+        };
+        let spaced =
+            ["serve", "--host", "127.0.0.1", "--port", "23471", "--data-dir", "/tmp/d", "--server-env", "staging"];
+        assert_eq!(run(&spaced), Ok(want));
+        let server = ["--headless", "--host=127.0.0.1", "--port=23471", "--data-dir=/tmp/d", "--server-env=staging"];
+        assert_eq!(run(&server).map(|a| (a.port, a.domain)), Ok((Some(23471), Some("beeper-staging.com"))));
+        let desktop = run(&["--pas-hostname=localhost", "--pas-port=23472", "--demo"]).unwrap();
+        assert_eq!((desktop.host.as_deref(), desktop.port, desktop.demo), (Some("localhost"), Some(23472), true));
+        assert_eq!(run(&["help"]).map(|a| a.command), Ok(Command::Help));
+        assert_eq!(run(&["beeper://chat/x"]).map(|a| a.link), Ok(Some("beeper://chat/x".into())));
+        assert_eq!(run(&["--port=1", "--port", "2"]).map(|a| a.port), Ok(Some(2)), "the last value wins");
+    }
+
+    #[test]
+    fn parse_rejects_bad_command_lines() {
+        let port = |v: &str| format!("Parsing --port: Expected an integer from 1 to 65535 but received: {v}");
+        let cases = [
+            (&["--bogus"][..], "Nonexistent flag: --bogus".into(), 2),
+            (&["-v"], "Nonexistent flag: -v".into(), 2),
+            (&["--demo=1"], "Nonexistent flag: --demo=1".into(), 2),
+            (&["chatz"], "chatz is not a beeper-rs command.".into(), 127),
+            (&["serve", "extra"], "Unexpected argument: extra".into(), 2),
+            (&["--port"], "Flag --port expects a value".into(), 2),
+            (&["--port", "--data-dir", "/tmp/d"], "Flag --port expects a value".into(), 2),
+            (&["--host="], "Flag --host expects a value".into(), 2),
+            (&["--port", "abc"], port("abc"), 2),
+            (&["--pas-port=0"], port("0"), 2),
+            (&["--port=65536"], port("65536"), 2),
+            (
+                &["--server-env=prod"],
+                "Expected --server-env=prod to be one of: production, staging, dev, local".into(),
+                2,
+            ),
+        ];
+        for (argv, error, code) in cases {
+            assert_eq!(run(argv), Err((error, code)), "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn help_and_version_follow_oclif() {
+        let help = help();
+        assert!(help.lines().all(|l| l.len() <= 100), "oclif wraps the help at 100 columns:\n{help}");
+        assert!(help.contains("\n      --port=<value>        Desktop API port"), "{help}");
+        assert!(help.contains("\n  -h, --help                Show this help"), "{help}");
+        assert!(version().starts_with(&format!("beeper-rs/{APP_VERSION} ")));
+    }
+
+    #[test]
+    fn bind_free_takes_the_next_free_port_then_a_random_port() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_io().build().unwrap();
+        let _busy = std::net::TcpListener::bind(("127.0.0.1", 23473)).expect("the test port 23473 is free");
+        let port = |ports| bind_free(&rt, "127.0.0.1", ports).unwrap().local_addr().unwrap().port();
+        assert_eq!(port(23473..=23474), 23474);
+        assert!(![0, 23473].contains(&port(23473..=23473)), "a busy port gives a random port");
     }
 }

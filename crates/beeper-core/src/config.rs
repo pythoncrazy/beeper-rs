@@ -6,9 +6,17 @@ pub const APP_BUNDLE_ID: &str = "com.automattic.beeper.desktop";
 pub const APP_NAME: &str = "Beeper";
 pub const APP_VERSION: &str = "4.3.176";
 pub const DEFAULT_PAS_HOST: &str = "127.0.0.1";
-pub const DEFAULT_PAS_PORT: u16 = 23374;
+/// Desktop's Desktop API port. When it is busy, Desktop tries the next 50 ports, then a random port.
+pub const DEFAULT_PAS_PORT: u16 = 23373;
 pub const DEFAULT_HOMESERVER: &str = "https://matrix.beeper.com";
 pub const DEFAULT_API_URL: &str = "https://api.beeper.com";
+/// Desktop's `--server-env` values and the domain of each Beeper cloud, which serves `api.` and `matrix.`.
+pub const SERVER_ENVS: [(&str, &str); 4] = [
+    ("production", "beeper.com"),
+    ("staging", "beeper-staging.com"),
+    ("dev", "beeper-dev.com"),
+    ("local", "beeper.localtest.me"),
+];
 pub const DEFAULT_USER_ID: &str = "@alex:beeper.com";
 pub const DEFAULT_DEVICE_ID: &str = "BEEPER_RS_DEV01";
 pub const DEFAULT_TOKEN: &str = "bp_tok_beeper_rs_default_secret";
@@ -46,7 +54,6 @@ impl CentralConfig {
         assert!(!host.trim().is_empty(), "host must not be empty");
         assert!(port > 0, "port must be positive");
         assert_not_original_beeper_dir(&data_dir);
-        let settings = BeeperSettings { pas_port: port, ..BeeperSettings::default() };
         Self {
             db_path: data_dir.join("beeper-rs.db"),
             assets_dir: data_dir.join("media"),
@@ -54,7 +61,7 @@ impl CentralConfig {
             host,
             port,
             profile,
-            settings,
+            settings: BeeperSettings::default(),
             demo: false,
             launch_host: false,
             remote: false,
@@ -82,7 +89,6 @@ impl Default for BeeperSettings {
             zoom_percent: 100,
             enable_pas_api: false,
             remote_access: false,
-            pas_port: DEFAULT_PAS_PORT,
             prefs: Default::default(),
             keybindings: Default::default(),
             reminders_order: 0,

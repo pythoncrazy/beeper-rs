@@ -61,7 +61,7 @@ cargo test --test e2e -- --nocapture
 
 ### 2. Run the Native Desktop GUI and Local Server
 
-Run the following command on your host machine to launch the desktop GUI. The GUI starts the local API server on `127.0.0.1:23374` only when **Settings > Enable Desktop API** is on (default: off). Restart `beeper-rs` after you change this setting:
+Run the following command on your host machine to launch the desktop GUI. The GUI starts the local API server on `127.0.0.1:23373`, or on the next free port up to 23423, only when **Settings > Enable Desktop API** is on (default: off). Restart `beeper-rs` after you change this setting:
 
 ```bash
 cargo run --release
