@@ -19,7 +19,47 @@ impl StatusCode {
     pub const CONFLICT: Self = Self(409);
     pub const PAYLOAD_TOO_LARGE: Self = Self(413);
     pub const RANGE_NOT_SATISFIABLE: Self = Self(416);
+    pub const HEADERS_TOO_LARGE: Self = Self(431);
     pub const BAD_GATEWAY: Self = Self(502);
+
+    /// The reason phrase of Node's `http.STATUS_CODES`.
+    pub fn reason(self) -> &'static str {
+        match self.0 {
+            100 => "Continue",
+            101 => "Switching Protocols",
+            200 => "OK",
+            201 => "Created",
+            202 => "Accepted",
+            204 => "No Content",
+            206 => "Partial Content",
+            301 => "Moved Permanently",
+            302 => "Found",
+            303 => "See Other",
+            304 => "Not Modified",
+            307 => "Temporary Redirect",
+            308 => "Permanent Redirect",
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            404 => "Not Found",
+            405 => "Method Not Allowed",
+            406 => "Not Acceptable",
+            409 => "Conflict",
+            410 => "Gone",
+            413 => "Payload Too Large",
+            415 => "Unsupported Media Type",
+            416 => "Range Not Satisfiable",
+            422 => "Unprocessable Entity",
+            429 => "Too Many Requests",
+            431 => "Request Header Fields Too Large",
+            500 => "Internal Server Error",
+            501 => "Not Implemented",
+            502 => "Bad Gateway",
+            503 => "Service Unavailable",
+            504 => "Gateway Timeout",
+            code => panic!("add the reason phrase of HTTP status {code}"),
+        }
+    }
 }
 
 pub struct HttpMessage {
@@ -70,8 +110,8 @@ pub type Stop = Option<StatusCode>;
 
 const BAD: Stop = Some(StatusCode::BAD_REQUEST);
 
-/// The longest chunk-size line or trailer section that a chunked body can have.
-const MAX_LINE: usize = 16 * 1024;
+/// The `maxHeaderSize` of Node: the longest head of a message, chunk-size line, or trailer section.
+const MAX_HEAD: usize = 16 * 1024;
 
 async fn fill<R: AsyncRead + Unpin>(stream: &mut R, buf: &mut Vec<u8>) -> Result<(), Stop> {
     buf.reserve(8192);
@@ -91,7 +131,7 @@ async fn line_end<R: AsyncRead + Unpin>(stream: &mut R, buf: &mut Vec<u8>, from:
         if let Some(i) = buf[from..].windows(2).position(|w| w == b"\r\n") {
             return Ok(from + i);
         }
-        if buf.len() - from > MAX_LINE {
+        if buf.len() - from > MAX_HEAD {
             return Err(BAD);
         }
         fill(stream, buf).await?;
@@ -133,30 +173,41 @@ async fn read_chunked<R: AsyncRead + Unpin>(
         if last {
             return Ok((body, pos));
         }
-        if pos - trailer > MAX_LINE {
+        if pos - trailer > MAX_HEAD {
             return Err(BAD);
         }
     }
 }
 
 /// Reads one message. `limit` gives the largest body that the server accepts for the message head.
-pub async fn read_message<R: AsyncRead + Unpin>(
-    stream: &mut R,
+pub async fn read_message<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
     buf: &mut Vec<u8>,
     limit: impl FnOnce(&HttpMessage) -> usize,
 ) -> Result<HttpMessage, Stop> {
+    let bare_lf = |head: &[u8]| head.iter().enumerate().any(|(i, &b)| b == b'\n' && (i == 0 || head[i - 1] != b'\r'));
     let head_end = loop {
-        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-            break pos + 4;
+        match buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            Some(pos) if pos + 4 > MAX_HEAD => return Err(Some(StatusCode::HEADERS_TOO_LARGE)),
+            Some(pos) => break pos + 4,
+            None if bare_lf(buf) => return Err(BAD),
+            None if buf.len() > MAX_HEAD => return Err(Some(StatusCode::HEADERS_TOO_LARGE)),
+            None => fill(stream, buf).await?,
         }
-        fill(stream, buf).await?;
     };
-    let mut lines = std::str::from_utf8(&buf[..head_end - 4]).map_err(|_| None)?.split("\r\n");
+    let head = &buf[..head_end - 4];
+    if bare_lf(head) {
+        return Err(BAD);
+    }
+    let mut lines = std::str::from_utf8(head).map_err(|_| BAD)?.split("\r\n");
     let start_line = lines.next().expect("a first line").to_string();
     let mut headers = HashMap::new();
     for line in lines {
-        let (k, v) = line.split_once(':').ok_or(None)?;
-        if headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string()).is_some()
+        let (k, v) = line.split_once(':').ok_or(BAD)?;
+        if k.is_empty() || k.contains(|c: char| c.is_ascii_whitespace()) {
+            return Err(BAD);
+        }
+        if headers.insert(k.to_ascii_lowercase(), v.trim().to_string()).is_some()
             && k.eq_ignore_ascii_case("content-length")
         {
             return Err(BAD);
@@ -164,6 +215,9 @@ pub async fn read_message<R: AsyncRead + Unpin>(
     }
     let mut msg = HttpMessage { start_line, headers, body: Vec::new() };
     let limit = limit(&msg);
+    if msg.header_is("expect", "100-continue") {
+        stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await.map_err(|_| None)?;
+    }
     let end = match (msg.header("transfer-encoding"), msg.header("content-length")) {
         (Some(_), Some(_)) => return Err(BAD),
         (Some(te), None) => {
@@ -190,12 +244,14 @@ pub async fn read_message<R: AsyncRead + Unpin>(
     Ok(msg)
 }
 
-/// Parses a query string like the `qs` parser of Express: a repeated key or a `key[]` key gives an array of strings.
-pub fn parse_query(raw: &str) -> Option<Map<String, Value>> {
+/// Parses a query string like the `qs` parser of Express: a repeated key or a `key[]` key gives an array of strings,
+/// and a part with bad percent-encoding stays as it is.
+pub fn parse_query(raw: &str) -> Map<String, Value> {
+    let decode = |s: &str| url_decode(s).unwrap_or_else(|| s.replace('+', " "));
     let mut query = Map::new();
     for pair in raw.split('&').filter(|p| !p.is_empty()) {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-        let (k, v) = (url_decode(k)?, Value::String(url_decode(v)?));
+        let (k, v) = (decode(k), Value::String(decode(v)));
         let (key, array) = k.strip_suffix("[]").map_or((k.as_str(), false), |key| (key, true));
         match query.get_mut(key) {
             Some(Value::Array(values)) => values.push(v),
@@ -203,7 +259,7 @@ pub fn parse_query(raw: &str) -> Option<Map<String, Value>> {
             None => drop(query.insert(key.into(), if array { Value::Array(vec![v]) } else { v })),
         }
     }
-    Some(query)
+    query
 }
 
 pub fn query_string(path: &str, params: &[(&str, &str)]) -> String {

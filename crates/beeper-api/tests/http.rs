@@ -77,7 +77,7 @@ async fn bodies_over_the_limit_of_the_route_get_413() {
     ] {
         let head = format!("POST {path} HTTP/1.1\r\nhost: x\r\ncontent-type: {ct}\r\ncontent-length: {len}\r\n\r\n");
         let out = text(port, &head).await;
-        let closes = out.contains("\r\nconnection: close\r\n");
+        let closes = out.contains("\r\nConnection: close\r\n");
         assert!(out.starts_with("HTTP/1.1 413 ") && closes && out.ends_with(too_large), "{path}: {out}");
     }
     let big_chunk = post("/oauth/revoke", "transfer-encoding: chunked\r\n", "10001\r\n");
@@ -111,8 +111,8 @@ async fn websocket_frames_over_64_kb_close_with_1009() {
 async fn repeated_and_bracket_query_keys_are_arrays() {
     use beeper_api::codec::url_encode;
     use serde_json::{json, Value};
-    let query = beeper_api::http::parse_query("a=1&a=2&b%5B%5D=3&b[]=4&c[]=5&d=x").unwrap();
-    assert_eq!(Value::Object(query), json!({ "a": ["1", "2"], "b": ["3", "4"], "c": ["5"], "d": "x" }));
+    let query = beeper_api::http::parse_query("a=1&a=2&b%5B%5D=3&b[]=4&c[]=5&d=x&e=%zz+1");
+    assert_eq!(Value::Object(query), json!({ "a": ["1", "2"], "b": ["3", "4"], "c": ["5"], "d": "x", "e": "%zz 1" }));
     let (port, token) = server("query").await;
     let get = |target: String| {
         let request =
@@ -175,13 +175,13 @@ async fn cors_and_default_headers_match_desktop() {
     };
 
     let out = text(port, &request("OPTIONS", "/v1/accounts", "origin: http://example.com\r\n")).await;
-    let preflight = "HTTP/1.1 204 \r\nX-Powered-By: Express\r\nAccess-Control-Allow-Origin: http://example.com\r\nVary: Origin\r\nAccess-Control-Allow-Methods: GET,POST,PUT,PATCH,DELETE,OPTIONS\r\nAccess-Control-Allow-Headers: Authorization,Content-Type,MCP-Protocol-Version,X-Beeper-Access-Token,X-Stainless-MCP\r\nAccess-Control-Max-Age: 600\r\nAccess-Control-Expose-Headers: WWW-Authenticate,X-Beeper-Desktop-Version\r\nContent-Length: 0";
+    let preflight = "HTTP/1.1 204 No Content\r\nX-Powered-By: Express\r\nAccess-Control-Allow-Origin: http://example.com\r\nVary: Origin\r\nAccess-Control-Allow-Methods: GET,POST,PUT,PATCH,DELETE,OPTIONS\r\nAccess-Control-Allow-Headers: Authorization,Content-Type,MCP-Protocol-Version,X-Beeper-Access-Token,X-Stainless-MCP\r\nAccess-Control-Max-Age: 600\r\nAccess-Control-Expose-Headers: WWW-Authenticate,X-Beeper-Desktop-Version\r\nContent-Length: 0\r\nConnection: close";
     assert_eq!(without_date(&out), (preflight.into(), ""));
 
     let out = text(port, &request("GET", "/v1/info", "origin: https://example.com\r\n")).await;
     let (head, body) = without_date(&out);
     let version = beeper_core::config::APP_VERSION;
-    let cors = format!("HTTP/1.1 200 \r\nX-Powered-By: Express\r\nAccess-Control-Allow-Origin: https://example.com\r\nVary: Origin\r\nAccess-Control-Expose-Headers: WWW-Authenticate,X-Beeper-Desktop-Version\r\nX-Beeper-Desktop-Version: {version}\r\n");
+    let cors = format!("HTTP/1.1 200 OK\r\nX-Powered-By: Express\r\nAccess-Control-Allow-Origin: https://example.com\r\nVary: Origin\r\nAccess-Control-Expose-Headers: WWW-Authenticate,X-Beeper-Desktop-Version\r\nX-Beeper-Desktop-Version: {version}\r\n");
     let etag = format!("ETag: {}", weak_etag(body.as_bytes()));
     assert!(head.starts_with(&cors) && head.contains(&etag), "{head}");
 
@@ -193,4 +193,54 @@ async fn cors_and_default_headers_match_desktop() {
     let out = text(port, &request("GET", "/v1/info", &format!("if-none-match: {}\r\n", &etag[6..]))).await;
     let (head, body) = without_date(&out);
     assert!(head.starts_with("HTTP/1.1 304 ") && !head.contains("Content-Length") && body.is_empty(), "{out}");
+}
+
+#[tokio::test]
+async fn the_transport_behaves_like_node() {
+    let (port, _) = server("node").await;
+    let get = "GET /v1/info?x=%zz HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
+    let out = text(port, get).await;
+    let (head, body) = without_date(&out);
+    assert!(head.starts_with("HTTP/1.1 200 OK\r\n") && head.ends_with("\r\nConnection: close"), "{head}");
+    assert!(head.contains("\r\ncontent-type: application/json; charset=utf-8\r\n"), "{head}");
+    let out = text(port, &get.replacen("GET", "HEAD", 1)).await;
+    let (head_of_head, empty) = without_date(&out);
+    assert_eq!((head_of_head, empty), (head.clone(), ""), "HEAD gives the head of GET");
+    assert!(head.contains(&format!("\r\nContent-Length: {}\r\n", body.len())));
+
+    let alive = "GET /v1/info HTTP/1.0\r\nconnection: keep-alive\r\n\r\n";
+    let out = text(port, &format!("{alive}GET /v1/info HTTP/1.0\r\n\r\n")).await;
+    let (first, second) = out.split_once("}HTTP/1.1 200 OK\r\n").expect("two responses");
+    assert!(first.contains("\r\nConnection: keep-alive\r\nKeep-Alive: timeout=360\r\n"), "{first}");
+    assert!(second.contains("\r\nConnection: close\r\n"), "HTTP/1.0 closes by default: {second}");
+
+    for target in ["/nope", "//v1/info", "/V1/INFO", "http://x/v1/info"] {
+        let out = text(port, &format!("GET {target} HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n")).await;
+        assert_eq!(without_date(&out), ("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close".into(), ""));
+    }
+
+    for request in [
+        "GARBAGE\r\n\r\n".to_string(),
+        "GET /v1/info HTTP/1.1\r\n\r\n".into(),
+        "GET /v1/info HTTP/1.1\r\nhost: x\r\nfoo\r\n\r\n".into(),
+        "GET /v1/info HTTP/1.1\r\nhost x : y\r\n\r\n".into(),
+        "GET /v1/info HTTP/1.1\nhost: x\n\n".into(),
+        "GET /v1/info HTTPS/1.1\r\nhost: x\r\n\r\n".into(),
+    ] {
+        assert_eq!(text(port, &request).await, BAD_REQUEST, "{request:?}");
+    }
+    let big = format!("GET /v1/info HTTP/1.1\r\nhost: x\r\nx-big: {}\r\n\r\n", "a".repeat(16 * 1024));
+    assert_eq!(text(port, &big).await, "HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n");
+
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let body = "{\"token\":\"x\"}";
+    let expect = format!("expect: 100-continue\r\ncontent-length: {}\r\nconnection: close\r\n", body.len());
+    stream.write_all(post("/oauth/introspect", &expect, "").as_bytes()).await.unwrap();
+    let mut continued = [0; 25];
+    stream.read_exact(&mut continued).await.unwrap();
+    assert_eq!(&continued, b"HTTP/1.1 100 Continue\r\n\r\n");
+    stream.write_all(body.as_bytes()).await.unwrap();
+    let mut out = String::new();
+    stream.read_to_string(&mut out).await.unwrap();
+    assert!(out.starts_with("HTTP/1.1 200 OK\r\n") && out.ends_with("{\"active\":false}"), "{out}");
 }
