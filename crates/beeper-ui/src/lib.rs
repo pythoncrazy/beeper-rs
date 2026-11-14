@@ -429,6 +429,9 @@ pub enum UiMessage {
     SetLabelInbox(String, Option<&'static str>),
     /// Desktop's `toggleMuteLabel`.
     MuteLabel(String, bool),
+    /// Desktop's `CO`: opens the Label Settings window of a label.
+    OpenLabelSettings(String),
+    LabelPane(window::Id, LabelPane),
     /// Desktop's `PollVotesBrowserWindow` for a chat's poll message.
     OpenPollVotes(String, String),
     EndPoll(String, String),
@@ -1580,13 +1583,18 @@ fn label_fill(color: Option<u8>) -> Option<Background> {
 
 /// Desktop's `LabelSpaceIcon`: the label color with its icon, or the icon alone.
 fn label_icon<'a>(l: &Label, size: f32, fg: Color) -> El<'a> {
+    label_tile(l, size, (size * 20.0 / 28.0).round(), 8.0, fg)
+}
+
+/// Desktop's `LabelIconTile`: the icon of a label, `glyph` pixels high, on a tile of the label color.
+fn label_tile<'a>(l: &Label, size: f32, glyph: f32, radius: f32, fg: Color) -> El<'a> {
     let fill = label_fill(l.color);
     let glyph = (l.icon.is_some() || fill.is_none())
         .then(|| label_glyph(l.icon.as_deref().unwrap_or(DEFAULT_LABEL_ICON)))
         .flatten()
-        .map(|h| tinted(h, (size * 20.0 / 28.0).round(), if fill.is_some() { Color::WHITE } else { fg }));
+        .map(|h| tinted(h, glyph, if fill.is_some() { Color::WHITE } else { fg }));
     let style =
-        move |_: &Theme| container::Style { background: fill, border: border::rounded(8.0), ..Default::default() };
+        move |_: &Theme| container::Style { background: fill, border: border::rounded(radius), ..Default::default() };
     container(glyph).center(size).style(style).into()
 }
 
@@ -3486,6 +3494,9 @@ pub struct BeeperGuiApp {
     pub labels_windows: Vec<(window::Id, String)>,
     pub poll_windows: Vec<PollDraft>,
     pub label_window: Option<LabelDraft>,
+    pub label_settings: Vec<LabelSettings>,
+    /// The window that shows the open Delete Label confirm, like Desktop's modal in that window.
+    pub delete_in: Option<window::Id>,
     pub spaces_window: Option<SpacesDraft>,
     pub group_window: Option<GroupDraft>,
     /// The Chat Info group description while it is edited, and whether it shows all of its lines.
@@ -3668,6 +3679,8 @@ impl BeeperGuiApp {
             login_window: None,
             theme_windows: Vec::new(),
             labels_windows: Vec::new(),
+            label_settings: Vec::new(),
+            delete_in: None,
             poll_windows: Vec::new(),
             label_window: None,
             group_window: None,
@@ -4046,6 +4059,7 @@ impl BeeperGuiApp {
             _ if Some(id) == self.settings_window => tr("Settings"),
             _ if self.theme_windows.iter().any(|w| w.0 == id) => tr("Chat Theme"),
             _ if self.labels_windows.iter().any(|w| w.0 == id) => tr("Edit Labels"),
+            _ if self.label_settings.iter().any(|w| w.id == id) => tr("Label Settings"),
             _ if self.poll_windows.iter().any(|w| w.id == id) => tr("New Poll"),
             _ if let Some(d) = self.label_window.as_ref().filter(|d| d.id == id) => {
                 return tr(if d.label.is_some() { "Edit label" } else { "New label" }).into();
@@ -5359,15 +5373,8 @@ impl BeeperGuiApp {
                 let order = rail_spaces(&st).into_iter().chain([SPACES_DIVIDER.into()]).chain(hidden_spaces(&st));
                 let order = order.collect();
                 drop(st);
-                self.spaces_window = Some(SpacesDraft {
-                    id,
-                    order,
-                    search: String::new(),
-                    drag: None,
-                    menu: None,
-                    scrolled: false,
-                    asking: false,
-                });
+                self.spaces_window =
+                    Some(SpacesDraft { id, order, search: String::new(), drag: None, menu: None, scrolled: false });
                 return open;
             }
             UiMessage::Spaces(e) => return self.spaces_edit(e),
@@ -5517,11 +5524,31 @@ impl BeeperGuiApp {
                 let what = format!("Set \"{}\" inbox visibility to {to}", old.name);
                 self.act(what, UiMessage::SetLabelInbox(id, old.inbox), None);
             }
+            UiMessage::OpenLabelSettings(label) => {
+                self.chat_menu = None;
+                let label = self.label_id(label);
+                if let Some(w) = self.label_settings.iter().find(|w| w.label == label) {
+                    return window::gain_focus(w.id);
+                }
+                let (id, open) = self.open_child(LABEL_SETTINGS_SIZE);
+                self.label_settings.push(LabelSettings { id, label, menu: false });
+                return open;
+            }
+            UiMessage::LabelPane(id, e) => {
+                let w = self.label_settings.iter_mut().find(|w| w.id == id).expect("an open Label Settings window");
+                match e {
+                    LabelPane::Menu(open) => w.menu = open,
+                    LabelPane::Delete => {
+                        let label = w.label.clone();
+                        let _ = self.update(UiMessage::AskDeleteLabel(label));
+                        self.delete_in = Some(id);
+                    }
+                    LabelPane::Done => return window::close(id),
+                }
+            }
             UiMessage::AskDeleteLabel(id) => {
                 (self.confirm, self.chat_menu, self.delete_target) = (Some(ASK_DELETE_LABEL), None, Some(id));
-                if let Some(d) = self.spaces_window.as_mut() {
-                    d.asking = false;
-                }
+                self.delete_in = None;
             }
             UiMessage::DeleteLabel(id) => {
                 self.confirm = None;
@@ -5539,6 +5566,8 @@ impl BeeperGuiApp {
                 if self.selected_account_filter.as_deref() == Some(&format!("label:{id}")) {
                     self.selected_account_filter = None;
                 }
+                let shown = self.label_settings.iter().filter(|w| w.label == id);
+                return Task::batch(shown.map(|w| window::close(w.id)).collect::<Vec<_>>());
             }
             UiMessage::Label(edit) => return self.label_edit(edit),
             UiMessage::EndPoll(chat, mid) => self.store.write().end_poll(&chat, &mid),
@@ -5871,9 +5900,16 @@ impl BeeperGuiApp {
                 if Some(id) == self.settings_window {
                     return self.settings_key(key, mods);
                 }
-                if self.spaces_asking() && key == Key::Named(Named::Escape) {
+                if self.label_asking(id) && key == Key::Named(Named::Escape) {
                     self.confirm = None;
                     return Task::none();
+                }
+                if self.label_settings.iter().any(|w| w.id == id) {
+                    return match key {
+                        Key::Named(Named::Escape) => window::close(id),
+                        Key::Named(Named::Enter) if mods.command() => window::close(id),
+                        _ => Task::none(),
+                    };
                 }
                 if self.theme_windows.iter().any(|w| w.0 == id)
                     || self.labels_windows.iter().any(|w| w.0 == id)
@@ -7426,9 +7462,10 @@ impl BeeperGuiApp {
                 self.poll_windows.retain(|w| w.id != id);
                 self.vote_windows.retain(|w| w.0 != id);
                 self.label_window = self.label_window.take().filter(|d| d.id != id);
-                if self.spaces_asking() && self.spaces_window.as_ref().is_some_and(|d| d.id == id) {
+                if self.label_asking(id) {
                     self.confirm = None;
                 }
+                self.label_settings.retain(|w| w.id != id);
                 self.spaces_window = self.spaces_window.take().filter(|d| d.id != id);
                 self.group_window = self.group_window.take().filter(|d| d.id != id);
                 if Some(id) == self.settings_window {
@@ -7899,6 +7936,8 @@ impl BeeperGuiApp {
             self.view_poll_creator(d)
         } else if let Some(d) = self.label_window.as_ref().filter(|d| d.id == id) {
             self.view_create_label(d)
+        } else if let Some(w) = self.label_settings.iter().find(|w| w.id == id) {
+            self.view_label_settings(w)
         } else if let Some(d) = self.spaces_window.as_ref().filter(|d| d.id == id) {
             self.view_edit_spaces(d)
         } else if let Some(d) = self.group_window.as_ref().filter(|d| d.id == id) {
@@ -8132,7 +8171,8 @@ impl BeeperGuiApp {
                 false => (main_menu.map(|m| layer(m, UiMessage::CloseModals)), None),
             };
         let toast = self.view_toast(76.0);
-        let confirm = self.confirm.filter(|d| !SETTINGS_DIALOGS.contains(d) && !self.spaces_asking());
+        let elsewhere = self.delete_in.is_some_and(|w| self.label_asking(w));
+        let confirm = self.confirm.filter(|d| !SETTINGS_DIALOGS.contains(d) && !elsewhere);
         let confirm = confirm.map(|d| self.view_confirm(d));
         let shows = |c: &&Carousel| {
             let st = self.store.read();
@@ -9002,7 +9042,7 @@ impl BeeperGuiApp {
         let heading = (!l.name.is_empty()).then(|| menu_heading(p, l.name.clone()));
         let items = [
             menu_item(p, blank(), mute.into(), "", Some(UiMessage::MuteLabel(l.id.clone(), !l.muted))),
-            menu_item(p, blank(), tr("Label Settings").into(), "", Some(UiMessage::EditLabel(l.id.clone()))),
+            menu_item(p, blank(), tr("Label Settings").into(), "", Some(UiMessage::OpenLabelSettings(l.id.clone()))),
         ];
         heading.into_iter().chain(items).collect()
     }
@@ -15232,6 +15272,126 @@ impl BeeperGuiApp {
         rows
     }
 
+    /// Desktop's Label Settings window (`grt`): the label tile and name with an Edit link, the chats of the label,
+    /// the Show in Inbox and Mute settings, Delete Label and Done.
+    fn view_label_settings<'a>(&'a self, w: &'a LabelSettings) -> El<'a> {
+        let p = &self.pal;
+        let st = self.store.read();
+        let id = st.sent.get(&w.label).unwrap_or(&w.label);
+        let Some(l) = st.labels.iter().find(|l| l.id == *id) else { return Space::new().into() };
+        let pane = |e| UiMessage::LabelPane(w.id, e);
+        let link = btn_style([CLEAR; 3], [p.accent; 3], 0.0);
+        let edit = trx("Edit", "edit a label name, icon and color");
+        let edit =
+            button(txt(edit, 13.0).color(p.accent)).padding(0).style(link).on_press(UiMessage::EditLabel(l.id.clone()));
+        let head = column![
+            container(label_tile(l, 54.0, 28.0, 20.0, p.strong)).padding(Padding::ZERO.bottom(16.0)),
+            semi(l.name.clone(), 18.0).line_height(Pixels(24.0)).color(p.strong).align_x(Center),
+            edit,
+        ]
+        .align_x(Center)
+        .width(Fill)
+        .padding(Padding::ZERO.top(8.0));
+        let title = |s: &str| container(med(s.to_string(), 13.0).color(p.sub)).padding([8, 12]);
+        let chats: Vec<&Chat> = l.rooms.iter().filter_map(|r| st.resolve_chat_idx(r).map(|i| &st.chats[i])).collect();
+        let fit = 1 + ((LABEL_SETTINGS_SIZE.width - 16.0 - 32.0 - 20.0 - 24.0 - 36.0) / 28.0) as usize;
+        let shown = match l.rooms.len() <= fit && chats.len() >= l.rooms.len() {
+            true => chats.len(),
+            false => chats.len().min(fit - 1),
+        };
+        let more = l.rooms.len() - shown;
+        let faces = chats[..shown].iter().map(|c| self.chat_avatar(c, 36.0, 1.25)).chain((more > 0).then(|| {
+            // Desktop translates "+%d" ("count of avatars not shown in a pile") in no language.
+            let more = format!("+{more}");
+            container(semi(more, 13.0).color(p.strong)).center(36).style(fill_box(p.selected, 18.0)).into()
+        }));
+        let faces = faces.enumerate().fold(Stack::new(), |s, (i, face)| {
+            let ring = container(face).padding(2).style(fill_box(p.chip, 20.0));
+            s.push(container(ring).padding(Padding::ZERO.left(i as f32 * 28.0)))
+        });
+        let group: El = match l.rooms.is_empty() {
+            true => container(txt(tr("Add Chats"), 12.0).color(p.sub)).center_y(36).width(Fill).into(),
+            false => container(faces).width(Fill).into(),
+        };
+        let group = row![group, ic(icon::CHEVRON_RIGHT, 16.0).color(p.sub)].spacing(8).align_y(Center);
+        let group = button(group)
+            .padding(Padding::new(8.0).left(12.0))
+            .width(Fill)
+            .style(btn_style([p.chip; 3], [p.text; 3], 16.0))
+            .on_press(UiMessage::EditLabel(l.id.clone()));
+        let now = l.inbox.unwrap_or("all");
+        let inbox_name = |o: &str, label: &'static str| match o {
+            "none" => trx(label, "label inbox visibility option"),
+            _ => inbox_label(label),
+        };
+        let current = INBOX_OPTIONS.iter().find(|o| o.0 == now).expect("an inbox option");
+        let pill =
+            row![txt(inbox_name(current.0, current.1), 12.0), ic(icon::EXPAND_MORE, 12.0)].spacing(2).align_y(Center);
+        let pill = button(pill)
+            .padding(Padding::new(2.0).right(6.0).left(10.0))
+            .height(24)
+            .style(btn_style([p.selected; 3], [p.sub; 3], 12.0))
+            .on_press(pane(LabelPane::Menu(!w.menu)));
+        let setting = |glyph: char, label: &str, end: El<'a>| -> El<'a> {
+            row![container(ic(glyph, 18.0).color(p.strong)).center_x(28), txt(label.to_string(), 13.0).width(Fill), end]
+                .spacing(8)
+                .align_y(Center)
+                .height(40)
+                .padding(Padding::new(8.0).left(8.0))
+                .into()
+        };
+        let rule = container(container(Space::new()).width(Fill).height(0.5).style(fill_box(p.prefs_border, 0.0)))
+            .padding(Padding::ZERO.left(40.0).right(8.0));
+        let mute = toggle(p, l.muted, Some(UiMessage::MuteLabel(l.id.clone(), !l.muted)));
+        let settings = column![
+            setting(icon::INBOX, tr("Show in Inbox"), pill.into()),
+            rule,
+            setting(icon::NOTIFICATIONS_OFF, trx("Mute", "label setting"), mute),
+        ];
+        let delete = button(container(txt(tr("Delete Label"), 13.0).color(p.danger)).center_y(24))
+            .padding([8, 12])
+            .width(Fill)
+            .style(btn_style([p.chip; 3], [p.danger; 3], 16.0))
+            .on_press(pane(LabelPane::Delete));
+        let body = column![
+            head,
+            column![title(trx("Chats", "label settings section")), group].padding(Padding::ZERO.top(16.0)),
+            container(container(settings).style(fill_box(p.chip, 16.0))).padding(Padding::ZERO.top(16.0)),
+            container(delete).padding(Padding::ZERO.top(16.0)),
+        ]
+        .padding(Padding::new(16.0).bottom(80.0));
+        let done = button(med(tr("Done"), 13.0).color(Color::WHITE))
+            .padding([6, 14])
+            .style(btn_style([p.accent; 3], [Color::WHITE; 3], 999.0))
+            .on_press(pane(LabelPane::Done));
+        let footer = container(done).align_right(Fill).align_bottom(Fill).padding(Padding::new(16.0).top(12.0));
+        let card = stack![scrollable(body).direction(bar()).style(scroll_style(p.scroll)).height(Fill), footer];
+        let card = container(card).height(Fill).clip(true).style(fill_box(p.card, 12.0));
+        let head = container(semi(tr("Label Settings"), 13.0).line_height(Pixels(16.0)).color(p.strong))
+            .center_x(Fill)
+            .padding([8, 0]);
+        let window = container(column![head, card]).padding(8).style(fill_box(p.window, 0.0));
+        let menu = w.menu.then(|| {
+            let items = INBOX_OPTIONS.iter().map(|&(o, label)| {
+                let lead = container((o == now).then(|| ic(icon::CHECK, 14.0))).width(22).into();
+                let msg = UiMessage::Commands(vec![
+                    pane(LabelPane::Menu(false)),
+                    UiMessage::SetLabelInbox(l.id.clone(), (o != "all").then_some(o)),
+                ]);
+                menu_item(p, Some(lead), inbox_name(o, label).into(), "", Some(msg))
+            });
+            let menu = container(Column::with_children(items).padding([4, 0])).width(ACCOUNT_SUB_W);
+            let menu = menu.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            stack![
+                mouse_area(Space::new().width(Fill).height(Fill)).on_press(pane(LabelPane::Menu(false))),
+                container(menu).align_right(Fill).padding(Padding::ZERO.top(LABEL_INBOX_MENU_Y).right(24.0)),
+            ]
+        });
+        drop(st);
+        let confirm = self.label_asking(w.id).then(|| self.view_confirm(ASK_DELETE_LABEL));
+        stack![window].push(menu).push(confirm).into()
+    }
+
     fn view_create_label<'a>(&'a self, d: &'a LabelDraft) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
@@ -15556,9 +15716,9 @@ impl BeeperGuiApp {
         container(body).padding(16).width(Fill).height(Fill).style(fill_box(p.card, 0.0)).into()
     }
 
-    /// Whether the open Delete Label confirm shows in the Edit Spaces window, like Desktop's modal in that window.
-    fn spaces_asking(&self) -> bool {
-        self.confirm == Some(ASK_DELETE_LABEL) && self.spaces_window.as_ref().is_some_and(|d| d.asking)
+    /// Whether the open Delete Label confirm shows in the window `id`.
+    fn label_asking(&self, id: window::Id) -> bool {
+        self.confirm == Some(ASK_DELETE_LABEL) && self.delete_in == Some(id)
     }
 
     fn spaces_edit(&mut self, e: SpacesEdit) -> Task<UiMessage> {
@@ -15596,9 +15756,11 @@ impl BeeperGuiApp {
                 if !matches!(*m, UiMessage::ChatSub(_)) {
                     d.menu = None;
                 }
-                let asking = matches!(*m, UiMessage::AskDeleteLabel(_));
+                let (asking, id) = (matches!(*m, UiMessage::AskDeleteLabel(_)), d.id);
                 let task = self.update(*m);
-                self.spaces_window.as_mut().expect("the Edit Spaces window is open").asking = asking;
+                if asking {
+                    self.delete_in = Some(id);
+                }
                 return task;
             }
             SpacesEdit::NewLabel => {
@@ -15745,7 +15907,7 @@ impl BeeperGuiApp {
         let window = mouse_area(window).on_release(edit(SpacesEdit::Drop));
         let Some((id, at)) = &d.menu else {
             drop(st);
-            return stack![window].push(self.spaces_asking().then(|| self.view_confirm(ASK_DELETE_LABEL))).into();
+            return stack![window].push(self.label_asking(d.id).then(|| self.view_confirm(ASK_DELETE_LABEL))).into();
         };
         let h = 8.0 + MENU_ITEM * if rail_label(&st, id).is_some() { 4.0 } else { 2.0 };
         drop(st);
@@ -16439,6 +16601,28 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
 /// Desktop's `cR`: the icon of a new label.
 const DEFAULT_LABEL_ICON: &str = "3257-5964";
 
+/// Desktop's Label Settings window (`CO`) of the label `label`. `menu` is the open Show in Inbox menu.
+pub struct LabelSettings {
+    pub id: window::Id,
+    pub label: String,
+    pub menu: bool,
+}
+
+/// An action in a Label Settings window.
+#[derive(Debug, Clone)]
+pub enum LabelPane {
+    /// Opens or closes the Show in Inbox menu.
+    Menu(bool),
+    /// Asks to delete the label, with the confirm in the window.
+    Delete,
+    Done,
+}
+
+/// The size of Desktop's Label Settings window.
+const LABEL_SETTINGS_SIZE: Size = Size::new(341.0, 563.0);
+/// The top of the Show in Inbox menu in the Label Settings window, under its pill.
+const LABEL_INBOX_MENU_Y: f32 = 326.0;
+
 /// The New label window, Desktop's `CreateLabel` state.
 pub struct LabelDraft {
     pub id: window::Id,
@@ -16519,8 +16703,6 @@ pub struct SpacesDraft {
     pub menu: Option<(String, Point)>,
     /// Whether the list scrolled down, so the search row casts a shadow.
     pub scrolled: bool,
-    /// Whether the Delete Label confirm opened from this window, so it shows here.
-    pub asking: bool,
 }
 
 /// The size of Desktop's Edit Spaces window.
