@@ -92,6 +92,7 @@ impl Default for BeeperSettings {
             chat_appearance: Default::default(),
             spaces_order: Vec::new(),
             ever_labeled: false,
+            labels_intro_seen: false,
         }
     }
 }

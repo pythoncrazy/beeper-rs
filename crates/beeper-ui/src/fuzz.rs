@@ -1671,32 +1671,30 @@ fn create_label_like_desktop() {
     let found = |app: &BeeperGuiApp, s: &str| {
         simulator(app.view_create_label(app.label_window.as_ref().expect("the label window"))).find(s).is_ok()
     };
+    let step = |app: &BeeperGuiApp| app.label_window.as_ref().expect("the label window").step;
+    assert!(found(&app, "Organize chats in custom spaces.") && found(&app, "Get Started"), "the intro shows first");
+    assert!(app.store.read().settings.labels_intro_seen);
+    edit(&mut app, LabelEdit::Advance);
     assert!(found(&app, "Chats") && !found(&app, "Selected"));
+    edit(&mut app, LabelEdit::Advance);
+    assert_eq!(step(&app), LabelStep::Pick, "Next needs a chat");
     edit(&mut app, LabelEdit::Toggle(chats[0].clone()));
     edit(&mut app, LabelEdit::Toggle(chats[1].clone()));
     assert!(found(&app, "Selected"));
-    edit(&mut app, LabelEdit::Create);
-    assert!(app.label_window.is_some(), "a label needs a title");
     edit(&mut app, LabelEdit::Search("zzzz".into()));
     assert!(found(&app, "Clear search to show all selected chats") && !found(&app, "Selected"));
-    edit(&mut app, LabelEdit::Picker(true));
-    assert!(found(
-        &app,
-        "Choose a title, icon, and/or color to customize your label. This is how it will appear throughout the app."
-    ));
+    edit(&mut app, LabelEdit::Advance);
+    assert!(step(&app) == LabelStep::Details && found(&app, "Back"));
+    edit(&mut app, LabelEdit::Advance);
+    assert!(app.label_window.is_some(), "a label needs a name");
     edit(&mut app, LabelEdit::Color(3));
     edit(&mut app, LabelEdit::Color(11));
     edit(&mut app, LabelEdit::Icon(DEFAULT_LABEL_ICON));
     edit(&mut app, LabelEdit::Icon("3257-5950"));
     edit(&mut app, LabelEdit::Icon("3257-5950"));
-    let _ = app.update(UiMessage::WindowKey(
-        app.label_window.as_ref().expect("open").id,
-        Key::Named(Named::Escape),
-        keyboard::Modifiers::empty(),
-    ));
-    assert!(app.label_window.as_ref().is_some_and(|d| !d.picker), "Escape closes the picker first");
     edit(&mut app, LabelEdit::Name(" Friends ".into()));
-    edit(&mut app, LabelEdit::Create);
+    edit(&mut app, LabelEdit::Advance);
+    assert_eq!(app.label_settings.len(), 1, "a new label opens its Label Settings");
     let st = app.store.read();
     let label = st.labels.iter().find(|l| l.name == "Friends").expect("the new label");
     assert_eq!(label.rooms, chats);
@@ -1716,12 +1714,14 @@ fn edit_and_delete_labels_like_desktop() {
     let menu = |app: &BeeperGuiApp| simulator(app.view_account_menu("label:lbl_work")).find("Label Settings").is_ok();
     assert!(menu(&app));
     let _ = app.update(UiMessage::EditLabel("lbl_work".into()));
-    let ready = |app: &BeeperGuiApp| app.label_window.as_ref().expect("the label window").ready(&app.store.read());
-    assert!(!ready(&app), "an unchanged label does not save");
-    simulator(app.view_create_label(app.label_window.as_ref().expect("open"))).find("Save").expect("a Save button");
+    let ready = |app: &BeeperGuiApp| app.label_window.as_ref().expect("the label window").ready();
+    assert_eq!(app.label_window.as_ref().map(|d| d.step), Some(LabelStep::Details), "Edit opens the Edit Label sheet");
+    simulator(app.view_create_label(app.label_window.as_ref().expect("open"))).find("Done").expect("a Done button");
+    let _ = app.update(UiMessage::Label(LabelEdit::Name(" ".into())));
+    assert!(!ready(&app), "a label needs a name");
     let _ = app.update(UiMessage::Label(LabelEdit::Name("Work Team".into())));
     assert!(ready(&app));
-    let _ = app.update(UiMessage::Label(LabelEdit::Create));
+    let _ = app.update(UiMessage::Label(LabelEdit::Advance));
     let rooms = {
         let st = app.store.read();
         let work = st.labels.iter().find(|l| l.id == "lbl_work").expect("the work label");
@@ -1870,8 +1870,9 @@ fn label_nudge_hides_after_the_first_label_like_desktop() {
     app.store.write().settings.ever_labeled = false;
     assert!(nudge(&app), "an account that never had labels");
     let _ = app.update(UiMessage::OpenCreateLabel(vec!["!note_self:beeper.com".into()]));
-    let _ = app.update(UiMessage::Label(LabelEdit::Name("Friends".into())));
-    let _ = app.update(UiMessage::Label(LabelEdit::Create));
+    for e in [LabelEdit::Advance, LabelEdit::Advance, LabelEdit::Name("Friends".into()), LabelEdit::Advance] {
+        let _ = app.update(UiMessage::Label(e));
+    }
     let id = app.store.read().labels[0].id.clone();
     app.store.write().delete_label(&id);
     assert!(app.store.read().labels.is_empty() && !nudge(&app), "the nudge stays hidden after a label");
