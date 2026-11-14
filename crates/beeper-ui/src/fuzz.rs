@@ -45,7 +45,8 @@ fn prefs() -> impl Iterator<Item = (SettingsTab, &'static prefs::Pref)> {
 }
 
 pub(crate) fn demo_app(name: &str) -> BeeperGuiApp {
-    let dir = std::env::temp_dir().join("beeper-rs-fuzz").join(name);
+    let checkout = crate::style::name_hash(env!("CARGO_MANIFEST_DIR"));
+    let dir = std::env::temp_dir().join(format!("beeper-rs-fuzz-{checkout:x}")).join(name);
     let _ = std::fs::remove_dir_all(&dir);
     let mut config = CentralConfig::new(dir, "127.0.0.1".into(), 23391, None);
     config.demo = true;
