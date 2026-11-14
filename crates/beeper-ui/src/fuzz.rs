@@ -2767,6 +2767,41 @@ fn another_chat_drops_the_pending_reveal() {
 }
 
 #[test]
+fn pinned_grid_and_range_selection_like_desktop() {
+    let cols = [(232.0, 1), (500.0, 3), (232.0, 4), (1000.0, 7), (232.0, 0)].map(|(w, n)| pin_columns(w, n));
+    assert_eq!(cols, [1, 3, 2, 4, 1], "at most 6 columns of 80px, balanced over the rows");
+    let mut app = demo_app("pins-range");
+    let pinned = app.store.read().chats.iter().find(|c| c.flags & CHAT_PINNED != 0).expect("a pin").id.clone();
+    {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(&pinned).expect("the pin");
+        st.set_chat_flag(idx, ChatFlag::LowPriority, Some(true));
+    }
+    let _ = app.update(UiMessage::SelectTab(InboxTab::LowPriority));
+    assert!(app.pins_and_rows(&app.store.read()).0.iter().any(|c| c.id == pinned), "Low Priority has the grid");
+    let _ = app.update(UiMessage::SelectTab(InboxTab::Reminders));
+    assert!(app.pins_and_rows(&app.store.read()).0.is_empty(), "Reminders has no grid");
+    {
+        let mut sim = simulator(app.view_filter_menu());
+        assert!(sim.find("Requests").is_ok());
+    }
+    let _ = app.update(UiMessage::SelectTab(InboxTab::Archived));
+    {
+        let mut sim = simulator(app.view_filter_menu());
+        assert!(sim.find("Low Priority").is_ok() && sim.find("Requests").is_err() && sim.find("Archived").is_err());
+    }
+    let _ = app.update(UiMessage::SelectTab(InboxTab::AllChats));
+    let list = app.list_ids(&app.store.read());
+    let _ = app.update(UiMessage::ClickChat(list[2].clone()));
+    app.mods = keyboard::Modifiers::SHIFT;
+    let _ = app.update(UiMessage::ClickChat(list[5].clone()));
+    assert_eq!(app.selection, list[2..=5], "Shift-click selects the range from the open chat");
+    app.mods = keyboard::Modifiers::CTRL;
+    let _ = app.update(UiMessage::ClickChat(list[7].clone()));
+    assert!(app.selection.len() == 5 && app.selection.contains(&list[7]), "Ctrl-click adds a chat");
+}
+
+#[test]
 fn message_requests_like_desktop() {
     let mut app = demo_app("message-requests");
     let dms: Vec<String> = {

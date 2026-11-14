@@ -1902,6 +1902,13 @@ fn receipt_tip(st: &BeeperStore, c: &Chat, m: &Message) -> Option<String> {
     })
 }
 
+/// Desktop's `Iot`: the columns of the pinned grid for `n` pins. A column is at least 80px wide, there are at most 6,
+/// and the rows get the same number of pins.
+fn pin_columns(width: f32, n: usize) -> usize {
+    let most = ((width / 80.0) as usize).min(n).clamp(1, 6);
+    n.max(1).div_ceil(n.max(1).div_ceil(most))
+}
+
 /// The message that the chat list previews: the newest shown message, or a newer reaction.
 fn preview_message<'s>(st: &'s BeeperStore, c: &'s Chat) -> Option<&'s Message> {
     let m = st
@@ -4338,7 +4345,7 @@ impl BeeperGuiApp {
         let (mut pinned, rest): (Vec<&Chat>, Vec<&Chat>) = self
             .visible_chats(st)
             .into_iter()
-            .partition(|c| self.active_tab == InboxTab::AllChats && c.flags & CHAT_PINNED != 0);
+            .partition(|c| self.active_tab.filterable() && c.flags & CHAT_PINNED != 0);
         pinned.sort_by_key(|c| (st.pin_rank.get(&c.id).copied().unwrap_or(usize::MAX), c.last_activity.clone()));
         match st.settings.on("regularPinned") {
             true => (vec![], pinned.into_iter().chain(rest).collect()),
@@ -5296,6 +5303,8 @@ impl BeeperGuiApp {
                 self.select_chat(&id);
                 return Task::batch([self.close_notifications(), operation::focus("composer-input")]);
             }
+            UiMessage::ClickChat(id) | UiMessage::ToggleSelected(id) if self.mods.shift() => self.select_range(&id),
+            UiMessage::ClickChat(id) if self.mods.control() => return self.update(UiMessage::ToggleSelected(id)),
             UiMessage::ClickChat(id) => {
                 let last = self.last_click.take();
                 if last.is_none_or(|(c, at)| c != id || at.elapsed() > std::time::Duration::from_millis(500)) {
@@ -8936,8 +8945,16 @@ impl BeeperGuiApp {
             let hotkey = prefs::hotkey_label(st.settings.hotkey_keys(FILTER_HOTKEYS[i]));
             item(self.filters & 1 << i != 0, FILTERS[i].1, format!("{} ({n})", tr(FILTERS[i].0)), hotkey, 1 << i)
         });
-        let views = (F_ARCHIVED..FILTERS.len())
-            .map(|i| item(self.filters & 1 << i != 0, FILTERS[i].1, tr(FILTERS[i].0).into(), String::new(), 1 << i));
+        let views: &[usize] = match self.active_tab {
+            InboxTab::Archived => &[F_LOW_PRIORITY],
+            InboxTab::LowPriority => &[F_ARCHIVED],
+            InboxTab::Requests => &[],
+            _ => &[F_ARCHIVED, F_REQUESTS, F_LOW_PRIORITY],
+        };
+        let rule = (!views.is_empty()).then(|| menu_rule(p));
+        let views = views
+            .iter()
+            .map(|&i| item(self.filters & 1 << i != 0, FILTERS[i].1, tr(FILTERS[i].0).into(), String::new(), 1 << i));
         let col = Column::with_children(
             std::iter::once(item(
                 self.filters == 0,
@@ -8947,7 +8964,7 @@ impl BeeperGuiApp {
                 0,
             ))
             .chain(counted)
-            .chain(std::iter::once(menu_rule(p)))
+            .chain(rule)
             .chain(views),
         );
         container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
@@ -10410,6 +10427,18 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `hasExpiredReminder`: the reminder time came while the reminder was set.
+    /// Desktop's `selectThreadRange` (`yot`): selects the chats from the last selected chat, or the open chat, to `id`.
+    fn select_range(&mut self, id: &str) {
+        let list = self.list_ids(&self.store.read());
+        let from = self.selection.last().or(self.pane.selected_chat_id.as_ref()).map_or(id, String::as_str);
+        let at = |c: &str| list.iter().position(|l| l == c).unwrap_or(0);
+        let (a, b) = (at(from), at(id));
+        let range = &list[a.min(b)..=a.max(b)];
+        self.selection.retain(|c| !range.contains(c));
+        self.selection.extend_from_slice(range);
+        self.select_mode = false;
+    }
+
     fn expired(&self, c: &Chat) -> bool {
         c.reminder.as_ref().is_some_and(|r| self.reminded.get(&c.id) == Some(&r.remind_at_ms))
     }
@@ -10798,8 +10827,9 @@ impl BeeperGuiApp {
         };
         let bar_pad = if SOLID_BARS { 0.0 } else { 4.0 };
         let inner = w - 8.0 - bar_pad - GUTTER;
-        let cols = (((w - 16.0) / 80.0).floor() as usize).max(1);
+        let cols = pin_columns(inner, pinned.len());
         let cell = inner / cols as f32;
+        let tile = cell.min(120.0);
         let previews = st.settings.on("showMessagePreviews");
         let now = now_unix_millis();
         let launched = now - self.started.elapsed().as_millis() as i64;
@@ -10811,7 +10841,7 @@ impl BeeperGuiApp {
                 let (bg, fg) = if quiet { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
                 let dot =
                     (!counts && unread).then(|| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0)));
-                let title_w = cell - if muted { 35.2 } else { 20.0 } - if dot.is_some() { 9.2 } else { 0.0 };
+                let title_w = tile - if muted { 35.2 } else { 20.0 } - if dot.is_some() { 9.2 } else { 0.0 };
                 let title = ell(short_title(c), title_w, 12.0, Weight::Semibold);
                 let label = row![]
                     .push(dot)
@@ -10835,28 +10865,20 @@ impl BeeperGuiApp {
                     .width(pin_av + 4.0)
                     .height(pin_av);
                 let item =
-                    column![face, label].spacing(if compact { 4 } else { 8 }).align_x(Center).width(cell).padding(
+                    column![face, label].spacing(if compact { 4 } else { 8 }).align_x(Center).width(tile).padding(
                         match compact {
                             true => Padding::new(10.0).top(8.0).bottom(6.0),
                             false => Padding::new(12.0).bottom(10.0),
                         },
                     );
                 let colors = if muted { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
-                let bubble = bubble.map(|t| pin_bubble(&t, c.unread_mentions > 0, colors, cell, pin_av, compact));
+                let bubble = bubble.map(|t| pin_bubble(&t, c.unread_mentions > 0, colors, tile, pin_av, compact));
                 let item = stack![item].push(bubble);
-                r.push(
-                    mouse_area(
-                        button(item)
-                            .padding(0)
-                            .style(btn_style(
-                                [if on { p.selected } else { CLEAR }, p.hover, p.selected],
-                                [p.text; 3],
-                                8.0,
-                            ))
-                            .on_press(pick(c)),
-                    )
-                    .on_right_press(UiMessage::OpenChatMenu(c.id.clone())),
-                )
+                let item = button(item)
+                    .padding(0)
+                    .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.text; 3], 8.0))
+                    .on_press(pick(c));
+                r.push(container(mouse_area(item).on_right_press(UiMessage::OpenChatMenu(c.id.clone()))).center_x(cell))
             }))
         };
         let lead = match (selecting, counts) {
@@ -11108,6 +11130,9 @@ impl BeeperGuiApp {
             };
             frame(c.id.clone(), dot, face.into(), [top.into(), preview.height(16 * lines as u32).into()], on, pick(c))
         };
+        // Desktop's order: the regular-style pinned rows, then the new-chat drafts, then the other chats.
+        let lead = rest.iter().take_while(|c| c.flags & CHAT_PINNED != 0).count();
+        let drafts = self.new_chats.len();
         let list: El<'_> = if chats.is_empty() && self.new_chats.is_empty() {
             let tab = if self.selected_account_filter.is_some() { InboxTab::Requests } else { self.active_tab };
             let (head, hint) = tab.empty();
@@ -11140,16 +11165,19 @@ impl BeeperGuiApp {
                 .into()
         } else {
             let tiles = pinned.len().div_ceil(cols);
+            let row_keys = self.row_keys(&rest);
             let keys: Vec<u64> = (0..tiles)
                 .map(|i| vlist::key(("pins", i)))
+                .chain(row_keys[..lead].iter().copied())
                 .chain(self.new_chats.iter().map(|d| vlist::key(("draft", d.id))))
-                .chain(self.row_keys(&rest).iter().copied())
+                .chain(row_keys[lead..].iter().copied())
                 .collect();
             let estimate = if compact { 52.0 } else { 68.0 };
             let rows = self.chat_list.view(&keys, false, estimate, UiMessage::Relist, |i| match i {
                 i if i < tiles => pin_row(&pinned[i * cols..(i * cols + cols).min(pinned.len())]),
-                i if i < tiles + self.new_chats.len() => draft_row(&self.new_chats[i - tiles]).into(),
-                i => chat_row(rest[i - tiles - self.new_chats.len()]).into(),
+                i if i < tiles + lead => chat_row(rest[i - tiles]).into(),
+                i if i < tiles + lead + drafts => draft_row(&self.new_chats[i - tiles - lead]).into(),
+                i => chat_row(rest[i - tiles - drafts]).into(),
             });
             scrollable(container(rows).padding(Padding::ZERO.right(bar_pad + GUTTER)))
                 .direction(stable_bar())
