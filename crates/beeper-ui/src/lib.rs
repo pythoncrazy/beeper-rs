@@ -11916,24 +11916,24 @@ impl BeeperGuiApp {
 
     fn view_composer<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {
         let p = &self.pal;
-        let banner = match (&self.pane().editing_message_id, &self.pane().reply_to_message_id) {
-            (Some(_), _) => Some((icon::PENCIL, "Editing message".to_string())),
-            (None, Some(r)) => Some((
-                icon::REPLY,
-                format!("Replying to {}", st.messages[st.msg_idx_by_id[r]].sender_name.clone().expect("sender name")),
-            )),
-            _ => None,
-        }
-        .map(|(c, label)| {
-            row![
-                ic(c, 12.0).color(p.accent),
-                txt(label, 12.0).color(p.sub),
-                Space::new().width(Fill),
-                icon_btn(p, icon::CLOSE, 12.0, 22.0, p.sub, UiMessage::CancelComposeMode)
-            ]
-            .spacing(6)
-            .align_y(Center)
-            .padding([4, 16])
+        // Desktop's quoted message in the composer (`bfe`): the sender in groups, and at most 128 characters on at most
+        // half of the width.
+        let quote = self.pane().reply_to_message_id.as_ref().and_then(|r| st.msg_idx_by_id.get(r)).map(|&i| {
+            let q = &st.messages[i];
+            let text = preview_body(q).map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
+            let text = text.or_else(|| message_tag(q).map(|t| t.1.to_string())).unwrap_or_default();
+            let text = match text.chars().count() > 128 {
+                true => text.chars().take(125).collect::<String>() + "...",
+                false => text,
+            };
+            let name = (chat.chat_type == "group").then(|| semi(q.sender_name.clone().expect("sender name"), 12.0));
+            let body = column![].push(name.map(|n| n.color(p.strong))).push(txt(text, 12.0).color(p.text)).spacing(2);
+            let (edge, fill) = match q.is_sender == Some(true) {
+                true => (p.sent, mix(p.card, p.sent, 0.3)),
+                false => (p.received, p.card),
+            };
+            let pill = container(body).max_width(self.pane().size.width / self.zoom / 2.0).padding(8);
+            removable(p, pill.style(bordered_box(fill, edge, 2.0, 17.0)), UiMessage::CancelComposeMode)
         });
         let gif_picker = (self.pane().picker == Some(Picker::Gif)).then(|| {
             let search = text_input(tr("Search KLIPY..."), &self.gif_query)
@@ -12102,30 +12102,6 @@ impl BeeperGuiApp {
         let inline = container(inline).padding(Padding::ZERO.left(2.0)).center_y(36);
         let input = self.with_formatting(input.into(), if st.settings.on("formattingMenu") { formats } else { 0 });
         let line = row![net, input, inline].align_y(Bottom).padding(Padding::new(0.0).left(14.0).right(6.5));
-        let pill: El<'a> = match self.pane().send_later {
-            None => container(line).width(Fill).style(fill_box(p.input, 18.0)).into(),
-            Some((at, no_reply)) => {
-                let when = send_day(at, st.settings.pref("timeFormat") == 1);
-                let when = if no_reply { trf("%s if no reply", &[&when]) } else { when };
-                let details = row![
-                    tinted(&COMPOSER_ICONS[6], 20.0, p.accent),
-                    semi(when, 11.0).line_height(Pixels(14.0)).color(p.accent),
-                    tinted(&CHEVRON_DOWN, 14.0, p.accent)
-                ];
-                let details = button(details.spacing(4).align_y(Center))
-                    .padding(0)
-                    .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
-                    .on_press(UiMessage::OpenSendLater);
-                let close = icon_btn(p, icon::CLOSE, 14.0, 20.0, p.accent, UiMessage::SendLater(None));
-                let blue = if p.card.r < 0.5 { hex(0x1b43aa) } else { hex(0xcbd9ff) };
-                let banner = container(row![details, Space::new().width(Fill), close].spacing(2).align_y(Center))
-                    .padding(2)
-                    .style(fill_box(blue, 20.0));
-                let body = column![container(banner).padding(Padding::new(8.0).bottom(0.0).left(12.0)), line];
-                let body = container(body).width(Fill).style(fill_box(p.card, 18.0));
-                stack![body, dashed::dashes(hex(0x808080), 18.0)].into()
-            }
-        };
         let plus_icon = tinted(&COMPOSER_ICONS[usize::from(self.pane().show_attach_menu)], 20.0, p.muted);
         let toggle = button(container(plus_icon).center(36))
             .padding(0)
@@ -12163,12 +12139,24 @@ impl BeeperGuiApp {
                 };
                 removable(p, preview, UiMessage::DiscardAttachment(i))
             });
-            Row::with_children(items).spacing(8).align_y(iced::Bottom).padding([6, 54])
+            Row::with_children(items).spacing(8).align_y(iced::Bottom)
         });
-        let send = button(container(tinted(&SEND_ARROW, 20.0, Color::WHITE)).center(36))
-            .padding(0)
-            .style(btn_style([if ready { p.accent } else { p.rule }, p.accent, p.accent], [Color::WHITE; 3], 18.0))
-            .on_press(UiMessage::SubmitComposer);
+        let send: El<'a> = match self.pane().editing_message_id {
+            // Desktop's "Edit Message" button in place of the send button.
+            Some(_) => {
+                let edit = button(container(ic(icon::CHECK, 20.0).color(Color::WHITE)).center(36))
+                    .padding(0)
+                    .style(btn_style([p.accent; 3], [Color::WHITE; 3], 18.0))
+                    .on_press(UiMessage::SubmitComposer);
+                let label = tr("Edit Message");
+                self.tip(edit.into(), label, vec!["⏎"], tooltip::Position::Top).into()
+            }
+            None => button(container(tinted(&SEND_ARROW, 20.0, Color::WHITE)).center(36))
+                .padding(0)
+                .style(btn_style([if ready { p.accent } else { p.rule }, p.accent, p.accent], [Color::WHITE; 3], 18.0))
+                .on_press(UiMessage::SubmitComposer)
+                .into(),
+        };
         let text = self.pane().composer.text();
         let urls = text_urls(&text);
         let links =
@@ -12204,11 +12192,44 @@ impl BeeperGuiApp {
                 };
                 Some(removable(p, card, UiMessage::RemoveLinkPreview(u.clone())))
             });
-        let links = Column::with_children(links).spacing(4).padding([2, 54]);
+        let links: Vec<El<'a>> = links.collect();
+        let links = (!links.is_empty()).then(|| Column::with_children(links).spacing(4));
+        // Desktop's `messageInputExternal`: the quote, the attachments and the link previews inside the pill.
+        let external: Vec<El<'a>> = [quote, pending.map(El::from), links.map(El::from)].into_iter().flatten().collect();
+        let external = (!external.is_empty()).then(|| {
+            let inner = Column::with_children(external).spacing(8);
+            container(inner).padding(Padding { top: 8.0, right: 8.0, bottom: 0.0, left: 12.0 })
+        });
+        let pill: El<'a> = match self.pane().send_later {
+            None => container(column![].push(external).push(line)).width(Fill).style(fill_box(p.input, 18.0)).into(),
+            Some((at, no_reply)) => {
+                let when = send_day(at, st.settings.pref("timeFormat") == 1);
+                let when = if no_reply { trf("%s if no reply", &[&when]) } else { when };
+                let details = row![
+                    tinted(&COMPOSER_ICONS[6], 20.0, p.accent),
+                    semi(when, 11.0).line_height(Pixels(14.0)).color(p.accent),
+                    tinted(&CHEVRON_DOWN, 14.0, p.accent)
+                ];
+                let details = button(details.spacing(4).align_y(Center))
+                    .padding(0)
+                    .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                    .on_press(UiMessage::OpenSendLater);
+                let close = icon_btn(p, icon::CLOSE, 14.0, 20.0, p.accent, UiMessage::SendLater(None));
+                let blue = if p.card.r < 0.5 { hex(0x1b43aa) } else { hex(0xcbd9ff) };
+                let banner = container(row![details, Space::new().width(Fill), close].spacing(2).align_y(Center))
+                    .padding(2)
+                    .style(fill_box(blue, 20.0));
+                let banner = container(banner).padding(Padding::new(8.0).bottom(0.0).left(12.0));
+                let body = column![banner].push(external).push(line);
+                let body = container(body).width(Fill).style(fill_box(p.card, 18.0));
+                stack![body, dashed::dashes(hex(0x808080), 18.0)].into()
+            }
+        };
+
         // Desktop lists no sticker packs on Matrix accounts: its Matrix API has no `getStickerPacks`.
         let stickers = (self.pane().picker == Some(Picker::Sticker))
             .then(|| container(txt(tr("No sticker packs found"), 14.0).color(p.text)).center_x(Fill).center_y(200));
-        let extras = Column::new().push(banner).push(gif_picker).push(stickers).push(pending).push(links);
+        let extras = Column::new().push(gif_picker).push(stickers);
         let line: Row<'a, UiMessage> = match &self.recorder {
             Some(r) => row![self.view_recorder(r), send],
             None => row![plus, pill, send],

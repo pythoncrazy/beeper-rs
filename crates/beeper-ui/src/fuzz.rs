@@ -950,6 +950,20 @@ fn history_and_folder_submenus_like_desktop() {
 }
 
 #[test]
+fn the_composer_pill_quotes_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("pill");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    let long = "word ".repeat(40);
+    let (_, own, _) = app.store.write().send_message(note, Some(long.clone()), None, None).unwrap();
+    let _ = app.update(UiMessage::StartReply(own.clone()));
+    let quoted = long.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(125).collect::<String>() + "...";
+    assert!(simulator(app.view_main()).find(quoted).is_ok(), "the quote shows 128 characters");
+    let _ = app.update(UiMessage::StartEdit(own, "old".into()));
+    assert!(simulator(app.view_main()).find("Editing message").is_err(), "Desktop has no edit banner");
+}
+
+#[test]
 fn media_carousel_draws() {
     let mut app = demo_app("mediacarousel");
     let _ = app.update(UiMessage::OpenMedia);
