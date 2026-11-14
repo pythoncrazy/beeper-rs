@@ -213,6 +213,14 @@ fn newest_first<'a>(lists: Vec<&'a [usize]>, key: impl Fn(usize) -> &'a str + 'a
     })
 }
 
+/// All the values of an array parameter of a parsed query, which is a repeated key or a `key[]` key.
+fn query_values<'a>(query: &'a serde_json::Map<String, Value>, k: &str) -> Vec<&'a str> {
+    match query.get(k) {
+        Some(Value::Array(values)) => values.iter().map(|v| v.as_str().expect("a string query value")).collect(),
+        v => v.and_then(Value::as_str).into_iter().collect(),
+    }
+}
+
 struct Req {
     query: serde_json::Map<String, Value>,
     msg: HttpMessage,
@@ -224,12 +232,8 @@ impl Req {
         self.query.get(k).and_then(Value::as_str)
     }
 
-    /// All the values of an array parameter, which is a repeated key or a `key[]` key.
     fn qs(&self, k: &str) -> Vec<&str> {
-        match self.query.get(k) {
-            Some(Value::Array(values)) => values.iter().map(|v| v.as_str().expect("a string query value")).collect(),
-            v => v.and_then(Value::as_str).into_iter().collect(),
-        }
+        query_values(&self.query, k)
     }
 
     /// Desktop's boolean query parameter: `true` or `false`.
