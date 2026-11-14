@@ -1239,9 +1239,10 @@ fn serve_asset(st: &BeeperStore, r: &Req) -> Reply {
         })?,
     };
     let bytes = std::fs::read(&path).map_err(|e| {
-        let message = match e.kind() {
-            std::io::ErrorKind::IsADirectory => "EISDIR: illegal operation on a directory, read".into(),
-            _ => e.to_string(),
+        // Windows reports "Access is denied" for a directory.
+        let message = match path.is_dir() {
+            true => "EISDIR: illegal operation on a directory, read".into(),
+            false => e.to_string(),
         };
         error(StatusCode(500), &message, "UNKNOWN_ERROR")
     })?;
