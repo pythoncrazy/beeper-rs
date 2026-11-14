@@ -5457,6 +5457,7 @@ impl BeeperGuiApp {
                 drop(st);
                 self.refresh_theme_and_tray();
             }
+            UiMessage::OpenSendLater if !self.store.read().feature("scheduled-message").on => {}
             UiMessage::OpenSendLater if self.pane.editing_message_id.is_some() => {
                 self.status_banner = tr("Send Later isn't available while editing a message").into();
             }
@@ -10293,10 +10294,22 @@ impl BeeperGuiApp {
         keys: Vec<&'static str>,
         at: tooltip::Position,
     ) -> iced::widget::Tooltip<'a, UiMessage> {
+        self.tip_caps(el, label, keys.into_iter().map(String::from).collect(), at)
+    }
+
+    /// [`Self::tip`] with the key caps of a hotkey from the settings.
+    fn tip_caps<'a>(
+        &self,
+        el: El<'a>,
+        label: impl iced::widget::text::IntoFragment<'a>,
+        keys: Vec<String>,
+        at: tooltip::Position,
+    ) -> iced::widget::Tooltip<'a, UiMessage> {
         let p = &self.pal;
-        let kbd = |k: &'static str| -> El<'a> {
+        let kbd = |k: String| -> El<'a> {
+            let width = if k.len() == 1 { Length::Fixed(20.0) } else { Shrink };
             container(med(k, 13.0).color(p.strong))
-                .center_x(if k.len() == 1 { Length::Fixed(20.0) } else { Shrink })
+                .center_x(width)
                 .center_y(20)
                 .padding([0, 2])
                 .style(fill_box(p.chip, 4.0))
@@ -11966,16 +11979,19 @@ impl BeeperGuiApp {
             };
             column![container(search).padding([0, 14]), carousel].spacing(8).padding(Padding::ZERO.top(4.0))
         });
+        let editing = self.pane().editing_message_id.is_some();
         let action_btn = |id: u8| -> El<'a> {
+            let (label, hotkey, on) = composer_action(st, chat, id, editing);
             let msg = match id {
                 0 => Some(UiMessage::Emoji(emoji::EmojiMsg::Toggle)),
                 2 => Some(UiMessage::TogglePicker(Picker::Gif)),
                 3 => Some(UiMessage::PickFiles),
                 4 => Some(UiMessage::OpenSendLater),
                 5 => Some(UiMessage::Record(record::Msg::Start)),
-                6 => chat.polls.map(|_| UiMessage::OpenPollCreator(chat.id.clone())),
+                6 => Some(UiMessage::OpenPollCreator(chat.id.clone())),
                 _ => None,
-            };
+            }
+            .filter(|_| on);
             let active = (id == 2 && self.pane().picker == Some(Picker::Gif))
                 || (id == 0 && self.pane().emoji.as_ref().is_some_and(|pk| pk.react.is_none()));
             let color = if active { p.strong } else { p.on_secondary };
@@ -11989,12 +12005,21 @@ impl BeeperGuiApp {
                 .padding(0)
                 .style(btn_style([bg, p.hover, p.selected], [p.text; 3], 14.0))
                 .on_press_maybe(msg);
+            let caps = hotkey
+                .map(|h| prefs::hotkey_label(st.settings.hotkey_keys(h).split(", ").next().expect("a combination")));
+            let caps = caps.map_or_else(Vec::new, |c| c.split_whitespace().map(String::from).collect());
             match id {
-                0 => mouse_area(b)
-                    .on_enter(UiMessage::Emoji(emoji::EmojiMsg::Pointer(0, true)))
-                    .on_exit(UiMessage::Emoji(emoji::EmojiMsg::Pointer(0, false)))
-                    .into(),
-                _ => b.into(),
+                // Desktop shows "Add Emoji" when the picker does not open on hover.
+                0 => {
+                    let b = mouse_area(b)
+                        .on_enter(UiMessage::Emoji(emoji::EmojiMsg::Pointer(0, true)))
+                        .on_exit(UiMessage::Emoji(emoji::EmojiMsg::Pointer(0, false)));
+                    match st.settings.on("emojiPickerOnHover") {
+                        true => b.into(),
+                        false => self.tip(b.into(), label, vec![], tooltip::Position::Top).into(),
+                    }
+                }
+                _ => self.tip_caps(b.into(), label, caps, tooltip::Position::Top).into(),
             }
         };
         let (pri, sec) = composer_buttons(st);
@@ -17383,6 +17408,38 @@ impl PollDraft {
 }
 
 const ATTACH_BUTTONS: [u8; 7] = [0, 3, 5, 2, 1, 4, 6];
+
+/// Desktop's composer action state (`rIt`, `_R` and `oIt`): the tooltip, the hotkey that it shows, and whether the
+/// button works. Talk to Type is the only action while you edit a message.
+fn composer_action(st: &BeeperStore, chat: &Chat, id: u8, editing: bool) -> (String, Option<&'static str>, bool) {
+    let (label, hotkey, plus) = COMPOSER_ACTION_INFO[usize::from(id)];
+    let supported = match id {
+        2 => chat.files & FILE_GIF != 0,
+        5 => chat.files & FILE_VOICE != 0,
+        6 => chat.polls.is_some(),
+        _ => true,
+    };
+    let usable = supported && (id == 1 || !editing);
+    let locked = plus.is_some_and(|f| !st.feature(f).on);
+    let label = match () {
+        _ if locked => trf("%s (Upgrade to Beeper Plus)", &[&tr(label)]),
+        _ if editing && id != 1 => trf("%s (Unavailable while editing)", &[&tr(label)]),
+        _ if supported => tr(label).to_string(),
+        _ => trf("%1$s (Unavailable for %2$s)", &[&tr(label), &network_name(&chat.account_id)]),
+    };
+    (label, hotkey.filter(|_| usable), usable && !locked)
+}
+
+/// Desktop's composer action configs (`Ome`) by composer button: the label, the hotkey, and the Beeper Plus feature.
+const COMPOSER_ACTION_INFO: [(&str, Option<&str>, Option<&str>); 7] = [
+    ("Add Emoji", None, None),
+    ("Talk to Type", None, Some("talk-to-type")),
+    ("Add GIF", Some("Message: Send GIF"), None),
+    ("Add Attachment", Some("Chat: Send File"), None),
+    ("Send Later", Some("Message: Send Later"), Some("scheduled-message")),
+    ("Record Audio", Some("Message: Record Audio"), None),
+    ("Create Poll", None, None),
+];
 
 /// Desktop's `ComposerHiddenActions`: the actions behind the plus button. Create Poll needs `enable-polls`.
 fn hidden_actions(st: &BeeperStore) -> Vec<u8> {
