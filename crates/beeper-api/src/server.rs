@@ -1417,7 +1417,7 @@ fn focus(st: &mut BeeperStore, r: &Req) -> Reply {
         let idx = idx.ok_or_else(|| bad("draft needs chatID"))?;
         let attachments =
             path.into_iter().map(|p| ChatDraftAttachment { upload_id: p.clone(), file_name: Some(p), mime_type: None });
-        let draft = ChatDraft { text, attachments: attachments.collect(), reply_to_message_id: None };
+        let draft = ChatDraft { text, attachments: attachments.collect(), ..ChatDraft::default() };
         st.update_chat(idx, |c| c.draft = Some(draft));
     }
     st.focus_tx.send(idx.map(|i| st.chats[i].id.clone())).ok();

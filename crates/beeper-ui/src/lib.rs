@@ -399,6 +399,8 @@ pub enum UiMessage {
     CheckScheduled,
     /// Ends the typing notices 3 seconds after the last key.
     TypingTick,
+    /// Desktop's throttled draft save, 5 seconds after a composer change.
+    SaveDrafts,
     /// Desktop's `showReplyThread`: shows the reply chain of the message over the timeline.
     ShowReplies(String),
     HideReplies,
@@ -3362,20 +3364,61 @@ fn duration(n: usize, unit: &str) -> String {
     }
 }
 
-/// Saves the composer text of the chat open in `pane` as its draft, or the stashed text when the composer edits a
-/// message.
+/// Desktop's `persistDraftRecordNow`: saves the composer state of the chat open in `pane` as its draft, or the state
+/// that an edit put aside. The attachments go to the uploads once and stay there while the draft keeps them.
 fn save_draft(st: &mut BeeperStore, pane: &Pane) {
     let Some(chat) = pane.selected_chat_id.as_deref() else { return };
-    let text = pane.stash.as_ref().map_or_else(|| pane.composer.text(), |s| s.text.clone());
-    let reply = pane.stash.as_ref().map_or(&pane.reply_to_message_id, |s| &s.reply_to);
-    let text = text.trim().to_string();
-    let draft = (!text.is_empty()).then(|| ChatDraft {
-        text: Some(text),
+    let (text, reply, files, links, later) = match &pane.stash {
+        Some(s) => (s.text.clone(), &s.reply_to, &s.attachments, &s.links, s.send_later),
+        None => {
+            (pane.composer.text(), &pane.reply_to_message_id, &pane.attachments, &pane.composer_links, pane.send_later)
+        }
+    };
+    let idx = st.resolve_chat_idx(chat).expect("the open chat exists");
+    let old: Vec<ChatDraftAttachment> = st.chats[idx].draft.iter().flat_map(|d| d.attachments.clone()).collect();
+    let kept = |(a, f): (&ChatDraftAttachment, &PendingMedia)| {
+        st.assets.get(&a.upload_id).is_some_and(|s| s.file_name == f.name && s.file_size == f.bytes.len() as u64)
+    };
+    let attachments = match old.len() == files.len() && old.iter().zip(files).all(kept) {
+        true => old,
+        false => files
+            .iter()
+            .map(|f| {
+                let a = st.store_uploaded_asset(f.name.clone(), f.mime.clone(), &f.bytes);
+                ChatDraftAttachment {
+                    upload_id: a.upload_id,
+                    file_name: Some(a.file_name),
+                    mime_type: Some(a.mime_type),
+                }
+            })
+            .collect(),
+    };
+    let discarded = links.iter().filter(|(_, s)| matches!(s, LinkState::Discarded)).map(|(u, _)| u.clone());
+    let draft = ChatDraft {
+        text: Some(text).filter(|t| !t.trim().is_empty()),
+        attachments,
         reply_to_message_id: reply.clone(),
-        attachments: Vec::new(),
-    });
-    st.patch_chat(chat, true, None, None).expect("clear draft");
-    st.patch_chat(chat, false, draft, None).expect("save draft");
+        send_later: later,
+        discarded_links: discarded.collect(),
+    };
+    let draft = (draft.text.is_some() || !draft.attachments.is_empty()).then_some(draft);
+    if draft != st.chats[idx].draft {
+        st.patch_chat(chat, true, None, None).expect("clear draft");
+        st.patch_chat(chat, false, draft, None).expect("save draft");
+    }
+}
+
+/// Desktop's `restoreDraftSnapshot`: the attachments of a saved draft. A draft from the API's focus endpoint names its
+/// attachments by file path.
+fn load_draft(st: &BeeperStore, draft: &ChatDraft) -> Result<Vec<PendingMedia>, String> {
+    let file = |a: &ChatDraftAttachment| match st.assets.get(&a.upload_id) {
+        Some(s) => {
+            let (path, _) = st.resolve_asset_path(&a.upload_id).expect("a stored upload has a path");
+            Ok(PendingMedia { name: s.file_name.clone(), ..portal::load_file(&path)? })
+        }
+        None => portal::load_file(std::path::Path::new(&a.upload_id)),
+    };
+    draft.attachments.iter().map(file).collect()
 }
 
 fn pref_row<'a>(
@@ -3487,6 +3530,8 @@ pub struct Pane {
     pub mentions: Vec<Mention>,
     /// Desktop's `pendingMessageDraft`: the composer state that an edit puts aside. Set while `editing_message_id` is.
     pub stash: Option<Stash>,
+    /// The composer changed after the last save of the draft. Desktop saves it at most every 5 seconds.
+    pub draft_due: bool,
 }
 
 /// Desktop's `TopOfThread`, which loads older messages while the top of the timeline is on screen.
@@ -4466,10 +4511,16 @@ impl BeeperGuiApp {
             st.queue(&cid, Outgoing::Read(ev));
         }
         let chat = st.chats[idx].clone();
-        self.pane.composer = composer_with(chat.draft.as_ref().and_then(|d| d.text.as_deref()).unwrap_or_default());
-        self.pane.history = History::default();
+        let draft = chat.draft.clone().unwrap_or_default();
+        self.pane.composer = composer_with(draft.text.as_deref().unwrap_or_default());
+        self.pane.attachments = load_draft(&st, &draft).unwrap_or_else(|e| {
+            self.status_banner = e;
+            Vec::new()
+        });
+        self.pane.composer_links = draft.discarded_links.into_iter().map(|u| (u, LinkState::Discarded)).collect();
+        (self.pane.history, self.pane.draft_due) = (History::default(), false);
         self.pane.timeline.forget_reveal();
-        self.pane.reply_to_message_id = None;
+        self.pane.reply_to_message_id = draft.reply_to_message_id;
         (self.pane.editing_message_id, self.pane.stash) = (None, None);
         self.pane.mentions.clear();
         self.pane.selected_msgs.clear();
@@ -4479,7 +4530,8 @@ impl BeeperGuiApp {
         self.info_query.clear();
         self.info_note = text_editor::Content::with_text(chat.note.as_deref().unwrap_or_default());
         let pending = st.scheduled.iter().any(|s| s.chat_id == chat.id && !s.canceled);
-        (self.pane.send_later, self.pane.sched_fold, self.pane.sched_menu) = (None, (pending, pending), None);
+        let later = draft.send_later.filter(|&(at, _)| at > now_unix_millis());
+        (self.pane.send_later, self.pane.sched_fold, self.pane.sched_menu) = (later, (pending, pending), None);
         self.pane.reply_thread = None;
         // A running load or retry of the last chat goes on to this chat when it ends.
         (self.pane.top.shown, self.pane.top.tries) = (false, 0);
@@ -4692,14 +4744,19 @@ impl BeeperGuiApp {
     }
 
     /// Quits the app; the open chats keep their drafts.
-    fn quit(&self) -> Task<UiMessage> {
-        let mut st = self.store.write();
-        for pane in std::iter::once(&self.pane).chain(self.chat_windows.iter().map(|w| &w.1)) {
-            save_draft(&mut st, pane);
-        }
-        drop(st);
+    fn quit(&mut self) -> Task<UiMessage> {
+        self.save_drafts();
         self.save_subwindows();
         self.save_main_window().chain(iced::exit())
+    }
+
+    /// Saves the drafts of the chats open in the main window and the chat windows.
+    fn save_drafts(&mut self) {
+        let mut st = self.store.write();
+        for pane in std::iter::once(&mut self.pane).chain(self.chat_windows.iter_mut().map(|w| &mut w.1)) {
+            save_draft(&mut st, pane);
+            pane.draft_due = false;
+        }
     }
 
     /// Adds an edit from `old` to the history, and reacts to the new text.
@@ -4730,6 +4787,7 @@ impl BeeperGuiApp {
     }
 
     fn composer_effects(&mut self) -> Task<UiMessage> {
+        self.pane.draft_due = true;
         self.pane.selected_msgs.clear();
         self.pane.link_dialog = None;
         self.pane.suggest = 0;
@@ -5281,6 +5339,18 @@ impl BeeperGuiApp {
     }
 
     fn handle(&mut self, msg: UiMessage) -> Task<UiMessage> {
+        // Desktop's `persistDraftRecord` after a change of the attachments, the quote, Send Later or the link previews.
+        self.pane.draft_due |= matches!(
+            msg,
+            UiMessage::FilesLoaded(_)
+                | UiMessage::Pasted(_)
+                | UiMessage::DiscardAttachment(_)
+                | UiMessage::GifDownloaded(..)
+                | UiMessage::StartReply(_)
+                | UiMessage::CancelComposeMode
+                | UiMessage::SendLater(_)
+                | UiMessage::RemoveLinkPreview(_)
+        );
         match msg {
             UiMessage::SelectTab(tab) => {
                 self.chat_menu = None;
@@ -5301,7 +5371,8 @@ impl BeeperGuiApp {
             // Desktop's composer `autofocus = "end"` when a chat opens.
             UiMessage::SelectChat(id) => {
                 self.select_chat(&id);
-                return Task::batch([self.close_notifications(), operation::focus("composer-input")]);
+                let previews = self.fetch_link_previews();
+                return Task::batch([previews, self.close_notifications(), operation::focus("composer-input")]);
             }
             UiMessage::ClickChat(id) | UiMessage::ToggleSelected(id) if self.mods.shift() => self.select_range(&id),
             UiMessage::ClickChat(id) if self.mods.control() => return self.update(UiMessage::ToggleSelected(id)),
@@ -5644,6 +5715,7 @@ impl BeeperGuiApp {
                 });
                 return Task::batch(notices);
             }
+            UiMessage::SaveDrafts => self.save_drafts(),
             UiMessage::CheckScheduled => {
                 let now = now_unix_millis();
                 if let Some((_, no_reply)) = self.pane.send_later.filter(|c| c.0 <= now) {
@@ -8366,6 +8438,8 @@ impl BeeperGuiApp {
         let toast = self.toast_running().then(|| iced::time::every(TOAST_TICK).map(|_| UiMessage::ToastTick));
         let tick =
             animated.then(|| iced::time::every(std::time::Duration::from_millis(20)).map(|_| UiMessage::AnimationTick));
+        let due = std::iter::once(&self.pane).chain(self.chat_windows.iter().map(|w| &w.1)).any(|p| p.draft_due);
+        let drafts = due.then(|| iced::time::every(std::time::Duration::from_secs(5)).map(|_| UiMessage::SaveDrafts));
         let shot = self.shot.map(|_| {
             iced::event::listen_raw(|e, _, id| {
                 matches!(e, Event::Window(window::Event::RedrawRequested(_))).then_some(UiMessage::Drawn(id))
@@ -8386,6 +8460,7 @@ impl BeeperGuiApp {
                 .chain(send)
                 .chain(queued)
                 .chain(typing)
+                .chain(drafts)
                 .chain(notes)
                 .chain(tray)
                 .chain(online)
