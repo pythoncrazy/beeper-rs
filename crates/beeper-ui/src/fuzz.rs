@@ -1133,6 +1133,34 @@ fn views_load_only_the_media_that_they_show() {
     assert!(app.media.contains_key(url), "the shown media loads");
 }
 
+/// A hover and a frame do not filter and sort the chats again: the views keep the chat list and the counts until
+/// the store changes.
+#[test]
+fn views_keep_the_chat_list_until_the_store_changes() {
+    let mut app = demo_app("memo");
+    let id = app.main_window.expect("a main window");
+    let list = |app: &BeeperGuiApp| {
+        drop(Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id)));
+        app.memo.lists.borrow().values().next().cloned().expect("the view sorted the chat list")
+    };
+    let first = list(&app);
+    let generation = app.store.generation().expect("no write lock");
+    let st = app.store.read();
+    let ids: Vec<String> =
+        app.visible_chats(&st).iter().filter(|c| c.flags & CHAT_PINNED == 0).take(4).map(|c| c.id.clone()).collect();
+    drop(st);
+    for chat in &ids {
+        let _ = app.update(UiMessage::HoverChat(chat.clone(), true));
+        let _ = app.update(UiMessage::Relist);
+        assert!(Rc::ptr_eq(&first, &list(&app)), "a hover keeps the chat list");
+    }
+    assert_eq!(app.store.generation(), Some(generation), "a hover does not write to the store");
+    let _ = app.update(UiMessage::ToggleFlag(ids[0].clone(), ChatFlag::Archived));
+    let after = list(&app);
+    assert!(!Rc::ptr_eq(&first, &after), "a change of the store sorts the chat list again");
+    assert!(!app.visible_chats(&app.store.read()).iter().any(|c| c.id == ids[0]), "the archived chat leaves");
+}
+
 #[test]
 fn forward_rows_open_the_chat_menu_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};

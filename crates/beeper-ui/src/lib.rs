@@ -74,6 +74,7 @@ use iced::{
     Point, Radians, Right, Shadow, Shrink, Size, Subscription, Task, Theme, Vector,
 };
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, Semaphore};
@@ -82,7 +83,7 @@ static AVATAR_SLOTS: Semaphore = Semaphore::const_new(8);
 
 pub type El<'a> = Element<'a, UiMessage>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InboxTab {
     AllChats,
     LowPriority,
@@ -3394,6 +3395,18 @@ impl Pane {
     }
 }
 
+/// The tab, the filters and the account of a chat list.
+type ListKey = (InboxTab, u8, Option<String>);
+
+/// Values that views compute from the store, kept until the next write to the store.
+#[derive(Default)]
+struct Memo {
+    generation: std::cell::Cell<u64>,
+    /// The chat list by tab, filters and account, as indices of `chats`.
+    lists: std::cell::RefCell<HashMap<ListKey, Rc<[usize]>>>,
+    counts: std::cell::RefCell<HashMap<String, usize>>,
+}
+
 pub struct BeeperGuiApp {
     pub pane: Pane,
     /// The chat windows and their panes.
@@ -3466,6 +3479,7 @@ pub struct BeeperGuiApp {
     pub new_chats: Vec<NewChat>,
     chat_list: vlist::VList,
     command_list: vlist::VList,
+    memo: Memo,
     /// The room of a direct chat that the bridge made, to select when it syncs, and the quote for its composer.
     pub pending_dm: Option<(String, Option<String>)>,
     /// The bridge provisioning capabilities of the chat accounts.
@@ -3684,6 +3698,7 @@ impl BeeperGuiApp {
             new_chats: Vec::new(),
             chat_list: vlist::VList::default(),
             command_list: vlist::VList::default(),
+            memo: Memo::default(),
             pending_dm: None,
             caps: resolve,
             contact_networks: None,
@@ -4179,7 +4194,41 @@ impl BeeperGuiApp {
         self.chats_with(st, self.filters)
     }
 
+    /// The chats of the list with `filters`, computed once for each store generation.
     fn chats_with<'a>(&self, st: &'a BeeperStore, filters: u8) -> Vec<&'a Chat> {
+        let Some(memo) = self.memo() else { return self.sorted_chats(st, filters) };
+        let key = (self.active_tab, filters, self.selected_account_filter.clone());
+        let known = memo.lists.borrow().get(&key).cloned();
+        let order = known.unwrap_or_else(|| {
+            let order: Rc<[usize]> = self.sorted_chats(st, filters).iter().map(|c| st.chat_idx_by_id[&c.id]).collect();
+            memo.lists.borrow_mut().insert(key, order.clone());
+            order
+        });
+        order.iter().map(|&i| &st.chats[i]).collect()
+    }
+
+    /// A count of chats, computed once for each store generation.
+    fn count(&self, key: &str, count: impl FnOnce() -> usize) -> usize {
+        let Some(memo) = self.memo() else { return count() };
+        let known = memo.counts.borrow().get(key).copied();
+        known.unwrap_or_else(|| {
+            let n = count();
+            memo.counts.borrow_mut().insert(key.to_string(), n);
+            n
+        })
+    }
+
+    /// The memo, emptied when the store changed after it, or `None` while a write lock can change the store.
+    fn memo(&self) -> Option<&Memo> {
+        let generation = self.store.generation()?;
+        if self.memo.generation.replace(generation) != generation {
+            self.memo.lists.borrow_mut().clear();
+            self.memo.counts.borrow_mut().clear();
+        }
+        Some(&self.memo)
+    }
+
+    fn sorted_chats<'a>(&self, st: &'a BeeperStore, filters: u8) -> Vec<&'a Chat> {
         let mut list: Vec<&Chat> = st
             .chats
             .iter()
@@ -4661,7 +4710,8 @@ impl BeeperGuiApp {
     }
 
     fn push_outbox(&mut self) -> Task<UiMessage> {
-        match self.store.write().start_flush() {
+        let can = self.store.read().can_flush();
+        match can && self.store.write().start_flush() {
             true => Task::perform(beeper_core::matrix::flush(self.store.clone()), UiMessage::Pushed),
             false => Task::none(),
         }
@@ -7790,8 +7840,9 @@ impl BeeperGuiApp {
                 }
             }
         }
-        if let Some(e) = self.store.write().matrix_error.take() {
-            self.status_banner = e;
+        // A write lock empties the memo of the views, so take one only for a change.
+        if self.store.read().matrix_error.is_some() {
+            self.status_banner = self.store.write().matrix_error.take().expect("a Matrix error");
         }
         Task::batch([self.load_avatars(), self.load_media(), self.push_outbox()])
     }
@@ -10123,7 +10174,9 @@ impl BeeperGuiApp {
                 && c.merged_into_chat_id.is_none()
                 && (c.unread_mentions > 0 || !st.notifications_muted(c))
         };
-        let tally = |f: &dyn Fn(&Chat) -> bool| st.chats.iter().filter(|c| countable(c) && f(c)).count();
+        let tally = |key: &str, f: &dyn Fn(&Chat) -> bool| {
+            self.count(key, || st.chats.iter().filter(|c| countable(c) && f(c)).count())
+        };
         let tab =
             |id: &'static str, key: usize, glyph: El<'static>, t: InboxTab, n: usize, number: bool| -> El<'static> {
                 let on = self.active_tab == t && self.selected_account_filter.is_none();
@@ -10133,7 +10186,9 @@ impl BeeperGuiApp {
                 let btn = if quiet { btn } else { tip(btn, t.label(), hotkey(key)).into() };
                 container(btn).id(id).into()
             };
-        let requests = st.chats.iter().filter(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0).count();
+        let requests = self.count("requests", || {
+            st.chats.iter().filter(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0).count()
+        });
         let g = |c: char| -> El<'static> { ic(c, 24.0).color(p.strong).into() };
         let ring_color = if self.dark { Color::WHITE } else { Color::BLACK };
         let ring = svg(DASHED_RING.clone())
@@ -10152,7 +10207,7 @@ impl BeeperGuiApp {
                 Some(l) => label_icon(l, 28.0, p.strong),
                 None => svg(brand_svg(brand_key(owner))).width(28).height(28).into(),
             };
-            let n = tally(&|c| {
+            let n = tally(&format!("rail:{acc}"), &|c| {
                 in_rail_entry(&st, &acc, c) && c.flags & CHAT_HIDDEN != 0 && c.flags & CHAT_LOW_PRIORITY == 0
             });
             let label = match (label, space) {
@@ -10205,7 +10260,7 @@ impl BeeperGuiApp {
                     i,
                     g(icon::INBOX),
                     InboxTab::AllChats,
-                    tally(&|c| c.flags & (CHAT_HIDDEN | CHAT_LOW_PRIORITY) == 0),
+                    tally("rail:inbox", &|c| c.flags & (CHAT_HIDDEN | CHAT_LOW_PRIORITY) == 0),
                     true,
                 ),
                 "archive" => tab("rail-archive", i, g(icon::ARCHIVE), InboxTab::Archived, 0, false),
@@ -10219,7 +10274,7 @@ impl BeeperGuiApp {
                     i,
                     g(icon::LOW_PRIORITY_SPACE),
                     InboxTab::LowPriority,
-                    tally(&|c| c.flags & CHAT_LOW_PRIORITY != 0),
+                    tally("rail:low", &|c| c.flags & CHAT_LOW_PRIORITY != 0),
                     true,
                 ),
                 _ => account(i, id.clone()),

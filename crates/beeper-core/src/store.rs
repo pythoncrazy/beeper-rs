@@ -9,6 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tokio::sync::broadcast;
 
@@ -17,44 +18,54 @@ pub type SharedStore = std::sync::Arc<StoreLock>;
 thread_local!(static LOCKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
 
 /// A std `RwLock` deadlocks when a thread that holds the store locks it again while a writer waits,
-/// so a nested lock on one thread panics.
-pub struct StoreLock(std::sync::RwLock<BeeperStore>);
+/// so a nested lock on one thread panics. The generation counts the starts and ends of write locks, so that a
+/// reader can keep values that it computed from the store until the next write.
+pub struct StoreLock(std::sync::RwLock<BeeperStore>, AtomicU64);
 
-pub struct Locked<G>(G);
+/// A held lock, with the generation that it moves when it is a write lock.
+pub struct Locked<'a, G>(G, Option<&'a AtomicU64>);
 
 impl StoreLock {
     pub fn shared(store: BeeperStore) -> SharedStore {
-        std::sync::Arc::new(Self(std::sync::RwLock::new(store)))
+        std::sync::Arc::new(Self(std::sync::RwLock::new(store), AtomicU64::new(0)))
     }
 
-    fn hold<G>(lock: impl FnOnce() -> G) -> Locked<G> {
+    fn hold<'a, G>(lock: impl FnOnce() -> G, writes: Option<&'a AtomicU64>) -> Locked<'a, G> {
         assert!(!LOCKED.replace(true), "the store is already locked on this thread");
-        Locked(lock())
+        let held = Locked(lock(), writes);
+        writes.map(|w| w.fetch_add(1, Ordering::Release));
+        held
     }
 
-    pub fn read(&self) -> Locked<std::sync::RwLockReadGuard<'_, BeeperStore>> {
-        Self::hold(|| self.0.read().expect("store lock"))
+    pub fn read(&self) -> Locked<'_, std::sync::RwLockReadGuard<'_, BeeperStore>> {
+        Self::hold(|| self.0.read().expect("store lock"), None)
     }
 
-    pub fn write(&self) -> Locked<std::sync::RwLockWriteGuard<'_, BeeperStore>> {
-        Self::hold(|| self.0.write().expect("store lock"))
+    pub fn write(&self) -> Locked<'_, std::sync::RwLockWriteGuard<'_, BeeperStore>> {
+        Self::hold(|| self.0.write().expect("store lock"), Some(&self.1))
+    }
+
+    /// The generation of the store, or `None` while a write lock can change it.
+    pub fn generation(&self) -> Option<u64> {
+        Some(self.1.load(Ordering::Acquire)).filter(|g| g % 2 == 0)
     }
 }
 
-impl<G> Drop for Locked<G> {
+impl<G> Drop for Locked<'_, G> {
     fn drop(&mut self) {
+        self.1.map(|w| w.fetch_add(1, Ordering::Release));
         LOCKED.set(false);
     }
 }
 
-impl<G: std::ops::Deref> std::ops::Deref for Locked<G> {
+impl<G: std::ops::Deref> std::ops::Deref for Locked<'_, G> {
     type Target = G::Target;
     fn deref(&self) -> &G::Target {
         &self.0
     }
 }
 
-impl<G: std::ops::DerefMut> std::ops::DerefMut for Locked<G> {
+impl<G: std::ops::DerefMut> std::ops::DerefMut for Locked<'_, G> {
     fn deref_mut(&mut self) -> &mut G::Target {
         &mut self.0
     }
@@ -972,8 +983,13 @@ impl BeeperStore {
         self.queue(&id, Outgoing::Reminder(reminder));
     }
 
+    /// Whether `start_flush` starts a flush.
+    pub fn can_flush(&self) -> bool {
+        !self.pushing && self.matrix.is_some() && !self.outbox.is_empty()
+    }
+
     pub fn start_flush(&mut self) -> bool {
-        let start = !self.pushing && self.matrix.is_some() && !self.outbox.is_empty();
+        let start = self.can_flush();
         self.pushing |= start;
         start
     }
