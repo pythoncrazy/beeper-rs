@@ -2143,6 +2143,50 @@ fn background_menus_like_desktop() {
 }
 
 #[test]
+fn space_sheet_like_desktop() {
+    let mut app = demo_app("space-sheet");
+    let main = app.main_window.expect("a main window");
+    let clicks = [mouse::Event::ButtonPressed(Button::Left), mouse::Event::ButtonReleased(Button::Left)];
+    let title = Point::new(100.0, 26.0);
+    for m in interact(&app, main, Size::new(1440.0, 900.0), title, clicks.map(iced::Event::Mouse).to_vec()) {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.chat_menu.as_ref().map(|m| m.0.as_str()), Some(SPACE_SHEET), "the header title opens the sheet");
+    let pick = |app: &mut BeeperGuiApp, item: &str, has: &[&str], lacks: &[&str]| {
+        let _ = app.update(UiMessage::OpenChatMenu(SPACE_SHEET.into()));
+        let msgs: Vec<UiMessage> = {
+            let mut sim = simulator(app.view_main());
+            for i in has {
+                assert!(sim.find(*i).is_ok(), "{i}");
+            }
+            for i in lacks {
+                assert!(sim.find(*i).is_err(), "{i}");
+            }
+            let _ = sim.click(item).expect(item);
+            sim.into_messages().collect()
+        };
+        for m in msgs {
+            let _ = app.update(m);
+        }
+    };
+    let actions = ["Select Chats", "New Label", "Edit Spaces...", "Add/Remove Accounts..."];
+    pick(&mut app, "Work", &[&["Inbox", "Archive"][..], &actions].concat(), &["Space Options", "Label Settings"]);
+    assert_eq!(app.selected_account_filter.as_deref(), Some("label:lbl_work"));
+    assert!(app.chat_menu.is_none());
+    pick(&mut app, "Label Settings", &["Mute"], &["Space Options", "Delete Label"]);
+    assert!(app.label_window.as_ref().is_some_and(|d| d.label.as_deref() == Some("lbl_work")));
+    let _ = app.update(UiMessage::CloseModals);
+    let account = app.store.read().bridge_accounts[0].account_id.clone();
+    let _ = app.update(UiMessage::SelectAccount(Some(account)));
+    pick(&mut app, "Space Options", &actions, &["Label Settings", "Account Settings..."]);
+    assert_eq!(app.chat_sub, Some(1), "Space Options opens its submenu");
+    let _ = app.update(UiMessage::OpenChatMenu(SPACE_SHEET.into()));
+    let _ = app.update(UiMessage::ChatSub(Some(1)));
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find("Show in Inbox").is_ok() && sim.find("Account Settings...").is_ok());
+}
+
+#[test]
 fn message_requests_like_desktop() {
     let mut app = demo_app("message-requests");
     let dms: Vec<String> = {
