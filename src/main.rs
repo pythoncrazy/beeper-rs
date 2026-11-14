@@ -92,6 +92,15 @@ fn main() {
         let info = rt.block_on(BeeperClient::new(format!("http://{host}:{port}"), "").info());
         return println!("{}", serde_json::to_string_pretty(&info).unwrap());
     }
+    #[cfg(target_os = "linux")]
+    let first = match std::env::var("ALLOW_MULTIPLE_INSTANCES").as_deref() {
+        Ok("true") => None,
+        _ => Some(beeper_core::platform::single_instance(&data_dir, &std::env::args().skip(1).collect::<Vec<_>>())),
+    };
+    #[cfg(target_os = "linux")]
+    if let Some(None) = first {
+        return eprintln!("Quitting because another instance is running");
+    }
     let mut cfg = CentralConfig::new(data_dir, host.clone(), port, profile);
     (cfg.demo, cfg.launch_host) = (demo, launch_host.is_some());
     if let Ok(url) = std::env::var("BEEPER_API_URL") {
@@ -101,6 +110,10 @@ fn main() {
         cfg.homeserver = url;
     }
     let store: SharedStore = StoreLock::shared(BeeperStore::from_config(cfg));
+    #[cfg(target_os = "linux")]
+    if let Some(Some(first)) = first {
+        beeper_core::platform::forward_launches(first, store.read().launch_tx.clone());
+    }
     let host = {
         let mut st = store.write();
         st.config.remote = !st.config.launch_host && st.settings.remote_access;
