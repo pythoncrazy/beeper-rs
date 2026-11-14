@@ -14927,29 +14927,28 @@ impl BeeperGuiApp {
 
     fn sas_row<'a>(&self, st: &BeeperStore) -> El<'a> {
         let p = &self.pal;
-        let v = st.setup_status.session.verification.as_ref();
-        let (desc, control): (Option<&str>, El<'a>) =
-            match (v.map(|v| v.state.as_str()), v.and_then(|v| v.sas.as_ref())) {
-                (Some("requested"), _) => (Some("Accept the request on your other device."), Space::new().into()),
-                (Some("sas_started"), Some(sas)) => {
-                    let emojis = sas.emojis.iter().map(|e| {
-                        column![txt(e.emoji.clone(), 24.0), txt(e.description.clone(), 11.0).color(p.sub)]
-                            .spacing(4)
-                            .align_x(Center)
-                            .width(Fill)
-                            .into()
-                    });
-                    let buttons = row![
-                        pill_btn(p, tr("They don't match"), UiMessage::SasMatch(false)),
-                        pill_btn(p, tr("They match"), UiMessage::SasMatch(true))
-                    ]
-                    .spacing(8);
-                    let title = txt("Compare the emojis on both devices", 13.0).color(p.text);
-                    let buttons = row![Space::new().width(Fill), buttons];
-                    return column![title, Row::with_children(emojis), buttons].spacing(12).padding([13, 14]).into();
-                }
-                _ => (None, pill_btn(p, tr("Verify"), UiMessage::VerifySasNow)),
-            };
+        let v = st.app_verification();
+        let (desc, control): (Option<&str>, El<'a>) = match (v.map(|v| v.state), v.and_then(|v| v.sas.as_ref())) {
+            (Some("requested" | "ready"), _) => (Some("Accept the request on your other device."), Space::new().into()),
+            (Some("sas_ready"), Some(sas)) => {
+                let emojis = sas.emojis.iter().map(|e| {
+                    column![txt(e.emoji.clone(), 24.0), txt(e.description.clone(), 11.0).color(p.sub)]
+                        .spacing(4)
+                        .align_x(Center)
+                        .width(Fill)
+                        .into()
+                });
+                let buttons = row![
+                    pill_btn(p, tr("They don't match"), UiMessage::SasMatch(false)),
+                    pill_btn(p, tr("They match"), UiMessage::SasMatch(true))
+                ]
+                .spacing(8);
+                let title = txt("Compare the emojis on both devices", 13.0).color(p.text);
+                let buttons = row![Space::new().width(Fill), buttons];
+                return column![title, Row::with_children(emojis), buttons].spacing(12).padding([13, 14]).into();
+            }
+            _ => (None, pill_btn(p, tr("Verify"), UiMessage::VerifySasNow)),
+        };
         pref_row(p, "Verify with another device", desc, None, control)
     }
 

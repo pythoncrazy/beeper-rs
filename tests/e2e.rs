@@ -678,6 +678,9 @@ async fn lifecycle() {
         assert!(!st.read().signed_in() && st.read().chats.is_empty(), "fresh install is signed out");
         let login = json!({ "message": "Sign in to Beeper Desktop first", "code": "needs_login" });
         assert_eq!(c.setup_step("verification/recovery-key/reset", json!({})).await, (StatusCode::CONFLICT, login));
+        let signed_out = r#"{"state":"needs-login","e2ee":{"initialized":false,"secretStorage":false,"crossSigning":false,"verified":false,"secrets":{"masterKey":false,"selfSigningKey":false,"userSigningKey":false,"megolmBackupKey":false,"recoveryKey":false},"keyBackup":false,"firstSyncDone":false,"hasBackedUpRecoveryKey":false}}"#;
+        let signed_out = serde_json::from_str(signed_out).unwrap();
+        assert_eq!(c.request("GET", "/v1/app/setup", None).await, (StatusCode::OK, signed_out), "Desktop's body");
         let (status, start) = c.setup_step("start", json!({})).await;
         assert_eq!((status, &start["signInMethods"]), (StatusCode::OK, &json!(["email"])));
         let id = start["setupRequestID"].clone();
@@ -697,6 +700,10 @@ async fn lifecycle() {
         }
         assert_eq!(done["matrix"]["userID"], format!("@{user}:beeper.com"));
         assert_eq!(done["matrix"]["accessToken"], format!("syt_{user}"));
+        assert_eq!(
+            (&done["session"]["state"], &done["session"]["matrix"]["userID"]),
+            (&json!("initializing"), &done["matrix"]["userID"])
+        );
         assert_eq!(c.setup_step("start", json!({})).await.0, StatusCode::CONFLICT);
         assert_eq!(st.read().me().full_name.as_deref(), Some(format!("{user} Real").as_str()));
         drop((st, c));
@@ -787,6 +794,15 @@ async fn lifecycle() {
     let ready = json!({ "message": "Beeper Desktop is already set up", "code": "already_ready" });
     let key = json!({ "recoveryKey": DEFAULT_RECOVERY_CODE });
     assert_eq!(client.setup_step("verification/recovery-key", key).await, (StatusCode::CONFLICT, ready));
+    let (_, app) = client.request("GET", "/v1/app/setup", None).await;
+    assert_eq!((&app["state"], &app["e2ee"]["hasBackedUpRecoveryKey"]), (&json!("ready"), &json!(true)));
+    assert_eq!(client.request("GET", "/v1/app/setup/verifications", None).await.1, json!({ "items": [] }));
+    let details = json!({ "action": "cancel", "verificationID": "x", "availableActions": [] });
+    let (status, refused) = client.setup_step("verifications/x/cancel", json!({})).await;
+    assert_eq!(
+        (status, &refused["code"], &refused["details"]),
+        (StatusCode::CONFLICT, &json!("verification_action_not_available"), &details)
+    );
 
     let bridge_sess = client.connect_bridge_session("linkedin", "user_input_login", "on_device").await;
     assert_eq!(bridge_sess.step.step_type, "complete");

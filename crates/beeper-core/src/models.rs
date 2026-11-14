@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 pub const CHAT_PINNED: u16 = 1 << 0;
 pub const CHAT_ARCHIVED: u16 = 1 << 1;
@@ -866,88 +865,108 @@ pub struct CursorPage<T> {
     pub newest_cursor: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct VerificationSasEmoji {
     pub emoji: String,
     pub description: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+fn emoji_sequence<S: serde::Serializer>(emojis: &[VerificationSasEmoji], s: S) -> Result<S::Ok, S::Error> {
+    s.collect_str(&emojis.iter().map(|e| e.emoji.as_str()).collect::<String>())
+}
+
+/// The emojis and numbers to compare on both devices. The API sends the emojis as one string, like Desktop.
+#[derive(Debug, Clone, Serialize)]
 pub struct VerificationSas {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub decimals: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    #[serde(serialize_with = "emoji_sequence")]
     pub emojis: Vec<VerificationSasEmoji>,
+    pub decimals: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerificationQr {
+#[derive(Debug, Clone, Serialize)]
+pub struct VerificationDevice {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VerificationError {
+    pub code: String,
+    pub reason: String,
+}
+
+/// Desktop's `AppVerification`: the progress of a trusted device verification.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppVerification {
+    pub id: String,
+    pub purpose: &'static str,
+    pub direction: &'static str,
+    pub state: &'static str,
+    pub methods: Vec<&'static str>,
+    pub available_actions: Vec<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerificationOtherDevice {
-    #[serde(rename = "deviceID")]
-    pub device_id: String,
-    #[serde(rename = "userID")]
-    pub user_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerificationState {
-    #[serde(rename = "verificationID")]
-    pub verification_id: String,
-    pub direction: String,
-    pub methods: Vec<String>,
-    pub state: String,
-    #[serde(rename = "updatedAt")]
-    pub updated_at: String,
+    pub other_device: Option<VerificationDevice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sas: Option<VerificationSas>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub qr: Option<VerificationQr>,
-    #[serde(rename = "otherDevice", skip_serializing_if = "Option::is_none")]
-    pub other_device: Option<VerificationOtherDevice>,
+    pub error: Option<VerificationError>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetupE2ee {
-    pub state: String,
-    pub cross_signing: bool,
-    pub first_sync_done: bool,
-    pub has_backed_up_code: bool,
-    pub initialized: bool,
-    pub key_backup: bool,
-    pub secret_storage: bool,
-    pub verified: bool,
-    pub verification_methods: Vec<String>,
-    pub secrets: HashMap<String, bool>,
+impl AppVerification {
+    /// Desktop's `getAvailableVerificationActions`, for the outgoing verifications with emojis of beeper-rs.
+    pub fn actions(&self) -> Vec<&'static str> {
+        assert_eq!(self.direction, "outgoing", "beeper-rs starts all verifications");
+        match self.state {
+            "requested" => vec!["cancel"],
+            "ready" if self.methods.contains(&"sas") => vec!["cancel", "sas.start"],
+            "ready" => vec!["cancel"],
+            "sas_ready" => vec!["sas.confirm", "cancel"],
+            _ => Vec::new(),
+        }
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SetupMatrix {
-    pub homeserver: String,
+#[derive(Debug, Clone, Serialize)]
+pub struct AppMatrix {
     #[serde(rename = "userID")]
     pub user_id: String,
-    #[serde(rename = "deviceID", skip_serializing_if = "Option::is_none")]
-    pub device_id: Option<String>,
+    #[serde(rename = "deviceID")]
+    pub device_id: String,
+    pub homeserver: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SetupSession {
-    pub state: String,
-    pub e2ee: SetupE2ee,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub matrix: Option<SetupMatrix>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verification: Option<VerificationState>,
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSecrets {
+    pub master_key: bool,
+    pub self_signing_key: bool,
+    pub user_signing_key: bool,
+    pub megolm_backup_key: bool,
+    pub recovery_key: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SetupStatusResponse {
-    pub session: SetupSession,
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppE2ee {
+    pub initialized: bool,
+    pub secret_storage: bool,
+    pub cross_signing: bool,
+    pub verified: bool,
+    pub secrets: AppSecrets,
+    pub key_backup: bool,
+    pub first_sync_done: bool,
+    pub has_backed_up_recovery_key: bool,
+}
+
+/// Desktop's `AppStateSnapshot`: the sign-in and encrypted messaging setup state of the app.
+#[derive(Debug, Clone, Serialize)]
+pub struct AppState {
+    pub state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matrix: Option<AppMatrix>,
+    pub e2ee: AppE2ee,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification: Option<AppVerification>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
