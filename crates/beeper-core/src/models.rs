@@ -426,8 +426,29 @@ pub struct Chat {
     /// Desktop's `roomFeatures.disappearing_timer`, or `None` when the room has no disappearing messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timers: Option<Timers>,
+    #[serde(default, skip_serializing_if = "Older::is_unknown")]
+    pub older: Older,
     #[serde(skip)]
     pub flags: u16,
+}
+
+/// Where the older messages of a chat load from, like the room pagination state of Desktop's SDK.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Older {
+    /// The chat did not load a page yet, so the older messages load back from the newest event.
+    #[default]
+    Unknown,
+    /// The pagination token of the next older page.
+    From(String),
+    /// The chat loaded all messages back to the start of the room.
+    Start,
+}
+
+impl Older {
+    fn is_unknown(&self) -> bool {
+        *self == Older::Unknown
+    }
 }
 
 /// Desktop's `BOOKMARK_EVENT_TYPE` and `BOOKMARK_REL_TYPE`.
