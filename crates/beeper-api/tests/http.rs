@@ -67,7 +67,7 @@ async fn chunked_bodies_are_decoded_and_conflicts_are_refused() {
 #[tokio::test]
 async fn bodies_over_the_limit_of_the_route_get_413() {
     let (port, _) = server("limits").await;
-    let too_large = "content-type: application/json\r\nconnection: close\r\n\r\n{\"message\":\"request entity too large\",\"code\":\"UNKNOWN_ERROR\"}";
+    let too_large = "\r\n\r\n{\"message\":\"request entity too large\",\"code\":\"UNKNOWN_ERROR\"}";
     for (path, ct, len) in [
         ("/oauth/token", "application/json", 64 * 1024 + 1),
         ("/v1/app/setup/start", "application/json", 64 * 1024 + 1),
@@ -77,7 +77,8 @@ async fn bodies_over_the_limit_of_the_route_get_413() {
     ] {
         let head = format!("POST {path} HTTP/1.1\r\nhost: x\r\ncontent-type: {ct}\r\ncontent-length: {len}\r\n\r\n");
         let out = text(port, &head).await;
-        assert!(out.starts_with("HTTP/1.1 413 ") && out.ends_with(too_large), "{path}: {out}");
+        let closes = out.contains("\r\nconnection: close\r\n");
+        assert!(out.starts_with("HTTP/1.1 413 ") && closes && out.ends_with(too_large), "{path}: {out}");
     }
     let big_chunk = post("/oauth/revoke", "transfer-encoding: chunked\r\n", "10001\r\n");
     assert!(text(port, &big_chunk).await.starts_with("HTTP/1.1 413 "));
@@ -104,4 +105,46 @@ async fn websocket_frames_over_64_kb_close_with_1009() {
         assert!(out.starts_with(b"HTTP/1.1 101 "));
         assert_eq!(&out[end..], close, "a {len} byte frame");
     }
+}
+
+/// The head of a response without the `Date` header, and the body.
+fn without_date(out: &str) -> (String, &str) {
+    let (head, body) = out.split_once("\r\n\r\n").expect("a response head");
+    let date = head.lines().find_map(|l| l.strip_prefix("Date: ")).expect("a Date header");
+    assert!(date.ends_with(" GMT") && date.len() == 29, "an IMF-fixdate: {date}");
+    (head.lines().filter(|l| !l.starts_with("Date: ")).collect::<Vec<_>>().join("\r\n"), body)
+}
+
+#[tokio::test]
+async fn cors_and_default_headers_match_desktop() {
+    use beeper_api::http::{http_date, weak_etag};
+    assert_eq!(http_date(784_111_777), "Sun, 06 Nov 1994 08:49:37 GMT");
+    assert_eq!(
+        weak_etag(b"{\"message\":\"Not found\",\"code\":\"not_found\"}"),
+        "W/\"2a-ffPysxnJrBrRRKnu/lKR4M9M4Rc\""
+    );
+    let (port, _) = server("cors").await;
+    let request = |method: &str, path: &str, headers: &str| {
+        format!("{method} {path} HTTP/1.1\r\nhost: x\r\n{headers}connection: close\r\n\r\n")
+    };
+
+    let out = text(port, &request("OPTIONS", "/v1/accounts", "origin: http://example.com\r\n")).await;
+    let preflight = "HTTP/1.1 204 \r\nX-Powered-By: Express\r\nAccess-Control-Allow-Origin: http://example.com\r\nVary: Origin\r\nAccess-Control-Allow-Methods: GET,POST,PUT,PATCH,DELETE,OPTIONS\r\nAccess-Control-Allow-Headers: Authorization,Content-Type,MCP-Protocol-Version,X-Beeper-Access-Token,X-Stainless-MCP\r\nAccess-Control-Max-Age: 600\r\nAccess-Control-Expose-Headers: WWW-Authenticate,X-Beeper-Desktop-Version\r\nContent-Length: 0";
+    assert_eq!(without_date(&out), (preflight.into(), ""));
+
+    let out = text(port, &request("GET", "/v1/info", "origin: https://example.com\r\n")).await;
+    let (head, body) = without_date(&out);
+    let version = beeper_core::config::APP_VERSION;
+    let cors = format!("HTTP/1.1 200 \r\nX-Powered-By: Express\r\nAccess-Control-Allow-Origin: https://example.com\r\nVary: Origin\r\nAccess-Control-Expose-Headers: WWW-Authenticate,X-Beeper-Desktop-Version\r\nX-Beeper-Desktop-Version: {version}\r\n");
+    let etag = format!("ETag: {}", weak_etag(body.as_bytes()));
+    assert!(head.starts_with(&cors) && head.contains(&etag), "{head}");
+
+    for (path, origin) in [("/v1/info", "chrome-extension://abc"), ("/focus", "http://example.com")] {
+        let out = text(port, &request("OPTIONS", path, &format!("origin: {origin}\r\n"))).await;
+        assert!(!out.contains("Access-Control") && out.contains("X-Beeper-Desktop-Version"), "{path} {origin}: {out}");
+    }
+
+    let out = text(port, &request("GET", "/v1/info", &format!("if-none-match: {}\r\n", &etag[6..]))).await;
+    let (head, body) = without_date(&out);
+    assert!(head.starts_with("HTTP/1.1 304 ") && !head.contains("Content-Length") && body.is_empty(), "{out}");
 }

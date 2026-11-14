@@ -1,4 +1,4 @@
-use crate::codec::{url_decode, url_encode};
+use crate::codec::{base64_encode_standard, sha1, url_decode, url_encode};
 use std::collections::HashMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -11,6 +11,7 @@ impl StatusCode {
     pub const NO_CONTENT: Self = Self(204);
     pub const PARTIAL_CONTENT: Self = Self(206);
     pub const FOUND: Self = Self(302);
+    pub const NOT_MODIFIED: Self = Self(304);
     pub const BAD_REQUEST: Self = Self(400);
     pub const UNAUTHORIZED: Self = Self(401);
     pub const NOT_FOUND: Self = Self(404);
@@ -34,6 +35,32 @@ impl HttpMessage {
     pub fn header_is(&self, name: &str, value: &str) -> bool {
         self.header(name).is_some_and(|v| v.eq_ignore_ascii_case(value))
     }
+
+    /// The method of a request.
+    pub fn method(&self) -> &str {
+        self.start_line.split(' ').next().expect("a first item")
+    }
+
+    /// The path of a request target, without the query.
+    pub fn path(&self) -> &str {
+        let target = self.start_line.split(' ').nth(1).unwrap_or_default();
+        target.split('?').next().expect("a first item")
+    }
+}
+
+/// The weak `ETag` of Express for a body.
+pub fn weak_etag(body: &[u8]) -> String {
+    format!("W/\"{:x}-{}\"", body.len(), &base64_encode_standard(&sha1(body))[..27])
+}
+
+/// An IMF-fixdate for the `Date` header, like `Sun, 06 Nov 1994 08:49:37 GMT`.
+pub fn http_date(secs: i64) -> String {
+    const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let (days, s) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let (y, m, d) = beeper_core::config::civil_from_days(days);
+    let (weekday, month) = (DAYS[days.rem_euclid(7) as usize], MONTHS[m as usize - 1]);
+    format!("{weekday}, {d:02} {month} {y} {:02}:{:02}:{:02} GMT", s / 3600, s / 60 % 60, s % 60)
 }
 
 /// Why a message was not read: the peer closed the connection (`None`), or the server refuses the request with
