@@ -444,6 +444,7 @@
 "Mention an AI to get answers and help in chat":["Mentionnez une IA pour obtenir des réponses et de l’aide dans la discussion"],
 "Message":["Message", "Messages"],
 "Message Other Accounts":["Envoyer un message à d’autres comptes"],
+"Message Request":["Demande de message"],
 "Message notifications":["Notifications de message"],
 "Message request notifications":["Notifications de demande de message"],
 "Message type":["Type de message"],

@@ -10928,7 +10928,8 @@ impl BeeperGuiApp {
         let selected = self.creating_chat.is_none().then_some(self.pane().selected_chat_id.as_deref()).flatten();
         let (pinned, rest) = self.pins_and_rows(&st);
         let counts = st.settings.on("showUnreadCount");
-        let network_icons = st.settings.on("showNetworkIcons") && self.selected_account_filter.is_none();
+        let network_icons = st.settings.on("showNetworkIcons")
+            && self.selected_account_filter.as_deref().is_none_or(|id| rail_label(&st, id).is_some());
         let colorize = st.settings.on("colorizeNetworkIcons");
         let hover_action = st.settings.pref("chatActionButton");
         let selecting = self.select_mode || !self.selection.is_empty();
@@ -11130,6 +11131,13 @@ impl BeeperGuiApp {
                 (true, Some(s)) => format!("{s}: {t}"),
                 _ => t,
             });
+            let body = match (c.is_request == Some(true), c.chat_type == "group") {
+                (false, _) => body,
+                (true, false) => body.or_else(|| Some(tr("Message Request").into())),
+                (true, true) => {
+                    Some(body.map_or(tr("Group Invitation").into(), |b| format!("{}\n{b}", tr("Group Invitation"))))
+                }
+            };
             let dot_bg = if self.list_quiet(&st, c) { Color { a: 0.3, ..p.strong } } else { p.accent };
             let count = match counts {
                 true => unread.then(|| count_badge(c, dot_bg, Color::WHITE, 12.0)),

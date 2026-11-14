@@ -442,6 +442,7 @@
 "Mention an AI to get answers and help in chat":["Erwähne eine KI, um Antworten und Hilfe im Chat zu erhalten"],
 "Message":["Nachricht", "Nachrichten"],
 "Message Other Accounts":["Nachricht über andere Konten"],
+"Message Request":["Nachrichtenanfrage"],
 "Message notifications":["Benachrichtigungen zu Nachrichten"],
 "Message request notifications":["Benachrichtigungen zu Nachrichtenanfragen"],
 "Message type":["Nachrichtenart"],

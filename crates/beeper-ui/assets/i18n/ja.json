@@ -445,6 +445,7 @@
 "Mention an AI to get answers and help in chat":["AI にメンションして、チャット内で回答やサポートを得る"],
 "Message":["メッセージ"],
 "Message Other Accounts":["他のアカウントにメッセージを送信"],
+"Message Request":["メッセージリクエスト"],
 "Message notifications":["メッセージ通知"],
 "Message request notifications":["メッセージリクエストの通知"],
 "Message type":["メッセージの種類"],
