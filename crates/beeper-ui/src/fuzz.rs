@@ -974,6 +974,20 @@ fn media_carousel_draws() {
 }
 
 #[test]
+fn typing_focuses_the_composer_like_desktop() {
+    let mut app = demo_app("typefocus");
+    let main = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+    let _ = app.update(UiMessage::ComposerChanged("ab".into()));
+    let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Move(text_editor::Motion::DocumentStart)));
+    let _ = app.update(UiMessage::WindowText(main, "c".into()));
+    assert_eq!(app.pane.composer.text(), "abc", "a key outside a text field types at the end of the composer");
+    app.show_command_palette = true;
+    let _ = app.update(UiMessage::WindowText(main, "d".into()));
+    assert_eq!(app.pane.composer.text(), "abc", "the command bar keeps the keys");
+}
+
+#[test]
 fn selected_message_commands_like_desktop() {
     let mut app = demo_app("msgcmds");
     let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
