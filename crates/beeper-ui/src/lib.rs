@@ -5826,6 +5826,15 @@ impl BeeperGuiApp {
             UiMessage::InputEscape(id) => {
                 return self.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), keyboard::Modifiers::empty()));
             }
+            // Desktop's menu roles "close" and "minimize", whose accelerators work while the menu bar hides.
+            UiMessage::WindowKey(id, Key::Character(c), mods)
+                if mods == Modifiers::COMMAND && matches!(c.to_lowercase().as_str(), "w" | "m") =>
+            {
+                return match c.eq_ignore_ascii_case("w") {
+                    true => self.update(UiMessage::CloseRequested(id)),
+                    false => window::minimize(id, true),
+                };
+            }
             UiMessage::WindowKey(id, key, mods) => {
                 if Some(id) == self.settings_window {
                     return self.settings_key(key, mods);
