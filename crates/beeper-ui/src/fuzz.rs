@@ -2890,6 +2890,29 @@ fn hidden_space_bar_floats_like_desktop() {
 }
 
 #[test]
+fn request_rows_like_desktop() {
+    let mut app = demo_app("request-rows");
+    let (dm, group) = {
+        let st = app.store.read();
+        let free = |c: &&Chat| c.id != NOTE_CHAT_ID && c.is_pinned != Some(true) && c.flags & CHAT_ARCHIVED == 0;
+        let dm = st.chats.iter().filter(free).find(|c| c.chat_type == "single").expect("a DM").id.clone();
+        let group = st.chats.iter().filter(free).find(|c| c.chat_type == "group").expect("a group").id.clone();
+        (dm, group)
+    };
+    for id in [&dm, &group] {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(id).expect("a chat");
+        st.update_chat(idx, |c| (c.is_request, c.flags) = (Some(true), c.flags | CHAT_REQUEST));
+    }
+    app.patch_settings(|s| {
+        s.prefs.insert("showMessagePreviews".into(), 0);
+    });
+    let _ = app.update(UiMessage::SelectTab(InboxTab::Requests));
+    let mut sim = simulator(app.view_sidebar());
+    assert!(sim.find("Message Request").is_ok() && sim.find("Group Invitation").is_ok());
+}
+
+#[test]
 fn message_requests_like_desktop() {
     let mut app = demo_app("message-requests");
     let dms: Vec<String> = {
