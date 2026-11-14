@@ -542,10 +542,10 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
     std::fs::write(legacy.join("index.db"), b"stale copy of Beeper Desktop").unwrap();
     {
         let db = Connection::open(legacy.join("beeper-rs.db")).unwrap();
-        let old_path = legacy.join("media").join("x").display().to_string();
+        let old_path = legacy.join("media").join("{id}").display().to_string();
         db.execute(
             "UPDATE assets SET json = json_set(json_remove(json, '$.disk_name'), '$.local_file_path',
-                 replace(?1, 'x', upload_id || '_a_b.txt'))",
+                 replace(?1, '{id}', upload_id || '_a_b.txt'))",
             [old_path],
         )
         .unwrap();
