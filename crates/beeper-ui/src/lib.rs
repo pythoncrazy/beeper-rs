@@ -789,6 +789,10 @@ pub enum UiMessage {
     AccountRemoved(String, Result<(), String>),
     ScreenshotCaptured(window::Id, window::Screenshot),
     KeyPressed(Key, Modifiers),
+    /// Text that a key typed outside of a text field in a window.
+    WindowText(window::Id, String),
+    /// Desktop's type-to-focus: the composer of the pane takes the text at its end.
+    TypeInComposer(String),
     StoreChanged,
     FocusRequested(Option<String>),
     /// Desktop's `second-instance` event with the arguments of the later launch.
@@ -5212,9 +5216,10 @@ impl BeeperGuiApp {
             UiMessage::SelectChat(_) if self.recorder.is_some() => {
                 self.status_banner = tr("Stop recording to switch chats").into();
             }
+            // Desktop's composer `autofocus = "end"` when a chat opens.
             UiMessage::SelectChat(id) => {
                 self.select_chat(&id);
-                return self.close_notifications();
+                return Task::batch([self.close_notifications(), operation::focus("composer-input")]);
             }
             UiMessage::ClickChat(id) => {
                 let last = self.last_click.take();
@@ -6222,6 +6227,36 @@ impl BeeperGuiApp {
             }
             UiMessage::InputEscape(id) => {
                 return self.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), keyboard::Modifiers::empty()));
+            }
+            UiMessage::WindowText(id, text) if self.chat_windows.iter().any(|w| w.0 == id) => {
+                return self.update(UiMessage::InWindow(id, Box::new(UiMessage::TypeInComposer(text))));
+            }
+            UiMessage::WindowText(id, text) if Some(id) == self.main_window => {
+                return self.update(UiMessage::TypeInComposer(text));
+            }
+            UiMessage::WindowText(..) => {}
+            UiMessage::TypeInComposer(text) => {
+                let st = self.store.read();
+                let chat = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
+                let open = chat.is_some_and(|i| {
+                    unavailable(&st, &st.chats[i]).is_none() && st.chats[i].replacement_room.is_none()
+                });
+                drop(st);
+                let quiet = self.confirm.is_none()
+                    && !self.show_command_palette
+                    && self.forward.is_none()
+                    && self.creating_chat.is_none()
+                    && self.carousel.is_none()
+                    && self.recorder.is_none();
+                if !(open && quiet) {
+                    return Task::none();
+                }
+                let old = self.pane.composer.text();
+                self.pane.composer.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+                for c in text.chars() {
+                    self.pane.composer.perform(text_editor::Action::Edit(text_editor::Edit::Insert(c)));
+                }
+                return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
             }
             // Desktop's menu roles "close" and "minimize", whose accelerators work while the menu bar hides.
             UiMessage::WindowKey(id, Key::Character(c), mods)
@@ -8172,6 +8207,11 @@ impl BeeperGuiApp {
                     ) =>
             {
                 Some(UiMessage::WindowKey(id, key, modifiers))
+            }
+            Event::Keyboard(keyboard::Event::KeyPressed { text: Some(text), .. })
+                if status == iced::event::Status::Ignored && !text.chars().any(char::is_control) =>
+            {
+                Some(UiMessage::WindowText(id, text.to_string()))
             }
             _ => None,
         });
