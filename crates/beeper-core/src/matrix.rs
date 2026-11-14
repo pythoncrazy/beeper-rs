@@ -2045,7 +2045,10 @@ pub async fn run(store: SharedStore) {
         Ok(c) => c,
         Err(e) => return store.write().matrix_error = Some(e),
     };
-    store.write().matrix = Some(client.clone());
+    {
+        let mut st = store.write();
+        (st.matrix, st.syncing) = (Some(client.clone()), true);
+    }
     tokio::spawn(retry_undecrypted(client.clone(), store.clone()));
     tokio::spawn(retry_after_backup(client.clone(), store.clone()));
     sync_account_data(&client, &store).await;
@@ -2076,7 +2079,10 @@ pub async fn run(store: SharedStore) {
                 match r {
                     Err(e) => store.write().matrix_error = Some(e.to_string()),
                     Ok(resp) => {
-                        store.write().matrix_error = None;
+                        {
+                            let mut st = store.write();
+                            (st.matrix_error, st.syncing) = (None, false);
+                        }
                         refresh_e2ee(&client, &store).await;
                         sync_account_data(&client, &store).await;
                         sync_prefs(&client, &store).await;
