@@ -991,10 +991,11 @@ async fn lifecycle() {
     assert_eq!(edit_resp["success"], true);
 
     let sarah_msgs = client.list_messages(&merged_chat_id).await;
-    let edited_msg = sarah_msgs.items.iter().find(|m| m.id == sent_msg_id).unwrap();
-    assert_eq!(edited_msg.text.as_deref(), Some("Routed message via merged chat (edited v2)"));
-    assert_eq!(edited_msg.edit_history.len(), 1);
-    assert_eq!(edited_msg.edit_history[0].text, "Routed message via merged chat");
+    let edited_msg = sarah_msgs.items.iter().find(|m| m["id"] == *sent_msg_id).unwrap();
+    assert_eq!(edited_msg["text"], "Routed message via merged chat (edited v2)");
+    assert!(edited_msg["editedTimestamp"].is_string() && edited_msg.get("edit_history").is_none());
+    let sarah = store.read().msg_idx_by_id[&sent_msg_id];
+    assert_eq!(store.read().messages[sarah].edit_history[0].text, "Routed message via merged chat");
 
     let rx_add = client.add_reaction("!im_sarah:beeper.com", &sent_msg_id, "🔥").await;
     assert_eq!(rx_add["success"], true);
@@ -1009,10 +1010,13 @@ async fn lifecycle() {
     assert_eq!(&slice, b"ABCDEF");
 
     let search_res = client.search_messages("edited", None).await;
-    assert!(search_res.items.iter().any(|m| m.id == sent_msg_id));
+    assert!(search_res.items.iter().any(|m| m["id"] == *sent_msg_id));
 
     let media_res = client.search_messages("", Some("any")).await;
-    assert!(!media_res.items.is_empty() && media_res.items.iter().all(|m| !m.attachments.is_empty()));
+    assert!(!media_res.items.is_empty() && media_res.items.iter().all(|m| m["attachments"].is_array()));
+    let voice =
+        media_res.items.iter().flat_map(|m| m["attachments"].as_array().unwrap()).find(|a| a["isVoiceNote"] == true);
+    assert!(voice.unwrap().get("transcript").is_none(), "no store fields");
 
     let unified = client.unified_search("rust").await;
     assert!(
@@ -1035,7 +1039,7 @@ async fn lifecycle() {
     let del_resp = client.delete_message("!im_sarah:beeper.com", &sent_msg_id).await;
     assert_eq!(del_resp["success"], true);
     let search_after_del = client.search_messages("edited", None).await;
-    assert!(!search_after_del.items.iter().any(|m| m.id == sent_msg_id));
+    assert!(!search_after_del.items.iter().any(|m| m["id"] == *sent_msg_id));
 
     let unmerge_chat = store.write().patch_chat(&merged_chat_id, false, None, Some(None)).unwrap();
     assert!(unmerge_chat.merge.is_none());
@@ -1528,10 +1532,12 @@ async fn lifecycle() {
     let _ = gui.update(UiMessage::CloseModals);
 
     let final_wa_msgs = client.list_messages("!wa_eric:beeper.com").await;
-    assert!(final_wa_msgs.items.iter().any(|m| {
-        m.text.as_deref() == Some("Hello from **Iced** Simulator E2E!")
-            && m.html.as_deref() == Some("Hello from <strong>Iced</strong> Simulator E2E!")
-    }));
+    assert!(final_wa_msgs
+        .items
+        .iter()
+        .any(|m| m["text"] == "Hello from **Iced** Simulator E2E!" && m.get("html").is_none()));
+    let html = Some("Hello from <strong>Iced</strong> Simulator E2E!");
+    assert!(store.read().messages.iter().any(|m| m.html.as_deref() == html));
 
     let emu_store = store.clone();
     std::thread::spawn(move || {

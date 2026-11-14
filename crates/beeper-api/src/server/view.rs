@@ -1,4 +1,4 @@
-//! The API shapes of Desktop's `mapChat`, in its key order, made from the stored chats.
+//! The API shapes of Desktop's `mapChat` and `mapMessage`, in their key order, made from the stored chats and messages.
 
 use beeper_core::config::{account_network, rfc3339_from_millis};
 use beeper_core::models::*;
@@ -46,7 +46,7 @@ pub(super) struct ApiChat<'a> {
     #[serde(rename = "mergedIntoChatID", skip_serializing_if = "Option::is_none")]
     merged_into_chat_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    preview: Option<&'a Message>,
+    preview: Option<ApiMessage<'a>>,
 }
 
 #[derive(Serialize)]
@@ -179,6 +179,136 @@ pub(super) fn chat<'a>(
         message_expiry_seconds: c.disappearing.map(|ms| ms / 1000),
         merge: c.merge.as_ref(),
         merged_into_chat_id: c.merged_into_chat_id.as_deref(),
-        preview: c.preview.as_ref().filter(|_| preview),
+        preview: c.preview.as_ref().filter(|_| preview).map(message),
+    }
+}
+
+/// Desktop's `Message`: the message types of the API, and no store fields.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ApiMessage<'a> {
+    id: &'a str,
+    #[serde(rename = "chatID")]
+    chat_id: &'a str,
+    #[serde(rename = "accountID")]
+    account_id: &'a str,
+    #[serde(rename = "senderID")]
+    sender_id: &'a str,
+    sender_name: &'a str,
+    timestamp: &'a str,
+    sort_key: &'a str,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    message_type: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edited_timestamp: Option<&'a str>,
+    is_sender: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_deleted: Option<bool>,
+    #[serde(rename = "linkedMessageID", skip_serializing_if = "Option::is_none")]
+    linked_message_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    links: &'a [MessageLink],
+    reactions: Vec<ApiReaction<'a>>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    seen: &'a BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attachments: Option<Vec<ApiAttachment<'a>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_unread: Option<bool>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiReaction<'a> {
+    id: &'a str,
+    reaction_key: &'a str,
+    #[serde(rename = "imgURL", skip_serializing_if = "Option::is_none")]
+    img_url: Option<&'a str>,
+    #[serde(rename = "participantID")]
+    participant_id: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiAttachment<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mime_type: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_gif: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_sticker: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_voice_note: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    poster_img: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<&'a AttachmentSize>,
+    #[serde(rename = "srcURL", skip_serializing_if = "Option::is_none")]
+    src_url: Option<&'a str>,
+}
+
+/// Desktop's message types (`Qd`). The API omits the other types.
+const MESSAGE_TYPES: [&str; 10] =
+    ["TEXT", "NOTICE", "IMAGE", "VIDEO", "VOICE", "AUDIO", "FILE", "STICKER", "LOCATION", "REACTION"];
+
+fn attachment(a: &Attachment) -> ApiAttachment<'_> {
+    ApiAttachment {
+        // Desktop's `rp` takes the ID, else the source URL, else the file name.
+        id: a.id.as_deref().or(a.src_url.as_deref()).or(a.file_name.as_deref()).unwrap_or("attachment"),
+        kind: &a.attachment_type,
+        mime_type: a.mime_type.as_deref(),
+        file_name: a.file_name.as_deref(),
+        file_size: a.file_size,
+        is_gif: a.is_gif,
+        is_sticker: a.is_sticker,
+        is_voice_note: a.is_voice_note,
+        duration: a.duration,
+        poster_img: a.poster_img.as_deref(),
+        size: a.size.as_ref(),
+        src_url: a.src_url.as_deref(),
+    }
+}
+
+/// Desktop's `sp`. Attachments have no `transcription`: Desktop requires its `engine`, and the store does not keep it.
+pub(super) fn message(m: &Message) -> ApiMessage<'_> {
+    ApiMessage {
+        id: &m.id,
+        chat_id: &m.chat_id,
+        account_id: &m.account_id,
+        sender_id: &m.sender_id,
+        sender_name: m.sender_name.as_deref().unwrap_or(&m.sender_id),
+        timestamp: &m.timestamp,
+        sort_key: &m.sort_key,
+        message_type: m.message_type.as_deref().filter(|t| MESSAGE_TYPES.contains(t)),
+        text: m.text.as_deref(),
+        edited_timestamp: m.edit_history.last().map(|e| e.timestamp.as_str()),
+        is_sender: m.is_sender == Some(true),
+        is_deleted: m.is_deleted,
+        linked_message_id: m.linked_message_id.as_deref(),
+        links: &m.links,
+        reactions: m
+            .reactions
+            .iter()
+            .map(|r| ApiReaction {
+                id: &r.id,
+                reaction_key: &r.reaction_key,
+                img_url: r.img_url.as_deref(),
+                participant_id: &r.participant_id,
+            })
+            .collect(),
+        seen: &m.seen,
+        attachments: (!m.attachments.is_empty()).then(|| m.attachments.iter().map(attachment).collect()),
+        is_unread: m.is_unread.filter(|_| m.is_sender != Some(true)),
     }
 }

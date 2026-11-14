@@ -751,7 +751,9 @@ fn get(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
                     ok(&view::chat(st, &st.chats[idx], usize::try_from(max).ok(), false))
                 }
                 ["messages"] => list_messages(st, idx, r),
-                ["messages", mid] => ok(&st.messages[st.message_in_chat(id, mid).map_err(store_error)?.1]),
+                ["messages", mid] => {
+                    ok(&view::message(&st.messages[st.message_in_chat(id, mid).map_err(store_error)?.1]))
+                }
                 _ => Err(no_route()),
             }
         }
@@ -1360,6 +1362,7 @@ fn list_messages(st: &BeeperStore, idx: usize, r: &Req) -> Reply {
     });
     let (items, has_more) = take_page(newest_first(lists.collect(), key).map(|m| &st.messages[m]), MESSAGE_PAGE);
     let (oldest, newest) = (items.last().map(|m| m.sort_key.clone()), items.first().map(|m| m.sort_key.clone()));
+    let items = items.into_iter().map(view::message).collect();
     ok(&CursorPage { items, has_more, oldest_cursor: oldest, newest_cursor: newest })
 }
 
@@ -1502,6 +1505,7 @@ fn search_messages(st: &BeeperStore, r: &Req) -> Reply {
     let chat = |id: &str| view::chat(st, &st.chats[st.chat_idx_by_id[id]], None, false);
     let chats: HashMap<&str, view::ApiChat> = items.iter().map(|m| (m.chat_id.as_str(), chat(&m.chat_id))).collect();
     let (oldest, newest) = (items.last().map(|m| &m.sort_key), items.first().map(|m| &m.sort_key));
+    let items: Vec<_> = items.into_iter().map(view::message).collect();
     ok(&json!({ "items": items, "chats": chats, "hasMore": has_more, "oldestCursor": oldest, "newestCursor": newest }))
 }
 
@@ -1534,7 +1538,7 @@ fn unified_search(st: &BeeperStore, r: &Req) -> Reply {
             "messages": {
                 "chats": referenced,
                 "hasMore": has_more,
-                "items": messages,
+                "items": messages.iter().map(|m| view::message(m)).collect::<Vec<_>>(),
                 "newestCursor": messages.first().map(|m| &m.sort_key),
                 "oldestCursor": messages.last().map(|m| &m.sort_key)
             }
