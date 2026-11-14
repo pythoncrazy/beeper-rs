@@ -54,7 +54,7 @@ impl BeeperClient {
         head.push_str("\r\n");
         let mut stream = TcpStream::connect(&self.host_port).await.expect("connect to Beeper server");
         stream.write_all(&[head.into_bytes(), body.unwrap_or_default()].concat()).await.expect("write HTTP request");
-        let resp = read_message(&mut stream, &mut Vec::new()).await.expect("read HTTP response");
+        let resp = read_message(&mut stream, &mut Vec::new(), |_| usize::MAX).await.expect("read HTTP response");
         let status = resp.start_line.split(' ').nth(1).and_then(|s| s.parse().ok()).expect("HTTP status code");
         (StatusCode(status), resp.body)
     }
@@ -241,18 +241,18 @@ impl BeeperClient {
         );
         stream.write_all(upgrade.as_bytes()).await.expect("send WS upgrade request");
         let mut leftover = Vec::new();
-        let resp = read_message(&mut stream, &mut leftover).await.expect("read WS upgrade response");
+        let resp = read_message(&mut stream, &mut leftover, |_| usize::MAX).await.expect("read WS upgrade response");
         assert!(
             resp.start_line.starts_with("HTTP/1.1 101"),
             "expected 101 Switching Protocols, got: {}",
             resp.start_line
         );
         let sub = json!({ "type": "subscriptions.set", "chatIDs": chat_ids }).to_string();
-        write_ws_frame(&mut stream, sub.as_bytes(), true).await.expect("send subscriptions.set");
+        write_ws_frame(&mut stream, 0x1, sub.as_bytes(), true).await.expect("send subscriptions.set");
         let (tx, rx) = unbounded_channel();
         tokio::spawn(async move {
             let mut reader = std::io::Cursor::new(leftover).chain(stream);
-            while let Some((0x1, payload)) = read_ws_frame(&mut reader).await {
+            while let Ok((0x1, payload)) = read_ws_frame(&mut reader, usize::MAX).await {
                 if tx.send(serde_json::from_slice(&payload).expect("parse WS event")).is_err() {
                     break;
                 }

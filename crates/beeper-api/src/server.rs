@@ -232,9 +232,49 @@ pub async fn serve_http(listener: TcpListener, store: SharedStore) {
     }
 }
 
+/// The limits of Desktop's body parsers: 64 KB for OAuth and setup, 100 MB for JSON uploads, 500 MB for multipart
+/// uploads, and 10 MB for the other routes.
+fn body_limit(head: &HttpMessage) -> usize {
+    let path = head.start_line.split(' ').nth(1).unwrap_or_default();
+    let path = path.split('?').next().expect("a first item");
+    match path.split('/').filter(|s| !s.is_empty()).collect::<Vec<_>>()[..] {
+        ["oauth", ..] | ["register"] | ["v1", "app", "setup", ..] => 64 << 10,
+        ["v1", "assets", "upload"] if head.header("content-type").is_some_and(|t| t.contains("application/json")) => {
+            100 << 20
+        }
+        ["v1", "assets", "upload"] => 500 << 20,
+        _ => 10 << 20,
+    }
+}
+
+async fn write_response(stream: &mut TcpStream, resp: Response) -> bool {
+    let mut head = format!("HTTP/1.1 {} \r\ncontent-length: {}\r\n", resp.status.0, resp.body.len());
+    resp.headers.iter().for_each(|(k, v)| write!(head, "{k}: {v}\r\n").unwrap());
+    head.push_str("\r\n");
+    stream.write_all(&[head.into_bytes(), resp.body].concat()).await.is_ok()
+}
+
 async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc<Cloud>) {
     let mut buf = Vec::new();
-    while let Some(msg) = read_message(&mut stream, &mut buf).await {
+    loop {
+        let msg = match read_message(&mut stream, &mut buf, body_limit).await {
+            Ok(msg) => msg,
+            Err(None) => return,
+            Err(Some(StatusCode::PAYLOAD_TOO_LARGE)) => {
+                let mut resp = error(StatusCode::PAYLOAD_TOO_LARGE, "request entity too large", "UNKNOWN_ERROR");
+                resp.headers.push(("connection", "close".into()));
+                write_response(&mut stream, resp).await;
+                // Discard the rest of the body, so that the client gets the response before the connection closes.
+                stream.shutdown().await.ok();
+                tokio::io::copy(&mut stream, &mut tokio::io::sink()).await.ok();
+                return;
+            }
+            Err(Some(status)) => {
+                assert_eq!(status, StatusCode::BAD_REQUEST, "the parser refuses with 400 or 413");
+                stream.write_all(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n").await.ok();
+                return;
+            }
+        };
         if msg.start_line.starts_with("GET /v1/ws ") && msg.header_is("upgrade", "websocket") {
             let refused = auth::authorize(&store.read(), auth::access_token(&msg), &[beeper_core::connect::READ]).err();
             if let Some((status, message)) = refused {
@@ -249,10 +289,7 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
         let resp = tokio::task::spawn_blocking(move || respond(&store, &cloud, msg).unwrap_or_else(|e| e))
             .await
             .expect("request handler panicked");
-        let mut head = format!("HTTP/1.1 {} \r\ncontent-length: {}\r\n", resp.status.0, resp.body.len());
-        resp.headers.iter().for_each(|(k, v)| write!(head, "{k}: {v}\r\n").unwrap());
-        head.push_str("\r\n");
-        if stream.write_all(&[head.into_bytes(), resp.body].concat()).await.is_err() || close {
+        if !write_response(&mut stream, resp).await || close {
             return;
         }
     }
@@ -1197,6 +1234,9 @@ fn focus(st: &mut BeeperStore, r: &Req) -> Reply {
     ok(&json!({ "success": true }))
 }
 
+/// Desktop's `maxPayload` of the WebSocket server.
+const WS_MAX_PAYLOAD: usize = 64 * 1024;
+
 async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, store: SharedStore) {
     let Some(key) = msg.header("sec-websocket-key") else { return };
     let accept = base64_encode_standard(&sha1(format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11").as_bytes()));
@@ -1210,27 +1250,40 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
     let (reader, mut writer) = stream.into_split();
     let subs = Arc::new(RwLock::new(HashSet::from(["*".to_string()])));
     let reader_subs = subs.clone();
-    let reader_task = tokio::spawn(async move {
+    let mut reader_task = tokio::spawn(async move {
         let mut reader = std::io::Cursor::new(leftover).chain(reader);
-        while let Some((opcode, payload)) = read_ws_frame(&mut reader).await {
+        loop {
+            let (opcode, payload) = match read_ws_frame(&mut reader, WS_MAX_PAYLOAD).await {
+                Ok(frame) => frame,
+                Err(close) => return close,
+            };
             match (opcode, serde_json::from_slice::<Value>(&payload)) {
                 (0x1, Ok(v)) if v["type"] == "subscriptions.set" && v["chatIDs"].is_array() => {
                     let ids = v["chatIDs"].as_array().unwrap().iter().filter_map(Value::as_str).map(String::from);
                     *reader_subs.write().unwrap() = ids.collect();
                 }
                 (0x9 | 0xA, _) => {}
-                _ => break,
+                _ => return None,
             }
         }
     });
-    while let Ok(ev) = events.recv().await {
-        let wanted = {
-            let s = subs.read().unwrap();
-            s.contains("*") || ev.chat_id.as_ref().is_some_and(|c| s.contains(c))
-        };
-        if wanted && write_ws_frame(&mut writer, &serde_json::to_vec(&ev).unwrap(), false).await.is_err() {
-            break;
+    let send_events = async {
+        while let Ok(ev) = events.recv().await {
+            let wanted = {
+                let s = subs.read().unwrap();
+                s.contains("*") || ev.chat_id.as_ref().is_some_and(|c| s.contains(c))
+            };
+            if wanted && write_ws_frame(&mut writer, 0x1, &serde_json::to_vec(&ev).unwrap(), false).await.is_err() {
+                break;
+            }
         }
-    }
+    };
+    let close = tokio::select! {
+        r = &mut reader_task => r.expect("WS reader task panicked"),
+        () = send_events => None,
+    };
     reader_task.abort();
+    if let Some(code) = close {
+        write_ws_frame(&mut writer, 0x8, &code.to_be_bytes(), false).await.ok();
+    }
 }

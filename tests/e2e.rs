@@ -58,7 +58,7 @@ async fn fake_beeper_cloud() -> String {
             let (mut stream, _) = listener.accept().await.unwrap();
             tokio::spawn(async move {
                 let mut buf = Vec::new();
-                while let Some(m) = read_message(&mut stream, &mut buf).await {
+                while let Ok(m) = read_message(&mut stream, &mut buf, |_| usize::MAX).await {
                     let path = m.start_line.split(' ').nth(1).unwrap().to_string();
                     let b: Value = serde_json::from_slice(&m.body).unwrap_or(Value::Null);
                     let auth = m.header("authorization").unwrap_or("");
