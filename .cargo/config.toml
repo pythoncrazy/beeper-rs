@@ -1,6 +1,10 @@
 [build]
 rustc-wrapper = "sccache"
 
+# iced_test renders with tiny-skia: a new wgpu renderer for each simulator takes seconds.
+[env]
+ICED_TEST_BACKEND = "tiny-skia"
+
 [target.'cfg(target_os = "linux")']
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 

@@ -26,7 +26,6 @@ fn shot(out: &Path, name: &str, size: (f32, f32), theme: &Theme, el: El<'_>) {
 }
 
 fn main() {
-    unsafe { std::env::set_var("ICED_TEST_BACKEND", "tiny-skia") };
     let mut args = std::env::args().skip(1);
     let out = PathBuf::from(args.next().unwrap_or_else(|| "/tmp/beeper-rs-shots".into()));
     let dark = args.next().as_deref() == Some("dark");
