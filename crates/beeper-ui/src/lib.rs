@@ -144,6 +144,20 @@ const FILTERS: [(&str, char); 8] = [
 const CYCLE: &str = "Cycle Chats (hold shift to reverse)";
 const FILTER_HOTKEYS: [&str; 5] =
     ["Filter: Unread", "Filter: Drafts", "Filter: Unanswered", "Filter: DMs", "Filter: Groups"];
+/// The hotkeys that act on the sign-in window and before sign-in. Desktop binds all hotkeys there, but the others act
+/// on chats and on the command bar, which Desktop does not draw before the onboarding ends.
+const SIGN_IN_HOTKEYS: [&str; 10] = [
+    "Minimize To Tray",
+    "Quit App",
+    "Reload App",
+    "Report a Problem",
+    "Reset Zoom",
+    "Settings",
+    "Toggle Sidebar",
+    "Toggle Space Bar",
+    "Zoom In",
+    "Zoom Out",
+];
 const F_ARCHIVED: usize = 5;
 const F_REQUESTS: usize = 6;
 const F_LOW_PRIORITY: usize = 7;
@@ -4822,7 +4836,7 @@ impl BeeperGuiApp {
             "Message: Edit" => {
                 let edit =
                     self.selected_message().filter(|m| editable(m, self.rules(m)) && edit_open(m, self.rules(m)));
-                let m = edit.or_else(|| self.last_own_message()).filter(|_| chat.is_some());
+                let m = chat.and_then(|_| edit.or_else(|| self.last_own_message()));
                 m.map(|m| {
                     self.pane.selected_msgs = vec![m.id.clone()];
                     UiMessage::StartEdit(m.id, m.text.unwrap_or_default())
@@ -4830,8 +4844,8 @@ impl BeeperGuiApp {
             }
             "Message: Forward" => {
                 let st = self.store.read();
-                let msgs = self.timeline(&st).0.into_iter().filter(|m| self.pane.selected_msgs.contains(&m.id));
-                let msgs: Vec<&Message> = msgs.filter(|_| chat.is_some()).collect();
+                let msgs = chat.iter().flat_map(|_| self.timeline(&st).0);
+                let msgs: Vec<&Message> = msgs.filter(|m| self.pane.selected_msgs.contains(&m.id)).collect();
                 let mids = msgs.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
                 let ok = !mids.is_empty() && msgs.iter().all(|m| m.is_deleted != Some(true));
                 drop(st);
@@ -5975,6 +5989,10 @@ impl BeeperGuiApp {
                     true => self.update(UiMessage::CloseRequested(id)),
                     false => window::minimize(id, true),
                 };
+            }
+            UiMessage::WindowKey(id, key, mods) if Some(id) == self.login_window || !self.store.read().signed_in() => {
+                let hit = self.find_hotkey(&key, mods).filter(|(h, _)| SIGN_IN_HOTKEYS.contains(h));
+                return hit.map_or_else(Task::none, |(h, digit)| self.run_hotkey(h, digit));
             }
             UiMessage::WindowKey(id, key, mods) => {
                 if Some(id) == self.settings_window {
@@ -8034,7 +8052,10 @@ impl BeeperGuiApp {
     }
 
     fn view_window(&self, id: window::Id) -> El<'_> {
-        if Some(id) == self.settings_window {
+        if Some(id) == self.settings_window && !self.store.read().signed_in() {
+            // Desktop's `InnerApp` draws nothing in a secondary window before sign-in.
+            Space::new().into()
+        } else if Some(id) == self.settings_window {
             self.view_settings()
         } else if let Some(w) = self.media_window.as_ref().filter(|w| w.id == id) {
             self.view_media(w)
