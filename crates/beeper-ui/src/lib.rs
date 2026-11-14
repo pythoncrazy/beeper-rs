@@ -43,8 +43,8 @@ use crate::login::{Login, LoginMsg};
 use crate::style::{
     bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded, fill_box,
     fw, glow_box, gutter_style, hex, ic, icon, initials, input_style, med, mix, pick, pick_menu_style, pick_style,
-    scroll_style, semi, shadow_box, stable_bar, text_width, txt, Palette, ALL_FONTS, AVATAR_GRADIENTS, CLEAR, GUTTER,
-    SOLID_BARS,
+    scroll_style, semi, shadow_box, stable_bar, text_width, txt, Palette, Token, ALL_FONTS, AVATAR_GRADIENTS, CLEAR,
+    GUTTER, SOLID_BARS,
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{
@@ -238,22 +238,32 @@ impl SettingsTab {
         }
     }
 
-    pub const fn meta(self) -> (&'static str, TabIcon, u32) {
+    /// Desktop's `.account-pref-pane` gives the Accounts, Devices and Storage panes `--appearance-color-bg-primary`.
+    pub fn pane(self, p: &Palette) -> Color {
+        match self {
+            Self::Accounts | Self::Devices | Self::Storage => p.card,
+            _ => p.prefs_pane,
+        }
+    }
+
+    /// The name, the icon, and the token of the icon tile color.
+    pub fn meta(self) -> (&'static str, TabIcon, Token) {
         use TabIcon::{Glyph, Svg};
-        [
-            ("Accounts", Glyph(icon::AT_SIGN), 0x9647e9),
-            ("General", Svg(include_bytes!("../assets/settings/general.svg")), 0x16b2ee),
-            ("Appearance", Svg(include_bytes!("../assets/settings/appearance.svg")), 0xd736c9),
-            ("Notifications", Svg(include_bytes!("../assets/settings/notifications.svg")), 0x1fb93d),
-            ("Hotkeys", Svg(include_bytes!("../assets/settings/hotkeys.svg")), 0xeaa900),
-            ("Devices", Svg(include_bytes!("../assets/settings/devices.svg")), 0xf54d0b),
-            ("AI", Svg(include_bytes!("../assets/settings/ai.svg")), 0x1fc8d3),
-            ("Beeper Plus", Svg(include_bytes!("../assets/settings/beeper_plus.svg")), 0x2a61fb),
-            ("Integrations", Glyph(icon::PUZZLE), 0x7459ff),
-            ("Storage", Glyph(icon::DATABASE), 0x35556a),
-            ("Help", Svg(include_bytes!("../assets/settings/help.svg")), 0x9a9aa1),
-            ("About", Svg(include_bytes!("../assets/settings/about.svg")), 0x20b4a1),
-        ][self as usize]
+        let tabs: [(_, _, Token); 12] = [
+            ("Accounts", Glyph(icon::AT_SIGN), |_| hex(0x9745ea)),
+            ("General", Svg(include_bytes!("../assets/settings/general.svg")), |_| hex(0x0eb3ef)),
+            ("Appearance", Svg(include_bytes!("../assets/settings/appearance.svg")), |_| hex(0xd833ca)),
+            ("Notifications", Svg(include_bytes!("../assets/settings/notifications.svg")), |_| hex(0x19ba3b)),
+            ("Hotkeys", Svg(include_bytes!("../assets/settings/hotkeys.svg")), |_| hex(0xebaa00)),
+            ("Devices", Svg(include_bytes!("../assets/settings/devices.svg")), |_| hex(0xf54c03)),
+            ("AI", Svg(include_bytes!("../assets/settings/ai.svg")), |_| hex(0x19c9d4)),
+            ("Beeper Plus", Svg(include_bytes!("../assets/settings/beeper_plus.svg")), |p| p.accent),
+            ("Integrations", Glyph(icon::PUZZLE), |_| hex(0x7559ff)),
+            ("Storage", Glyph(icon::DATABASE), |_| hex(0x32546a)),
+            ("Help", Svg(include_bytes!("../assets/settings/help.svg")), |p| p.on_secondary),
+            ("About", Svg(include_bytes!("../assets/settings/about.svg")), |_| hex(0x1ab5a2)),
+        ];
+        tabs[self as usize]
     }
 }
 
@@ -1298,7 +1308,7 @@ fn menu_item<'a>(
 
 /// A menu row with the content `line`. Without a message it is greyed out.
 fn menu_line<'a>(p: &Palette, line: Row<'a, UiMessage>, msg: Option<UiMessage>) -> El<'a> {
-    let style = btn_style([CLEAR, p.accent, p.accent], [p.text, Color::WHITE, Color::WHITE], 4.0);
+    let style = btn_style([CLEAR, p.menu_hover, p.menu_hover], [p.text, Color::WHITE, Color::WHITE], 4.0);
     let line = line.align_y(Center);
     container(button(line).padding([3.125, 8.0]).width(Fill).style(style).on_press_maybe(msg)).padding([2, 5]).into()
 }
@@ -9911,7 +9921,7 @@ impl BeeperGuiApp {
         let rail_btn = |glyph: El<'static>, on: bool, msg: UiMessage| {
             button(container(glyph).center(36))
                 .padding(0)
-                .style(btn_style([if on { p.rail_sel } else { CLEAR }, p.hover, p.rail_sel], [p.strong; 3], 14.0))
+                .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.strong; 3], 14.0))
                 .on_press_maybe(drag.is_none().then_some(msg))
         };
         let quiet = self.chat_menu.is_some() || drag.is_some();
@@ -10088,7 +10098,7 @@ impl BeeperGuiApp {
         .padding(Padding::ZERO.bottom(16.0));
         let scroll = scrollable(top).direction(Direction::Vertical(Scrollbar::hidden())).height(Fill);
         let rail = container(column![scroll, footer].align_x(Center)).width(68).height(Fill);
-        let rail = mouse_area(rail.style(fill_box(p.rail, 0.0)))
+        let rail = mouse_area(rail.style(fill_box(p.hover, 0.0)))
             .on_right_press(UiMessage::OpenChatMenu("account:inbox".into()));
         stack![rail].push(lifted).into()
     }
@@ -10198,7 +10208,7 @@ impl BeeperGuiApp {
                 let muted = c.is_muted == Some(true);
                 let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
                 let quiet = muted && c.unread_mentions == 0;
-                let (bg, fg) = if quiet { (p.frame, p.text) } else { (p.accent, Color::WHITE) };
+                let (bg, fg) = if quiet { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
                 let dot =
                     (!counts && unread).then(|| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0)));
                 let title_w = cell - if muted { 35.2 } else { 20.0 } - if dot.is_some() { 9.2 } else { 0.0 };
@@ -10231,7 +10241,7 @@ impl BeeperGuiApp {
                             false => Padding::new(12.0).bottom(10.0),
                         },
                     );
-                let colors = if muted { (p.frame, p.text) } else { (p.accent, Color::WHITE) };
+                let colors = if muted { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
                 let bubble = bubble.map(|t| pin_bubble(&t, c.unread_mentions > 0, colors, cell, pin_av, compact));
                 let item = stack![item].push(bubble);
                 r.push(
@@ -10714,7 +10724,7 @@ impl BeeperGuiApp {
             let note = txt("Verify this device to read your encrypted messages.", 12.0).color(p.text);
             let go = pill_btn(p, tr("Verify"), UiMessage::OpenSettings(SettingsTab::Devices));
             let bar = row![note, Space::new().width(Fill), go].align_y(Center);
-            container(bar).padding([8, 14]).style(bordered_box(p.elevated, p.outline, 1.0, 10.0))
+            container(bar).padding([8, 14]).style(bordered_box(p.elevated, p.chip, 1.0, 10.0))
         });
         let verify = verify.map(|v| container(v).padding([0, 12]));
         let pane = column![stack![list, overlay].push(replies).push(close).width(Fill).height(Fill)]
@@ -10824,8 +10834,8 @@ impl BeeperGuiApp {
             let day_changed = prev.is_none_or(|q| day_num(&q.timestamp) != day_num(&m.timestamp));
             let mut head = Column::new().push(prev.map(|q| Space::new().height(gap_below(q, m))));
             if day_changed {
-                let label = semi(day_label(&m.timestamp), 11.0).line_height(Pixels(14.0)).color(p.date_text);
-                let pill = container(label).padding([5, 9]).style(bordered_box(p.card, p.outline, 1.0, 12.0));
+                let label = semi(day_label(&m.timestamp), 11.0).line_height(Pixels(14.0)).color(p.on_secondary);
+                let pill = container(label).padding([5, 9]).style(bordered_box(p.card, p.chip, 1.0, 12.0));
                 head = head.push(container(pill).center_x(Fill).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
             }
             if Some(i) == first_unread {
@@ -11664,7 +11674,7 @@ impl BeeperGuiApp {
         });
         let send = button(container(tinted(&SEND_ARROW, 20.0, Color::WHITE)).center(36))
             .padding(0)
-            .style(btn_style([if ready { p.accent } else { p.send_btn }, p.accent, p.accent], [p.text; 3], 18.0))
+            .style(btn_style([if ready { p.accent } else { p.rule }, p.accent, p.accent], [Color::WHITE; 3], 18.0))
             .on_press(UiMessage::SubmitComposer);
         let text = self.pane().composer.text();
         let urls = text_urls(&text);
@@ -12051,7 +12061,7 @@ impl BeeperGuiApp {
                 .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
                 .on_press(UiMessage::ToggleRightPanel)
         });
-        let rule = || container(Space::new()).width(Fill).height(1).style(fill_box(p.outline, 0.0));
+        let rule = || container(Space::new()).width(Fill).height(1).style(fill_box(p.chip, 0.0));
         let line = row![small(text, p.on_secondary).align_x(Center)].push(change).align_y(Center);
         let line = row![rule(), container(line).max_width(400), rule()].spacing(10).align_y(Center);
         container(line).padding(Padding::ZERO.bottom(6.0).left(GUTTER)).into()
@@ -12677,7 +12687,7 @@ impl BeeperGuiApp {
             let card = |title: String, sub: El<'static>| -> El<'static> {
                 let body =
                     column![clamp(&title, 94.0, 3, 10.0, Weight::Normal).line_height(Pixels(12.0)).color(p.text), sub];
-                container(body).align_bottom(Fill).width(Fill).padding(8).style(fill_box(p.frame, 8.0)).into()
+                container(body).align_bottom(Fill).width(Fill).padding(8).style(fill_box(p.window, 8.0)).into()
             };
             let thumb = m.attachments.iter().find(|a| matches!(a.attachment_type.as_str(), "img" | "video"));
             let body: El<'_> = match (thumb, m.links.first(), m.attachments.first()) {
@@ -12717,7 +12727,7 @@ impl BeeperGuiApp {
                 2.0,
                 14.0,
             ));
-            let tile = stack![container(body).width(110).height(110).style(fill_box(p.outline, 8.0))]
+            let tile = stack![container(body).width(110).height(110).style(fill_box(p.chip, 8.0))]
                 .push(container(face).padding(6));
             button(tile)
                 .padding(0)
@@ -12942,7 +12952,7 @@ impl BeeperGuiApp {
                     .size(13.0)
                     .color(p.strong);
                 let card = row![glyph, text, close].spacing(8).align_y(Center);
-                return container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0)).into();
+                return container(card).padding(8).style(shadow_box(p.card, p.chip, 10.0, 15.0)).into();
             }
             if let Some(t) = self.shown_toast() {
                 return self.toast_card(t, None);
@@ -12951,7 +12961,7 @@ impl BeeperGuiApp {
             let relaunch = self.relaunch_toast.map(|_| pill_btn(p, tr("Relaunch app"), UiMessage::Relaunch));
             let card = row![text.wrapping(iced::widget::text::Wrapping::WordOrGlyph)].push(relaunch).push(close);
             let card = card.spacing(8).align_y(Center);
-            container(card).padding(8).style(shadow_box(p.card, p.outline, 10.0, 15.0)).into()
+            container(card).padding(8).style(shadow_box(p.card, p.chip, 10.0, 15.0)).into()
         });
         let toasts: Vec<El> = older.chain(newest).collect();
         (!toasts.is_empty()).then(|| {
@@ -12991,7 +13001,7 @@ impl BeeperGuiApp {
         let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, if t.error { fg } else { p.sub }, dismiss);
         let card = row![].push(glyph).push(body).push(right).push(close).spacing(8);
         let card = card.align_y(if t.buttons.is_empty() { Center } else { iced::Alignment::Start });
-        let card = container(card).padding(8).style(shadow_box(bg, p.outline, 10.0, 15.0));
+        let card = container(card).padding(8).style(shadow_box(bg, p.chip, 10.0, 15.0));
         match t.open.clone() {
             Some(open) => mouse_area(card).on_press(open).into(),
             None => card.into(),
@@ -13051,7 +13061,7 @@ impl BeeperGuiApp {
         let header = container(row![tabs, Space::new().width(Fill), controls].spacing(8).align_y(Center))
             .padding([8, 10])
             .center_y(52);
-        let rule = || container(Space::new()).width(Fill).height(0.5).style(fill_box(p.outline, 0.0));
+        let rule = || container(Space::new()).width(Fill).height(0.5).style(fill_box(p.chip, 0.0));
         let search_row = w.search.as_deref().map(|q| {
             let input = text_input(tr("Search by caption"), q)
                 .id("media-search")
@@ -13707,7 +13717,7 @@ impl BeeperGuiApp {
         let head = closable_head(p, title, 14.0, UiMessage::CloseModals);
         container(column![head, txt(detail.to_string(), 13.0).color(p.sub)].spacing(10).padding(16))
             .width(420)
-            .style(shadow_box(p.elevated, p.outline, 12.0, 30.0))
+            .style(shadow_box(p.elevated, p.chip, 12.0, 30.0))
             .into()
     }
 
@@ -13741,7 +13751,7 @@ impl BeeperGuiApp {
         .style(fill_box(p.search, 38.0));
         // The search results draw the icons at Desktop's 11 px instead of 13 px.
         let tile = |tab: SettingsTab, small: bool, alpha: f32| {
-            let (_, glyph, rgb) = tab.meta();
+            let (_, glyph, tint) = tab.meta();
             let em = if small { 11.0 } else { 13.0 };
             let glyph: El = match glyph {
                 TabIcon::Glyph(g) => ic(g, em).color(Color::WHITE.scale_alpha(alpha)).into(),
@@ -13750,7 +13760,7 @@ impl BeeperGuiApp {
                     svg(svg::Handle::from_memory(doc)).width(w * em / 13.0).height(h * em / 13.0).opacity(alpha).into()
                 }
             };
-            let fill = Color::from_rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8).scale_alpha(alpha);
+            let fill = tint(p).scale_alpha(alpha);
             let (size, radius) = if small { (16, 4.0) } else { (20, 6.0) };
             container(glyph).center(size).style(fill_box(fill, radius))
         };
@@ -13790,7 +13800,7 @@ impl BeeperGuiApp {
                 button(line)
                     .padding(0)
                     .width(Fill)
-                    .style(btn_style([if on { p.rail } else { CLEAR }, p.hover, p.rail], [p.text; 3], 8.0))
+                    .style(btn_style([if on { p.hover } else { CLEAR }, p.hover, p.hover], [p.text; 3], 8.0))
                     .on_press(UiMessage::SelectSettingsTab(tab)),
             )
             .push((!on).then(|| {
@@ -13868,7 +13878,7 @@ impl BeeperGuiApp {
         )
         .width(Fill)
         .height(Fill)
-        .style(fill_box(p.prefs_pane, 10.0));
+        .style(fill_box(self.active_settings_tab.pane(p), 10.0));
         let base = container(row![left, container(right).padding(8)]).width(Fill).height(Fill);
         drop(st);
         let confirm = self.confirm.filter(|d| SETTINGS_DIALOGS.contains(d)).map(|d| self.view_confirm(d));
@@ -16341,7 +16351,7 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         .subscription(BeeperGuiApp::subscription)
         .theme(|a: &BeeperGuiApp, _| a.iced_theme())
         .scale_factor(|a: &BeeperGuiApp, _| a.zoom)
-        .style(|a: &BeeperGuiApp, _| iced::theme::Style { background_color: a.pal.frame, text_color: a.pal.text })
+        .style(|a: &BeeperGuiApp, _| iced::theme::Style { background_color: a.pal.window, text_color: a.pal.text })
         .default_font(fw(Weight::Normal));
     ALL_FONTS.into_iter().fold(app, |app, f| app.font(f)).run()
 }
