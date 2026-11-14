@@ -16513,6 +16513,13 @@ mod tests {
     }
 
     #[test]
+    fn app_icon_is_the_desktop_linux_icon() {
+        let icon = ::image::load_from_memory(include_bytes!("../assets/icon.png")).unwrap().into_rgba8();
+        assert_eq!(icon.dimensions(), (512, 512));
+        assert_eq!(icon.get_pixel(256, 256).0, [59, 82, 245, 255], "the blue Beeper B");
+    }
+
+    #[test]
     fn gif_frames_play_with_browser_delays() {
         let mut bytes = Vec::new();
         let frames = [50, 0].map(|ms| {
