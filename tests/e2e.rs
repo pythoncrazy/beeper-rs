@@ -737,6 +737,36 @@ async fn lifecycle() {
     assert_eq!(titles(&by_people).len(), 2, "{by_people}");
     let (_, rust) = pager.request("GET", "/v1/chats/search?query=rust&accountIDs=acc_signal", None).await;
     assert_eq!(rust["items"], json!([]));
+    let eric = "/v1/chats/!wa_eric:beeper.com";
+    let patch =
+        json!({ "title": "Eric M", "description": null, "isPinned": false, "isMuted": true, "isArchived": true });
+    let (status, patched) = pager.request("PATCH", eric, Some(patch)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!((&patched["title"], &patched["description"]), (&json!("Eric M"), &Value::Null));
+    assert_eq!(
+        (&patched["isPinned"], &patched["isMuted"], &patched["isArchived"]),
+        (&json!(false), &json!(true), &json!(true))
+    );
+    assert_eq!(
+        pager.request("PATCH", eric, Some(json!({ "isMuted": "yes", "title": "x" }))).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(pager.request("GET", eric, None).await.1["title"], "Eric M", "a bad field changes nothing");
+    let upload = pager.upload_asset_base64("a.png", "image/png", b"png").await;
+    let draft =
+        json!({ "draft": { "text": "with file", "attachments": { upload["uploadID"].as_str().unwrap(): {} } } });
+    let (_, drafted) = pager.request("PATCH", eric, Some(draft)).await;
+    assert_eq!(drafted["draft"]["attachments"][upload["uploadID"].as_str().unwrap()]["fileName"], "a.png");
+    let (status, read) = pager.request("POST", &format!("{eric}/read"), None).await;
+    assert_eq!((status, &read["id"], &read["unreadCount"]), (StatusCode::OK, &json!("!wa_eric:beeper.com"), &json!(0)));
+    let remind = json!({ "reminder": { "remindAt": "2027-01-01T09:00:00Z" } });
+    assert_eq!(pager.request("POST", &format!("{eric}/reminders"), Some(remind)).await.0, StatusCode::NO_CONTENT);
+    let at = pager.request("GET", eric, None).await.1["reminder"]["remindAt"].clone();
+    assert_eq!(at, "2027-01-01T09:00:00.000Z");
+    let bad = json!({ "reminder": { "remindAt": "tomorrow" } });
+    assert_eq!(pager.request("POST", &format!("{eric}/reminders"), Some(bad)).await.0, StatusCode::BAD_REQUEST);
+    let (status, sent) = pager.request("POST", &format!("{eric}/messages"), Some(json!({ "text": "hi" }))).await;
+    assert_eq!(status, StatusCode::OK, "{sent}");
 
     let rpc = |id: u32, method: &str, params: Value| json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
     let hello =
@@ -1061,8 +1091,7 @@ async fn lifecycle() {
     assert_eq!(search_settings(&store.read(), "whats")[1], SettingsHit::Network("WhatsApp"));
     assert!(search_settings(&store.read(), " ").is_empty());
 
-    let del_resp = client.delete_message("!im_sarah:beeper.com", &sent_msg_id).await;
-    assert_eq!(del_resp["success"], true);
+    assert_eq!(client.delete_message("!im_sarah:beeper.com", &sent_msg_id).await, StatusCode::NO_CONTENT);
     let search_after_del = client.search_messages("edited", None).await;
     assert!(!search_after_del.items.iter().any(|m| m["id"] == *sent_msg_id));
 

@@ -1253,17 +1253,21 @@ fn search_chats(st: &BeeperStore, r: &Req) -> Reply {
 }
 
 fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str], r: &Req) -> Reply {
-    let success = |st: &BeeperStore| ok(&json!({ "chatID": st.chats[idx].id, "success": true }));
     match (method, rest) {
         ("PATCH", []) => {
             let draft = r.body.get("draft");
-            let new_draft = draft.filter(|d| !d.is_null()).map(|_| r.parse("draft")).transpose()?;
+            let new_draft = draft.filter(|d| !d.is_null()).map(|d| draft_input(st, d)).transpose()?;
             let new_merge: Option<Option<ChatMergeInfo>> = r.body.get("merge").map(|_| r.parse("merge")).transpose()?;
             if let Some(Some(m)) = &new_merge {
                 check_merge(st, &m.chat_ids, m.default_chat_id.as_deref())?;
             }
+            let fields = ChatFields::parse(&r.body)?;
+            if fields.expiry.is_some() && st.chats[idx].timers.is_none() {
+                return Err(bad("messageExpirySeconds: the chat has no disappearing messages"));
+            }
             st.patch_chat(id, draft.is_some_and(Value::is_null), new_draft, new_merge).map_err(store_error)?;
-            ok(&view::chat(st, &st.chats[idx], Some(100), false))
+            fields.apply(st, idx);
+            chat_reply(st, idx)
         }
         ("POST", ["archive"]) => {
             let archived = r.body["archived"].as_bool().unwrap_or(true);
@@ -1275,18 +1279,32 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
                 let cid = st.chats[idx].id.clone();
                 st.queue(&cid, Outgoing::Read(ev));
             }
-            success(st)
+            chat_reply(st, idx)
         }
         ("POST", ["unread"]) => {
             st.set_chat_flag(idx, ChatFlag::MarkedUnread, Some(true));
-            success(st)
+            chat_reply(st, idx)
         }
         ("POST", ["notify-anyway"]) => {
             st.update_chat(idx, |c| c.flags |= CHAT_NOTIFY_ANYWAY);
-            success(st)
+            chat_reply(st, idx)
         }
         ("POST", ["reminders"]) => {
-            st.set_reminder(idx, Some(r.parse("reminder")?));
+            let reminder = &r.body["reminder"];
+            // Desktop's `Sp` also takes the older `remindAtMs`.
+            let at = match (&reminder["remindAt"], &reminder["remindAtMs"]) {
+                (Value::String(at), _) => millis_from_iso(at),
+                (Value::Null, ms) => ms.as_i64(),
+                _ => None,
+            };
+            let invalid =
+                || error(StatusCode::BAD_REQUEST, "reminder.remindAt must be a valid ISO timestamp", "INVALID_INPUT");
+            let dismiss = match &reminder["dismissOnIncomingMessage"] {
+                Value::Null => false,
+                v => v.as_bool().ok_or_else(|| bad("reminder.dismissOnIncomingMessage must be a boolean"))?,
+            };
+            let reminder = ChatReminder { remind_at_ms: at.ok_or_else(invalid)?, dismiss_on_incoming_message: dismiss };
+            st.set_reminder(idx, Some(reminder));
             empty(StatusCode::NO_CONTENT, Vec::new())
         }
         ("DELETE", ["reminders"]) => {
@@ -1303,7 +1321,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
         ("DELETE", ["messages", mid]) => {
             let cid = st.delete_message(id, mid).map_err(store_error)?;
             st.queue(&cid, Outgoing::Redact { target: (*mid).into() });
-            ok(&json!({ "chatID": cid, "messageID": mid, "success": true }))
+            empty(StatusCode::NO_CONTENT, Vec::new())
         }
         ("POST", ["messages", mid, "reactions"]) => {
             let key = r.need("reactionKey")?;
@@ -1345,6 +1363,114 @@ fn list_messages(st: &BeeperStore, idx: usize, r: &Req) -> Reply {
     ok(&CursorPage { items, has_more, oldest_cursor: oldest, newest_cursor: newest })
 }
 
+fn upload_not_found(upload_id: &str) -> Response {
+    let message = format!("Upload not found: {upload_id}. File may have expired.");
+    error(StatusCode::NOT_FOUND, &message, "UPLOAD_NOT_FOUND")
+}
+
+/// Desktop's reply of the chat routes that change a chat: the chat with at most 100 participants.
+fn chat_reply(st: &BeeperStore, idx: usize) -> Reply {
+    ok(&view::chat(st, &st.chats[idx], Some(100), false))
+}
+
+/// Desktop's `ChatDraftInput`: the text, and the attachments keyed by upload ID.
+fn draft_input(st: &BeeperStore, v: &Value) -> Result<ChatDraft, Response> {
+    let text = match &v["text"] {
+        Value::Null => None,
+        Value::String(t) => Some(t.clone()),
+        _ => return Err(bad("draft.text must be a string")),
+    };
+    let ids = match &v["attachments"] {
+        Value::Null => Vec::new(),
+        Value::Object(m) => m.keys().collect(),
+        _ => return Err(bad("draft.attachments must be an object keyed by upload ID")),
+    };
+    let attachment = |id: &String| {
+        let a = st.assets.get(id).ok_or_else(|| upload_not_found(id))?;
+        let (file_name, mime_type) = (Some(a.file_name.clone()), Some(a.mime_type.clone()));
+        Ok(ChatDraftAttachment { upload_id: id.clone(), file_name, mime_type })
+    };
+    let attachments = ids.into_iter().map(attachment).collect::<Result<_, Response>>()?;
+    Ok(ChatDraft { text, attachments, ..ChatDraft::default() })
+}
+
+/// The fields of Desktop's `patchChat` besides `draft`, checked before the chat changes.
+struct ChatFields {
+    title: Option<String>,
+    description: Option<String>,
+    avatar: Option<Option<(String, Vec<u8>, String)>>,
+    flags: Vec<(ChatFlag, bool)>,
+    expiry: Option<u64>,
+}
+
+impl ChatFields {
+    fn parse(b: &Value) -> Result<Self, Response> {
+        let text = |k: &str| match b.get(k) {
+            None => Ok(None),
+            Some(Value::String(t)) => Ok(Some(t.clone())),
+            Some(Value::Null) if k == "description" => Ok(Some(String::new())),
+            Some(_) => Err(bad(&format!("{k} must be a string"))),
+        };
+        let avatar = match b.get("imgURL") {
+            None => None,
+            Some(Value::Null) => Some(None),
+            Some(Value::String(url)) => Some(Some(avatar_file(url)?)),
+            Some(_) => return Err(bad("imgURL must be a string")),
+        };
+        let mut flags = Vec::new();
+        // The pin goes first, because the store does not archive a pinned chat.
+        for (k, flag) in [
+            ("isPinned", ChatFlag::Pinned),
+            ("isArchived", ChatFlag::Archived),
+            ("isMuted", ChatFlag::Muted),
+            ("isLowPriority", ChatFlag::LowPriority),
+        ] {
+            match b.get(k) {
+                None => {}
+                Some(Value::Bool(on)) => flags.push((flag, *on)),
+                Some(_) => return Err(bad(&format!("{k} must be a boolean"))),
+            }
+        }
+        let expiry = match b.get("messageExpirySeconds") {
+            None => None,
+            Some(Value::Null) => Some(0),
+            Some(v) => Some(v.as_u64().ok_or_else(|| bad("messageExpirySeconds must be a whole number or null"))?),
+        };
+        Ok(Self { title: text("title")?, description: text("description")?, avatar, flags, expiry })
+    }
+
+    fn apply(self, st: &mut BeeperStore, idx: usize) {
+        let id = st.chats[idx].id.clone();
+        if self.title.is_some() || self.description.is_some() || self.avatar.is_some() {
+            st.update_group(&id, self.title, self.description, self.avatar);
+        }
+        for (flag, on) in self.flags {
+            st.set_chat_flag(idx, flag, Some(on));
+        }
+        if let Some(seconds) = self.expiry {
+            st.set_disappearing(&id, seconds * 1000);
+        }
+    }
+}
+
+/// The file URL, the bytes, and the MIME type of a new chat avatar from an absolute path or a `file://` URL.
+fn avatar_file(url: &str) -> Result<(String, Vec<u8>, String), Response> {
+    let path = match url.starts_with("file://") {
+        true => url::Url::parse(url).ok().and_then(|u| u.to_file_path().ok()),
+        false => Some(std::path::PathBuf::from(url)).filter(|p| p.is_absolute()),
+    };
+    let path = path.ok_or_else(|| bad("imgURL must be an absolute path or a file URL"))?;
+    let mime = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => return Err(bad("imgURL must be a PNG, JPEG, GIF, or WebP image")),
+    };
+    let bytes = std::fs::read(&path).map_err(|e| bad(&format!("imgURL: {e}")))?;
+    Ok((path_to_file_url(&path), bytes, mime.into()))
+}
+
 fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
     let attachment = match &r.body["attachment"] {
         Value::Null => None,
@@ -1352,10 +1478,7 @@ fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
             let upload_id = a["uploadID"]
                 .as_str()
                 .ok_or_else(|| error(StatusCode::BAD_REQUEST, "uploadID is required", "MISSING_UPLOAD_ID"))?;
-            let stored = st.assets.get(upload_id).ok_or_else(|| {
-                let message = format!("Upload not found: {upload_id}. File may have expired.");
-                error(StatusCode::NOT_FOUND, &message, "UPLOAD_NOT_FOUND")
-            })?;
+            let stored = st.assets.get(upload_id).ok_or_else(|| upload_not_found(upload_id))?;
             let stored = stored.clone();
             let mime = a["mimeType"].as_str().map_or(stored.mime_type, str::to_string);
             let kind = match mime.split('/').next() {
@@ -1392,7 +1515,7 @@ fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
             Outgoing::Send { txn: pending.clone(), text, reply_to, preview: None, mentions: Vec::new() },
         );
     }
-    Ok(json_with(StatusCode::CREATED, &json!({ "chatID": chat_id, "pendingMessageID": pending })))
+    ok(&json!({ "chatID": chat_id, "pendingMessageID": pending }))
 }
 
 /// Desktop's `searchMessages`: the newest messages that match the query and the filters, at most 20 for each page,
