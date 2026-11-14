@@ -94,16 +94,23 @@ async fn bodies_over_the_limit_of_the_route_get_413() {
 #[tokio::test]
 async fn websocket_frames_over_64_kb_close_with_1009() {
     let (port, token) = server("ws").await;
-    for (len, close) in [(64 * 1024, &[][..]), (64 * 1024 + 1, &[0x88, 0x02, 0x03, 0xF1][..])] {
+    let ready = br#"{"type":"ready","version":1,"chatIDs":[]}"#;
+    for (len, close) in [(64 * 1024, false), (64 * 1024 + 1, true)] {
         let upgrade = format!("GET /v1/ws HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\nauthorization: Bearer {token}\r\n\r\n");
         let mut frame = vec![0x81, 0x80 | 127];
         frame.extend((len as u64).to_be_bytes());
         frame.extend([0; 4]);
         frame.extend(vec![b'x'; len]);
-        let out = raw(port, &[upgrade.into_bytes(), frame].concat()).await;
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        stream.write_all(&[upgrade.into_bytes(), frame].concat()).await.unwrap();
+        let mut out = Vec::new();
+        // The server answers a frame that fits with an error frame and keeps the connection.
+        let read = timeout(Duration::from_secs(2), stream.read_to_end(&mut out)).await;
+        assert_eq!(read.is_ok(), close, "a {len} byte frame");
         let end = out.windows(4).position(|w| w == b"\r\n\r\n").expect("a handshake") + 4;
         assert!(out.starts_with(b"HTTP/1.1 101 "));
-        assert_eq!(&out[end..], close, "a {len} byte frame");
+        assert!(out[end..].starts_with(&[&[0x81, ready.len() as u8][..], ready].concat()), "the ready frame first");
+        assert_eq!(out.ends_with(&[0x88, 0x02, 0x03, 0xF1]), close, "a {len} byte frame");
     }
 }
 

@@ -4,8 +4,8 @@ use crate::http::{
 };
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{
-    millis_from_iso, millis_from_rfc3339, network_spec, APP_BUNDLE_ID, APP_NAME, APP_VERSION, NETWORK_SPECS,
-    OPENAPI_SPEC_JSON,
+    millis_from_iso, millis_from_rfc3339, network_spec, now_rfc3339_millis, APP_BUNDLE_ID, APP_NAME, APP_VERSION,
+    NETWORK_SPECS, OPENAPI_SPEC_JSON,
 };
 use beeper_core::connect::{READ, WRITE};
 use beeper_core::matrix::{self, ChatFlag, Outgoing};
@@ -14,7 +14,7 @@ use beeper_core::platform::{path_to_file_url, OsKind};
 use beeper_core::store::{activity_key, tokenize, BeeperStore, SharedStore, StoredAsset};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap};
 use std::fmt::Write;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::{Arc, RwLock};
@@ -1801,6 +1801,85 @@ fn focus(st: &mut BeeperStore, r: &Req) -> Reply {
     ok(&json!({ "success": true }))
 }
 
+/// Desktop's event frame `{type, seq, ts, chatID, ids, entries?}`. A message event carries the message in `entries`.
+#[derive(Serialize)]
+struct WsFrame<'a> {
+    #[serde(rename = "type")]
+    kind: &'a str,
+    seq: u64,
+    ts: String,
+    #[serde(rename = "chatID")]
+    chat_id: &'a str,
+    ids: Vec<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entries: Option<Vec<view::ApiMessage<'a>>>,
+}
+
+impl<'a> WsFrame<'a> {
+    fn new(ev: &'a WsEvent, seq: u64) -> Self {
+        let chat_id = ev.chat_id.as_deref().expect("store events have a chat");
+        WsFrame {
+            kind: &ev.event_type,
+            seq,
+            ts: now_rfc3339_millis(),
+            chat_id,
+            ids: vec![ev.message_id.as_deref().unwrap_or(chat_id)],
+            entries: ev.message.as_ref().map(|m| vec![view::message(m)]),
+        }
+    }
+}
+
+/// Desktop's `handleClientMessage`: applies a `subscriptions.set` command, and returns its `subscriptions.updated`
+/// acknowledgement or an `error` frame. The chat IDs are sorted and unique, and `*` stands for all chats.
+fn subscribe(subs: &RwLock<Vec<String>>, payload: &[u8]) -> Value {
+    let error = |code: &str, message: &str, request: Option<&Value>| {
+        let mut e = json!({ "type": "error", "code": code, "message": message });
+        if let Some(r) = request {
+            e["requestID"] = r.clone();
+        }
+        e
+    };
+    let Ok(v) = serde_json::from_slice::<Value>(payload) else {
+        return error("INVALID_PAYLOAD", "Invalid JSON payload", None);
+    };
+    let Some(command) = v.as_object().filter(|o| o.contains_key("type")) else {
+        return error("INVALID_PAYLOAD", "Payload must be an object with a type field", None);
+    };
+    if v["type"] != "subscriptions.set" {
+        let kind = v["type"].as_str().map_or_else(|| v["type"].to_string(), str::to_string);
+        return error("INVALID_COMMAND", &format!("Unsupported command type: {kind}"), None);
+    }
+    let request = v.get("requestID").filter(|r| r.is_string());
+    let invalid = |message: &str| error("INVALID_PAYLOAD", message, request);
+    if let Some(k) = command.keys().find(|k| !["type", "requestID", "chatIDs", "app"].contains(&k.as_str())) {
+        return invalid(&format!("Unrecognized key(s) in object: '{k}'"));
+    }
+    if v.get("requestID").is_some_and(|r| !r.is_string()) {
+        return invalid("requestID must be a string");
+    }
+    let ids: Option<Vec<String>> = match &v["chatIDs"] {
+        Value::Null => Some(Vec::new()),
+        ids => serde_json::from_value(ids.clone()).ok(),
+    };
+    let Some(mut ids) = ids else { return invalid("chatIDs must be an array of strings") };
+    if ids.contains(&"*".to_string()) && ids.len() > 1 {
+        return invalid("chatIDs cannot combine '*' with specific IDs");
+    }
+    let app = match &v["app"] {
+        Value::Null => false,
+        Value::Object(a) if a.len() == 1 && a["state"].is_boolean() => a["state"] == true,
+        _ => return invalid("app must be an object with a boolean state"),
+    };
+    ids.sort_unstable();
+    ids.dedup();
+    let mut ack = json!({ "type": "subscriptions.updated", "chatIDs": ids, "app": { "state": app } });
+    if let Some(r) = request {
+        ack["requestID"] = r.clone();
+    }
+    *subs.write().unwrap() = ids;
+    ack
+}
+
 /// Desktop's `maxPayload` of the WebSocket server.
 const WS_MAX_PAYLOAD: usize = 64 * 1024;
 
@@ -1815,7 +1894,10 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
     }
     let mut events = store.read().ws_tx.subscribe();
     let (reader, mut writer) = stream.into_split();
-    let subs = Arc::new(RwLock::new(HashSet::from(["*".to_string()])));
+    let subs = Arc::new(RwLock::new(Vec::<String>::new()));
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let frame = |v: &Value| serde_json::to_vec(v).expect("serialize a WebSocket frame");
+    out_tx.send(frame(&json!({ "type": "ready", "version": 1, "chatIDs": [] }))).expect("the writer runs");
     let reader_subs = subs.clone();
     let mut reader_task = tokio::spawn(async move {
         let mut reader = std::io::Cursor::new(leftover).chain(reader);
@@ -1824,23 +1906,36 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
                 Ok(frame) => frame,
                 Err(close) => return (close, reader),
             };
-            match (opcode, serde_json::from_slice::<Value>(&payload)) {
-                (0x1, Ok(v)) if v["type"] == "subscriptions.set" && v["chatIDs"].is_array() => {
-                    let ids = v["chatIDs"].as_array().unwrap().iter().filter_map(Value::as_str).map(String::from);
-                    *reader_subs.write().unwrap() = ids.collect();
+            match opcode {
+                0x1 => {
+                    let reply = subscribe(&reader_subs, &payload);
+                    out_tx.send(frame(&reply)).ok();
                 }
-                (0x9 | 0xA, _) => {}
+                0x9 | 0xA => {}
                 _ => return (None, reader),
             }
         }
     });
     let send_events = async {
-        while let Ok(ev) = events.recv().await {
-            let wanted = {
-                let s = subs.read().unwrap();
-                s.contains("*") || ev.chat_id.as_ref().is_some_and(|c| s.contains(c))
+        let mut seq = 0;
+        loop {
+            let bytes = tokio::select! {
+                ev = events.recv() => {
+                    let Ok(ev) = ev else { break };
+                    let chat = ev.chat_id.as_deref().expect("store events have a chat");
+                    let wanted = {
+                        let s = subs.read().unwrap();
+                        s.first().is_some_and(|f| f == "*") || s.iter().any(|c| c == chat)
+                    };
+                    if !wanted {
+                        continue;
+                    }
+                    seq += 1;
+                    serde_json::to_vec(&WsFrame::new(&ev, seq)).expect("serialize a WebSocket event")
+                }
+                Some(bytes) = out_rx.recv() => bytes,
             };
-            if wanted && write_ws_frame(&mut writer, 0x1, &serde_json::to_vec(&ev).unwrap(), false).await.is_err() {
+            if write_ws_frame(&mut writer, 0x1, &bytes, false).await.is_err() {
                 break;
             }
         }
