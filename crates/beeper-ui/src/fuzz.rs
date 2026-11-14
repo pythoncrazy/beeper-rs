@@ -428,6 +428,32 @@ fn attachments_send_like_desktop() {
 }
 
 #[test]
+fn auto_sent_gifs_keep_the_composer_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("gifsend");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    let _ = app.update(UiMessage::SetPref("autoSendGifs", 1));
+    let _ = app.update(UiMessage::ComposerChanged("keep".into()));
+    let mut gif = Vec::new();
+    ::image::RgbaImage::new(2, 2).write_to(&mut std::io::Cursor::new(&mut gif), ::image::ImageFormat::Gif).unwrap();
+    let frames = decode_media(gif.clone()).unwrap();
+    let g = beeper_core::cloud::KlipyGif {
+        id: "g".into(),
+        preview_url: String::new(),
+        preview_size: (2, 2),
+        gif_url: String::new(),
+        gif_size: (2, 2),
+        mp4_url: String::new(),
+        mp4_size: (2, 2),
+    };
+    let _ = app.update(UiMessage::GifDownloaded(g, Ok((gif, frames))));
+    let st = app.store.read();
+    let last = &st.messages[*st.chat_msg_indices[note].last().unwrap()];
+    assert!(last.text.is_none() && last.attachments[0].is_gif == Some(true), "only the GIF goes");
+    assert_eq!(app.pane.composer.text(), "keep", "the composer keeps its text");
+}
+
+#[test]
 fn filter_account_submenu_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
     let mut app = demo_app("filteracc");

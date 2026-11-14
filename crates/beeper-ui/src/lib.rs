@@ -6872,22 +6872,39 @@ impl BeeperGuiApp {
                     move |r| UiMessage::GifDownloaded(g, r),
                 );
             }
+            UiMessage::GifDownloaded(_, Ok(_)) if self.pane.editing_message_id.is_some() => {
+                self.status_banner = tr("Attachments can't be added while editing a message").into();
+            }
             UiMessage::GifDownloaded(g, r) => match r {
                 Ok((bytes, frames)) => {
-                    self.pane.send_later = None;
-                    self.pane.attachments.push(PendingMedia {
+                    let gif = PendingMedia {
                         bytes,
                         name: format!("{}.gif", g.id),
                         mime: "image/gif".into(),
                         is_gif: true,
                         size: g.gif_size,
                         frames,
-                    });
-                    if self.store.read().settings.on("autoSendGifs") {
-                        self.submit_composer(false);
+                    };
+                    if !self.store.read().settings.on("autoSendGifs") {
+                        self.pane.send_later = None;
+                        self.pane.attachments.push(gif);
+                        return Task::none();
                     }
+                    // Desktop's `onSendAttachment`: only the GIF goes now. The composer keeps the rest.
+                    let pane = &mut self.pane;
+                    let text = std::mem::replace(&mut pane.composer, composer_with(""));
+                    let files = std::mem::replace(&mut pane.attachments, vec![gif]);
+                    let links = std::mem::take(&mut pane.composer_links);
+                    let (later, reply) = (pane.send_later.take(), pane.reply_to_message_id.clone());
+                    self.submit_composer(false);
+                    let pane = &mut self.pane;
+                    (pane.composer, pane.attachments, pane.composer_links) = (text, files, links);
+                    (pane.send_later, pane.reply_to_message_id) = (later, reply);
                 }
-                Err(e) => self.fail(Toast::new(format!("Could not download GIF: {e}"))),
+                Err(e) => {
+                    let text = trf("An error occurred while downloading the GIF: %s", &[&e]);
+                    self.fail(Toast::new(text));
+                }
             },
             UiMessage::AnimationTick => {}
             UiMessage::RecoveryInputChanged(v) => self.recovery_code_input = v,
