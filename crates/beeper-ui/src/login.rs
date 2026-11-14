@@ -259,7 +259,7 @@ impl BeeperGuiApp {
     pub fn enter_app(&mut self) -> Task<UiMessage> {
         let login = self.login_window.take().expect("login window is open");
         self.select_chat(NOTE_CHAT_ID);
-        let (id, open) = window::open(Self::window_settings(Size::new(1264.0, 893.0)));
+        let (id, open) = window::open(self.main_window_settings());
         self.main_window = Some(id);
         Task::batch([open.map(UiMessage::WindowOpened), window::close(login)])
     }
