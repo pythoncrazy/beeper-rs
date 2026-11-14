@@ -994,6 +994,54 @@ fn forward_selected_messages_like_desktop() {
     assert_eq!(after[before..], source[n - 2..], "the messages arrive in timeline order");
 }
 
+/// Desktop's `virtua` lists: the chat list and the timeline build only the rows near the viewport, and build the
+/// other rows when they scroll into view or when a jump needs them.
+#[test]
+fn long_lists_build_only_the_rows_near_the_viewport() {
+    let mut app = demo_app("virtual-lists");
+    let (chat, msg) = {
+        let st = app.store.read();
+        let has_msgs = |c: &&Chat| st.chat_msg_indices.get(&c.id).is_some_and(|m| !m.is_empty());
+        let c = st.chats.iter().filter(|c| c.flags & CHAT_PINNED == 0).find(has_msgs).expect("a chat").clone();
+        (c.clone(), st.messages[st.chat_msg_indices[&c.id][0]].clone())
+    };
+    {
+        let mut st = app.store.write();
+        for i in 0..150 {
+            let at = format!("2001-01-01T00:{:02}:{:02}.000Z", i / 60, i % 60);
+            let title = format!("Many {i:03}");
+            let id = format!("!many{i}:beeper.local");
+            st.upsert_chat(Chat { id, title, network_name: None, last_activity: Some(at.clone()), ..chat.clone() });
+            let text = Some(format!("Line {i:03}"));
+            let sort_key = format!("{:016}", 1000 + i);
+            st.upsert_message(Message { id: format!("$many{i:03}"), text, sort_key, timestamp: at, ..msg.clone() });
+        }
+    }
+    fn view(app: &BeeperGuiApp) -> Simulator<'_, UiMessage> {
+        let id = app.main_window.expect("a main window");
+        Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id))
+    }
+    let mut sim = view(&app);
+    assert!(sim.find("Many 149").is_ok() && sim.find("Many 000").is_err(), "the list builds the top rows only");
+    sim.point_at(Point::new(200.0, 500.0));
+    let wheel = mouse::Event::WheelScrolled { delta: ScrollDelta::Pixels { x: 0.0, y: -100_000.0 } };
+    let redraw = iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now()));
+    let _ = sim.simulate([iced::Event::Mouse(wheel), redraw]);
+    let msgs: Vec<UiMessage> = sim.into_messages().collect();
+    assert!(msgs.iter().any(|m| matches!(m, UiMessage::Relist)), "a scroll past the built rows asks for others");
+    for m in msgs {
+        let _ = app.update(m);
+    }
+    let mut sim = view(&app);
+    assert!(sim.find("Many 000").is_ok() && sim.find("Many 149").is_err(), "the list builds the bottom rows");
+    drop(sim);
+    app.select_chat(&chat.id);
+    let first = iced::widget::Id::new("msg-$many000");
+    assert!(view(&app).find(first.clone()).is_err(), "the timeline builds the newest messages only");
+    let _ = app.update(UiMessage::JumpTo(chat.id.clone(), "$many000".into()));
+    assert!(view(&app).find(first).is_ok(), "a jump builds the message that it shows");
+}
+
 #[test]
 fn forward_rows_open_the_chat_menu_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};

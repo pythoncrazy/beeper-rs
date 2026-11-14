@@ -36,6 +36,7 @@ mod tray {
 }
 pub mod style;
 mod video;
+mod vlist;
 mod voice;
 
 use crate::i18n::{tr, trf, trn, trnx, trs, trx, trxf};
@@ -298,6 +299,8 @@ pub enum MenuEdit {
 #[derive(Clone)]
 pub enum UiMessage {
     Noop,
+    /// A virtual list must build other rows.
+    Relist,
     DismissBanner,
     SelectTab(InboxTab),
     SelectAccount(Option<String>),
@@ -3362,6 +3365,8 @@ pub struct Pane {
     /// Desktop's `openReplyThread`: the message whose reply chain shows over the timeline.
     pub reply_thread: Option<String>,
     pub top: TopOfThread,
+    timeline: vlist::VList,
+    thread_list: vlist::VList,
 }
 
 /// Desktop's `TopOfThread`, which loads older messages while the top of the timeline is on screen.
@@ -3453,6 +3458,8 @@ pub struct BeeperGuiApp {
     pub search_expanded: bool,
     pub creating_chat: Option<u32>,
     pub new_chats: Vec<NewChat>,
+    chat_list: vlist::VList,
+    command_list: vlist::VList,
     /// The room of a direct chat that the bridge made, to select when it syncs, and the quote for its composer.
     pub pending_dm: Option<(String, Option<String>)>,
     /// The bridge provisioning capabilities of the chat accounts.
@@ -3668,6 +3675,8 @@ impl BeeperGuiApp {
             search_expanded: false,
             creating_chat: None,
             new_chats: Vec::new(),
+            chat_list: vlist::VList::default(),
+            command_list: vlist::VList::default(),
             pending_dm: None,
             caps: resolve,
             contact_networks: None,
@@ -5789,7 +5798,10 @@ impl BeeperGuiApp {
                     (false, next) => self.pane.selected_msgs = next.into_iter().collect(),
                 }
                 return match self.pane.selected_msgs.last() {
-                    Some(mid) => locate(format!("msg-{mid}"), "timeline", true),
+                    Some(mid) => {
+                        self.pane.timeline.reveal(vlist::key(mid));
+                        locate(format!("msg-{mid}"), "timeline", true)
+                    }
                     None => operation::focus("composer-input"),
                 };
             }
@@ -6238,6 +6250,7 @@ impl BeeperGuiApp {
                 (self.show_command_palette, self.command_palette_query, self.chat_menu) = (false, String::new(), None);
                 self.select_chat(&cid);
                 let msg = format!("msg-{mid}");
+                self.pane.timeline.reveal(vlist::key(&mid));
                 self.flash = Some((mid, std::time::Instant::now()));
                 return locate(msg, "timeline", false);
             }
@@ -7220,6 +7233,7 @@ impl BeeperGuiApp {
                     (self.pane.expanded_history_msg_id.as_ref() != Some(&mid)).then_some(mid);
             }
             UiMessage::Noop => {}
+            UiMessage::Relist => return Task::none(),
             UiMessage::OpenUrl(url) => {
                 let (cmd, args) = open_url_or_path_command(self.os, &url);
                 let open = move || match std::process::Command::new(&cmd).args(args).status() {
@@ -7699,6 +7713,7 @@ impl BeeperGuiApp {
                     };
                     if let Some(by) = step {
                         self.cmd_index = (self.cmd_index + by) % n;
+                        self.command_list.reveal(cmds[self.cmd_index].key());
                         return locate(format!("cmd-{}", self.cmd_index), commands::COMMANDS, true);
                     }
                 }
@@ -10390,8 +10405,8 @@ impl BeeperGuiApp {
         let previews = st.settings.on("showMessagePreviews");
         let now = now_unix_millis();
         let launched = now - self.started.elapsed().as_millis() as i64;
-        let pins = pinned.chunks(cols).fold(Column::new(), |col, chunk| {
-            col.push(chunk.iter().fold(Row::new(), |r, c| {
+        let pin_row = |chunk: &[&Chat]| {
+            El::from(chunk.iter().fold(Row::new(), |r, c| {
                 let on = selected == Some(c.id.as_str());
                 let muted = c.is_muted == Some(true);
                 let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
@@ -10446,7 +10461,7 @@ impl BeeperGuiApp {
                     .on_right_press(UiMessage::OpenChatMenu(c.id.clone())),
                 )
             }))
-        });
+        };
         let lead = match (selecting, counts) {
             (true, _) => 16.0,
             (false, true) => 0.0,
@@ -10489,7 +10504,7 @@ impl BeeperGuiApp {
             .on_right_press(UiMessage::OpenChatMenu(key));
             column![row, divider(p.divider, av + 18.0)]
         };
-        let drafts = self.new_chats.iter().map(|d| {
+        let draft_row = |d: &NewChat| {
             let n = d.id;
             let dot = (!counts).then(|| container(Space::new()).width(12).into());
             let names: Vec<&str> = d.users.iter().map(|(_, u)| u.full_name.as_deref().unwrap_or(&u.id)).collect();
@@ -10517,8 +10532,8 @@ impl BeeperGuiApp {
                 None => face,
             };
             frame(key, dot, face, rows, on, UiMessage::SelectNewChat(n))
-        });
-        let rows = rest.iter().fold(Column::with_children(drafts.map(El::from)), |col, c| {
+        };
+        let chat_row = |c: &Chat| {
             let on = selected == Some(c.id.as_str());
             let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
             let muted = c.is_muted == Some(true);
@@ -10686,15 +10701,8 @@ impl BeeperGuiApp {
                 true => Some(container(checkbox(p, picked(c))).padding(Padding::ZERO.right(8.0)).into()),
                 false => dot.map(El::from),
             };
-            col.push(frame(
-                c.id.clone(),
-                dot,
-                face.into(),
-                [top.into(), preview.height(16 * lines as u32).into()],
-                on,
-                pick(c),
-            ))
-        });
+            frame(c.id.clone(), dot, face.into(), [top.into(), preview.height(16 * lines as u32).into()], on, pick(c))
+        };
         let list: El<'_> = if chats.is_empty() && self.new_chats.is_empty() {
             let tab = if self.selected_account_filter.is_some() { InboxTab::Requests } else { self.active_tab };
             let (head, hint) = tab.empty();
@@ -10726,7 +10734,19 @@ impl BeeperGuiApp {
                 .width(Fill)
                 .into()
         } else {
-            scrollable(column![pins, rows].padding(Padding::ZERO.right(bar_pad + GUTTER)))
+            let tiles = pinned.len().div_ceil(cols);
+            let keys: Vec<u64> = (0..tiles)
+                .map(|i| vlist::key(("pins", i)))
+                .chain(self.new_chats.iter().map(|d| vlist::key(("draft", d.id))))
+                .chain(rest.iter().map(|c| vlist::key(&c.id)))
+                .collect();
+            let estimate = if compact { 52.0 } else { 68.0 };
+            let rows = self.chat_list.view(&keys, false, estimate, UiMessage::Relist, |i| match i {
+                i if i < tiles => pin_row(&pinned[i * cols..(i * cols + cols).min(pinned.len())]),
+                i if i < tiles + self.new_chats.len() => draft_row(&self.new_chats[i - tiles]).into(),
+                i => chat_row(rest[i - tiles - self.new_chats.len()]).into(),
+            });
+            scrollable(container(rows).padding(Padding::ZERO.right(bar_pad + GUTTER)))
                 .direction(stable_bar())
                 .height(Fill)
                 .style(scroll_style(p.scroll))
@@ -11016,7 +11036,6 @@ impl BeeperGuiApp {
         }
         let mut col = Column::new().padding(Padding::new(8.0).right(8.0 + GUTTER).top(96.0).bottom(0.0));
         col = col.push((!thread).then(|| self.top_of_thread(st, chat)));
-        let mut prev: Option<&Message> = None;
         let last_live = msgs.iter().rposition(|m| m.is_deleted != Some(true));
         let mut last_seen: HashMap<&str, (&str, &str)> = HashMap::new();
         let mut replied: HashSet<&str> = HashSet::new();
@@ -11041,7 +11060,8 @@ impl BeeperGuiApp {
             let n = later.entry(roots[i]).or_insert(0);
             (counts[i], *n) = (*n, *n + 1);
         }
-        for (i, m) in msgs.iter().enumerate() {
+        let item = |i: usize| -> El<'a> {
+            let (m, prev) = (msgs[i], i.checked_sub(1).map(|j| msgs[j]));
             let day_changed = prev.is_none_or(|q| day_num(&q.timestamp) != day_num(&m.timestamp));
             let mut head = Column::new().push(prev.map(|q| Space::new().height(gap_below(q, m))));
             if day_changed {
@@ -11055,13 +11075,13 @@ impl BeeperGuiApp {
             if let Some(timer) = m.timer {
                 let next =
                     msgs.get(i + 1).filter(|n| n.timer.is_some() && day_num(&n.timestamp) == day_num(&m.timestamp));
-                if next.is_none_or(|n| n.sender_id != m.sender_id) {
-                    col = col.push(head.push(self.timer_notice(st, chat, m, timer, next.is_none())));
-                }
-                prev = Some(m);
-                continue;
+                return match next.is_none_or(|n| n.sender_id != m.sender_id) {
+                    true => head.push(self.timer_notice(st, chat, m, timer, next.is_none())).into(),
+                    false => Column::new().into(),
+                };
             }
             if membership(m) {
+                let mut rows = Column::new();
                 let s = run_start[i];
                 let size = run_start[s..].iter().take_while(|&&r| r == s).count();
                 let open = self.pane().open_members.contains(&msgs[s].id);
@@ -11075,17 +11095,16 @@ impl BeeperGuiApp {
                         .padding(0)
                         .style(btn_style([Color::TRANSPARENT; 3], [dim; 3], 0.0))
                         .on_press(UiMessage::ToggleMembers(msgs[s].id.clone()));
-                    col = col.push(head.push(container(toggle).center_x(Fill)));
+                    rows = rows.push(head.push(container(toggle).center_x(Fill)));
                     head = Column::new();
                 }
                 if size < 3 || open {
                     let gap = if size >= 3 { Space::new().height(6) } else { Space::new() };
                     let line = txt(m.text.clone().expect("membership text"), 11.0).line_height(Pixels(14.0));
                     let line = container(line.color(dim).align_x(Center)).center_x(Fill).padding([2, 0]);
-                    col = col.push(head.push(gap).push(line));
+                    rows = rows.push(head.push(gap).push(line));
                 }
-                prev = Some(m);
-                continue;
+                return rows.into();
             }
             let first = day_changed || prev.is_none_or(|q| q.sender_id != m.sender_id || membership(q));
             let last = msgs.get(i + 1).is_none_or(|n| {
@@ -11137,10 +11156,11 @@ impl BeeperGuiApp {
                 container(Space::new()).width(Fill).height(Fill).style(fill_box(p.accent.scale_alpha(0.4 * a), 0.0))
             });
             let cell = container(stack![view].push(flash));
-            col = col.push(if thread { cell } else { cell.id(format!("msg-{}", m.id)) });
-            prev = Some(m);
-        }
-        col
+            (if thread { cell } else { cell.id(format!("msg-{}", m.id)) }).into()
+        };
+        let keys: Vec<u64> = msgs.iter().map(|m| vlist::key(&m.id)).collect();
+        let list = if thread { &self.pane().thread_list } else { &self.pane().timeline };
+        col.push(list.view(&keys, true, 48.0, UiMessage::Relist, item))
     }
 
     fn view_message<'a>(
