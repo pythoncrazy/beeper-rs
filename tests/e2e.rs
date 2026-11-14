@@ -643,6 +643,27 @@ async fn lifecycle() {
         (&json!("message.upserted"), &json!("!wa_eric:beeper.com"), &json!(1))
     );
     assert_eq!(event["entries"][0]["text"], "subscribed");
+    let anon = BeeperClient::new(format!("http://{}", pager.host_port), "");
+    let (status, page) = anon.send("GET", "/focus/local_wa_eric?draft=Hi%20there", &[], None).await;
+    assert!(status == StatusCode::OK && String::from_utf8(page).unwrap().contains("You can close this window"));
+    let eric_draft = pages.read().chats.iter().find(|c| c.id == "!wa_eric:beeper.com").unwrap().draft.clone();
+    assert_eq!(eric_draft.unwrap().text.as_deref(), Some("Hi there"));
+    assert_eq!(
+        anon.send("GET", "/focus/local_wa_eric", &[("origin", "https://x.example")], None).await.0,
+        StatusCode(403)
+    );
+    assert_eq!(anon.send("GET", "/focus?draft=x", &[], None).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(anon.send("GET", "/focus/nope", &[], None).await.0, StatusCode::NOT_FOUND);
+    pager.patch_chat_draft("!wa_eric:beeper.com", None).await;
+    let upload = json!({ "content": "aGVsbG8=", "fileName": "hello.txt", "mimeType": "text/plain" });
+    let (status, uploaded) = pager.request("POST", "/v1/assets/upload", Some(upload)).await;
+    assert_eq!((status, &uploaded["fileName"]), (StatusCode::OK, &json!("hello.txt")));
+    let (status, refused) = pager.request("POST", "/v1/assets/upload", Some(json!({ "content": "aGVsbG8=" }))).await;
+    assert_eq!((status, &refused["code"]), (StatusCode::BAD_REQUEST, &json!("MISSING_FILENAME")));
+    pager.add_reaction("!wa_eric:beeper.com", "msg_1001", "👍").await;
+    let unreact = query_string("/v1/chats/!wa_eric:beeper.com/messages/msg_1001/reactions", &[("reactionKey", "👍")]);
+    let (status, removed) = pager.request("DELETE", &unreact, None).await;
+    assert_eq!((status, &removed["reactionKey"]), (StatusCode::OK, &json!("👍")));
     let (_, bridges) = pager.request("GET", "/v1/bridges", None).await;
     let whatsapp = bridges["items"].as_array().unwrap().iter().find(|b| b["id"] == "whatsapp").unwrap();
     assert_eq!(
