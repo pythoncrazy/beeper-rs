@@ -390,6 +390,11 @@ pub fn mix(a: Color, b: Color, k: f32) -> Color {
     Color::from_rgba(a.r + (b.r - a.r) * k, a.g + (b.g - a.g) * k, a.b + (b.b - a.b) * k, a.a + (b.a - a.a) * k)
 }
 
+/// The opaque color of `c` drawn over `bg`.
+pub fn flat(bg: Color, c: Color) -> Color {
+    mix(bg, Color { a: 1.0, ..c }, c.a)
+}
+
 macro_rules! brands {
     ($($id:literal),*) => {
         [$(($id, include_str!(concat!("../assets/brands/", $id, ".svg")), include_str!(concat!("../assets/brands/badge/", $id, ".svg")))),*]
@@ -620,68 +625,6 @@ pub(crate) fn rail_style(track: Color, thumb: Color) -> scrollable::Style {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Palette {
-    pub frame: Color,
-    pub window: Color,
-    pub rail: Color,
-    pub rail_sel: Color,
-    pub card: Color,
-    pub selected: Color,
-    pub hover: Color,
-    pub text: Color,
-    pub fg: Color,
-    pub strong: Color,
-    pub sub: Color,
-    pub weak: Color,
-    pub muted: Color,
-    pub tertiary: Color,
-    pub divider: Color,
-    pub elevated: Color,
-    pub input: Color,
-    pub send_btn: Color,
-    pub sent: Color,
-    pub sent_meta: Color,
-    /// The text of sent bubbles.
-    pub sent_fg: Color,
-    pub received: Color,
-    pub link_card: Color,
-    pub outline: Color,
-    /// `--color-outline`.
-    pub rule: Color,
-    pub date_text: Color,
-    pub accent: Color,
-    pub toggle_on: Color,
-    pub toggle_off: Color,
-    pub prefs_pane: Color,
-    pub gutter: [Color; 2],
-    pub scroll: Color,
-    pub prefs_group: Color,
-    pub prefs_border: Color,
-    pub neutral_border: Color,
-    pub search: Color,
-    pub chip: Color,
-    pub link: Color,
-    pub button: Color,
-    pub button_border: Color,
-    pub range: Color,
-    pub range_track: Color,
-    pub range_edge: Color,
-    pub menu: Color,
-    pub menu_border: Color,
-    pub on_secondary: Color,
-    /// `--color-text-neutrals-subtle`.
-    pub subtle: Color,
-    pub surface_dim: Color,
-    pub reply_line: Color,
-    pub danger: Color,
-    pub success: Color,
-    pub warning: Color,
-    /// `AudioBar`'s ring while recording, its ring while paused, its text, and its live waveform.
-    pub audio_bar: [Color; 4],
-    pub names: [u32; 20],
-}
-
 pub const fn hex(v: u32) -> Color {
     Color::from_rgb(((v >> 16) & 255) as f32 / 255.0, ((v >> 8) & 255) as f32 / 255.0, (v & 255) as f32 / 255.0)
 }
@@ -691,125 +634,122 @@ const fn hexa(v: u32, a: f32) -> Color {
     Color { a, ..c }
 }
 
-pub const BEEPER_DARK: Palette = Palette {
-    frame: hex(0x212121),
-    window: hex(0x282828),
-    rail: hex(0x3d3d3d),
-    rail_sel: hex(0x505050),
-    card: hex(0x000000),
-    selected: hex(0x3e3e3e),
-    hover: hexa(0xf6f6f6, 0.05),
-    text: hex(0xededed),
-    fg: hex(0xffffff),
-    strong: hex(0xf6f6f6),
-    sub: hexa(0xebebf5, 0.62),
-    weak: hex(0xadadad),
-    muted: hex(0x808080),
-    tertiary: hexa(0xebebf5, 0.27),
-    divider: hexa(0xf6f6f6, 0.2),
-    elevated: hex(0x232323),
-    input: hex(0x222223),
-    send_btn: hex(0x4d4d4d),
-    sent: hex(0x2a61fb),
-    sent_meta: hexa(0xffffff, 0.8),
-    sent_fg: Color::WHITE,
-    received: hex(0x232326),
-    link_card: hex(0x282828),
-    outline: hex(0x28282a),
-    rule: hex(0x4c4c4c),
-    date_text: hex(0x9a9aa1),
-    accent: hex(0x2a61fb),
-    toggle_on: hex(0x0d4ffb),
-    toggle_off: hex(0x606060),
-    prefs_pane: hex(0x161616),
-    gutter: [hex(0x2c2c2c), hex(0x9f9f9f)],
-    scroll: Color::WHITE,
-    prefs_group: hex(0x1c1c1c),
-    prefs_border: hex(0x282828),
-    neutral_border: hex(0x343434),
-    search: hex(0x323232),
-    chip: hex(0x232326),
-    link: hex(0x5cadff),
-    button: hex(0x505050),
-    button_border: hex(0x5e5e5e),
-    range: hex(0x99c8ff),
-    range_track: hex(0x3b3b3b),
-    range_edge: hex(0x858585),
-    menu: hex(0x232323),
-    menu_border: hex(0x434343),
-    on_secondary: hex(0x9b9ba2),
-    subtle: hex(0x7e7e7e),
-    surface_dim: hex(0x000000),
-    reply_line: hex(0x353535),
-    danger: hex(0xff383c),
-    success: hex(0x34c759),
-    warning: hex(0xf54c03),
-    audio_bar: [hex(0x606366), hex(0x303236), hex(0xd8d8d8), hex(0x9b9ba2)],
-    names: [
-        0x9e7ef8, 0xce7fff, 0xf86fdb, 0xef939e, 0xff256e, 0xff657b, 0xff4658, 0xfa6533, 0xfc9775, 0xdba685, 0x9f8778,
-        0xffb938, 0xffe500, 0xb4fb44, 0x25ca63, 0x6fe582, 0x06cf9c, 0x42c6b8, 0x29b0e1, 0x5583fc,
-    ],
-};
+/// One row for each color: the Desktop 4.3.308 CSS token, its light value and its dark value. Linux always has
+/// `body.no-transparency`, so the tokens are the opaque ones.
+macro_rules! palette {
+    ($($(#[$doc:meta])* $field:ident: $ty:ty = $light:expr, $dark:expr;)*) => {
+        #[derive(Debug, Clone, Copy)]
+        pub struct Palette { $($(#[$doc])* pub $field: $ty,)* }
+        pub const BEEPER_LIGHT: Palette = Palette { $($field: $light,)* };
+        pub const BEEPER_DARK: Palette = Palette { $($field: $dark,)* };
+    };
+}
 
-pub const BEEPER_LIGHT: Palette = Palette {
-    frame: hex(0xf0f0f0),
-    window: hex(0xf0f0f0),
-    rail: hex(0xe1e1e1),
-    rail_sel: hex(0xcfcfcf),
-    card: hex(0xffffff),
-    selected: hex(0xe0e0e0),
-    hover: hexa(0x000000, 0.04),
-    text: hex(0x1c1c1e),
-    fg: hex(0x000000),
-    strong: hex(0x000000),
-    sub: hexa(0x3c3c43, 0.62),
-    weak: hex(0x5e5e63),
-    muted: hex(0x8e8e93),
-    tertiary: hexa(0x3c3c43, 0.3),
-    divider: hexa(0x000000, 0.12),
-    elevated: hex(0xffffff),
-    input: hex(0xf4f4f5),
-    send_btn: hex(0xd5d5d8),
-    sent: hex(0x0d4ffb),
-    sent_meta: hexa(0xffffff, 0.7),
-    sent_fg: Color::WHITE,
-    received: hex(0xe9e9eb),
-    link_card: hex(0xededed),
-    outline: hex(0xe2e2e4),
-    rule: hex(0xb3b3b3),
-    date_text: hex(0x6c6c72),
-    accent: hex(0x0d4ffb),
-    toggle_on: hex(0x0d4ffb),
-    toggle_off: hexa(0x000000, 0.25),
-    prefs_pane: hex(0xf3f3f3),
-    gutter: [hex(0xf1f1f1), hex(0xc1c1c1)],
-    scroll: Color::BLACK,
-    prefs_group: hex(0xffffff),
-    prefs_border: hex(0xededed),
-    neutral_border: hex(0xe2e2e2),
-    search: hex(0xe6e6e6),
-    chip: hex(0xefeff0),
-    link: hex(0x0069db),
-    button: hex(0xffffff),
-    button_border: hex(0xe2e2e2),
-    range: hex(0x0075ff),
-    range_track: hex(0xefefef),
-    range_edge: hex(0x767676),
-    menu: hex(0xf3f3f3),
-    menu_border: hex(0xe2e2e2),
-    on_secondary: hex(0x6c6c72),
-    subtle: hex(0x858585),
-    surface_dim: hex(0xebebeb),
-    reply_line: hex(0xe1e1e1),
-    danger: hex(0xff383c),
-    success: hex(0x34c759),
-    warning: hex(0xf54c03),
-    audio_bar: [hex(0xe3e9f2), hex(0xf1f4f8), hex(0x7f7f7f), hex(0x828286)],
-    names: [
+palette! {
+    /// `--left-pane-bg`: the window behind the chat list and the chat.
+    window: Color = hex(0xeaebf0), hex(0x1c1d1e);
+    /// `--appearance-color-bg-primary`.
+    card: Color = hex(0xffffff), hex(0x000000);
+    /// `--color-background-selected`.
+    selected: Color = hexa(0x000000, 0.1), hexa(0xffffff, 0.1);
+    /// `--color-backing-shade`: hover fills, the account rail and the selected settings tab.
+    hover: Color = hexa(0x202124, 0.1), hexa(0xf6f6f6, 0.1);
+    /// `--color-text-neutrals`.
+    text: Color = hex(0x171717), hex(0xededed);
+    /// `--color-text-primary`.
+    fg: Color = hex(0x000000), hex(0xffffff);
+    /// `--color-on-surface`.
+    strong: Color = hex(0x202124), hex(0xf6f6f6);
+    /// `--color-text-secondary`.
+    sub: Color = hexa(0x3c3c44, 0.69), hexa(0xebebf5, 0.63);
+    /// `--color-text-neutrals-weak`.
+    weak: Color = hex(0x595959), hex(0xadadad);
+    /// `--color-on-surface-variant`.
+    muted: Color = hex(0x808080), hex(0x808080);
+    /// `--color-text-tertiary`.
+    tertiary: Color = hexa(0x3c3c44, 0.38), hexa(0xebebf5, 0.27);
+    /// `--color-on-surface` at `--divider-opacity`.
+    divider: Color = hexa(0x202124, 0.2), hexa(0xf6f6f6, 0.2);
+    /// `--color-background-elevated`.
+    elevated: Color = hex(0xffffff), hex(0x232323);
+    /// `--color-tertiary-container`: the composer.
+    input: Color = hex(0xf4f4f5), hex(0x1c1c1d);
+    /// `--bubble-out-bg`.
+    sent: Color = hex(0x0d4ffb), hex(0x2561fb);
+    /// `--color-text-on-accent-weak`: the metadata of sent bubbles.
+    sent_meta: Color = hexa(0xffffff, 0.7), hexa(0xffffff, 0.7);
+    /// `--bubble-out-fg`.
+    sent_fg: Color = hex(0xffffff), hex(0xffffff);
+    /// `--color-secondary-container`: received bubbles.
+    received: Color = hex(0xefeff0), hex(0x232326);
+    /// `--color-background-message-bubble-received`: link previews.
+    link_card: Color = hex(0xededed), hex(0x282828);
+    /// `--color-outline`.
+    rule: Color = hex(0xb3b3b3), hex(0x4c4c4c);
+    /// `--color-primary`.
+    accent: Color = hex(0x0d4ffb), hex(0x2561fb);
+    /// `--toggle-style-knob-on`.
+    toggle_on: Color = hex(0x0d4ffb), hex(0x0d4ffb);
+    /// `--toggle-style-border` and `--toggle-style-knob-off`.
+    toggle_off: Color = hexa(0x000000, 0.302), hexa(0xffffff, 0.302);
+    /// `--color-background-grouped-weak`.
+    prefs_pane: Color = hex(0xf3f3f3), hex(0x161616);
+    /// Chromium's own scrollbar track and thumb, which the Settings pane keeps.
+    gutter: [Color; 2] = [hex(0xf1f1f1), hex(0xc1c1c1)], [hex(0x2c2c2c), hex(0x9f9f9f)];
+    /// `--color-background-scrollbar` without its alpha.
+    scroll: Color = hex(0x000000), hex(0xffffff);
+    /// `--color-background-grouped`.
+    prefs_group: Color = hex(0xffffff), hex(0x1c1c1c);
+    /// `--color-border-neutrals-weak`.
+    prefs_border: Color = hex(0xededed), hex(0x282828);
+    /// `--color-border-neutrals`.
+    neutral_border: Color = hex(0xe2e2e2), hex(0x343434);
+    /// `--color-on-surface` at 0.05: the Settings search field.
+    search: Color = hexa(0x202124, 0.05), hexa(0xf6f6f6, 0.05);
+    /// `--color-secondary-container`.
+    chip: Color = hex(0xefeff0), hex(0x232326);
+    /// `--color-text-info`.
+    link: Color = hex(0x0069db), hex(0x5cadff);
+    /// `--color-background-button-secondary`.
+    button: Color = hex(0xffffff), hex(0x505050);
+    /// `--color-border-button-secondary`.
+    button_border: Color = hex(0xe2e2e2), hex(0x5e5e5e);
+    /// Chromium's own `input[type=range]` fill, track and track edge.
+    range: Color = hex(0x0075ff), hex(0x99c8ff);
+    range_track: Color = hex(0xefefef), hex(0x3b3b3b);
+    range_edge: Color = hex(0x767676), hex(0x858585);
+    /// `--color-background-menu-opaque`.
+    menu: Color = hex(0xededed), hex(0x232323);
+    /// `--color-border-translucent-strong`.
+    menu_border: Color = hexa(0x000000, 0.15), hexa(0xffffff, 0.15);
+    /// `--color-background-menu-option-hover`.
+    menu_hover: Color = hex(0x007aff), hex(0x005bb8);
+    /// `--color-on-secondary-container`.
+    on_secondary: Color = hex(0x828286), hex(0x9b9ba2);
+    /// `--color-text-neutrals-subtle`.
+    subtle: Color = hex(0x858585), hex(0x7e7e7e);
+    /// `--color-surface-dim`.
+    surface_dim: Color = hex(0xebebeb), hex(0x000000);
+    /// The color of `BrandReplyLineSegment`.
+    reply_line: Color = hex(0xe1e1e1), hex(0x353535);
+    /// `--appearance-color-text-danger`.
+    danger: Color = hex(0xff383c), hex(0xff383c);
+    /// `--audio-bar-border`, `--audio-bar-bg`, `--compose-message-accent` and `--color-on-secondary-container`:
+    /// `AudioBar`'s ring while recording, its ring while paused, its text, and its live waveform.
+    audio_bar: [Color; 4] = [hex(0xe3e9f2), hex(0xf1f4f8), hex(0x7f7f7f), hex(0x828286)],
+        [hex(0x606366), hex(0x303236), hex(0xd8d8d8), hex(0x9b9ba2)];
+    /// The avatar name colors.
+    names: [u32; 20] = [
         0x6a4be5, 0x9745ea, 0xd833ca, 0xdf6f7c, 0xe8126b, 0xcd1557, 0xee1f34, 0xde4b19, 0xc25e3c, 0xbb7c55, 0x8d6954,
         0xc2891f, 0xd99c00, 0x6bad16, 0x0f9240, 0x45a654, 0x07a06d, 0x239084, 0x0a81ac, 0x1e54e1,
-    ],
-};
+    ], [
+        0x9e7ef8, 0xce7fff, 0xf86fdb, 0xef939e, 0xff256e, 0xff657b, 0xff4658, 0xfa6533, 0xfc9775, 0xdba685, 0x9f8778,
+        0xffb938, 0xffe500, 0xb4fb44, 0x25ca63, 0x6fe582, 0x06cf9c, 0x42c6b8, 0x29b0e1, 0x5583fc,
+    ];
+}
+
+/// A color that depends on the theme.
+pub type Token = fn(&Palette) -> Color;
 
 pub fn palette(dark: bool) -> Palette {
     if dark {
@@ -829,5 +769,28 @@ pub fn hidden_slider(_: &Theme, _: slider::Status) -> slider::Style {
             border_width: 0.0,
             border_color: CLEAR,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn palette_matches_desktop_tokens() {
+        let rows: [(&str, Token, Color, Color); 9] = [
+            ("--left-pane-bg", |p| p.window, hex(0xeaebf0), hex(0x1c1d1e)),
+            ("--color-primary", |p| p.accent, hex(0x0d4ffb), hex(0x2561fb)),
+            ("--color-secondary-container", |p| p.received, hex(0xefeff0), hex(0x232326)),
+            ("--color-text-neutrals", |p| p.text, hex(0x171717), hex(0xededed)),
+            ("--color-on-surface", |p| p.strong, hex(0x202124), hex(0xf6f6f6)),
+            ("--color-text-secondary", |p| p.sub, hexa(0x3c3c44, 0.69), hexa(0xebebf5, 0.63)),
+            ("--color-on-secondary-container", |p| p.on_secondary, hex(0x828286), hex(0x9b9ba2)),
+            ("--color-background-menu-opaque", |p| p.menu, hex(0xededed), hex(0x232323)),
+            ("--color-background-menu-option-hover", |p| p.menu_hover, hex(0x007aff), hex(0x005bb8)),
+        ];
+        for (token, field, light, dark) in rows {
+            assert_eq!((field(&BEEPER_LIGHT), field(&BEEPER_DARK)), (light, dark), "{token}");
+        }
     }
 }
