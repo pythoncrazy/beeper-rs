@@ -40,6 +40,39 @@ pub async fn open_files(dest: String, title: String, images: bool) -> Result<Vec
     picked(code, uris.transpose().expect("uris is a string array").unwrap_or_default())
 }
 
+/// Chromium's `navigator.onLine` from the portal's `NetworkMonitor`: whether the network is available, and then the
+/// same at each change. Without the portal, the stream ends, and the app stays online.
+#[cfg(target_os = "linux")]
+pub fn online() -> impl iced::futures::Stream<Item = bool> {
+    iced::stream::channel(4, async |mut out: iced::futures::channel::mpsc::Sender<bool>| {
+        let Err(e) = watch_network(&mut out).await;
+        eprintln!("network monitor: {e}");
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn online() -> iced::futures::stream::Empty<bool> {
+    unreachable!("only the Linux build reads the network portal")
+}
+
+#[cfg(target_os = "linux")]
+async fn watch_network(
+    out: &mut iced::futures::channel::mpsc::Sender<bool>,
+) -> Result<std::convert::Infallible, String> {
+    use iced::futures::{SinkExt, StreamExt};
+    let (obj, iface) = ("/org/freedesktop/portal/desktop", "org.freedesktop.portal.NetworkMonitor");
+    let bus = crate::notify::bus().await?;
+    let rule = zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal).interface(iface);
+    let rule = rule.and_then(|r| r.member("changed")).expect("a valid match rule").build();
+    let mut changes = zbus::MessageStream::for_match_rule(rule, bus, None).await.map_err(|e| e.to_string())?;
+    loop {
+        let reply = bus.call_method(Some(PORTAL), obj, Some(iface), "GetAvailable", &()).await;
+        let available = reply.map_err(|e| e.to_string())?.body().deserialize::<bool>();
+        _ = out.send(available.expect("GetAvailable gives a boolean")).await;
+        changes.next().await.ok_or("the session bus closed")?.map_err(|e| e.to_string())?;
+    }
+}
+
 /// Desktop's image extensions that the `image` codecs of the app decode.
 #[cfg(target_os = "linux")]
 const IMAGES: [&str; 5] = ["jpg", "jpeg", "png", "gif", "webp"];

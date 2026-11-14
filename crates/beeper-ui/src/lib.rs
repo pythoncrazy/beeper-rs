@@ -748,6 +748,9 @@ pub enum UiMessage {
     SecondInstance(Vec<String>),
     /// A room that a `beeper://join-matrix-room` link joined.
     RoomJoined(Result<String, String>),
+    /// The network became available or unavailable.
+    Online(bool),
+    PillHover(bool),
     Login(LoginMsg),
 }
 
@@ -2311,6 +2314,7 @@ static FILE_ICONS: std::sync::LazyLock<[svg::Handle; 4]> = std::sync::LazyLock::
 svg_static!(MAT_FORWARD, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="m640-280-57-56 184-184-184-184 57-56 240 240-240 240ZM80-200v-160q0-83 58.5-141.5T280-560h247L383-704l57-56 240 240-240 240-57-56 144-144H280q-50 0-85 35t-35 85v160H80Z"/></svg>"##);
 
 svg_static!(ZOOM_LEVEL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 15" fill="#000"><path d="M20.64 14.343C21.01 14.343 21.303 14.237 21.52 14.026C21.736 13.816 21.845 13.534 21.845 13.183C21.845 12.937 21.798 12.679 21.705 12.409L17.995 2.346C17.837 1.877 17.603 1.53 17.292 1.304C16.982 1.079 16.583 0.966 16.097 0.966C15.177 0.966 14.562 1.423 14.251 2.336L10.498 12.488C10.4122 12.7219 10.3675 12.9689 10.366 13.218C10.366 13.563 10.469 13.838 10.674 14.04C10.879 14.242 11.16 14.343 11.518 14.343C11.863 14.343 12.134 14.261 12.331 14.097C12.527 13.933 12.675 13.666 12.774 13.297L13.636 10.915H18.531L19.393 13.297C19.493 13.666 19.64 13.933 19.836 14.097C20.033 14.261 20.301 14.343 20.641 14.343H20.64ZM17.995 8.999H14.198L16.07 3.479H16.123L17.995 9V8.999ZM7.87 14.325C8.175 14.325 8.42 14.233 8.608 14.048C8.7018 13.9545 8.77527 13.8427 8.8238 13.7195C8.87232 13.5962 8.89486 13.4643 8.89 13.332C8.89 13.209 8.878 13.09 8.854 12.976C8.8266 12.8487 8.78846 12.7239 8.74 12.603L6.14 5.606C5.987 5.19 5.782 4.883 5.524 4.684C5.267 4.484 4.939 4.384 4.54 4.384C4.165 4.384 3.85 4.484 3.595 4.684C3.34 4.883 3.137 5.19 2.985 5.606L0.381 12.603C0.292023 12.8359 0.244637 13.0827 0.241 13.332C0.241 13.642 0.332 13.886 0.517 14.062C0.702 14.237 0.952 14.325 1.269 14.325C1.532 14.325 1.746 14.25 1.91 14.101C2.074 13.951 2.203 13.707 2.297 13.367L2.851 11.741H6.261L6.814 13.385C6.902 13.725 7.031 13.966 7.201 14.11C7.371 14.253 7.594 14.325 7.869 14.325H7.87ZM5.787 10.16H3.31L4.45 6.494H4.626L5.786 10.159L5.787 10.16Z"/></svg>"##);
+svg_static!(MAT_SYNC, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="M160-160v-80h110l-16-14q-52-46-73-105t-21-119q0-111 66.5-197.5T400-790v84q-72 26-116 88.5T240-478q0 45 17 87.5t53 78.5l10 10v-98h80v240H160Zm400-10v-84q72-26 116-88.5T720-482q0-45-17-87.5T650-648l-10-10v98h-80v-240h240v80H690l16 14q49 49 71.5 106.5T800-482q0 111-66.5 197.5T560-170Z"/></svg>"##);
 svg_static!(MAT_EXPAND_LESS, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="M480-528 296-344l-56-56 240-240 240 240-56 56-184-184Z"/></svg>"##);
 svg_static!(MAT_LINK, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#000"><path d="M440-280H280q-83 0-141.5-58.5T80-480q0-83 58.5-141.5T280-680h160v80H280q-50 0-85 35t-35 85q0 50 35 85t85 35h160v80ZM320-440v-80h320v80H320Zm200 160v-80h160q50 0 85-35t35-85q0-50-35-85t-85-35H520v-80h160q83 0 141.5 58.5T880-480q0 83-58.5 141.5T680-280H520Z"/></svg>"##);
 
@@ -3467,6 +3471,10 @@ pub struct BeeperGuiApp {
     undo_note: Option<String>,
     /// The toast text the timeout counts for, whether the pointer is on it, and the time it showed.
     toast_clock: (String, bool, Duration),
+    /// Chromium's `navigator.onLine`.
+    online: bool,
+    /// The pointer is on the "Connecting..." status pill, which then names the accounts.
+    pill_hover: bool,
     /// A toast that stays until it is replaced, like Desktop's timeout 0.
     sticky_banner: Option<String>,
     pub dnd_muted: bool,
@@ -3655,6 +3663,8 @@ impl BeeperGuiApp {
             undo_stack: Vec::new(),
             undo_note: None,
             toast_clock: (String::new(), false, Duration::ZERO),
+            online: true,
+            pill_hover: false,
             sticky_banner: None,
             dnd_muted: false,
             sidebar_width,
@@ -7486,6 +7496,8 @@ impl BeeperGuiApp {
             }
             UiMessage::SecondInstance(args) => return self.second_instance(args),
             UiMessage::RoomJoined(r) => self.room_joined(r),
+            UiMessage::Online(on) => self.online = on,
+            UiMessage::PillHover(on) => self.pill_hover = on,
             UiMessage::Login(m) => return self.update_login(m),
             UiMessage::KeyPressed(Key::Named(k @ (Named::Enter | Named::Escape)), m)
                 if self.recorder.is_some() && m.is_empty() =>
@@ -7841,6 +7853,7 @@ impl BeeperGuiApp {
             || self.pref_flash.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 2.0);
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
             .then(|| Subscription::run(tray::events).map(UiMessage::Tray));
+        let online = cfg!(target_os = "linux").then(|| Subscription::run(portal::online).map(UiMessage::Online));
         let notes = (!self.notifications.is_empty())
             .then(|| Subscription::run(notify::events).map(|(id, clicked)| UiMessage::NotificationEvent(id, clicked)));
         let toast = self.toast_running().then(|| iced::time::every(TOAST_TICK).map(|_| UiMessage::ToastTick));
@@ -7867,6 +7880,7 @@ impl BeeperGuiApp {
                 .chain(queued)
                 .chain(notes)
                 .chain(tray)
+                .chain(online)
                 .chain(self.audio_ticks())
                 .chain(self.record_events())
                 .chain(self.video_ticks()),
@@ -12993,7 +13007,30 @@ impl BeeperGuiApp {
             Some(t) => tr(t),
             None => &self.status_banner,
         };
+        let pill = |(kind, text): (Pill, String)| -> El<'_> {
+            let icon = (kind == Pill::Syncing).then(|| tinted(&MAT_SYNC, 12.0, p.strong));
+            let body = row![].push(icon).push(txt(text, 12.0).color(p.strong)).spacing(4).align_y(Center);
+            let style = move |_: &Theme| container::Style {
+                background: Some(p.card.into()),
+                border: border::rounded(17.0),
+                shadow: Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.15),
+                    offset: Vector::ZERO,
+                    blur_radius: 20.0,
+                },
+                ..container::Style::default()
+            };
+            let pill = mouse_area(container(body).padding([4, 8]).style(style));
+            match kind {
+                Pill::Connecting => {
+                    pill.on_enter(UiMessage::PillHover(true)).on_exit(UiMessage::PillHover(false)).into()
+                }
+                Pill::Offline | Pill::Syncing => pill.into(),
+            }
+        };
+        let pills = self.status_pills().into_iter().map(pill);
         let older = self.older_toasts.iter().enumerate().map(|(i, t)| self.toast_card(&t.0, Some(i)));
+        let older = pills.chain(older);
         let newest = (!banner.is_empty()).then(|| -> El<'_> {
             let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, p.sub, UiMessage::DismissBanner);
             if let Some(what) = self.undo_note.as_ref().filter(|_| self.shown_note()) {
@@ -13020,6 +13057,34 @@ impl BeeperGuiApp {
                 .on_exit(UiMessage::ToastHover(false));
             container(list).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(left)).into()
         })
+    }
+
+    /// Desktop's `StatusPill` toasts, which stay while their state lasts: "Offline", "Syncing..." and "Connecting...",
+    /// with each sync icon. "Connecting..." names the accounts in a transient disconnect while it has the pointer.
+    fn status_pills(&self) -> Vec<(Pill, String)> {
+        let st = self.store.read();
+        let shown = |account: &str| match &self.selected_account_filter {
+            Some(f) => rail_owner(&st, f) == account,
+            None => {
+                self.active_tab == InboxTab::AllChats
+                    && st.chats.iter().any(|c| c.account_id == account && c.is_hidden_from_inbox != Some(true))
+            }
+        };
+        let down = st.bridge_accounts.iter().filter(|a| a.state == "TRANSIENT_DISCONNECT" && shown(&a.account_id));
+        let names: Vec<&str> = down.map(|a| network_label(&a.account_id)).filter(|_| self.online).collect();
+        let connecting = match names[..] {
+            [] => None,
+            _ if !self.pill_hover => Some(tr("Connecting...").to_string()),
+            [a, b] => Some(trs("Connecting... (%1$s & %2$s)", &[a, b])),
+            _ => {
+                let more = names.len().saturating_sub(3);
+                let more = if more > 0 { trn(", +%d more", ", +%d more", more, &[&more]) } else { String::new() };
+                Some(trs("Connecting... (%s)", &[&format!("{}{more}", names[..names.len().min(3)].join(", "))]))
+            }
+        };
+        let offline = (!self.online).then(|| (Pill::Offline, tr("Offline").to_string()));
+        let syncing = st.syncing.then(|| (Pill::Syncing, tr("Syncing...").to_string()));
+        offline.into_iter().chain(syncing).chain(connecting.map(|c| (Pill::Connecting, c))).collect()
     }
 
     /// Desktop's `Toast`: the newest toast, or the toast at an index of `older_toasts`.
@@ -16408,6 +16473,14 @@ fn write_window_state(path: &std::path::Path, maximized: bool, size: Size, at: O
     }
     main["isMaximized"] = maximized.into();
     std::fs::write(path, state.to_string()).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+}
+
+/// Desktop's `StatusPill` toasts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pill {
+    Offline,
+    Syncing,
+    Connecting,
 }
 
 /// "Relaunch app" closed the app; `main` starts it again.

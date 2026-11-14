@@ -295,6 +295,8 @@ pub struct BeeperStore {
     pub link_previews: HashMap<String, LinkPreview>,
     pub matrix: Option<matrix_sdk::Client>,
     pub matrix_error: Option<String>,
+    /// Desktop's `isSyncing`: the app is connected to Matrix and waits for its first sync.
+    pub syncing: bool,
     pub sas_confirm: Option<tokio::sync::oneshot::Sender<bool>>,
     pub outbox: Vec<(String, Outgoing)>,
     /// Desktop's bookmarks room, after its history is read.
@@ -423,6 +425,7 @@ impl BeeperStore {
             api_on: tokio::sync::watch::channel(false).0,
             matrix: None,
             matrix_error: None,
+            syncing: false,
             sas_confirm: None,
             outbox: Vec::new(),
             bookmarks_room: None,

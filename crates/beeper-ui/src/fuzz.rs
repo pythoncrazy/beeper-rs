@@ -501,6 +501,27 @@ fn incognito_toggle_like_desktop() {
 }
 
 #[test]
+fn status_pills_like_desktop() {
+    let mut app = demo_app("pills");
+    let texts = |app: &BeeperGuiApp| app.status_pills().into_iter().map(|p| p.1).collect::<Vec<_>>();
+    assert!(texts(&app).is_empty());
+    let _ = app.update(UiMessage::Online(false));
+    app.store.write().syncing = true;
+    assert_eq!(texts(&app), ["Offline", "Syncing..."]);
+    assert!(simulator(app.view_main()).find("Offline").is_ok());
+    let _ = app.update(UiMessage::Online(true));
+    app.store.write().syncing = false;
+    for a in app.store.write().bridge_accounts.iter_mut().filter(|a| a.account_id == "acc_whatsapp") {
+        a.state = "TRANSIENT_DISCONNECT".into();
+    }
+    assert_eq!(texts(&app), ["Connecting..."]);
+    let _ = app.update(UiMessage::PillHover(true));
+    assert_eq!(texts(&app), ["Connecting... (WhatsApp)"], "the pointer shows the accounts");
+    let _ = app.update(UiMessage::SelectAccount(Some("acc_telegram".into())));
+    assert!(texts(&app).is_empty(), "an account space shows only its own account");
+}
+
+#[test]
 fn settings_commands_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
     let mut app = demo_app("settingscmd");
