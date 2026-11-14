@@ -455,6 +455,21 @@ fn auto_sent_gifs_keep_the_composer_like_desktop() {
 }
 
 #[test]
+fn gif_picker_like_desktop() {
+    let mut app = demo_app("gifpicker");
+    let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+    app.pane.picker = Some(Picker::Gif);
+    let _ = app.update(UiMessage::GifQueryChanged("cats".into()));
+    let _ = app.update(UiMessage::GifsLoaded("ca".into(), Err("late".into())));
+    assert!(app.gif_loading && app.gif_error.is_none(), "an older query does not change the picker");
+    let _ = app.update(UiMessage::GifsLoaded("cats".into(), Ok(Vec::new())));
+    assert!(simulator(app.view_main()).find("No results. Try searching something else?").is_ok());
+    let _ = app.update(UiMessage::GifsLoaded("cats".into(), Err("boom".into())));
+    let text = "Something went wrong (boom). Try searching something else?";
+    assert!(simulator(app.view_main()).find(text).is_ok());
+}
+
+#[test]
 fn filter_account_submenu_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
     let mut app = demo_app("filteracc");
