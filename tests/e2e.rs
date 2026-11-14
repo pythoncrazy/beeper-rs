@@ -1550,6 +1550,27 @@ async fn e2e_api_rejects_bad_input_and_keeps_serving() {
         (StatusCode::OK, &json!("!tg_rust:beeper.com")),
         "a merged chat has the messages of its members"
     );
+
+    let outside = std::env::temp_dir().join("beeper_bad_input_outside.txt");
+    std::fs::write(&outside, b"secret").unwrap();
+    let uploaded = client.upload_asset_base64("a.txt", "text/plain", b"attachment").await;
+    let (_, saved) = client.request("POST", "/v1/assets/download", Some(json!({ "url": uploaded["srcURL"] }))).await;
+    let denied = br#"{"message":"Access denied: Path must be within allowed attachment directories","code":"SERVE_ASSET_ERROR"}"#;
+    let mut files = vec![
+        (saved["srcURL"].as_str().unwrap().to_string(), 200, &b"attachment"[..]),
+        (path_to_file_url(&outside), 403, denied),
+        (path_to_file_url(&data_dir.join("beeper-rs.db")), 403, denied),
+        (path_to_file_url(&data_dir.join("nope")), 404, br#"{"message":"File not found","code":"SERVE_ASSET_ERROR"}"#),
+    ];
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&outside, data_dir.join("media/link.txt")).unwrap();
+        files.push((path_to_file_url(&data_dir.join("media/link.txt")), 403, denied));
+    }
+    for (url, status, body) in files {
+        assert_eq!(client.serve_asset_range(&url, None).await, (StatusCode(status), body.to_vec()), "serve {url}");
+    }
     drop(store);
+    std::fs::remove_file(outside).unwrap();
     std::fs::remove_dir_all(data_dir).unwrap();
 }

@@ -1152,12 +1152,44 @@ fn asset_failure(url: &str) -> (StatusCode, &'static str) {
     }
 }
 
+/// The folders of the data folder from which Desktop serves `file://` URLs.
+const ATTACHMENT_DIRS: &[&str] = &[
+    "media",
+    "api-uploads",
+    "report_a_problem_attachments",
+    "draft_attachments",
+    "app_icons",
+    "user_avatar",
+    "quick_reply_attachments",
+    "temp_avatar_uploads",
+    "transcoded_cache",
+    "transcribed_notes",
+    "linkpreviews",
+];
+
+/// Desktop's `serveAsset` check of a `file://` URL: the real path is in an attachment folder of the data folder.
+fn attachment_file(st: &BeeperStore, url: &str) -> Result<std::path::PathBuf, Response> {
+    let fail = |status, message| error(status, message, "SERVE_ASSET_ERROR");
+    let path = url::Url::parse(url).ok().and_then(|u| u.to_file_path().ok());
+    let path = path.ok_or_else(|| fail(StatusCode::BAD_REQUEST, "Malformed file URL"))?;
+    let (Ok(real), Ok(data)) = (path.canonicalize(), st.config.data_dir.canonicalize()) else {
+        return Err(fail(StatusCode::NOT_FOUND, "File not found"));
+    };
+    match real.strip_prefix(&data).ok().and_then(|rel| rel.components().next()) {
+        Some(std::path::Component::Normal(dir)) if ATTACHMENT_DIRS.iter().any(|d| dir == *d) => Ok(real),
+        _ => Err(fail(StatusCode(403), "Access denied: Path must be within allowed attachment directories")),
+    }
+}
+
 fn serve_asset(st: &BeeperStore, r: &Req) -> Reply {
     let url = r.need_q("url")?;
-    let (path, mime) = st.resolve_asset_path(url).ok_or_else(|| {
-        let (status, message) = asset_failure(url);
-        error(status, message, "SERVE_ASSET_ERROR")
-    })?;
+    let (path, mime) = match url.starts_with("file://") {
+        true => (attachment_file(st, url)?, "application/octet-stream".into()),
+        false => st.resolve_asset_path(url).ok_or_else(|| {
+            let (status, message) = asset_failure(url);
+            error(status, message, "SERVE_ASSET_ERROR")
+        })?,
+    };
     let bytes = std::fs::read(&path).map_err(|e| {
         let message = match e.kind() {
             std::io::ErrorKind::IsADirectory => "EISDIR: illegal operation on a directory, read".into(),
