@@ -177,14 +177,22 @@ fn page<T: Serialize>(items: Vec<T>, oldest_cursor: Option<String>, newest_curso
 }
 
 struct Req {
-    query: HashMap<String, String>,
+    query: serde_json::Map<String, Value>,
     msg: HttpMessage,
     body: Value,
 }
 
 impl Req {
     fn q(&self, k: &str) -> Option<&str> {
-        self.query.get(k).map(String::as_str)
+        self.query.get(k).and_then(Value::as_str)
+    }
+
+    /// All the values of an array parameter, which is a repeated key or a `key[]` key.
+    fn qs(&self, k: &str) -> Vec<&str> {
+        match self.query.get(k) {
+            Some(Value::Array(values)) => values.iter().map(|v| v.as_str().expect("a string query value")).collect(),
+            v => v.and_then(Value::as_str).into_iter().collect(),
+        }
     }
 
     fn need_q(&self, k: &str) -> Result<&str, Response> {
@@ -217,7 +225,7 @@ fn parse_body(msg: &HttpMessage) -> Option<Value> {
         _ if msg.body.is_empty() => Value::Null,
         Some(ct) if ct.starts_with("application/json") => serde_json::from_slice(&msg.body).ok()?,
         Some(ct) if ct.starts_with("application/x-www-form-urlencoded") => {
-            json!(parse_query(std::str::from_utf8(&msg.body).ok()?)?)
+            Value::Object(parse_query(std::str::from_utf8(&msg.body).ok()?)?)
         }
         _ => Value::Null,
     })
@@ -898,8 +906,10 @@ fn candidates(index: &InvertedIndex, query: Option<&str>, len: usize) -> Vec<usi
 fn chats(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
     match (method, path) {
         ("GET", []) => {
-            let account = r.q("accountIDs");
-            let mut items: Vec<&Chat> = st.chats.iter().filter(|c| account.is_none_or(|a| c.account_id == a)).collect();
+            let accounts = r.qs("accountIDs");
+            let all = accounts.is_empty();
+            let mut items: Vec<&Chat> =
+                st.chats.iter().filter(|c| all || accounts.contains(&c.account_id.as_str())).collect();
             items.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
             let (oldest, newest) = (items.last().map(|c| c.id.clone()), items.first().map(|c| c.id.clone()));
             page(items, oldest, newest)
@@ -1142,30 +1152,32 @@ fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
 }
 
 fn search_messages(st: &BeeperStore, r: &Req) -> Reply {
-    let media: fn(&Message) -> bool = match r.q("mediaTypes") {
-        None => |_| true,
-        Some("any") => |m| !m.attachments.is_empty(),
-        Some("image") => |m| m.attachments.iter().any(|a| a.attachment_type == "img"),
-        Some("video") => |m| m.attachments.iter().any(|a| a.attachment_type == "video"),
-        Some("audio") => |m| m.attachments.iter().any(|a| a.attachment_type == "audio"),
-        Some("file") => |m| m.attachments.iter().any(|a| a.attachment_type == "unknown"),
-        Some("link") => |m| m.text.as_deref().is_some_and(|t| t.contains("http://") || t.contains("https://")),
-        Some(_) => return Err(bad("unknown mediaTypes")),
-    };
-    let (sender, chat_id) = (r.q("sender"), r.q("chatIDs"));
+    let media = r.qs("mediaTypes").into_iter().map(|t| -> Result<fn(&Message) -> bool, Response> {
+        Ok(match t {
+            "any" => |m| !m.attachments.is_empty(),
+            "image" => |m| m.attachments.iter().any(|a| a.attachment_type == "img"),
+            "video" => |m| m.attachments.iter().any(|a| a.attachment_type == "video"),
+            "audio" => |m| m.attachments.iter().any(|a| a.attachment_type == "audio"),
+            "file" => |m| m.attachments.iter().any(|a| a.attachment_type == "unknown"),
+            "link" => |m| m.text.as_deref().is_some_and(|t| t.contains("http://") || t.contains("https://")),
+            _ => return Err(bad("unknown mediaTypes")),
+        })
+    });
+    let media = media.collect::<Result<Vec<_>, _>>()?;
+    let (sender, chat_ids) = (r.q("sender"), r.qs("chatIDs"));
     let mut items: Vec<&Message> = candidates(&st.msg_search_index, r.q("query"), st.messages.len())
         .into_iter()
         .map(|i| &st.messages[i])
         .filter(|m| {
             m.flags & MSG_DELETED == 0
-                && chat_id.is_none_or(|c| m.chat_id == c)
+                && (chat_ids.is_empty() || chat_ids.contains(&m.chat_id.as_str()))
                 && match sender {
                     None => true,
                     Some("me") => m.is_sender == Some(true),
                     Some("others") => m.is_sender != Some(true),
                     Some(s) => m.sender_id == s,
                 }
-                && media(m)
+                && (media.is_empty() || media.iter().any(|f| f(m)))
         })
         .collect();
     items.sort_by(|a, b| b.sort_key.cmp(&a.sort_key));

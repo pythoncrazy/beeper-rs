@@ -1,4 +1,5 @@
 use crate::codec::{base64_encode_standard, sha1, url_decode, url_encode};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -189,14 +190,20 @@ pub async fn read_message<R: AsyncRead + Unpin>(
     Ok(msg)
 }
 
-pub fn parse_query(raw: &str) -> Option<HashMap<String, String>> {
-    raw.split('&')
-        .filter(|p| !p.is_empty())
-        .map(|p| {
-            let (k, v) = p.split_once('=').unwrap_or((p, ""));
-            Some((url_decode(k)?, url_decode(v)?))
-        })
-        .collect()
+/// Parses a query string like the `qs` parser of Express: a repeated key or a `key[]` key gives an array of strings.
+pub fn parse_query(raw: &str) -> Option<Map<String, Value>> {
+    let mut query = Map::new();
+    for pair in raw.split('&').filter(|p| !p.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        let (k, v) = (url_decode(k)?, Value::String(url_decode(v)?));
+        let (key, array) = k.strip_suffix("[]").map_or((k.as_str(), false), |key| (key, true));
+        match query.get_mut(key) {
+            Some(Value::Array(values)) => values.push(v),
+            Some(first) => *first = Value::Array(vec![first.take(), v]),
+            None => drop(query.insert(key.into(), if array { Value::Array(vec![v]) } else { v })),
+        }
+    }
+    Some(query)
 }
 
 pub fn query_string(path: &str, params: &[(&str, &str)]) -> String {
