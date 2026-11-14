@@ -1470,7 +1470,7 @@ async fn lifecycle() {
 /// Bad requests get Desktop's errors, and the server answers the next request.
 #[tokio::test]
 async fn e2e_api_rejects_bad_input_and_keeps_serving() {
-    let (data_dir, _, store, client) = spawn_e2e_beeper_instance("bad_input", None).await;
+    let (data_dir, _, _, client) = spawn_e2e_beeper_instance("bad_input", None).await;
     let media = path_to_file_url(&data_dir.join("media"));
     let issue = |path: &str| json!({ "code": "custom", "message": "'single' chat must have exactly one participantID.", "path": [path] });
     let too_small = json!({
@@ -1558,6 +1558,7 @@ async fn e2e_api_rejects_bad_input_and_keeps_serving() {
     let uploaded = client.upload_asset_base64("a.txt", "text/plain", b"attachment").await;
     let (_, saved) = client.request("POST", "/v1/assets/download", Some(json!({ "url": uploaded["srcURL"] }))).await;
     let denied = br#"{"message":"Access denied: Path must be within allowed attachment directories","code":"SERVE_ASSET_ERROR"}"#;
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut files = vec![
         (saved["srcURL"].as_str().unwrap().to_string(), 200, &b"attachment"[..]),
         (path_to_file_url(&outside), 403, denied),
@@ -1572,7 +1573,6 @@ async fn e2e_api_rejects_bad_input_and_keeps_serving() {
     for (url, status, body) in files {
         assert_eq!(client.serve_asset_range(&url, None).await, (StatusCode(status), body.to_vec()), "serve {url}");
     }
-    drop(store);
+    // The server keeps its data folder open, and Windows cannot remove an open file. The next run removes the folder.
     std::fs::remove_file(outside).unwrap();
-    std::fs::remove_dir_all(data_dir).unwrap();
 }
