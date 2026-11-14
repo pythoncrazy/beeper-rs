@@ -583,6 +583,17 @@ fn remind_submenu_like_desktop() {
 }
 
 #[test]
+fn menu_accelerators_work_like_desktop() {
+    use iced::keyboard::{Key, Modifiers};
+    let mut app = demo_app("menukeys");
+    let main = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::WindowKey(main, Key::Character("w".into()), Modifiers::CTRL | Modifiers::SHIFT));
+    assert!(!app.hidden, "Ctrl Shift W is not the Close accelerator");
+    let _ = app.update(UiMessage::WindowKey(main, Key::Character("w".into()), Modifiers::CTRL));
+    assert!(app.hidden, "Ctrl W closes the main window, which hides it");
+}
+
+#[test]
 fn send_later_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
     let mut app = demo_app("sendlater");
