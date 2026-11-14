@@ -423,7 +423,6 @@ pub enum UiMessage {
     /// Desktop's `CreateLabelBrowserWindow` for an existing label.
     EditLabel(String),
     Label(LabelEdit),
-    AskDeleteLabel(String),
     DeleteLabel(String),
     /// Desktop's `setLabelInboxVisibility`.
     SetLabelInbox(String, Option<&'static str>),
@@ -2416,6 +2415,11 @@ enum SpaceMenu {
     Prefs,
     /// The Space Options submenu of the space sheet (`sfe`), which keeps `chat_sub` at `Some(1)` while it is open.
     Options,
+}
+
+/// The number of rows of Desktop's label items (`kS`): the name heading, Mute or Unmute, and Label Settings.
+fn label_rows(l: &Label) -> f32 {
+    2.0 + f32::from(u8::from(!l.name.is_empty()))
 }
 
 /// The `chat_menu` key of Desktop's space sheet (`zft`), which opens from the sidebar header title.
@@ -5610,16 +5614,11 @@ impl BeeperGuiApp {
                 match e {
                     LabelPane::Menu(open) => w.menu = open,
                     LabelPane::Delete => {
-                        let label = w.label.clone();
-                        let _ = self.update(UiMessage::AskDeleteLabel(label));
+                        (self.confirm, self.delete_target) = (Some(ASK_DELETE_LABEL), Some(w.label.clone()));
                         self.delete_in = Some(id);
                     }
                     LabelPane::Done => return window::close(id),
                 }
-            }
-            UiMessage::AskDeleteLabel(id) => {
-                (self.confirm, self.chat_menu, self.delete_target) = (Some(ASK_DELETE_LABEL), None, Some(id));
-                self.delete_in = None;
             }
             UiMessage::DeleteLabel(id) => {
                 self.confirm = None;
@@ -8165,13 +8164,17 @@ impl BeeperGuiApp {
                 (233.0, 8.0 + 4.0 * MENU_ITEM)
             } else if let Some(entry) = cid.strip_prefix("head:") {
                 let st = self.store.read();
-                let items = match (RAIL_VIEWS.iter().any(|v| v.0 == entry), rail_label(&st, entry).is_some()) {
+                let items = match (RAIL_VIEWS.iter().any(|v| v.0 == entry), rail_label(&st, entry)) {
                     (true, _) => 1.0,
-                    (false, true) => 5.0,
-                    (false, false) => 4.0,
+                    (false, Some(l)) => label_rows(l) + 1.0,
+                    (false, None) => 4.0,
                 };
                 let rule = if items > 1.0 { 11.0 } else { 0.0 };
                 (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + items * MENU_ITEM + rule)
+            } else if let Some(n) =
+                cid.strip_prefix("account:").and_then(|e| rail_label(&self.store.read(), e).map(label_rows))
+            {
+                (233.0, 8.0 + (n + 2.0) * MENU_ITEM + 11.0)
             } else if cid.starts_with("account:") {
                 (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + 6.0 * MENU_ITEM + 22.0)
             } else {
@@ -9256,8 +9259,8 @@ impl BeeperGuiApp {
     }
 
     /// The menu of a sidebar space and its Show in Inbox submenu. The gear menu of the Edit Spaces window
-    /// (`mYe` and `gYe`) has fewer items, and the sidebar header menu (`Ede` with `Ide` or `Ade`) starts with
-    /// Select Chats.
+    /// (`mYe` and `gYe`) has fewer items, and the sidebar header menu (`Ede` with `Ide` or `Ade`) has Select Chats.
+    /// A label space has the label items (`kS`) instead.
     fn account_menu(&self, entry: &str, kind: SpaceMenu) -> (El<'_>, Option<El<'_>>) {
         let p = &self.pal;
         let st = self.store.read();
@@ -9300,59 +9303,20 @@ impl BeeperGuiApp {
             return (menu.into(), None);
         }
         if let Some(l) = rail_label(&st, entry) {
-            let now = l.inbox.unwrap_or("all");
-            let sub = (self.chat_sub == Some(0)).then(|| {
-                let items = INBOX_OPTIONS.iter().map(|&(o, label)| {
-                    let lead = container((o == now).then(|| ic(icon::CHECK, 14.0))).width(22).into();
-                    let name =
-                        if o == "none" { trx(label, "label inbox visibility option") } else { inbox_label(label) };
-                    let msg = UiMessage::SetLabelInbox(l.id.clone(), (o != "all").then_some(o));
-                    menu_item(p, Some(lead), name.into(), "", Some(msg))
-                });
-                let body = container(Column::with_children(items).padding([4, 0])).width(ACCOUNT_SUB_W);
-                body.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
-            });
-            let item = |label: &str, msg| {
-                mouse_area(menu_item(p, None, label.into(), "", Some(msg))).on_enter(UiMessage::ChatSub(None))
-            };
-            let inbox = menu_item(p, None, tr("Show in Inbox").into(), "›", Some(UiMessage::ChatSub(Some(0))));
-            let inbox = mouse_area(inbox).on_enter(UiMessage::ChatSub(Some(0)));
-            let mute = if l.muted { "Unmute" } else { "Mute" };
-            let col = match kind {
-                SpaceMenu::Header => column![
-                    select,
-                    inbox,
-                    item(
-                        tr(if l.muted { "Unmute Label" } else { "Mute Label" }),
-                        UiMessage::MuteLabel(l.id.clone(), !l.muted)
-                    ),
-                    menu_rule(p),
-                    item(tr("Edit Label..."), UiMessage::EditLabel(l.id.clone())),
-                    item(tr("Delete Label"), UiMessage::AskDeleteLabel(l.id.clone())),
-                ],
-                SpaceMenu::Prefs | SpaceMenu::Options => unreachable!("only account spaces have these menus"),
-                SpaceMenu::Gear => column![
-                    inbox,
-                    item(trx(mute, "label context menu action"), UiMessage::MuteLabel(l.id.clone(), !l.muted)),
-                    item(tr("Edit Label…"), UiMessage::EditLabel(l.id.clone())),
-                    item(tr("Delete Label"), UiMessage::AskDeleteLabel(l.id.clone())),
-                ],
-                SpaceMenu::Rail => column![
-                    inbox,
-                    item(
-                        tr(if l.muted { "Unmute Label" } else { "Mute Label" }),
-                        UiMessage::MuteLabel(l.id.clone(), !l.muted)
-                    ),
+            let item = |label: &str, msg| menu_item(p, None, label.into(), "", Some(msg));
+            let tail = match kind {
+                SpaceMenu::Rail => vec![
                     menu_rule(p),
                     item(tr("Edit Spaces…"), UiMessage::OpenEditSpaces),
                     item(tr("Add/Remove Accounts…"), UiMessage::OpenSettings(SettingsTab::Accounts)),
-                    menu_rule(p),
-                    item(tr("Edit Label…"), UiMessage::EditLabel(l.id.clone())),
-                    item(tr("Delete Label"), UiMessage::AskDeleteLabel(l.id.clone())),
                 ],
+                SpaceMenu::Header => vec![menu_rule(p), select.expect("the header menu has Select Chats").into()],
+                SpaceMenu::Gear => vec![],
+                SpaceMenu::Prefs | SpaceMenu::Options => unreachable!("only account spaces have these menus"),
             };
+            let col = Column::with_children(self.label_items(l, 0.0).into_iter().chain(tail));
             let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
-            return (menu.into(), sub.map(Into::into));
+            return (menu.into(), None);
         }
         let space = network_space(&st, entry);
         let account = space.map_or(entry, |n| n.account_id.as_str());
@@ -15878,12 +15842,7 @@ impl BeeperGuiApp {
                 if !matches!(*m, UiMessage::ChatSub(_)) {
                     d.menu = None;
                 }
-                let (asking, id) = (matches!(*m, UiMessage::AskDeleteLabel(_)), d.id);
-                let task = self.update(*m);
-                if asking {
-                    self.delete_in = Some(id);
-                }
-                return task;
+                return self.update(*m);
             }
             SpacesEdit::NewLabel => {
                 let close = window::close(d.id);
@@ -16029,9 +15988,9 @@ impl BeeperGuiApp {
         let window = mouse_area(window).on_release(edit(SpacesEdit::Drop));
         let Some((id, at)) = &d.menu else {
             drop(st);
-            return stack![window].push(self.label_asking(d.id).then(|| self.view_confirm(ASK_DELETE_LABEL))).into();
+            return window.into();
         };
-        let h = 8.0 + MENU_ITEM * if rail_label(&st, id).is_some() { 4.0 } else { 2.0 };
+        let h = 8.0 + MENU_ITEM * rail_label(&st, id).map_or(2.0, label_rows);
         drop(st);
         let (menu, sub) = self.account_menu(id, SpaceMenu::Gear);
         let x = if at.x + 233.0 > SPACES_SIZE.width { at.x - 233.0 } else { at.x }.max(4.0);
