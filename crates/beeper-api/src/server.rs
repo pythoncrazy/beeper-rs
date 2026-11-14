@@ -796,7 +796,14 @@ fn info(st: &BeeperStore) -> InfoResponse {
             ws_events: format!("{base_url}/v1/ws"),
         },
         platform: InfoPlatform {
-            arch: std::env::consts::ARCH.into(),
+            // Node's `process.arch`.
+            arch: match std::env::consts::ARCH {
+                "x86_64" => "x64",
+                "aarch64" => "arm64",
+                "x86" => "ia32",
+                other => other,
+            }
+            .into(),
             os: OsKind::current().node_platform_str().into(),
             release: "7.0.14".into(),
         },
@@ -805,7 +812,7 @@ fn info(st: &BeeperStore) -> InfoResponse {
             mcp_enabled: true,
             port: st.config.port,
             remote_access: st.config.remote,
-            status: "ok".into(),
+            status: "running".into(),
             base_url,
         },
     }

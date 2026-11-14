@@ -608,6 +608,13 @@ async fn lifecycle() {
     assert_eq!(store.read().bridge_accounts.len(), 6);
 
     let info = client.info().await;
+    let (_, raw) = client.send("GET", "/v1/info", &[], None).await;
+    let raw = String::from_utf8(raw).unwrap();
+    assert!(
+        raw.starts_with(r#"{"app":{"name":"Beeper","version":"#) && raw.contains(r#""server":{"status":"running","#)
+    );
+    #[cfg(target_arch = "x86_64")]
+    assert_eq!(info.platform.arch, "x64", "Node's process.arch");
     assert_eq!(info.app.bundle_id, APP_BUNDLE_ID);
     assert_eq!(info.server.port, port);
     assert_eq!(info.endpoints.ws_events, format!("http://127.0.0.1:{port}/v1/ws"));
@@ -1786,7 +1793,7 @@ async fn e2e_api_rejects_bad_input_and_keeps_serving() {
     ];
     for (method, path, body, status, want) in cases {
         assert_eq!(client.request(method, &path, body).await, (StatusCode(status), want), "{method} {path}");
-        assert_eq!(client.info().await.server.status, "ok", "the server answers after {method} {path}");
+        assert_eq!(client.info().await.server.status, "running", "the server answers after {method} {path}");
     }
     let merged = client.merge_chats("Merged", vec!["!tg_rust:beeper.com".into()], None).await;
     let path = format!("/v1/chats/{}/messages/msg_1004", merged["chatID"].as_str().unwrap());

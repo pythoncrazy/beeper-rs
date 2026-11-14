@@ -212,54 +212,55 @@ impl Default for Profile {
     }
 }
 
+/// Desktop's `/v1/info`, in its key order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InfoResponse {
     pub app: InfoApp,
-    pub endpoints: InfoEndpoints,
     pub platform: InfoPlatform,
     pub server: InfoServer,
+    pub endpoints: InfoEndpoints,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InfoApp {
-    pub bundle_id: String,
     pub name: String,
     pub version: String,
+    pub bundle_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InfoEndpoints {
-    pub mcp: String,
     pub oauth: InfoOAuthEndpoints,
     pub spec: String,
+    pub mcp: String,
     pub ws_events: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InfoOAuthEndpoints {
     pub authorization_endpoint: String,
-    pub introspection_endpoint: String,
-    pub registration_endpoint: String,
-    pub revocation_endpoint: String,
     pub token_endpoint: String,
+    pub introspection_endpoint: String,
     pub userinfo_endpoint: String,
+    pub revocation_endpoint: String,
+    pub registration_endpoint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InfoPlatform {
-    pub arch: String,
     pub os: String,
+    pub arch: String,
     pub release: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InfoServer {
-    pub base_url: String,
-    pub hostname: String,
-    pub mcp_enabled: bool,
-    pub port: u16,
-    pub remote_access: bool,
     pub status: String,
+    pub base_url: String,
+    pub port: u16,
+    pub hostname: String,
+    pub remote_access: bool,
+    pub mcp_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
