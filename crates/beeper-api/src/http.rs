@@ -15,6 +15,7 @@ impl StatusCode {
     pub const UNAUTHORIZED: Self = Self(401);
     pub const NOT_FOUND: Self = Self(404);
     pub const CONFLICT: Self = Self(409);
+    pub const PAYLOAD_TOO_LARGE: Self = Self(413);
     pub const RANGE_NOT_SATISFIABLE: Self = Self(416);
     pub const BAD_GATEWAY: Self = Self(502);
 }
@@ -35,33 +36,130 @@ impl HttpMessage {
     }
 }
 
-async fn fill<R: AsyncRead + Unpin>(stream: &mut R, buf: &mut Vec<u8>) -> Option<()> {
-    let mut tmp = [0u8; 8192];
-    let n = stream.read(&mut tmp).await.ok().filter(|&n| n > 0)?;
-    buf.extend_from_slice(&tmp[..n]);
-    Some(())
+/// Why a message was not read: the peer closed the connection (`None`), or the server refuses the request with
+/// this status, like Node's HTTP parser and Express's body parsers.
+pub type Stop = Option<StatusCode>;
+
+const BAD: Stop = Some(StatusCode::BAD_REQUEST);
+
+/// The longest chunk-size line or trailer section that a chunked body can have.
+const MAX_LINE: usize = 16 * 1024;
+
+async fn fill<R: AsyncRead + Unpin>(stream: &mut R, buf: &mut Vec<u8>) -> Result<(), Stop> {
+    buf.reserve(8192);
+    stream.read_buf(buf).await.ok().filter(|&n| n > 0).ok_or(None).map(drop)
 }
 
-pub async fn read_message<R: AsyncRead + Unpin>(stream: &mut R, buf: &mut Vec<u8>) -> Option<HttpMessage> {
+async fn fill_to<R: AsyncRead + Unpin>(stream: &mut R, buf: &mut Vec<u8>, end: usize) -> Result<(), Stop> {
+    while buf.len() < end {
+        fill(stream, buf).await?;
+    }
+    Ok(())
+}
+
+/// The position of the next CRLF at or after `from`.
+async fn line_end<R: AsyncRead + Unpin>(stream: &mut R, buf: &mut Vec<u8>, from: usize) -> Result<usize, Stop> {
+    loop {
+        if let Some(i) = buf[from..].windows(2).position(|w| w == b"\r\n") {
+            return Ok(from + i);
+        }
+        if buf.len() - from > MAX_LINE {
+            return Err(BAD);
+        }
+        fill(stream, buf).await?;
+    }
+}
+
+/// Decodes a chunked body that starts at `pos`, and returns it with the position after its trailer section.
+async fn read_chunked<R: AsyncRead + Unpin>(
+    stream: &mut R,
+    buf: &mut Vec<u8>,
+    mut pos: usize,
+    limit: usize,
+) -> Result<(Vec<u8>, usize), Stop> {
+    let mut body = Vec::new();
+    loop {
+        let eol = line_end(stream, buf, pos).await?;
+        let size = std::str::from_utf8(&buf[pos..eol]).ok().map(|l| l.split(';').next().expect("a first item"));
+        let size = size.filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit()));
+        let size = size.and_then(|s| usize::from_str_radix(s, 16).ok()).ok_or(BAD)?;
+        pos = eol + 2;
+        if size == 0 {
+            break;
+        }
+        if body.len() + size > limit {
+            return Err(Some(StatusCode::PAYLOAD_TOO_LARGE));
+        }
+        fill_to(stream, buf, pos + size + 2).await?;
+        if &buf[pos + size..pos + size + 2] != b"\r\n" {
+            return Err(BAD);
+        }
+        body.extend_from_slice(&buf[pos..pos + size]);
+        pos += size + 2;
+    }
+    let trailer = pos;
+    loop {
+        let eol = line_end(stream, buf, pos).await?;
+        let last = eol == pos;
+        pos = eol + 2;
+        if last {
+            return Ok((body, pos));
+        }
+        if pos - trailer > MAX_LINE {
+            return Err(BAD);
+        }
+    }
+}
+
+/// Reads one message. `limit` gives the largest body that the server accepts for the message head.
+pub async fn read_message<R: AsyncRead + Unpin>(
+    stream: &mut R,
+    buf: &mut Vec<u8>,
+    limit: impl FnOnce(&HttpMessage) -> usize,
+) -> Result<HttpMessage, Stop> {
     let head_end = loop {
         if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
             break pos + 4;
         }
         fill(stream, buf).await?;
     };
-    let mut lines = std::str::from_utf8(&buf[..head_end - 4]).ok()?.split("\r\n");
-    let start_line = lines.next()?.to_string();
-    let headers: HashMap<String, String> = lines
-        .map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string())))
-        .collect::<Option<_>>()?;
-    let len: usize = headers.get("content-length").map_or(Some(0), |v| v.parse().ok())?;
-    let end = head_end.checked_add(len)?;
-    while buf.len() < end {
-        fill(stream, buf).await?;
+    let mut lines = std::str::from_utf8(&buf[..head_end - 4]).map_err(|_| None)?.split("\r\n");
+    let start_line = lines.next().expect("a first line").to_string();
+    let mut headers = HashMap::new();
+    for line in lines {
+        let (k, v) = line.split_once(':').ok_or(None)?;
+        if headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string()).is_some()
+            && k.eq_ignore_ascii_case("content-length")
+        {
+            return Err(BAD);
+        }
     }
-    let body = buf[head_end..end].to_vec();
+    let mut msg = HttpMessage { start_line, headers, body: Vec::new() };
+    let limit = limit(&msg);
+    let end = match (msg.header("transfer-encoding"), msg.header("content-length")) {
+        (Some(_), Some(_)) => return Err(BAD),
+        (Some(te), None) => {
+            if !te.rsplit(',').next().expect("a last item").trim().eq_ignore_ascii_case("chunked") {
+                return Err(BAD);
+            }
+            let (body, end) = read_chunked(stream, buf, head_end, limit).await?;
+            msg.body = body;
+            end
+        }
+        (None, len) => {
+            let len = len.unwrap_or("0");
+            let len: usize = len.bytes().all(|b| b.is_ascii_digit()).then(|| len.parse().ok()).flatten().ok_or(BAD)?;
+            if len > limit {
+                return Err(Some(StatusCode::PAYLOAD_TOO_LARGE));
+            }
+            let end = head_end.checked_add(len).ok_or(BAD)?;
+            fill_to(stream, buf, end).await?;
+            msg.body = buf[head_end..end].to_vec();
+            end
+        }
+    };
     buf.drain(..end);
-    Some(HttpMessage { start_line, headers, body })
+    Ok(msg)
 }
 
 pub fn parse_query(raw: &str) -> Option<HashMap<String, String>> {
@@ -79,23 +177,37 @@ pub fn query_string(path: &str, params: &[(&str, &str)]) -> String {
     format!("{path}?{}", pairs.join("&"))
 }
 
-pub async fn read_ws_frame<R: AsyncRead + Unpin>(r: &mut R) -> Option<(u8, Vec<u8>)> {
-    let [b0, b1] = r.read_u16().await.ok()?.to_be_bytes();
+/// The close code of a frame larger than the `max` of [`read_ws_frame`], like the `ws` package.
+const WS_TOO_BIG: u16 = 1009;
+
+/// Reads one frame as `(opcode, payload)`. `Err(Some(code))` means that the reader must close the connection with
+/// this code.
+pub async fn read_ws_frame<R: AsyncRead + Unpin>(r: &mut R, max: usize) -> Result<(u8, Vec<u8>), Option<u16>> {
+    let [b0, b1] = r.read_u16().await.map_err(|_| None)?.to_be_bytes();
     let len = match b1 & 0x7F {
-        126 => r.read_u16().await.ok()? as usize,
-        127 => r.read_u64().await.ok()? as usize,
-        n => n as usize,
+        126 => r.read_u16().await.map_err(|_| None)? as u64,
+        127 => r.read_u64().await.map_err(|_| None)?,
+        n => n as u64,
     };
-    let mask = if b1 & 0x80 != 0 { r.read_u32().await.ok()?.to_be_bytes() } else { [0; 4] };
-    let mut payload = vec![0u8; len];
-    r.read_exact(&mut payload).await.ok()?;
+    if len > max as u64 {
+        return Err(Some(WS_TOO_BIG));
+    }
+    let mask = if b1 & 0x80 != 0 { r.read_u32().await.map_err(|_| None)?.to_be_bytes() } else { [0; 4] };
+    let mut payload = vec![0u8; len as usize];
+    r.read_exact(&mut payload).await.map_err(|_| None)?;
     payload.iter_mut().enumerate().for_each(|(i, b)| *b ^= mask[i & 3]);
-    Some((b0 & 0x0F, payload))
+    Ok((b0 & 0x0F, payload))
 }
 
-pub async fn write_ws_frame<W: AsyncWrite + Unpin>(w: &mut W, payload: &[u8], masked: bool) -> std::io::Result<()> {
+/// Writes one final frame with `opcode`: 0x1 for text, 0x8 for close.
+pub async fn write_ws_frame<W: AsyncWrite + Unpin>(
+    w: &mut W,
+    opcode: u8,
+    payload: &[u8],
+    masked: bool,
+) -> std::io::Result<()> {
     let (mask_bit, mask) = if masked { (0x80, [0x37, 0xFA, 0x21, 0x3D]) } else { (0, [0; 4]) };
-    let mut frame = vec![0x81];
+    let mut frame = vec![0x80 | opcode];
     match payload.len() {
         n if n < 126 => frame.push(mask_bit | n as u8),
         n if n <= 0xFFFF => frame.extend([&[mask_bit | 126][..], &(n as u16).to_be_bytes()].concat()),

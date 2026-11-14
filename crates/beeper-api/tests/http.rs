@@ -1,0 +1,107 @@
+//! The HTTP/1.1 transport of the Desktop API server, with raw requests on a TCP connection.
+
+use beeper_api::server::serve_http;
+use beeper_core::config::CentralConfig;
+use beeper_core::store::{BeeperStore, StoreLock};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::time::{timeout, Duration};
+
+const BAD_REQUEST: &str = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
+
+/// Starts a demo server, and returns its port and access token.
+async fn server(name: &str) -> (u16, String) {
+    let dir = std::env::temp_dir().join(format!("beeper-rs-http-{name}"));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("remove the stale test dir");
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let mut cfg = CentralConfig::new(dir, "127.0.0.1".into(), port, None);
+    cfg.demo = true;
+    let store = StoreLock::shared(BeeperStore::from_config(cfg));
+    let token = store.read().beeper_state.access_token.clone();
+    tokio::spawn(serve_http(listener, store));
+    (port, token)
+}
+
+/// Sends `request`, and returns all the bytes that the server writes until it closes the connection.
+async fn raw(port: u16, request: &[u8]) -> Vec<u8> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream.write_all(request).await.unwrap();
+    let mut out = Vec::new();
+    timeout(Duration::from_secs(10), stream.read_to_end(&mut out)).await.expect("the server closes").unwrap();
+    out
+}
+
+async fn text(port: u16, request: &str) -> String {
+    String::from_utf8(raw(port, request.as_bytes()).await).expect("a UTF-8 response")
+}
+
+fn post(path: &str, headers: &str, body: &str) -> String {
+    format!("POST {path} HTTP/1.1\r\nhost: x\r\ncontent-type: application/json\r\n{headers}\r\n{body}")
+}
+
+#[tokio::test]
+async fn chunked_bodies_are_decoded_and_conflicts_are_refused() {
+    let (port, _) = server("chunked").await;
+    let info = "GET /v1/info HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
+    let chunks = "4;ext=1\r\n{\"to\r\n9\r\nken\":\"x\"}\r\n0\r\ntrailer: 1\r\n\r\n";
+    let out = text(port, &(post("/oauth/introspect", "transfer-encoding: chunked\r\n", chunks) + info)).await;
+    let (first, second) = out.split_once("\r\n\r\n{\"active\":false}").expect("the decoded token is introspected");
+    assert!(first.starts_with("HTTP/1.1 200 ") && second.contains("\"bundle_id\""), "{out}");
+
+    for headers in [
+        "transfer-encoding: chunked\r\ncontent-length: 4\r\n",
+        "transfer-encoding: gzip\r\n",
+        "content-length: 2\r\ncontent-length: 2\r\n",
+        "content-length: +2\r\n",
+        "content-length: abc\r\n",
+    ] {
+        assert_eq!(text(port, &post("/oauth/revoke", headers, "{}")).await, BAD_REQUEST, "{headers}");
+    }
+    let bad_size = post("/oauth/revoke", "transfer-encoding: chunked\r\n", "zz\r\n{}\r\n0\r\n\r\n");
+    assert_eq!(text(port, &bad_size).await, BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn bodies_over_the_limit_of_the_route_get_413() {
+    let (port, _) = server("limits").await;
+    let too_large = "content-type: application/json\r\nconnection: close\r\n\r\n{\"message\":\"request entity too large\",\"code\":\"UNKNOWN_ERROR\"}";
+    for (path, ct, len) in [
+        ("/oauth/token", "application/json", 64 * 1024 + 1),
+        ("/v1/app/setup/start", "application/json", 64 * 1024 + 1),
+        ("/v1/chats", "application/json", 10 * 1024 * 1024 + 1),
+        ("/v1/assets/upload", "application/json", 100 * 1024 * 1024 + 1),
+        ("/v1/assets/upload", "multipart/form-data; boundary=b", 500 * 1024 * 1024 + 1),
+    ] {
+        let head = format!("POST {path} HTTP/1.1\r\nhost: x\r\ncontent-type: {ct}\r\ncontent-length: {len}\r\n\r\n");
+        let out = text(port, &head).await;
+        assert!(out.starts_with("HTTP/1.1 413 ") && out.ends_with(too_large), "{path}: {out}");
+    }
+    let big_chunk = post("/oauth/revoke", "transfer-encoding: chunked\r\n", "10001\r\n");
+    assert!(text(port, &big_chunk).await.starts_with("HTTP/1.1 413 "));
+    let body = format!("{{\"token\":\"{}\"}}", "x".repeat(60_000));
+    let out = text(
+        port,
+        &post("/oauth/introspect", &format!("content-length: {}\r\nconnection: close\r\n", body.len()), &body),
+    )
+    .await;
+    assert!(out.ends_with("{\"active\":false}"), "a body under the limit is read: {out}");
+}
+
+#[tokio::test]
+async fn websocket_frames_over_64_kb_close_with_1009() {
+    let (port, token) = server("ws").await;
+    for (len, close) in [(64 * 1024, &[][..]), (64 * 1024 + 1, &[0x88, 0x02, 0x03, 0xF1][..])] {
+        let upgrade = format!("GET /v1/ws HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\nauthorization: Bearer {token}\r\n\r\n");
+        let mut frame = vec![0x81, 0x80 | 127];
+        frame.extend((len as u64).to_be_bytes());
+        frame.extend([0; 4]);
+        frame.extend(vec![b'x'; len]);
+        let out = raw(port, &[upgrade.into_bytes(), frame].concat()).await;
+        let end = out.windows(4).position(|w| w == b"\r\n\r\n").expect("a handshake") + 4;
+        assert!(out.starts_with(b"HTTP/1.1 101 "));
+        assert_eq!(&out[end..], close, "a {len} byte frame");
+    }
+}
