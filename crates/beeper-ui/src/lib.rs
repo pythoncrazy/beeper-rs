@@ -4453,6 +4453,7 @@ impl BeeperGuiApp {
         let chat = st.chats[idx].clone();
         self.pane.composer = composer_with(chat.draft.as_ref().and_then(|d| d.text.as_deref()).unwrap_or_default());
         self.pane.history = History::default();
+        self.pane.timeline.forget_reveal();
         self.pane.reply_to_message_id = None;
         (self.pane.editing_message_id, self.pane.stash) = (None, None);
         self.pane.mentions.clear();

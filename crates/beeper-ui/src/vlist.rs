@@ -149,6 +149,11 @@ impl VList {
     pub fn reveal(&self, key: u64) {
         self.0.borrow_mut().target = Some(key);
     }
+
+    /// Drops the row that the next view was to reveal, when the list gets other rows.
+    pub fn forget_reveal(&self) {
+        self.0.borrow_mut().target = None;
+    }
 }
 
 /// The layouts of the rows in the layout of `Rows`.
