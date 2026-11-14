@@ -1564,11 +1564,14 @@ impl BeeperStore {
         Ok((chat_id, msg_id, msg))
     }
 
-    fn message_in_chat(&self, chat_or_local_id: &str, message_id: &str) -> Result<(String, usize), &'static str> {
-        let chat_id = self.resolve_canonical_chat_id(chat_or_local_id).ok_or("Chat not found")?;
+    /// The chat ID and index of a message in the chat, or in a member chat of a merged chat.
+    pub fn message_in_chat(&self, chat_or_local_id: &str, message_id: &str) -> Result<(String, usize), &'static str> {
+        let chat = &self.chats[self.resolve_chat_idx(chat_or_local_id).ok_or("Chat not found")?];
         let &m_idx = self.msg_idx_by_id.get(message_id).ok_or("Message not found")?;
-        assert_eq!(self.messages[m_idx].chat_id, chat_id, "message belongs to another chat");
-        Ok((chat_id, m_idx))
+        let target = &self.messages[m_idx].chat_id;
+        let mut members = chat.merge.iter().flat_map(|m| &m.chat_ids);
+        let found = chat.id == *target || members.any(|id| self.resolve_canonical_chat_id(id).as_ref() == Some(target));
+        found.then(|| (target.clone(), m_idx)).ok_or("Message not found")
     }
 
     pub fn edit_message(
@@ -1580,8 +1583,9 @@ impl BeeperStore {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let msg = self.update_message(m_idx, |m| {
             m.html = crate::codec::markdown_html(&new_text);
-            let prev = m.text.replace(new_text).expect("edited message has text");
-            m.edit_history.push(EditHistoryEntry { text: prev, timestamp: now_rfc3339_millis() });
+            if let Some(prev) = m.text.replace(new_text) {
+                m.edit_history.push(EditHistoryEntry { text: prev, timestamp: now_rfc3339_millis() });
+            }
         });
         Ok((chat_id, msg))
     }
@@ -1680,13 +1684,14 @@ impl BeeperStore {
         chat_or_local_id: &str,
         message_id: &str,
         reaction_key: &str,
-    ) -> Result<String, &'static str> {
+    ) -> Result<(String, String), &'static str> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let mine = |r: &Reaction| r.reaction_key == reaction_key && self.is_me(&r.participant_id);
         let ids: Vec<String> =
             self.messages[m_idx].reactions.iter().filter(|r| mine(r)).map(|r| r.id.clone()).collect();
+        let first = ids.first().ok_or("Reaction not found")?.clone();
         self.update_message(m_idx, |m| m.reactions.retain(|r| !ids.contains(&r.id)));
-        Ok(chat_id)
+        Ok((chat_id, first))
     }
 
     pub fn toggle_bookmark(&mut self, message_id: &str) -> bool {

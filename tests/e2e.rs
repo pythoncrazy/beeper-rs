@@ -1464,3 +1464,92 @@ async fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui
         }
     }
 }
+
+/// Bad requests get Desktop's errors, and the server answers the next request.
+#[tokio::test]
+async fn e2e_api_rejects_bad_input_and_keeps_serving() {
+    let (data_dir, _, store, client) = spawn_e2e_beeper_instance("bad_input", None).await;
+    let media = path_to_file_url(&data_dir.join("media"));
+    let issue = |path: &str| json!({ "code": "custom", "message": "'single' chat must have exactly one participantID.", "path": [path] });
+    let too_small = json!({
+        "code": "too_small", "minimum": 1, "type": "array", "inclusive": true, "exact": false,
+        "message": "Array must contain at least 1 element(s)", "path": ["participantIDs"]
+    });
+    let invalid = |issues: Value| json!({ "message": "Invalid input", "code": "VALIDATION_ERROR", "details": { "issues": issues } });
+    let not_found = |m: &str| json!({ "message": m, "code": "NOT_FOUND" });
+    let cases = [
+        (
+            "POST",
+            "/v1/chats".to_string(),
+            Some(json!({ "accountID": "acc_whatsapp", "type": "single", "participantIDs": [] })),
+            400,
+            invalid(json!([too_small, issue("participantIDs")])),
+        ),
+        (
+            "POST",
+            "/v1/chats".to_string(),
+            Some(json!({ "accountID": "acc_whatsapp", "type": "group" })),
+            400,
+            invalid(json!([{
+                "code": "invalid_type", "expected": "array", "received": "undefined", "path": ["participantIDs"],
+                "message": "Required"
+            }])),
+        ),
+        (
+            "DELETE",
+            "/v1/chats/!tg_rust:beeper.com/messages/nope/reactions/x".to_string(),
+            None,
+            404,
+            not_found("Message not found"),
+        ),
+        (
+            "DELETE",
+            "/v1/chats/!tg_pebble:beeper.com/messages/msg_1004".to_string(),
+            None,
+            404,
+            not_found("Message not found"),
+        ),
+        (
+            "GET",
+            "/v1/chats/!tg_pebble:beeper.com/messages/msg_1004".to_string(),
+            None,
+            404,
+            not_found("Message not found"),
+        ),
+        (
+            "PATCH",
+            "/v1/chats/!tg_rust:beeper.com".to_string(),
+            Some(json!({ "merge": { "chatIDs": ["!nope"] } })),
+            404,
+            not_found("Chat not found"),
+        ),
+        (
+            "POST",
+            "/v1/chats".to_string(),
+            Some(json!({ "mode": "merge", "merge": { "chatIDs": ["!tg_rust:beeper.com"] } })),
+            400,
+            json!({ "message": "title is required", "code": "INVALID_INPUT" }),
+        ),
+        (
+            "GET",
+            beeper_api::http::query_string("/v1/assets/serve", &[("url", &media)]),
+            None,
+            500,
+            json!({ "message": "EISDIR: illegal operation on a directory, read", "code": "UNKNOWN_ERROR" }),
+        ),
+    ];
+    for (method, path, body, status, want) in cases {
+        assert_eq!(client.request(method, &path, body).await, (StatusCode(status), want), "{method} {path}");
+        assert_eq!(client.info().await.server.status, "ok", "the server answers after {method} {path}");
+    }
+    let merged = client.merge_chats("Merged", vec!["!tg_rust:beeper.com".into()], None).await;
+    let path = format!("/v1/chats/{}/messages/msg_1004", merged["chatID"].as_str().unwrap());
+    let (status, msg) = client.request("GET", &path, None).await;
+    assert_eq!(
+        (status, &msg["chatID"]),
+        (StatusCode::OK, &json!("!tg_rust:beeper.com")),
+        "a merged chat has the messages of its members"
+    );
+    drop(store);
+    std::fs::remove_dir_all(data_dir).unwrap();
+}

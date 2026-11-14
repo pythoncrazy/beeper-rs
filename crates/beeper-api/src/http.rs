@@ -55,11 +55,12 @@ pub async fn read_message<R: AsyncRead + Unpin>(stream: &mut R, buf: &mut Vec<u8
         .map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string())))
         .collect::<Option<_>>()?;
     let len: usize = headers.get("content-length").map_or(Some(0), |v| v.parse().ok())?;
-    while buf.len() < head_end + len {
+    let end = head_end.checked_add(len)?;
+    while buf.len() < end {
         fill(stream, buf).await?;
     }
-    let body = buf[head_end..head_end + len].to_vec();
-    buf.drain(..head_end + len);
+    let body = buf[head_end..end].to_vec();
+    buf.drain(..end);
     Some(HttpMessage { start_line, headers, body })
 }
 
