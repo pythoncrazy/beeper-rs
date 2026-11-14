@@ -144,7 +144,7 @@ impl BeeperClient {
         self.json("GET", "/v1/accounts", None).await
     }
 
-    pub async fn list_chats(&self) -> CursorPage<Chat> {
+    pub async fn list_chats(&self) -> CursorPage<Value> {
         self.json("GET", "/v1/chats", None).await
     }
 

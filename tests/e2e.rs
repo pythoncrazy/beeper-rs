@@ -635,6 +635,15 @@ async fn lifecycle() {
     assert_eq!((ids.len(), ids.iter().collect::<std::collections::HashSet<_>>().len()), (all.len(), all.len()));
     assert!(listed.windows(2).all(|w| w[0].0.as_str() >= w[1].0.as_str()), "newest activity first: {listed:?}");
     let (_, first) = pager.request("GET", "/v1/chats", None).await;
+    let eric = &first["items"].as_array().unwrap().iter().find(|c| c["id"] == "!wa_eric:beeper.com").unwrap();
+    assert_eq!(
+        (&eric["network"], &eric["isMuted"], &eric["snooze"]),
+        (&json!("WhatsApp"), &json!(false), &Value::Null)
+    );
+    assert!(eric["preview"].is_object() && eric.get("inboxGroup").is_none() && eric.get("labelIDs").is_none());
+    let (_, one) = pager.request("GET", "/v1/chats/local_wa_eric?maxParticipantCount=1", None).await;
+    assert_eq!((&one["participants"]["hasMore"], &one["participants"]["total"]), (&json!(true), &json!(2)));
+    assert!(one.get("preview").is_none() && one["labels"][0]["name"].is_string(), "{one}");
     assert_eq!((first["items"].as_array().unwrap().len(), &first["hasMore"]), (all.len().min(25), &json!(false)));
     let (_, two) = pager.request("GET", "/v1/chats?accountIDs=acc_whatsapp&accountIDs=acc_telegram", None).await;
     let wanted =
@@ -1006,7 +1015,11 @@ async fn lifecycle() {
     assert!(!media_res.items.is_empty() && media_res.items.iter().all(|m| !m.attachments.is_empty()));
 
     let unified = client.unified_search("rust").await;
-    assert!(!unified["results"]["in_groups"].as_array().unwrap().is_empty());
+    assert!(
+        !unified["results"]["chats"].as_array().unwrap().is_empty() && unified["results"]["in_groups"] == json!([])
+    );
+    let people = client.unified_search("eric").await;
+    assert_eq!(people["results"]["in_groups"][0]["title"], "#desktop-release", "groups match by participant");
 
     let settings_hits = search_settings(&store.read(), "notifications");
     assert_eq!(settings_hits[0], SettingsHit::Section(SettingsTab::Notifications, true));
