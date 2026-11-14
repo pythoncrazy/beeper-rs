@@ -2201,7 +2201,7 @@ fn space_sheet_like_desktop() {
     assert_eq!(app.selected_account_filter.as_deref(), Some("label:lbl_work"));
     assert!(app.chat_menu.is_none());
     pick(&mut app, "Label Settings", &["Mute"], &["Space Options", "Delete Label"]);
-    assert!(app.label_window.as_ref().is_some_and(|d| d.label.as_deref() == Some("lbl_work")));
+    assert!(app.label_settings.iter().any(|w| w.label == "lbl_work"));
     let _ = app.update(UiMessage::CloseModals);
     let account = app.store.read().bridge_accounts[0].account_id.clone();
     let _ = app.update(UiMessage::SelectAccount(Some(account)));
@@ -2211,6 +2211,51 @@ fn space_sheet_like_desktop() {
     let _ = app.update(UiMessage::ChatSub(Some(1)));
     let mut sim = simulator(app.view_main());
     assert!(sim.find("Show in Inbox").is_ok() && sim.find("Account Settings...").is_ok());
+}
+
+#[test]
+fn label_settings_like_desktop() {
+    let mut app = demo_app("label-settings");
+    let _ = app.update(UiMessage::SelectAccount(Some("label:lbl_work".into())));
+    let _ = app.update(UiMessage::OpenChatMenu(SPACE_SHEET.into()));
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_main());
+        let _ = sim.click("Label Settings").expect("Label Settings");
+        sim.into_messages().collect()
+    };
+    for m in picked {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.label_settings.len(), 1, "the sheet opens Label Settings");
+    let w = app.label_settings[0].id;
+    let run = |app: &mut BeeperGuiApp, item: &str| {
+        let picked: Vec<UiMessage> = {
+            let mut sim = simulator(app.view_window(w));
+            let _ = sim.click(item).expect(item);
+            sim.into_messages().collect()
+        };
+        for m in picked {
+            let _ = app.update(m);
+        }
+    };
+    {
+        let mut sim = simulator(app.view_window(w));
+        for item in ["Work", "Edit", "Chats", "Show in Inbox", "Mute", "Delete Label", "Done"] {
+            assert!(sim.find(item).is_ok(), "{item}");
+        }
+    }
+    run(&mut app, "All Messages");
+    assert!(app.label_settings[0].menu, "the pill opens the Show in Inbox menu");
+    run(&mut app, "Only DMs");
+    let inbox = |app: &BeeperGuiApp| app.store.read().labels.iter().find(|l| l.id == "lbl_work").map(|l| l.inbox);
+    assert_eq!(inbox(&app), Some(Some("dmOnly")));
+    assert!(!app.label_settings[0].menu);
+    run(&mut app, "Delete Label");
+    assert!(app.label_asking(w), "the confirm shows in the Label Settings window");
+    let ask = "Are you sure you want to delete \"Work\"? This will remove the label from all chats.";
+    assert!(simulator(app.view_main()).find(ask).is_err());
+    run(&mut app, "Delete");
+    assert_eq!(inbox(&app), None, "Delete deletes the label");
 }
 
 #[test]
