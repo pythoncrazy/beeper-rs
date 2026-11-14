@@ -10320,8 +10320,8 @@ impl BeeperGuiApp {
             let face = match d.users.first().map(|(a, _)| a).or(picked).filter(|_| network_icons) {
                 Some(account) => {
                     let ring = match (on, self.hovered_chat.as_ref() == Some(&key)) {
-                        (true, _) => p.selected,
-                        (false, true) => crate::style::mix(p.window, Color { a: 1.0, ..p.hover }, p.hover.a),
+                        (true, _) => crate::style::flat(p.window, p.selected),
+                        (false, true) => crate::style::flat(p.window, p.hover),
                         (false, false) => p.window,
                     };
                     badged(face, account, av, if compact { 12.0 } else { 16.0 }, (!colorize).then_some(p), ring)
@@ -10484,8 +10484,8 @@ impl BeeperGuiApp {
             let avatar = match network_icons {
                 true => {
                     let ring = match (on, self.hovered_chat.as_ref() == Some(&c.id)) {
-                        (true, _) => p.selected,
-                        (false, true) => crate::style::mix(p.window, Color { a: 1.0, ..p.hover }, p.hover.a),
+                        (true, _) => crate::style::flat(p.window, p.selected),
+                        (false, true) => crate::style::flat(p.window, p.hover),
                         (false, false) => p.window,
                     };
                     badged(avatar, &c.account_id, av, if compact { 12.0 } else { 16.0 }, (!colorize).then_some(p), ring)

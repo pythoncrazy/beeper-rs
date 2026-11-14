@@ -390,6 +390,11 @@ pub fn mix(a: Color, b: Color, k: f32) -> Color {
     Color::from_rgba(a.r + (b.r - a.r) * k, a.g + (b.g - a.g) * k, a.b + (b.b - a.b) * k, a.a + (b.a - a.a) * k)
 }
 
+/// The opaque color of `c` drawn over `bg`.
+pub fn flat(bg: Color, c: Color) -> Color {
+    mix(bg, Color { a: 1.0, ..c }, c.a)
+}
+
 macro_rules! brands {
     ($($id:literal),*) => {
         [$(($id, include_str!(concat!("../assets/brands/", $id, ".svg")), include_str!(concat!("../assets/brands/badge/", $id, ".svg")))),*]
