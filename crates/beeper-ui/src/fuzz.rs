@@ -1183,6 +1183,28 @@ fn views_keep_the_chat_list_until_the_store_changes() {
     assert!(!app.visible_chats(&app.store.read()).iter().any(|c| c.id == ids[0]), "the archived chat leaves");
 }
 
+/// The command bar searches once for each query: the other events keep its finds until the store changes, and the
+/// finds are the newest messages first.
+#[test]
+fn command_bar_searches_once_for_each_query() {
+    let mut app = demo_app("search-memo");
+    let id = app.main_window.expect("a main window");
+    let hits = |app: &BeeperGuiApp| {
+        drop(Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id)));
+        app.memo.hits.borrow().clone().expect("the view searched").1
+    };
+    let _ = app.update(UiMessage::ToggleCommandPalette);
+    let _ = app.update(UiMessage::CommandQueryChanged("rust".into()));
+    let first = hits(&app);
+    assert!(first.0.len() > 1, "the demo has messages with the word");
+    let _ = app.update(UiMessage::Relist);
+    assert!(Rc::ptr_eq(&first, &hits(&app)), "a frame keeps the finds");
+    let _ = app.update(UiMessage::CommandQueryChanged("rus".into()));
+    assert!(!Rc::ptr_eq(&first, &hits(&app)), "a key searches again");
+    let st = app.store.read();
+    assert!(first.0.windows(2).all(|w| st.messages[w[0]].sort_key > st.messages[w[1]].sort_key), "newest first");
+}
+
 #[test]
 fn forward_rows_open_the_chat_menu_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
