@@ -1025,6 +1025,19 @@ fn selected_message_commands_like_desktop() {
 }
 
 #[test]
+fn composer_placeholder_like_desktop() {
+    let app = demo_app("placeholder");
+    let mut chat = app.visible_chats(&app.store.read())[0].clone();
+    let net = network_name(&chat.account_id);
+    chat.title = "x".repeat(130);
+    assert_eq!(app.composer_placeholder(&chat), format!("Message {}... on {net}", "x".repeat(125)), "128 characters");
+    (chat.title, chat.is_request, chat.chat_type) = ("Ann".into(), Some(true), "single".into());
+    assert_eq!(app.composer_placeholder(&chat), format!("Message Ann on {net} to accept the request"));
+    chat.chat_type = "group".into();
+    assert_eq!(app.composer_placeholder(&chat), format!("Message Ann on {net} to join the group"));
+}
+
+#[test]
 fn emoticons_follow_the_setting() {
     use iced_test::simulator::typewrite;
     let mut app = demo_app("emoticons");

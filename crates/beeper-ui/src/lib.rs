@@ -1735,6 +1735,14 @@ pub enum Suggestion {
     Mention(String, String, Option<User>),
 }
 
+/// Lodash's `truncate` with the default omission: at most `n` characters, and "..." at the end when it cuts.
+fn truncate(s: String, n: usize) -> String {
+    match s.chars().count() > n {
+        true => s.chars().take(n - 3).collect::<String>() + "...",
+        false => s,
+    }
+}
+
 /// Desktop's `xk`: the label of a mention of `u`.
 fn mention_label(u: &User) -> String {
     let username = u.username.as_deref().map(|n| n.strip_prefix('@').unwrap_or(n));
@@ -12021,9 +12029,16 @@ impl BeeperGuiApp {
         let pane = self.pane();
         let to = match (pane.send_later, pane.reply_thread.is_some() || pane.reply_to_message_id.is_some()) {
             (Some(_), _) => "Send Later".into(),
-            (None, reply) => format!("{} {}", if reply { "Reply to" } else { "Message" }, chat.title),
+            (None, reply) => {
+                format!("{} {}", if reply { "Reply to" } else { "Message" }, truncate(chat.title.clone(), 128))
+            }
         };
-        format!("{to} on {}", network_name(&chat.account_id))
+        let request = match (chat.is_request == Some(true), chat.chat_type == "group") {
+            (false, _) => "",
+            (true, true) => " to join the group",
+            (true, false) => " to accept the request",
+        };
+        format!("{to} on {}{request}", network_name(&chat.account_id))
     }
 
     fn view_composer<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {
@@ -12034,10 +12049,7 @@ impl BeeperGuiApp {
             let q = &st.messages[i];
             let text = preview_body(q).map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
             let text = text.or_else(|| message_tag(q).map(|t| t.1.to_string())).unwrap_or_default();
-            let text = match text.chars().count() > 128 {
-                true => text.chars().take(125).collect::<String>() + "...",
-                false => text,
-            };
+            let text = truncate(text, 128);
             let name = (chat.chat_type == "group").then(|| semi(q.sender_name.clone().expect("sender name"), 12.0));
             let body = column![].push(name.map(|n| n.color(p.strong))).push(txt(text, 12.0).color(p.text)).spacing(2);
             let (edge, fill) = match q.is_sender == Some(true) {
