@@ -130,15 +130,19 @@ async fn edit_pins(client: &Client, id: &str, add: bool) -> matrix_sdk::Result<(
     account.set_account_data_raw(kind, raw).await.map(drop)
 }
 
+/// Desktop's `findMatchingBridgeAccount`: the login of the room's receiver, the one Slack login of the room's
+/// workspace, or the one login of a room without a receiver.
 fn account_id(bridge: &Value, accounts: &[BridgeAccountInfo]) -> String {
     let Some(name) = s(&bridge["com.beeper.bridge_name"]) else { return "hungryserv".into() };
-    let mut matches = accounts.iter().filter(|a| a.bridge_id == name);
-    let network = s(&bridge["network"]["id"]);
-    let found = match network {
-        Some(n) if name == "slackgo" => matches.find(|a| a.login_id.starts_with(&n)),
-        _ => matches.next(),
-    };
-    found.map_or(name, |a| a.account_id.clone())
+    let logins: Vec<&BridgeAccountInfo> = accounts.iter().filter(|a| a.bridge_id == name).collect();
+    let receiver = s(&bridge["channel"]["fi.mau.receiver"]).filter(|r| *r != name && r != "unknown");
+    let one = |v: Vec<&&BridgeAccountInfo>| (v.len() == 1).then(|| v[0].account_id.clone());
+    let workspace = s(&bridge["network"]["id"]).filter(|_| name == "slackgo").and_then(|n| {
+        one(logins.iter().filter(|a| a.login_id == n || a.login_id.starts_with(&format!("{n}-"))).collect())
+    });
+    let by_receiver = receiver.as_ref().and_then(|r| logins.iter().find(|a| a.login_id == *r));
+    let only = receiver.is_none().then(|| one(logins.iter().collect())).flatten();
+    by_receiver.map(|a| a.account_id.clone()).or(workspace).or(only).unwrap_or(name)
 }
 
 pub const RULES: &str = "com.beeper.chat_list_rules";
@@ -2240,6 +2244,31 @@ mod tests {
         assert_eq!(st.chats[st.chat_idx_by_id["!room:x"]].older, Older::Start, "the pagination state persists");
         // Windows keeps the Matrix store open while the tasks of the SDK end, so the next run removes it.
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Desktop keeps each cloud login of a bridge as its own account, and puts a room on the login of its receiver.
+    #[test]
+    fn several_logins_of_a_bridge_like_desktop() {
+        let on = json!({ "state_event": "CONNECTED" });
+        let bridges = json!({
+            "whatsapp": { "bridgeState": { "bridgeType": "whatsapp" }, "remoteState": { "a": on, "b": on } },
+            "telegram": { "bridgeState": { "bridgeType": "telegram" }, "remoteState": { "t": on } },
+        });
+        let accounts = crate::cloud::cloud_accounts(&bridges).expect("two logins of one bridge are valid");
+        let mut ids: Vec<&str> = accounts.iter().map(|a| a.account_id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, ["telegram", "whatsapp.a", "whatsapp.b"]);
+        let room = |bridge: &str, receiver: Option<&str>| {
+            let mut v = json!({ "com.beeper.bridge_name": bridge });
+            if let Some(r) = receiver {
+                v["channel"] = json!({ "fi.mau.receiver": r });
+            }
+            super::account_id(&v, &accounts)
+        };
+        assert_eq!(room("whatsapp", Some("b")), "whatsapp.b");
+        assert_eq!(room("whatsapp", None), "whatsapp", "Desktop does not guess between two logins");
+        assert_eq!(room("telegram", None), "telegram");
+        assert_eq!(room("telegram", Some("t")), "telegram");
     }
 
     #[tokio::test]

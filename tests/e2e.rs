@@ -461,7 +461,6 @@ async fn lifecycle() {
     for bad in [
         json!([]),
         json!({ "whatsapp": { "bridgeState": {}, "remoteState": { "w": { "state_event": "CONNECTED" } } } }),
-        json!({ "whatsapp": { "bridgeState": { "bridgeType": "whatsapp" }, "remoteState": { "a": { "state_event": "CONNECTED" }, "b": { "state_event": "CONNECTED" } } } }),
     ] {
         assert_eq!(beeper_core::cloud::cloud_accounts(&bad).unwrap_err().status, 502, "{bad} is rejected");
     }

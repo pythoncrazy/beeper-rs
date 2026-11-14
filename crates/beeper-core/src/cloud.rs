@@ -41,12 +41,12 @@ pub fn cloud_accounts(bridges: &Value) -> Result<Vec<BridgeAccountInfo>, CloudEr
         let state = &b["bridgeState"];
         let remotes = b["remoteState"].as_object().into_iter().flatten();
         let remotes: Vec<_> = remotes.filter(|(_, r)| r["state_event"] != "UNCONFIGURED").collect();
-        if remotes.len() > 1 && id != "slackgo" {
-            return Err(bad(&format!("{id} has {} cloud logins", remotes.len())));
-        }
+        // Desktop's account ID (`Uo`) is `bridge.login` for each cloud login. A bridge with one login other than Slack
+        // keeps the bridge name.
+        let several = remotes.len() > 1 || id == "slackgo";
         for (remote, r) in remotes {
             out.push(BridgeAccountInfo {
-                account_id: if id == "slackgo" { format!("{id}.{remote}") } else { id.clone() },
+                account_id: if several { format!("{id}.{remote}") } else { id.clone() },
                 bridge_id: id.clone(),
                 bridge_type: field(state, "bridgeType").ok_or_else(|| bad(&format!("{id} has no bridgeType")))?,
                 is_running: state["stateEvent"] == "RUNNING",
