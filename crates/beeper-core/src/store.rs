@@ -1044,7 +1044,7 @@ impl BeeperStore {
             }
             false => self.exec("DELETE FROM outbox WHERE id = ?1", params![row]),
         }
-        let error = error.map(|(message, _)| SendError { message, retrying: false });
+        let error = error.map(|(message, _)| SendError { message: Some(message), retrying: false });
         if let Some(&i) = message.and_then(|id| self.msg_idx_by_id.get(id)) {
             if self.messages[i].send_error != error {
                 self.update_message(i, |m| m.send_error = error);
@@ -1739,6 +1739,7 @@ impl BeeperStore {
             seen: BTreeMap::new(),
             timer: None,
             send_error: None,
+            is_delivered: false,
             flags: 0,
         };
         let m_idx = self.push_message(msg, true);

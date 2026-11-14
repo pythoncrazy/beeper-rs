@@ -1981,18 +1981,25 @@ fn undo_send_like_desktop() {
     assert!(app.queued.is_empty(), "the free plan sends at once");
 }
 
+/// Turns off the demo, so that changes go to the outbox. The seed messages count as messages that the homeserver took.
+fn online(app: &BeeperGuiApp) {
+    let mut st = app.store.write();
+    st.config.demo = false;
+    let seeded: Vec<String> = st.messages.iter().map(|m| m.id.clone()).collect();
+    st.sent.extend(seeded.into_iter().map(|id| (id.clone(), id)));
+}
+
 #[test]
 fn failed_sends_show_retry_and_remove_like_desktop() {
     let note = "!note_self:beeper.com";
     let mut app = demo_app("failed-send");
     let _ = app.update(UiMessage::SelectChat(note.into()));
-    app.store.write().config.demo = false;
+    online(&app);
     let _ = app.update(UiMessage::ComposerChanged("hi".into()));
     let _ = app.update(UiMessage::SubmitComposer);
     let _ = app.update(UiMessage::SendQueued(Some(note.into())));
     let id = {
         let mut st = app.store.write();
-        st.config.demo = true;
         let (row, _, out) = st.outbox.remove(0);
         let id = out.message().expect("a send has a local echo").to_string();
         st.pushed(row, Some(&id), Some(("M_FORBIDDEN: refused".into(), true)));
@@ -2007,6 +2014,54 @@ fn failed_sends_show_retry_and_remove_like_desktop() {
     let _ = app.update(UiMessage::RemoveUnsent(id.clone()));
     let st = app.store.read();
     assert!(!st.msg_idx_by_id.contains_key(&id) && st.outbox.is_empty(), "Remove drops the echo and its send");
+}
+
+#[test]
+fn own_messages_show_their_send_status_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("send-status");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    online(&app);
+    let send = |app: &mut BeeperGuiApp, text: &str| {
+        let _ = app.update(UiMessage::ComposerChanged(text.into()));
+        let _ = app.update(UiMessage::SubmitComposer);
+    };
+    let status = |app: &BeeperGuiApp| {
+        let mut sim = simulator(app.view_main());
+        ["Queued", "Sending...", "Still sending...", "Sent", "Delivered"].map(|s| sim.find(s).is_ok())
+    };
+    send(&mut app, "one");
+    if !app.queued.is_empty() {
+        assert_eq!(status(&app), [true, false, false, false, false], "undo send queues the message");
+        let _ = app.update(UiMessage::SendQueued(Some(note.into())));
+    }
+    let id = app.store.read().outbox[0].2.message().expect("a local echo").to_string();
+    // The views of a debug build are slow, so the test sets the age of the message.
+    let age = |app: &BeeperGuiApp, ms: i64| {
+        let mut st = app.store.write();
+        let i = st.msg_idx_by_id[&id];
+        st.update_message(i, |m| m.timestamp = beeper_core::config::rfc3339_from_millis(now_unix_millis() - ms));
+    };
+    age(&app, -60_000);
+    assert_eq!(status(&app), [false, true, false, false, false], "a pending message is sending");
+    age(&app, 5_000);
+    assert_eq!(status(&app), [false, false, true, false, false], "after 5 s it is still sending");
+    {
+        let mut st = app.store.write();
+        st.config.demo = true;
+        let (row, ..) = st.outbox.remove(0);
+        st.pushed(row, Some(&id), None);
+        let echo = st.messages[st.msg_idx_by_id[&id]].clone();
+        st.remove_message(note, &id).expect("the local echo");
+        st.upsert_message(Message { id: "$sent".into(), ..echo });
+    }
+    assert_eq!(status(&app), [false, false, false, true, false], "the homeserver took the message");
+    {
+        let mut st = app.store.write();
+        let i = st.msg_idx_by_id["$sent"];
+        st.update_message(i, |m| m.is_delivered = true);
+    }
+    assert_eq!(status(&app), [false, false, false, false, true], "a bridge delivered the message");
 }
 
 #[test]

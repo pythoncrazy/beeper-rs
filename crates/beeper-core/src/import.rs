@@ -297,6 +297,7 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         seen: Default::default(),
         timer: None,
         send_error: None,
+        is_delivered: false,
         flags: 0,
     });
     let text = Some(crate::matrix::reaction_text(&key, target.as_ref(), who));
@@ -326,6 +327,7 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         seen: Default::default(),
         timer: None,
         send_error: None,
+        is_delivered: false,
         flags: 0,
     })
 }
@@ -625,6 +627,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
             edit_history: Vec::new(),
             timer: None,
             send_error: None,
+            is_delivered: false,
             is_edited: flag(&m, "editedTimestamp").then_some(true),
             links: m
                 .get("links")
