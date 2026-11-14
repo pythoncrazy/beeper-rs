@@ -326,7 +326,8 @@ pub enum UiMessage {
     ChatUpserted(Box<Chat>),
     Typing(String),
     NotifyTimer(String, u64),
-    Notified(Result<(u32, String), String>),
+    /// A shown notification, with its chat and message.
+    Notified(Result<(u32, (String, String)), String>),
     NotificationEvent(u32, bool),
     WindowFocused(bool),
     /// Desktop's `toggleIncognitoMode` from a hotkey or the command bar, with its toast.
@@ -3381,7 +3382,7 @@ pub struct BeeperGuiApp {
     booted: String,
     focused: bool,
     notified: HashSet<String>,
-    notifications: HashMap<u32, String>,
+    notifications: HashMap<u32, (String, String)>,
     pending: notify::Pending,
     pub gif_query: String,
     pub gifs: Vec<KlipyGif>,
@@ -6655,12 +6656,9 @@ impl BeeperGuiApp {
                 return Task::batch([self.update(UiMessage::StoreChanged), note]);
             }
             UiMessage::NotifyTimer(chat, timer) => return self.notify_timer(chat, timer),
-            UiMessage::Notified(Ok((id, chat))) => _ = self.notifications.insert(id, chat),
+            UiMessage::Notified(Ok((id, note))) => _ = self.notifications.insert(id, note),
             UiMessage::Notified(Err(e)) => self.status_banner = format!("Notifications failed: {e}"),
-            UiMessage::NotificationEvent(id, clicked) => {
-                let chat = self.notifications.remove(&id).filter(|_| clicked);
-                return chat.map_or_else(Task::none, |c| self.update(UiMessage::FocusRequested(Some(c))));
-            }
+            UiMessage::NotificationEvent(id, clicked) => return self.notification_event(id, clicked),
             m @ (UiMessage::ToastHover(_) | UiMessage::ToastTick) if self.toast_clock.0 != self.status_banner => {
                 self.toast_clock = (self.status_banner.clone(), self.toast_clock.1, Duration::ZERO);
                 return self.update(m);

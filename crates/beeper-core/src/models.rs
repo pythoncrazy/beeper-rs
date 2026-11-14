@@ -78,6 +78,8 @@ pub const MSG_BOOKMARKED: u16 = 1 << 2;
 pub const MSG_VOICE_NOTE: u16 = 1 << 3;
 pub const MSG_EDITED: u16 = 1 << 5;
 pub const MSG_DELETED: u16 = 1 << 6;
+/// The message mentions the user in `m.mentions`.
+pub const MSG_MENTION: u16 = 1 << 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NetworkKind {
@@ -770,6 +772,7 @@ impl Message {
             (self.attachments.iter().any(|a| a.is_voice_note == Some(true)), MSG_VOICE_NOTE),
             (self.edited(), MSG_EDITED),
             (self.is_deleted == Some(true), MSG_DELETED),
+            (self.flags & MSG_MENTION != 0, MSG_MENTION),
         ]);
     }
 }

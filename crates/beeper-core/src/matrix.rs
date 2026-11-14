@@ -5,7 +5,7 @@ use crate::models::{
     EditHistoryEntry, Label, Message, MessageLink, MessageRules, PollData, PollOption, PollRules, Reaction, Timers,
     User, VerificationSas, VerificationSasEmoji, VerificationState, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS,
     BEEPER_MESSAGES, BEEPER_POLLS, BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER,
-    EDITS, FILE_GIF, FILE_VOICE, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK,
+    EDITS, FILE_GIF, FILE_VOICE, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -558,7 +558,10 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         links: links(c),
         seen: Default::default(),
         timer: (message_type == "DISAPPEARING_TIMER").then(|| c["timer"].as_u64().unwrap_or(0)),
-        flags: 0,
+        flags: match c["m.mentions"]["user_ids"].as_array() {
+            Some(ids) if ids.iter().any(|u| u == room.own_user_id().as_str()) => MSG_MENTION,
+            _ => 0,
+        },
     });
     match reaction {
         Some(r) => Some(Op::React(msg.linked_message_id.clone()?, r, msg)),
