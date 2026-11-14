@@ -154,8 +154,6 @@ fn e2e_full_beeper_lifecycle_api_ws_auth_messages_search_themes_os_and_gui() {
 }
 
 async fn lifecycle() {
-    std::env::set_var("ICED_TEST_BACKEND", "tiny-skia");
-
     let fs = iced_test::renderer::graphics::text::font_system();
     {
         let mut w = fs.write().expect("font system");
