@@ -12,7 +12,7 @@ use beeper_core::models::{
 };
 use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
-use iced::widget::{column, container, mouse_area, row, scrollable, svg, Column, Row, Space};
+use iced::widget::{column, container, mouse_area, row, scrollable, svg, Row, Space};
 use iced::{Center, Fill, Padding, Pixels};
 
 /// A command: Desktop shows a disabled command, which has no message, at 70% opacity.
@@ -76,6 +76,11 @@ impl Command {
 
     fn sub(self, subtitle: Option<&'static str>) -> Self {
         Self { subtitle, ..self }
+    }
+
+    /// The row key of the command in the virtual list.
+    pub(crate) fn key(&self) -> u64 {
+        crate::vlist::key((self.category, &self.title, self.user.as_ref().map(|u| &u.id)))
     }
 }
 
@@ -685,7 +690,8 @@ impl BeeperGuiApp {
     /// The commands under Desktop's category headings.
     pub(crate) fn view_commands(&self, st: &BeeperStore, cmds: &[Command]) -> El<'_> {
         let p = &self.pal;
-        let list = cmds.iter().enumerate().fold(Column::new(), |col, (i, c)| {
+        let item = |i: usize| {
+            let c = &cmds[i];
             let head = ((self.cmd_submenu.is_none() || !c.category.is_empty())
                 && (i == 0 || cmds[i - 1].category != c.category))
                 .then(|| {
@@ -694,9 +700,11 @@ impl BeeperGuiApp {
                         .center_y(32)
                         .padding(Padding::ZERO.left(12.0).right(4.0))
                 });
-            col.push(head).push(self.view_command(st, c, i == self.cmd_index, i))
-        });
-        let list = scrollable(list.padding(Padding::ZERO.bottom(6.0))).id(COMMANDS).direction(bar());
+            column![].push(head).push(self.view_command(st, c, i == self.cmd_index, i)).into()
+        };
+        let keys: Vec<u64> = cmds.iter().map(Command::key).collect();
+        let list = self.command_list.view(&keys, false, 36.0, UiMessage::Relist, item);
+        let list = scrollable(container(list).padding(Padding::ZERO.bottom(6.0))).id(COMMANDS).direction(bar());
         list.height(Fill).style(scroll_style(p.scroll)).into()
     }
 

@@ -1097,11 +1097,11 @@ async fn lifecycle() {
         let _ = gui.update(UiMessage::Modifiers(Modifiers::empty()));
         let _ = gui.update(UiMessage::KeyPressed(Key::Character("j".into()), Modifiers::CTRL));
         assert!(gui.show_command_palette && gui.cmd_bar_commands_mode, "Ctrl J opens the commands");
-        {
+        for title in ["Archive all chats", "Toggle sidebar", "Media viewer", "Report a problem"] {
+            let _ = gui.update(UiMessage::CommandQueryChanged(title.to_lowercase()));
             let mut sim = simulator(gui.view_main());
-            for title in ["Archive all chats", "Toggle sidebar", "Media viewer", "Report a problem", "Window"] {
-                assert!(sim.find(title).is_ok(), "the commands have {title}");
-            }
+            assert!(sim.find(title).is_ok(), "the commands have {title}");
+            assert!(title != "Media viewer" || sim.find("Window").is_ok(), "the commands have their category");
         }
         let _ = gui.update(UiMessage::CommandQueryChanged("toggle sidebar".into()));
         let _ = gui.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
