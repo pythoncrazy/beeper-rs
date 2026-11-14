@@ -1538,8 +1538,17 @@ fn removable<'a>(p: &Palette, item: impl Into<El<'a>>, msg: UiMessage) -> El<'a>
     stack![item, row![Space::new().width(Fill), close.on_press(msg)]].width(Shrink).into()
 }
 
+/// Desktop's `Ng`: an unread count, at most "999+".
+fn unread_label(n: usize) -> String {
+    if n > 999 {
+        "999+".into()
+    } else {
+        n.to_string()
+    }
+}
+
 fn count_badge<'a>(c: &Chat, bg: Color, fg: Color, h: f32) -> El<'a> {
-    let n = if c.unread_count > 0 { c.unread_count.to_string() } else { String::new() };
+    let n = if c.unread_count > 0 { unread_label(c.unread_count as usize) } else { String::new() };
     let empty = n.is_empty() && c.unread_mentions == 0;
     let at = (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 10.0).color(fg));
     let body = row![].push(at).push(semi(n, 10.0).color(fg)).spacing(2).align_y(Center);
@@ -1817,6 +1826,31 @@ fn can_edit_group(c: &Chat) -> bool {
 
 fn network_bot(chat: &Chat, user_id: &str) -> bool {
     chat.participants.items.iter().any(|u| u.id == user_id && u.is_network_bot == Some(true))
+}
+
+/// Desktop's `pendingMessages`: a message of this device that the homeserver did not take yet. The demo has no
+/// homeserver.
+fn pending(st: &BeeperStore, m: &Message) -> bool {
+    !st.config.demo && m.id.starts_with("msg_") && !st.sent.contains_key(&m.id)
+}
+
+/// The people other than you and the sender who saw the message.
+fn seen_by(st: &BeeperStore, m: &Message) -> usize {
+    m.seen.keys().filter(|u| !st.is_me(u) && **u != m.sender_id).count()
+}
+
+/// The tooltip of Desktop's `getReadIcon` in the chat list: "Sent", "Seen", or "Seen by %1$d of %2$d" in a group.
+/// A pending message has no tooltip.
+fn receipt_tip(st: &BeeperStore, c: &Chat, m: &Message) -> Option<String> {
+    if pending(st, m) {
+        return None;
+    }
+    let total = c.participants.items.iter().filter(|u| !st.is_me(&u.id) && u.id != m.sender_id).count();
+    Some(match seen_by(st, m) {
+        0 => tr("Sent").into(),
+        n if total > 1 => trf("Seen by %1$d of %2$d", &[&n, &total]),
+        _ => tr("Seen").into(),
+    })
 }
 
 /// The message that the chat list previews: the newest shown message, or a newer reaction.
@@ -2204,6 +2238,9 @@ static SENT: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(||
     ]
     .map(svg::Handle::from_memory)
 });
+
+// Desktop's `MessagePendingIcon`.
+svg_static!(PENDING, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5.375" fill="none" stroke="#000" stroke-width="1.25"/><circle cx="3.3" cy="6" r=".9"/><circle cx="6" cy="6" r=".9"/><circle cx="8.7" cy="6" r=".9"/></svg>"##);
 
 svg_static!(SEND_ARROW, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path transform="rotate(90 10 10)" d="m6.52 10.833 4.668 4.667L10 16.666 3.333 10 10 3.333 11.188 4.5 6.52 9.166h10.146v1.667z"/></svg>"##);
 svg_static!(EYES, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 46 46" fill="#fff"><path d="M22.1197 25.5092C23.0085 30.1093 20.937 33.1 16.2324 34.009C11.5277 34.918 8.49126 32.9143 7.60244 28.3142L6.68822 23.5827C5.7994 18.9826 7.87085 15.9919 12.5755 15.0829C17.2802 14.1738 20.3166 16.1776 21.2054 20.7777L22.1197 25.5092ZM14.8746 30.5902C15.1743 32.1411 16.6446 33.1113 18.2307 32.8049C19.8168 32.4984 20.8199 31.0503 20.5202 29.4994C20.2205 27.9485 18.7503 26.9783 17.1641 27.2847C15.578 27.5912 14.575 29.0393 14.8746 30.5902Z"/><path d="M39.1455 22.1235C40.0344 26.7236 37.9629 29.7142 33.2583 30.6233C28.5536 31.5323 25.5171 29.5286 24.6283 24.9284L23.7141 20.1969C22.8253 15.5968 24.8967 12.6061 29.6014 11.6971C34.306 10.7881 37.3425 12.7918 38.2313 17.3919L39.1455 22.1235ZM31.9005 27.2045C32.2002 28.7554 33.6704 29.7256 35.2566 29.4191C36.8427 29.1126 37.8457 27.6645 37.5461 26.1136C37.2464 24.5627 35.7761 23.5925 34.19 23.899C32.6039 24.2055 31.6008 25.6536 31.9005 27.2045Z"/></svg>"##);
@@ -2643,6 +2680,11 @@ fn status_text(st: &BeeperStore, account_id: &str) -> Option<&'static str> {
         "BAD_CREDENTIALS" => Some("Reconnect Required"),
         _ => None,
     }
+}
+
+/// Desktop's `remoteHasError` of the account of an account or network space: the status that the space shows.
+fn space_error(st: &BeeperStore, id: &str) -> Option<&'static str> {
+    rail_label(st, id).is_none().then(|| status_text(st, &rail_owner(st, id))).flatten()
 }
 
 /// Desktop's `getSpaceSubtitle`: the chats, reminders, requests or scheduled messages of a space.
@@ -9202,7 +9244,7 @@ impl BeeperGuiApp {
                 (None, Some(l)) => l.muted,
                 (None, None) => !st.settings.account(&owner).notifications,
             };
-            let status = (view.is_none() && label.is_none()).then(|| status_text(&st, &owner)).flatten();
+            let status = space_error(&st, id);
             let badge = status.map(|s| container(semi(tr(s), 10.0)).padding([2, 6]).style(fill_box(p.chip, 9.0)));
             let line = row![
                 container(on.then(|| ic(icon::CHECK, 14.0))).width(22),
@@ -10014,6 +10056,18 @@ impl BeeperGuiApp {
         c.reminder.as_ref().is_some_and(|r| self.reminded.get(&c.id) == Some(&r.remind_at_ms))
     }
 
+    /// Whether the chat list draws the chat muted: Desktop's `areNotificationsMuted` of the chat, its labels or its
+    /// account, unless a reminder is due.
+    fn list_muted(&self, st: &BeeperStore, c: &Chat) -> bool {
+        st.notifications_muted(c) && !self.expired(c)
+    }
+
+    /// Desktop's `isMuted` row style, with a grey unread dot and count: a muted chat without unread mentions, or an
+    /// archived chat.
+    fn list_quiet(&self, st: &BeeperStore, c: &Chat) -> bool {
+        self.list_muted(st, c) && c.unread_mentions == 0 || c.flags & CHAT_ARCHIVED != 0
+    }
+
     fn row_action<'a>(&self, c: &Chat, pref: u8) -> Option<El<'a>> {
         let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
         let archived = c.flags & CHAT_ARCHIVED != 0;
@@ -10098,7 +10152,7 @@ impl BeeperGuiApp {
         let numbers = st.settings.on("showUnreadCount");
         let badge = |btn: El<'static>, n: usize, number: bool| -> El<'static> {
             let dot = match number && numbers {
-                true => container(semi(if n > 999 { "999+".into() } else { n.to_string() }, 10.0).color(Color::WHITE))
+                true => container(semi(unread_label(n), 10.0).color(Color::WHITE))
                     .padding([0, 4])
                     .center_y(14)
                     .width(Shrink)
@@ -10151,11 +10205,19 @@ impl BeeperGuiApp {
                 (None, Some(n)) => format!("{} ({})", n.name, network_label(owner)),
                 (None, None) => network_label(owner).to_string(),
             };
-            let label = match status_text(&st, owner).filter(|_| rail_label(&st, &acc).is_none()) {
+            let error = space_error(&st, &acc);
+            let label = match error {
                 Some(s) => format!("{label} ({s})"),
                 None => label,
             };
-            let btn = badge(rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc.clone()))).into(), n, true);
+            let btn = rail_btn(logo, on, UiMessage::SelectAccount((!on).then_some(acc.clone()))).into();
+            let btn = match error {
+                Some(_) => {
+                    let corner = container(svg(ERROR_CIRCLE.clone()).width(14).height(14));
+                    stack![btn, corner.align_right(36).padding(Padding::ZERO.top(2.0).right(2.0))].into()
+                }
+                None => badge(btn, n, true),
+            };
             let btn: El = mouse_area(btn).on_right_press(UiMessage::OpenChatMenu(format!("account:{acc}"))).into();
             if quiet {
                 btn
@@ -10370,9 +10432,8 @@ impl BeeperGuiApp {
         let pin_row = |chunk: &[&Chat]| {
             El::from(chunk.iter().fold(Row::new(), |r, c| {
                 let on = selected == Some(c.id.as_str());
-                let muted = c.is_muted == Some(true);
+                let (muted, quiet) = (self.list_muted(&st, c), self.list_quiet(&st, c));
                 let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
-                let quiet = muted && c.unread_mentions == 0;
                 let (bg, fg) = if quiet { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
                 let dot =
                     (!counts && unread).then(|| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0)));
@@ -10498,7 +10559,7 @@ impl BeeperGuiApp {
         let chat_row = |c: &Chat| {
             let on = selected == Some(c.id.as_str());
             let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
-            let muted = c.is_muted == Some(true);
+            let muted = self.list_muted(&st, c);
             let draft = c
                 .draft
                 .as_ref()
@@ -10561,7 +10622,7 @@ impl BeeperGuiApp {
                 (true, Some(s)) => format!("{s}: {t}"),
                 _ => t,
             });
-            let dot_bg = if muted { Color { a: 0.3, ..p.strong } } else { p.accent };
+            let dot_bg = if self.list_quiet(&st, c) { Color { a: 0.3, ..p.strong } } else { p.accent };
             let count = match counts {
                 true => unread.then(|| count_badge(c, dot_bg, Color::WHITE, 12.0)),
                 false => (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 12.0).color(p.accent).into()),
@@ -10573,7 +10634,8 @@ impl BeeperGuiApp {
             let count = count
                 .filter(|_| self.hovered_chat.as_ref() != Some(&c.id) || self.row_action(c, hover_action).is_none());
             let sender = show_sender.then(|| preview_sender(c, m?)).flatten();
-            let digits = if counts && c.unread_count > 0 { c.unread_count.to_string().len() as f32 } else { 0.0 };
+            let digits =
+                if counts && c.unread_count > 0 { unread_label(c.unread_count as usize).len() as f32 } else { 0.0 };
             let at = if c.unread_mentions > 0 { 12.0 } else { 0.0 };
             let prefix = first.filter(|_| media_tag.is_some()).map(|s| format!("{s}:"));
             let prefix_w = prefix.as_deref().map_or(0.0, |s| crate::style::text_width(s, 13.0, Weight::Normal) + 4.0);
@@ -10598,8 +10660,15 @@ impl BeeperGuiApp {
             };
             let style = if italic { iced::font::Style::Italic } else { iced::font::Style::Normal };
             let body_font = iced::Font { style, ..fw(Weight::Normal) };
-            let read = m.is_some_and(|m| m.seen.keys().any(|u| !st.is_me(u) && u != &m.sender_id));
             let fg = p.fg.scale_alpha(0.63);
+            let receipt = m.filter(|_| receipt).map(|m| {
+                let glyph = if pending(&st, m) { &PENDING } else { &SENT[usize::from(seen_by(&st, m) > 0)] };
+                let icon = tinted(glyph, 12.0, fg);
+                match receipt_tip(&st, c, m) {
+                    Some(tip) => self.tip(icon, tip, vec![], tooltip::Position::Top).into(),
+                    None => icon,
+                }
+            });
             let face =
                 sender.map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0, 0.5));
             let badge = (expired && previews).then(|| {
@@ -10608,7 +10677,7 @@ impl BeeperGuiApp {
             });
             let preview = row![]
                 .push(badge)
-                .push(receipt.then(|| tinted(&SENT[usize::from(read)], 12.0, fg)))
+                .push(receipt)
                 .push(face)
                 .push(prefix.map(|s| txt(s, 13.0).color(fg)))
                 .push(media_tag.map(|(icon, label, _)| -> El<'_> {
