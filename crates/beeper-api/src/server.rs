@@ -45,10 +45,105 @@ fn empty(status: StatusCode, headers: Vec<(&'static str, String)>) -> Reply {
 struct ApiError<'a> {
     message: &'a str,
     code: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<Issues>,
 }
 
 fn error(status: StatusCode, message: &str, code: &str) -> Response {
-    json_with(status, &ApiError { message, code })
+    json_with(status, &ApiError { message, code, details: None })
+}
+
+#[derive(Serialize)]
+struct Issues {
+    issues: Vec<Issue>,
+}
+
+/// A zod issue, with its keys in the order of zod.
+struct Issue(Vec<(&'static str, Value)>);
+
+impl Serialize for Issue {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_map(self.0.iter().map(|(k, v)| (k, v)))
+    }
+}
+
+/// The type name of zod for a JSON value, or `undefined` for a missing value.
+fn zod_type(v: Option<&Value>) -> &'static str {
+    match v {
+        None => "undefined",
+        Some(Value::Null) => "null",
+        Some(Value::Bool(_)) => "boolean",
+        Some(Value::Number(_)) => "number",
+        Some(Value::String(_)) => "string",
+        Some(Value::Array(_)) => "array",
+        Some(Value::Object(_)) => "object",
+    }
+}
+
+/// The zod `invalid_type` issue, with `keys` in the order of the zod type that makes it.
+fn type_issue(keys: [&'static str; 3], expected: &str, v: Option<&Value>, path: Value) -> Issue {
+    let received = zod_type(v);
+    let message = match received {
+        "undefined" => "Required".to_string(),
+        r => format!("Expected {expected}, received {r}"),
+    };
+    let value = |k| match k {
+        "code" => json!("invalid_type"),
+        "expected" => json!(expected),
+        _ => json!(received),
+    };
+    Issue(keys.map(|k| (k, value(k))).into_iter().chain([("path", path), ("message", message.into())]).collect())
+}
+
+/// The zod issue of a string field, if the value is not a string.
+fn string_issue(v: Option<&Value>, optional: bool, path: Value) -> Option<Issue> {
+    let ok = matches!(v, Some(Value::String(_))) || (optional && v.is_none());
+    (!ok).then(|| type_issue(["code", "expected", "received"], "string", v, path))
+}
+
+/// The issues of Desktop's zod schema `CreateChatInput` for a request body.
+fn create_chat_issues(b: &Value) -> Vec<Issue> {
+    let field = |k: &'static str, optional| string_issue(b.get(k), optional, json!([k]));
+    let mut issues: Vec<Issue> =
+        [field("accountID", false), field("messageText", true)].into_iter().flatten().collect();
+    match b.get("type") {
+        Some(Value::String(t)) if t == "single" || t == "group" => {}
+        Some(Value::String(t)) => issues.push(Issue(vec![
+            ("received", json!(t)),
+            ("code", json!("invalid_enum_value")),
+            ("options", json!(["single", "group"])),
+            ("path", json!(["type"])),
+            ("message", format!("Invalid enum value. Expected 'single' | 'group', received '{t}'").into()),
+        ])),
+        v => issues.push(type_issue(["expected", "received", "code"], "'single' | 'group'", v, json!(["type"]))),
+    }
+    let count = b.get("participantIDs").and_then(Value::as_array).map(Vec::len);
+    match b.get("participantIDs") {
+        Some(Value::Array(ids)) if ids.is_empty() => issues.push(Issue(vec![
+            ("code", json!("too_small")),
+            ("minimum", json!(1)),
+            ("type", json!("array")),
+            ("inclusive", json!(true)),
+            ("exact", json!(false)),
+            ("message", json!("Array must contain at least 1 element(s)")),
+            ("path", json!(["participantIDs"])),
+        ])),
+        Some(Value::Array(ids)) => {
+            let items = ids.iter().enumerate();
+            issues.extend(items.filter_map(|(i, v)| string_issue(Some(v), false, json!(["participantIDs", i]))));
+        }
+        v => issues.push(type_issue(["code", "expected", "received"], "array", v, json!(["participantIDs"]))),
+    }
+    issues.extend(field("title", true));
+    // zod runs the refinement when only the `too_small` issue, which does not abort, is present.
+    if issues.len() == (count == Some(0)) as usize && b["type"] == "single" && count != Some(1) {
+        issues.push(Issue(vec![
+            ("code", json!("custom")),
+            ("message", json!("'single' chat must have exactly one participantID.")),
+            ("path", json!(["participantIDs"])),
+        ]));
+    }
+    issues
 }
 
 fn bad(message: &str) -> Response {
@@ -728,33 +823,39 @@ fn create_chat(st: &mut BeeperStore, r: &Req) -> Reply {
     let (chat, status) = match r.str("mode").unwrap_or("create") {
         "merge" => {
             let merge = &r.body["merge"];
-            let chat_ids: Vec<String> = serde_json::from_value(merge["chatIDs"].clone())
-                .ok()
-                .filter(|ids: &Vec<String>| !ids.is_empty())
-                .ok_or_else(|| bad("merge.chatIDs is required"))?;
+            let chat_ids: Vec<String> =
+                serde_json::from_value(merge["chatIDs"].clone()).map_err(|_| bad("merge.chatIDs is required"))?;
             let default_chat_id = merge["defaultChatID"].as_str().map(str::to_string);
-            let lead = st.resolve_chat_idx(default_chat_id.as_deref().unwrap_or(&chat_ids[0]));
-            let account = st.chats[lead.ok_or_else(|| missing("Chat not found"))?].account_id.clone();
-            st.create_or_start_chat(
-                &account,
-                "merged",
-                r.owned("title"),
-                Vec::new(),
-                None,
-                Some(chat_ids),
-                default_chat_id,
-            )
+            check_merge(st, &chat_ids, default_chat_id.as_deref())?;
+            let lead = default_chat_id.as_deref().unwrap_or(&chat_ids[0]);
+            let account = st.chats[st.resolve_chat_idx(lead).expect("check_merge found the chat")].account_id.clone();
+            let title = r.need("title")?.into();
+            st.create_or_start_chat(&account, "merged", Some(title), Vec::new(), None, Some(chat_ids), default_chat_id)
         }
         "create" => {
-            let participants: Option<Vec<String>> = r.parse("participantIDs")?;
-            let account_id = r.need("accountID")?;
-            let chat_type = r.str("type").unwrap_or("single");
+            let issues = create_chat_issues(&r.body);
+            if !issues.is_empty() {
+                let details = Some(Issues { issues });
+                let body = ApiError { message: "Invalid input", code: "VALIDATION_ERROR", details };
+                return Err(json_with(StatusCode::BAD_REQUEST, &body));
+            }
+            let participants = r.parse("participantIDs")?;
+            let (account_id, chat_type) = (r.need("accountID")?, r.need("type")?);
             let (title, text) = (r.owned("title"), r.owned("messageText"));
-            st.create_or_start_chat(account_id, chat_type, title, participants.unwrap_or_default(), text, None, None)
+            st.create_or_start_chat(account_id, chat_type, title, participants, text, None, None)
         }
         _ => return Err(bad("mode must be create or merge")),
     };
     ok(&json!({ "chatID": chat.id, "status": status }))
+}
+
+/// The member chats of a merged chat exist.
+fn check_merge(st: &BeeperStore, chat_ids: &[String], default_chat_id: Option<&str>) -> Result<(), Response> {
+    if chat_ids.is_empty() {
+        return Err(bad("merge.chatIDs is required"));
+    }
+    let mut ids = chat_ids.iter().map(String::as_str).chain(default_chat_id);
+    ids.all(|id| st.resolve_chat_idx(id).is_some()).then_some(()).ok_or_else(|| missing("Chat not found"))
 }
 
 fn search_chats(st: &BeeperStore, r: &Req) -> Reply {
@@ -787,7 +888,10 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
         ("PATCH", []) => {
             let draft = r.body.get("draft");
             let new_draft = draft.filter(|d| !d.is_null()).map(|_| r.parse("draft")).transpose()?;
-            let new_merge = r.body.get("merge").map(|_| r.parse("merge")).transpose()?;
+            let new_merge: Option<Option<ChatMergeInfo>> = r.body.get("merge").map(|_| r.parse("merge")).transpose()?;
+            if let Some(Some(m)) = &new_merge {
+                check_merge(st, &m.chat_ids, m.default_chat_id.as_deref())?;
+            }
             ok(&st.patch_chat(id, draft.is_some_and(Value::is_null), new_draft, new_merge).map_err(store_error)?)
         }
         ("POST", ["archive"]) => {
@@ -820,9 +924,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
         }
         ("GET", ["messages"]) => list_messages(st, idx, r),
         ("POST", ["messages"]) => send_message(st, id, r),
-        ("GET", ["messages", mid]) => {
-            ok(&st.messages[*st.msg_idx_by_id.get(*mid).ok_or_else(|| missing("Message not found"))?])
-        }
+        ("GET", ["messages", mid]) => ok(&st.messages[st.message_in_chat(id, mid).map_err(store_error)?.1]),
         ("PUT", ["messages", mid]) => {
             let text = r.need("text")?;
             let (cid, msg) = st.edit_message(id, mid, text.into()).map_err(store_error)?;
@@ -841,12 +943,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
             ok(&json!({ "chatID": cid, "messageID": mid, "reactionKey": key, "transactionID": tx, "success": true }))
         }
         ("DELETE", ["messages", mid, "reactions", key]) => {
-            let mine = st.messages[st.msg_idx_by_id[*mid]]
-                .reactions
-                .iter()
-                .find(|x| x.reaction_key == *key && st.is_me(&x.participant_id));
-            let target = mine.ok_or_else(|| missing("Reaction not found"))?.id.clone();
-            let cid = st.remove_reaction(id, mid, key).map_err(store_error)?;
+            let (cid, target) = st.remove_reaction(id, mid, key).map_err(store_error)?;
             st.queue(&cid, Outgoing::Redact { target });
             ok(&json!({ "chatID": cid, "messageID": mid, "reactionKey": key, "success": true }))
         }
@@ -1061,7 +1158,13 @@ fn serve_asset(st: &BeeperStore, r: &Req) -> Reply {
         let (status, message) = asset_failure(url);
         error(status, message, "SERVE_ASSET_ERROR")
     })?;
-    let bytes = std::fs::read(&path).expect("read asset file");
+    let bytes = std::fs::read(&path).map_err(|e| {
+        let message = match e.kind() {
+            std::io::ErrorKind::IsADirectory => "EISDIR: illegal operation on a directory, read".into(),
+            _ => e.to_string(),
+        };
+        error(StatusCode(500), &message, "UNKNOWN_ERROR")
+    })?;
     let mut headers = vec![("content-type", mime), ("accept-ranges", "bytes".into())];
     let Some(range) = r.msg.header("range") else {
         return Ok(Response { status: StatusCode::OK, headers, body: bytes });
