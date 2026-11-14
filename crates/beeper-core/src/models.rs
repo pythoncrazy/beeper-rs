@@ -428,6 +428,12 @@ pub struct Chat {
     pub timers: Option<Timers>,
     #[serde(default, skip_serializing_if = "Older::is_unknown")]
     pub older: Older,
+    /// Desktop's `isReadOnly`: your power level is below the one of messages, or an upgrade replaced the room.
+    #[serde(rename = "isReadOnly", default)]
+    pub is_read_only: bool,
+    /// Desktop's `extra.replacementRoomID`: the room of the `m.room.tombstone` of the chat.
+    #[serde(rename = "replacementRoomID", default, skip_serializing_if = "Option::is_none")]
+    pub replacement_room: Option<String>,
     #[serde(skip)]
     pub flags: u16,
 }

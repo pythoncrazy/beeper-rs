@@ -410,6 +410,8 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 disappearing: t.pointer("/disappearingTimer/timer").and_then(Value::as_u64).filter(|&t| t > 0),
                 timers: None,
                 older: Older::Unknown,
+                is_read_only: false,
+                replacement_room: None,
                 flags: 0,
                 id,
             })

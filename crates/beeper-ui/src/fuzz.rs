@@ -771,6 +771,32 @@ fn pickers_check_the_network_like_desktop() {
 }
 
 #[test]
+fn unavailable_chats_hide_the_composer_like_desktop() {
+    let mut app = demo_app("unavailable");
+    let ids: Vec<String> = app.visible_chats(&app.store.read()).iter().take(2).map(|c| c.id.clone()).collect();
+    let _ = app.update(UiMessage::SelectChat(ids[0].clone()));
+    let set = |app: &BeeperGuiApp, read_only: bool, room: Option<&str>| {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&ids[0]).unwrap();
+        st.update_chat(i, |c| (c.is_read_only, c.replacement_room) = (read_only, room.map(str::to_string)));
+    };
+    let composer = |sim: &mut Simulator<UiMessage>| sim.find(iced::widget::Id::new("composer-input")).is_ok();
+    assert!(composer(&mut simulator(app.view_main())));
+    set(&app, true, None);
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find("Messaging isn't available in this chat").is_ok() && !composer(&mut sim), "a read-only chat");
+    set(&app, true, Some("!gone:beeper.com"));
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find("Chat was upgraded.").is_ok() && !composer(&mut sim), "the new room is not in the list");
+    set(&app, true, Some(&ids[1]));
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find("Messaging isn't available in this chat").is_err() && !composer(&mut sim));
+    let _ = sim.click("Click here to follow the conversation").expect("a link to the new room");
+    let msgs: Vec<UiMessage> = sim.into_messages().collect();
+    assert!(matches!(&msgs[..], [UiMessage::SelectChat(id)] if *id == ids[1]), "the link opens the new room");
+}
+
+#[test]
 fn profile_links_match_desktop() {
     let app = demo_app("profile");
     let st = app.store.read();

@@ -264,6 +264,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     let levels = state(room, "m.room.power_levels").await.unwrap_or(Value::Null);
     let users_default = levels["users_default"].as_i64().unwrap_or(0).try_into().expect("power level");
     let features = state(room, "com.beeper.room_features").await;
+    let tombstone = state(room, "m.room.tombstone").await;
     let member_actions = features.as_ref().map_or(ALL_MEMBER_ACTIONS, |f| {
         let on = |k: &str| f["member_actions"][k].as_i64().is_some_and(|l| l > 0);
         MEMBER_ACTIONS.iter().enumerate().filter(|(_, k)| on(k)).fold(0, |m, (i, _)| m | 1 << i)
@@ -371,8 +372,16 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         disappearing: state(room, DISAPPEARING_TIMER).await.and_then(|t| t["timer"].as_u64()).filter(|&t| t > 0),
         timers: timers(features.as_ref(), &levels, me.as_str()),
         older: Older::Unknown,
+        is_read_only: tombstone.is_some() || read_only(&levels, me.as_str()),
+        replacement_room: tombstone.and_then(|t| s(&t["replacement_room"])),
         flags: 0,
     }
+}
+
+/// Desktop's `isReadOnly` from `m.room.power_levels`: your level is below the level of `m.room.message`.
+fn read_only(levels: &Value, me: &str) -> bool {
+    let mine = levels["users"][me].as_i64().or(levels["users_default"].as_i64()).unwrap_or(0);
+    mine < levels["events"]["m.room.message"].as_i64().or(levels["events_default"].as_i64()).unwrap_or(0)
 }
 
 fn url_field(url: &Value, file: &Value) -> Option<String> {
@@ -2267,6 +2276,15 @@ mod tests {
         assert_eq!(edit_bits(Some(&features), &levels, "@me:x"), 0b001, "features without a level reject the event");
         assert_eq!(edit_bits(None, &json!(null), "@me:x"), 0, "without power levels the events need 50");
         assert_eq!(edit_bits(None, &json!({ "users_default": 50 }), "@me:x"), 0b111);
+    }
+
+    #[test]
+    fn read_only_follows_power_levels_like_desktop() {
+        use serde_json::json;
+        let levels = json!({ "users": { "@admin:x": 100 }, "events": { "m.room.message": 50 } });
+        assert!(super::read_only(&levels, "@me:x") && !super::read_only(&levels, "@admin:x"));
+        assert!(!super::read_only(&json!(null), "@me:x"), "a room without power levels takes messages");
+        assert!(super::read_only(&json!({ "events_default": 10 }), "@me:x"), "the default level of events");
     }
 
     #[test]
