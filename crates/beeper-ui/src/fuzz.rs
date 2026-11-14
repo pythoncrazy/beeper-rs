@@ -2169,6 +2169,27 @@ fn scroll_to_bottom_shows_when_you_scroll_up_like_desktop() {
 }
 
 #[test]
+fn deleted_and_encrypted_messages_look_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("deleted-rows");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    let deleted = {
+        let mut st = app.store.write();
+        let ids: Vec<String> =
+            st.chat_msg_indices[note].iter().rev().take(2).map(|&i| st.messages[i].id.clone()).collect();
+        st.delete_message(note, &ids[0]).expect("delete a message");
+        let i = st.msg_idx_by_id[&ids[1]];
+        st.update_message(i, |m| (m.text, m.html) = (Some(beeper_core::matrix::UTD_TEXT.into()), None));
+        ids[0].clone()
+    };
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find("This message is waiting for decryption.").is_ok(), "an encrypted message waits for its keys");
+    let _ = sim.click("This message has been deleted");
+    let clicked = sim.into_messages().any(|m| matches!(m, UiMessage::ClickMessage(id) if id == deleted));
+    assert!(clicked, "a deleted message keeps its row and its click selection");
+}
+
+#[test]
 fn plus_rows_follow_the_feature_flags() {
     let mut app = demo_app("features");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
