@@ -108,6 +108,47 @@ pub fn current_desktop_data_dir(profile: Option<&str>) -> PathBuf {
     resolve_desktop_data_dir(OsKind::current(), profile, &env_map, &resolve_home_dir(&env_map))
 }
 
+/// Desktop's `requestSingleInstanceLock`, which Electron scopes to the data dir, so two profiles run side by side. Like
+/// Desktop's lock, the socket is in `XDG_RUNTIME_DIR`. The first launch gets the listener. A later launch sends `args`
+/// to the first launch and gets `None`. A lock file makes the check and the bind one step.
+#[cfg(target_os = "linux")]
+pub fn single_instance(data_dir: &Path, args: &[String]) -> Option<std::os::unix::net::UnixListener> {
+    use std::io::ErrorKind::{ConnectionRefused, NotFound};
+    let path = std::path::absolute(data_dir).expect("the data dir has an absolute path");
+    let fnv = |h: u64, b: &u8| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+    let hash = path.as_os_str().as_encoded_bytes().iter().fold(0xcbf2_9ce4_8422_2325, fnv);
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
+    let socket = dir.join(format!("beeper-rs-{hash:016x}"));
+    let lock = std::fs::File::create(socket.with_extension("lock")).expect("create the single instance lock");
+    lock.lock().expect("lock the single instance lock");
+    match std::os::unix::net::UnixStream::connect(&socket) {
+        Ok(stream) => {
+            serde_json::to_writer(stream, args).expect("send the arguments to the running instance");
+            None
+        }
+        Err(e) if matches!(e.kind(), NotFound | ConnectionRefused) => {
+            if e.kind() == ConnectionRefused {
+                std::fs::remove_file(&socket).expect("remove the socket of an instance that stopped");
+            }
+            Some(std::os::unix::net::UnixListener::bind(&socket).expect("bind the single instance socket"))
+        }
+        Err(e) => panic!("connect to {}: {e}", socket.display()),
+    }
+}
+
+/// Desktop's `second-instance` event: sends the arguments of each later launch to `tx`.
+#[cfg(target_os = "linux")]
+pub fn forward_launches(first: std::os::unix::net::UnixListener, tx: tokio::sync::broadcast::Sender<Vec<String>>) {
+    std::thread::spawn(move || {
+        for stream in first.incoming() {
+            match serde_json::from_reader(stream.expect("accept a later launch")) {
+                Ok(args) => drop(tx.send(args)),
+                Err(e) => eprintln!("read the arguments of a later launch: {e}"),
+            }
+        }
+    });
+}
+
 #[derive(Debug, Clone)]
 pub struct OsAutostartManifest {
     pub os: OsKind,
@@ -148,5 +189,22 @@ pub fn generate_os_autostart_manifest(os: OsKind, home_dir: &Path, bin_path: &Pa
             desktop_entry_path: None,
             desktop_entry_content: None,
         },
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::single_instance;
+
+    #[test]
+    fn a_later_launch_hands_its_arguments_to_the_first() {
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/single-instance-test"));
+        let first = single_instance(dir, &[]).expect("the first launch runs");
+        let profile = single_instance(&dir.join("profile"), &[]).expect("a launch with another data dir runs");
+        assert!(single_instance(dir, &["beeper://focus".into()]).is_none(), "a later launch stops");
+        let args: Vec<String> = serde_json::from_reader(first.accept().expect("the later launch").0).unwrap();
+        assert_eq!(args, ["beeper://focus"]);
+        drop((first, profile));
+        assert!(single_instance(dir, &[]).is_some(), "a launch after a stop replaces the old socket");
     }
 }

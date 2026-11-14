@@ -732,6 +732,8 @@ pub enum UiMessage {
     KeyPressed(Key, Modifiers),
     StoreChanged,
     FocusRequested(Option<String>),
+    /// Desktop's `second-instance` event with the arguments of the later launch.
+    SecondInstance(Vec<String>),
     Login(LoginMsg),
 }
 
@@ -7420,6 +7422,10 @@ impl BeeperGuiApp {
                 let focus = window::gain_focus(self.main_window.or(self.login_window).expect("a window is open"));
                 return Task::batch([focus, self.load_avatars(), self.load_media(), self.close_notifications()]);
             }
+            UiMessage::SecondInstance(_) if self.main_window.is_none() => {
+                return window::gain_focus(self.login_window.expect("a window is open"));
+            }
+            UiMessage::SecondInstance(_) => return self.set_hidden(false),
             UiMessage::Login(m) => return self.update_login(m),
             UiMessage::KeyPressed(Key::Named(k @ (Named::Enter | Named::Escape)), m)
                 if self.recorder.is_some() && m.is_empty() =>
@@ -7679,6 +7685,9 @@ impl BeeperGuiApp {
         let tokens = Subscription::run_with(StoreFeed(self.store.clone(), 2), |f| {
             feed(f.0.read().connect_tx.subscribe(), |(id, outcome)| UiMessage::TokenRequest(id, outcome))
         });
+        let launches = Subscription::run_with(StoreFeed(self.store.clone(), 3), |f| {
+            feed(f.0.read().launch_tx.subscribe(), UiMessage::SecondInstance)
+        });
         let keys = iced::event::listen_with(|e, status, id| match e {
             Event::Window(window::Event::Closed) => Some(UiMessage::WindowClosed(id)),
             Event::Window(window::Event::CloseRequested) => Some(UiMessage::CloseRequested(id)),
@@ -7783,7 +7792,7 @@ impl BeeperGuiApp {
             })
         });
         Subscription::batch(
-            [changes, focus, tokens, keys, system]
+            [changes, focus, tokens, launches, keys, system]
                 .into_iter()
                 .chain(drag)
                 .chain(rail_press)

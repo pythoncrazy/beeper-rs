@@ -3534,3 +3534,12 @@ fn edit_group_like_desktop() {
     let st = app.store.read();
     assert_eq!(st.chats[st.resolve_chat_idx(&id).expect("the group")].img_url, None, "Remove Photo clears the avatar");
 }
+
+#[test]
+fn a_later_launch_shows_the_window_like_desktop() {
+    let mut app = demo_app("secondinstance");
+    let _ = app.update(UiMessage::RunHotkey("Minimize To Tray"));
+    assert!(app.hidden);
+    let _ = app.update(UiMessage::SecondInstance(vec!["--demo".into()]));
+    assert!(!app.hidden, "Desktop's second-instance event shows the main window");
+}
