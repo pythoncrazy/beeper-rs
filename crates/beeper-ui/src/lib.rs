@@ -2824,15 +2824,17 @@ impl SearchFilters {
     }
 
     fn keeps(&self, st: &BeeperStore, room: Option<&str>, m: &Message) -> bool {
-        let (after, before) = self.window();
-        let group = st.chats[st.chat_idx_by_id[&m.chat_id]].chat_type == "group";
-        let at = millis_from_rfc3339(&m.timestamp).expect("RFC 3339 timestamp");
+        let group = || st.chats[st.chat_idx_by_id[&m.chat_id]].chat_type == "group";
+        let at = || millis_from_rfc3339(&m.timestamp).expect("RFC 3339 timestamp");
         m.is_deleted != Some(true)
             && room.is_none_or(|r| m.chat_id == r)
             && (self.accounts.is_empty() || self.accounts.contains(&m.account_id))
             && self.sent.is_none_or(|s| (m.is_sender == Some(true)) == s)
-            && self.group.is_none_or(|g| group == g)
-            && (after..before).contains(&at)
+            && self.group.is_none_or(|g| group() == g)
+            && self.period.is_none_or(|_| {
+                let (after, before) = self.window();
+                (after..before).contains(&at())
+            })
             && (self.media.is_empty() || self.media.iter().any(|&k| has_media(m, k)))
     }
 
@@ -3137,6 +3139,17 @@ fn file_icon(a: &Attachment) -> &'static svg::Handle {
     &FILE_ICONS[k]
 }
 
+/// The `n` newest of the messages `v`, newest first.
+fn newest(st: &BeeperStore, mut v: Vec<usize>, n: usize) -> Vec<usize> {
+    let key = |&i: &usize| (std::cmp::Reverse(&st.messages[i].sort_key), i);
+    if v.len() > n {
+        v.select_nth_unstable_by_key(n, key);
+        v.truncate(n);
+    }
+    v.sort_unstable_by_key(key);
+    v
+}
+
 /// The chats the forward dialog offers: recent chats, or all chats that match the query.
 fn forward_chats<'s>(st: &'s BeeperStore, f: &Forward) -> Vec<&'s Chat> {
     let q = f.query.trim().to_lowercase();
@@ -3405,7 +3418,20 @@ struct Memo {
     /// The chat list by tab, filters and account, as indices of `chats`.
     lists: std::cell::RefCell<HashMap<ListKey, Rc<[usize]>>>,
     counts: std::cell::RefCell<HashMap<String, usize>>,
+    /// All chats newest first, and the lowercase title and search subtitle of each chat.
+    words: std::cell::RefCell<Option<Words>>,
+    /// The command bar finds for a query, its filters and its room.
+    hits: std::cell::RefCell<Option<(HitsKey, Hits)>>,
 }
+
+/// The query, the filters and the room of a command bar search.
+type HitsKey = (String, SearchFilters, Option<String>);
+
+/// The text and the media messages that a command bar search finds, as indices of `messages`.
+type Hits = Rc<(Vec<usize>, Vec<usize>)>;
+
+/// All chats newest first, as indices of `chats`, and the lowercase title and search subtitle of each chat.
+type Words = (Rc<[usize]>, Rc<[String]>);
 
 pub struct BeeperGuiApp {
     pub pane: Pane,
@@ -4224,6 +4250,8 @@ impl BeeperGuiApp {
         if self.memo.generation.replace(generation) != generation {
             self.memo.lists.borrow_mut().clear();
             self.memo.counts.borrow_mut().clear();
+            self.memo.words.take();
+            self.memo.hits.take();
         }
         Some(&self.memo)
     }
@@ -9095,30 +9123,60 @@ impl BeeperGuiApp {
         )
     }
 
-    /// Messages for the search media grid, newest first.
-    fn media_hits<'s>(&self, st: &'s BeeperStore) -> Vec<&'s Message> {
-        let f = &self.search_filters;
-        if !self.show_command_palette || self.cmd_bar_commands_mode || f.media.is_empty() {
-            return Vec::new();
+    /// The command bar finds: the 20 newest text messages, and the 50 newest messages for the media grid, as
+    /// indices of `messages`. The memo keeps them for the query, the filters and the room until the store changes,
+    /// so that only a key or a change of the store searches again.
+    fn search_hits(&self, st: &BeeperStore, q: &str) -> Hits {
+        let (f, room) = (&self.search_filters, self.search_room.as_deref());
+        let key = (q.to_string(), f.clone(), self.search_room.clone());
+        // A period filter moves with the clock, so its finds stay only for one view.
+        let memo = self.memo().filter(|_| f.period.is_none());
+        if let Some((_, hits)) = memo.and_then(|m| m.hits.borrow().clone()).filter(|(k, _)| *k == key) {
+            return hits;
         }
-        let q = self.command_palette_query.trim().to_lowercase();
-        let text: Option<HashSet<u32>> =
-            (q.chars().count() > 1).then(|| st.msg_search_index.query_all_tokens(&q).into_iter().collect());
-        let mut hits: Vec<&Message> = st
-            .messages
-            .iter()
-            .enumerate()
-            .filter(|(i, m)| {
-                text.as_ref().is_none_or(|t| {
-                    t.contains(&(*i as u32))
-                        || st.chats[st.chat_idx_by_id[&m.chat_id]].title.to_lowercase().contains(&q)
-                }) && f.keeps(st, self.search_room.as_deref(), m)
-            })
-            .map(|(_, m)| m)
-            .collect();
-        hits.sort_by(|a, b| b.sort_key.cmp(&a.sort_key));
-        hits.truncate(50);
+        let found = match q.chars().count() > 1 && f.media.is_empty() {
+            true => st.msg_search_index.query_all_tokens(q),
+            false => Vec::new(),
+        };
+        let found = found.into_iter().map(|i| i as usize).filter(|&i| {
+            let m = &st.messages[i];
+            m.text.as_deref().is_some_and(|t| !t.is_empty()) && f.keeps(st, room, m)
+        });
+        let found = newest(st, found.collect(), 20);
+        let media = match f.media.is_empty() {
+            true => Vec::new(),
+            false => {
+                let text: Option<HashSet<usize>> = (q.chars().count() > 1)
+                    .then(|| st.msg_search_index.query_all_tokens(q).into_iter().map(|i| i as usize).collect());
+                let titled: Vec<bool> = st.chats.iter().map(|c| c.title.to_lowercase().contains(q)).collect();
+                let hit = |&(i, m): &(usize, &Message)| {
+                    text.as_ref().is_none_or(|t| t.contains(&i) || titled[st.chat_idx_by_id[&m.chat_id]])
+                        && f.keeps(st, room, m)
+                };
+                newest(st, st.messages.iter().enumerate().filter(hit).map(|(i, _)| i).collect(), 50)
+            }
+        };
+        let hits = Rc::new((found, media));
+        if let Some(m) = memo {
+            *m.hits.borrow_mut() = Some((key, hits.clone()));
+        }
         hits
+    }
+
+    /// All chats newest first, as indices of `chats`, and the lowercase title and search subtitle of each chat.
+    fn chat_words(&self, st: &BeeperStore) -> Words {
+        let memo = self.memo();
+        if let Some(words) = memo.and_then(|m| m.words.borrow().clone()) {
+            return words;
+        }
+        let mut order: Vec<usize> = (0..st.chats.len()).collect();
+        order.sort_by(|&a, &b| st.chats[b].last_activity.cmp(&st.chats[a].last_activity));
+        let words = st.chats.iter().map(|c| format!("{}\0{}", c.title, chat_search_subtitle(c)).to_lowercase());
+        let words = (order.into(), words.collect());
+        if let Some(m) = memo {
+            *m.words.borrow_mut() = Some(words.clone());
+        }
+        words
     }
 
     fn view_search_select(&self, chip: usize, at: iced::Rectangle) -> El<'_> {
@@ -12871,19 +12929,15 @@ impl BeeperGuiApp {
                 .filter(|c| c.flags & CHAT_HIDDEN == 0)
                 .collect()
         } else {
-            let mut v: Vec<&Chat> = st
-                .chats
-                .iter()
-                .filter(|c| {
-                    c.flags & CHAT_HIDDEN == 0
-                        && (f.accounts.is_empty() || f.accounts.contains(&c.account_id))
-                        && (q.is_empty()
-                            || c.title.to_lowercase().contains(&q)
-                            || chat_search_subtitle(c).to_lowercase().contains(&q))
-                })
-                .collect();
-            v.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
-            v
+            // The view shows 12 chats at most, and one more tells that there are more.
+            let (order, words) = self.chat_words(&st);
+            let hit = |&&i: &&usize| {
+                let c = &st.chats[i];
+                c.flags & CHAT_HIDDEN == 0
+                    && (f.accounts.is_empty() || f.accounts.contains(&c.account_id))
+                    && words[i].contains(&q)
+            };
+            order.iter().filter(hit).take(13).map(|&i| &st.chats[i]).collect()
         };
         if q.is_empty() && chats.len() > 1 {
             chats.retain(|c| self.pane().selected_chat_id.as_deref() != Some(c.id.as_str()));
@@ -12902,19 +12956,9 @@ impl BeeperGuiApp {
         }))
         .align_y(Center)
         .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0));
-        let mut found: Vec<&Message> = match q.chars().count() > 1 && f.media.is_empty() {
-            true => st
-                .msg_search_index
-                .query_all_tokens(&q)
-                .into_iter()
-                .map(|i| &st.messages[i as usize])
-                .filter(|m| m.text.as_deref().is_some_and(|t| !t.is_empty()) && f.keeps(&st, room, m))
-                .collect(),
-            false => Vec::new(),
-        };
-        found.sort_by(|a, b| b.sort_key.cmp(&a.sort_key));
-        found.truncate(20);
-        let media = self.media_hits(&st);
+        let hits = self.search_hits(&st, &q);
+        let found: Vec<&Message> = hits.0.iter().map(|&i| &st.messages[i]).collect();
+        let media: Vec<&Message> = hits.1.iter().map(|&i| &st.messages[i]).collect();
         let none =
             found.is_empty() && chats.is_empty() && media.is_empty() && (q.chars().count() > 1 || !f.media.is_empty());
         let heading = |label: &'static str| {
