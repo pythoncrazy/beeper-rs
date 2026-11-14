@@ -339,7 +339,10 @@ pub enum UiMessage {
     /// Desktop's toast button: the toast closes, newest or older, and its action runs.
     ToastAction(Option<usize>, Box<UiMessage>),
     GifQueryChanged(String),
-    GifsLoaded(Result<Vec<KlipyGif>, String>),
+    /// Desktop's GIF search 500 ms after the last key, for the query of that time.
+    GifSearch(String),
+    /// The GIFs of a query.
+    GifsLoaded(String, Result<Vec<KlipyGif>, String>),
     PickGif(KlipyGif),
     GifDownloaded(KlipyGif, Result<(Vec<u8>, Frames), String>),
     SetReminder(String, Option<i64>),
@@ -6839,22 +6842,27 @@ impl BeeperGuiApp {
                     if self.gifs.is_empty() && !self.gif_loading {
                         self.gif_loading = true;
                         self.gif_error = None;
-                        let q = self.gif_query.clone();
-                        return Task::batch([
-                            focus,
-                            Task::perform(beeper_core::cloud::klipy_gifs(q), UiMessage::GifsLoaded),
-                        ]);
+                        return Task::batch([focus, self.update(UiMessage::GifSearch(self.gif_query.clone()))]);
                     }
                     return focus;
                 }
             }
             UiMessage::GifQueryChanged(q) => {
-                self.gif_query = q.clone();
-                self.gif_loading = true;
-                self.gif_error = None;
-                return Task::perform(beeper_core::cloud::klipy_gifs(q), UiMessage::GifsLoaded);
+                (self.gif_query, self.gif_loading, self.gif_error) = (q.clone(), true, None);
+                if q.trim().is_empty() {
+                    return self.update(UiMessage::GifSearch(q));
+                }
+                let wait = async { tokio::time::sleep(std::time::Duration::from_millis(500)).await };
+                return Task::perform(wait, move |()| UiMessage::GifSearch(q.clone()));
             }
-            UiMessage::GifsLoaded(r) => {
+            UiMessage::GifSearch(q) if q == self.gif_query => {
+                return Task::perform(beeper_core::cloud::klipy_gifs(q.clone()), move |r| {
+                    UiMessage::GifsLoaded(q.clone(), r)
+                });
+            }
+            UiMessage::GifSearch(_) => {}
+            UiMessage::GifsLoaded(q, _) if q != self.gif_query => {}
+            UiMessage::GifsLoaded(_, r) => {
                 self.gif_loading = false;
                 match r {
                     Ok(gifs) => {
@@ -11658,10 +11666,17 @@ impl BeeperGuiApp {
                 .size(13)
                 .padding([6, 12])
                 .style(input_style(p.input, p.strong, p.sub, p.accent, 8.0));
-            let carousel: El<'a> = if let Some(err) = &self.gif_error {
-                container(txt(err.clone(), 12.0).color(p.danger)).center_y(215).padding([0, 14]).into()
+            // Desktop's `GifPicker`: the error or "No results" text, or 10 skeleton tiles while the first page loads.
+            let note =
+                |t: String| -> El<'a> { container(txt(t, 13.0).color(p.text)).center_x(Fill).center_y(215).into() };
+            let carousel: El<'a> = if let Some(err) = self.gif_error.as_ref().filter(|_| self.gifs.is_empty()) {
+                note(trf("Something went wrong (%s). Try searching something else?", &[err]))
             } else if self.gif_loading && self.gifs.is_empty() {
-                container(txt("Loading GIFs...", 12.0).color(p.sub)).center_y(215).padding([0, 14]).into()
+                let tile = || container(Space::new()).width(300).height(200).style(fill_box(p.hover, 4.0)).into();
+                let tiles = Row::with_children((0..10).map(|_| tile())).spacing(4);
+                container(tiles).padding(Padding::ZERO.left(14.0)).height(215).clip(true).into()
+            } else if self.gifs.is_empty() {
+                note(tr("No results. Try searching something else?").to_string())
             } else {
                 let items = self.gifs.iter().map(|g| {
                     let (pw, ph) = g.preview_size;
