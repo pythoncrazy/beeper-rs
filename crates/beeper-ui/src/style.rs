@@ -220,15 +220,51 @@ fn shape<T>(s: &str, size: f32, w: Weight, width: Option<f32>, f: impl FnOnce(&c
     f(&buf)
 }
 
-fn glyphs(s: &str, size: f32, w: Weight) -> (f32, Vec<(usize, f32)>) {
-    shape(s, size, w, None, |buf| {
-        let mut out = Vec::new();
-        let mut total = 0.0;
-        for g in buf.layout_runs().flat_map(|r| r.glyphs.iter()) {
-            total += g.w;
-            out.push((g.end, total));
+/// The most text measurements that each memo keeps: when its new half holds `MEMO`, its old half goes, so the
+/// measurements of the last views stay.
+const MEMO: usize = 4096;
+
+type Memo<K, V> = RefCell<[HashMap<K, V>; 2]>;
+
+/// The value of `key` in `memo`, made by `make` once while the key stays in use.
+fn memo<K: std::hash::Hash + Eq, V: Clone>(
+    memo: &'static std::thread::LocalKey<Memo<K, V>>,
+    key: K,
+    make: impl FnOnce() -> V,
+) -> V {
+    let (new, old) = memo.with(|m| {
+        let [new, old] = &*m.borrow();
+        (new.get(&key).cloned(), old.get(&key).cloned())
+    });
+    if let Some(v) = new {
+        return v;
+    }
+    let v = old.unwrap_or_else(make);
+    memo.with(|m| {
+        let [new, old] = &mut *m.borrow_mut();
+        if new.len() >= MEMO {
+            *old = std::mem::take(new);
         }
-        (total, out)
+        new.insert(key, v.clone());
+    });
+    v
+}
+
+/// The width of a text, and the end and the x position after each glyph.
+type Glyphs = Rc<(f32, Vec<(usize, f32)>)>;
+
+fn glyphs(s: &str, size: f32, w: Weight) -> Glyphs {
+    thread_local!(static MEMO: Memo<(String, u32, Weight), Glyphs> = RefCell::default());
+    memo(&MEMO, (s.to_owned(), size.to_bits(), w), || {
+        shape(s, size, w, None, |buf| {
+            let mut out = Vec::new();
+            let mut total = 0.0;
+            for g in buf.layout_runs().flat_map(|r| r.glyphs.iter()) {
+                total += g.w;
+                out.push((g.end, total));
+            }
+            Rc::new((total, out))
+        })
     })
 }
 
@@ -251,15 +287,11 @@ pub fn carets(s: &str, size: f32, width: f32, at: impl IntoIterator<Item = (usiz
 
 /// CSS `text-wrap: balance`: the narrowest width that wraps `s` into as many lines as `max` does, if that is more than one.
 pub fn wraps(s: &str, max: f32, size: f32) -> bool {
-    thread_local!(static CACHE: RefCell<HashMap<(String, u32), bool>> = RefCell::default());
-    let key = (s.to_owned(), max.to_bits());
-    if let Some(w) = CACHE.with(|c| c.borrow().get(&key).copied()) {
-        return w;
-    }
-    let lines = |w| shape(s, size, Weight::Normal, w, |b| b.layout_runs().count());
-    let w = lines(Some(max)) > lines(None);
-    CACHE.with(|c| c.borrow_mut().insert(key, w));
-    w
+    thread_local!(static MEMO: Memo<(String, u32, u32), bool> = RefCell::default());
+    memo(&MEMO, (s.to_owned(), max.to_bits(), size.to_bits()), || {
+        let lines = |w| shape(s, size, Weight::Normal, w, |b| b.layout_runs().count());
+        lines(Some(max)) > lines(None)
+    })
 }
 
 pub fn text_width(s: &str, size: f32, w: Weight) -> f32 {
@@ -267,7 +299,8 @@ pub fn text_width(s: &str, size: f32, w: Weight) -> f32 {
 }
 
 fn ell_line(s: &str, max: f32, size: f32, w: Weight) -> String {
-    let (total, gs) = glyphs(s, size, w);
+    let gs = glyphs(s, size, w);
+    let (total, gs) = (gs.0, &gs.1);
     if total <= max {
         return s.into();
     }
@@ -290,27 +323,17 @@ pub fn clamp<'a>(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> text:
 }
 
 pub fn clamped(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> Rc<str> {
-    type Key = (String, u32, u32, Weight, usize);
-    thread_local!(static CACHE: RefCell<HashMap<Key, Rc<str>>> = RefCell::default());
+    thread_local!(static MEMO: Memo<(String, u32, u32, Weight, usize), Rc<str>> = RefCell::default());
     assert!(lines > 0, "clamp to zero lines");
-    let key = (s.to_owned(), max.max(0.0).to_bits(), size.to_bits(), w, lines);
-    CACHE.with(|c| c.borrow().get(&key).cloned()).unwrap_or_else(|| {
+    memo(&MEMO, (s.to_owned(), max.max(0.0).to_bits(), size.to_bits(), w, lines), || {
         let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
         let starts: Vec<usize> = shape(&s, size, w, Some(max.max(0.0)), |buf| {
             buf.layout_runs().map(|r| r.glyphs.first().map_or(0, |g| g.start)).collect()
         });
-        let res: Rc<str> = match starts.get(lines - 1) {
+        match starts.get(lines - 1) {
             Some(&k) if starts.len() > lines => format!("{}{}", &s[..k], ell_line(&s[k..], max, size, w)).into(),
             _ => s.into(),
-        };
-        CACHE.with(|c| {
-            let mut m = c.borrow_mut();
-            if m.len() > 4096 {
-                m.clear();
-            }
-            m.insert(key, res.clone());
-        });
-        res
+        }
     })
 }
 
@@ -318,7 +341,8 @@ pub fn clamped(s: &str, max: f32, lines: usize, size: f32, w: Weight) -> Rc<str>
 /// fit on the first line, and the rest clamped to the other lines.
 pub fn flow(s: &str, indent: f32, max: f32, lines: usize, size: f32, w: Weight) -> (String, Rc<str>) {
     let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    let (_, gs) = glyphs(&s, size, w);
+    let gs = glyphs(&s, size, w);
+    let gs = &gs.1;
     let width = |i: usize| gs.get(gs.partition_point(|g| g.0 <= i).wrapping_sub(1)).map_or(0.0, |g| g.1);
     let breaks = s.match_indices(' ').map(|(i, _)| i).chain([s.len()]);
     let fit = breaks.take_while(|&i| width(i) <= max - indent).last().unwrap_or(0);
@@ -775,6 +799,16 @@ pub fn hidden_slider(_: &Theme, _: slider::Status) -> slider::Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_memos_keep_the_measurements_in_use_and_stay_bounded() {
+        thread_local!(static M: Memo<usize, usize> = RefCell::default());
+        for i in 1..3 * MEMO {
+            assert_eq!(memo(&M, i, || i), i);
+            assert_eq!(memo(&M, 0, || i), 1, "a measurement in use stays");
+        }
+        M.with(|m| assert!(m.borrow().iter().map(HashMap::len).sum::<usize>() <= 2 * MEMO, "the memo is bounded"));
+    }
 
     #[test]
     fn palette_matches_desktop_tokens() {
