@@ -295,11 +295,39 @@ pub const MANAGE_KICK: u8 = 1;
 /// Desktop's `participantsCurrentUserCanChangePowerLevels`.
 pub const MANAGE_ROLE: u8 = 2;
 
+/// Desktop's API `Account`, in its key order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
     #[serde(rename = "accountID")]
     pub account_id: String,
+    #[serde(rename = "loginID")]
+    pub login_id: String,
+    pub bridge: AccountBridge,
+    pub network: String,
     pub user: User,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountBridge {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub bridge_type: String,
+    /// `cloud` or `local`.
+    pub provider: String,
+}
+
+/// Desktop's `mapAccountStatus`: the API status of a bridge state event.
+pub fn account_status(state_event: &str) -> &'static str {
+    match state_event {
+        "CONNECTED" => "connected",
+        "CONNECTING" => "connecting",
+        "BACKFILLING" => "backfilling",
+        "BAD_CREDENTIALS" => "reconnect_required",
+        "UNCONFIGURED" => "connection_required",
+        "TRANSIENT_DISCONNECT" | "UNKNOWN_ERROR" | "LOGGED_OUT" => "disconnected",
+        _ => "attention_required",
+    }
 }
 
 /// A Desktop label: a private Matrix space with `com.beeper.label` in its create event.

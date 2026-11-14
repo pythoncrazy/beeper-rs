@@ -1052,7 +1052,19 @@ impl BeeperStore {
             .iter()
             .map(|b| Account {
                 account_id: b.account_id.clone(),
+                login_id: b.login_id.clone(),
+                bridge: AccountBridge {
+                    id: b.bridge_id.clone(),
+                    bridge_type: b.bridge_type.clone(),
+                    provider: match b.mode {
+                        BridgeMode::Cloud => "cloud",
+                        BridgeMode::OnDevice => "local",
+                    }
+                    .into(),
+                },
+                network: b.network_name.clone(),
                 user: User { id: format!("@self_{}:beeper.com", b.bridge_id), ..self.me().clone() },
+                status: account_status(&b.state).into(),
             })
             .collect();
     }
