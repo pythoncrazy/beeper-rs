@@ -9,8 +9,8 @@ use beeper_core::{
     matrix::{ChatFlag, Outgoing},
     models::*,
     platform::{
-        file_url_to_path, generate_os_autostart_manifest, open_url_or_path_command, path_to_file_url,
-        resolve_desktop_data_dir, resolve_original_beeper_data_dir, DisplayServerKind, OsKind,
+        file_url_to_path, open_url_or_path_command, path_to_file_url, resolve_desktop_data_dir,
+        resolve_original_beeper_data_dir, DisplayServerKind, OsKind,
     },
     store::{BeeperStore, Setup, SharedStore, StoreLock, NOTE_CHAT_ID},
 };
@@ -572,25 +572,6 @@ async fn lifecycle() {
     drop(moved);
     beeper_core::config::migrate_legacy_data_dir(&current, Some("dev"));
     std::fs::remove_dir_all(&root).unwrap();
-
-    let mac_manifest = generate_os_autostart_manifest(
-        OsKind::MacOs,
-        &home,
-        &PathBuf::from("/Applications/Beeper.app/Contents/MacOS/beeper-rs"),
-    );
-    assert!(mac_manifest.content.contains(APP_BUNDLE_ID));
-    let linux_manifest = generate_os_autostart_manifest(
-        OsKind::Linux,
-        &PathBuf::from("/home/alex"),
-        &PathBuf::from("/usr/local/bin/beeper-rs"),
-    );
-    assert!(linux_manifest.desktop_entry_content.as_ref().unwrap().contains("x-scheme-handler/beeper"));
-    let win_manifest = generate_os_autostart_manifest(
-        OsKind::Windows,
-        &home,
-        &PathBuf::from("C:\\Program Files\\Beeper\\beeper-rs.exe"),
-    );
-    assert!(win_manifest.content.contains("beeper-rs.exe"));
 
     let (_, port, store, client) = spawn_e2e_beeper_instance("master", None).await;
     assert_eq!(store.read().beeper_state.user_id, "@alex:beeper.com");

@@ -37,6 +37,8 @@ pub struct CentralConfig {
     pub launch_host: bool,
     /// The Desktop API listens on all interfaces, and `host` is the external address.
     pub remote: bool,
+    /// The `beeper://` link in the launch arguments, which the app opens when it starts.
+    pub link: Option<String>,
 }
 
 impl CentralConfig {
@@ -56,6 +58,7 @@ impl CentralConfig {
             demo: false,
             launch_host: false,
             remote: false,
+            link: None,
             api_url: DEFAULT_API_URL.into(),
             homeserver: DEFAULT_HOMESERVER.into(),
         }
@@ -152,10 +155,15 @@ const NETWORK_ALIASES: [(&str, &str); 4] =
     [("messenger", "facebook"), ("imsg", "imessage"), ("matrix", "hungryserv"), ("beeper", "hungryserv")];
 
 pub fn account_network(account_id: &str) -> &'static NetworkSpec {
+    find_network(account_id).unwrap_or(&NETWORK_SPECS[0])
+}
+
+/// The network of an account ID or a bridge name, if it is a known network.
+pub fn find_network(account_id: &str) -> Option<&'static NetworkSpec> {
     let id = account_id.to_ascii_lowercase();
     let id = ["acc_", "local-", "bridge-"].iter().fold(id.as_str(), |s, p| s.strip_prefix(p).unwrap_or(s));
     let id = NETWORK_ALIASES.iter().find(|(alias, _)| id.starts_with(alias)).map_or(id, |(_, bridge)| bridge);
-    NETWORK_SPECS.iter().find(|n| id.starts_with(n.bridge_id)).unwrap_or(&NETWORK_SPECS[0])
+    NETWORK_SPECS.iter().find(|n| id.starts_with(n.bridge_id))
 }
 
 pub fn is_original_beeper_dir(path: &Path) -> bool {
