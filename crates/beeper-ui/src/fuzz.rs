@@ -522,6 +522,22 @@ fn settings_commands_like_desktop() {
 }
 
 #[test]
+fn closing_the_main_window_hides_it_like_desktop() {
+    let mut app = demo_app("closehide");
+    let main = app.main_window.expect("a main window");
+    let _ = app.update(UiMessage::SetPref("showTrayIcon", 0));
+    let _ = app.update(UiMessage::CloseRequested(main));
+    assert!(app.hidden, "the main window hides without a tray icon too");
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
+    assert_eq!(app.sub_windows(), [app.settings_window.expect("the settings window")]);
+    let _ = app.update(UiMessage::Tray(Ok(tray::Event::Activate)));
+    assert!(!app.hidden, "a click on the tray icon shows the windows");
+    let _ = app.update(UiMessage::SetPref("quitOnClose", 1));
+    let _ = app.update(UiMessage::CloseRequested(main));
+    assert!(!app.hidden, "with Quit on close, the window closes");
+}
+
+#[test]
 fn remind_submenu_like_desktop() {
     use iced::keyboard::{key::Named, Key, Modifiers};
     let mut app = demo_app("remindsub");

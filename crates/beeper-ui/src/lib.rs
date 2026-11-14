@@ -3323,8 +3323,6 @@ pub struct BeeperGuiApp {
     pub store: SharedStore,
     pub os: OsKind,
     pub display_server: DisplayServerKind,
-    /// The tray icon is registered with the tray host.
-    pub tray_up: bool,
     /// The main window is hidden in the tray.
     pub hidden: bool,
     /// The unread count and window state last sent to the tray and the app badge, and whether they can be stale.
@@ -3547,7 +3545,6 @@ impl BeeperGuiApp {
             store,
             os,
             display_server,
-            tray_up: false,
             hidden: false,
             tray_sent: (None, true),
             pal: crate::style::palette(theme),
@@ -3694,7 +3691,7 @@ impl BeeperGuiApp {
         let mut settings =
             if signed_in { Self::window_settings(Size::new(1264.0, 893.0)) } else { Self::login_window_settings() };
         let st = app.store.read();
-        app.hidden = signed_in && st.settings.on("startMinimized") && st.settings.on("showTrayIcon");
+        app.hidden = signed_in && st.settings.on("startMinimized");
         drop(st);
         settings.visible = !app.hidden;
         let (id, open) = window::open(settings);
@@ -4794,15 +4791,35 @@ impl BeeperGuiApp {
         n as u32
     }
 
-    /// Desktop's `hideToTray` and `showWindow`.
+    /// The windows besides the main window, Desktop's `subWindows`.
+    fn sub_windows(&self) -> Vec<window::Id> {
+        let drafts = [self.label_window.as_ref().map(|d| d.id), self.spaces_window.as_ref().map(|d| d.id)];
+        let singles = [self.settings_window, self.media_window.as_ref().map(|w| w.id)].into_iter().chain(drafts);
+        let lists = self.chat_windows.iter().map(|w| w.0).chain(self.theme_windows.iter().map(|w| w.0));
+        let lists = lists.chain(self.labels_windows.iter().map(|w| w.0)).chain(self.vote_windows.iter().map(|w| w.0));
+        let group = self.group_window.as_ref().map(|d| d.id);
+        singles.chain([group]).flatten().chain(lists).chain(self.poll_windows.iter().map(|w| w.id)).collect()
+    }
+
+    /// Desktop's `hideToTray` (`Du`), which hides the sub-windows and then the main window, and `showWindow`, which
+    /// shows the main window.
     fn set_hidden(&mut self, hidden: bool) -> Task<UiMessage> {
         let Some(id) = self.main_window else { return Task::none() };
         self.hidden = hidden;
         self.tray_sent.1 = true;
         match hidden {
-            true => window::set_mode(id, window::Mode::Hidden),
+            true => {
+                let subs = self.sub_windows().into_iter().map(|w| window::set_mode(w, window::Mode::Hidden));
+                Task::batch(subs).chain(window::set_mode(id, window::Mode::Hidden))
+            }
             false => window::set_mode(id, window::Mode::Windowed).chain(window::gain_focus(id)),
         }
+    }
+
+    /// Desktop's `showAllWindows` (`hm`): the sub-windows, then the main window.
+    fn show_all(&mut self) -> Task<UiMessage> {
+        let subs = self.sub_windows().into_iter().map(|w| window::set_mode(w, window::Mode::Windowed));
+        Task::batch(subs).chain(self.set_hidden(false))
     }
 
     fn handle(&mut self, msg: UiMessage) -> Task<UiMessage> {
@@ -7299,27 +7316,23 @@ impl BeeperGuiApp {
                     self.settings_size = size;
                 }
             }
-            UiMessage::Tray(Ok(tray::Event::Up)) => {
-                self.tray_up = true;
-                self.tray_sent = (None, true);
-            }
+            UiMessage::Tray(Ok(tray::Event::Up)) => self.tray_sent = (None, true),
             // Electron cannot pop up the tray menu on Linux, so Desktop's click on a focused window does nothing.
             UiMessage::Tray(Ok(tray::Event::Activate)) if !self.hidden && self.focused => {}
-            UiMessage::Tray(Ok(tray::Event::Show | tray::Event::Activate)) => return self.set_hidden(false),
+            UiMessage::Tray(Ok(tray::Event::Activate)) => return self.show_all(),
+            UiMessage::Tray(Ok(tray::Event::Show)) => return self.set_hidden(false),
             UiMessage::Tray(Ok(tray::Event::Hide)) => return self.set_hidden(true),
             UiMessage::Tray(Ok(tray::Event::Quit)) => return self.quit(),
             UiMessage::Tray(Err(e)) | UiMessage::TrayFailed(e) => {
                 eprintln!("tray icon failed: {e}");
-                self.tray_up = false;
                 return self.set_hidden(false);
             }
             UiMessage::CloseRequested(id) if self.poll_windows.iter().any(|w| w.id == id) => {
                 return self.poll_edit(id, PollEdit::Close);
             }
+            // Desktop hides the main window on close, with or without the tray: a later launch shows it again.
             UiMessage::CloseRequested(id) => {
-                let st = self.store.read();
-                let quit = st.settings.on("quitOnClose") || !(self.tray_up && st.settings.on("showTrayIcon"));
-                drop(st);
+                let quit = self.store.read().settings.on("quitOnClose");
                 return match Some(id) == self.main_window && !quit {
                     true => self.set_hidden(true),
                     false => window::close(id),
