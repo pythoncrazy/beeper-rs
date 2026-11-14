@@ -17,11 +17,43 @@ const OVERSCAN: usize = 15;
 /// The visible height that a list uses before a frame measures it.
 const FIRST_SPAN: f32 = 1600.0;
 
-/// The key of a row.
+/// The key of a row: the FNV-1a hash of its id, which is fast for the short ids of chats and messages.
 pub fn key(id: impl Hash) -> u64 {
-    let mut h = std::hash::DefaultHasher::new();
+    let mut h = Fnv(0xcbf2_9ce4_8422_2325);
     id.hash(&mut h);
-    h.finish()
+    h.0
+}
+
+struct Fnv(u64);
+
+impl Hasher for Fnv {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+}
+
+/// The hasher of the height map: its keys are hashes already.
+#[derive(Default)]
+struct Same(u64);
+
+impl Hasher for Same {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, _: &[u8]) {
+        unreachable!("the height map has u64 keys")
+    }
+
+    fn write_u64(&mut self, key: u64) {
+        self.0 = key;
+    }
 }
 
 #[derive(Default)]
@@ -31,7 +63,7 @@ pub struct VList(RefCell<Inner>);
 struct Inner {
     /// The width of the measured rows.
     width: f32,
-    heights: HashMap<u64, f32>,
+    heights: HashMap<u64, f32, std::hash::BuildHasherDefault<Same>>,
     /// The mean height of the rows of the last frame, for the rows that no frame measured.
     typical: Option<f32>,
     /// The visible span of the last frame: its distance from the anchored edge of the list, and its height.
@@ -40,6 +72,11 @@ struct Inner {
     safe: (f32, f32),
     /// The row that the next view must put in the middle of the visible span.
     target: Option<u64>,
+    /// The keys, the anchor and the unmeasured height of the last view, and where each row starts from the anchored
+    /// edge, so that a view of the same rows does not add up all heights again.
+    starts: (Vec<u64>, bool, f32, Vec<f32>),
+    /// A frame measured a height that `starts` does not have.
+    stale: bool,
 }
 
 impl VList {
@@ -65,13 +102,20 @@ impl VList {
         let target = inner.target.take();
         let unmeasured = inner.typical.unwrap_or(estimate);
         let height = |i: usize| inner.heights.get(&keys[i]).copied().unwrap_or(unmeasured);
-        let mut starts = Vec::with_capacity(n + 1);
-        let mut y = 0.0;
-        for k in 0..n {
+        let (old, old_end, old_unmeasured, _) = &inner.starts;
+        if inner.stale || old[..] != keys[..] || *old_end != end || *old_unmeasured != unmeasured {
+            let mut starts = Vec::with_capacity(n + 1);
+            let mut y = 0.0;
+            for k in 0..n {
+                starts.push(y);
+                y += height(index(k));
+            }
             starts.push(y);
-            y += height(index(k));
+            inner.starts = (keys.to_vec(), end, unmeasured, starts);
+            inner.stale = false;
         }
-        starts.push(y);
+        let starts = &inner.starts.3;
+        let y = starts[n];
         let (mut at, len) = inner.seen.unwrap_or((0.0, FIRST_SPAN));
         if let Some(t) = target {
             let k = (0..n).find(|&k| keys[index(k)] == t).expect("the revealed row is in the list");
@@ -204,6 +248,7 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
         if inner.width != b.width {
             inner.width = b.width;
             inner.heights.clear();
+            inner.stale = true;
         }
         let mut changed = false;
         let mut sum = 0.0;
@@ -211,7 +256,7 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
             let h = row.bounds().height;
             changed |= (h - assumed).abs() > 0.5;
             sum += h;
-            inner.heights.insert(*k, h);
+            inner.stale |= inner.heights.insert(*k, h) != Some(h);
         }
         if !self.keys.is_empty() {
             inner.typical = Some(sum / self.keys.len() as f32);
