@@ -396,6 +396,8 @@ pub enum UiMessage {
     EditScheduled(String),
     FoldScheduled(bool),
     CheckScheduled,
+    /// Ends the typing notices 3 seconds after the last key.
+    TypingTick,
     /// Desktop's `showReplyThread`: shows the reply chain of the message over the timeline.
     ShowReplies(String),
     HideReplies,
@@ -2399,6 +2401,9 @@ const TOAST_TIMEOUT: Duration = Duration::from_secs(5);
 /// Desktop's `Txe` shows its "Undo:" toast for a second.
 const UNDO_NOTE_TIMEOUT: Duration = Duration::from_secs(1);
 const TOAST_TICK: Duration = Duration::from_millis(250);
+
+/// Desktop's `Oct`: a typing notice ends 3 seconds after the last key.
+const TYPING_STOP: Duration = Duration::from_secs(3);
 /// Desktop's `toasts-list` shows the last 10 toasts.
 const TOASTS_SHOWN: usize = 10;
 const LABEL_DRAFT: &str = "label:draft";
@@ -3374,6 +3379,8 @@ pub struct Pane {
     pub top: TopOfThread,
     timeline: vlist::VList,
     thread_list: vlist::VList,
+    /// Desktop's `stopTypingTimeout`: the chat with a typing notice, and the time of the last key.
+    pub typing: Option<(String, std::time::Instant)>,
 }
 
 /// Desktop's `TopOfThread`, which loads older messages while the top of the timeline is on screen.
@@ -4513,14 +4520,27 @@ impl BeeperGuiApp {
         self.pane.selected_msgs.clear();
         self.pane.link_dialog = None;
         self.pane.suggest = 0;
+        // Desktop types nothing for an empty composer or a Send Later message.
+        let typing = match self.pane.composer.is_empty() || self.pane.send_later.is_some() {
+            true => Task::none(),
+            false => self.typing(true),
+        };
+        Task::batch([typing, self.fetch_link_previews()])
+    }
+
+    /// Desktop's `onTyping` and `stopTyping`: one typing notice when you start to type in a chat, and its end when
+    /// you send. [`UiMessage::TypingTick`] ends it 3 seconds after the last key.
+    fn typing(&mut self, on: bool) -> Task<UiMessage> {
+        let chat = self.pane.selected_chat_id.clone().filter(|_| on);
+        // The notice of another chat, or of this chat when you stop, ends now.
+        let ended = self.pane.typing.take_if(|(c, _)| Some(&*c) != chat.as_ref()).map(|(c, _)| c);
+        let started = chat.clone().filter(|_| self.pane.typing.is_none());
+        self.pane.typing = chat.map(|c| (c, std::time::Instant::now()));
         let st = self.store.read();
-        let new = self.pane.composer.text();
-        let notice = st.matrix.clone().filter(|_| st.typing_notices());
-        let task = notice.zip(self.pane.selected_chat_id.clone()).map(|(client, chat)| {
-            Task::perform(beeper_core::matrix::typing(client, chat, !new.is_empty()), UiMessage::Pushed)
-        });
+        let Some(client) = st.matrix.clone().filter(|_| st.typing_notices()) else { return Task::none() };
         drop(st);
-        Task::batch([task.unwrap_or_else(Task::none), self.fetch_link_previews()])
+        let notice = |chat, on| Task::perform(beeper_core::matrix::typing(client.clone(), chat, on), UiMessage::Pushed);
+        Task::batch([ended.map(|c| notice(c, false)), started.map(|c| notice(c, true))].into_iter().flatten())
     }
 
     /// Desktop's `sendMessage`: a new message moves an archived chat to the inbox, unless `archive` is set.
@@ -5207,7 +5227,10 @@ impl BeeperGuiApp {
                 return self.update(UiMessage::PickEmoji(self.pane.suggest));
             }
             UiMessage::SubmitComposer if self.recorder.is_some() => return self.send_take(),
-            UiMessage::SubmitComposer => self.submit_composer(false),
+            UiMessage::SubmitComposer => {
+                self.submit_composer(false);
+                return self.typing(false);
+            }
             UiMessage::SendAndArchive => {
                 let cid = self.pane.selected_chat_id.clone().expect("a chat is selected");
                 let st = self.store.read();
@@ -5215,10 +5238,12 @@ impl BeeperGuiApp {
                 drop(st);
                 let draft = !self.pane.composer.text().trim().is_empty() || !self.pane.attachments.is_empty();
                 self.submit_composer(true);
+                let stop = self.typing(false);
                 let list = self.list_ids(&self.store.read());
                 if let Some(at) = at.filter(|_| draft && !list.contains(&cid)) {
-                    return self.after_action("afterArchive", &list, at, true);
+                    return stop.chain(self.after_action("afterArchive", &list, at, true));
                 }
+                return stop;
             }
             UiMessage::PickEmoji(i) => {
                 let picks = self.emoji_suggestions(&self.store.read());
@@ -5373,6 +5398,17 @@ impl BeeperGuiApp {
             UiMessage::FoldScheduled(collapsed) => {
                 self.pane.sched_fold.0 = collapsed;
                 return operation::scroll_to("timeline", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
+            }
+            UiMessage::TypingTick => {
+                let client = self.store.read().matrix.clone();
+                let panes = std::iter::once(&mut self.pane).chain(self.chat_windows.iter_mut().map(|w| &mut w.1));
+                let ended: Vec<String> =
+                    panes.filter_map(|p| p.typing.take_if(|t| t.1.elapsed() >= TYPING_STOP)).map(|t| t.0).collect();
+                let notices = ended.into_iter().filter_map(|chat| {
+                    let stop = beeper_core::matrix::typing(client.clone()?, chat, false);
+                    Some(Task::perform(stop, UiMessage::Pushed))
+                });
+                return Task::batch(notices);
             }
             UiMessage::CheckScheduled => {
                 let now = now_unix_millis();
@@ -8033,6 +8069,12 @@ impl BeeperGuiApp {
         let wait = |at: i64| std::time::Duration::from_millis((at - now_unix_millis()).max(1) as u64);
         let remind = due.0.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::CheckReminders));
         let send = due.1.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::CheckScheduled));
+        let typed = std::iter::once(&self.pane).chain(self.chat_windows.iter().map(|w| &w.1));
+        let typed = typed.filter_map(|p| p.typing.as_ref().map(|t| t.1)).min();
+        let typing = typed.map(|t| {
+            let left = TYPING_STOP.saturating_sub(t.elapsed()).max(Duration::from_millis(1));
+            iced::time::every(left).map(|_| UiMessage::TypingTick)
+        });
         let queued = self.queued.iter().map(|q| q.due).min();
         let queued = queued.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::SendQueued(None)));
         let animated = rising
@@ -8067,6 +8109,7 @@ impl BeeperGuiApp {
                 .chain(remind)
                 .chain(send)
                 .chain(queued)
+                .chain(typing)
                 .chain(notes)
                 .chain(tray)
                 .chain(online)

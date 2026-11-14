@@ -949,6 +949,28 @@ fn emoticons_follow_the_setting() {
 }
 
 #[test]
+fn typing_notices_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("typing");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    let typing = |app: &BeeperGuiApp| app.pane.typing.as_ref().map(|t| t.0.clone());
+    let _ = app.update(UiMessage::ComposerChanged("a".into()));
+    assert_eq!(typing(&app), Some(note.to_string()), "a key starts the notice");
+    let _ = app.update(UiMessage::SubmitComposer);
+    assert_eq!(typing(&app), None, "a send ends the notice");
+    let _ = app.update(UiMessage::SendLater(Some((now_unix_millis() + 3_600_000, false))));
+    let _ = app.update(UiMessage::ComposerChanged("later".into()));
+    assert_eq!(typing(&app), None, "a Send Later message has no notice");
+    let _ = app.update(UiMessage::SendLater(None));
+    let _ = app.update(UiMessage::ComposerChanged("b".into()));
+    let _ = app.update(UiMessage::TypingTick);
+    assert_eq!(typing(&app), Some(note.to_string()), "the notice stays for 3 seconds");
+    app.pane.typing.as_mut().unwrap().1 -= TYPING_STOP;
+    let _ = app.update(UiMessage::TypingTick);
+    assert_eq!(typing(&app), None, "the notice ends 3 seconds after the last key");
+}
+
+#[test]
 fn composer_undo_groups_like_prosemirror() {
     let mut app = demo_app("undo");
     let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
