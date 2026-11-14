@@ -655,6 +655,11 @@ pub enum UiMessage {
     VerifyRecoveryCode,
     Verified(Result<(), String>),
     Pushed(Result<(), String>),
+    /// The top of the timeline came on screen (true) or went off screen.
+    TopShown(bool),
+    LoadOlder,
+    /// A load of older messages ended.
+    LoadedOlder(Result<(), String>),
     DevicesLoaded(Result<Vec<DeviceInfo>, String>),
     MicsLoaded(Result<(String, Vec<String>), String>),
     SetMicrophone(String),
@@ -3129,6 +3134,13 @@ fn gap_below(m: &Message, next: &Message) -> f32 {
 static LOGO: std::sync::LazyLock<svg::Handle> =
     std::sync::LazyLock::new(|| svg::Handle::from_memory(include_bytes!("../assets/beeper.svg")));
 svg_static!(TAKE_BEEPER, include_bytes!("../assets/take_beeper.svg"));
+// Desktop's `BeeperIcon` of the networks icons.
+svg_static!(BEEPER_ICON, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 15"><path fill-rule="evenodd" clip-rule="evenodd" d="M0.350037 5.29941C0.350037 2.76021 2.33427 0.649414 4.84524 0.649414H8.75483C11.2658 0.649414 13.25 2.76021 13.25 5.29941C13.25 6.61227 12.7229 7.80414 11.8693 8.65264L7.23829 13.8348C6.60047 14.5486 5.42971 13.9544 5.62929 13.0182L6.2835 9.94942H4.84524C2.33427 9.94942 0.350037 7.83862 0.350037 5.29941ZM4.84524 2.14941C3.21937 2.14941 1.85004 3.5308 1.85004 5.29941C1.85004 7.06803 3.21937 8.44941 4.84524 8.44941H8.13699L7.54101 11.245L10.7824 7.61781L10.7997 7.60083C11.382 7.02833 11.75 6.2123 11.75 5.29941C11.75 3.5308 10.3807 2.14941 8.75483 2.14941H4.84524Z"/></svg>"##);
+
+/// Desktop's `hasOlderMessages`: the chat has events before its first loaded page.
+fn has_older(st: &BeeperStore, chat: &Chat) -> bool {
+    st.matrix.is_some() && chat.older != Older::Start
+}
 // Desktop's QR code of `https://www.beeper.com/download`.
 svg_static!(APP_QR, include_bytes!("../assets/app_qr.svg"));
 
@@ -3319,6 +3331,19 @@ pub struct Pane {
     pub sched_menu: Option<(Vec<String>, bool, Point)>,
     /// Desktop's `openReplyThread`: the message whose reply chain shows over the timeline.
     pub reply_thread: Option<String>,
+    pub top: TopOfThread,
+}
+
+/// Desktop's `TopOfThread`, which loads older messages while the top of the timeline is on screen.
+#[derive(Default)]
+pub struct TopOfThread {
+    shown: bool,
+    /// The start of the running load, its chat, and the message count of the chat before it.
+    loading: Option<(std::time::Instant, String, usize)>,
+    /// A retry waits for its backoff.
+    waiting: bool,
+    /// The loads since the message count changed.
+    tries: u32,
 }
 
 impl Pane {
@@ -4176,6 +4201,8 @@ impl BeeperGuiApp {
         let pending = st.scheduled.iter().any(|s| s.chat_id == chat.id && !s.canceled);
         (self.pane.send_later, self.pane.sched_fold, self.pane.sched_menu) = (None, (pending, pending), None);
         self.pane.reply_thread = None;
+        // A running load or retry of the last chat goes on to this chat when it ends.
+        (self.pane.top.shown, self.pane.top.tries) = (false, 0);
         self.video = None;
         drop(st);
         self.refresh_theme_and_tray();
@@ -4542,6 +4569,50 @@ impl BeeperGuiApp {
             }
         }
         Task::batch(tasks)
+    }
+
+    /// Desktop's `TopOfThread` effect: loads older messages of the open chat while the top of its timeline is on
+    /// screen, up to 5 loads that bring no message.
+    fn load_older(&mut self) -> Task<UiMessage> {
+        let top = &self.pane.top;
+        if !top.shown || top.loading.is_some() || top.waiting || top.tries >= 5 {
+            return Task::none();
+        }
+        let st = self.store.read();
+        let Some(chat) = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c)) else {
+            return Task::none();
+        };
+        let chat = &st.chats[chat];
+        if !has_older(&st, chat) {
+            return Task::none();
+        }
+        let (id, before) = (chat.id.clone(), st.chat_msg_indices[&chat.id].len());
+        drop(st);
+        self.pane.top.loading = Some((std::time::Instant::now(), id.clone(), before));
+        let load = beeper_core::matrix::load_older(self.store.clone(), id);
+        Task::perform(load, UiMessage::LoadedOlder)
+    }
+
+    /// The end of a load of older messages. A retry follows with Desktop's backoff: 100 ms * 2^tries up to 3 s, with
+    /// the tries reset when messages came.
+    fn loaded_older(&mut self, r: Result<(), String>) -> Task<UiMessage> {
+        let (_, chat, before) = self.pane.top.loading.take().expect("a load ran");
+        let st = self.store.read();
+        let open = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_canonical_chat_id(c));
+        let count = open.as_ref().map(|c| st.chat_msg_indices[c].len());
+        drop(st);
+        if open != Some(chat) {
+            return self.load_older();
+        }
+        if let Err(e) = r {
+            // The next time the top comes on screen, it tries again.
+            self.fail(Toast::new(format!("Could not load older messages: {e}")));
+            return Task::none();
+        }
+        let top = &mut self.pane.top;
+        (top.tries, top.waiting) = (if count == Some(before) { top.tries + 1 } else { 0 }, true);
+        let wait = Duration::from_millis((100 * 2u64.pow(top.tries)).min(3000));
+        Task::perform(tokio::time::sleep(wait), |()| UiMessage::LoadOlder)
     }
 
     fn push_outbox(&mut self) -> Task<UiMessage> {
@@ -6800,6 +6871,15 @@ impl BeeperGuiApp {
                 return self.quit();
             }
             UiMessage::Pushed(Err(e)) => self.fail(Toast::new(format!("Could not send to Matrix: {e}"))),
+            UiMessage::TopShown(shown) => {
+                self.pane.top.shown = shown;
+                return self.load_older();
+            }
+            UiMessage::LoadOlder => {
+                self.pane.top.waiting = false;
+                return self.load_older();
+            }
+            UiMessage::LoadedOlder(r) => return self.loaded_older(r),
             UiMessage::VerifySasNow => {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 self.store.write().sas_confirm = Some(tx);
@@ -7837,6 +7917,8 @@ impl BeeperGuiApp {
         let queued = self.queued.iter().map(|q| q.due).min();
         let queued = queued.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::SendQueued(None)));
         let animated = rising
+            || self.pane.top.loading.is_some()
+            || self.chat_windows.iter().any(|w| w.1.top.loading.is_some())
             || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
             || self.pref_flash.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 2.0);
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
@@ -10836,6 +10918,29 @@ impl BeeperGuiApp {
         row![line(), label, line()].spacing(10).align_y(Center).padding([12, 0]).into()
     }
 
+    /// Desktop's `TopOfThread`: "Loading..." while older messages load, else the Beeper icon at the start of the
+    /// room, and the request header of a message request. It tells the app when it comes on or off screen.
+    fn top_of_thread<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {
+        let fg = self.wallpaper_fg(st, chat, false).unwrap_or(self.pal.text);
+        // Desktop fades the text in after 0.2 s over 0.24 s, and moves a 25% to 50% gradient over it each second.
+        let loading = self.pane().top.loading.as_ref().map(|(at, ..)| {
+            let t = at.elapsed().as_secs_f32();
+            let alpha = ((t - 0.2) / 0.24).clamp(0.0, 1.0) * (0.5 - 0.25 * (2.0 * t.fract() - 1.0).abs());
+            container(txt("Loading...", 13.0).color(fg.scale_alpha(alpha))).center_x(Fill).padding(13)
+        });
+        let request = self.view_request_head(st, chat);
+        let icon = (loading.is_none() && !has_older(st, chat) && request.is_none()).then(|| {
+            let icon = svg(BEEPER_ICON.clone()).width(32.0 * 14.0 / 15.0).height(32);
+            container(icon.style(move |_, _| svg::Style { color: Some(fg.scale_alpha(0.1)) })).center_x(Fill)
+        });
+        let top = column![].push(loading).push(icon).push(request).width(Fill);
+        iced::widget::sensor(top)
+            .key(chat.id.clone())
+            .on_show(|_| UiMessage::TopShown(true))
+            .on_hide(UiMessage::TopShown(false))
+            .into()
+    }
+
     /// Desktop's `MessageList`: the messages in timeline order. In a reply chain, the quotes, the reply lines,
     /// the replies buttons and the unread divider do not show.
     fn view_messages<'a>(
@@ -10854,7 +10959,7 @@ impl BeeperGuiApp {
             }
         }
         let mut col = Column::new().padding(Padding::new(8.0).right(8.0 + GUTTER).top(96.0).bottom(0.0));
-        col = col.push((!thread).then(|| self.view_request_head(st, chat)).flatten());
+        col = col.push((!thread).then(|| self.top_of_thread(st, chat)));
         let mut prev: Option<&Message> = None;
         let last_live = msgs.iter().rposition(|m| m.is_deleted != Some(true));
         let mut last_seen: HashMap<&str, (&str, &str)> = HashMap::new();

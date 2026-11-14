@@ -2,8 +2,8 @@ use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
     timer_distance, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder,
-    EditHistoryEntry, Label, Message, MessageLink, MessageRules, PollData, PollOption, PollRules, Reaction, Timers,
-    User, VerificationSas, VerificationSasEmoji, VerificationState, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS,
+    EditHistoryEntry, Label, Message, MessageLink, MessageRules, Older, PollData, PollOption, PollRules, Reaction,
+    Timers, User, VerificationSas, VerificationSasEmoji, VerificationState, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS,
     BEEPER_MESSAGES, BEEPER_POLLS, BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER,
     EDITS, FILE_GIF, FILE_VOICE, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION,
 };
@@ -370,6 +370,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         messages: features.as_ref().map_or(BEEPER_MESSAGES, message_rules),
         disappearing: state(room, DISAPPEARING_TIMER).await.and_then(|t| t["timer"].as_u64()).filter(|&t| t > 0),
         timers: timers(features.as_ref(), &levels, me.as_str()),
+        older: Older::Unknown,
         flags: 0,
     }
 }
@@ -680,12 +681,47 @@ fn reaction_verb(key: &str) -> String {
 /// JavaScript's `Number.MIN_SAFE_INTEGER`, the order Beeper gives a chat with no events.
 const MIN_SAFE_INTEGER: i64 = -9_007_199_254_740_991;
 
-async fn history(room: &Room) -> Vec<TimelineEvent> {
+/// One page of the room timeline back from `from`, oldest first, and the token of the page before it, or `None`
+/// at the start of the room.
+async fn page(
+    room: &Room,
+    from: Option<String>,
+    limit: u32,
+) -> matrix_sdk::Result<(Vec<TimelineEvent>, Option<String>)> {
     let mut opts = MessagesOptions::backward();
-    opts.limit = HISTORY.into();
-    let mut chunk = room.messages(opts).await.expect("load room history").chunk;
-    chunk.reverse();
-    chunk
+    (opts.from, opts.limit) = (from, limit.into());
+    let page = room.messages(opts).await?;
+    let end = page.end.filter(|_| !page.chunk.is_empty());
+    Ok((page.chunk.into_iter().rev().collect(), end))
+}
+
+async fn history(room: &Room) -> (Vec<TimelineEvent>, Option<String>) {
+    page(room, None, HISTORY).await.expect("load room history")
+}
+
+/// Desktop's `loadOlderMessages`: loads pages back from the `older` token of the chat until a page adds a message
+/// or the room has no older events.
+pub async fn load_older(store: SharedStore, chat: String) -> Result<(), String> {
+    let client = store.read().matrix.clone().expect("only a Matrix chat loads older messages");
+    let room = joined_room(&client, &chat).await?;
+    let count = || store.read().chat_msg_indices[&chat].len();
+    let start = count();
+    while count() == start {
+        let from = {
+            let st = store.read();
+            match &st.chats[st.chat_idx_by_id[&chat]].older {
+                Older::Start => return Ok(()),
+                Older::Unknown => None,
+                Older::From(token) => Some(token.clone()),
+            }
+        };
+        let (events, end) = page(&room, from, HISTORY).await.map_err(|e| e.to_string())?;
+        sync_room(&store, &room, events).await;
+        let mut st = store.write();
+        let idx = st.chat_idx_by_id[&chat];
+        st.update_chat(idx, |c| c.older = end.map_or(Older::Start, Older::From));
+    }
+    Ok(())
 }
 
 async fn set_typing(store: &SharedStore, room: &Room, ids: &Value) {
@@ -828,20 +864,15 @@ pub async fn bookmarked_message(client: Client, chat: String, target: String, ac
 }
 
 async fn all_history(room: &Room) -> Vec<TimelineEvent> {
-    let (mut events, mut from) = (Vec::new(), None);
+    let (mut pages, mut from) = (Vec::new(), None);
     loop {
-        let mut opts = MessagesOptions::backward();
-        (opts.from, opts.limit) = (from, 100u32.into());
-        let page = room.messages(opts).await.expect("load room history");
-        let done = page.chunk.is_empty() || page.end.is_none();
-        events.extend(page.chunk);
-        if done {
-            break;
+        let (events, end) = page(room, from, 100).await.expect("load room history");
+        pages.push(events);
+        match end {
+            Some(token) => from = Some(token),
+            None => return pages.into_iter().rev().flatten().collect(),
         }
-        from = page.end;
     }
-    events.reverse();
-    events
 }
 
 /// A redaction with extra content, which `Room::redact` does not send.
@@ -910,11 +941,13 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
         let st = store.read();
         st.chat_idx_by_id.get(&chat_id).is_some_and(|&i| st.chats[i].notifiable.is_some())
     };
+    let mut older = None;
     if !seen {
         let known: HashSet<String> = events.iter().filter_map(|e| Some(e.event_id()?.to_string())).collect();
-        let older =
-            history(room).await.into_iter().filter(|e| e.event_id().is_some_and(|id| !known.contains(id.as_str())));
-        events = older.chain(events).collect();
+        let (page, end) = history(room).await;
+        older = Some(end.map_or(Older::Start, Older::From));
+        let page = page.into_iter().filter(|e| e.event_id().is_some_and(|id| !known.contains(id.as_str())));
+        events = page.chain(events).collect();
     }
     let (mut ops, mut non_messages) = (Vec::new(), Vec::new());
     let hidden = store.read().settings.on("hiddenEvents");
@@ -1055,6 +1088,9 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
             }
         }
         let idx = st.chat_idx_by_id[&chat_id];
+        if let Some(older) = older {
+            st.update_chat(idx, |c| c.older = older);
+        }
         let msgs = st.chat_msg_indices.get(&chat_id).map_or(&[][..], |v| &v[..]).iter().map(|&i| &st.messages[i]);
         let last = msgs.clone().rev().find(|m| m.message_type.as_deref() != Some("MEMBERSHIP")).map(|m| &m.sort_key);
         let stored = msgs.flat_map(|m| &m.reactions).map(|r| &r.sort_key).max();
@@ -1663,7 +1699,7 @@ async fn refetch_undecrypted(store: &SharedStore, rooms: Vec<Room>) {
     futures_util::stream::iter(rooms)
         .for_each_concurrent(8, |room| async move {
             if has_utd(store, &room).await {
-                sync_room(store, &room, history(&room).await).await;
+                sync_room(store, &room, history(&room).await.0).await;
             }
         })
         .await;
@@ -2021,7 +2057,7 @@ pub async fn run(store: SharedStore) {
         .for_each_concurrent(8, |room| {
             let store = store.clone();
             async move {
-                let events = if first || has_utd(&store, &room).await { history(&room).await } else { Vec::new() };
+                let events = if first || has_utd(&store, &room).await { history(&room).await.0 } else { Vec::new() };
                 sync_room(&store, &room, events).await
             }
         })
@@ -2076,6 +2112,130 @@ pub async fn run(store: SharedStore) {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::{json, Value};
+
+    /// A Matrix homeserver stub on a free port that answers each request with `reply(method, path, body)`.
+    async fn stub_homeserver(reply: impl Fn(&str, &str, Value) -> (u16, Value) + Send + Sync + 'static) -> String {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind the stub homeserver");
+        let url = format!("http://{}", listener.local_addr().expect("the stub address"));
+        let reply = std::sync::Arc::new(reply);
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.expect("accept a stub connection");
+                let reply = reply.clone();
+                tokio::spawn(async move {
+                    let (mut stream, mut line, mut len) = (BufReader::new(stream), String::new(), 0);
+                    stream.read_line(&mut line).await.expect("read the request line");
+                    let mut header = String::new();
+                    while stream.read_line(&mut header).await.expect("read a header") > 2 {
+                        if let Some(v) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                            len = v.trim().parse().expect("a content length");
+                        }
+                        header.clear();
+                    }
+                    let mut body = vec![0; len];
+                    stream.read_exact(&mut body).await.expect("read the request body");
+                    let mut parts = line.split(' ');
+                    let (method, path) = (parts.next().expect("a method"), parts.next().expect("a path"));
+                    let (code, json) = reply(method, path, serde_json::from_slice(&body).unwrap_or(Value::Null));
+                    let json = json.to_string();
+                    let head = format!(
+                        "HTTP/1.1 {code} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        json.len()
+                    );
+                    stream.get_mut().write_all(format!("{head}{json}").as_bytes()).await.expect("write the reply");
+                });
+            }
+        });
+        url
+    }
+
+    /// A signed-in store in `dir` with a Matrix client that synced the stub homeserver at `url`.
+    async fn stub_store(dir: &std::path::Path, url: &str) -> crate::store::SharedStore {
+        crate::cloud::install_tls();
+        let cfg = crate::config::CentralConfig::new(dir.into(), "127.0.0.1".into(), 23392, None);
+        let store = crate::store::StoreLock::shared(crate::store::BeeperStore::from_config(cfg));
+        {
+            let s = &mut store.write().beeper_state;
+            (s.homeserver, s.user_id, s.device_id, s.access_token) =
+                (url.into(), "@me:x".into(), "DEV".into(), "token".into());
+        }
+        let client = super::connect(&store).await.expect("connect to the stub homeserver");
+        client.sync_once(super::SyncSettings::default()).await.expect("sync with the stub homeserver");
+        store.write().matrix = Some(client);
+        store
+    }
+
+    /// The `/sync` reply of the stub homeserver: one joined room `!room:x` of the user `@me:x`.
+    fn stub_sync() -> Value {
+        let state = |kind: &str, key: &str, content: Value| {
+            json!({ "type": kind, "state_key": key, "sender": "@me:x", "event_id": format!("${kind}"),
+                "origin_server_ts": 1, "content": content })
+        };
+        let create = state("m.room.create", "", json!({ "creator": "@me:x", "room_version": "10" }));
+        let member = state("m.room.member", "@me:x", json!({ "membership": "join", "displayname": "Me" }));
+        let room = json!({ "state": { "events": [create, member] }, "timeline": { "events": [] } });
+        json!({ "next_batch": "s1", "rooms": { "join": { "!room:x": room } } })
+    }
+
+    fn stub_message(i: i64) -> Value {
+        json!({ "type": "m.room.message", "sender": "@me:x", "event_id": format!("$e{i}"),
+            "origin_server_ts": 1_700_000_000_000 + i * 1000, "content": { "msgtype": "m.text", "body": format!("m{i}") },
+            "unsigned": { "com.beeper.hs.order": i } })
+    }
+
+    #[tokio::test]
+    async fn older_messages_load_back_to_the_start_of_the_room_like_desktop() {
+        use crate::models::Older;
+        let url = stub_homeserver(|_, path, _| {
+            let (path, query) = path.split_once('?').unwrap_or((path, ""));
+            match path {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/sync" => (200, stub_sync()),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                p if p.ends_with("/messages") => {
+                    // The stub room has 70 messages, and the token `tN` pages back from message N.
+                    let from = query.split('&').find_map(|kv| kv.strip_prefix("from=t"));
+                    let to: i64 = from.map_or(70, |t| t.parse().expect("a stub token"));
+                    let end = (to - 30).max(0);
+                    let mut page = json!({ "start": format!("t{to}"), "chunk": (end + 1..=to).rev().map(stub_message).collect::<Vec<_>>() });
+                    if end > 0 {
+                        page["end"] = json!(format!("t{end}"));
+                    }
+                    (200, page)
+                }
+                _ => (404, json!({ "errcode": "M_UNRECOGNIZED", "error": "not in the stub" })),
+            }
+        })
+        .await;
+        let dir = std::env::temp_dir().join(format!("beeper-rs-older-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = stub_store(&dir, &url).await;
+        let room =
+            store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).expect("the room");
+        super::sync_room(&store, &room, Vec::new()).await;
+        let state = || {
+            let st = store.read();
+            let texts = st.chat_msg_indices["!room:x"].iter().map(|&i| st.messages[i].text.clone().unwrap());
+            (texts.collect::<Vec<_>>(), st.chats[st.chat_idx_by_id["!room:x"]].older.clone())
+        };
+        let texts = |a: i64| (a..=70).map(|i| format!("m{i}")).collect::<Vec<_>>();
+        assert_eq!(state(), (texts(41), Older::From("t40".into())), "the first sync loads the newest 30 events");
+        super::load_older(store.clone(), "!room:x".into()).await.expect("load older messages");
+        assert_eq!(state(), (texts(11), Older::From("t10".into())), "older messages go before the loaded ones");
+        super::load_older(store.clone(), "!room:x".into()).await.expect("load older messages");
+        assert_eq!(state(), (texts(1), Older::Start), "the last page has no token");
+        super::load_older(store.clone(), "!room:x".into()).await.expect("load at the start of the room");
+        assert_eq!(state().0.len(), 70);
+        drop(store);
+        let cfg = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23392, None);
+        let st = crate::store::BeeperStore::from_config(cfg);
+        assert_eq!(st.chats[st.chat_idx_by_id["!room:x"]].older, Older::Start, "the pagination state persists");
+        // Windows keeps the Matrix store open while the tasks of the SDK end, so the next run removes it.
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn demo_logout_deletes_local_data() {
         let dir = std::env::temp_dir().join(format!("beeper-rs-logout-{}", std::process::id()));

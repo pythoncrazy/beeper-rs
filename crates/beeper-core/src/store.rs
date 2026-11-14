@@ -878,6 +878,7 @@ impl BeeperStore {
             messages: BEEPER_MESSAGES,
             disappearing: None,
             timers: None,
+            older: Older::Unknown,
             flags: 0,
         };
         self.push_chat(chat, true);
@@ -1240,6 +1241,7 @@ impl BeeperStore {
                 chat_theme: c.chat_theme.take(),
                 note: c.note.take(),
                 notifiable: c.notifiable.take(),
+                older: std::mem::take(&mut c.older),
                 ..chat
             }
         });
@@ -1471,6 +1473,7 @@ impl BeeperStore {
             messages: BEEPER_MESSAGES,
             disappearing: None,
             timers: None,
+            older: Older::Unknown,
             flags: 0,
         };
         let idx = self.push_chat(chat, true);
