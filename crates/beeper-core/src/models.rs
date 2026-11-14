@@ -1083,6 +1083,8 @@ pub struct BeeperSettings {
     pub spaces_order: Vec<SpaceOrder>,
     /// Desktop's local `has_ever_created_label`: the Create Label nudge stays hidden after the first label.
     pub ever_labeled: bool,
+    /// Desktop's local `labels_intro_seen`: New Label shows its intro only the first time.
+    pub labels_intro_seen: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

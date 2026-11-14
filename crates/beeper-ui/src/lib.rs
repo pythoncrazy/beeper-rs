@@ -443,8 +443,10 @@ pub enum UiMessage {
     RestoreLabel(Box<Label>),
     /// Desktop's `restoreLabel`: makes a deleted label again, in its old place in the sidebar.
     RestoreDeletedLabel(Box<Label>, Vec<SpaceOrder>),
-    /// Desktop's `CreateLabelBrowserWindow` for an existing label.
+    /// Desktop's Edit Label sheet (`Lst`) of Label Settings: the name, icon and color of a label.
     EditLabel(String),
+    /// Desktop's Chats sheet (`Nst`) of Label Settings: the chats of a label.
+    EditLabelChats(String),
     Label(LabelEdit),
     DeleteLabel(String),
     /// Desktop's `setLabelInboxVisibility`.
@@ -4104,9 +4106,11 @@ impl BeeperGuiApp {
             _ if self.labels_windows.iter().any(|w| w.0 == id) => tr("Edit Labels"),
             _ if self.label_settings.iter().any(|w| w.id == id) => tr("Label Settings"),
             _ if self.poll_windows.iter().any(|w| w.id == id) => tr("New Poll"),
-            _ if let Some(d) = self.label_window.as_ref().filter(|d| d.id == id) => {
-                return tr(if d.label.is_some() { "Edit label" } else { "New label" }).into();
-            }
+            _ if let Some(d) = self.label_window.as_ref().filter(|d| d.id == id) => match (d.label.is_some(), d.step) {
+                (false, _) => tr("New Label"),
+                (true, LabelStep::Details) => tr("Edit Label"),
+                (true, _) => tr("Chats"),
+            },
             _ if self.spaces_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Spaces"),
             _ if self.group_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Group"),
             _ if let Some((_, _, mid)) = self.vote_windows.iter().find(|w| w.0 == id) => {
@@ -5576,22 +5580,17 @@ impl BeeperGuiApp {
                 if let Some(d) = &self.label_window {
                     return window::gain_focus(d.id);
                 }
-                let (id, open) = self.open_child(Size::new(600.0, 700.0));
-                self.label_window = Some(LabelDraft { chats, ..LabelDraft::new(id) });
-                return open.chain(operation::focus("label-title"));
-            }
-            UiMessage::EditLabel(label) => {
-                self.chat_menu = None;
-                if let Some(d) = &self.label_window {
-                    return window::gain_focus(d.id);
+                let intro = !self.store.read().settings.labels_intro_seen;
+                if intro {
+                    self.patch_settings(|s| s.labels_intro_seen = true);
                 }
-                let (id, open) = self.open_child(Size::new(600.0, 700.0));
-                let st = self.store.read();
-                let label = st.labels.iter().find(|l| l.id == label).expect("an edited label");
-                self.label_window = Some(LabelDraft::edit(id, label));
-                drop(st);
-                return open.chain(operation::focus("label-title"));
+                let (id, open) = self.open_child(LABEL_SETTINGS_SIZE);
+                let step = if intro { LabelStep::Intro } else { LabelStep::Pick };
+                self.label_window = Some(LabelDraft { chats, step, ..LabelDraft::new(id) });
+                return if intro { open } else { open.chain(operation::focus("label-search")) };
             }
+            UiMessage::EditLabel(label) => return self.open_label_sheet(label, LabelStep::Details),
+            UiMessage::EditLabelChats(label) => return self.open_label_sheet(label, LabelStep::Pick),
             UiMessage::MuteLabel(id, muted) => {
                 self.chat_menu = None;
                 let id = self.label_id(id);
@@ -6012,11 +6011,8 @@ impl BeeperGuiApp {
                 }
                 if self.label_window.as_ref().is_some_and(|d| d.id == id) {
                     return match key {
-                        Key::Named(Named::Escape) if self.label_window.as_ref().is_some_and(|d| d.picker) => {
-                            self.label_edit(LabelEdit::Picker(false))
-                        }
                         Key::Named(Named::Escape) => window::close(id),
-                        Key::Named(Named::Enter) if mods.command() => self.label_edit(LabelEdit::Create),
+                        Key::Named(Named::Enter) if mods.command() => self.label_edit(LabelEdit::Advance),
                         _ => Task::none(),
                     };
                 }
@@ -15360,8 +15356,22 @@ impl BeeperGuiApp {
         }
     }
 
+    /// Desktop's Edit Label (`Lst`) and Chats (`Nst`) sheets of Label Settings, by their step.
+    fn open_label_sheet(&mut self, label: String, step: LabelStep) -> Task<UiMessage> {
+        self.chat_menu = None;
+        if let Some(d) = &self.label_window {
+            return window::gain_focus(d.id);
+        }
+        let (id, open) = self.open_child(LABEL_SHEET_SIZE);
+        let label = self.label_id(label);
+        let st = self.store.read();
+        let label = st.labels.iter().find(|l| l.id == label).expect("an edited label");
+        self.label_window = Some(LabelDraft { step, ..LabelDraft::edit(id, label) });
+        drop(st);
+        open.chain(operation::focus(if step == LabelStep::Details { "label-title" } else { "label-search" }))
+    }
+
     fn label_edit(&mut self, edit: LabelEdit) -> Task<UiMessage> {
-        let ready = self.label_window.as_ref().expect("the label window is open").ready(&self.store.read());
         let d = self.label_window.as_mut().expect("the label window is open");
         match edit {
             LabelEdit::Name(name) => d.name = name,
@@ -15371,29 +15381,44 @@ impl BeeperGuiApp {
                 None => d.chats.push(chat),
             },
             LabelEdit::More => d.more = !d.more,
-            LabelEdit::Picker(open) => d.picker = open,
             LabelEdit::Color(c) => d.color = (d.color != Some(c)).then_some(c),
             LabelEdit::Icon(i) => d.icon = (d.icon.as_deref() != Some(i)).then(|| i.into()),
-            LabelEdit::Create if ready => {
+            LabelEdit::Cancel => return window::close(d.id),
+            LabelEdit::Back => d.step = LabelStep::Pick,
+            LabelEdit::Advance if !d.ready() => {}
+            LabelEdit::Advance if d.label.is_none() && d.step != LabelStep::Details => {
+                let (step, focus) = match d.step {
+                    LabelStep::Intro => (LabelStep::Pick, "label-search"),
+                    _ => (LabelStep::Details, "label-title"),
+                };
+                d.step = step;
+                return operation::focus(focus);
+            }
+            LabelEdit::Advance => {
                 let (id, chats) = (d.id, std::mem::take(&mut d.chats));
-                let name = d.name.trim().to_string();
+                let (name, color, icon) = (d.name.trim().to_string(), d.color, d.icon.clone());
                 if let Some(label) = d.label.clone() {
                     let mut st = self.store.write();
                     let old = st.labels.iter().find(|l| l.id == label).expect("an edited label").clone();
-                    st.update_label(&label, &name, d.color, d.icon.clone(), chats);
-                    drop(st);
-                    let (what, text) = (format!("Update label \"{}\"", old.name), format!("Updated {name}"));
-                    self.act(what, UiMessage::RestoreLabel(Box::new(old)), Some((text, None)));
+                    let same = old.name == name
+                        && (old.color, &old.icon) == (color, &icon)
+                        && old.rooms.len() == chats.len()
+                        && chats.iter().all(|c| old.rooms.contains(c));
+                    if !same {
+                        st.update_label(&label, &name, color, icon, chats);
+                        drop(st);
+                        let (what, text) = (format!("Update label \"{}\"", old.name), format!("Updated {name}"));
+                        self.act(what, UiMessage::RestoreLabel(Box::new(old)), Some((text, None)));
+                    }
                     return window::close(id);
                 }
-                let label = self.store.write().create_label(&name, d.color, d.icon.clone(), chats);
+                let label = self.store.write().create_label(&name, color, icon, chats);
                 let open = UiMessage::SelectAccount(Some(format!("label:{label}")));
                 let _ = self.update(open.clone());
                 let (what, text) = (format!("Create label \"{name}\""), format!("Created {name}"));
-                self.act(what, UiMessage::DeleteLabel(label), Some((text, Some(open))));
-                return window::close(id);
+                self.act(what, UiMessage::DeleteLabel(label.clone()), Some((text, Some(open))));
+                return Task::batch([window::close(id), self.update(UiMessage::OpenLabelSettings(label))]);
             }
-            LabelEdit::Create => {}
         }
         Task::none()
     }
@@ -15480,7 +15505,7 @@ impl BeeperGuiApp {
             .padding(Padding::new(8.0).left(12.0))
             .width(Fill)
             .style(btn_style([p.chip; 3], [p.text; 3], 16.0))
-            .on_press(UiMessage::EditLabel(l.id.clone()));
+            .on_press(UiMessage::EditLabelChats(l.id.clone()));
         let now = l.inbox.unwrap_or("all");
         let inbox_name = |o: &str, label: &'static str| match o {
             "none" => trx(label, "label inbox visibility option"),
@@ -15554,20 +15579,97 @@ impl BeeperGuiApp {
         stack![window].push(menu).push(confirm).into()
     }
 
+    /// Desktop's label sheets: the New Label wizard (`krt`) with its intro, chats and details steps, and the Chats
+    /// (`Cst`) and Edit Label (`Tst`) sheets of Label Settings.
     fn view_create_label<'a>(&'a self, d: &'a LabelDraft) -> El<'a> {
+        let p = &self.pal;
+        let edit = UiMessage::Label;
+        let body = match d.step {
+            LabelStep::Intro => self.view_label_intro(d),
+            LabelStep::Pick => self.view_label_pick(d),
+            LabelStep::Details => self.view_label_details(d),
+        };
+        let ((back, undo), next) = match (d.label.is_some(), d.step) {
+            (false, LabelStep::Intro) => ((tr("Cancel"), LabelEdit::Cancel), tr("Get Started")),
+            (false, LabelStep::Pick) => ((tr("Cancel"), LabelEdit::Cancel), tr("Next")),
+            (false, LabelStep::Details) => ((tr("Back"), LabelEdit::Back), tr("Next")),
+            (true, _) => ((tr("Cancel"), LabelEdit::Cancel), tr("Done")),
+        };
+        let back = button(container(med(back, 13.0)).center_y(32))
+            .padding([0, 12])
+            .style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 16.0))
+            .on_press(edit(undo));
+        let ready = d.ready();
+        let bg = if ready { p.accent } else { p.accent.scale_alpha(0.4) };
+        let next = button(container(med(next, 13.0)).center_y(32))
+            .padding([0, 14])
+            .style(btn_style([bg; 3], [Color::WHITE.scale_alpha(if ready { 1.0 } else { 0.6 }); 3], 16.0))
+            .on_press_maybe(ready.then_some(edit(LabelEdit::Advance)));
+        let footer = row![Space::new().width(Fill), back, next].spacing(8).padding(Padding::new(16.0).top(12.0));
+        let card = container(column![container(body).height(Fill), footer]).height(Fill).clip(true);
+        let head = semi(self.title(d.id), 13.0).line_height(Pixels(16.0)).color(p.strong);
+        let head = container(head).center_x(Fill).padding([8, 0]);
+        let window = column![head, card.style(fill_box(p.card, 12.0))];
+        container(window).padding(8).style(fill_box(p.window, 0.0)).into()
+    }
+
+    /// The intro step of Desktop's New Label wizard: the picked chats or three sample faces with a label badge.
+    fn view_label_intro<'a>(&'a self, d: &'a LabelDraft) -> El<'a> {
+        let p = &self.pal;
+        let st = self.store.read();
+        let picked = d.chats.iter().filter_map(|c| st.resolve_chat_idx(c)).take(5);
+        let mut faces: Vec<El> = picked.map(|i| self.chat_avatar(&st.chats[i], 48.0, 1.25)).collect();
+        if faces.is_empty() {
+            faces = LABEL_INTRO_FACES.iter().map(|h| image(h.clone()).width(48).height(48).into()).collect();
+        }
+        let n = faces.len();
+        let faces = faces.into_iter().enumerate().fold(Stack::new(), |s, (i, face)| {
+            let ring = container(face).padding(4).style(fill_box(p.card, 28.0));
+            s.push(container(ring).padding(Padding::ZERO.left(i as f32 * 33.0)))
+        });
+        let tile = Label {
+            color: Some(LABEL_COLORS.len() as u8 - 1),
+            icon: Some(DEFAULT_LABEL_ICON.into()),
+            ..Label::default()
+        };
+        let tile = container(label_tile(&tile, 26.0, 18.0, 13.0, p.strong)).padding(2).style(fill_box(p.card, 15.0));
+        let width = 56.0 + (n - 1) as f32 * 33.0;
+        let stack =
+            stack![container(faces).padding(Padding::ZERO.top(13.0)), container(tile).align_right(width + 13.0),];
+        let headline = semi(tr("Organize chats in custom spaces."), 13.0).color(p.strong).align_x(Center);
+        let intro = column![stack, headline].spacing(16).align_x(Center);
+        let plus = container(badge(p, prefs::Badge::Plus)).align_right(Fill).padding(Padding::new(12.0).right(14.0));
+        stack![container(intro).center(Fill), plus].into()
+    }
+
+    /// Desktop's `LabelDetailsFields` (`Ide`): the label tile, the name field and the icon and color grid.
+    fn view_label_details<'a>(&'a self, d: &'a LabelDraft) -> El<'a> {
+        let p = &self.pal;
+        let edit = UiMessage::Label;
+        let tile = Label { color: d.color, icon: d.icon.clone(), ..Label::default() };
+        let name = text_input(tr("Label name"), &d.name)
+            .id("label-title")
+            .on_input(move |n| edit(LabelEdit::Name(n)))
+            .on_submit(edit(LabelEdit::Advance))
+            .size(12)
+            .line_height(Pixels(16.0))
+            .padding([8, 12])
+            .style(input_style(p.chip, p.strong, p.sub, p.accent, 16.0));
+        let body = column![
+            container(label_tile(&tile, 54.0, 28.0, 20.0, p.strong)).center_x(Fill),
+            container(name).padding(Padding::ZERO.top(20.0)),
+            container(self.label_grid(d, d.size().width - 48.0)).padding(Padding::ZERO.top(20.0)),
+        ];
+        scrollable(container(body).padding(16)).direction(Direction::Vertical(Scrollbar::hidden())).into()
+    }
+
+    /// Desktop's `LabelChatPicker` (`_de`): the search row, then the selected, recent and other chats.
+    fn view_label_pick<'a>(&'a self, d: &'a LabelDraft) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
         let edit = UiMessage::Label;
-        let title = text_input(tr("Title"), &d.name)
-            .id("label-title")
-            .on_input(move |n| edit(LabelEdit::Name(n)))
-            .size(13)
-            .line_height(Pixels(16.0))
-            .padding([10, 8])
-            .style(input_style(p.received, p.strong, p.sub, p.accent, 18.0));
-        let explainer =
-            txt(tr("Add chats to a label to organize them and set rules"), 14.0).line_height(Pixels(18.0)).color(p.sub);
         let search = text_input(tr("Search name, @, number, or network"), &d.search)
+            .id("label-search")
             .on_input(move |q| edit(LabelEdit::Search(q)))
             .size(13)
             .line_height(Pixels(16.0))
@@ -15623,62 +15725,41 @@ impl BeeperGuiApp {
             }
         });
         let list = scrollable(Column::with_children(rows)).direction(Direction::Vertical(Scrollbar::hidden()));
-        let editing = d.label.is_some();
-        let create = row![
-            semi(if editing { tr("Save") } else { tr("Create label") }, 12.0).line_height(Pixels(15.0)),
-            txt("CTRL+ENTER", 10.0).line_height(Pixels(12.0)).color(Color::WHITE.scale_alpha(0.8))
-        ]
-        .spacing(4)
-        .align_y(Center);
-        let ready = d.ready(&st);
-        let bg = if ready { p.accent } else { p.accent.scale_alpha(0.4) };
-        let fg = Color::WHITE.scale_alpha(if ready { 1.0 } else { 0.4 });
-        let create = button(create)
-            .padding([4, 8])
-            .style(btn_style([bg; 3], [fg; 3], 20.0))
-            .on_press_maybe(ready.then_some(edit(LabelEdit::Create)));
+        column![search, container(list).height(Fill)].into()
+    }
+
+    /// Desktop's `IconColorGrid`: the label colors, then the label icons, in rows `width` wide.
+    fn label_grid<'a>(&self, d: &LabelDraft, width: f32) -> El<'a> {
+        let p = &self.pal;
+        let edit = UiMessage::Label;
         let shade = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
-        let fill = label_fill(d.color);
-        let glyph = label_glyph(d.icon.as_deref().unwrap_or(DEFAULT_LABEL_ICON))
-            .map(|h| tinted(h, 15.0, if fill.is_some() { Color::WHITE } else { p.strong }));
-        let circle = container(glyph).center(20).style(move |_: &Theme| container::Style {
-            background: fill,
-            border: border::rounded(6.0),
-            ..Default::default()
+        let colors = (0..LABEL_COLORS.len() as u8).map(|c| -> El<'a> {
+            let on = d.color == Some(c);
+            let fill = label_fill(Some(c));
+            let dot = container(Space::new()).width(24).height(24).style(move |_: &Theme| container::Style {
+                background: fill,
+                border: border::rounded(12.0),
+                ..Default::default()
+            });
+            let ring = if on { (CLEAR, p.accent) } else { (shade, CLEAR) };
+            let dot = container(dot).center(32).style(bordered_box(ring.0, ring.1, 2.0, 16.0));
+            button(dot)
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [p.strong; 3], 16.0))
+                .on_press(edit(LabelEdit::Color(c)))
+                .into()
         });
-        let trigger = button(row![circle, ic(icon::EXPAND_MORE, 10.0).color(p.sub)].spacing(4).align_y(Center))
-            .padding(6)
-            .style(btn_style([p.received; 3], [p.sub; 3], 20.0))
-            .on_press(edit(LabelEdit::Picker(!d.picker)));
-        let footer = column![
-            container(Space::new()).width(Fill).height(2).style(fill_box(shade, 0.0)),
-            row![trigger, Space::new().width(Fill), create].align_y(Center).padding(Padding {
-                top: 8.0,
-                right: 8.0,
-                bottom: 8.0,
-                left: 13.0
-            })
-        ];
-        let body = column![
-            container(title).padding(Padding { top: 16.0, right: 13.0, bottom: 0.0, left: 13.0 }),
-            container(explainer).padding(Padding { top: 8.0, right: 13.0, bottom: 0.0, left: 13.0 }),
-            search,
-            container(list).height(Fill),
-            footer,
-        ];
-        let card = container(body).height(Fill).clip(true).style(fill_box(p.card, 12.0));
-        let head = if editing { tr("Edit label") } else { tr("New label") };
-        let head = container(semi(head, 13.0).line_height(Pixels(16.0)).color(p.strong)).center_x(Fill).padding([8, 0]);
-        let window = container(column![head, card]).padding(8).style(fill_box(p.window, 0.0));
-        match d.picker {
-            true => stack![
-                window,
-                mouse_area(Space::new().width(Fill).height(Fill)).on_press(edit(LabelEdit::Picker(false))),
-                container(self.label_picker(d)).align_bottom(Fill).padding(Padding::ZERO.left(13.0).bottom(64.0)),
-            ]
-            .into(),
-            false => window.into(),
-        }
+        let icons = LABEL_ICONS.iter().map(|(id, h)| -> El<'a> {
+            let on = d.icon.as_deref() == Some(*id);
+            let ring = if on { (p.chip, p.accent) } else { (CLEAR, CLEAR) };
+            let cell = container(tinted(h, 16.0, p.strong)).center(32).style(bordered_box(ring.0, ring.1, 2.0, 18.0));
+            button(cell)
+                .padding(0)
+                .style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 18.0))
+                .on_press(edit(LabelEdit::Icon(id)))
+                .into()
+        });
+        column![spread(colors.collect(), 32.0, width), spread(icons.collect(), 32.0, width)].spacing(20).into()
     }
 
     fn group_edit(&mut self, edit: GroupEdit) -> Task<UiMessage> {
@@ -16103,62 +16184,6 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `IconColorPicker` popover: the label colors, then the label icons.
-    fn label_picker<'a>(&self, d: &LabelDraft) -> El<'a> {
-        let p = &self.pal;
-        let edit = UiMessage::Label;
-        let shade = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);
-        let colors = (0..LABEL_COLORS.len() as u8).map(|c| -> El<'a> {
-            let on = d.color == Some(c);
-            let fill = label_fill(Some(c));
-            let dot = container(Space::new()).width(16).height(16).style(move |_: &Theme| container::Style {
-                background: fill,
-                border: border::rounded(8.0),
-                ..Default::default()
-            });
-            let ring = if on { (CLEAR, p.accent) } else { (shade, CLEAR) };
-            let dot = container(dot).center(24).style(bordered_box(ring.0, ring.1, 2.0, 12.0));
-            button(dot)
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 12.0))
-                .on_press(edit(LabelEdit::Color(c)))
-                .into()
-        });
-        let icons = LABEL_ICONS.iter().map(|(id, h)| -> El<'a> {
-            let on = d.icon.as_deref() == Some(*id);
-            let cell = container(tinted(h, 20.0, p.strong)).center(28).style(bordered_box(
-                if on { p.card } else { CLEAR },
-                if on { p.accent } else { CLEAR },
-                2.0,
-                8.0,
-            ));
-            button(cell)
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 8.0))
-                .on_press(edit(LabelEdit::Icon(id)))
-                .into()
-        });
-        let explainer = tr("Choose a title, icon, and/or color to customize your label. This is how it will appear throughout the app.");
-        let grid = column![spread(colors.collect(), 24.0, 220.0), spread(icons.collect(), 28.0, 220.0)].spacing(12);
-        let grid = scrollable(grid).direction(Direction::Vertical(Scrollbar::hidden())).height(Shrink);
-        let body = column![txt(explainer, 13.0).line_height(Pixels(18.0)).color(p.sub), grid].spacing(12);
-        let card = p.card;
-        container(body)
-            .width(260)
-            .max_height(316)
-            .padding(20)
-            .style(move |_: &Theme| container::Style {
-                background: Some(card.into()),
-                border: iced::Border { color: Color::BLACK.scale_alpha(0.23), width: 1.0, radius: 26.0.into() },
-                shadow: Shadow {
-                    color: Color::BLACK.scale_alpha(0.35),
-                    offset: Vector::new(0.0, 16.0),
-                    blur_radius: 48.0,
-                },
-                ..Default::default()
-            })
-            .into()
-    }
-
     /// Desktop's `ChatThemeWindow`: the title and the chat theme picker of a chat.
     fn poll_edit(&mut self, id: window::Id, edit: PollEdit) -> Task<UiMessage> {
         let i = self.poll_windows.iter().position(|d| d.id == id).expect("the poll window is open");
@@ -16801,9 +16826,30 @@ pub struct LabelDraft {
     pub icon: Option<String>,
     /// Whether "Recent chats" shows all of its chats.
     pub more: bool,
-    /// Whether the `IconColorPicker` is open.
-    pub picker: bool,
+    /// The step of the New Label wizard, or the sheet of an existing label: Pick for Chats, Details for Edit Label.
+    pub step: LabelStep,
 }
+
+/// A step of Desktop's New Label wizard (`krt`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LabelStep {
+    Intro,
+    Pick,
+    Details,
+}
+
+/// The size of Desktop's Chats and Edit Label sheets of Label Settings.
+const LABEL_SHEET_SIZE: Size = Size::new(395.0, 504.0);
+
+/// Desktop's `intro-avatar` faces of the New Label intro.
+static LABEL_INTRO_FACES: std::sync::LazyLock<[image::Handle; 3]> = std::sync::LazyLock::new(|| {
+    [
+        include_bytes!("../assets/label_intro/1.png").as_slice(),
+        include_bytes!("../assets/label_intro/2.png").as_slice(),
+        include_bytes!("../assets/label_intro/3.png").as_slice(),
+    ]
+    .map(image::Handle::from_bytes)
+});
 
 /// People, each with the account to reach them on.
 pub type People = Vec<(String, User)>;
@@ -16937,7 +16983,7 @@ impl LabelDraft {
     fn new(id: window::Id) -> Self {
         let (name, search, chats) = (String::new(), String::new(), Vec::new());
         let icon = Some(DEFAULT_LABEL_ICON.into());
-        LabelDraft { id, label: None, name, search, chats, color: None, icon, more: false, picker: false }
+        LabelDraft { id, label: None, name, search, chats, color: None, icon, more: false, step: LabelStep::Pick }
     }
 
     fn edit(id: window::Id, l: &Label) -> Self {
@@ -16945,17 +16991,24 @@ impl LabelDraft {
         LabelDraft { label: Some(l.id.clone()), name, chats, color, icon, ..Self::new(id) }
     }
 
-    /// Desktop's `canSubmit`: a title and chats, and a change when the label exists.
-    pub fn ready(&self, st: &BeeperStore) -> bool {
-        let filled = !self.name.trim().is_empty() && !self.chats.is_empty();
-        let Some(id) = &self.label else { return filled };
-        let same = |o: &Label| {
-            o.name == self.name.trim()
-                && (o.color, &o.icon) == (self.color, &self.icon)
-                && o.rooms.len() == self.chats.len()
-                && self.chats.iter().all(|c| o.rooms.contains(c))
-        };
-        filled && st.labels.iter().find(|l| l.id == *id).is_some_and(|o| !same(o))
+    /// Whether the step can go on: the pick step needs a chat and the details step needs a name. A new label
+    /// needs both.
+    pub fn ready(&self) -> bool {
+        let named = !self.name.trim().is_empty();
+        match self.step {
+            LabelStep::Intro => true,
+            LabelStep::Pick => !self.chats.is_empty(),
+            LabelStep::Details => named && (self.label.is_some() || !self.chats.is_empty()),
+        }
+    }
+
+    /// The size of the window: Desktop's New Label wizard, or a sheet of Label Settings.
+    fn size(&self) -> Size {
+        if self.label.is_some() {
+            LABEL_SHEET_SIZE
+        } else {
+            LABEL_SETTINGS_SIZE
+        }
     }
 }
 
@@ -16974,12 +17027,14 @@ pub enum LabelEdit {
     Search(String),
     Toggle(String),
     More,
-    Picker(bool),
     /// Picks a color, or clears the picked color.
     Color(u8),
     /// Picks an icon, or clears the picked icon.
     Icon(&'static str),
-    Create,
+    /// Get Started, Next or Done: the next step, or creates or saves the label.
+    Advance,
+    Back,
+    Cancel,
 }
 
 /// A New Poll window, Desktop's `PollCreator` state.
