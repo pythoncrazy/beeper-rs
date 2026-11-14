@@ -46,9 +46,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: mozilla-actions/sccache-action@v0.0.11
+      - if: runner.os == 'macOS'
+        uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: v0.18.0
+      # sccache expands the cargo argfile and spawns rustc with more than the 32767 characters that Windows permits.
+      - if: runner.os == 'Windows'
+        run: echo "RUSTC_WRAPPER=" >> $env:GITHUB_ENV
+      - if: runner.os == 'Windows'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - if: runner.os == 'macOS'
         run: brew install ffmpeg
       - if: runner.os == 'Windows'
