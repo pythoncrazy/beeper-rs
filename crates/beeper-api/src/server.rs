@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::sync::{Arc, RwLock};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 mod auth;
@@ -254,6 +254,16 @@ async fn write_response(stream: &mut TcpStream, resp: Response) -> bool {
     stream.write_all(&[head.into_bytes(), resp.body].concat()).await.is_ok()
 }
 
+/// Closes a connection after the server refuses a request: the server discards the rest of the request until the
+/// client closes, so that the client gets the response and not a reset.
+async fn linger<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(writer: &mut W, reader: &mut R) {
+    writer.shutdown().await.ok();
+    tokio::time::timeout(LINGER, tokio::io::copy(reader, &mut tokio::io::sink())).await.ok();
+}
+
+/// The `closeTimeout` of the `ws` package.
+const LINGER: std::time::Duration = std::time::Duration::from_secs(30);
+
 async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc<Cloud>) {
     let mut buf = Vec::new();
     loop {
@@ -264,14 +274,15 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
                 let mut resp = error(StatusCode::PAYLOAD_TOO_LARGE, "request entity too large", "UNKNOWN_ERROR");
                 resp.headers.push(("connection", "close".into()));
                 write_response(&mut stream, resp).await;
-                // Discard the rest of the body, so that the client gets the response before the connection closes.
-                stream.shutdown().await.ok();
-                tokio::io::copy(&mut stream, &mut tokio::io::sink()).await.ok();
+                let (mut reader, mut writer) = stream.split();
+                linger(&mut writer, &mut reader).await;
                 return;
             }
             Err(Some(status)) => {
                 assert_eq!(status, StatusCode::BAD_REQUEST, "the parser refuses with 400 or 413");
                 stream.write_all(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n").await.ok();
+                let (mut reader, mut writer) = stream.split();
+                linger(&mut writer, &mut reader).await;
                 return;
             }
         };
@@ -1255,7 +1266,7 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
         loop {
             let (opcode, payload) = match read_ws_frame(&mut reader, WS_MAX_PAYLOAD).await {
                 Ok(frame) => frame,
-                Err(close) => return close,
+                Err(close) => return (close, reader),
             };
             match (opcode, serde_json::from_slice::<Value>(&payload)) {
                 (0x1, Ok(v)) if v["type"] == "subscriptions.set" && v["chatIDs"].is_array() => {
@@ -1263,7 +1274,7 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
                     *reader_subs.write().unwrap() = ids.collect();
                 }
                 (0x9 | 0xA, _) => {}
-                _ => return None,
+                _ => return (None, reader),
             }
         }
     });
@@ -1279,11 +1290,12 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
         }
     };
     let close = tokio::select! {
-        r = &mut reader_task => r.expect("WS reader task panicked"),
+        r = &mut reader_task => Some(r.expect("WS reader task panicked")),
         () = send_events => None,
     };
     reader_task.abort();
-    if let Some(code) = close {
+    if let Some((Some(code), mut reader)) = close {
         write_ws_frame(&mut writer, 0x8, &code.to_be_bytes(), false).await.ok();
+        linger(&mut writer, &mut reader).await;
     }
 }
