@@ -31,8 +31,13 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::time::{timeout, Duration};
 
+/// A path in the temporary folder with the hash of this checkout, so that several checkouts can test at the same time.
+fn temp_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("{name}_{:x}", beeper_ui::style::name_hash(env!("CARGO_MANIFEST_DIR"))))
+}
+
 fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(name);
+    let dir = temp_path(name);
     if dir.exists() {
         std::fs::remove_dir_all(&dir).expect("remove stale test dir");
     }
@@ -1364,7 +1369,7 @@ async fn lifecycle() {
         emu.run(&app_prog, Instruction::parse("expect \"Note to self\"").unwrap());
         let shot = emu.screenshot(&app_prog, &Theme::Dark, 1.0);
         assert_eq!((shot.size.width, shot.size.height), (1264, 893));
-        let emu_png = std::env::temp_dir().join("beeper_rs_iced_dark.png");
+        let emu_png = temp_path("beeper_rs_iced_dark").with_extension("png");
         write_rgba_png(&emu_png, shot.size.width, shot.size.height, &shot.rgba);
         assert!(emu_png.exists());
     })
@@ -1374,18 +1379,17 @@ async fn lifecycle() {
     #[cfg(target_os = "linux")]
     {
         let bin_exe = env!("CARGO_BIN_EXE_beeper-rs");
-        let (wl_png, wl_settings_png, x_png) = (
-            "/tmp/beeper_rs_wayland_window.png",
-            "/tmp/beeper_rs_wayland_settings.png",
-            "/tmp/beeper_rs_xvfb_window.png",
-        );
-        for png in [wl_png, wl_settings_png, x_png].into_iter().filter(|p| std::path::Path::new(p).exists()) {
+        let png = |name| temp_path(name).with_extension("png").into_os_string().into_string().unwrap();
+        let (wl_png, wl_settings_png, x_png) =
+            (png("beeper_rs_wayland_window"), png("beeper_rs_wayland_settings"), png("beeper_rs_xvfb_window"));
+        for png in [&wl_png, &wl_settings_png, &x_png].into_iter().filter(|p| std::path::Path::new(p).exists()) {
             std::fs::remove_file(png).unwrap();
         }
-        let run_gui = |port: &str, hide: &str, envs: &[(&str, &str)]| {
-            let data = temp_dir(&format!("BeeperRs_gui_{port}"));
+        let run_gui = |name: &str, hide: &str, envs: &[(&str, &str)]| {
+            let data = temp_dir(&format!("BeeperRs_gui_{name}"));
+            let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port().to_string();
             let mut gui = std::process::Command::new(bin_exe)
-                .args(["--data-dir", data.to_str().unwrap(), "--port", port])
+                .args(["--data-dir", data.to_str().unwrap(), "--port", &port])
                 .args(envs.iter().any(|e| e.0 == "WAYLAND_DISPLAY").then_some("--demo"))
                 .env_remove(hide)
                 .env_remove("ICED_BACKEND")
@@ -1435,35 +1439,37 @@ async fn lifecycle() {
         let weston = spawn_quiet("weston", &weston_args, &[xdg]);
         wait_for(&wl_runtime.join("beeper-wl-e2e")).await;
         let wl_status = run_gui(
-            "23398",
+            "wayland",
             "DISPLAY",
             &[
                 xdg,
                 ("WAYLAND_DISPLAY", "beeper-wl-e2e"),
-                ("BEEPER_SCREENSHOT_EXIT", wl_png),
-                ("BEEPER_SCREENSHOT_SETTINGS", wl_settings_png),
+                ("BEEPER_SCREENSHOT_EXIT", &wl_png),
+                ("BEEPER_SCREENSHOT_SETTINGS", &wl_settings_png),
             ],
         );
         stop(weston);
         assert!(wl_status.success(), "beeper-rs GUI on headless Wayland exited cleanly");
 
-        let fb_dir = temp_dir("beeper_xvfb");
-        std::fs::create_dir_all(&fb_dir).unwrap();
-        let xvfb_args =
-            [":99", "-screen", "0", "1440x900x24", "-ac", "-nolisten", "tcp", "-fbdir", fb_dir.to_str().unwrap()];
-        let xvfb = spawn_quiet("Xvfb", &xvfb_args, &[]);
-        wait_for(&fb_dir.join("Xvfb_screen0")).await;
-        let x_status = run_gui("23399", "WAYLAND_DISPLAY", &[("DISPLAY", ":99"), ("BEEPER_SCREENSHOT_EXIT", x_png)]);
+        // Xvfb takes a free display and writes its number when it accepts clients.
+        let mut xvfb = std::process::Command::new("Xvfb")
+            .args(["-displayfd", "1", "-screen", "0", "1440x900x24", "-ac", "-nolisten", "tcp"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn Xvfb");
+        let mut display = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(xvfb.stdout.take().unwrap()), &mut display).unwrap();
+        let display = format!(":{}", display.trim());
+        let x_status = run_gui("x11", "WAYLAND_DISPLAY", &[("DISPLAY", &display), ("BEEPER_SCREENSHOT_EXIT", &x_png)]);
         stop(xvfb);
-        assert!(x_status.success(), "beeper-rs GUI on Xvfb :99 exited cleanly");
+        assert!(x_status.success(), "beeper-rs GUI on Xvfb {display} exited cleanly");
 
         for (png, min) in [(wl_png, 25_000), (wl_settings_png, 15_000), (x_png, 15_000)] {
-            let len = std::fs::metadata(png).expect("screenshot PNG is written").len();
+            let len = std::fs::metadata(&png).expect("screenshot PNG is written").len();
             assert!(len > min, "{png} has {len} bytes");
         }
-        for dir in [wl_runtime, fb_dir] {
-            std::fs::remove_dir_all(dir).expect("remove test dir");
-        }
+        std::fs::remove_dir_all(wl_runtime).expect("remove test dir");
     }
 }
 
