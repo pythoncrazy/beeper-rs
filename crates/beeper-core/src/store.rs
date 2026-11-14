@@ -153,11 +153,39 @@ struct Seed {
     messages: Vec<Message>,
 }
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 const SCHEMA: &str = "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
      CREATE TABLE chats (id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;
-     CREATE TABLE messages (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, sort_key TEXT NOT NULL, json TEXT NOT NULL) STRICT;
      CREATE TABLE assets (upload_id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;";
+
+/// The messages table with its chat index and Desktop's full-text search table `mx_room_messages_fts`. The search
+/// text is the message text, file names and voice note transcripts. `n` is the search row: a plain rowid can change
+/// on `VACUUM`.
+fn messages_schema() -> String {
+    let text = |row: &str| {
+        format!(
+            "concat_ws(' ', {row}.json ->> '$.text', (SELECT group_concat(concat_ws(' ', a.value ->> '$.fileName', \
+             a.value ->> '$.transcript'), ' ') FROM json_each({row}.json, '$.attachments') a))"
+        )
+    };
+    format!(
+        "CREATE TABLE messages (n INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, chat_id TEXT NOT NULL, \
+         sort_key TEXT NOT NULL, json TEXT NOT NULL) STRICT;
+         CREATE INDEX messages_by_chat ON messages (chat_id, sort_key);
+         CREATE VIRTUAL TABLE messages_fts USING fts5(text, content='', contentless_delete=1);
+         CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+             INSERT INTO messages_fts (rowid, text) VALUES (new.n, {new});
+         END;
+         CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+             DELETE FROM messages_fts WHERE rowid = old.n;
+         END;
+         CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
+             DELETE FROM messages_fts WHERE rowid = old.n;
+             INSERT INTO messages_fts (rowid, text) VALUES (new.n, {new});
+         END;",
+        new = text("new")
+    )
+}
 const KEY_STATE: &str = "state";
 const KEY_BRIDGES: &str = "bridges";
 const KEY_SETTINGS: &str = "settings";
@@ -253,11 +281,6 @@ fn chat_index_text(c: &Chat) -> String {
         .join(" ")
 }
 
-fn message_index_text(m: &Message) -> String {
-    let files = m.attachments.iter().flat_map(|a| [&a.file_name, &a.transcript]);
-    [&m.text, &m.sender_name].into_iter().chain(files).flatten().map(String::as_str).collect::<Vec<_>>().join(" ")
-}
-
 /// A network inside a bridged account, like a Discord server. Its chats have the same `network_id`.
 #[derive(Debug, Clone)]
 pub struct NetworkSpace {
@@ -289,7 +312,6 @@ pub struct BeeperStore {
     pub messages: Vec<Message>,
     pub msg_idx_by_id: HashMap<String, usize>,
     pub chat_msg_indices: HashMap<String, Vec<usize>>,
-    pub msg_search_index: InvertedIndex,
     pub chat_search_index: InvertedIndex,
     pub assets: HashMap<String, StoredAsset>,
     assets_by_mxc: HashMap<String, String>,
@@ -371,7 +393,10 @@ impl BeeperStore {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).expect("read schema version");
         match version {
             0 => conn
-                .execute_batch(&format!("BEGIN; {SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"))
+                .execute_batch(&format!(
+                    "BEGIN; {SCHEMA} {} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;",
+                    messages_schema()
+                ))
                 .expect("create beeper-rs schema"),
             1..SCHEMA_VERSION => {
                 let steps = [
@@ -380,6 +405,13 @@ impl BeeperStore {
                         .to_string(),
                     widen_sort_keys(),
                     widen_sort_keys(),
+                    format!(
+                        "ALTER TABLE messages RENAME TO messages_v4; {}
+                         INSERT INTO messages (id, chat_id, sort_key, json)
+                             SELECT id, chat_id, sort_key, json FROM messages_v4 ORDER BY rowid;
+                         DROP TABLE messages_v4;",
+                        messages_schema()
+                    ),
                 ];
                 for (from, sql) in (version..).zip(&steps[version as usize - 1..]) {
                     conn.execute_batch(&format!("BEGIN; {sql} PRAGMA user_version = {}; COMMIT;", from + 1))
@@ -418,7 +450,6 @@ impl BeeperStore {
             messages: Vec::new(),
             msg_idx_by_id: HashMap::new(),
             chat_msg_indices: HashMap::new(),
-            msg_search_index: InvertedIndex::default(),
             chat_search_index: InvertedIndex::default(),
             assets: HashMap::new(),
             assets_by_mxc: HashMap::new(),
@@ -551,7 +582,8 @@ impl BeeperStore {
     fn persist_message(&self, idx: usize) {
         let m = &self.messages[idx];
         self.exec(
-            "INSERT OR REPLACE INTO messages (id, chat_id, sort_key, json) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO messages (id, chat_id, sort_key, json) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (id)
+             DO UPDATE SET chat_id = excluded.chat_id, sort_key = excluded.sort_key, json = excluded.json",
             params![m.id, m.chat_id, m.sort_key, serde_json::to_string(m).unwrap()],
         );
     }
@@ -1034,7 +1066,6 @@ impl BeeperStore {
         self.next_seq = self.next_seq.max(msg.sort_key.parse().expect("sort keys are numbers"));
         let idx = self.messages.len();
         assert!(self.msg_idx_by_id.insert(msg.id.clone(), idx).is_none(), "duplicate message {}", msg.id);
-        self.msg_search_index.insert_doc(idx as u32, &message_index_text(&msg));
         let list = self.chat_msg_indices.entry(msg.chat_id.clone()).or_default();
         let pos = list.partition_point(|&i| self.messages[i].sort_key <= msg.sort_key);
         list.insert(pos, idx);
@@ -1278,7 +1309,7 @@ impl BeeperStore {
         let (chats, messages) = (std::mem::take(&mut self.chats), std::mem::take(&mut self.messages));
         let live = std::mem::take(&mut self.msg_idx_by_id);
         (self.chat_idx_by_id, self.local_chat_idx_by_id, self.chat_msg_indices) = Default::default();
-        (self.chat_search_index, self.msg_search_index) = Default::default();
+        self.chat_search_index = Default::default();
         for c in chats.into_iter().filter(|c| c.id != id) {
             self.push_chat(c, false);
         }
@@ -1346,11 +1377,8 @@ impl BeeperStore {
     }
 
     pub fn update_message(&mut self, idx: usize, f: impl FnOnce(&mut Message)) -> Message {
-        let old = message_index_text(&self.messages[idx]);
         f(&mut self.messages[idx]);
         self.messages[idx].sync_flags();
-        self.msg_search_index.remove_doc(idx as u32, &old);
-        self.msg_search_index.insert_doc(idx as u32, &message_index_text(&self.messages[idx]));
         self.persist_message(idx);
         let msg = self.messages[idx].clone();
         let c_idx = self.chat_idx_by_id[&msg.chat_id];
@@ -1637,7 +1665,6 @@ impl BeeperStore {
 
     pub fn remove_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, &'static str> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
-        self.msg_search_index.remove_doc(m_idx as u32, &message_index_text(&self.messages[m_idx]));
         self.messages[m_idx].is_deleted = Some(true);
         self.messages[m_idx].flags |= MSG_DELETED;
         (self.messages[m_idx].text, self.messages[m_idx].html) = (None, None);
@@ -1940,6 +1967,26 @@ impl BeeperStore {
         }
     }
 
+    /// Desktop's message search with partial matches (`searchRoomMessages` with `useFts`): the indices of the messages
+    /// that contain the query as a phrase, where the last word can be the start of a word, in load order.
+    pub fn search_messages(&self, query: &str) -> Vec<usize> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let db = self.db.lock().unwrap();
+        let mut q = db
+            .prepare_cached(
+                "SELECT m.id FROM messages_fts JOIN messages m ON m.n = messages_fts.rowid WHERE messages_fts MATCH ?1",
+            )
+            .expect("prepare message search");
+        let ids = q.query_map([format!("\"{}\"*", query.replace('"', "\"\""))], |r| r.get::<_, String>(0));
+        let mut found: Vec<usize> =
+            ids.expect("search messages").map(|id| self.msg_idx_by_id[&id.expect("read a found message")]).collect();
+        found.sort_unstable();
+        found
+    }
+
     /// The id, chat, Unix seconds and stored bytes of each message.
     pub fn message_sizes(&self) -> Vec<(String, String, i64, u64)> {
         let db = self.db.lock().unwrap();
@@ -1967,7 +2014,6 @@ impl BeeperStore {
         }
         for id in messages {
             let i = self.msg_idx_by_id.remove(id).expect("a stored message");
-            self.msg_search_index.remove_doc(i as u32, &message_index_text(&self.messages[i]));
             let m = &mut self.messages[i];
             (m.is_deleted, m.text, m.html) = (Some(true), None, None);
             m.flags |= MSG_DELETED;
@@ -1986,15 +2032,18 @@ impl BeeperStore {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     #[test]
     fn widened_sort_keys_match_sort_key() {
         let old = |seq: i64| if seq < 0 { format!("-{:012}", 1_000_000_000_000 + seq) } else { format!("{seq:012}") };
         let db = rusqlite::Connection::open_in_memory().unwrap();
-        db.execute_batch(super::SCHEMA).unwrap();
+        db.execute_batch(&format!("{} {}", super::SCHEMA, super::messages_schema())).unwrap();
         let seqs = [-5, -1, 0, 7, 123_456_789];
         for seq in seqs {
             let (key, json) = (old(seq), serde_json::json!({ "sortKey": old(seq) }).to_string());
-            db.execute("INSERT INTO messages VALUES (?1, 'c', ?1, ?2)", [&key, &json]).unwrap();
+            db.execute("INSERT INTO messages (id, chat_id, sort_key, json) VALUES (?1, 'c', ?1, ?2)", [&key, &json])
+                .unwrap();
             let chat = serde_json::json!({ "preview": { "sortKey": key }, "lastReadMessageSortKey": key });
             db.execute("INSERT INTO chats VALUES (?1, ?2)", [&key, &chat.to_string()]).unwrap();
         }
@@ -2011,6 +2060,47 @@ mod tests {
         ] {
             assert_eq!(rows(sql), want, "{sql}");
         }
+    }
+
+    #[test]
+    fn schema_4_migrates_to_message_search() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-schema-4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23395, None);
+        config.demo = true;
+        let fresh = super::BeeperStore::from_config(config.clone());
+        let ids = |st: &super::BeeperStore, q| -> HashSet<String> {
+            st.search_messages(q).into_iter().map(|i| st.messages[i].id.clone()).collect()
+        };
+        let want = ids(&fresh, "borr");
+        assert_eq!(want.len(), 2, "the demo has a message with \"borrow\" and one with \"borrowed\"");
+        drop(fresh);
+        let v4 = dir.join("v4.db");
+        {
+            let db = rusqlite::Connection::open(&config.db_path).unwrap();
+            db.execute_batch(&format!(
+                "ATTACH '{}' AS v4;
+                 CREATE TABLE v4.kv (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+                 CREATE TABLE v4.chats (id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;
+                 CREATE TABLE v4.messages (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, sort_key TEXT NOT NULL, json TEXT NOT NULL) STRICT;
+                 CREATE TABLE v4.assets (upload_id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;
+                 INSERT INTO v4.kv SELECT * FROM kv;
+                 INSERT INTO v4.chats SELECT * FROM chats ORDER BY rowid;
+                 INSERT INTO v4.messages SELECT id, chat_id, sort_key, json FROM messages ORDER BY n;
+                 PRAGMA v4.user_version = 4;",
+                v4.display()
+            ))
+            .unwrap();
+        }
+        for f in ["beeper-rs.db-wal", "beeper-rs.db-shm"] {
+            let _ = std::fs::remove_file(dir.join(f));
+        }
+        std::fs::rename(v4, &config.db_path).unwrap();
+        let st = super::BeeperStore::from_config(config);
+        assert_eq!(ids(&st, "borr"), want, "search finds the same messages after the migration");
+        assert_eq!(st.search_messages("orrow"), Vec::<usize>::new(), "only the last word is a prefix");
+        drop(st);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
