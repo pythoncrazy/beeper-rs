@@ -1,10 +1,86 @@
-//! The API shapes of Desktop's `mapChat` and `mapMessage`, in their key order, made from the stored chats and messages.
+//! The API shapes of Desktop's `mapChat`, `mapMessage`, and bridges, in their key order, made from the store.
 
 use beeper_core::config::{account_network, rfc3339_from_millis};
 use beeper_core::models::*;
 use beeper_core::store::BeeperStore;
 use serde::Serialize;
 use std::collections::BTreeMap;
+
+/// Desktop's `Bridge` of `listBridges`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Bridge<'a> {
+    id: &'static str,
+    #[serde(rename = "type")]
+    bridge_type: &'static str,
+    provider: &'static str,
+    display_name: &'static str,
+    network: &'static str,
+    active_account_count: usize,
+    supports_multiple_accounts: bool,
+    status: &'static str,
+    accounts: Vec<&'a Account>,
+}
+
+/// Desktop's `listBridges` entry of a network. No network allows more than one account here.
+pub(super) fn bridge<'a>(st: &'a BeeperStore, spec: &NetworkSpec) -> Bridge<'a> {
+    let accounts: Vec<&Account> = st.accounts.iter().filter(|a| a.bridge.id == spec.bridge_id).collect();
+    Bridge {
+        id: spec.bridge_id,
+        bridge_type: spec.bridge_type,
+        provider: if spec.supports_cloud { "cloud" } else { "local" },
+        display_name: spec.display_name,
+        network: spec.display_name,
+        active_account_count: accounts.len(),
+        supports_multiple_accounts: false,
+        status: if accounts.is_empty() { "available" } else { "connected" },
+        accounts,
+    }
+}
+
+/// Desktop's `BridgeLogin`: the accounts of one bridge login.
+#[derive(Serialize)]
+pub(super) struct BridgeLogin<'a> {
+    #[serde(rename = "loginID")]
+    pub(super) login_id: &'a str,
+    #[serde(rename = "bridgeID")]
+    bridge_id: &'a str,
+    #[serde(rename = "accountIDs")]
+    account_ids: Vec<&'a str>,
+    user: &'a User,
+    status: &'static str,
+    #[serde(rename = "removeScopes")]
+    remove_scopes: &'static [&'static str],
+}
+
+/// Desktop's `mapBridgeAccountsToLogin` for each login of the bridge.
+pub(super) fn logins<'a>(st: &'a BeeperStore, bridge_id: &str) -> Vec<BridgeLogin<'a>> {
+    let accounts: Vec<&Account> = st.accounts.iter().filter(|a| a.bridge.id == bridge_id).collect();
+    let mut ids: Vec<&str> = accounts.iter().map(|a| a.login_id.as_str()).collect();
+    ids.dedup();
+    let login = |id: &'a str| {
+        let mine: Vec<&'a Account> = accounts.iter().copied().filter(|a| a.login_id == id).collect();
+        let any = |s: &[&str]| mine.iter().any(|a| s.contains(&a.status.as_str()));
+        BridgeLogin {
+            login_id: id,
+            bridge_id: &mine[0].bridge.id,
+            account_ids: mine.iter().map(|a| a.account_id.as_str()).collect(),
+            user: &mine[0].user,
+            status: match () {
+                _ if any(&["connected"]) => "connected",
+                _ if any(&["connecting", "backfilling"]) => "connecting",
+                _ if any(&["reconnect_required", "connection_required"]) => "needs_login",
+                _ if any(&["disconnected"]) => "logged_out",
+                _ => "unknown",
+            },
+            remove_scopes: match mine[0].bridge.provider.as_str() {
+                "local" => &["current-device", "all-devices"],
+                _ => &["all-devices"],
+            },
+        }
+    };
+    ids.into_iter().map(login).collect()
+}
 
 /// Desktop's `Chat`.
 #[derive(Serialize)]
