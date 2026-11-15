@@ -244,6 +244,10 @@ pub const GENERAL: &[Item] = &[
         t("autoCopyOtp", "Auto copy OTP/2FA codes", true).desc("If the chat is muted, you'll still be notified."),
         s("upArrow", "Press ↑ in the composer to:", &["Move focus to the message list", "Edit your last message"], 0),
     ]),
+    Item::Heading("Sticker packs"),
+    Item::Group(&[t("stickerPacks", "Use sticker packs", false)
+        .badge(Badge::Labs)
+        .desc("Send stickers from your Telegram, Signal and WhatsApp packs, and from Matrix sticker packs.")]),
     Item::Group(&[
         custom("downloadsDir", "Downloads location", Control::Downloads).named("Downloads Preferences"),
         t("alwaysAskDownload", "Always ask where to save files before downloading", false),
@@ -839,6 +843,7 @@ pub const SYNCED: &[(&str, Ad)] = &[
     ("keepEmoticons", b("disable_emoticon_replacement")),
     ("autoCopyOtp", b("auto_copy_otp")),
     ("upArrow", v("compose_up_arrow_action", &["focus_message_list", "edit_last_message"])),
+    ("stickerPacks", b("sticker_packs")),
     ("whatsappCommunities", Ad::Event("com.beeper.labs.wa_communities_as_spaces", "wa_communities_as_spaces")),
     ("telegramTopics", Ad::Event("com.beeper.labs.tg_topics_as_spaces", "tg_topics_as_spaces")),
     ("showSidebar", b("show_space_switcher")),

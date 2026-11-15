@@ -1187,15 +1187,19 @@ fn thread_follows_like_desktop() {
 #[test]
 fn pickers_check_the_network_like_desktop() {
     let mut app = demo_app("pickers");
-    let st = app.store.read();
-    let on = |want: bool| {
-        let stickers =
-            |c: &&Chat| matches!(account_network(&c.account_id).kind, NetworkKind::WhatsApp | NetworkKind::Telegram);
-        st.chats.iter().find(|c| stickers(c) == want).unwrap().id.clone()
-    };
-    let (wa, other) = (on(true), on(false));
+    let mut st = app.store.write();
+    let (wa, other) = (st.chats[0].id.clone(), st.chats[1].id.clone());
+    st.chats[0].file.insert(FILE_STICKER.into(), FileRule::default());
+    assert!(!st.chats[1].takes(FILE_STICKER), "the generic room features have no stickers");
     drop(st);
     let _ = app.update(UiMessage::SelectChat(wa));
+    let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
+    assert_eq!((app.pane.picker, app.status_banner.as_str()), (None, ""), "the picker needs Use sticker packs");
+    assert!(!hidden_actions(&app.store.read()).contains(&7));
+    let _ = app.update(UiMessage::SetPref("stickerPacks", 1));
+    assert_eq!(hidden_actions(&app.store.read())[0], 7, "Add a sticker follows the emoji button");
+    let cmds = app.commands(&app.store.read(), "");
+    assert_eq!(cmds.iter().find(|c| c.title == "Send Sticker").and_then(|c| c.hotkey), Some("Message: Send Sticker"));
     let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
     assert_eq!(app.pane.picker, Some(Picker::Sticker));
     assert!(simulator(app.view_main()).find("No sticker packs yet.").is_ok());
@@ -1368,6 +1372,7 @@ fn composer_actions_follow_the_chat_like_desktop() {
     assert_eq!(composer_action(&st, &chat, 2, false), (format!("Add GIF (Unavailable for {net})"), None, false));
     assert!(!composer_action(&st, &chat, 5, false).2, "the chat takes no voice notes");
     assert_eq!(composer_action(&st, &chat, 6, false), (format!("Create Poll (Unavailable for {net})"), None, false));
+    assert_eq!(composer_action(&st, &chat, 7, false), (format!("Add a sticker (Unavailable for {net})"), None, false));
 }
 
 #[test]
