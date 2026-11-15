@@ -2190,6 +2190,41 @@ fn deleted_and_encrypted_messages_look_like_desktop() {
 }
 
 #[test]
+fn attachments_show_download_and_time_on_hover_like_desktop() {
+    let mut app = demo_app("attachment-hover");
+    let (chat, id, time) = {
+        let st = app.store.read();
+        let m = st.messages.iter().rev().find(|m| {
+            m.text.as_deref().is_none_or(str::is_empty)
+                && m.attachments.first().is_some_and(|a| a.attachment_type == "img")
+        });
+        let m = m.expect("a demo image message");
+        (m.chat_id.clone(), m.id.clone(), format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1))
+    };
+    let _ = app.update(UiMessage::SelectChat(chat.clone()));
+    let _ = app.update(UiMessage::HoverEnter(id.clone()));
+    let download = icon::DOWNLOAD.to_string();
+    assert!(simulator(app.view_main()).find(download.as_str()).is_err(), "a gallery opens its items in the carousel");
+    {
+        // Captions take the other images of the demo gallery out of it, so that this image shows alone.
+        let mut st = app.store.write();
+        let others = st.chat_msg_indices[&chat].iter().copied();
+        let others: Vec<usize> =
+            others.filter(|&i| st.messages[i].id != id && !st.messages[i].attachments.is_empty()).collect();
+        for i in others {
+            st.update_message(i, |m| m.text = Some("caption".into()));
+        }
+    }
+    let _ = app.update(UiMessage::HoverExit(id.clone()));
+    assert!(simulator(app.view_main()).find(time.as_str()).is_err(), "an image has no time until you hover it");
+    let _ = app.update(UiMessage::HoverEnter(id.clone()));
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find(time.as_str()).is_ok(), "the hover shows the time of an image");
+    let _ = sim.click(download.as_str());
+    assert!(matches!(sim.into_messages().last(), Some(UiMessage::Download(m, Some(0))) if *m == id));
+}
+
+#[test]
 fn plus_rows_follow_the_feature_flags() {
     let mut app = demo_app("features");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));

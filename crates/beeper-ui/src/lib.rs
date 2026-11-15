@@ -3446,6 +3446,8 @@ svg_static!(TAKE_BEEPER, include_bytes!("../assets/take_beeper.svg"));
 svg_static!(ERROR_OUTLINE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M11 15h2v2h-2zm0-8h2v6h-2zm.99-5C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z"/></svg>"##);
 /// Desktop's `--color-on-error-container`, the same in the light and dark themes.
 const ON_ERROR_CONTAINER: Color = Color::from_rgb8(0xdc, 0x36, 0x2e);
+// Desktop's `BookmarkIcon` of the general icons.
+svg_static!(BOOKMARK_ICON, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 14"><path d="M3.5 0.5H10.5C11.3284 0.5 12 1.17157 12 2V13.0625C12 13.2499 11.8949 13.4215 11.7279 13.5068C11.5608 13.5921 11.36 13.5767 11.2081 13.4669L7 10.4272L2.79188 13.4669C2.64 13.5767 2.43918 13.5921 2.27212 13.5068C2.10506 13.4215 2 13.2499 2 13.0625V2C2 1.17157 2.67157 0.5 3.5 0.5Z"/></svg>"##);
 // Desktop's `BeeperIcon` of the networks icons.
 svg_static!(BEEPER_ICON, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 15"><path fill-rule="evenodd" clip-rule="evenodd" d="M0.350037 5.29941C0.350037 2.76021 2.33427 0.649414 4.84524 0.649414H8.75483C11.2658 0.649414 13.25 2.76021 13.25 5.29941C13.25 6.61227 12.7229 7.80414 11.8693 8.65264L7.23829 13.8348C6.60047 14.5486 5.42971 13.9544 5.62929 13.0182L6.2835 9.94942H4.84524C2.33427 9.94942 0.350037 7.83862 0.350037 5.29941ZM4.84524 2.14941C3.21937 2.14941 1.85004 3.5308 1.85004 5.29941C1.85004 7.06803 3.21937 8.44941 4.84524 8.44941H8.13699L7.54101 11.245L10.7824 7.61781L10.7997 7.60083C11.382 7.02833 11.75 6.2123 11.75 5.29941C11.75 3.5308 10.3807 2.14941 8.75483 2.14941H4.84524Z"/></svg>"##);
 
@@ -12436,6 +12438,15 @@ impl BeeperGuiApp {
                     let meta = row![txt(label, 11.0).color(ON_ERROR_CONTAINER), tip].spacing(4).align_y(Center);
                     (crate::style::text_width(label, 11.0, Weight::Normal) + 28.0, Some(meta.into()))
                 }
+                // Desktop's `BookmarkIndicator` goes before the time.
+                None if m.is_bookmarked == Some(true) => {
+                    let color = if mine { sent_meta } else { p.sub };
+                    let icon = svg(BOOKMARK_ICON.clone()).width(10).height(10);
+                    let icon = icon.style(move |_, _| svg::Style { color: Some(color) });
+                    let label = tr("Bookmarked");
+                    let icon = self.tip(icon.into(), label, vec![], tooltip::Position::Left);
+                    (room + 14.0, Some(row![icon].push(time).spacing(4).align_y(Center).into()))
+                }
                 None => (room, time),
             };
             let me = |id: &str| id == st.beeper_state.user_id;
@@ -12690,7 +12701,28 @@ impl BeeperGuiApp {
                     .on_press(msg)
                     .into()
             });
-            let all: Vec<El<'a>> = [reply, react].into_iter().flatten().chain(quick).collect();
+            // Desktop's download button beside an attachment, and the time of a message without text in its flyover.
+            // The items of a gallery open in the carousel, so a gallery has no download button here.
+            let file = m
+                .attachments
+                .first()
+                .filter(|a| live && ms.len() == 1 && a.attachment_type != "audio" && a.is_voice_note != Some(true));
+            let download = file.map(|a| -> El<'a> {
+                let tip = match a.file_size {
+                    Some(n) => trf("Download - %s", &[&human_size(n)]),
+                    None => trx("Download", "message attachment action").into(),
+                };
+                let button = button(ic(icon::DOWNLOAD, 20.0))
+                    .padding(0)
+                    .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                    .on_press(UiMessage::Download(m.id.clone(), Some(0)));
+                let gap = if mine { Padding::ZERO.right(12.0) } else { Padding::ZERO.left(12.0) };
+                container(self.tip(button.into(), tip, vec![], tooltip::Position::Top)).padding(gap).into()
+            });
+            let time = (file.is_some() && text.is_empty() && st.settings.on("showTimestamps")).then(|| -> El<'a> {
+                txt(format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1), 11.0).color(muted).into()
+            });
+            let all: Vec<El<'a>> = [download, time, reply, react].into_iter().flatten().chain(quick).collect();
             match mine {
                 true => Row::with_children(all.into_iter().rev()),
                 false => Row::with_children(all),
