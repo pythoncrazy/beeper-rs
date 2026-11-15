@@ -5480,6 +5480,55 @@ fn sign_in_window_follows_the_system_theme() {
     }
 }
 
+/// The keyboard of the sign-in window, like Desktop: Tab goes through the controls in their order, Enter presses
+/// the focused control or submits the form, and Escape closes the menu. Errors show in the toast, and an email
+/// that is not valid shows Chromium's message.
+#[test]
+fn sign_in_keyboard_and_errors_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    use login::{LoginMsg, Screen, Stop};
+    let mut app = signed_out_app("sign-in-keyboard");
+    let id = app.login_window.expect("the sign-in window");
+    let key = |app: &mut BeeperGuiApp, k: Named, mods: Modifiers| {
+        let _ = app.update(UiMessage::WindowKey(id, Key::Named(k), mods));
+        app.login.focus.map(|i| [Stop::Menu, Stop::Terms, Stop::Google, Stop::Email][i])
+    };
+    let tabs: Vec<_> = (0..5).map(|_| key(&mut app, Named::Tab, Modifiers::empty())).collect();
+    let order = [Stop::Menu, Stop::Terms, Stop::Google, Stop::Email, Stop::Menu].map(Some);
+    assert_eq!(tabs, order, "Tab cycles the chevron, the terms link, Google and Email");
+    assert_eq!(key(&mut app, Named::Tab, Modifiers::SHIFT), Some(Stop::Email), "Shift+Tab goes back");
+    let shows = |app: &BeeperGuiApp, label: &str| simulator(app.view_login()).find(label).is_ok();
+    key(&mut app, Named::Tab, Modifiers::SHIFT);
+    let _ = app.update(UiMessage::WindowText(id, " ".into()));
+    assert!(shows(&app, "Google sign-in is not available in beeper-rs. Use email."), "Space presses Google");
+    let _ = app.update(LoginMsg::CloseToast.into());
+    assert!(app.login.toast.is_none(), "the close button of the toast hides it");
+    key(&mut app, Named::Tab, Modifiers::empty());
+    key(&mut app, Named::Enter, Modifiers::empty());
+    assert_eq!((app.login.screen, app.login.focus), (Screen::Email, Some(1)), "Enter opens the email form");
+    key(&mut app, Named::Enter, Modifiers::empty());
+    assert_eq!(app.login.toast.as_deref(), Some("Please enter your email."));
+    let _ = app.update(LoginMsg::Email("foo".into()).into());
+    assert!(app.login.toast.is_none(), "a change of the email hides the toast");
+    key(&mut app, Named::Enter, Modifiers::empty());
+    let missing = "Please include an '@' in the email address. 'foo' is missing an '@'.";
+    assert!(shows(&app, missing) && !app.login.busy, "Chromium checks the email before a request");
+    for (screen, items) in [
+        (Screen::Welcome, &["Report a Problem"][..]),
+        (Screen::Email, &["Go Back", "Report a Problem"]),
+        (Screen::Code, &["Go Back", "Report a Problem", "Start Over"]),
+        (Screen::Username, &["Report a Problem", "Start Over"]),
+    ] {
+        app.login.screen = screen;
+        let _ = app.update(LoginMsg::Menu.into());
+        for item in ["Go Back", "Report a Problem", "Start Over"] {
+            assert_eq!(shows(&app, item), items.contains(&item), "{item} in the menu of {screen:?}");
+        }
+        key(&mut app, Named::Escape, Modifiers::empty());
+        assert!(!shows(&app, "Report a Problem"), "Escape closes the menu");
+    }
+}
+
 /// Every hotkey and tray action on the sign-in window, before and after sign-in. None panics, and Ctrl+, opens the
 /// Settings window, which Desktop draws empty before sign-in.
 #[test]

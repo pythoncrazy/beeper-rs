@@ -972,7 +972,9 @@ async fn lifecycle() {
     shows(&login, &["Enter Code", "Check alex@example.com\nfor your login code", "Open Email"]);
     let _ = login.update(UiMessage::Login(LoginMsg::Code("12 34 56".into())));
     assert_eq!(login.login.code, "123456");
-    let _ = login.update(UiMessage::Login(LoginMsg::Done(Err("Invalid code".into()))));
+    let refused = beeper_core::cloud::CloudError { status: 401, message: "Invalid code".into() };
+    let _ = login.update(UiMessage::Login(LoginMsg::Done(Err(refused))));
+    assert_eq!(login.login.error.as_deref(), Some("Invalid code"), "a refused code shows under the heading");
     shows(&login, &["Invalid code"]);
     let gui_cloud = cloud.clone();
     let (session, profile, accounts) = tokio::task::spawn_blocking(move || {

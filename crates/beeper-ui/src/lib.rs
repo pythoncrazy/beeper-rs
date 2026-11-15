@@ -6925,6 +6925,7 @@ impl BeeperGuiApp {
             UiMessage::WindowText(id, text) if Some(id) == self.main_window => {
                 return self.update(UiMessage::TypeInComposer(text));
             }
+            UiMessage::WindowText(id, text) if Some(id) == self.login_window => return self.login_text(&text),
             UiMessage::WindowText(..) => {}
             UiMessage::TypeInComposer(text) => {
                 let st = self.store.read();
@@ -6959,8 +6960,7 @@ impl BeeperGuiApp {
                 };
             }
             UiMessage::WindowKey(id, key, mods) if Some(id) == self.login_window || !self.store.read().signed_in() => {
-                let hit = self.find_hotkey(&key, mods).filter(|(h, _)| SIGN_IN_HOTKEYS.contains(h));
-                return hit.map_or_else(Task::none, |(h, digit)| self.run_hotkey(h, digit));
+                return self.login_key(key, mods);
             }
             UiMessage::WindowKey(id, key, mods) => {
                 if Some(id) == self.settings_window {
