@@ -30,7 +30,7 @@ pub const COMMANDS: &[Cmd] = &[
 ];
 
 /// `http://host:port/path` as the base URL and the path.
-fn split_url(url: &str) -> (String, String) {
+pub fn split_url(url: &str) -> (String, String) {
     let rest = url.split_once("://").map_or(url, |p| p.1);
     let (host, path) = rest.split_once('/').map_or((rest, String::new()), |(h, p)| (h, format!("/{p}")));
     let scheme = url.split_once("://").map_or("http", |p| p.0);

@@ -116,7 +116,7 @@ fn help() -> String {
     let mut rows: Vec<(String, String)> = rows.chain(cli::commands::root_rows()).collect();
     rows.sort();
     let width = rows.iter().map(|r| r.0.len()).max().expect("a command");
-    let commands = rows.iter().map(|(name, text)| format!("  {name:<width$} {text}")).collect::<Vec<_>>().join("\n");
+    let commands = rows.iter().map(|(name, text)| format!("  {name:<width$}  {text}")).collect::<Vec<_>>().join("\n");
     let flags = FLAGS.map(|(names, value, text, _)| {
         let (short, long): (Vec<&str>, Vec<&str>) = names.iter().partition(|n| !n.starts_with("--"));
         let short = short.first().map_or("    ".into(), |s| format!("{s}, "));
@@ -200,6 +200,13 @@ fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().is_some_and(|word| cli::is_cli(word)) {
         std::process::exit(cli::run(&argv));
+    }
+    // `help <command>` is the help of a client command, like oclif.
+    if let ["help", words @ ..] = argv.as_slice().iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        if words.first().is_some_and(|word| cli::is_cli(word)) {
+            let words: Vec<String> = words.iter().map(|w| w.to_string()).chain(["--help".into()]).collect();
+            std::process::exit(cli::run(&words));
+        }
     }
     let env = |key: &str, flag: &str| std::env::var(key).ok().map(|v| format!("{flag}={v}"));
     let argv = [env("BEEPER_PAS_HOST", "--host"), env("BEEPER_PAS_PORT", "--port")].into_iter().flatten();

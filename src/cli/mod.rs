@@ -5,9 +5,11 @@
 mod accounts;
 mod chats;
 pub mod commands;
+mod export;
 mod messages;
 mod render;
 mod stream;
+mod targets;
 
 use beeper_api::client::{ApiError, BeeperClient};
 use serde_json::{json, Map, Value};
@@ -185,8 +187,10 @@ pub fn is_cli(word: &str) -> bool {
     commands::all().any(|c| c.id.split(' ').next() == Some(word)) || commands::topic(word).is_some()
 }
 
+/// The flag of `cmd` that `pred` selects. A command flag replaces the global flag of the same name.
 fn flag_spec(cmd: &Cmd, pred: impl Fn(&Flag) -> bool) -> Option<&Flag> {
-    cmd.flags.iter().chain(GLOBAL).find(|f| pred(f))
+    let globals = GLOBAL.iter().filter(|g| cmd.flags.iter().all(|f| f.name != g.name));
+    cmd.flags.iter().chain(globals).find(|f| pred(f))
 }
 
 /// Parses the words after the command id like the oclif parser, with its error text.
@@ -429,6 +433,11 @@ impl Ctx {
             self.target = Some(target);
         }
         Ok(self.target.as_ref().expect("the target is set"))
+    }
+
+    /// Selects `target` for the next requests.
+    pub fn set_target(&mut self, target: Map<String, Value>) {
+        (self.target, self.client) = (Some(target), None);
     }
 
     pub fn base_url(&mut self) -> Res<String> {

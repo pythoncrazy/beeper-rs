@@ -105,6 +105,11 @@ pub const COMMANDS: &[Cmd] = &[
         ..cmd("messages show", "Show one message", show)
     },
     Cmd {
+        args: &[super::arg("url", "mxc:// or localmxc:// URL")],
+        flags: &[Flag::s("out", "Output directory; pass - to stream the file to stdout").c('o').def(".")],
+        ..cmd("media download", "Download message media", media_download)
+    },
+    Cmd {
         description: "Requires server-side support. Networks without typing notifications return an error.",
         flags: &[
             CHAT,
@@ -497,4 +502,31 @@ fn presence(c: &mut Ctx) -> Res {
     c.call("POST", &path, Some(json!({ "state": "paused" })))?;
     let data = json!({ "chatID": chat, "state": "paused", "durationSeconds": seconds });
     c.success(&format!("Sent typing then paused after {seconds}s"), None, data)
+}
+
+/// `media download`: the file of an `mxc://` URL into a folder, or onto stdout.
+fn media_download(c: &mut Ctx) -> Res {
+    let url = c.arg(0).expect("a required arg").to_string();
+    let client = c.client()?.clone();
+    let bytes = c.block(client.call_raw("GET", &query_string("/v1/assets/serve", &[("url", &url)]), None))?;
+    let out = c.str("out").expect("--out has a default").to_string();
+    if out == "-" {
+        use std::io::Write;
+        return std::io::stdout().write_all(&bytes).map_err(|e| CliError::bug(e.to_string()));
+    }
+    c.writable()?;
+    let after_scheme = url
+        .split_once("://")
+        .map(|p| p.1)
+        .ok_or_else(|| CliError::bug(format!("\"{url}\" cannot be parsed as a URL.")))?;
+    let path = after_scheme.split(['?', '#']).next().unwrap_or_default();
+    let name = path
+        .split_once('/')
+        .map(|p| p.1.trim_end_matches('/').rsplit('/').next().unwrap_or_default())
+        .unwrap_or_default();
+    let name = if name.is_empty() { "media" } else { name };
+    let file = if out == "." { name.to_string() } else { format!("{}/{name}", out.trim_end_matches('/')) };
+    std::fs::create_dir_all(&out).map_err(|e| CliError::system(format!("{e}, mkdir '{out}'")))?;
+    std::fs::write(&file, &bytes).map_err(|e| CliError::system(format!("{e}, open '{file}'")))?;
+    c.success("Downloaded media", Some(&file), json!({ "path": file, "bytes": bytes.len() }))
 }

@@ -95,6 +95,8 @@ cargo run -- chats list --limit 5 --base-url http://127.0.0.1:23374
 cargo run -- chats --help
 ```
 
+The client topics are `accounts`, `api`, `auth`, `bridges`, `chats`, `config`, `contacts`, `media`, `messages`, `send`, and `targets`, and the commands `doctor`, `docs`, `export`, `presence`, `rpc`, `status`, `version`, and `watch`. The commands that install, update, or sign in (`install`, `update`, `setup`, `auth email`, `verify`, `accounts add`, and the managed `targets` commands) and the oclif plugin commands are not in `beeper-rs`.
+
 The CLI keeps `config.json` and `targets/` in the `cli` folder of the beeper-rs data folder. It does not use `~/.beeper` of the Beeper CLI. Set `BEEPER_CLI_CONFIG_DIR` to use a different folder.
 
 ## Development Workflow

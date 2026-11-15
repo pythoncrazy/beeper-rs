@@ -32,6 +32,15 @@ fn bad_command_lines_print_the_usage_and_exit_with_the_oclif_codes() {
     assert_eq!(run(&["chatz"]), (Some(127), String::new(), not_found.into()));
     let (code, help, _) = run(&["help"]);
     assert!(code == Some(0) && help.starts_with("Beeper chat app"), "{help}");
+    assert!(
+        help.contains("\n  chats     List, search, manage, and modify chats\n"),
+        "the root help lists the client topics: {help}"
+    );
+    let (code, help, _) = run(&["help", "send", "text"]);
+    assert!(
+        code == Some(0) && help.starts_with("Send a text message\n\nUSAGE\n  $ beeper-rs send text --to <value>"),
+        "{help}"
+    );
     let (code, version, _) = run(&["-V"]);
     assert!(code == Some(0) && version.starts_with("beeper-rs/"), "{version}");
 }
@@ -133,9 +142,9 @@ fn cli_status_doctor_config_and_api_match_upstream() {
 
     let info = d.run(&["api", "get", "/v1/info"]).json();
     assert_eq!(info["data"]["server"]["base_url"], d.base);
-    let missing = d.run(&["api", "get", "/v1/nothing", "--no-auth"]);
+    let missing = d.run(&["api", "get", "/v1/accounts", "--no-auth"]);
     assert_eq!(missing.code, 1);
-    assert!(missing.stderr.contains("│ GET /v1/nothing failed: 404 "), "{}", missing.stderr);
+    assert!(missing.stderr.contains("│ GET /v1/accounts failed: 401 "), "{}", missing.stderr);
 }
 
 #[test]
@@ -320,4 +329,73 @@ fn cli_watches_the_websocket_and_runs_rpc_lines() {
         json!({ "id": 4, "ok": false, "error": "Expected args, argv, or command" }),
     ];
     assert_eq!(replies, want);
+}
+
+#[test]
+fn cli_manages_targets_and_downloads_and_exports() {
+    let d = demo("targets");
+    let added = d.run(&["targets", "add", "remote", "home", &d.base, "--default"]).stdout;
+    assert_eq!(added, format!("✓ Added target: home  {}\n", d.base));
+    assert_eq!(d.run(&["targets", "add", "remote", "home", &d.base]).code, 1, "a target name is unique");
+    // Without --base-url, the default target selects the server.
+    let plain = |args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_beeper-rs"));
+        command.args(args).env("BEEPER_CLI_CONFIG_DIR", &d.config).env("BEEPER_ACCESS_TOKEN", &d.token);
+        Out::of(command.output().unwrap())
+    };
+    let status = plain(&["status"]).stdout;
+    assert_eq!(status, format!("▎ Ready  ready\n  target      home\n  endpoint    {}\n", d.base));
+    let list = plain(&["targets", "--json"]).json();
+    let row = &list["data"][0];
+    assert_eq!(
+        (row["id"].clone(), row["default"].clone(), row["reachable"].clone()),
+        (json!("home"), json!(true), json!(true))
+    );
+    assert_eq!(plain(&["chats", "list", "--limit", "1", "--ids"]).stdout, "local_tg_rust\n");
+    let logout = plain(&["auth", "logout"]);
+    assert!(
+        logout.stderr.contains("│ auth logout cannot clear BEEPER_ACCESS_TOKEN from the environment;"),
+        "{}",
+        logout.stderr
+    );
+    assert_eq!(plain(&["targets", "remove", "home"]).stdout, "✓ Removed target: home\n");
+    assert!(!d.config.join("targets/home.json").exists());
+
+    let file = d.config.with_file_name("note.txt");
+    std::fs::write(&file, "a note\n").unwrap();
+    let sent =
+        d.run(&["send", "file", "--to", "local_x7", "--file", file.to_str().unwrap(), "--wait", "--json"]).json();
+    let url = sent["data"]["message"]["attachments"][0]["srcURL"].as_str().unwrap().to_string();
+    assert_eq!(d.run(&["media", "download", &url, "-o", "-"]).stdout, "a note\n");
+    let out = d.config.with_file_name("media");
+    let saved = d.run(&["media", "download", &url, "-o", out.to_str().unwrap(), "--json"]).json();
+    let path = saved["data"]["path"].as_str().unwrap();
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "a note\n");
+
+    let dir = d.config.with_file_name("export");
+    let export = d.run(&["export", "-o", dir.to_str().unwrap(), "--chat", "local_x0", "--no-attachments"]);
+    assert_eq!(export.stdout, format!("Exported 1 chats, 1 messages, 0 attachments to {}\n", dir.display()));
+    assert!(
+        export.stderr.ends_with(
+            "[1/1] Family (WhatsApp) complete: 1 messages, 0 attachments\nDone: 1 chats, 1 messages, 0 attachments\n"
+        ),
+        "{}",
+        export.stderr
+    );
+    let chat = dir.join("chats/wa_family_beeper.com");
+    let markdown = std::fs::read_to_string(chat.join("messages.markdown")).unwrap();
+    assert!(markdown.starts_with("# Family\n\n- Chat ID: `!wa_family:beeper.com`\n- Account ID: `acc_whatsapp`\n- Network: WhatsApp\n- Type: group\n- Messages: 1\n\n## Messages\n\n### Mom - "), "{markdown}");
+    let html = std::fs::read_to_string(chat.join("messages.html")).unwrap();
+    assert!(
+        html.contains("      <article class=\"message\">\n        <header><strong>Mom</strong><time datetime="),
+        "{html}"
+    );
+    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!((manifest["chatCount"].clone(), manifest["messageCount"].clone()), (json!(1), json!(1)));
+    let again = d.run(&["export", "-o", dir.to_str().unwrap(), "--chat", "local_x0", "--no-attachments"]);
+    assert!(
+        again.stderr.contains("[1/1] Family (WhatsApp) already complete\n"),
+        "the state file resumes: {}",
+        again.stderr
+    );
 }
