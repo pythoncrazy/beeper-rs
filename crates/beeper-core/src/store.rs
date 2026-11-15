@@ -153,7 +153,7 @@ struct Seed {
     messages: Vec<Message>,
 }
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 const SCHEMA: &str = "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
      CREATE TABLE chats (id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;
      CREATE TABLE assets (upload_id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;";
@@ -162,28 +162,39 @@ const SCHEMA: &str = "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL
 /// text is the message text, file names and voice note transcripts. `n` is the search row: a plain rowid can change
 /// on `VACUUM`.
 fn messages_schema() -> String {
-    let text = |row: &str| {
-        format!(
-            "concat_ws(' ', {row}.json ->> '$.text', (SELECT group_concat(concat_ws(' ', a.value ->> '$.fileName', \
-             a.value ->> '$.transcript'), ' ') FROM json_each({row}.json, '$.attachments') a))"
-        )
-    };
     format!(
         "CREATE TABLE messages (n INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, chat_id TEXT NOT NULL, \
          sort_key TEXT NOT NULL, json TEXT NOT NULL) STRICT;
          CREATE INDEX messages_by_chat ON messages (chat_id, sort_key);
          CREATE VIRTUAL TABLE messages_fts USING fts5(text, content='', contentless_delete=1);
-         CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
-             INSERT INTO messages_fts (rowid, text) VALUES (new.n, {new});
-         END;
          CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
              DELETE FROM messages_fts WHERE rowid = old.n;
+         END; {}",
+        search_triggers()
+    )
+}
+/// The triggers that index the search text of a new or changed message.
+fn search_triggers() -> String {
+    let new = "concat_ws(' ', new.json ->> '$.text', (SELECT group_concat(concat_ws(' ', a.value ->> '$.fileName', \
+               a.value ->> '$.transcription.transcription'), ' ') FROM json_each(new.json, '$.attachments') a))";
+    format!(
+        "CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+             INSERT INTO messages_fts (rowid, text) VALUES (new.n, {new});
          END;
          CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
              DELETE FROM messages_fts WHERE rowid = old.n;
              INSERT INTO messages_fts (rowid, text) VALUES (new.n, {new});
-         END;",
-        new = text("new")
+         END;"
+    )
+}
+/// Schema 9 keeps a transcript as Desktop's `transcription` object, with the engine `unknown` of Desktop's `p`.
+fn transcriptions() -> String {
+    let old = "'$.attachments[0].transcript'";
+    format!(
+        "DROP TRIGGER messages_ai; DROP TRIGGER messages_au; {}
+         UPDATE messages SET json = json_set(json_remove(json, {old}), '$.attachments[0].transcription',
+             json_object('transcription', json ->> {old}, 'engine', 'unknown')) WHERE json ->> {old} IS NOT NULL;",
+        search_triggers()
     )
 }
 /// Schema 6 adds the outbox: the JSON of each `Outgoing`, and the file of a media message.
@@ -509,6 +520,7 @@ impl BeeperStore {
                     OUTBOX.to_string(),
                     secret_flags(),
                     order_schema(),
+                    transcriptions(),
                 ];
                 for (from, sql) in (version..).zip(&steps[version as usize - 1..]) {
                     conn.execute_batch(&format!("BEGIN; {sql} PRAGMA user_version = {}; COMMIT;", from + 1))
@@ -2385,6 +2397,14 @@ impl BeeperStore {
         }
     }
 
+    /// Desktop's `setTranscriptionByMessageEventID`: the transcription of the first attachment of the message `target`.
+    /// Like Desktop, it skips a message that is not stored or has no attachment.
+    pub fn set_transcription(&mut self, target: &str, t: Transcription) {
+        if let Some(i) = self.find_message(target).filter(|&i| !self.messages[i].attachments.is_empty()) {
+            self.update_message(i, |m| m.attachments[0].transcription = Some(t));
+        }
+    }
+
     /// Desktop's `sendPoll`: a pending poll message with the options `1`, `2`, ..., and its poll start event.
     pub fn send_poll(&mut self, chat: &str, question: String, answers: Vec<String>, multiple: bool, undisclosed: bool) {
         assert!(answers.len() >= 2, "a poll has two options");
@@ -2705,6 +2725,32 @@ mod tests {
             matches!(&st.outbox[..], [(_, c, super::Outgoing::Flag(crate::matrix::ChatFlag::Muted, true))] if c == super::NOTE_CHAT_ID),
             "the new outbox keeps a change"
         );
+        drop(st);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Schema 9 changes the `transcript` text of schema 8 to Desktop's `transcription`, and search finds it.
+    #[test]
+    fn schema_8_migrates_transcripts() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-schema-8-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23396, None);
+        config.demo = true;
+        let old = "'$.attachments[0].transcript', json ->> '$.attachments[0].transcription.transcription'";
+        drop(super::BeeperStore::from_config(config.clone()));
+        rusqlite::Connection::open(&config.db_path)
+            .unwrap()
+            .execute_batch(&format!(
+                "UPDATE messages SET json = json_remove(json_set(json, {old}), '$.attachments[0].transcription')
+                     WHERE id = 'msg_1000c'; PRAGMA user_version = 8;"
+            ))
+            .unwrap();
+        let mut st = super::BeeperStore::from_config(config);
+        let i = st.find_message("msg_1000c").unwrap();
+        let t = st.messages[i].attachments[0].transcription.clone().expect("a transcription");
+        assert_eq!((t.engine.as_str(), t.language), ("unknown", None));
+        assert!(t.transcription.starts_with("Native Rust"));
+        assert_eq!(found(&st, "instantaneous"), HashSet::from(["msg_1000c".to_string()]));
         drop(st);
         std::fs::remove_dir_all(dir).unwrap();
     }

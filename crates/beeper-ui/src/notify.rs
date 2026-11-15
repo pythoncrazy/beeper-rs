@@ -30,8 +30,8 @@ pub(crate) fn attachment_text(all: &[Attachment], verbose: bool) -> Option<Strin
         _ if a.is_gif == Some(true) => pick("Sent a GIF", "🎬 [GIF]"),
         ("img", _) => pick("Sent a picture", "🖼 [Picture]"),
         ("video", _) => pick("Sent a video", "🎥 [Video]"),
-        ("audio", _) => match &a.transcript {
-            Some(t) => Some(format!("“{t}”")),
+        ("audio", _) => match &a.transcription {
+            Some(t) => Some(format!("“{}”", t.transcription)),
             None if a.is_voice_note == Some(true) => pick("Sent a voice note", "🎤 [Voice Note]"),
             None => pick("Sent an audio", "🎵 [Audio]"),
         },

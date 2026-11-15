@@ -2228,7 +2228,7 @@ fn media_tag(attachments: &[Attachment]) -> Option<MediaTag> {
     let mime = a.mime_type.as_deref().unwrap_or_default().to_lowercase();
     let name = a.file_name.clone().map(|f| (f, true));
     let length = a.duration.map(|d| (voice::clock(d as f32), false));
-    let said = a.transcript.as_ref().map(|t| (format!("“{t}”"), false));
+    let said = a.transcription.as_ref().map(|t| (format!("“{}”", t.transcription), false));
     let image = a.attachment_type == "img" || mime.starts_with("image/");
     Some(match a.attachment_type.as_str() {
         _ if a.is_sticker == Some(true) => (0, tr("Sticker"), None),
@@ -13612,7 +13612,13 @@ impl BeeperGuiApp {
         for (ai, a) in m.attachments.iter().enumerate().filter(|_| ms.len() == 1) {
             let name = a.file_name.clone().expect("attachment file name");
             let content: El<'a> = match (a.is_voice_note == Some(true), a.attachment_type.as_str()) {
-                (_, "audio") if self.playable(a) => self.view_audio(m, a, mine, fg, bg),
+                (_, "audio") if self.playable(a) => {
+                    let ts = st.settings.on("showTimestamps").then(|| {
+                        let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
+                        (time, if mine { sent_meta } else { p.sub })
+                    });
+                    self.view_audio(m, a, mine, ts, fg, bg)
+                }
                 (false, "img" | "video") => {
                     let is_video = a.attachment_type == "video";
                     let (w, h) = a.size.as_ref().map_or((240.0, 160.0), |s| {

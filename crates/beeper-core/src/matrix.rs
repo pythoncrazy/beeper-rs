@@ -3,11 +3,12 @@ use crate::import::DesktopCrypto;
 use crate::models::{
     beeper_files, timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat,
     ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageRules, Older,
-    PollData, PollOption, PollRules, Reaction, SendError, ThreadFollows, Timers, User, VerificationDevice,
-    VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS,
-    BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, DEFAULT_TIMERS, DELETE_FOR_EVERYONE,
-    DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK,
-    MSG_MENTION, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REPORT_SPAM, USER_BLOCKED,
+    PollData, PollOption, PollRules, Reaction, SendError, ThreadFollows, Timers, Transcription, User,
+    VerificationDevice, VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS,
+    ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, DEFAULT_TIMERS,
+    DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS,
+    MEMBER_KICK, MSG_MENTION, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REPORT_SPAM, TRANSCRIPTION,
+    TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -944,6 +945,31 @@ fn bookmark_change(e: &Value, me: &str) -> Option<(String, Option<Bookmark>)> {
     }
 }
 
+/// Desktop's `handleTranscriptionEvent` for the new events of the transcriptions room. Like Desktop, it does not
+/// read the older events of the room.
+fn sync_transcriptions(store: &SharedStore, events: Vec<TimelineEvent>) {
+    let mut st = store.write();
+    for e in events {
+        if let Some((target, t)) = transcription(&serde_json::from_str(e.raw().json().get()).expect("event JSON")) {
+            st.set_transcription(&target, t);
+        }
+    }
+}
+
+/// Desktop's `parseTranscription` (`p`) of a `com.beeper.transcription` event, and the message that it relates to.
+fn transcription(e: &Value) -> Option<(String, Transcription)> {
+    if e["type"] != TRANSCRIPTION {
+        return None;
+    }
+    let c = &e["content"];
+    let rel = &c["com.beeper.relates_to"];
+    let plain = |t: &&Value| t["mimetype"].is_null() || t["mimetype"] == "text/plain";
+    let text = c["m.text"].as_array()?.iter().rev().filter(plain).find_map(|t| s(&t["body"]))?;
+    let target = s(&rel["event_id"]).filter(|_| s(&rel["room_id"]).is_some())?;
+    let engine = s(&c["com.beeper.transcription.model"]).unwrap_or_else(|| "unknown".into());
+    Some((target, Transcription { transcription: text, engine, language: s(&c["com.beeper.transcription.language"]) }))
+}
+
 /// Desktop's `hydrateMissingBookmarks` for one message that is not loaded: the event as a message, or None when
 /// the server does not give it.
 pub async fn bookmarked_message(client: Client, chat: String, target: String, account_id: String) -> Option<Message> {
@@ -1012,6 +1038,9 @@ async fn sync_space(store: &SharedStore, room: &Room) {
 async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>) {
     if room.room_id() == BOOKMARKS_ROOM {
         return sync_bookmarks(store, room, events).await;
+    }
+    if room.room_id() == TRANSCRIPTIONS_ROOM {
+        return sync_transcriptions(store, events);
     }
     let create = state(room, "m.room.create").await.expect("rooms have a create event");
     if create["com.beeper.label"] == true {
@@ -3561,6 +3590,34 @@ mod tests {
         assert_eq!(bookmark_change(&ev("m.room.redaction", "@me:x"), "@me:x"), Some(("$m".into(), None)));
         let bare = json!({ "type": "m.room.redaction", "sender": "@me:x", "redacts": "$b", "content": {} });
         assert!(bookmark_change(&bare, "@me:x").is_none(), "a redaction without a relation is unresolved");
+    }
+
+    /// Desktop's `parseTranscription`: the last plain text, and the engine "unknown" when the event has none.
+    #[test]
+    fn transcription_events_like_desktop() {
+        use super::transcription;
+        use crate::models::Transcription;
+        use serde_json::json;
+        let rel = json!({ "room_id": "!r", "event_id": "$m", "rel_type": "com.beeper.transcription" });
+        let texts = json!([{ "body": "one" }, { "body": "<b>two</b>", "mimetype": "text/html" }, { "body": "three", "mimetype": "text/plain" }]);
+        let ev = |content: serde_json::Value| json!({ "type": "com.beeper.transcription", "content": content });
+        let full = ev(json!({ "com.beeper.relates_to": rel, "m.text": texts,
+            "com.beeper.transcription.model": "openai-whisper", "com.beeper.transcription.language": "fr" }));
+        let want = Transcription {
+            transcription: "three".into(),
+            engine: "openai-whisper".into(),
+            language: Some("fr".into()),
+        };
+        assert_eq!(transcription(&full), Some(("$m".into(), want)));
+        let bare = transcription(&ev(json!({ "com.beeper.relates_to": rel, "m.text": [{ "body": "hi" }] })));
+        assert_eq!(
+            bare,
+            Some(("$m".into(), Transcription { transcription: "hi".into(), engine: "unknown".into(), language: None }))
+        );
+        assert!(transcription(&ev(json!({ "com.beeper.relates_to": rel, "m.text": [{ "body": "" }] }))).is_none());
+        assert!(transcription(&ev(json!({ "com.beeper.relates_to": { "event_id": "$m" }, "m.text": texts }))).is_none());
+        let other = json!({ "type": "m.room.message", "content": { "com.beeper.relates_to": rel, "m.text": texts } });
+        assert!(transcription(&other).is_none());
     }
 
     #[test]
