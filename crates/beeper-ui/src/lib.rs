@@ -4666,27 +4666,7 @@ impl BeeperGuiApp {
     /// older store generation, which it changes little, and its keys end with the chat index, so the order does not
     /// depend on `last`.
     fn sorted_chats(&self, st: &BeeperStore, filters: u8, last: &[usize]) -> Vec<usize> {
-        let keep = |c: &Chat| {
-            let on = |i: usize| filters & 1 << i != 0;
-            let shown = |i: usize| on(i) || !filter_hit(i, c, st);
-            c.merged_into_chat_id.is_none()
-                && self.selected_account_filter.as_ref().is_none_or(|a| in_rail_entry(st, a, c))
-                && match self.active_tab {
-                    InboxTab::AllChats => {
-                        let hidden = if self.selected_account_filter.is_some() { 0 } else { CHAT_HIDDEN };
-                        c.flags & hidden == 0 && shown(F_ARCHIVED) && shown(F_LOW_PRIORITY) && shown(F_REQUESTS)
-                    }
-                    InboxTab::Requests => c.flags & CHAT_REQUEST != 0,
-                    InboxTab::Archived => c.flags & CHAT_ARCHIVED != 0 && shown(F_REQUESTS),
-                    InboxTab::LowPriority => c.flags & CHAT_LOW_PRIORITY != 0 && shown(F_ARCHIVED) && shown(F_REQUESTS),
-                    InboxTab::Reminders => c.reminder.is_some(),
-                    InboxTab::SendLater => st.scheduled.iter().any(|s| s.chat_id == c.id),
-                }
-                && (!self.active_tab.filterable()
-                    || filters == 0
-                    || (0..FILTERS.len()).any(|i| on(i) && filter_hit(i, c, st)))
-        };
-        let keep: Vec<bool> = st.chats.iter().map(keep).collect();
+        let keep: Vec<bool> = st.chats.iter().map(|c| self.listed(st, filters, c)).collect();
         let mut seen = vec![false; keep.len()];
         let mut list: Vec<usize> = (last.iter().copied())
             .filter(|&i| keep.get(i) == Some(&true) && !std::mem::replace(&mut seen[i], true))
@@ -4702,6 +4682,28 @@ impl BeeperGuiApp {
             _ => list.sort_by_key(|&i| (std::cmp::Reverse(activity(i)), i)),
         }
         list
+    }
+
+    /// Whether the chat list with `filters` shows `c`.
+    fn listed(&self, st: &BeeperStore, filters: u8, c: &Chat) -> bool {
+        let on = |i: usize| filters & 1 << i != 0;
+        let shown = |i: usize| on(i) || !filter_hit(i, c, st);
+        c.merged_into_chat_id.is_none()
+            && self.selected_account_filter.as_ref().is_none_or(|a| in_rail_entry(st, a, c))
+            && match self.active_tab {
+                InboxTab::AllChats => {
+                    let hidden = if self.selected_account_filter.is_some() { 0 } else { CHAT_HIDDEN };
+                    c.flags & hidden == 0 && shown(F_ARCHIVED) && shown(F_LOW_PRIORITY) && shown(F_REQUESTS)
+                }
+                InboxTab::Requests => c.flags & CHAT_REQUEST != 0,
+                InboxTab::Archived => c.flags & CHAT_ARCHIVED != 0 && shown(F_REQUESTS),
+                InboxTab::LowPriority => c.flags & CHAT_LOW_PRIORITY != 0 && shown(F_ARCHIVED) && shown(F_REQUESTS),
+                InboxTab::Reminders => c.reminder.is_some(),
+                InboxTab::SendLater => st.scheduled.iter().any(|s| s.chat_id == c.id),
+            }
+            && (!self.active_tab.filterable()
+                || filters == 0
+                || (0..FILTERS.len()).any(|i| on(i) && filter_hit(i, c, st)))
     }
 
     pub fn select_chat(&mut self, chat_id: &str) {
@@ -5702,7 +5704,7 @@ impl BeeperGuiApp {
             _ => self.visible_chats(&st).into_iter().filter(|c| counts(c)).count(),
         };
         // Desktop counts one more with unread threads.
-        n as u32 + u32::from(!self.unread_threads(&st, None).is_empty())
+        n as u32 + u32::from(!self.unread_threads(&st, false).is_empty())
     }
 
     /// The windows besides the main window, Desktop's `subWindows`.
@@ -6164,8 +6166,8 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::ToggleFlag(cid, flag) => {
+                let at = self.list_ids(&self.store.read()).iter().position(|c| *c == cid);
                 let mut st = self.store.write();
-                let at = self.list_ids(&st).iter().position(|c| *c == cid);
                 let idx = st.resolve_chat_idx(&cid).expect("chat exists");
                 let was = has_flag(&st.chats[idx], flag);
                 let moved = match flag {
@@ -6175,7 +6177,6 @@ impl BeeperGuiApp {
                     }
                     _ => st.set_chat_flag(idx, flag, None),
                 };
-                let list = self.list_ids(&st);
                 drop(st);
                 if !moved {
                     self.status_banner = tr("Pinned chats can't be archived").into();
@@ -6192,6 +6193,7 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
                 let selected = self.pane.selected_chat_id.as_deref() == Some(cid.as_str());
                 if let Some(at) = at.filter(|_| flag == ChatFlag::Archived && moved && selected) {
+                    let list = self.list_ids(&self.store.read());
                     return self.after_action("afterArchive", &list, at, true);
                 }
             }
@@ -6478,8 +6480,8 @@ impl BeeperGuiApp {
                 self.refresh_theme_and_tray();
             }
             UiMessage::ToggleRead(cid) => {
+                let list = self.list_ids(&self.store.read());
                 let mut st = self.store.write();
-                let list = self.list_ids(&st);
                 let idx = st.resolve_chat_idx(&cid).expect("chat exists");
                 let c = &st.chats[idx];
                 if c.is_unread() {
@@ -11856,16 +11858,13 @@ impl BeeperGuiApp {
         let lead = rest.iter().take_while(|c| c.flags & CHAT_PINNED != 0).count();
         let drafts = self.new_chats.len();
         // Desktop hides the divider of the selected row and of the row above it.
-        let ids = |r: std::ops::Range<usize>| rest[r].iter().map(|c| std::borrow::Cow::Borrowed(c.id.as_str()));
-        let draft_keys = self.new_chats.iter().map(|d| std::borrow::Cow::Owned(format!("draft:{}", d.id)));
-        let lit = |k: &str| {
-            selected == Some(k) || k.strip_prefix("draft:").is_some_and(|n| self.creating_chat == n.parse().ok())
-        };
-        let mut prev = None;
-        let above = ids(0..lead).chain(draft_keys).chain(ids(lead..rest.len())).find_map(|k| {
-            let hit = if lit(&k) { prev.take() } else { None };
-            prev = Some(k);
-            hit
+        let draft = self.creating_chat.and_then(|n| self.new_chats.iter().position(|d| d.id == n)).map(|i| lead + i);
+        let chat =
+            || selected.and_then(|s| rest.iter().position(|c| c.id == s)).map(|i| i + drafts * usize::from(i >= lead));
+        let above = draft.or_else(chat).and_then(|i| i.checked_sub(1)).map(|i| match i.checked_sub(lead) {
+            Some(d) if d < drafts => std::borrow::Cow::Owned(format!("draft:{}", self.new_chats[d].id)),
+            Some(d) => std::borrow::Cow::Borrowed(rest[lead + d - drafts].id.as_str()),
+            None => std::borrow::Cow::Borrowed(rest[i].id.as_str()),
         });
         let frame =
             |key: String, dot: Option<El<'static>>, face: El<'static>, lines: [El<'static>; 2], on: bool, select| {
@@ -12148,7 +12147,7 @@ impl BeeperGuiApp {
             let tiles = pinned.len().div_ceil(cols);
             let row_keys = self.row_keys(&rest);
             // Desktop's "Unread threads" pill comes first.
-            let threads = self.unread_threads(&st, Some(&chats));
+            let threads = self.unread_threads(&st, true);
             let pre = usize::from(!threads.is_empty());
             let keys: Vec<u64> = (0..pre)
                 .map(|_| vlist::key("unread-threads"))

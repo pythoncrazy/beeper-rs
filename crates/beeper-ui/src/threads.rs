@@ -130,9 +130,9 @@ impl BeeperGuiApp {
         self.refresh_theme_and_tray();
     }
 
-    /// Desktop's `unreadThreadEntries` of the chats `listed`, or of all chats. Each thread reads SQLite, so the memo
+    /// Desktop's `unreadThreadEntries` of the chats in the chat list when `listed`, or of all chats. Each thread reads SQLite, so the memo
     /// keeps the unread threads of all chats until the store changes.
-    pub(crate) fn unread_threads(&self, st: &BeeperStore, listed: Option<&[&Chat]>) -> Vec<(usize, String)> {
+    pub(crate) fn unread_threads(&self, st: &BeeperStore, listed: bool) -> Vec<(usize, String)> {
         let memo = self.memo();
         let all = memo.and_then(|m| m.threads.borrow().clone()).unwrap_or_else(|| {
             let all: Threads = st.unread_threads(0..st.chats.len()).into();
@@ -141,9 +141,7 @@ impl BeeperGuiApp {
             }
             all
         });
-        let listed: Option<HashSet<&str>> = listed.map(|l| l.iter().map(|c| c.id.as_str()).collect());
-        let shown = |i: &usize| listed.as_ref().is_none_or(|l| l.contains(st.chats[*i].id.as_str()));
-        all.iter().filter(|(i, _)| shown(i)).cloned().collect()
+        all.iter().filter(|(i, _)| !listed || self.listed(st, self.filters, &st.chats[*i])).cloned().collect()
     }
 
     /// Desktop's `markAllUnreadThreadsAsRead`.
@@ -283,7 +281,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_unread_menu(&self, at: Point) -> (El<'_>, f32, f32) {
         let p = &self.pal;
         let st = self.store.read();
-        let n = self.unread_threads(&st, Some(&self.visible_chats(&st))).len();
+        let n = self.unread_threads(&st, true).len();
         let label = trn("Mark %d Thread as Read", "Mark %d Threads as Read", n, &[&n]);
         let col = column![menu_item(p, None, label, "", Some(UiMessage::MarkAllThreadsRead))];
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
@@ -295,7 +293,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_unread_threads(&self) -> El<'_> {
         let p = &self.pal;
         let st = self.store.read();
-        let threads = self.unread_threads(&st, Some(&self.visible_chats(&st)));
+        let threads = self.unread_threads(&st, true);
         let open = self.pane.thread.as_ref().map(|t| (t.selected_chat_id.clone(), t.thread_root.clone()));
         let title = semi(tr("Unread threads"), 14.0).line_height(Pixels(18.0)).color(p.text);
         let count = (!threads.is_empty())
