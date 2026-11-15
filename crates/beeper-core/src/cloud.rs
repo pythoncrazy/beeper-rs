@@ -354,16 +354,20 @@ fn klipy_key() -> String {
     KLIPY_KEY.iter().zip(b"beeper-rs".iter().cycle()).map(|(k, m)| char::from(k ^ m)).collect()
 }
 
-pub async fn klipy_gifs(query: String) -> Result<Vec<KlipyGif>, String> {
+/// One page of KLIPY's featured GIFs, or of a search, from the position `pos`, and the position of the next page,
+/// which is empty after the last page.
+pub async fn klipy_gifs(query: String, pos: String) -> Result<(Vec<KlipyGif>, String), String> {
     let key = klipy_key();
     let q = query.trim();
     let url = match q.is_empty() {
         true => format!(
-            "https://api.klipy.com/v2/featured?key={key}&limit=10&contentfilter=high&media_filter=gif,tinygif,mp4,tinymp4&pos="
+            "https://api.klipy.com/v2/featured?key={key}&limit=10&contentfilter=high&media_filter=gif,tinygif,mp4,tinymp4&pos={}",
+            crate::codec::url_encode(&pos)
         ),
         false => format!(
-            "https://api.klipy.com/v2/search?key={key}&limit=10&contentfilter=high&media_filter=gif,tinygif,mp4,tinymp4&q={}&pos=",
-            crate::codec::url_encode(q)
+            "https://api.klipy.com/v2/search?key={key}&limit=10&contentfilter=high&media_filter=gif,tinygif,mp4,tinymp4&q={}&pos={}",
+            crate::codec::url_encode(q),
+            crate::codec::url_encode(&pos)
         ),
     };
     let resp = http_client().get(&url).send().await.map_err(|e| e.without_url().to_string())?;
@@ -379,7 +383,7 @@ pub async fn klipy_gifs(query: String) -> Result<Vec<KlipyGif>, String> {
         let h = u32::try_from(f["dims"][1].as_u64()?).ok()?;
         Some((u, (w.max(1), h.max(1))))
     };
-    Ok(v["results"]
+    let gifs = v["results"]
         .as_array()
         .into_iter()
         .flatten()
@@ -399,7 +403,8 @@ pub async fn klipy_gifs(query: String) -> Result<Vec<KlipyGif>, String> {
                 mp4_size,
             })
         })
-        .collect())
+        .collect();
+    Ok((gifs, v["next"].as_str().unwrap_or_default().to_string()))
 }
 
 pub async fn http_bytes(url: &str) -> Result<Vec<u8>, String> {
@@ -498,9 +503,11 @@ mod tests {
         let key = klipy_key();
         assert!(key.len() == 64 && key.bytes().all(|b| b.is_ascii_alphanumeric()));
         if std::env::var_os("KLIPY_LIVE").is_some() {
-            let featured = klipy_gifs(String::new()).await.expect("KLIPY featured");
-            assert!(!featured.is_empty());
-            let search = klipy_gifs("cat".into()).await.expect("KLIPY search");
+            let (featured, next) = klipy_gifs(String::new(), String::new()).await.expect("KLIPY featured");
+            assert!(!featured.is_empty() && !next.is_empty(), "a first page has a next page");
+            let (more, _) = klipy_gifs(String::new(), next).await.expect("KLIPY featured page 2");
+            assert!(!more.is_empty(), "the next page has GIFs");
+            let (search, _) = klipy_gifs("cat".into(), String::new()).await.expect("KLIPY search");
             assert!(!search.is_empty());
             let g = &search[0];
             let tiny = http_bytes(&g.preview_url).await.expect("download tinygif");
