@@ -33,7 +33,7 @@ fn bad_command_lines_print_the_usage_and_exit_with_the_oclif_codes() {
     let (code, help, _) = run(&["help"]);
     assert!(code == Some(0) && help.starts_with("Beeper chat app"), "{help}");
     assert!(
-        help.contains("\n  chats    List, search, manage, and modify chats\n"),
+        help.contains("\n  chats     List, search, manage, and modify chats\n"),
         "the root help lists the client topics: {help}"
     );
     let (code, help, _) = run(&["help", "send", "text"]);

@@ -116,7 +116,7 @@ fn help() -> String {
     let mut rows: Vec<(String, String)> = rows.chain(cli::commands::root_rows()).collect();
     rows.sort();
     let width = rows.iter().map(|r| r.0.len()).max().expect("a command");
-    let commands = rows.iter().map(|(name, text)| format!("  {name:<width$} {text}")).collect::<Vec<_>>().join("\n");
+    let commands = rows.iter().map(|(name, text)| format!("  {name:<width$}  {text}")).collect::<Vec<_>>().join("\n");
     let flags = FLAGS.map(|(names, value, text, _)| {
         let (short, long): (Vec<&str>, Vec<&str>) = names.iter().partition(|n| !n.starts_with("--"));
         let short = short.first().map_or("    ".into(), |s| format!("{s}, "));
