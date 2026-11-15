@@ -11,8 +11,8 @@ use beeper_core::config::{
 use beeper_core::connect::{Token, READ};
 use beeper_core::matrix::{self, ChatFlag, Outgoing};
 use beeper_core::models::*;
-use beeper_core::platform::{path_to_file_url, OsKind};
-use beeper_core::store::{activity_key, tokenize, BeeperStore, SharedStore, StoredAsset};
+use beeper_core::platform::{extension_of, mime_type_of, path_to_file_url, OsKind};
+use beeper_core::store::{activity_key, tokenize, BeeperStore, SharedStore};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BinaryHeap, HashMap};
@@ -825,14 +825,28 @@ fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply
             )),
         },
         ("POST", ["v1", "assets", "upload", "base64"]) => {
-            let bytes = base64_decode(r.need("content")?).filter(|b| !b.is_empty());
-            let bytes = bytes.ok_or_else(|| bad("content must be non-empty base64"))?;
-            ok(&asset_json(st.store_uploaded_asset(r.need("fileName")?.into(), r.need("mimeType")?.into(), &bytes)))
+            let field = |k: &'static str, optional| string_issue(r.body.get(k), optional, json!([k]));
+            let issues: Vec<Issue> = [field("content", false), field("fileName", true), field("mimeType", true)]
+                .into_iter()
+                .flatten()
+                .collect();
+            if !issues.is_empty() {
+                return Err(invalid_input(issues));
+            }
+            let bytes = base64_decode(r.str("content").expect("a string content")).filter(|b| !b.is_empty());
+            upload(
+                st,
+                r.str("fileName"),
+                r.str("mimeType"),
+                &bytes.ok_or_else(|| bad("content must be non-empty base64"))?,
+            )
         }
         ("POST", ["v1", "assets", "download"]) => {
             let url = r.need("url")?;
             let failed = || json_with(StatusCode::OK, &json!({ "error": asset_failure(url).1 }));
-            let (path, _) = st.resolve_asset_path(url).ok_or_else(failed)?;
+            // Desktop's `resolveMatrixAsset` downloads only media URLs.
+            let media = url.starts_with("mxc://") || url.starts_with("localmxc://");
+            let (path, _) = st.resolve_asset_path(url).filter(|_| media).ok_or_else(failed)?;
             ok(&json!({ "srcURL": path_to_file_url(&path) }))
         }
         ("POST", ["v1", "focus"]) => focus(st, r),
@@ -1628,13 +1642,9 @@ fn avatar_file(url: &str) -> Result<(String, Vec<u8>, String), Response> {
         false => Some(std::path::PathBuf::from(url)).filter(|p| p.is_absolute()),
     };
     let path = path.ok_or_else(|| bad("imgURL must be an absolute path or a file URL"))?;
-    let mime = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        _ => return Err(bad("imgURL must be a PNG, JPEG, GIF, or WebP image")),
-    };
+    let mime = mime_type_of(&path.to_string_lossy())
+        .filter(|m| ["image/png", "image/jpeg", "image/gif", "image/webp"].contains(m))
+        .ok_or_else(|| bad("imgURL must be a PNG, JPEG, GIF, or WebP image"))?;
     let bytes = std::fs::read(&path).map_err(|e| bad(&format!("imgURL: {e}")))?;
     Ok((path_to_file_url(&path), bytes, mime.into()))
 }
@@ -1816,16 +1826,70 @@ fn unified_search(st: &BeeperStore, r: &Req) -> Reply {
     }))
 }
 
-fn asset_json(asset: StoredAsset) -> Value {
-    json!({
+/// The MIME type and the extension of the `file-type` package for the first bytes of a file.
+fn sniff(b: &[u8]) -> Option<(&'static str, &'static str)> {
+    let at = |i: usize, magic: &[u8]| b.get(i..i + magic.len()) == Some(magic);
+    Some(match () {
+        _ if at(0, b"\x89PNG\r\n\x1a\n") => ("image/png", "png"),
+        _ if at(0, b"\xFF\xD8\xFF") => ("image/jpeg", "jpg"),
+        _ if at(0, b"GIF8") => ("image/gif", "gif"),
+        _ if at(0, b"RIFF") && at(8, b"WEBP") => ("image/webp", "webp"),
+        _ if at(0, b"RIFF") && at(8, b"WAVE") => ("audio/wav", "wav"),
+        _ if at(0, b"%PDF") => ("application/pdf", "pdf"),
+        _ if at(0, b"OggS") && at(28, b"OpusHead") => ("audio/ogg; codecs=opus", "opus"),
+        _ if at(0, b"OggS") && at(28, b"\x01vorbis") => ("audio/ogg", "ogg"),
+        _ if at(0, b"OggS") => ("application/ogg", "ogx"),
+        _ if at(0, b"ID3") => ("audio/mpeg", "mp3"),
+        _ if at(0, b"PK\x03\x04") => ("application/zip", "zip"),
+        _ if at(4, b"ftypM4A ") => ("audio/x-m4a", "m4a"),
+        _ if at(4, b"ftypheic") || at(4, b"ftypheix") => ("image/heic", "heic"),
+        _ if at(4, b"ftypqt  ") => ("video/quicktime", "mov"),
+        _ if at(4, b"ftyp") => ("video/mp4", "mp4"),
+        _ if at(0, b"\x1A\x45\xDF\xA3") && find(&b[..b.len().min(64)], b"webm").is_some() => ("video/webm", "webm"),
+        _ if at(0, b"\x1A\x45\xDF\xA3") => ("video/x-matroska", "mkv"),
+        _ => return None,
+    })
+}
+
+/// Desktop's `uploadAsset`: the base name of the file with an extension, the MIME type of the request or else of
+/// the bytes, and the file URL of the stored file.
+fn upload(st: &mut BeeperStore, name: Option<&str>, mime: Option<&str>, bytes: &[u8]) -> Reply {
+    let name = name.filter(|n| !n.is_empty()).unwrap_or("file").rsplit('/').next().expect("a last item");
+    let name = if matches!(name, "" | "." | "..") { "file" } else { name };
+    let lower = name.to_ascii_lowercase();
+    let device = |p: &str| lower.strip_prefix(p).is_some_and(|d| d.len() == 1 && d.as_bytes()[0].is_ascii_digit());
+    if name.starts_with('.')
+        || name.contains("::")
+        || name.contains('~')
+        || ["con", "prn", "aux", "nul"].contains(&lower.as_str())
+        || device("com")
+        || device("lpt")
+    {
+        let message = "Invalid filename: hidden files or reserved names not allowed";
+        return Err(error(StatusCode::BAD_REQUEST, message, "INVALID_FILENAME"));
+    }
+    if name.contains('\0') || name.encode_utf16().count() > 255 {
+        return Err(error(StatusCode::BAD_REQUEST, "Invalid filename", "INVALID_FILENAME"));
+    }
+    let sniffed = sniff(bytes);
+    let mime = mime.filter(|m| !m.is_empty()).or(sniffed.map(|s| s.0)).unwrap_or("application/octet-stream");
+    let ext = std::path::Path::new(name).extension().is_none().then(|| sniffed.map(|s| s.1).or(extension_of(mime)));
+    let name = match ext.flatten() {
+        Some(ext) => format!("{name}.{ext}"),
+        None => name.into(),
+    };
+    let asset = st.store_uploaded_asset(name, mime.into(), bytes);
+    let mut out = json!({
         "uploadID": asset.upload_id,
+        "srcURL": path_to_file_url(&st.config.assets_dir.join(&asset.disk_name)),
         "fileName": asset.file_name,
         "mimeType": asset.mime_type,
         "fileSize": asset.file_size,
-        "srcURL": asset.mxc_url,
-        "width": asset.width,
-        "height": asset.height
-    })
+    });
+    if let Some((w, h)) = asset.width.zip(asset.height) {
+        (out["width"], out["height"]) = (w.into(), h.into());
+    }
+    ok(&out)
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1842,7 +1906,7 @@ fn upload_json(st: &mut BeeperStore, r: &Req) -> Reply {
     let mime = field("mimeType", "Missing required field: mimeType", "MISSING_MIMETYPE")?;
     let bytes = base64_decode(content).filter(|b| !b.is_empty());
     let bytes = bytes.ok_or_else(|| error(StatusCode::BAD_REQUEST, "Invalid base64 content", "INVALID_BASE64"))?;
-    ok(&asset_json(st.store_uploaded_asset(file_name.into(), mime.into(), &bytes)))
+    upload(st, Some(file_name), Some(mime), &bytes)
 }
 
 /// Desktop's `GET /focus{/:chatID{/:messageID}}?draft=`: `POST /v1/focus` for other programs, with an HTML answer.
@@ -1875,7 +1939,7 @@ fn upload_multipart(st: &mut BeeperStore, r: &Req) -> Reply {
     let delim = format!("\r\n--{}", boundary.ok_or_else(|| bad("multipart boundary is required"))?.1.trim_matches('"'));
     let body = [b"\r\n", r.msg.body.as_slice()].concat();
     let mut rest = body.as_slice();
-    let (mut file, mut fields) = (None, HashMap::new());
+    let mut file = None;
     while let Some(start) = find(rest, delim.as_bytes()) {
         rest = &rest[start + delim.len()..];
         let part = &rest[..find(rest, delim.as_bytes()).unwrap_or(rest.len())];
@@ -1886,38 +1950,38 @@ fn upload_multipart(st: &mut BeeperStore, r: &Req) -> Reply {
         let content_type = head.lines().find_map(|l| {
             l.split_once(':').filter(|(k, _)| k.trim().eq_ignore_ascii_case("content-type")).map(|(_, v)| v.trim())
         });
-        match attr("name") {
-            Some("file") => file = Some((attr("filename"), content_type, content)),
-            Some(name) => {
-                fields.insert(name, std::str::from_utf8(content).map_err(|_| bad("multipart fields must be UTF-8"))?);
-            }
-            None => return Err(bad("multipart part needs a name")),
+        // multer takes the part with a file name as the file. The other parts are fields that Desktop ignores, and
+        // busboy gives a part without a type the RFC 7578 default type.
+        if let (Some("file"), Some(name)) = (attr("name"), attr("filename")) {
+            file = Some((name, content_type.unwrap_or("text/plain"), content));
         }
     }
-    let (file_name, mime, content) = file.ok_or_else(|| bad("file part is required"))?;
-    let file_name = fields.get("fileName").copied().or(file_name).ok_or_else(|| bad("fileName is required"))?;
-    let mime = fields.get("mimeType").copied().or(mime).ok_or_else(|| bad("mimeType is required"))?;
+    let missing = || error(StatusCode::BAD_REQUEST, "No file uploaded. Use field name \"file\"", "MISSING_FILE");
+    let (name, mime, content) = file.ok_or_else(missing)?;
     if content.is_empty() {
         return Err(bad("file part is empty"));
     }
-    ok(&asset_json(st.store_uploaded_asset(file_name.into(), mime.into(), content)))
+    upload(st, Some(name), Some(mime), content)
 }
 
+/// The first satisfiable range of a `Range` header, like the `range-parser` package.
 fn parse_range(header: &str, total: usize) -> Option<(usize, usize)> {
-    let (s, e) = header.strip_prefix("bytes=")?.split_once('-')?;
-    let last = total.checked_sub(1)?;
-    let (start, end) = match (s, e) {
-        ("", n) => (total.saturating_sub(n.parse().ok()?), last),
-        (s, "") => (s.parse().ok()?, last),
-        (s, e) => (s.parse().ok()?, e.parse::<usize>().ok()?.min(last)),
+    let last = total - 1;
+    let one = |spec: &str| {
+        let (s, e) = spec.trim().split_once('-')?;
+        let (start, end) = match (s, e) {
+            ("", n) => (total.saturating_sub(n.parse().ok()?), last),
+            (s, "") => (s.parse().ok()?, last),
+            (s, e) => (s.parse().ok()?, e.parse::<usize>().ok()?.min(last)),
+        };
+        (start <= end).then_some((start, end))
     };
-    (start <= end).then_some((start, end))
+    header.strip_prefix("bytes=")?.split(',').find_map(one)
 }
 
-/// Desktop's failures of `resolveMatrixAsset` and of file URLs.
+/// Desktop's failures of `resolveMatrixAsset`.
 fn asset_failure(url: &str) -> (StatusCode, &'static str) {
     match url {
-        u if u.starts_with("file://") => (StatusCode::NOT_FOUND, "File not found"),
         u if u.starts_with("mxc://") || u.starts_with("localmxc://") => {
             (StatusCode::BAD_GATEWAY, "Failed to download asset: Not found")
         }
@@ -1954,37 +2018,62 @@ fn attachment_file(st: &BeeperStore, url: &str) -> Result<std::path::PathBuf, Re
     }
 }
 
-fn asset_file(st: &BeeperStore, r: &Req) -> Result<(std::path::PathBuf, String), Response> {
+fn asset_file(st: &BeeperStore, r: &Req) -> Result<std::path::PathBuf, Response> {
     let missing_url = || error(StatusCode::BAD_REQUEST, "Missing required query parameter: url", "MISSING_URL");
     let url = r.q("url").filter(|u| !u.is_empty()).ok_or_else(missing_url)?;
     match url.starts_with("file://") {
-        true => Ok((attachment_file(st, url)?, "application/octet-stream".into())),
-        false => st.resolve_asset_path(url).ok_or_else(|| {
+        true => attachment_file(st, url),
+        false => st.resolve_asset_path(url).map(|(path, _)| path).ok_or_else(|| {
             let (status, message) = asset_failure(url);
             error(status, message, "SERVE_ASSET_ERROR")
         }),
     }
 }
 
-/// Reads the file after the caller releases the store lock.
-fn serve_asset((path, mime): (std::path::PathBuf, String), r: &Req) -> Reply {
-    let bytes = std::fs::read(&path).map_err(|e| {
+/// Desktop's `serveAsset` answer: the cache headers, 304 for the `ETag` of the file, the type of the file name, and
+/// the first range of a `Range` header. It reads the file after the caller releases the store lock.
+fn serve_asset(path: std::path::PathBuf, r: &Req) -> Reply {
+    let read = |e: std::io::Error| {
         // Windows reports "Access is denied" for a directory.
         let message = match path.is_dir() {
             true => "EISDIR: illegal operation on a directory, read".into(),
             false => e.to_string(),
         };
         error(StatusCode(500), &message, "UNKNOWN_ERROR")
-    })?;
-    let mut headers = vec![("content-type", mime), ("accept-ranges", "bytes".into())];
-    let Some(range) = r.msg.header("range") else {
+    };
+    let bytes = std::fs::read(&path).map_err(read)?;
+    let modified = std::fs::metadata(&path).and_then(|m| m.modified()).map_err(read)?;
+    let since = modified.duration_since(std::time::UNIX_EPOCH).expect("a file time after 1970");
+    // Node's `mtimeMs`.
+    let etag = format!("\"{}-{}\"", bytes.len(), since.as_nanos() as f64 / 1e6);
+    let fresh = r.msg.header("if-none-match") == Some(etag.as_str());
+    let mut headers = vec![
+        ("ETag", etag),
+        ("Last-Modified", http_date(since.as_secs() as i64)),
+        ("Cache-Control", "private, max-age=3600".into()),
+    ];
+    if fresh {
+        return Ok(Response { status: StatusCode::NOT_MODIFIED, headers, body: Vec::new() });
+    }
+    let name = path.file_name().expect("a file name").to_string_lossy();
+    let text = |m: &str| m.starts_with("text/") || m == "application/json";
+    let kind = mime_type_of(&name).map(|m| if text(m) { format!("{m}; charset=utf-8") } else { m.into() });
+    headers.extend(kind.map(|k| ("Content-Type", k)));
+    headers.push(("Accept-Ranges", "bytes".into()));
+    let total = bytes.len();
+    let Some(range) = r.msg.header("range").filter(|_| total > 0) else {
         return Ok(Response { status: StatusCode::OK, headers, body: bytes });
     };
-    let total = bytes.len();
-    let (start, end) = parse_range(range, total)
-        .ok_or_else(|| error(StatusCode::RANGE_NOT_SATISFIABLE, "Range Not Satisfiable", "UNKNOWN_ERROR"))?;
-    headers.push(("content-range", format!("bytes {start}-{end}/{total}")));
-    Ok(Response { status: StatusCode::PARTIAL_CONTENT, headers, body: bytes[start..=end].to_vec() })
+    match parse_range(range, total) {
+        Some((start, end)) => {
+            headers.push(("Content-Range", format!("bytes {start}-{end}/{total}")));
+            Ok(Response { status: StatusCode::PARTIAL_CONTENT, headers, body: bytes[start..=end].to_vec() })
+        }
+        None => {
+            headers.push(("Content-Range", format!("bytes */{total}")));
+            Ok(Response { status: StatusCode::RANGE_NOT_SATISFIABLE, headers, body: Vec::new() })
+        }
+    }
 }
 
 fn focus(st: &mut BeeperStore, r: &Req) -> Reply {

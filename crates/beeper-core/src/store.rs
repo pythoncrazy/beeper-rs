@@ -2191,6 +2191,9 @@ impl BeeperStore {
             file_name.chars().map(|c| if c.is_alphanumeric() || ".-_".contains(c) { c } else { '_' }).collect();
         let disk_name = format!("{upload_id}_{safe_name}");
         std::fs::write(self.config.assets_dir.join(&disk_name), bytes).expect("write uploaded asset to disk");
+        // Desktop's `extractMediaDimensions` reads the size of an image.
+        let size = imagesize::blob_size(bytes).ok().filter(|_| mime_type.starts_with("image/"));
+        let dim = |n: usize| u32::try_from(n).ok();
         let asset = StoredAsset {
             mxc_url: format!("mxc://beeper.com/{upload_id}"),
             upload_id: upload_id.clone(),
@@ -2198,8 +2201,8 @@ impl BeeperStore {
             file_name,
             mime_type,
             file_size: bytes.len() as u64,
-            width: None,
-            height: None,
+            width: size.and_then(|s| dim(s.width)),
+            height: size.and_then(|s| dim(s.height)),
             duration: None,
             created_epoch_secs: now_unix_secs(),
         };

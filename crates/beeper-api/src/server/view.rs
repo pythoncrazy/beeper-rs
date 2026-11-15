@@ -442,8 +442,14 @@ const MESSAGE_TYPES: [&str; 10] =
 
 fn attachment(a: &Attachment) -> ApiAttachment<'_> {
     ApiAttachment {
-        // Desktop's `rp` takes the ID, else the source URL, else the file name.
-        id: a.id.as_deref().or(a.src_url.as_deref()).or(a.file_name.as_deref()).unwrap_or("attachment"),
+        // Desktop's `rp` takes the media URL without its encryption info, else the source URL, else the file name.
+        // The store's own attachment IDs are not media URLs, so the API does not show them.
+        id: a
+            .src_url
+            .as_deref()
+            .map(|u| if u.starts_with("mxc://") { u.split('?').next().expect("a first item") } else { u })
+            .or(a.file_name.as_deref())
+            .unwrap_or("attachment"),
         kind: &a.attachment_type,
         mime_type: a.mime_type.as_deref(),
         file_name: a.file_name.as_deref(),
