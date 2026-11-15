@@ -1172,6 +1172,67 @@ fn carousel_steps_through_videos_and_files_like_desktop() {
     assert!(!app.video.as_ref().unwrap().playing(), "a step away pauses the video");
 }
 
+/// Desktop's inline video: a click opens the carousel, where the played video goes on, and the carousel shows
+/// Fullscreen in place of Rotate. When the carousel closes on the video, the inline video plays again.
+#[test]
+fn inline_videos_open_the_carousel_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let clip = "https://example.com/clip.mp4";
+    let mut app = demo_app("carousel-video");
+    {
+        let mut st = app.store.write();
+        let base = st.messages[*st.chat_msg_indices[note].last().unwrap()].clone();
+        let a = Attachment {
+            attachment_type: "video".into(),
+            src_url: Some(clip.into()),
+            file_name: Some("clip.mp4".into()),
+            size: Some(AttachmentSize { width: Some(320), height: Some(180) }),
+            ..Default::default()
+        };
+        let sort_key = format!("{:016}", 9_000_000);
+        st.upsert_message(Message { id: "$clip".into(), sort_key, attachments: vec![a], text: None, ..base });
+    }
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    (app.pane.size, app.main_window) = (Size::new(1000.0, 700.0), Some(window::Id::unique()));
+    let msgs: Vec<UiMessage> = {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 700.0), app.view_main());
+        sim.point_at(Point::new(700.0, 480.0));
+        let _ = sim.simulate(iced_test::simulator::click());
+        sim.into_messages().collect()
+    };
+    let open = video::Msg::Open("$clip".into(), 0, 320, 180);
+    assert!(
+        msgs.iter().any(|m| matches!(m, UiMessage::Video(video::Msg::Open(m, 0, 320, 180)) if m == "$clip")),
+        "a click on the video opens the carousel"
+    );
+    let _ = app.update(UiMessage::Video(open.clone()));
+    assert_eq!(app.carousel.as_ref().unwrap().mid, "$clip");
+    let _ = app.update(UiMessage::CloseCarousel);
+    assert!(app.video.as_ref().is_some_and(|v| v.url == clip && v.playing()), "the inline video plays on close");
+    let _ = app.update(UiMessage::Video(open));
+    assert!(app.video.as_ref().unwrap().playing(), "the video goes on in the carousel");
+    let key = |app: &mut BeeperGuiApp, k: Key| drop(app.update(UiMessage::KeyPressed(k, Modifiers::empty())));
+    key(&mut app, Key::Character("f".into()));
+    assert!(app.video.as_ref().unwrap().is_full(), "F fills the screen with the video");
+    drop(app.view_main());
+    key(&mut app, Key::Named(Named::Escape));
+    assert!(!app.video.as_ref().unwrap().is_full() && app.carousel.is_some(), "Escape leaves the full screen first");
+    let file = std::env::temp_dir().join(format!("beeper-rs-clip-{}.mp4", std::process::id()));
+    let lavfi = ["-f", "lavfi", "-i", "testsrc=size=320x180:rate=30", "-t", "2", "-pix_fmt", "yuv420p", "-y"];
+    assert!(std::process::Command::new("ffmpeg").args(lavfi).arg(&file).output().unwrap().status.success());
+    let media = video::probe(clip, &std::fs::read(&file).unwrap()).map(std::sync::Arc::new);
+    std::fs::remove_file(&file).unwrap();
+    let _ = app.update(UiMessage::Video(video::Msg::Loaded(clip.into(), media)));
+    let _ = app.update(UiMessage::Video(video::Msg::Toggle));
+    // Desktop's carousel video controls: the skip buttons, the progress bar, the speed button and the time.
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 700.0), app.view_main());
+    assert!(sim.find("00:00/00:02").is_ok(), "the time shows");
+    sim.point_at(Point::new(888.0, 654.0));
+    let _ = sim.simulate(iced_test::simulator::click());
+    let speed = sim.into_messages().any(|m| matches!(m, UiMessage::Video(video::Msg::Rate(1.25))));
+    assert!(speed, "the speed button goes to the next speed");
+}
+
 /// Desktop's carousel zoom: a double click or `+` zooms in, so that a click beside the image hits the image and does
 /// not close the carousel, and `-` zooms out again.
 #[test]

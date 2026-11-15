@@ -3220,13 +3220,15 @@ struct Forward {
     query: String,
 }
 
-/// The attachment that a carousel shows, its quarter turns, and if it shows the Media window items.
+/// The attachment that a carousel shows, its quarter turns, if it shows the Media window items, and the inline size of
+/// the video that opened it, which plays again when the carousel closes on it.
 #[derive(Clone)]
 struct Carousel {
     mid: String,
     ai: usize,
     turns: u8,
     in_media: bool,
+    resume: Option<(u32, u32)>,
 }
 
 /// Desktop's Media window: its tab (Media, Links or Docs), its size, how many items it shows,
@@ -6475,7 +6477,8 @@ impl BeeperGuiApp {
             }
             UiMessage::OpenCarousel(mid, ai, in_media) => {
                 self.leave_carousel_video();
-                self.carousel = Some(Carousel { mid, ai, turns: 0, in_media });
+                self.carousel = Some(Carousel { mid, ai, turns: 0, in_media, resume: None });
+                self.fit_carousel_video();
                 return self.load_media();
             }
             UiMessage::CarouselStep(next) => {
@@ -6487,7 +6490,8 @@ impl BeeperGuiApp {
                 let Some(item) = item else { return Task::none() };
                 self.leave_carousel_video();
                 let c = self.carousel.as_mut().expect("the carousel is open");
-                (c.mid, c.ai) = item;
+                (c.mid, c.ai, c.resume) = (item.0, item.1, None);
+                self.fit_carousel_video();
                 return self.load_media();
             }
             UiMessage::RotateCarousel => {
@@ -6495,8 +6499,9 @@ impl BeeperGuiApp {
                 c.turns = (c.turns + 1) % 4;
             }
             UiMessage::CloseCarousel => {
-                self.leave_carousel_video();
+                let task = self.close_carousel_video();
                 self.carousel = None;
+                return task;
             }
             UiMessage::OpenMedia => {
                 if let Some(w) = &self.media_window {
@@ -8959,7 +8964,7 @@ impl BeeperGuiApp {
         drop(st);
         let in_main = self.drawing.get().is_none();
         let base = match in_main {
-            true => self.view_full_video().unwrap_or_else(|| self.view_body(open)),
+            true => self.view_full_video(false).unwrap_or_else(|| self.view_body(open)),
             false => container(match shown {
                 true => self.view_conversation(),
                 false => Space::new().into(),
@@ -12288,7 +12293,7 @@ impl BeeperGuiApp {
                         } else if thumb_url.as_ref().and_then(|u| self.media_at(u)).is_some_and(Result::is_err) {
                             (base, UiMessage::RetryMedia(thumb_url.expect("a failed media has a URL")))
                         } else if let Some(src) = a.src_url.as_ref().filter(|_| is_video && a.is_gif != Some(true)) {
-                            parts = parts.push(self.view_video(&m.id, src, base, w, h));
+                            parts = parts.push(self.view_video(&m.id, src, base, (w, h), video::Place::Inline(ai)));
                             continue;
                         } else if is_video && a.is_gif != Some(true) {
                             (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))
@@ -14083,13 +14088,34 @@ impl BeeperGuiApp {
         Some((items, at))
     }
 
+    /// The source and the size of the video that the open carousel shows, if it shows a video that is not a GIF. Desktop
+    /// shows the video at most at its own size, `100vw - 100px` wide and `90vh` high.
+    fn carousel_video(&self) -> Option<(String, (u32, u32))> {
+        let c = self.carousel.as_ref()?;
+        let st = self.store.read();
+        let a = st.messages[*st.msg_idx_by_id.get(&c.mid)?].attachments.get(c.ai)?;
+        let src = a.src_url.clone().filter(|_| a.attachment_type == "video" && a.is_gif != Some(true))?;
+        let area = match c.in_media {
+            true => self.media_window.as_ref().expect("the Media window is open").size,
+            false => self.pane.size,
+        };
+        let size = a.size.as_ref();
+        let (w, h) = size.map_or((240.0, 160.0), |s| (s.width.unwrap_or(240) as f32, s.height.unwrap_or(160) as f32));
+        let k = ((area.width - 100.0) / w).min(0.9 * area.height / h).min(1.0);
+        Some((src, ((w * k).round() as u32, (h * k).round() as u32)))
+    }
+
     fn carousel_key(&mut self, key: &Key, mods: keyboard::Modifiers) -> Task<UiMessage> {
         let Some((items, at)) = self.carousel_items(&self.store.read()) else {
             return self.update(UiMessage::CloseCarousel);
         };
         let c = self.carousel.clone().expect("the carousel is open");
+        let video = self.carousel_video().and_then(|(src, _)| self.video.as_ref().filter(|v| v.url == src));
+        let (video, full) = (video.is_some(), video.is_some_and(video::Video::is_full));
         match key.as_ref() {
+            Key::Named(Named::Escape) if full => self.video(video::Msg::Fullscreen),
             Key::Named(Named::Escape) => self.update(UiMessage::CloseCarousel),
+            Key::Character("f") if mods.is_empty() && video => self.video(video::Msg::Fullscreen),
             Key::Named(Named::ArrowLeft) if mods.is_empty() && at > 0 => self.update(UiMessage::CarouselStep(false)),
             Key::Named(Named::ArrowRight) if mods.is_empty() && at + 1 < items.len() => {
                 self.update(UiMessage::CarouselStep(true))
@@ -14124,6 +14150,10 @@ impl BeeperGuiApp {
 
     /// The carousel, or `None` until the next store change closes a carousel whose item is gone.
     fn view_carousel<'a>(&'a self, car: &Carousel) -> Option<El<'a>> {
+        if let Some(full) = self.view_full_video(true) {
+            return Some(full);
+        }
+        let video = self.carousel_video();
         let p = &self.pal;
         let st = self.store.read();
         let (items, at) = self.carousel_items(&st)?;
@@ -14134,10 +14164,11 @@ impl BeeperGuiApp {
         let h24 = st.settings.pref("timeFormat") == 1;
         let white = Color::WHITE;
         // Desktop's carousel controls have a tooltip with their key.
-        let control = |h: &svg::Handle, label: &'static str, key: Vec<&'static str>, msg| -> El<'a> {
-            let b = button(tinted(h, 20.0, white)).padding(0).style(btn_style([CLEAR; 3], [white; 3], 0.0));
-            self.tip(b.on_press(msg).into(), label, key, tooltip::Position::Bottom).into()
-        };
+        let control =
+            |h: &svg::Handle, label: &'static str, key: Vec<&'static str>, msg: Option<UiMessage>| -> El<'a> {
+                let b = button(tinted(h, 20.0, white)).padding(0).style(btn_style([CLEAR; 3], [white; 3], 0.0));
+                self.tip(b.on_press_maybe(msg).into(), label, key, tooltip::Position::Bottom).into()
+            };
         let action = |s| trx(s, "attachment carousel action");
         let (face, name) = match car.in_media {
             true => {
@@ -14154,13 +14185,28 @@ impl BeeperGuiApp {
             .spacing(8)
             .align_y(Center);
         let go = car.in_media.then(|| {
-            control(&MEDIA_ICONS[3], tr("Go to Message"), vec![], UiMessage::GoToMessage(c.id.clone(), mid.into()))
+            control(
+                &MEDIA_ICONS[3],
+                tr("Go to Message"),
+                vec![],
+                Some(UiMessage::GoToMessage(c.id.clone(), mid.into())),
+            )
         });
+        // Desktop shows Fullscreen in place of Rotate for a video.
+        let turn_or_full = match &video {
+            Some((src, _)) => {
+                let full =
+                    self.video.as_ref().filter(|v| v.url == *src).map(|_| UiMessage::Video(video::Msg::Fullscreen));
+                control(&video::GLYPHS[3], tr("Fullscreen"), vec!["F"], full)
+            }
+            None => control(&SYS_ROTATE, action("Rotate"), vec!["R"], Some(UiMessage::RotateCarousel)),
+        };
+        let download = Some(UiMessage::Download(mid.to_string(), Some(ai)));
         let controls = row![]
             .push(go)
-            .push(control(&SYS_ROTATE, action("Rotate"), vec!["R"], UiMessage::RotateCarousel))
-            .push(control(&SYS_DOWNLOAD, action("Download"), vec!["D"], UiMessage::Download(mid.to_string(), Some(ai))))
-            .push(control(&ROW_ACTIONS[6], action("Close"), vec!["Escape"], UiMessage::CloseCarousel))
+            .push(turn_or_full)
+            .push(control(&SYS_DOWNLOAD, action("Download"), vec!["D"], download))
+            .push(control(&ROW_ACTIONS[6], action("Close"), vec!["Escape"], Some(UiMessage::CloseCarousel)))
             .spacing(8);
         let head =
             stack![container(title).center_x(Fill).center_y(34), container(controls).align_right(Fill).center_y(34)];
@@ -14169,22 +14215,15 @@ impl BeeperGuiApp {
         let frames = url.and_then(|u| self.media_at(u)).and_then(|f| f.as_ref().ok());
         // Desktop's `renderAttachment`: a video plays with its controls and does not zoom, and a file is a link that
         // downloads it.
-        let main: El<'a> = match (a.attachment_type.as_str(), a.is_gif == Some(true), a.src_url.as_deref()) {
-            ("video", false, Some(src)) => {
-                let area = match car.in_media {
-                    true => self.media_window.as_ref().expect("the Media window is open").size,
-                    false => self.pane().size,
-                };
-                let (w, h) = a
-                    .size
-                    .as_ref()
-                    .map_or((240.0, 160.0), |s| (s.width.unwrap_or(240) as f32, s.height.unwrap_or(160) as f32));
-                let k = ((area.width - 16.0) / w).min((area.height - 66.0) / h);
+        let main: El<'a> = match (a.attachment_type.as_str(), &video) {
+            ("video", Some((src, (w, h)))) => {
+                let (w, h) = (*w as f32, *h as f32);
                 let poster: El<'a> = match frames {
-                    Some(f) => image(f[0].0.clone()).width(w * k).height(h * k).into(),
-                    None => Space::new().width(w * k).height(h * k).into(),
+                    Some(f) => image(f[0].0.clone()).width(w).height(h).into(),
+                    None => Space::new().width(w).height(h).into(),
                 };
-                let video = mouse_area(self.view_video(mid, src, poster, w * k, h * k)).on_press(UiMessage::Noop);
+                let video = self.view_video(mid, src, poster, (w, h), video::Place::Carousel);
+                let video = mouse_area(video).on_press(UiMessage::Noop);
                 container(video).center(Fill).padding(8).into()
             }
             ("img" | "video", ..) => {
@@ -14245,6 +14284,7 @@ impl BeeperGuiApp {
         let layer = stack![body]
             .push((at > 0).then(|| step(false)))
             .push((at + 1 < items.len()).then(|| step(true)))
+            .push(video.and_then(|(src, _)| self.view_carousel_video_controls(&src)))
             .push(strip);
         let scrim = container(layer).width(Fill).height(Fill).style(fill_box(Color::BLACK.scale_alpha(0.85), 0.0));
         Some(mouse_area(scrim).on_press(UiMessage::CloseCarousel).into())
