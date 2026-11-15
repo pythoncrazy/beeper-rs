@@ -84,6 +84,14 @@ impl Flags {
         Some((left > 0, left))
     }
 
+    /// Desktop's `freebieStore.stateFor` of the count freebie of the feature `key`, when the plan does not include the
+    /// feature: the free uses that are used, and the limit.
+    pub fn free_uses(&self, key: &str) -> Option<(i64, i64)> {
+        let (_, left) = self.free(key).filter(|_| !self.flag(key).on)?;
+        let used = self.usage[key]["used"].as_i64().unwrap_or(0);
+        Some((used, used + left))
+    }
+
     /// Desktop's `trialDaysLeft` of the incognito trial: the days left, rounded up, while the trial is open.
     pub fn trial_days_left(&self) -> Option<i64> {
         const DAY: i64 = 86_400_000;
@@ -202,6 +210,11 @@ mod tests {
         assert_eq!(f.get("remind-later", 0), lock, "a missing limit gives no free uses");
         f.usage = json!({ "scheduled-message": { "limit": 9 } });
         assert_eq!(f.get("scheduled-message", 2), lock, "a usage without a count keeps the default limit");
+        assert_eq!(f.free_uses("voice-transcription"), None, "the plan includes the feature");
+        let mut free = Flags::free_plan();
+        assert_eq!(free.free_uses("voice-transcription"), Some((0, 5)));
+        free.usage = json!({ "voice-transcription": { "used": 5 } });
+        assert_eq!(free.free_uses("voice-transcription"), Some((5, 5)));
     }
 
     #[test]

@@ -1606,6 +1606,8 @@ const ASK_BLOCK: u8 = 18;
 const ASK_UNBLOCK: u8 = 19;
 const ASK_BLOCK_OFFLINE: u8 = 20;
 const ASK_UNBLOCK_OFFLINE: u8 = 21;
+/// Desktop's "Privacy notice" before the first transcription of a voice note.
+const ASK_TRANSCRIBE: u8 = 22;
 const SETTINGS_SIZE: Size = Size::new(793.0, 705.0);
 /// The dialogs over the Settings window.
 const SETTINGS_DIALOGS: [u8; 7] = [
@@ -9514,6 +9516,7 @@ impl BeeperGuiApp {
                 .chain(tray)
                 .chain(online)
                 .chain(self.audio_ticks())
+                .chain(self.transcribe_ticks())
                 .chain(self.audio_drag())
                 .chain(self.record_events())
                 .chain(self.video_ticks()),
@@ -13889,7 +13892,10 @@ impl BeeperGuiApp {
         });
         // Desktop's `_fe`: a gallery shows the reactions of all its messages.
         let reactions: Vec<&Reaction> = ms.iter().flat_map(|g| &g.reactions).collect();
-        let tail = if footer.is_some() { 15.0 } else { 0.0 } + if reactions.is_empty() { 0.0 } else { 21.0 };
+        let transcribe = self.view_transcribe(st, m).filter(|_| m.is_deleted != Some(true));
+        let tail = if footer.is_some() { 15.0 } else { 0.0 }
+            + if reactions.is_empty() { 0.0 } else { 21.0 }
+            + if transcribe.is_some() { 16.0 } else { 0.0 };
         let edits = open.then(|| {
             m.edit_history.iter().fold(Column::new().spacing(2), |c, e| {
                 c.push(txt(format!("{} · {}", e.text, format_short_ts(&e.timestamp, false)), 11.0).color(p.muted))
@@ -13954,11 +13960,13 @@ impl BeeperGuiApp {
         let thread_button =
             (threaded && !in_pane && !thread).then(|| self.thread_replies_button(st, chat, &m.id)).flatten();
         let thread_button = thread_button.map(|b| container(b).padding(Padding::ZERO.top(2.0)));
-        let parts = column![parts].push(edits).push(actions).push(thread_button).push(footer).align_x(if mine {
-            Right
-        } else {
-            iced::Left
-        });
+        let parts = column![parts]
+            .push(edits)
+            .push(actions)
+            .push(thread_button)
+            .push(footer)
+            .push(transcribe)
+            .align_x(if mine { Right } else { iced::Left });
         let tools = (self.pane().hovered_msg.as_ref() == Some(&m.id)).then(|| {
             let b = |c: char, msg: UiMessage| -> El<'a> {
                 let style = move |_: &Theme, s| button::Style {
@@ -17323,6 +17331,15 @@ impl BeeperGuiApp {
                         (trf("%s Is Disconnected", &[&network]), trf(body, &[&network, &c.title]), again)
                     }
                 }
+            }
+            ASK_TRANSCRIBE => {
+                let body = trf(
+                    "%s works by sharing audio clips with OpenAI via our servers. You can always change this in Settings.",
+                    &[&tr("Transcribing voice notes")],
+                );
+                let allow = vec![(tr("Allow Access"), UiMessage::Voice(voice::Msg::Allow(true)))];
+                let disable = (tr("Disable"), UiMessage::Voice(voice::Msg::Allow(false)));
+                return self.dialog_with(tr("Privacy notice").into(), body, None, allow, disable);
             }
             _ => unreachable!("dialog {dialog}"),
         };

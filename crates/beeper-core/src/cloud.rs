@@ -295,6 +295,44 @@ pub(crate) fn http_client() -> &'static reqwest::Client {
     })
 }
 
+/// Desktop's OpenAI `baseURL` (`uke`): Beeper's proxy beside the homeserver, with "matrix." changed to "ai-services.".
+pub fn ai_services(homeserver: &str) -> String {
+    let url = reqwest::Url::parse(homeserver).expect("a homeserver URL");
+    let host = url.host_str().expect("a homeserver host");
+    let host = host.strip_prefix("matrix.").map_or(host.to_string(), |h| format!("ai-services.{h}"));
+    format!("https://{host}/proxy/_/v1")
+}
+
+/// Desktop's Whisper transcription (`xre`): `audio.transcriptions.create` of the OpenAI SDK with `whisper-1` at
+/// `base`, and the Matrix access token as the API key. Like Desktop, the file is "speech.mp3" of type `audio/mpeg`.
+pub async fn transcribe(base: &str, token: &str, audio: Vec<u8>, language: Option<&str>) -> Result<String, String> {
+    let b = matrix_sdk::ruma::TransactionId::new();
+    let part =
+        |name: &str, extra: &str| format!("--{b}\r\nContent-Disposition: form-data; name=\"{name}\"{extra}\r\n\r\n");
+    let fields = [("model", "whisper-1")].into_iter().chain(language.map(|l| ("language", l)));
+    let mut body: Vec<u8> = fields.flat_map(|(k, v)| format!("{}{v}\r\n", part(k, "")).into_bytes()).collect();
+    body.extend(part("file", "; filename=\"speech.mp3\"\r\nContent-Type: audio/mpeg").bytes());
+    body.extend(audio);
+    body.extend(format!("\r\n--{b}--\r\n").bytes());
+    let res = http_client()
+        .post(format!("{base}/audio/transcriptions"))
+        .bearer_auth(token)
+        .header("content-type", format!("multipart/form-data; boundary={b}"))
+        // The OpenAI SDK waits 10 minutes.
+        .timeout(Duration::from_secs(600))
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = res.status();
+    let body = res.bytes().await.map_err(|e| e.to_string())?;
+    let v: Value = serde_json::from_slice(&body).map_err(|e| format!("{status}: {e}"))?;
+    match v["text"].as_str() {
+        Some(t) if status.is_success() => Ok(t.into()),
+        _ => Err(v["error"]["message"].as_str().map_or_else(|| status.to_string(), str::to_string)),
+    }
+}
+
 /// Beeper Desktop's KLIPY API key, masked so that it is not plain text in the repository (see NOTICE).
 const KLIPY_KEY: [u8; 64] = [
     5, 93, 45, 61, 22, 55, 85, 26, 60, 48, 2, 36, 6, 21, 1, 64, 71, 6, 35, 6, 22, 21, 85, 70, 116, 74, 27, 54, 17, 38,
@@ -419,6 +457,27 @@ mod tests {
         assert_eq!((profile(&ended).plan, profile(&ended).can_subscribe), (Plan::Free, true));
         let blocked = json!({ "canSubscribe": { "STRIPE": false } });
         assert!(!profile(&blocked).can_subscribe, "the server can forbid Stripe");
+    }
+
+    /// Desktop's Whisper request, to a local stub of Beeper's OpenAI proxy.
+    #[tokio::test]
+    async fn transcriptions_go_to_whisper_like_desktop() {
+        assert_eq!(ai_services("https://matrix.beeper.com"), "https://ai-services.beeper.com/proxy/_/v1");
+        assert_eq!(ai_services("https://matrix.beeper-dev.com/"), "https://ai-services.beeper-dev.com/proxy/_/v1");
+        let url = crate::bridge_stub::serve(|method, path, body| {
+            let body = body.as_str().expect("a multipart body");
+            assert_eq!((method, path), ("POST", "/proxy/_/v1/audio/transcriptions"));
+            assert!(body.contains("name=\"model\"\r\n\r\nwhisper-1\r\n"), "{body}");
+            assert!(body.contains("filename=\"speech.mp3\"\r\nContent-Type: audio/mpeg\r\n\r\nOggS\r\n--"), "{body}");
+            match body.contains("name=\"language\"\r\n\r\nde\r\n") {
+                true => (200, json!({ "text": "Hallo" })),
+                false => (401, json!({ "error": { "message": "Invalid token" } })),
+            }
+        })
+        .await;
+        let base = format!("{url}/proxy/_/v1");
+        assert_eq!(transcribe(&base, "t", b"OggS".to_vec(), Some("de")).await, Ok("Hallo".into()));
+        assert_eq!(transcribe(&base, "t", b"OggS".to_vec(), None).await, Err("Invalid token".into()));
     }
 
     #[tokio::test]

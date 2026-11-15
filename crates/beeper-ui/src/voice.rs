@@ -2,7 +2,7 @@
 //! voice note.
 use crate::style::{btn_style, clamped, fill_box, hidden_slider, ic, icon, semi, shadow_box, text_width, txt, CLEAR};
 use crate::{menu_item, sound, tinted, tr, BeeperGuiApp, El, UiMessage, AVATAR_SLOTS, MENU_ITEM};
-use beeper_core::models::{Attachment, Message};
+use beeper_core::models::{Attachment, Message, Transcription};
 use beeper_core::store::BeeperStore;
 use iced::font::Weight;
 use iced::widget::text::Wrapping;
@@ -92,6 +92,10 @@ pub struct Player {
     saved: PathBuf,
     /// The messages with a clamped transcript that shows all its lines.
     more: HashSet<String>,
+    /// Desktop's `aiStore.transcriptionState` by message: the language, and whether it failed, else it is in flight.
+    transcribing: HashMap<String, (String, bool)>,
+    /// The transcription that waits for the privacy notice: the message, a new transcription, and the language.
+    asked: Option<(String, bool, Option<String>)>,
 }
 
 /// Desktop's `activationConstraint`: a drag starts after the cursor moves this far.
@@ -125,6 +129,8 @@ impl Player {
             grab: None,
             saved,
             more: HashSet::new(),
+            transcribing: HashMap::new(),
+            asked: None,
         }
     }
 }
@@ -149,6 +155,14 @@ pub enum Msg {
     Drop,
     /// "Show more" or "Show less" of the transcript of a message.
     More(String),
+    /// Desktop's `transcribeAttachment` of a message: again when true, in a language or else the default one.
+    Transcribe(String, bool, Option<String>),
+    /// The transcript of a message in a language, or the text of the error toast.
+    Transcribed(String, String, Result<String, String>),
+    /// The answer to the privacy notice of transcriptions.
+    Allow(bool),
+    /// A frame of the spinner of a transcription.
+    Spin,
 }
 
 /// The `-f f32le` arguments that make ffmpeg write mono `HZ` samples.
@@ -249,6 +263,27 @@ impl BeeperGuiApp {
         }
         let audio = &mut self.audio;
         match msg {
+            Msg::Transcribe(mid, again, language) => return self.transcribe(mid, again, language),
+            Msg::Transcribed(mid, language, Ok(text)) => {
+                self.audio.transcribing.remove(&mid);
+                let t =
+                    Transcription { transcription: text, engine: "openai-whisper".into(), language: Some(language) };
+                self.store.write().transcribed(&mid, t);
+                return Task::none();
+            }
+            Msg::Transcribed(mid, language, Err(toast)) => {
+                self.audio.transcribing.insert(mid, (language, true));
+                self.status_banner = toast;
+                return Task::none();
+            }
+            Msg::Allow(on) => {
+                self.confirm = None;
+                let (mid, again, language) =
+                    self.audio.asked.take().expect("the privacy notice asks for a transcription");
+                let set = self.handle(UiMessage::SetPref("transcribeWithOpenai", u8::from(on)));
+                return if on { Task::batch([set, self.transcribe(mid, again, language)]) } else { set };
+            }
+            Msg::Spin => {}
             Msg::Loaded(url, clip) => {
                 audio.clips.insert(url, Some(clip));
             }
@@ -442,8 +477,10 @@ impl BeeperGuiApp {
         let contents = 20.0 + 8.0 + WAVE_W + 8.0 + text_width(&total, 11.0, Weight::Normal);
         // Desktop's `transcribed-message`: the transcript in quotes, in the bubble text color, at most `QUOTE_W` wide.
         // Over `QUOTE_LINES` lines, it is clamped and "Show more" shows all of it. The time floats after the text,
-        // else it goes beside "Show more".
-        let (quote, inner) = match a.transcription.as_ref() {
+        // else it goes beside "Show more". It is `stale` at half opacity while a new transcription is in flight.
+        let stale = self.audio.transcribing.get(&m.id).is_some_and(|s| !s.1);
+        let quote_fg = if stale { fg.scale_alpha(0.5) } else { fg };
+        let (quote, inner) = match a.transcription.as_ref().filter(|t| !t.transcription.is_empty()) {
             None => (None, contents + ts.as_ref().map_or(0.0, |_| 8.0 + ts_w)),
             Some(t) => {
                 let q = format!("\"{}\"", t.transcription);
@@ -458,7 +495,7 @@ impl BeeperGuiApp {
                     float.as_ref().map_or(String::new(), |_| "\u{a0}".repeat(((ts_w + 4.0) / nbsp).ceil() as usize));
                 let body = format!("{}{pad}", if over && !open { &shown } else { &all });
                 let w = text_width(&body, 13.0, Weight::Normal).min(QUOTE_W);
-                let body = txt(body, 13.0).line_height(Pixels(16.0)).color(fg).wrapping(Wrapping::WordOrGlyph);
+                let body = txt(body, 13.0).line_height(Pixels(16.0)).color(quote_fg).wrapping(Wrapping::WordOrGlyph);
                 let body = stack![body].push(float.map(|t| container(stamp(t)).align_right(Fill).align_bottom(Fill)));
                 let footer = over.then(|| {
                     let label = semi(if open { tr("Show less") } else { tr("Show more") }, 13.0);
@@ -612,6 +649,148 @@ fn audio_url(m: &Message) -> Option<&str> {
     m.attachments.iter().find(|a| a.attachment_type == "audio")?.src_url.as_deref()
 }
 
+/// The extensions that Whisper reads (`wke`), and the extensions that Desktop changes to MP3 first (`nre`).
+const WHISPER_EXTS: [&str; 10] = [".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".oga", ".opus"];
+const TO_MP3: [&str; 4] = [".caf", ".aac", ".mp4", ".m4a"];
+/// Whisper's largest file (`Ske`).
+const WHISPER_MAX: usize = 25 * 1024 * 1024;
+
+/// Desktop's `getAudioExtension` (`_ke`) without its MIME database: the MIME subtype, else the file extension.
+fn audio_ext(a: &Attachment) -> String {
+    let known = |e: &str| WHISPER_EXTS.contains(&e) || TO_MP3.contains(&e);
+    let mime = a.mime_type.as_deref().and_then(|m| m.split(';').next()?.split_once('/')).map(|(_, t)| format!(".{t}"));
+    let name = a.file_name.as_deref().and_then(|n| n.rfind('.').map(|i| n[i..].to_lowercase()));
+    match (mime, name) {
+        (Some(m), _) if known(&m) => m,
+        (_, Some(n)) if known(&n) => n,
+        (m, n) => m.or(n).unwrap_or_default(),
+    }
+}
+
+/// Desktop's `Mke.transcribe` after the download: MP3 for the formats that Whisper does not read, and the toast of
+/// the files that Whisper rejects (`Sre`).
+fn whisper_audio(bytes: Vec<u8>, ext: &str) -> Result<Vec<u8>, String> {
+    let (bytes, ext) = match TO_MP3.contains(&ext) {
+        true => (crate::run_ffmpeg(&bytes, &["-f", "mp3", "pipe:1"])?, ".mp3"),
+        false => (bytes, ext),
+    };
+    let rejected = |why: String| format!("{why} for OpenAI Whisper, and this audio can't be transcribed another way.");
+    if !ext.is_empty() && !WHISPER_EXTS.contains(&ext) {
+        return Err(rejected(format!("Unsupported file extension ({ext})")));
+    }
+    if bytes.len() > WHISPER_MAX {
+        return Err(rejected(format!("File size too large ({})", crate::human_size(bytes.len() as u64))));
+    }
+    Ok(bytes)
+}
+
+/// Desktop's `ai` and `spinner` icons.
+static TRANSCRIBE_ICONS: LazyLock<[svg::Handle; 2]> = LazyLock::new(|| {
+    [
+        ("0 0 12 15", "M6.855 14.08a.35.35 0 0 1-.251-.1.46.46 0 0 1-.135-.257 17 17 0 0 0-.3-1.582q-.157-.639-.41-1.05a1.95 1.95 0 0 0-.655-.655q-.405-.247-1.038-.399a15 15 0 0 0-1.552-.275.42.42 0 0 1-.27-.13.38.38 0 0 1-.1-.263q0-.152.1-.264a.42.42 0 0 1 .27-.128 15 15 0 0 0 1.558-.24q.639-.147 1.05-.4a2 2 0 0 0 .661-.667q.252-.415.404-1.06.159-.65.282-1.594a.4.4 0 0 1 .129-.252q.111-.1.257-.1.153 0 .258.1a.43.43 0 0 1 .135.252q.135.943.293 1.588t.404 1.06q.252.416.662.668.411.246 1.038.393.631.14 1.558.252a.42.42 0 0 1 .264.134q.1.106.1.258a.37.37 0 0 1-.106.264.4.4 0 0 1-.258.129q-.925.105-1.564.252-.633.14-1.043.386a1.9 1.9 0 0 0-.662.668q-.252.417-.405 1.06-.152.651-.28 1.595a.46.46 0 0 1-.136.257.35.35 0 0 1-.258.1M2.742 7.57q-.21 0-.234-.228a8 8 0 0 0-.153-.903q-.075-.333-.246-.498-.17-.17-.51-.252a10 10 0 0 0-.925-.181q-.24-.036-.24-.24 0-.205.21-.24.604-.112.944-.2.345-.093.516-.252.175-.164.251-.486.083-.323.153-.902.023-.23.234-.229.217 0 .24.223.077.591.153.925.081.334.252.504.17.171.51.252.339.083.943.164a.24.24 0 0 1 .152.077.22.22 0 0 1 .065.164q0 .198-.211.24-.61.11-.95.205-.339.087-.51.252-.17.164-.251.492-.076.322-.153.897a.26.26 0 0 1-.076.158.24.24 0 0 1-.164.058M5.59 3.434q-.135 0-.152-.141-.064-.357-.112-.557a.63.63 0 0 0-.152-.31.66.66 0 0 0-.31-.164 5 5 0 0 0-.58-.13q-.147-.023-.147-.152 0-.128.14-.152.375-.076.586-.135a.66.66 0 0 0 .31-.164.6.6 0 0 0 .153-.304q.047-.2.112-.551.017-.147.152-.147.13 0 .152.141.059.357.106.562A.7.7 0 0 0 6 1.541q.106.105.31.164.211.052.592.123.141.024.141.152 0 .129-.14.153-.375.07-.587.135a.66.66 0 0 0-.31.164.7.7 0 0 0-.152.31 6 6 0 0 0-.112.551q-.023.14-.152.14"),
+        ("0 0 24 24", "M2.629 13.569a.792.792 0 1 0 1.562-.26A7.917 7.917 0 1 1 12 19.917a.792.792 0 1 0-.001 1.583 9.5 9.5 0 1 0-9.371-7.931"),
+    ]
+    .map(|(view, d)| {
+        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}"><path d="{d}"/></svg>"#);
+        svg::Handle::from_memory(svg.into_bytes())
+    })
+});
+/// `.spin-icon` turns once in 1.2 s.
+const SPIN: Duration = Duration::from_millis(1200);
+
+impl BeeperGuiApp {
+    /// Desktop's `transcribeAttachment`, after its privacy notice (`oL`): the Whisper transcript of the first
+    /// attachment of the message `mid`, in `language` or the default language. Desktop's `fetchLatestRelation` of an
+    /// earlier transcription is not done: its endpoint is not known.
+    fn transcribe(&mut self, mid: String, again: bool, language: Option<String>) -> Task<UiMessage> {
+        let st = self.store.read();
+        if !st.settings.on("transcribeWithOpenai") {
+            drop(st);
+            (self.audio.asked, self.confirm) = (Some((mid, again, language)), Some(crate::ASK_TRANSCRIBE));
+            return Task::none();
+        }
+        let a = crate::stored(&st, &mid).attachments.swap_remove(0);
+        assert!(again || a.transcription.is_none(), "the message has no transcription yet");
+        let language = language.unwrap_or_else(|| "auto".into());
+        let code = beeper_core::prefs::transcription_language(&language).map(|_| language.clone());
+        let (client, s) = (st.matrix.clone(), &st.beeper_state);
+        let (base, token) = (beeper_core::cloud::ai_services(&s.homeserver), s.access_token.clone());
+        drop(st);
+        self.audio.transcribing.insert(mid.clone(), (language.clone(), false));
+        let url = a.src_url.clone().expect("an audio attachment has a URL");
+        let run = async move {
+            let failed = |_| tr("Failed to transcribe audio message").to_string();
+            let bytes = beeper_core::matrix::media(client, url).await.map_err(failed)?;
+            let ext = audio_ext(&a);
+            let bytes = tokio::task::spawn_blocking(move || whisper_audio(bytes, &ext)).await.expect("the MP3 task")?;
+            beeper_core::cloud::transcribe(&base, &token, bytes, code.as_deref()).await.map_err(failed)
+        };
+        Task::perform(run, move |r| UiMessage::Voice(Msg::Transcribed(mid, language, r)))
+    }
+
+    /// The frames of the spinners while a transcription is in flight.
+    pub(crate) fn transcribe_ticks(&self) -> Option<Subscription<UiMessage>> {
+        let busy = self.audio.transcribing.values().any(|(_, failed)| !failed);
+        busy.then(|| iced::time::every(Duration::from_millis(50)).map(|_| UiMessage::Voice(Msg::Spin)))
+    }
+
+    /// Desktop's `Transcribe` under the audio message `m`: the button, the spinner, the error, and the free uses.
+    pub(crate) fn view_transcribe<'a>(&self, st: &BeeperStore, m: &Message) -> Option<El<'a>> {
+        let a = m.attachments.first().filter(|a| a.attachment_type == "audio")?;
+        let p = &self.pal;
+        let state = self.audio.transcribing.get(&m.id);
+        let (done, sent) = (a.transcription.is_some(), !crate::pending(st, m));
+        let can = st.feature("voice-transcription").on && sent && !done && state.is_none_or(|s| s.1);
+        let free = st.features.free_uses("voice-transcription");
+        let used_up = sent && !can && free.is_some_and(|(used, limit)| used >= limit);
+        let small = |s: String, c: Color| txt(s, 11.0).line_height(Pixels(14.0)).color(c);
+        let count = free.filter(|&(used, limit)| used > 0 && limit > used).map(|(used, limit)| {
+            let n = (limit - used) as usize;
+            small(crate::trn("%d free transcription left", "%d free transcriptions left", n, &[&n]), p.sub)
+        });
+        let ai = || tinted(&TRANSCRIBE_ICONS[0], 16.0, p.accent);
+        let line: El<'a> = match state {
+            Some((language, false)) => {
+                let turn = self.started.elapsed().as_secs_f32() / SPIN.as_secs_f32() * std::f32::consts::TAU;
+                let spinner = svg(TRANSCRIBE_ICONS[1].clone()).width(10).height(10);
+                let spinner = spinner.rotation(iced::Rotation::Solid(iced::Radians(turn)));
+                let label = match beeper_core::prefs::transcription_language(language) {
+                    Some(name) => crate::trf("Transcribing in %s…", &[&name]),
+                    None => tr("Transcribing…").into(),
+                };
+                let sub = p.sub;
+                let spinner = spinner.style(move |_, _| svg::Style { color: Some(sub) });
+                row![spinner, small(label, p.sub)].spacing(2).align_y(Center).into()
+            }
+            _ if !done && !can && !used_up => return None,
+            Some((language, true)) => {
+                let again = Msg::Transcribe(m.id.clone(), done, Some(language.clone()));
+                let again = button(semi(tr("Try Again"), 11.0).line_height(Pixels(14.0)).color(p.accent))
+                    .padding(0)
+                    .style(|_, _| button::Style::default())
+                    .on_press(UiMessage::Voice(again));
+                row![small(tr("Error transcribing audio").into(), p.sub), again].spacing(4).into()
+            }
+            _ if done => row![ai()].push(count?).spacing(4).align_y(Center).into(),
+            _ => {
+                let fresh = free.is_some_and(|(used, limit)| used == 0 && limit > 0);
+                let label = small(tr(if fresh { "Try Transcribe" } else { "Transcribe" }).into(), p.accent);
+                let press = match used_up {
+                    true => UiMessage::OpenSettings(crate::SettingsTab::BeeperPlus),
+                    false => UiMessage::Voice(Msg::Transcribe(m.id.clone(), false, None)),
+                };
+                let count = count.filter(|_| free.is_some_and(|(used, limit)| used < limit));
+                button(row![ai(), label].push(count).spacing(4).align_y(Center))
+                    .padding(0)
+                    .style(|_, _| button::Style::default())
+                    .on_press(press)
+                    .into()
+            }
+        };
+        Some(container(line).height(16).align_y(Center).padding([0.0, crate::BUBBLE_PAD_X]).into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -661,6 +840,87 @@ mod tests {
         let mut sim = iced_test::simulator(app.view_main());
         assert!(content(sim.find(quote).unwrap()).trim_end_matches('\u{a0}').ends_with("word\""), "all of it shows");
         let _ = sim.click("Show less").expect("an open transcript has Show less");
+    }
+
+    /// Desktop's `Transcribe` row: the privacy notice, the spinner, the error with "Try Again", the transcript, and
+    /// the paywall when no free transcriptions are left.
+    #[test]
+    fn transcribe_like_desktop() {
+        let mut app = crate::fuzz::demo_app("voice-transcribe");
+        let id = "msg_1000c".to_string();
+        let untranscribed = |app: &mut BeeperGuiApp| {
+            let mut st = app.store.write();
+            let i = st.find_message("msg_1000c").unwrap();
+            st.update_message(i, |m| m.attachments[0].transcription = None);
+        };
+        app.store.write().features = beeper_core::features::Flags::free_plan();
+        untranscribed(&mut app);
+        let _ = app.update(UiMessage::SelectChat("!wa_eric:beeper.com".into()));
+        let click = |app: &mut BeeperGuiApp, label: &str| -> Vec<UiMessage> {
+            let mut sim = iced_test::simulator(app.view_main());
+            let _ = sim.click(label).unwrap_or_else(|e| panic!("{label}: {e:?}"));
+            sim.into_messages().collect()
+        };
+        let has = |app: &BeeperGuiApp, s: &str| iced_test::simulator(app.view_main()).find(s).is_ok();
+        for m in click(&mut app, "Try Transcribe") {
+            let _ = app.update(m);
+        }
+        assert_eq!(app.confirm, Some(crate::ASK_TRANSCRIBE), "the privacy notice comes first");
+        let _ = app.update(UiMessage::Voice(Msg::Allow(false)));
+        assert!(!app.store.read().settings.on("transcribeWithOpenai") && app.audio.transcribing.is_empty());
+        let _ = app.update(UiMessage::Voice(Msg::Transcribe(id.clone(), false, Some("de".into()))));
+        let _ = app.update(UiMessage::Voice(Msg::Allow(true)));
+        assert!(app.store.read().settings.on("transcribeWithOpenai"));
+        assert!(has(&app, "Transcribing in German…") && app.transcribe_ticks().is_some());
+        let failed = Err("Failed to transcribe audio message".to_string());
+        let _ = app.update(UiMessage::Voice(Msg::Transcribed(id.clone(), "de".into(), failed)));
+        assert!(has(&app, "Error transcribing audio") && app.status_banner == "Failed to transcribe audio message");
+        let again = click(&mut app, "Try Again");
+        assert!(matches!(&again[..], [UiMessage::Voice(Msg::Transcribe(m, false, Some(l)))] if *m == id && l == "de"));
+        let _ = app.update(UiMessage::Voice(Msg::Transcribed(id.clone(), "de".into(), Ok("Hallo".into()))));
+        let mut st = app.store.write();
+        let i = st.find_message(&id).unwrap();
+        let want = Transcription {
+            transcription: "Hallo".into(),
+            engine: "openai-whisper".into(),
+            language: Some("de".into()),
+        };
+        assert_eq!(st.messages[i].attachments[0].transcription, Some(want));
+        drop(st);
+        assert!(!has(&app, "Error transcribing audio") && !has(&app, "Transcribe"));
+        app.store.write().features.usage = serde_json::json!({ "voice-transcription": { "used": 5 } });
+        untranscribed(&mut app);
+        let paywall = click(&mut app, "Transcribe");
+        assert!(
+            matches!(&paywall[..], [UiMessage::OpenSettings(crate::SettingsTab::BeeperPlus)]),
+            "no free uses are left"
+        );
+    }
+
+    /// Desktop's `getAudioExtension` and the files that Whisper rejects.
+    #[test]
+    fn whisper_files_like_desktop() {
+        let ext = |mime: Option<&str>, name: Option<&str>| {
+            let a = Attachment {
+                mime_type: mime.map(str::to_string),
+                file_name: name.map(str::to_string),
+                ..Default::default()
+            };
+            audio_ext(&a)
+        };
+        assert_eq!(ext(Some("audio/ogg; codecs=opus"), Some("a.bin")), ".ogg");
+        assert_eq!(ext(Some("audio/x-m4a"), Some("Note.M4A")), ".m4a");
+        assert_eq!(ext(Some("audio/amr"), None), ".amr");
+        assert_eq!(ext(None, None), "");
+        assert_eq!(whisper_audio(b"OggS".to_vec(), ".ogg"), Ok(b"OggS".to_vec()));
+        let toast =
+            "Unsupported file extension (.amr) for OpenAI Whisper, and this audio can't be transcribed another way.";
+        assert_eq!(whisper_audio(Vec::new(), ".amr"), Err(toast.into()));
+        let big = whisper_audio(vec![0; WHISPER_MAX + 1], "").unwrap_err();
+        assert!(
+            big.starts_with("File size too large (")
+                && big.ends_with("for OpenAI Whisper, and this audio can't be transcribed another way.")
+        );
     }
 
     /// A demo app with two decoded 10 ms voice notes, `v0` and `v1`, in the first chat.
