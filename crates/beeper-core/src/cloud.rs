@@ -188,7 +188,9 @@ impl Cloud {
         let name = format!("beeper-rs ({})", std::env::consts::OS);
         let body = json!({ "type": "org.matrix.login.jwt", "token": jwt, "initial_device_display_name": name });
         let v = self.call(&format!("{}/_matrix/client/v3/login", self.homeserver), None, Some(&body))?;
-        serde_json::from_value(v).map_err(|e| fail(502, format!("Bad Matrix login response: {e}")))
+        let session: MatrixSession =
+            serde_json::from_value(v).map_err(|e| fail(502, format!("Bad Matrix login response: {e}")))?;
+        Ok(MatrixSession { jwt: Some(jwt.into()), ..session })
     }
 
     pub fn whoami(&self, access_token: &str) -> Result<(Profile, Vec<BridgeAccountInfo>), CloudError> {

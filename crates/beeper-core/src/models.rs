@@ -215,6 +215,9 @@ pub struct MatrixSession {
     pub user_id: String,
     pub access_token: String,
     pub device_id: String,
+    /// The Beeper JWT of the sign-in.
+    #[serde(skip)]
+    pub jwt: Option<String>,
 }
 
 /// Desktop's `subscriptionPlanId`.

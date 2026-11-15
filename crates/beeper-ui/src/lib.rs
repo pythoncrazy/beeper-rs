@@ -17,6 +17,7 @@ mod notify;
 mod popover;
 mod portal;
 mod profile;
+mod reauth;
 mod record;
 mod sound;
 mod spell;
@@ -919,6 +920,7 @@ pub enum UiMessage {
     PillHover(bool),
     Login(LoginMsg),
     Verify(verify::VerifyMsg),
+    Reauth(reauth::ReauthMsg),
     /// Desktop's `openNewAccountInNewWindow` for a network, or `reauthenticate` for a login of it.
     OpenAddAccount(String, Option<String>),
     AddAccount(window::Id, add_account::AddMsg),
@@ -4360,6 +4362,7 @@ pub struct BeeperGuiApp {
     shot: Option<window::Id>,
     pub login: Login,
     pub verify: verify::Verify,
+    pub reauth: reauth::Reauth,
     pub cloud: Arc<Cloud>,
     pub avatars: images::Images<image::Handle>,
     wants: wants::Wants,
@@ -4561,6 +4564,7 @@ impl BeeperGuiApp {
             shot: None,
             login: Login::new(source),
             verify: Default::default(),
+            reauth: Default::default(),
             cloud,
             avatars: images::Images::new(64 << 20),
             wants: wants::Wants::default(),
@@ -4738,12 +4742,16 @@ impl BeeperGuiApp {
     fn open_child(&self, size: Size) -> (window::Id, Task<UiMessage>) {
         let (id, open) =
             window::open(window::Settings { resizable: false, min_size: None, ..Self::window_settings(size) });
-        let main = self.main_window.expect("the main window is open");
-        let offset =
-            Vector::new((self.pane.size.width - size.width) / 2.0, (self.pane.size.height - size.height) / 2.0);
+        // The main window, or the sign-in window of the onboarding.
+        let (parent, around) = match self.main_window {
+            Some(main) => (main, self.pane.size),
+            None => (self.login_window.expect("the main or the sign-in window is open"), login::SIZE),
+        };
+        let offset = Vector::new((around.width - size.width) / 2.0, (around.height - size.height) / 2.0);
+        // Desktop keeps the left and the top edge of a modal on the screen.
         let center = move |_| {
-            window::position(main).then(move |at| match at {
-                Some(at) => window::move_to(id, at + offset),
+            window::position(parent).then(move |at| match at {
+                Some(at) => window::move_to(id, Point::new((at.x + offset.x).max(0.0), (at.y + offset.y).max(0.0))),
                 None => Task::none(),
             })
         };
@@ -5026,6 +5034,7 @@ impl BeeperGuiApp {
                 return tr(if d.personal { "Edit Chat for Me" } else { "Edit Group" }).into();
             }
             _ if Some(id) == self.verify.window => "Beeper",
+            _ if Some(id) == self.reauth.window => tr("Authentication Required"),
             _ if let Some(title) = self.add_account_title(id) => return title,
             _ if let Some((_, _, mid)) = self.vote_windows.iter().find(|w| w.0 == id) => {
                 let st = self.store.read();
@@ -7294,6 +7303,9 @@ impl BeeperGuiApp {
                 {
                     return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
                 }
+                if self.reauth.window == Some(id) {
+                    return self.reauth_key(key);
+                }
                 if self.label_window.as_ref().is_some_and(|d| d.id == id) {
                     return match key {
                         Key::Named(Named::Escape) => window::close(id),
@@ -9017,6 +9029,7 @@ impl BeeperGuiApp {
                 self.group_window = self.group_window.take().filter(|d| d.id != id);
                 self.blocked_window = self.blocked_window.filter(|w| *w != id);
                 self.verify.window = self.verify.window.filter(|w| *w != id);
+                self.reauth.window = self.reauth.window.filter(|w| *w != id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
                 } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
@@ -9082,6 +9095,7 @@ impl BeeperGuiApp {
             UiMessage::PillHover(on) => self.pill_hover = on,
             UiMessage::Login(m) => return self.update_login(m),
             UiMessage::Verify(m) => return self.update_verify(m),
+            UiMessage::Reauth(m) => return self.update_reauth(m),
             UiMessage::OpenAddAccount(network, login) => return self.open_add_account(&network, login),
             UiMessage::AddAccount(id, m) => return self.update_add_account(id, m),
             UiMessage::KeyPressed(Key::Named(k @ (Named::Enter | Named::Escape)), m)
@@ -9524,6 +9538,8 @@ impl BeeperGuiApp {
             self.view_login()
         } else if Some(id) == self.verify.window {
             self.view_verify()
+        } else if Some(id) == self.reauth.window {
+            self.view_reauth()
         } else if let Some(a) = self.add_accounts.iter().find(|a| a.id == id) {
             self.view_add_account(a)
         } else if let Some((_, chat)) = self.theme_windows.iter().find(|w| w.0 == id) {

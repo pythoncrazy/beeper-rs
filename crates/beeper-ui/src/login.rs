@@ -28,6 +28,8 @@ const FLOAT_LABEL: f32 = 38.0 * 0.6 + 38.0 * 0.6875 / 2.0 - 38.0 / 2.0;
 const ERROR_ROOM: f32 = 8.0 + 13.0;
 /// The start of the animations of the sign-in window.
 static EPOCH: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
+/// The size of the sign-in window.
+pub(crate) const SIZE: Size = Size::new(330.0, 620.0);
 const EMAIL_INPUT: &str = "login-email";
 const CODE_INPUT: &str = "login-code";
 const USERNAME_INPUT: &str = "login-username";
@@ -606,23 +608,23 @@ pub(crate) fn art<'a>(i: usize, height: f32) -> El<'a> {
 /// Desktop's `BrandInput` with `floatingPlaceholder`: text in the color of the placeholder, and the placeholder
 /// as a small chip over the top edge once the field has text. Enter submits the form through the key handler of
 /// the window, like Desktop's Enter hotkey.
-fn field<'a>(
+pub(crate) fn field<'a, M: Into<UiMessage> + 'a>(
     p: &Palette,
     id: &'static str,
     hint: &'a str,
     value: &'a str,
-    on: Option<fn(String) -> LoginMsg>,
+    on: Option<fn(String) -> M>,
 ) -> El<'a> {
     field_with_icons(p, id, hint, value, on, Vec::new())
 }
 
 /// A `field` with `BrandInput`'s `rightIcons`: icons 8 px from the right edge, 2 px apart.
-fn field_with_icons<'a>(
+fn field_with_icons<'a, M: Into<UiMessage> + 'a>(
     p: &Palette,
     id: &'static str,
     hint: &'a str,
     value: &'a str,
-    on: Option<fn(String) -> LoginMsg>,
+    on: Option<fn(String) -> M>,
     icons: Vec<El<'a>>,
 ) -> El<'a> {
     let room = if icons.is_empty() { 12.0 } else { 8.0 + 22.0 * icons.len() as f32 };
@@ -648,7 +650,7 @@ fn field_with_icons<'a>(
 
 impl BeeperGuiApp {
     pub fn login_window_settings() -> window::Settings {
-        let settings = Self::window_settings(Size::new(330.0, 620.0));
+        let settings = Self::window_settings(SIZE);
         window::Settings { resizable: false, position: window::Position::Centered, ..settings }
     }
 
@@ -825,6 +827,11 @@ impl BeeperGuiApp {
                 l.busy = false;
                 match r {
                     Ok(key) => l.new_key = Some(key),
+                    // Desktop's `ReauthRequiredModal` asks for a sign-in code, then the key is made again.
+                    Err(e) if e == beeper_core::matrix::REAUTH => {
+                        l.error = Some(e);
+                        return self.open_reauth();
+                    }
                     Err(e) => l.error = Some(e),
                 }
             }

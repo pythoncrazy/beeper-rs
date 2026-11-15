@@ -22,13 +22,15 @@ use matrix_sdk::encryption::verification::{
     CancelInfo, QrVerificationData, QrVerificationState, SasState, Verification, VerificationRequest,
     VerificationRequestState,
 };
-use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
+use matrix_sdk::encryption::{BackupDownloadStrategy, CrossSigningResetAuthType, EncryptionSettings};
 use matrix_sdk::event_handler::Ctx;
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
 use matrix_sdk::notification_settings::RoomNotificationMode;
 use matrix_sdk::room::MessagesOptions;
 use matrix_sdk::ruma::api::client::media::get_content_thumbnail::v3::Method;
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType as SendReceiptType;
+use matrix_sdk::ruma::api::client::uiaa::AuthData;
+use matrix_sdk::ruma::api::error::ErrorKind;
 use matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent;
 use matrix_sdk::ruma::events::key::verification::VerificationMethod;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
@@ -2310,27 +2312,57 @@ pub async fn import_crypto(dir: &std::path::Path, c: &DesktopCrypto) -> Result<(
 /// The text of Desktop's error when the homeserver asks to sign in again before a reset.
 pub const REAUTH: &str = "Re-authentication is required to continue";
 
+/// Desktop SDK's user-interactive auth with the token of `updateUIAuthToken`: the Beeper JWT, for the auth `session`.
+fn jwt_auth(store: &SharedStore, session: Option<String>) -> Result<AuthData, String> {
+    let st = store.read();
+    let token = st.ui_auth_token.clone().ok_or(REAUTH)?;
+    let Value::Object(data) = serde_json::json!({ "token": token, "user": st.beeper_state.user_id }) else {
+        unreachable!("the auth data is a JSON object")
+    };
+    Ok(AuthData::new("org.matrix.login.jwt", session, data).expect("a custom auth type"))
+}
+
+/// Desktop's check of a refused auth: the homeserver asks for auth again, or refuses the Beeper JWT.
+fn auth_error(e: matrix_sdk::Error) -> String {
+    match e.as_uiaa_response().is_some() || e.client_api_error_kind() == Some(&ErrorKind::Forbidden) {
+        true => REAUTH.into(),
+        false => e.to_string(),
+    }
+}
+
 /// Desktop's `beginResetCrossSigning`: makes a new cross-signing identity, secret storage and key backup, and returns
 /// their new recovery key. An account that has an identity loses it, like Desktop's reset. The recovery key
-/// waits for [`confirm_recovery_key`].
+/// waits for [`confirm_recovery_key`]. The homeserver can ask for auth, which the Beeper JWT gives.
 pub async fn new_recovery_key(store: &SharedStore) -> Result<String, String> {
     let e = |e: &dyn std::fmt::Display| e.to_string();
     let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
     let me = client.user_id().expect("signed-in client has a user ID").to_owned();
     let encryption = client.encryption();
     match encryption.request_user_identity(&me).await.map_err(|x| e(&x))? {
-        // The cross-signing reset comes first: when it needs a new sign-in, the backup and secret storage stay.
+        // The cross-signing reset comes first: when the auth fails, the backup and secret storage stay.
         Some(_) => {
             if let Some(handle) = encryption.reset_cross_signing().await.map_err(|x| e(&x))? {
-                handle.cancel().await;
-                return Err(REAUTH.into());
+                let done = match handle.auth_type() {
+                    CrossSigningResetAuthType::Uiaa(uiaa) => match jwt_auth(store, uiaa.session.clone()) {
+                        Ok(auth) => handle.auth(Some(auth)).await.map_err(auth_error),
+                        Err(x) => Err(x),
+                    },
+                    CrossSigningResetAuthType::OAuth(_) => Err("The homeserver asks for OAuth".into()),
+                };
+                if let Err(x) = done {
+                    handle.cancel().await;
+                    return Err(x);
+                }
             }
             encryption.backups().disable_and_delete().await.map_err(|x| e(&x))?;
         }
-        None => encryption.bootstrap_cross_signing(None).await.map_err(|x| match x.as_uiaa_response() {
-            Some(_) => REAUTH.into(),
-            None => e(&x),
-        })?,
+        None => {
+            if let Err(x) = encryption.bootstrap_cross_signing(None).await {
+                let uiaa = x.as_uiaa_response().ok_or_else(|| e(&x))?;
+                let auth = jwt_auth(store, uiaa.session.clone())?;
+                encryption.bootstrap_cross_signing(Some(auth)).await.map_err(auth_error)?;
+            }
+        }
     }
     let key = encryption.recovery().enable().await.map_err(|x| e(&x))?;
     {
@@ -3274,6 +3306,39 @@ mod tests {
             (state.state, state.e2ee.initialized, state.e2ee.cross_signing),
             ("needs-cross-signing-setup", true, false)
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Like Desktop's SDK, the user-interactive auth of the cross-signing keys sends the Beeper JWT, and without a
+    /// JWT the user must sign in again.
+    #[tokio::test]
+    async fn cross_signing_auth_sends_the_beeper_jwt_like_desktop() {
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = sent.clone();
+        let url = crate::bridge_stub::serve(move |_, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/keys/query" => (200, json!({ "device_keys": { "@me:x": {} } })),
+            "/_matrix/client/v3/keys/device_signing/upload" if body["auth"].is_null() => {
+                (401, json!({ "session": "s1", "flows": [{ "stages": ["org.matrix.login.jwt"] }], "params": {} }))
+            }
+            "/_matrix/client/v3/keys/device_signing/upload" => {
+                seen.lock().unwrap().push(body["auth"].clone());
+                (403, json!({ "errcode": "M_FORBIDDEN", "error": "JWT validation failed" }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let dir = std::env::temp_dir().join(format!("beeper-rs-jwt-auth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = stub_store(&dir, &url).await;
+        assert_eq!(super::new_recovery_key(&store).await, Err(super::REAUTH.into()), "no JWT");
+        assert!(sent.lock().unwrap().is_empty());
+        store.write().ui_auth_token = Some("old.jwt".into());
+        assert_eq!(super::new_recovery_key(&store).await, Err(super::REAUTH.into()), "a refused JWT");
+        let auth = json!({ "type": "org.matrix.login.jwt", "session": "s1", "token": "old.jwt", "user": "@me:x" });
+        assert_eq!(*sent.lock().unwrap(), [auth]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -465,6 +465,7 @@ async fn lifecycle() {
         user_id: "@emile:beeper.com".into(),
         access_token: "syt_emile".into(),
         device_id: "NEWDEVICE".into(),
+        jwt: None,
     };
     let profile = Profile {
         full_name: Some("Émile Zola".into()),
