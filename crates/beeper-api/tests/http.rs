@@ -66,8 +66,9 @@ async fn chunked_bodies_are_decoded_and_conflicts_are_refused() {
 
 #[tokio::test]
 async fn bodies_over_the_limit_of_the_route_get_413() {
-    let (port, _) = server("limits").await;
+    let (port, token) = server("limits").await;
     let too_large = "\r\n\r\n{\"message\":\"request entity too large\",\"code\":\"UNKNOWN_ERROR\"}";
+    let auth = format!("authorization: Bearer {token}\r\n");
     for (path, ct, len) in [
         ("/oauth/token", "application/json", 64 * 1024 + 1),
         ("/v1/app/setup/start", "application/json", 64 * 1024 + 1),
@@ -75,10 +76,19 @@ async fn bodies_over_the_limit_of_the_route_get_413() {
         ("/v1/assets/upload", "application/json", 100 * 1024 * 1024 + 1),
         ("/v1/assets/upload", "multipart/form-data; boundary=b", 500 * 1024 * 1024 + 1),
     ] {
-        let head = format!("POST {path} HTTP/1.1\r\nhost: x\r\ncontent-type: {ct}\r\ncontent-length: {len}\r\n\r\n");
+        let head =
+            format!("POST {path} HTTP/1.1\r\nhost: x\r\n{auth}content-type: {ct}\r\ncontent-length: {len}\r\n\r\n");
         let out = text(port, &head).await;
         let closes = out.contains("\r\nConnection: close\r\n");
         assert!(out.starts_with("HTTP/1.1 413 ") && closes && out.ends_with(too_large), "{path}: {out}");
+    }
+    // Desktop checks the route and the token before it reads the body.
+    for (path, refusal) in [("/v1/chats", "401 Unauthorized"), ("/v1/nope", "404 Not Found")] {
+        let head = format!(
+            "POST {path} HTTP/1.1\r\nhost: x\r\ncontent-type: application/json\r\ncontent-length: 20000000\r\n\r\n"
+        );
+        let out = text(port, &head).await;
+        assert!(out.starts_with(&format!("HTTP/1.1 {refusal}\r\n")), "{path}: {out}");
     }
     let big_chunk = post("/oauth/revoke", "transfer-encoding: chunked\r\n", "10001\r\n");
     assert!(text(port, &big_chunk).await.starts_with("HTTP/1.1 413 "));
@@ -250,6 +260,85 @@ async fn the_transport_behaves_like_node() {
     let mut out = String::new();
     stream.read_to_string(&mut out).await.unwrap();
     assert!(out.starts_with("HTTP/1.1 200 OK\r\n") && out.ends_with("{\"active\":false}"), "{out}");
+}
+
+#[tokio::test]
+async fn routes_match_like_express() {
+    let (port, token) = server("routes").await;
+    let get = |method: &str, target: &str, headers: &str| {
+        let request = format!("{method} {target} HTTP/1.1\r\nhost: x\r\n{headers}connection: close\r\n\r\n");
+        async move { without_date(&text(port, &request).await).0 }
+    };
+    let auth = format!("authorization: Bearer {token}\r\n");
+    let not_found = "\r\n\r\n{\"message\":\"Not found\",\"code\":\"not_found\"}";
+    for (method, target) in [
+        ("GET", "/v1/%69nfo"),
+        ("GET", "/v1/info%2F"),
+        ("GET", "/v1//info"),
+        ("GET", "/v1/nope"),
+        ("PUT", "/v1/accounts"),
+        ("GET", "/v1/ws"),
+    ] {
+        let out = text(port, &format!("{method} {target} HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n")).await;
+        assert!(out.starts_with("HTTP/1.1 404 ") && out.ends_with(not_found), "{method} {target}: {out}");
+    }
+    for target in ["/v1/info/", "/v1/INFO", "/v1/accounts/"] {
+        assert!(get("GET", target, &auth).await.starts_with("HTTP/1.1 200 "), "{target}");
+    }
+    let out = text(port, &format!("GET /v1/chats/%zz HTTP/1.1\r\nhost: x\r\n{auth}connection: close\r\n\r\n")).await;
+    assert!(out.ends_with("{\"message\":\"Failed to decode param '%zz'\",\"code\":\"UNKNOWN_ERROR\"}"), "{out}");
+    let out = text(port, &format!("GET /v1/chats/a%2Fb HTTP/1.1\r\nhost: x\r\n{auth}connection: close\r\n\r\n")).await;
+    assert!(
+        out.ends_with("{\"message\":\"Chat not found\",\"code\":\"NOT_FOUND\"}"),
+        "a parameter can hold a slash: {out}"
+    );
+
+    let redirect = "HTTP/1.1 302 Found\r\nX-Powered-By: Express\r\nX-Beeper-Desktop-Version: ";
+    for (accept, kind, body) in [
+        ("", Some("text/plain"), "Found. Redirecting to /v1/info"),
+        ("accept: */*\r\n", Some("text/plain"), "Found. Redirecting to /v1/info"),
+        ("accept: text/html,text/plain;q=0.9\r\n", Some("text/html"), "<p>Found. Redirecting to /v1/info</p>"),
+        ("accept: application/json\r\n", None, ""),
+    ] {
+        let out = text(port, &format!("GET / HTTP/1.1\r\nhost: x\r\n{accept}connection: close\r\n\r\n")).await;
+        let (head, got) = without_date(&out);
+        let kind = kind.map_or(String::new(), |k| format!("\r\ncontent-type: {k}; charset=utf-8"));
+        let tail = format!(
+            "\r\nlocation: /v1/info\r\nvary: Accept{kind}\r\nContent-Length: {}\r\nConnection: close",
+            body.len()
+        );
+        assert!(head.starts_with(redirect) && head.ends_with(&tail) && got == body, "{accept}: {out}");
+    }
+
+    let spec = |host: String| async move {
+        let out = text(port, &format!("GET /v1/spec HTTP/1.1\r\nhost: {host}\r\nconnection: close\r\n\r\n")).await;
+        let (head, body) = out.split_once("\r\n\r\n").expect("a response head");
+        assert!(head.contains("\r\ncache-control: public, max-age=3600\r\n"), "{head}");
+        assert!(body.starts_with("{\n  \"openapi\": \"3.1.0\",\n  \"info\": {\n    \"title\": \"Beeper Client API\",\n    \"version\": \"5.0.0\""));
+        serde_json::from_str::<serde_json::Value>(body).expect("a JSON document")
+    };
+    for (host, base) in [
+        (format!("127.0.0.1:{port}"), format!("http://127.0.0.1:{port}")),
+        (format!("localhost:{port}"), format!("http://localhost:{port}")),
+        ("example.com".into(), format!("http://127.0.0.1:{port}")),
+    ] {
+        let doc = spec(host).await;
+        assert_eq!(doc["servers"][0]["url"], base.as_str());
+        let flow = &doc["components"]["securitySchemes"]["oauth2"]["flows"]["authorizationCode"];
+        assert_eq!(flow["tokenUrl"], format!("{base}/oauth/token"));
+    }
+    // The document lists the routes of the server and no other routes.
+    let doc = spec("x".into()).await;
+    for (path, methods) in doc["paths"].as_object().unwrap() {
+        for (method, op) in methods.as_object().unwrap() {
+            let target = path.replace('{', "x").replace('}', "");
+            let method = method.to_uppercase();
+            let out = text(port, &format!("{method} {target} HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n")).await;
+            assert!(!out.ends_with(not_found), "{method} {path}: {}", op["operationId"]);
+        }
+    }
+    let count = doc["paths"].as_object().unwrap().values().map(|m| m.as_object().unwrap().len()).sum::<usize>();
+    assert_eq!(count, 66);
 }
 
 #[tokio::test]
