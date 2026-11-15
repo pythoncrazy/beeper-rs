@@ -2299,12 +2299,15 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
             }
         }
     });
+    let token = auth::access_token(&msg).expect("the upgrade has a token").to_string();
+    // The close code and reason when the server ends the connection.
     let send_events = async {
-        let mut seq = 0;
+        let (mut seq, mut recent) = (0, HashMap::<String, tokio::time::Instant>::new());
+        let mut keepalive = tokio::time::interval_at(tokio::time::Instant::now() + WS_KEEPALIVE, WS_KEEPALIVE);
         loop {
-            let bytes = tokio::select! {
+            let (opcode, bytes) = tokio::select! {
                 ev = events.recv() => {
-                    let Ok(ev) = ev else { break };
+                    let Ok(ev) = ev else { return None };
                     let chat = ev.chat_id.as_deref().expect("store events have a chat");
                     let wanted = {
                         let s = subs.read().unwrap();
@@ -2313,23 +2316,63 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
                     if !wanted {
                         continue;
                     }
+                    // Desktop drops an event that repeats one of the last 250 ms, without the times.
+                    let event = serde_json::to_value(WsFrame::new(&ev, 0)).expect("serialize a WebSocket event");
+                    let now = tokio::time::Instant::now();
+                    recent.retain(|_, at| now - *at < WS_DUPLICATE);
+                    if recent.insert(without_times(&event).to_string(), now).is_some() {
+                        continue;
+                    }
                     seq += 1;
-                    serde_json::to_vec(&WsFrame::new(&ev, seq)).expect("serialize a WebSocket event")
+                    (0x1, serde_json::to_vec(&WsFrame::new(&ev, seq)).expect("serialize a WebSocket event"))
                 }
-                Some(bytes) = out_rx.recv() => bytes,
+                Some(bytes) = out_rx.recv() => (0x1, bytes),
+                // Desktop pings each client every 30 s, and closes the clients whose token it revoked.
+                _ = keepalive.tick() => {
+                    let (st, token) = (store.clone(), token.clone());
+                    let check = tokio::task::spawn_blocking(move || auth::authorize(&st.read(), Some(&token), &[]).err());
+                    if let Some((401, reason)) = check.await.expect("the token check panicked") {
+                        return Some((1008, reason));
+                    }
+                    (0x9, Vec::new())
+                }
             };
-            if write_ws_frame(&mut writer, 0x1, &bytes, false).await.is_err() {
-                break;
+            if write_ws_frame(&mut writer, opcode, &bytes, false).await.is_err() {
+                return None;
             }
         }
     };
     let close = tokio::select! {
-        r = &mut reader_task => Some(r.expect("WS reader task panicked")),
-        () = send_events => None,
+        r = &mut reader_task => {
+            let (code, reader) = r.expect("WS reader task panicked");
+            code.map(|code| (code, String::new(), Some(reader)))
+        }
+        closed = send_events => closed.map(|(code, reason)| (code, reason, None)),
     };
     reader_task.abort();
-    if let Some((Some(code), mut reader)) = close {
-        write_ws_frame(&mut writer, 0x8, &code.to_be_bytes(), false).await.ok();
-        linger(&mut writer, &mut reader).await;
+    if let Some((code, reason, reader)) = close {
+        write_ws_frame(&mut writer, 0x8, &[&code.to_be_bytes()[..], reason.as_bytes()].concat(), false).await.ok();
+        match reader {
+            Some(mut reader) => linger(&mut writer, &mut reader).await,
+            None => drop(writer.shutdown().await),
+        }
+    }
+}
+
+/// The ping interval of Desktop's WebSocket server.
+const WS_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Desktop's window of repeated WebSocket events.
+const WS_DUPLICATE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// An event without its `seq`, `ts` and `timestamp` keys, for Desktop's duplicate check.
+fn without_times(v: &Value) -> Value {
+    match v {
+        Value::Object(o) => {
+            let kept = o.iter().filter(|(k, _)| !["seq", "ts", "timestamp"].contains(&k.as_str()));
+            Value::Object(kept.map(|(k, v)| (k.clone(), without_times(v))).collect())
+        }
+        Value::Array(a) => Value::Array(a.iter().map(without_times).collect()),
+        v => v.clone(),
     }
 }
