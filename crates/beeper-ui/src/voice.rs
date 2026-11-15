@@ -8,6 +8,7 @@ use iced::font::Weight;
 use iced::widget::{button, column, container, mouse_area, row, slider, stack, svg, Column, Row, Space};
 use iced::{Center, Color, Fill, Padding, Pixels, Point, Subscription, Task};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
@@ -79,10 +80,31 @@ pub struct Player {
     closed: bool,
     /// When the current track ended, while nothing plays since.
     ended: Option<Instant>,
+    /// Desktop's `audio-player-position`: the global player is this far above the bottom of the sidebar.
+    pub bottom: f32,
+    /// The drag of the global player: the cursor height and `bottom` at the press, and if the drag started.
+    grab: Option<(f32, f32, bool)>,
+    /// Where `bottom` is saved.
+    saved: PathBuf,
 }
 
-impl Default for Player {
-    fn default() -> Self {
+/// Desktop's `activationConstraint`: a drag starts after the cursor moves this far.
+const DRAG_START: f32 = 5.0;
+/// The height of `GlobalAudioControls` with the chat avatar.
+const PILL_H: f32 = 40.0;
+
+impl Player {
+    /// The player, with the position of the global player that `data` keeps, or Desktop's 8 px.
+    pub(crate) fn new(data: &Path) -> Self {
+        let saved = data.join("audio-player-position");
+        let bottom = match std::fs::read_to_string(&saved) {
+            Ok(json) => {
+                let at: serde_json::Value = serde_json::from_str(&json).expect("a saved audio player position");
+                at["y"].as_f64().expect("a numeric audio player position") as f32
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 8.0,
+            Err(e) => panic!("read {}: {e}", saved.display()),
+        };
         Self {
             clips: HashMap::new(),
             now: None,
@@ -93,6 +115,9 @@ impl Default for Player {
             pill: false,
             closed: false,
             ended: None,
+            bottom,
+            grab: None,
+            saved,
         }
     }
 }
@@ -111,6 +136,10 @@ pub enum Msg {
     Skip(bool),
     Close,
     Hide,
+    /// A press on the global player, a cursor move while it is pressed, and the release.
+    Grab,
+    Drag(f32),
+    Drop,
 }
 
 /// The `-f f32le` arguments that make ffmpeg write mono `HZ` samples.
@@ -236,6 +265,21 @@ impl BeeperGuiApp {
                 (audio.now, audio.closed) = (None, true);
             }
             Msg::Hide => audio.closed |= audio.ended.is_some_and(|e| e.elapsed() >= HIDE_AFTER),
+            // Desktop drags the global player up and down in the sidebar and saves where it is.
+            Msg::Grab => audio.grab = Some((self.cursor.get().y, audio.bottom, false)),
+            Msg::Drag(y) => {
+                let (y0, b0, started) = audio.grab.expect("a pressed player drags");
+                if started || (y0 - y).abs() >= DRAG_START {
+                    let top = (self.pane.size.height - PILL_H - 8.0).max(0.0);
+                    (audio.bottom, audio.grab) = ((b0 + y0 - y).clamp(0.0, top), Some((y0, b0, true)));
+                }
+            }
+            Msg::Drop => {
+                if audio.grab.take().expect("a pressed player drops").2 {
+                    let at = serde_json::json!({ "x": 8, "y": audio.bottom }).to_string();
+                    std::fs::write(&audio.saved, at).unwrap_or_else(|e| panic!("write {}: {e}", audio.saved.display()));
+                }
+            }
             Msg::Seek(chat, mid, url, frac) => {
                 let at = frac * audio.clip(&url).expect("only a decoded track seeks").secs();
                 match &mut audio.now {
@@ -323,6 +367,19 @@ impl BeeperGuiApp {
                 move |r| UiMessage::Voice(Msg::Loaded(url, r)),
             )
         }))
+    }
+
+    /// The cursor moves and the release while the global player is pressed.
+    pub(crate) fn audio_drag(&self) -> Option<Subscription<UiMessage>> {
+        self.audio.grab.map(|_| {
+            iced::event::listen_with(|e, _, _| match e {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(UiMessage::Voice(Msg::Drag(position.y)))
+                }
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(_)) => Some(UiMessage::Voice(Msg::Drop)),
+                _ => None,
+            })
+        })
     }
 
     pub(crate) fn audio_ticks(&self) -> Option<Subscription<UiMessage>> {
@@ -447,7 +504,8 @@ impl BeeperGuiApp {
         let gap = || Space::new().width(Fill);
         let line = row![].push(avatar).push(gap()).push(buttons).push(gap()).push(wave).push(gap()).push(time);
         let pill = container(line.align_y(Center)).width(w).padding([6, 8]).style(fill_box(p.card, 24.0));
-        Some(mouse_area(pill).on_right_press(UiMessage::Voice(Msg::PillMenu)).into())
+        let pill = mouse_area(pill).on_press(UiMessage::Voice(Msg::Grab));
+        Some(pill.on_right_press(UiMessage::Voice(Msg::PillMenu)).into())
     }
 
     /// The right-click menu of `GlobalAudioControls` `top` below its Playback Speed submenu.
@@ -576,6 +634,21 @@ mod tests {
         assert!((play(&mut app, "v0", "mxc://a", &chat) - 0.005).abs() < 1e-6, "it plays again from there");
         let _ = play(&mut app, "v1", "mxc://b", "!other:beeper.com");
         assert!(!app.audio.stops.contains_key("v0"), "another chat forgets the positions");
+    }
+
+    /// Desktop's drag of the global player: it starts after 5 px, moves the player up and down, and saves the place.
+    #[test]
+    fn global_player_drags_like_desktop() {
+        let (mut app, _) = two_notes("pill-drag");
+        assert_eq!(app.audio.bottom, 8.0, "Desktop's default place");
+        app.cursor.set(Point::new(100.0, 500.0));
+        let _ = app.voice(Msg::Grab);
+        let _ = app.voice(Msg::Drag(497.0));
+        assert_eq!(app.audio.bottom, 8.0, "a move under 5 px does not drag");
+        let _ = app.voice(Msg::Drag(450.0));
+        let _ = app.voice(Msg::Drop);
+        assert_eq!(app.audio.bottom, 58.0);
+        assert_eq!(Player::new(&app.store.read().data_dir).bottom, 58.0, "the place stays");
     }
 
     #[test]
