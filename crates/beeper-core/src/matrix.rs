@@ -3,10 +3,10 @@ use crate::import::DesktopCrypto;
 use crate::models::{
     timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatParticipants,
     ChatReminder, EditHistoryEntry, Label, Message, MessageLink, MessageRules, Older, PollData, PollOption, PollRules,
-    Reaction, SendError, Timers, User, VerificationDevice, VerificationError, VerificationSas, VerificationSasEmoji,
-    ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BOOKMARK, DEFAULT_TIMERS,
-    DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE, FORMATS, MANAGE_KICK,
-    MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION,
+    Reaction, SendError, ThreadFollows, Timers, User, VerificationDevice, VerificationError, VerificationSas,
+    VerificationSasEmoji, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BOOKMARK,
+    DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE, FORMATS,
+    MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -41,11 +41,13 @@ use matrix_sdk::ruma::serde::Raw;
 use matrix_sdk::ruma::{OwnedEventId, OwnedUserId};
 use matrix_sdk::{Client, LoopCtrl, Room, RoomMemberships, SessionMeta, SessionTokens};
 use serde_json::Value;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use tokio::sync::oneshot;
 
 pub const UTD_TEXT: &str = "Waiting for message";
 const HISTORY: u32 = 30;
+/// Desktop's `THREAD_FOLLOWS_EVENT_TYPE`.
+const THREAD_FOLLOWS: &str = "com.beeper.thread_follows";
 
 enum Op {
     Upsert(Box<Message>),
@@ -397,6 +399,9 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         replacement_room: tombstone.and_then(|t| s(&t["replacement_room"])),
         can_mention_room: features.as_ref().is_none_or(|f| f["formatting"]["at_room_mention"].as_i64() >= Some(1))
             && power(&levels, me.as_str()) >= levels["notifications"]["room"].as_i64().unwrap_or(50),
+        threads: features.as_ref().is_some_and(|f| f["thread"].as_i64() > Some(0)),
+        follows: account_data(room, THREAD_FOLLOWS).await.and_then(|f| ThreadFollows::parse(&f)).unwrap_or_default(),
+        thread_reads: BTreeMap::new(),
         flags: 0,
     }
 }
@@ -605,6 +610,10 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         timer: (message_type == "DISAPPEARING_TIMER").then(|| c["timer"].as_u64().unwrap_or(0)),
         send_error: None,
         is_delivered: false,
+        // Desktop's `threadFields`.
+        thread_root: s(&rel["event_id"]).filter(|_| rel["rel_type"] == "m.thread"),
+        broadcast: rel["rel_type"] == "m.thread" && c["com.beeper.broadcast_outside_thread"] == true,
+        fallback: rel["rel_type"] == "m.thread" && rel["is_falling_back"] != false,
         flags: match c["m.mentions"]["user_ids"].as_array() {
             Some(ids) if ids.iter().any(|u| u == room.own_user_id().as_str()) => MSG_MENTION,
             _ => 0,
@@ -1000,13 +1009,16 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
         let page = page.into_iter().filter(|e| e.event_id().is_some_and(|id| !known.contains(id.as_str())));
         events = page.chain(events).collect();
     }
-    let (mut ops, mut non_messages) = (Vec::new(), Vec::new());
+    let (mut ops, mut non_messages, mut roots) = (Vec::new(), Vec::new(), BTreeSet::new());
     let hidden = store.read().settings.on("hiddenEvents");
     for e in &events {
         let v: Value = serde_json::from_str(e.raw().json().get()).expect("timeline event JSON");
         ops.extend(s(&v["unsigned"]["transaction_id"]).map(Op::Remove));
         match op(room, &chat_id, &chat.account_id, &v, hidden).await {
-            Some(Op::Upsert(m)) => ops.push(Op::Upsert(m)),
+            Some(Op::Upsert(m)) => {
+                roots.extend(m.thread_root.clone());
+                ops.push(Op::Upsert(m));
+            }
             o => {
                 non_messages.extend(s(&v["event_id"]));
                 ops.extend(o);
@@ -1163,7 +1175,52 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
             st.update_chat(idx, |c| (c.is_archived, c.notifiable) = (Some(archived), notifiable));
         }
     }
+    sync_thread_reads(store, room, roots).await;
     sync_receipts(store, room).await;
+}
+
+/// Desktop's `lastReadHsOrder` of the threads of `roots`: the own thread receipt, and for a new thread the own
+/// receipt of the room, like Desktop's `loadThread`.
+async fn sync_thread_reads(store: &SharedStore, room: &Room, roots: BTreeSet<String>) {
+    if roots.is_empty() {
+        return;
+    }
+    let me = room.own_user_id();
+    let receipt = async |thread: ReceiptThread| {
+        let r = room.load_user_receipt(ReceiptType::Read, &thread, me).await.expect("read receipt");
+        r.map(|(event, _)| event.to_string())
+    };
+    let main = [receipt(ReceiptThread::Unthreaded).await, receipt(ReceiptThread::Main).await];
+    let mut reads = Vec::new();
+    for root in roots {
+        let thread = OwnedEventId::try_from(root.as_str()).ok().map(ReceiptThread::Thread);
+        reads.push((
+            root,
+            match thread {
+                Some(t) => receipt(t).await,
+                None => None,
+            },
+        ));
+    }
+    let chat = chat_id(room).await;
+    let mut st = store.write();
+    let key = |st: &BeeperStore, e: &Option<String>| {
+        e.as_ref().and_then(|e| Some(st.messages[*st.msg_idx_by_id.get(e)?].sort_key.clone()))
+    };
+    let main = main.iter().filter_map(|e| key(&st, e)).max().unwrap_or_else(|| sort_key(MIN_SAFE_INTEGER));
+    let idx = st.chat_idx_by_id[&chat];
+    let old = &st.chats[idx].thread_reads;
+    let new: Vec<(String, String)> = reads
+        .into_iter()
+        .map(|(root, e)| {
+            let read = old.get(&root).cloned().unwrap_or_else(|| main.clone()).max(key(&st, &e).unwrap_or_default());
+            (root, read)
+        })
+        .filter(|(root, read)| old.get(root) != Some(read))
+        .collect();
+    if !new.is_empty() {
+        st.update_chat(idx, |c| c.thread_reads.extend(new));
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1181,6 +1238,16 @@ pub type Mention = (String, String);
 /// Desktop's ID of the "@room" mention.
 pub const ROOM_MENTION: &str = "@room";
 
+/// Desktop's `threadSendOptions`: a reply in the thread of `root` to `quoted`, which the user `chosen` or which is the
+/// newest message of the thread, and whether Desktop's "Also send to chat" is on.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ThreadSend {
+    pub root: String,
+    pub quoted: String,
+    pub chosen: bool,
+    pub broadcast: bool,
+}
+
 /// A change for the homeserver. The outbox table of the store keeps it until the homeserver takes it.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub enum Outgoing {
@@ -1191,6 +1258,8 @@ pub enum Outgoing {
         /// A link preview with the `og:image:type` of its image.
         preview: Option<crate::cloud::PagePreview>,
         mentions: Vec<Mention>,
+        /// The thread of a thread reply, whose `quoted` is `reply_to`.
+        thread: Option<ThreadSend>,
     },
     Edit {
         target: String,
@@ -1244,6 +1313,11 @@ pub enum Outgoing {
     /// Adds (true) or removes a chat from a label.
     LabelChild(String, bool),
     Read(String),
+    /// Desktop's `sendThreadReadReceipt`: a read receipt for `event` in the thread of `root`.
+    ThreadRead {
+        root: String,
+        event: String,
+    },
     Flag(ChatFlag, bool),
     Reminder(Option<ChatReminder>),
     DeleteChat {
@@ -1388,16 +1462,31 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
     let e = |x: matrix_sdk::Error| x.to_string();
     let sent = |txn: String, id: OwnedEventId| store.write().sent.insert(txn, id.to_string());
     match out {
-        Outgoing::Send { txn, text, reply_to, preview, mentions } => {
-            let sender = reply_to.as_ref().and_then(|r| {
+        Outgoing::Send { txn, text, reply_to, preview, mentions, thread } => {
+            // Desktop mentions the sender of the quoted message, but not of the fallback reply of a thread reply.
+            let sender = reply_to.as_ref().filter(|_| thread.as_ref().is_none_or(|t| t.chosen)).and_then(|r| {
                 let st = store.read();
                 let m = &st.messages[*st.msg_idx_by_id.get(r)?];
                 (!st.is_me(&m.sender_id)).then(|| m.sender_id.clone())
             });
             let mut content = text_content(text, &mentions, sender.as_deref())?;
-            content.relates_to =
-                reply_to.map(|r| event(r).map(|id| Relation::Reply(Reply::with_event_id(id)))).transpose()?;
+            if thread.is_none() {
+                content.relates_to =
+                    reply_to.map(|r| event(r).map(|id| Relation::Reply(Reply::with_event_id(id)))).transpose()?;
+            }
             let mut content = serde_json::to_value(content).expect("message JSON");
+            if let Some(t) = thread {
+                // Desktop's `buildThreadRelation`.
+                content["m.relates_to"] = serde_json::json!({
+                    "rel_type": "m.thread",
+                    "event_id": event(t.root)?.to_string(),
+                    "is_falling_back": !t.chosen,
+                    "m.in_reply_to": { "event_id": event(t.quoted)?.to_string() },
+                });
+                if t.broadcast {
+                    content["com.beeper.broadcast_outside_thread"] = true.into();
+                }
+            }
             if let Some((mut p, image)) = preview {
                 if let Some(bytes) = image {
                     if room.latest_encryption_state().await.map_err(e)?.is_encrypted() {
@@ -1464,6 +1553,10 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             room.send_single_receipt(SendReceiptType::Read, ReceiptThread::Unthreaded, event(target)?)
                 .await
                 .map_err(e)?;
+        }
+        Outgoing::ThreadRead { root, event: target } => {
+            let thread = ReceiptThread::Thread(event(root)?);
+            room.send_single_receipt(SendReceiptType::Read, thread, event(target)?).await.map_err(e)?;
         }
         Outgoing::Flag(flag, on) => match flag {
             ChatFlag::Archived => {
@@ -2403,6 +2496,18 @@ pub async fn run(store: SharedStore) {
                                     set_typing(&store, &room, &v["content"]["user_ids"]).await;
                                 } else if v["type"] == "m.receipt" {
                                     sync_receipts(&store, &room).await;
+                                    let me = room.own_user_id().as_str();
+                                    let receipts = v["content"].as_object().into_iter().flatten();
+                                    if receipts.into_iter().any(|(_, r)| r["m.read"].get(me).is_some()) {
+                                        let chat = chat_id(&room).await;
+                                        let roots = {
+                                            let st = store.read();
+                                            let reads =
+                                                st.chat_idx_by_id.get(&chat).map(|&i| &st.chats[i].thread_reads);
+                                            reads.into_iter().flat_map(|r| r.keys().cloned()).collect()
+                                        };
+                                        sync_thread_reads(&store, &room, roots).await;
+                                    }
                                 }
                             }
                         }
@@ -2626,6 +2731,118 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Desktop's threaded replies: the `m.thread` relations of a room with threads, the thread follows, the own
+    /// thread receipt, and the thread replies and receipts that Desktop sends.
+    #[tokio::test]
+    async fn threads_like_desktop() {
+        let rel = |falling_back: bool, to: &str| json!({ "rel_type": "m.thread", "event_id": "$e1", "is_falling_back": falling_back, "m.in_reply_to": { "event_id": to } });
+        let reply = |i: i64, rel: Value, broadcast: bool| {
+            let mut e = stub_message(i);
+            (e["sender"], e["content"]["m.relates_to"]) = (json!("@ann:x"), rel);
+            if broadcast {
+                e["content"]["com.beeper.broadcast_outside_thread"] = json!(true);
+            }
+            e
+        };
+        let events = [
+            stub_message(1),
+            reply(2, rel(true, "$e1"), false),
+            reply(3, rel(false, "$e2"), true),
+            stub_message(4),
+            reply(5, rel(true, "$e3"), false),
+        ];
+        let mut sync = stub_sync();
+        let room = &mut sync["rooms"]["join"]["!room:x"];
+        let features = json!({ "type": "com.beeper.room_features", "state_key": "", "sender": "@me:x",
+            "event_id": "$features", "origin_server_ts": 1, "content": { "thread": 1 } });
+        room["state"]["events"].as_array_mut().unwrap().push(features);
+        let follows =
+            json!({ "follow_all": false, "followed": [], "unfollowed": ["$e1"], "com.beeper.revision_id": "r" });
+        room["account_data"] = json!({ "events": [{ "type": "com.beeper.thread_follows", "content": follows }] });
+        let receipt = json!({ "$e2": { "m.read": { "@me:x": { "ts": 1, "thread_id": "$e1" } } } });
+        room["ephemeral"] = json!({ "events": [{ "type": "m.receipt", "content": receipt }] });
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url =
+            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/sync" => (200, sync.clone()),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                p if p.ends_with("/messages") => {
+                    (200, json!({ "start": "t", "chunk": events.iter().rev().collect::<Vec<_>>() }))
+                }
+                p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+                _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+                p => {
+                    log.lock().unwrap().push((p.to_string(), body));
+                    (200, json!({ "event_id": "$sent" }))
+                }
+            })
+            .await;
+        let dir = std::env::temp_dir().join(format!("beeper-rs-threads-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = stub_store(&dir, &url).await;
+        store.write().features = crate::features::Flags::free_plan();
+        sync_stub_room(&store, "!room:x").await;
+        let chat = || {
+            let st = store.read();
+            st.chats[st.chat_idx_by_id["!room:x"]].clone()
+        };
+        {
+            let c = chat();
+            let st = store.read();
+            assert!(c.threads && st.threaded(&c), "the thread room feature and the threads flag");
+            let m = |id: &str| st.messages[st.msg_idx_by_id[id]].clone();
+            assert_eq!(
+                (m("$e2").thread_root.as_deref(), m("$e2").fallback, m("$e2").broadcast),
+                (Some("$e1"), true, false)
+            );
+            assert_eq!(
+                (m("$e3").fallback, m("$e3").broadcast, m("$e3").linked_message_id),
+                (false, true, Some("$e2".into()))
+            );
+            assert_eq!(m("$e4").thread_root, None);
+            let replies: Vec<&str> = st.thread_replies("$e1").map(|m| m.id.as_str()).collect();
+            assert_eq!(replies, ["$e2", "$e3", "$e5"]);
+            assert_eq!(
+                c.preview.as_ref().map(|p| p.id.as_str()),
+                Some("$e4"),
+                "a reply only in the thread does not preview"
+            );
+            assert_eq!(c.follows.unfollowed, ["$e1"]);
+            assert!(!st.follows_thread(&c, "$e1"), "an explicit unfollow beats the own root");
+            let joined = crate::models::Chat { follows: Default::default(), ..c.clone() };
+            assert!(st.follows_thread(&joined, "$e1"), "the user follows a thread with the own root");
+            assert_eq!(c.thread_reads["$e1"], crate::store::sort_key(2), "the own thread receipt");
+            assert_eq!(st.thread_unread(&c, "$e1"), (2, 0));
+        }
+        store.write().mark_thread_read("!room:x", "$e1", None);
+        let c = chat();
+        assert_eq!(store.read().thread_unread(&c, "$e1"), (0, 0));
+        let t = store.read().thread_send("$e1", None, true);
+        assert_eq!(t, super::ThreadSend { root: "$e1".into(), quoted: "$e5".into(), chosen: false, broadcast: true });
+        let out = super::Outgoing::Send {
+            txn: "txn".into(),
+            text: "hi".into(),
+            reply_to: Some(t.quoted.clone()),
+            preview: None,
+            mentions: Vec::new(),
+            thread: Some(t),
+        };
+        store.write().queue("!room:x", out);
+        super::flush(store.clone()).await.expect("send the thread receipt and the reply");
+        let sent = sent.lock().unwrap();
+        let (receipt, body) = sent.iter().find(|(p, _)| p.contains("/receipt/")).expect("a thread receipt");
+        assert!(receipt.ends_with("/receipt/m.read/$e5"), "{receipt}");
+        assert_eq!(body["thread_id"], "$e1");
+        let (_, body) = sent.iter().find(|(p, _)| p.contains("/send/m.room.message/")).expect("a thread reply");
+        let rel = json!({ "rel_type": "m.thread", "event_id": "$e1", "is_falling_back": true, "m.in_reply_to": { "event_id": "$e5" } });
+        assert_eq!((&body["m.relates_to"], &body["com.beeper.broadcast_outside_thread"]), (&rel, &json!(true)));
+        assert_eq!(body["m.mentions"], json!({}), "Desktop does not mention the sender of the fallback reply");
+        drop(sent);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// Desktop keeps each cloud login of a bridge as its own account, and puts a room on the login of its receiver.
     #[test]
     fn several_logins_of_a_bridge_like_desktop() {
@@ -2732,6 +2949,7 @@ mod tests {
                 reply_to: None,
                 preview: None,
                 mentions: Vec::new(),
+                thread: None,
             };
             st.queue("!room:x", out);
             txn

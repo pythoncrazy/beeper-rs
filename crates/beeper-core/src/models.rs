@@ -515,8 +515,54 @@ pub struct Chat {
     /// Desktop's `canMentionRoom` with the room's `at_room_mention` feature: the composer offers "@room".
     #[serde(rename = "canMentionRoom", default)]
     pub can_mention_room: bool,
+    /// Desktop's `supportsThreads`: the `thread` room feature is above 0.
+    #[serde(rename = "supportsThreads", default)]
+    pub threads: bool,
+    /// Desktop's `com.beeper.thread_follows` room account data.
+    #[serde(rename = "threadFollows", default, skip_serializing_if = "ThreadFollows::is_empty")]
+    pub follows: ThreadFollows,
+    /// Desktop's `lastReadHsOrder` of each thread: the sort key that the thread is read through, by root ID.
+    #[serde(rename = "threadReads", default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub thread_reads: std::collections::BTreeMap<String, String>,
     #[serde(skip)]
     pub flags: u16,
+}
+
+/// Desktop's `com.beeper.thread_follows`: the threads of a room that the user follows or unfollows explicitly.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadFollows {
+    /// Desktop's `threadFollowAll`, or `None` to follow all threads of a room with 20 members or fewer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_all: Option<bool>,
+    #[serde(default)]
+    pub followed: Vec<String>,
+    #[serde(default)]
+    pub unfollowed: Vec<String>,
+}
+
+impl ThreadFollows {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Desktop's `parseThreadFollows`, where `following` is the old name of `followed`, or `None` for bad content.
+    pub fn parse(v: &serde_json::Value) -> Option<Self> {
+        let ids = |k: &str| -> Option<Vec<String>> {
+            v[k].as_array()?.iter().map(|i| i.as_str().map(String::from)).collect()
+        };
+        let followed = if v.get("followed").is_some() { ids("followed") } else { ids("following") };
+        Some(Self { follow_all: v["follow_all"].as_bool(), followed: followed?, unfollowed: ids("unfollowed")? })
+    }
+
+    /// Desktop's `followsThread`: the explicit follow, else whether the user `participated`, else the follow-all
+    /// state, which is on in a room with 20 `members` or fewer.
+    pub fn follows(&self, root: &str, members: usize, participated: bool) -> bool {
+        match (self.followed.iter().any(|r| r == root), self.unfollowed.iter().any(|r| r == root)) {
+            (true, _) => true,
+            (_, true) => false,
+            _ => participated || self.follow_all.unwrap_or(members <= 20),
+        }
+    }
 }
 
 /// Where the older messages of a chat load from, like the room pagination state of Desktop's SDK.
@@ -843,6 +889,15 @@ pub struct Message {
     /// Desktop's `isDelivered`: the bridge delivered the message to a user.
     #[serde(rename = "isDelivered", skip_serializing_if = "std::ops::Not::not", default)]
     pub is_delivered: bool,
+    /// Desktop's `threadRootEventID`: the root of the Matrix thread of a reply.
+    #[serde(rename = "threadRootEventID", default, skip_serializing_if = "Option::is_none")]
+    pub thread_root: Option<String>,
+    /// Desktop's `extra.broadcastOutsideThread`: the thread reply shows in the chat too.
+    #[serde(rename = "broadcastOutsideThread", default, skip_serializing_if = "std::ops::Not::not")]
+    pub broadcast: bool,
+    /// Desktop's `extra.isReplyFallback`: `linkedMessageID` is the fallback reply of a thread reply, not a quote.
+    #[serde(rename = "isReplyFallback", default, skip_serializing_if = "std::ops::Not::not")]
+    pub fallback: bool,
     #[serde(skip)]
     pub flags: u16,
 }
@@ -889,6 +944,11 @@ impl Message {
 
     pub fn edited(&self) -> bool {
         self.is_edited == Some(true) || !self.edit_history.is_empty()
+    }
+
+    /// Desktop's `isThreadOnly` with `threads` on: a thread reply that only its thread shows.
+    pub fn thread_only(&self, threads: bool) -> bool {
+        threads && self.thread_root.is_some() && !self.broadcast
     }
 
     pub fn sync_flags(&mut self) {

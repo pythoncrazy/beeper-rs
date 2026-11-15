@@ -1529,7 +1529,7 @@ fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
     if let Some(text) = text {
         st.queue(
             &chat_id,
-            Outgoing::Send { txn: pending.clone(), text, reply_to, preview: None, mentions: Vec::new() },
+            Outgoing::Send { txn: pending.clone(), text, reply_to, preview: None, mentions: Vec::new(), thread: None },
         );
     }
     ok(&json!({ "chatID": chat_id, "pendingMessageID": pending }))

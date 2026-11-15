@@ -5159,7 +5159,7 @@ impl BeeperGuiApp {
                     st.update_message(i, |m| m.links = vec![link]);
                 }
                 let reply_to = reply_to.take();
-                sends.push((txn.clone(), Outgoing::Send { txn, text, reply_to, preview, mentions }));
+                sends.push((txn.clone(), Outgoing::Send { txn, text, reply_to, preview, mentions, thread: None }));
             }
             for PendingMedia { bytes, name, mime, is_gif, size, frames } in files {
                 let image = !frames.is_empty();
@@ -5220,7 +5220,14 @@ impl BeeperGuiApp {
             }
             let (_, txn, _) =
                 st.send_message(&s.chat_id, Some(s.text.clone()), s.reply_to.clone(), None).expect("send scheduled");
-            let out = Outgoing::Send { txn, text: s.text, reply_to: s.reply_to, preview: None, mentions: Vec::new() };
+            let out = Outgoing::Send {
+                txn,
+                text: s.text,
+                reply_to: s.reply_to,
+                preview: None,
+                mentions: Vec::new(),
+                thread: None,
+            };
             st.queue(&s.chat_id, out);
         }
         drop(st);

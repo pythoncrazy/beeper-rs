@@ -3,7 +3,7 @@ use crate::config::{
     DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN, DEFAULT_USER_ID, SEED_JSON,
     WS_CHANNEL_CAPACITY,
 };
-use crate::matrix::{ChatFlag, Outgoing};
+use crate::matrix::{ChatFlag, Outgoing, ThreadSend};
 use crate::models::*;
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
@@ -323,6 +323,8 @@ pub struct BeeperStore {
     pub messages: Vec<Message>,
     pub msg_idx_by_id: HashMap<String, usize>,
     pub chat_msg_indices: HashMap<String, Vec<usize>>,
+    /// The replies of each thread in timeline order, by the ID of the thread root.
+    pub thread_msg_indices: HashMap<String, Vec<usize>>,
     pub chat_search_index: InvertedIndex,
     pub assets: HashMap<String, StoredAsset>,
     assets_by_mxc: HashMap<String, String>,
@@ -469,6 +471,7 @@ impl BeeperStore {
             messages: Vec::new(),
             msg_idx_by_id: HashMap::new(),
             chat_msg_indices: HashMap::new(),
+            thread_msg_indices: HashMap::new(),
             chat_search_index: InvertedIndex::default(),
             assets: HashMap::new(),
             assets_by_mxc: HashMap::new(),
@@ -949,6 +952,9 @@ impl BeeperStore {
             is_read_only: false,
             replacement_room: None,
             can_mention_room: false,
+            threads: false,
+            follows: ThreadFollows::default(),
+            thread_reads: BTreeMap::new(),
             flags: 0,
         };
         self.push_chat(chat, true);
@@ -1169,12 +1175,17 @@ impl BeeperStore {
         self.next_seq = self.next_seq.max(msg.sort_key.parse().expect("sort keys are numbers"));
         let idx = self.messages.len();
         assert!(self.msg_idx_by_id.insert(msg.id.clone(), idx).is_none(), "duplicate message {}", msg.id);
-        let list = self.chat_msg_indices.entry(msg.chat_id.clone()).or_default();
-        let pos = list.partition_point(|&i| self.messages[i].sort_key <= msg.sort_key);
-        list.insert(pos, idx);
+        let lists = [Some(&msg.chat_id), msg.thread_root.as_ref()].into_iter().flatten();
+        for list in
+            lists.zip([&mut self.chat_msg_indices, &mut self.thread_msg_indices]).map(|(k, m)| m.entry(k.clone()))
+        {
+            let list = list.or_default();
+            list.insert(list.partition_point(|&i| self.messages[i].sort_key <= msg.sort_key), idx);
+        }
+        let shown = !msg.silent() && !msg.thread_only(self.feature("enable-threads").on);
         let c_idx = self.chat_idx_by_id[&msg.chat_id];
         let chat = &mut self.chats[c_idx];
-        if !msg.silent() && chat.preview.as_ref().is_none_or(|p| p.sort_key <= msg.sort_key) {
+        if shown && chat.preview.as_ref().is_none_or(|p| p.sort_key <= msg.sort_key) {
             self.chat_order.remove(&activity_key(chat));
             chat.last_activity = Some(msg.timestamp.clone());
             chat.preview = Some(msg.clone());
@@ -1400,6 +1411,7 @@ impl BeeperStore {
                 note: c.note.take(),
                 notifiable: c.notifiable.take(),
                 older: std::mem::take(&mut c.older),
+                thread_reads: std::mem::take(&mut c.thread_reads),
                 ..chat
             }
         });
@@ -1439,6 +1451,10 @@ impl BeeperStore {
             *i = moved[*i];
             assert_ne!(*i, usize::MAX, "a listed message stays");
         }
+        self.thread_msg_indices.retain(|_, list| {
+            list.iter_mut().for_each(|i| *i = moved[*i]);
+            !list.contains(&usize::MAX)
+        });
         self.exec("DELETE FROM messages WHERE chat_id = ?1", params![id]);
         self.exec("DELETE FROM chats WHERE id = ?1", params![id]);
         self.recent_chat_ids.retain(|c| c != id);
@@ -1651,6 +1667,9 @@ impl BeeperStore {
             is_read_only: false,
             replacement_room: None,
             can_mention_room: false,
+            threads: false,
+            follows: ThreadFollows::default(),
+            thread_reads: BTreeMap::new(),
             flags: 0,
         };
         let idx = self.push_chat(chat, true);
@@ -1702,6 +1721,31 @@ impl BeeperStore {
         reply_to_message_id: Option<String>,
         attachment: Option<Attachment>,
     ) -> Result<(String, String, Message), &'static str> {
+        self.compose(chat_or_local_id, text, reply_to_message_id, attachment, None)
+    }
+
+    /// Desktop's `sendThreadedReply`: a reply in the thread `t`, which reads the thread through it.
+    pub fn send_in_thread(
+        &mut self,
+        chat_or_local_id: &str,
+        text: Option<String>,
+        attachment: Option<Attachment>,
+        t: &ThreadSend,
+    ) -> Result<(String, String, Message), &'static str> {
+        let sent = self.compose(chat_or_local_id, text, Some(t.quoted.clone()), attachment, Some(t))?;
+        let idx = self.chat_idx_by_id[&sent.0];
+        self.update_chat(idx, |c| drop(c.thread_reads.insert(t.root.clone(), sent.2.sort_key.clone())));
+        Ok(sent)
+    }
+
+    fn compose(
+        &mut self,
+        chat_or_local_id: &str,
+        text: Option<String>,
+        reply_to_message_id: Option<String>,
+        attachment: Option<Attachment>,
+        thread: Option<&ThreadSend>,
+    ) -> Result<(String, String, Message), &'static str> {
         let c_idx = self.send_target(self.resolve_chat_idx(chat_or_local_id).ok_or("Chat not found")?);
         let (chat_id, account_id) = (self.chats[c_idx].id.clone(), self.chats[c_idx].account_id.clone());
         let msg_id = self.next_id("msg");
@@ -1740,6 +1784,9 @@ impl BeeperStore {
             timer: None,
             send_error: None,
             is_delivered: false,
+            thread_root: thread.map(|t| t.root.clone()),
+            broadcast: thread.is_some_and(|t| t.broadcast),
+            fallback: thread.is_some_and(|t| !t.chosen),
             flags: 0,
         };
         let m_idx = self.push_message(msg, true);
@@ -1796,9 +1843,64 @@ impl BeeperStore {
         (self.messages[m_idx].text, self.messages[m_idx].html) = (None, None);
         self.msg_idx_by_id.remove(message_id);
         self.chat_msg_indices.get_mut(&chat_id).expect("chat has messages").retain(|&i| i != m_idx);
+        if let Some(root) = &self.messages[m_idx].thread_root {
+            self.thread_msg_indices.get_mut(root).expect("a thread has replies").retain(|&i| i != m_idx);
+        }
         self.exec("DELETE FROM messages WHERE id = ?1", params![message_id]);
         self.emit_ws("message.deleted", &chat_id, Some(message_id), None, None);
         Ok(chat_id)
+    }
+
+    /// Desktop's `useThreadedReplies`: the threads feature is on and the room supports threads.
+    pub fn threaded(&self, chat: &Chat) -> bool {
+        chat.threads && self.feature("enable-threads").on
+    }
+
+    /// The replies of the thread of `root` in timeline order.
+    pub fn thread_replies(&self, root: &str) -> impl DoubleEndedIterator<Item = &Message> {
+        self.thread_msg_indices.get(root).into_iter().flatten().map(|&i| &self.messages[i])
+    }
+
+    /// Desktop's `threadSendOptions` for a reply in the thread of `root` to `chosen`, else to its newest message.
+    pub fn thread_send(&self, root: &str, chosen: Option<String>, broadcast: bool) -> ThreadSend {
+        let newest = || self.thread_replies(root).next_back().map_or_else(|| root.to_string(), |m| m.id.clone());
+        ThreadSend { root: root.into(), chosen: chosen.is_some(), quoted: chosen.unwrap_or_else(newest), broadcast }
+    }
+
+    /// Desktop's `followsThread`. The user takes part in a thread with its root or a reply.
+    pub fn follows_thread(&self, chat: &Chat, root: &str) -> bool {
+        let mine = |m: &Message| m.is_sender == Some(true) && m.is_deleted != Some(true);
+        let root_mine = self.msg_idx_by_id.get(root).is_some_and(|&i| mine(&self.messages[i]));
+        chat.follows.follows(root, chat.participants.total, root_mine || self.thread_replies(root).any(mine))
+    }
+
+    /// Desktop's `unreadCount` and `unreadMentionsCount` of a thread: the replies of others after its read mark.
+    pub fn thread_unread(&self, chat: &Chat, root: &str) -> (usize, usize) {
+        let Some(read) = chat.thread_reads.get(root) else { return (0, 0) };
+        let later = self.thread_replies(root).rev().take_while(|m| m.sort_key > *read);
+        let unread = later.filter(|m| m.is_sender != Some(true) && m.is_deleted != Some(true));
+        unread.fold((0, 0), |(n, at), m| (n + 1, at + usize::from(m.flags & MSG_MENTION != 0)))
+    }
+
+    /// Desktop's `markReplyThreadRead`: an unread thread is read through `through`, else through its newest reply,
+    /// and its thread receipt goes to that reply.
+    pub fn mark_thread_read(&mut self, chat_id: &str, root: &str, through: Option<&str>) {
+        let idx = self.chat_idx_by_id[chat_id];
+        if self.thread_unread(&self.chats[idx], root).0 == 0 {
+            return;
+        }
+        let last = match through {
+            Some(id) => &self.messages[self.msg_idx_by_id[id]],
+            None => self.thread_replies(root).next_back().expect("an unread thread has replies"),
+        };
+        let (key, event) = (last.sort_key.clone(), last.id.clone());
+        if self.chats[idx].thread_reads[root] >= key {
+            return;
+        }
+        self.update_chat(idx, |c| drop(c.thread_reads.insert(root.into(), key)));
+        if event.starts_with('$') {
+            self.queue(chat_id, Outgoing::ThreadRead { root: root.into(), event });
+        }
     }
 
     /// Desktop's `labelInboxVisibility`: the labels of a chat override the inbox rule of its account.
@@ -2145,7 +2247,7 @@ impl BeeperStore {
             m.flags |= MSG_DELETED;
         }
         let msgs = &self.messages;
-        for list in self.chat_msg_indices.values_mut() {
+        for list in self.chat_msg_indices.values_mut().chain(self.thread_msg_indices.values_mut()) {
             list.retain(|&i| !messages.contains(&msgs[i].id));
         }
         self.db.lock().unwrap().execute_batch("BEGIN IMMEDIATE;").expect("begin forget transaction");
@@ -2323,6 +2425,36 @@ mod tests {
         let last = *st.chat_msg_indices[&chat].last().unwrap();
         assert_eq!(st.messages[last].id, id);
         assert_eq!(st.chats[st.chat_idx_by_id[&chat]].preview.as_ref().unwrap().id, id);
+        drop(st);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Desktop's threaded replies in the demo: a reply only in the thread neither previews the chat nor counts
+    /// for an other thread, and an own reply reads the thread.
+    #[test]
+    fn thread_replies_like_desktop() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-thread-replies-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23392, None);
+        config.demo = true;
+        let mut st = super::BeeperStore::from_config(config);
+        let (chat, root) = ("!sl_infra:beeper.com", "msg_1007");
+        let c = st.chats[st.chat_idx_by_id[chat]].clone();
+        assert!(st.threaded(&c) && st.follows_thread(&c, root), "a room of 3 members follows all threads");
+        assert_eq!(st.thread_replies(root).count(), 4);
+        assert_eq!(st.thread_unread(&c, root), (2, 0));
+        assert_eq!(c.preview.unwrap().id, "msg_1010", "the reply that is also sent to the chat previews it");
+        let t = st.thread_send(root, None, false);
+        assert_eq!((t.quoted.as_str(), t.chosen), ("msg_1011", false), "the reply goes to the newest reply");
+        let (_, id, msg) = st.send_in_thread(chat, Some("ok".into()), None, &t).unwrap();
+        assert_eq!(
+            (msg.thread_root.as_deref(), msg.fallback, msg.linked_message_id.as_deref()),
+            (Some(root), true, Some("msg_1011"))
+        );
+        let c = &st.chats[st.chat_idx_by_id[chat]];
+        assert_eq!((st.thread_unread(c, root), c.preview.as_ref().unwrap().id.as_str()), ((0, 0), "msg_1010"));
+        st.remove_message(chat, &id).unwrap();
+        assert_eq!(st.thread_replies(root).count(), 4, "a removed reply leaves the thread");
         drop(st);
         std::fs::remove_dir_all(dir).unwrap();
     }
