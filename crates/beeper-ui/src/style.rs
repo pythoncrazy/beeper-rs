@@ -909,6 +909,26 @@ mod tests {
     }
 
     #[test]
+    fn caret_redraws_keep_the_shadowed_card_outside_the_damage() {
+        use iced::{Point, Rectangle, Size};
+        let mut renderer = iced_tiny_skia::Renderer::new(Font::DEFAULT, 16.into());
+        let (style, card) = (shadow_box(Color::WHITE, CLEAR, 12.0, 24.0)(&Theme::Light), Size::new(120.0, 120.0));
+        container::draw_background(&mut renderer, &style, Rectangle::new(Point::new(40.0, 40.0), card));
+        let mut pixmap = tiny_skia::Pixmap::new(200, 200).unwrap();
+        let mut mask = tiny_skia::Mask::new(200, 200).unwrap();
+        let viewport = iced_tiny_skia::graphics::Viewport::with_physical_size(Size::new(200, 200), 1.0);
+        let mut draw = |pixmap: &mut tiny_skia::Pixmap, damage| {
+            renderer.draw(&mut pixmap.as_mut(), &mut mask, &viewport, &[damage], Color::WHITE);
+        };
+        draw(&mut pixmap, Rectangle::with_size(Size::new(200.0, 200.0)));
+        let full = pixmap.clone();
+        for _ in 0..20 {
+            draw(&mut pixmap, Rectangle::new(Point::new(60.0, 60.0), Size::new(2.0, 16.0)));
+        }
+        assert!(pixmap == full, "a redraw of the caret changes no pixel of the card");
+    }
+
+    #[test]
     fn palette_matches_desktop_tokens() {
         let rows: [(&str, Token, Color, Color); 9] = [
             ("--left-pane-bg", |p| p.window, hex(0xeaebf0), hex(0x1c1d1e)),

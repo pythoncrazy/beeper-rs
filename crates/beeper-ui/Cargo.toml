@@ -34,3 +34,5 @@ wgpu = { version = "27.0.1", default-features = false, features = ["std", "parki
 beeper-core = { workspace = true, features = ["stub"] }
 iced_runtime = "0.14.0"
 iced_test = "0.14.0"
+iced_tiny_skia = { version = "0.14.1", default-features = false }
+tiny-skia = { version = "0.11.4", default-features = false, features = ["std"] }
