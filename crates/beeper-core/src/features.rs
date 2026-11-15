@@ -135,7 +135,7 @@ impl Flags {
             | "enable-polls"
             | "enable-disappearing-message-timer-config"
             | "personal-room-overrides" => self.flag(key),
-            "archive-as-unread" | "enable-threads" => {
+            "archive-as-unread" | "enable-threads" | "block-users" => {
                 let on = self.flag(key).on;
                 Feature { show: on, on, upgrade: false }
             }

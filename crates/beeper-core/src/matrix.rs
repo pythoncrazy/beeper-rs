@@ -5,8 +5,9 @@ use crate::models::{
     ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageRules, Older,
     PollData, PollOption, PollRules, Reaction, SendError, ThreadFollows, Timers, User, VerificationDevice,
     VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS,
-    BEEPER_MESSAGES, BEEPER_POLLS, BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER,
-    EDITS, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, PERSONAL_AVATAR, PERSONAL_NAME,
+    BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME,
+    DISAPPEARING_TIMER, EDITS, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, NO_UNBLOCK,
+    PERSONAL_AVATAR, PERSONAL_NAME, REPORT_SPAM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -242,6 +243,15 @@ fn file_rules(f: &Value) -> FileRules {
         .collect()
 }
 
+/// The `Chat::block` bits from the room features and the `m.bridge` channel.
+fn block_bits(features: Option<&Value>, bridge: &Value) -> u8 {
+    let on = |f: Option<&Value>, k: &str, bit: u8| u8::from(f.is_some_and(|f| f[k] == true)) * bit;
+    on(features, "block_user", BLOCK_USER)
+        | on(features, "no_unblock", NO_UNBLOCK)
+        | on(features, "report_spam", REPORT_SPAM)
+        | on(Some(&bridge["channel"]), "com.beeper.user_blocked", USER_BLOCKED)
+}
+
 /// Desktop's poll limits from `com.beeper.room_features`, or `None` when the room has no polls.
 fn poll_rules(f: &Value) -> Option<PollRules> {
     let level = |k: &str| f[k].as_i64().is_some_and(|n| n > 0);
@@ -394,6 +404,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
                 | (u8::from(f["delete_chat_for_everyone"] == true) * DELETE_FOR_EVERYONE)
         }),
         can_accept_request: features.as_ref().is_some_and(|f| f["message_request"]["accept_with_button"] == 2),
+        block: block_bits(features.as_ref(), &bridge),
         edits: edit_bits(features.as_ref(), &levels, me.as_str()),
         member_actions,
         formatting: features.as_ref().map_or(ALL_FORMATS, |f| {
@@ -1346,6 +1357,11 @@ pub enum Outgoing {
         for_everyone: bool,
     },
     AcceptRequest,
+    /// Desktop's `blockUser`: the bridge blocks (true) or unblocks the other person of a DM, and can report spam.
+    BlockUser {
+        block: bool,
+        report_spam: bool,
+    },
     /// Send the content of `event` from the `from` chat again, with the current `text` and `html`.
     Forward {
         txn: String,
@@ -1634,6 +1650,10 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
         }
         Outgoing::AcceptRequest => {
             room.send_raw("com.beeper.accept_message_request", serde_json::json!({})).await.map_err(e)?;
+        }
+        Outgoing::BlockUser { block, report_spam } => {
+            let content = serde_json::json!({ "block": block, "report_spam": report_spam });
+            room.send_raw("com.beeper.block_user", content).await.map_err(e)?;
         }
         Outgoing::DeleteChat { for_everyone } => {
             let content = serde_json::json!({ "delete_for_everyone": for_everyone });
@@ -3086,6 +3106,64 @@ mod tests {
             (&json!(["$e1"]), &json!([]), &json!(false))
         );
         assert!(body["com.beeper.revision_id"].is_string(), "Desktop writes a new revision");
+        drop(sent);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Desktop's blocking: the `block_user`, `no_unblock` and `report_spam` room features, the
+    /// `com.beeper.user_blocked` of the bridge channel, and the `com.beeper.block_user` event that the SDK sends.
+    #[tokio::test]
+    async fn blocking_follows_the_bridge_like_desktop() {
+        use crate::models::{BLOCK_USER, NO_UNBLOCK, REPORT_SPAM, USER_BLOCKED};
+        let mut sync = stub_sync();
+        let state = |kind: &str, content: Value| {
+            json!({ "type": kind, "state_key": "", "sender": "@me:x", "event_id": format!("${kind}"),
+                "origin_server_ts": 1, "content": content })
+        };
+        let features = state("com.beeper.room_features", json!({ "block_user": true, "report_spam": true }));
+        let bridge = json!({ "bridgebot": "@bot:x", "channel": { "id": "c", "com.beeper.user_blocked": true },
+            "protocol": { "id": "telegram" }, "com.beeper.room_type.v2": "dm" });
+        let events = sync["rooms"]["join"]["!room:x"]["state"]["events"].as_array_mut().unwrap();
+        events.extend([features, state("m.bridge", bridge)]);
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url =
+            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/sync" => (200, sync.clone()),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": [] })),
+                p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+                _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+                p => {
+                    log.lock().unwrap().push((p.to_string(), body));
+                    (200, json!({ "event_id": "$sent" }))
+                }
+            })
+            .await;
+        let dir = std::env::temp_dir().join(format!("beeper-rs-block-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = stub_store(&dir, &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        let chat = || {
+            let st = store.read();
+            st.chats[st.chat_idx_by_id["!room:x"]].clone()
+        };
+        let c = chat();
+        assert_eq!(c.block, BLOCK_USER | REPORT_SPAM | USER_BLOCKED);
+        assert!(!store.read().can_block(&c), "the block-users flag is off");
+        store.write().features.flags = json!({ "features": { "*": { "block-users": true } } });
+        assert!(store.read().user_blocked(&c));
+        store.write().set_user_blocked("!room:x", false, false);
+        let c = chat();
+        assert!(!store.read().user_blocked(&c) && c.block & NO_UNBLOCK == 0);
+        store.write().set_user_blocked("!room:x", true, true);
+        super::flush(store.clone()).await.expect("send the block events");
+        let sent = sent.lock().unwrap();
+        let bodies: Vec<&Value> =
+            sent.iter().filter(|(p, _)| p.contains("/send/com.beeper.block_user/")).map(|(_, b)| b).collect();
+        let want = [json!({ "block": false, "report_spam": false }), json!({ "block": true, "report_spam": true })];
+        assert_eq!(bodies, [&want[0], &want[1]]);
         drop(sent);
         let _ = std::fs::remove_dir_all(dir);
     }

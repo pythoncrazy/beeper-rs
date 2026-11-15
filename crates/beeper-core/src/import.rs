@@ -415,6 +415,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 img_url: str_field(&t, "imgURL"),
                 delete_modes: 0,
                 can_accept_request: false,
+                block: 0,
                 edits: 0,
                 member_actions: 0,
                 formatting: ALL_FORMATS,
