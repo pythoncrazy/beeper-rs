@@ -239,8 +239,14 @@ fn main() {
     // The GUI, the Desktop API and Matrix share this runtime until the process exits.
     let rt: &'static tokio::runtime::Runtime = Box::leak(Box::new(rt.expect("build tokio runtime")));
     if let Command::Info = command {
-        let info = rt.block_on(BeeperClient::new(format!("http://{host}:{}", ports.start()), "").info());
-        return println!("{}", serde_json::to_string_pretty(&info).unwrap());
+        let client = BeeperClient::new(format!("http://{host}:{}", ports.start()), "");
+        match rt.block_on(client.call("GET", "/v1/info", None)) {
+            Ok(info) => return println!("{}", serde_json::to_string_pretty(&info).expect("JSON values serialize")),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
     }
     #[cfg(target_os = "linux")]
     let first = match std::env::var("ALLOW_MULTIPLE_INSTANCES").as_deref() {

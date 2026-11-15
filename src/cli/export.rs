@@ -1,9 +1,11 @@
 //! `export` (`lib/export/index.js`): a resumable export of accounts, chats, messages, transcripts, and attachments.
 
-use super::chats::{chat_path, resolve_accounts, resolve_chat, PICK};
+use super::chats::{resolve_accounts, resolve_chat, PICK};
 use super::commands::cmd;
 use super::{js_string, pretty, CliError, Cmd, Ctx, Flag, Res};
+use beeper_api::client::chat_path;
 use beeper_api::http::query_string;
+use beeper_core::codec::escape_html;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -141,10 +143,6 @@ fn encode_uri(value: &str) -> String {
 
 fn escape_markdown(value: &str) -> String {
     value.chars().flat_map(|c| ("\\`*_{}[]()#+.!|-".contains(c).then_some('\\')).into_iter().chain([c])).collect()
-}
-
-fn escape_html(value: &str) -> String {
-    value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }
 
 fn text_of(v: &Value) -> String {

@@ -45,6 +45,7 @@ beeper-core = { workspace = true, features = ["stub"] }
 iced = { version = "0.14.0", default-features = false }
 iced_test = "0.14.0"
 rusqlite.workspace = true
+serde.workspace = true
 
 [patch.crates-io]
 iced_tiny_skia = { path = "vendor/iced_tiny_skia" }
