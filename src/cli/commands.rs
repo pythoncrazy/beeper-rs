@@ -15,8 +15,10 @@ const TOPICS: &[(&str, &str, Option<&str>)] = &[
     ("chats", "List, search, manage, and modify chats", Some("chats list")),
     ("config", "Manage local CLI configuration", None),
     ("contacts", "List, search, and inspect contacts", Some("contacts list")),
+    ("media", "Download message media", None),
     ("messages", "List, search, show, edit, delete, and export messages", None),
     ("send", "Send text, files, and reactions", None),
+    ("targets", "Manage local Desktop, managed Server, and remote Beeper targets", Some("targets list")),
 ];
 
 pub type Topic = (&'static str, &'static str, Option<&'static str>);
@@ -27,9 +29,17 @@ pub fn topic(name: &str) -> Option<&'static Topic> {
 
 /// Every command, topic by topic.
 pub fn all() -> impl Iterator<Item = &'static Cmd> + Clone {
-    [CORE, super::accounts::COMMANDS, super::chats::COMMANDS, super::messages::COMMANDS, super::stream::COMMANDS]
-        .into_iter()
-        .flatten()
+    [
+        CORE,
+        super::accounts::COMMANDS,
+        super::chats::COMMANDS,
+        super::export::COMMANDS,
+        super::messages::COMMANDS,
+        super::stream::COMMANDS,
+        super::targets::COMMANDS,
+    ]
+    .into_iter()
+    .flatten()
 }
 
 const NO_AUTH: Flag = Flag::b("no-auth", "Call a public API path without a bearer token");
@@ -452,8 +462,9 @@ fn help_as(cmd: &Cmd, id: &str) -> String {
         })
         .collect();
     out.push(section("FLAGS", &rows));
-    if !cmd.description.is_empty() {
-        let text = cmd.description.replace("`beeper ", &format!("`{BIN} "));
+    // oclif's `hideCommandSummaryInDescription` shows only the last line of the description.
+    if let Some(text) = cmd.description.lines().last() {
+        let text = text.replace("`beeper ", &format!("`{BIN} "));
         out.push(format!(
             "DESCRIPTION\n{}",
             wrap(&text, WIDTH - 2).iter().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")
