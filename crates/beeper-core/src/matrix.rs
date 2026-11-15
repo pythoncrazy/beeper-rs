@@ -1259,6 +1259,7 @@ pub enum Outgoing {
         preview: Option<crate::cloud::PagePreview>,
         mentions: Vec<Mention>,
         /// The thread of a thread reply, whose `quoted` is `reply_to`.
+        #[serde(default)]
         thread: Option<ThreadSend>,
     },
     Edit {
@@ -1342,6 +1343,9 @@ pub enum Outgoing {
         info: MediaInfo,
         caption: Option<String>,
         reply_to: Option<String>,
+        /// The thread of a thread reply, whose `quoted` is `reply_to`.
+        #[serde(default)]
+        thread: Option<ThreadSend>,
     },
 }
 
@@ -1628,19 +1632,20 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             let sent_id = room.send_raw(&kind, ev["content"].take()).with_transaction_id(txn.as_str().into());
             sent(txn, sent_id.await.map_err(e)?.response.event_id);
         }
-        Outgoing::Media { txn, bytes: data, name, mime, info, caption, reply_to } => {
+        Outgoing::Media { txn, bytes: data, name, mime, info, caption, reply_to, thread } => {
             use matrix_sdk::attachment::{
                 AttachmentConfig, AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo,
             };
             use matrix_sdk::room::reply::{EnforceThread, Reply};
+            use matrix_sdk::ruma::events::room::message::{AddMentions, ReplyWithinThread};
+            // The thread relation of the SDK is Desktop's `buildThreadRelation` without "Also send to chat".
+            let (enforce_thread, add_mentions) = match thread.map(|t| t.chosen) {
+                Some(true) => (EnforceThread::Threaded(ReplyWithinThread::Yes), AddMentions::Yes),
+                Some(false) => (EnforceThread::Threaded(ReplyWithinThread::No), AddMentions::No),
+                None => (EnforceThread::MaybeThreaded, AddMentions::Yes),
+            };
             let reply = reply_to
-                .map(|r| {
-                    event(r).map(|event_id| Reply {
-                        event_id,
-                        enforce_thread: EnforceThread::MaybeThreaded,
-                        add_mentions: matrix_sdk::ruma::events::room::message::AddMentions::Yes,
-                    })
-                })
+                .map(|r| event(r).map(|event_id| Reply { event_id, enforce_thread, add_mentions }))
                 .transpose()?;
             let size = Some(matrix_sdk::ruma::UInt::try_from(data.len()).expect("the media size fits"));
             let info = match info {

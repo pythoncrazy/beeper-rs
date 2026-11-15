@@ -241,14 +241,23 @@ impl BeeperGuiApp {
                     src_url: Some(key.clone()),
                     ..Default::default()
                 };
-                let (_, txn, _) = st.send_message(&chat, None, reply_to.clone(), Some(att)).expect("send a voice note");
-                st.mark_chat_read(&chat, true);
+                let (txn, reply_to, thread) = self.pane.compose(&mut st, &chat, None, reply_to, Some(att));
+                if thread.is_none() {
+                    st.mark_chat_read(&chat, true);
+                }
                 let info = beeper_core::matrix::MediaInfo::Voice { ms, wave };
                 let (name, mime) = ("voice-note.ogg".into(), "audio/ogg".into());
-                st.queue(
-                    &chat,
-                    beeper_core::matrix::Outgoing::Media { txn, bytes, name, mime, info, caption: None, reply_to },
-                );
+                let out = beeper_core::matrix::Outgoing::Media {
+                    txn,
+                    bytes,
+                    name,
+                    mime,
+                    info,
+                    caption: None,
+                    reply_to,
+                    thread,
+                };
+                st.queue(&chat, out);
                 drop(st);
                 self.refresh_theme_and_tray();
                 return self.voice(voice::Msg::Loaded(key, Ok(clip)));

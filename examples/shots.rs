@@ -69,6 +69,11 @@ fn main() {
     let _ = app.update(UiMessage::BeginSelecting(dm.clone()));
     shot(&out, "main_selecting", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::CloseModals);
+    app.select_chat("!sl_infra:beeper.com");
+    shot(&out, "main_threads", (1200.0, 800.0), &theme, app.view_main());
+    let _ = app.update(UiMessage::ShowThread("msg_1007".into()));
+    shot(&out, "main_thread_pane", (1200.0, 800.0), &theme, app.view_main());
+    let _ = app.update(UiMessage::HideThread);
     for tab in SettingsTab::ALL {
         let _ = app.update(UiMessage::OpenSettings(tab));
         shot(&out, &format!("settings_{tab:?}").to_lowercase(), (800.0, 740.0), &theme, app.view_settings());
