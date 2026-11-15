@@ -3227,18 +3227,23 @@ fn ease_out(x: f32) -> f32 {
 
 /// CSS `cubic-bezier(.22, 1, .36, 1)`.
 fn ease_out_quint(x: f32) -> f32 {
+    cubic_bezier(x, [0.22, 1.0, 0.36, 1.0])
+}
+
+/// CSS `cubic-bezier(x1, y1, x2, y2)` at `x`.
+fn cubic_bezier(x: f32, [x1, y1, x2, y2]: [f32; 4]) -> f32 {
     let bezier =
         |t: f32, p1: f32, p2: f32| 3.0 * (1.0 - t) * (1.0 - t) * t * p1 + 3.0 * (1.0 - t) * t * t * p2 + t.powi(3);
     let (mut lo, mut hi) = (0.0, 1.0);
     for _ in 0..20 {
         let mid = (lo + hi) / 2.0;
-        if bezier(mid, 0.22, 0.36) < x {
+        if bezier(mid, x1, x2) < x {
             lo = mid;
         } else {
             hi = mid;
         }
     }
-    bezier((lo + hi) / 2.0, 1.0, 1.0)
+    bezier((lo + hi) / 2.0, y1, y2)
 }
 
 /// Desktop's `IJ`: when a pending message shows "Still sending...", 5 s after it, or 12 s with attachments.
@@ -3315,13 +3320,14 @@ struct Forward {
     query: String,
 }
 
-/// The attachment that a carousel shows, its quarter turns, if it shows the Media window items, the inline size of
+/// The attachment that a carousel shows, its quarter turns and when the last one started, if it shows the Media window items, the inline size of
 /// the video that opened it, which plays again when the carousel closes on it, and where its menu is open.
 #[derive(Clone)]
 struct Carousel {
     mid: String,
     ai: usize,
     turns: u8,
+    turned: Option<std::time::Instant>,
     in_media: bool,
     resume: Option<(u32, u32)>,
     menu: Option<Point>,
@@ -6734,7 +6740,7 @@ impl BeeperGuiApp {
             }
             UiMessage::OpenCarousel(mid, ai, in_media) => {
                 self.leave_carousel_video();
-                self.carousel = Some(Carousel { mid, ai, turns: 0, in_media, resume: None, menu: None });
+                self.carousel = Some(Carousel { mid, ai, turns: 0, turned: None, in_media, resume: None, menu: None });
                 self.fit_carousel_video();
                 return self.load_media();
             }
@@ -6757,7 +6763,7 @@ impl BeeperGuiApp {
             }
             UiMessage::RotateCarousel => {
                 let c = self.carousel.as_mut().expect("the carousel is open");
-                c.turns = (c.turns + 1) % 4;
+                (c.turns, c.turned) = ((c.turns + 1) % 4, Some(std::time::Instant::now()));
             }
             UiMessage::CloseCarousel => {
                 let task = self.close_carousel_video();
@@ -15251,7 +15257,12 @@ impl BeeperGuiApp {
         let head =
             stack![container(title).center_x(Fill).center_y(34), container(controls).align_right(Fill).center_y(34)];
         let url = a.poster_img.as_ref().or(a.src_url.as_ref());
-        let turn = iced::Radians(-std::f32::consts::FRAC_PI_2 * f32::from(car.turns));
+        // Desktop turns the image by a quarter in `.2s` with the CSS `ease` curve.
+        let quarter = -std::f32::consts::FRAC_PI_2;
+        let turn = car.turned.map_or((0.0, 0.0, self.started), |at| {
+            let before = f32::from((car.turns + 3) % 4);
+            (quarter * before, quarter * (before + 1.0), at)
+        });
         let frames = url.and_then(|u| self.media_at(u)).and_then(|f| f.as_ref().ok());
         // Desktop's `renderAttachment`: a video plays with its controls and does not zoom, and a file is a link that
         // downloads it.
@@ -15269,9 +15280,8 @@ impl BeeperGuiApp {
             ("img" | "video", ..) => {
                 let shown: El<'a> = match frames {
                     Some(frames) => {
-                        anim::gif(anim::playing(frames, st.settings.on("autoplayGifs")), self.started, move |f| {
-                            image(f).content_fit(iced::ContentFit::ScaleDown).rotation(iced::Rotation::Solid(turn))
-                        })
+                        let frames = anim::playing(frames, st.settings.on("autoplayGifs"));
+                        anim::turning(frames, self.started, turn, |f| image(f).content_fit(iced::ContentFit::ScaleDown))
                     }
                     None => Space::new().into(),
                 };
