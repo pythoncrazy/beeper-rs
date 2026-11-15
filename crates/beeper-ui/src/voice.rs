@@ -332,6 +332,11 @@ impl BeeperGuiApp {
         Task::none()
     }
 
+    /// The chat of the current track.
+    pub(crate) fn track_chat(&self) -> Option<&String> {
+        self.audio.now.as_ref().map(|t| &t.chat)
+    }
+
     /// The decoded audio message before or after the current track in its chat, like `prevAudio` and `nextAudio`.
     fn neighbor(&self, st: &BeeperStore, forward: bool) -> Option<(String, String, String)> {
         let t = self.audio.now.as_ref()?;

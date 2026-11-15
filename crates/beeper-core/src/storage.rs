@@ -47,8 +47,7 @@ pub struct Entry {
 pub fn scan(store: &SharedStore) -> Vec<Entry> {
     let st = store.read();
     let mut owner = HashMap::new();
-    for &i in st.msg_idx_by_id.values() {
-        let m = &st.messages[i];
+    st.scan(&crate::store::Query::default().media(), |m| {
         for a in &m.attachments {
             if let Some(uri) =
                 a.src_url.as_deref().and_then(|s| s.split('?').next()).filter(|s| s.starts_with("mxc://"))
@@ -56,7 +55,8 @@ pub fn scan(store: &SharedStore) -> Vec<Entry> {
                 owner.insert(uri.to_string(), (Kind::of(a), m.chat_id.clone()));
             }
         }
-    }
+        true
+    });
     let message = |(key, chat, secs, bytes)| Entry { kind: Kind::Message, chat: Some(chat), secs, bytes, key };
     let mut all: Vec<Entry> = st.message_sizes().into_iter().map(message).collect();
     all.extend(st.assets.values().map(|a| Entry {

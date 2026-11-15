@@ -214,8 +214,7 @@ impl BeeperGuiApp {
             (Some(q), _) if q.0 == timer => (self.pending.queued.remove(&chat).expect("queued").1, true),
             (_, Some(r)) if r.0 == timer => {
                 let note = self.pending.repeat.remove(&chat).expect("repeated").1;
-                let kept =
-                    st.msg_idx_by_id.get(&note.message).is_some_and(|&i| st.messages[i].is_deleted != Some(true));
+                let kept = st.stored_message(&note.message).is_some_and(|m| m.is_deleted != Some(true));
                 let seen = self.focused && self.pane.selected_chat_id.as_ref() == Some(&chat);
                 let on = kept && !seen && st.settings.on("messageNotifications");
                 (on.then_some(note).into_iter().collect(), false)

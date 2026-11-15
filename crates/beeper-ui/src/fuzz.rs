@@ -1216,10 +1216,11 @@ fn media_window_menu_and_rows_like_desktop() {
     let _ = app.update(UiMessage::MediaMenu(false));
     let (mid, k) = {
         let mut st = app.store.write();
-        let items = crate::media_items(&st, app.media_window.as_ref().unwrap());
-        let (i, k) = items[0];
-        st.messages[i].attachments[k].file_size = Some(2048);
-        (st.messages[i].id.clone(), k)
+        let media = app.media_messages(&st);
+        let (i, k) = crate::media_items(&st, &media, app.media_window.as_ref().unwrap())[0];
+        let j = st.find_message(&media[i].id).expect("a stored message");
+        st.update_message(j, |m| m.attachments[k].file_size = Some(2048));
+        (media[i].id.clone(), k)
     };
     let _ = app.update(UiMessage::MediaSelect(true));
     let _ = app.update(UiMessage::MediaPick(mid, k));
@@ -1231,11 +1232,18 @@ fn media_window_menu_and_rows_like_desktop() {
         let mut st = app.store.write();
         let i = *st.chat_msg_indices["!note_self:beeper.com"].last().expect("a note");
         let url = "https://example.com/page".into();
-        st.messages[i].links = vec![MessageLink { url, img: Some(img.into()), ..Default::default() }];
+        st.update_message(i, |m| m.links = vec![MessageLink { url, img: Some(img.into()), ..Default::default() }]);
     }
     let _ = app.update(UiMessage::MediaTab(1));
     drop(app.view(id));
     assert!(app.wants.media.borrow().contains(img), "the row loads the preview image");
+}
+
+/// The index of a loaded message with an image, and the index of the image.
+fn image(st: &BeeperStore) -> (usize, usize) {
+    let img = |a: &Attachment| a.attachment_type == "img";
+    let i = st.messages.iter().position(|m| m.attachments.iter().any(img)).expect("an image");
+    (i, st.messages[i].attachments.iter().position(img).expect("an image"))
 }
 
 /// Desktop's Media window viewer has Delete only when the chat deletes for everyone, you sent the message, and the
@@ -1247,10 +1255,8 @@ fn media_viewer_deletes_like_desktop() {
     let id = app.media_window.as_ref().map(|w| w.id).expect("a media window");
     let (mid, ai, chat) = {
         let mut st = app.store.write();
-        let items = crate::media_items(&st, app.media_window.as_ref().expect("a media window"));
-        let (i, ai) =
-            *items.iter().find(|&&(i, k)| st.messages[i].attachments[k].attachment_type == "img").expect("an image");
-        st.messages[i].is_sender = Some(true);
+        let (i, ai) = image(&st);
+        st.update_message(i, |m| m.is_sender = Some(true));
         let c = st.chat_idx_by_id[&st.messages[i].chat_id];
         (st.chats[c].messages.delete, st.chats[c].messages.delete_max_age) = (true, None);
         (st.messages[i].id.clone(), ai, c)
@@ -1287,8 +1293,9 @@ fn media_filmstrip_scrolls_like_desktop() {
     let _ = app.update(UiMessage::WindowResized(id, size));
     let (mid, ai) = {
         let st = app.store.read();
-        let items = crate::media_items(&st, app.media_window.as_ref().unwrap());
-        (st.messages[items[0].0].id.clone(), items[0].1)
+        let media = app.media_messages(&st);
+        let items = crate::media_items(&st, &media, app.media_window.as_ref().unwrap());
+        (media[items[0].0].id.clone(), items[0].1)
     };
     let _ = app.update(UiMessage::OpenCarousel(mid, ai, true));
     let wheel = {
@@ -1312,9 +1319,7 @@ fn media_carousel_draws() {
     let id = app.media_window.as_ref().map(|w| w.id).expect("a media window");
     let (mid, ai, chat) = {
         let st = app.store.read();
-        let items = crate::media_items(&st, app.media_window.as_ref().expect("a media window"));
-        let (i, ai) =
-            *items.iter().find(|&&(i, k)| st.messages[i].attachments[k].attachment_type == "img").expect("an image");
+        let (i, ai) = image(&st);
         (st.messages[i].id.clone(), ai, st.messages[i].chat_id.clone())
     };
     let _ = app.update(UiMessage::OpenCarousel(mid.clone(), ai, true));
@@ -1668,7 +1673,7 @@ fn carousel_react_and_reply_like_desktop() {
             img_url: None,
             sort_key: String::new(),
         };
-        st.messages[i].reactions = vec![reaction];
+        st.update_message(i, |m| m.reactions = vec![reaction]);
         (st.messages[i].chat_id.clone(), st.messages[i].id.clone())
     };
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
@@ -2087,8 +2092,7 @@ fn command_bar_searches_once_for_each_query() {
     assert!(Rc::ptr_eq(&first, &hits(&app)), "a frame keeps the finds");
     let _ = app.update(UiMessage::CommandQueryChanged("rus".into()));
     assert!(!Rc::ptr_eq(&first, &hits(&app)), "a key searches again");
-    let st = app.store.read();
-    assert!(first.0.windows(2).all(|w| st.messages[w[0]].sort_key > st.messages[w[1]].sort_key), "newest first");
+    assert!(first.0.windows(2).all(|w| w[0].sort_key > w[1].sort_key), "newest first");
 }
 
 /// The work of an event does not grow with the account: a hover over a list of 2,000 chats builds as many widgets

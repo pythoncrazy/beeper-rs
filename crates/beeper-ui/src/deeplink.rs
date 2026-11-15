@@ -203,8 +203,7 @@ impl BeeperGuiApp {
         let thread = thread.map(|i| (st.chats[i].id.clone(), st.chats[i].is_request == Some(true)));
         let at_key = |key: &str| {
             let (cid, _) = thread.as_ref()?;
-            let msgs = st.chat_msg_indices.get(cid)?.iter().map(|&i| &st.messages[i]);
-            msgs.filter(|m| m.sort_key == key).map(|m| m.id.clone()).next()
+            Some(st.stored("chat_id = ?1 AND sort_key = ?2", [cid.as_str(), key]).pop()?.id)
         };
         let sorted = part(3).and_then(at_key);
         drop(st);

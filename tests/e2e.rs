@@ -549,10 +549,10 @@ async fn lifecycle() {
     let mut reopened = BeeperStore::from_config(CentralConfig::new(rs_dir.clone(), "127.0.0.1".into(), 23379, None));
     assert_eq!(reopened.setup, Some(Setup::Imported));
     assert_eq!(reopened.pin_rank.get("!dc:beeper.local"), Some(&0));
-    assert!(reopened.signed_in() && reopened.chats.len() == 6 && reopened.messages.len() == 6);
+    assert!(reopened.signed_in() && reopened.chats.len() == 6 && reopened.stored("1", []).len() == 6);
     let (_, sent_id, _) = reopened.send_message(NOTE_CHAT_ID, Some("After restart".into()), None, None).unwrap();
-    let keys: Vec<&str> = reopened.messages.iter().map(|m| m.sort_key.as_str()).collect();
-    assert!(keys.windows(2).all(|w| w[0] < w[1]), "new messages sort after imported ones: {keys:?}");
+    let last = reopened.stored("1 ORDER BY sort_key DESC LIMIT 1", []).pop().expect("a message");
+    assert_eq!(last.id, sent_id, "new messages sort after imported ones");
     reopened.delete_message(NOTE_CHAT_ID, &sent_id).unwrap();
     drop(reopened);
     let mut fresh_gui = BeeperGuiApp::new(StoreLock::shared(BeeperStore::from_config(CentralConfig::new(
@@ -1185,7 +1185,12 @@ async fn lifecycle() {
 
     {
         let st = store.read();
-        assert!(st.chats.iter().all(|c| st.chat_msg_indices.contains_key(&c.id)), "every chat has a message list");
+        for (c, list) in &st.chat_msg_indices {
+            let ids: Vec<&str> = list.iter().map(|&i| st.messages[i].id.as_str()).collect();
+            let stored: Vec<String> =
+                st.stored("chat_id = ?1 ORDER BY sort_key", [c]).into_iter().map(|m| m.id).collect();
+            assert_eq!(ids, stored, "a loaded chat has the stored messages of the chat");
+        }
     }
     let mut gui = BeeperGuiApp::new(store.clone());
     assert_eq!(gui.pane.selected_chat_id.as_deref(), Some("!note_self:beeper.com"));
@@ -1637,7 +1642,8 @@ async fn lifecycle() {
     }
     let _ = gui.update(UiMessage::SettingsQueryChanged("tray".to_string()));
     let _ = simulator(gui.view_settings());
-    let _ = gui.update(UiMessage::PickSetting(search_settings(&store.read(), "tray")[1]));
+    let hit = search_settings(&store.read(), "tray")[1];
+    let _ = gui.update(UiMessage::PickSetting(hit));
     assert_eq!(gui.active_settings_tab, SettingsTab::Appearance);
     assert!(simulator(gui.view_settings()).find("Show tray icon").is_ok());
     let _ = gui.update(UiMessage::SetPref("appLanguage", 2));

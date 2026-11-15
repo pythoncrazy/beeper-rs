@@ -67,7 +67,7 @@ use beeper_core::models::*;
 use beeper_core::platform::{current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind};
 use beeper_core::prefs;
 use beeper_core::storage;
-use beeper_core::store::{BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
+use beeper_core::store::{BeeperStore, NetworkSpace, Query, SharedStore, NOTE_CHAT_ID};
 use iced::font::Weight;
 use iced::gradient::Linear;
 use iced::keyboard::{self, key::Named, Key, Modifiers};
@@ -208,12 +208,10 @@ fn filter_hit(i: usize, c: &Chat, st: &BeeperStore) -> bool {
     match i {
         0 => c.flags & CHAT_UNREAD != 0,
         1 => c.draft.is_some(),
-        2 => {
-            let v = st.chat_msg_indices.get(&c.id);
-            v.and_then(|v| v.iter().rev().map(|&i| &st.messages[i]).find(|m| !m.silent())).is_none_or(|m| {
-                m.is_sender != Some(true) && !m.reactions.iter().any(|r| r.participant_id == st.me().id)
-            })
-        }
+        2 => c
+            .preview
+            .as_ref()
+            .is_none_or(|m| m.is_sender != Some(true) && !m.reactions.iter().any(|r| r.participant_id == st.me().id)),
         3 => c.chat_type != "group",
         4 => c.chat_type == "group",
         F_ARCHIVED => c.flags & CHAT_ARCHIVED != 0,
@@ -2113,19 +2111,6 @@ fn pin_columns(width: f32, n: usize) -> usize {
     n.max(1).div_ceil(n.max(1).div_ceil(most))
 }
 
-/// The message that the chat list previews: the newest shown message, or a newer reaction.
-fn preview_message<'s>(st: &'s BeeperStore, c: &'s Chat) -> Option<&'s Message> {
-    // Desktop's `shouldPreview` leaves out the replies only in a thread.
-    let threads = st.feature("enable-threads").on;
-    let shown = |m: &&Message| m.is_deleted != Some(true) && !m.silent() && !m.thread_only(threads);
-    let m = st.chat_msg_indices.get(&c.id).and_then(|v| v.iter().rev().map(|&i| &st.messages[i]).find(shown));
-    let reaction = c
-        .preview
-        .as_ref()
-        .filter(|p| p.message_type.as_deref() == Some("REACTION") && m.is_none_or(|m| m.sort_key < p.sort_key));
-    reaction.or(m)
-}
-
 /// Desktop's `canStartEditMessage` for text: an own message that is not a poll.
 /// Desktop's `canStartEditMessage` for a message of a chat with `rules`.
 fn editable(m: &Message, rules: MessageRules) -> bool {
@@ -2152,7 +2137,7 @@ fn preview_body(m: &Message) -> Option<String> {
 
 /// The text of Desktop's bubble on an unread pinned chat. A new message shows it, and after a minute it hides
 /// when the chat has more unread messages than Desktop's limit for its size.
-fn bubble_text(st: &BeeperStore, c: &Chat, launched: i64, now: i64) -> Option<String> {
+fn bubble_text(c: &Chat, launched: i64, now: i64) -> Option<String> {
     let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
     let at = c.last_activity.as_deref().map_or(0, |t| millis_from_rfc3339(t).expect("RFC 3339 timestamp"));
     let limit = match c.participants.total {
@@ -2163,7 +2148,7 @@ fn bubble_text(st: &BeeperStore, c: &Chat, launched: i64, now: i64) -> Option<St
     if !unread || c.unread_count == 0 || (now - at.max(launched) >= 60_000 && c.unread_count > limit) {
         return None;
     }
-    let m = preview_message(st, c)?;
+    let m = c.preview.as_ref()?;
     let tag = || message_tag(m).map(|(_, l, d)| d.map_or_else(|| l.to_string(), |(d, _)| format!("{l} {d}")));
     let text = preview_body(m).or_else(tag)?;
     let first = preview_sender(c, m).and(m.sender_name.as_deref()).and_then(|n| n.split(' ').next());
@@ -3070,6 +3055,11 @@ fn in_rail_entry(st: &BeeperStore, id: &str, c: &Chat) -> bool {
     }
 }
 
+/// The stored message `id`, which can be in a chat that is not loaded.
+fn stored(st: &BeeperStore, id: &str) -> Message {
+    st.stored_message(id).expect("a stored message")
+}
+
 /// Desktop's `rootMessageIDs`: the first message of the reply chain of `m`, which can be a message that is not loaded.
 fn reply_root<'s>(st: &'s BeeperStore, mut m: &'s Message) -> &'s str {
     let mut seen = HashSet::new();
@@ -3398,9 +3388,9 @@ fn deletable(st: &BeeperStore, m: &Message) -> bool {
 const MEDIA_PAGE: usize = 50;
 const MEDIA_TABS: [&str; 3] = ["Media", "Links", "Docs"];
 
-/// The items of the Media window tab, as (message index, attachment or link index), in its order.
-/// Like Desktop, it skips low priority chats and message requests.
-fn media_items(st: &BeeperStore, w: &MediaWindow) -> Vec<(usize, usize)> {
+/// The items of the Media window tab, as (index of `media`, attachment or link index), in its order. `media` holds the
+/// stored messages with media. Like Desktop, it skips low priority chats and message requests.
+fn media_items(st: &BeeperStore, media: &[Message], w: &MediaWindow) -> Vec<(usize, usize)> {
     let (tab, needle) = (w.tab, w.search.as_deref().unwrap_or("").trim().to_lowercase());
     let shown = |m: &&Message| {
         m.is_deleted != Some(true)
@@ -3413,8 +3403,7 @@ fn media_items(st: &BeeperStore, w: &MediaWindow) -> Vec<(usize, usize)> {
             }
             && m.text.as_deref().unwrap_or("").to_lowercase().contains(&needle)
     };
-    let mut items: Vec<_> = st
-        .messages
+    let mut items: Vec<_> = media
         .iter()
         .enumerate()
         .filter(|(_, m)| shown(m))
@@ -3514,17 +3503,6 @@ fn file_icon(a: &Attachment) -> &'static svg::Handle {
         _ => 0,
     };
     &FILE_ICONS[k]
-}
-
-/// The `n` newest of the messages `v`, newest first.
-fn newest(st: &BeeperStore, mut v: Vec<usize>, n: usize) -> Vec<usize> {
-    let key = |&i: &usize| (std::cmp::Reverse(&st.messages[i].sort_key), i);
-    if v.len() > n {
-        v.select_nth_unstable_by_key(n, key);
-        v.truncate(n);
-    }
-    v.sort_unstable_by_key(key);
-    v
 }
 
 /// The chats the forward dialog offers: recent chats, or all chats that match the query.
@@ -3970,13 +3948,15 @@ struct Memo {
     words: std::cell::RefCell<Option<Words>>,
     /// The command bar finds for a query, its filters and its room.
     hits: std::cell::RefCell<Option<(HitsKey, Hits)>>,
+    /// The stored messages with media, newest first.
+    media: std::cell::RefCell<Option<Rc<[Message]>>>,
 }
 
 /// The query, the filters and the room of a command bar search.
 type HitsKey = (String, SearchFilters, Option<String>);
 
-/// The text and the media messages that a command bar search finds, as indices of `messages`.
-type Hits = Rc<(Vec<usize>, Vec<usize>)>;
+/// The text and the media messages that a command bar search finds.
+type Hits = Rc<(Vec<Message>, Vec<Message>)>;
 
 /// All chats newest first, as indices of `chats`, and the lowercase title and search subtitle of each chat.
 type Words = (Rc<[usize]>, Rc<[String]>);
@@ -4401,10 +4381,30 @@ impl BeeperGuiApp {
             chat_history: Vec::new(),
             cycling: false,
         };
+        app.store.write().load_recent();
         if let Some(id) = first_chat {
             app.select_chat(&id);
         }
+        app.keep_shown();
         app
+    }
+
+    /// The chats that the windows show stay loaded: the chats of the panes and their threads, of the poll vote
+    /// windows, and of the voice note that plays. A chat that a sync removed leaves the windows at `StoreChanged`.
+    fn keep_shown(&mut self) {
+        let panes = std::iter::once(&self.pane).chain(self.chat_windows.iter().map(|w| &w.1));
+        let panes = panes.flat_map(|p| std::iter::once(p).chain(p.thread.as_deref()));
+        let chats = panes.filter_map(|p| p.selected_chat_id.as_ref());
+        let chats = chats.chain(self.vote_windows.iter().map(|w| &w.1)).chain(self.track_chat());
+        let st = self.store.read();
+        let shown: Vec<String> = chats.filter_map(|c| st.resolve_canonical_chat_id(c)).collect();
+        if st.shown == shown {
+            return;
+        }
+        drop(st);
+        let mut st = self.store.write();
+        st.shown = shown.clone();
+        shown.iter().for_each(|c| st.load_chat(c));
     }
 
     pub fn boot(store: SharedStore) -> (Self, Task<UiMessage>) {
@@ -4944,6 +4944,7 @@ impl BeeperGuiApp {
             self.memo.keys.borrow_mut().clear();
             self.memo.words.take();
             self.memo.hits.take();
+            self.memo.media.take();
         }
         Some(&self.memo)
     }
@@ -5826,6 +5827,7 @@ impl BeeperGuiApp {
     pub fn update(&mut self, msg: UiMessage) -> Task<UiMessage> {
         let (shown, dismissals) = (self.stackable_toast(), self.toast_dismissals);
         let task = self.handle(msg);
+        self.keep_shown();
         let replaced = |t: &(Toast, Duration)| !self.status_banner.is_empty() && t.0.text != self.status_banner;
         if let Some(t) = shown.filter(|t| dismissals == self.toast_dismissals && replaced(t)) {
             self.older_toasts.push(t);
@@ -6142,7 +6144,7 @@ impl BeeperGuiApp {
             }
             UiMessage::ToggleReaction(cid, mid, key) => {
                 let mut st = self.store.write();
-                let mine = st.messages[st.msg_idx_by_id[&mid]]
+                let mine = stored(&st, &mid)
                     .reactions
                     .iter()
                     .find(|r| r.reaction_key == key && st.is_me(&r.participant_id))
@@ -6180,7 +6182,7 @@ impl BeeperGuiApp {
             }
             UiMessage::VotePoll(mid, answers) => {
                 let mut st = self.store.write();
-                let chat = st.messages[st.msg_idx_by_id[&mid]].chat_id.clone();
+                let chat = stored(&st, &mid).chat_id;
                 st.vote_poll(&chat, &mid, answers);
             }
             UiMessage::SetReminder(cid, at) => self.set_reminder(&cid, at, None),
@@ -6774,7 +6776,7 @@ impl BeeperGuiApp {
             UiMessage::CopyText(s) => return iced::clipboard::write(s),
             UiMessage::CopyImage(mid, ai) => {
                 let st = self.store.read();
-                let a = &st.messages[st.msg_idx_by_id[&mid]].attachments[ai];
+                let a = &stored(&st, &mid).attachments[ai];
                 let url = a.src_url.clone().expect("an image has a source");
                 let fetch = beeper_core::matrix::media(st.matrix.clone(), url);
                 let decode = async move {
@@ -6908,7 +6910,8 @@ impl BeeperGuiApp {
             UiMessage::MediaPickAll => {
                 let st = self.store.read();
                 let w = self.media_window.as_ref().expect("the Media window is open");
-                let all = media_items(&st, w).into_iter().take(w.shown).map(|(i, k)| (st.messages[i].id.clone(), k));
+                let media = self.media_messages(&st);
+                let all = media_items(&st, &media, w).into_iter().take(w.shown).map(|(i, k)| (media[i].id.clone(), k));
                 let all = all.collect();
                 drop(st);
                 self.media_mut().picked = all;
@@ -6922,13 +6925,12 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let mut pairs: Vec<(String, String)> = Vec::new();
                 for (mid, _) in &items {
-                    let m = &st.messages[st.msg_idx_by_id[mid]];
+                    let m = &stored(&st, mid);
                     if deletable(&st, m) && !pairs.iter().any(|(_, x)| x == mid) {
                         pairs.push((m.chat_id.clone(), mid.clone()));
                     }
                 }
-                let skipped =
-                    items.iter().filter(|(mid, _)| !deletable(&st, &st.messages[st.msg_idx_by_id[mid]])).count();
+                let skipped = items.iter().filter(|(mid, _)| !deletable(&st, &stored(&st, mid))).count();
                 drop(st);
                 match pairs.is_empty() {
                     true => self.status_banner = tr("These messages can’t be deleted").into(),
@@ -7120,7 +7122,7 @@ impl BeeperGuiApp {
                 let mut st = self.store.write();
                 for cid in &picked {
                     for mid in &mids {
-                        let m = st.messages[st.msg_idx_by_id[mid]].clone();
+                        let m = stored(&st, mid);
                         let (_, txn, _) = st
                             .send_message(cid, m.text.clone(), None, m.attachments.first().cloned())
                             .expect("forward message");
@@ -7135,7 +7137,7 @@ impl BeeperGuiApp {
             }
             UiMessage::Download(mid, only) => {
                 let st = self.store.read();
-                let m = &st.messages[st.msg_idx_by_id[&mid]];
+                let m = &stored(&st, &mid);
                 let files: Vec<(String, String)> = m
                     .attachments
                     .iter()
@@ -7439,7 +7441,7 @@ impl BeeperGuiApp {
             }
             UiMessage::ReplyPrivately(mid) => {
                 let st = self.store.read();
-                let m = &st.messages[st.msg_idx_by_id[&mid]];
+                let m = &stored(&st, &mid);
                 let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
                 let sender = c.participants.items.iter().find(|u| u.id == m.sender_id).cloned().expect("the sender");
                 let quote = copy_text(m, false, false).lines().map(|l| format!("> {l}\n")).collect();
@@ -10354,9 +10356,27 @@ impl BeeperGuiApp {
         )
     }
 
-    /// The command bar finds: the 20 newest text messages, and the 50 newest messages for the media grid, as
-    /// indices of `messages`. The memo keeps them for the query, the filters and the room until the store changes,
-    /// so that only a key or a change of the store searches again.
+    /// The stored messages with media for the Media window, newest first. The memo keeps them until the store changes.
+    fn media_messages(&self, st: &BeeperStore) -> Rc<[Message]> {
+        let memo = self.memo();
+        if let Some(all) = memo.and_then(|m| m.media.borrow().clone()) {
+            return all;
+        }
+        let mut all = Vec::new();
+        st.scan(&Query::default().media(), |m| {
+            all.push(m);
+            true
+        });
+        let all: Rc<[Message]> = all.into();
+        if let Some(m) = memo {
+            *m.media.borrow_mut() = Some(all.clone());
+        }
+        all
+    }
+
+    /// The command bar finds: the 20 newest text messages, and the 50 newest messages for the media grid. The memo
+    /// keeps them for the query, the filters and the room until the store changes, so that only a key or a change of
+    /// the store searches again.
     fn search_hits(&self, st: &BeeperStore, q: &str) -> Hits {
         let (f, room) = (&self.search_filters, self.search_room.as_deref());
         let key = (q.to_string(), f.clone(), self.search_room.clone());
@@ -10365,26 +10385,33 @@ impl BeeperGuiApp {
         if let Some((_, hits)) = memo.and_then(|m| m.hits.borrow().clone()).filter(|(k, _)| *k == key) {
             return hits;
         }
-        let found = match q.chars().count() > 1 && f.media.is_empty() {
-            true => st.search_messages(q),
+        let words = q.chars().count() > 1 && !q.trim().is_empty();
+        let newest = |query: Query, n: usize, keep: &dyn Fn(&Message) -> bool| {
+            let mut found = Vec::new();
+            st.scan(&query, |m| {
+                if keep(&m) && f.keeps(st, room, &m) {
+                    found.push(m);
+                }
+                found.len() < n
+            });
+            found
+        };
+        let found = match words && f.media.is_empty() {
+            true => newest(Query::default().text(q), 20, &|m| m.text.as_deref().is_some_and(|t| !t.is_empty())),
             false => Vec::new(),
         };
-        let found = found.into_iter().filter(|&i| {
-            let m = &st.messages[i];
-            m.text.as_deref().is_some_and(|t| !t.is_empty()) && f.keeps(st, room, m)
-        });
-        let found = newest(st, found.collect(), 20);
         let media = match f.media.is_empty() {
             true => Vec::new(),
             false => {
-                let text: Option<HashSet<usize>> =
-                    (q.chars().count() > 1).then(|| st.search_messages(q).into_iter().collect());
+                let text: Option<HashSet<String>> = words.then(|| {
+                    let all = newest(Query::default().media().text(q), usize::MAX, &|_| true);
+                    all.into_iter().map(|m| m.id).collect()
+                });
                 let titled: Vec<bool> = st.chats.iter().map(|c| c.title.to_lowercase().contains(q)).collect();
-                let hit = |&(i, m): &(usize, &Message)| {
-                    text.as_ref().is_none_or(|t| t.contains(&i) || titled[st.chat_idx_by_id[&m.chat_id]])
-                        && f.keeps(st, room, m)
+                let hit = |m: &Message| {
+                    text.as_ref().is_none_or(|t| t.contains(&m.id) || titled[st.chat_idx_by_id[&m.chat_id]])
                 };
-                newest(st, st.messages.iter().enumerate().filter(hit).map(|(i, _)| i).collect(), 50)
+                newest(Query::default().media(), 50, &hit)
             }
         };
         let hits = Rc::new((found, media));
@@ -11865,7 +11892,7 @@ impl BeeperGuiApp {
                         container(at).padding([0, 4]).center_y(14).style(fill_box(bg, 7.0)).into()
                     }),
                 };
-                let bubble = bubble_text(&st, c, launched, now).filter(|_| previews && !on && !selecting);
+                let bubble = bubble_text(c, launched, now).filter(|_| previews && !on && !selecting);
                 let unread = unread.filter(|_| bubble.is_none());
                 let face = stack![container(self.chat_avatar(c, pin_av, 1.25)).center_x(pin_av + 4.0)]
                     .push((!selecting).then(|| container(unread).width(pin_av + 4.0).align_right(pin_av + 4.0)))
@@ -11985,7 +12012,7 @@ impl BeeperGuiApp {
                 .as_ref()
                 .and_then(|d| d.text.as_deref())
                 .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
-            let m = preview_message(&st, c).filter(|_| previews && draft.is_none());
+            let m = c.preview.as_ref().filter(|_| previews && draft.is_none());
             let reaction = m.filter(|m| m.message_type.as_deref() == Some("REACTION"));
             let next = next_send(&st, &c.id);
             let ts = match (self.active_tab, &c.reminder, next) {
@@ -12781,7 +12808,7 @@ impl BeeperGuiApp {
     /// the chat and the root, the unread count, and the newest reply.
     fn unread_thread_card<'a>(&'a self, st: &BeeperStore, chat: &Chat, root: &str, selected: bool) -> El<'a> {
         let p = &self.pal;
-        let replies: Vec<&Message> = st.thread_replies(root).collect();
+        let replies = st.stored_replies(&chat.id, root);
         let read = chat.thread_reads.get(root).cloned().unwrap_or_default();
         // Desktop's `unreadSenderIDs`: the senders of the unread replies, the newest first.
         let mut senders: Vec<&str> = Vec::new();
@@ -12815,7 +12842,7 @@ impl BeeperGuiApp {
             .push(first.map(|f| container(f).padding(Padding::ZERO.left(-8.0))))
             .width(56);
         let message = |m: Option<&Message>| m.and_then(preview_body).unwrap_or_else(|| tr("Message").into());
-        let root_text = message(st.msg_idx_by_id.get(root).map(|&i| &st.messages[i]));
+        let root_text = message(st.stored_message(root).as_ref());
         let time = txt(format_short_ts(&newest.timestamp, st.settings.pref("timeFormat") == 1), 11.0).color(p.sub);
         let top =
             row![ell(&repliers, 180.0, 13.0, Weight::Normal).color(p.sub), Space::new().width(Fill), time].spacing(8);
@@ -15030,8 +15057,8 @@ impl BeeperGuiApp {
         .align_y(Center)
         .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0));
         let hits = self.search_hits(&st, &q);
-        let found: Vec<&Message> = hits.0.iter().map(|&i| &st.messages[i]).collect();
-        let media: Vec<&Message> = hits.1.iter().map(|&i| &st.messages[i]).collect();
+        let found: Vec<&Message> = hits.0.iter().collect();
+        let media: Vec<&Message> = hits.1.iter().collect();
         let none =
             found.is_empty() && chats.is_empty() && media.is_empty() && (q.chars().count() > 1 || !f.media.is_empty());
         let heading = |label: &'static str| {
@@ -15194,10 +15221,11 @@ impl BeeperGuiApp {
     fn carousel_items(&self, st: &BeeperStore) -> Option<(Vec<(String, usize)>, usize)> {
         let c = self.carousel.as_ref().expect("the carousel is open");
         let items: Vec<_> = match c.in_media {
-            true => media_items(st, self.media_window.as_ref().expect("the Media window is open"))
-                .into_iter()
-                .map(|(i, k)| (st.messages[i].id.clone(), k))
-                .collect(),
+            true => {
+                let media = self.media_messages(st);
+                let items = media_items(st, &media, self.media_window.as_ref().expect("the Media window is open"));
+                items.into_iter().map(|(i, k)| (media[i].id.clone(), k)).collect()
+            }
             false => {
                 let chat = &st.messages[*st.msg_idx_by_id.get(&c.mid)?].chat_id;
                 let messages = st.chat_msg_indices[chat].iter().map(|&i| &st.messages[i]);
@@ -15218,7 +15246,8 @@ impl BeeperGuiApp {
     fn carousel_video(&self) -> Option<(String, (u32, u32))> {
         let c = self.carousel.as_ref()?;
         let st = self.store.read();
-        let a = st.messages[*st.msg_idx_by_id.get(&c.mid)?].attachments.get(c.ai)?;
+        let m = st.stored_message(&c.mid)?;
+        let a = m.attachments.get(c.ai)?;
         let src = a.src_url.clone().filter(|_| a.attachment_type == "video" && a.is_gif != Some(true))?;
         let area = match c.in_media {
             true => self.media_window.as_ref().expect("the Media window is open").size,
@@ -15241,7 +15270,8 @@ impl BeeperGuiApp {
     }
 
     fn carousel_key(&mut self, key: &Key, mods: keyboard::Modifiers) -> Task<UiMessage> {
-        let Some((items, at)) = self.carousel_items(&self.store.read()) else {
+        let items = self.carousel_items(&self.store.read());
+        let Some((items, at)) = items else {
             return self.update(UiMessage::CloseCarousel);
         };
         let c = self.carousel.clone().expect("the carousel is open");
@@ -15364,7 +15394,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let (items, at) = self.carousel_items(&st)?;
         let (mid, ai) = (car.mid.as_str(), car.ai);
-        let m = &st.messages[st.msg_idx_by_id[mid]];
+        let m = &stored(&st, mid);
         let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
         let a = &m.attachments[ai];
         let h24 = st.settings.pref("timeFormat") == 1;
@@ -15490,7 +15520,7 @@ impl BeeperGuiApp {
             let size = self.media_window.as_ref().expect("the Media window is open").size;
             let (start, end) = filmstrip(&size, at, items.len(), car.strip);
             let thumbs = items[start..end].iter().enumerate().map(|(k, (mid, ai))| -> El<'a> {
-                let a = &st.messages[st.msg_idx_by_id[mid]].attachments[*ai];
+                let a = &stored(&st, mid).attachments[*ai];
                 let edge = if start + k == at { p.accent } else { CLEAR };
                 let face = container(self.thumb(a, 44.0, 6.0)).padding(2);
                 let face = face.style(bordered_box(white.scale_alpha(0.1), edge, 2.0, 8.0));
@@ -15723,7 +15753,8 @@ impl BeeperGuiApp {
             let mark = on.then(|| tinted(done_icon, 14.0, Color::WHITE));
             container(mark).center(20).style(bordered_box(bg, edge, 1.5, 10.0)).into()
         };
-        let items = media_items(&st, w);
+        let media = self.media_messages(&st);
+        let items = media_items(&st, &media, w);
         // Desktop's `label-sm` (11/14) and `body-sm` (13/16) type of the Media window.
         let sub = |s: String| txt(s, 11.0).line_height(Pixels(14.0)).color(p.on_secondary);
         let tabs = MEDIA_TABS.iter().enumerate().map(|(i, label)| -> El<'a> {
@@ -15789,14 +15820,14 @@ impl BeeperGuiApp {
         let text_w = inner - 20.0 - 48.0 - 8.0 - 150.0;
         let mut groups: Vec<(String, Vec<(usize, usize)>)> = Vec::new();
         for &(i, k) in items.iter().take(w.shown) {
-            let label = media_group(day_num(&st.messages[i].timestamp));
+            let label = media_group(day_num(&media[i].timestamp));
             match groups.last_mut() {
                 Some((l, g)) if *l == label => g.push((i, k)),
                 _ => groups.push((label, vec![(i, k)])),
             }
         }
         let body = groups.iter().fold(Column::new(), |col, (label, group)| {
-            let days = group.iter().map(|&(i, _)| day_num(&st.messages[i].timestamp));
+            let days = group.iter().map(|&(i, _)| day_num(&media[i].timestamp));
             let (lo, hi) = (days.clone().min().expect("a group has items"), days.max().expect("a group has items"));
             let full = |d| i18n::date(i18n::Date::Medium, civil_from_days(d), (0, 0));
             let range = if lo == hi { full(lo) } else { format!("{} - {}", full(lo), full(hi)) };
@@ -15805,7 +15836,7 @@ impl BeeperGuiApp {
             match w.tab {
                 0 => group.chunks(cols).fold(col, |col, chunk| {
                     let tiles = chunk.iter().map(|&(i, k)| -> El<'a> {
-                        let m = &st.messages[i];
+                        let m = &media[i];
                         let a = &m.attachments[k];
                         let badge = match (a.is_gif == Some(true), a.attachment_type == "video") {
                             (true, _) => Some(row![semi(tr("GIF"), 11.0).line_height(Pixels(14.0))]),
@@ -15861,7 +15892,7 @@ impl BeeperGuiApp {
                     )
                 }),
                 _ => group.iter().fold(col, |col, &(i, k)| {
-                    let m = &st.messages[i];
+                    let m = &media[i];
                     let icon = |glyph, size| -> El<'a> {
                         container(tinted(glyph, size, p.on_secondary)).center(40).style(fill_box(p.chip, 8.0)).into()
                     };
@@ -15935,11 +15966,7 @@ impl BeeperGuiApp {
         let footer = w.select.then(|| {
             let bytes: u64 = match w.tab {
                 1 => 0,
-                _ => w
-                    .picked
-                    .iter()
-                    .filter_map(|(mid, k)| st.messages[st.msg_idx_by_id[mid]].attachments[*k].file_size)
-                    .sum(),
+                _ => w.picked.iter().filter_map(|(mid, k)| stored(&st, mid).attachments[*k].file_size).sum(),
             };
             let n = w.picked.len();
             let count = match bytes {
@@ -15969,7 +15996,7 @@ impl BeeperGuiApp {
         let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.card, 12.0));
         let base = container(column![title, pane]).padding(8).width(Fill).height(Fill).style(fill_box(p.window, 0.0));
         let item_menu = w.item_menu.as_ref().map(|(mid, k, at)| {
-            let m = &st.messages[st.msg_idx_by_id[mid]];
+            let m = &stored(&st, mid);
             let act =
                 |label: &str, msg| menu_item(p, None, label.into(), "", Some(UiMessage::MediaItemAct(Box::new(msg))));
             let go = act(tr("Go to Message"), UiMessage::GoToMessage(m.chat_id.clone(), mid.clone()));
@@ -16863,7 +16890,7 @@ impl BeeperGuiApp {
                 let mids: Vec<&str> = self.delete_target.as_deref().expect("messages to delete").split(' ').collect();
                 let n = mids.len();
                 let delete = mids.iter().map(|&mid| {
-                    UiMessage::DeleteMessage(st.messages[st.msg_idx_by_id[mid]].chat_id.clone(), mid.into())
+                    UiMessage::DeleteMessage(stored(&st, mid).chat_id, mid.into())
                 });
                 let body = match n {
                     1 => tr("Are you sure you want to delete this message?").into(),
