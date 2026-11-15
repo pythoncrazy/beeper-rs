@@ -195,10 +195,11 @@ fn no_route() -> Response {
     error(StatusCode::NOT_FOUND, "Not found", "not_found")
 }
 
-fn store_error(e: &'static str) -> Response {
-    match e.starts_with("Cannot overwrite") {
-        true => error(StatusCode::CONFLICT, e, "DRAFT_NOT_EMPTY"),
-        false => missing(e),
+fn store_error(e: beeper_core::Error) -> Response {
+    use beeper_core::Error::{ChatNotFound, DraftNotEmpty, MessageNotFound, ReactionNotFound};
+    match e {
+        DraftNotEmpty => error(StatusCode::CONFLICT, &e.to_string(), "DRAFT_NOT_EMPTY"),
+        ChatNotFound | MessageNotFound | ReactionNotFound => missing(&e.to_string()),
     }
 }
 
