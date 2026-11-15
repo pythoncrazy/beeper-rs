@@ -4,7 +4,7 @@ use crate::i18n::{tr, trf};
 use crate::style::{brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, CLEAR};
 use crate::{menu_item, BeeperGuiApp, El, Toast, UiMessage, ERROR_CIRCLE};
 use beeper_core::bridge_login::{self, Field, Flow, Step};
-use beeper_core::config::find_network;
+use beeper_core::config::{cloud_bridge, find_network};
 use beeper_core::matrix::Provision;
 use beeper_core::models::NetworkSpec;
 use iced::widget::{
@@ -84,19 +84,6 @@ static DOMAIN: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?i)^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$")
         .expect("the domain pattern compiles")
 });
-
-/// The Beeper Cloud bridge of a network (Desktop's cloud platforms), if beeper-rs can add an account on it.
-pub fn cloud_bridge(n: &NetworkSpec) -> Option<&'static str> {
-    match n.bridge_id {
-        "hungryserv" | "imessage" | "bluesky" => None,
-        "slack" => Some("slackgo"),
-        "discord" => Some("discordgo"),
-        "facebook" => Some("facebookgo"),
-        "instagram" => Some("instagramgo"),
-        "tumblr" => Some("tumblrdms"),
-        id => Some(id),
-    }
-}
 
 /// An Add Account window.
 pub struct AddAccount {

@@ -4,6 +4,7 @@ use beeper_core::config::{account_network, rfc3339_from_millis};
 use beeper_core::models::*;
 use beeper_core::store::BeeperStore;
 use serde::Serialize;
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 /// Desktop's `Bridge` of `listBridges`.
@@ -80,6 +81,91 @@ pub(super) fn logins<'a>(st: &'a BeeperStore, bridge_id: &str) -> Vec<BridgeLogi
         }
     };
     ids.into_iter().map(login).collect()
+}
+
+/// Desktop's `mapLoginStep`: the API shape of a bridge login step. Like Desktop, it reads only the keys that it
+/// knows, with their types.
+fn login_step(raw: &Value) -> Value {
+    let text = |v: &Value| v.as_str().map(Value::from);
+    let set = |o: &mut Value, k: &str, v: Option<Value>| {
+        if let Some(v) = v {
+            o[k] = v;
+        }
+    };
+    let id = raw["step_id"].as_str().unwrap_or_default();
+    let mut step = json!({ "type": raw["type"], "stepID": id });
+    set(&mut step, "instructions", text(&raw["instructions"]));
+    match raw["type"].as_str() {
+        Some("user_input") => {
+            let fields = raw["user_input"]["fields"].as_array().into_iter().flatten().map(|f| {
+                let mut field = json!({ "id": f["id"].as_str().unwrap_or_default() });
+                for (k, from) in [
+                    ("type", "type"),
+                    ("label", "label"),
+                    ("placeholder", "placeholder"),
+                    ("initialValue", "initial_value"),
+                ] {
+                    set(&mut field, k, text(&f[from]));
+                }
+                set(&mut field, "optional", f["optional"].as_bool().map(Value::from));
+                field
+            });
+            step["fields"] = fields.collect::<Vec<_>>().into();
+            set(&mut step, "attachments", raw["user_input"]["attachments"].as_array().map(|a| a.clone().into()));
+        }
+        Some("cookies") => {
+            let c = &raw["cookies"];
+            step["url"] = c["url"].as_str().unwrap_or_default().into();
+            set(&mut step, "userAgent", text(&c["user_agent"]));
+            let fields = c["fields"].as_array().into_iter().flatten().map(|f| {
+                let mut field = json!({ "id": f["id"].as_str().or(f["name"].as_str()).unwrap_or_default() });
+                let kind = f["type"].as_str().filter(|t| ["cookie", "header", "local_storage"].contains(t));
+                set(&mut field, "type", kind.map(Value::from));
+                set(&mut field, "name", text(&f["name"]));
+                field
+            });
+            step["fields"] = fields.collect::<Vec<_>>().into();
+            set(&mut step, "expectedFinalURLRegex", text(&c["wait_for_url_pattern"]));
+            set(&mut step, "extractJS", text(&c["extract_js"]));
+        }
+        Some("display_and_wait") => {
+            let d = &raw["display_and_wait"];
+            let data = d["data"].as_str().unwrap_or_default();
+            step["display"] = match d["type"].as_str() {
+                Some("qr") => json!({ "type": "qr", "data": data }),
+                Some("emoji") => json!({ "type": "emoji", "imageURL": d["image_url"].as_str().unwrap_or_default() }),
+                Some("code") => json!({ "type": "code", "data": data }),
+                _ => json!({ "type": "nothing" }),
+            };
+        }
+        Some("complete") => {}
+        _ => return Value::Null,
+    }
+    step
+}
+
+/// Desktop's `buildLoginSession`: the session of a login process with its current step. A finished login has the
+/// status `complete`.
+pub(super) fn login_session(id: &str, bridge: &str, login: Value, account: Value, raw: &Value) -> Value {
+    let step = login_step(raw);
+    let status = match step["type"].as_str() {
+        Some("user_input") => "waiting_for_input",
+        Some("cookies") => "waiting_for_cookies",
+        Some("display_and_wait") => "waiting_for_display",
+        Some("complete") => "complete",
+        _ => "failed",
+    };
+    let mut session = json!({ "loginSessionID": id, "bridgeID": bridge });
+    for (k, v) in [("loginID", login), ("accountID", account)] {
+        if !v.is_null() {
+            session[k] = v;
+        }
+    }
+    session["status"] = status.into();
+    if !step.is_null() {
+        session["currentStep"] = step;
+    }
+    session
 }
 
 /// Desktop's `Chat`.

@@ -157,6 +157,19 @@ pub const NETWORK_SPECS: [NetworkSpec; 20] = [
     net(Bluesky, "bluesky", "bluesky", "Bluesky", [0, 133, 255], [T, F, F, F, F]),
 ];
 
+/// The Beeper Cloud bridge of a network (Desktop's cloud platforms), if beeper-rs can add an account on it.
+pub fn cloud_bridge(n: &NetworkSpec) -> Option<&'static str> {
+    match n.bridge_id {
+        "hungryserv" | "imessage" | "bluesky" => None,
+        "slack" => Some("slackgo"),
+        "discord" => Some("discordgo"),
+        "facebook" => Some("facebookgo"),
+        "instagram" => Some("instagramgo"),
+        "tumblr" => Some("tumblrdms"),
+        id => Some(id),
+    }
+}
+
 pub fn network_spec(bridge_id: &str) -> Option<&'static NetworkSpec> {
     NETWORK_SPECS.iter().find(|n| n.bridge_id == bridge_id)
 }

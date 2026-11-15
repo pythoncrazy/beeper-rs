@@ -1126,74 +1126,11 @@ pub struct RemoteProfile {
     pub email: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BridgeLoginFlow {
-    pub id: String,
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BridgeLoginField {
-    pub id: String,
-    pub name: String,
-    #[serde(rename = "type")]
-    pub field_type: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BridgeLoginStep {
-    #[serde(rename = "stepID")]
-    pub step_id: String,
-    #[serde(rename = "type")]
-    pub step_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub instructions: Option<String>,
-    #[serde(rename = "userInput", skip_serializing_if = "Option::is_none")]
-    pub user_input: Option<BridgeLoginStepUserInput>,
-    #[serde(rename = "displayAndWait", skip_serializing_if = "Option::is_none")]
-    pub display_and_wait: Option<BridgeLoginStepDisplay>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cookies: Option<BridgeLoginStepCookies>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub complete: Option<BridgeLoginStepComplete>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BridgeLoginStepUserInput {
-    pub fields: Vec<BridgeLoginField>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BridgeLoginStepDisplay {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BridgeLoginStepCookies {
-    pub names: Vec<String>,
-    pub url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BridgeLoginStepComplete {
-    #[serde(rename = "userLoginID")]
-    pub user_login_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A login session of the Desktop API: Desktop's `LoginSession` and the bridge step that it shows.
+#[derive(Debug, Clone)]
 pub struct BridgeLoginSession {
-    #[serde(rename = "loginSessionID")]
-    pub login_session_id: String,
-    #[serde(rename = "bridgeID")]
-    pub bridge_id: String,
-    #[serde(rename = "flowID")]
-    pub flow_id: String,
-    pub step: BridgeLoginStep,
+    pub view: serde_json::Value,
+    pub step: crate::bridge_login::Step,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

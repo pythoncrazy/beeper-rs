@@ -155,7 +155,7 @@ pub fn network_grid(st: &BeeperStore, query: &str, ink: Color) -> El<'static> {
             .align_x(Center)
             .padding(8);
             // Desktop's tile tooltip (`App:132302`): beeper-rs adds accounts on the Beeper Cloud bridges only.
-            let bridge = crate::add_account::cloud_bridge(n);
+            let bridge = beeper_core::config::cloud_bridge(n);
             let open = !st.config.demo && bridge.is_some_and(|b| count == 0 || features.multi_account(b));
             let tip = match (bridge, count, open) {
                 (None, ..) => trf("Can't add %s", &[&n.display_name]),
