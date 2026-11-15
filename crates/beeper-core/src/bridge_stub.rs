@@ -5,7 +5,8 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-/// An HTTP server on a free port that answers each request with `reply(method, path, body)`.
+/// An HTTP server on a free port that answers each request with `reply(method, path, body)`. A body that is not
+/// JSON is a JSON string, and an empty body is null.
 pub async fn serve(reply: impl Fn(&str, &str, Value) -> (u16, Value) + Send + Sync + 'static) -> String {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind the stub server");
@@ -29,7 +30,12 @@ pub async fn serve(reply: impl Fn(&str, &str, Value) -> (u16, Value) + Send + Sy
                 stream.read_exact(&mut body).await.expect("read the request body");
                 let mut parts = line.split(' ');
                 let (method, path) = (parts.next().expect("a method"), parts.next().expect("a path"));
-                let (code, json) = reply(method, path, serde_json::from_slice(&body).unwrap_or(Value::Null));
+                let body = match serde_json::from_slice(&body) {
+                    Ok(v) => v,
+                    Err(_) if body.is_empty() => Value::Null,
+                    Err(_) => Value::String(String::from_utf8_lossy(&body).into()),
+                };
+                let (code, json) = reply(method, path, body);
                 let json = json.to_string();
                 let head = format!(
                     "HTTP/1.1 {code} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",

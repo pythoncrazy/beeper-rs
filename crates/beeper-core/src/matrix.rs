@@ -1370,6 +1370,12 @@ pub enum Outgoing {
         target: String,
         on: bool,
     },
+    /// Desktop's `setTranscription`: the transcription of a message in a room. Its chat is the transcriptions room.
+    Transcription {
+        room: String,
+        target: String,
+        transcription: Transcription,
+    },
     /// Uploads an image with its MIME type and makes it the room avatar, or removes the avatar.
     Avatar(Option<(Vec<u8>, String)>),
     /// Sets room account data of this type.
@@ -1814,6 +1820,16 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                 }
                 _ => {}
             }
+        }
+        Outgoing::Transcription { room: chat, target, transcription: t } => {
+            let content = serde_json::json!({
+                "msgtype": TRANSCRIPTION,
+                "com.beeper.relates_to": { "room_id": chat, "event_id": event(target)?, "rel_type": TRANSCRIPTION },
+                "com.beeper.transcription.model": t.engine,
+                "com.beeper.transcription.language": t.language,
+                "m.text": [{ "body": t.transcription }],
+            });
+            room.send_raw(TRANSCRIPTION, content).await.map_err(e)?;
         }
         Outgoing::Avatar(image) => {
             let content = match image {

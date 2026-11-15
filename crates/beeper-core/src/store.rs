@@ -2410,6 +2410,15 @@ impl BeeperStore {
         }
     }
 
+    /// Desktop's `transcribeAttachment` after the transcription: the transcription of the message `target`, here and
+    /// in the transcriptions room.
+    pub fn transcribed(&mut self, target: &str, t: Transcription) {
+        let i = self.find_message(target).expect("a transcribed message is stored");
+        let room = self.messages[i].chat_id.clone();
+        self.set_transcription(target, t.clone());
+        self.queue(TRANSCRIPTIONS_ROOM, Outgoing::Transcription { room, target: target.into(), transcription: t });
+    }
+
     /// Desktop's `sendPoll`: a pending poll message with the options `1`, `2`, ..., and its poll start event.
     pub fn send_poll(&mut self, chat: &str, question: String, answers: Vec<String>, multiple: bool, undisclosed: bool) {
         assert!(answers.len() >= 2, "a poll has two options");
@@ -3002,6 +3011,24 @@ mod tests {
             if r == "!bookmarks" && *room == m.chat_id && target == "$other"),
             "a message that is not loaded"
         );
+        drop(st);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    /// Desktop's `setTranscription`: the message shows the transcription, and the transcriptions room gets it.
+    #[test]
+    fn transcriptions_go_to_the_transcriptions_room() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-transcribed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23394, None);
+        config.demo = true;
+        let mut st = super::BeeperStore::from_config(config);
+        st.config.demo = false;
+        let t = super::Transcription { transcription: "Hi".into(), engine: "openai-whisper".into(), language: None };
+        st.transcribed("msg_1003", t.clone());
+        let i = st.find_message("msg_1003").unwrap();
+        assert_eq!(st.messages[i].attachments[0].transcription.as_ref(), Some(&t));
+        assert!(matches!(&st.outbox[..], [(_, r, super::Outgoing::Transcription { room, target, transcription })]
+            if r == super::TRANSCRIPTIONS_ROOM && room == "!tg_rust:beeper.com" && target == "msg_1003" && *transcription == t));
         drop(st);
         std::fs::remove_dir_all(dir).unwrap();
     }

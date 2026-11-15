@@ -410,6 +410,72 @@ pub const AI: &[Item] = &[
         .args(&["20"])]),
 ];
 
+/// Desktop's Whisper languages (`yx`) by code. "auto" (`Gd`) detects the language.
+pub const TRANSCRIPTION_LANGUAGES: [(&str, &str); 57] = [
+    ("af", "Afrikaans"),
+    ("ar", "Arabic"),
+    ("hy", "Armenian"),
+    ("az", "Azerbaijani"),
+    ("be", "Belarusian"),
+    ("bs", "Bosnian"),
+    ("bg", "Bulgarian"),
+    ("ca", "Catalan"),
+    ("zh", "Chinese"),
+    ("hr", "Croatian"),
+    ("cs", "Czech"),
+    ("da", "Danish"),
+    ("nl", "Dutch"),
+    ("en", "English"),
+    ("et", "Estonian"),
+    ("fi", "Finnish"),
+    ("fr", "French"),
+    ("gl", "Galician"),
+    ("de", "German"),
+    ("el", "Greek"),
+    ("he", "Hebrew"),
+    ("hi", "Hindi"),
+    ("hu", "Hungarian"),
+    ("is", "Icelandic"),
+    ("id", "Indonesian"),
+    ("it", "Italian"),
+    ("ja", "Japanese"),
+    ("kn", "Kannada"),
+    ("kk", "Kazakh"),
+    ("ko", "Korean"),
+    ("lv", "Latvian"),
+    ("lt", "Lithuanian"),
+    ("mk", "Macedonian"),
+    ("ms", "Malay"),
+    ("mr", "Marathi"),
+    ("mi", "Maori"),
+    ("ne", "Nepali"),
+    ("no", "Norwegian"),
+    ("fa", "Persian"),
+    ("pl", "Polish"),
+    ("pt", "Portuguese"),
+    ("ro", "Romanian"),
+    ("ru", "Russian"),
+    ("sr", "Serbian"),
+    ("sk", "Slovak"),
+    ("sl", "Slovenian"),
+    ("es", "Spanish"),
+    ("sw", "Swahili"),
+    ("sv", "Swedish"),
+    ("tl", "Tagalog"),
+    ("ta", "Tamil"),
+    ("th", "Thai"),
+    ("tr", "Turkish"),
+    ("uk", "Ukrainian"),
+    ("ur", "Urdu"),
+    ("vi", "Vietnamese"),
+    ("cy", "Welsh"),
+];
+
+/// The name of the Whisper language `code`, or None for "auto" and unknown codes (Desktop's `isTranscriptionLanguage`).
+pub fn transcription_language(code: &str) -> Option<&'static str> {
+    TRANSCRIPTION_LANGUAGES.iter().find(|(c, _)| *c == code).map(|(_, name)| *name)
+}
+
 pub const PAGES: [(&str, &[Item]); 4] =
     [("General", GENERAL), ("Appearance", APPEARANCE), ("Notifications", NOTIFICATIONS), ("AI", AI)];
 
