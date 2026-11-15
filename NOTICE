@@ -64,6 +64,7 @@ The files in `crates/beeper-core/assets/themes/` come from the `beeper/themes` r
 - **Call icon (`CALL` SVG in `crates/beeper-ui/src/lib.rs`)**: The path data comes from the `Call` system icon of Beeper Desktop. It is property of Beeper Inc.
 - **Toast icons (`TOAST_ICONS` SVGs in `crates/beeper-ui/src/lib.rs`)**: The path data comes from the `Archive`, `Inbox`, `LowPriority` and `Undo` assets of Beeper Desktop. It is property of Beeper Inc.
 - **Iced (`iced`, `iced_test`)**: Copyright Héctor Ramón (`https://github.com/iced-rs/iced`), licensed under the MIT License.
+- **iced_tiny_skia (`vendor/iced_tiny_skia/`)**: The iced_tiny_skia 0.14.1 crate of Iced with the iced commit `0553559827` applied. Copyright Héctor Ramón, Iced contributors (`https://github.com/iced-rs/iced`), licensed under the MIT License. The license text is in `vendor/iced_tiny_skia/LICENSE`.
 
 ## 5. Third-Party API Key
 

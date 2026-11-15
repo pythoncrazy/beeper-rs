@@ -1,0 +1,1 @@
+This directory is iced_tiny_skia 0.14.1 from crates.io with one change: the iced commit 0553559827c99b8c80563375f5fa6bbe1edce597 ("Clip quad shadows in `tiny-skia` renderer"). Delete this directory and its [patch.crates-io] entry in the root Cargo.toml when an iced release contains the commit.

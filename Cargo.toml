@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/*"]
+exclude = ["vendor/iced_tiny_skia"]
 resolver = "2"
 
 [workspace.package]
@@ -43,6 +44,9 @@ x11rb = { version = "0.13.2", default-features = false }
 iced = { version = "0.14.0", default-features = false }
 iced_test = "0.14.0"
 rusqlite.workspace = true
+
+[patch.crates-io]
+iced_tiny_skia = { path = "vendor/iced_tiny_skia" }
 
 [profile.dev]
 debug = 0

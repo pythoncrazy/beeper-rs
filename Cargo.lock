@@ -497,12 +497,14 @@ dependencies = [
  "iced",
  "iced_runtime",
  "iced_test",
+ "iced_tiny_skia",
  "image",
  "qrcodegen",
  "regex",
  "rodio",
  "serde_json",
  "spellbook",
+ "tiny-skia",
  "tokio",
  "unicode-script",
  "wgpu",
@@ -2447,8 +2449,6 @@ dependencies = [
 [[package]]
 name = "iced_tiny_skia"
 version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c267596d742714b1853cc10c3983a367762816fc4836bd3b79f76ce76787d6f8"
 dependencies = [
  "bytemuck",
  "cosmic-text",
