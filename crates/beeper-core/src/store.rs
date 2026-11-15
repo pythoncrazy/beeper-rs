@@ -350,6 +350,14 @@ impl Query {
     }
 }
 
+/// A row of a thread that counts as unread: its sort key, its event, whether you sent it, and whether it mentions you.
+struct ThreadRow {
+    key: String,
+    id: String,
+    mine: bool,
+    mention: bool,
+}
+
 /// A network inside a bridged account, like a Discord server. Its chats have the same `network_id`.
 #[derive(Debug, Clone)]
 pub struct NetworkSpace {
@@ -2188,22 +2196,34 @@ impl BeeperStore {
         self.stored(&format!("chat_id = ?1 AND {THREAD} = ?2 ORDER BY sort_key"), [chat, root])
     }
 
-    /// The stored replies of the thread of `root` after its read mark, oldest first, and the replies of others among
-    /// them.
-    fn replies_after_read(&self, chat: &Chat, root: &str) -> (Vec<Message>, Vec<usize>) {
-        let Some(read) = chat.thread_reads.get(root) else { return (Vec::new(), Vec::new()) };
-        let mut later = self.stored_replies(&chat.id, root);
-        later.retain(|m| m.sort_key > *read);
-        let unread =
-            (0..later.len()).filter(|&i| later[i].is_sender != Some(true) && later[i].is_deleted != Some(true));
-        let unread = unread.collect();
-        (later, unread)
+    /// Desktop's `unreadCount` and `unreadMentionsCount` of a thread: the counted rows of others after its read mark.
+    pub fn thread_unread(&self, chat: &Chat, root: &str) -> (usize, usize) {
+        let Some(read) = chat.thread_reads.get(root) else { return (0, 0) };
+        let unread = self.thread_rows(chat, root).into_iter().filter(|r| r.key > *read && !r.mine);
+        unread.fold((0, 0), |(n, at), r| (n + 1, at + usize::from(r.mention)))
     }
 
-    /// Desktop's `unreadCount` and `unreadMentionsCount` of a thread: the replies of others after its read mark.
-    pub fn thread_unread(&self, chat: &Chat, root: &str) -> (usize, usize) {
-        let (later, unread) = self.replies_after_read(chat, root);
-        (unread.len(), unread.iter().filter(|&&i| later[i].flags & MSG_MENTION != 0).count())
+    /// Desktop's rows with `countsAsUnreadInThread`: the live stored replies of the thread, and the reactions to its
+    /// replies that Desktop keeps as hidden rows, in a room of 20 members or fewer, of a direct chat or to your reply.
+    fn thread_rows(&self, chat: &Chat, root: &str) -> Vec<ThreadRow> {
+        let small = chat.participants.total <= 20;
+        let replies = self.stored_replies(&chat.id, root).into_iter().filter(|m| m.is_deleted != Some(true));
+        replies
+            .flat_map(|m| {
+                let mine = m.is_sender == Some(true);
+                let kept = small && (chat.chat_type != "group" || mine);
+                let reactions: Vec<ThreadRow> = (m.reactions.iter().filter(|_| kept))
+                    .map(|r| ThreadRow {
+                        key: r.sort_key.clone(),
+                        id: r.id.clone(),
+                        mine: self.is_me(&r.participant_id),
+                        mention: false,
+                    })
+                    .collect();
+                let mention = m.flags & MSG_MENTION != 0;
+                std::iter::once(ThreadRow { key: m.sort_key, id: m.id, mine, mention }).chain(reactions)
+            })
+            .collect()
     }
 
     /// Desktop's `unreadThreadEntries`: the followed threads with unread replies of the chats of `chats`, as the chat
@@ -2214,28 +2234,31 @@ impl BeeperStore {
             .filter(|&i| self.threaded(&self.chats[i]))
             .flat_map(|i| self.chats[i].thread_reads.keys().map(move |r| (i, r)))
             .filter_map(|(i, r)| {
-                let (mut later, unread) = self.replies_after_read(&self.chats[i], r);
-                let followed = !unread.is_empty() && self.follows_thread(&self.chats[i], r);
-                followed.then(|| (later.pop().expect("an unread thread has replies").timestamp, i, r.clone()))
+                let followed = self.thread_unread(&self.chats[i], r).0 > 0 && self.follows_thread(&self.chats[i], r);
+                let newest = || self.stored_replies(&self.chats[i].id, r).pop().expect("an unread thread has replies");
+                followed.then(|| (newest().timestamp, i, r.clone()))
             })
             .collect();
         all.sort_by(|a, b| b.0.cmp(&a.0));
         all.into_iter().map(|(_, i, r)| (i, r)).collect()
     }
 
-    /// Desktop's `markReplyThreadRead`: an unread thread is read through `through`, else through its newest reply,
-    /// and its thread receipt goes to that reply.
+    /// Desktop's `markReplyThreadRead`: an unread thread is read through `through`, else through its newest counted
+    /// row, and its thread receipt goes to that event.
     pub fn mark_thread_read(&mut self, chat_id: &str, root: &str, through: Option<&str>) {
         self.load_chat(chat_id);
         let idx = self.chat_idx_by_id[chat_id];
         if self.thread_unread(&self.chats[idx], root).0 == 0 {
             return;
         }
-        let last = match through {
-            Some(id) => &self.messages[self.msg_idx_by_id[id]],
-            None => self.thread_replies(root).next_back().expect("an unread thread has replies"),
+        let (key, event) = match through {
+            Some(id) => (self.messages[self.msg_idx_by_id[id]].sort_key.clone(), id.to_string()),
+            None => {
+                let rows = self.thread_rows(&self.chats[idx], root);
+                let last = rows.into_iter().max_by(|a, b| a.key.cmp(&b.key)).expect("an unread thread has rows");
+                (last.key, last.id)
+            }
         };
-        let (key, event) = (last.sort_key.clone(), last.id.clone());
         if self.chats[idx].thread_reads[root] >= key {
             return;
         }
@@ -2854,6 +2877,23 @@ mod tests {
         );
         let c = &st.chats[st.chat_idx_by_id[chat]];
         assert_eq!((st.thread_unread(c, root), c.preview.as_ref().unwrap().id.as_str()), ((0, 0), "msg_1010"));
+        // Desktop's hidden reaction rows: a reaction to your reply counts as unread in the thread.
+        let i = st.msg_idx_by_id[&id];
+        let key = format!("{}~", st.messages[i].sort_key);
+        let r = super::Reaction {
+            id: "$r".into(),
+            participant_id: "@dev:x".into(),
+            reaction_key: "👍".into(),
+            animated: None,
+            img_url: None,
+            sort_key: key.clone(),
+        };
+        st.update_message(i, |m| m.reactions.push(r));
+        let c = st.chats[st.chat_idx_by_id[chat]].clone();
+        assert_eq!(st.thread_unread(&c, root), (1, 0));
+        st.mark_thread_read(chat, root, None);
+        let c = &st.chats[st.chat_idx_by_id[chat]];
+        assert_eq!((st.thread_unread(c, root), &c.thread_reads[root]), ((0, 0), &key), "the reaction is read too");
         st.remove_message(chat, &id).unwrap();
         assert_eq!(st.thread_replies(root).count(), 4, "a removed reply leaves the thread");
         drop(st);

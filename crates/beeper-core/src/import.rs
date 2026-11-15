@@ -1,7 +1,7 @@
 use crate::config::rfc3339_from_millis;
 use crate::models::{
     beeper_files, Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, Older, Reaction,
-    SpaceOrder, ThemeChoice, User, ALL_FORMATS, BEEPER_MESSAGES, BEEPER_POLLS,
+    SpaceOrder, ThemeChoice, ThreadFollows, User, ALL_FORMATS, BEEPER_MESSAGES, BEEPER_POLLS,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
@@ -128,7 +128,8 @@ fn read_snapshot(dir: &Path, src_dir: &Path) -> Result<BeeperData, String> {
         .collect();
     let recent_chat_ids = read_recent_chats(src_dir, &remap);
     let mut people = read_participants(&db).map_err(e)?;
-    let chats = read_chats(&db, &mut people, &rules)?;
+    let mut chats = read_chats(&db, &mut people, &rules)?;
+    read_threads(&db, &mut chats)?;
     let messages = read_messages(&db, &chats)?;
     let prefs = read_local_prefs(&db)?;
     let spaces_order = prefs.as_ref().map(read_spaces_order).transpose()?.unwrap_or_default();
@@ -338,10 +339,34 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
     })
 }
 
+/// Desktop's `mx_threads`: the read mark of each thread, and the follow or unfollow that it keeps.
+fn read_threads(db: &Connection, chats: &mut [Chat]) -> Result<(), String> {
+    let idx: HashMap<String, usize> = chats.iter().enumerate().map(|(i, c)| (c.id.clone(), i)).collect();
+    let mut q = db
+        .prepare("SELECT roomID, rootEventID, following, lastReadHsOrder FROM mx_threads ORDER BY rowid")
+        .map_err(|e| e.to_string())?;
+    let rows = q.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<bool>>(2)?, r.get::<_, i64>(3)?))
+    });
+    for row in rows.map_err(|e| e.to_string())? {
+        let (room, root, following, read) = row.map_err(|e| e.to_string())?;
+        let Some(&i) = idx.get(&room) else { continue };
+        let c = &mut chats[i];
+        c.thread_reads.insert(root.clone(), crate::store::sort_key(read));
+        match following {
+            Some(true) => c.follows.followed.push(root),
+            Some(false) => c.follows.unfollowed.push(root),
+            None => {}
+        }
+    }
+    Ok(())
+}
+
 fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &Value) -> Result<Vec<Chat>, String> {
     let mut stmt = db
         .prepare(
-            "SELECT threadID, threads.accountID, CAST(thread AS TEXT), timestamp, json_extract(props, '$.note')
+            "SELECT threadID, threads.accountID, CAST(thread AS TEXT), timestamp, json_extract(props, '$.note'),
+                    json_extract(props, '$.threadFollowAll')
              FROM threads LEFT JOIN thread_props USING (threadID)
              WHERE COALESCE(is_label, 0) = 0 AND json_extract(CAST(thread AS TEXT), '$.extra.roomType') IS NULL
              AND json_extract(CAST(thread AS TEXT), '$.extra.isNoteToSelf') IS NOT 1
@@ -356,12 +381,13 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<i64>>(3)?,
                 r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<bool>>(5)?,
             ))
         })
         .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
         .map_err(|e| e.to_string())?;
     rows.into_iter()
-        .map(|(id, account, json, ts, note)| {
+        .map(|(id, account, json, ts, note, follow_all)| {
             let t: Value = serde_json::from_str(&json).map_err(|e| format!("thread {id}: {e}"))?;
             let items = people.remove(&id).unwrap_or_default();
             let group = t.get("type").and_then(Value::as_str) == Some("group");
@@ -419,7 +445,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 edits: 0,
                 member_actions: 0,
                 formatting: ALL_FORMATS,
-                file: beeper_files(),
+                file: t.get("features").map_or_else(beeper_files, crate::matrix::file_rules),
                 polls: Some(BEEPER_POLLS),
                 messages: BEEPER_MESSAGES,
                 disappearing: t.pointer("/disappearingTimer/timer").and_then(Value::as_u64).filter(|&t| t > 0),
@@ -428,8 +454,8 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 is_read_only: false,
                 replacement_room: None,
                 can_mention_room: false,
-                threads: false,
-                follows: Default::default(),
+                threads: t.pointer("/features/thread").and_then(Value::as_i64) > Some(0),
+                follows: ThreadFollows { follow_all, ..Default::default() },
                 thread_reads: Default::default(),
                 personal: None,
                 flags: 0,
@@ -513,9 +539,10 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
     .map_err(|e| e.to_string())?;
     let mut stmt = db
         .prepare(
-            "SELECT messageID, threadID, timestamp, CAST(message AS TEXT), NULL, 0 FROM messages
+            "SELECT messageID, threadID, timestamp, CAST(message AS TEXT), NULL, 0, NULL FROM messages
              UNION ALL
-             SELECT eventID, roomID, timestamp, CAST(message AS TEXT), hsOrder, isDeleted FROM mx_room_messages
+             SELECT eventID, roomID, timestamp, CAST(message AS TEXT), hsOrder, isDeleted, threadRootEventID
+             FROM mx_room_messages
              WHERE type NOT IN ('REACTION', 'MEMBERSHIP', 'HIDDEN')
              ORDER BY 3, 5",
         )
@@ -529,6 +556,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                 r.get::<_, String>(3)?,
                 r.get::<_, Option<i64>>(4)?,
                 r.get::<_, bool>(5)?,
+                r.get::<_, Option<String>>(6)?,
             ))
         })
         .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
@@ -554,7 +582,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
     .map_err(|e| e.to_string())?;
     let mut seen = HashSet::new();
     let mut out = Vec::with_capacity(rows.len());
-    for (id, chat_id, ts, json, order, deleted) in rows {
+    for (id, chat_id, ts, json, order, deleted, thread_root) in rows {
         let Some(&account_id) = accounts.get(chat_id.as_str()) else { continue };
         let m: Value = serde_json::from_str(&json).map_err(|e| format!("message {id}: {e}"))?;
         if flag(&m, "isHidden") || !seen.insert(id.clone()) {
@@ -657,9 +685,9 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                 })
                 .collect(),
             seen: seen_by,
-            thread_root: None,
-            broadcast: false,
-            fallback: false,
+            broadcast: thread_root.is_some() && m.pointer("/extra/broadcastOutsideThread") == Some(&Value::Bool(true)),
+            fallback: m.pointer("/extra/isReplyFallback") == Some(&Value::Bool(true)),
+            thread_root,
             flags: 0,
             id,
         });
