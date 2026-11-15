@@ -4519,12 +4519,18 @@ impl BeeperGuiApp {
     /// Desktop's `windowStateKeeper("main")`: the main window opens with the bounds and the maximized state of
     /// `window.json`, else centered with the default size.
     fn main_window_settings(&self) -> window::Settings {
+        self.saved_window_settings("main", MAIN_SIZE)
+    }
+
+    /// Desktop's `windowStateKeeper(key)`: a window opens with its bounds and its maximized state in `window.json`,
+    /// else centered with the `size` by default.
+    fn saved_window_settings(&self, key: &str, size: Size) -> window::Settings {
         let state = read_window_state(&self.store.read().data_dir.join("window.json"));
-        let main = &state["windowState"]["main"];
-        let num = |key: &str| main[key].as_f64().map(|v| v as f32);
-        let size = num("width").zip(num("height")).map_or(MAIN_SIZE, |(w, h)| Size::new(w, h));
+        let saved = &state["windowState"][key];
+        let num = |key: &str| saved[key].as_f64().map(|v| v as f32);
+        let size = num("width").zip(num("height")).map_or(size, |(w, h)| Size::new(w, h));
         let at = num("x").zip(num("y")).map(|(x, y)| window::Position::Specific(Point::new(x, y)));
-        let maximized = main["isMaximized"] == true;
+        let maximized = saved["isMaximized"] == true;
         window::Settings {
             position: at.unwrap_or(window::Position::Centered),
             maximized,
@@ -4532,13 +4538,18 @@ impl BeeperGuiApp {
         }
     }
 
-    /// Saves the state of the main window to `window.json`. A maximized window keeps the bounds from before.
+    /// Saves the state of the main window to `window.json`.
     fn save_main_window(&self) -> Task<UiMessage> {
         let Some(id) = self.main_window else { return Task::none() };
+        self.save_window(id, "main")
+    }
+
+    /// Saves the state of window `id` under `key` in `window.json`. A maximized window keeps the bounds from before.
+    fn save_window(&self, id: window::Id, key: &'static str) -> Task<UiMessage> {
         let path = self.store.read().data_dir.join("window.json");
         let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (max, size)));
         let state = state.then(move |(max, size)| window::position(id).map(move |at| (max, size, at)));
-        state.map(move |(max, size, at)| write_window_state(&path, max, size, at)).discard()
+        state.map(move |(max, size, at)| write_window_state(&path, key, max, size, at)).discard()
     }
 
     fn window_settings(size: Size) -> window::Settings {
@@ -6757,8 +6768,9 @@ impl BeeperGuiApp {
                 if let Some(w) = &self.media_window {
                     return window::gain_focus(w.id);
                 }
-                let size = Size::new(1000.0, 720.0);
-                let (id, open) = window::open(Self::window_settings(size));
+                // Desktop's `media-viewer` window state.
+                let settings = self.saved_window_settings("media-viewer", Size::new(1000.0, 720.0));
+                let (size, (id, open)) = (settings.size, window::open(settings));
                 self.media_window = Some(MediaWindow {
                     id,
                     tab: 0,
@@ -7006,7 +7018,7 @@ impl BeeperGuiApp {
                     } else if w.select {
                         (w.select, w.picked) = (false, Vec::new());
                     } else {
-                        return window::close(id);
+                        return self.update(UiMessage::CloseRequested(id));
                     }
                 }
             }
@@ -8621,6 +8633,9 @@ impl BeeperGuiApp {
                 return match (Some(id) == self.main_window, quit) {
                     (true, false) => self.set_hidden(true),
                     (true, true) => self.save_main_window().chain(window::close(id)),
+                    _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => {
+                        self.save_window(id, "media-viewer").chain(window::close(id))
+                    }
                     (false, _) => window::close(id),
                 };
             }
@@ -19190,9 +19205,9 @@ fn read_window_state(path: &std::path::Path) -> serde_json::Value {
     }
 }
 
-fn write_window_state(path: &std::path::Path, maximized: bool, size: Size, at: Option<Point>) {
+fn write_window_state(path: &std::path::Path, key: &str, maximized: bool, size: Size, at: Option<Point>) {
     let mut state = read_window_state(path);
-    let main = &mut state["windowState"]["main"];
+    let main = &mut state["windowState"][key];
     if !maximized {
         *main = serde_json::json!({ "width": size.width, "height": size.height });
         if let Some(at) = at {
