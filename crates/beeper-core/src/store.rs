@@ -655,10 +655,7 @@ impl BeeperStore {
             self.contacts = serde_json::from_str(&c).expect("parse stored contacts");
         }
         if let Some(s) = settings {
-            self.settings = BeeperSettings {
-                pas_port: self.settings.pas_port,
-                ..serde_json::from_str(&s).expect("parse stored settings")
-            };
+            self.settings = serde_json::from_str(&s).expect("parse stored settings");
             self.settings.prefs.retain(|k, _| !crate::prefs::RETIRED.contains(&k.as_str()));
             self.settings.assert_valid();
         }
