@@ -1,5 +1,5 @@
 use beeper_core::config::NETWORK_SPECS;
-use iced::advanced::graphics::text::cosmic_text::{self, Fallback as _};
+use iced::advanced::graphics::text::cosmic_text::{self, fontdb::Source, Fallback as _};
 use iced::advanced::graphics::text::{font_system, to_attributes};
 use iced::font::{Family, Font, Weight};
 use iced::overlay::menu;
@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LazyLock, Once};
+use std::sync::{Arc, LazyLock, Once};
 
 pub mod icon {
     pub const INBOX: char = '\u{f000}';
@@ -74,25 +74,17 @@ macro_rules! font {
 }
 
 pub const FONT_EMOJI: &[u8] = font!("Twemoji.Mozilla.ttf");
-/// The Inter 3.18 WOFF files of Desktop, unpacked to TrueType once. WOFF keeps the binary 1.3 MB smaller.
-static INTER: LazyLock<[Vec<u8>; 8]> = LazyLock::new(|| {
-    [
-        font!("Inter-Regular.woff"),
-        font!("Inter-Italic.woff"),
-        font!("Inter-Medium.woff"),
-        font!("Inter-MediumItalic.woff"),
-        font!("Inter-SemiBold.woff"),
-        font!("Inter-SemiBoldItalic.woff"),
-        font!("Inter-Bold.woff"),
-        font!("Inter-BoldItalic.woff"),
-    ]
-    .map(woff_to_sfnt)
-});
-
-/// The Inter 3.18 faces of Desktop, the icons, and Twemoji.
-pub fn all_fonts() -> impl Iterator<Item = &'static [u8]> {
-    INTER.iter().map(Vec::as_slice).chain([font!("icons.ttf"), FONT_EMOJI])
-}
+/// The Inter 3.18 WOFF files of Desktop. WOFF keeps the binary 1.3 MB smaller.
+const INTER: [&[u8]; 8] = [
+    font!("Inter-Regular.woff"),
+    font!("Inter-Italic.woff"),
+    font!("Inter-Medium.woff"),
+    font!("Inter-MediumItalic.woff"),
+    font!("Inter-SemiBold.woff"),
+    font!("Inter-SemiBoldItalic.woff"),
+    font!("Inter-Bold.woff"),
+    font!("Inter-BoldItalic.woff"),
+];
 pub const CLEAR: Color = Color::TRANSPARENT;
 
 static LOAD_FONTS: Once = Once::new();
@@ -127,12 +119,15 @@ pub fn ensure_fonts_loaded() {
         let empty = cosmic_text::FontSystem::new_with_locale_and_db(String::new(), Default::default());
         let (locale, db) = std::mem::replace(fs.raw(), empty).into_locale_and_db();
         *fs.raw() = cosmic_text::FontSystem::new_with_locale_and_db_and_fallback(locale, db, TwemojiFirst);
-        for bytes in all_fonts() {
-            fs.load_font(bytes.into());
+        // The font database reads the TrueType files in the binary, and each WOFF file unpacked once.
+        let db = fs.raw().db_mut();
+        for ttf in [font!("icons.ttf"), FONT_EMOJI] {
+            db.load_font_source(Source::Binary(Arc::new(ttf)));
         }
-        if let Some(woff) = desktop_asars().find_map(|p| knicknack_woff(&p)) {
-            fs.load_font(woff_to_sfnt(&woff).into());
-            KNICKNACK.store(true, Ordering::Relaxed);
+        let knicknack = desktop_asars().find_map(|p| knicknack_woff(&p));
+        KNICKNACK.store(knicknack.is_some(), Ordering::Relaxed);
+        for woff in INTER.into_iter().chain(knicknack.as_deref()) {
+            db.load_font_source(Source::Binary(Arc::new(woff_to_sfnt(woff))));
         }
     });
 }
