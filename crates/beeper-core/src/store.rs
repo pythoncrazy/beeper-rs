@@ -295,7 +295,8 @@ pub struct BeeperStore {
     pub setup: Option<Setup>,
     db: Mutex<Connection>,
     pub beeper_state: BeeperStateRecord,
-    pub setup_status: SetupStatusResponse,
+    /// Desktop's `AppStateTracker`: the last trusted device verification.
+    pub verification: Option<AppVerification>,
     pub bridge_accounts: Vec<BridgeAccountInfo>,
     /// Position of each pinned chat in the `com.beeper.favourites_order` account data.
     pub pin_rank: HashMap<String, usize>,
@@ -438,7 +439,7 @@ impl BeeperStore {
             settings: config.settings.clone(),
             config,
             db: Mutex::new(conn),
-            setup_status: Self::build_setup_from_state(&beeper_state),
+            verification: None,
             beeper_state,
             bridge_accounts: Vec::new(),
             pin_rank: HashMap::new(),
@@ -512,47 +513,41 @@ impl BeeperStore {
         store
     }
 
-    pub fn build_setup_from_state(state: &BeeperStateRecord) -> SetupStatusResponse {
-        let s = &state.secrets;
-        let secrets = [
-            ("masterKey", &s.master_key),
-            ("selfSigningKey", &s.self_signing_key),
-            ("userSigningKey", &s.user_signing_key),
-            ("megolmBackupKey", &s.megolm_backup_key),
-            ("recoveryCode", &s.recovery_code),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), !v.is_empty()))
-        .collect();
-        let signed_in = !state.access_token.is_empty();
-        let phase = |active: bool, inactive: &str| match (active, state.verified) {
-            (false, _) => inactive.to_string(),
-            (true, false) => "needs_verification".to_string(),
-            (true, true) => "ready".to_string(),
-        };
-        SetupStatusResponse {
-            session: SetupSession {
-                state: phase(signed_in, "signed_out"),
-                e2ee: SetupE2ee {
-                    state: phase(state.initialized, "idle"),
-                    cross_signing: state.cross_signing,
-                    first_sync_done: state.first_sync_done,
-                    has_backed_up_code: state.has_backed_up_code,
-                    initialized: state.initialized,
-                    key_backup: state.key_backup,
-                    secret_storage: state.secret_storage,
-                    verified: state.verified,
-                    verification_methods: ["recovery_key", "other_device", "qr_code", "sas"].map(String::from).to_vec(),
-                    secrets,
+    /// Desktop's `buildSnapshot`: the sign-in and encrypted messaging setup state.
+    pub fn app_state(&self) -> AppState {
+        let r = &self.beeper_state;
+        let state = r.app_state();
+        let has = |k: &String| !k.is_empty();
+        AppState {
+            state,
+            matrix: (state != "needs-login").then(|| AppMatrix {
+                user_id: r.user_id.clone(),
+                device_id: r.device_id.clone(),
+                homeserver: r.homeserver.clone(),
+            }),
+            e2ee: AppE2ee {
+                initialized: r.initialized,
+                secret_storage: r.secret_storage,
+                cross_signing: r.cross_signing,
+                verified: r.verified,
+                secrets: AppSecrets {
+                    master_key: has(&r.secrets.master_key),
+                    self_signing_key: has(&r.secrets.self_signing_key),
+                    user_signing_key: has(&r.secrets.user_signing_key),
+                    megolm_backup_key: has(&r.secrets.megolm_backup_key),
+                    recovery_key: has(&r.secrets.recovery_code),
                 },
-                matrix: signed_in.then(|| SetupMatrix {
-                    homeserver: state.homeserver.clone(),
-                    user_id: state.user_id.clone(),
-                    device_id: Some(state.device_id.clone()),
-                }),
-                verification: None,
+                key_backup: r.key_backup,
+                first_sync_done: r.first_sync_done,
+                has_backed_up_recovery_key: r.has_backed_up_code,
             },
+            verification: self.app_verification().cloned(),
         }
+    }
+
+    /// Desktop's `buildVerificationSnapshot`: a signed-out app has no verification.
+    pub fn app_verification(&self) -> Option<&AppVerification> {
+        self.verification.as_ref().filter(|_| self.signed_in())
     }
 
     fn exec(&self, sql: &str, args: &[&dyn ToSql]) {
@@ -639,7 +634,6 @@ impl BeeperStore {
         if let Some(s) = kv(KEY_SCHEDULED) {
             self.scheduled = serde_json::from_str(&s).expect("parse stored scheduled messages");
         }
-        self.setup_status = Self::build_setup_from_state(&self.beeper_state);
         if let Some(b) = bridges {
             self.bridge_accounts = serde_json::from_str(&b).expect("parse stored bridge accounts");
         }
@@ -860,7 +854,6 @@ impl BeeperStore {
             homeserver,
             ..BeeperStateRecord::default()
         };
-        self.setup_status = Self::build_setup_from_state(&self.beeper_state);
         self.pin_app_locale();
         self.persist_state_to_sqlite();
         self.whoami = profile.clone();

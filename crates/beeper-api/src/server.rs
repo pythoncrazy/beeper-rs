@@ -4,7 +4,7 @@ use crate::http::{
 };
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{network_spec, APP_BUNDLE_ID, APP_NAME, APP_VERSION, NETWORK_SPECS, OPENAPI_SPEC_JSON};
-use beeper_core::matrix::{ChatFlag, Outgoing};
+use beeper_core::matrix::{self, ChatFlag, Outgoing};
 use beeper_core::models::*;
 use beeper_core::platform::{path_to_file_url, OsKind};
 use beeper_core::store::{BeeperStore, InvertedIndex, SharedStore, StoredAsset};
@@ -48,12 +48,16 @@ fn empty(status: StatusCode, headers: Vec<(&'static str, String)>) -> Reply {
 struct ApiError<'a> {
     message: &'a str,
     code: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    details: Option<Issues>,
+    #[serde(skip_serializing_if = "Value::is_null")]
+    details: Value,
 }
 
 fn error(status: StatusCode, message: &str, code: &str) -> Response {
-    json_with(status, &ApiError { message, code, details: None })
+    error_with(status, message, code, Value::Null)
+}
+
+fn error_with(status: StatusCode, message: &str, code: &str, details: Value) -> Response {
+    json_with(status, &ApiError { message, code, details })
 }
 
 #[derive(Serialize)]
@@ -489,8 +493,10 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     {
         return sign_in_step(store, cloud, step, &req);
     }
-    if let ("POST", ["v1", "app", "setup", rest @ ..]) = (method.as_str(), &segs[..]) {
-        return e2ee_setup(store, rest, &req);
+    if let ("GET" | "POST", ["v1", "app", "setup", rest @ ..]) = (method.as_str(), &segs[..]) {
+        if !rest.is_empty() {
+            return e2ee_setup(store, &method, rest, &req);
+        }
     }
     let mut st = store.write();
     let reply = dispatch(&mut st, &method, &segs, &req);
@@ -505,8 +511,26 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     reply
 }
 
+/// Desktop's `{verification, session}` body of the verification routes.
+#[derive(Serialize)]
+struct Progress<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verification: Option<&'a AppVerification>,
+    session: AppState,
+}
+
+/// The progress body. A route that `requires` a verification fails without one.
+fn progress(store: &SharedStore, requires: bool) -> Reply {
+    let st = store.read();
+    let verification = st.app_verification();
+    if requires && verification.is_none() {
+        return Err(verification_not_found());
+    }
+    ok(&Progress { verification, session: st.app_state() })
+}
+
 /// Desktop's encrypted messaging setup routes, which act on the Matrix client of a signed-in account.
-fn e2ee_setup(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
+fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Reply {
     let signed_in = || match store.read().signed_in() {
         true => Ok(()),
         false => Err(error(StatusCode::CONFLICT, "Sign in to Beeper Desktop first", "needs_login")),
@@ -518,63 +542,113 @@ fn e2ee_setup(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
             _ => Ok(()),
         }
     };
-    let connected = || match store.read().matrix.is_some() {
-        true => Ok(()),
-        false => Err(failed("Matrix is not connected yet")),
-    };
-    match path {
-        ["verification", "recovery-key"] => {
+    let rt = tokio::runtime::Handle::current();
+    match (method, path) {
+        ("POST", ["verification", "recovery-key"]) => {
             not_ready()?;
             let key = r.need("recoveryKey")?.to_string();
-            let recovered =
-                tokio::runtime::Handle::current().block_on(beeper_core::matrix::recover(store.clone(), key));
-            recovered.map_err(|e| match e.to_lowercase().contains("invalid recovery key") {
-                true => error(StatusCode::BAD_REQUEST, "The recovery key is invalid", "invalid_recovery_code"),
-                false => failed(&e),
+            rt.block_on(matrix::recover(store.clone(), key)).map_err(|e| {
+                match e.to_lowercase().contains("invalid recovery key") {
+                    true => error(StatusCode::BAD_REQUEST, "The recovery key is invalid", "invalid_recovery_code"),
+                    false => failed(&e),
+                }
             })?;
-            ok(&json!({ "session": store.read().setup_status.session }))
+            progress(store, false)
         }
-        ["verification", "recovery-key", "reset"] | ["verification", "recovery-key", "reset", "confirm"] => {
+        ("POST", ["verification", "recovery-key", "reset"] | ["verification", "recovery-key", "reset", "confirm"]) => {
             not_ready()?;
             Err(failed("Reset of the recovery key is not supported"))
         }
-        ["verifications", "qr", "scan"] | ["verifications", _, "qr", "confirm-scanned"] => {
+        ("GET", ["verifications"]) => {
             signed_in()?;
-            Err(failed("QR code verification is not supported"))
+            ok(&json!({ "items": store.read().app_verification().into_iter().collect::<Vec<_>>() }))
         }
-        ["verifications"] => {
+        ("POST", ["verifications"]) => {
             signed_in()?;
-            connected()?;
+            let purpose = match r.str("purpose") {
+                None | Some("device") => "device",
+                Some("login") => "login",
+                Some(_) => return Err(bad("purpose must be login or device")),
+            };
+            if r.str("userID").is_some_and(|u| u != store.read().beeper_state.user_id) {
+                return Err(failed("Verification of other users is not supported"));
+            }
+            if let Some(v) = store.read().app_verification().filter(|v| !matches!(v.state, "done" | "cancelled")) {
+                let details = json!({ "verificationID": v.id, "state": v.state });
+                return Err(error_with(
+                    StatusCode::CONFLICT,
+                    "A verification is already in progress",
+                    "verification_in_progress",
+                    details,
+                ));
+            }
+            let request = rt.block_on(matrix::start_verification(store, purpose)).map_err(|e| failed(&e))?;
             let (tx, rx) = tokio::sync::oneshot::channel();
             store.write().sas_confirm = Some(tx);
             let s = store.clone();
-            tokio::runtime::Handle::current().spawn(async move {
-                if let Err(e) = beeper_core::matrix::verify(s.clone(), rx).await {
+            rt.spawn(async move {
+                if let Err(e) = matrix::run_verification(s.clone(), request, rx).await {
                     s.write().matrix_error = Some(e);
                 }
             });
-            verification(&store.read())
+            progress(store, true)
         }
-        ["verifications", _, "sas", "confirm"] | ["verifications", _, "cancel"] => {
+        ("GET", ["verifications", id]) => {
             signed_in()?;
-            let tx = store.write().sas_confirm.take().ok_or_else(verification_not_found)?;
-            tx.send(path[2] == "sas").ok();
-            verification(&store.read())
+            let found = store.read().app_verification().is_some_and(|v| v.id == *id);
+            match found {
+                true => progress(store, true),
+                false => Err(verification_not_found()),
+            }
         }
-        ["verifications", _, "accept"] | ["verifications", _, "sas", "start"] => {
+        ("POST", ["verifications", "qr", "scan"]) => {
             signed_in()?;
-            verification(&store.read())
+            Err(failed("QR code verification is not supported"))
+        }
+        ("POST", ["verifications", id, action @ ..]) => {
+            let action = match action {
+                ["accept"] => "accept",
+                ["cancel"] => "cancel",
+                ["sas", "start"] => "sas.start",
+                ["sas", "confirm"] => "sas.confirm",
+                ["qr", "confirm-scanned"] => "qr.confirmScanned",
+                _ => return Err(no_route()),
+            };
+            signed_in()?;
+            available(&store.read(), id, action)?;
+            match action {
+                "cancel" => rt.block_on(matrix::cancel_verification(store, id)).map_err(|e| failed(&e))?,
+                "sas.confirm" => {
+                    let tx = store.write().sas_confirm.take().ok_or_else(verification_not_found)?;
+                    tx.send(true).ok();
+                }
+                // beeper-rs starts the emoji comparison when the request is ready.
+                "sas.start" => {}
+                _ => unreachable!("beeper-rs has no incoming or QR code verification that allows {action}"),
+            }
+            progress(store, true)
         }
         _ => Err(no_route()),
     }
 }
 
-fn verification_not_found() -> Response {
-    error(StatusCode::NOT_FOUND, "Verification not found", "verification_not_found")
+/// Desktop's check that the current verification has the `id` and allows the `action`.
+fn available(st: &BeeperStore, id: &str, action: &str) -> Result<(), Response> {
+    let v = st.app_verification();
+    if v.is_some_and(|v| v.id == id && v.available_actions.contains(&action)) {
+        return Ok(());
+    }
+    let actions = v.map_or(&Vec::new(), |v| &v.available_actions).clone();
+    let mut details = json!({ "action": action, "verificationID": id, "availableActions": actions });
+    if let Some(v) = v {
+        details["state"] = v.state.into();
+    }
+    let message = "Verification action is not available in the current app state";
+    Err(error_with(StatusCode::CONFLICT, message, "verification_action_not_available", details))
 }
 
-fn verification(st: &BeeperStore) -> Reply {
-    ok(&json!({ "session": st.setup_status.session, "verification": st.setup_status.session.verification }))
+fn verification_not_found() -> Response {
+    error(StatusCode::NOT_FOUND, "Verification not found", "verification_not_found")
 }
 
 fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
@@ -586,13 +660,7 @@ fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply
             body: OPENAPI_SPEC_JSON.as_bytes().to_vec(),
         }),
         ("GET", []) => empty(StatusCode::FOUND, vec![("location", "/v1/info".into())]),
-        ("GET", ["v1", "app", "setup"]) => ok(&st.setup_status),
-        ("GET", ["v1", "app", "setup", "verifications"]) => verification(st),
-        ("GET", ["v1", "app", "setup", "verifications", id]) => {
-            let v = st.setup_status.session.verification.as_ref().filter(|v| v.verification_id == *id);
-            v.ok_or_else(verification_not_found)?;
-            verification(st)
-        }
+        ("GET", ["v1", "app", "setup"]) => ok(&st.app_state()),
         ("GET", ["v1", "accounts"]) => ok(&st.accounts),
         ("GET", ["v1", "accounts", id, rest @ ..]) => account(st, id, rest, r),
         ("GET", ["v1", "labels"]) => ok(&st.labels),
@@ -711,7 +779,7 @@ fn sign_in_step(store: &SharedStore, cloud: &Cloud, step: &str, r: &Req) -> Repl
     st.sign_in(session, cloud.homeserver.clone(), &profile, accounts);
     let s = &st.beeper_state;
     let matrix = json!({ "userID": s.user_id, "deviceID": s.device_id, "accessToken": s.access_token, "homeserver": s.homeserver });
-    ok(&json!({ "matrix": matrix, "session": st.setup_status.session }))
+    ok(&json!({ "matrix": matrix, "session": st.app_state() }))
 }
 
 fn account(st: &BeeperStore, id: &str, rest: &[&str], r: &Req) -> Reply {
@@ -976,7 +1044,7 @@ fn create_chat(st: &mut BeeperStore, r: &Req) -> Reply {
         "create" => {
             let issues = create_chat_issues(&r.body);
             if !issues.is_empty() {
-                let details = Some(Issues { issues });
+                let details = json!(Issues { issues });
                 let body = ApiError { message: "Invalid input", code: "VALIDATION_ERROR", details };
                 return Err(json_with(StatusCode::BAD_REQUEST, &body));
             }

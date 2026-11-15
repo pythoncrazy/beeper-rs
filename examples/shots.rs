@@ -1,5 +1,5 @@
 use beeper_core::config::CentralConfig;
-use beeper_core::models::{ThemeChoice, VerificationSas, VerificationSasEmoji, VerificationState};
+use beeper_core::models::{AppVerification, ThemeChoice, VerificationSas, VerificationSasEmoji};
 use beeper_core::store::{BeeperStore, StoreLock};
 use beeper_ui::{
     login::{Login, LoginMsg, Screen},
@@ -89,15 +89,16 @@ fn main() {
             ("🍕", "Pizza"),
         ];
         let emojis = emojis.map(|(e, d)| VerificationSasEmoji { emoji: e.into(), description: d.into() }).to_vec();
-        st.setup_status.session.verification = Some(VerificationState {
-            verification_id: "shot".into(),
-            direction: "outgoing".into(),
-            methods: vec!["sas".into()],
-            state: "sas_started".into(),
-            updated_at: String::new(),
-            sas: Some(VerificationSas { decimals: None, emojis }),
-            qr: None,
+        st.verification = Some(AppVerification {
+            id: "shot".into(),
+            purpose: "device",
+            direction: "outgoing",
+            state: "sas_ready",
+            methods: vec!["sas"],
+            available_actions: vec!["sas.confirm", "cancel"],
             other_device: None,
+            sas: Some(VerificationSas { emojis, decimals: "1234 5678 9012".into() }),
+            error: None,
         });
     }
     shot(&out, "settings_sas", (800.0, 740.0), &theme, app.view_settings());

@@ -1,11 +1,12 @@
 use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
-    timer_distance, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatParticipants, ChatReminder,
-    EditHistoryEntry, Label, Message, MessageLink, MessageRules, Older, PollData, PollOption, PollRules, Reaction,
-    Timers, User, VerificationSas, VerificationSasEmoji, VerificationState, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS,
-    BEEPER_MESSAGES, BEEPER_POLLS, BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER,
-    EDITS, FILE_GIF, FILE_VOICE, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION,
+    timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatParticipants,
+    ChatReminder, EditHistoryEntry, Label, Message, MessageLink, MessageRules, Older, PollData, PollOption, PollRules,
+    Reaction, Timers, User, VerificationDevice, VerificationError, VerificationSas, VerificationSasEmoji, ALL_FILES,
+    ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE,
+    DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS,
+    MEMBER_KICK, MSG_MENTION,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -16,13 +17,16 @@ use matrix_sdk::deserialized_responses::{RawAnySyncOrStrippedState, TimelineEven
 use matrix_sdk::encryption::backups::BackupState;
 use matrix_sdk::encryption::recovery::RecoveryError;
 use matrix_sdk::encryption::secret_storage::SecretStorageError;
-use matrix_sdk::encryption::verification::{SasState, Verification, VerificationRequestState};
+use matrix_sdk::encryption::verification::{
+    CancelInfo, SasState, Verification, VerificationRequest, VerificationRequestState,
+};
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
 use matrix_sdk::notification_settings::RoomNotificationMode;
 use matrix_sdk::room::MessagesOptions;
 use matrix_sdk::ruma::api::client::media::get_content_thumbnail::v3::Method;
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType as SendReceiptType;
+use matrix_sdk::ruma::events::key::verification::VerificationMethod;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::receipt::{ReceiptThread, ReceiptType};
 use matrix_sdk::ruma::events::relation::{Annotation, Reply};
@@ -1907,7 +1911,6 @@ async fn refresh_e2ee(client: &Client, store: &SharedStore) {
     if (st.beeper_state.verified, st.beeper_state.key_backup) != state {
         (st.beeper_state.verified, st.beeper_state.key_backup) = state;
         st.persist_state_to_sqlite();
-        st.setup_status = BeeperStore::build_setup_from_state(&st.beeper_state);
         st.emit_ws("setup.updated", "", None, None, None);
     }
 }
@@ -1984,28 +1987,26 @@ pub async fn recover(store: SharedStore, key: String) -> Result<(), String> {
         RecoveryError::SecretStorage(SecretStorageError::SecretStorageKey(e)) => format!("Invalid recovery key: {e}"),
         e => e.to_string(),
     })?;
-    set_verification(&store, "verified", None);
+    let mut st = store.write();
+    mark_verified(&mut st);
+    st.emit_ws("setup.updated", "", None, None, None);
     Ok(())
 }
 
-fn set_verification(store: &SharedStore, state: &str, sas: Option<VerificationSas>) {
+fn mark_verified(st: &mut BeeperStore) {
+    (st.beeper_state.verified, st.beeper_state.cross_signing) = (true, true);
+    st.persist_state_to_sqlite();
+}
+
+/// Desktop's `AppStateTracker.handleAppEvent`: applies a change of the Matrix verification to the tracked one.
+fn track(store: &SharedStore, change: impl FnOnce(&mut AppVerification)) {
     let mut st = store.write();
-    if state == "verified" {
-        st.beeper_state.verified = true;
-        st.beeper_state.cross_signing = true;
-        st.persist_state_to_sqlite();
-        st.setup_status = BeeperStore::build_setup_from_state(&st.beeper_state);
+    let v = st.verification.as_mut().expect("a started verification");
+    change(v);
+    v.available_actions = v.actions();
+    if v.state == "done" {
+        mark_verified(&mut st);
     }
-    st.setup_status.session.verification = Some(VerificationState {
-        verification_id: "matrix".into(),
-        direction: "outgoing".into(),
-        methods: vec!["sas".into()],
-        state: state.into(),
-        updated_at: now_rfc3339_millis(),
-        sas,
-        qr: None,
-        other_device: None,
-    });
     st.emit_ws("setup.updated", "", None, None, None);
 }
 
@@ -2051,14 +2052,41 @@ pub async fn logout(store: SharedStore) -> Result<(), String> {
     std::fs::write(dir.join(crate::store::LOGGED_OUT), "").map_err(|e| format!("Could not mark the logout: {e}"))
 }
 
-pub async fn verify(store: SharedStore, confirm: oneshot::Receiver<bool>) -> Result<(), String> {
+/// Desktop's `startVerification`: asks the other devices of the account to verify this device.
+pub async fn start_verification(store: &SharedStore, purpose: &'static str) -> Result<VerificationRequest, String> {
     let e = |e: &dyn std::fmt::Display| e.to_string();
     let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
     let me = client.user_id().expect("signed-in client has a user ID").to_owned();
     let identity = client.encryption().get_user_identity(&me).await.map_err(|x| e(&x))?;
     let request = identity.ok_or("this account has no cross-signing identity")?.request_verification().await;
     let request = request.map_err(|x| e(&x))?;
-    set_verification(&store, "requested", None);
+    store.write().verification = Some(AppVerification {
+        id: request.flow_id().into(),
+        purpose,
+        direction: "outgoing",
+        state: "requested",
+        methods: Vec::new(),
+        available_actions: Vec::new(),
+        other_device: None,
+        sas: None,
+        error: None,
+    });
+    track(store, |_| {});
+    Ok(request)
+}
+
+/// Runs a started verification with emojis to its end. `confirm` carries the answer of the user to the emojis.
+pub async fn run_verification(
+    store: SharedStore,
+    request: VerificationRequest,
+    confirm: oneshot::Receiver<bool>,
+) -> Result<(), String> {
+    let e = |e: &dyn std::fmt::Display| e.to_string();
+    let cancelled = |info: CancelInfo| {
+        let error = VerificationError { code: info.cancel_code().to_string(), reason: info.reason().into() };
+        track(&store, |v| (v.state, v.error) = ("cancelled", Some(error)));
+        Err(info.reason().to_string())
+    };
     let mut requests = request.changes();
     let mut sas = None;
     let mut sas_changes = futures_util::stream::pending().boxed();
@@ -2066,7 +2094,12 @@ pub async fn verify(store: SharedStore, confirm: oneshot::Receiver<bool>) -> Res
     loop {
         tokio::select! {
             state = requests.next() => match state.ok_or("the verification request ended")? {
-                VerificationRequestState::Ready { .. } if request.is_ready() => {
+                VerificationRequestState::Ready { their_methods, other_device_data, .. } if request.is_ready() => {
+                    track(&store, |v| {
+                        v.state = "ready";
+                        v.methods = their_methods.iter().filter(|m| **m == VerificationMethod::SasV1).map(|_| "sas").collect();
+                        v.other_device = Some(VerificationDevice { id: other_device_data.device_id().to_string() });
+                    });
                     request.start_sas().await.map_err(|x| e(&x))?;
                 }
                 VerificationRequestState::Transitioned { verification: Verification::SasV1(s), .. } => {
@@ -2076,10 +2109,7 @@ pub async fn verify(store: SharedStore, confirm: oneshot::Receiver<bool>) -> Res
                     sas_changes = s.changes().boxed();
                     sas = Some(s);
                 }
-                VerificationRequestState::Cancelled(c) => {
-                    set_verification(&store, "cancelled", None);
-                    return Err(c.reason().to_string());
-                }
+                VerificationRequestState::Cancelled(c) => return cancelled(c),
                 _ => {}
             },
             Some(state) = sas_changes.next() => match state {
@@ -2087,30 +2117,50 @@ pub async fn verify(store: SharedStore, confirm: oneshot::Receiver<bool>) -> Res
                     let emojis = emojis.emojis.iter();
                     let emojis =
                         emojis.map(|x| VerificationSasEmoji { emoji: x.symbol.into(), description: x.description.into() });
-                    let sas_info = VerificationSas { decimals: Some(format!("{a} {b} {c}")), emojis: emojis.collect() };
-                    set_verification(&store, "sas_started", Some(sas_info));
+                    let shown = VerificationSas { emojis: emojis.collect(), decimals: format!("{a} {b} {c}") };
+                    track(&store, |v| {
+                        v.state = "sas_ready";
+                        if !v.methods.contains(&"sas") {
+                            v.methods.push("sas");
+                        }
+                        v.sas = Some(shown);
+                    });
                     let sas = sas.as_ref().expect("SAS changes come from a SAS");
                     match confirm.take().expect("emojis are shown once").await {
                         Ok(true) => sas.confirm().await.map_err(|x| e(&x))?,
-                        _ => {
-                            sas.cancel().await.map_err(|x| e(&x))?;
-                            set_verification(&store, "cancelled", None);
-                            return Err("the emojis did not match".into());
-                        }
+                        _ => sas.cancel().await.map_err(|x| e(&x))?,
                     }
                 }
                 SasState::Done { .. } => {
-                    set_verification(&store, "verified", None);
+                    track(&store, |v| v.state = "done");
                     return Ok(());
                 }
-                SasState::Cancelled(c) => {
-                    set_verification(&store, "cancelled", None);
-                    return Err(c.reason().to_string());
-                }
+                SasState::Cancelled(c) => return cancelled(c),
                 _ => {}
             },
         }
     }
+}
+
+/// Desktop's `cancelVerification`: cancels the request, or the emojis when they are on the screen.
+pub async fn cancel_verification(store: &SharedStore, id: &str) -> Result<(), String> {
+    let (client, emojis) = {
+        let mut st = store.write();
+        (st.matrix.clone().ok_or("Matrix is not connected yet")?, st.sas_confirm.take())
+    };
+    if let Some(tx) = emojis {
+        tx.send(false).ok();
+    }
+    let me = client.user_id().expect("signed-in client has a user ID").to_owned();
+    match client.encryption().get_verification_request(&me, id).await {
+        Some(request) => request.cancel().await.map_err(|e| e.to_string()),
+        None => Ok(()),
+    }
+}
+
+pub async fn verify(store: SharedStore, confirm: oneshot::Receiver<bool>) -> Result<(), String> {
+    let request = start_verification(&store, "device").await?;
+    run_verification(store, request, confirm).await
 }
 
 pub async fn run(store: SharedStore) {
