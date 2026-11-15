@@ -948,6 +948,25 @@ mod tests {
     }
 
     #[test]
+    fn a_card_in_tiles_fills_the_same_pixels_as_one_full_draw() {
+        use iced::{Point, Rectangle, Size};
+        let blue = Color::from_rgb(0.2, 0.4, 0.8);
+        let full = shadowed_card(blue, &[Rectangle::with_size(Size::new(200.0, 200.0))]);
+        // Tiles with fractional edges. The middle tile misses the rounded corners, so it fills only a rectangle.
+        let side = 200.0 / 3.0;
+        let tiles: Vec<Rectangle> = (0..9)
+            .map(|i| Rectangle::new(Point::new((i % 3) as f32 * side, (i / 3) as f32 * side), Size::new(side, side)))
+            .collect();
+        let tiled = shadowed_card(blue, &tiles);
+        // The masked corners of the card can be 1 level away, like in the shadow test.
+        assert!(full.data().iter().zip(tiled.data()).all(|(a, b)| a.abs_diff(*b) <= 1), "the tiles draw the card");
+        let middle = |p: &tiny_skia::Pixmap| -> Vec<u8> {
+            (67..133).flat_map(|y| p.data()[(y * 200 + 67) * 4..(y * 200 + 133) * 4].to_vec()).collect()
+        };
+        assert_eq!(middle(&tiled), middle(&full), "the middle tile fills the same pixels");
+    }
+
+    #[test]
     fn palette_matches_desktop_tokens() {
         let rows: [(&str, Token, Color, Color); 9] = [
             ("--left-pane-bg", |p| p.window, hex(0xeaebf0), hex(0x1c1d1e)),
