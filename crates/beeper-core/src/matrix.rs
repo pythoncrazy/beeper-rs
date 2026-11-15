@@ -668,11 +668,16 @@ fn membership_text(now: &str, before: &str, (name, me): (&str, bool), by: Option
     }
 }
 
+/// A link of `com.beeper.linkpreviews`, with its `og:image`, which can be encrypted.
 pub fn link(p: &Value) -> Option<MessageLink> {
+    let dim = |k: &str| p[k].as_u64().map(|n| u32::try_from(n).expect("image dimension"));
+    let (width, height) = (dim("og:image:width"), dim("og:image:height"));
     Some(MessageLink {
         url: s(&p["matched_url"]).or(s(&p["og:url"]))?,
         title: s(&p["og:title"]).unwrap_or_default(),
         summary: s(&p["og:description"]),
+        img: url_field(&p["og:image"], &p["beeper:image:encryption"]),
+        img_size: width.zip(height).map(|(w, h)| AttachmentSize { width: Some(w), height: Some(h) }),
     })
 }
 
