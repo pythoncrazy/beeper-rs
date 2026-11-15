@@ -426,6 +426,9 @@ pub struct ChatDraft {
     /// The links whose preview you removed. Desktop keeps them as `{ matched_url }` link previews.
     #[serde(rename = "discardedLinks", skip_serializing_if = "Vec::is_empty", default)]
     pub discarded_links: Vec<String>,
+    /// The mention pills of the text: the label without "@", and the user ID. Desktop keeps them in the editor document.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub mentions: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

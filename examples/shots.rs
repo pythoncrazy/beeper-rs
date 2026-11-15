@@ -63,6 +63,10 @@ fn main() {
     };
     app.select_chat(&dm);
     shot(&out, "main_typing", (1200.0, 800.0), &theme, app.view_main());
+    let marks = "**bold** _italic_ ~~gone~~ `code` [link](https://beeper.com)\n> quote\n- item";
+    let _ = app.update(UiMessage::ComposerChanged(marks.into()));
+    shot(&out, "main_composer_marks", (1200.0, 800.0), &theme, app.view_main());
+    let _ = app.update(UiMessage::ComposerChanged(String::new()));
     app.store.write().typing.clear();
     app.store.write().recent_emoji = vec![("👍".into(), 3), ("joy".into(), 2), ("❤️".into(), 1)];
     let _ = app.update(UiMessage::Emoji(beeper_ui::emoji::EmojiMsg::Pointer(0, true)));
