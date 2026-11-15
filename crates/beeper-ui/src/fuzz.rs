@@ -1034,7 +1034,7 @@ fn threads_like_desktop() {
         let m = st.messages.last().unwrap();
         assert_eq!((m.text.as_deref(), m.thread_root.as_deref(), m.broadcast), (Some("done"), Some(root), true));
         assert_eq!(m.linked_message_id.as_deref(), Some("msg_1011"), "the reply falls back to the newest reply");
-        let c = &st.chats[st.chat_idx_by_id[chat]];
+        let c = st.chat(chat);
         assert_eq!(c.preview.as_ref().map(|p| p.id.as_str()), Some(m.id.as_str()), "it is also sent to the chat");
     }
     let thread = app.pane.thread.as_ref().unwrap();
@@ -1067,14 +1067,14 @@ fn threads_like_desktop() {
     let (_, id, _) = st.send_in_thread(chat, Some("new".into()), None, &t).unwrap();
     let i = st.msg_idx_by_id[&id];
     let m = st.update_message(i, |m| m.is_sender = Some(false));
-    let ci = st.chat_idx_by_id[chat];
+    let ci = st.chat_idx(chat);
     st.update_chat(ci, |c| drop(c.thread_reads.insert(root.into(), beeper_core::store::sort_key(0))));
     assert!(st.thread_unread(&st.chats[ci], root).0 > 0);
     drop(st);
     app.focused = true;
     let _ = app.update(UiMessage::Upserted(Box::new(m)));
     let st = app.store.read();
-    assert_eq!(st.thread_unread(&st.chats[st.chat_idx_by_id[chat]], root), (0, 0));
+    assert_eq!(st.thread_unread(st.chat(chat), root), (0, 0));
 }
 
 /// Desktop's `FocusScope`s: the open thread pane takes the arrow keys until a click in the chat, a composer action
@@ -1131,7 +1131,7 @@ fn unread_threads_like_desktop() {
     assert_eq!(thread.thread_divider.as_deref(), Some("0000000000001009"), "the divider stays at the old read mark");
     {
         let st = app.store.read();
-        assert_eq!(st.thread_unread(&st.chats[st.chat_idx_by_id[chat]], root), (0, 0), "the open thread is read");
+        assert_eq!(st.thread_unread(st.chat(chat), root), (0, 0), "the open thread is read");
     }
     assert!(simulator(app.view_main()).find("You’re all caught up.").is_ok());
     assert!(simulator(app.view_sidebar()).find("Unread threads").is_err(), "the pill goes with the last unread thread");
@@ -1153,7 +1153,7 @@ fn thread_follows_like_desktop() {
     }
     let follows = |app: &BeeperGuiApp| {
         let st = app.store.read();
-        st.chats[st.chat_idx_by_id[chat]].follows.clone()
+        st.chat(chat).follows.clone()
     };
     assert_eq!(follows(&app).unfollowed, [root]);
     let st = app.store.read();
@@ -1535,7 +1535,7 @@ fn media_viewer_deletes_like_desktop() {
         let mut st = app.store.write();
         let (i, ai) = image(&st);
         st.update_message(i, |m| m.is_sender = Some(true));
-        let c = st.chat_idx_by_id[&st.messages[i].chat_id];
+        let c = st.chat_idx(&st.messages[i].chat_id);
         (st.chats[c].messages.delete, st.chats[c].messages.delete_max_age) = (true, None);
         (st.messages[i].id.clone(), ai, c)
     };
@@ -2951,7 +2951,7 @@ fn scroll_to_bottom_shows_when_you_scroll_up_like_desktop() {
         for n in 0..40 {
             st.send_message(NOTE_CHAT_ID, Some(format!("line {n}")), None, None).expect("a demo send");
         }
-        let i = st.chat_idx_by_id[NOTE_CHAT_ID];
+        let i = st.chat_idx(NOTE_CHAT_ID);
         st.update_chat(i, |c| c.unread_count = 2);
     }
     // The sensor at the bottom of the timeline tells when the timeline leaves its bottom and comes back.
@@ -3331,7 +3331,7 @@ fn polls_like_desktop() {
     assert!(click(&app, "Dracula").is_empty(), "an ended poll takes no votes");
     app.store.write().update_poll(mid, |p| (p.ended, p.undisclosed) = (false, true));
     assert!(simulator(app.view_main()).find("Results will be displayed when the poll ends").is_ok());
-    let i = app.store.read().chat_idx_by_id[chat];
+    let i = app.store.read().chat_idx(chat);
     app.store.write().update_chat(i, |c| c.polls = None);
     let mut sim = simulator(app.view_main());
     assert!(
@@ -3345,7 +3345,7 @@ fn poll_creator_like_desktop() {
     let mut app = demo_app("poll-creator");
     let chat = "!tg_rust:beeper.com".to_string();
     assert!(crate::hidden_actions(&app.store.read()).contains(&6), "Create Poll is behind the plus button");
-    let i = app.store.read().chat_idx_by_id[&chat];
+    let i = app.store.read().chat_idx(&chat);
     let rules = PollRules { hidden_votes: false, end: true, duplicates: false, max_options: 3, max_length: 200 };
     app.store.write().update_chat(i, |c| c.polls = Some(rules));
     let _ = app.update(UiMessage::OpenPollCreator(chat.clone()));
@@ -3575,7 +3575,7 @@ fn create_label_like_desktop() {
     let label = st.labels.iter().find(|l| l.name == "Friends").expect("the new label");
     assert_eq!(label.rooms, chats);
     assert_eq!((label.color, label.icon.as_deref()), (Some(11), None), "a second pick clears the icon");
-    assert!(chats.iter().all(|c| st.chats[st.chat_idx_by_id[c]].label_ids.contains(&label.id)));
+    assert!(chats.iter().all(|c| st.chat(c).label_ids.contains(&label.id)));
     assert_eq!(app.selected_account_filter, Some(format!("label:{}", label.id)), "the new label opens");
     assert_eq!(app.status_banner, "Created Friends");
     drop(st);
@@ -3617,7 +3617,7 @@ fn edit_and_delete_labels_like_desktop() {
     {
         let st = app.store.read();
         assert!(st.labels.iter().all(|l| l.id != "lbl_work"));
-        assert!(rooms.iter().all(|r| !st.chats[st.chat_idx_by_id[r]].label_ids.iter().any(|l| l == "lbl_work")));
+        assert!(rooms.iter().all(|r| !st.chat(r).label_ids.iter().any(|l| l == "lbl_work")));
     }
     assert_eq!(app.selected_account_filter, None, "the inbox opens when its label is deleted");
     assert_eq!(app.status_banner, "Deleted \"Work\"");
@@ -3625,7 +3625,7 @@ fn edit_and_delete_labels_like_desktop() {
     let st = app.store.read();
     let back = st.labels.iter().find(|l| l.name == "Work").expect("Undo makes the label again");
     assert!(back.muted && back.rooms == rooms);
-    assert!(rooms.iter().all(|r| st.chats[st.chat_idx_by_id[r]].label_ids.contains(&back.id)));
+    assert!(rooms.iter().all(|r| st.chat(r).label_ids.contains(&back.id)));
     assert_eq!(st.settings.spaces_order[0].id, format!("label:{}", back.id), "the label keeps its place");
 }
 
@@ -4367,7 +4367,7 @@ fn label_menu_labels_the_selection_like_desktop() {
     }
     let labeled = |app: &BeeperGuiApp| {
         let st = app.store.read();
-        ids.iter().filter(|id| st.chats[st.chat_idx_by_id[*id]].label_ids.iter().any(|l| l == "lbl_work")).count()
+        ids.iter().filter(|id| st.chat(id).label_ids.iter().any(|l| l == "lbl_work")).count()
     };
     assert_eq!(labeled(&app), 2, "the label goes on every selected chat");
     let _ = app.update(UiMessage::Undo(false));
@@ -4489,7 +4489,7 @@ fn blocking_like_desktop() {
     }
     let blocked = |app: &BeeperGuiApp| {
         let st = app.store.read();
-        st.user_blocked(&st.chats[st.chat_idx_by_id[&id]])
+        st.user_blocked(st.chat(&id))
     };
     assert!(blocked(&app) && app.confirm.is_none());
     assert_eq!(app.status_banner, format!("{title} blocked"));
@@ -4514,7 +4514,7 @@ fn blocking_like_desktop() {
     assert!(blocked(&app), "Undo blocks again");
     let network = {
         let mut st = app.store.write();
-        let i = st.chat_idx_by_id[&id];
+        let i = st.chat_idx(&id);
         st.update_chat(i, |c| c.block |= NO_UNBLOCK);
         network_name(&st.chats[i].account_id)
     };
@@ -4641,7 +4641,7 @@ fn label_inbox_rules_like_desktop() {
     let hidden = |app: &BeeperGuiApp| {
         let st = app.store.read();
         let work = st.labels.iter().find(|l| l.id == "lbl_work").expect("the work label");
-        let chats = work.rooms.iter().map(|r| &st.chats[st.chat_idx_by_id[r]]);
+        let chats = work.rooms.iter().map(|r| st.chat(r));
         chats.map(|c| (c.inbox_group, c.flags & CHAT_HIDDEN != 0)).collect::<Vec<_>>()
     };
     let shown = hidden(&app);
@@ -4675,7 +4675,7 @@ fn label_chats_from_the_chat_menu_like_desktop() {
     }
     let labels = |app: &BeeperGuiApp| {
         let st = app.store.read();
-        st.chats[st.chat_idx_by_id[chat]].label_ids.clone()
+        st.chat(chat).label_ids.clone()
     };
     assert_eq!(labels(&app), ["lbl_work"]);
     assert!(app.store.read().labels.iter().any(|l| l.id == "lbl_work" && l.rooms.iter().any(|r| r == chat)));
@@ -4731,7 +4731,7 @@ fn chat_info_labels_like_desktop() {
     }
     let _ = app.update(UiMessage::SwitchLabel("lbl_work".into(), chat.clone(), true));
     let st = app.store.read();
-    assert_eq!(st.chats[st.chat_idx_by_id[&chat]].label_ids, ["lbl_work"]);
+    assert_eq!(st.chat(&chat).label_ids, ["lbl_work"]);
     drop(st);
     assert!(app.toast.is_none() && app.undo_stack.len() == 1, "the switch has no toast but can be undone");
     let mut sim = simulator(app.view_info());
@@ -4753,7 +4753,7 @@ fn chat_info_disappearing_messages_like_desktop() {
     let _ = app.update(UiMessage::SetDisappearing(id.clone(), 604_800_000));
     let disappearing = |app: &BeeperGuiApp| {
         let st = app.store.read();
-        st.chats[st.chat_idx_by_id[&id]].disappearing
+        st.chat(&id).disappearing
     };
     assert_eq!(disappearing(&app), Some(604_800_000));
     let _ = app.update(UiMessage::SetDisappearing(id.clone(), 0));
@@ -4769,7 +4769,7 @@ fn disappearing_timer_changes_in_the_timeline_like_desktop() {
     {
         let mut st = app.store.write();
         let last = st.chat_msg_indices[&id].last().map(|&i| st.messages[i].clone()).expect("a message");
-        let me = st.chats[st.chat_idx_by_id[&id]].participants.items.iter().find(|u| u.is_self == Some(true));
+        let me = st.chat(&id).participants.items.iter().find(|u| u.is_self == Some(true));
         let me = me.expect("the user").id.clone();
         for (n, (sender, timer)) in
             [(me.as_str(), 3_600_000), (me.as_str(), 604_800_000), ("@tulir:beeper.com", 0)].into_iter().enumerate()
@@ -5020,9 +5020,9 @@ fn chat_info_contact_like_desktop() {
     {
         let mut st = app.store.write();
         let other = |c: &Chat| c.participants.items.iter().position(|u| u.is_self != Some(true)).expect("a member");
-        let from = &st.chats[st.chat_idx_by_id[sarah]];
+        let from = st.chat(sarah);
         let user = from.participants.items[other(from)].clone();
-        let to = st.chat_idx_by_id["!sg_lena:beeper.com"];
+        let to = st.chat_idx("!sg_lena:beeper.com");
         let at = other(&st.chats[to]);
         st.chats[to].participants.items[at] = user;
     }
@@ -5166,7 +5166,7 @@ fn mute_labels_like_desktop() {
     simulator(app.view_account_menu("label:lbl_work")).find("Unmute").expect("an Unmute item");
     let muted = |app: &BeeperGuiApp| {
         let st = app.store.read();
-        st.notifications_muted(&st.chats[st.chat_idx_by_id[&only]])
+        st.notifications_muted(st.chat(&only))
     };
     assert!(muted(&app), "a chat is muted when all its labels are muted");
     {
@@ -5176,7 +5176,7 @@ fn mute_labels_like_desktop() {
         let toggles = sim.into_messages().filter(|m| matches!(m, UiMessage::ToggleFlag(..)));
         assert_eq!(toggles.count(), 0, "a label mute is not undone from the chat");
     }
-    let i = app.store.read().chat_idx_by_id[&only];
+    let i = app.store.read().chat_idx(&only);
     app.store.write().update_chat(i, |c| c.label_ids.push(both.clone()));
     assert!(!muted(&app), "an unmuted label keeps the chat unmuted");
     let _ = app.update(UiMessage::MuteLabel("lbl_work".into(), false));
@@ -5634,11 +5634,11 @@ fn message_actions_follow_room_features_like_desktop() {
     };
     let network = {
         let st = app.store.read();
-        network_name(&st.chats[st.chat_idx_by_id[&id]].account_id)
+        network_name(&st.chat(&id).account_id)
     };
     let set = |app: &mut BeeperGuiApp, rules: MessageRules| {
         let mut st = app.store.write();
-        let i = st.chat_idx_by_id[&id];
+        let i = st.chat_idx(&id);
         st.update_chat(i, |c| c.messages = rules);
     };
     let old = MessageRules { edit_max_age: Some(60), react: false, reply: false, ..BEEPER_MESSAGES };
@@ -5689,7 +5689,7 @@ fn delete_dialog_removes_from_beeper_like_desktop() {
     };
     let rules = |app: &mut BeeperGuiApp, delete: bool, delete_for_me: bool| {
         let mut st = app.store.write();
-        let i = st.chat_idx_by_id[&cid];
+        let i = st.chat_idx(&cid);
         st.update_chat(i, |c| {
             c.messages = MessageRules { delete, delete_for_me, delete_max_age: None, ..BEEPER_MESSAGES }
         });
@@ -5704,7 +5704,7 @@ fn delete_dialog_removes_from_beeper_like_desktop() {
     };
     let (title, network, name) = {
         let st = app.store.read();
-        let c = &st.chats[st.chat_idx_by_id[&cid]];
+        let c = st.chat(&cid);
         ("Delete message?".to_string(), network_name(&c.account_id), c.title.clone())
     };
     rules(&mut app, true, false);
@@ -5737,7 +5737,7 @@ fn delete_dialog_removes_from_beeper_like_desktop() {
     let account = stored(&app.store.read(), &mine).account_id;
     let note = |account: &str, kind: &str, title: &str| {
         let mut st = app.store.write();
-        let i = st.chat_idx_by_id[&cid];
+        let i = st.chat_idx(&cid);
         st.update_chat(i, |c| (c.account_id, c.chat_type, c.title) = (account.into(), kind.into(), title.into()));
         let m = stored(&st, &mine);
         removal_note(&st, &[&m])
@@ -5800,7 +5800,7 @@ fn message_menu_speed_and_read_like_desktop() {
     assert!(!read(&app), "the message is read");
     let st = app.store.read();
     let left = st.chat_msg_indices[&cid].iter().filter(|&&i| st.messages[i].is_unread == Some(true)).count();
-    assert_eq!(st.chats[st.chat_idx_by_id[&cid]].unread_count as usize, left);
+    assert_eq!(st.chat(&cid).unread_count as usize, left);
 }
 
 #[test]
@@ -6020,7 +6020,7 @@ fn edit_for_me_like_desktop() {
     let room = "Beeper Rust Core Team";
     let chat = |app: &BeeperGuiApp| {
         let st = app.store.read();
-        st.chats[st.chat_idx_by_id[&id]].clone()
+        st.chat(&id).clone()
     };
     let labels = |app: &BeeperGuiApp, key: &str| -> Vec<String> {
         info_menu(&app.store.read(), key, |_| true).into_iter().map(|i| i.map(|i| i.0).unwrap_or_default()).collect()

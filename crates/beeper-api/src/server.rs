@@ -1295,7 +1295,7 @@ fn chat_page<'a>(
     keep: impl Fn(&Chat) -> bool,
     limit: usize,
 ) -> Reply {
-    let chats = keys.map(|k| (k, &st.chats[st.chat_idx_by_id[k.1]]));
+    let chats = keys.map(|k| (k, st.chat(k.1)));
     let (chats, has_more) = take_page(chats.filter(|(_, c)| c.merged_into_chat_id.is_none() && keep(c)), limit);
     let cursor = |(ms, id): (i64, &str)| Some(format!("{ms}:{id}"));
     let input = || r.q("cursor").map(str::to_string);
@@ -1582,7 +1582,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
 /// A message of a chat and the message features of its room.
 fn message_rules(st: &mut BeeperStore, chat: &str, id: &str) -> Result<(Message, MessageRules), Response> {
     let (cid, m) = st.message_in_chat(chat, id).map_err(store_error)?;
-    Ok((st.messages[m].clone(), st.chats[st.chat_idx_by_id[&cid]].messages))
+    Ok((st.messages[m].clone(), st.chat(&cid).messages))
 }
 
 /// The canonical IDs of the chat `idx` and of the member chats of a merged chat.
@@ -1797,7 +1797,7 @@ fn search_messages(st: &BeeperStore, r: &Req) -> Reply {
                 || (media.contains(&"link") && !m.links.is_empty()))
     };
     let chat_ok = |m: &Message| {
-        let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
+        let c = st.chat(&m.chat_id);
         (accounts.is_empty() || accounts.contains(&c.account_id.as_str()))
             && chat_type.is_none_or(|t| c.chat_type == t)
             && !(exclude_low && c.flags & CHAT_LOW_PRIORITY != 0)
@@ -1811,7 +1811,7 @@ fn search_messages(st: &BeeperStore, r: &Req) -> Reply {
         q = q.text(text);
     }
     let (items, has_more) = message_page(st, &q, limit, |m| message_ok(m) && chat_ok(m));
-    let chat = |id: &str| view::chat(st, &st.chats[st.chat_idx_by_id[id]], None, false);
+    let chat = |id: &str| view::chat(st, st.chat(id), None, false);
     let chats: HashMap<&str, view::ApiChat> = items.iter().map(|m| (m.chat_id.as_str(), chat(&m.chat_id))).collect();
     let (oldest, newest) = (items.last().map(|m| &m.sort_key), items.first().map(|m| &m.sort_key));
     let items: Vec<_> = items.iter().map(view::message).collect();
@@ -1831,9 +1831,9 @@ fn unified_search(st: &BeeperStore, r: &Req) -> Reply {
     let groups = found.iter().copied().filter(|c| c.chat_type == "group" && chat_hit(c, true, &words));
     let in_groups: Vec<_> = groups.take(30).map(|c| view::chat(st, c, Some(20), false)).collect();
     let (messages, has_more) = message_page(st, &Query::default().text(q), 20, |m| {
-        m.flags & MSG_DELETED == 0 && st.chats[st.chat_idx_by_id[&m.chat_id]].flags & CHAT_LOW_PRIORITY == 0
+        m.flags & MSG_DELETED == 0 && st.chat(&m.chat_id).flags & CHAT_LOW_PRIORITY == 0
     });
-    let chat = |id: &str| view::chat(st, &st.chats[st.chat_idx_by_id[id]], None, false);
+    let chat = |id: &str| view::chat(st, st.chat(id), None, false);
     let referenced: HashMap<&str, view::ApiChat> =
         messages.iter().map(|m| (m.chat_id.as_str(), chat(&m.chat_id))).collect();
     ok(&json!({

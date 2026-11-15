@@ -814,7 +814,7 @@ pub async fn load_older(store: SharedStore, chat: String) -> Result<(), String> 
     while count() == start {
         let from = {
             let st = store.read();
-            match &st.chats[st.chat_idx_by_id[&chat]].older {
+            match &st.chat(&chat).older {
                 Older::Start => return Ok(()),
                 Older::Unknown => None,
                 Older::From(token) => Some(token.clone()),
@@ -823,7 +823,7 @@ pub async fn load_older(store: SharedStore, chat: String) -> Result<(), String> 
         let (events, end) = page(&room, from, HISTORY).await.map_err(|e| e.to_string())?;
         sync_room(&store, &room, events).await;
         let mut st = store.write();
-        let idx = st.chat_idx_by_id[&chat];
+        let idx = st.chat_idx(&chat);
         st.update_chat(idx, |c| c.older = end.map_or(Older::Start, Older::From));
     }
     Ok(())
@@ -1140,7 +1140,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
         if !note {
             st.upsert_chat(chat);
         } else {
-            let i = st.chat_idx_by_id[NOTE_CHAT_ID];
+            let i = st.chat_idx(NOTE_CHAT_ID);
             let room = |c: &Chat| {
                 (
                     c.img_url.clone(),
@@ -1207,7 +1207,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                             m.reactions.push(r);
                         });
                     }
-                    let idx = st.chat_idx_by_id[&chat_id];
+                    let idx = st.chat_idx(&chat_id);
                     let shown = preview.is_sender == Some(true) || (members <= 20 && (!group || target_mine));
                     let newer = st.chats[idx]
                         .preview
@@ -1259,7 +1259,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                 }
             }
         }
-        let idx = st.chat_idx_by_id[&chat_id];
+        let idx = st.chat_idx(&chat_id);
         if let Some(older) = older {
             st.update_chat(idx, |c| c.older = older);
         }
@@ -1330,7 +1330,7 @@ async fn sync_thread_reads(store: &SharedStore, room: &Room, roots: BTreeSet<Str
     let mut st = store.write();
     let key = |st: &BeeperStore, e: &Option<String>| e.as_ref().and_then(|e| Some(st.stored_message(e)?.sort_key));
     let main = main.iter().filter_map(|e| key(&st, e)).max().unwrap_or_else(|| sort_key(MIN_SAFE_INTEGER));
-    let idx = st.chat_idx_by_id[&chat];
+    let idx = st.chat_idx(&chat);
     let old = &st.chats[idx].thread_reads;
     let new: Vec<(String, String)> = reads
         .into_iter()
@@ -1893,7 +1893,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                 let order = on.then(|| {
                     let st = store.read();
                     let last = st.stored("chat_id = ?1 ORDER BY sort_key DESC LIMIT 1", [&chat]).pop();
-                    let last = last.map(|m| m.sort_key).max(st.chats[st.chat_idx_by_id[&chat]].notifiable.clone());
+                    let last = last.map(|m| m.sort_key).max(st.chat(&chat).notifiable.clone());
                     last.map_or(MIN_SAFE_INTEGER, |k| order_of(&k))
                 });
                 let done = inbox_done(order, now_unix_millis());
@@ -2541,7 +2541,7 @@ async fn sync_profile(client: &Client, store: &SharedStore) {
     };
     let field = |k: &str| profile.get(k).and_then(Value::as_str).map(str::to_string);
     let mut st = store.write();
-    let i = st.chat_idx_by_id[NOTE_CHAT_ID];
+    let i = st.chat_idx(NOTE_CHAT_ID);
     st.update_chat(i, |c| {
         let me = &mut c.participants.items[0];
         me.full_name = field("displayname").or(me.full_name.take());
@@ -3362,7 +3362,7 @@ mod tests {
         let state = || {
             let st = store.read();
             let texts = st.chat_msg_indices["!room:x"].iter().map(|&i| st.messages[i].text.clone().unwrap());
-            (texts.collect::<Vec<_>>(), st.chats[st.chat_idx_by_id["!room:x"]].older.clone())
+            (texts.collect::<Vec<_>>(), st.chat("!room:x").older.clone())
         };
         let texts = |a: i64| (a..=70).map(|i| format!("m{i}")).collect::<Vec<_>>();
         assert_eq!(state(), (texts(41), Older::From("t40".into())), "the first sync loads the newest 30 events");
@@ -3375,7 +3375,7 @@ mod tests {
         drop(store);
         let cfg = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23392, None);
         let st = crate::store::BeeperStore::from_config(cfg);
-        assert_eq!(st.chats[st.chat_idx_by_id["!room:x"]].older, Older::Start, "the pagination state persists");
+        assert_eq!(st.chat("!room:x").older, Older::Start, "the pagination state persists");
     }
 
     /// A store with the stub rooms `!room:x`, whose history is `events`, and `other.0`, whose history is `other.1`.
@@ -3429,13 +3429,13 @@ mod tests {
         sync_stub_room(&store, "!room:x").await;
         let flags = |store: &crate::store::SharedStore| {
             let st = store.read();
-            let c = &st.chats[st.chat_idx_by_id["!room:x"]];
+            let c = st.chat("!room:x");
             (c.is_archived, c.is_low_priority)
         };
         assert_eq!(flags(&store), (Some(false), Some(false)));
         {
             let mut st = store.write();
-            let i = st.chat_idx_by_id["!room:x"];
+            let i = st.chat_idx("!room:x");
             assert!(st.set_chat_flag(i, super::ChatFlag::Archived, Some(true)));
             assert!(st.set_chat_flag(i, super::ChatFlag::LowPriority, Some(true)));
         }
@@ -3454,7 +3454,7 @@ mod tests {
         assert_eq!(flags(&store), (Some(false), Some(false)), "later syncs show the homeserver state");
         let mut c = {
             let st = store.read();
-            st.chats[st.chat_idx_by_id["!room:x"]].clone()
+            st.chat("!room:x").clone()
         };
         (c.unread_count, c.is_marked_unread, c.is_pinned, c.last_activity) = (0, None, None, None);
         let (old, new) = (crate::store::sort_key(3), crate::store::sort_key(9));
@@ -3607,7 +3607,7 @@ mod tests {
         sync_stub_room(&store, "!room:x").await;
         let chat = || {
             let st = store.read();
-            st.chats[st.chat_idx_by_id["!room:x"]].clone()
+            st.chat("!room:x").clone()
         };
         {
             let c = chat();
@@ -3876,7 +3876,7 @@ mod tests {
         sync_stub_room(&store, "!room:x").await;
         let chat = || {
             let st = store.read();
-            st.chats[st.chat_idx_by_id["!room:x"]].clone()
+            st.chat("!room:x").clone()
         };
         let c = chat();
         assert_eq!(c.block, BLOCK_USER | REPORT_SPAM | USER_BLOCKED);

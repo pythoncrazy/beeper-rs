@@ -2933,7 +2933,7 @@ impl SearchFilters {
     }
 
     fn keeps(&self, st: &BeeperStore, room: Option<&str>, m: &Message) -> bool {
-        let group = || st.chats[st.chat_idx_by_id[&m.chat_id]].chat_type == "group";
+        let group = || st.chat(&m.chat_id).chat_type == "group";
         let at = || millis_from_rfc3339(&m.timestamp).expect("RFC 3339 timestamp");
         m.is_deleted != Some(true)
             && room.is_none_or(|r| m.chat_id == r)
@@ -3151,7 +3151,7 @@ struct MediaWindow {
 /// If you can delete a message for everyone, like Desktop's Media window `G`: the chat fully supports deletion, you
 /// sent the message, and it is younger than the `delete_max_age` of the network.
 fn deletable(st: &BeeperStore, m: &Message) -> bool {
-    let rules = st.chats[st.chat_idx_by_id[&m.chat_id]].messages;
+    let rules = st.chat(&m.chat_id).messages;
     rules.delete
         && m.is_sender == Some(true)
         && m.is_deleted != Some(true)
@@ -3169,7 +3169,7 @@ fn delete_dialog(st: &BeeperStore, ms: &[&Message]) -> Option<(String, Vec<(&'st
         ms.iter().copied().filter(|m| !m.silent()).partition(|m| m.is_sender == Some(true));
     // Desktop's `Vit`.
     let mode = |m: &Message| {
-        let rules = st.chats[st.chat_idx_by_id[&m.chat_id]].messages;
+        let rules = st.chat(&m.chat_id).messages;
         match rules.delete {
             true => MessageRules::young(rules.delete_max_age, &m.timestamp).then_some("Delete for Everyone"),
             false => rules.delete_for_me.then_some("Delete for Me"),
@@ -3199,7 +3199,7 @@ fn delete_dialog(st: &BeeperStore, ms: &[&Message]) -> Option<(String, Vec<(&'st
 /// Desktop's `Git`: where "Remove from Beeper" keeps the messages `ms`, by their chat.
 fn removal_note(st: &BeeperStore, ms: &[&Message]) -> String {
     let n = ms.len();
-    let c = &st.chats[st.chat_idx_by_id[&ms[0].chat_id]];
+    let c = st.chat(&ms[0].chat_id);
     if ms.iter().any(|m| m.chat_id != c.id) {
         let (one, many) = (
             "Removing it from Beeper keeps it on its original network.",
@@ -3277,7 +3277,7 @@ fn media_items(st: &BeeperStore, media: &[Message], w: &MediaWindow) -> Vec<(usi
     let (tab, needle) = (w.tab, w.search.as_deref().unwrap_or("").trim().to_lowercase());
     let shown = |m: &&Message| {
         m.is_deleted != Some(true)
-            && st.chats[st.chat_idx_by_id[&m.chat_id]].flags & (CHAT_LOW_PRIORITY | CHAT_REQUEST) == 0
+            && st.chat(&m.chat_id).flags & (CHAT_LOW_PRIORITY | CHAT_REQUEST) == 0
             && match w.sent_by {
                 0 => true,
                 1 => m.is_sender == Some(true),
@@ -3392,7 +3392,7 @@ fn file_icon(a: &Attachment) -> &'static svg::Handle {
 fn forward_chats<'s>(st: &'s BeeperStore, f: &Forward) -> Vec<&'s Chat> {
     let q = f.query.trim().to_lowercase();
     let mut v: Vec<&Chat> = match q.is_empty() && !st.recent_chat_ids.is_empty() {
-        true => st.recent_chat_ids.iter().filter_map(|id| st.chat_idx_by_id.get(id).map(|&i| &st.chats[i])).collect(),
+        true => st.recent_chat_ids.iter().filter_map(|id| st.find_chat(id)).collect(),
         false => {
             let hit =
                 |c: &&Chat| c.title.to_lowercase().contains(&q) || chat_search_subtitle(c).to_lowercase().contains(&q);
@@ -5268,14 +5268,14 @@ impl BeeperGuiApp {
     /// The message features of the chat of `m`.
     fn rules(&self, m: &Message) -> MessageRules {
         let st = self.store.read();
-        st.chats[st.chat_idx_by_id[&m.chat_id]].messages
+        st.chat(&m.chat_id).messages
     }
 
     /// The newest message you can edit in the open chat.
     fn last_own_message(&self) -> Option<Message> {
         let st = self.store.read();
         let id = self.pane().selected_chat_id.as_deref().expect("an open chat");
-        let rules = st.chats[st.chat_idx_by_id[id]].messages;
+        let rules = st.chat(id).messages;
         let own = st.chat_msg_indices[id]
             .iter()
             .map(|&i| &st.messages[i])
@@ -7288,7 +7288,7 @@ impl BeeperGuiApp {
             UiMessage::AddMember(chat, user) => {
                 let mut st = self.store.write();
                 // The second click of a double click hits the row of the person that the first click added.
-                if st.chats[st.chat_idx_by_id[&chat]].participants.items.iter().all(|u| u.id != user.id) {
+                if st.chat(&chat).participants.items.iter().all(|u| u.id != user.id) {
                     st.add_member(&chat, *user);
                 }
             }
@@ -7428,7 +7428,7 @@ impl BeeperGuiApp {
             UiMessage::MessageMember(cid, uid) => {
                 self.chat_menu = None;
                 let st = self.store.read();
-                let c = &st.chats[st.chat_idx_by_id[&cid]];
+                let c = st.chat(&cid);
                 let user = c.participants.items.iter().find(|u| u.id == uid).cloned().expect("a member of the chat");
                 let account = c.account_id.clone();
                 drop(st);
@@ -7448,7 +7448,7 @@ impl BeeperGuiApp {
             UiMessage::ReplyPrivately(mid) => {
                 let st = self.store.read();
                 let m = &stored(&st, &mid);
-                let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
+                let c = st.chat(&m.chat_id);
                 let sender = c.participants.items.iter().find(|u| u.id == m.sender_id).cloned().expect("the sender");
                 let quote = copy_text(m, false, false).lines().map(|l| format!("> {l}\n")).collect();
                 let account = c.account_id.clone();
@@ -7702,7 +7702,7 @@ impl BeeperGuiApp {
                     st.whoami = profile;
                     let info = (st.beeper_state.access_token.clone(), st.beeper_state.user_id.clone(), st.config.demo);
                     if st.me().email != email {
-                        let i = st.chat_idx_by_id[NOTE_CHAT_ID];
+                        let i = st.chat_idx(NOTE_CHAT_ID);
                         st.update_chat(i, |c| c.participants.items[0].email = email);
                     }
                     st.set_cloud_accounts(accounts.clone());
@@ -10319,7 +10319,7 @@ impl BeeperGuiApp {
             })
             .into(),
         };
-        let chat = &st.chats[st.chat_idx_by_id[&cid]];
+        let chat = st.chat(&cid);
         let (rules, live) = (chat.messages, m.is_deleted != Some(true));
         let others = chat.participants.items.iter().filter(|u| u.is_self != Some(true)).count();
         let sender = chat.participants.items.iter().any(|u| u.id == m.sender_id);
@@ -10384,7 +10384,7 @@ impl BeeperGuiApp {
                 && m.poll.as_ref().is_some_and(|p| !p.ended)
                 && m.is_deleted != Some(true)
                 && st.feature("enable-polls").on
-                && st.chats[st.chat_idx_by_id[&cid]].polls.is_some_and(|r| r.end))
+                && st.chat(&cid).polls.is_some_and(|r| r.end))
             .then(|| vec![item("End Poll".into(), "", Some(UiMessage::EndPoll(cid.clone(), mid.clone())))]),
             self.pane().reply_thread.is_some().then(|| {
                 let jump = UiMessage::Commands(vec![
@@ -10503,9 +10503,8 @@ impl BeeperGuiApp {
                     all.into_iter().map(|m| m.id).collect()
                 });
                 let titled: Vec<bool> = st.chats.iter().map(|c| c.title.to_lowercase().contains(q)).collect();
-                let hit = |m: &Message| {
-                    text.as_ref().is_none_or(|t| t.contains(&m.id) || titled[st.chat_idx_by_id[&m.chat_id]])
-                };
+                let hit =
+                    |m: &Message| text.as_ref().is_none_or(|t| t.contains(&m.id) || titled[st.chat_idx(&m.chat_id)]);
                 newest(Query::default().media(), 50, &hit)
             }
         };
@@ -11544,7 +11543,7 @@ impl BeeperGuiApp {
     /// the bridge blocks or unblocks, a toast tells it with Undo when it can be undone, and a blocked request closes.
     fn block_user(&mut self, id: &str, block: bool, spam: bool) -> Task<UiMessage> {
         let mut st = self.store.write();
-        let c = &st.chats[st.chat_idx_by_id[id]];
+        let c = st.chat(id);
         if st.bridge_accounts.iter().any(|b| b.account_id == c.account_id && b.state == "BAD_CREDENTIALS") {
             (self.confirm, self.delete_target) =
                 (Some(if block { ASK_BLOCK_OFFLINE } else { ASK_UNBLOCK_OFFLINE }), Some(id.into()));
@@ -12824,7 +12823,7 @@ impl BeeperGuiApp {
     fn mark_all_threads_read(&mut self) {
         self.unread_menu = None;
         let mut st = self.store.write();
-        let chats: Vec<usize> = self.visible_chats(&st).iter().map(|c| st.chat_idx_by_id[&c.id]).collect();
+        let chats: Vec<usize> = self.visible_chats(&st).iter().map(|c| st.chat_idx(&c.id)).collect();
         for (i, root) in st.unread_threads(chats) {
             let cid = st.chats[i].id.clone();
             st.mark_thread_read(&cid, &root, None);
@@ -15367,11 +15366,7 @@ impl BeeperGuiApp {
         let mut chats: Vec<&Chat> = if room.is_some() || !f.media.is_empty() || (filtered && q.is_empty()) {
             Vec::new()
         } else if q.is_empty() && !st.recent_chat_ids.is_empty() {
-            st.recent_chat_ids
-                .iter()
-                .filter_map(|id| st.chat_idx_by_id.get(id).map(|&i| &st.chats[i]))
-                .filter(|c| c.flags & CHAT_HIDDEN == 0)
-                .collect()
+            st.recent_chat_ids.iter().filter_map(|id| st.find_chat(id)).filter(|c| c.flags & CHAT_HIDDEN == 0).collect()
         } else {
             // The view shows 12 chats at most, and one more tells that there are more.
             let (order, words) = self.chat_words(&st);
@@ -15412,7 +15407,7 @@ impl BeeperGuiApp {
         let needle = q.to_ascii_lowercase();
         let messages =
             found.iter().fold(Column::new().push((!found.is_empty()).then(|| heading(tr("Messages")))), |col, m| {
-                let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
+                let c = st.chat(&m.chat_id);
                 let mine = m.is_sender == Some(true);
                 let label = match (c.chat_type == "group", mine) {
                     (false, _) => c.title.clone(),
@@ -15457,7 +15452,7 @@ impl BeeperGuiApp {
                 )
             });
         let tiles = media.iter().map(|m| -> El<'_> {
-            let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
+            let c = st.chat(&m.chat_id);
             let card = |title: String, sub: El<'static>| -> El<'static> {
                 let body =
                     column![clamp(&title, 94.0, 3, 10.0, Weight::Normal).line_height(Pixels(12.0)).color(p.text), sub];
@@ -15739,7 +15734,7 @@ impl BeeperGuiApp {
         let (items, at) = self.carousel_items(&st)?;
         let (mid, ai) = (car.mid.as_str(), car.ai);
         let m = &stored(&st, mid);
-        let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
+        let c = st.chat(&m.chat_id);
         let a = &m.attachments[ai];
         let h24 = st.settings.pref("timeFormat") == 1;
         let white = Color::WHITE;
@@ -16456,7 +16451,7 @@ impl BeeperGuiApp {
         let head = row![tinted(&MAT_FORWARD, 16.0, p.strong), txt(tr("Forward message"), 14.0).color(p.strong)];
         let head = strip(head.spacing(12).align_y(Center).into(), border::Radius::default().top(18)).center_y(44);
         let pills = f.picked.iter().map(|cid| -> El<'a> {
-            let c = &st.chats[st.chat_idx_by_id[cid]];
+            let c = st.chat(cid);
             let label = semi(c.title.clone(), 14.0).line_height(Pixels(16.0)).color(p.strong);
             let pill = row![self.chat_avatar(c, 16.0, 0.0), label].spacing(4).align_y(Center);
             container(pill).padding(Padding::new(2.0).right(8.0)).style(fill_box(shade, 20.0)).into()

@@ -492,25 +492,24 @@ async fn lifecycle() {
         assert_eq!(st.beeper_state.access_token, "syt_emile");
         assert_eq!(st.me().email.as_deref(), Some("zola@example.com"), "whoami updates the imported email");
         assert_eq!(st.me().full_name.as_deref(), Some("Émile Zola"));
-        let title = |id: &str| st.chats[st.chat_idx_by_id[id]].title.as_str();
+        let title = |id: &str| st.chat(id).title.as_str();
         assert_eq!(title("!wa:beeper.local"), "Ana Núñez", "a single chat without a title uses the other person");
-        assert_eq!(st.chats[st.chat_idx_by_id["!wa:beeper.local"]].note.as_deref(), Some("Call back"));
+        assert_eq!(st.chat("!wa:beeper.local").note.as_deref(), Some("Call back"));
         assert_eq!(title("!sl:beeper.local"), "@sl_x:beeper.local");
         assert_eq!(title("!mx:beeper.local"), "Unnamed chat");
-        assert!(!st.chat_idx_by_id.contains_key("label_inbox"), "label threads are not chats");
-        let network =
-            |id: &str| beeper_core::config::account_network(&st.chats[st.chat_idx_by_id[id]].account_id).bridge_id;
+        assert!(st.find_chat("label_inbox").is_none(), "label threads are not chats");
+        let network = |id: &str| beeper_core::config::account_network(&st.chat(id).account_id).bridge_id;
         assert_eq!(
             ["!wa:beeper.local", "!dc:beeper.local", "!sl:beeper.local", "!mx:beeper.local", "!zz:beeper.local"]
                 .map(network),
             ["whatsapp", "discord", "slack", "hungryserv", "hungryserv"]
         );
-        let dc = &st.chats[st.chat_idx_by_id["!dc:beeper.local"]];
+        let dc = st.chat("!dc:beeper.local");
         assert!(dc.is_pinned == Some(true) && dc.is_muted == Some(true) && dc.participants.items.len() == 2);
         assert_eq!(st.pin_rank.get("!dc:beeper.local"), Some(&0));
-        assert_eq!(st.chats[st.chat_idx_by_id["!sl:beeper.local"]].is_hidden_from_inbox, Some(true));
+        assert_eq!(st.chat("!sl:beeper.local").is_hidden_from_inbox, Some(true));
         assert_eq!(
-            st.chats[st.chat_idx_by_id["!mx:beeper.local"]].preview.as_ref().and_then(|p| p.text.as_deref()),
+            st.chat("!mx:beeper.local").preview.as_ref().and_then(|p| p.text.as_deref()),
             Some("loved \"from matrix\"")
         );
         let msg = |id: &str| &st.messages[st.msg_idx_by_id[id]];
@@ -533,7 +532,7 @@ async fn lifecycle() {
             (msg("$x3").thread_root.as_deref(), msg("$x3").fallback, msg("$x3").broadcast),
             (Some("$x1"), true, false)
         );
-        let mx = &st.chats[st.chat_idx_by_id["!mx:beeper.local"]];
+        let mx = st.chat("!mx:beeper.local");
         assert_eq!(
             (mx.thread_reads["$x1"].as_str(), mx.follows.unfollowed.as_slice()),
             (beeper_core::store::sort_key(900).as_str(), ["$x1".to_string()].as_slice())
@@ -1076,7 +1075,7 @@ async fn lifecycle() {
     let mut focus_rx = store.read().focus_tx.subscribe();
     assert_eq!(client.focus(Some("!wa_eric:beeper.com"), None, Some("Focus draft")).await, StatusCode::OK);
     assert_eq!(focus_rx.recv().await.unwrap().as_deref(), Some("!wa_eric:beeper.com"));
-    let eric_idx = store.read().chat_idx_by_id["!wa_eric:beeper.com"];
+    let eric_idx = store.read().chat_idx("!wa_eric:beeper.com");
     let focus_draft = store.read().chats[eric_idx].draft.clone().unwrap().text;
     assert_eq!(focus_draft.as_deref(), Some("Focus draft"));
     assert_eq!(client.patch_chat_draft("!wa_eric:beeper.com", None).await.0, StatusCode::OK);
