@@ -1618,6 +1618,18 @@ async fn prepare_media(
     Ok((data, f.name, f.mime, info))
 }
 
+/// The local echo of the file of `txn`, when there is one, takes the name and the type of the converted file.
+fn converted(store: &SharedStore, txn: &str, name: &str, mime: &str) {
+    let mut st = store.write();
+    let Some(i) = st.find_message(txn) else { return };
+    let a = &st.messages[i].attachments[0];
+    if (a.file_name.as_deref(), a.mime_type.as_deref()) != (Some(name), Some(mime)) {
+        st.update_message(i, |m| {
+            (m.attachments[0].file_name, m.attachments[0].mime_type) = (Some(name.into()), Some(mime.into()));
+        });
+    }
+}
+
 /// Desktop's `sendMessageInternal` of a sticker: the content of the image without `msgtype` and `filename`, with the
 /// body of the pack image, Desktop's info, the thumbnail of the pack info when it tells of the same file (`FI`), and
 /// the pack of the sticker (`com.beeper.msc4459.image_source_packs`).
@@ -1938,6 +1950,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             });
             let (data, name, mime, info) =
                 prepare_media(store, &chat, &txn, data, (name, mime), info, sticker.is_some()).await?;
+            converted(store, &txn, &name, &mime);
             let dims = match info {
                 MediaInfo::Image(w, h) | MediaInfo::Video(w, h, _) => Some((w, h)),
                 _ => None,
@@ -3637,7 +3650,8 @@ mod tests {
         let joined = |events: Vec<Value>| json!({ "state": { "events": events }, "timeline": { "events": [] } });
         let member = state("m.room.member", "@me:x", json!({ "membership": "join" }));
         let mut sync = stub_sync();
-        let features = json!({ "file": { "m.sticker": { "mime_types": { "image/png": 2 } } } });
+        let png_only = json!({ "mime_types": { "image/png": 2 } });
+        let features = json!({ "file": { "m.sticker": png_only, "m.image": png_only } });
         let cats = json!({ "pack": { "display_name": "Cats" }, "images": { "cat": img("mxc://x/cat", Value::Null),
             "kitty": img("mxc://x/cat", Value::Null), "smile": img("mxc://x/e", json!(["emoticon"])) } });
         let dogs = json!({ "pack": { "usage": ["sticker"] }, "images": { "dog": img("mxc://x/dog", Value::Null) } });
@@ -3721,8 +3735,8 @@ mod tests {
         };
         store.write().queue("!room:x", sticker);
         super::flush(store.clone()).await.expect("send the sticker");
-        let sent = sent.lock().unwrap();
-        let (_, body) = sent.iter().find(|(p, _)| p.contains("/send/m.sticker/")).expect("an m.sticker event");
+        let sticker = sent.lock().unwrap().iter().find(|(p, _)| p.contains("/send/m.sticker/")).cloned();
+        let (_, body) = sticker.expect("an m.sticker event");
         let info = json!({ "mimetype": "image/png", "w": 2, "h": 2, "size": png.len(), "thumbnail_url": "mxc://x/t" });
         let source = json!({ "mxc://x/f": { "room_id": "!room:x", "state_key": "a", "shortcode": "cat" } });
         assert_eq!(
@@ -3730,7 +3744,32 @@ mod tests {
             (&json!("b"), &info, &json!("mxc://x/f"), &source)
         );
         assert!(body.get("msgtype").is_none() && body.get("filename").is_none());
-        drop(sent);
+        // The local echo of a converted file takes the name and the type of the conversion.
+        let mut jpg = Vec::new();
+        ::image::RgbImage::new(2, 2).write_to(&mut std::io::Cursor::new(&mut jpg), ::image::ImageFormat::Jpeg).unwrap();
+        let att = crate::models::Attachment {
+            file_name: Some("a.jpg".into()),
+            mime_type: Some("image/jpeg".into()),
+            ..Default::default()
+        };
+        let (_, txn, _) = store.write().send_message("!room:x", None, None, Some(att)).expect("a local echo");
+        let file = super::Outgoing::Media {
+            txn: txn.clone(),
+            bytes: jpg,
+            name: "a.jpg".into(),
+            mime: "image/jpeg".into(),
+            info: super::MediaInfo::Image(2, 2),
+            caption: None,
+            reply_to: None,
+            thread: None,
+            gif: false,
+            sticker: None,
+        };
+        store.write().queue("!room:x", file);
+        super::flush(store.clone()).await.expect("send the image");
+        let echo = store.read().stored_message(&txn).expect("the echo");
+        let a = &echo.attachments[0];
+        assert_eq!((a.file_name.as_deref(), a.mime_type.as_deref()), (Some("a.png"), Some("image/png")));
         let _ = std::fs::remove_dir_all(dir);
     }
 
