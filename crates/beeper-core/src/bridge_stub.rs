@@ -255,10 +255,18 @@ fn reply(st: &mut State, method: &str, path: &str, body: &Value) -> (u16, Value)
         st.started.insert(b.into());
         return (200, json!({}));
     }
+    if let Some(b) = path.strip_prefix("/bridge/").filter(|_| method == "DELETE") {
+        st.logins.retain(|(bridge, _)| bridge != b);
+        return (200, json!({}));
+    }
     let Some(rest) = path.strip_prefix("/_matrix/client/unstable/com.beeper.bridge/") else {
         return err(404, "M_UNRECOGNIZED", "Unrecognized request");
     };
     let (b, rest) = rest.split_once("/_matrix/provision/v3/").expect("a provisioning request");
+    if let Some(login) = rest.strip_prefix("logout/").filter(|_| method == "POST") {
+        st.logins.retain(|l| l != &(b.to_string(), login.to_string()));
+        return (200, json!({}));
+    }
     let Some(flows) = bridge(b).filter(|_| b != STOPPED_BRIDGE || st.started.contains(b)) else {
         return err(404, "M_NOT_FOUND", "Unknown bridge");
     };

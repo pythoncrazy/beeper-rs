@@ -5,8 +5,8 @@ use crate::http::{
 use beeper_core::bridge_login;
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{
-    cloud_bridge, millis_from_iso, millis_from_rfc3339, network_spec, now_rfc3339_millis, APP_BUNDLE_ID, APP_NAME,
-    APP_VERSION, NETWORK_SPECS,
+    cloud_bridge, millis_from_iso, millis_from_rfc3339, now_rfc3339_millis, APP_BUNDLE_ID, APP_NAME, APP_VERSION,
+    NETWORK_SPECS,
 };
 use beeper_core::connect::{Token, READ};
 use beeper_core::matrix::{self, ChatFlag, Outgoing};
@@ -116,22 +116,34 @@ fn string_issue(v: Option<&Value>, optional: bool, path: Value) -> Option<Issue>
     (!ok).then(|| type_issue(["code", "expected", "received"], "string", v, path))
 }
 
+/// The zod issue of an enum field, if the value is not one of the options.
+fn enum_issue(v: Option<&Value>, options: &[&str], path: Value) -> Option<Issue> {
+    let expected = options.iter().map(|o| format!("'{o}'")).collect::<Vec<_>>().join(" | ");
+    match v {
+        Some(Value::String(t)) if options.contains(&t.as_str()) => None,
+        Some(Value::String(t)) => Some(Issue(vec![
+            ("received", json!(t)),
+            ("code", json!("invalid_enum_value")),
+            ("options", json!(options)),
+            ("path", path),
+            ("message", format!("Invalid enum value. Expected {expected}, received '{t}'").into()),
+        ])),
+        v => Some(type_issue(["expected", "received", "code"], &expected, v, path)),
+    }
+}
+
+/// Desktop's answer to a body that fails its zod schema.
+fn invalid_input(issues: Vec<Issue>) -> Response {
+    let details = json!(Issues { issues });
+    json_with(StatusCode::BAD_REQUEST, &ApiError { message: "Invalid input", code: "VALIDATION_ERROR", details })
+}
+
 /// The issues of Desktop's zod schema `CreateChatInput` for a request body.
 fn create_chat_issues(b: &Value) -> Vec<Issue> {
     let field = |k: &'static str, optional| string_issue(b.get(k), optional, json!([k]));
     let mut issues: Vec<Issue> =
         [field("accountID", false), field("messageText", true)].into_iter().flatten().collect();
-    match b.get("type") {
-        Some(Value::String(t)) if t == "single" || t == "group" => {}
-        Some(Value::String(t)) => issues.push(Issue(vec![
-            ("received", json!(t)),
-            ("code", json!("invalid_enum_value")),
-            ("options", json!(["single", "group"])),
-            ("path", json!(["type"])),
-            ("message", format!("Invalid enum value. Expected 'single' | 'group', received '{t}'").into()),
-        ])),
-        v => issues.push(type_issue(["expected", "received", "code"], "'single' | 'group'", v, json!(["type"]))),
-    }
+    issues.extend(enum_issue(b.get("type"), &["single", "group"], json!(["type"])));
     let count = b.get("participantIDs").and_then(Value::as_array).map(Vec::len);
     match b.get("participantIDs") {
         Some(Value::Array(ids)) if ids.is_empty() => issues.push(Issue(vec![
@@ -802,7 +814,6 @@ fn get(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
 
 fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
     match (method, path) {
-        (_, ["v1", "bridges", rest @ ..]) => bridges(st, method, rest),
         (_, ["v1", "chats", rest @ ..]) => chats(st, method, rest, r),
         ("POST", ["v1", "assets", "upload"]) => match r.msg.header("content-type").unwrap_or_default() {
             t if t.contains("multipart/form-data") => upload_multipart(st, r),
@@ -1044,8 +1055,51 @@ fn bridge_login(store: &SharedStore, cloud: &Cloud, method: &str, segs: &[&str],
         ("GET", ["capabilities" | "login-flows"])
         | ("POST", ["login-sessions"] | ["login-sessions", _, "steps", _])
         | ("DELETE", ["login-sessions", _]) => Some(bridge_call(store, cloud, method, id, rest, r)),
+        ("POST", ["logins", login_id, "remove"]) => Some(remove_login(store, cloud, id, login_id, r)),
         _ => None,
     }
+}
+
+/// Desktop's `removeBridgeLogin`. Beeper Cloud logs the login out, or deletes the bridge when the login is its only
+/// one. The demo has no cloud, so it only forgets the login.
+fn remove_login(store: &SharedStore, cloud: &Cloud, id: &str, login_id: &str, r: &Req) -> Reply {
+    if let Some(issue) = enum_issue(r.body.get("scope"), &["current-device", "all-devices"], json!(["scope"])) {
+        return Err(invalid_input(vec![issue]));
+    }
+    let scope = r.str("scope").expect("the scope is an option");
+    let (bridge, p, sole, affected) = {
+        let st = store.read();
+        let spec = view::bridge_network(id);
+        let login = spec.and_then(|s| view::logins(&st, s).into_iter().find(|l| l.login_id == login_id));
+        let login = login.ok_or_else(|| missing("Bridge login not found"))?;
+        if !login.remove_scopes.contains(&scope) {
+            let message = format!("Remove scope {scope} is not available for this bridge login");
+            return Err(error(StatusCode::BAD_REQUEST, &message, "INVALID_SCOPE"));
+        }
+        let affected: Vec<String> = login.account_ids.iter().map(|a| a.to_string()).collect();
+        let found = st.bridge_accounts.iter().find(|b| b.account_id == affected[0]).expect("an account of the login");
+        let bridge = found.bridge_id.clone();
+        let sole = st.bridge_accounts.iter().filter(|b| b.bridge_id == bridge).all(|b| b.login_id == login_id);
+        let s = &st.beeper_state;
+        let p = matrix::Provision {
+            homeserver: s.homeserver.clone(),
+            access_token: s.access_token.clone(),
+            user_id: s.user_id.clone(),
+            bridge_id: bridge.clone(),
+            login_id: login_id.into(),
+        };
+        (bridge, (!st.config.demo).then_some(p), sole, affected)
+    };
+    if let Some(p) = p {
+        let removing = matrix::remove_account(p, cloud.api_url.clone(), sole);
+        tokio::runtime::Handle::current().block_on(removing).map_err(|e| failed(&e))?;
+    }
+    let mut st = store.write();
+    st.bridge_accounts.retain(|b| b.bridge_id != bridge || b.login_id != login_id);
+    st.rebuild_accounts_from_bridges();
+    st.persist_state_to_sqlite();
+    let body = json!({ "bridgeID": id, "loginID": login_id, "affectedAccountIDs": affected, "status": "removed", "scope": scope });
+    ok(&body)
 }
 
 fn bridge_call(store: &SharedStore, cloud: &Cloud, method: &str, id: &str, rest: &[&str], r: &Req) -> Reply {
@@ -1163,32 +1217,17 @@ fn bridge_get(st: &BeeperStore, path: &[&str]) -> Reply {
     let [id, rest @ ..] = path else {
         return ok(&json!({ "items": NETWORK_SPECS.iter().map(|s| view::bridge(st, s)).collect::<Vec<_>>() }));
     };
-    let spec = network_spec(id).ok_or_else(|| missing("Bridge not found"))?;
+    let spec = view::bridge_network(id).ok_or_else(|| missing("Bridge not found"))?;
     match rest {
         [] => ok(&view::bridge(st, spec)),
-        ["logins"] => ok(&json!({ "items": view::logins(st, spec.bridge_id) })),
+        ["logins"] => ok(&json!({ "items": view::logins(st, spec) })),
         ["logins", login_id] => {
-            let login = view::logins(st, spec.bridge_id).into_iter().find(|l| l.login_id == *login_id);
+            let login = view::logins(st, spec).into_iter().find(|l| l.login_id == *login_id);
             ok(&login.ok_or_else(|| missing("Bridge login not found"))?)
         }
         ["login-sessions", sid] => {
             let session = st.bridge_sessions.get(*sid).filter(|s| s.view["bridgeID"] == *id);
             ok(&session.ok_or_else(|| missing("Bridge login session not found"))?.view)
-        }
-        _ => Err(no_route()),
-    }
-}
-
-fn bridges(st: &mut BeeperStore, method: &str, path: &[&str]) -> Reply {
-    let [id, rest @ ..] = path else { return Err(no_route()) };
-    let spec = network_spec(id).ok_or_else(|| missing("Bridge not found"))?;
-    match (method, rest) {
-        ("DELETE", ["logins", login_id]) => {
-            let pos = st.bridge_accounts.iter().position(|b| b.bridge_id == *id && b.login_id == *login_id);
-            st.bridge_accounts.remove(pos.ok_or_else(|| missing("Bridge login not found"))?);
-            st.rebuild_accounts_from_bridges();
-            st.persist_state_to_sqlite();
-            ok(&json!({ "bridge": view::bridge(st, spec) }))
         }
         _ => Err(no_route()),
     }
@@ -1293,9 +1332,7 @@ fn create_chat(st: &mut BeeperStore, r: &Req) -> Reply {
         "create" => {
             let issues = create_chat_issues(&r.body);
             if !issues.is_empty() {
-                let details = json!(Issues { issues });
-                let body = ApiError { message: "Invalid input", code: "VALIDATION_ERROR", details };
-                return Err(json_with(StatusCode::BAD_REQUEST, &body));
+                return Err(invalid_input(issues));
             }
             let participants = r.parse("participantIDs")?;
             let (account_id, chat_type) = (r.need("accountID")?, r.need("type")?);

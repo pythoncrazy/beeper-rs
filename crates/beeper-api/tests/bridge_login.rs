@@ -2,15 +2,20 @@
 //! contacts a real bridge.
 
 use beeper_api::server::serve_http;
-use beeper_core::bridge_stub::{homeserver, WRONG_CODE};
+use beeper_core::bridge_stub::{homeserver, Bridges, WRONG_CODE};
 use beeper_core::config::CentralConfig;
-use beeper_core::models::{MatrixSession, Profile};
+use beeper_core::models::{BridgeAccountInfo, MatrixSession, Profile};
 use beeper_core::store::{BeeperStore, StoreLock};
 use serde_json::{json, Value};
 
 /// A signed-in server whose homeserver and Beeper API are the stub, and its port.
 async fn server(name: &str) -> u16 {
-    let (url, _) = homeserver().await;
+    server_with(name, Vec::new()).await.0
+}
+
+/// A signed-in server with cloud accounts, its port, and the stub bridges.
+async fn server_with(name: &str, accounts: Vec<BridgeAccountInfo>) -> (u16, Bridges) {
+    let (url, bridges) = homeserver().await;
     let dir = std::env::temp_dir().join(format!("beeper-rs-bridge-login-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -19,9 +24,9 @@ async fn server(name: &str) -> u16 {
     (cfg.api_url, cfg.homeserver) = (url.clone(), url.clone());
     let store = StoreLock::shared(BeeperStore::from_config(cfg));
     let session = MatrixSession { user_id: "@me:beeper.com".into(), access_token: "tok".into(), device_id: "D".into() };
-    store.write().sign_in(session, url, &Profile::default(), Vec::new());
+    store.write().sign_in(session, url, &Profile::default(), accounts);
     tokio::spawn(serve_http(listener, store));
-    port
+    (port, bridges)
 }
 
 /// One HTTP/1.1 request with the API token, and the status and JSON body of the reply.
@@ -106,4 +111,43 @@ async fn sessions_show_qr_and_cookie_steps_and_cancel() {
     assert_eq!(call("GET", "/v1/bridges/nope/login-flows".into(), Value::Null).await.0, 400);
     let other = call("POST", "/v1/bridges/signal/login-sessions".into(), json!({ "accountID": "missing" })).await;
     assert_eq!(other.0, 404);
+}
+
+/// The cloud bridges have Desktop's IDs, such as `slackgo`, and `removeBridgeLogin` logs a login out of the bridge,
+/// or deletes the bridge for its last login.
+#[tokio::test(flavor = "multi_thread")]
+async fn bridges_use_cloud_ids_and_remove_logins() {
+    let remotes = json!({ "T1-U1": { "state_event": "CONNECTED" }, "T2-U2": { "state_event": "CONNECTED" } });
+    let state = json!({ "bridgeType": "slackgo", "stateEvent": "RUNNING" });
+    let whoami = json!({ "slackgo": { "bridgeState": state, "remoteState": remotes } });
+    let accounts = beeper_core::cloud::cloud_accounts(&whoami).unwrap();
+    let (port, bridges) = server_with("slack", accounts).await;
+    let call = |m: &'static str, p: &str, b: Value| call(port, m, p.into(), b);
+    let (_, list) = call("GET", "/v1/bridges", Value::Null).await;
+    let slack = list["items"].as_array().unwrap().iter().find(|b| b["displayName"] == "Slack").unwrap().clone();
+    let shown = (&slack["id"], &slack["type"], &slack["activeAccountCount"]);
+    assert_eq!(shown, (&json!("slackgo"), &json!("slackgo"), &json!(2)));
+    assert_eq!(call("GET", "/v1/bridges/slack", Value::Null).await.0, 404);
+    let (_, logins) = call("GET", "/v1/bridges/slackgo/logins", Value::Null).await;
+    let ids: Vec<&Value> = logins["items"].as_array().unwrap().iter().map(|l| &l["loginID"]).collect();
+    assert_eq!((ids, &logins["items"][0]["bridgeID"]), (vec![&json!("T1-U1"), &json!("T2-U2")], &json!("slackgo")));
+
+    let remove = "/v1/bridges/slackgo/logins/T1-U1/remove";
+    let (status, missing) = call("POST", remove, json!({})).await;
+    let issue = json!({ "expected": "'current-device' | 'all-devices'", "received": "undefined",
+                        "code": "invalid_type", "path": ["scope"], "message": "Required" });
+    assert_eq!((status, &missing["details"]["issues"][0]), (400, &issue));
+    let (status, local) = call("POST", remove, json!({ "scope": "current-device" })).await;
+    assert_eq!((status, &local["code"]), (400, &json!("INVALID_SCOPE")));
+    let removed = json!({ "bridgeID": "slackgo", "loginID": "T1-U1", "affectedAccountIDs": ["slackgo.T1-U1"],
+                          "status": "removed", "scope": "all-devices" });
+    assert_eq!(call("POST", remove, json!({ "scope": "all-devices" })).await, (200, removed));
+    assert_eq!(call("POST", remove, json!({ "scope": "all-devices" })).await.0, 404);
+    let last = call("POST", "/v1/bridges/slackgo/logins/T2-U2/remove", json!({ "scope": "all-devices" })).await;
+    assert_eq!(last.0, 200);
+    let sent: Vec<String> =
+        bridges.requests().into_iter().filter(|r| r.contains("logout") || r.starts_with("DELETE")).collect();
+    let logout = "POST /_matrix/client/unstable/com.beeper.bridge/slackgo/_matrix/provision/v3/logout/T1-U1";
+    assert_eq!(sent, [logout, "DELETE /bridge/slackgo"]);
+    assert_eq!(call("GET", "/v1/accounts", Value::Null).await.1, json!([]));
 }

@@ -52,6 +52,7 @@ pub(super) const ROUTES: &[Route] = &[
     op("GET", "/v1/bridges/{bridgeID}/login-flows", "listBridgeLoginFlows", R),
     op("GET", "/v1/bridges/{bridgeID}/logins", "listBridgeLogins", R),
     op("GET", "/v1/bridges/{bridgeID}/logins/{loginID}", "getBridgeLogin", R),
+    op("POST", "/v1/bridges/{bridgeID}/logins/{loginID}/remove", "removeBridgeLogin", W),
     op("POST", "/v1/bridges/{bridgeID}/login-sessions", "createLoginSession", W),
     op("GET", "/v1/bridges/{bridgeID}/login-sessions/{loginSessionID}", "getLoginSession", R),
     op("POST", "/v1/bridges/{bridgeID}/login-sessions/{loginSessionID}/steps/{stepID}", "submitLoginStep", W),
@@ -130,8 +131,6 @@ pub(super) const ROUTES: &[Route] = &[
     other("DELETE", "/v0/mcp", Own),
     other("OPTIONS", "/v0/mcp", Own),
     other("DELETE", "/v1/chats/{chatID}/messages/{messageID}/reactions", W),
-    // beeper-rs removes a bridge login with this route until it has Desktop's `removeBridgeLogin`.
-    other("DELETE", "/v1/bridges/{bridgeID}/logins/{loginID}", W),
     other("GET", "/focus", Open),
     other("GET", "/focus/{chatID}", Open),
     other("GET", "/focus/{chatID}/{messageID}", Open),
