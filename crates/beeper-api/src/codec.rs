@@ -61,6 +61,14 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     be_bytes(state)
 }
 
+/// HMAC-SHA256 (RFC 2104).
+pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    let mut block = if key.len() > 64 { sha256(key).to_vec() } else { key.to_vec() };
+    block.resize(64, 0);
+    let pad = |b: u8| block.iter().map(|k| k ^ b).collect::<Vec<u8>>();
+    sha256(&[pad(0x5c), sha256(&[pad(0x36), data.to_vec()].concat()).to_vec()].concat())
+}
+
 pub fn sha1(data: &[u8]) -> [u8; 20] {
     let mut state = [0x67452301u32, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0];
     for chunk in md_pad(data).as_chunks::<64>().0 {

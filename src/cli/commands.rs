@@ -27,7 +27,9 @@ pub fn topic(name: &str) -> Option<&'static Topic> {
 
 /// Every command, topic by topic.
 pub fn all() -> impl Iterator<Item = &'static Cmd> + Clone {
-    [CORE, super::accounts::COMMANDS, super::chats::COMMANDS, super::messages::COMMANDS].into_iter().flatten()
+    [CORE, super::accounts::COMMANDS, super::chats::COMMANDS, super::messages::COMMANDS, super::stream::COMMANDS]
+        .into_iter()
+        .flatten()
 }
 
 const NO_AUTH: Flag = Flag::b("no-auth", "Call a public API path without a bearer token");

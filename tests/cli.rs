@@ -71,15 +71,24 @@ impl Out {
 }
 
 impl Demo {
-    fn run(&self, args: &[&str]) -> Out {
-        let out = Command::new(env!("CARGO_BIN_EXE_beeper-rs"))
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_beeper-rs"));
+        command
             .args(args)
             .args(["--base-url", &self.base])
             .env("BEEPER_CLI_CONFIG_DIR", &self.config)
             .env("BEEPER_ACCESS_TOKEN", &self.token)
-            .env_remove("BEEPER_READONLY")
-            .output()
-            .unwrap();
+            .env_remove("BEEPER_READONLY");
+        command
+    }
+
+    fn run(&self, args: &[&str]) -> Out {
+        Out::of(self.command(args).output().unwrap())
+    }
+}
+
+impl Out {
+    fn of(out: std::process::Output) -> Self {
         let text = |b: Vec<u8>| String::from_utf8(b).unwrap();
         Out { code: out.status.code().unwrap(), stdout: text(out.stdout), stderr: text(out.stderr) }
     }
@@ -265,4 +274,50 @@ fn cli_lists_accounts_contacts_and_bridges() {
     let listed = d.run(&["contacts", "--limit", "2", "--ids"]).stdout;
     assert_eq!(listed.lines().count(), 2, "{listed}");
     assert_eq!(d.run(&["bridges", "list", "--provider", "nowhere"]).code, 1, "a bad option is a parse error");
+}
+
+#[test]
+fn cli_watches_the_websocket_and_runs_rpc_lines() {
+    use std::io::{BufRead, Write};
+    let d = demo("stream");
+    let mut watch = d
+        .command(&["watch", "--json", "-c", "!wa_eric:beeper.com"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = std::io::BufReader::new(watch.stdout.take().unwrap()).lines();
+    let mut next = || serde_json::from_str::<Value>(&lines.next().unwrap().unwrap()).unwrap();
+    assert_eq!(next()["type"], "ready");
+    assert_eq!(
+        next(),
+        json!({ "type": "subscriptions.updated", "chatIDs": ["!wa_eric:beeper.com"], "app": { "state": false } })
+    );
+    d.run(&["send", "text", "--to", "local_wa_eric", "--message", "during watch"]);
+    let event = next();
+    assert_eq!(
+        (event["type"].clone(), event["entries"][0]["text"].clone()),
+        (json!("message.upserted"), json!("during watch"))
+    );
+    assert!(Command::new("kill").args(["-INT", &watch.id().to_string()]).status().unwrap().success());
+    assert_eq!(watch.wait().unwrap().code(), Some(0), "Ctrl+C closes the socket and exits");
+
+    let mut rpc =
+        d.command(&["rpc"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let lines = [
+        format!("{{\"id\":1,\"command\":\"accounts --ids --base-url {}\"}}", d.base),
+        "{\"id\":2,\"args\":[\"rpc\"]}".into(),
+        "{\"id\":3,\"command\":\"say \\\"hi\"}".into(),
+        "{\"id\":4}".into(),
+    ];
+    rpc.stdin.take().unwrap().write_all(lines.join("\n").as_bytes()).unwrap();
+    let out = Out::of(rpc.wait_with_output().unwrap());
+    let replies: Vec<Value> = out.stdout.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let accounts = "acc_whatsapp\nacc_imessage\nacc_telegram\nacc_signal\nacc_instagram\nacc_slack\n";
+    let want = [
+        json!({ "id": 1, "ok": true, "code": 0, "signal": null, "stdout": accounts, "stderr": "" }),
+        json!({ "id": 2, "ok": false, "error": "Unsupported nested command: rpc" }),
+        json!({ "id": 3, "ok": false, "error": "Unclosed \" quote" }),
+        json!({ "id": 4, "ok": false, "error": "Expected args, argv, or command" }),
+    ];
+    assert_eq!(replies, want);
 }
