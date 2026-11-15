@@ -153,7 +153,7 @@ struct Seed {
     messages: Vec<Message>,
 }
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 const SCHEMA: &str = "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
      CREATE TABLE chats (id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;
      CREATE TABLE assets (upload_id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;";
@@ -195,6 +195,20 @@ fn secret_flags() -> String {
     let keys = ["master_key", "self_signing_key", "user_signing_key", "megolm_backup_key"].map(flag).join(", ");
     format!("UPDATE kv SET value = json_set(value, {keys}) WHERE key = '{KEY_STATE}';")
 }
+/// The messages with attachments, links or URLs in the text.
+const MEDIA: &str = "(json ->> '$.attachments[0]' IS NOT NULL OR json ->> '$.links[0]' IS NOT NULL OR json ->> '$.text' LIKE '%http%://%')";
+/// Schema 8 orders all messages, the messages with media and the thread replies, which the store reads from SQLite.
+fn order_schema() -> String {
+    format!(
+        "CREATE INDEX messages_by_key ON messages (sort_key);
+         CREATE INDEX messages_with_media ON messages (sort_key) WHERE {MEDIA};
+         CREATE INDEX messages_by_thread ON messages ({THREAD}, sort_key) WHERE {THREAD} IS NOT NULL;"
+    )
+}
+/// The root of a thread reply.
+const THREAD: &str = "(json ->> '$.threadRootEventID')";
+/// The most messages that stay loaded when a chat loads.
+const LOADED_MESSAGES: usize = 5_000;
 const KEY_STATE: &str = "state";
 const KEY_BRIDGES: &str = "bridges";
 const KEY_SETTINGS: &str = "settings";
@@ -296,6 +310,46 @@ fn chat_index_text(c: &Chat) -> String {
         .join(" ")
 }
 
+/// The SQL conditions of a read of stored messages, with their arguments.
+#[derive(Debug, Default)]
+pub struct Query(Vec<String>, Vec<String>);
+
+impl Query {
+    /// Adds a condition with one `?` for `arg`.
+    pub fn and(mut self, cond: &str, arg: impl Into<String>) -> Self {
+        self.1.push(arg.into());
+        self.0.push(cond.replace('?', &format!("?{}", self.1.len())));
+        self
+    }
+
+    /// The messages of the chats `ids`.
+    pub fn chats(self, ids: &[&str]) -> Self {
+        self.and("chat_id IN (SELECT value FROM json_each(?))", serde_json::to_string(ids).expect("chat ID JSON"))
+    }
+
+    /// Desktop's message search with partial matches (`searchRoomMessages` with `useFts`): the messages that contain
+    /// `text` as a phrase, where the last word can be the start of a word.
+    pub fn text(self, text: &str) -> Self {
+        assert!(!text.trim().is_empty(), "a message search has words");
+        let phrase = format!("\"{}\"*", text.trim().replace('"', "\"\""));
+        self.and("n IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)", phrase)
+    }
+
+    /// The messages after the sort key `cursor`, or before it.
+    pub fn past(self, cursor: Option<&str>, after: bool) -> Self {
+        match cursor {
+            Some(c) => self.and(if after { "sort_key > ?" } else { "sort_key < ?" }, c),
+            None => self,
+        }
+    }
+
+    /// The messages with attachments, links or URLs in the text.
+    pub fn media(mut self) -> Self {
+        self.0.push(MEDIA.into());
+        self
+    }
+}
+
 /// A network inside a bridged account, like a Discord server. Its chats have the same `network_id`.
 #[derive(Debug, Clone)]
 pub struct NetworkSpace {
@@ -326,9 +380,15 @@ pub struct BeeperStore {
     /// The `activity_key` of each chat, for Desktop's chat order `ORDER BY timestamp DESC`.
     pub chat_order: BTreeSet<(i64, String)>,
     local_chat_idx_by_id: HashMap<String, usize>,
+    /// The messages of the loaded chats. SQLite keeps all messages, and `load_chat` loads the messages of a chat.
     pub messages: Vec<Message>,
     pub msg_idx_by_id: HashMap<String, usize>,
+    /// The messages of each loaded chat in timeline order. A chat that is not loaded has no entry.
     pub chat_msg_indices: HashMap<String, Vec<usize>>,
+    /// The loaded chats, the chat that was used last at the end.
+    loaded: Vec<String>,
+    /// The chats that the windows show, which stay loaded.
+    pub shown: Vec<String>,
     /// The replies of each thread in timeline order, by the ID of the thread root.
     pub thread_msg_indices: HashMap<String, Vec<usize>>,
     pub chat_search_index: InvertedIndex,
@@ -417,8 +477,9 @@ impl BeeperStore {
         match version {
             0 => conn
                 .execute_batch(&format!(
-                    "BEGIN; {SCHEMA} {} {OUTBOX} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;",
-                    messages_schema()
+                    "BEGIN; {SCHEMA} {} {OUTBOX} {} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;",
+                    messages_schema(),
+                    order_schema()
                 ))
                 .expect("create beeper-rs schema"),
             1..SCHEMA_VERSION => {
@@ -437,6 +498,7 @@ impl BeeperStore {
                     ),
                     OUTBOX.to_string(),
                     secret_flags(),
+                    order_schema(),
                 ];
                 for (from, sql) in (version..).zip(&steps[version as usize - 1..]) {
                     conn.execute_batch(&format!("BEGIN; {sql} PRAGMA user_version = {}; COMMIT;", from + 1))
@@ -480,6 +542,8 @@ impl BeeperStore {
             messages: Vec::new(),
             msg_idx_by_id: HashMap::new(),
             chat_msg_indices: HashMap::new(),
+            loaded: Vec::new(),
+            shown: Vec::new(),
             thread_msg_indices: HashMap::new(),
             chat_search_index: InvertedIndex::default(),
             assets: HashMap::new(),
@@ -614,6 +678,122 @@ impl BeeperStore {
         );
     }
 
+    /// Reads the stored messages that `filter`, the SQL after `WHERE`, selects in its order, until `f` returns false.
+    pub fn scan_stored(&self, filter: &str, args: impl rusqlite::Params, mut f: impl FnMut(Message) -> bool) {
+        let db = self.db.lock().unwrap();
+        let mut q =
+            db.prepare_cached(&format!("SELECT json FROM messages WHERE {filter}")).expect("prepare a message read");
+        let mut rows = q.query(args).expect("read messages");
+        while let Some(row) = rows.next().expect("read a message row") {
+            let mut m: Message =
+                serde_json::from_str(row.get_ref(0).unwrap().as_str().unwrap()).expect("parse a stored message");
+            m.sync_flags();
+            if !f(m) {
+                break;
+            }
+        }
+    }
+
+    /// The stored messages that `filter` selects, like `scan_stored`.
+    pub fn stored(&self, filter: &str, args: impl rusqlite::Params) -> Vec<Message> {
+        let mut all = Vec::new();
+        self.scan_stored(filter, args, |m| {
+            all.push(m);
+            true
+        });
+        all
+    }
+
+    /// The stored message `id`.
+    pub fn stored_message(&self, id: &str) -> Option<Message> {
+        self.stored("id = ?1", [id]).pop()
+    }
+
+    /// Loads the 100 chats with the newest activity, up to half of `LOADED_MESSAGES` messages, so that they open at
+    /// once.
+    pub fn load_recent(&mut self) {
+        let recent: Vec<String> = self.chat_order.iter().rev().take(100).map(|k| k.1.clone()).collect();
+        for id in recent {
+            if self.msg_idx_by_id.len() >= LOADED_MESSAGES / 2 {
+                break;
+            }
+            self.load_chat(&id);
+        }
+    }
+
+    /// Loads the messages of the chat `id`, unless they are loaded, and unloads old chats. It can move the indices of
+    /// `messages`, so call it before taking them.
+    pub fn load_chat(&mut self, id: &str) {
+        self.loaded.retain(|c| c != id);
+        self.loaded.push(id.into());
+        if !self.chat_msg_indices.contains_key(id) {
+            assert!(self.chat_idx_by_id.contains_key(id), "load the messages of the unknown chat {id}");
+            self.chat_msg_indices.insert(id.into(), Vec::new());
+            for m in self.stored("chat_id = ?1 ORDER BY sort_key", [id]) {
+                self.insert_message(m);
+            }
+        }
+        self.unload_old();
+    }
+
+    /// With more than `LOADED_MESSAGES` loaded messages, unloads the chats that were used least recently down to half
+    /// of them, except the chat that was used last and the shown chats. So one unload frees the room for many loads.
+    fn unload_old(&mut self) {
+        let mut live = self.msg_idx_by_id.len();
+        if live <= LOADED_MESSAGES {
+            return;
+        }
+        let old = self.loaded[..self.loaded.len() - 1].iter().filter(|c| {
+            let drop = live > LOADED_MESSAGES / 2 && !self.shown.contains(c);
+            live -= if drop { self.chat_msg_indices[*c].len() } else { 0 };
+            drop
+        });
+        let old: HashSet<String> = old.cloned().collect();
+        self.loaded.retain(|c| !old.contains(c));
+        self.chat_msg_indices.retain(|c, _| !old.contains(c));
+        self.compact();
+    }
+
+    /// Loads the chat of the stored message `id`, and returns the index of the message.
+    pub fn find_message(&mut self, id: &str) -> Option<usize> {
+        if !self.msg_idx_by_id.contains_key(id) {
+            let db = self.db.lock().unwrap();
+            let chat: Option<String> = db
+                .prepare_cached("SELECT chat_id FROM messages WHERE id = ?1")
+                .unwrap()
+                .query_row([id], |r| r.get(0))
+                .optional()
+                .expect("find a message");
+            drop(db);
+            self.load_chat(&chat?);
+        }
+        Some(self.msg_idx_by_id[id])
+    }
+
+    /// Drops the messages of the chats that are not loaded, and the removed messages, from `messages`.
+    fn compact(&mut self) {
+        let messages = std::mem::take(&mut self.messages);
+        let mut moved = vec![usize::MAX; messages.len()];
+        for (i, m) in messages.into_iter().enumerate() {
+            if self.chat_msg_indices.contains_key(&m.chat_id) && self.msg_idx_by_id.get(&m.id) == Some(&i) {
+                moved[i] = self.messages.len();
+                self.messages.push(m);
+            }
+        }
+        self.msg_idx_by_id.retain(|_, i| {
+            *i = moved[*i];
+            *i != usize::MAX
+        });
+        for i in self.chat_msg_indices.values_mut().flatten() {
+            *i = moved[*i];
+            assert_ne!(*i, usize::MAX, "a listed message stays");
+        }
+        self.thread_msg_indices.retain(|_, list| {
+            list.iter_mut().for_each(|i| *i = moved[*i]);
+            !list.contains(&usize::MAX)
+        });
+    }
+
     fn load_from_sqlite_or_seed(&mut self) {
         let (setup, state, bridges, settings, pin_rank, recents, contacts, seq, chats, messages, assets) = {
             let conn = self.db.lock().unwrap();
@@ -636,7 +816,8 @@ impl BeeperStore {
                 kv(KEY_CONTACTS),
                 kv(KEY_SEQ),
                 rows("SELECT json FROM chats ORDER BY rowid"),
-                rows("SELECT json FROM messages ORDER BY sort_key ASC"),
+                conn.query_row("SELECT max(sort_key) FROM messages", [], |r| r.get::<_, Option<String>>(0))
+                    .expect("read the last sort key"),
                 rows("SELECT json FROM assets"),
             )
         };
@@ -684,7 +865,7 @@ impl BeeperStore {
             self.assets.insert(asset.upload_id.clone(), asset);
         }
         let fresh = chats.is_empty();
-        assert!(!fresh || messages.is_empty(), "stored messages without chats");
+        assert!(!fresh || messages.is_none(), "stored messages without chats");
         if fresh && self.config.demo {
             self.seed_default_workspace();
             self.finish_setup(Setup::Fresh);
@@ -692,8 +873,8 @@ impl BeeperStore {
         for c in chats {
             self.push_chat(serde_json::from_str(&c).expect("parse stored chat"), false);
         }
-        for m in messages {
-            self.push_message(serde_json::from_str(&m).expect("parse stored message"), false);
+        if let Some(key) = messages {
+            self.next_seq = self.next_seq.max(key.parse().expect("sort keys are numbers"));
         }
         self.outbox = self.outbox_rows(None);
         match seq {
@@ -768,10 +949,15 @@ impl BeeperStore {
 
     /// Desktop's `cancelSendIfReplied` for each entry, then the entries due at `now`, which leave the store.
     pub fn take_due_scheduled(&mut self, now: i64) -> Vec<Scheduled> {
+        // The messages after the entry come last in the timeline.
         let replied = |st: &Self, s: &Scheduled| {
-            let msgs = st.chat_msg_indices.get(&s.chat_id).into_iter().flatten().map(|&i| &st.messages[i]);
-            msgs.filter(|m| crate::config::millis_from_rfc3339(&m.timestamp).is_some_and(|t| t >= s.added_on))
-                .any(|m| m.is_sender != Some(true) && !m.silent())
+            let mut found = false;
+            st.scan_stored("chat_id = ?1 ORDER BY sort_key DESC", [&s.chat_id], |m| {
+                let later = crate::config::millis_from_rfc3339(&m.timestamp).is_some_and(|t| t >= s.added_on);
+                found = later && m.is_sender != Some(true) && !m.silent();
+                later && !found
+            });
+            found
         };
         let cancel: Vec<usize> = (0..self.scheduled.len())
             .filter(|&i| {
@@ -813,7 +999,7 @@ impl BeeperStore {
         self.finish_setup(Setup::Imported);
         let (chats, messages) = (self.chats.len(), self.messages.len());
         for c in data.chats {
-            self.push_chat(c, false);
+            self.push_chat(c, true);
         }
         for mut m in data.messages {
             if m.sort_key.is_empty() {
@@ -826,6 +1012,7 @@ impl BeeperStore {
         (messages..self.messages.len()).for_each(|i| self.persist_message(i));
         self.persist_seq();
         self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit import transaction");
+        self.unload_old();
         self.pin_rank = data.pin_rank;
         self.recent_chat_ids = data.recent_chat_ids;
         if let Some(theme) = data.theme {
@@ -1038,8 +1225,8 @@ impl BeeperStore {
 
     /// A message of the change failed and waits for Retry.
     fn waits_for_retry(&self, out: &Outgoing) -> bool {
-        let m = out.message().and_then(|id| self.msg_idx_by_id.get(id)).map(|&i| &self.messages[i]);
-        m.and_then(|m| m.send_error.as_ref()).is_some_and(|e| !e.retrying)
+        let m = out.message().and_then(|id| self.stored_message(id));
+        m.and_then(|m| m.send_error).is_some_and(|e| !e.retrying)
     }
 
     /// The next change for the homeserver. At the end of the outbox the push stops.
@@ -1061,7 +1248,7 @@ impl BeeperStore {
             false => self.exec("DELETE FROM outbox WHERE id = ?1", params![row]),
         }
         let error = error.map(|(message, _)| SendError { message: Some(message), retrying: false });
-        if let Some(&i) = message.and_then(|id| self.msg_idx_by_id.get(id)) {
+        if let Some(i) = message.and_then(|id| self.find_message(id)) {
             if self.messages[i].send_error != error {
                 self.update_message(i, |m| m.send_error = error);
             }
@@ -1070,7 +1257,7 @@ impl BeeperStore {
 
     /// Desktop's `retryErroredMessage`.
     pub fn retry_send(&mut self, id: &str) {
-        let i = self.msg_idx_by_id[id];
+        let i = self.find_message(id).expect("a failed message");
         self.update_message(i, |m| m.send_error.as_mut().expect("a failed message").retrying = true);
     }
 
@@ -1166,39 +1353,51 @@ impl BeeperStore {
             .collect();
     }
 
-    fn push_chat(&mut self, mut chat: Chat, persist: bool) -> usize {
+    /// Adds a chat. A new chat has no stored messages, so it is loaded.
+    fn push_chat(&mut self, mut chat: Chat, new: bool) -> usize {
         chat.sync_flags();
         chat.flags = self.label_flags(&chat);
         let idx = self.chats.len();
         assert!(self.chat_idx_by_id.insert(chat.id.clone(), idx).is_none(), "duplicate chat {}", chat.id);
         self.chat_order.insert(activity_key(&chat));
         self.chat_search_index.insert_doc(idx as u32, &chat_index_text(&chat));
-        self.chat_msg_indices.entry(chat.id.clone()).or_default();
         if let Some(loc) = &chat.local_chat_id {
             self.local_chat_idx_by_id.insert(loc.clone(), idx);
         }
+        if new {
+            self.chat_msg_indices.insert(chat.id.clone(), Vec::new());
+            self.loaded.push(chat.id.clone());
+        }
         self.chats.push(chat);
-        if persist {
+        if new {
             self.persist_chat(idx);
         }
         idx
     }
 
-    fn push_message(&mut self, mut msg: Message, persist: bool) -> usize {
+    /// Puts a message of a loaded chat into the message lists.
+    fn insert_message(&mut self, mut msg: Message) -> usize {
         msg.sync_flags();
         let digits = msg.sort_key.strip_prefix('-').unwrap_or(&msg.sort_key).len();
         assert_eq!(digits, 16, "sort key {} of {} is not from sort_key", msg.sort_key, msg.id);
         self.next_seq = self.next_seq.max(msg.sort_key.parse().expect("sort keys are numbers"));
         let idx = self.messages.len();
         assert!(self.msg_idx_by_id.insert(msg.id.clone(), idx).is_none(), "duplicate message {}", msg.id);
-        let lists = [Some(&msg.chat_id), msg.thread_root.as_ref()].into_iter().flatten();
-        for list in
-            lists.zip([&mut self.chat_msg_indices, &mut self.thread_msg_indices]).map(|(k, m)| m.entry(k.clone()))
-        {
-            let list = list.or_default();
+        let chat = self.chat_msg_indices.get_mut(&msg.chat_id).expect("the chat of the message is loaded");
+        let thread = msg.thread_root.as_ref().map(|r| self.thread_msg_indices.entry(r.clone()).or_default());
+        for list in std::iter::once(chat).chain(thread) {
             list.insert(list.partition_point(|&i| self.messages[i].sort_key <= msg.sort_key), idx);
         }
-        let shown = !msg.silent() && !msg.thread_only(self.feature("enable-threads").on);
+        self.messages.push(msg);
+        idx
+    }
+
+    /// Adds a message of a loaded chat, which can preview the chat.
+    fn push_message(&mut self, msg: Message, persist: bool) -> usize {
+        let idx = self.insert_message(msg);
+        let msg = &self.messages[idx];
+        let shown =
+            !msg.silent() && !msg.thread_only(self.feature("enable-threads").on) && msg.flags & MSG_DELETED == 0;
         let c_idx = self.chat_idx_by_id[&msg.chat_id];
         let chat = &mut self.chats[c_idx];
         if shown && chat.preview.as_ref().is_none_or(|p| p.sort_key <= msg.sort_key) {
@@ -1207,7 +1406,6 @@ impl BeeperStore {
             chat.preview = Some(msg.clone());
             self.chat_order.insert(activity_key(chat));
         }
-        self.messages.push(msg);
         if persist {
             self.persist_chat(c_idx);
             self.persist_message(idx);
@@ -1457,7 +1655,7 @@ impl BeeperStore {
         });
     }
 
-    /// Drops a chat that the user left, with its messages. The other messages move without a new search index.
+    /// Drops a chat that the user left, with its messages.
     pub fn remove_chat(&mut self, id: &str) {
         self.remove_label(id);
         let Some(idx) = self.chat_idx_by_id.remove(id) else { return };
@@ -1473,28 +1671,10 @@ impl BeeperStore {
         for (i, c) in self.chats.iter().enumerate() {
             self.chat_search_index.insert_doc(i as u32, &chat_index_text(c));
         }
-        self.chat_msg_indices.remove(id).expect("a chat has a message list");
-        let messages = std::mem::take(&mut self.messages);
-        let mut moved = vec![usize::MAX; messages.len()];
-        self.messages.reserve(messages.len());
-        for (i, m) in messages.into_iter().enumerate() {
-            if m.chat_id != id && self.msg_idx_by_id.get(&m.id) == Some(&i) {
-                moved[i] = self.messages.len();
-                self.messages.push(m);
-            }
+        self.loaded.retain(|c| c != id);
+        if self.chat_msg_indices.remove(id).is_some() {
+            self.compact();
         }
-        self.msg_idx_by_id.retain(|_, i| {
-            *i = moved[*i];
-            *i != usize::MAX
-        });
-        for i in self.chat_msg_indices.values_mut().flatten() {
-            *i = moved[*i];
-            assert_ne!(*i, usize::MAX, "a listed message stays");
-        }
-        self.thread_msg_indices.retain(|_, list| {
-            list.iter_mut().for_each(|i| *i = moved[*i]);
-            !list.contains(&usize::MAX)
-        });
         self.exec("DELETE FROM messages WHERE chat_id = ?1", params![id]);
         self.exec("DELETE FROM chats WHERE id = ?1", params![id]);
         self.recent_chat_ids.retain(|c| c != id);
@@ -1517,6 +1697,7 @@ impl BeeperStore {
         if self.bookmarks_room.is_some() {
             msg.is_bookmarked = Some(self.bookmarks.contains_key(&msg.id));
         }
+        self.load_chat(&msg.chat_id);
         let Some(&idx) = self.msg_idx_by_id.get(&msg.id) else {
             let idx = self.push_message(msg, true);
             let m = self.messages[idx].clone();
@@ -1563,11 +1744,25 @@ impl BeeperStore {
         let msg = self.messages[idx].clone();
         let c_idx = self.chat_idx_by_id[&msg.chat_id];
         if self.chats[c_idx].preview.as_ref().is_some_and(|p| p.id == msg.id) {
-            self.chats[c_idx].preview = Some(msg.clone());
+            match msg.flags & MSG_DELETED {
+                0 => self.chats[c_idx].preview = Some(msg.clone()),
+                _ => self.chats[c_idx].preview = self.last_shown(&msg.chat_id),
+            }
             self.persist_chat(c_idx);
         }
         self.emit_ws("message.upserted", &msg.chat_id, Some(&msg.id), None, Some(msg.clone()));
         msg
+    }
+
+    /// Desktop's chat preview after its message is deleted: the newest shown message that is left.
+    fn last_shown(&self, chat: &str) -> Option<Message> {
+        let (threads, mut last) = (self.feature("enable-threads").on, None);
+        self.scan_stored("chat_id = ?1 ORDER BY sort_key DESC", [chat], |m| {
+            let shown = !m.silent() && !m.thread_only(threads) && m.flags & MSG_DELETED == 0;
+            last = shown.then_some(m);
+            !shown
+        });
+        last
     }
 
     pub fn next_id(&mut self, prefix: &str) -> String {
@@ -1794,6 +1989,7 @@ impl BeeperStore {
     ) -> Result<(String, String, Message), &'static str> {
         let c_idx = self.send_target(self.resolve_chat_idx(chat_or_local_id).ok_or("Chat not found")?);
         let (chat_id, account_id) = (self.chats[c_idx].id.clone(), self.chats[c_idx].account_id.clone());
+        self.load_chat(&chat_id);
         let msg_id = self.next_id("msg");
         let mut attachment = attachment;
         let msg_type = match attachment.as_mut() {
@@ -1844,14 +2040,24 @@ impl BeeperStore {
         Ok((chat_id, msg_id, msg))
     }
 
-    /// The chat ID and index of a message in the chat, or in a member chat of a merged chat.
-    pub fn message_in_chat(&self, chat_or_local_id: &str, message_id: &str) -> Result<(String, usize), &'static str> {
-        let chat = &self.chats[self.resolve_chat_idx(chat_or_local_id).ok_or("Chat not found")?];
-        let &m_idx = self.msg_idx_by_id.get(message_id).ok_or("Message not found")?;
-        let target = &self.messages[m_idx].chat_id;
+    /// The chat ID and index of a message in the chat, or in a member chat of a merged chat. It loads the chat of the
+    /// message.
+    pub fn message_in_chat(
+        &mut self,
+        chat_or_local_id: &str,
+        message_id: &str,
+    ) -> Result<(String, usize), &'static str> {
+        let idx = self.resolve_chat_idx(chat_or_local_id).ok_or("Chat not found")?;
+        let m_idx = self.find_message(message_id).ok_or("Message not found")?;
+        let target = self.messages[m_idx].chat_id.clone();
+        self.in_chat(idx, &target).then_some((target, m_idx)).ok_or("Message not found")
+    }
+
+    /// Whether the chat `idx` shows the messages of the chat `target`: it is the chat, or the merged chat of it.
+    pub fn in_chat(&self, idx: usize, target: &str) -> bool {
+        let chat = &self.chats[idx];
         let mut members = chat.merge.iter().flat_map(|m| &m.chat_ids);
-        let found = chat.id == *target || members.any(|id| self.resolve_canonical_chat_id(id).as_ref() == Some(target));
-        found.then(|| (target.clone(), m_idx)).ok_or("Message not found")
+        chat.id == target || members.any(|id| self.resolve_canonical_chat_id(id).as_deref() == Some(target))
     }
 
     pub fn edit_message(
@@ -1895,6 +2101,11 @@ impl BeeperStore {
             self.thread_msg_indices.get_mut(root).expect("a thread has replies").retain(|&i| i != m_idx);
         }
         self.exec("DELETE FROM messages WHERE id = ?1", params![message_id]);
+        let c_idx = self.chat_idx_by_id[&chat_id];
+        if self.chats[c_idx].preview.as_ref().is_some_and(|p| p.id == message_id) {
+            self.chats[c_idx].preview = self.last_shown(&chat_id);
+            self.persist_chat(c_idx);
+        }
         self.emit_ws("message.deleted", &chat_id, Some(message_id), None, None);
         Ok(chat_id)
     }
@@ -1929,41 +2140,60 @@ impl BeeperStore {
         self.queue(chat_id, Outgoing::ThreadFollows(follows));
     }
 
-    /// Desktop's `followsThread`. The user takes part in a thread with its root or a reply.
+    /// Desktop's `followsThread`. The user takes part in a thread with its root or a reply. It reads SQLite, so that
+    /// the chat need not be loaded.
     pub fn follows_thread(&self, chat: &Chat, root: &str) -> bool {
-        let mine = |m: &Message| m.is_sender == Some(true) && m.is_deleted != Some(true);
-        let root_mine = self.msg_idx_by_id.get(root).is_some_and(|&i| mine(&self.messages[i]));
-        chat.follows.follows(root, chat.participants.total, root_mine || self.thread_replies(root).any(mine))
+        let mine = format!(
+            "chat_id = ?1 AND (id = ?2 OR {THREAD} = ?2) AND json ->> '$.isSender' AND json ->> '$.isDeleted' IS NOT 1 \
+             LIMIT 1"
+        );
+        chat.follows.follows(root, chat.participants.total, !self.stored(&mine, [&chat.id, root]).is_empty())
+    }
+
+    /// The stored replies of the thread of `root` in the chat `chat`, oldest first, for a chat that need not be loaded.
+    pub fn stored_replies(&self, chat: &str, root: &str) -> Vec<Message> {
+        self.stored(&format!("chat_id = ?1 AND {THREAD} = ?2 ORDER BY sort_key"), [chat, root])
+    }
+
+    /// The stored replies of the thread of `root` after its read mark, oldest first, and the replies of others among
+    /// them.
+    fn replies_after_read(&self, chat: &Chat, root: &str) -> (Vec<Message>, Vec<usize>) {
+        let Some(read) = chat.thread_reads.get(root) else { return (Vec::new(), Vec::new()) };
+        let mut later = self.stored_replies(&chat.id, root);
+        later.retain(|m| m.sort_key > *read);
+        let unread =
+            (0..later.len()).filter(|&i| later[i].is_sender != Some(true) && later[i].is_deleted != Some(true));
+        let unread = unread.collect();
+        (later, unread)
     }
 
     /// Desktop's `unreadCount` and `unreadMentionsCount` of a thread: the replies of others after its read mark.
     pub fn thread_unread(&self, chat: &Chat, root: &str) -> (usize, usize) {
-        let Some(read) = chat.thread_reads.get(root) else { return (0, 0) };
-        let later = self.thread_replies(root).rev().take_while(|m| m.sort_key > *read);
-        let unread = later.filter(|m| m.is_sender != Some(true) && m.is_deleted != Some(true));
-        unread.fold((0, 0), |(n, at), m| (n + 1, at + usize::from(m.flags & MSG_MENTION != 0)))
+        let (later, unread) = self.replies_after_read(chat, root);
+        (unread.len(), unread.iter().filter(|&&i| later[i].flags & MSG_MENTION != 0).count())
     }
 
     /// Desktop's `unreadThreadEntries`: the followed threads with unread replies of the chats of `chats`, as the chat
     /// index and the root, the newest reply first.
     pub fn unread_threads(&self, chats: impl IntoIterator<Item = usize>) -> Vec<(usize, String)> {
-        let mut all: Vec<(&str, usize, String)> = chats
+        let mut all: Vec<(String, usize, String)> = chats
             .into_iter()
             .filter(|&i| self.threaded(&self.chats[i]))
             .flat_map(|i| self.chats[i].thread_reads.keys().map(move |r| (i, r)))
-            .filter(|&(i, r)| self.thread_unread(&self.chats[i], r).0 > 0 && self.follows_thread(&self.chats[i], r))
-            .map(|(i, r)| {
-                let newest = self.thread_replies(r).next_back().expect("an unread thread has replies");
-                (newest.timestamp.as_str(), i, r.clone())
+            .filter_map(|(i, r)| {
+                let (mut later, unread) = self.replies_after_read(&self.chats[i], r);
+                let followed = !unread.is_empty() && self.follows_thread(&self.chats[i], r);
+                followed.then(|| (later.pop().expect("an unread thread has replies").timestamp, i, r.clone()))
             })
             .collect();
-        all.sort_by(|a, b| b.0.cmp(a.0));
+        all.sort_by(|a, b| b.0.cmp(&a.0));
         all.into_iter().map(|(_, i, r)| (i, r)).collect()
     }
 
     /// Desktop's `markReplyThreadRead`: an unread thread is read through `through`, else through its newest reply,
     /// and its thread receipt goes to that reply.
     pub fn mark_thread_read(&mut self, chat_id: &str, root: &str, through: Option<&str>) {
+        self.load_chat(chat_id);
         let idx = self.chat_idx_by_id[chat_id];
         if self.thread_unread(&self.chats[idx], root).0 == 0 {
             return;
@@ -2060,7 +2290,7 @@ impl BeeperStore {
     }
 
     pub fn toggle_bookmark(&mut self, message_id: &str) -> bool {
-        let m_idx = self.msg_idx_by_id[message_id];
+        let m_idx = self.find_message(message_id).expect("a stored message");
         let m = self.update_message(m_idx, |m| m.is_bookmarked = Some(m.is_bookmarked != Some(true)));
         let on = m.is_bookmarked == Some(true);
         if let Some(room) = self.bookmarks_room.clone() {
@@ -2071,7 +2301,7 @@ impl BeeperStore {
 
     /// Desktop's "Remove Bookmark" in Chat Info, also for a message that is not loaded.
     pub fn remove_bookmark(&mut self, target: &str) {
-        if self.msg_idx_by_id.contains_key(target) {
+        if self.find_message(target).is_some() {
             assert!(!self.toggle_bookmark(target), "{target} was bookmarked");
             return;
         }
@@ -2089,7 +2319,7 @@ impl BeeperStore {
                 Some(b) => self.bookmarks.insert(target.clone(), b),
                 None => self.bookmarks.remove(&target),
             };
-            if let Some(&i) = self.msg_idx_by_id.get(&target).filter(|&&i| self.messages[i].is_bookmarked != Some(on)) {
+            if let Some(i) = self.find_message(&target).filter(|&i| self.messages[i].is_bookmarked != Some(on)) {
                 self.update_message(i, |m| m.is_bookmarked = Some(on));
             }
         }
@@ -2128,7 +2358,7 @@ impl BeeperStore {
 
     /// Changes the poll `message_id` when it is loaded. Desktop ignores responses to other messages.
     pub fn update_poll(&mut self, message_id: &str, f: impl FnOnce(&mut PollData)) {
-        if let Some(&i) = self.msg_idx_by_id.get(message_id).filter(|&&i| self.messages[i].poll.is_some()) {
+        if let Some(i) = self.find_message(message_id).filter(|&i| self.messages[i].poll.is_some()) {
             self.update_message(i, |m| f(m.poll.as_mut().expect("the filter keeps polls")));
         }
     }
@@ -2176,7 +2406,8 @@ impl BeeperStore {
     pub fn mark_chat_read(&mut self, chat_or_local_id: &str, clear_messages: bool) -> Option<String> {
         let idx = self.resolve_chat_idx(chat_or_local_id)?;
         let chat_id = self.chats[idx].id.clone();
-        let indices = self.chat_msg_indices.get(&chat_id).cloned().unwrap_or_default();
+        self.load_chat(&chat_id);
+        let indices = self.chat_msg_indices[&chat_id].clone();
         let last_key = indices.last().map(|&i| self.messages[i].sort_key.clone());
         let last_event = indices.iter().rev().map(|&i| &self.messages[i].id).find(|id| id.starts_with('$')).cloned();
         let had_unread = self.chats[idx].flags & CHAT_UNREAD != 0;
@@ -2265,24 +2496,10 @@ impl BeeperStore {
         }
     }
 
-    /// Desktop's message search with partial matches (`searchRoomMessages` with `useFts`): the indices of the messages
-    /// that contain the query as a phrase, where the last word can be the start of a word, in load order.
-    pub fn search_messages(&self, query: &str) -> Vec<usize> {
-        let query = query.trim();
-        if query.is_empty() {
-            return Vec::new();
-        }
-        let db = self.db.lock().unwrap();
-        let mut q = db
-            .prepare_cached(
-                "SELECT m.id FROM messages_fts JOIN messages m ON m.n = messages_fts.rowid WHERE messages_fts MATCH ?1",
-            )
-            .expect("prepare message search");
-        let ids = q.query_map([format!("\"{}\"*", query.replace('"', "\"\""))], |r| r.get::<_, String>(0));
-        let mut found: Vec<usize> =
-            ids.expect("search messages").map(|id| self.msg_idx_by_id[&id.expect("read a found message")]).collect();
-        found.sort_unstable();
-        found
+    /// Reads the stored messages that `q` selects, newest first, until `f` returns false.
+    pub fn scan(&self, q: &Query, f: impl FnMut(Message) -> bool) {
+        let all = if q.0.is_empty() { "1".to_string() } else { q.0.join(" AND ") };
+        self.scan_stored(&format!("{all} ORDER BY sort_key DESC"), rusqlite::params_from_iter(&q.1), f);
     }
 
     /// The id, chat, Unix seconds and stored bytes of each message.
@@ -2310,16 +2527,12 @@ impl BeeperStore {
         if messages.is_empty() {
             return;
         }
-        for id in messages {
-            let i = self.msg_idx_by_id.remove(id).expect("a stored message");
-            let m = &mut self.messages[i];
-            (m.is_deleted, m.text, m.html) = (Some(true), None, None);
-            m.flags |= MSG_DELETED;
-        }
         let msgs = &self.messages;
         for list in self.chat_msg_indices.values_mut().chain(self.thread_msg_indices.values_mut()) {
             list.retain(|&i| !messages.contains(&msgs[i].id));
         }
+        self.msg_idx_by_id.retain(|id, _| !messages.contains(id));
+        self.compact();
         self.db.lock().unwrap().execute_batch("BEGIN IMMEDIATE;").expect("begin forget transaction");
         for id in messages {
             self.exec("DELETE FROM messages WHERE id = ?1", params![id]);
@@ -2331,6 +2544,13 @@ impl BeeperStore {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+
+    /// The IDs of the stored messages that a message search finds.
+    fn found(st: &super::BeeperStore, q: &str) -> HashSet<String> {
+        let mut ids = HashSet::new();
+        st.scan(&super::Query::default().text(q), |m| ids.insert(m.id) || true);
+        ids
+    }
 
     #[test]
     fn widened_sort_keys_match_sort_key() {
@@ -2367,9 +2587,7 @@ mod tests {
         let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23395, None);
         config.demo = true;
         let fresh = super::BeeperStore::from_config(config.clone());
-        let ids = |st: &super::BeeperStore, q| -> HashSet<String> {
-            st.search_messages(q).into_iter().map(|i| st.messages[i].id.clone()).collect()
-        };
+        let ids = |st: &super::BeeperStore, q| -> HashSet<String> { found(st, q) };
         let want = ids(&fresh, "borr");
         assert_eq!(want.len(), 2, "the demo has a message with \"borrow\" and one with \"borrowed\"");
         drop(fresh);
@@ -2396,7 +2614,7 @@ mod tests {
         std::fs::rename(v4, &config.db_path).unwrap();
         let st = super::BeeperStore::from_config(config);
         assert_eq!(ids(&st, "borr"), want, "search finds the same messages after the migration");
-        assert_eq!(st.search_messages("orrow"), Vec::<usize>::new(), "only the last word is a prefix");
+        assert!(found(&st, "orrow").is_empty(), "only the last word is a prefix");
         drop(st);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -2407,15 +2625,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23397, None);
         config.demo = true;
-        let ids = |st: &super::BeeperStore| -> HashSet<String> {
-            st.search_messages("borr").into_iter().map(|i| st.messages[i].id.clone()).collect()
-        };
+        let ids = |st: &super::BeeperStore| -> HashSet<String> { found(st, "borr") };
         let want = ids(&super::BeeperStore::from_config(config.clone()));
         assert_eq!(want.len(), 2);
-        // Schema 5 is schema 6 without the outbox table.
+        // Schema 5 is schema 8 without the outbox table, the secret flags and the message order indices.
         rusqlite::Connection::open(&config.db_path)
             .unwrap()
-            .execute_batch("DROP TABLE outbox; PRAGMA user_version = 5;")
+            .execute_batch("DROP TABLE outbox; DROP INDEX messages_by_key; DROP INDEX messages_with_media; DROP INDEX messages_by_thread; PRAGMA user_version = 5;")
             .unwrap();
         let mut st = super::BeeperStore::from_config(config.clone());
         assert_eq!(ids(&st), want, "the message search stays");
@@ -2433,6 +2649,61 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// A start loads no messages. A chat loads its stored messages on first use, and the chats that were used least
+    /// recently unload, except the shown chats.
+    #[test]
+    fn chats_load_on_demand_and_old_chats_unload() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-load-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23389, None);
+        config.demo = true;
+        drop(super::BeeperStore::from_config(config.clone()));
+        let mut st = super::BeeperStore::from_config(config);
+        assert!(st.chat_msg_indices.is_empty() && st.messages.is_empty(), "a start loads no messages");
+        assert_eq!(found(&st, "borr").len(), 2, "the search reads the messages that are not loaded");
+        let stored = |st: &super::BeeperStore, c: &str| -> Vec<String> {
+            st.stored("chat_id = ?1 ORDER BY sort_key", [c]).into_iter().map(|m| m.id).collect()
+        };
+        let loaded = |st: &super::BeeperStore, c: &str| -> Vec<String> {
+            st.chat_msg_indices[c].iter().map(|&i| st.messages[i].id.clone()).collect()
+        };
+        let chat = st.chats.iter().map(|c| c.id.clone()).find(|c| stored(&st, c).len() > 2).expect("a long chat");
+        let preview = |st: &super::BeeperStore| st.chats[st.chat_idx_by_id[&chat]].preview.clone().unwrap().id;
+        let last = preview(&st);
+        st.delete_message(&chat, &last).unwrap();
+        assert_eq!(loaded(&st, &chat), stored(&st, &chat), "a change loads the chat");
+        assert!(preview(&st) != last, "the preview of a deleted message moves to an older message");
+        let others: Vec<String> = st.chats.iter().map(|c| c.id.clone()).filter(|c| *c != chat).take(3).collect();
+        let template = super::Message { thread_root: None, ..st.messages[st.chat_msg_indices[&chat][0]].clone() };
+        {
+            let db = st.db.lock().unwrap();
+            db.execute_batch("BEGIN").unwrap();
+            for (k, c) in others.iter().enumerate() {
+                for j in 0..2000 {
+                    let (id, key) = (format!("bulk_{k}_{j}"), super::sort_key(1_000_000 + (k * 2000 + j) as i64));
+                    let m = super::Message { id, chat_id: c.clone(), sort_key: key, ..template.clone() };
+                    let json = serde_json::to_string(&m).unwrap();
+                    let sql = "INSERT INTO messages (id, chat_id, sort_key, json) VALUES (?1, ?2, ?3, ?4)";
+                    db.execute(sql, [&m.id, c, &m.sort_key, &json]).unwrap();
+                }
+            }
+            db.execute_batch("COMMIT").unwrap();
+        }
+        st.shown = vec![others[0].clone()];
+        others.iter().for_each(|c| st.load_chat(c));
+        let mut open: Vec<&String> = st.chat_msg_indices.keys().collect();
+        open.sort();
+        let mut want = vec![&others[0], &others[2]];
+        want.sort();
+        assert_eq!(open, want, "the shown chat and the last chat stay");
+        assert_eq!(st.messages.len(), st.msg_idx_by_id.len());
+        assert!(st.msg_idx_by_id.iter().all(|(id, &i)| st.messages[i].id == *id));
+        assert!(want.iter().all(|c| loaded(&st, c) == stored(&st, c)));
+        assert!(st.find_message(&last).is_some() && st.chat_msg_indices.contains_key(&chat), "a lookup loads");
+        drop(st);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn schema_6_migrates_to_secret_flags() {
         let dir = std::env::temp_dir().join(format!("beeper-rs-schema-6-{}", std::process::id()));
@@ -2446,6 +2717,7 @@ mod tests {
             .execute_batch(
                 "UPDATE kv SET value = json_set(value, '$.secrets.master_key', 'mk', '$.secrets.self_signing_key', '',
                      '$.secrets.user_signing_key', 'usk', '$.secrets.megolm_backup_key', '') WHERE key = 'state';
+                 DROP INDEX messages_by_key; DROP INDEX messages_with_media; DROP INDEX messages_by_thread;
                  PRAGMA user_version = 6;",
             )
             .unwrap();

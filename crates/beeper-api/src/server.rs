@@ -12,10 +12,10 @@ use beeper_core::connect::{Token, READ};
 use beeper_core::matrix::{self, ChatFlag, MediaInfo, Outgoing};
 use beeper_core::models::*;
 use beeper_core::platform::{extension_of, is_mime, mime_type_of, path_to_file_url, OsKind};
-use beeper_core::store::{activity_key, tokenize, BeeperStore, SharedStore};
+use beeper_core::store::{activity_key, tokenize, BeeperStore, Query, SharedStore};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::HashMap;
 use std::fmt::Write;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::{Arc, RwLock};
@@ -210,17 +210,16 @@ fn take_page<T>(items: impl Iterator<Item = T>, limit: usize) -> (Vec<T>, bool) 
     (items, more)
 }
 
-/// The items of lists in ascending order, newest first: a merge from the ends of the lists.
-fn newest_first<'a>(lists: Vec<&'a [usize]>, key: impl Fn(usize) -> &'a str + 'a) -> impl Iterator<Item = usize> + 'a {
-    let mut heap: BinaryHeap<(&str, &[usize])> = lists.into_iter().filter_map(|l| Some((key(*l.last()?), l))).collect();
-    std::iter::from_fn(move || {
-        let (_, list) = heap.pop()?;
-        let (&last, rest) = list.split_last().expect("the heap has no empty lists");
-        if let Some(&next) = rest.last() {
-            heap.push((key(next), rest));
+/// The first `limit` stored messages of `q` that `keep` keeps, newest first, and whether more messages follow.
+fn message_page(st: &BeeperStore, q: &Query, limit: usize, keep: impl Fn(&Message) -> bool) -> (Vec<Message>, bool) {
+    let mut items = Vec::new();
+    st.scan(q, |m| {
+        if keep(&m) {
+            items.push(m);
         }
-        Some(last)
-    })
+        items.len() <= limit
+    });
+    take_page(items.into_iter(), limit)
 }
 
 /// All the values of an array parameter of a parsed query, which is a repeated key or a `key[]` key.
@@ -801,7 +800,8 @@ fn get(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
                 }
                 ["messages"] => list_messages(st, idx, r),
                 ["messages", mid] => {
-                    ok(&view::message(&st.messages[st.message_in_chat(id, mid).map_err(store_error)?.1]))
+                    let m = st.stored_message(mid).filter(|m| st.in_chat(idx, &m.chat_id));
+                    ok(&view::message(&m.ok_or_else(|| missing("Message not found"))?))
                 }
                 _ => Err(no_route()),
             }
@@ -1568,9 +1568,16 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
 }
 
 /// A message of a chat and the message features of its room.
-fn message_rules(st: &BeeperStore, chat: &str, id: &str) -> Result<(Message, MessageRules), Response> {
+fn message_rules(st: &mut BeeperStore, chat: &str, id: &str) -> Result<(Message, MessageRules), Response> {
     let (cid, m) = st.message_in_chat(chat, id).map_err(store_error)?;
     Ok((st.messages[m].clone(), st.chats[st.chat_idx_by_id[&cid]].messages))
+}
+
+/// The canonical IDs of the chat `idx` and of the member chats of a merged chat.
+fn chat_and_members(st: &BeeperStore, idx: usize) -> Vec<&str> {
+    let members = st.chats[idx].merge.iter().flat_map(|m| &m.chat_ids);
+    let members = members.map(|id| st.chats[st.resolve_chat_idx(id).expect("merged member chat exists")].id.as_str());
+    std::iter::once(st.chats[idx].id.as_str()).chain(members).collect()
 }
 
 /// Desktop's page size of `getRoomMessages`.
@@ -1579,22 +1586,10 @@ const MESSAGE_PAGE: usize = 20;
 /// Desktop's `listMessages`: one page of the chat and its merged member chats, newest first. The cursor is a sort
 /// key, and both directions take the newest messages past it, like Desktop's `ORDER BY hsOrder DESC LIMIT 20`.
 fn list_messages(st: &BeeperStore, idx: usize, r: &Req) -> Reply {
-    let (after, cursor) = (r.after()?, r.q("cursor"));
-    let chat = &st.chats[idx];
-    let members = chat.merge.iter().flat_map(|m| &m.chat_ids);
-    let member_ids = members.map(|id| &st.chats[st.resolve_chat_idx(id).expect("merged member chat exists")].id);
-    let key = |m: usize| st.messages[m].sort_key.as_str();
-    let lists = std::iter::once(&chat.id).chain(member_ids).map(|cid| {
-        let list = st.chat_msg_indices[cid].as_slice();
-        match cursor {
-            None => list,
-            Some(c) if after => &list[list.partition_point(|&m| key(m) <= c)..],
-            Some(c) => &list[..list.partition_point(|&m| key(m) < c)],
-        }
-    });
-    let (items, has_more) = take_page(newest_first(lists.collect(), key).map(|m| &st.messages[m]), MESSAGE_PAGE);
+    let q = Query::default().chats(&chat_and_members(st, idx)).past(r.q("cursor"), r.after()?);
+    let (items, has_more) = message_page(st, &q, MESSAGE_PAGE, |_| true);
     let (oldest, newest) = (items.last().map(|m| m.sort_key.clone()), items.first().map(|m| m.sort_key.clone()));
-    let items = items.into_iter().map(view::message).collect();
+    let items = items.iter().map(view::message).collect();
     ok(&CursorPage { items, has_more, oldest_cursor: oldest, newest_cursor: newest })
 }
 
@@ -1819,9 +1814,7 @@ fn search_messages(st: &BeeperStore, r: &Req) -> Reply {
         }
     }
     let kind = |m: &Message, k: &str| m.attachments.iter().any(|a| a.attachment_type == k);
-    // The message filters read only the message, and the chat filters also read its chat.
-    let message_ok = |&m: &usize| {
-        let m = &st.messages[m];
+    let message_ok = |m: &Message| {
         let ms = || millis_from_rfc3339(&m.timestamp).expect("RFC 3339 message time");
         m.flags & MSG_DELETED == 0
             && !matches!(m.message_type.as_deref(), Some("HIDDEN" | "REACTION"))
@@ -1840,46 +1833,25 @@ fn search_messages(st: &BeeperStore, r: &Req) -> Reply {
                 || (media.contains(&"file") && kind(m, "unknown"))
                 || (media.contains(&"link") && !m.links.is_empty()))
     };
-    let chat_ok = |&m: &usize| {
-        let c = &st.chats[st.chat_idx_by_id[&st.messages[m].chat_id]];
+    let chat_ok = |m: &Message| {
+        let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
         (accounts.is_empty() || accounts.contains(&c.account_id.as_str()))
             && chat_type.is_none_or(|t| c.chat_type == t)
             && !(exclude_low && c.flags & CHAT_LOW_PRIORITY != 0)
             && (include_muted || c.flags & CHAT_MUTED == 0)
     };
-    let key = |m: usize| st.messages[m].sort_key.as_str();
-    let past = |k: &str| cursor.is_none_or(|c| if after { k > c } else { k < c });
-    let hits: Box<dyn Iterator<Item = usize>> =
-        match (r.q("query").map(str::trim).filter(|q| !q.is_empty()), &rooms[..]) {
-            (None, [_, ..]) => {
-                let lists = rooms.iter().map(|cid| {
-                    let list = st.chat_msg_indices[cid].as_slice();
-                    match cursor {
-                        None => list,
-                        Some(c) if after => &list[list.partition_point(|&m| key(m) <= c)..],
-                        Some(c) => &list[..list.partition_point(|&m| key(m) < c)],
-                    }
-                });
-                Box::new(newest_first(lists.collect(), key).filter(message_ok).filter(chat_ok))
-            }
-            (query, _) => {
-                // A text query has few hits, so the filters run after the sort. Without one, the message filters run
-                // first, because they drop most messages and need no chat.
-                let room = |m: usize| rooms.is_empty() || rooms.contains(&st.messages[m].chat_id);
-                let mut hits: Vec<usize> = match query {
-                    Some(q) => st.search_messages(q),
-                    None => (0..st.messages.len()).filter(message_ok).collect(),
-                };
-                hits.retain(|&m| past(key(m)) && room(m));
-                hits.sort_unstable_by(|&a, &b| key(b).cmp(key(a)));
-                Box::new(hits.into_iter().filter(message_ok).filter(chat_ok))
-            }
-        };
-    let (items, has_more) = take_page(hits.map(|m| &st.messages[m]), limit);
+    let mut q = Query::default().past(cursor, after);
+    if !rooms.is_empty() {
+        q = q.chats(&rooms.iter().map(String::as_str).collect::<Vec<_>>());
+    }
+    if let Some(text) = r.q("query").filter(|q| !q.trim().is_empty()) {
+        q = q.text(text);
+    }
+    let (items, has_more) = message_page(st, &q, limit, |m| message_ok(m) && chat_ok(m));
     let chat = |id: &str| view::chat(st, &st.chats[st.chat_idx_by_id[id]], None, false);
     let chats: HashMap<&str, view::ApiChat> = items.iter().map(|m| (m.chat_id.as_str(), chat(&m.chat_id))).collect();
     let (oldest, newest) = (items.last().map(|m| &m.sort_key), items.first().map(|m| &m.sort_key));
-    let items: Vec<_> = items.into_iter().map(view::message).collect();
+    let items: Vec<_> = items.iter().map(view::message).collect();
     ok(&json!({ "items": items, "chats": chats, "hasMore": has_more, "oldestCursor": oldest, "newestCursor": newest }))
 }
 
@@ -1895,13 +1867,9 @@ fn unified_search(st: &BeeperStore, r: &Req) -> Reply {
     let chats: Vec<_> = titles.take(30).map(|c| view::chat(st, c, Some(20), false)).collect();
     let groups = found.iter().copied().filter(|c| c.chat_type == "group" && chat_hit(c, true, &words));
     let in_groups: Vec<_> = groups.take(30).map(|c| view::chat(st, c, Some(20), false)).collect();
-    let mut hits: Vec<&Message> = st.search_messages(q).into_iter().map(|i| &st.messages[i]).collect();
-    hits.sort_unstable_by(|a, b| b.sort_key.cmp(&a.sort_key));
-    let shown = |m: &&&Message| {
-        let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
-        m.flags & MSG_DELETED == 0 && c.flags & CHAT_LOW_PRIORITY == 0
-    };
-    let (messages, has_more) = take_page(hits.iter().filter(shown), 20);
+    let (messages, has_more) = message_page(st, &Query::default().text(q), 20, |m| {
+        m.flags & MSG_DELETED == 0 && st.chats[st.chat_idx_by_id[&m.chat_id]].flags & CHAT_LOW_PRIORITY == 0
+    });
     let chat = |id: &str| view::chat(st, &st.chats[st.chat_idx_by_id[id]], None, false);
     let referenced: HashMap<&str, view::ApiChat> =
         messages.iter().map(|m| (m.chat_id.as_str(), chat(&m.chat_id))).collect();

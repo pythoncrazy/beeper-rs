@@ -779,7 +779,11 @@ async fn history(room: &Room) -> (Vec<TimelineEvent>, Option<String>) {
 pub async fn load_older(store: SharedStore, chat: String) -> Result<(), String> {
     let client = store.read().matrix.clone().expect("only a Matrix chat loads older messages");
     let room = joined_room(&client, &chat).await?;
-    let count = || store.read().chat_msg_indices[&chat].len();
+    let count = || {
+        let mut st = store.write();
+        st.load_chat(&chat);
+        st.chat_msg_indices[&chat].len()
+    };
     let start = count();
     while count() == start {
         let from = {
@@ -831,7 +835,8 @@ async fn sync_receipts(store: &SharedStore, room: &Room) {
         return;
     }
     let mut st = store.write();
-    let indices = st.chat_msg_indices.get(&chat).cloned().unwrap_or_default();
+    st.load_chat(&chat);
+    let indices = st.chat_msg_indices[&chat].clone();
     for (uid, ev, ts) in updates {
         let target = indices.iter().copied().find(|&i| {
             let m = &st.messages[i];
@@ -1083,6 +1088,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                 });
             }
         }
+        st.load_chat(&chat_id);
         // Desktop finds the target of an event only in the room of the event.
         let here = |st: &BeeperStore, id: &str| {
             st.msg_idx_by_id.get(id).copied().filter(|&i| st.messages[i].chat_id == chat_id)
@@ -1219,9 +1225,7 @@ async fn sync_thread_reads(store: &SharedStore, room: &Room, roots: BTreeSet<Str
     }
     let chat = chat_id(room).await;
     let mut st = store.write();
-    let key = |st: &BeeperStore, e: &Option<String>| {
-        e.as_ref().and_then(|e| Some(st.messages[*st.msg_idx_by_id.get(e)?].sort_key.clone()))
-    };
+    let key = |st: &BeeperStore, e: &Option<String>| e.as_ref().and_then(|e| Some(st.stored_message(e)?.sort_key));
     let main = main.iter().filter_map(|e| key(&st, e)).max().unwrap_or_else(|| sort_key(MIN_SAFE_INTEGER));
     let idx = st.chat_idx_by_id[&chat];
     let old = &st.chats[idx].thread_reads;
@@ -1404,7 +1408,7 @@ pub async fn flush(store: SharedStore) -> Result<(), String> {
     loop {
         let Some((row, chat, out)) = store.write().next_outgoing() else { return Ok(()) };
         // A failed change waits for Retry only with a local echo that shows the error.
-        let message = out.message().filter(|id| store.read().msg_idx_by_id.contains_key(*id)).map(str::to_string);
+        let message = out.message().filter(|id| store.read().stored_message(id).is_some()).map(str::to_string);
         let retry = !matches!(out, Outgoing::Edit { .. });
         let r = push(&store, chat, out).await;
         let mut st = store.write();
@@ -1495,8 +1499,8 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             // Desktop mentions the sender of the quoted message, but not of the fallback reply of a thread reply.
             let sender = reply_to.as_ref().filter(|_| thread.as_ref().is_none_or(|t| t.chosen)).and_then(|r| {
                 let st = store.read();
-                let m = &st.messages[*st.msg_idx_by_id.get(r)?];
-                (!st.is_me(&m.sender_id)).then(|| m.sender_id.clone())
+                let m = st.stored_message(r)?;
+                (!st.is_me(&m.sender_id)).then_some(m.sender_id)
             });
             let mut content = text_content(text, &mentions, sender.as_deref())?;
             if thread.is_none() {
@@ -1593,8 +1597,8 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                 let mut done = serde_json::json!({ "at_ts": now, "updated_ts": now });
                 if on {
                     let st = store.read();
-                    let last = st.chat_msg_indices.get(&chat).and_then(|v| v.last()).map(|&i| &st.messages[i].sort_key);
-                    let last = last.max(st.chats[st.chat_idx_by_id[&chat]].notifiable.as_ref());
+                    let last = st.stored("chat_id = ?1 ORDER BY sort_key DESC LIMIT 1", [&chat]).pop();
+                    let last = last.map(|m| m.sort_key).max(st.chats[st.chat_idx_by_id[&chat]].notifiable.clone());
                     let order = last.map_or(MIN_SAFE_INTEGER, |k| k.parse::<i64>().expect("numeric sort key"));
                     done["at_order"] = order.into();
                 }
@@ -1982,8 +1986,7 @@ async fn chat_id(room: &Room) -> String {
 
 async fn has_utd(store: &SharedStore, room: &Room) -> bool {
     let chat = chat_id(room).await;
-    let st = store.read();
-    st.chat_msg_indices.get(&chat).into_iter().flatten().any(|&i| st.messages[i].text.as_deref() == Some(UTD_TEXT))
+    !store.read().stored("chat_id = ?1 AND json ->> '$.text' = ?2 LIMIT 1", [&chat, UTD_TEXT]).is_empty()
 }
 
 async fn retry_undecrypted(client: Client, store: SharedStore) {
@@ -3229,7 +3232,8 @@ mod tests {
         };
         let error = |store: &crate::store::SharedStore| {
             let mut st = store.write();
-            (st.messages[st.msg_idx_by_id[&txn]].send_error.clone(), st.outbox.len(), st.start_flush())
+            let i = st.find_message(&txn).expect("the local echo");
+            (st.messages[i].send_error.clone(), st.outbox.len(), st.start_flush())
         };
         assert!(store.write().start_flush());
         super::flush(store.clone()).await.expect("a failed message is not a flush error");
