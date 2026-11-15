@@ -14,7 +14,12 @@ pub struct Gif<'a> {
     frames: &'a [Frame],
     start: Instant,
     make: Box<dyn Fn(image::Handle) -> Image + 'a>,
+    /// The turn in radians from the first angle to the second one in `TURN_MS` from the time.
+    turn: (f32, f32, Instant),
 }
+
+/// The time of Desktop's `.2s transform` transition.
+const TURN_MS: f32 = 200.0;
 
 pub fn gif<'a, M: 'a>(
     frames: &'a [Frame],
@@ -23,7 +28,28 @@ pub fn gif<'a, M: 'a>(
 ) -> Element<'a, M> {
     match frames.len() {
         1 => make(frames[0].0.clone()).into(),
-        _ => Element::new(Gif { frames, start, make: Box::new(make) }),
+        _ => Element::new(Gif { frames, start, make: Box::new(make), turn: (0.0, 0.0, start) }),
+    }
+}
+
+/// `gif`, turned from the first angle to the second one in radians, from the time on, with the CSS `ease` curve.
+/// The turned image fits in its bounds.
+pub fn turning<'a, M: 'a>(
+    frames: &'a [Frame],
+    start: Instant,
+    turn: (f32, f32, Instant),
+    make: impl Fn(image::Handle) -> Image + 'a,
+) -> Element<'a, M> {
+    Element::new(Gif { frames, start, make: Box::new(make), turn })
+}
+
+impl Gif<'_> {
+    /// The image of frame `h` at the angle of the turn now, and if the turn goes on.
+    fn image(&self, h: image::Handle) -> (Image, bool) {
+        let (from, to, at) = self.turn;
+        let t = (at.elapsed().as_secs_f32() * 1000.0 / TURN_MS).min(1.0);
+        let angle = from + (to - from) * crate::cubic_bezier(t, [0.25, 0.1, 0.25, 1.0]);
+        ((self.make)(h).rotation(iced::Rotation::Solid(iced::Radians(angle))), t < 1.0 && from != to)
     }
 }
 
@@ -68,7 +94,12 @@ impl<M> Widget<M, Theme, Renderer> for Gif<'_> {
         viewport: &Rectangle,
     ) {
         let Event::Window(window::Event::RedrawRequested(now)) = event else { return };
-        if layout.bounds().intersects(viewport) {
+        if !layout.bounds().intersects(viewport) {
+            return;
+        }
+        if self.image(self.frames[0].0.clone()).1 {
+            shell.request_redraw();
+        } else if self.frames.len() > 1 {
             let (_, left) = frame(self.frames, now.duration_since(self.start).as_millis());
             shell.request_redraw_at(*now + Duration::from_millis(left as u64));
         }
@@ -84,8 +115,12 @@ impl<M> Widget<M, Theme, Renderer> for Gif<'_> {
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let (h, _) = frame(self.frames, self.start.elapsed().as_millis());
-        let image = (self.make)(h.clone());
+        // A still image has one frame without a delay.
+        let h = match self.frames {
+            [(h, _)] => h,
+            _ => frame(self.frames, self.start.elapsed().as_millis()).0,
+        };
+        let (image, _) = self.image(h.clone());
         Widget::<M, Theme, Renderer>::draw(&image, tree, renderer, theme, style, layout, cursor, viewport);
     }
 }
@@ -146,5 +181,23 @@ impl<M> Widget<M, Theme, Renderer> for Dot {
             ..Default::default()
         };
         renderer.fill_quad(quad, self.color.scale_alpha((self.alpha)(t)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Desktop's `.2s transform` turn with the CSS `ease` curve: it goes on for 200 ms, and only for a change.
+    #[test]
+    fn turns_like_desktop() {
+        assert!((crate::cubic_bezier(0.5, [0.25, 0.1, 0.25, 1.0]) - 0.802).abs() < 5e-3, "the CSS ease curve");
+        let frames = [(image::Handle::from_rgba(1, 1, vec![0; 4]), 0)];
+        let start = Instant::now();
+        let gif = |turn| Gif { frames: &frames, start, make: Box::new(image), turn };
+        let h = || frames[0].0.clone();
+        assert!(gif((0.0, -1.0, Instant::now())).image(h()).1, "a new turn goes on");
+        assert!(!gif((0.0, -1.0, start - Duration::from_millis(300))).image(h()).1, "a turn ends after 200 ms");
+        assert!(!gif((-1.0, -1.0, Instant::now())).image(h()).1, "no turn without a change");
     }
 }
