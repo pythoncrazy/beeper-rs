@@ -239,6 +239,8 @@ pub struct Login {
     pub busy: bool,
     menu: bool,
     query: String,
+    /// Clicks on the Connect Chat Accounts heading: the tenth one finishes the onboarding, like Desktop's.
+    headline_clicks: u8,
     source: Option<PathBuf>,
     import: Option<Arc<BeeperData>>,
     /// The other devices that can verify this device, "Try another way" was pressed, and "They match" was pressed.
@@ -311,6 +313,8 @@ pub enum LoginMsg {
     StartOver,
     CloseToast,
     Query(String),
+    /// A click on the Connect Chat Accounts heading.
+    Headline,
     Continue,
     Done(Result<Outcome, CloudError>),
     E2ee(Result<E2eeSetup, String>),
@@ -806,6 +810,12 @@ impl BeeperGuiApp {
             LoginMsg::OpenEmail => return open_email_client(),
             LoginMsg::StartOver => self.login = Login::new(l.source.take()),
             LoginMsg::Query(q) => l.query = q,
+            LoginMsg::Headline => {
+                l.headline_clicks += 1;
+                if l.headline_clicks == 10 {
+                    return self.update_login(LoginMsg::Continue);
+                }
+            }
             LoginMsg::Continue => {
                 self.login = Login::default();
                 return self.enter_app();
@@ -1179,7 +1189,8 @@ impl BeeperGuiApp {
                 column![
                     {
                         let (headline, width) = gradient_text(tr("Connect Chat Accounts"), 26.0, 48.0);
-                        container(svg(headline).width(width).height(48)).center_x(Fill)
+                        let headline = mouse_area(svg(headline).width(width).height(48));
+                        container(headline.on_press(LoginMsg::Headline.into())).center_x(Fill)
                     },
                     Space::new().height(8),
                     container(column![search, divider, grid].push(go_on)).height(Fill).style(card_style(p.card)),

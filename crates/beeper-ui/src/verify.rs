@@ -667,6 +667,9 @@ pub(crate) fn format_recovery_key(key: &str) -> String {
 }
 
 /// Desktop's `RecoveryCodeInput`: the key in 4 lines of 3 dash groups, and "Paste from Clipboard".
+/// The widget ID of the recovery key fields.
+pub(crate) const KEY_INPUT: &str = "recovery-key-input";
+
 pub(crate) fn key_input<'a>(
     p: &Palette,
     content: &'a text_editor::Content,
@@ -676,15 +679,16 @@ pub(crate) fn key_input<'a>(
 ) -> El<'a> {
     let p = *p;
     let edge = if error { p.text_danger } else { CLEAR };
-    let editor = text_editor(content).on_action(edit).size(17).height(4.0 * 17.0 * 1.3 + 24.0).padding(12).style(
-        move |_: &Theme, _| text_editor::Style {
-            background: p.chip.into(),
-            border: border::rounded(12).color(edge).width(1),
-            placeholder: p.on_secondary,
-            value: p.strong,
-            selection: p.accent.scale_alpha(0.3),
-        },
-    );
+    let editor =
+        text_editor(content).id(KEY_INPUT).on_action(edit).size(17).height(4.0 * 17.0 * 1.3 + 24.0).padding(12).style(
+            move |_: &Theme, _| text_editor::Style {
+                background: p.chip.into(),
+                border: border::rounded(12).color(edge).width(1),
+                placeholder: p.on_secondary,
+                value: p.strong,
+                selection: p.accent.scale_alpha(0.3),
+            },
+        );
     let paste = txt(trx("Paste from Clipboard", "button label"), 12.0).color(p.on_secondary);
     let paste = button(paste).padding(4).style(btn_style([CLEAR, p.chip, p.chip], [p.on_secondary; 3], 6.0));
     column![editor, paste.on_press(on_paste)].spacing(4).align_x(Center).padding([24, 18]).into()
