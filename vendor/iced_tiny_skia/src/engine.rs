@@ -174,6 +174,36 @@ impl Engine {
         let clip_mask = (!physical_bounds.is_within(&clip_bounds))
             .then_some(clip_mask as &_);
 
+        // The mask hides the fill outside the clip bounds, but tiny-skia
+        // still fills all pixels of the path. When the clip bounds, a pixel
+        // larger, miss the rounded corners, the fill in them is a rectangle.
+        let path = clip_mask
+            .and_then(|_| {
+                let near = clip_bounds.expand(1.0)
+                    * Transformation::scale(1.0 / transformation.scale_factor());
+                let shown = quad.bounds.intersection(&near)?;
+                let [tl, tr, br, bl] = fill_border_radius;
+                let (b, right, bottom) = (
+                    quad.bounds,
+                    quad.bounds.x + quad.bounds.width,
+                    quad.bounds.y + quad.bounds.height,
+                );
+                let corners = [
+                    (b.x, b.y, tl),
+                    (right - tr, b.y, tr),
+                    (right - br, bottom - br, br),
+                    (b.x, bottom - bl, bl),
+                ];
+                corners
+                    .iter()
+                    .all(|&(x, y, r)| {
+                        !Rectangle::new(crate::core::Point::new(x, y), Size::new(r, r))
+                            .intersects(&shown)
+                    })
+                    .then(|| rounded_rectangle(shown, [0.0; 4]))
+            })
+            .unwrap_or(path);
+
         pixels.fill_path(
             &path,
             &tiny_skia::Paint {
