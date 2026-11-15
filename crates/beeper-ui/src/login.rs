@@ -11,8 +11,8 @@ use beeper_core::models::{BridgeAccountInfo, MatrixSession, Profile};
 use beeper_core::store::{BeeperStore, Setup, NOTE_CHAT_ID};
 use iced::gradient::Linear;
 use iced::widget::{
-    button, column, container, mouse_area, operation, rich_text, row, scrollable, span, stack, svg, text_input,
-    tooltip, Space,
+    button, column, container, mouse_area, operation, rich_text, row, scrollable, span, stack, svg, text_editor,
+    text_input, tooltip, Space,
 };
 use iced::{border, window, Background, Center, Color, Degrees, Fill, Gradient, Padding, Size, Task, Theme};
 use std::path::PathBuf;
@@ -54,6 +54,12 @@ pub enum Screen {
     Verify,
     RecoveryKey,
     Syncing,
+    /// Desktop's `RecoveryCodePreamble`, `AwaitNewRecoveryCode` (which shows the new key, then asks for it again) and
+    /// `ConfirmResetRecoveryCode`.
+    Preamble,
+    NewKey,
+    ConfirmKey,
+    Reset,
     Accounts,
 }
 
@@ -75,7 +81,12 @@ pub struct Login {
     pub devices: Vec<DeviceInfo>,
     pub another_way: bool,
     pub waiting: bool,
-    pub recovery_key: String,
+    /// Desktop's `RecoveryCodeInput`, and the keys that were tried, which a paste on focus does not submit again.
+    pub key_input: text_editor::Content,
+    pub tried_keys: Vec<String>,
+    /// The new recovery key, and whether "Copy to Clipboard" copied it.
+    pub new_key: Option<String>,
+    pub copied: bool,
 }
 
 impl Login {
@@ -119,9 +130,23 @@ pub enum LoginMsg {
     AnotherWay,
     /// "Enter Recovery Key", which cancels the verification.
     UseRecoveryKey,
-    RecoveryKey(String),
+    KeyEdit(text_editor::Action),
+    /// "Paste from Clipboard", and the text of the clipboard.
+    PasteKey,
+    Pasted(Option<String>),
+    /// The window got the focus: Desktop submits a valid recovery key from the clipboard.
+    KeyOnFocus(Option<String>),
     SubmitRecoveryKey,
     Recovered(Result<(), String>),
+    /// "Save Key", and "Reset Recovery Key": a new recovery key.
+    NewKey,
+    MadeKey(Result<String, String>),
+    CopyKey,
+    /// "Next" under the new key, which asks for it again.
+    KeyNext,
+    SubmitConfirmKey,
+    /// "Lost your recovery key?", which cancels the verification.
+    LostKey,
 }
 
 impl From<LoginMsg> for UiMessage {
@@ -134,10 +159,16 @@ fn previous(s: Screen) -> Option<Screen> {
     match s {
         Screen::Email => Some(Screen::Welcome),
         Screen::Code => Some(Screen::Email),
-        Screen::RecoveryKey => Some(Screen::Verify),
-        Screen::Import | Screen::Welcome | Screen::Username | Screen::Verify | Screen::Syncing | Screen::Accounts => {
-            None
-        }
+        Screen::RecoveryKey | Screen::Reset => Some(Screen::Verify),
+        Screen::ConfirmKey => Some(Screen::NewKey),
+        Screen::Import
+        | Screen::Welcome
+        | Screen::Username
+        | Screen::Verify
+        | Screen::Syncing
+        | Screen::Preamble
+        | Screen::NewKey
+        | Screen::Accounts => None,
     }
 }
 
@@ -264,7 +295,7 @@ pub(crate) fn heading<'a>(s: &'a str, size: f32) -> El<'a> {
         .into()
 }
 
-fn art<'a>(i: usize, height: f32) -> El<'a> {
+pub(crate) fn art<'a>(i: usize, height: f32) -> El<'a> {
     svg(ART[i].clone()).width(Fill).height(height).into()
 }
 
@@ -332,6 +363,9 @@ impl BeeperGuiApp {
             LoginMsg::Show(s) => {
                 l.screen = s;
                 l.error = None;
+                if s == Screen::Verify {
+                    return self.start_login_verification();
+                }
                 if s == Screen::Email {
                     return operation::focus(EMAIL_INPUT);
                 }
@@ -394,15 +428,51 @@ impl BeeperGuiApp {
             LoginMsg::E2ee(r) => return self.e2ee_checked(r),
             LoginMsg::AnotherWay => l.another_way = true,
             LoginMsg::UseRecoveryKey => return self.use_recovery_key(),
-            LoginMsg::RecoveryKey(v) => {
-                l.recovery_key = v;
+            LoginMsg::KeyEdit(action) => {
+                crate::verify::edit_recovery_key(&mut l.key_input, action);
                 l.error = None;
+            }
+            LoginMsg::PasteKey => return iced::clipboard::read().map(|t| LoginMsg::Pasted(t).into()),
+            LoginMsg::Pasted(text) => {
+                l.key_input =
+                    text_editor::Content::with_text(&crate::verify::format_recovery_key(&text.unwrap_or_default()));
+                l.error = None;
+            }
+            LoginMsg::KeyOnFocus(text) => {
+                let key = beeper_core::matrix::recovery_key_chars(&text.unwrap_or_default());
+                let fresh = crate::verify::valid_recovery_key(&key) && !l.tried_keys.contains(&key);
+                if fresh && l.screen == Screen::RecoveryKey && !l.busy {
+                    l.key_input = text_editor::Content::with_text(&crate::verify::format_recovery_key(&key));
+                    return self.update_login(LoginMsg::SubmitRecoveryKey);
+                }
             }
             LoginMsg::SubmitRecoveryKey => {
                 l.busy = true;
-                let recover = beeper_core::matrix::recover(self.store.clone(), l.recovery_key.clone());
+                let key = beeper_core::matrix::recovery_key_chars(&l.key_input.text());
+                l.tried_keys.push(key.clone());
+                let recover = beeper_core::matrix::recover(self.store.clone(), key);
                 return Task::perform(recover, |r| LoginMsg::Recovered(r).into());
             }
+            LoginMsg::NewKey => return self.make_recovery_key(),
+            LoginMsg::MadeKey(r) => {
+                l.busy = false;
+                match r {
+                    Ok(key) => l.new_key = Some(key),
+                    Err(e) => l.error = Some(e),
+                }
+            }
+            LoginMsg::CopyKey => {
+                l.copied = true;
+                return iced::clipboard::write(l.new_key.clone().expect("a shown key"));
+            }
+            LoginMsg::KeyNext => (l.screen, l.key_input, l.error) = (Screen::ConfirmKey, Default::default(), None),
+            LoginMsg::SubmitConfirmKey => {
+                match beeper_core::matrix::confirm_recovery_key(&self.store, &l.key_input.text()) {
+                    Ok(()) => self.advance_onboarding(),
+                    Err(e) => l.error = Some(e),
+                }
+            }
+            LoginMsg::LostKey => return self.lost_key(),
             LoginMsg::Recovered(r) => {
                 l.busy = false;
                 l.error = r.err().map(|e| tr("Error: %(message)s").replace("%(message)s", &e));
@@ -645,6 +715,9 @@ impl BeeperGuiApp {
             Screen::Verify => self.view_onboarding_verify(),
             Screen::RecoveryKey => self.view_onboarding_key(),
             Screen::Syncing => self.view_onboarding_syncing(),
+            Screen::Preamble => self.view_onboarding_preamble(),
+            Screen::NewKey | Screen::ConfirmKey => self.view_onboarding_new_key(),
+            Screen::Reset => self.view_onboarding_reset(),
             Screen::Username => column![
                 Space::new().height(34),
                 heading(tr("Pick a Username"), 28.0),

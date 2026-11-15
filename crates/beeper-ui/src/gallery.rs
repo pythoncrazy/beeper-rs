@@ -1,11 +1,13 @@
 //! Desktop's `GalleryGrouper` and `GalleryAttachments`: the photos and videos that one sender sends in a short time
 //! show as one gallery of up to four tiles.
-use crate::style::{bordered_box, fill_box, semi, Palette};
-use crate::{iso_millis, pending, tinted, BeeperGuiApp, El, UiMessage};
+use crate::i18n::{tr, trx};
+use crate::style::{bordered_box, fill_box, semi, shadow_box, Palette};
+use crate::{deletable, iso_millis, menu_item, menu_rule, pending, tinted, BeeperGuiApp, El, UiMessage};
+use crate::{MENU_ITEM, MESSAGE_MENU_W};
 use beeper_core::models::{AttachmentSize, Message};
 use beeper_core::store::BeeperStore;
-use iced::widget::{container, image, mouse_area, stack, Space, Stack};
-use iced::{mouse, Color, Fill, Padding, Pixels, Task};
+use iced::widget::{container, image, mouse_area, stack, Column, Space, Stack};
+use iced::{mouse, Color, Fill, Padding, Pixels, Point, Task};
 
 /// Desktop's `rbt`, `obt` and `ibt`: at most 20 messages, at most 2 minutes after the first, at most 60 seconds apart.
 const MAX: usize = 20;
@@ -60,6 +62,19 @@ pub(crate) fn starts(st: &BeeperStore, msgs: &[&Message], replies: &[usize]) -> 
     starts
 }
 
+/// The selection and the menu of a gallery, like Desktop's `MessageComponent` of a `GalleryGrouper`.
+#[derive(Clone)]
+pub enum Msg {
+    /// A click on a gallery beside its tiles, with the messages of the gallery.
+    Click(Vec<String>),
+    /// A click on the tile of a message.
+    Tile(String),
+    /// A right click on a gallery, with the messages of the gallery.
+    Menu(Vec<String>),
+    /// The "Reactions" item of the gallery menu at a point.
+    Reactions(Vec<String>, Point),
+}
+
 /// A tile: its left, top, width, height and turn in radians, clockwise.
 type Tile = [f32; 5];
 
@@ -112,9 +127,9 @@ fn turned((w, h): (f32, f32), turn: f32) -> (f32, f32) {
 }
 
 /// A tile image: `src` cut to cover a `w` by `h` tile, at `BAKE` times its size, with the round corners and the
-/// half pixel border of Desktop's `.tile`. iced can turn an image, but it cuts and rounds an image only along the
-/// screen axes, so the tile has its corners in its pixels.
-fn bake(src: &image::Handle, (w, h): (u32, u32), border: Color) -> image::Handle {
+/// `ring` of Desktop's `.tile`: its half pixel border, or the 2 px outline of a selected tile. iced can turn an image,
+/// but it cuts and rounds an image only along the screen axes, so the tile has its corners in its pixels.
+fn bake(src: &image::Handle, (w, h): (u32, u32), (border, thick): (Color, f32)) -> image::Handle {
     let image::Handle::Rgba { width, height, pixels, .. } = src else { unreachable!("decoded media is RGBA") };
     let full = ::image::RgbaImage::from_raw(*width, *height, pixels.to_vec()).expect("RGBA pixels fill the image");
     let (tw, th) = ((w as f32 * BAKE) as u32, (h as f32 * BAKE) as u32);
@@ -128,7 +143,7 @@ fn bake(src: &image::Handle, (w, h): (u32, u32), border: Color) -> image::Handle
         // The signed distance from the rounded edge, negative inside.
         let q = [(x as f32 + 0.5 - half[0]).abs() - half[0] + r, (y as f32 + 0.5 - half[1]).abs() - half[1] + r];
         let d = q[0].max(0.0).hypot(q[1].max(0.0)) + q[0].max(q[1]).min(0.0) - r;
-        let ring = (0.5 + d + 0.5 * BAKE).clamp(0.0, 1.0) * f32::from(edge[3]) / 255.0;
+        let ring = (0.5 + d + thick * BAKE).clamp(0.0, 1.0) * f32::from(edge[3]) / 255.0;
         for c in 0..3 {
             px[c] = (f32::from(px[c]) * (1.0 - ring) + f32::from(edge[c]) * ring).round() as u8;
         }
@@ -138,8 +153,8 @@ fn bake(src: &image::Handle, (w, h): (u32, u32), border: Color) -> image::Handle
 }
 
 /// The key of a baked tile in `BeeperGuiApp::tiles`.
-fn key(url: &str, (w, h): (u32, u32), dark: bool) -> String {
-    format!("{w}x{h}{} {url}", u8::from(dark))
+fn key(url: &str, (w, h): (u32, u32), dark: bool, selected: bool) -> String {
+    format!("{w}x{h}{}{} {url}", u8::from(dark), u8::from(selected))
 }
 
 /// Desktop's `.duration` and `.more` labels: white text on a dark pill.
@@ -149,30 +164,123 @@ fn label<'a>(text: String, size: f32, line: f32, pad: [f32; 2], radius: f32) -> 
 }
 
 impl BeeperGuiApp {
-    /// The baked tile of `url` once its media loaded, or `None` while a load or a bake runs.
-    fn tile(&self, url: &str, size: (u32, u32)) -> Option<&image::Handle> {
-        let Some(Ok(_)) = self.media_at(url) else { return None };
-        match self.tiles.get(&key(url, size, self.dark)) {
-            Some(t) => t.as_ref(),
-            None => {
-                self.wants.ask(&self.wants.tiles, &(url.to_string(), size.0, size.1));
-                None
+    pub(crate) fn gallery(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            // Shift selects up to the last message of the gallery. Ctrl adds the gallery to the selection, and a click
+            // selects only the gallery. Both unselect a selected gallery.
+            Msg::Click(ids) => {
+                let task = match self.mods.shift() {
+                    true => self.update(UiMessage::ClickMessage(ids.last().expect("a gallery has messages").clone())),
+                    false => {
+                        let sel = &mut self.pane.selected_msgs;
+                        match (ids.iter().all(|i| sel.contains(i)), self.mods.command()) {
+                            (true, _) => sel.retain(|m| !ids.contains(m)),
+                            (false, true) => {
+                                let more: Vec<String> = ids.iter().filter(|i| !sel.contains(i)).cloned().collect();
+                                sel.extend(more);
+                            }
+                            (false, false) => *sel = ids.clone(),
+                        }
+                        Task::none()
+                    }
+                };
+                self.pane.msg_anchor = Some(ids[0].clone());
+                return task;
             }
+            // Ctrl and Shift select tiles like messages, and a click opens the carousel.
+            Msg::Tile(mid) => {
+                return match self.mods.command() || self.mods.shift() {
+                    true => self.update(UiMessage::ClickMessage(mid)),
+                    false => self.update(UiMessage::OpenCarousel(mid, 0, false)),
+                };
+            }
+            // A right click selects only the gallery, unless all of it is selected.
+            Msg::Menu(ids) => {
+                if !ids.iter().all(|i| self.pane.selected_msgs.contains(i)) {
+                    self.pane.selected_msgs = ids.clone();
+                }
+                let task = self.update(UiMessage::OpenMessageMenu(ids[0].clone()));
+                self.pane.gallery_menu = ids;
+                return task;
+            }
+            Msg::Reactions(ids, at) => self.pane.gallery_reactions = Some((ids, at)),
         }
+        Task::none()
+    }
+
+    /// Desktop's gallery menu when only the whole gallery of message `mid` is selected: "Reactions", "Download All",
+    /// "Forward All…" and "Delete…", as the menu, its height and the top of its voice rows.
+    pub(crate) fn view_gallery_menu(&self, mid: &str) -> Option<(El<'_>, f32, f32)> {
+        let (ids, sel) = (&self.pane().gallery_menu, &self.pane().selected_msgs);
+        if ids.first().is_none_or(|first| first != mid)
+            || sel.len() != ids.len()
+            || !ids.iter().all(|i| sel.contains(i))
+        {
+            return None;
+        }
+        let p = &self.pal;
+        let st = self.store.read();
+        let ms: Vec<&Message> = ids.iter().map(|i| &st.messages[st.msg_idx_by_id[i]]).collect();
+        let at = self.pane().message_menu.as_ref().expect("the menu is open").1;
+        let item = |label: String, hotkey, msg| {
+            (menu_item(p, None, label, hotkey, Some(UiMessage::MessageMenu(Box::new(msg)))), MENU_ITEM)
+        };
+        let action = |s| trx(s, "gallery menu action").to_string();
+        let download = UiMessage::Commands(ids.iter().map(|i| UiMessage::Download(i.clone(), None)).collect());
+        let rows: Vec<(El, f32)> = [
+            ms.iter()
+                .any(|m| !m.reactions.is_empty())
+                .then(|| vec![item(action("Reactions"), "", UiMessage::Gallery(Msg::Reactions(ids.clone(), at)))]),
+            Some(vec![
+                item(action("Download All"), "Ctrl D", download),
+                item(action("Forward All…"), "Ctrl Shift F", UiMessage::Forward(ids.clone())),
+            ]),
+            ms.iter().all(|m| deletable(&st, m)).then(|| {
+                let delete = UiMessage::AskDeleteMessage(ids.clone());
+                vec![(menu_rule(p), 11.0), item(tr("Delete…").into(), "", delete)]
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .collect();
+        let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
+        let col = Column::with_children(rows.into_iter().map(|r| r.0)).padding([4, 0]);
+        Some((container(col).width(MESSAGE_MENU_W).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into(), h, 0.0))
+    }
+
+    /// Desktop's reactions list of the messages of a gallery, at the point of its anchor.
+    pub(crate) fn view_gallery_reactions<'a>(&self, ids: &[String]) -> El<'a> {
+        let st = self.store.read();
+        let ms: Vec<&Message> = ids.iter().map(|i| &st.messages[st.msg_idx_by_id[i]]).collect();
+        let chat = &st.chats[st.chat_idx_by_id[&ms[0].chat_id]];
+        crate::popover::popover(Space::new(), self.reaction_list(chat, &ms), true).into()
+    }
+
+    /// The baked tile of `url` once its media loaded, or `None` while a load or a bake runs. While the selected or
+    /// the unselected tile bakes after a click, the other one shows.
+    fn tile(&self, url: &str, size: (u32, u32), selected: bool) -> Option<&image::Handle> {
+        let Some(Ok(_)) = self.media_at(url) else { return None };
+        let baked = |selected| self.tiles.get(&key(url, size, self.dark, selected));
+        if baked(selected).is_none() {
+            self.wants.ask(&self.wants.tiles, &(url.to_string(), size.0, size.1, selected));
+        }
+        baked(selected).or(baked(!selected)).and_then(Option::as_ref)
     }
 
     /// Bakes the tiles that a view asked for, on worker threads.
     pub(crate) fn bake_tiles(&mut self) -> Task<UiMessage> {
         let wanted = std::mem::take(&mut *self.wants.tiles.borrow_mut());
-        let border = self.pal.prefs_border;
+        let (border, outline) = (self.pal.prefs_border, self.pal.accent);
         let tasks: Vec<_> = (wanted.into_iter())
-            .filter_map(|(url, w, h)| {
-                let k = key(&url, (w, h), self.dark);
+            .filter_map(|(url, w, h, selected)| {
+                let k = key(&url, (w, h), self.dark, selected);
+                let ring = if selected { (outline, 2.0) } else { (border, 0.5) };
                 // A view asks again for a tile whose media went out of the cache.
                 let Some(Some(Ok(frames))) = self.media.get(&url) else { return None };
                 let src = frames[0].0.clone();
                 (!self.tiles.contains_key(&k)).then(|| {
-                    let bake = move || bake(&src, (w, h), border);
+                    let bake = move || bake(&src, (w, h), ring);
                     let task = async move { tokio::task::spawn_blocking(bake).await.expect("tile bake task") };
                     (k, task)
                 })
@@ -182,7 +290,8 @@ impl BeeperGuiApp {
         Task::batch(tasks.into_iter().map(|(k, task)| Task::perform(task, move |h| UiMessage::TileBaked(k.clone(), h))))
     }
 
-    /// Desktop's `GalleryAttachments` of the messages of a gallery: each tile opens its item in the carousel.
+    /// Desktop's `GalleryAttachments` of the messages of a gallery: each tile opens its item in the carousel, and a
+    /// selected message has an outline on its tile.
     pub(crate) fn view_gallery<'a>(&self, members: &[&Message]) -> El<'a> {
         let p: &Palette = &self.pal;
         let width = (if self.sidebar_hidden { 0.85 } else { 0.45 }) * self.pane().size.width;
@@ -195,7 +304,8 @@ impl BeeperGuiApp {
             let url = a.poster_img.as_ref().or(a.src_url.as_ref());
             let (bw, bh) = turned((w, h), turn);
             let size = (w.round() as u32, h.round() as u32);
-            let base: El<'a> = match url.and_then(|u| self.tile(u, size)) {
+            let selected = self.pane().selected_msgs.contains(&m.id);
+            let base: El<'a> = match url.and_then(|u| self.tile(u, size, selected)) {
                 Some(t) => image(t.clone())
                     .width(bw)
                     .height(bh)
@@ -222,8 +332,8 @@ impl BeeperGuiApp {
             });
             let marks = Stack::new().push(play).push(time).push(more).width(w).height(h);
             let marks = container(marks).padding(Padding::ZERO.left((bw - w) / 2.0).top((bh - h) / 2.0));
-            let open = UiMessage::OpenCarousel(m.id.clone(), 0, false);
-            let tile = mouse_area(stack![base, marks]).on_press(open).interaction(mouse::Interaction::Pointer);
+            let click = UiMessage::Gallery(Msg::Tile(m.id.clone()));
+            let tile = mouse_area(stack![base, marks]).on_press(click).interaction(mouse::Interaction::Pointer);
             container(tile).padding(Padding::ZERO.left(x - (bw - w) / 2.0).top(y - (bh - h) / 2.0)).into()
         });
         Stack::with_children(layers).width(gw).height(gh).into()
@@ -264,7 +374,7 @@ mod tests {
     #[test]
     fn baked_tiles_have_round_corners() {
         let src = image::Handle::from_rgba(40, 20, vec![255; 40 * 20 * 4]);
-        let image::Handle::Rgba { width, height, pixels, .. } = bake(&src, (30, 30), Color::BLACK) else {
+        let image::Handle::Rgba { width, height, pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 0.5)) else {
             unreachable!()
         };
         assert_eq!((width, height), (60, 60), "a tile bakes at twice its size");
@@ -272,5 +382,12 @@ mod tests {
         assert_eq!(at(0, 0)[3], 0, "a corner is clear");
         assert_eq!(at(30, 30), [255; 4], "the middle keeps the image");
         assert_eq!(at(30, 0), [0, 0, 0, 255], "the edge has the border");
+        assert_eq!(at(30, 2), [255; 4], "the half pixel border is thin");
+        let image::Handle::Rgba { pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 2.0)) else { unreachable!() };
+        assert_eq!(
+            pixels[((2 * width + 30) * 4) as usize..][..4],
+            [0, 0, 0, 255],
+            "a selected tile has a 2 px outline"
+        );
     }
 }

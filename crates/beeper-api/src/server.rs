@@ -1,4 +1,4 @@
-use crate::codec::{base64_decode, base64_encode_standard, sha1, url_decode};
+use crate::codec::{base64_decode, base64_encode_standard, sha1};
 use crate::http::{
     http_date, parse_query, read_message, read_ws_frame, weak_etag, write_ws_frame, HttpMessage, StatusCode,
 };
@@ -6,9 +6,9 @@ use beeper_core::bridge_login;
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{
     cloud_bridge, millis_from_iso, millis_from_rfc3339, network_spec, now_rfc3339_millis, APP_BUNDLE_ID, APP_NAME,
-    APP_VERSION, NETWORK_SPECS, OPENAPI_SPEC_JSON,
+    APP_VERSION, NETWORK_SPECS,
 };
-use beeper_core::connect::{READ, WRITE};
+use beeper_core::connect::{Token, READ};
 use beeper_core::matrix::{self, ChatFlag, Outgoing};
 use beeper_core::models::*;
 use beeper_core::platform::{path_to_file_url, OsKind};
@@ -24,6 +24,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 mod auth;
 mod mcp;
+mod routes;
 mod view;
 
 struct Response {
@@ -368,9 +369,11 @@ fn express(resp: Response, origin: Option<String>, if_none_match: Option<&str>) 
         headers.push((EXPOSE_HEADERS.0, EXPOSE_HEADERS.1.into()));
     }
     headers.push(("X-Beeper-Desktop-Version", APP_VERSION.into()));
-    let sent = route
-        .iter()
-        .any(|(k, v)| *k == "content-type" && ["application/json", "text/html"].iter().any(|t| v.starts_with(t)));
+    // `res.redirect` ends the response without the ETag of `res.send`.
+    let sent = status != StatusCode::FOUND
+        && route
+            .iter()
+            .any(|(k, v)| *k == "content-type" && ["application/json", "text/html"].iter().any(|t| v.starts_with(t)));
     headers.extend(route);
     let tag = sent.then(|| weak_etag(&body));
     let fresh = tag.as_ref().is_some_and(|tag| if_none_match.is_some_and(|m| m.split(',').any(|t| t.trim() == tag)));
@@ -446,9 +449,15 @@ const LINGER: std::time::Duration = std::time::Duration::from_secs(30);
 async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc<Cloud>) {
     let mut buf = Vec::new();
     loop {
-        let mut origin = None;
+        let (mut origin, mut api_head) = (None, None);
         let limit = |head: &HttpMessage| {
             origin = cors_origin(head);
+            let (start_line, headers) = (head.start_line.clone(), head.headers.clone());
+            api_head = (valid_request(head) && api_path(head)).then_some(HttpMessage {
+                start_line,
+                headers,
+                body: Vec::new(),
+            });
             body_limit(head)
         };
         let Ok(read) = tokio::time::timeout(KEEP_ALIVE, read_message(&mut stream, &mut buf, limit)).await else {
@@ -459,7 +468,11 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
             Ok(msg) => msg,
             Err(None) => return,
             Err(Some(StatusCode::PAYLOAD_TOO_LARGE)) => {
-                let resp = error(StatusCode::PAYLOAD_TOO_LARGE, "request entity too large", "UNKNOWN_ERROR");
+                let too_large = || error(StatusCode::PAYLOAD_TOO_LARGE, "request entity too large", "UNKNOWN_ERROR");
+                // The store lock waits on a blocking thread, like the handlers.
+                let st = store.clone();
+                let refused = tokio::task::spawn_blocking(move || api_head.and_then(|h| refusal(&st.read(), &h)));
+                let resp = refused.await.expect("the refusal check panicked").unwrap_or_else(too_large);
                 write_response(&mut stream, express(resp, origin, None), false, true).await;
                 let (mut reader, mut writer) = stream.split();
                 linger(&mut writer, &mut reader).await;
@@ -514,36 +527,45 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
     }
 }
 
+/// Desktop's `requireAuth` of a route: the token of the request, or the refusal.
+fn require_auth(st: &BeeperStore, route: &routes::Route, msg: &HttpMessage) -> Result<Option<Token>, Response> {
+    match route.auth {
+        routes::Auth::Token(scopes) => {
+            Ok(Some(auth::authorize(st, auth::access_token(msg), scopes).map_err(auth::refusal)?))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The answer to a request that does not depend on its body: no route, or a refused token. The server sends it in
+/// place of 413 for a body that is too large, because Desktop checks the route and the token before the body.
+fn refusal(st: &BeeperStore, head: &HttpMessage) -> Option<Response> {
+    let (route, _) = match routes::find(head.method(), head.path()) {
+        Ok(found) => found,
+        Err(resp) => return Some(resp),
+    };
+    require_auth(st, route, head).err()
+}
+
+/// Desktop's order: the route, then the token, then the body.
 fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     let mut parts = msg.start_line.split(' ');
     let (method, target) = (parts.next().expect("a method"), parts.next().expect("a request target"));
     let method = method.to_string();
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    let segs: Vec<String> = path
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .map(url_decode)
-        .collect::<Option<_>>()
-        .ok_or_else(|| bad("bad path"))?;
+    let (route, segs) = routes::find(&method, path)?;
     let segs: Vec<&str> = segs.iter().map(String::as_str).collect();
-    if segs == ["v0", "mcp"] {
+    if route.path == "/v0/mcp" {
         let token = auth::access_token(&msg);
         if method != "OPTIONS" && auth::authorize(&store.read(), token, &[]).is_err() {
             return Err(auth::mcp_refusal(&store.read(), &msg));
         }
         return mcp::handle(store, cloud, &method, &msg, token);
     }
+    let granted = require_auth(&store.read(), route, &msg)?;
     let query = parse_query(query);
     let body = parse_body(&msg).ok_or_else(|| bad("malformed request body"))?;
     let req = Req { query, msg, body };
-    let in_query = if segs == ["v1", "assets", "serve"] { req.q("dangerouslyUseTokenInQuery") } else { None };
-    let granted = match auth::scope(&method, &segs) {
-        Some(scope) => {
-            let token = auth::access_token(&req.msg).or(in_query);
-            Some(auth::authorize(&store.read(), token, &[scope]).map_err(auth::refusal)?)
-        }
-        None => None,
-    };
     if let Some(reply) = auth::route(store, &method, &segs, &req, granted.as_ref()) {
         return reply;
     }
@@ -597,16 +619,11 @@ fn progress(store: &SharedStore, requires: bool) -> Reply {
 }
 
 /// Desktop's app setup state and its encrypted messaging setup routes, which act on the Matrix client of a
-/// signed-in account. Each route checks the token first, like Desktop's `requireAuth`.
+/// signed-in account. The state needs a token only when the app is signed in.
 fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Reply {
-    let scopes: &[&str] = if method == "GET" { &[READ] } else { &[READ, WRITE] };
-    let authorized = || auth::authorize(&store.read(), auth::access_token(&r.msg), scopes).map_err(auth::refusal);
-    let signed_in = || {
-        authorized()?;
-        match store.read().signed_in() {
-            true => Ok(()),
-            false => Err(error(StatusCode::CONFLICT, "Sign in to Beeper Desktop first", "needs_login")),
-        }
+    let signed_in = || match store.read().signed_in() {
+        true => Ok(()),
+        false => Err(error(StatusCode::CONFLICT, "Sign in to Beeper Desktop first", "needs_login")),
     };
     let not_ready = || {
         signed_in()?;
@@ -619,7 +636,7 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
     match (method, path) {
         ("GET", []) => {
             if store.read().signed_in() {
-                authorized()?;
+                auth::authorize(&store.read(), auth::access_token(&r.msg), &[READ]).map_err(auth::refusal)?;
             }
             ok(&store.read().app_state())
         }
@@ -634,9 +651,15 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
             })?;
             progress(store, false)
         }
-        ("POST", ["verification", "recovery-key", "reset"] | ["verification", "recovery-key", "reset", "confirm"]) => {
+        ("POST", ["verification", "recovery-key", "reset"]) => {
             not_ready()?;
-            Err(failed("Reset of the recovery key is not supported"))
+            let key = rt.block_on(matrix::new_recovery_key(store)).map_err(|e| failed(&e))?;
+            ok(&json!({ "recoveryKey": key, "session": store.read().app_state() }))
+        }
+        ("POST", ["verification", "recovery-key", "reset", "confirm"]) => {
+            not_ready()?;
+            matrix::confirm_recovery_key(store, r.need("recoveryKey")?).map_err(|e| failed(&e))?;
+            progress(store, false)
         }
         ("GET", ["verifications"]) => {
             signed_in()?;
@@ -728,18 +751,26 @@ fn verification_not_found() -> Response {
 /// The GET routes only read the store, so they share its lock with each other and with the UI.
 fn get(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
     if path == ["v1", "assets", "serve"] {
-        let file = asset_file(&store.read(), r)?;
+        let file = {
+            let st = store.read();
+            // Desktop's `serveAsset` also takes the token from the query, for media elements.
+            let token = auth::access_token(&r.msg).or(r.q("dangerouslyUseTokenInQuery")).filter(|t| !t.is_empty());
+            let token =
+                token.ok_or_else(|| error(StatusCode::UNAUTHORIZED, "Unauthorized: Missing token", "unauthorized"))?;
+            auth::authorize(&st, Some(token), &[READ]).map_err(auth::refusal)?;
+            asset_file(&st, r)?
+        };
         return serve_asset(file, r);
     }
     let st = &*store.read();
     match path {
-        ["v1", "info"] => ok(&info(st)),
+        ["v1", "info"] => ok(&info(st, &base_url(st, &r.msg))),
         ["v1", "spec"] => Ok(Response {
             status: StatusCode::OK,
-            headers: vec![("content-type", JSON.into())],
-            body: OPENAPI_SPEC_JSON.as_bytes().to_vec(),
+            headers: vec![("content-type", JSON.into()), ("cache-control", "public, max-age=3600".into())],
+            body: routes::spec(&base_url(st, &r.msg)),
         }),
-        [] => empty(StatusCode::FOUND, vec![("location", "/v1/info".into())]),
+        [] => Ok(redirect("/v1/info", r.msg.header("accept"))),
         ["v1", "accounts"] => ok(&st.accounts),
         ["v1", "accounts", id, rest @ ..] => account(st, id, rest, r),
         ["v1", "labels"] => ok(&st.labels),
@@ -798,8 +829,95 @@ fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply
     }
 }
 
-fn info(st: &BeeperStore) -> InfoResponse {
-    let base_url = st.config.base_url();
+/// Desktop's `buildBaseURL`: the bind address `0.0.0.0` and IPv6 addresses give the loopback address, and the port
+/// of the scheme drops.
+fn build_base_url(scheme: &str, host: &str, port: &str) -> String {
+    let host = match host.trim() {
+        h if h.is_empty() || h == "0.0.0.0" || h.contains(':') => "127.0.0.1",
+        h => h,
+    };
+    let port = port.trim();
+    match port.is_empty() || port == if scheme == "http" { "80" } else { "443" } {
+        true => format!("{scheme}://{host}"),
+        false => format!("{scheme}://{host}:{port}"),
+    }
+}
+
+/// Desktop's `getBaseURL`: the bind address, or the loopback host name of the request. With remote access, the host,
+/// the scheme and the port of the request after the proxy headers.
+fn base_url(st: &BeeperStore, msg: &HttpMessage) -> String {
+    let (cfg, port) = (&st.config, st.config.port.to_string());
+    let bound = build_base_url("http", &cfg.host, &port);
+    let first = |k| msg.header(k).map(|v| v.split(',').next().expect("a first item").trim());
+    // Express's `req.hostname`.
+    let host = cfg.remote.then(|| first("x-forwarded-host")).flatten().or(msg.header("host")).filter(|h| !h.is_empty());
+    let Some(host) = host else { return bound };
+    let end = host.find(']').map_or(0, |i| i + 1);
+    let name = host[end..].find(':').map_or(host, |i| &host[..end + i]);
+    if name.contains(':') {
+        return bound;
+    }
+    if !cfg.remote {
+        return match auth::loopback_name(name) {
+            true => build_base_url("http", name, &port),
+            false => bound,
+        };
+    }
+    let scheme = if first("x-forwarded-proto") == Some("https") { "https" } else { "http" };
+    let port = first("x-forwarded-port").or(msg.header("host").and_then(|h| h.split(':').nth(1)));
+    build_base_url(scheme, name, port.unwrap_or_default())
+}
+
+/// The offer that an `Accept` header prefers, like the `negotiator` package of Express, without media type
+/// parameters.
+fn preferred<'a>(accept: Option<&str>, offers: &[&'a str]) -> Option<&'a str> {
+    let accepted: Vec<(&str, &str, f64)> = (accept.unwrap_or("*/*").split(','))
+        .filter_map(|a| {
+            let mut params = a.split(';');
+            let (t, s) = params.next().expect("a first item").trim().split_once('/')?;
+            let q = params.find_map(|p| p.trim().strip_prefix("q=")).map_or(Some(1.0), |q| q.parse().ok())?;
+            Some((t.trim(), s.trim(), q))
+        })
+        .collect();
+    let part = |a: &str, o: &str, bit| match a.eq_ignore_ascii_case(o) {
+        true => Some(bit),
+        false => (a == "*").then_some(0),
+    };
+    // The most specific entry of the header for the offer, then the highest quality, then the last one.
+    let priority = |offer: &str| {
+        let (t, s) = offer.split_once('/').expect("a media type");
+        let specs = accepted.iter().enumerate();
+        let specs = specs.filter_map(|(o, &(at, sub, q))| Some((part(at, t, 4)? | part(sub, s, 2)?, q, o)));
+        specs.max_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)))
+    };
+    let ranked = offers.iter().enumerate().filter_map(|(i, &offer)| {
+        let (s, q, o) = priority(offer)?;
+        (q > 0.0).then_some((q, s, o, i, offer))
+    });
+    let best = ranked.min_by(|a, b| b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3)));
+    best.map(|r| r.4)
+}
+
+/// Express's `res.redirect`: a 302 with a body of the type that the client prefers.
+fn redirect(to: &str, accept: Option<&str>) -> Response {
+    let text = format!("Found. Redirecting to {to}");
+    let mut headers = vec![("location", to.to_string()), ("vary", "Accept".into())];
+    let body = match preferred(accept, &["text/plain", "text/html"]) {
+        Some(t) => {
+            headers.push(("content-type", format!("{t}; charset=utf-8")));
+            if t == "text/html" {
+                format!("<p>{text}</p>")
+            } else {
+                text
+            }
+        }
+        None => String::new(),
+    };
+    Response { status: StatusCode::FOUND, headers, body: body.into_bytes() }
+}
+
+fn info(st: &BeeperStore, base_url: &str) -> InfoResponse {
+    let base_url = base_url.to_string();
     let oauth = |p: &str| format!("{base_url}/oauth/{p}");
     InfoResponse {
         app: InfoApp { bundle_id: APP_BUNDLE_ID.into(), name: APP_NAME.into(), version: APP_VERSION.into() },
@@ -1800,7 +1918,8 @@ fn attachment_file(st: &BeeperStore, url: &str) -> Result<std::path::PathBuf, Re
 }
 
 fn asset_file(st: &BeeperStore, r: &Req) -> Result<(std::path::PathBuf, String), Response> {
-    let url = r.need_q("url")?;
+    let missing_url = || error(StatusCode::BAD_REQUEST, "Missing required query parameter: url", "MISSING_URL");
+    let url = r.q("url").filter(|u| !u.is_empty()).ok_or_else(missing_url)?;
     match url.starts_with("file://") {
         true => Ok((attachment_file(st, url)?, "application/octet-stream".into())),
         false => st.resolve_asset_path(url).ok_or_else(|| {

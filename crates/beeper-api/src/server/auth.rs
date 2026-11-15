@@ -1,14 +1,14 @@
 //! Desktop's Beeper Connect auth on the HTTP server: the access token and scopes of a request, OAuth 2.1 with PKCE
 //! and the approval of the user, and the OAuth discovery documents.
 
-use super::{json_with, ok, Reply, Req, Response};
+use super::{base_url, json_with, ok, Reply, Req, Response};
 use crate::codec::base64_encode_standard;
 use crate::http::{HttpMessage, StatusCode};
 use beeper_core::config::{APP_BUNDLE_ID, APP_NAME, APP_VERSION};
 use beeper_core::connect::{self, ClientInfo, Outcome, Token, READ, WRITE};
 use beeper_core::store::{BeeperStore, SharedStore};
 use serde_json::{json, Value};
-use url::{Host, Url};
+use url::Url;
 
 const PAGE: &str = include_str!("../../assets/page.html");
 const AUTHORIZE: &str = include_str!("../../assets/authorize.html");
@@ -24,19 +24,6 @@ pub(super) fn access_token(msg: &HttpMessage) -> Option<&str> {
     match msg.header("authorization") {
         Some(a) => a.strip_prefix("Bearer "),
         None => msg.header("x-beeper-access-token"),
-    }
-}
-
-/// The scope that a route needs, or `None` for the routes that are open to all and for the setup routes, which
-/// check the token themselves.
-pub(super) fn scope(method: &str, segs: &[&str]) -> Option<&'static str> {
-    match (method, segs) {
-        (_, [] | ["v1", "info" | "spec"] | [".well-known", ..] | ["register"] | ["v1", "app", "setup", ..]) => None,
-        ("GET", ["focus", ..]) => None,
-        ("GET", ["oauth", "userinfo"]) => Some(READ),
-        (_, ["oauth", ..]) => None,
-        ("GET", _) | ("POST", ["v1", "focus"] | ["v1", "assets", "download"]) => Some(READ),
-        _ => Some(WRITE),
     }
 }
 
@@ -64,7 +51,7 @@ pub(super) fn refusal((status, message): (u16, String)) -> Response {
 
 /// The MCP refusal, which tells the client where to get a token.
 pub(super) fn mcp_refusal(st: &BeeperStore, msg: &HttpMessage) -> Response {
-    let base = st.config.base_url();
+    let base = base_url(st, msg);
     let id = serde_json::from_slice::<Value>(&msg.body).ok().and_then(|b| b.get("id").cloned()).unwrap_or(Value::Null);
     let mut resp = json_with(
         StatusCode(401),
@@ -77,19 +64,22 @@ pub(super) fn mcp_refusal(st: &BeeperStore, msg: &HttpMessage) -> Response {
     resp
 }
 
+/// Desktop's `isLoopbackHostname`: `localhost`, `::1`, or an IPv4 address in `127.0.0.0/8`.
+pub(super) fn loopback_name(host: &str) -> bool {
+    let host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host).to_ascii_lowercase();
+    let octet = |p: &str| (1..=3).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit());
+    let ipv4 = host.split('.').count() == 4 && host.split('.').all(octet);
+    host == "localhost" || host == "::1" || (ipv4 && host.starts_with("127."))
+}
+
 fn loopback(u: &Url) -> bool {
-    match u.host() {
-        Some(Host::Domain(d)) => d == "localhost",
-        Some(Host::Ipv4(ip)) => ip.octets()[0] == 127,
-        Some(Host::Ipv6(ip)) => ip.is_loopback(),
-        None => false,
-    }
+    u.host_str().is_some_and(loopback_name)
 }
 
 /// Desktop's `isSameOriginRequest`: no `Origin`, the origin of the server, or a loopback origin on its port.
 fn same_origin(st: &BeeperStore, msg: &HttpMessage) -> Result<(), Response> {
     let Some(origin) = msg.header("origin") else { return Ok(()) };
-    let base = Url::parse(&st.config.base_url()).expect("parse the base URL");
+    let base = Url::parse(&base_url(st, msg)).expect("parse the base URL");
     let same = Url::parse(origin).is_ok_and(|o| {
         o.origin() == base.origin()
             || (o.scheme() == base.scheme() && o.port() == base.port() && loopback(&o) && loopback(&base))
@@ -246,11 +236,14 @@ fn secs(ms: i64) -> i64 {
 pub(super) fn route(store: &SharedStore, method: &str, segs: &[&str], r: &Req, token: Option<&Token>) -> Option<Reply> {
     let reply = match (method, segs) {
         ("GET", [".well-known", "oauth-protected-resource", rest @ ..]) => {
-            let suffix = format!("/{}", rest.join("/"));
+            // Desktop joins the segments, then drops repeated slashes and the last slash.
+            let parts = rest.iter().flat_map(|s| s.split('/')).filter(|s| !s.is_empty());
+            let suffix: String = parts.map(|s| format!("/{s}")).collect();
+            let suffix = if suffix.is_empty() { "/".to_string() } else { suffix };
             if !["/", "/v1", "/v0/mcp"].contains(&suffix.as_str()) {
                 return Some(Ok(json_with(StatusCode::NOT_FOUND, &json!({ "error": "Not Found" }))));
             }
-            let base = store.read().config.base_url();
+            let base = base_url(&store.read(), &r.msg);
             let resource = if suffix == "/" { "/v1" } else { &suffix };
             ok(&json!({
                 "resource": format!("{base}{resource}"),
@@ -260,7 +253,7 @@ pub(super) fn route(store: &SharedStore, method: &str, segs: &[&str], r: &Req, t
             }))
         }
         ("GET", [".well-known", "oauth-authorization-server"]) => {
-            let base = store.read().config.base_url();
+            let base = base_url(&store.read(), &r.msg);
             let mut resp = json_with(
                 StatusCode::OK,
                 &json!({
@@ -444,7 +437,7 @@ fn introspect(st: &BeeperStore, r: &Req) -> Reply {
         "sub": t.id,
         "aud": c.client_id,
         "client_id": c.client_id,
-        "iss": st.config.base_url(),
+        "iss": base_url(st, &r.msg),
         "app": { "version": APP_VERSION, "name": APP_NAME, "bundle_id": APP_BUNDLE_ID },
         "client": compact(json!({
             "id": c.client_id,
@@ -491,7 +484,7 @@ fn register(st: &mut BeeperStore, r: &Req) -> Reply {
         scope,
         created_at: connect::now_ms(),
     };
-    let base = st.config.base_url();
+    let base = base_url(st, &r.msg);
     let body = compact(json!({
         "client_id": client.client_id,
         "client_name": client.client_name,

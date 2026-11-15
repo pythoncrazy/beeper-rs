@@ -1178,6 +1178,42 @@ fn the_composer_pill_quotes_like_desktop() {
     assert!(simulator(app.view_main()).find("Editing message").is_err(), "Desktop has no edit banner");
 }
 
+/// Desktop's Media window: the filter menu opens at the cursor, the selection bar counts with its plural string, and a
+/// link row shows the preview image of the link.
+#[test]
+fn media_window_menu_and_rows_like_desktop() {
+    let mut app = demo_app("media-rows");
+    let _ = app.update(UiMessage::OpenMedia);
+    let id = app.media_window.as_ref().map(|w| w.id).expect("a media window");
+    let _ = app.update(UiMessage::WindowResized(id, Size::new(1000.0, 720.0)));
+    app.cursor.set(Point::new(900.0, 40.0));
+    let _ = app.update(UiMessage::MediaMenu(true));
+    assert_eq!(app.media_window.as_ref().unwrap().menu, Some(Point::new(900.0, 40.0)), "the menu opens at the cursor");
+    let _ = app.update(UiMessage::MediaMenu(false));
+    let (mid, k) = {
+        let mut st = app.store.write();
+        let items = crate::media_items(&st, app.media_window.as_ref().unwrap());
+        let (i, k) = items[0];
+        st.messages[i].attachments[k].file_size = Some(2048);
+        (st.messages[i].id.clone(), k)
+    };
+    let _ = app.update(UiMessage::MediaSelect(true));
+    let _ = app.update(UiMessage::MediaPick(mid, k));
+    let count = format!("1 selected ({})", human_size(2048));
+    assert!(simulator(app.view(id)).find(count.as_str()).is_ok(), "the selection bar counts the items");
+    let _ = app.update(UiMessage::MediaSelect(false));
+    let img = "https://example.com/preview.png";
+    {
+        let mut st = app.store.write();
+        let i = *st.chat_msg_indices["!note_self:beeper.com"].last().expect("a note");
+        let url = "https://example.com/page".into();
+        st.messages[i].links = vec![MessageLink { url, img: Some(img.into()), ..Default::default() }];
+    }
+    let _ = app.update(UiMessage::MediaTab(1));
+    drop(app.view(id));
+    assert!(app.wants.media.borrow().contains(img), "the row loads the preview image");
+}
+
 /// Desktop's Media window viewer has Delete only when the chat deletes for everyone, you sent the message, and the
 /// network time limit has not passed. The delete dialog shows over the viewer and Escape closes it first.
 #[test]
@@ -1293,6 +1329,66 @@ fn photos_group_into_galleries_like_desktop() {
     let mut sim = simulator(app.view_main());
     assert!(sim.find("+2").is_ok(), "the fourth tile counts the two hidden photos");
     assert!(sim.find("01:15").is_ok(), "a video tile shows its duration");
+}
+
+/// Desktop's gallery selection and menu: a click selects the gallery, Ctrl and a tile select one photo, and a right
+/// click selects the gallery and shows "Reactions", "Download All" and "Forward All…". A menu that closes without an
+/// action unselects the gallery.
+#[test]
+fn galleries_select_and_have_a_menu_like_desktop() {
+    let mut app = demo_app("gallery-menu");
+    let (chat, ids) = {
+        let st = app.store.read();
+        let chat = st.messages.iter().find(|m| m.attachments.iter().any(|a| a.attachment_type == "img")).unwrap();
+        let chat = chat.chat_id.clone();
+        let msgs: Vec<&Message> = st.chat_msg_indices[&chat].iter().map(|&i| &st.messages[i]).collect();
+        let starts = gallery::starts(&st, &msgs, &vec![0; msgs.len()]);
+        let first = (1..msgs.len()).find(|&i| starts[i] != i).map(|i| starts[i]).expect("a demo gallery");
+        let ids: Vec<String> =
+            (first..msgs.len()).filter(|&i| starts[i] == first).map(|i| msgs[i].id.clone()).collect();
+        (chat, ids)
+    };
+    {
+        let mut st = app.store.write();
+        let i = st.msg_idx_by_id[&ids[1]];
+        let key = "🎉".into();
+        let reaction = Reaction {
+            id: "r".into(),
+            participant_id: "@x:beeper.com".into(),
+            reaction_key: key,
+            animated: None,
+            img_url: None,
+            sort_key: String::new(),
+        };
+        st.messages[i].reactions = vec![reaction];
+    }
+    let _ = app.update(UiMessage::SelectChat(chat));
+    let _ = app.update(UiMessage::Gallery(gallery::Msg::Click(ids.clone())));
+    assert_eq!(app.pane.selected_msgs, ids, "a click selects the gallery");
+    app.mods = Modifiers::CTRL;
+    let _ = app.update(UiMessage::Gallery(gallery::Msg::Tile(ids[1].clone())));
+    assert!(!app.pane.selected_msgs.contains(&ids[1]) && app.carousel.is_none(), "Ctrl and a tile unselect a photo");
+    app.mods = Modifiers::empty();
+    let _ = app.update(UiMessage::Gallery(gallery::Msg::Tile(ids[1].clone())));
+    assert!(app.carousel.is_some(), "a tile opens the carousel");
+    let _ = app.update(UiMessage::CloseCarousel);
+    let _ = app.update(UiMessage::Gallery(gallery::Msg::Menu(ids.clone())));
+    assert_eq!(app.pane.selected_msgs, ids, "a right click selects the gallery");
+    let mut sim = simulator(app.view_main());
+    for label in ["Reactions", "Download All", "Forward All…"] {
+        assert!(sim.find(label).is_ok(), "{label} shows");
+    }
+    assert!(sim.find("Copy").is_err(), "the gallery menu is not the message menu");
+    let _ = sim.click("Reactions").expect("Reactions");
+    let msgs: Vec<UiMessage> = sim.into_messages().collect();
+    let [UiMessage::MessageMenu(m)] = &msgs[..] else { panic!("one menu action") };
+    assert!(matches!(&**m, UiMessage::Gallery(gallery::Msg::Reactions(r, _)) if *r == ids));
+    let _ = app.update(msgs.into_iter().next().unwrap());
+    assert!(app.pane.gallery_reactions.is_some() && app.pane.selected_msgs == ids, "the list shows");
+    let _ = app.update(UiMessage::CloseModals);
+    let _ = app.update(UiMessage::Gallery(gallery::Msg::Menu(ids.clone())));
+    let _ = app.update(UiMessage::CloseModals);
+    assert!(app.pane.selected_msgs.is_empty(), "a menu without an action unselects the gallery");
 }
 
 /// Desktop's carousel shows every attachment of the chat but audio: a video plays with its controls, and a file is a

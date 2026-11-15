@@ -14,8 +14,8 @@ use std::collections::BTreeSet;
 pub struct Wants {
     pub avatars: RefCell<BTreeSet<String>>,
     pub media: RefCell<BTreeSet<String>>,
-    /// The gallery tiles to bake, as (media URL, width, height).
-    pub tiles: RefCell<BTreeSet<(String, u32, u32)>>,
+    /// The gallery tiles to bake, as (media URL, width, height, selected).
+    pub tiles: RefCell<BTreeSet<(String, u32, u32, bool)>>,
     /// A view asked for a URL after the last frame.
     fresh: Cell<bool>,
 }

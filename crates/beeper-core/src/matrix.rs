@@ -2210,10 +2210,62 @@ pub async fn import_crypto(dir: &std::path::Path, c: &DesktopCrypto) -> Result<(
     store.save_changes(changes).await.map_err(|x| e(&x))
 }
 
+/// The text of Desktop's error when the homeserver asks to sign in again before a reset.
+pub const REAUTH: &str = "Re-authentication is required to continue";
+
+/// Desktop's `beginResetCrossSigning`: makes a new cross-signing identity, secret storage and key backup, and returns
+/// their new recovery key. An account that has an identity loses it, like Desktop's reset. The recovery key
+/// waits for [`confirm_recovery_key`].
+pub async fn new_recovery_key(store: &SharedStore) -> Result<String, String> {
+    let e = |e: &dyn std::fmt::Display| e.to_string();
+    let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
+    let me = client.user_id().expect("signed-in client has a user ID").to_owned();
+    let encryption = client.encryption();
+    match encryption.request_user_identity(&me).await.map_err(|x| e(&x))? {
+        // The cross-signing reset comes first: when it needs a new sign-in, the backup and secret storage stay.
+        Some(_) => {
+            if let Some(handle) = encryption.reset_cross_signing().await.map_err(|x| e(&x))? {
+                handle.cancel().await;
+                return Err(REAUTH.into());
+            }
+            encryption.backups().disable_and_delete().await.map_err(|x| e(&x))?;
+        }
+        None => encryption.bootstrap_cross_signing(None).await.map_err(|x| match x.as_uiaa_response() {
+            Some(_) => REAUTH.into(),
+            None => e(&x),
+        })?,
+    }
+    let key = encryption.recovery().enable().await.map_err(|x| e(&x))?;
+    let mut st = store.write();
+    st.pending_recovery_key = Some(key.clone());
+    (st.beeper_state.secret_storage, st.beeper_state.has_backed_up_code) = (true, false);
+    mark_verified(&mut st);
+    st.emit_ws("setup.updated", "", None, None, None);
+    Ok(key)
+}
+
+/// Desktop's `confirmResetCrossSigning`: the user typed the new recovery key again, so it is saved.
+pub fn confirm_recovery_key(store: &SharedStore, key: &str) -> Result<(), String> {
+    let mut st = store.write();
+    let pending = st.pending_recovery_key.as_deref().ok_or("No new recovery key waits for a confirmation")?;
+    if recovery_key_chars(pending) != recovery_key_chars(key) {
+        return Err("The Recovery Key you entered doesn't match your Recovery Key.".into());
+    }
+    st.pending_recovery_key = None;
+    st.beeper_state.has_backed_up_code = true;
+    st.persist_state_to_sqlite();
+    st.emit_ws("setup.updated", "", None, None, None);
+    Ok(())
+}
+
+/// The letters and digits of a recovery key, which Desktop shows in groups with dashes.
+pub fn recovery_key_chars(key: &str) -> String {
+    key.chars().filter(char::is_ascii_alphanumeric).collect()
+}
+
 pub async fn recover(store: SharedStore, key: String) -> Result<(), String> {
     let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
-    // Desktop formats the key in groups with dashes, and reads only its letters and digits.
-    let key: String = key.chars().filter(char::is_ascii_alphanumeric).collect();
+    let key = recovery_key_chars(&key);
     client.encryption().recovery().recover(&key).await.map_err(|e| match e {
         RecoveryError::SecretStorage(SecretStorageError::SecretStorageKey(e)) => format!("Invalid recovery key: {e}"),
         e => e.to_string(),

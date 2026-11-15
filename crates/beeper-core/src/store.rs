@@ -344,6 +344,8 @@ pub struct BeeperStore {
     /// Desktop's `isSyncing`: the app is connected to Matrix and waits for its first sync.
     pub syncing: bool,
     pub sas_confirm: Option<tokio::sync::oneshot::Sender<bool>>,
+    /// The new recovery key of a reset, until the user types it again.
+    pub pending_recovery_key: Option<String>,
     /// The changes for the homeserver, with their outbox row and chat, in the order of the rows.
     pub outbox: Vec<(i64, String, Outgoing)>,
     /// Desktop's bookmarks room, after its history is read.
@@ -491,6 +493,7 @@ impl BeeperStore {
             matrix_error: None,
             syncing: false,
             sas_confirm: None,
+            pending_recovery_key: None,
             outbox: Vec::new(),
             bookmarks_room: None,
             bookmarks: HashMap::new(),
@@ -2050,18 +2053,6 @@ impl BeeperStore {
                 self.update_message(i, |m| m.is_bookmarked = Some(on));
             }
         }
-    }
-
-    pub fn retranscribe_voice_note(&mut self, message_id: &str) -> String {
-        let m_idx = self.msg_idx_by_id[message_id];
-        let label = crate::prefs::LANGUAGES[self.settings.pref("appLanguage") as usize];
-        let msg = self.update_message(m_idx, |m| {
-            let att =
-                m.attachments.iter_mut().find(|a| a.is_voice_note == Some(true)).expect("message has a voice note");
-            let old = att.transcript.as_deref().expect("voice note has a transcript");
-            att.transcript = Some(format!("[Re-transcribed ({label})]: {old}"));
-        });
-        msg.attachments.into_iter().find_map(|a| a.transcript).unwrap()
     }
 
     /// Desktop's `sendPoll`: a pending poll message with the options `1`, `2`, ..., and its poll start event.
