@@ -3,7 +3,7 @@ use crate::config::{
     DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN, DEFAULT_USER_ID, SEED_JSON,
     WS_CHANNEL_CAPACITY,
 };
-use crate::matrix::{ChatFlag, Outgoing, ThreadSend};
+use crate::matrix::{Outgoing, ThreadSend};
 use crate::models::*;
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
@@ -1363,8 +1363,6 @@ impl BeeperStore {
         self.remove_message(&chat, id).expect("remove the local echo");
     }
 
-    /// Sets a chat flag here and on the homeserver. `None` toggles the flag.
-    /// Returns false, like Desktop, when asked to archive a pinned chat.
     /// Desktop's optimistic thread update: the value of a flag that changed here and that a sync may not show yet, from
     /// the outbox or from a change that the homeserver has.
     pub fn local_flag(&self, chat: &str, flag: ChatFlag) -> Option<bool> {
@@ -1376,15 +1374,11 @@ impl BeeperStore {
     }
 
     /// Keeps the flags of `c` that changed here and that the homeserver state of `c` may not show yet.
+    /// The archive flag comes from `com.beeper.inbox.done` later, in `sync_room`.
     pub fn keep_local_flags(&self, c: &mut Chat) {
-        for (flag, slot) in [
-            (ChatFlag::Pinned, &mut c.is_pinned),
-            (ChatFlag::LowPriority, &mut c.is_low_priority),
-            (ChatFlag::Muted, &mut c.is_muted),
-            (ChatFlag::MarkedUnread, &mut c.is_marked_unread),
-        ] {
+        for flag in ChatFlag::ALL.into_iter().filter(|&f| f != ChatFlag::Archived) {
             if let Some(on) = self.local_flag(&c.id, flag) {
-                *slot = Some(on);
+                *c.flag_mut(flag) = Some(on);
             }
         }
     }
@@ -1400,23 +1394,15 @@ impl BeeperStore {
         self.sent_flags.retain(|_, v| v.1 > n);
     }
 
+    /// Sets a chat flag here and on the homeserver. `None` toggles the flag.
+    /// Returns false, like Desktop, when asked to archive a pinned chat.
     pub fn set_chat_flag(&mut self, idx: usize, flag: ChatFlag, on: Option<bool>) -> bool {
         let c = &self.chats[idx];
-        if flag == ChatFlag::Archived && c.is_pinned == Some(true) && on.unwrap_or(c.is_archived != Some(true)) {
+        let value = on.unwrap_or(!c.flag(flag));
+        if flag == ChatFlag::Archived && value && c.flag(ChatFlag::Pinned) {
             return false;
         }
-        let mut value = false;
-        self.update_chat(idx, |c| {
-            let slot = match flag {
-                ChatFlag::Archived => &mut c.is_archived,
-                ChatFlag::Pinned => &mut c.is_pinned,
-                ChatFlag::LowPriority => &mut c.is_low_priority,
-                ChatFlag::Muted => &mut c.is_muted,
-                ChatFlag::MarkedUnread => &mut c.is_marked_unread,
-            };
-            value = on.unwrap_or(*slot != Some(true));
-            *slot = Some(value);
-        });
+        self.update_chat(idx, |c| *c.flag_mut(flag) = Some(value));
         let id = self.chats[idx].id.clone();
         self.queue(&id, Outgoing::Flag(flag, value));
         true
@@ -1756,7 +1742,7 @@ impl BeeperStore {
     /// Desktop's `areNotificationsMuted`: the chat is muted, all labels of the chat are muted, or for a chat
     /// without labels, "Enable notifications" of its account is off.
     pub fn notifications_muted(&self, c: &Chat) -> bool {
-        if c.is_muted == Some(true) {
+        if c.flag(ChatFlag::Muted) {
             return true;
         }
         if self.feature("labels-v2").on && !c.label_ids.is_empty() {
@@ -2629,7 +2615,7 @@ impl BeeperStore {
         }
         let left = indices.iter().filter(|&&i| self.messages[i].is_unread == Some(true)).count() as u32;
         let idx = self.chat_idx_by_id[&chat_id];
-        if self.chats[idx].is_marked_unread == Some(true) {
+        if self.chats[idx].flag(ChatFlag::MarkedUnread) {
             self.queue(&chat_id, Outgoing::Flag(ChatFlag::MarkedUnread, false));
         }
         self.update_chat(idx, |c| {
@@ -2651,7 +2637,7 @@ impl BeeperStore {
         let last_key = indices.last().map(|&i| self.messages[i].sort_key.clone());
         let last_event = indices.iter().rev().map(|&i| &self.messages[i].id).find(|id| id.starts_with('$')).cloned();
         let had_unread = self.chats[idx].flags & CHAT_UNREAD != 0;
-        if self.chats[idx].is_marked_unread == Some(true) {
+        if self.chats[idx].flag(ChatFlag::MarkedUnread) {
             self.queue(&chat_id, Outgoing::Flag(ChatFlag::MarkedUnread, false));
         }
         if had_unread || self.chats[idx].last_read_message_sort_key < last_key {
@@ -2889,13 +2875,13 @@ mod tests {
         let mut st = super::BeeperStore::from_config(config.clone());
         assert_eq!(ids(&st), want, "the message search stays");
         st.config.demo = false;
-        st.queue(super::NOTE_CHAT_ID, super::Outgoing::Flag(crate::matrix::ChatFlag::Muted, true));
+        st.queue(super::NOTE_CHAT_ID, super::Outgoing::Flag(super::ChatFlag::Muted, true));
         drop(st);
         let st = super::BeeperStore::from_config(config);
         let version: i64 = st.db.lock().unwrap().query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, super::SCHEMA_VERSION);
         assert!(
-            matches!(&st.outbox[..], [(_, c, super::Outgoing::Flag(crate::matrix::ChatFlag::Muted, true))] if c == super::NOTE_CHAT_ID),
+            matches!(&st.outbox[..], [(_, c, super::Outgoing::Flag(super::ChatFlag::Muted, true))] if c == super::NOTE_CHAT_ID),
             "the new outbox keeps a change"
         );
         drop(st);

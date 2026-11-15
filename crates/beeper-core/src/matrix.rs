@@ -1,13 +1,13 @@
 use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
-    timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatParticipants,
-    ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageRules, Older, PollData, PollOption,
-    PollRules, Reaction, SendError, Sticker, StickerPack, StickerSource, ThreadFollows, Timers, Transcription, User,
-    VerificationDevice, VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS,
-    ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, DEFAULT_TIMERS,
-    DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE,
-    MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REMOVED_MESSAGE,
+    timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatFlag,
+    ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageRules, Older,
+    PollData, PollOption, PollRules, Reaction, SendError, Sticker, StickerPack, StickerSource, ThreadFollows, Timers,
+    Transcription, User, VerificationDevice, VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji,
+    ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM,
+    DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK,
+    MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REMOVED_MESSAGE,
     REMOVED_MESSAGES_ROOM, REPORT_SPAM, TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
@@ -1293,10 +1293,10 @@ fn inbox_done(order: Option<i64>, now: i64) -> Value {
 /// chat is archived up to that homeserver order; with only a time, up to that time when nothing is unread.
 fn archived_upto(c: &Chat, done: Option<(Option<i64>, Option<i64>)>, notifiable: &str) -> bool {
     match done {
-        _ if c.is_pinned == Some(true) => false,
+        _ if c.flag(ChatFlag::Pinned) => false,
         Some((Some(order), _)) => sort_key(order).as_str() >= notifiable,
         Some((None, Some(at))) => {
-            let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
+            let unread = c.is_unread();
             at >= crate::store::activity_key(c).0 && at < now_unix_millis() && !unread
         }
         _ => false,
@@ -1343,15 +1343,6 @@ async fn sync_thread_reads(store: &SharedStore, room: &Room, roots: BTreeSet<Str
     if !new.is_empty() {
         st.update_chat(idx, |c| c.thread_reads.extend(new));
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum ChatFlag {
-    Archived,
-    Pinned,
-    LowPriority,
-    Muted,
-    MarkedUnread,
 }
 
 /// A mention pill of the composer: the label after "@" and the user ID, or [`ROOM_MENTION`] for "@room".

@@ -523,7 +523,7 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
     let accounts: HashMap<&str, &str> = chats.iter().map(|c| (c.id.as_str(), c.account_id.as_str())).collect();
     let unread_chats: HashMap<&str, Option<&str>> = chats
         .iter()
-        .filter(|c| c.unread_count > 0 || c.is_marked_unread == Some(true))
+        .filter(|c| c.is_unread())
         .map(|c| (c.id.as_str(), c.last_read_message_sort_key.as_deref()))
         .collect();
     let mut receipts: HashMap<(String, String), BTreeMap<String, String>> = HashMap::new();

@@ -64,7 +64,7 @@ use beeper_core::config::{
     parse_when_millis, rfc3339_from_millis, APP_VERSION,
 };
 use beeper_core::import::has_beeper_data;
-use beeper_core::matrix::{ChatFlag, DeviceInfo, MediaInfo, Mention, Outgoing, ROOM_MENTION};
+use beeper_core::matrix::{DeviceInfo, MediaInfo, Mention, Outgoing, ROOM_MENTION};
 use beeper_core::models::*;
 use beeper_core::platform::{current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind};
 use beeper_core::prefs;
@@ -1777,15 +1777,12 @@ fn send_day(at: i64, h24: bool) -> String {
     }
 }
 
+/// A flag as the chat menus show it: "Mark as Read" is for every unread chat.
 fn has_flag(c: &Chat, flag: ChatFlag) -> bool {
-    let on = match flag {
-        ChatFlag::Archived => c.is_archived,
-        ChatFlag::Pinned => c.is_pinned,
-        ChatFlag::LowPriority => c.is_low_priority,
-        ChatFlag::Muted => c.is_muted,
-        ChatFlag::MarkedUnread => return c.unread_count > 0 || c.is_marked_unread == Some(true),
-    };
-    on == Some(true)
+    match flag {
+        ChatFlag::MarkedUnread => c.is_unread(),
+        f => c.flag(f),
+    }
 }
 
 fn checkbox<'a>(p: &Palette, on: bool) -> El<'a> {
@@ -2229,7 +2226,7 @@ fn preview_body(m: &Message) -> Option<String> {
 /// The text of Desktop's bubble on an unread pinned chat. A new message shows it, and after a minute it hides
 /// when the chat has more unread messages than Desktop's limit for its size.
 fn bubble_text(c: &Chat, launched: i64, now: i64) -> Option<String> {
-    let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
+    let unread = c.is_unread();
     let at = c.last_activity.as_deref().map_or(0, |t| millis_from_rfc3339(t).expect("RFC 3339 timestamp"));
     let limit = match c.participants.total {
         0..=2 => 3,
@@ -5928,7 +5925,7 @@ impl BeeperGuiApp {
         let Some(prev) = self.pane().selected_chat_id.as_deref().filter(|&p| Some(p) != next) else { return };
         save_draft(st, self.pane());
         let idx = st.resolve_chat_idx(prev).expect("selected chat exists");
-        if !st.incognito() && st.chats[idx].is_marked_unread != Some(true) {
+        if !st.incognito() && !st.chats[idx].flag(ChatFlag::MarkedUnread) {
             st.mark_chat_read(prev, true);
         }
         if self.expired(&st.chats[idx]) {
@@ -6873,10 +6870,10 @@ impl BeeperGuiApp {
                     if self.reminded.insert(c.id.clone(), at) == Some(at) {
                         continue;
                     }
-                    let flags = [(ChatFlag::LowPriority, c.is_low_priority), (ChatFlag::Archived, c.is_archived)];
+                    let flags = [ChatFlag::LowPriority, ChatFlag::Archived].map(|f| (f, c.flag(f)));
                     let ts = rfc3339_from_millis(at);
                     st.update_chat(i, |c| c.last_activity = c.last_activity.take().max(Some(ts)));
-                    for (flag, _) in flags.into_iter().filter(|(_, on)| *on == Some(true)) {
+                    for (flag, _) in flags.into_iter().filter(|f| f.1) {
                         st.set_chat_flag(i, flag, Some(false));
                     }
                 }
@@ -7331,7 +7328,7 @@ impl BeeperGuiApp {
                 let list = self.list_ids(&st);
                 let idx = st.resolve_chat_idx(&cid).expect("chat exists");
                 let c = &st.chats[idx];
-                if c.unread_count > 0 || c.is_marked_unread == Some(true) {
+                if c.is_unread() {
                     self.mark_read(&mut st, idx);
                 } else {
                     st.set_chat_flag(idx, ChatFlag::MarkedUnread, Some(true));
@@ -11725,10 +11722,9 @@ impl BeeperGuiApp {
         }
         let st = self.store.read();
         let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
-        let on = |v: Option<bool>| v == Some(true);
         let flag = |f: ChatFlag| Some(UiMessage::ToggleFlag(c.id.clone(), f));
-        let archived = on(c.is_archived);
-        let unread = c.unread_count > 0 || on(c.is_marked_unread);
+        let archived = c.flag(ChatFlag::Archived);
+        let unread = c.is_unread();
         let close_sub = |items: Column<'static, UiMessage>| mouse_area(items).on_enter(UiMessage::ChatSub(None));
         let item = |label: &str, key: &'static str, msg| menu_item(p, None, label.into(), key, msg);
         let open_sub = |i: u8, label: &str| {
@@ -11745,7 +11741,7 @@ impl BeeperGuiApp {
         let every = |f: ChatFlag| picked.iter().all(|c| has_flag(c, f));
         let some = |f: ChatFlag| picked.iter().any(|c| has_flag(c, f));
         let set = |f: ChatFlag, on: bool| Some(UiMessage::SelectionSet(f, on));
-        let can_archive = archived || !on(c.is_pinned);
+        let can_archive = archived || !c.flag(ChatFlag::Pinned);
         let archive = match n {
             0 => item(
                 pick(
@@ -11770,7 +11766,7 @@ impl BeeperGuiApp {
             (0, true) => item(
                 trx("Unmute", "thread context menu action"),
                 "Ctrl Shift M",
-                flag(ChatFlag::Muted).filter(|_| on(c.is_muted) && reason.is_none()),
+                flag(ChatFlag::Muted).filter(|_| c.flag(ChatFlag::Muted) && reason.is_none()),
             ),
             _ => item(
                 pick(
@@ -11805,12 +11801,12 @@ impl BeeperGuiApp {
             .flatten()
             .collect(),
         };
-        let pinned = if n == 0 { on(c.is_pinned) } else { every(ChatFlag::Pinned) };
+        let pinned = if n == 0 { c.flag(ChatFlag::Pinned) } else { every(ChatFlag::Pinned) };
         let pin = match n {
             0 => flag(ChatFlag::Pinned),
             _ => set(ChatFlag::Pinned, !pinned),
         };
-        let low = if n == 0 { on(c.is_low_priority) } else { every(ChatFlag::LowPriority) };
+        let low = if n == 0 { c.flag(ChatFlag::LowPriority) } else { every(ChatFlag::LowPriority) };
         let low = item(
             tr(pick(low, "Move to Inbox", "Move to Low Priority")),
             "",
@@ -11855,7 +11851,7 @@ impl BeeperGuiApp {
                     }))
                     .push(can_edit_group(c).then(|| {
                         let open = UiMessage::OpenEditGroup(c.id.clone());
-                        item(tr("Edit Group..."), "", (!on(c.is_request)).then_some(open))
+                        item(tr("Edit Group..."), "", (c.is_request != Some(true)).then_some(open))
                     }))
             ),
             open_sub(0, tr("Copy")),
@@ -12338,7 +12334,7 @@ impl BeeperGuiApp {
     }
 
     fn row_action<'a>(&self, c: &Chat, pref: u8) -> Option<El<'a>> {
-        let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
+        let unread = c.is_unread();
         let archived = c.flags & CHAT_ARCHIVED != 0;
         let (glyph, size, label, keys, msg) = match pref {
             _ if self.active_tab == InboxTab::Reminders => {
@@ -12729,7 +12725,7 @@ impl BeeperGuiApp {
             El::from(chunk.iter().fold(Row::new(), |r, c| {
                 let on = selected == Some(c.id.as_str());
                 let (muted, quiet) = (self.list_muted(&st, c), self.list_quiet(&st, c));
-                let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
+                let unread = c.is_unread();
                 let (bg, fg) = if quiet { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
                 let dot =
                     (!counts && unread).then(|| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0)));
@@ -12862,7 +12858,7 @@ impl BeeperGuiApp {
         };
         let chat_row = |c: &Chat| {
             let on = selected == Some(c.id.as_str());
-            let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
+            let unread = c.is_unread();
             let muted = self.list_muted(&st, c);
             let draft = c
                 .draft
@@ -12896,7 +12892,7 @@ impl BeeperGuiApp {
             let title = c.network_name.as_ref().map_or_else(|| c.title.clone(), |n| format!("{} • {n}", c.title));
             let weight = if counts && !unread { Weight::Medium } else { Weight::Semibold };
             let bell = if muted { 16.0 } else { 0.0 };
-            let pinned = c.is_pinned == Some(true);
+            let pinned = c.flag(ChatFlag::Pinned);
             let pin_icon = pinned.then(|| container(tinted(&PIN, 13.0, p.strong)).padding(Padding::ZERO.right(2.0)));
             let pin_w = if pinned { 15.0 } else { 0.0 };
             let top = row![]
@@ -13197,7 +13193,7 @@ impl BeeperGuiApp {
 
     /// Desktop's `IncognitoMarkAsRead`: a link below an unread chat that incognito mode keeps unread.
     fn incognito_mark_read<'a>(&self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
-        let unread = chat.unread_count > 0 || chat.is_marked_unread == Some(true);
+        let unread = chat.is_unread();
         (unread && st.incognito_indicator()).then(|| {
             let p = &self.pal;
             let link = button(semi(tr("Mark as Read"), 11.0).line_height(Pixels(14.0)).color(p.accent))
@@ -15200,11 +15196,11 @@ impl BeeperGuiApp {
         let pane_head = row![
             pane_btn(
                 icon::NOTIFICATIONS_OFF,
-                on(chat.is_muted),
+                chat.flag(ChatFlag::Muted),
                 tr("Mute Chat"),
                 (!locked).then(|| flag(ChatFlag::Muted))
             ),
-            pane_btn(icon::KEEP, on(chat.is_pinned), tr("Pin Chat"), Some(flag(ChatFlag::Pinned))),
+            pane_btn(icon::KEEP, chat.flag(ChatFlag::Pinned), tr("Pin Chat"), Some(flag(ChatFlag::Pinned))),
             Space::new().width(Fill),
             pane_btn(icon::CLOSE, false, tr("Close Chat Info"), Some(UiMessage::ToggleRightPanel)),
         ]
@@ -15332,8 +15328,8 @@ impl BeeperGuiApp {
             container(edit).align_right(Fill).padding(Padding::ZERO.top(12.0).right(8.0)),
         ])
         .on_right_press(UiMessage::OpenChatMenu(format!("info:{cid}")));
-        let archived = on(chat.is_archived);
-        let pinned = !archived && on(chat.is_pinned);
+        let archived = chat.flag(ChatFlag::Archived);
+        let pinned = !archived && chat.flag(ChatFlag::Pinned);
         let tool = |glyph: char, fg: Color, label: &'static str, keys, msg: Option<UiMessage>| -> El<'_> {
             let style = move |_: &Theme, s: button::Status| button::Style {
                 text_color: if matches!(s, button::Status::Disabled) { fg.scale_alpha(0.2) } else { fg },

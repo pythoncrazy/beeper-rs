@@ -2,7 +2,7 @@
 use crate::{BeeperGuiApp, UiMessage};
 use beeper_core::config::{account_network, millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::NetworkKind::*;
-use beeper_core::models::{Attachment, Chat, Message, MSG_MENTION};
+use beeper_core::models::{Attachment, Chat, ChatFlag, Message, MSG_MENTION};
 use iced::Task;
 use std::collections::{HashMap, HashSet};
 
@@ -159,7 +159,7 @@ impl BeeperGuiApp {
         };
         if self.focused
             && self.pane().selected_chat_id.as_ref() == Some(&m.chat_id)
-            && st.chats[i].is_muted != Some(true)
+            && !st.chats[i].flag(ChatFlag::Muted)
         {
             play(sound, st.settings.pref("soundVolume") as f32 / 100.0);
         }
@@ -355,7 +355,7 @@ impl BeeperGuiApp {
             .filter(|(_, (c, _))| {
                 let read = |i: usize| {
                     let c = &st.chats[i];
-                    c.unread_count == 0 && c.is_marked_unread != Some(true) && c.reminder.is_none()
+                    !c.is_unread() && c.reminder.is_none()
                 };
                 (self.focused && self.pane.selected_chat_id.as_ref() == Some(c))
                     || st.resolve_chat_idx(c).is_none_or(read)

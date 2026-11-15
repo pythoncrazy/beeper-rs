@@ -9,7 +9,7 @@ use beeper_core::config::{
     APP_VERSION, NETWORK_SPECS,
 };
 use beeper_core::connect::{Token, READ};
-use beeper_core::matrix::{self, ChatFlag, MediaInfo, Outgoing};
+use beeper_core::matrix::{self, MediaInfo, Outgoing};
 use beeper_core::models::*;
 use beeper_core::platform::{extension_of, is_mime, mime_type_of, path_to_file_url, OsKind};
 use beeper_core::store::{activity_key, tokenize, BeeperStore, Query, SharedStore};
@@ -1666,12 +1666,8 @@ impl ChatFields {
         };
         let mut flags = Vec::new();
         // The pin goes first, because the store does not archive a pinned chat.
-        for (k, flag) in [
-            ("isPinned", ChatFlag::Pinned),
-            ("isArchived", ChatFlag::Archived),
-            ("isMuted", ChatFlag::Muted),
-            ("isLowPriority", ChatFlag::LowPriority),
-        ] {
+        for flag in [ChatFlag::Pinned, ChatFlag::Archived, ChatFlag::Muted, ChatFlag::LowPriority] {
+            let k = flag.api_key();
             match b.get(k) {
                 None => {}
                 Some(Value::Bool(on)) => flags.push((flag, *on)),

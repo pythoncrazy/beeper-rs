@@ -6,7 +6,7 @@ use beeper_api::{
 use beeper_core::{
     config::{is_original_beeper_dir, CentralConfig, APP_BUNDLE_ID, DEFAULT_RECOVERY_CODE},
     import::read_beeper_data,
-    matrix::{ChatFlag, Outgoing},
+    matrix::Outgoing,
     models::*,
     platform::{
         file_url_to_path, open_url_or_path_command, path_to_file_url, resolve_desktop_data_dir,
