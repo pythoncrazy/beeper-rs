@@ -5,6 +5,7 @@ pub mod cloud;
 pub mod codec;
 pub mod config;
 pub mod connect;
+mod error;
 pub mod features;
 pub mod import;
 pub mod matrix;
@@ -16,3 +17,5 @@ pub mod storage;
 pub mod store;
 #[cfg(any(test, feature = "stub"))]
 pub mod testing;
+
+pub use error::Error;

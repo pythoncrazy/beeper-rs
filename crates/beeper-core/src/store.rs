@@ -5,6 +5,7 @@ use crate::config::{
 };
 use crate::matrix::{Mention, Outgoing, ThreadSend};
 use crate::models::*;
+use crate::Error;
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -2068,19 +2069,20 @@ impl BeeperStore {
         (chat, "created".to_string())
     }
 
+    /// Desktop's chat update: the draft and the merge of a chat. Returns the changed chat.
     pub fn patch_chat(
         &mut self,
         chat_or_local_id: &str,
         clear_draft: bool,
         new_draft: Option<ChatDraft>,
         new_merge: Option<Option<ChatMergeInfo>>,
-    ) -> Result<Chat, &'static str> {
-        let idx = self.resolve_chat_idx(chat_or_local_id).ok_or("Chat not found")?;
+    ) -> Result<Chat, Error> {
+        let idx = self.resolve_chat_idx(chat_or_local_id).ok_or(Error::ChatNotFound)?;
         let has_content = |d: &ChatDraft| d.text.as_deref().is_some_and(|s| !s.is_empty()) || !d.attachments.is_empty();
         let draft = match new_draft {
             _ if clear_draft => None,
             Some(d) if has_content(&d) && self.chats[idx].draft.as_ref().is_some_and(has_content) => {
-                return Err("Cannot overwrite a non-empty draft. Clear the draft first by setting draft to null or draft.text to an empty string.")
+                return Err(Error::DraftNotEmpty)
             }
             Some(d) => Some(d).filter(has_content),
             None => self.chats[idx].draft.clone(),
@@ -2098,13 +2100,14 @@ impl BeeperStore {
         Ok(self.update_chat(idx, |c| c.draft = draft))
     }
 
+    /// Adds the local echo of a sent message. Returns the chat ID, the message ID (also the transaction ID) and the echo.
     pub fn send_message(
         &mut self,
         chat_or_local_id: &str,
         text: Option<String>,
         reply_to_message_id: Option<String>,
         attachment: Option<Attachment>,
-    ) -> Result<(String, String, Message), &'static str> {
+    ) -> Result<(String, String, Message), Error> {
         self.compose(chat_or_local_id, text, reply_to_message_id, attachment, None)
     }
 
@@ -2115,7 +2118,7 @@ impl BeeperStore {
         text: Option<String>,
         attachment: Option<Attachment>,
         t: &ThreadSend,
-    ) -> Result<(String, String, Message), &'static str> {
+    ) -> Result<(String, String, Message), Error> {
         let sent = self.compose(chat_or_local_id, text, Some(t.quoted.clone()), attachment, Some(t))?;
         let idx = self.chat_idx_by_id[&sent.0];
         self.update_chat(idx, |c| drop(c.thread_reads.insert(t.root.clone(), sent.2.sort_key.clone())));
@@ -2134,8 +2137,8 @@ impl BeeperStore {
         reply_to_message_id: Option<String>,
         attachment: Option<Attachment>,
         thread: Option<&ThreadSend>,
-    ) -> Result<(String, String, Message), &'static str> {
-        let c_idx = self.send_target(self.resolve_chat_idx(chat_or_local_id).ok_or("Chat not found")?);
+    ) -> Result<(String, String, Message), Error> {
+        let c_idx = self.send_target(self.resolve_chat_idx(chat_or_local_id).ok_or(Error::ChatNotFound)?);
         let (chat_id, account_id) = (self.chats[c_idx].id.clone(), self.chats[c_idx].account_id.clone());
         self.load_chat(&chat_id);
         let msg_id = self.next_id("msg");
@@ -2191,15 +2194,11 @@ impl BeeperStore {
 
     /// The chat ID and index of a message in the chat, or in a member chat of a merged chat. It loads the chat of the
     /// message.
-    pub fn message_in_chat(
-        &mut self,
-        chat_or_local_id: &str,
-        message_id: &str,
-    ) -> Result<(String, usize), &'static str> {
-        let idx = self.resolve_chat_idx(chat_or_local_id).ok_or("Chat not found")?;
-        let m_idx = self.find_message(message_id).ok_or("Message not found")?;
+    pub fn message_in_chat(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<(String, usize), Error> {
+        let idx = self.resolve_chat_idx(chat_or_local_id).ok_or(Error::ChatNotFound)?;
+        let m_idx = self.find_message(message_id).ok_or(Error::MessageNotFound)?;
         let target = self.messages[m_idx].chat_id.clone();
-        self.in_chat(idx, &target).then_some((target, m_idx)).ok_or("Message not found")
+        self.in_chat(idx, &target).then_some((target, m_idx)).ok_or(Error::MessageNotFound)
     }
 
     /// Whether the chat `idx` shows the messages of the chat `target`: it is the chat, or the merged chat of it.
@@ -2217,7 +2216,7 @@ impl BeeperStore {
         message_id: &str,
         text: String,
         mentions: Vec<Mention>,
-    ) -> Result<(String, Message), &'static str> {
+    ) -> Result<(String, Message), Error> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let msg = self.update_message(m_idx, |m| {
             m.html = crate::codec::markdown_html(&text);
@@ -2231,14 +2230,14 @@ impl BeeperStore {
 
     /// Deletes a message for everyone: here, and with a redaction that the outbox sends. Returns the chat ID of the
     /// message.
-    pub fn redact_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, &'static str> {
+    pub fn redact_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, Error> {
         let chat_id = self.delete_message(chat_or_local_id, message_id)?;
         self.queue(&chat_id, Outgoing::Redact { target: message_id.into() });
         Ok(chat_id)
     }
 
     /// Deletes a message here only, as for a redaction that a sync shows. Returns the chat ID of the message.
-    pub fn delete_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, &'static str> {
+    pub fn delete_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, Error> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let removed = self.messages[m_idx].removed;
         self.update_message(m_idx, |m| {
@@ -2284,7 +2283,8 @@ impl BeeperStore {
         }
     }
 
-    pub fn remove_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, &'static str> {
+    /// Removes a message from its chat and from the stored messages. Returns the chat ID of the message.
+    pub fn remove_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, Error> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         self.messages[m_idx].is_deleted = Some(true);
         self.messages[m_idx].flags |= MSG_DELETED;
@@ -2479,7 +2479,7 @@ impl BeeperStore {
         message_id: &str,
         reaction_key: &str,
         transaction_id: Option<String>,
-    ) -> Result<(String, String), &'static str> {
+    ) -> Result<(String, String), Error> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let tx_id = transaction_id.unwrap_or_else(|| self.next_id("tx_rx"));
         let rx_id = tx_id.clone();
@@ -2507,12 +2507,12 @@ impl BeeperStore {
         chat_or_local_id: &str,
         message_id: &str,
         reaction_key: &str,
-    ) -> Result<String, &'static str> {
+    ) -> Result<String, Error> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let mine = |r: &Reaction| r.reaction_key == reaction_key && self.is_me(&r.participant_id);
         let ids: Vec<String> =
             self.messages[m_idx].reactions.iter().filter(|r| mine(r)).map(|r| r.id.clone()).collect();
-        let first = ids.first().ok_or("Reaction not found")?.clone();
+        let first = ids.first().ok_or(Error::ReactionNotFound)?.clone();
         self.update_message(m_idx, |m| m.reactions.retain(|r| !ids.contains(&r.id)));
         self.queue(&chat_id, Outgoing::Redact { target: first });
         Ok(chat_id)
