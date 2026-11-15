@@ -1517,8 +1517,9 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
             };
             let invalid =
                 || error(StatusCode::BAD_REQUEST, "reminder.remindAt must be a valid ISO timestamp", "INVALID_INPUT");
+            // Desktop's `setReminder` dismisses the reminder on an incoming message when the request does not say.
             let dismiss = match &reminder["dismissOnIncomingMessage"] {
-                Value::Null => false,
+                Value::Null => true,
                 v => v.as_bool().ok_or_else(|| bad("reminder.dismissOnIncomingMessage must be a boolean"))?,
             };
             let reminder = ChatReminder { remind_at_ms: at.ok_or_else(invalid)?, dismiss_on_incoming_message: dismiss };

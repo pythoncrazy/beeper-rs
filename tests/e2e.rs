@@ -809,8 +809,9 @@ async fn lifecycle() {
     assert_eq!((status, &read["id"], &read["unreadCount"]), (StatusCode::OK, &json!("!wa_eric:beeper.com"), &json!(0)));
     let remind = json!({ "reminder": { "remindAt": "2027-01-01T09:00:00Z" } });
     assert_eq!(pager.request("POST", &format!("{eric}/reminders"), Some(remind)).await.0, StatusCode::NO_CONTENT);
-    let at = pager.request("GET", eric, None).await.1["reminder"]["remindAt"].clone();
-    assert_eq!(at, "2027-01-01T09:00:00.000Z");
+    let reminder = pager.request("GET", eric, None).await.1["reminder"].clone();
+    // Desktop's `setReminder` dismisses a reminder on an incoming message by default.
+    assert_eq!(reminder, json!({ "remindAt": "2027-01-01T09:00:00.000Z", "dismissOnIncomingMessage": true }));
     let bad = json!({ "reminder": { "remindAt": "tomorrow" } });
     assert_eq!(pager.request("POST", &format!("{eric}/reminders"), Some(bad)).await.0, StatusCode::BAD_REQUEST);
     let (status, sent) = pager.request("POST", &format!("{eric}/messages"), Some(json!({ "text": "hi" }))).await;
