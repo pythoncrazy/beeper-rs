@@ -440,6 +440,10 @@ impl BeeperGuiApp {
     /// Desktop's `advanceOnboarding`: the next screen once this device is verified. An account with a connected chat
     /// account skips Connect Chat Accounts, like Desktop's `completeSigninIn`.
     pub(crate) fn advance_onboarding(&mut self) -> Task<UiMessage> {
+        // A store change can end the onboarding before the result of its Matrix call comes.
+        if self.login_window.is_none() {
+            return Task::none();
+        }
         // Desktop's `IndicateSyncing` waits for the keys and the first sync of a verified device.
         let (verified, waiting, connected) = {
             let st = self.store.read();
@@ -1046,6 +1050,17 @@ mod tests {
         app.store.write().beeper_state.verified = true;
         let _ = app.update(LoginMsg::Recovered(Ok(())).into());
         assert!(app.login_window.is_none(), "a connected chat account skips Connect Chat Accounts");
+    }
+
+    #[test]
+    fn a_recovery_key_that_ends_the_onboarding_before_its_result_comes_does_not_stop_the_app() {
+        let mut app = crate::fuzz::demo_app("verify-late-result");
+        let main = app.main_window.take();
+        (app.login_window, app.login.screen, app.login.busy) = (main, Screen::RecoveryKey, true);
+        let _ = app.update(UiMessage::StoreChanged);
+        assert!(app.login_window.is_none() && app.main_window.is_some(), "the keys of the recovery key end it");
+        let _ = app.update(LoginMsg::Recovered(Ok(())).into());
+        assert!(app.main_window.is_some(), "the late result changes nothing");
     }
 
     #[test]
