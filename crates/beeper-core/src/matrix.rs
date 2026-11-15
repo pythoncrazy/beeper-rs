@@ -155,6 +155,8 @@ fn account_id(bridge: &Value, accounts: &[BridgeAccountInfo]) -> String {
 }
 
 pub const RULES: &str = "com.beeper.chat_list_rules";
+/// The bridge states that the homeserver keeps, in the shape of `whoami`'s `user.bridges`.
+const BRIDGE_STATE: &str = "com.beeper.bridge_state";
 
 /// Desktop's `Xl`: the `chat_list_rules` visibility key of an account.
 fn visibility_key(account_id: &str) -> &str {
@@ -1665,7 +1667,9 @@ pub async fn media(client: Option<Client>, src: String) -> Result<Vec<u8>, Strin
     client.media().get_media_content(&request, true).await.map_err(|e| e.to_string())
 }
 
-/// The session and bridge login that a bridge provisioning request acts as.
+/// The session and bridge login that a bridge provisioning request acts as. The homeserver passes the request to
+/// the bridge, like the SDK's `CallCloudBridgeAPI`. An empty `login_id` acts as the default login, or a new one.
+#[derive(Clone)]
 pub struct Provision {
     pub homeserver: String,
     pub access_token: String,
@@ -1674,40 +1678,48 @@ pub struct Provision {
     pub login_id: String,
 }
 
-impl Provision {
-    fn url(&self, path: &str) -> String {
-        let enc = crate::codec::url_encode;
-        format!(
-            "{}/_matrix/client/unstable/com.beeper.bridge/{}/_matrix/provision/v3/{path}?user_id={}&login_id={}",
-            self.homeserver.trim_end_matches('/'),
-            enc(&self.bridge_id),
-            enc(&self.user_id),
-            enc(&self.login_id),
-        )
-    }
-
-    async fn post(self, path: &str, body: String) -> Result<String, String> {
-        let resp = reqwest::Client::new()
-            .post(self.url(path))
-            .bearer_auth(self.access_token)
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        resp.error_for_status().map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string())
+/// The body of a bridge reply, or the Matrix `error` text of a failed one.
+async fn bridge_reply(resp: Result<reqwest::Response, reqwest::Error>) -> Result<String, String> {
+    let resp = resp.map_err(|e| e.without_url().to_string())?;
+    let status = resp.status();
+    let body = resp.text().await.map_err(|e| e.without_url().to_string())?;
+    match status.is_success() {
+        true => Ok(body),
+        false => Err(serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|v| v["error"].as_str().map(str::to_string))
+            .unwrap_or(format!("HTTP {status}"))),
     }
 }
 
 impl Provision {
-    async fn get(&self, path: &str) -> Result<Option<Value>, String> {
+    fn url(&self, path: &str) -> String {
+        let enc = crate::codec::url_encode;
+        let login = match self.login_id.is_empty() {
+            true => String::new(),
+            false => format!("&login_id={}", enc(&self.login_id)),
+        };
+        format!(
+            "{}/_matrix/client/unstable/com.beeper.bridge/{}/_matrix/provision/v3/{path}?user_id={}{login}",
+            self.homeserver.trim_end_matches('/'),
+            enc(&self.bridge_id),
+            enc(&self.user_id),
+        )
+    }
+
+    /// A POST without a timeout, because `display_and_wait` steps answer only when the user acts.
+    pub(crate) async fn post(&self, path: &str, body: String) -> Result<String, String> {
+        let req = reqwest::Client::new().post(self.url(path)).bearer_auth(&self.access_token);
+        bridge_reply(req.header("content-type", "application/json").body(body).send().await).await
+    }
+
+    /// The JSON reply, or `None` when the homeserver or the bridge does not know the path (`M_NOT_FOUND`).
+    pub(crate) async fn get(&self, path: &str) -> Result<Option<Value>, String> {
         let resp = reqwest::Client::new().get(self.url(path)).bearer_auth(&self.access_token).send().await;
-        let resp = resp.map_err(|e| e.to_string())?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        if resp.as_ref().is_ok_and(|r| r.status() == reqwest::StatusCode::NOT_FOUND) {
             return Ok(None);
         }
-        let body = resp.error_for_status().map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string())?;
-        serde_json::from_str(&body).map(Some).map_err(|e| e.to_string())
+        serde_json::from_str(&bridge_reply(resp).await?).map(Some).map_err(|e| e.to_string())
     }
 }
 
@@ -1867,10 +1879,23 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
     let recent = recent.collect();
     let tone = global(client, "com.beeper.emoji_skin_tone").await["tone"].as_u64().map_or(0, |t| t as u8);
     let (flags, usage) = (global(client, crate::features::FLAGS).await, global(client, crate::features::USAGE).await);
+    let bridges = global(client, BRIDGE_STATE).await;
     let mut st = store.write();
     st.recent_emoji = recent;
     st.skin_tone = tone;
     (st.features.flags, st.features.usage) = (flags, usage);
+    // Desktop's `BRIDGE_STATES_UPDATED`: the homeserver updates the bridge states while the app runs.
+    if bridges.is_null() {
+        return;
+    }
+    match crate::cloud::cloud_accounts(&bridges["bridges"]) {
+        Ok(accounts) if accounts != st.bridge_accounts => {
+            st.set_cloud_accounts(accounts);
+            st.emit_ws("setup.updated", "", None, None, None);
+        }
+        Ok(_) => {}
+        Err(e) => st.matrix_error = Some(e.message),
+    }
 }
 
 /// Desktop's `userProfileStore`: the own name and avatar come from the Matrix profile.
@@ -2394,43 +2419,6 @@ pub async fn run(store: SharedStore) {
 mod tests {
     use serde_json::{json, Value};
 
-    /// A Matrix homeserver stub on a free port that answers each request with `reply(method, path, body)`.
-    async fn stub_homeserver(reply: impl Fn(&str, &str, Value) -> (u16, Value) + Send + Sync + 'static) -> String {
-        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind the stub homeserver");
-        let url = format!("http://{}", listener.local_addr().expect("the stub address"));
-        let reply = std::sync::Arc::new(reply);
-        tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.expect("accept a stub connection");
-                let reply = reply.clone();
-                tokio::spawn(async move {
-                    let (mut stream, mut line, mut len) = (BufReader::new(stream), String::new(), 0);
-                    stream.read_line(&mut line).await.expect("read the request line");
-                    let mut header = String::new();
-                    while stream.read_line(&mut header).await.expect("read a header") > 2 {
-                        if let Some(v) = header.to_ascii_lowercase().strip_prefix("content-length:") {
-                            len = v.trim().parse().expect("a content length");
-                        }
-                        header.clear();
-                    }
-                    let mut body = vec![0; len];
-                    stream.read_exact(&mut body).await.expect("read the request body");
-                    let mut parts = line.split(' ');
-                    let (method, path) = (parts.next().expect("a method"), parts.next().expect("a path"));
-                    let (code, json) = reply(method, path, serde_json::from_slice(&body).unwrap_or(Value::Null));
-                    let json = json.to_string();
-                    let head = format!(
-                        "HTTP/1.1 {code} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                        json.len()
-                    );
-                    stream.get_mut().write_all(format!("{head}{json}").as_bytes()).await.expect("write the reply");
-                });
-            }
-        });
-        url
-    }
-
     /// A signed-in store in `dir` with a Matrix client that synced the stub homeserver at `url`.
     async fn stub_store(dir: &std::path::Path, url: &str) -> crate::store::SharedStore {
         crate::cloud::install_tls();
@@ -2472,7 +2460,7 @@ mod tests {
     #[tokio::test]
     async fn older_messages_load_back_to_the_start_of_the_room_like_desktop() {
         use crate::models::Older;
-        let url = stub_homeserver(|_, path, _| {
+        let url = crate::bridge_stub::serve(|_, path, _| {
             let (path, query) = path.split_once('?').unwrap_or((path, ""));
             match path {
                 "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
@@ -2529,7 +2517,7 @@ mod tests {
     ) -> (crate::store::SharedStore, std::path::PathBuf) {
         let mut sync = stub_sync();
         sync["rooms"]["join"]["!other:x"] = sync["rooms"]["join"]["!room:x"].clone();
-        let url = stub_homeserver(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
             "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
             "/_matrix/client/v3/sync" => (200, sync.clone()),
             "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
@@ -2663,10 +2651,40 @@ mod tests {
         assert_eq!(room("telegram", Some("t")), "telegram");
     }
 
+    /// Desktop's `BRIDGE_STATES_UPDATED`: a `com.beeper.bridge_state` change in a sync replaces the cloud accounts.
+    #[tokio::test]
+    async fn synced_bridge_states_replace_the_cloud_accounts() {
+        let mut sync = stub_sync();
+        let bad = json!({ "state_event": "BAD_CREDENTIALS", "has_error": true, "message": "Logged out" });
+        let bridges = json!({ "signal": { "bridgeState": { "bridgeType": "signal" }, "remoteState": { "s": bad } } });
+        let event = json!({ "type": "com.beeper.bridge_state", "content": { "bridges": bridges } });
+        sync["account_data"] = json!({ "events": [event] });
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            _ => (404, json!({ "errcode": "M_UNRECOGNIZED", "error": "not in the stub" })),
+        })
+        .await;
+        let dir = std::env::temp_dir().join(format!("beeper-rs-bridge-state-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = stub_store(&dir, &url).await;
+        let mut events = store.read().ws_tx.subscribe();
+        let client = store.read().matrix.clone().expect("a client");
+        super::sync_account_data(&client, &store).await;
+        let accounts = store.read().bridge_accounts.clone();
+        let accounts: Vec<_> = accounts.iter().map(|a| (a.account_id.as_str(), a.remote_error.as_deref())).collect();
+        assert_eq!(accounts, [("signal", Some("Logged out"))]);
+        assert_eq!(events.try_recv().expect("an update event").event_type, "setup.updated");
+        super::sync_account_data(&client, &store).await;
+        assert!(events.try_recv().is_err(), "the same states change nothing");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// A bridge that answers its contact list without a list gives no contacts, and the other bridges give theirs.
     #[tokio::test(flavor = "multi_thread")]
     async fn contacts_without_a_list_from_a_bridge() {
-        let url = stub_homeserver(|_, path, _| match path.contains("/whatsapp/") {
+        let url = crate::bridge_stub::serve(|_, path, _| match path.contains("/whatsapp/") {
             true => (200, json!({ "contacts": null })),
             false => (200, json!({ "contacts": [{ "id": "1", "name": "Sam", "identifiers": ["tel:15550100"] }] })),
         })
@@ -2688,7 +2706,7 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
         let fail = std::sync::Arc::new(AtomicBool::new(true));
         let failing = fail.clone();
-        let url = stub_homeserver(move |_, path, _| match path.split('?').next().expect("a path") {
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split('?').next().expect("a path") {
             "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
             "/_matrix/client/v3/sync" => (200, stub_sync()),
             "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
@@ -2750,7 +2768,7 @@ mod tests {
             json!({ "type": "com.beeper.message_send_status", "sender": "@bot:x", "event_id": format!("$s{i}"),
                 "origin_server_ts": 1_700_000_100_000i64, "content": content, "unsigned": { "com.beeper.hs.order": 10 + i } })
         };
-        let url = stub_homeserver(move |_, path, _| match path.split('?').next().expect("a path") {
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split('?').next().expect("a path") {
             "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
             "/_matrix/client/v3/sync" => (200, stub_sync()),
             "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),

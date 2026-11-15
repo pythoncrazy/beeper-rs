@@ -1022,7 +1022,7 @@ pub struct AppState {
     pub verification: Option<AppVerification>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BridgeAccountInfo {
     #[serde(rename = "accountID")]
@@ -1054,7 +1054,7 @@ impl BridgeAccountInfo {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RemoteProfile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
