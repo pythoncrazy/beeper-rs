@@ -2082,6 +2082,37 @@ fn selected_message_commands_like_desktop() {
     );
 }
 
+/// Desktop's `composeSwitchTargets`: with two accounts of a bridge, the chats with the person on both accounts, the
+/// "Switch Chat" card, and a pick that opens the other chat with the draft.
+#[test]
+fn account_switcher_like_desktop() {
+    let mut app = demo_app("switcher");
+    let b = app.store.read().bridge_accounts.iter().find(|b| b.remote_profile.is_some()).cloned().unwrap();
+    let them = |c: &Chat| c.participants.items.iter().any(|u| u.is_self != Some(true));
+    let st = app.store.read();
+    let chat = st.chats.iter().find(|c| c.account_id == b.account_id && c.chat_type == "single" && them(c)).cloned();
+    let chat = chat.unwrap();
+    drop(st);
+    assert_eq!(switch_targets(&app.store.read(), &chat), None, "one account of the bridge");
+    let two = beeper_core::models::BridgeAccountInfo { account_id: format!("{}-2", b.account_id), ..b.clone() };
+    app.store.write().bridge_accounts.push(two.clone());
+    assert_eq!(switch_targets(&app.store.read(), &chat), Some(vec![chat.id.clone()]), "no chat on the other account");
+    let alt = Chat { id: "!alt:x".into(), account_id: two.account_id.clone(), draft: None, ..chat.clone() };
+    app.store.write().upsert_chat(alt);
+    let both = Some(vec![chat.id.clone(), "!alt:x".to_string()]);
+    assert_eq!(switch_targets(&app.store.read(), &chat), both);
+    let _ = app.update(UiMessage::SelectChat(chat.id.clone()));
+    let _ = app.update(UiMessage::ComposerChanged("hi".into()));
+    let _ = app.update(UiMessage::SwitchCard);
+    assert!(simulator(app.view_main()).find("Switch Chat").is_ok());
+    let _ = app.update(UiMessage::SwitchChat("!alt:x".into()));
+    assert_eq!((app.pane.selected_chat_id.as_deref(), app.chat_menu.is_none()), (Some("!alt:x"), true));
+    assert_eq!(app.pane.composer.text().trim(), "hi", "the draft goes to the chat without a draft");
+    let st = app.store.read();
+    let old = st.chats[st.resolve_chat_idx(&chat.id).unwrap()].draft.clone().unwrap_or_default();
+    assert!(old.text.unwrap_or_default().is_empty(), "the chat keeps no draft");
+}
+
 #[test]
 fn composer_placeholder_like_desktop() {
     let app = demo_app("placeholder");
