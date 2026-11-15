@@ -2263,6 +2263,75 @@ fn contact_name(f: &str) -> String {
     rest.map_or(f, |(_, r)| r).replacen(".vcf", "", 1)
 }
 
+/// The parts of a vCard that Desktop's contact card shows.
+#[derive(Debug, Default, PartialEq)]
+struct VCard {
+    name: String,
+    org: Option<String>,
+    phones: Vec<String>,
+    emails: Vec<String>,
+}
+
+/// Desktop's `parseVCardAsContact`: unfolds the lines, drops the parameters and groups, and splits each value at the
+/// unescaped `;`, or else at the unescaped `,`. The name is `FN`, or else the given and family names of `N`.
+fn parse_vcard(text: &str) -> VCard {
+    let mut lines: Vec<String> = Vec::new();
+    for l in text.lines() {
+        match lines.last_mut().filter(|_| l.starts_with([' ', '\t'])) {
+            Some(last) => last.push_str(l.trim()),
+            None => lines.push(l.to_string()),
+        }
+    }
+    let bare = |v: &str, c: char| v.starts_with(c) || v.as_bytes().windows(2).any(|w| w[1] == c as u8 && w[0] != b'\\');
+    let split = |v: &str| -> Vec<String> {
+        let v = v.replace("\\n", "\n");
+        let Some(c) = [';', ','].into_iter().find(|&c| bare(&v, c)) else {
+            return vec![v.replace("\\,", ",").replace("\\;", ";")];
+        };
+        let other = if c == ';' { ',' } else { ';' };
+        let v = v.replace(&format!("\\{other}"), &other.to_string()).replace(&format!("\\{c}"), "\0");
+        v.split(c).map(|p| p.replace('\0', &c.to_string())).collect()
+    };
+    let mut fields = HashMap::<String, Vec<Vec<String>>>::new();
+    for l in &lines {
+        let (key, value) = l.split_once(':').unwrap_or((l, ""));
+        let key = key.split(';').next().expect("split gives one part");
+        fields.entry(key.split_once('.').map_or(key, |(_, k)| k).to_lowercase()).or_default().push(split(value));
+    }
+    let first = |k: &str| fields.get(k).and_then(|v| v[0].iter().find(|s| !s.is_empty()).cloned());
+    let all = |k: &str| fields.get(k).into_iter().flatten().flatten().filter(|s| !s.is_empty()).cloned().collect();
+    let n = fields.get("n").map(|n| n[0].clone()).unwrap_or_default();
+    let given = [n.get(1), n.first()].into_iter().flatten().filter(|s| !s.is_empty()).cloned();
+    let name = first("fn").unwrap_or_else(|| given.collect::<Vec<_>>().join(" "));
+    VCard { name, org: first("org"), phones: all("tel"), emails: all("email") }
+}
+
+/// Desktop's pending `ContactAttachment`: the avatar, the name or the organization, and the first phone number and
+/// email with the count of the others.
+fn contact_card<'a>(p: &Palette, c: &VCard) -> El<'a> {
+    let line = |s: String| txt(s, 12.0).line_height(Pixels(16.0)).color(p.text);
+    let medium = |s: String| txt(s, 14.0).font(fw(Weight::Medium)).color(p.text);
+    let mut meta = Column::new().push((!c.name.is_empty()).then(|| medium(c.name.clone())));
+    if let Some(org) = &c.org {
+        meta = meta.push(match c.name.is_empty() {
+            true => El::from(medium(org.clone())),
+            false => container(line(org.clone())).padding(Padding::ZERO.top(4.0)).into(),
+        });
+    }
+    let list = |items: &[String], title: String, more: &'static str, fmt: fn(&str) -> String| {
+        let head = semi(title, 12.0).line_height(Pixels(16.0)).color(p.text);
+        let rest = items.len().saturating_sub(1);
+        let more = (rest > 0).then(|| line(trn(more, more, rest, &[&rest])));
+        let col = column![container(head).padding(Padding::ZERO.top(6.0).bottom(4.0))];
+        (!items.is_empty()).then(|| col.push(line(fmt(&items[0]))).push(more))
+    };
+    let n = c.phones.len();
+    let phones = list(&c.phones, trn("Phone Number", "Phone Numbers", n, &[]), "+ %d more", fmt_phone);
+    let emails = list(&c.emails, trn("Email", "Emails", c.emails.len(), &[]), " + %d more", str::to_string);
+    let details = row![avatar(&c.name, 32.0, 0.0, p), meta.push(phones).push(emails)].spacing(8);
+    container(column![details, Space::new().width(180)]).padding([8, 10]).style(fill_box(p.received, 0.0)).into()
+}
+
 /// Desktop's chat list badge icons: image, videocam, volume_up, audio_file, account_circle, csv, folder_zip,
 /// draft and photo_library, at its `scale(1.2)` in a 12 px box.
 static TAG_ICONS: std::sync::LazyLock<[svg::Handle; 9]> = std::sync::LazyLock::new(|| {
@@ -3810,7 +3879,7 @@ fn file_echo(
     f: PendingMedia,
 ) -> (Attachment, MediaOut) {
     let PendingMedia { bytes, name, mime, is_gif, size, frames, duration } = f;
-    let image = !frames.is_empty();
+    let image = !frames.is_empty() && mime.starts_with("image/");
     let key = format!("pasted:{}", st.next_id("img"));
     if image {
         media.insert(key.clone(), Some(Ok(frames)));
@@ -5334,9 +5403,9 @@ impl BeeperGuiApp {
                 true => {
                     let path = std::env::temp_dir().join(format!("beeper-rs-{}-{name}", std::process::id()));
                     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
-                    let f = portal::load_file(&path);
+                    let (f, frames) = (portal::load_file(&path), portal::video_frames(&path, true));
                     std::fs::remove_file(&path).expect("remove the downloaded GIF");
-                    Ok(PendingMedia { is_gif: true, size, ..f? })
+                    Ok(PendingMedia { is_gif: true, size, frames: frames?, ..f? })
                 }
                 false => {
                     let frames = decode_media(bytes.clone())?;
@@ -14351,7 +14420,10 @@ impl BeeperGuiApp {
             || self.recorder.is_some();
         let pending = (!self.pane().attachments.is_empty()).then(|| {
             let items = self.pane().attachments.iter().enumerate().map(|(i, pm)| {
-                let preview: El<'a> = if pm.frames.is_empty() {
+                let vcard = pm.name.ends_with(".vcf") || pm.mime == "text/x-vcard";
+                let preview: El<'a> = if pm.frames.is_empty() && vcard {
+                    contact_card(p, &parse_vcard(&String::from_utf8_lossy(&pm.bytes)))
+                } else if pm.frames.is_empty() {
                     let ext = std::path::Path::new(&pm.name).extension().map(|e| e.to_string_lossy().to_uppercase());
                     let meta = ext.into_iter().chain([human_size(pm.bytes.len() as u64)]).collect::<Vec<_>>();
                     let name = clamp(&pm.name, 190.0, 2, 11.0, Weight::Semibold).line_height(Pixels(14.0));
@@ -14366,8 +14438,19 @@ impl BeeperGuiApp {
                 } else {
                     let fg = Color { a: 0.1, ..p.text };
                     let fit = |f| image(f).height(66).content_fit(iced::ContentFit::Contain);
-                    let img = container(anim::gif(&pm.frames, self.started, fit)).max_width(120).clip(true);
-                    img.style(bordered_box(CLEAR, fg, 1.0, 8.0)).into()
+                    // Desktop's pending `BrandVideo`: the MP4 of a GIF loops with "Autoplay GIFs", and a video is a
+                    // thumbnail with a play button.
+                    let video = pm.mime.starts_with("video/");
+                    let frames = anim::playing(&pm.frames, !video || st.settings.on("autoplayGifs"));
+                    let img = container(anim::gif(frames, self.started, fit)).max_width(120).clip(true);
+                    let img = img.style(bordered_box(CLEAR, fg, 1.0, 8.0));
+                    let play = container(tinted(&voice::ICONS[0], 20.0, p.strong))
+                        .center(36)
+                        .style(fill_box(p.received, 18.0));
+                    match video && !pm.is_gif {
+                        true => stack![img, container(play).center(Fill)].into(),
+                        false => img.into(),
+                    }
                 };
                 removable(p, preview, UiMessage::DiscardAttachment(i))
             });
@@ -20479,6 +20562,17 @@ mod tests {
         assert_eq!(tag(&[voice]), Some((2, "Voice Note", Some("01:05".into()))));
         assert_eq!(tag(&[a("video", "c.mp4", "video/mp4")]), Some((1, "Video", Some("01:05".into()))));
         assert_eq!(tag(&[a("unknown", "12.abc.Ann.vcf", "")]), Some((4, "Contact", Some("Ann".into()))));
+        let card =
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nN:Doe;Jo;;;\r\nORG:Acme\\, Inc.\r\nitem1.TEL;type=CELL:+1555\r\n 0100\r\n\
+            TEL:+15550100200\r\nEMAIL:jo@x.y\r\nEND:VCARD\r\n";
+        let want = VCard {
+            name: "Jo Doe".into(),
+            org: Some("Acme, Inc.".into()),
+            phones: vec!["+15550100".into(), "+15550100200".into()],
+            emails: vec!["jo@x.y".into()],
+        };
+        assert_eq!(parse_vcard(card), want, "Desktop's `parseVCardAsContact`");
+        assert_eq!(parse_vcard("FN:Ann\nN:B;C").name, "Ann");
         assert_eq!(tag(&[a("unknown", "d.zip", "")]).map(|t| t.1), Some("ZIP"));
         assert_eq!(tag(&[a("unknown", "d.pdf", "application/pdf")]).map(|t| t.1), Some("Document"));
         assert_eq!(tag(&[a("img", "", ""), a("img", "", "")]), Some((8, "Media", None)));

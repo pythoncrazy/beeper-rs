@@ -136,7 +136,29 @@ pub fn load_file(path: &Path) -> Result<PendingMedia, String> {
             ((0, 0), None)
         }
     };
-    Ok(PendingMedia { bytes, name, mime: mime.into(), is_gif: false, size, frames: vec![], duration })
+    // Desktop's pending `BrandVideo` thumbnail shows the first frame; a video that ffmpeg cannot read has none.
+    let frames = match mime.starts_with("video/") {
+        true => video_frames(path, false).unwrap_or_else(|e| {
+            eprintln!("processAttachment: could not read the first frame of {name}: {e}");
+            vec![]
+        }),
+        false => vec![],
+    };
+    Ok(PendingMedia { bytes, name, mime: mime.into(), is_gif: false, size, frames, duration })
+}
+
+/// The first frame of a video, or all the frames of the MP4 of a GIF, which Desktop plays in a loop.
+pub fn video_frames(path: &Path, gif: bool) -> Result<crate::Frames, String> {
+    let args: &[&str] = match gif {
+        true => &["-f", "gif", "pipe:1"],
+        false => &["-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"],
+    };
+    let out = std::process::Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(path).args(args).output();
+    let out = out.map_err(|e| format!("Could not start ffmpeg: {e}"))?;
+    match out.status.success() && !out.stdout.is_empty() {
+        true => decode_media(out.stdout),
+        false => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+    }
 }
 
 /// Desktop's `Oae`: the `com.beeper.room_features` file kind of a MIME type.
@@ -274,6 +296,15 @@ mod tests {
         let pdf = load_file(&dir.join("b.PDF")).unwrap();
         assert_eq!((pdf.name.as_str(), pdf.mime.as_str(), pdf.frames.len()), ("b.PDF", "application/pdf", 0));
         assert!(load_file(&dir.join("none")).is_err());
+        let mp4 = dir.join("c.mp4");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-f", "lavfi", "-i", "testsrc=size=32x24:rate=10:duration=1"])
+            .arg(&mp4)
+            .status();
+        assert!(made.unwrap().success(), "ffmpeg makes a test video");
+        let video = load_file(&mp4).unwrap();
+        assert_eq!((video.mime.as_str(), video.size, video.frames.len()), ("video/mp4", (32, 24), 1), "a thumbnail");
+        assert!(video_frames(&mp4, true).unwrap().len() > 1, "the MP4 of a GIF plays");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
