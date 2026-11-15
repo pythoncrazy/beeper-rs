@@ -11919,7 +11919,9 @@ impl BeeperGuiApp {
             .settings
             .on("feedbackWidget")
             .then(|| container(feedback).align_right(Fill).padding(Padding::ZERO.top(6.0).right(5.0)));
+        // The see-through header hides the timeline under it from the cursor, like Desktop's opaque header element.
         let header = mouse_area(container(header).width(Fill))
+            .interaction(mouse::Interaction::Idle)
             .on_double_click(UiMessage::ToggleMaximize(self.drawing.get()))
             .on_right_press(UiMessage::OpenChatMenu(cid.into()));
         let overlay = stack![fade, header].push(feedback).push(reminder);

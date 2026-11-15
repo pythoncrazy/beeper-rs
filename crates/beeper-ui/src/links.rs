@@ -52,7 +52,8 @@ impl BeeperGuiApp {
         }
     }
 
-    /// The preview card of a link, `max` wide at most, in the colors that `dim` gives for a selected message.
+    /// The preview card of a link, `max` wide at most, in the colors that `dim` gives for a selected message. Like the
+    /// `<a>` of Desktop's `LinkPreview`, a click on the card opens the link.
     pub(crate) fn view_link<'a>(&'a self, link: &MessageLink, max: f32, dim: impl Fn(Color) -> Color) -> El<'a> {
         let p = &self.pal;
         if let Some(id) = youtube_id(&link.url) {
@@ -106,7 +107,8 @@ impl BeeperGuiApp {
                 .width(w)
                 .into()
         };
-        container(card).style(fill_box(dim(p.link_card), RADIUS)).into()
+        let card = container(card).style(fill_box(dim(p.link_card), RADIUS));
+        mouse_area(card).on_press(UiMessage::OpenUrl(link.url.clone())).into()
     }
 
     /// Desktop's `VideoEmbed` of a YouTube link: the platform, the title, and the `lite-youtube` thumbnail with its

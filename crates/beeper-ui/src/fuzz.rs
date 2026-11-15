@@ -4457,9 +4457,12 @@ fn link_previews_like_desktop() {
             assert!(sim.find(label).is_ok(), "{label} shows");
         }
         let _ = sim.click("A video").expect("the video card");
+        let _ = sim.click("First page").expect("the link card");
         sim.into_messages().collect()
     };
     assert!(msgs.iter().any(|m| matches!(m, UiMessage::OpenUrl(u) if u == tube)), "the card opens the video");
+    let page = |m: &UiMessage| matches!(m, UiMessage::OpenUrl(u) if u == "https://example.com/a");
+    assert!(msgs.iter().any(page), "the card opens the link");
 }
 
 #[test]
@@ -4526,6 +4529,13 @@ fn double_clicks_like_desktop() {
     assert!(app.pane.selected_chat_id.is_some());
     let header = interact(&app, main, Size::new(1440.0, 900.0), Point::new(500.0, 20.0), twice.clone());
     assert!(matches!(&header[..], [UiMessage::ToggleMaximize(None)]), "the chat header maximizes: {header:?}");
+    // The chat header hides the link card under it from the cursor, and the card opens its link below the header.
+    let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+    let (size, card) = (Size::new(1000.0, 700.0), Point::new(900.0, 40.0));
+    let over = interact(&app, main, size, card, twice.clone());
+    assert!(matches!(&over[..], [UiMessage::ToggleMaximize(None)]), "the header over a card maximizes");
+    let below = interact(&app, main, size, Point::new(900.0, 90.0), twice[..2].to_vec());
+    assert!(matches!(&below[..], [UiMessage::HoverEnter(_), UiMessage::OpenUrl(_)]), "the card opens its link");
     let edge = interact(&app, main, Size::new(1440.0, 900.0), Point::new(68.0 + SIDEBAR_WIDTH + 1.0, 400.0), twice);
     assert!(edge.iter().any(|m| matches!(m, UiMessage::ResetSidebarWidth)), "the sidebar edge resets: {edge:?}");
     let _ = app.update(UiMessage::DragStart);
