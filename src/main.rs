@@ -294,8 +294,13 @@ fn main() {
     if !loading.config.demo {
         rt.spawn(beeper_core::matrix::run(store.clone()));
     }
+    // The GUI loads its fonts while the chats load. The join comes before the GUI sets its environment variables.
+    let fonts = server.is_none().then(|| std::thread::spawn(beeper_ui::style::ensure_fonts_loaded));
     loading.load_chats();
     drop(loading);
+    if let Some(fonts) = fonts {
+        fonts.join().expect("load the fonts");
+    }
     if let Some(server) = server {
         return rt.block_on(server).expect("serve the Desktop API");
     }
