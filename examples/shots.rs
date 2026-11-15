@@ -130,6 +130,14 @@ fn main() {
     let _ = app.update(UiMessage::Login(LoginMsg::Email("foo".into())));
     let _ = app.update(UiMessage::Login(LoginMsg::SubmitEmail));
     shot(&out, "login_email_invalid", (330.0, 620.0), &theme, app.view_login());
+    let _ = app.update(UiMessage::Login(LoginMsg::Email("someone@example.com".into())));
+    let _ = app.update(UiMessage::Login(LoginMsg::Done(Ok(beeper_ui::login::Outcome::Requested("r".into())))));
+    let _ = app.update(UiMessage::Login(LoginMsg::Code("12".into())));
+    shot(&out, "login_code_typed", (330.0, 620.0), &theme, app.view_login());
+    let _ = app.update(UiMessage::Login(LoginMsg::Code("123456".into())));
+    let refused = beeper_core::cloud::CloudError { status: 401, message: "Invalid code. Please try again.".into() };
+    let _ = app.update(UiMessage::Login(LoginMsg::Done(Err(refused))));
+    shot(&out, "login_code_error", (330.0, 620.0), &theme, app.view_login());
     if real.is_none() {
         std::fs::remove_dir_all(data).expect("remove shot data dir");
     }

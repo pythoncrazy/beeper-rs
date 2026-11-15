@@ -24,6 +24,8 @@ use std::sync::{Arc, LazyLock};
 /// The room over a `field` for its floating label: the label rises 60 % of the 38 px field and is 26.125 px high. A
 /// screen with a field puts the same room under its heading, so that its gaps are Desktop's.
 const FLOAT_LABEL: f32 = 38.0 * 0.6 + 38.0 * 0.6875 / 2.0 - 38.0 / 2.0;
+/// The room of Desktop's floating `small` error over the form of the code screen: 8 px and one line of 10.4 px text.
+const ERROR_ROOM: f32 = 8.0 + 13.0;
 /// The start of the animations of the sign-in window.
 static EPOCH: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
 const EMAIL_INPUT: &str = "login-email";
@@ -216,6 +218,10 @@ pub struct Login {
     /// The error under the heading of a screen, and Desktop's red error toast at the top of the window.
     pub error: Option<String>,
     pub toast: Option<String>,
+    /// When Desktop's auto paste of a code from the clipboard showed its toast.
+    pasted: Option<std::time::Instant>,
+    /// The codes sent since the last code request, which the clipboard does not paste again (Desktop's stale codes).
+    tried_codes: Vec<String>,
     /// The bubble of Chromium's `type=email` check over the email field.
     pub invalid: Option<String>,
     /// The index of the control in `Screen::stops` that has the keyboard focus.
@@ -240,9 +246,14 @@ pub struct Login {
 }
 
 impl Login {
-    /// The screens with the floating welcome illustration.
+    /// The screens with the floating welcome illustration, and the toast of a pasted code until it goes.
     pub fn animated(&self) -> bool {
-        matches!(self.screen, Screen::Import | Screen::Welcome)
+        matches!(self.screen, Screen::Import | Screen::Welcome) || self.pasted()
+    }
+
+    /// The toast of a code from the clipboard shows for 3 s.
+    fn pasted(&self) -> bool {
+        self.pasted.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3))
     }
 
     /// The screens before the sign-in ends.
@@ -423,20 +434,21 @@ fn card_style(bg: Color) -> impl Fn(&Theme) -> container::Style {
 }
 
 /// Desktop's onboarding error toast: 300x32 at the top of the window, with an info icon and a close button.
-fn toast<'a>(p: &Palette, text: &'a str) -> El<'a> {
-    let close = button(ic(icon::CLOSE, 14.0).color(Color::WHITE))
-        .padding(3)
-        .style(btn_style([CLEAR; 3], [Color::WHITE; 3], 4.0))
-        .on_press(LoginMsg::CloseToast.into());
-    let line = row![
-        ic(icon::INFO, 20.0).color(Color::WHITE),
-        txt(text, 13.0).line_height(iced::Pixels(16.0)).color(Color::WHITE).width(Fill),
-        close
-    ]
-    .spacing(6)
-    .align_y(Center);
-    let card =
-        container(line).padding([0, 6]).width(300).center_y(32).style(glow_box(ERROR_RED, p.shadow, 10.0, 1.0, 10.0));
+/// Desktop's `showToast`: a neutral toast with centered text and no close button, which goes after 3 s.
+fn toast<'a>(p: &Palette, text: &'a str, error: bool) -> El<'a> {
+    let (bg, fg) = if error { (ERROR_RED, Color::WHITE) } else { (p.card, p.strong) };
+    let text = txt(text, 13.0).line_height(iced::Pixels(16.0)).color(fg).width(Fill);
+    let line: El<'a> = match error {
+        true => {
+            let close = button(ic(icon::CLOSE, 14.0).color(fg))
+                .padding(3)
+                .style(btn_style([CLEAR; 3], [fg; 3], 4.0))
+                .on_press(LoginMsg::CloseToast.into());
+            row![ic(icon::INFO, 20.0).color(fg), text, close].spacing(6).align_y(Center).into()
+        }
+        false => text.center().into(),
+    };
+    let card = container(line).padding([0, 6]).width(300).center_y(32).style(glow_box(bg, p.shadow, 10.0, 1.0, 10.0));
     container(card).center_x(Fill).padding(Padding::ZERO.top(44)).into()
 }
 
@@ -642,6 +654,7 @@ impl BeeperGuiApp {
                     return operation::focus(EMAIL_INPUT);
                 }
                 l.code.clear();
+                l.tried_codes.clear();
                 return self.background(move |c| {
                     let (request, methods) = c.start_login()?;
                     if !methods.iter().any(|m| m == "email") {
@@ -663,6 +676,7 @@ impl BeeperGuiApp {
             LoginMsg::SubmitCode if l.busy => {}
             LoginMsg::SubmitCode => {
                 let (request, code) = (l.request.clone(), l.code.clone());
+                l.tried_codes.push(code.clone());
                 return self.background(move |c| match c.send_login_code(&request, &code)? {
                     CodeResult::Token(jwt) => session(c, &jwt),
                     CodeResult::Registration { lead_token, username_suggestions } => {
@@ -702,6 +716,16 @@ impl BeeperGuiApp {
                 l.key_input =
                     text_editor::Content::with_text(&crate::verify::format_recovery_key(&text.unwrap_or_default()));
                 l.error = None;
+            }
+            LoginMsg::KeyOnFocus(text) if l.screen == Screen::Code => {
+                // Desktop's `iF` with `Hk`: a 6-digit code in the clipboard that was not sent yet goes in, with a toast.
+                let text = text.unwrap_or_default();
+                let code: String = text.split_whitespace().collect();
+                let digits = !text.is_empty() && text.chars().all(|c| c.is_ascii_digit() || c.is_whitespace());
+                if digits && code.len() == 6 && !l.tried_codes.contains(&code) && !l.busy {
+                    (l.code, l.pasted) = (code, Some(std::time::Instant::now()));
+                    return self.update_login(LoginMsg::SubmitCode);
+                }
             }
             LoginMsg::KeyOnFocus(text) => {
                 let key = beeper_core::matrix::recovery_key_chars(&text.unwrap_or_default());
@@ -910,31 +934,43 @@ impl BeeperGuiApp {
             ]
             .into(),
             Screen::Code => {
-                let active = l.code.len().min(5);
+                // Desktop's `OTPInput`: six 41.3x56 slots 8 px apart, with a 2 px ring outside the focused slot, and
+                // red digits and rings on all slots after an error.
+                let error = l.error.is_some();
+                let focused = l.focus.map(|i| l.screen.stops()[i]) == Some(Stop::Field);
                 let slots = row((0..6).map(|i| {
-                    let digit: Option<El<'_>> =
-                        l.code.chars().nth(i).map(|c| semi(c.to_string(), 28.0).color(p.strong).into());
-                    let caret = (i == l.code.len())
-                        .then(|| container(Space::new()).width(1.5).height(28).style(fill_box(p.strong, 0.0)).into());
-                    let edge = match (&l.error, i == active) {
-                        (Some(_), _) => p.text_danger,
-                        (None, true) => p.accent,
-                        (None, false) => CLEAR,
+                    let ink = if error { ERROR_RED } else { p.strong };
+                    let digit: Option<El<'_>> = l
+                        .code
+                        .chars()
+                        .nth(i)
+                        .map(|c| semi(c.to_string(), 28.0).line_height(iced::Pixels(36.0)).color(ink).into());
+                    let at = focused && i == l.code.len().min(5);
+                    let caret = (at && i == l.code.len())
+                        .then(|| container(Space::new()).width(1.5).height(28).style(fill_box(ink, 0.0)).into());
+                    let edge = match (error, at) {
+                        (true, _) => ERROR_RED,
+                        (false, true) => p.accent,
+                        (false, false) => CLEAR,
                     };
-                    container(digit.or(caret).unwrap_or_else(|| Space::new().into()))
-                        .center_x(41)
+                    let slot = container(digit.or(caret).unwrap_or_else(|| Space::new().into()))
+                        .center_x(41.3)
                         .center_y(56)
-                        .style(bordered_box(p.chip, edge, 1.5, 12.0))
-                        .into()
+                        .style(fill_box(if error { CLEAR } else { p.chip }, 12.0));
+                    container(slot).padding(2).style(bordered_box(CLEAR, edge, 2.0, 14.0)).into()
                 }))
-                .spacing(8);
+                .spacing(4);
                 let capture = text_input("", &l.code)
                     .id(CODE_INPUT)
                     .on_input(|v| LoginMsg::Code(v).into())
                     .size(28)
                     .padding(14)
                     .style(input_style(CLEAR, CLEAR, CLEAR, CLEAR, 0.0));
-                let otp = stack![container(slots).center_x(Fill), container(capture).height(56)].height(56);
+                let otp = stack![container(slots).center_x(Fill), container(capture).height(60)].height(60);
+                // `otpContainer`: the lock animation, 70 px over the heading, and the 4 px under its inline box, with the
+                // slots on its bottom edge.
+                let lock =
+                    stack![column![art(2, 314.0), Space::new().height(4 + 2)], container(otp).align_bottom(Fill)];
                 let info = format!("Check {}\nfor your login code", l.email.trim());
                 let foot = rich_text![
                     span("Didn't get a code? ").color(p.on_secondary),
@@ -942,20 +978,33 @@ impl BeeperGuiApp {
                 ]
                 .on_link_click(move |m: UiMessage| if l.busy { UiMessage::Noop } else { m })
                 .size(11)
+                .line_height(iced::Pixels(14.0))
                 .width(Fill)
                 .center();
-                column![
-                    Space::new().height(50),
-                    heading(tr("Enter Code"), 36.0),
-                    art(2, 240.0),
-                    otp,
+                // Desktop's floating `small` error, 8 px over the form.
+                let error = l.error.as_deref().map(|e| txt(e, 10.4).color(p.text_danger).center().width(Fill));
+                let error =
+                    container(column![].push(error)).height(ERROR_ROOM - 8.0).align_bottom(Fill).padding([0, 18]);
+                // Desktop's `space-between` column with the 70 px overlap: the lock starts 20 px under the top, and
+                // takes the room of the error and of the 2 px ring there too, so its gaps are Desktop's.
+                let form = column![
+                    Space::new().height(20.0 + 2.0 + ERROR_ROOM),
+                    Space::new().height(Fill),
+                    lock,
                     Space::new().height(Fill),
                     error,
+                    Space::new().height(8),
                     actions(
                         vec![
-                            container(txt(info, 13.0).color(p.on_secondary).center().width(Fill))
-                                .padding(Padding::ZERO.bottom(8))
-                                .into(),
+                            container(
+                                txt(info, 13.0)
+                                    .line_height(iced::Pixels(16.0))
+                                    .color(p.on_secondary)
+                                    .center()
+                                    .width(Fill)
+                            )
+                            .padding(Padding::ZERO.bottom(8))
+                            .into(),
                             brand_button(
                                 p,
                                 label(tr("Open Email"), None),
@@ -963,12 +1012,13 @@ impl BeeperGuiApp {
                                 self.login_act(Stop::OpenEmail),
                                 l.busy
                             ),
-                            container(foot).padding(Padding::ZERO.top(8)).into(),
+                            container(foot).padding(Padding::ZERO.top(8)).height(36).center_y(36).into(),
                         ],
                         24.0
                     ),
-                ]
-                .into()
+                ];
+                let top = column![Space::new().height(50), heading(tr("Enter Code"), 36.0)].height(Fill);
+                stack![top, form].into()
             }
             Screen::Accounts => {
                 let st = self.store.read();
@@ -1063,7 +1113,8 @@ impl BeeperGuiApp {
             mouse_area(container(items).align_right(Fill).height(Fill).padding(at)).on_press(LoginMsg::Menu.into())
         });
         stack![container(page).padding(pad).style(fill_box(frame, 0.0))]
-            .push(l.toast.as_deref().map(|t| toast(p, t)))
+            .push(l.toast.as_deref().map(|t| toast(p, t, true)))
+            .push(l.pasted().then(|| toast(p, tr("Code auto pasted from clipboard"), false)))
             .push(l.invalid.as_deref().map(bubble))
             .push(menu)
             .into()
@@ -1120,9 +1171,15 @@ impl BeeperGuiApp {
         Task::none()
     }
 
-    /// Text typed in the sign-in window outside a text field: Space presses the focused control.
+    /// Text typed in the sign-in window outside a text field: Space presses the focused control, and a digit goes
+    /// into the code, like Desktop's `keydown` handler of the code screen.
     pub fn login_text(&mut self, text: &str) -> Task<UiMessage> {
-        let l = &self.login;
+        let l = &mut self.login;
+        if l.screen == Screen::Code && text.len() == 1 && text.chars().all(|c| c.is_ascii_digit()) {
+            l.focus = Screen::Code.stops().iter().position(|s| *s == Stop::Field);
+            let code = format!("{}{text}", l.code);
+            return Task::batch([self.update_login(LoginMsg::Code(code)), operation::focus(CODE_INPUT)]);
+        }
         let stop = l.focus.map(|i| l.screen.stops()[i]).filter(|s| *s != Stop::Field && text == " ");
         stop.and_then(|s| self.login_act(s)).map_or_else(Task::none, |m| self.update(m))
     }

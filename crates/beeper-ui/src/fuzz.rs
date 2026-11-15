@@ -5674,6 +5674,32 @@ fn sign_in_brand_controls_like_desktop() {
     assert_eq!(login_pixels(&app, &[next]), [app.pal.chip], "a loading button is disabled");
 }
 
+/// Desktop's code screen: a code in the clipboard goes in when the window gets the focus, once, with a toast;
+/// digits typed anywhere go into the code; and an error turns the slots red on no fill.
+#[test]
+fn sign_in_code_screen_like_desktop() {
+    use login::{LoginMsg, Outcome, Screen};
+    let mut app = signed_out_app("sign-in-code");
+    let id = app.login_window.expect("the sign-in window");
+    let _ = app.update(LoginMsg::Email("alex@example.com".into()).into());
+    let _ = app.update(LoginMsg::Done(Ok(Outcome::Requested("req_1".into()))).into());
+    assert_eq!(app.login.screen, Screen::Code);
+    let _ = app.update(UiMessage::WindowText(id, "7".into()));
+    assert_eq!(app.login.code, "7", "a digit typed in the window goes into the code");
+    let _ = app.update(LoginMsg::KeyOnFocus(Some("12345".into())).into());
+    assert_eq!(app.login.code, "7", "the clipboard pastes only a whole code");
+    let _ = app.update(LoginMsg::KeyOnFocus(Some("123 456".into())).into());
+    assert!(app.login.code == "123456" && app.login.busy, "a code in the clipboard goes in and is sent");
+    assert!(simulator(app.view_login()).find("Code auto pasted from clipboard").is_ok());
+    let refused = beeper_core::cloud::CloudError { status: 401, message: "Invalid code. Please try again.".into() };
+    let _ = app.update(LoginMsg::Done(Err(refused)).into());
+    let _ = app.update(LoginMsg::KeyOnFocus(Some("123456".into())).into());
+    assert!(!app.login.busy, "a code that was sent does not go again");
+    // The middle of the first slot has no fill, and its ring is red.
+    let red = Color::from_rgb8(220, 54, 46);
+    assert_eq!(login_pixels(&app, &[(28, 375), (20, 393)]), [app.pal.primary_container, red]);
+}
+
 /// The keyboard of the sign-in window, like Desktop: Tab goes through the controls in their order, Enter presses
 /// the focused control or submits the form, and Escape closes the menu. Errors show in the toast, and an email
 /// that is not valid shows Chromium's message.
