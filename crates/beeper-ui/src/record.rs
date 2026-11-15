@@ -256,6 +256,7 @@ impl BeeperGuiApp {
                     caption: None,
                     reply_to,
                     thread,
+                    gif: false,
                 };
                 st.queue(&chat, out);
                 drop(st);
