@@ -672,8 +672,8 @@ pub enum UiMessage {
     ZoomDrag(f32),
     ZoomRelease,
     ToggleSetting(fn(&mut BeeperSettings)),
-    /// The Beeper account email and the chat accounts from `whoami`.
-    CloudAccounts(Result<(Option<String>, bool, Vec<BridgeAccountInfo>), String>),
+    /// The Beeper account profile and the chat accounts from `whoami`.
+    CloudAccounts(Result<(Profile, Vec<BridgeAccountInfo>), String>),
     AvatarLoaded(String, Result<image::Handle, String>),
     MediaLoaded(String, Result<Frames, String>),
     Voice(voice::Msg),
@@ -708,6 +708,10 @@ pub enum UiMessage {
     DevicesLoaded(Result<Vec<DeviceInfo>, String>),
     MicsLoaded(Result<(String, Vec<String>), String>),
     SetMicrophone(String),
+    /// Desktop's "Share Analytics" toggle.
+    ShareAnalytics,
+    /// The server saved `analyticsDisabled`, or failed and the toggle goes back to the first value.
+    AnalyticsSaved(bool, Result<(), String>),
     Ask(Option<u8>),
     ReminderMenu,
     OrderReminders(u8),
@@ -1708,7 +1712,7 @@ fn round_avatar(bytes: &[u8]) -> Result<image::Handle, String> {
 }
 
 /// Image frames with their delays in milliseconds; a still image has one frame.
-pub type Frames = Vec<(image::Handle, u128)>;
+pub type Frames = Vec<anim::Frame>;
 type Png = (Vec<u8>, (u32, u32));
 
 /// Desktop's `queuedPendingMessages`: the sends of a chat that wait for "Allow undo send", and the composer to
@@ -4385,7 +4389,9 @@ impl BeeperGuiApp {
         let st = self.store.read();
         self.dark = st.settings.theme.is_dark(self.system_dark);
         self.pal = crate::style::palette(self.dark);
-        self.zoom = f32::from(st.settings.zoom_percent) / 100.0;
+        // Desktop's `--custom-font-size` is the font size plus 3 px, and 16 px is the default.
+        let font: f32 = st.settings.choice("fontSize").parse().expect("a number option");
+        self.zoom = f32::from(st.settings.zoom_percent) / 100.0 * (font + 3.0) / 16.0;
         self.tray_sent.1 = true;
     }
 
@@ -6878,6 +6884,27 @@ impl BeeperGuiApp {
                 self.mics = Some(r);
             }
             UiMessage::SetMicrophone(name) => self.patch_settings(|s| s.microphone = name),
+            UiMessage::ShareAnalytics => {
+                let mut st = self.store.write();
+                let was = st.analytics_disabled;
+                st.analytics_disabled = !was;
+                let (cloud, token) = (self.cloud.clone(), st.beeper_state.access_token.clone());
+                if !st.config.demo {
+                    return Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || cloud.set_analytics_disabled(&token, !was))
+                                .await
+                                .expect("analytics worker thread")
+                        },
+                        move |r| UiMessage::AnalyticsSaved(was, r.map_err(|e| e.message)),
+                    );
+                }
+            }
+            UiMessage::AnalyticsSaved(_, Ok(())) => {}
+            UiMessage::AnalyticsSaved(was, Err(e)) => {
+                self.store.write().analytics_disabled = was;
+                self.fail(Toast::new(trf("Something went wrong: %s", &[&e])));
+            }
             UiMessage::Ask(dialog) => (self.confirm, self.reminder_menu) = (dialog, None),
             UiMessage::AskDeleteChat(id) => {
                 (self.confirm, self.chat_menu, self.delete_target) = (Some(ASK_DELETE_CHAT), None, Some(id));
@@ -7025,10 +7052,10 @@ impl BeeperGuiApp {
             }
             UiMessage::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
             UiMessage::ToggleSetting(flip) => self.patch_settings(flip),
-            UiMessage::CloudAccounts(Ok((email, subscribed, accounts))) => {
+            UiMessage::CloudAccounts(Ok((Profile { email, subscribed, analytics_disabled, .. }, accounts))) => {
                 let (token, uid, demo) = {
                     let mut st = self.store.write();
-                    st.features.subscribed = subscribed;
+                    (st.features.subscribed, st.analytics_disabled) = (subscribed, analytics_disabled);
                     let info = (st.beeper_state.access_token.clone(), st.beeper_state.user_id.clone(), st.config.demo);
                     if st.me().email != email {
                         let i = st.chat_idx_by_id[NOTE_CHAT_ID];
@@ -7806,12 +7833,10 @@ impl BeeperGuiApp {
                 }
                 self.patch_settings(|s| s.set_pref(key, v));
                 self.relaunch_toast = match key {
-                    "spellcheck" | "quitOnClose" => Some("Preference changed"),
+                    "spellcheck" | "quitOnClose" | "hwAcceleration" | "hiddenEvents" => Some("Preference changed"),
+                    "appLanguage" => Some("App language will change after relaunch"),
                     _ => self.relaunch_toast,
                 };
-                if key == "appLanguage" {
-                    i18n::set(v);
-                }
                 let mut st = self.store.write();
                 let client = st.matrix.clone();
                 if let Some(((kind, content), c)) = beeper_core::matrix::pref_write(&mut st, key).zip(client) {
@@ -10480,7 +10505,7 @@ impl BeeperGuiApp {
     }
 
     fn set_archived(&self, st: &mut BeeperStore, idx: usize, on: bool) -> bool {
-        if on && st.settings.on("markReadOnArchive") {
+        if on && (!st.feature("archive-as-unread").on || st.settings.on("markReadOnArchive")) {
             self.mark_read(st, idx);
         }
         st.set_chat_flag(idx, ChatFlag::Archived, Some(on))
@@ -11879,6 +11904,7 @@ impl BeeperGuiApp {
                     };
                     let base: El<'_> = match thumb_url.as_ref().and_then(|u| self.media_at(u)) {
                         Some(Ok(frames)) => {
+                            let frames = anim::playing(frames, st.settings.on("autoplayGifs"));
                             anim::gif(frames, self.started, move |f| image(f).width(w).height(h).border_radius(17.0))
                         }
                         Some(Err(_)) if m.unresolved_media.is_none() => {
@@ -13730,9 +13756,11 @@ impl BeeperGuiApp {
         let url = a.poster_img.as_ref().or(a.src_url.as_ref());
         let turn = iced::Radians(-std::f32::consts::FRAC_PI_2 * f32::from(car.turns));
         let shown: El<'a> = match url.and_then(|u| self.media_at(u)) {
-            Some(Ok(frames)) => anim::gif(frames, self.started, move |f| {
-                image(f).content_fit(iced::ContentFit::ScaleDown).rotation(iced::Rotation::Solid(turn))
-            }),
+            Some(Ok(frames)) => {
+                anim::gif(anim::playing(frames, st.settings.on("autoplayGifs")), self.started, move |f| {
+                    image(f).content_fit(iced::ContentFit::ScaleDown).rotation(iced::Rotation::Solid(turn))
+                })
+            }
             _ => Space::new().into(),
         };
         let main = container(mouse_area(shown).on_press(UiMessage::Noop)).center(Fill).padding(8);
@@ -17269,6 +17297,10 @@ impl BeeperGuiApp {
                 press = (!off).then_some(UiMessage::SetPref(r.key, 1 - v));
                 toggle_faded(p, v == 1 && !locked, press.clone(), if off { 0.5 } else { 1.0 })
             }
+            prefs::Control::Analytics => {
+                press = Some(UiMessage::ShareAnalytics);
+                toggle_faded(p, !st.analytics_disabled, press.clone(), 1.0)
+            }
             prefs::Control::Select(..) if locked => {
                 stack![self.pref_select(r, s), iced::widget::opaque(Space::new().width(Fill).height(Fill))].into()
             }
@@ -17307,7 +17339,9 @@ impl BeeperGuiApp {
             prefs::Control::Slider(_) => {
                 assert!(r.desc.is_none() && r.badge.is_none(), "{} is a plain slider", r.key);
                 let key = r.key;
+                // Desktop's range input from 0 to 1 in steps of 0.1.
                 let bar = slider(0..=100u8, s.pref(key), move |x| UiMessage::SetPref(key, x))
+                    .step(10u8)
                     .height(16)
                     .style(slider_style(p));
                 let body = column![
@@ -17436,6 +17470,10 @@ impl iced::Executor for Executor {
 pub fn run_native_gui(store: SharedStore) -> iced::Result {
     let st = store.read();
     i18n::set(st.settings.pref("appLanguage"));
+    if !st.settings.on("hwAcceleration") {
+        // Desktop's `app.disableHardwareAcceleration()`: draw with the CPU renderer.
+        std::env::set_var("ICED_BACKEND", "tiny-skia");
+    }
     if st.settings.on("spellcheck") {
         let custom = st.data_dir.join("Custom Dictionary.txt");
         std::thread::spawn(|| spell::load(custom));

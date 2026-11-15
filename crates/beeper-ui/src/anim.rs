@@ -1,4 +1,3 @@
-use crate::Frames;
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{mouse, renderer, Clipboard, Renderer as _, Shell};
@@ -6,16 +5,19 @@ use iced::widget::{image, Image};
 use iced::{window, Color, Element, Event, Length, Rectangle, Renderer, Size, Theme};
 use std::time::{Duration, Instant};
 
+/// A frame of an animation and its delay in milliseconds.
+pub type Frame = (image::Handle, u128);
+
 /// Draws the frame of `frames` that is due since `start`, and asks for a redraw at the next frame while it is
 /// visible. The view does not change, so the animation needs no view or layout.
 pub struct Gif<'a> {
-    frames: &'a Frames,
+    frames: &'a [Frame],
     start: Instant,
     make: Box<dyn Fn(image::Handle) -> Image + 'a>,
 }
 
 pub fn gif<'a, M: 'a>(
-    frames: &'a Frames,
+    frames: &'a [Frame],
     start: Instant,
     make: impl Fn(image::Handle) -> Image + 'a,
 ) -> Element<'a, M> {
@@ -25,8 +27,13 @@ pub fn gif<'a, M: 'a>(
     }
 }
 
+/// The frames to draw: only the first one when the animation does not play.
+pub fn playing(frames: &[Frame], play: bool) -> &[Frame] {
+    &frames[..if play { frames.len() } else { 1 }]
+}
+
 /// The frame at `ms` into the loop, and the time until the next frame.
-pub fn frame(frames: &Frames, ms: u128) -> (&image::Handle, u128) {
+pub fn frame(frames: &[Frame], ms: u128) -> (&image::Handle, u128) {
     let mut t = ms % frames.iter().map(|f| f.1).sum::<u128>();
     frames
         .iter()

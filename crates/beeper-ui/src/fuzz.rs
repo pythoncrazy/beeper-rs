@@ -39,7 +39,9 @@ const TEXTS: [&str; 10] =
 fn prefs() -> impl Iterator<Item = (SettingsTab, &'static prefs::Pref)> {
     let tab = |page| *SettingsTab::ALL.iter().find(|t| t.meta().0 == page).expect("a settings tab");
     prefs::all()
-        .filter(|(_, p)| !matches!(p.control, prefs::Control::Microphone | prefs::Control::Multi(_)))
+        .filter(|(_, p)| {
+            !matches!(p.control, prefs::Control::Microphone | prefs::Control::Multi(_) | prefs::Control::Analytics)
+        })
         .filter(|(_, p)| p.key != "appLanguage")
         .map(move |(page, p)| (tab(page), p))
 }
@@ -1836,6 +1838,8 @@ fn zoom_keys_like_desktop() {
         let _ = app.update(UiMessage::KeyPressed(Key::Character(key.into()), Modifiers::CTRL));
         assert_eq!(app.zoom, zoom, "ctrl {key}");
     }
+    let _ = app.update(UiMessage::SetPref("fontSize", 0));
+    assert_eq!(app.zoom, 0.75, "the font size 9 is a root font of 12 px, as in Desktop");
 }
 
 #[test]
