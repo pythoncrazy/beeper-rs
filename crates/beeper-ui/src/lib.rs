@@ -829,6 +829,8 @@ pub enum UiMessage {
     AskLogoutDevice(String),
     LogoutDevice(String),
     DeviceLoggedOut(String, Result<(), String>),
+    /// The close of Desktop's recovery key reminder (`dismissRecoveryCodeReminder`).
+    DismissRecoveryReminder,
     ReminderMenu,
     OrderReminders(u8),
     DismissAllReminders,
@@ -3733,13 +3735,15 @@ fn tinted<'a>(h: &svg::Handle, size: f32, color: Color) -> El<'a> {
     svg(h.clone()).width(size).height(size).opacity(color.a).style(move |_, _| svg::Style { color: Some(color) }).into()
 }
 
-/// Desktop's `Archive`, `Inbox` and `LowPriority` assets, which its archive and Low Priority toasts show.
-static TOAST_ICONS: std::sync::LazyLock<[svg::Handle; 4]> = std::sync::LazyLock::new(|| {
+/// Desktop's `Archive`, `Inbox` and `LowPriority` assets, which its archive and Low Priority toasts show, its `Undo`
+/// icon, and its `Lock` icon of the recovery key reminder.
+static TOAST_ICONS: std::sync::LazyLock<[svg::Handle; 5]> = std::sync::LazyLock::new(|| {
     [
         "M4.556 17a1.5 1.5 0 0 1-1.1-.457A1.5 1.5 0 0 1 3 15.444V5.722q0-.292.097-.525.098-.232.253-.447l1.089-1.322a1 1 0 0 1 .389-.321Q5.06 3 5.333 3h9.334q.272 0 .505.107a1 1 0 0 1 .39.32L16.65 4.75q.156.214.253.447t.097.525v9.722a1.5 1.5 0 0 1-.457 1.1 1.5 1.5 0 0 1-1.099.456zm.31-11.667h10.267l-.66-.777H5.527zm-.31 1.556v8.555h10.888V6.89zM10 14.667l3.111-3.111-1.089-1.09-1.244 1.245V8.444H9.222v3.267l-1.244-1.244-1.09 1.089z",
         "M15.833 2.5H4.158c-.925 0-1.65.742-1.65 1.667L2.5 15.833A1.66 1.66 0 0 0 4.158 17.5h11.675c.917 0 1.667-.75 1.667-1.667V4.167c0-.925-.75-1.667-1.667-1.667m0 10H12.5c0 1.383-1.125 2.5-2.5 2.5a2.5 2.5 0 0 1-2.5-2.5H4.158V4.167h11.675z",
         "M11.667 4.167h6.666v1.556h-6.666zm0 4.278h6.666V10h-6.666zm0 4.278h6.666v1.555h-6.666zm-10-3.5c0 2.784 2.433 5.055 5.416 5.055H7.5v1.556L10 13.5l-2.5-2.333v1.556h-.417c-2.066 0-3.75-1.572-3.75-3.5 0-1.93 1.684-3.5 3.75-3.5H10V4.167H7.083c-2.983 0-5.416 2.271-5.416 5.056",
         "M5.833 15.833v-1.667h5.917q1.312 0 2.281-.833.969-.834.969-2.083t-.969-2.084q-.969-.833-2.281-.833H6.5L8.667 10.5 7.5 11.666 3.333 7.5 7.5 3.333 8.667 4.5 6.5 6.666h5.25q2.021 0 3.469 1.313t1.448 3.27-1.448 3.271-3.469 1.313z",
+        "M9.996 2.712a3.9 3.9 0 0 1 1.86.461q.865.462 1.392 1.377.535.909.535 2.264v1.745q.569.079.9.423.433.447.433 1.333v5.178q0 .9-.432 1.347t-1.26.448H6.576q-.827 0-1.26-.448-.432-.446-.432-1.347v-5.178q0-.886.432-1.333.333-.344.9-.423V6.814q0-1.355.528-2.264.535-.915 1.4-1.377a3.9 3.9 0 0 1 1.852-.46m0 1.296q-.651 0-1.208.308-.55.308-.879.901-.33.594-.33 1.457v1.86h4.849v-1.86q0-.864-.337-1.457a2.25 2.25 0 0 0-.886-.901 2.43 2.43 0 0 0-1.209-.308",
     ]
     .map(|d| svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="{d}"/></svg>"#).into_bytes()))
 });
@@ -8541,6 +8545,10 @@ impl BeeperGuiApp {
             },
             UiMessage::AnimationTick => {}
             UiMessage::Pushed(Ok(())) => {}
+            UiMessage::DismissRecoveryReminder => {
+                let now = beeper_core::config::now_unix_millis();
+                self.patch_settings(|s| s.recovery_reminder_dismissed_at = now);
+            }
             UiMessage::DismissBanner => {
                 (self.status_banner, self.relaunch_toast) = (String::new(), None);
                 self.toast_dismissals += 1;
@@ -10023,7 +10031,7 @@ impl BeeperGuiApp {
         let menu =
             menu.or_else(|| Some(layer(self.view_thread_menu(self.pane().thread_menu?), UiMessage::CloseModals)));
         let menu = menu.or_else(|| Some(layer(self.view_unread_menu(self.unread_menu?), UiMessage::CloseModals)));
-        let toast = self.view_toast(76.0);
+        let toast = self.view_toast(true);
         let elsewhere = self.delete_in.is_some_and(|w| self.label_asking(w));
         let confirm = self.confirm.filter(|d| !SETTINGS_DIALOGS.contains(d) && !elsewhere);
         let confirm = confirm.map(|d| self.view_confirm(d));
@@ -16183,9 +16191,10 @@ impl BeeperGuiApp {
             .into()
     }
 
-    /// The status toast at the bottom left of a window, `left` from its edge.
-    fn view_toast(&self, left: f32) -> Option<El<'_>> {
+    /// The status toast at the bottom left of the `main` window or of the Media window.
+    fn view_toast(&self, main: bool) -> Option<El<'_>> {
         let p = &self.pal;
+        let left = if main { 76.0 } else { 8.0 };
         let banner = match self.relaunch_toast {
             Some(t) => trs(t, &["Beeper"]),
             None => self.status_banner.clone(),
@@ -16213,7 +16222,17 @@ impl BeeperGuiApp {
         };
         let pills = self.status_pills().into_iter().map(pill);
         let older = self.older_toasts.iter().enumerate().map(|(i, t)| self.toast_card(&t.0, Some(i)));
-        let older = pills.chain(older);
+        let reminder = (main && self.recovery_reminder()).then(|| {
+            let toast = Toast {
+                icon: Some(4),
+                strong: true,
+                right: Some((trx("Verify", "recovery key reminder"), enter_key::KeyMsg::Open.into())),
+                dismiss: Some(UiMessage::DismissRecoveryReminder),
+                ..Toast::new(tr("Check if you still have access to a recovery key.").into())
+            };
+            self.toast_card(&toast, None)
+        });
+        let older = pills.chain(reminder).chain(older);
         let newest = (!banner.is_empty()).then(|| -> El<'_> {
             let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, p.sub, UiMessage::DismissBanner);
             if let Some(what) = self.undo_note.as_ref().filter(|_| self.shown_note()) {
@@ -16240,6 +16259,17 @@ impl BeeperGuiApp {
                 .on_exit(UiMessage::ToastHover(false));
             container(list).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(left)).into()
         })
+    }
+
+    /// Desktop's `RecoveryCodeReminder`, which the flag `personal-room-overrides` or `drafts-sync` turns on: a verified
+    /// device without the recovery key asks to check it, unless the user closed the reminder in the last 7 days.
+    fn recovery_reminder(&self) -> bool {
+        const WEEK_MS: i64 = 7 * 86_400_000;
+        let st = self.store.read();
+        let (s, closed) = (&st.beeper_state, st.settings.recovery_reminder_dismissed_at);
+        let flag = st.feature("personal-room-overrides").on || st.feature("drafts-sync").on;
+        let recent = beeper_core::config::now_unix_millis() - closed < WEEK_MS;
+        flag && s.verified && s.secrets.recovery_code.is_empty() && !recent
     }
 
     /// Desktop's `StatusPill` toasts, which stay while their state lasts: "Offline", "Syncing..." and "Connecting...",
@@ -16279,7 +16309,10 @@ impl BeeperGuiApp {
         };
         let btn = |(label, msg): &(&'static str, UiMessage), fg: Color| {
             let label = semi(*label, 13.0).line_height(Pixels(18.0)).color(fg);
-            let action = UiMessage::ToastAction(older, Box::new(msg.clone()));
+            let action = match t.dismiss {
+                Some(_) => msg.clone(),
+                None => UiMessage::ToastAction(older, Box::new(msg.clone())),
+            };
             button(label).padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0)).on_press(action)
         };
         // Desktop's 20 px icon sits in a 2rem box with a -8 px margin, so the toast stays 2rem tall.
@@ -16296,7 +16329,10 @@ impl BeeperGuiApp {
         });
         let body = column![text.color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph)].push(below).spacing(16);
         let right = t.right.as_ref().map(|b| btn(b, p.accent));
-        let dismiss = older.map_or(UiMessage::DismissBanner, UiMessage::DismissOlderToast);
+        let dismiss = match &t.dismiss {
+            Some(m) => m.clone(),
+            None => older.map_or(UiMessage::DismissBanner, UiMessage::DismissOlderToast),
+        };
         let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, if t.error { fg } else { p.sub }, dismiss);
         let pad = if glyph.is_some() { Padding::new(6.0).right(8.0) } else { Padding::new(8.0) };
         let lead = row![].push(glyph).push(body).spacing(6);
@@ -16640,7 +16676,7 @@ impl BeeperGuiApp {
             )
         });
         // The menus and the delete dialog of the viewer show over it.
-        stack![base].push(self.view_toast(8.0)).push(carousel).push(menu).push(item_menu).push(ask).into()
+        stack![base].push(self.view_toast(false)).push(carousel).push(menu).push(item_menu).push(ask).into()
     }
 
     fn view_forward<'a>(&'a self, f: &'a Forward) -> El<'a> {
@@ -20295,11 +20331,23 @@ pub struct Toast {
     pub open: Option<UiMessage>,
     /// Desktop's `type: "error"`.
     pub error: bool,
+    /// Desktop's `onDismiss` of a toast with `keepToastOpen` buttons: the close runs it, and the buttons do not close
+    /// the toast.
+    pub dismiss: Option<UiMessage>,
 }
 
 impl Toast {
     pub fn new(text: String) -> Self {
-        Toast { text, icon: None, strong: false, buttons: Vec::new(), right: None, open: None, error: false }
+        Toast {
+            text,
+            icon: None,
+            strong: false,
+            buttons: Vec::new(),
+            right: None,
+            open: None,
+            error: false,
+            dismiss: None,
+        }
     }
 }
 

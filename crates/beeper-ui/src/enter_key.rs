@@ -140,4 +140,27 @@ mod tests {
         let _ = app.update(KeyMsg::Done(Ok(())).into());
         assert!(app.enter_key.window.is_none(), "a verified device closes the modal");
     }
+
+    #[test]
+    fn a_verified_device_without_the_recovery_key_shows_the_reminder_like_desktop() {
+        const TEXT: &str = "Check if you still have access to a recovery key.";
+        let mut app = crate::fuzz::demo_app("enter-key-reminder");
+        let shows = |app: &BeeperGuiApp| simulator(app.view_main()).find(TEXT).is_ok();
+        assert!(!shows(&app), "a device with the recovery key has no reminder");
+        app.store.write().beeper_state.secrets.recovery_code.clear();
+        assert!(shows(&app), "a device verified without the recovery key shows the reminder");
+        let mut sim = simulator(app.view_main());
+        let _ = sim.click("Verify");
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        for m in msgs {
+            let _ = app.update(m);
+        }
+        assert!(app.enter_key.window.is_some() && shows(&app), "Verify opens the modal and keeps the reminder");
+        let _ = app.update(UiMessage::DismissRecoveryReminder);
+        assert!(!shows(&app), "the close hides the reminder for 7 days");
+        app.store.write().settings.recovery_reminder_dismissed_at -= 8 * 86_400_000;
+        assert!(shows(&app), "the reminder comes back after 7 days");
+        app.store.write().features.flags["features"]["*"]["personal-room-overrides"] = false.into();
+        assert!(!shows(&app), "the reminder needs the flag personal-room-overrides or drafts-sync");
+    }
 }

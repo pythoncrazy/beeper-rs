@@ -297,6 +297,7 @@ fn demo_state() -> BeeperStateRecord {
             megolm_backup_key: true,
             recovery_code: DEFAULT_RECOVERY_CODE.to_string(),
         },
+        recovery_code_generated_at: 0,
     }
 }
 
@@ -656,6 +657,7 @@ impl BeeperStore {
                 key_backup: r.key_backup,
                 first_sync_done: r.first_sync_done,
                 has_backed_up_recovery_key: r.has_backed_up_code,
+                recovery_key_generated_at: (r.recovery_code_generated_at > 0).then_some(r.recovery_code_generated_at),
             },
             verification: self.app_verification().cloned(),
         }

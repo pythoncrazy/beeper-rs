@@ -251,6 +251,9 @@ pub struct BeeperStateRecord {
     pub key_backup: bool,
     pub has_backed_up_code: bool,
     pub secrets: BeeperStateSecrets,
+    /// Desktop's `recovery_code_generated_at`: the time in ms when this device made the recovery key, or 0.
+    #[serde(default)]
+    pub recovery_code_generated_at: i64,
 }
 
 impl BeeperStateRecord {
@@ -1308,6 +1311,8 @@ pub struct AppE2ee {
     pub key_backup: bool,
     pub first_sync_done: bool,
     pub has_backed_up_recovery_key: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_key_generated_at: Option<i64>,
 }
 
 /// Desktop's `AppStateSnapshot`: the sign-in and encrypted messaging setup state of the app.
@@ -1444,6 +1449,9 @@ pub struct BeeperSettings {
     pub ever_labeled: bool,
     /// Desktop's local `labels_intro_seen`: New Label shows its intro only the first time.
     pub labels_intro_seen: bool,
+    /// Desktop's local `recovery_code_reminder_dismissed_at`: the time in ms when the user closed the recovery key
+    /// reminder, or 0.
+    pub recovery_reminder_dismissed_at: i64,
     /// Desktop's local `downloads_dir_path`, or empty for the downloads folder of the OS.
     pub downloads_dir: String,
     /// Desktop's synced `message_double_click_reaction`: the emoji of Quick React.

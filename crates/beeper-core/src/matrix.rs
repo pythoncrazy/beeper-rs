@@ -2552,7 +2552,9 @@ pub async fn new_recovery_key(store: &SharedStore) -> Result<String, String> {
     {
         let mut st = store.write();
         st.pending_recovery_key = Some(key.clone());
-        st.beeper_state.has_backed_up_code = false;
+        let s = &mut st.beeper_state;
+        (s.has_backed_up_code, s.secrets.recovery_code) = (false, key.clone());
+        s.recovery_code_generated_at = crate::config::now_unix_millis();
         st.persist_state_to_sqlite();
         st.emit_ws("setup.updated", "", None, None, None);
     }
@@ -2586,6 +2588,13 @@ pub async fn recover(store: SharedStore, key: String) -> Result<(), String> {
         RecoveryError::SecretStorage(SecretStorageError::SecretStorageKey(e)) => format!("Invalid recovery key: {e}"),
         e => e.to_string(),
     })?;
+    // Desktop's SDK keeps the recovery key that verified this device.
+    {
+        let mut st = store.write();
+        st.beeper_state.secrets.recovery_code = key;
+        st.persist_state_to_sqlite();
+        st.emit_ws("setup.updated", "", None, None, None);
+    }
     refresh_e2ee(&client, &store).await;
     Ok(())
 }
@@ -3525,6 +3534,11 @@ mod tests {
             (state.state, state.e2ee.initialized, state.e2ee.cross_signing),
             ("needs-cross-signing-setup", true, false)
         );
+        let e2ee =
+            |store: &crate::store::SharedStore| serde_json::to_value(store.read().app_state()).unwrap()["e2ee"].clone();
+        assert!(e2ee(&store).get("recoveryKeyGeneratedAt").is_none(), "Desktop leaves out a time of 0");
+        store.write().beeper_state.recovery_code_generated_at = 1_763_200_000_000;
+        assert_eq!(e2ee(&store)["recoveryKeyGeneratedAt"], 1_763_200_000_000_i64);
         let _ = std::fs::remove_dir_all(dir);
     }
 
