@@ -2,6 +2,7 @@
 //! flags, defaults, text output, `--json` envelope, and exit codes. They talk to any Desktop API server through
 //! [`BeeperClient`].
 
+mod accounts;
 mod chats;
 pub mod commands;
 mod messages;

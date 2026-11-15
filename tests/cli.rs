@@ -230,3 +230,39 @@ fn cli_lists_searches_sends_and_exports_messages() {
             .unwrap();
     assert_eq!((export["chatID"].clone(), export["count"].clone()), (json!("local_wa_eric"), json!(2)));
 }
+
+#[test]
+fn cli_lists_accounts_contacts_and_bridges() {
+    let d = demo("accounts");
+    let ids = d.run(&["accounts", "--ids"]).stdout;
+    assert_eq!(ids, "acc_whatsapp\nacc_imessage\nacc_telegram\nacc_signal\nacc_instagram\nacc_slack\n");
+    let show = d.run(&["accounts", "show", "telegram"]).stdout;
+    assert_eq!(show, "▎ Telegram  telegram\n  acc_telegram  bridge telegram cloud telegram\n\n");
+    let missing = d.run(&["accounts", "show", "zzz", "--json"]);
+    assert_eq!(missing.code, 5, "a selector without a match is a not-found error");
+    let removed = d.run(&["accounts", "remove", "telegram"]);
+    assert!(removed.stderr.contains("│ This Desktop API does not expose account removal.\n"), "{}", removed.stderr);
+
+    let used = d.run(&["accounts", "use", "telegram", "--json"]).json();
+    assert_eq!(used["data"], json!({ "message": "Default account: acc_telegram", "accountID": "acc_telegram" }));
+    let default = d.run(&["accounts", "list", "--json"]).json();
+    assert_eq!(default["data"][2]["default"], true, "the default account has the default mark");
+    let chats = d.run(&["chats", "list", "--json"]).json();
+    assert!(
+        chats["data"].as_array().unwrap().iter().all(|c| c["accountID"] == "acc_telegram"),
+        "the default account limits the chats"
+    );
+    d.run(&["accounts", "use", ""]);
+
+    let search = d.run(&["contacts", "search", "tulir"]);
+    assert_eq!(search.stdout, "▎ Tulir Asokan\n  @tulir  tulir@example.com\n  @tulir:beeper.com  on acc_telegram\n\n");
+    assert_eq!(search.stderr, "✓ 1 match across 6 accounts\n");
+    let contact = d.run(&["contacts", "show", "@tulir:beeper.com", "--account", "telegram", "--json"]).json();
+    assert_eq!(
+        (contact["data"]["accountID"].clone(), contact["data"]["contact"]["fullName"].clone()),
+        (json!("acc_telegram"), json!("Tulir Asokan"))
+    );
+    let listed = d.run(&["contacts", "--limit", "2", "--ids"]).stdout;
+    assert_eq!(listed.lines().count(), 2, "{listed}");
+    assert_eq!(d.run(&["bridges", "list", "--provider", "nowhere"]).code, 1, "a bad option is a parse error");
+}
