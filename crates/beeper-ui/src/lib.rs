@@ -3746,14 +3746,69 @@ fn save_draft(st: &mut BeeperStore, pane: &Pane) {
 /// Desktop's `restoreDraftSnapshot`: the attachments of a saved draft. A draft from the API's focus endpoint names its
 /// attachments by file path.
 fn load_draft(st: &BeeperStore, draft: &ChatDraft) -> Result<Vec<PendingMedia>, String> {
-    let file = |a: &ChatDraftAttachment| match st.assets.get(&a.upload_id) {
-        Some(s) => {
-            let (path, _) = st.resolve_asset_path(&a.upload_id).expect("a stored upload has a path");
-            Ok(PendingMedia { name: s.file_name.clone(), ..portal::load_file(&path)? })
-        }
-        None => portal::load_file(std::path::Path::new(&a.upload_id)),
+    let file = |a: &ChatDraftAttachment| match st.assets.contains_key(&a.upload_id) {
+        true => load_upload(st, &a.upload_id),
+        false => portal::load_file(std::path::Path::new(&a.upload_id)),
     };
     draft.attachments.iter().map(file).collect()
+}
+
+/// A stored upload as a file for the composer, with its first name.
+fn load_upload(st: &BeeperStore, id: &str) -> Result<PendingMedia, String> {
+    let (path, _) = st.resolve_asset_path(id).expect("a stored upload has a path");
+    Ok(PendingMedia { name: st.assets[id].file_name.clone(), ..portal::load_file(&path)? })
+}
+
+/// Desktop's caption rule: the text goes with a single file as its caption.
+fn caption(text: &str, files: &[PendingMedia]) -> Option<String> {
+    (!text.is_empty() && files.len() == 1).then(|| text.to_string())
+}
+
+type MediaOut =
+    Box<dyn FnOnce(String, Option<String>, Option<String>, Option<beeper_core::matrix::ThreadSend>) -> Outgoing>;
+
+/// Desktop's `KFe`: the attachment of the local echo of a file, and the send for its transaction, caption, reply and
+/// thread. A video and an audio file go with their measured length and size. An image keeps its frames in `media`.
+fn file_echo(
+    media: &mut images::Images<Result<Frames, String>>,
+    st: &mut BeeperStore,
+    f: PendingMedia,
+) -> (Attachment, MediaOut) {
+    let PendingMedia { bytes, name, mime, is_gif, size, frames, duration } = f;
+    let image = !frames.is_empty();
+    let key = format!("pasted:{}", st.next_id("img"));
+    if image {
+        media.insert(key.clone(), Some(Ok(frames)));
+    }
+    let ms = duration.map(|s| (s * 1000.0).round() as u64);
+    let (kind, info) = match (mime.split('/').next(), ms) {
+        _ if image => ("img", MediaInfo::Image(size.0, size.1)),
+        (Some("video"), Some(ms)) => ("video", MediaInfo::Video(size.0, size.1, ms)),
+        (Some("audio"), Some(ms)) => ("audio", MediaInfo::Audio(ms)),
+        _ => ("file", MediaInfo::File),
+    };
+    let att = Attachment {
+        attachment_type: kind.into(),
+        duration,
+        file_name: Some(name.clone()),
+        file_size: Some(bytes.len() as u64),
+        is_gif: Some(is_gif),
+        mime_type: Some(mime.clone()),
+        size: (size.0 > 0).then_some(AttachmentSize { width: Some(size.0), height: Some(size.1) }),
+        src_url: image.then_some(key),
+        ..Default::default()
+    };
+    let out = move |txn, caption, reply_to, thread| Outgoing::Media {
+        txn,
+        bytes,
+        name,
+        mime,
+        info,
+        caption,
+        reply_to,
+        thread,
+    };
+    (att, Box::new(out))
 }
 
 fn pref_row<'a>(
@@ -5134,10 +5189,7 @@ impl BeeperGuiApp {
         drop(st);
         for f in checked {
             match f {
-                Ok(f) => {
-                    self.pane.send_later = None;
-                    self.pane.attachments.push(f);
-                }
+                Ok(f) => self.pane.attachments.push(f),
                 Err(e) => self.fail(Toast::new(e)),
             }
         }
@@ -5407,7 +5459,23 @@ impl BeeperGuiApp {
             if !st.scheduled.iter().any(|s| s.chat_id == cid && !s.canceled) {
                 self.pane.sched_fold = (false, false);
             }
-            st.schedule(&chat_id, text, self.pane.reply_target(), at, no_reply);
+            // Desktop's `scheduleCurrentDraft`: one entry for each content part, with the reply on the first.
+            let mut reply_to = self.pane.reply_target();
+            let files = std::mem::take(&mut self.pane.attachments);
+            let caption = caption(&text, &files);
+            if !text.is_empty() && caption.is_none() {
+                st.schedule(&chat_id, text, reply_to.take(), (at, no_reply), None);
+            }
+            for f in files {
+                let upload = st.store_uploaded_asset(f.name, f.mime, &f.bytes).upload_id;
+                st.schedule(
+                    &chat_id,
+                    caption.clone().unwrap_or_default(),
+                    reply_to.take(),
+                    (at, no_reply),
+                    Some(upload),
+                );
+            }
         } else if let Some(target) = self.pane.editing_message_id.take() {
             st.edit_message(&chat_id, &target, text.clone()).expect("edit message");
             st.queue(&chat_id, Outgoing::Edit { target, text, mentions });
@@ -5419,7 +5487,7 @@ impl BeeperGuiApp {
             let delay = delay.filter(|&ms| ms > 0);
             let restore = delay.map(|_| (text.clone(), reply_to.clone(), files.clone()));
             let mut sends = Vec::new();
-            let caption = (!text.is_empty() && files.len() == 1).then(|| text.clone());
+            let caption = caption(&text, &files);
             if !text.is_empty() && caption.is_none() {
                 let urls = text_urls(&text);
                 let preview = self.pane.composer_links.iter().find_map(|(u, s)| match s {
@@ -5437,36 +5505,11 @@ impl BeeperGuiApp {
                 reply_to = None;
                 sends.push((txn.clone(), Outgoing::Send { txn, text, reply_to: to, preview, mentions, thread }));
             }
-            for PendingMedia { bytes, name, mime, is_gif, size, frames, duration } in files {
-                let image = !frames.is_empty();
-                let key = format!("pasted:{}", st.next_id("img"));
-                if image {
-                    self.media.insert(key.clone(), Some(Ok(frames)));
-                }
-                // Desktop's `KFe`: a video and an audio file go with their measured length and size.
-                let ms = duration.map(|s| (s * 1000.0).round() as u64);
-                let (kind, info) = match (mime.split('/').next(), ms) {
-                    _ if image => ("img", MediaInfo::Image(size.0, size.1)),
-                    (Some("video"), Some(ms)) => ("video", MediaInfo::Video(size.0, size.1, ms)),
-                    (Some("audio"), Some(ms)) => ("audio", MediaInfo::Audio(ms)),
-                    _ => ("file", MediaInfo::File),
-                };
-                let att = Attachment {
-                    attachment_type: kind.into(),
-                    duration,
-                    file_name: Some(name.clone()),
-                    file_size: Some(bytes.len() as u64),
-                    is_gif: Some(is_gif),
-                    mime_type: Some(mime.clone()),
-                    size: (size.0 > 0).then_some(AttachmentSize { width: Some(size.0), height: Some(size.1) }),
-                    src_url: image.then_some(key),
-                    ..Default::default()
-                };
+            for f in files {
+                let (att, out) = file_echo(&mut self.media, &mut st, f);
                 let (txn, to, thread) =
                     self.pane.compose(&mut st, &chat_id, caption.clone(), reply_to.take(), Some(att));
-                let caption = caption.clone();
-                let out = Outgoing::Media { txn: txn.clone(), bytes, name, mime, info, caption, reply_to: to, thread };
-                sends.push((txn, out));
+                sends.push((txn.clone(), out(txn, caption.clone(), to, thread)));
             }
             // Desktop's `queuePendingMessages` sends the earlier queue of the chat first.
             if let Some(i) = self.queued.iter().position(|q| q.chat == chat_id) {
@@ -5496,27 +5539,54 @@ impl BeeperGuiApp {
         self.refresh_theme_and_tray();
     }
 
-    /// Desktop's `ScheduledStore.sendMessage`: a typed message, which moves an archived chat to the inbox.
+    /// Desktop's `ScheduledStore.sendMessage`: a typed message or a file, which moves an archived chat to the inbox.
     fn send_scheduled(&mut self, due: Vec<Scheduled>) {
         let mut st = self.store.write();
+        let mut failed = Vec::new();
         for s in due {
             let Some(idx) = st.resolve_chat_idx(&s.chat_id) else { continue };
             if has_flag(&st.chats[idx], ChatFlag::Archived) {
                 self.set_archived(&mut st, idx, false);
             }
-            let (_, txn, _) =
-                st.send_message(&s.chat_id, Some(s.text.clone()), s.reply_to.clone(), None).expect("send scheduled");
-            let out = Outgoing::Send {
-                txn,
-                text: s.text,
-                reply_to: s.reply_to,
-                preview: None,
-                mentions: Vec::new(),
-                thread: None,
+            let text = Some(s.text).filter(|t| !t.is_empty());
+            let out = match s.upload {
+                None => {
+                    let (_, txn, _) =
+                        st.send_message(&s.chat_id, text.clone(), s.reply_to.clone(), None).expect("send scheduled");
+                    let text = text.expect("a scheduled text part has text");
+                    Outgoing::Send {
+                        txn,
+                        text,
+                        reply_to: s.reply_to,
+                        preview: None,
+                        mentions: Vec::new(),
+                        thread: None,
+                    }
+                }
+                // "Clear storage" can remove the upload before the send.
+                Some(id) => {
+                    let f = match st.assets.contains_key(&id) {
+                        true => load_upload(&st, &id),
+                        false => Err(format!("Couldn't attach {id}")),
+                    };
+                    let f = match f {
+                        Ok(f) => f,
+                        Err(e) => {
+                            failed.push(e);
+                            continue;
+                        }
+                    };
+                    let (att, out) = file_echo(&mut self.media, &mut st, f);
+                    let (_, txn, _) = st
+                        .send_message(&s.chat_id, text.clone(), s.reply_to.clone(), Some(att))
+                        .expect("send scheduled");
+                    out(txn, text, s.reply_to, None)
+                }
             };
             st.queue(&s.chat_id, out);
         }
         drop(st);
+        failed.into_iter().for_each(|e| self.fail(Toast::new(e)));
         self.refresh_theme_and_tray();
     }
 
@@ -6232,7 +6302,7 @@ impl BeeperGuiApp {
                 self.status_banner = tr("Send Later isn't available while editing a message").into();
             }
             UiMessage::OpenSendLater => {
-                if self.pane.selected_chat_id.is_some() && self.pane.attachments.is_empty() {
+                if self.pane.selected_chat_id.is_some() {
                     return self.update(UiMessage::OpenSubMenu(commands::SubMenu::Schedule(Vec::new())));
                 }
             }
@@ -8089,7 +8159,6 @@ impl BeeperGuiApp {
                         duration: None,
                     };
                     if !self.store.read().settings.on("autoSendGifs") {
-                        self.pane.send_later = None;
                         self.pane.attachments.push(gif);
                         return Task::none();
                     }
@@ -10139,7 +10208,7 @@ impl BeeperGuiApp {
                         left: 8.0,
                     })
                 });
-                column![].push(date).push(self.view_scheduled_bubble(s, bg)).into()
+                column![].push(date).push(self.view_scheduled_bubble(st, s, bg)).into()
             });
             rows.collect()
         };
@@ -10171,13 +10240,18 @@ impl BeeperGuiApp {
     }
 
     /// A scheduled message like Desktop's `is-scheduled` bubble: `bg`, with a dashed border in the text color.
-    fn view_scheduled_bubble(&self, s: &Scheduled, bg: Color) -> El<'_> {
+    fn view_scheduled_bubble(&self, st: &BeeperStore, s: &Scheduled, bg: Color) -> El<'_> {
         let p = &self.pal;
         let fg = if s.canceled { hex(0x808080) } else { p.accent };
-        let text = txt(s.text.clone(), 13.0)
-            .line_height(Pixels(16.0))
-            .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-            .color(fg);
+        let line =
+            |t: String| txt(t, 13.0).line_height(Pixels(16.0)).wrapping(iced::widget::text::Wrapping::WordOrGlyph);
+        // A file part shows its file name over its caption.
+        let file = s
+            .upload
+            .as_ref()
+            .and_then(|id| st.assets.get(id))
+            .map(|a| line(a.file_name.clone()).font(fw(Weight::Semibold)).color(fg));
+        let text = column![].push(file).push((!s.text.is_empty()).then(|| line(s.text.clone()).color(fg)));
         let bubble = container(text)
             .padding([9.0, BUBBLE_PAD_X])
             .max_width(0.45 * self.pane().size.width)

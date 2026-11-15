@@ -1044,6 +1044,9 @@ pub struct Scheduled {
     pub send_on: i64,
     pub send_only_on_no_response: bool,
     pub canceled: bool,
+    /// The stored upload of a file part, which goes with `text` as its caption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload: Option<String>,
 }
 
 impl Message {
