@@ -376,7 +376,7 @@ pub enum UiMessage {
     NotifyTimer(String, u64),
     /// A shown notification, with its chat and message.
     Notified(Result<(u32, (String, String)), String>),
-    NotificationEvent(u32, bool),
+    NotificationEvent(u32, Option<String>),
     WindowFocused(bool),
     /// Desktop's `toggleIncognitoMode` from a hotkey or the command bar, with its toast.
     ToggleIncognito,
@@ -7895,7 +7895,7 @@ impl BeeperGuiApp {
             UiMessage::NotifyTimer(chat, timer) => return self.notify_timer(chat, timer),
             UiMessage::Notified(Ok((id, note))) => _ = self.notifications.insert(id, note),
             UiMessage::Notified(Err(e)) => self.status_banner = format!("Notifications failed: {e}"),
-            UiMessage::NotificationEvent(id, clicked) => return self.notification_event(id, clicked),
+            UiMessage::NotificationEvent(id, action) => return self.notification_event(id, action),
             m @ (UiMessage::ToastHover(_) | UiMessage::ToastTick) if self.toast_clock.0 != self.status_banner => {
                 self.toast_clock = (self.status_banner.clone(), self.toast_clock.1, Duration::ZERO);
                 return self.update(m);
@@ -9179,8 +9179,8 @@ impl BeeperGuiApp {
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
             .then(|| Subscription::run(tray::events).map(UiMessage::Tray));
         let online = cfg!(target_os = "linux").then(|| Subscription::run(portal::online).map(UiMessage::Online));
-        let notes = (!self.notifications.is_empty())
-            .then(|| Subscription::run(notify::events).map(|(id, clicked)| UiMessage::NotificationEvent(id, clicked)));
+        let notes = (!self.notifications.is_empty() || self.verify.note.is_some())
+            .then(|| Subscription::run(notify::events).map(|(id, action)| UiMessage::NotificationEvent(id, action)));
         let toast = self.toast_running().then(|| iced::time::every(TOAST_TICK).map(|_| UiMessage::ToastTick));
         let tick =
             animated.then(|| iced::time::every(std::time::Duration::from_millis(20)).map(|_| UiMessage::AnimationTick));
