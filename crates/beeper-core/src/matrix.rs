@@ -11,7 +11,7 @@ use crate::models::{
     REMOVED_MESSAGES_ROOM, REPORT_SPAM, TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
-use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
+use crate::store::{order_of, sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
 use futures_util::StreamExt;
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::config::SyncSettings;
@@ -1092,7 +1092,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     let rules = store.read().inbox_rules.clone();
     let pins = global(&room.client(), "com.beeper.favourites_order").await;
     let rank = pins["Inbox"].as_array().and_then(|ids| ids.iter().position(|id| id == room.room_id().as_str()));
-    let chat = chat(room, &accounts, &rules).await;
+    let mut chat = chat(room, &accounts, &rules).await;
     let seen = {
         let st = store.read();
         st.chat_idx_by_id.get(&chat_id).is_some_and(|&i| st.chats[i].notifiable.is_some())
@@ -1121,7 +1121,8 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
             }
         }
     }
-    let done = account_data(room, "com.beeper.inbox.done").await.and_then(|d| d["at_order"].as_i64());
+    let done = account_data(room, "com.beeper.inbox.done").await;
+    let done = done.map(|d| (d["at_order"].as_i64(), d["updated_ts"].as_i64()));
     let reacted =
         ops.iter().filter_map(|o| if let Op::React(_, _, m) = o { Some(m.sort_key.clone()) } else { None }).max();
     let redacted = ops.iter().any(|o| matches!(o, Op::Redact(_)));
@@ -1135,6 +1136,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
         if old != rank {
             st.persist_state_to_sqlite();
         }
+        st.keep_local_flags(&mut chat);
         if !note {
             st.upsert_chat(chat);
         } else {
@@ -1267,13 +1269,38 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
         let old = st.chats[idx].notifiable.as_ref().filter(|_| !redacted);
         let notifiable = [old, last, reacted.as_ref(), stored].into_iter().flatten().max().cloned();
         let notifiable = Some(notifiable.unwrap_or_else(|| sort_key(MIN_SAFE_INTEGER)));
-        let archived = st.chats[idx].is_pinned != Some(true) && done.is_some_and(|d| Some(sort_key(d)) >= notifiable);
+        let archived = st
+            .local_flag(&chat_id, ChatFlag::Archived)
+            .unwrap_or_else(|| archived_upto(&st.chats[idx], done, notifiable.as_deref().expect("a notifiable order")));
         if (st.chats[idx].is_archived, &st.chats[idx].notifiable) != (Some(archived), &notifiable) {
             st.update_chat(idx, |c| (c.is_archived, c.notifiable) = (Some(archived), notifiable));
         }
     }
     sync_thread_reads(store, room, roots).await;
     sync_receipts(store, room).await;
+}
+
+/// Desktop's `archiveThread` content of `com.beeper.inbox.done`: archived up to `order` at `now`, or an empty object to
+/// unarchive.
+fn inbox_done(order: Option<i64>, now: i64) -> Value {
+    match order {
+        Some(order) => serde_json::json!({ "at_ts": now, "updated_ts": now, "at_order": order }),
+        None => serde_json::json!({}),
+    }
+}
+
+/// Desktop's `isArchived` of a thread from its `com.beeper.inbox.done` (`at_order`, `updated_ts`): with an order, the
+/// chat is archived up to that homeserver order; with only a time, up to that time when nothing is unread.
+fn archived_upto(c: &Chat, done: Option<(Option<i64>, Option<i64>)>, notifiable: &str) -> bool {
+    match done {
+        _ if c.is_pinned == Some(true) => false,
+        Some((Some(order), _)) => sort_key(order).as_str() >= notifiable,
+        Some((None, Some(at))) => {
+            let unread = c.unread_count > 0 || c.is_marked_unread == Some(true);
+            at >= crate::store::activity_key(c).0 && at < now_unix_millis() && !unread
+        }
+        _ => false,
+    }
 }
 
 /// Desktop's `lastReadHsOrder` of the threads of `roots`: the own thread receipt, and for a new thread the own
@@ -1318,7 +1345,7 @@ async fn sync_thread_reads(store: &SharedStore, room: &Room, roots: BTreeSet<Str
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ChatFlag {
     Archived,
     Pinned,
@@ -1678,10 +1705,19 @@ pub async fn flush(store: SharedStore) -> Result<(), String> {
         let message = out.message().filter(|id| store.read().stored_message(id).is_some()).map(str::to_string);
         let retry = !matches!(out, Outgoing::Edit { .. });
         let pending = matches!(out, Outgoing::RemoveFromBeeper { .. });
+        let flag = match out {
+            Outgoing::Flag(f, on) => Some((chat.clone(), f, on)),
+            _ => None,
+        };
         let r = push(&store, chat, out).await;
         let mut st = store.write();
         match (r, message) {
-            (Ok(()), message) => st.pushed(row, message.as_deref(), None),
+            (Ok(()), message) => {
+                if let Some((chat, f, on)) = flag {
+                    st.flag_sent(chat, f, on);
+                }
+                st.pushed(row, message.as_deref(), None);
+            }
             (Err(e), Some(message)) => st.pushed(row, Some(&message), Some((e, retry))),
             (Err(e), None) => {
                 if !pending {
@@ -1863,15 +1899,13 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
         }
         Outgoing::Flag(flag, on) => match flag {
             ChatFlag::Archived => {
-                let now = now_unix_millis();
-                let mut done = serde_json::json!({ "at_ts": now, "updated_ts": now });
-                if on {
+                let order = on.then(|| {
                     let st = store.read();
                     let last = st.stored("chat_id = ?1 ORDER BY sort_key DESC LIMIT 1", [&chat]).pop();
                     let last = last.map(|m| m.sort_key).max(st.chats[st.chat_idx_by_id[&chat]].notifiable.clone());
-                    let order = last.map_or(MIN_SAFE_INTEGER, |k| k.parse::<i64>().expect("numeric sort key"));
-                    done["at_order"] = order.into();
-                }
+                    last.map_or(MIN_SAFE_INTEGER, |k| order_of(&k))
+                });
+                let done = inbox_done(order, now_unix_millis());
                 let raw = Raw::from_json(serde_json::value::to_raw_value(&done).expect("inbox done JSON"));
                 room.set_account_data_raw("com.beeper.inbox.done".into(), raw).await.map_err(e)?;
             }
@@ -3216,6 +3250,7 @@ pub async fn run(store: SharedStore) {
                         {
                             let mut st = store.write();
                             (st.matrix_error, st.syncing) = (None, false);
+                            st.syncs += 1;
                         }
                         refresh_e2ee(&client, &store).await;
                         sync_account_data(&client, &store).await;
@@ -3253,6 +3288,7 @@ pub async fn run(store: SharedStore) {
                                 }
                             }
                         }
+                        store.write().synced();
                     }
                 }
                 Ok(LoopCtrl::Continue)
@@ -3378,6 +3414,7 @@ mod tests {
                 (200, events.iter().find(|e| e["event_id"] == id.as_str()).expect("a stub event").clone())
             }
             p if p.contains("/send/") => (200, json!({ "event_id": "$sent" })),
+            p if p.contains("/account_data/") || p.contains("/tags/") => (200, json!({})),
             _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
         })
         .await;
@@ -3395,6 +3432,64 @@ mod tests {
     fn stub_event(id: &str, kind: &str, content: Value) -> Value {
         json!({ "type": kind, "sender": "@me:x", "event_id": id, "origin_server_ts": 1_700_000_000_000i64,
             "content": content, "unsigned": { "com.beeper.hs.order": 1 } })
+    }
+
+    /// Desktop's optimistic thread update: a flag changed here keeps its value until a sync shows the change, also
+    /// when a sync of the room (here the stub, which never has the change) comes first.
+    #[tokio::test]
+    async fn changed_flags_stay_until_a_sync_shows_them_like_desktop() {
+        use super::archived_upto;
+        let text = stub_event("$a", "m.room.message", json!({ "msgtype": "m.text", "body": "hi" }));
+        let (store, dir) = stub_history("local-flags", vec![text], ("!other:x", Vec::new())).await;
+        sync_stub_room(&store, "!room:x").await;
+        let flags = |store: &crate::store::SharedStore| {
+            let st = store.read();
+            let c = &st.chats[st.chat_idx_by_id["!room:x"]];
+            (c.is_archived, c.is_low_priority)
+        };
+        assert_eq!(flags(&store), (Some(false), Some(false)));
+        {
+            let mut st = store.write();
+            let i = st.chat_idx_by_id["!room:x"];
+            assert!(st.set_chat_flag(i, super::ChatFlag::Archived, Some(true)));
+            assert!(st.set_chat_flag(i, super::ChatFlag::LowPriority, Some(true)));
+        }
+        sync_stub_room(&store, "!room:x").await;
+        assert_eq!(flags(&store), (Some(true), Some(true)), "the queued changes win over the room state");
+        super::flush(store.clone()).await.expect("the stub takes the account data and the tag");
+        assert!(store.read().outbox.is_empty());
+        sync_stub_room(&store, "!room:x").await;
+        assert_eq!(flags(&store), (Some(true), Some(true)), "the sync in flight may not show the sent changes");
+        for _ in 0..2 {
+            let mut st = store.write();
+            st.syncs += 1;
+            st.synced();
+        }
+        sync_stub_room(&store, "!room:x").await;
+        assert_eq!(flags(&store), (Some(false), Some(false)), "later syncs show the homeserver state");
+        let mut c = {
+            let st = store.read();
+            st.chats[st.chat_idx_by_id["!room:x"]].clone()
+        };
+        (c.unread_count, c.is_marked_unread, c.is_pinned, c.last_activity) = (0, None, None, None);
+        let (old, new) = (crate::store::sort_key(3), crate::store::sort_key(9));
+        assert!(archived_upto(&c, Some((Some(9), None)), &old) && !archived_upto(&c, Some((Some(3), None)), &new));
+        assert!(!archived_upto(&c, Some((None, None)), &old) && !archived_upto(&c, None, &old));
+        assert!(archived_upto(&c, Some((None, Some(10))), &new), "a time without an order, after the last activity");
+        c.unread_count = 1;
+        assert!(!archived_upto(&c, Some((None, Some(10))), &new), "an unread chat is not archived up to a time");
+        c.is_pinned = Some(true);
+        assert!(!archived_upto(&c, Some((Some(9), None)), &old), "a pinned chat is never archived");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn archive_state_like_desktop() {
+        use super::inbox_done;
+        use crate::store::{order_of, sort_key};
+        assert_eq!(inbox_done(None, 5), json!({}), "Desktop unarchives with an empty object");
+        assert_eq!(inbox_done(Some(-3), 5), json!({ "at_ts": 5, "updated_ts": 5, "at_order": -3 }));
+        assert!([-5, 0, 7, -9_007_199_254_740_991].iter().all(|&o| order_of(&sort_key(o)) == o));
     }
 
     /// Other clients send events without the fields that Desktop expects, and Desktop shows them as well as it can.
