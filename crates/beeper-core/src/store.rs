@@ -307,6 +307,16 @@ pub fn activity_key(c: &Chat) -> (i64, String) {
     (ms.unwrap_or(0), c.id.clone())
 }
 
+/// Desktop's `markRemovedFromBeeper` and `deleteRemovedMessageData`: a deleted message without its content.
+fn removed_from_beeper(m: &mut Message) {
+    (m.is_deleted, m.removed) = (Some(true), true);
+    (m.text, m.html, m.poll) = (None, None, None);
+    m.edit_history.clear();
+    m.attachments.clear();
+    m.reactions.clear();
+    m.links.clear();
+}
+
 fn chat_index_text(c: &Chat) -> String {
     let people = c
         .participants
@@ -444,6 +454,9 @@ pub struct BeeperStore {
     pub bookmarks: HashMap<String, Bookmark>,
     /// The bookmarked messages that are not loaded, as Chat Info fetched them, or None when they are unavailable.
     pub bookmarked: HashMap<String, Option<Message>>,
+    /// Desktop's `mx_removed_messages` after the history of the removed-messages room is read: the removal events by
+    /// the event ID of the removed message.
+    pub removals: Option<HashMap<String, Vec<String>>>,
     pub pushing: bool,
     /// The Matrix IDs of sent events and created labels by their local IDs.
     pub sent: HashMap<String, String>,
@@ -596,6 +609,7 @@ impl BeeperStore {
             bookmarks_room: None,
             bookmarks: HashMap::new(),
             bookmarked: HashMap::new(),
+            removals: None,
             pushing: false,
             sent: HashMap::new(),
             typing: HashMap::new(),
@@ -1765,6 +1779,11 @@ impl BeeperStore {
             msg.is_bookmarked = Some(self.bookmarks.contains_key(&msg.id));
         }
         self.load_chat(&msg.chat_id);
+        // Desktop's upsert keeps `isDeleted` when the message has a removal.
+        let stored = self.msg_idx_by_id.get(&msg.id).is_some_and(|&i| self.messages[i].removed);
+        if msg.is_deleted != Some(true) && (stored || self.removals.as_ref().is_some_and(|r| r.contains_key(&msg.id))) {
+            removed_from_beeper(&mut msg);
+        }
         let Some(&idx) = self.msg_idx_by_id.get(&msg.id) else {
             let idx = self.push_message(msg, true);
             let m = self.messages[idx].clone();
@@ -2085,6 +2104,7 @@ impl BeeperStore {
             is_unread: Some(false),
             is_bookmarked: Some(false),
             is_deleted: None,
+            removed: false,
             linked_message_id: reply_to_message_id,
             attachments: attachment.into_iter().collect(),
             reactions: Vec::new(),
@@ -2147,16 +2167,48 @@ impl BeeperStore {
 
     pub fn delete_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, &'static str> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
+        let removed = self.messages[m_idx].removed;
         self.update_message(m_idx, |m| {
-            (m.is_deleted, m.is_edited) = (Some(true), Some(true));
-            (m.text, m.html, m.poll) = (None, None, None);
-            m.edit_history.clear();
-            m.attachments.clear();
-            m.reactions.clear();
-            m.links.clear();
+            removed_from_beeper(m);
+            (m.removed, m.is_edited) = (false, Some(true));
         });
+        if removed {
+            self.clean_up_removals(message_id);
+        }
         self.emit_ws("message.deleted", &chat_id, Some(message_id), None, None);
         Ok(chat_id)
+    }
+
+    /// Desktop's `removeMessage`: "Remove from Beeper" deletes the message here at once, and the outbox sends the
+    /// removal to the removed-messages room with one transaction ID, also after a restart.
+    pub fn remove_from_beeper(&mut self, message_id: &str) {
+        let m_idx = self.find_message(message_id).expect("a stored message");
+        let m = self.update_message(m_idx, removed_from_beeper);
+        let txn = format!("~beeper-{}", matrix_sdk::ruma::TransactionId::new());
+        self.queue(REMOVED_MESSAGES_ROOM, Outgoing::RemoveFromBeeper { txn, room: m.chat_id, target: m.id });
+    }
+
+    /// Desktop's `handleRemovedMessageRoomEvents`: the removal events of the removed-messages room by the event ID of
+    /// the removed message, in timeline order.
+    pub fn apply_removals(&mut self, removals: Vec<(String, String)>) {
+        self.removals.get_or_insert_default();
+        for (target, removal) in removals {
+            self.removals.as_mut().expect("read above").entry(target.clone()).or_default().push(removal);
+            match self.find_message(&target) {
+                Some(i) if self.messages[i].is_deleted != Some(true) => {
+                    drop(self.update_message(i, removed_from_beeper))
+                }
+                Some(i) if !self.messages[i].removed => self.clean_up_removals(&target),
+                _ => {}
+            }
+        }
+    }
+
+    /// Desktop's `cleanup` of a removed message that a redaction deleted: it redacts the removals of the message.
+    fn clean_up_removals(&mut self, target: &str) {
+        for removal in self.removals.as_mut().and_then(|r| r.remove(target)).into_iter().flatten() {
+            self.queue(REMOVED_MESSAGES_ROOM, Outgoing::Redact { target: removal });
+        }
     }
 
     pub fn remove_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, &'static str> {

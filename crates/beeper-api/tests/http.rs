@@ -486,8 +486,15 @@ async fn assets_upload_and_serve_like_desktop() {
         (&json!(id), &json!(id), &json!(true), &json!("hello again"), &me)
     );
     assert!(edited["editedTimestamp"].is_string(), "{edited}");
+    // Desktop answers 204 to `forEveryone=false`, and the message stays.
     let kept = send("DELETE", &format!("{chat}/{id}?forEveryone=false"), "", "").await;
-    assert!(kept.starts_with("HTTP/1.1 400 "), "{kept}");
+    assert!(kept.starts_with("HTTP/1.1 204 "), "{kept}");
+    let message = body(&send("GET", &format!("{chat}/{id}"), "", "").await);
+    assert_eq!(
+        (&message["text"], &message["isDeleted"]),
+        (&json!("hello again"), &serde_json::Value::Null),
+        "{message}"
+    );
 }
 
 #[tokio::test]

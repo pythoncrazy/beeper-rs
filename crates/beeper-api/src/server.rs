@@ -1538,8 +1538,9 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
                 Some(v) => v.as_bool().ok_or_else(|| bad("forEveryone must be a boolean"))?,
                 None => r.flag("forEveryone", true)?,
             };
+            // Desktop's `deleteMessage` of the Matrix platform does nothing when `forEveryone` is false.
             if !everyone {
-                return Err(bad("beeper-rs deletes messages only for everyone"));
+                return empty(StatusCode::NO_CONTENT, Vec::new());
             }
             let (msg, rules) = message_rules(st, id, mid)?;
             if msg.is_deleted != Some(true) && !MessageRules::young(rules.delete_max_age, &msg.timestamp) {
