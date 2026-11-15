@@ -1319,9 +1319,9 @@ fn chat_keys<'a>(
     after: bool,
 ) -> impl Iterator<Item = (i64, &'a str)> {
     let keys = match cursor {
-        None => st.chat_order.range::<(i64, String), _>(..),
-        Some(c) if after => st.chat_order.range((Excluded(c), Unbounded)),
-        Some(c) => st.chat_order.range(..c),
+        None => st.chat_order().range::<(i64, String), _>(..),
+        Some(c) if after => st.chat_order().range((Excluded(c), Unbounded)),
+        Some(c) => st.chat_order().range(..c),
     };
     keys.rev().map(|(ms, id)| (*ms, id.as_str()))
 }
