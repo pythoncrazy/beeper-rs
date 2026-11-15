@@ -359,6 +359,7 @@ mod tests {
             "action to block the other person in a DM\u{4}Block…",
             "action to unblock the other person in a DM\u{4}Unblock",
             "action to unblock the other person in a DM\u{4}Unblock…",
+            "message command\u{4}Reply in thread",
         ];
         for file in std::fs::read_dir(dir).unwrap() {
             let src = std::fs::read_to_string(file.unwrap().path()).unwrap();

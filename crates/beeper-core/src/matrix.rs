@@ -233,7 +233,7 @@ fn message_rules(f: &Value) -> MessageRules {
 
 /// The non-null `file` kinds of `com.beeper.room_features`. The bridge writes the state, so a kind that does not parse
 /// is left out with a log line.
-fn file_rules(f: &Value) -> FileRules {
+pub(crate) fn file_rules(f: &Value) -> FileRules {
     let kinds = f["file"].as_object().into_iter().flatten().filter(|(_, v)| !v.is_null());
     kinds
         .filter_map(|(k, v)| {
@@ -1693,7 +1693,10 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             };
             use matrix_sdk::room::reply::{EnforceThread, Reply};
             use matrix_sdk::ruma::events::room::message::{AddMentions, ReplyWithinThread};
-            // The thread relation of the SDK is Desktop's `buildThreadRelation` without "Also send to chat".
+            // The thread relation of the SDK is Desktop's `buildThreadRelation`, and "Also send to chat" adds its flag.
+            let broadcast = thread.as_ref().is_some_and(|t| t.broadcast).then(|| {
+                serde_json::Map::from_iter([("com.beeper.broadcast_outside_thread".to_string(), true.into())])
+            });
             let (enforce_thread, add_mentions) = match thread.map(|t| t.chosen) {
                 Some(true) => (EnforceThread::Threaded(ReplyWithinThread::Yes), AddMentions::Yes),
                 Some(false) => (EnforceThread::Threaded(ReplyWithinThread::No), AddMentions::No),
@@ -1732,6 +1735,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             };
             let caption = caption.map(matrix_sdk::ruma::events::room::message::TextMessageEventContent::plain);
             let config = AttachmentConfig::new().txn_id(txn.clone().into()).info(info).caption(caption).reply(reply);
+            let config = config.extra_content(broadcast);
             let parsed_mime = mime.parse().expect("valid media mime");
             sent(txn, room.send_attachment(&name, &parsed_mime, data, config).await.map_err(e)?.event_id);
         }
@@ -3033,6 +3037,11 @@ mod tests {
                 p if p.ends_with("/messages") => {
                     (200, json!({ "start": "t", "chunk": events.iter().rev().collect::<Vec<_>>() }))
                 }
+                p if p.contains("/event/") => {
+                    (200, events.iter().find(|e| p.ends_with(e["event_id"].as_str().unwrap())).unwrap().clone())
+                }
+                "/_matrix/client/v1/media/config" => (200, json!({ "m.upload.size": 1_000_000 })),
+                "/_matrix/media/v3/upload" => (200, json!({ "content_uri": "mxc://x/f" })),
                 p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
                 _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
                 p => {
@@ -3089,9 +3098,22 @@ mod tests {
             reply_to: Some(t.quoted.clone()),
             preview: None,
             mentions: Vec::new(),
-            thread: Some(t),
+            thread: Some(t.clone()),
         };
         store.write().queue("!room:x", out);
+        let (bytes, name, mime) = (b"%PDF".to_vec(), "a.pdf".to_string(), "application/pdf".to_string());
+        let caption = None;
+        let file = super::Outgoing::Media {
+            txn: "file".into(),
+            bytes,
+            name,
+            mime,
+            info: super::MediaInfo::File,
+            caption,
+            reply_to: Some(t.quoted.clone()),
+            thread: Some(t),
+        };
+        store.write().queue("!room:x", file);
         store.write().follow_thread("!room:x", "$e1", true);
         super::flush(store.clone()).await.expect("send the thread receipt, the reply and the follow");
         let sent = sent.lock().unwrap();
@@ -3102,6 +3124,9 @@ mod tests {
         let rel = json!({ "rel_type": "m.thread", "event_id": "$e1", "is_falling_back": true, "m.in_reply_to": { "event_id": "$e5" } });
         assert_eq!((&body["m.relates_to"], &body["com.beeper.broadcast_outside_thread"]), (&rel, &json!(true)));
         assert_eq!(body["m.mentions"], json!({}), "Desktop does not mention the sender of the fallback reply");
+        let (_, body) =
+            sent.iter().find(|(p, b)| p.contains("/send/m.room.message/") && b["msgtype"] == "m.file").expect("a file");
+        assert_eq!(body["com.beeper.broadcast_outside_thread"], json!(true), "a file has \"Also send to chat\" too");
         let (_, body) =
             sent.iter().find(|(p, _)| p.ends_with("/account_data/com.beeper.thread_follows")).expect("a follow");
         assert_eq!(

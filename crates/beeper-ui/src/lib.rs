@@ -4088,6 +4088,8 @@ pub struct BeeperGuiApp {
     drawing_thread: std::cell::Cell<bool>,
     /// Desktop's `threadedRepliesPaneFraction`: the part of the chat area that the thread pane takes.
     thread_fraction: f32,
+    /// Desktop's `openThreadedReplies` of each chat: the root of the thread pane that the chat shows when you come back.
+    open_threads: HashMap<String, String>,
     /// The width of the chat area at the last draw, where a drag of the thread pane edge starts.
     thread_area: std::cell::Cell<f32>,
     /// The thread pane edge follows the pointer.
@@ -4344,6 +4346,7 @@ impl BeeperGuiApp {
             drawing: Default::default(),
             drawing_thread: Default::default(),
             thread_fraction: THREAD_FRACTION,
+            open_threads: HashMap::new(),
             thread_area: Default::default(),
             thread_drag: false,
             unread_view: false,
@@ -5121,6 +5124,12 @@ impl BeeperGuiApp {
         let mut st = self.store.write();
         self.leave_chat(&mut st, Some(chat_id));
         let incognito = st.incognito();
+        if let Some(old) = self.pane.selected_chat_id.clone() {
+            match self.pane.thread.as_ref().and_then(|t| t.thread_root.clone()) {
+                Some(root) => drop(self.open_threads.insert(old, root)),
+                None => drop(self.open_threads.remove(&old)),
+            }
+        }
         let idx = st.resolve_chat_idx(chat_id).expect("selected chat exists");
         self.pane.selected_chat_id = Some(chat_id.to_string());
         if let Some(ev) = (!incognito).then(|| st.mark_chat_read(chat_id, false)).flatten() {
@@ -5156,6 +5165,9 @@ impl BeeperGuiApp {
         (self.pane.top.shown, self.pane.top.tries) = (false, 0);
         self.video = None;
         drop(st);
+        if let Some(root) = self.open_threads.get(chat_id).cloned() {
+            self.open_thread(chat_id.into(), root);
+        }
         self.refresh_theme_and_tray();
     }
 
@@ -8079,6 +8091,12 @@ impl BeeperGuiApp {
                     && st.scheduled.iter().any(|s| s.chat_id == m.chat_id && !s.canceled)
                 {
                     self.pane.sched_fold = (true, true);
+                }
+                // Desktop's thread pane reads a new reply that comes into view at the bottom of the thread.
+                let thread =
+                    self.pane.thread.as_ref().filter(|t| t.thread_root.is_some() && t.thread_root == m.thread_root);
+                if self.focused && thread.is_some_and(|t| t.scrolled_up.is_none_or(|(up, _)| !up)) {
+                    st.mark_thread_read(&m.chat_id, m.thread_root.as_deref().expect("a thread reply"), None);
                 }
                 drop(st);
                 self.send_scheduled(due);

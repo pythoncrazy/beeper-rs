@@ -1003,6 +1003,31 @@ fn threads_like_desktop() {
     assert!(app.pane.thread.is_some() && !app.show_right_panel, "the thread pane takes the place of Chat Info");
     let _ = app.update(UiMessage::ToggleRightPanel);
     assert!(app.pane.thread.is_none() && app.show_right_panel, "Chat Info takes the place of the thread pane");
+    // The command bar replies in the thread of the selected message, and the chat keeps its thread pane.
+    let _ = app.update(UiMessage::SelectMessages(vec![root.into()]));
+    let cmds = app.commands(&app.store.read(), "");
+    let cmd = cmds.iter().find(|c| c.title == "Reply in thread").expect("a Reply in thread command");
+    assert_eq!(cmd.hotkey, Some("Show Replies"));
+    let _ = app.update(cmd.msg.clone().unwrap());
+    let other = app.store.read().chats.iter().find(|c| c.id != chat).unwrap().id.clone();
+    app.select_chat(&other);
+    assert!(app.pane.thread.is_none());
+    app.select_chat(chat);
+    assert_eq!(app.pane.thread.as_ref().and_then(|t| t.thread_root.as_deref()), Some(root), "the thread comes back");
+    // A new reply in the open thread pane is read when it comes into view.
+    let mut st = app.store.write();
+    let t = st.thread_send(root, None, false);
+    let (_, id, _) = st.send_in_thread(chat, Some("new".into()), None, &t).unwrap();
+    let i = st.msg_idx_by_id[&id];
+    let m = st.update_message(i, |m| m.is_sender = Some(false));
+    let ci = st.chat_idx_by_id[chat];
+    st.update_chat(ci, |c| drop(c.thread_reads.insert(root.into(), beeper_core::store::sort_key(0))));
+    assert!(st.thread_unread(&st.chats[ci], root).0 > 0);
+    drop(st);
+    app.focused = true;
+    let _ = app.update(UiMessage::Upserted(Box::new(m)));
+    let st = app.store.read();
+    assert_eq!(st.thread_unread(&st.chats[st.chat_idx_by_id[chat]], root), (0, 0));
 }
 
 /// Desktop's unread threads: the "Unread threads" pill and its menu, the Unread threads view with its cards, the badge

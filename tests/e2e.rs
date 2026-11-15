@@ -295,14 +295,18 @@ async fn lifecycle() {
                      is_network_bot INTEGER, added_by TEXT, is_admin INTEGER, is_pending INTEGER, has_exited INTEGER);
                  CREATE TABLE participant_identifiers (account_id TEXT, participant_id TEXT, identifier TEXT, identifier_type TEXT);
                  CREATE TABLE mx_room_messages (eventID TEXT, roomID TEXT, timestamp INTEGER, type TEXT, isDeleted INTEGER,
-                     hsOrder INTEGER, message JSON);
+                     hsOrder INTEGER, message JSON, threadRootEventID TEXT);
+                 CREATE TABLE mx_threads (roomID TEXT, rootEventID TEXT, timestamp INTEGER, following INTEGER, lastReadHsOrder INTEGER);
+                 INSERT INTO mx_threads VALUES ('!mx:beeper.local', '$x1', 1760000301500, 0, 900);
                  CREATE TABLE mx_reactions (roomID TEXT, reactionID TEXT, eventID TEXT, senderID TEXT, description TEXT,
                      \"order\" INTEGER, isDeleted INTEGER);
                  CREATE TABLE mx_read_receipts (roomID TEXT, userID TEXT, timestamp INTEGER, relatesToID TEXT, lastVisibleEventID TEXT);
                  INSERT INTO mx_read_receipts VALUES ('!wa:beeper.local', '@wa_ana:beeper.local', 1760000003000, '$m2', '$m2');
                  INSERT INTO mx_room_messages VALUES ('$x1', '!mx:beeper.local', 1760000301000, 'TEXT', 0, 900,
-                     '{\"senderID\":\"@emile:beeper.com\",\"text\":\"from matrix\",\"isSender\":true}');
-                 INSERT INTO mx_room_messages VALUES ('$x2', '!mx:beeper.local', 1760000302000, 'REACTION', 0, 901, '{}');
+                     '{\"senderID\":\"@emile:beeper.com\",\"text\":\"from matrix\",\"isSender\":true}', NULL);
+                 INSERT INTO mx_room_messages VALUES ('$x3', '!mx:beeper.local', 1760000300500, 'TEXT', 0, 899,
+                     '{\"senderID\":\"@a:beeper.com\",\"text\":\"in thread\",\"extra\":{\"isReplyFallback\":true}}', '$x1');
+                 INSERT INTO mx_room_messages VALUES ('$x2', '!mx:beeper.local', 1760000302000, 'REACTION', 0, 901, '{}', NULL);
                  INSERT INTO mx_reactions VALUES ('!mx:beeper.local', '$x2', '$x1', '@a:beeper.com', '❤️', 1, 0);
                  INSERT INTO key_values VALUES ('beeperState', '{\"user_id\":\"\",\"access_token\":\"\"}');
                  INSERT INTO key_values VALUES ('nextSeq', 1234);
@@ -535,6 +539,15 @@ async fn lifecycle() {
         assert_eq!(msg("$x1").text.as_deref(), Some("from matrix"));
         assert_eq!(msg("$x1").reactions[0].reaction_key, "❤️");
         assert!(!st.msg_idx_by_id.contains_key("$x2"), "reaction events are not messages");
+        assert_eq!(
+            (msg("$x3").thread_root.as_deref(), msg("$x3").fallback, msg("$x3").broadcast),
+            (Some("$x1"), true, false)
+        );
+        let mx = &st.chats[st.chat_idx_by_id["!mx:beeper.local"]];
+        assert_eq!(
+            (mx.thread_reads["$x1"].as_str(), mx.follows.unfollowed.as_slice()),
+            (beeper_core::store::sort_key(900).as_str(), ["$x1".to_string()].as_slice())
+        );
         st.chats.clone()
     };
     assert_eq!(chats.len(), 6);
@@ -549,7 +562,7 @@ async fn lifecycle() {
     let mut reopened = BeeperStore::from_config(CentralConfig::new(rs_dir.clone(), "127.0.0.1".into(), 23379, None));
     assert_eq!(reopened.setup, Some(Setup::Imported));
     assert_eq!(reopened.pin_rank.get("!dc:beeper.local"), Some(&0));
-    assert!(reopened.signed_in() && reopened.chats.len() == 6 && reopened.stored("1", []).len() == 6);
+    assert!(reopened.signed_in() && reopened.chats.len() == 6 && reopened.stored("1", []).len() == 7);
     let (_, sent_id, _) = reopened.send_message(NOTE_CHAT_ID, Some("After restart".into()), None, None).unwrap();
     let last = reopened.stored("1 ORDER BY sort_key DESC LIMIT 1", []).pop().expect("a message");
     assert_eq!(last.id, sent_id, "new messages sort after imported ones");

@@ -436,6 +436,12 @@ impl BeeperGuiApp {
                 let reply = cmd(e, trx("Reply", "message command"), Some(UiMessage::StartReply(m.id.clone())));
                 v.push(reply.hotkey("Message: Quote & Reply"));
             }
+            if let [m] = picked[..] {
+                if crate::can_thread(st, chat.expect("a chat of the picked messages"), m) {
+                    let thread = Some(UiMessage::ShowThread(m.id.clone()));
+                    v.push(cmd(e, trx("Reply in thread", "message command"), thread).hotkey("Show Replies"));
+                }
+            }
         }
         if let Some(c) = chat {
             let id = || c.id.clone();
