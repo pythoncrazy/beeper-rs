@@ -412,6 +412,8 @@ pub struct BeeperStore {
     pub sas_confirm: Option<tokio::sync::oneshot::Sender<bool>>,
     /// The new recovery key of a reset, until the user types it again.
     pub pending_recovery_key: Option<String>,
+    /// Desktop SDK's UI auth token: the Beeper JWT that answers the user-interactive auth of the homeserver.
+    pub ui_auth_token: Option<String>,
     /// The changes for the homeserver, with their outbox row and chat, in the order of the rows.
     pub outbox: Vec<(i64, String, Outgoing)>,
     /// Desktop's bookmarks room, after its history is read.
@@ -565,6 +567,7 @@ impl BeeperStore {
             syncing: false,
             sas_confirm: None,
             pending_recovery_key: None,
+            ui_auth_token: None,
             outbox: Vec::new(),
             bookmarks_room: None,
             bookmarks: HashMap::new(),
@@ -1077,6 +1080,7 @@ impl BeeperStore {
             homeserver,
             ..BeeperStateRecord::default()
         };
+        self.ui_auth_token = session.jwt;
         self.pin_app_locale();
         self.persist_state_to_sqlite();
         self.whoami = profile.clone();

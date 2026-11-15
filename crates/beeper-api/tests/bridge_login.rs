@@ -23,7 +23,12 @@ async fn server_with(name: &str, accounts: Vec<BridgeAccountInfo>) -> (u16, Brid
     let mut cfg = CentralConfig::new(dir, "127.0.0.1".into(), port, None);
     (cfg.api_url, cfg.homeserver) = (url.clone(), url.clone());
     let store = StoreLock::shared(BeeperStore::from_config(cfg));
-    let session = MatrixSession { user_id: "@me:beeper.com".into(), access_token: "tok".into(), device_id: "D".into() };
+    let session = MatrixSession {
+        user_id: "@me:beeper.com".into(),
+        access_token: "tok".into(),
+        device_id: "D".into(),
+        jwt: None,
+    };
     store.write().sign_in(session, url, &Profile::default(), accounts);
     tokio::spawn(serve_http(listener, store));
     (port, bridges)

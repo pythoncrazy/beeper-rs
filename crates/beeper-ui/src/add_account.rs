@@ -661,8 +661,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let config = beeper_core::config::CentralConfig::new(dir, "127.0.0.1".into(), 23631, None);
         let store = beeper_core::store::StoreLock::shared(beeper_core::store::BeeperStore::from_config(config));
-        let session =
-            MatrixSession { user_id: "@me:beeper.com".into(), access_token: "t".into(), device_id: "D".into() };
+        let session = MatrixSession {
+            user_id: "@me:beeper.com".into(),
+            access_token: "t".into(),
+            device_id: "D".into(),
+            jwt: None,
+        };
         store.write().sign_in(session, url.clone(), &Profile::default(), Vec::new());
         let mut app = BeeperGuiApp::boot(store).0;
         app.cloud = std::sync::Arc::new(beeper_core::cloud::Cloud::new(&url, &url));
