@@ -4,6 +4,7 @@ use crate::http::{
 };
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{network_spec, APP_BUNDLE_ID, APP_NAME, APP_VERSION, NETWORK_SPECS, OPENAPI_SPEC_JSON};
+use beeper_core::connect::{READ, WRITE};
 use beeper_core::matrix::{self, ChatFlag, Outgoing};
 use beeper_core::models::*;
 use beeper_core::platform::{path_to_file_url, OsKind};
@@ -485,18 +486,14 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     if let Some(reply) = auth::route(store, &method, &segs, &req, granted.as_ref()) {
         return reply;
     }
-    if method == "POST" && segs.starts_with(&["v1", "app", "setup"]) {
-        auth::setup_origin(&req.msg)?;
-    }
     if let ("POST", ["v1", "app", "setup", step @ ("start" | "email" | "response" | "register")]) =
         (method.as_str(), &segs[..])
     {
+        auth::setup_origin(&req.msg)?;
         return sign_in_step(store, cloud, step, &req);
     }
     if let ("GET" | "POST", ["v1", "app", "setup", rest @ ..]) = (method.as_str(), &segs[..]) {
-        if !rest.is_empty() {
-            return e2ee_setup(store, &method, rest, &req);
-        }
+        return e2ee_setup(store, &method, rest, &req);
     }
     let mut st = store.write();
     let reply = dispatch(&mut st, &method, &segs, &req);
@@ -529,11 +526,17 @@ fn progress(store: &SharedStore, requires: bool) -> Reply {
     ok(&Progress { verification, session: st.app_state() })
 }
 
-/// Desktop's encrypted messaging setup routes, which act on the Matrix client of a signed-in account.
+/// Desktop's app setup state and its encrypted messaging setup routes, which act on the Matrix client of a
+/// signed-in account. Each route checks the token first, like Desktop's `requireAuth`.
 fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Reply {
-    let signed_in = || match store.read().signed_in() {
-        true => Ok(()),
-        false => Err(error(StatusCode::CONFLICT, "Sign in to Beeper Desktop first", "needs_login")),
+    let scopes: &[&str] = if method == "GET" { &[READ] } else { &[READ, WRITE] };
+    let authorized = || auth::authorize(&store.read(), auth::access_token(&r.msg), scopes).map_err(auth::refusal);
+    let signed_in = || {
+        authorized()?;
+        match store.read().signed_in() {
+            true => Ok(()),
+            false => Err(error(StatusCode::CONFLICT, "Sign in to Beeper Desktop first", "needs_login")),
+        }
     };
     let not_ready = || {
         signed_in()?;
@@ -544,6 +547,12 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
     };
     let rt = tokio::runtime::Handle::current();
     match (method, path) {
+        ("GET", []) => {
+            if store.read().signed_in() {
+                authorized()?;
+            }
+            ok(&store.read().app_state())
+        }
         ("POST", ["verification", "recovery-key"]) => {
             not_ready()?;
             let key = r.need("recoveryKey")?.to_string();
@@ -660,7 +669,6 @@ fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply
             body: OPENAPI_SPEC_JSON.as_bytes().to_vec(),
         }),
         ("GET", []) => empty(StatusCode::FOUND, vec![("location", "/v1/info".into())]),
-        ("GET", ["v1", "app", "setup"]) => ok(&st.app_state()),
         ("GET", ["v1", "accounts"]) => ok(&st.accounts),
         ("GET", ["v1", "accounts", id, rest @ ..]) => account(st, id, rest, r),
         ("GET", ["v1", "labels"]) => ok(&st.labels),

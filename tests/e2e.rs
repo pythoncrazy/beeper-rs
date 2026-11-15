@@ -640,7 +640,7 @@ async fn lifecycle() {
     assert_eq!(oauth.list_accounts().await.len(), store.read().accounts.len(), "the approved token reads");
     let anon = BeeperClient::new(&base, "");
     let unauthorized = json!({ "message": "Unauthorized: Invalid or missing token", "code": "unauthorized" });
-    assert_eq!(anon.request("GET", "/v1/accounts", None).await, (StatusCode(401), unauthorized));
+    assert_eq!(anon.request("GET", "/v1/accounts", None).await, (StatusCode(401), unauthorized.clone()));
     let chat = json!({ "message": "Chat not found", "code": "NOT_FOUND" });
     assert_eq!(oauth.request("GET", "/v1/chats/nope", None).await, (StatusCode(404), chat));
     let route = json!({ "message": "Not found", "code": "not_found" });
@@ -654,6 +654,13 @@ async fn lifecycle() {
         (status, refused["message"].as_str()),
         (StatusCode(403), Some("Insufficient permissions. Required scopes: write, missing: write"))
     );
+    let (status, refused) = reader.setup_step("verifications", json!({})).await;
+    assert_eq!(
+        (status, refused["message"].as_str()),
+        (StatusCode(403), Some("Insufficient permissions. Required scopes: read, write, missing: write"))
+    );
+    assert_eq!(anon.request("GET", "/v1/app/setup", None).await, (StatusCode(401), unauthorized.clone()));
+    assert_eq!(anon.request("GET", "/v1/app/setup/nope", None).await.0, StatusCode(404), "no route needs no token");
     let (_, resource) = anon.request("GET", "/.well-known/oauth-protected-resource/v0/mcp", None).await;
     assert_eq!(resource["resource"], format!("{base}/v0/mcp"));
     let (_, seen) = anon.request("POST", "/oauth/introspect", Some(json!({ "token": oauth_token }))).await;
@@ -674,10 +681,14 @@ async fn lifecycle() {
     assert_eq!(client.setup_step("start", json!({})).await.0, StatusCode::CONFLICT, "demo account is signed in");
     let cloud = fake_beeper_cloud().await;
     for (name, code, user) in [("login", "123456", "alex"), ("register", "654321", "newbie")] {
-        let (dir, _, st, c) = spawn_e2e_beeper_instance(name, Some(&cloud)).await;
+        let (dir, fresh_port, st, c) = spawn_e2e_beeper_instance(name, Some(&cloud)).await;
         assert!(!st.read().signed_in() && st.read().chats.is_empty(), "fresh install is signed out");
+        let reset = "verification/recovery-key/reset";
+        assert_eq!(c.setup_step(reset, json!({})).await, (StatusCode(401), unauthorized.clone()));
+        let token = st.write().connect.create(vec!["read".into(), "write".into()], 0, None);
         let login = json!({ "message": "Sign in to Beeper Desktop first", "code": "needs_login" });
-        assert_eq!(c.setup_step("verification/recovery-key/reset", json!({})).await, (StatusCode::CONFLICT, login));
+        let tokened = BeeperClient::new(format!("http://127.0.0.1:{fresh_port}"), token);
+        assert_eq!(tokened.setup_step(reset, json!({})).await, (StatusCode::CONFLICT, login));
         let signed_out = r#"{"state":"needs-login","e2ee":{"initialized":false,"secretStorage":false,"crossSigning":false,"verified":false,"secrets":{"masterKey":false,"selfSigningKey":false,"userSigningKey":false,"megolmBackupKey":false,"recoveryKey":false},"keyBackup":false,"firstSyncDone":false,"hasBackedUpRecoveryKey":false}}"#;
         let signed_out = serde_json::from_str(signed_out).unwrap();
         assert_eq!(c.request("GET", "/v1/app/setup", None).await, (StatusCode::OK, signed_out), "Desktop's body");
