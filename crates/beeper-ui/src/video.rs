@@ -18,18 +18,63 @@ pub(crate) const SPEED_MENU_W: f32 = 110.0;
 const HZ: f32 = 48_000.0;
 
 /// Desktop's `replay10`, `forward10`, `more` and `full-screen`.
-static GLYPHS: LazyLock<[svg::Handle; 4]> = LazyLock::new(|| {
+pub(crate) static GLYPHS: LazyLock<[svg::Handle; 4]> = LazyLock::new(|| {
     [
         "M10 18.333a7.3 7.3 0 0 1-2.927-.594 7.6 7.6 0 0 1-2.375-1.604 7.6 7.6 0 0 1-1.604-2.375 7.3 7.3 0 0 1-.594-2.927h1.667q0 2.437 1.698 4.135T10 16.666t4.135-1.698 1.698-4.135q0-2.437-1.698-4.135T10 5h-.125l1.292 1.291L10 7.5 6.667 4.166 10 .833l1.167 1.208-1.292 1.292H10q1.563 0 2.927.594t2.375 1.604a7.6 7.6 0 0 1 1.604 2.375q.594 1.364.594 2.927a7.3 7.3 0 0 1-.594 2.927 7.6 7.6 0 0 1-1.604 2.375 7.6 7.6 0 0 1-2.375 1.604 7.3 7.3 0 0 1-2.927.594m-2.5-5v-3.75H6.25v-1.25h2.5v5zm2.917 0a.8.8 0 0 1-.594-.24.8.8 0 0 1-.24-.593V9.166q0-.354.24-.593.24-.24.594-.24h1.666q.354 0 .594.24t.24.593V12.5q0 .354-.24.593a.8.8 0 0 1-.594.24zm.416-1.25h.834v-2.5h-.834z",
         "M7.5 13.332v-3.75H6.25v-1.25h2.5v5zm2.917 0a.8.8 0 0 1-.594-.24.8.8 0 0 1-.24-.593V9.165q0-.354.24-.593.24-.24.594-.24h1.666q.354 0 .594.24t.24.593V12.5q0 .354-.24.593a.8.8 0 0 1-.594.24zm.416-1.25h.834v-2.5h-.834zM10 18.332a7.3 7.3 0 0 1-2.927-.594 7.6 7.6 0 0 1-2.375-1.604 7.6 7.6 0 0 1-1.604-2.375 7.3 7.3 0 0 1-.594-2.927q0-1.562.594-2.927.593-1.364 1.604-2.375a7.6 7.6 0 0 1 2.375-1.604A7.3 7.3 0 0 1 10 3.332h.125L8.833 2.04 10 .832l3.333 3.333L10 7.5 8.833 6.29 10.125 5H10q-2.437 0-4.135 1.698t-1.698 4.135 1.698 4.135T10 16.665t4.135-1.698 1.698-4.135H17.5a7.3 7.3 0 0 1-.594 2.927 7.6 7.6 0 0 1-1.604 2.375 7.6 7.6 0 0 1-2.375 1.604 7.3 7.3 0 0 1-2.927.594",
         "M10 16.666q-.687 0-1.177-.49A1.6 1.6 0 0 1 8.333 15q0-.688.49-1.177t1.177-.49 1.177.49q.49.489.49 1.177 0 .687-.49 1.177t-1.177.49m0-5q-.687 0-1.177-.49A1.6 1.6 0 0 1 8.333 10q0-.688.49-1.177T10 8.333t1.177.49q.49.489.49 1.177 0 .687-.49 1.177t-1.177.49m0-5q-.687 0-1.177-.49A1.6 1.6 0 0 1 8.333 5q0-.688.49-1.177T10 3.333t1.177.49q.49.489.49 1.177 0 .687-.49 1.177T10 6.667",
         "M2.43 17.33v-4.139h1.656v2.484H6.57v1.655zm10.762 0v-1.655h2.484V13.19h1.655v4.14zM2.431 6.57v-4.14H6.57v1.656H4.086V6.57zm13.245 0V4.085h-2.484V2.43h4.14v4.139z",
     ]
-    .map(|d| {
-        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="{d}"/></svg>"#);
-        svg::Handle::from_memory(svg.into_bytes())
-    })
+    .map(glyph)
 });
+
+/// Desktop's `speed025` to `speed2`, the icons of `voice::RATES`.
+static SPEEDS: LazyLock<[svg::Handle; 8]> = LazyLock::new(|| {
+    [
+        "M3 14v-1.5h1.5V14zm8.5 0v-1.5H15v-1.75h-3.5V6h5v1.5H13v1.75h2q.619 0 1.06.44.44.442.44 1.06v1.75q0 .619-.44 1.06-.44.44-1.06.44zm-6 0v-3.25q0-.619.44-1.06.442-.44 1.06-.44h2V7.5H5.5V6H9q.619 0 1.06.44.44.442.44 1.06v1.75q0 .619-.44 1.06-.442.44-1.06.44H7v1.75h3.5V14z",
+        "M2.5 14v-1.5H4V14zm8.5 0 2.313-4L11 6h1.73l1.457 2.5L15.626 6h1.73l-2.313 4 2.312 4h-1.729l-1.437-2.5-1.459 2.5zm-6 0v-1.5h3.5v-1.75H5V6h5v1.5H6.5v1.75h2q.619 0 1.06.44.44.442.44 1.06v1.75q0 .619-.44 1.06-.442.44-1.06.44z",
+        "M3.5 14v-1.5H5V14zm7.5 0v-1.5h3.5v-1.75H11V6h5v1.5h-3.5v1.75h2q.619 0 1.06.44.44.442.44 1.06v1.75q0 .619-.44 1.06-.442.44-1.06.44zm-4.5 0 2-6.5H5V6h3.708q.536 0 .914.375t.378.917q0 .041-.062.396L8 14z",
+        "M5.5 14V7.5H4V6h3v8zm4.146 0 2.312-4-2.312-4h1.729l1.438 2.5L14.27 6H16l-2.312 4L16 14h-1.73l-1.457-2.5-1.438 2.5z",
+        "M5 14v-1.5h1.5V14zm8.5 0v-1.5H17v-1.75h-3.5V6h5v1.5H15v1.75h2q.62 0 1.06.44.44.442.44 1.06v1.75q0 .619-.44 1.06-.44.44-1.06.44zm-6 0v-3.25q0-.619.44-1.06.442-.44 1.06-.44h2V7.5H7.5V6H11q.619 0 1.06.44.44.442.44 1.06v1.75q0 .619-.44 1.06-.442.44-1.06.44H9v1.75h3.5V14zm-5 0V7.5H1V6h3v8z",
+        "M5 14v-1.5h1.5V14zm-2.5 0V7.5H1V6h3v8zM13 14l2.313-4L13 6h1.73l1.437 2.5L17.604 6h1.75l-2.312 4 2.312 4h-1.75l-1.437-2.5-1.438 2.5zm-5.5 0v-1.5h3v-1.75h-3V6H12v1.5H9v1.75h1.5q.619 0 1.06.44.44.442.44 1.06v1.75q0 .619-.44 1.06-.442.44-1.06.44z",
+        "M6 14v-1.5h1.5V14zm7.5 0v-1.5H17v-1.75h-3.5V6h5v1.5H15v1.75h2q.62 0 1.06.44.44.442.44 1.06v1.75q0 .619-.44 1.06-.44.44-1.06.44zm-10 0V7.5H2V6h3v8zM9 14l2-6.5H7.5V6h3.708q.536 0 .914.375t.378.917q0 .041-.062.396L10.5 14z",
+        "M4 14v-3.25q0-.619.44-1.06.442-.44 1.06-.44h2V7.5H4V6h3.5q.619 0 1.06.44Q9 6.883 9 7.5v1.75q0 .619-.44 1.06-.442.44-1.06.44h-2v1.75H9V14zm6 0 2.313-4L10 6h1.73l1.457 2.5L14.626 6h1.73l-2.313 4 2.312 4h-1.729l-1.437-2.5-1.459 2.5z",
+    ]
+    .map(glyph)
+});
+
+fn glyph(d: &str) -> svg::Handle {
+    let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="{d}"/></svg>"#);
+    svg::Handle::from_memory(svg.into_bytes())
+}
+
+/// Where a video shows: in the timeline as attachment `ai` of its message, in the carousel, or on the full screen.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Place {
+    Inline(usize),
+    Carousel,
+    Full,
+}
+
+/// Desktop's `video-progress-bar`: a 3 px white bar over a dim one, and a hidden slider that seeks.
+fn video_progress<'a>(v: &Video) -> El<'a> {
+    let frac = v.media.as_ref().map_or(0.0, |m| (v.pos() / m.secs).clamp(0.0, 1.0));
+    let bar = |c: Color| container(Space::new()).width(Fill).height(3).style(fill_box(c, 100.0));
+    let part = |f: f32| iced::Length::FillPortion((f * 1000.0).round().max(1.0) as u16);
+    let done = row![bar(Color::WHITE).width(part(frac)), Space::new().width(part(1.0 - frac))];
+    let seek = slider(0.0..=1.0, frac, |f| UiMessage::Video(Msg::Seek(f)))
+        .step(0.001_f32)
+        .height(11)
+        .on_release(UiMessage::Video(Msg::SeekEnd))
+        .style(crate::style::hidden_slider);
+    stack![container(stack![bar(Color::WHITE.scale_alpha(0.2)), done]).center_y(11), seek].into()
+}
+
+/// Desktop's `jA` time format, `mm:ss` with the minutes not cut at an hour.
+fn mmss(secs: f32) -> String {
+    let s = secs as u32;
+    format!("{:02}:{:02}", s / 60, s % 60)
+}
 
 /// A downloaded video: a temporary file for ffmpeg to seek in, its length, and its mono 48 kHz sound.
 pub struct Media {
@@ -47,7 +92,7 @@ impl Drop for Media {
 /// The inline video that played last, at `at` seconds when playback started at `since`.
 pub struct Video {
     pub mid: String,
-    url: String,
+    pub url: String,
     size: (u32, u32),
     media: Option<Arc<Media>>,
     at: f32,
@@ -59,7 +104,7 @@ pub struct Video {
     frame: Option<image::Handle>,
     pub rate: f32,
     pub muted: bool,
-    /// The inline frame size while the video fills the screen.
+    /// The frame size before the video filled the screen.
     full: Option<(u32, u32)>,
     /// The "Playback Speed" submenu is open.
     pub sub: bool,
@@ -68,6 +113,8 @@ pub struct Video {
 #[derive(Clone)]
 pub enum Msg {
     Play(String, String, u32, u32),
+    /// A click on the inline video of attachment `ai` of a message, which is `w` by `h`.
+    Open(String, usize, u32, u32),
     Loaded(String, Result<Arc<Media>, String>),
     Toggle,
     Skip(f32),
@@ -90,7 +137,7 @@ fn run(program: &str, args: &[&str], path: &Path) -> Result<Vec<u8>, String> {
 }
 
 /// Store `bytes` for ffmpeg and read the length and sound track.
-fn probe(url: &str, bytes: &[u8]) -> Result<Media, String> {
+pub(crate) fn probe(url: &str, bytes: &[u8]) -> Result<Media, String> {
     let path = std::env::temp_dir().join(format!("beeper-rs-video-{:x}", crate::style::name_hash(url)));
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
     // Dropping `media` on an error removes the file.
@@ -146,6 +193,23 @@ impl Video {
         if self.since.is_some() {
             (self.at, self.since) = (self.pos(), None);
             sound::voice(None);
+        }
+    }
+
+    /// Play from the current position, once the video is loaded.
+    fn play(&mut self) {
+        if self.since.is_none() && self.media.is_some() {
+            self.since = Some(Instant::now());
+            self.restart();
+        }
+    }
+
+    /// Decode the frames at `size` from the current position on.
+    fn resize(&mut self, size: (u32, u32)) {
+        self.size = size;
+        if self.media.is_some() {
+            (self.at, self.since) = (self.pos(), self.since.map(|_| Instant::now()));
+            self.restart();
         }
     }
 
@@ -219,13 +283,18 @@ impl BeeperGuiApp {
                 }
                 (None, _) => {}
             },
+            // Desktop pauses the inline video and opens the carousel, where the video goes on at the same time, play
+            // state and speed.
+            Msg::Open(mid, ai, w, h) => {
+                let task = self.update(UiMessage::OpenCarousel(mid, ai, false));
+                self.carousel.as_mut().expect("the carousel is open").resume = Some((w, h));
+                return task;
+            }
             Msg::Toggle => {
                 let v = self.video.as_mut().expect("a played video");
-                if v.since.is_some() {
-                    v.pause();
-                } else if v.media.is_some() {
-                    v.since = Some(Instant::now());
-                    v.restart();
+                match v.since.is_some() {
+                    true => v.pause(),
+                    false => v.play(),
                 }
             }
             Msg::Skip(by) => {
@@ -259,20 +328,26 @@ impl BeeperGuiApp {
             }
             Msg::Sub => self.video.as_mut().expect("a played video").sub = true,
             Msg::Fullscreen => {
+                let (id, area) = match self.carousel.as_ref().filter(|c| c.in_media && self.carousel_shows_video()) {
+                    Some(_) => {
+                        let w = self.media_window.as_ref().expect("the Media window is open");
+                        (w.id, w.size)
+                    }
+                    None => (self.main_window.expect("the main window is open"), self.pane.size),
+                };
                 let v = self.video.as_mut().expect("a played video");
                 let (mode, size) = match v.full.take() {
-                    Some(inline) => (window::Mode::Windowed, inline),
+                    Some(before) => (window::Mode::Windowed, before),
                     None => {
                         v.full = Some(v.size);
                         let (w, h) = (v.size.0 as f32, v.size.1 as f32);
-                        let k = (self.pane.size.width / w).min(self.pane.size.height / h);
+                        let k = (area.width / w).min(area.height / h);
                         (window::Mode::Fullscreen, ((w * k) as u32, (h * k) as u32))
                     }
                 };
-                (v.at, v.since, v.size) = (v.pos(), v.since.map(|_| Instant::now()), size);
-                v.restart();
+                v.resize(size);
                 self.pane.message_menu = None;
-                return window::set_mode(self.main_window.expect("the main window is open"), mode);
+                return window::set_mode(id, mode);
             }
             Msg::Tick => {
                 let v = self.video.as_mut().expect("only a played video ticks");
@@ -292,12 +367,43 @@ impl BeeperGuiApp {
         Task::none()
     }
 
-    /// Desktop unmounts the video of the carousel when the carousel shows another item or closes.
+    /// The carousel is open and shows the played video.
+    fn carousel_shows_video(&self) -> bool {
+        let src = self.carousel_video().map(|(src, _)| src);
+        self.video.as_ref().is_some_and(|v| Some(&v.url) == src.as_ref())
+    }
+
+    /// Decode the played video at the carousel size when the carousel shows it.
+    pub(crate) fn fit_carousel_video(&mut self) {
+        let Some((src, size)) = self.carousel_video() else { return };
+        if let Some(v) = self.video.as_mut().filter(|v| v.url == src) {
+            v.resize(size);
+        }
+    }
+
+    /// Desktop unmounts the video of the carousel when the carousel shows another item.
     pub(crate) fn leave_carousel_video(&mut self) {
-        let mid = self.carousel.as_ref().map(|c| c.mid.as_str());
-        if let Some(v) = self.video.as_mut().filter(|v| Some(v.mid.as_str()) == mid) {
+        let src = self.carousel_video().map(|(src, _)| src);
+        if let Some(v) = self.video.as_mut().filter(|v| Some(&v.url) == src.as_ref()) {
             v.pause();
         }
+    }
+
+    /// Desktop unmounts the video of the carousel when the carousel closes. When the carousel closes on the inline
+    /// video that opened it, Desktop plays the inline video again.
+    pub(crate) fn close_carousel_video(&mut self) -> Task<UiMessage> {
+        let Some((src, _)) = self.carousel_video() else { return Task::none() };
+        let c = self.carousel.as_ref().expect("the carousel is open");
+        match (self.video.as_mut().filter(|v| v.url == src), c.resume) {
+            (Some(v), Some(size)) => {
+                v.resize(size);
+                v.play();
+            }
+            (Some(v), None) => v.pause(),
+            (None, Some((w, h))) => return self.video(Msg::Play(c.mid.clone(), src, w, h)),
+            (None, None) => {}
+        }
+        Task::none()
     }
 
     pub(crate) fn video_ticks(&self) -> Option<Subscription<UiMessage>> {
@@ -305,45 +411,47 @@ impl BeeperGuiApp {
         v.map(|_| iced::time::every(Duration::from_secs_f32(1.0 / FPS)).map(|_| UiMessage::Video(Msg::Tick)))
     }
 
-    /// The video of message `mid` over `poster`, `w` by `h`.
-    pub(crate) fn view_video<'a>(&self, mid: &str, url: &str, poster: El<'a>, w: f32, h: f32) -> El<'a> {
+    /// The video of message `mid` over `poster`, `w` by `h`, at `place`.
+    pub(crate) fn view_video<'a>(
+        &self,
+        mid: &str,
+        url: &str,
+        poster: El<'a>,
+        (w, h): (f32, f32),
+        place: Place,
+    ) -> El<'a> {
         let v = self.video.as_ref().filter(|v| v.url == url);
-        let r = if v.is_some_and(|v| v.full.is_some()) { 0.0 } else { 17.0 };
+        let r = if matches!(place, Place::Inline(_)) { 17.0 } else { 0.0 };
         let base: El<'a> = match v.and_then(|v| v.frame.clone()) {
             Some(f) => image(f).width(w).height(h).border_radius(r).into(),
             None => poster,
         };
+        // A click on the inline video opens the carousel, and elsewhere it plays or pauses the video.
+        let click = match place {
+            Place::Inline(ai) => Some(UiMessage::Video(Msg::Open(mid.into(), ai, w.round() as u32, h.round() as u32))),
+            _ => v.is_some_and(|v| v.media.is_some()).then_some(UiMessage::Video(Msg::Toggle)),
+        };
+        let surface = button(base).padding(0).style(btn_style([CLEAR; 3], [CLEAR; 3], r)).on_press_maybe(click);
         let Some(v) = v else {
             let play = button(tinted(&crate::voice::ICONS[0], 20.0, Color::from_rgb8(0x20, 0x21, 0x24)))
                 .padding(8)
                 .style(btn_style([Color::from_rgb8(0xef, 0xef, 0xf0); 3], [Color::BLACK; 3], 18.0))
                 .on_press(UiMessage::Video(Msg::Play(mid.into(), url.into(), w.round() as u32, h.round() as u32)));
-            return stack![base, container(play).center_x(w).center_y(h)].into();
+            return stack![surface, container(play).center_x(w).center_y(h)].into();
         };
-        let on = |glyph: &svg::Handle, msg: UiMessage| -> El<'a> {
-            button(tinted(glyph, 20.0, Color::WHITE))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [Color::WHITE; 3], 0.0))
-                .on_press_maybe(v.media.is_some().then_some(msg))
-                .into()
-        };
-        let skip = |i: usize, by| on(&GLYPHS[i], UiMessage::Video(Msg::Skip(by)));
-        let toggle = on(&crate::voice::ICONS[usize::from(v.playing())], UiMessage::Video(Msg::Toggle));
-        let skips = row![skip(0, -10.0), toggle, skip(1, 10.0)];
+        // The carousel shows its own controls and menu.
+        if place == Place::Carousel {
+            return surface.into();
+        }
+        let surface = mouse_area(surface).on_right_press(UiMessage::OpenMessageMenu(mid.into()));
+        let on = |glyph: &svg::Handle, msg: UiMessage| -> El<'a> { self.video_button(v, glyph, msg) };
+        let skips = self.video_skips(v);
         let corners = row![
             on(&GLYPHS[2], UiMessage::OpenMessageMenu(mid.into())),
             Space::new().width(Fill),
             on(&GLYPHS[3], UiMessage::Video(Msg::Fullscreen))
         ];
-        let frac = v.media.as_ref().map_or(0.0, |m| (v.pos() / m.secs).clamp(0.0, 1.0));
-        let bar = |c: Color| container(Space::new()).width(Fill).height(3).style(fill_box(c, 100.0));
-        let progress = bar(Color::WHITE).width((w - 20.0) * frac);
-        let seek = slider(0.0..=1.0, frac, |f| UiMessage::Video(Msg::Seek(f)))
-            .step(0.001_f32)
-            .height(11)
-            .on_release(UiMessage::Video(Msg::SeekEnd))
-            .style(crate::style::hidden_slider);
-        let progress = stack![container(stack![bar(Color::WHITE.scale_alpha(0.2)), progress]).center_y(11), seek];
+        let progress = video_progress(v);
         let shade = Linear::new(iced::Radians(std::f32::consts::PI))
             .add_stop(0.0, Color::TRANSPARENT)
             .add_stop(1.0, Color::BLACK.scale_alpha(0.66));
@@ -355,19 +463,52 @@ impl BeeperGuiApp {
                 border: iced::border::rounded(iced::border::bottom(r)),
                 ..Default::default()
             });
-        let surface = button(base).padding(0).style(btn_style([CLEAR; 3], [CLEAR; 3], r));
-        let surface = surface.on_press_maybe(v.media.is_some().then_some(UiMessage::Video(Msg::Toggle)));
-        let surface = mouse_area(surface).on_right_press(UiMessage::OpenMessageMenu(mid.into()));
         hover(surface, column![container(corners).padding(8), Space::new().height(Fill), controls].width(w).height(h))
     }
 
-    /// The video that fills the screen, like Desktop's `screenfull` toggle on the `<video>`.
-    pub(crate) fn view_full_video(&self) -> Option<El<'_>> {
-        let v = self.video.as_ref().filter(|v| v.full.is_some())?;
+    /// The video that fills the screen, like Desktop's `screenfull` toggle on the `<video>`, if it is the video of the
+    /// carousel (`in_carousel`) or of the timeline.
+    pub(crate) fn view_full_video(&self, in_carousel: bool) -> Option<El<'_>> {
+        let v = self.video.as_ref().filter(|v| v.full.is_some() && self.carousel_shows_video() == in_carousel)?;
+        let area = match self.carousel.as_ref().filter(|c| in_carousel && c.in_media) {
+            Some(_) => self.media_window.as_ref().expect("the Media window is open").size,
+            None => self.pane().size,
+        };
         let (w, h) = (v.size.0 as f32, v.size.1 as f32);
-        let k = (self.pane().size.width / w).min(self.pane().size.height / h);
-        let video = self.view_video(&v.mid, &v.url, Space::new().into(), w * k, h * k);
+        let k = (area.width / w).min(area.height / h);
+        let video = self.view_video(&v.mid, &v.url, Space::new().into(), (w * k, h * k), Place::Full);
         Some(container(video).center(Fill).style(fill_box(Color::BLACK, 0.0)).into())
+    }
+
+    /// A white control of the played video, which works once the video is loaded.
+    fn video_button<'a>(&self, v: &Video, glyph: &svg::Handle, msg: UiMessage) -> El<'a> {
+        button(tinted(glyph, 20.0, Color::WHITE))
+            .padding(0)
+            .style(btn_style([CLEAR; 3], [Color::WHITE; 3], 0.0))
+            .on_press_maybe(v.media.is_some().then_some(msg))
+            .into()
+    }
+
+    /// Desktop's Rewind, Play or Pause, and Fast Forward buttons.
+    fn video_skips<'a>(&self, v: &Video) -> iced::widget::Row<'a, UiMessage> {
+        let skip = |i: usize, by| self.video_button(v, &GLYPHS[i], UiMessage::Video(Msg::Skip(by)));
+        let toggle =
+            self.video_button(v, &crate::voice::ICONS[usize::from(v.playing())], UiMessage::Video(Msg::Toggle));
+        row![skip(0, -10.0), toggle, skip(1, 10.0)]
+    }
+
+    /// Desktop's `video-controls-carousel`: a row 28 px above the bottom of the window, 8 px from its sides, with the
+    /// skip buttons, the progress bar, the speed button and the time, if the carousel video plays.
+    pub(crate) fn view_carousel_video_controls<'a>(&self, src: &str) -> Option<El<'a>> {
+        let v = self.video.as_ref().filter(|v| v.url == src && v.media.is_some())?;
+        let secs = v.media.as_ref().expect("a loaded video").secs;
+        let k = crate::voice::RATES.iter().position(|&r| r == v.rate).expect("a rate of the list");
+        let next = crate::voice::RATES[(k + 1) % crate::voice::RATES.len()];
+        let speed = self.video_button(v, &SPEEDS[k], UiMessage::Video(Msg::Rate(next)));
+        let time = crate::semi(format!("{}/{}", mmss(v.pos().min(secs)), mmss(secs)), 11.0).color(Color::WHITE);
+        let bar = row![self.video_skips(v).spacing(12), video_progress(v), speed, time].spacing(12).align_y(Center);
+        let bar = mouse_area(container(bar).padding([8, 12])).on_press(UiMessage::Noop);
+        Some(container(bar).align_bottom(Fill).padding(Padding::new(8.0).top(0.0).bottom(28.0)).into())
     }
 
     /// The video of message `mid` while it has a menu.
@@ -383,11 +524,7 @@ impl BeeperGuiApp {
         let speed = mouse_area(menu_item(p, None, tr("Playback Speed").into(), "›", Some(UiMessage::Video(Msg::Sub))))
             .on_enter(UiMessage::Video(Msg::Sub));
         Some(vec![
-            item(
-                if v.full.is_some() { "Exit Fullscreen" } else { "Fullscreen" },
-                "",
-                UiMessage::Video(Msg::Fullscreen),
-            ),
+            item("Fullscreen", "", UiMessage::Video(Msg::Fullscreen)),
             item("Download", "", UiMessage::Download(mid.into(), None)),
             item(if v.muted { "Unmute" } else { "Mute" }, "", UiMessage::Video(Msg::Mute)),
             (speed.into(), MENU_ITEM),
