@@ -757,7 +757,8 @@ pub enum UiMessage {
     /// Opens the emoji picker for a quick reaction (see [`emoji::Picker::pref`]), or closes it.
     QuickEmoji(Option<u8>),
     SetQuickEmoji(u8, String),
-    FilesLoaded(Result<Vec<PendingMedia>, String>),
+    /// The files to attach, or the toast text of each file that did not load.
+    FilesLoaded(Vec<Result<PendingMedia, String>>),
     /// A file drag enters (true) or leaves a window.
     FileHover(window::Id, bool),
     FileDropped(window::Id, std::path::PathBuf),
@@ -1902,6 +1903,8 @@ pub struct PendingMedia {
     pub is_gif: bool,
     pub size: (u32, u32),
     pub frames: Frames,
+    /// The length in seconds of a video or an audio file.
+    pub duration: Option<f64>,
 }
 
 /// A row of the composer autocomplete: an emoji and its name, or a mention label, its user ID and the member.
@@ -5038,8 +5041,8 @@ impl BeeperGuiApp {
         let chat = &st.chats
             [st.resolve_chat_idx(self.pane().selected_chat_id.as_deref().expect("an open chat")).expect("chat exists")];
         let (ok, toast) = match kind {
-            Picker::Gif => (chat.files & FILE_GIF != 0, "GIFs aren't supported on %s"),
-            Picker::Audio => (chat.files & FILE_VOICE != 0, "Recording audio isn't supported on %s"),
+            Picker::Gif => (chat.takes(FILE_GIF), "GIFs aren't supported on %s"),
+            Picker::Audio => (chat.takes(FILE_VOICE), "Recording audio isn't supported on %s"),
             // The bridges with Desktop's `supportsStickers`.
             Picker::Sticker => (
                 matches!(account_network(&chat.account_id).kind, NetworkKind::WhatsApp | NetworkKind::Telegram),
@@ -5052,6 +5055,25 @@ impl BeeperGuiApp {
             self.status_banner = trf(toast, &[&net]);
         }
         ok
+    }
+
+    /// Desktop's `processAttachment`: attaches each file that the open chat accepts, and shows a toast for the others.
+    fn attach_files(&mut self, files: Vec<Result<PendingMedia, String>>) {
+        let st = self.store.read();
+        let chat = &st.chats
+            [st.resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat")).expect("chat exists")];
+        let checked: Vec<_> =
+            files.into_iter().map(|f| f.and_then(|f| portal::check(&f, &chat.file).map(|()| f))).collect();
+        drop(st);
+        for f in checked {
+            match f {
+                Ok(f) => {
+                    self.pane.send_later = None;
+                    self.pane.attachments.push(f);
+                }
+                Err(e) => self.fail(Toast::new(e)),
+            }
+        }
     }
 
     /// The selected message when only one message is selected.
@@ -5348,25 +5370,33 @@ impl BeeperGuiApp {
                 reply_to = None;
                 sends.push((txn.clone(), Outgoing::Send { txn, text, reply_to: to, preview, mentions, thread }));
             }
-            for PendingMedia { bytes, name, mime, is_gif, size, frames } in files {
+            for PendingMedia { bytes, name, mime, is_gif, size, frames, duration } in files {
                 let image = !frames.is_empty();
                 let key = format!("pasted:{}", st.next_id("img"));
                 if image {
                     self.media.insert(key.clone(), Some(Ok(frames)));
                 }
+                // Desktop's `KFe`: a video and an audio file go with their measured length and size.
+                let ms = duration.map(|s| (s * 1000.0).round() as u64);
+                let (kind, info) = match (mime.split('/').next(), ms) {
+                    _ if image => ("img", MediaInfo::Image(size.0, size.1)),
+                    (Some("video"), Some(ms)) => ("video", MediaInfo::Video(size.0, size.1, ms)),
+                    (Some("audio"), Some(ms)) => ("audio", MediaInfo::Audio(ms)),
+                    _ => ("file", MediaInfo::File),
+                };
                 let att = Attachment {
-                    attachment_type: if image { "img" } else { "file" }.into(),
+                    attachment_type: kind.into(),
+                    duration,
                     file_name: Some(name.clone()),
                     file_size: Some(bytes.len() as u64),
                     is_gif: Some(is_gif),
                     mime_type: Some(mime.clone()),
-                    size: image.then_some(AttachmentSize { width: Some(size.0), height: Some(size.1) }),
+                    size: (size.0 > 0).then_some(AttachmentSize { width: Some(size.0), height: Some(size.1) }),
                     src_url: image.then_some(key),
                     ..Default::default()
                 };
                 let (txn, to, thread) =
                     self.pane.compose(&mut st, &chat_id, caption.clone(), reply_to.take(), Some(att));
-                let info = if image { MediaInfo::Image(size.0, size.1) } else { MediaInfo::File };
                 let caption = caption.clone();
                 let out = Outgoing::Media { txn: txn.clone(), bytes, name, mime, info, caption, reply_to: to, thread };
                 sends.push((txn, out));
@@ -7697,17 +7727,21 @@ impl BeeperGuiApp {
             UiMessage::Video(msg) => return self.video(msg),
             UiMessage::Gallery(msg) => return self.gallery(msg),
             UiMessage::Pasted(r) => match r {
-                Ok(img) => {
-                    self.pane.send_later = self.pane.send_later.filter(|_| img.is_none());
-                    self.pane.attachments.extend(img.map(|(png, size)| PendingMedia {
-                        name: "image.png".into(),
-                        mime: "image/png".into(),
-                        is_gif: false,
-                        size,
-                        frames: vec![(image::Handle::from_bytes(png.clone()), 0)],
-                        bytes: png,
-                    }));
-                }
+                Ok(img) => self.attach_files(
+                    img.map(|(png, size)| {
+                        Ok(PendingMedia {
+                            name: "image.png".into(),
+                            mime: "image/png".into(),
+                            is_gif: false,
+                            size,
+                            frames: vec![(image::Handle::from_bytes(png.clone()), 0)],
+                            bytes: png,
+                            duration: None,
+                        })
+                    })
+                    .into_iter()
+                    .collect(),
+                ),
                 Err(e) => self.status_banner = e,
             },
             UiMessage::DiscardAttachment(i) => drop(self.pane.attachments.remove(i)),
@@ -7750,25 +7784,31 @@ impl BeeperGuiApp {
             UiMessage::DownloadsPicked(Err(e)) => self.fail(Toast::new(e)),
             UiMessage::FilesPicked(r) => match r {
                 Ok(paths) => {
-                    let load = move || paths.iter().map(|p| portal::load_file(p)).collect();
+                    // Desktop's `attachFiles` logs the error of a file and shows "Couldn't attach %s".
+                    let load = move || {
+                        let load = |p: &std::path::PathBuf| {
+                            let name = p.file_name().map_or(p.display().to_string(), |n| n.to_string_lossy().into());
+                            portal::load_file(p).map_err(|e| {
+                                eprintln!("attachFiles: failed to attach {name}: {e}");
+                                format!("Couldn't attach {name}")
+                            })
+                        };
+                        paths.iter().map(load).collect()
+                    };
                     let load = async { tokio::task::spawn_blocking(load).await.expect("file load thread") };
                     return Task::perform(load, UiMessage::FilesLoaded);
                 }
                 Err(e) => self.status_banner = e,
             },
-            UiMessage::FilesLoaded(Ok(_)) if self.pane.editing_message_id.is_some() => {
+            UiMessage::FilesLoaded(_) if self.pane.editing_message_id.is_some() => {
                 self.status_banner = tr("Attachments can't be added while editing a message").into();
             }
-            UiMessage::FilesLoaded(r) => match r {
-                Ok(files) => {
-                    self.pane.send_later = self.pane.send_later.filter(|_| files.is_empty());
-                    self.pane.attachments.extend(files);
-                    if self.drop_send {
-                        self.submit_composer(false);
-                    }
+            UiMessage::FilesLoaded(files) => {
+                self.attach_files(files);
+                if self.drop_send {
+                    self.submit_composer(false);
                 }
-                Err(e) => self.status_banner = e,
-            },
+            }
             UiMessage::FileHover(id, on) if Some(id) == self.main_window => {
                 self.dropping = on && self.pane.selected_chat_id.is_some();
                 self.drop_send &= !on;
@@ -7969,6 +8009,7 @@ impl BeeperGuiApp {
                         is_gif: true,
                         size: g.gif_size,
                         frames,
+                        duration: None,
                     };
                     if !self.store.read().settings.on("autoSendGifs") {
                         self.pane.send_later = None;
@@ -19629,8 +19670,8 @@ const ATTACH_BUTTONS: [u8; 7] = [0, 3, 5, 2, 1, 4, 6];
 fn composer_action(st: &BeeperStore, chat: &Chat, id: u8, editing: bool) -> (String, Option<&'static str>, bool) {
     let (label, hotkey, plus) = COMPOSER_ACTION_INFO[usize::from(id)];
     let supported = match id {
-        2 => chat.files & FILE_GIF != 0,
-        5 => chat.files & FILE_VOICE != 0,
+        2 => chat.takes(FILE_GIF),
+        5 => chat.takes(FILE_VOICE),
         6 => chat.polls.is_some(),
         _ => true,
     };

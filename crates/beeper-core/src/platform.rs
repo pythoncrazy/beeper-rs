@@ -53,7 +53,7 @@ pub fn resolve_home_dir(env_vars: &HashMap<String, String>) -> PathBuf {
 
 /// The MIME types of Desktop's `mime-types` package for the files of chats, with their extensions. The first
 /// extension is the one that Desktop adds to a file name without one.
-const MIME_TYPES: [(&str, &[&str]); 19] = [
+const MIME_TYPES: [(&str, &[&str]); 24] = [
     ("image/png", &["png"]),
     ("image/jpeg", &["jpeg", "jpg", "jpe"]),
     ("image/gif", &["gif"]),
@@ -63,10 +63,15 @@ const MIME_TYPES: [(&str, &[&str]); 19] = [
     ("video/mp4", &["mp4", "mp4v", "mpg4", "m4v"]),
     ("video/quicktime", &["qt", "mov"]),
     ("video/webm", &["webm"]),
+    ("video/x-matroska", &["mkv", "mk3d", "mks"]),
+    ("video/x-msvideo", &["avi"]),
+    ("video/3gpp", &["3gp", "3gpp"]),
     ("audio/mpeg", &["mpga", "mp2", "mp2a", "mp3", "m2a", "m3a"]),
     ("audio/mp4", &["m4a", "mp4a"]),
     ("audio/ogg", &["oga", "ogg", "spx", "opus"]),
     ("audio/wav", &["wav"]),
+    ("audio/aac", &["aac"]),
+    ("audio/x-flac", &["flac"]),
     ("application/pdf", &["pdf"]),
     ("application/zip", &["zip"]),
     ("application/json", &["json", "map"]),

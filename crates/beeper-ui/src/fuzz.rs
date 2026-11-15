@@ -401,8 +401,8 @@ fn attachments_send_like_desktop() {
         std::fs::remove_file(path).unwrap();
         PendingMedia { name: name.into(), ..f }
     };
-    let files = vec![file("a.png", &png), file("b.pdf", b"%PDF")];
-    let _ = app.update(UiMessage::FilesLoaded(Ok(files.clone())));
+    let files = [file("a.png", &png), file("b.pdf", b"%PDF")];
+    let _ = app.update(UiMessage::FilesLoaded(files.iter().cloned().map(Ok).collect()));
     assert!(simulator(app.view_main()).find("PDF ・ 4 B").is_ok(), "a file shows its type and size");
     let _ = app.update(UiMessage::ComposerChanged("hi".into()));
     let _ = app.update(UiMessage::SubmitComposer);
@@ -416,11 +416,11 @@ fn attachments_send_like_desktop() {
     let want = [(Some("hi".into()), vec![]), (None, vec!["img".into()]), (None, vec!["file".into()])];
     assert_eq!(sent, want, "the text first, then each attachment");
     assert!(app.pane.attachments.is_empty() && app.pane.composer.text().is_empty());
-    let _ = app.update(UiMessage::FilesLoaded(Ok(files[1..].to_vec())));
+    let _ = app.update(UiMessage::FilesLoaded(files[1..].iter().cloned().map(Ok).collect()));
     let _ = app.update(UiMessage::ComposerChanged("cap".into()));
     let _ = app.update(UiMessage::SubmitComposer);
     assert_eq!(last(&app, 1), [(Some("cap".into()), vec!["file".into()])], "one attachment has the text as caption");
-    let _ = app.update(UiMessage::FilesLoaded(Ok(files.clone())));
+    let _ = app.update(UiMessage::FilesLoaded(files.iter().cloned().map(Ok).collect()));
     let _ = app.update(UiMessage::DiscardAttachment(0));
     assert_eq!(app.pane.attachments.len(), 1);
     let _ = app.update(UiMessage::DiscardAttachment(0));
@@ -429,14 +429,37 @@ fn attachments_send_like_desktop() {
     assert!(simulator(app.view_main()).find("Drop files here to attach").is_ok(), "a drag shows the drop zone");
     let _ = app.update(UiMessage::Modifiers(Modifiers::SHIFT));
     let _ = app.update(UiMessage::FileDropped(id, "/none".into()));
-    let _ = app.update(UiMessage::FilesLoaded(Ok(files[1..].to_vec())));
+    let _ = app.update(UiMessage::FilesLoaded(files[1..].iter().cloned().map(Ok).collect()));
     assert!(!app.dropping && app.pane.attachments.is_empty(), "a drop with Shift sends");
     assert_eq!(last(&app, 1), [(None, vec!["file".into()])]);
     let _ = app.update(UiMessage::Modifiers(Modifiers::empty()));
     let _ = app.update(UiMessage::FileHover(id, true));
     let _ = app.update(UiMessage::FileDropped(id, "/none".into()));
-    let _ = app.update(UiMessage::FilesLoaded(Ok(files[1..].to_vec())));
+    let _ = app.update(UiMessage::FilesLoaded(files[1..].iter().cloned().map(Ok).collect()));
     assert_eq!(app.pane.attachments.len(), 1, "a drop attaches");
+    let _ = app.update(UiMessage::DiscardAttachment(0));
+    // Desktop's `processAttachment`: a video goes as a video with its measured size and length.
+    let path = std::env::temp_dir().join(format!("beeper-rs-{}-c.mp4", std::process::id()));
+    let lavfi = ["-f", "lavfi", "-i", "testsrc=size=64x48:rate=10", "-t", "1.5", "-pix_fmt", "yuv420p", "-y"];
+    assert!(std::process::Command::new("ffmpeg").args(lavfi).arg(&path).output().unwrap().status.success());
+    let clip = portal::load_file(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert_eq!((clip.mime.as_str(), clip.size, clip.duration), ("video/mp4", (64, 48), Some(1.5)));
+    let _ = app.update(UiMessage::FilesLoaded(vec![Ok(clip)]));
+    let _ = app.update(UiMessage::SubmitComposer);
+    let st = app.store.read();
+    let a = &st.messages[*st.chat_msg_indices[note].last().unwrap()].attachments[0];
+    let size = a.size.as_ref().map(|s| (s.width, s.height));
+    assert_eq!((a.attachment_type.as_str(), size, a.duration), ("video", Some((Some(64), Some(48))), Some(1.5)));
+    drop(st);
+    // The room features limit the files, and a file that does not load shows "Couldn't attach %s".
+    let i = app.store.read().resolve_chat_idx(note).unwrap();
+    app.store.write().chats[i].file.get_mut("m.file").unwrap().max_size = Some(3);
+    let _ = app.update(UiMessage::FilesLoaded(files.iter().cloned().map(Ok).collect()));
+    assert_eq!(app.pane.attachments.len(), 1, "the image attaches");
+    assert_eq!(app.status_banner, "File size (4 B) exceeds the maximum allowed size (3 B)");
+    let _ = app.update(UiMessage::FilesLoaded(vec![Err("Couldn't attach c.mp4".into())]));
+    assert_eq!(app.status_banner, "Couldn't attach c.mp4");
 }
 
 #[test]
@@ -764,7 +787,7 @@ fn drafts_keep_the_composer_like_desktop() {
     std::fs::write(&path, b"%PDF").unwrap();
     let file = PendingMedia { name: "b.pdf".into(), ..portal::load_file(&path).unwrap() };
     std::fs::remove_file(path).unwrap();
-    let _ = app.update(UiMessage::FilesLoaded(Ok(vec![file])));
+    let _ = app.update(UiMessage::FilesLoaded(vec![Ok(file)]));
     let text = " see https://example.com ";
     let _ = app.update(UiMessage::ComposerChanged(text.into()));
     let _ = app.update(UiMessage::StartReply(own.clone()));
@@ -988,7 +1011,7 @@ fn pickers_check_the_network_like_desktop() {
     assert!(app.status_banner.starts_with("Stickers aren't supported on "), "{}", app.status_banner);
     let mut st = app.store.write();
     let i = st.resolve_chat_idx(&other).unwrap();
-    st.chats[i].files = 0;
+    st.chats[i].file.clear();
     drop(st);
     let _ = app.update(UiMessage::TogglePicker(Picker::Gif));
     assert_eq!(app.pane.picker, None);
@@ -1124,7 +1147,8 @@ fn composer_actions_follow_the_chat_like_desktop() {
         ("Add Attachment (Unavailable while editing)".into(), None, false)
     );
     assert_eq!(composer_action(&st, &chat, 4, false), ("Send Later".into(), Some("Message: Send Later"), true));
-    (chat.files, chat.polls) = (0, None);
+    chat.file.clear();
+    chat.polls = None;
     assert_eq!(composer_action(&st, &chat, 2, false), (format!("Add GIF (Unavailable for {net})"), None, false));
     assert!(!composer_action(&st, &chat, 5, false).2, "the chat takes no voice notes");
     assert_eq!(composer_action(&st, &chat, 6, false), (format!("Create Poll (Unavailable for {net})"), None, false));
