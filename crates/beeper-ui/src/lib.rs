@@ -1502,9 +1502,9 @@ fn menu_item<'a>(
 ) -> El<'a> {
     let line = row![]
         .push(lead)
-        .push(txt(label, 13.0))
+        .push(txt(label, 13.0).line_height(Pixels(MENU_LINE)))
         .push(Space::new().width(Fill))
-        .push(txt(hotkey, 13.0).color(Color { a: 0.5, ..p.strong }));
+        .push(txt(hotkey, 13.0).line_height(Pixels(MENU_LINE)).color(Color { a: 0.5, ..p.strong }));
     menu_line(p, line, msg)
 }
 
@@ -1512,7 +1512,7 @@ fn menu_item<'a>(
 fn menu_line<'a>(p: &Palette, line: Row<'a, UiMessage>, msg: Option<UiMessage>) -> El<'a> {
     let style = btn_style([CLEAR, p.menu_hover, p.menu_hover], [p.text, Color::WHITE, Color::WHITE], 4.0);
     let line = line.align_y(Center);
-    container(button(line).padding([3.125, 8.0]).width(Fill).style(style).on_press_maybe(msg)).padding([2, 5]).into()
+    container(button(line).padding([3, 8]).width(Fill).style(style).on_press_maybe(msg)).padding([1, 5]).into()
 }
 
 /// Desktop's `menu-item section-header`: a grey heading row of a menu, as high as a menu row.
@@ -1572,7 +1572,10 @@ const REMINDER_ORDERS: [&str; 4] = [
     "Order by Oldest Message",
     "Order by Newest Message",
 ];
-const MENU_ITEM: f32 = 26.0;
+/// Desktop's `.menu-item` line: 13 px text at the 1.4 line height of `html`.
+const MENU_LINE: f32 = 13.0 * 1.4;
+/// The pitch of Desktop's `.menu-item`: the line, 3 px of padding on each side, and a collapsed 2 px margin.
+const MENU_ITEM: f32 = MENU_LINE + 8.0;
 /// Desktop's `qL` inbox visibility options of an account, with their labels.
 const INBOX_OPTIONS: [(&str, &str); 3] = [("all", "All Messages"), ("dmOnly", "Only DMs"), ("none", "None")];
 const ACCOUNT_SUB_W: f32 = 160.0;
@@ -3535,6 +3538,11 @@ pub fn short_title(c: &Chat) -> &str {
     } else {
         &c.title
     }
+}
+
+/// Desktop's `Toasts-module__container`: no border, and the `--shadow-medium-15` shadow.
+fn toast_box(bg: Color, p: &Palette) -> impl Fn(&Theme) -> container::Style + Copy {
+    glow_box(bg, p.shadow, 10.0, 1.0, 10.0)
 }
 
 fn tinted<'a>(h: &svg::Handle, size: f32, color: Color) -> El<'a> {
@@ -10323,7 +10331,7 @@ impl BeeperGuiApp {
                 container(on.then(|| ic(icon::CHECK, 14.0))).width(22),
                 glyph,
                 Space::new().width(6),
-                txt(space_name(&st, id), 13.0),
+                txt(space_name(&st, id), 13.0).line_height(Pixels(MENU_LINE)),
                 Space::new().width(4)
             ]
             .push(muted.then(|| ic(icon::NOTIFICATIONS_OFF, 12.0)))
@@ -11236,7 +11244,7 @@ impl BeeperGuiApp {
         };
         let keys = (!keys.is_empty()).then(|| Row::with_children(keys.into_iter().map(kbd)).spacing(4));
         let body = row![med(label, 13.0).color(p.strong)].push(keys).spacing(8).align_y(Center);
-        tooltip(el, container(body).padding([8, 12]).style(fill_box(p.card, 18.0)), at)
+        tooltip(el, container(body).padding([8, 11]).style(glow_box(p.card, p.shadow, 17.0, 0.0, 20.0)), at)
     }
 
     fn view_rail(&self) -> El<'_> {
@@ -11592,7 +11600,7 @@ impl BeeperGuiApp {
                 let item = stack![item].push(bubble);
                 let item = button(item)
                     .padding(0)
-                    .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.text; 3], 8.0))
+                    .style(btn_style([if on { p.selected } else { CLEAR }; 3], [p.text; 3], 8.0))
                     .on_press(pick(c));
                 r.push(container(mouse_area(item).on_right_press(UiMessage::OpenChatMenu(c.id.clone()))).center_x(cell))
             }))
@@ -11603,42 +11611,62 @@ impl BeeperGuiApp {
             (false, false) => 12.0,
         };
         let text_w = inner - 16.0 - av - 10.0 - lead;
-        let frame = |key: String, dot: Option<El<'static>>, face: El<'static>, lines: [El<'static>; 2], on, select| {
-            let [top, preview] = lines;
-            let item = row![]
-                .push(dot)
-                .push(container(face).width(av + 10.0))
-                .push(column![top, preview].width(Fill))
-                .align_y(Center)
-                .padding(Padding::new(8.0).top(9.0).bottom(10.0).left(if selecting { 0.0 } else { 8.0 }));
-            let action =
-                (!selecting && self.hovered_chat.as_ref() == Some(&key)).then(|| match key.strip_prefix("draft:") {
-                    Some(n) => Some(self.hover_btn(
-                        5,
-                        20.0,
-                        tr("Delete Chat"),
-                        vec![],
-                        UiMessage::DeleteNewChat(n.parse().unwrap()),
-                    )),
-                    None => self.row_action(&st.chats[st.resolve_chat_idx(&key).expect("listed chat")], hover_action),
-                });
-            let row = mouse_area(
-                button(stack![item].push(action.flatten()))
-                    .padding(0)
-                    .width(Fill)
-                    .style(btn_style([if on { p.selected } else { CLEAR }, p.hover, p.selected], [p.text; 3], 8.0))
-                    .on_press(select),
-            )
-            .on_enter(UiMessage::HoverChat(key.clone(), true))
-            .on_exit(UiMessage::HoverChat(key.clone(), false));
-            let inbox = st.resolve_chat_idx(&key).is_some_and(|i| st.chats[i].flags & CHAT_ARCHIVED == 0);
-            let row = match inbox {
-                true => row.on_middle_press(UiMessage::ToggleFlag(key.clone(), ChatFlag::Archived)),
-                false => row,
-            }
-            .on_right_press(UiMessage::OpenChatMenu(key));
-            column![row, divider(p.divider, av + 18.0)]
+        // Desktop's order: the regular-style pinned rows, then the new-chat drafts, then the other chats.
+        let lead = rest.iter().take_while(|c| c.flags & CHAT_PINNED != 0).count();
+        let drafts = self.new_chats.len();
+        // Desktop hides the divider of the selected row and of the row above it.
+        let ids = |r: std::ops::Range<usize>| rest[r].iter().map(|c| std::borrow::Cow::Borrowed(c.id.as_str()));
+        let draft_keys = self.new_chats.iter().map(|d| std::borrow::Cow::Owned(format!("draft:{}", d.id)));
+        let lit = |k: &str| {
+            selected == Some(k) || k.strip_prefix("draft:").is_some_and(|n| self.creating_chat == n.parse().ok())
         };
+        let mut prev = None;
+        let above = ids(0..lead).chain(draft_keys).chain(ids(lead..rest.len())).find_map(|k| {
+            let hit = if lit(&k) { prev.take() } else { None };
+            prev = Some(k);
+            hit
+        });
+        let frame =
+            |key: String, dot: Option<El<'static>>, face: El<'static>, lines: [El<'static>; 2], on: bool, select| {
+                let [top, preview] = lines;
+                let item = row![]
+                    .push(dot)
+                    .push(container(face).width(av + 10.0))
+                    .push(column![top, preview].width(Fill))
+                    .align_y(Center)
+                    .padding(Padding::new(8.0).top(9.0).bottom(11.0).left(if selecting { 0.0 } else { 8.0 }));
+                let action = (!selecting && self.hovered_chat.as_ref() == Some(&key)).then(|| {
+                    match key.strip_prefix("draft:") {
+                        Some(n) => Some(self.hover_btn(
+                            5,
+                            20.0,
+                            tr("Delete Chat"),
+                            vec![],
+                            UiMessage::DeleteNewChat(n.parse().unwrap()),
+                        )),
+                        None => {
+                            self.row_action(&st.chats[st.resolve_chat_idx(&key).expect("listed chat")], hover_action)
+                        }
+                    }
+                });
+                let rule = (!on && above.as_deref() != Some(key.as_str()))
+                    .then(|| container(divider(p.divider, av + 18.0)).align_bottom(Fill));
+                let row = mouse_area(
+                    button(stack![item].push(action.flatten()).push(rule))
+                        .padding(0)
+                        .width(Fill)
+                        .style(btn_style([if on { p.selected } else { CLEAR }; 3], [p.text; 3], 8.0))
+                        .on_press(select),
+                )
+                .on_enter(UiMessage::HoverChat(key.clone(), true))
+                .on_exit(UiMessage::HoverChat(key.clone(), false));
+                let inbox = st.resolve_chat_idx(&key).is_some_and(|i| st.chats[i].flags & CHAT_ARCHIVED == 0);
+                match inbox {
+                    true => row.on_middle_press(UiMessage::ToggleFlag(key.clone(), ChatFlag::Archived)),
+                    false => row,
+                }
+                .on_right_press(UiMessage::OpenChatMenu(key))
+            };
         let draft_row = |d: &NewChat| {
             let n = d.id;
             let dot = (!counts).then(|| container(Space::new()).width(12).into());
@@ -11657,11 +11685,7 @@ impl BeeperGuiApp {
             let picked = self.new_chat_account.as_ref().filter(|_| on);
             let face = match d.users.first().map(|(a, _)| a).or(picked).filter(|_| network_icons) {
                 Some(account) => {
-                    let ring = match (on, self.hovered_chat.as_ref() == Some(&key)) {
-                        (true, _) => crate::style::flat(p.window, p.selected),
-                        (false, true) => crate::style::flat(p.window, p.hover),
-                        (false, false) => p.window,
-                    };
+                    let ring = if on { crate::style::flat(p.window, p.selected) } else { p.window };
                     badged(face, account, av, if compact { 12.0 } else { 16.0 }, (!colorize).then_some(p), ring)
                 }
                 None => face,
@@ -11836,11 +11860,7 @@ impl BeeperGuiApp {
             let avatar = self.chat_avatar(c, av, 1.25);
             let avatar = match network_icons {
                 true => {
-                    let ring = match (on, self.hovered_chat.as_ref() == Some(&c.id)) {
-                        (true, _) => crate::style::flat(p.window, p.selected),
-                        (false, true) => crate::style::flat(p.window, p.hover),
-                        (false, false) => p.window,
-                    };
+                    let ring = if on { crate::style::flat(p.window, p.selected) } else { p.window };
                     badged(avatar, &c.account_id, av, if compact { 12.0 } else { 16.0 }, (!colorize).then_some(p), ring)
                 }
                 false => avatar,
@@ -11853,9 +11873,6 @@ impl BeeperGuiApp {
             };
             frame(c.id.clone(), dot, face.into(), [top.into(), preview.height(16 * lines as u32).into()], on, pick(c))
         };
-        // Desktop's order: the regular-style pinned rows, then the new-chat drafts, then the other chats.
-        let lead = rest.iter().take_while(|c| c.flags & CHAT_PINNED != 0).count();
-        let drafts = self.new_chats.len();
         let list: El<'_> = if chats.is_empty() && self.new_chats.is_empty() {
             let tab = if self.selected_account_filter.is_some() { InboxTab::Requests } else { self.active_tab };
             let (head, hint) = tab.empty();
@@ -12133,7 +12150,8 @@ impl BeeperGuiApp {
             .view_emoji_picker(&st)
             .filter(|_| self.pane().emoji.as_ref().is_some_and(|pk| pk.react.is_none() && pk.pref.is_none()))
             .map(|e| {
-                let right = if secondary { 112.0 } else { 82.0 };
+                // Desktop's `.ComposeMessage-module__emojiPopup` is `right: 0` over the emoji button.
+                let right = if secondary { 88.0 } else { 58.0 };
                 container(e).align_right(Fill).align_bottom(Fill).padding(Padding::ZERO.right(right).bottom(36.0))
             });
         let dropping = self.dropping.then(|| {
@@ -12842,16 +12860,26 @@ impl BeeperGuiApp {
             let arrow =
                 || span(icon::ARROW_UP_RIGHT.to_string()).font(iced::Font::with_name("icons")).size(11.0).color(fg);
             let rich = |r: beeper_core::codec::Run| {
+                // Desktop's `--font-weight-emphasized` bold, and its inline `code`: `--font-family-mono` at 0.9em and
+                // weight 500, on `--color-on-surface` at 0.1 with a 4 px radius and `.1em .33em` of padding.
+                let style = if r.italic { iced::font::Style::Italic } else { iced::font::Style::Normal };
                 let font = match r.code {
-                    true => iced::Font::MONOSPACE,
-                    false => iced::Font {
-                        style: if r.italic { iced::font::Style::Italic } else { iced::font::Style::Normal },
-                        ..crate::style::fw(if r.bold { Weight::Bold } else { Weight::Normal })
-                    },
+                    true => iced::Font { weight: Weight::Medium, ..iced::Font::MONOSPACE },
+                    false => {
+                        iced::Font { style, ..crate::style::fw(if r.bold { Weight::Semibold } else { Weight::Normal }) }
+                    }
                 };
                 let mention = r.link.as_deref().and_then(|l| l.strip_prefix("https://matrix.to/#/"));
                 let mention = mention.and_then(beeper_core::codec::url_decode).filter(|id| id.starts_with('@'));
                 let s = span(r.text).size(13.0).color(fg).font(font).strikethrough(r.strike);
+                let s = match r.code {
+                    true => s
+                        .size(13.0 * 0.9)
+                        .background(Color { a: 0.1, ..p.strong })
+                        .border(border::rounded(4))
+                        .padding(Padding::from([0.1 * 13.0 * 0.9, 0.33 * 13.0 * 0.9])),
+                    false => s,
+                };
                 let bold = crate::style::fw(Weight::Bold);
                 let s = match mention {
                     Some(id) if me(&id) => {
@@ -14278,7 +14306,7 @@ impl BeeperGuiApp {
             container(body)
                 .width(602)
                 .height(360)
-                .style(glow_box(p.card, Color { a: 0.18, ..p.strong }, 18.0, 84.0))
+                .style(glow_box(p.card, Color { a: 0.18, ..p.strong }, 18.0, 4.0, 84.0))
                 .into()
         };
         let mode_btn = button(
@@ -14909,7 +14937,7 @@ impl BeeperGuiApp {
                     .size(13.0)
                     .color(p.strong);
                 let card = row![glyph, text, close].spacing(8).align_y(Center);
-                return container(card).padding(8).style(shadow_box(p.card, p.chip, 10.0, 15.0)).into();
+                return container(card).padding([6, 8]).style(toast_box(p.card, p)).into();
             }
             if let Some(t) = self.shown_toast() {
                 return self.toast_card(t, None);
@@ -14918,7 +14946,7 @@ impl BeeperGuiApp {
             let relaunch = self.relaunch_toast.map(|_| pill_btn(p, tr("Relaunch app"), UiMessage::Relaunch));
             let card = row![text.wrapping(iced::widget::text::Wrapping::WordOrGlyph)].push(relaunch).push(close);
             let card = card.spacing(8).align_y(Center);
-            container(card).padding(8).style(shadow_box(p.card, p.chip, 10.0, 15.0)).into()
+            container(card).padding(8).style(toast_box(p.card, p)).into()
         });
         let toasts: Vec<El> = older.chain(newest).collect();
         (!toasts.is_empty()).then(|| {
@@ -14969,7 +14997,8 @@ impl BeeperGuiApp {
             let action = UiMessage::ToastAction(older, Box::new(msg.clone()));
             button(label).padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0)).on_press(action)
         };
-        let glyph = t.icon.map(|i| container(tinted(&TOAST_ICONS[i], 20.0, fg)).center_x(16).center_y(20));
+        // Desktop's 20 px icon sits in a 2rem box with a -8 px margin, so the toast stays 2rem tall.
+        let glyph = t.icon.map(|i| container(tinted(&TOAST_ICONS[i], 20.0, fg)).center(20));
         let text = match t.strong {
             true => semi(t.text.clone(), 13.0),
             false => txt(t.text.clone(), 13.0),
@@ -14984,9 +15013,11 @@ impl BeeperGuiApp {
         let right = t.right.as_ref().map(|b| btn(b, p.accent));
         let dismiss = older.map_or(UiMessage::DismissBanner, UiMessage::DismissOlderToast);
         let close = icon_btn(p, icon::CLOSE, 14.0, 16.0, if t.error { fg } else { p.sub }, dismiss);
-        let card = row![].push(glyph).push(body).push(right).push(close).spacing(8);
+        let pad = if glyph.is_some() { Padding::new(6.0).right(8.0) } else { Padding::new(8.0) };
+        let lead = row![].push(glyph).push(body).spacing(6);
+        let card = row![lead].push(right).push(close).spacing(8);
         let card = card.align_y(if t.buttons.is_empty() { Center } else { iced::Alignment::Start });
-        let card = container(card).padding(8).style(shadow_box(bg, p.chip, 10.0, 15.0));
+        let card = container(card).padding(pad).style(toast_box(bg, p));
         match t.open.clone() {
             Some(open) => mouse_area(card).on_press(open).into(),
             None => card.into(),
@@ -15360,7 +15391,7 @@ impl BeeperGuiApp {
             container(Space::new()).width(Fill).height(2).style(fill_box(shade, 0.0)),
             strip(foot.into(), border::Radius::default().bottom(18)),
         ];
-        container(body).width(602).style(glow_box(p.card, Color { a: 0.18, ..p.strong }, 18.0, 84.0)).into()
+        container(body).width(602).style(glow_box(p.card, Color { a: 0.18, ..p.strong }, 18.0, 4.0, 84.0)).into()
     }
 
     fn view_new_chat<'a>(&'a self) -> El<'a> {
@@ -15728,12 +15759,13 @@ impl BeeperGuiApp {
                 .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
                 .on_press(UiMessage::SettingsQueryChanged(String::new()))
         });
+        // Desktop's 16 px Material icon is scaled by 1.2 without a change to its 16 px box.
         let search = container(
-            row![ic(icon::SEARCH, 16.0).color(p.text), search_input]
+            row![ic(icon::SEARCH, 16.0 * 1.2).color(p.strong), search_input]
                 .push(clear)
-                .spacing(8)
+                .spacing(8.0 - 1.6)
                 .align_y(Center)
-                .padding([6, 8]),
+                .padding(Padding::new(6.0 - 1.6).left(8.0 - 1.6).right(8.0)),
         )
         .style(fill_box(p.search, 38.0));
         // The search results draw the icons at Desktop's 11 px instead of 13 px.
@@ -15793,7 +15825,8 @@ impl BeeperGuiApp {
                 .align_y(Center)
                 .height(if on { 44 } else { 43 })
                 .padding([0, 8]);
-            let next_on = tabs.get(i + 1).is_some_and(|n| *n == self.active_settings_tab);
+            // Desktop's `.pref-option:has(+ .selected)` and `:last-child` have no divider.
+            let next_on = tabs.get(i + 1).is_none_or(|n| *n == self.active_settings_tab);
             c.push(button(line).padding(0).width(Fill).style(style).on_press(UiMessage::SelectSettingsTab(tab))).push(
                 (!on).then(|| {
                     let rule = if next_on { CLEAR } else { p.divider };
@@ -15871,8 +15904,10 @@ impl BeeperGuiApp {
         )
         .width(Fill)
         .height(Fill)
-        .style(fill_box(self.active_settings_tab.pane(p), 10.0));
-        let base = container(row![left, container(right).padding(8)]).width(Fill).height(Fill);
+        .style(glow_box(self.active_settings_tab.pane(p), Color::BLACK.scale_alpha(0.12), 10.0, 0.0, 10.0));
+        // Desktop's `.prefs-right-pane` fills the window width, with a `drop-shadow(0 0 10px #0000001f)`.
+        let base =
+            container(row![left, container(right).padding(Padding::new(8.0).right(0.0))]).width(Fill).height(Fill);
         drop(st);
         let confirm = self.confirm.filter(|d| SETTINGS_DIALOGS.contains(d)).map(|d| self.view_confirm(d));
         let add = self.integrations.add.as_ref().map(|a| self.view_add_token(a));
@@ -19078,6 +19113,13 @@ mod tests {
         let icon = ::image::load_from_memory(include_bytes!("../assets/icon.png")).unwrap().into_rgba8();
         assert_eq!(icon.dimensions(), (512, 512));
         assert_eq!(icon.get_pixel(256, 256).0, [59, 82, 245, 255], "the blue Beeper B");
+    }
+
+    #[test]
+    fn window_and_menu_sizes_match_desktop() {
+        let min = BeeperGuiApp::window_settings(Size::new(1200.0, 800.0)).min_size;
+        assert_eq!(min, Some(Size::new(330.0, 400.0)), "main-entry `minWidth` and `minHeight`");
+        assert!((MENU_ITEM - 26.2).abs() < 1e-4, "a 24.2 px `.menu-item` and its collapsed 2 px margin");
     }
 
     #[test]
