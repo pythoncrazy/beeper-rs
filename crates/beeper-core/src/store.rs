@@ -358,7 +358,7 @@ pub struct BeeperStore {
 }
 
 impl BeeperStore {
-    pub fn from_config(config: CentralConfig) -> Self {
+    pub fn from_config(mut config: CentralConfig) -> Self {
         assert_not_original_beeper_dir(&config.data_dir);
         let logged_out = config.data_dir.join(LOGGED_OUT);
         if logged_out.exists() {
@@ -426,6 +426,11 @@ impl BeeperStore {
                 config.db_path.display()
             ),
         }
+        let stored_token = "SELECT value ->> '$.access_token' FROM kv WHERE key = ?1";
+        let token: Option<String> =
+            conn.query_row(stored_token, [KEY_STATE], |r| r.get(0)).optional().expect("read the stored token");
+        // A data folder from `--demo` holds the demo account, which must never reach the network.
+        config.demo |= token.as_deref() == Some(DEFAULT_TOKEN);
         let beeper_state = if config.demo { demo_state() } else { BeeperStateRecord::default() };
         let features =
             if config.demo { crate::features::Flags::free_plan() } else { crate::features::Flags::default() };
@@ -2162,6 +2167,20 @@ mod tests {
         let title = st.chats.last().unwrap().title.clone();
         let found = st.chat_search_index.query_all_tokens(&title);
         assert!(found.iter().any(|&i| st.chats[i as usize].title == title), "the chat search finds moved chats");
+        drop(st);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_demo_data_folder_stays_offline_without_the_demo_flag() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-demo-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23390, None);
+        assert!(!super::BeeperStore::from_config(config.clone()).config.demo, "a signed-out folder is not a demo");
+        std::fs::remove_dir_all(&dir).unwrap();
+        drop(super::BeeperStore::from_config(crate::config::CentralConfig { demo: true, ..config.clone() }));
+        let st = super::BeeperStore::from_config(config);
+        assert!(st.config.demo && st.signed_in(), "the demo account does not start the Matrix sync");
         drop(st);
         std::fs::remove_dir_all(dir).unwrap();
     }
