@@ -791,6 +791,8 @@ palette! {
     surface_dim: Color = hex(0xebebeb), hex(0x000000);
     /// The color of `BrandReplyLineSegment`.
     reply_line: Color = hex(0xe1e1e1), hex(0x353535);
+    /// `--color-text-danger`: the errors of the sign-in window.
+    text_danger: Color = hex(0xcd2b31), hex(0xff6369);
     /// `--appearance-color-text-danger`.
     danger: Color = hex(0xff383c), hex(0xff383c);
     /// The color of `--shadow-medium-15` and `--shadow-large-15`: toasts and tooltips.
