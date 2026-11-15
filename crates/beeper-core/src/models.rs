@@ -755,16 +755,14 @@ pub const BOOKMARKS_ROOM: &str = "!bookmarks:beeper.local";
 /// The event type and the relation type of a transcription, and Desktop's `TRANSCRIPTIONS_ROOM_ID`, its room.
 pub const TRANSCRIPTION: &str = "com.beeper.transcription";
 pub const TRANSCRIPTIONS_ROOM: &str = "!transcriptions:beeper.local";
+/// The event type and the relation type of a Desktop "Remove from Beeper", and its managed room.
+pub const REMOVED_MESSAGE: &str = "com.beeper.removed_message";
+pub const REMOVED_MESSAGES_ROOM: &str = "!removed-messages:beeper.local";
 /// The managed rooms on the Beeper homeserver that keep data and are not chats: the rooms of Desktop's
 /// `managedRoomEventHandlers` and `TRANSCRIPTIONS_ROOM_ID`. `!tips:beeper.local` is also a managed room, but Desktop
 /// shows it as a chat.
-pub const MANAGED_ROOMS: [&str; 5] = [
-    BOOKMARKS_ROOM,
-    TRANSCRIPTIONS_ROOM,
-    "!blasts:beeper.local",
-    "!removed-messages:beeper.local",
-    "!reminders:beeper.local",
-];
+pub const MANAGED_ROOMS: [&str; 5] =
+    [BOOKMARKS_ROOM, TRANSCRIPTIONS_ROOM, "!blasts:beeper.local", REMOVED_MESSAGES_ROOM, "!reminders:beeper.local"];
 
 /// A `com.beeper.bookmark` event of the bookmarks room, which relates to a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1075,6 +1073,9 @@ pub struct Message {
     pub is_bookmarked: Option<bool>,
     #[serde(rename = "isDeleted", skip_serializing_if = "Option::is_none")]
     pub is_deleted: Option<bool>,
+    /// Desktop's `isRemovedFromBeeper`: the user removed the deleted message from Beeper, and nobody redacted it.
+    #[serde(rename = "isRemovedFromBeeper", default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
     #[serde(rename = "linkedMessageID", skip_serializing_if = "Option::is_none")]
     pub linked_message_id: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]

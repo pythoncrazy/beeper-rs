@@ -7,8 +7,8 @@ use crate::models::{
     VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES,
     BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME,
     DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK,
-    MSG_MENTION, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REPORT_SPAM, TRANSCRIPTION, TRANSCRIPTIONS_ROOM,
-    USER_BLOCKED,
+    MSG_MENTION, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM,
+    TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -636,6 +636,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         is_unread: Some(false),
         is_bookmarked: Some(false),
         is_deleted: deleted.then_some(true),
+        removed: false,
         linked_message_id: s(&rel["m.in_reply_to"]["event_id"]).or(reaction.as_ref().and(s(&rel["event_id"]))),
         reactions: Vec::new(),
         text,
@@ -956,6 +957,27 @@ fn bookmark_change(e: &Value, me: &str) -> Option<(String, Option<Bookmark>)> {
     }
 }
 
+/// Desktop's restoration of the removed messages: the whole removed-messages room once, then its new events.
+async fn sync_removals(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
+    let events = if store.read().removals.is_none() { all_history(room).await } else { events };
+    let me = room.own_user_id().as_str();
+    let removals = events
+        .iter()
+        .filter_map(|e| removal(&serde_json::from_str(e.raw().json().get()).expect("timeline event JSON"), me))
+        .collect();
+    store.write().apply_removals(removals);
+}
+
+/// Desktop's `parseRemovalEvent`: the removed message and the removal event. Desktop does not undo a removal when the
+/// removal is redacted, so a redaction is not a change.
+fn removal(e: &Value, me: &str) -> Option<(String, String)> {
+    let rel = &e["content"]["com.beeper.relates_to"];
+    let valid = e["type"] == REMOVED_MESSAGE && e["sender"] == me && rel["rel_type"] == REMOVED_MESSAGE;
+    let redacted = !e["unsigned"]["redacted_because"].is_null();
+    s(&rel["room_id"]).filter(|_| valid && !redacted)?;
+    Some((s(&rel["event_id"])?, s(&e["event_id"])?))
+}
+
 /// Desktop's `handleTranscriptionEvent` for the new events of the transcriptions room. Like Desktop, it does not
 /// read the older events of the room.
 fn sync_transcriptions(store: &SharedStore, events: Vec<TimelineEvent>) {
@@ -1050,6 +1072,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     match room.room_id().as_str() {
         BOOKMARKS_ROOM => return sync_bookmarks(store, room, events).await,
         TRANSCRIPTIONS_ROOM => return sync_transcriptions(store, events),
+        REMOVED_MESSAGES_ROOM => return sync_removals(store, room, events).await,
         id if MANAGED_ROOMS.contains(&id) => return,
         _ => {}
     }
@@ -1381,6 +1404,12 @@ pub enum Outgoing {
         target: String,
         on: bool,
     },
+    /// Desktop's `removeMessageFromBeeper`: a removal of a message in a room. Its chat is the removed-messages room.
+    RemoveFromBeeper {
+        txn: String,
+        room: String,
+        target: String,
+    },
     /// Desktop's `setTranscription`: the transcription of a message in a room. Its chat is the transcriptions room.
     Transcription {
         room: String,
@@ -1580,21 +1609,25 @@ async fn prepare_media(
     Ok((data, f.name, f.mime, info))
 }
 
-/// Pushes the outbox to the homeserver. A message that fails keeps an error, like Desktop's failed echoes. Other
-/// changes that fail are dropped, and the error comes back.
+/// Pushes the outbox to the homeserver. A message that fails keeps an error, like Desktop's failed echoes. A removal
+/// that fails stays pending for the next launch, like Desktop's `resendPendingRemovals`. Other changes that fail are
+/// dropped, and the error comes back.
 pub async fn flush(store: SharedStore) -> Result<(), String> {
     loop {
         let Some((row, chat, out)) = store.write().next_outgoing() else { return Ok(()) };
         // A failed change waits for Retry only with a local echo that shows the error.
         let message = out.message().filter(|id| store.read().stored_message(id).is_some()).map(str::to_string);
         let retry = !matches!(out, Outgoing::Edit { .. });
+        let pending = matches!(out, Outgoing::RemoveFromBeeper { .. });
         let r = push(&store, chat, out).await;
         let mut st = store.write();
         match (r, message) {
             (Ok(()), message) => st.pushed(row, message.as_deref(), None),
             (Err(e), Some(message)) => st.pushed(row, Some(&message), Some((e, retry))),
             (Err(e), None) => {
-                st.pushed(row, None, None);
+                if !pending {
+                    st.pushed(row, None, None);
+                }
                 st.pushing = false;
                 return Err(e);
             }
@@ -1958,6 +1991,15 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                     store.write().bookmarks.remove(&target);
                 }
                 _ => {}
+            }
+        }
+        // Desktop sends a pending removal again after a restart, but not when the room already has a removal.
+        Outgoing::RemoveFromBeeper { txn, room: chat, target } => {
+            let target = event(target)?.to_string();
+            if store.read().removals.as_ref().is_none_or(|r| !r.contains_key(&target)) {
+                let rel = serde_json::json!({ "event_id": target, "room_id": chat, "rel_type": REMOVED_MESSAGE });
+                let content = serde_json::json!({ "com.beeper.relates_to": rel });
+                room.send_raw(REMOVED_MESSAGE, content).with_transaction_id(txn.as_str().into()).await.map_err(e)?;
             }
         }
         Outgoing::Transcription { room: chat, target, transcription: t } => {
@@ -3751,6 +3793,115 @@ mod tests {
         assert!(!st.chat_idx_by_id.contains_key(BOOKMARKS_ROOM), "the bookmarks room is not a chat");
         drop(st);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Desktop's "Remove from Beeper": the own removals of the removed-messages room delete their messages, a new
+    /// removal goes to that room with one transaction ID and stays pending after a failure until the next launch, and
+    /// a redaction of a removed message redacts its removal.
+    #[tokio::test]
+    async fn removals_follow_the_removed_messages_room_like_desktop() {
+        use crate::models::REMOVED_MESSAGES_ROOM;
+        use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+        let rel = |id: &str| json!({ "com.beeper.relates_to": { "event_id": id, "room_id": "!room:x", "rel_type": "com.beeper.removed_message" } });
+        let text = |id: &str| stub_event(id, "m.room.message", json!({ "msgtype": "m.text", "body": id }));
+        let mut redaction = stub_event("$x", "m.room.redaction", json!({ "redacts": "$c" }));
+        redaction["redacts"] = "$c".into();
+        let events = vec![text("$a"), text("$b"), text("$c"), redaction];
+        let mut foreign = stub_event("$ro", "com.beeper.removed_message", rel("$b"));
+        foreign["sender"] = "@other:x".into();
+        let removals = vec![
+            stub_event("$ra", "com.beeper.removed_message", rel("$a")),
+            foreign,
+            stub_event("$rc", "com.beeper.removed_message", rel("$c")),
+        ];
+        let mut sync = stub_sync();
+        sync["rooms"]["join"][REMOVED_MESSAGES_ROOM] = sync["rooms"]["join"]["!room:x"].clone();
+        let (failing, sent) =
+            (std::sync::Arc::new(AtomicBool::new(true)), std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        let (fail_now, sent_log) = (failing.clone(), sent.clone());
+        let url = crate::bridge_stub::serve(move |method, path, body| {
+            let path = crate::codec::url_decode(path.split('?').next().expect("a path")).expect("an encoded path");
+            match path.as_str() {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/sync" => (200, sync.clone()),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                p if p.ends_with("/messages") => {
+                    let page = if p.contains(REMOVED_MESSAGES_ROOM) { &removals } else { &events };
+                    (200, json!({ "start": "t", "chunk": page.iter().rev().collect::<Vec<_>>() }))
+                }
+                p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+                _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+                p if p.contains("/send/com.beeper.removed_message/") && fail_now.load(Relaxed) => {
+                    (403, json!({ "errcode": "M_FORBIDDEN", "error": "stub refusal" }))
+                }
+                p => {
+                    sent_log.lock().unwrap().push((p.to_string(), body));
+                    (200, json!({ "event_id": "$sent" }))
+                }
+            }
+        })
+        .await;
+        let dir = std::env::temp_dir().join(format!("beeper-rs-removals-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = stub_store(&dir, &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        sync_stub_room(&store, REMOVED_MESSAGES_ROOM).await;
+        let state = |store: &crate::store::SharedStore, id: &str| {
+            let mut st = store.write();
+            let i = st.find_message(id).expect("a stored message");
+            (st.messages[i].is_deleted == Some(true), st.messages[i].removed, st.messages[i].text.is_some())
+        };
+        assert_eq!(state(&store, "$a"), (true, true, false), "an own removal deletes the message");
+        assert_eq!(state(&store, "$b"), (false, false, true), "Desktop skips the removals of other users");
+        assert_eq!(state(&store, "$c"), (true, false, false), "a redacted message is not removed");
+        {
+            let mut st = store.write();
+            st.delete_message("!room:x", "$a").expect("a redaction of a removed message");
+            st.remove_from_beeper("$b");
+        }
+        assert_eq!(state(&store, "$a"), (true, false, false), "a redaction ends the removal");
+        assert_eq!(state(&store, "$b"), (true, true, false), "a removal deletes the message at once");
+        assert!(store.write().start_flush());
+        assert!(super::flush(store.clone()).await.is_err(), "the removal fails");
+        // The changes for the removed-messages room, with the path after the room.
+        let room = format!("/_matrix/client/v3/rooms/{REMOVED_MESSAGES_ROOM}/");
+        let changes = || {
+            let sent = sent.lock().unwrap();
+            sent.iter().filter_map(|(p, b)| Some((p.strip_prefix(&room)?.to_string(), b.clone()))).collect::<Vec<_>>()
+        };
+        let redacted: Vec<String> = changes().into_iter().map(|c| c.0[..10].to_string()).collect();
+        assert_eq!(redacted, ["redact/$rc", "redact/$ra"], "Desktop's cleanup redacts the removals");
+        drop(store);
+        failing.store(false, Relaxed);
+        let store = stub_store(&dir, &url).await;
+        assert_eq!(state(&store, "$b"), (true, true, false), "the removal persists");
+        assert!(store.write().start_flush());
+        super::flush(store.clone()).await.expect("the pending removal goes again after a restart");
+        let (path, body) = changes().pop().expect("the removal");
+        assert!(path.starts_with("send/com.beeper.removed_message/~beeper-"), "{path}");
+        assert_eq!(body, rel("$b"));
+        drop(store);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn removal_events_like_desktop() {
+        let rel = json!({ "event_id": "$m", "room_id": "!r", "rel_type": "com.beeper.removed_message" });
+        let ev = json!({ "type": "com.beeper.removed_message", "sender": "@me:x", "event_id": "$rm",
+            "content": { "com.beeper.relates_to": rel } });
+        assert_eq!(super::removal(&ev, "@me:x"), Some(("$m".into(), "$rm".into())));
+        assert_eq!(super::removal(&ev, "@other:x"), None, "Desktop takes only own removals");
+        let mut redacted = ev.clone();
+        redacted["unsigned"] = json!({ "redacted_because": {} });
+        assert_eq!(super::removal(&redacted, "@me:x"), None);
+        for key in ["room_id", "event_id"] {
+            let mut bad = ev.clone();
+            bad["content"]["com.beeper.relates_to"][key].take();
+            assert_eq!(super::removal(&bad, "@me:x"), None, "a removal without {key}");
+        }
+        let mut bookmark = ev.clone();
+        bookmark["content"]["com.beeper.relates_to"]["rel_type"] = "com.beeper.bookmark".into();
+        assert_eq!(super::removal(&bookmark, "@me:x"), None);
     }
 
     /// Desktop's `managedRoomEventHandlers` take the events of the managed rooms, and the transcriptions room is not
