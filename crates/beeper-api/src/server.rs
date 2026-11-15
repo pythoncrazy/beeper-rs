@@ -202,10 +202,6 @@ fn store_error(e: &'static str) -> Response {
     }
 }
 
-fn page<T: Serialize>(items: Vec<T>, oldest_cursor: Option<String>, newest_cursor: Option<String>) -> Reply {
-    ok(&CursorPage { items, has_more: false, oldest_cursor, newest_cursor })
-}
-
 /// The `limit` items of a page from an iterator, newest first, and whether the iterator has more items.
 fn take_page<T>(items: impl Iterator<Item = T>, limit: usize) -> (Vec<T>, bool) {
     let mut items: Vec<T> = items.take(limit + 1).collect();
@@ -1046,16 +1042,38 @@ fn sign_in_step(store: &SharedStore, cloud: &Cloud, step: &str, r: &Req) -> Repl
 
 fn account(st: &BeeperStore, id: &str, rest: &[&str], r: &Req) -> Reply {
     let account = st.accounts.iter().find(|a| a.account_id == id).ok_or_else(|| missing("Account not found"))?;
+    // The people of the chats of the account, each once, without the user.
+    let mut seen = std::collections::HashSet::new();
     let users = st.chats.iter().filter(|c| c.account_id == id).flat_map(|c| &c.participants.items);
+    let users = users.filter(|p| p.is_self != Some(true) && seen.insert(p.id.as_str()));
+    let q = r.q("query").map(|q| q.trim().to_lowercase()).filter(|q| !q.is_empty());
+    // The query also finds a contact by its ID, like the exact lookup of Desktop.
+    let fields = |p: &User| {
+        [Some(p.id.clone()), p.full_name.clone(), p.username.clone(), p.email.clone(), p.phone_number.clone()]
+    };
+    let hit = |p: &&User| q.as_ref().is_none_or(|q| fields(p).iter().flatten().any(|f| f.to_lowercase().contains(q)));
     match rest {
         [] => ok(account),
         ["contacts"] => {
-            let q = r.q("query").unwrap_or_default().to_lowercase();
-            let fields = |p: &User| [p.full_name.clone(), p.username.clone(), p.email.clone(), p.phone_number.clone()];
-            let hit = |p: &&User| q.is_empty() || fields(p).iter().flatten().any(|f| f.to_lowercase().contains(&q));
+            r.need_q("query")?;
             ok(&json!({ "items": users.filter(hit).collect::<Vec<_>>() }))
         }
-        ["contacts", "list"] => page(users.filter(|p| p.is_self != Some(true)).collect(), None, None),
+        ["contacts", "list"] => {
+            let (limit, after) = (r.limit(50, 200)?, r.after()?);
+            let all: Vec<&User> = users.filter(hit).collect();
+            // A cursor is the ID of a contact: `before` pages to the contacts after it, `after` to the ones before it.
+            let at = r.q("cursor").map(|c| all.iter().position(|u| u.id == c).ok_or_else(|| bad("invalid cursor")));
+            let (start, end) = match (at.transpose()?, after) {
+                (None, _) => (0, limit.min(all.len())),
+                (Some(i), false) => (i + 1, (i + 1 + limit).min(all.len())),
+                (Some(i), true) => (i.saturating_sub(limit), i),
+            };
+            let items = all[start..end].to_vec();
+            let has_more = if after { start > 0 } else { end < all.len() };
+            let (oldest_cursor, newest_cursor) =
+                (items.last().map(|u| u.id.clone()), items.first().map(|u| u.id.clone()));
+            ok(&CursorPage { items, has_more, oldest_cursor, newest_cursor })
+        }
         _ => Err(no_route()),
     }
 }
@@ -2149,17 +2167,14 @@ fn serve_asset(path: std::path::PathBuf, r: &Req) -> Reply {
 }
 
 fn focus(st: &mut BeeperStore, r: &Req) -> Reply {
-    let idx = match (r.str("chatID"), r.str("messageID")) {
-        (Some(id), _) => Some(st.resolve_chat_idx(id).ok_or_else(|| missing("Chat not found"))?),
-        (None, Some(mid)) => {
-            let &m_idx = st.msg_idx_by_id.get(mid).ok_or_else(|| missing("Message not found"))?;
-            Some(st.chat_idx_by_id[&st.messages[m_idx].chat_id])
-        }
-        (None, None) => None,
-    };
+    // Desktop's `focusApp` uses the message and the draft only with a chat, and fails on a draft text without one.
+    let idx = r.str("chatID").map(|id| st.resolve_chat_idx(id).ok_or_else(|| missing("Chat not found"))).transpose()?;
     let (text, path) = (r.owned("draftText"), r.owned("draftAttachmentPath"));
-    if text.is_some() || path.is_some() {
-        let idx = idx.ok_or_else(|| bad("draft needs chatID"))?;
+    if idx.is_none() && text.is_some() {
+        let message = "Failed to execute tool: focusApp";
+        return Err(error_with(StatusCode(500), message, "TOOL_EXECUTION_ERROR", json!({})));
+    }
+    if let Some(idx) = idx.filter(|_| text.is_some() || path.is_some()) {
         let attachments =
             path.into_iter().map(|p| ChatDraftAttachment { upload_id: p.clone(), file_name: Some(p), mime_type: None });
         let draft = ChatDraft { text, attachments: attachments.collect(), ..ChatDraft::default() };

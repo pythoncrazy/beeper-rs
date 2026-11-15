@@ -452,6 +452,53 @@ async fn assets_upload_and_serve_like_desktop() {
 }
 
 #[tokio::test]
+async fn contacts_and_focus_follow_desktop() {
+    use serde_json::{json, Value};
+    let (port, token) = server("contacts").await;
+    let call = |method: &str, target: String, body: &str| {
+        let request = format!(
+            "{method} {target} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        async move {
+            let out = text(port, &request).await;
+            (out[9..12].to_string(), serde_json::from_str::<Value>(out.split_once("\r\n\r\n").unwrap().1).unwrap())
+        }
+    };
+    let list = "/v1/accounts/acc_telegram/contacts/list";
+    let (_, all) = call("GET", format!("{list}?limit=200"), "").await;
+    let ids: Vec<&str> = all["items"].as_array().unwrap().iter().map(|u| u["id"].as_str().unwrap()).collect();
+    let mut unique = ids.clone();
+    unique.sort();
+    unique.dedup();
+    assert!(ids.len() > 2 && ids.len() == unique.len() && all["hasMore"] == false, "each contact once: {ids:?}");
+    assert!(all["items"].as_array().unwrap().iter().all(|u| u["isSelf"] != true));
+    let (mut paged, mut cursor) = (Vec::new(), None::<String>);
+    loop {
+        let after = cursor.as_ref().map_or(String::new(), |c| format!("&cursor={}", beeper_api::codec::url_encode(c)));
+        let (_, page) = call("GET", format!("{list}?limit=2{after}"), "").await;
+        paged.extend(page["items"].as_array().unwrap().iter().map(|u| u["id"].as_str().unwrap().to_string()));
+        cursor = page["oldestCursor"].as_str().map(str::to_string);
+        if page["hasMore"] == false {
+            break;
+        }
+    }
+    assert_eq!(paged, ids);
+    let name = all["items"][0]["fullName"].as_str().unwrap().to_lowercase();
+    let (_, found) = call("GET", format!("{list}?query={}", beeper_api::codec::url_encode(&name)), "").await;
+    assert!(found["items"].as_array().unwrap().iter().any(|u| u["id"] == ids[0]));
+    assert_eq!(call("GET", "/v1/accounts/acc_telegram/contacts".into(), "").await.0, "400");
+
+    let (status, failed) = call("POST", "/v1/focus".into(), r#"{"draftText":"hi"}"#).await;
+    let want = json!({ "message": "Failed to execute tool: focusApp", "code": "TOOL_EXECUTION_ERROR", "details": {} });
+    assert_eq!((status.as_str(), failed), ("500", want));
+    let (status, _) = call("POST", "/v1/focus".into(), r#"{"messageID":"msg_1001"}"#).await;
+    assert_eq!(status, "200", "a message without a chat only focuses the app");
+    let (_, chat) = call("GET", "/v1/chats/!tg_rust:beeper.com".into(), "").await;
+    assert_eq!(chat["isReadOnly"], false);
+}
+
+#[tokio::test]
 async fn json_keys_keep_the_order_of_desktop() {
     let (port, _) = server("order").await;
     let get = "GET /.well-known/oauth-authorization-server HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
