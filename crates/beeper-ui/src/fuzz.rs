@@ -5752,6 +5752,23 @@ fn login_pixels(app: &BeeperGuiApp, points: &[(u32, u32)]) -> Vec<Color> {
         .collect()
 }
 
+/// The sign-in window opens in the middle of the screen with Desktop's minimum size, the terms wrap like
+/// `text-wrap: balance` after "terms", and Open Email asks for the default mail app.
+#[test]
+fn sign_in_window_details_like_desktop() {
+    let s = BeeperGuiApp::login_window_settings();
+    assert!(matches!(s.position, window::Position::Centered) && s.min_size == Some(Size::new(330.0, 400.0)));
+    let sentence = "By continuing, you agree to our terms of use and have read our privacy policy.";
+    let width = style::balanced_width(sentence, 278.0, 11.0);
+    let first = style::text_width("By continuing, you agree to our terms", 11.0, iced::font::Weight::Normal);
+    let more = style::text_width("By continuing, you agree to our terms of", 11.0, iced::font::Weight::Normal);
+    assert!(first < width && width < more, "the first line ends with \"terms\", like Desktop's: {width}");
+    let mut app = signed_out_app("sign-in-details");
+    app.login.screen = login::Screen::Code;
+    let open = app.login_act(login::Stop::OpenEmail);
+    assert!(matches!(open, Some(UiMessage::Login(login::LoginMsg::OpenEmail))), "Open Email opens the mail app");
+}
+
 /// The sign-in window follows the system theme, like Desktop's `prefers-color-scheme`.
 #[test]
 fn sign_in_window_follows_the_system_theme() {

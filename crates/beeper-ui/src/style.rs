@@ -302,7 +302,27 @@ pub fn carets(s: &str, size: f32, width: f32, at: impl IntoIterator<Item = (usiz
     })
 }
 
-/// CSS `text-wrap: balance`: the narrowest width that wraps `s` into as many lines as `max` does, if that is more than one.
+/// CSS `text-wrap: balance`: the narrowest width up to `max` that wraps `s` into as many lines as `max` does.
+pub fn balanced_width(s: &str, max: f32, size: f32) -> f32 {
+    thread_local!(static MEMO: Memo<(String, u32, u32), f32> = RefCell::default());
+    memo(&MEMO, (s.to_owned(), max.to_bits(), size.to_bits()), || {
+        let lines = |w: f32| shape(s, size, Weight::Normal, Some(w), |b| b.layout_runs().count());
+        let n = lines(max);
+        let (mut lo, mut hi) = (0.0, max);
+        while hi - lo > 0.25 {
+            let mid = (lo + hi) / 2.0;
+            if lines(mid) > n {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        // A pixel of room, so that iced breaks the lines where the measure did.
+        (hi + 1.0).min(max)
+    })
+}
+
+/// Whether `s` at `size` takes more than one line at `max` width.
 pub fn wraps(s: &str, max: f32, size: f32) -> bool {
     thread_local!(static MEMO: Memo<(String, u32, u32), bool> = RefCell::default());
     memo(&MEMO, (s.to_owned(), max.to_bits(), size.to_bits()), || {
