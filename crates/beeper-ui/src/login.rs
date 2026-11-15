@@ -1,4 +1,4 @@
-use crate::i18n::{tr, trf, trn, trx};
+use crate::i18n::{tr, trf, trn, trx, trxf};
 use crate::style::{
     bold, bordered_box, brand_svg, btn_style, fill_box, glow_box, gradient_text, ic, icon, input_style, med, semi,
     shadow_box, txt, Palette, CLEAR,
@@ -32,6 +32,7 @@ const EMAIL_INPUT: &str = "login-email";
 const CODE_INPUT: &str = "login-code";
 const USERNAME_INPUT: &str = "login-username";
 const TERMS_URL: &str = "https://www.beeper.com/terms-onboarding";
+const PRIVACY_URL: &str = "https://www.beeper.com/privacy";
 /// Desktop's `--color-on-error-container`: the error toast.
 const ERROR_RED: Color = Color::from_rgb8(220, 54, 46);
 const NO_EMAIL_LOGIN: &str = "The server does not support email-based login. Try logging in with a username instead.";
@@ -295,6 +296,8 @@ pub enum LoginMsg {
     /// The sync icon of the username field: the next suggestion.
     NextSuggestion,
     SubmitCode,
+    /// "Open Email": Desktop's `openEmailClient`.
+    OpenEmail,
     Menu,
     StartOver,
     CloseToast,
@@ -372,6 +375,28 @@ fn username_ok(name: &str) -> bool {
         && !name.ends_with("bot")
         && !["beep", "support", "admin"].iter().any(|w| name.contains(w))
         && !name.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Desktop's `openEmailClient` on Linux: `gtk-launch` of the default `mailto` handler that `xdg-settings` names, and
+/// `mailto:` when there is none or it does not start.
+fn open_email_client() -> Task<UiMessage> {
+    let launch = || {
+        let handler = std::process::Command::new("xdg-settings")
+            .args(["get", "default-url-scheme-handler", "mailto"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|h| !h.is_empty());
+        handler.is_some_and(|h| std::process::Command::new("gtk-launch").arg(h).status().is_ok_and(|s| s.success()))
+    };
+    Task::perform(async move { tokio::task::spawn_blocking(launch).await.expect("mail client thread") }, |opened| {
+        if opened {
+            UiMessage::Noop
+        } else {
+            UiMessage::OpenUrl("mailto:".into())
+        }
+    })
 }
 
 /// An error of beeper-rs itself, which shows in the toast like a network error.
@@ -563,7 +588,7 @@ pub(crate) fn actions(items: Vec<El<'_>>, bottom: f32) -> El<'_> {
 }
 
 /// The content of a `BrandButton`: 13 px medium text, after an 18 px icon with an 8 px gap.
-fn label<'a>(s: &'a str, lead: Option<El<'a>>) -> El<'a> {
+fn label<'a>(s: impl iced::widget::text::IntoFragment<'a>, lead: Option<El<'a>>) -> El<'a> {
     let text = med(s, 13.0).line_height(iced::Pixels(14.95));
     row![].push(lead).push(text).spacing(8).align_y(Center).into()
 }
@@ -581,7 +606,13 @@ pub(crate) fn art<'a>(i: usize, height: f32) -> El<'a> {
 /// Desktop's `BrandInput` with `floatingPlaceholder`: text in the color of the placeholder, and the placeholder
 /// as a small chip over the top edge once the field has text. Enter submits the form through the key handler of
 /// the window, like Desktop's Enter hotkey.
-fn field<'a>(p: &Palette, id: &'static str, hint: &'a str, value: &'a str, on: fn(String) -> LoginMsg) -> El<'a> {
+fn field<'a>(
+    p: &Palette,
+    id: &'static str,
+    hint: &'a str,
+    value: &'a str,
+    on: Option<fn(String) -> LoginMsg>,
+) -> El<'a> {
     field_with_icons(p, id, hint, value, on, Vec::new())
 }
 
@@ -591,13 +622,13 @@ fn field_with_icons<'a>(
     id: &'static str,
     hint: &'a str,
     value: &'a str,
-    on: fn(String) -> LoginMsg,
+    on: Option<fn(String) -> LoginMsg>,
     icons: Vec<El<'a>>,
 ) -> El<'a> {
     let room = if icons.is_empty() { 12.0 } else { 8.0 + 22.0 * icons.len() as f32 };
     let input = text_input(hint, value)
         .id(id)
-        .on_input(move |v| on(v).into())
+        .on_input_maybe(on.map(|on| move |v| on(v).into()))
         .size(14)
         .line_height(iced::Pixels(18.0))
         .padding(Padding::new(10.0).left(12.0).right(room))
@@ -617,7 +648,8 @@ fn field_with_icons<'a>(
 
 impl BeeperGuiApp {
     pub fn login_window_settings() -> window::Settings {
-        window::Settings { resizable: false, ..Self::window_settings(Size::new(330.0, 620.0)) }
+        let settings = Self::window_settings(Size::new(330.0, 620.0));
+        window::Settings { resizable: false, position: window::Position::Centered, ..settings }
     }
 
     pub fn refresh_cloud_accounts(&self) -> Task<UiMessage> {
@@ -743,6 +775,7 @@ impl BeeperGuiApp {
             }
             LoginMsg::Menu => {}
             LoginMsg::CloseToast => l.toast = None,
+            LoginMsg::OpenEmail => return open_email_client(),
             LoginMsg::StartOver => self.login = Login::new(l.source.take()),
             LoginMsg::Query(q) => l.query = q,
             LoginMsg::Continue => {
@@ -913,19 +946,31 @@ impl BeeperGuiApp {
                 // Chromium's focus ring of a link: a 1 px orange outline.
                 let ring = (l.focus.map(|i| l.screen.stops()[i]) == Some(Stop::Terms))
                     .then(|| border::rounded(2).color(Color::from_rgb8(229, 151, 0)).width(1));
-                let terms = rich_text![
-                    span("By continuing, you agree to our ").color(p.text),
-                    link("terms\nof use", UiMessage::OpenUrl(TERMS_URL.into())).border_maybe(ring),
-                    span(" and have read our ").color(p.text),
-                    link("privacy policy", UiMessage::OpenUrl("https://www.beeper.com/privacy".into())),
-                    span(".").color(p.text),
-                ]
-                .on_link_click(|m: UiMessage| m)
-                .size(11)
-                .line_height(iced::widget::text::LineHeight::Absolute(14.0.into()))
-                .width(Fill)
-                .center();
+                // Desktop's one sentence with the two links in it, wrapped like `text-wrap: balance`.
+                let sentence = tr("By continuing, you agree to our %1$s and have read our %2$s.");
+                let legal = |s| trx(s, "onboarding legal link label");
+                let (terms_label, privacy_label) = (legal("terms of use"), legal("privacy policy"));
+                let mut spans = Vec::new();
+                let mut rest = sentence;
+                while let Some(at) = rest.find("%1$s").into_iter().chain(rest.find("%2$s")).min() {
+                    spans.push(span(&rest[..at]).color(p.text));
+                    spans.push(match &rest[at..at + 4] {
+                        "%1$s" => link(terms_label, UiMessage::OpenUrl(TERMS_URL.into())).border_maybe(ring),
+                        _ => link(privacy_label, UiMessage::OpenUrl(PRIVACY_URL.into())),
+                    });
+                    rest = &rest[at + 4..];
+                }
+                spans.push(span(rest).color(p.text));
+                let plain = sentence.replace("%1$s", terms_label).replace("%2$s", privacy_label);
+                let terms = rich_text(spans)
+                    .on_link_click(|m: UiMessage| m)
+                    .size(11)
+                    .line_height(iced::widget::text::LineHeight::Absolute(14.0.into()))
+                    .width(crate::style::balanced_width(&plain, 278.0, 11.0))
+                    .center();
+                let terms = container(terms).center_x(Fill);
                 let google = svg(ART[3].clone()).width(18).height(18);
+                let google_label = trxf("Continue with %s", "button label", &[&"Google"]);
                 let mail =
                     svg(ICONS[0].clone()).width(18).height(18).style(|_, _| svg::Style { color: Some(Color::WHITE) });
                 column![
@@ -936,7 +981,7 @@ impl BeeperGuiApp {
                             container(terms).padding(Padding::ZERO.bottom(8)).into(),
                             brand_button(
                                 p,
-                                label("Continue with Google", Some(google.into())),
+                                label(google_label, Some(google.into())),
                                 Brand::Muted,
                                 self.login_act(Stop::Google),
                                 false
@@ -963,7 +1008,7 @@ impl BeeperGuiApp {
                 Space::new().height(Fill),
                 actions(
                     vec![
-                        field(p, EMAIL_INPUT, tr("Email"), &l.email, LoginMsg::Email),
+                        field(p, EMAIL_INPUT, tr("Email"), &l.email, (!l.busy).then_some(LoginMsg::Email)),
                         brand_button(
                             p,
                             label(trx("Next", "button label"), None),
@@ -1147,7 +1192,7 @@ impl BeeperGuiApp {
                     USERNAME_INPUT,
                     tr("Username"),
                     &l.username,
-                    LoginMsg::Username,
+                    (!l.busy).then_some(LoginMsg::Username),
                     icons.into_iter().flatten().collect(),
                 );
                 // Desktop's floating `small` error, 20 px over the field: a layer, so that it moves nothing.
@@ -1217,11 +1262,11 @@ impl BeeperGuiApp {
     }
 
     /// What a control does when it is clicked or pressed with the keyboard. A busy screen disables its buttons.
-    fn login_act(&self, stop: Stop) -> Option<UiMessage> {
+    pub(crate) fn login_act(&self, stop: Stop) -> Option<UiMessage> {
         let msg: UiMessage = match (stop, self.login.screen) {
             (Stop::Menu, _) => return Some(LoginMsg::Menu.into()),
             (Stop::Terms, _) => return Some(UiMessage::OpenUrl(TERMS_URL.into())),
-            (Stop::OpenEmail, _) => return Some(UiMessage::OpenUrl("mailto:".into())),
+            (Stop::OpenEmail, _) => return Some(LoginMsg::OpenEmail.into()),
             (Stop::Google, _) => LoginMsg::Google.into(),
             (Stop::Email, _) => LoginMsg::Show(Screen::Email).into(),
             (Stop::Resend, _) => LoginMsg::Resend.into(),
