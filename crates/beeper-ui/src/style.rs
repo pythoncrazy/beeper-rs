@@ -908,24 +908,43 @@ mod tests {
         M.with(|m| assert!(m.borrow().iter().map(HashMap::len).sum::<usize>() <= 2 * MEMO, "the memo is bounded"));
     }
 
-    #[test]
-    fn caret_redraws_keep_the_shadowed_card_outside_the_damage() {
+    /// A 200x200 pixmap of a card with the background `bg` and a shadow, drawn in turn with each damage rectangle.
+    fn shadowed_card(bg: Color, damages: &[iced::Rectangle]) -> tiny_skia::Pixmap {
         use iced::{Point, Rectangle, Size};
         let mut renderer = iced_tiny_skia::Renderer::new(Font::DEFAULT, 16.into());
-        let (style, card) = (shadow_box(Color::WHITE, CLEAR, 12.0, 24.0)(&Theme::Light), Size::new(120.0, 120.0));
+        let (style, card) = (shadow_box(bg, CLEAR, 12.0, 24.0)(&Theme::Light), Size::new(120.0, 120.0));
         container::draw_background(&mut renderer, &style, Rectangle::new(Point::new(40.0, 40.0), card));
         let mut pixmap = tiny_skia::Pixmap::new(200, 200).unwrap();
         let mut mask = tiny_skia::Mask::new(200, 200).unwrap();
         let viewport = iced_tiny_skia::graphics::Viewport::with_physical_size(Size::new(200, 200), 1.0);
-        let mut draw = |pixmap: &mut tiny_skia::Pixmap, damage| {
+        for &damage in damages {
             renderer.draw(&mut pixmap.as_mut(), &mut mask, &viewport, &[damage], Color::WHITE);
-        };
-        draw(&mut pixmap, Rectangle::with_size(Size::new(200.0, 200.0)));
-        let full = pixmap.clone();
-        for _ in 0..20 {
-            draw(&mut pixmap, Rectangle::new(Point::new(60.0, 60.0), Size::new(2.0, 16.0)));
         }
-        assert!(pixmap == full, "a redraw of the caret changes no pixel of the card");
+        pixmap
+    }
+
+    #[test]
+    fn caret_redraws_keep_the_shadowed_card_outside_the_damage() {
+        use iced::{Point, Rectangle, Size};
+        let full = Rectangle::with_size(Size::new(200.0, 200.0));
+        let caret = Rectangle::new(Point::new(60.0, 60.0), Size::new(2.0, 16.0));
+        let redrawn = shadowed_card(Color::WHITE, &[[full].as_slice(), &[caret; 20]].concat());
+        assert!(redrawn == shadowed_card(Color::WHITE, &[full]), "a redraw of the caret changes no pixel of the card");
+    }
+
+    #[test]
+    fn shadows_compute_only_the_visible_pixels_in_the_damage() {
+        use iced::{Point, Rectangle, Size};
+        let screen = Rectangle::with_size(Size::new(200.0, 200.0));
+        let full = shadowed_card(Color::WHITE, &[screen]);
+        // The anti-aliased corners of the card can be 1 level away, with a translucent fill or a clipped fill.
+        let near = |p: tiny_skia::Pixmap| full.data().iter().zip(p.data()).all(|(a, b)| a.abs_diff(*b) <= 1);
+        // A card that is not opaque gets the shadow under its fill too.
+        let translucent = shadowed_card(Color { a: 0.9999, ..Color::WHITE }, &[screen]);
+        assert!(near(translucent), "the fill of an opaque card covers the shadow that is not computed");
+        let tiles = [(0.0, 0.0), (100.0, 0.0), (0.0, 100.0), (100.0, 100.0)]
+            .map(|(x, y)| Rectangle::new(Point::new(x, y), Size::new(100.0, 100.0)));
+        assert!(near(shadowed_card(Color::WHITE, &tiles)), "the shadow in tiles is the shadow of one full draw");
     }
 
     #[test]
