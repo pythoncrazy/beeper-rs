@@ -410,7 +410,10 @@ pub enum UiMessage {
     /// Desktop's GIF search 500 ms after the last key, for the query of that time.
     GifSearch(String),
     /// The GIFs of a query.
-    GifsLoaded(String, Result<Vec<KlipyGif>, String>),
+    /// A page of GIFs for a query: the first page (false) or the next one, and the position of the page after it.
+    GifsLoaded(String, bool, Result<(Vec<KlipyGif>, String), String>),
+    /// The GIF carousel scrolled: its offset, its content width and its width.
+    GifScrolled(f32, f32, f32),
     PickGif(KlipyGif),
     GifDownloaded(Result<PendingMedia, String>),
     SetReminder(String, Option<i64>),
@@ -3871,6 +3874,18 @@ fn caption(text: &str, files: &[PendingMedia]) -> Option<String> {
     (!text.is_empty() && files.len() == 1).then(|| text.to_string())
 }
 
+/// The width of a GIF of the carousel, 215 px high like Desktop's `tinymp4` videos.
+fn gif_width(g: &KlipyGif) -> f32 {
+    let (w, h) = g.preview_size;
+    (215.0 * w as f32 / h.max(1) as f32).round().max(48.0)
+}
+
+/// Loads the page of GIFs at `pos` for the query `q`.
+fn gif_page(q: String, pos: String) -> Task<UiMessage> {
+    let more = !pos.is_empty();
+    Task::perform(beeper_core::cloud::klipy_gifs(q.clone(), pos), move |r| UiMessage::GifsLoaded(q.clone(), more, r))
+}
+
 type MediaOut =
     Box<dyn FnOnce(String, Option<String>, Option<String>, Option<beeper_core::matrix::ThreadSend>) -> Outgoing>;
 
@@ -4305,6 +4320,12 @@ pub struct BeeperGuiApp {
     pub gifs: Vec<KlipyGif>,
     pub gif_loading: bool,
     pub gif_error: Option<String>,
+    /// Desktop's `paginationPos` of the next page, which is empty after the last page.
+    pub gif_next: String,
+    /// Desktop's selected GIF of the arrow keys.
+    pub gif_sel: Option<usize>,
+    /// The offset and the width of the GIF carousel.
+    gif_view: (f32, f32),
     pub command_palette_query: String,
     pub cmd_bar_commands_mode: bool,
     pub cmd_submenu: Option<commands::SubMenu>,
@@ -4548,6 +4569,9 @@ impl BeeperGuiApp {
             gifs: Vec::new(),
             gif_loading: false,
             gif_error: None,
+            gif_next: String::new(),
+            gif_sel: None,
+            gif_view: (0.0, 0.0),
             command_palette_query: String::new(),
             cmd_bar_commands_mode: false,
             cmd_submenu: None,
@@ -5390,6 +5414,39 @@ impl BeeperGuiApp {
             self.status_banner = trf(toast, &[&net]);
         }
         ok
+    }
+
+    /// Desktop's `GifPicker` keys: Down selects the first GIF, Left and Right move the selection, Up goes back to the
+    /// search, Enter sends the selected GIF, and Escape closes the picker and focuses the composer.
+    fn gif_key(&mut self, key: &Key) -> Option<Task<UiMessage>> {
+        let n = self.gifs.len();
+        let select = |app: &mut Self, i: usize| {
+            app.gif_sel = Some(i);
+            // Desktop's `scrollIntoView` of the selected GIF, to the nearest edge.
+            let x = 14.0 + app.gifs[..i].iter().map(|g| gif_width(g) + 4.0).sum::<f32>();
+            let (at, width) = app.gif_view;
+            let to = match () {
+                _ if x < at => x,
+                _ if x + gif_width(&app.gifs[i]) > at + width => x + gif_width(&app.gifs[i]) - width,
+                _ => return Task::none(),
+            };
+            operation::scroll_to("gif-carousel", operation::AbsoluteOffset { x: to, y: 0.0 })
+        };
+        Some(match (key.as_ref(), self.gif_sel) {
+            (Key::Named(Named::ArrowUp), _) => {
+                self.gif_sel = None;
+                Task::batch([operation::focus("gif-search-input"), operation::move_cursor_to_end("gif-search-input")])
+            }
+            (Key::Named(Named::ArrowDown), None) if n > 0 => select(self, 0),
+            (Key::Named(Named::ArrowLeft), Some(i)) => select(self, i.saturating_sub(1).min(n - 1)),
+            (Key::Named(Named::ArrowRight), Some(i)) => select(self, (i + 1).min(n - 1)),
+            (Key::Named(Named::Enter), Some(i)) if i < n => self.update(UiMessage::PickGif(self.gifs[i].clone())),
+            (Key::Named(Named::Escape), _) => {
+                self.pane.picker = None;
+                operation::focus("composer-input")
+            }
+            _ => return None,
+        })
     }
 
     /// Desktop's `downloadGif`: downloads the format of the GIF that the open chat takes. An MP4 is measured like a
@@ -8368,6 +8425,7 @@ impl BeeperGuiApp {
             }
             UiMessage::GifQueryChanged(q) => {
                 (self.gif_query, self.gif_loading, self.gif_error) = (q.clone(), true, None);
+                self.gif_next.clear();
                 if q.trim().is_empty() {
                     return self.update(UiMessage::GifSearch(q));
                 }
@@ -8375,24 +8433,41 @@ impl BeeperGuiApp {
                 return Task::perform(wait, move |()| UiMessage::GifSearch(q.clone()));
             }
             UiMessage::GifSearch(q) if q == self.gif_query => {
-                return Task::perform(beeper_core::cloud::klipy_gifs(q.clone()), move |r| {
-                    UiMessage::GifsLoaded(q.clone(), r)
-                });
+                let reset = operation::scroll_to("gif-carousel", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
+                return Task::batch([reset, gif_page(q, String::new())]);
             }
             UiMessage::GifSearch(_) => {}
-            UiMessage::GifsLoaded(q, _) if q != self.gif_query => {}
-            UiMessage::GifsLoaded(_, r) => {
+            UiMessage::GifsLoaded(q, ..) if q != self.gif_query => {}
+            UiMessage::GifsLoaded(_, more, r) => {
                 self.gif_loading = false;
                 match r {
-                    Ok(gifs) => {
-                        self.gifs = gifs;
-                        self.gif_error = None;
+                    // Desktop's `uniqBy(existingGifs.concat(page), "id")`.
+                    Ok((page, next)) => {
+                        if !more {
+                            self.gifs.clear();
+                        }
+                        for g in page {
+                            if self.gifs.iter().all(|x| x.id != g.id) {
+                                self.gifs.push(g);
+                            }
+                        }
+                        (self.gif_next, self.gif_error) = (next, None);
                         return self.load_media();
                     }
                     Err(e) => {
-                        self.gifs.clear();
+                        if !more {
+                            self.gifs.clear();
+                        }
                         self.gif_error = Some(e);
                     }
+                }
+            }
+            // Desktop loads the next page when the carousel scrolls to 100 px from its end.
+            UiMessage::GifScrolled(x, content, width) => {
+                self.gif_view = (x, width);
+                if x >= content - width - 100.0 && !self.gif_next.is_empty() && !self.gif_loading {
+                    self.gif_loading = true;
+                    return gif_page(self.gif_query.clone(), self.gif_next.clone());
                 }
             }
             UiMessage::PickGif(g) => {
@@ -9202,6 +9277,11 @@ impl BeeperGuiApp {
                 }
                 if z && (self.queued_here() || self.shown_undo().is_some()) {
                     return self.update(UiMessage::Undo(mods.shift()));
+                }
+                if self.pane.picker == Some(Picker::Gif) && mods.is_empty() {
+                    if let Some(task) = self.gif_key(&key) {
+                        return task;
+                    }
                 }
                 let n = self.suggestions(&self.store.read()).map_or(0, |(_, picks)| picks.len());
                 if n > 0 && mods.is_empty() {
@@ -14246,23 +14326,37 @@ impl BeeperGuiApp {
             } else if self.gifs.is_empty() {
                 note(tr("No results. Try searching something else?").to_string())
             } else {
-                let items = self.gifs.iter().map(|g| {
-                    let (pw, ph) = g.preview_size;
-                    let w = (215.0 * pw as f32 / ph.max(1) as f32).round().max(48.0);
+                let items = self.gifs.iter().enumerate().map(|(i, g)| {
+                    let w = gif_width(g);
                     let cell: El<'a> = match self.media_at(&g.preview_url) {
                         Some(Ok(frames)) => anim::gif(frames, self.started, move |f| {
                             image(f).width(w).height(215).content_fit(iced::ContentFit::Cover)
                         }),
                         _ => container(Space::new()).width(w).height(215).style(fill_box(p.hover, 4.0)).into(),
                     };
-                    button(container(cell).clip(true).style(fill_box(CLEAR, 4.0)))
+                    // Desktop's `.gif.selected`: a 4 px outline in the primary color inside the GIF.
+                    let ring = (self.gif_sel == Some(i)).then(|| {
+                        container(Space::new()).width(w).height(215).style(bordered_box(CLEAR, p.accent, 4.0, 0.0))
+                    });
+                    button(stack![container(cell).clip(true).style(fill_box(CLEAR, 4.0))].push(ring))
                         .padding(0)
                         .style(btn_style([CLEAR, p.hover, p.selected], [p.text; 3], 4.0))
                         .on_press(UiMessage::PickGif(g.clone()))
                         .into()
                 });
+                // Desktop's skeleton tiles while the next page loads.
+                let tile = || container(Space::new()).width(300).height(200).style(fill_box(p.hover, 4.0)).into();
+                let more = self
+                    .gif_loading
+                    .then(|| Row::with_children((0..10).map(|_| tile())).spacing(4).padding(Padding::ZERO.left(14.0)));
                 let dir = Direction::Horizontal(Scrollbar::new().width(4).scroller_width(4));
-                scrollable(container(Row::with_children(items).spacing(4)).padding(Padding::ZERO.left(14.0)))
+                let row = Row::with_children(items).push(more).spacing(4);
+                scrollable(container(row).padding(Padding::ZERO.left(14.0)))
+                    .id("gif-carousel")
+                    .on_scroll(|v| {
+                        let (x, content, width) = (v.absolute_offset().x, v.content_bounds().width, v.bounds().width);
+                        UiMessage::GifScrolled(x, content, width)
+                    })
                     .direction(dir)
                     .height(215)
                     .width(Fill)

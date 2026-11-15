@@ -525,17 +525,56 @@ fn auto_sent_gifs_keep_the_composer_like_desktop() {
 
 #[test]
 fn gif_picker_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
     let mut app = demo_app("gifpicker");
     let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
     app.pane.picker = Some(Picker::Gif);
     let _ = app.update(UiMessage::GifQueryChanged("cats".into()));
-    let _ = app.update(UiMessage::GifsLoaded("ca".into(), Err("late".into())));
+    let _ = app.update(UiMessage::GifsLoaded("ca".into(), false, Err("late".into())));
     assert!(app.gif_loading && app.gif_error.is_none(), "an older query does not change the picker");
-    let _ = app.update(UiMessage::GifsLoaded("cats".into(), Ok(Vec::new())));
+    let _ = app.update(UiMessage::GifsLoaded("cats".into(), false, Ok((Vec::new(), String::new()))));
     assert!(simulator(app.view_main()).find("No results. Try searching something else?").is_ok());
-    let _ = app.update(UiMessage::GifsLoaded("cats".into(), Err("boom".into())));
+    let _ = app.update(UiMessage::GifsLoaded("cats".into(), false, Err("boom".into())));
     let text = "Something went wrong (boom). Try searching something else?";
     assert!(simulator(app.view_main()).find(text).is_ok());
+    // Desktop's pages: the next page joins the carousel without the GIFs that it has already.
+    let gif = |id: &str| beeper_core::cloud::KlipyGif {
+        id: id.into(),
+        preview_url: format!("https://x/{id}.gif"),
+        preview_size: (100, 100),
+        gif_url: String::new(),
+        gif_size: (1, 1),
+        gif_bytes: None,
+        mp4_url: String::new(),
+        mp4_size: (1, 1),
+    };
+    let page = |ids: &[&str], next: &str| Ok((ids.iter().map(|i| gif(i)).collect(), next.to_string()));
+    let _ = app.update(UiMessage::GifsLoaded("cats".into(), false, page(&["a", "b"], "2")));
+    let _ = app.update(UiMessage::GifScrolled(0.0, 1000.0, 400.0));
+    assert!(!app.gif_loading, "the start of the carousel loads nothing");
+    let _ = app.update(UiMessage::GifScrolled(520.0, 1000.0, 400.0));
+    assert!(app.gif_loading, "the end of the carousel loads the next page");
+    let _ = app.update(UiMessage::GifsLoaded("cats".into(), true, page(&["b", "c"], "")));
+    assert_eq!(app.gifs.iter().map(|g| g.id.as_str()).collect::<Vec<_>>(), ["a", "b", "c"]);
+    let _ = app.update(UiMessage::GifScrolled(600.0, 1000.0, 400.0));
+    assert!(!app.gif_loading, "the last page has no next page");
+    // Desktop's keys: Down selects, Left and Right move, Enter sends, Escape closes.
+    let key =
+        |app: &mut BeeperGuiApp, k: Named| drop(app.update(UiMessage::KeyPressed(Key::Named(k), Modifiers::empty())));
+    key(&mut app, Named::ArrowDown);
+    key(&mut app, Named::ArrowRight);
+    key(&mut app, Named::ArrowRight);
+    key(&mut app, Named::ArrowRight);
+    key(&mut app, Named::ArrowLeft);
+    assert_eq!(app.gif_sel, Some(1));
+    key(&mut app, Named::ArrowUp);
+    assert_eq!(app.gif_sel, None, "Up goes back to the search");
+    key(&mut app, Named::ArrowDown);
+    key(&mut app, Named::Enter);
+    assert_eq!(app.pane.picker, None, "Enter sends the GIF and closes the picker");
+    app.pane.picker = Some(Picker::Gif);
+    key(&mut app, Named::Escape);
+    assert_eq!(app.pane.picker, None);
 }
 
 #[test]
