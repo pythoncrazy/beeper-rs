@@ -6,6 +6,7 @@ use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{Operation, Tree, Widget};
 use iced::advanced::{mouse, overlay, renderer, Clipboard, Shell};
 use iced::{window, Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector};
+use std::borrow::Borrow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 
@@ -13,14 +14,19 @@ use std::collections::BTreeSet;
 pub struct Wants {
     pub avatars: RefCell<BTreeSet<String>>,
     pub media: RefCell<BTreeSet<String>>,
+    /// The gallery tiles to bake, as (media URL, width, height).
+    pub tiles: RefCell<BTreeSet<(String, u32, u32)>>,
     /// A view asked for a URL after the last frame.
     fresh: Cell<bool>,
 }
 
 impl Wants {
-    pub fn ask(&self, set: &RefCell<BTreeSet<String>>, url: &str) {
-        if !set.borrow().contains(url) {
-            set.borrow_mut().insert(url.to_string());
+    pub fn ask<K: Ord + ToOwned + ?Sized>(&self, set: &RefCell<BTreeSet<K::Owned>>, key: &K)
+    where
+        K::Owned: Ord + Borrow<K>,
+    {
+        if !set.borrow().contains(key) {
+            set.borrow_mut().insert(key.to_owned());
             self.fresh.set(true);
         }
     }

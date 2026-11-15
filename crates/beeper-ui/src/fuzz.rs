@@ -1048,6 +1048,52 @@ fn media_carousel_draws() {
     drop(app.view(id));
 }
 
+/// Desktop's `GalleryGrouper`: photos of one sender, 60 seconds apart and 2 minutes from the first, show as one
+/// gallery of up to 20 messages, with "+N" on the fourth tile.
+#[test]
+fn photos_group_into_galleries_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("gallery");
+    let base = {
+        let st = app.store.read();
+        st.messages[*st.chat_msg_indices[note].last().unwrap()].clone()
+    };
+    let photo = |i: usize, secs: i64, text: Option<&str>| {
+        let img = Attachment {
+            attachment_type: if i == 1 { "video".into() } else { "img".into() },
+            src_url: Some(format!("https://example.com/{i}.png")),
+            file_name: Some(format!("{i}.png")),
+            duration: Some(75.0),
+            ..Default::default()
+        };
+        let timestamp = rfc3339_from_millis(1_800_000_000_000 + secs * 1000);
+        let (id, sort_key) = (format!("$photo{i:02}"), format!("{:016}", 9_000_000 + i));
+        Message { id, sort_key, timestamp, attachments: vec![img], text: text.map(Into::into), ..base.clone() }
+    };
+    {
+        let mut st = app.store.write();
+        for (i, secs) in [0, 50, 100, 110, 115, 120].into_iter().enumerate() {
+            st.upsert_message(photo(i, secs, None));
+        }
+        st.upsert_message(photo(6, 125, None));
+        st.upsert_message(photo(7, 126, Some("caption")));
+        st.upsert_message(photo(8, 300, None));
+    }
+    let st = app.store.read();
+    let msgs: Vec<&Message> = st.chat_msg_indices[note].iter().map(|&i| &st.messages[i]).collect();
+    let starts = gallery::starts(&st, &msgs, &vec![0; msgs.len()]);
+    let at = |id: &str| msgs.iter().position(|m| m.id == id).unwrap();
+    let first = at("$photo00");
+    assert!((first..=at("$photo05")).all(|i| starts[i] == first), "photos up to 2 minutes from the first group");
+    assert_eq!(starts[at("$photo06")], at("$photo06"), "a photo after 2 minutes starts a new gallery");
+    assert_eq!(starts[at("$photo07")], at("$photo07"), "a photo with a caption is not in a gallery");
+    drop(st);
+    app.select_chat(note);
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find("+2").is_ok(), "the fourth tile counts the two hidden photos");
+    assert!(sim.find("01:15").is_ok(), "a video tile shows its duration");
+}
+
 #[test]
 fn typing_focuses_the_composer_like_desktop() {
     let mut app = demo_app("typefocus");
@@ -1559,7 +1605,7 @@ fn storage_clears_like_desktop() {
     let mut app = demo_app("storage");
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::Storage));
     let _ = app.update(UiMessage::StorageScanned(beeper_core::storage::scan(&app.store)));
-    let mut sim = simulator(app.view_settings());
+    let mut sim = tall(app.view_settings());
     for label in ["Messages", "Clear storage older than", "Clear All Cache", "Storage by Chat", "Note to self"] {
         assert!(sim.find(label).is_ok(), "{label} shows");
     }

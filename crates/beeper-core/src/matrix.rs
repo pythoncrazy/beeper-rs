@@ -1582,6 +1582,10 @@ pub async fn media(client: Option<Client>, src: String) -> Result<Vec<u8>, Strin
     if src.starts_with("https://") {
         return crate::cloud::http_bytes(&src).await;
     }
+    // The demo seed has its photos inline.
+    if let Some((_, b64)) = src.strip_prefix("data:").and_then(|s| s.split_once(";base64,")) {
+        return vodozemac::base64_decode(b64).map_err(|e| e.to_string());
+    }
     let client = client.ok_or("Not connected to Matrix")?;
     let source = match src.split_once(&format!("?{ENCRYPTED_FILE}=")) {
         Some((_, json)) => {
