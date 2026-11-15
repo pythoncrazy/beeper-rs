@@ -412,7 +412,7 @@ impl BeeperGuiApp {
     /// The decoded audio message before or after the current track in its chat, like `prevAudio` and `nextAudio`.
     fn neighbor(&self, st: &BeeperStore, forward: bool) -> Option<(String, String, String)> {
         let t = self.audio.now.as_ref()?;
-        let queue = st.chat_msg_indices.get(&t.chat).into_iter().flatten().map(|&i| &st.messages[i]);
+        let queue = st.timeline(&t.chat);
         let queue: Vec<_> = queue.filter_map(|m| Some((&m.id, audio_url(m)?))).collect();
         let k = queue.iter().position(|(id, _)| **id == t.mid)?;
         let (id, url) = if forward { queue.get(k + 1) } else { k.checked_sub(1).map(|k| &queue[k]) }?;
@@ -423,7 +423,7 @@ impl BeeperGuiApp {
     pub(crate) fn load_audio(&mut self) -> Task<UiMessage> {
         let st = self.store.read();
         let Some(client) = st.matrix.clone() else { return Task::none() };
-        let chat = self.pane.selected_chat_id.as_ref().and_then(|c| st.chat_msg_indices.get(c));
+        let chat = self.pane.selected_chat_id.as_ref().map(|c| st.timeline_indices(c));
         let urls: Vec<String> = chat
             .into_iter()
             .flatten()
@@ -792,9 +792,7 @@ impl BeeperGuiApp {
         let asked = std::mem::take(&mut *self.wants.transcribe.borrow_mut());
         let st = self.store.read();
         // A shown message can get a transcription or leave the store before this frame.
-        let open = |mid: &String| {
-            st.msg_idx_by_id.get(mid).is_some_and(|&i| st.messages[i].attachments[0].transcription.is_none())
-        };
+        let open = |mid: &String| st.loaded(mid).is_some_and(|m| m.attachments[0].transcription.is_none());
         let asked: Vec<_> =
             asked.into_iter().filter(|mid| !self.audio.transcribing.contains_key(mid) && open(mid)).collect();
         drop(st);

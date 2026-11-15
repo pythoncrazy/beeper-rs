@@ -464,7 +464,7 @@ mod tests {
                 .iter()
                 .find(|c| c.chat_type == "single" && c.account_id != "hungryserv" && c.label_ids.is_empty());
             let c = c.expect("a demo DM without labels").clone();
-            let m = st.chat_msg_indices[&c.id].iter().map(|&i| &st.messages[i]).find(|m| m.is_sender != Some(true));
+            let m = st.timeline(&c.id).find(|m| m.is_sender != Some(true));
             (c, m.expect("a received message").clone())
         };
         (m.timestamp, m.text, m.attachments) = ("2099-01-01T00:00:00.000Z".into(), Some("hi".into()), Vec::new());
@@ -483,7 +483,7 @@ mod tests {
         assert_eq!(mention, Some(("hi".into(), false)), "a mention notifies through the mute");
         let mid = {
             let st = app.store.read();
-            st.messages[st.chat_msg_indices[&chat.id][0]].id.clone()
+            st.messages[st.timeline_indices(&chat.id)[0]].id.clone()
         };
         app.notifications.insert(7, (chat.id.clone(), mid.clone()));
         let _ = app.update(UiMessage::NotificationEvent(7, Some("default".into())));

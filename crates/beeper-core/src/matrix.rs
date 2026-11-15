@@ -808,7 +808,7 @@ pub async fn load_older(store: SharedStore, chat: String) -> Result<(), String> 
     let count = || {
         let mut st = store.write();
         st.load_chat(&chat);
-        st.chat_msg_indices[&chat].len()
+        st.timeline_indices(&chat).len()
     };
     let start = count();
     while count() == start {
@@ -862,7 +862,7 @@ async fn sync_receipts(store: &SharedStore, room: &Room) {
     }
     let mut st = store.write();
     st.load_chat(&chat);
-    let indices = st.chat_msg_indices[&chat].clone();
+    let indices = st.timeline_indices(&chat).to_vec();
     for (uid, ev, ts) in updates {
         let target = indices.iter().copied().find(|&i| {
             let m = &st.messages[i];
@@ -1168,9 +1168,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
         }
         st.load_chat(&chat_id);
         // Desktop finds the target of an event only in the room of the event.
-        let here = |st: &BeeperStore, id: &str| {
-            st.msg_idx_by_id.get(id).copied().filter(|&i| st.messages[i].chat_id == chat_id)
-        };
+        let here = |st: &BeeperStore, id: &str| st.loaded_idx(id).filter(|&i| st.messages[i].chat_id == chat_id);
         for id in non_messages {
             if here(&st, &id).is_some() {
                 st.remove_message(&chat_id, &id).expect("remove a decrypted placeholder");
@@ -1250,9 +1248,10 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                 }
                 Op::Remove(id) | Op::Redact(id) => {
                     let reacted = st
-                        .chat_msg_indices
-                        .get(&chat_id)
-                        .and_then(|v| v.iter().copied().find(|&i| st.messages[i].reactions.iter().any(|r| r.id == id)));
+                        .timeline_indices(&chat_id)
+                        .iter()
+                        .copied()
+                        .find(|&i| st.messages[i].reactions.iter().any(|r| r.id == id));
                     if let Some(i) = reacted {
                         st.update_message(i, |m| m.reactions.retain(|r| r.id != id));
                     }
@@ -1263,7 +1262,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
         if let Some(older) = older {
             st.update_chat(idx, |c| c.older = older);
         }
-        let msgs = st.chat_msg_indices.get(&chat_id).map_or(&[][..], |v| &v[..]).iter().map(|&i| &st.messages[i]);
+        let msgs = st.timeline(&chat_id);
         let last = msgs.clone().rev().find(|m| m.message_type.as_deref() != Some("MEMBERSHIP")).map(|m| &m.sort_key);
         let stored = msgs.flat_map(|m| &m.reactions).map(|r| &r.sort_key).max();
         let old = st.chats[idx].notifiable.as_ref().filter(|_| !redacted);
@@ -3361,7 +3360,7 @@ mod tests {
         super::sync_room(&store, &room, Vec::new()).await;
         let state = || {
             let st = store.read();
-            let texts = st.chat_msg_indices["!room:x"].iter().map(|&i| st.messages[i].text.clone().unwrap());
+            let texts = st.timeline_indices("!room:x").iter().map(|&i| st.messages[i].text.clone().unwrap());
             (texts.collect::<Vec<_>>(), st.chat("!room:x").older.clone())
         };
         let texts = |a: i64| (a..=70).map(|i| format!("m{i}")).collect::<Vec<_>>();
@@ -3490,7 +3489,7 @@ mod tests {
         sync_stub_room(&store, "!room:x").await;
         {
             let st = store.read();
-            let m = |id: &str| &st.messages[st.msg_idx_by_id[id]];
+            let m = |id: &str| st.message(id);
             assert_eq!(m("$a").text.as_deref(), Some("Bob: hi"), "a body without the fallback stays");
             assert_eq!(m("$a").sort_key, crate::store::sort_key(0), "Desktop's hs.order ?? 0");
             let a = &m("$b").attachments[0];
@@ -3544,7 +3543,7 @@ mod tests {
         sync_stub_room(&store, "!other:x").await;
         sync_stub_room(&store, "!room:x").await;
         let st = store.read();
-        let m = &st.messages[st.msg_idx_by_id["$note"]];
+        let m = st.message("$note");
         assert!(m.is_deleted.is_none() && m.text.as_deref() == Some("Q") && m.reactions.is_empty());
         assert_eq!(m.poll.as_ref().map(|p| p.voters()), Some(0));
     }
@@ -3613,7 +3612,7 @@ mod tests {
             let c = chat();
             let st = store.read();
             assert!(c.threads && st.threaded(&c), "the thread room feature and the threads flag");
-            let m = |id: &str| st.messages[st.msg_idx_by_id[id]].clone();
+            let m = |id: &str| st.message(id).clone();
             assert_eq!(
                 (m("$e2").thread_root.as_deref(), m("$e2").fallback, m("$e2").broadcast),
                 (Some("$e1"), true, false)
@@ -4108,11 +4107,11 @@ mod tests {
         let room = store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).unwrap();
         super::sync_room(&store, &room, Vec::new()).await;
         let st = store.read();
-        let m = |id: &str| &st.messages[st.msg_idx_by_id[id]];
+        let m = |id: &str| st.message(id);
         assert!(m("$e1").is_delivered && m("$e1").send_error.is_none(), "a delivered message");
         let error = crate::models::SendError { message: Some("Network down".into()), retrying: false };
         assert_eq!((m("$e2").is_delivered, m("$e2").send_error.as_ref()), (false, Some(&error)), "a failed message");
-        assert_eq!(st.chat_msg_indices["!room:x"].len(), 2, "send statuses are no timeline rows");
+        assert_eq!(st.timeline_indices("!room:x").len(), 2, "send statuses are no timeline rows");
     }
 
     #[tokio::test]
@@ -4195,7 +4194,7 @@ mod tests {
         sync_stub_room(&store, BOOKMARKS_ROOM).await;
         let st = store.read();
         assert_eq!(st.bookmarks_room.as_deref(), Some(BOOKMARKS_ROOM));
-        assert_eq!(st.messages[st.msg_idx_by_id["$m"]].is_bookmarked, Some(true));
+        assert_eq!(st.message("$m").is_bookmarked, Some(true));
         assert!(!st.chat_idx_by_id.contains_key(BOOKMARKS_ROOM), "the bookmarks room is not a chat");
     }
 

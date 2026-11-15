@@ -268,7 +268,7 @@ mod tests {
         let (cid, account, mid) = {
             let st = app.store.read();
             let c = st.chats.iter().find(|c| c.account_id == "acc_whatsapp").expect("a WhatsApp chat");
-            let first = st.chat_msg_indices[&c.id].first().expect("the chat has messages");
+            let first = st.timeline_indices(&c.id).first().expect("the chat has messages");
             (c.id.clone(), c.account_id.clone(), st.messages[*first].id.clone())
         };
         let open = |app: &mut BeeperGuiApp, link: &str| {

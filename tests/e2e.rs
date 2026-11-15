@@ -512,7 +512,7 @@ async fn lifecycle() {
             st.chat("!mx:beeper.local").preview.as_ref().and_then(|p| p.text.as_deref()),
             Some("loved \"from matrix\"")
         );
-        let msg = |id: &str| &st.messages[st.msg_idx_by_id[id]];
+        let msg = |id: &str| st.message(id);
         assert_eq!(msg("$m3").sender_name.as_deref(), Some("Bo"));
         assert_eq!(msg("$m3").attachments[0].file_name.as_deref(), Some("Voice message"));
         assert_eq!(msg("$m4").sender_name.as_deref(), Some("@dc_stranger:beeper.local"));
@@ -524,10 +524,10 @@ async fn lifecycle() {
         assert_eq!(msg("$m5").attachments[2].poster_img.as_deref(), Some("mxc://beeper.local/reel_poster"));
         assert_eq!(msg("$m5").attachments[2].duration, Some(15.0));
         assert_eq!(msg("$m1").timestamp, "2025-10-09T08:53:21.000Z");
-        assert!(!st.msg_idx_by_id.contains_key("$m6") && !st.msg_idx_by_id.contains_key("$m7"));
+        assert!(st.loaded("$m6").is_none() && st.loaded("$m7").is_none());
         assert_eq!(msg("$x1").text.as_deref(), Some("from matrix"));
         assert_eq!(msg("$x1").reactions[0].reaction_key, "❤️");
-        assert!(!st.msg_idx_by_id.contains_key("$x2"), "reaction events are not messages");
+        assert!(st.loaded("$x2").is_none(), "reaction events are not messages");
         assert_eq!(
             (msg("$x3").thread_root.as_deref(), msg("$x3").fallback, msg("$x3").broadcast),
             (Some("$x1"), true, false)
@@ -1120,7 +1120,7 @@ async fn lifecycle() {
     let edited_msg = sarah_msgs.items.iter().find(|m| m["id"] == *sent_msg_id).unwrap();
     assert_eq!(edited_msg["text"], "Routed message via merged chat (edited v2)");
     assert!(edited_msg["editedTimestamp"].is_string() && edited_msg.get("edit_history").is_none());
-    let sarah = store.read().msg_idx_by_id[&sent_msg_id];
+    let sarah = store.read().message_idx(&sent_msg_id);
     assert_eq!(store.read().messages[sarah].edit_history[0].text, "Routed message via merged chat");
 
     let rx_add = client.add_reaction("!im_sarah:beeper.com", &sent_msg_id, "🔥").await;
@@ -1192,7 +1192,7 @@ async fn lifecycle() {
 
     {
         let st = store.read();
-        for (c, list) in &st.chat_msg_indices {
+        for (c, list) in st.chats.iter().map(|c| (&c.id, st.timeline_indices(&c.id))).filter(|(_, l)| !l.is_empty()) {
             let ids: Vec<&str> = list.iter().map(|&i| st.messages[i].id.as_str()).collect();
             let stored: Vec<String> =
                 st.stored("chat_id = ?1 ORDER BY sort_key", [c]).into_iter().map(|m| m.id).collect();
@@ -1605,8 +1605,11 @@ async fn lifecycle() {
         let _ = simulator(gui.view_main());
         let _ = gui.update(UiMessage::StoreChanged);
         let st = store.read();
-        assert!(st.resolve_chat_idx(&left).is_none() && !st.chat_msg_indices.contains_key(&left));
-        assert!(st.msg_idx_by_id.values().all(|&i| st.messages[i].chat_id != left), "a left chat loses its messages");
+        assert!(st.resolve_chat_idx(&left).is_none() && st.timeline_indices(&left).is_empty());
+        assert!(
+            st.messages.iter().filter(|m| st.loaded(&m.id).is_some()).all(|m| m.chat_id != left),
+            "a left chat loses its messages"
+        );
         assert_eq!(gui.pane.selected_chat_id.as_deref(), Some(note), "leaving the open chat opens Note to self");
         drop(st);
         let doomed = {
