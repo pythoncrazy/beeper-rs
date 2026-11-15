@@ -164,7 +164,7 @@ impl BeeperClient {
         self.send("POST", "/v1/focus", &[], Some(&body)).await.0
     }
 
-    pub async fn list_messages(&self, chat_id: &str) -> CursorPage<Message> {
+    pub async fn list_messages(&self, chat_id: &str) -> CursorPage<Value> {
         self.json("GET", &chat_path(chat_id, "/messages"), None).await
     }
 
@@ -207,7 +207,7 @@ impl BeeperClient {
         self.send("GET", &query_string("/v1/assets/serve", &[("url", url)]), &headers, None).await
     }
 
-    pub async fn search_messages(&self, query: &str, media_types: Option<&str>) -> CursorPage<Message> {
+    pub async fn search_messages(&self, query: &str, media_types: Option<&str>) -> CursorPage<Value> {
         let params: Vec<(&str, &str)> = [("query", Some(query)), ("mediaTypes", media_types)]
             .into_iter()
             .filter_map(|(k, v)| Some((k, v?)))
