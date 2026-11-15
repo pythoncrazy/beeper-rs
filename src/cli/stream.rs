@@ -118,7 +118,7 @@ fn watch(c: &mut Ctx) -> Res {
     if status >= 300 {
         return Err(CliError::bug(format!("Failed to fetch /v1/info: HTTP {status}")));
     }
-    let info: Value = serde_json::from_slice(&body).unwrap_or_default();
+    let info: Value = serde_json::from_slice(&body).map_err(|e| CliError::bug(format!("JSON Parse error: {e}")))?;
     let endpoint = info["endpoints"]["ws_events"].as_str().filter(|e| !e.is_empty()).unwrap_or("/v1/ws");
     let (ws_base, path) =
         if endpoint.contains("://") { split_url(endpoint) } else { (base.clone(), endpoint.to_string()) };
