@@ -1493,10 +1493,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
             empty(StatusCode::NO_CONTENT, Vec::new())
         }
         ("POST", ["read"]) => {
-            if let Some(ev) = st.mark_chat_read(id, true) {
-                let cid = st.chats[idx].id.clone();
-                st.queue(&cid, Outgoing::Read(ev));
-            }
+            st.mark_read(idx, true);
             chat_reply(st, idx)
         }
         ("POST", ["unread"]) => {
