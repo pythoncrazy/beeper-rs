@@ -452,6 +452,10 @@ pub enum UiMessage {
     /// Desktop's `showReplyThread`: shows the reply chain of the message over the timeline.
     ShowReplies(String),
     HideReplies,
+    /// Desktop's `SwitchChatHoverCard` of the composer: shows the chats of the person on your other accounts.
+    SwitchCard,
+    /// Desktop's `composeSwitchTargets.onSelect`: the chat of the person on another account.
+    SwitchChat(String),
     /// Desktop's `showThreadedReplies`: opens the thread pane of a message, or of the thread of a reply.
     ShowThread(String),
     /// Desktop's `hideThreadedReplies`.
@@ -1160,6 +1164,41 @@ fn account_user(st: &BeeperStore, account_id: &str) -> String {
     let b = st.bridge_accounts.iter().find(|b| b.account_id == account_id);
     let r = b.and_then(|b| b.remote_profile.clone()).unwrap_or_default();
     [r.name, r.username, r.phone, r.email].into_iter().flatten().find(|s| !s.is_empty()).unwrap_or_default()
+}
+
+/// Desktop's `hasMultipleAccountsOnSameBridgeType`: you have another account of the bridge of `account_id`.
+fn several_accounts(st: &BeeperStore, account_id: &str) -> bool {
+    let kind = st.bridge_accounts.iter().find(|b| b.account_id == account_id).map(|b| &b.bridge_type);
+    kind.is_some_and(|k| st.bridge_accounts.iter().filter(|b| &b.bridge_type == k).count() > 1)
+}
+
+/// Desktop's `composeSwitchTargets` of the account variant: in a single chat on an account with other accounts of its
+/// bridge, the chat and the chats with the same person on those accounts (`getAltAccountThreads`).
+fn switch_targets(st: &BeeperStore, chat: &Chat) -> Option<Vec<String>> {
+    let other = |c: &Chat| c.participants.items.iter().find(|u| u.is_self != Some(true)).cloned();
+    let them = other(chat).filter(|_| chat.chat_type == "single" && several_accounts(st, &chat.account_id))?;
+    let kind = st.bridge_accounts.iter().find(|b| b.account_id == chat.account_id).map(|b| &b.bridge_type);
+    let alts: Vec<&str> = st
+        .bridge_accounts
+        .iter()
+        .filter(|b| b.account_id != chat.account_id && Some(&b.bridge_type) == kind)
+        .map(|b| b.account_id.as_str())
+        .collect();
+    // Desktop's `findMostRecentSingleThread` of each account, by the username, the phone, the email, then the ID.
+    let keys: [fn(&User) -> Option<&str>; 4] =
+        [|u| u.username.as_deref(), |u| u.phone_number.as_deref(), |u| u.email.as_deref(), |u| Some(u.id.as_str())];
+    let newest = |account: &str, same: &dyn Fn(&User) -> bool| {
+        let single = st.chats.iter().filter(|c| c.account_id == account && c.chat_type == "single");
+        single.filter(|c| other(c).is_some_and(|u| same(&u))).max_by(|a, b| a.last_activity.cmp(&b.last_activity))
+    };
+    let mut found: Vec<&Chat> = keys
+        .iter()
+        .filter_map(|k| Some((k, k(&them).filter(|v| !v.is_empty())?)))
+        .map(|(k, v)| alts.iter().filter_map(|a| newest(a, &|u: &User| k(u) == Some(v))).collect())
+        .find(|f: &Vec<&Chat>| !f.is_empty())
+        .unwrap_or_default();
+    found.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+    Some(std::iter::once(chat).chain(found).map(|c| c.id.clone()).collect())
 }
 
 /// Desktop's `Up`: the network of an account, and its user when another listed account has the same network.
@@ -2873,6 +2912,8 @@ fn label_rows(l: &Label) -> f32 {
 
 /// The `chat_menu` key of Desktop's space sheet (`zft`), which opens from the sidebar header title.
 const SPACE_SHEET: &str = "space:sheet";
+/// The `chat_menu` key of the "Switch Chat" hover card of the composer.
+const SWITCH_CARD: &str = "switch:card";
 
 /// The `chat_menu` key of Desktop's sidebar background menu (`Gct`).
 const SIDEBAR_MENU: &str = "sidebar:menu";
@@ -6897,6 +6938,8 @@ impl BeeperGuiApp {
             }
             UiMessage::ShowReplies(id) => (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), Some(id)),
             UiMessage::ShowThread(id) => self.show_thread(&id),
+            UiMessage::SwitchCard => self.chat_menu = Some((SWITCH_CARD.into(), self.cursor.get())),
+            UiMessage::SwitchChat(id) => self.switch_chat(id),
             UiMessage::HideThread => (self.pane.thread, self.pane.thread_menu) = (None, None),
             UiMessage::InThread(msg) => return self.in_thread(*msg),
             UiMessage::SetBroadcast(on) => self.pane.broadcast = on,
@@ -10079,6 +10122,7 @@ impl BeeperGuiApp {
             c == RAIL_MORE
                 || c == SIDEBAR_MENU
                 || c == SPACE_SHEET
+                || c == SWITCH_CARD
                 || c.starts_with("draft:")
                 || c.starts_with("account:")
                 || c.starts_with("head:")
@@ -10142,6 +10186,10 @@ impl BeeperGuiApp {
                 let x = (at.x - CARD_W / 2.0).clamp(8.0, size.width - CARD_W - 8.0);
                 let below = at.y + 30.0 + CARD_H <= size.height;
                 return (self.view_user_card(key), x, if below { at.y + 30.0 } else { at.y - 30.0 - CARD_H });
+            }
+            if cid == SWITCH_CARD {
+                let (card, h) = self.view_switch_card();
+                return (card, at.x - 8.0, at.y - h + 8.0);
             }
             if cid == SPACE_SHEET {
                 let (sheet, w, h) = self.view_space_sheet();
@@ -11503,6 +11551,80 @@ impl BeeperGuiApp {
         ];
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         (menu.into(), sub.map(Into::into))
+    }
+
+    /// Desktop's `SwitchChatHoverCard`: "Switch Chat" and a row for each chat of the person, with the avatar, the
+    /// network and the user of its account, and a check on the open chat. The card closes when the pointer leaves it.
+    fn view_switch_card(&self) -> (El<'_>, f32) {
+        let p = &self.pal;
+        let st = self.store.read();
+        let open = self.pane.selected_chat_id.as_deref().expect("an open chat");
+        let chat = &st.chats[st.resolve_chat_idx(open).expect("chat exists")];
+        let targets = switch_targets(&st, chat).expect("a chat with switch targets");
+        let line = || container(Space::new().width(Fill).height(1)).style(fill_box(p.received, 0.0));
+        let header = container(semi(tr("Switch Chat"), 13.0).line_height(Pixels(16.0)).color(p.strong))
+            .padding(Padding::new(12.0).left(27.0).right(8.0));
+        // Desktop's card is as wide as its rows, up to 300 px.
+        let wide = |c: &Chat| {
+            let name = text_width(network_name(&c.account_id), 16.0, Weight::Normal);
+            29.0 + 28.0 + 8.0 + name.max(text_width(&account_user(&st, &c.account_id), 12.0, Weight::Normal)) + 8.0
+        };
+        let chats = targets.iter().map(|id| &st.chats[st.resolve_chat_idx(id).expect("a switch target exists")]);
+        let w = chats.map(wide).fold(35.0 + text_width(tr("Switch Chat"), 13.0, Weight::Semibold), f32::max).min(300.0);
+        let rows = targets.iter().map(|id| {
+            let c = &st.chats[st.resolve_chat_idx(id).expect("a switch target exists")];
+            let on = id == open;
+            let r = st.bridge_accounts.iter().find(|b| b.account_id == c.account_id);
+            let face = self.face(
+                r.and_then(|b| b.remote_profile.as_ref()?.avatar.as_deref()),
+                &account_user(&st, &c.account_id),
+                28.0,
+                0.0,
+            );
+            let info = column![
+                txt(network_name(&c.account_id).to_string(), 16.0).line_height(Pixels(20.0)).color(p.strong),
+                txt(account_user(&st, &c.account_id), 12.0).line_height(Pixels(16.0)).color(p.strong.scale_alpha(0.4)),
+            ];
+            let check = on.then(|| ic(icon::CHECK, 13.0).color(p.strong));
+            let row = row![].push(check).push(face).push(info).spacing(8).align_y(Center);
+            let pad = Padding::new(8.0).left(if on { 8.0 } else { 29.0 });
+            let b =
+                button(row).padding(pad).width(Fill).style(btn_style([CLEAR, p.hover, p.selected], [p.text; 3], 0.0));
+            column![b.on_press(UiMessage::SwitchChat(id.clone()))]
+                .push((id != targets.last().expect("a target")).then(line))
+                .into()
+        });
+        let h = 41.0 + targets.len() as f32 * 53.0;
+        let card = column![header, line()].extend(rows).width(w.ceil());
+        let card = container(card).style(shadow_box(p.menu, p.menu_border, 8.0, 16.0));
+        (mouse_area(card).on_exit(UiMessage::CloseChatMenu).into(), h)
+    }
+
+    /// Desktop's `composeSwitchTargets.onSelect`: opens the chat on the other account, and moves the draft there
+    /// when that chat has none.
+    fn switch_chat(&mut self, id: String) {
+        self.chat_menu = None;
+        if self.pane.selected_chat_id.as_deref() == Some(id.as_str()) {
+            return;
+        }
+        let empty = {
+            let st = self.store.read();
+            let d =
+                st.chats[st.resolve_chat_idx(&id).expect("a switch target exists")].draft.clone().unwrap_or_default();
+            d.text.as_deref().unwrap_or_default().trim().is_empty() && d.attachments.is_empty()
+        };
+        let pane = &mut self.pane;
+        let carry = empty.then(|| {
+            let text = std::mem::replace(&mut pane.composer, composer_with(""));
+            let (files, mentions) = (std::mem::take(&mut pane.attachments), std::mem::take(&mut pane.mentions));
+            (text, files, mentions, std::mem::take(&mut pane.composer_links), pane.send_later.take())
+        });
+        self.select_chat(&id);
+        if let Some(draft) = carry {
+            let pane = &mut self.pane;
+            (pane.composer, pane.attachments, pane.mentions, pane.composer_links, pane.send_later) = draft;
+            pane.draft_due = true;
+        }
     }
 
     /// Desktop's `BrandUserHoverCard` of the member in "chat user": the avatar over the card, the name, the
@@ -14589,8 +14711,7 @@ impl BeeperGuiApp {
             (true, false) => " to accept the request",
         };
         // Desktop's `bridgeProtocolDisplayName`: the user of the account, when you have more accounts of its bridge.
-        let kind = st.bridge_accounts.iter().find(|b| b.account_id == chat.account_id).map(|b| &b.bridge_type);
-        let several = kind.is_some_and(|k| st.bridge_accounts.iter().filter(|b| &b.bridge_type == k).count() > 1);
+        let several = several_accounts(st, &chat.account_id);
         let user = Some(account_user(st, &chat.account_id)).filter(|u| several && !u.is_empty());
         let net = network_name(&chat.account_id);
         let net = user.map_or(net.to_string(), |u| format!("{net} ({u})"));
@@ -14805,8 +14926,26 @@ impl BeeperGuiApp {
                 selection: p.accent.scale_alpha(0.45),
             });
         let empty = self.pane().composer.is_empty();
-        let net = (st.settings.on("showNetworkIcons") && empty)
-            .then(|| svg(brand_svg(brand_key(&chat.account_id))).width(14).height(14));
+        // Desktop's `AccountAvatar` takes the place of the network icon when you have more accounts of the bridge.
+        let switch =
+            switch_targets(st, chat).filter(|_| self.pane().thread_root.is_none() && self.drawing.get().is_none());
+        let net: Option<El<'a>> = match switch {
+            Some(targets) => {
+                let r = st.bridge_accounts.iter().find(|b| b.account_id == chat.account_id);
+                let url = r.and_then(|b| b.remote_profile.as_ref()?.avatar.as_deref());
+                let face = self.face(url, &account_user(st, &chat.account_id), 14.0, 0.0);
+                Some(match targets.len() {
+                    1 => {
+                        let accounts: Vec<String> = st.bridge_accounts.iter().map(|b| b.account_id.clone()).collect();
+                        let name = account_display_name(st, &chat.account_id, &accounts);
+                        self.tip(face, name, vec![], tooltip::Position::Top).into()
+                    }
+                    _ => mouse_area(face).on_enter(UiMessage::SwitchCard).into(),
+                })
+            }
+            None => (st.settings.on("showNetworkIcons") && empty && !several_accounts(st, &chat.account_id))
+                .then(|| svg(brand_svg(brand_key(&chat.account_id))).width(14).height(14).into()),
+        };
         let inline = Row::with_children([pri, sec].into_iter().flatten().map(&action_btn)).spacing(2).align_y(Center);
         let net = Row::new().push(net.map(|n| container(n).padding(Padding::ZERO.right(2.0)).center_y(36)));
         let inline = container(inline).padding(Padding::ZERO.left(2.0)).center_y(36);
