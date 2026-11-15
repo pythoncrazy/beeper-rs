@@ -668,6 +668,8 @@ pub struct Personal {
 
 /// Desktop's `BOOKMARK_EVENT_TYPE` and `BOOKMARK_REL_TYPE`.
 pub const BOOKMARK: &str = "com.beeper.bookmark";
+/// Desktop's `BOOKMARKS_ROOM_ID`: the managed room of the bookmarks on the Beeper homeserver.
+pub const BOOKMARKS_ROOM: &str = "!bookmarks:beeper.local";
 
 /// A `com.beeper.bookmark` event of the bookmarks room, which relates to a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
