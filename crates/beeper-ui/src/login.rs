@@ -1,4 +1,4 @@
-use crate::i18n::{tr, trn};
+use crate::i18n::{tr, trn, trx};
 use crate::style::{
     bold, bordered_box, brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, CLEAR,
 };
@@ -495,7 +495,7 @@ impl BeeperGuiApp {
                 actions(
                     vec![
                         field(EMAIL_INPUT, tr("Email"), &l.email, LoginMsg::Email, LoginMsg::SubmitEmail),
-                        pill(label(tr("Next"), None), 33.0, None, go(LoginMsg::SubmitEmail)),
+                        pill(label(trx("Next", "button label"), None), 33.0, None, go(LoginMsg::SubmitEmail)),
                     ],
                     24.0
                 ),
@@ -602,7 +602,7 @@ impl BeeperGuiApp {
                             LoginMsg::Username,
                             LoginMsg::SubmitUsername
                         ),
-                        pill(label(tr("Next"), None), 33.0, None, go(LoginMsg::SubmitUsername)),
+                        pill(label(trx("Next", "button label"), None), 33.0, None, go(LoginMsg::SubmitUsername)),
                     ],
                     52.0
                 ),

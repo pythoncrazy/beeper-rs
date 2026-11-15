@@ -462,7 +462,7 @@ impl BeeperGuiApp {
             }
             let delete = (c.delete_modes != 0).then(|| UiMessage::AskDeleteChat(id()));
             v.push(cmd(e, trx("Delete", "chat command"), delete).keys(&["delete", "leave"]));
-            v.push(cmd(e, tr("Report as spam"), None));
+            v.push(cmd(e, tr("Report spam"), None));
             v.push(cmd(e, tr("Open in new window"), Some(UiMessage::OpenChatWindow(id()))));
         }
         v.push(
