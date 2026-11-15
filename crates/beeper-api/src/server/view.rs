@@ -1,6 +1,6 @@
 //! The API shapes of Desktop's `mapChat`, `mapMessage`, and bridges, in their key order, made from the store.
 
-use beeper_core::config::{account_network, rfc3339_from_millis};
+use beeper_core::config::{account_network, cloud_bridge, find_network, rfc3339_from_millis, NETWORK_SPECS};
 use beeper_core::models::*;
 use beeper_core::store::BeeperStore;
 use serde::Serialize;
@@ -23,12 +23,28 @@ pub(super) struct Bridge<'a> {
     accounts: Vec<&'a Account>,
 }
 
+/// Desktop's bridge ID of a network: the ID of its Beeper Cloud bridge, such as `slackgo`.
+pub(super) fn bridge_id(spec: &NetworkSpec) -> &'static str {
+    cloud_bridge(spec).unwrap_or(spec.bridge_id)
+}
+
+/// The network of a bridge ID of the API.
+pub(super) fn bridge_network(id: &str) -> Option<&'static NetworkSpec> {
+    NETWORK_SPECS.iter().find(|n| bridge_id(n) == id)
+}
+
+/// The accounts of a network. Cloud accounts carry the cloud bridge ID, and the demo accounts the network ID.
+fn network_accounts<'a>(st: &'a BeeperStore, spec: &NetworkSpec) -> Vec<&'a Account> {
+    let of = |a: &&Account| find_network(&a.bridge.id).is_some_and(|n| n.bridge_id == spec.bridge_id);
+    st.accounts.iter().filter(of).collect()
+}
+
 /// Desktop's `listBridges` entry of a network. No network allows more than one account here.
 pub(super) fn bridge<'a>(st: &'a BeeperStore, spec: &NetworkSpec) -> Bridge<'a> {
-    let accounts: Vec<&Account> = st.accounts.iter().filter(|a| a.bridge.id == spec.bridge_id).collect();
+    let accounts = network_accounts(st, spec);
     Bridge {
-        id: spec.bridge_id,
-        bridge_type: spec.bridge_type,
+        id: bridge_id(spec),
+        bridge_type: bridge_id(spec),
         provider: if spec.supports_cloud { "cloud" } else { "local" },
         display_name: spec.display_name,
         network: spec.display_name,
@@ -47,16 +63,16 @@ pub(super) struct BridgeLogin<'a> {
     #[serde(rename = "bridgeID")]
     bridge_id: &'a str,
     #[serde(rename = "accountIDs")]
-    account_ids: Vec<&'a str>,
+    pub(super) account_ids: Vec<&'a str>,
     user: &'a User,
     status: &'static str,
     #[serde(rename = "removeScopes")]
-    remove_scopes: &'static [&'static str],
+    pub(super) remove_scopes: &'static [&'static str],
 }
 
 /// Desktop's `mapBridgeAccountsToLogin` for each login of the bridge.
-pub(super) fn logins<'a>(st: &'a BeeperStore, bridge_id: &str) -> Vec<BridgeLogin<'a>> {
-    let accounts: Vec<&Account> = st.accounts.iter().filter(|a| a.bridge.id == bridge_id).collect();
+pub(super) fn logins<'a>(st: &'a BeeperStore, spec: &NetworkSpec) -> Vec<BridgeLogin<'a>> {
+    let accounts = network_accounts(st, spec);
     let mut ids: Vec<&str> = accounts.iter().map(|a| a.login_id.as_str()).collect();
     ids.dedup();
     let login = |id: &'a str| {
@@ -64,7 +80,7 @@ pub(super) fn logins<'a>(st: &'a BeeperStore, bridge_id: &str) -> Vec<BridgeLogi
         let any = |s: &[&str]| mine.iter().any(|a| s.contains(&a.status.as_str()));
         BridgeLogin {
             login_id: id,
-            bridge_id: &mine[0].bridge.id,
+            bridge_id: bridge_id(spec),
             account_ids: mine.iter().map(|a| a.account_id.as_str()).collect(),
             user: &mine[0].user,
             status: match () {

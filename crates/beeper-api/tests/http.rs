@@ -338,7 +338,7 @@ async fn routes_match_like_express() {
         }
     }
     let count = doc["paths"].as_object().unwrap().values().map(|m| m.as_object().unwrap().len()).sum::<usize>();
-    assert_eq!(count, 66);
+    assert_eq!(count, 67);
 }
 
 #[tokio::test]
