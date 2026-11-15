@@ -256,6 +256,15 @@ pub fn sort_key(seq: i64) -> String {
     }
 }
 
+/// The order of a [`sort_key`].
+pub fn order_of(key: &str) -> i64 {
+    const SPAN: i64 = 10_000_000_000_000_000;
+    match key.strip_prefix('-') {
+        Some(rest) => rest.parse::<i64>().expect("numeric sort key") - SPAN,
+        None => key.parse().expect("numeric sort key"),
+    }
+}
+
 /// SQL that changes the 12-digit sort keys of schema 2 to the 16-digit keys of schema 3. It runs again for
 /// schema 4 because the demo seed kept 12-digit keys until then.
 fn widen_sort_keys() -> String {
@@ -459,6 +468,10 @@ pub struct BeeperStore {
     /// the event ID of the removed message.
     pub removals: Option<HashMap<String, Vec<String>>>,
     pub pushing: bool,
+    /// Flags whose change the homeserver has, with the value and the sync after which a sync shows the change.
+    pub sent_flags: HashMap<(String, ChatFlag), (bool, u64)>,
+    /// The number of syncs of the Matrix sync loop.
+    pub syncs: u64,
     /// The Matrix IDs of sent events and created labels by their local IDs.
     pub sent: HashMap<String, String>,
     pub typing: HashMap<String, Vec<String>>,
@@ -620,6 +633,8 @@ impl BeeperStore {
             bookmarked: HashMap::new(),
             removals: None,
             pushing: false,
+            sent_flags: HashMap::new(),
+            syncs: 0,
             sent: HashMap::new(),
             typing: HashMap::new(),
             recent_emoji: Vec::new(),
@@ -1350,6 +1365,41 @@ impl BeeperStore {
 
     /// Sets a chat flag here and on the homeserver. `None` toggles the flag.
     /// Returns false, like Desktop, when asked to archive a pinned chat.
+    /// Desktop's optimistic thread update: the value of a flag that changed here and that a sync may not show yet, from
+    /// the outbox or from a change that the homeserver has.
+    pub fn local_flag(&self, chat: &str, flag: ChatFlag) -> Option<bool> {
+        let queued = self.outbox.iter().rev().find_map(|(_, c, o)| match o {
+            Outgoing::Flag(f, on) if c == chat && *f == flag => Some(*on),
+            _ => None,
+        });
+        queued.or_else(|| self.sent_flags.get(&(chat.to_string(), flag)).map(|v| v.0))
+    }
+
+    /// Keeps the flags of `c` that changed here and that the homeserver state of `c` may not show yet.
+    pub fn keep_local_flags(&self, c: &mut Chat) {
+        for (flag, slot) in [
+            (ChatFlag::Pinned, &mut c.is_pinned),
+            (ChatFlag::LowPriority, &mut c.is_low_priority),
+            (ChatFlag::Muted, &mut c.is_muted),
+            (ChatFlag::MarkedUnread, &mut c.is_marked_unread),
+        ] {
+            if let Some(on) = self.local_flag(&c.id, flag) {
+                *slot = Some(on);
+            }
+        }
+    }
+
+    /// A flag change reached the homeserver. The sync in flight may not show it, the sync after it does.
+    pub fn flag_sent(&mut self, chat: String, flag: ChatFlag, on: bool) {
+        self.sent_flags.insert((chat, flag), (on, self.syncs + 2));
+    }
+
+    /// A sync of the Matrix sync loop is done: the changes that it shows need no local value any more.
+    pub fn synced(&mut self) {
+        let n = self.syncs;
+        self.sent_flags.retain(|_, v| v.1 > n);
+    }
+
     pub fn set_chat_flag(&mut self, idx: usize, flag: ChatFlag, on: Option<bool>) -> bool {
         let c = &self.chats[idx];
         if flag == ChatFlag::Archived && c.is_pinned == Some(true) && on.unwrap_or(c.is_archived != Some(true)) {
