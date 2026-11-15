@@ -1882,6 +1882,23 @@ impl BeeperStore {
         unread.fold((0, 0), |(n, at), m| (n + 1, at + usize::from(m.flags & MSG_MENTION != 0)))
     }
 
+    /// Desktop's `unreadThreadEntries`: the followed threads with unread replies of the chats of `chats`, as the chat
+    /// index and the root, the newest reply first.
+    pub fn unread_threads(&self, chats: impl IntoIterator<Item = usize>) -> Vec<(usize, String)> {
+        let mut all: Vec<(&str, usize, String)> = chats
+            .into_iter()
+            .filter(|&i| self.threaded(&self.chats[i]))
+            .flat_map(|i| self.chats[i].thread_reads.keys().map(move |r| (i, r)))
+            .filter(|&(i, r)| self.thread_unread(&self.chats[i], r).0 > 0 && self.follows_thread(&self.chats[i], r))
+            .map(|(i, r)| {
+                let newest = self.thread_replies(r).next_back().expect("an unread thread has replies");
+                (newest.timestamp.as_str(), i, r.clone())
+            })
+            .collect();
+        all.sort_by(|a, b| b.0.cmp(a.0));
+        all.into_iter().map(|(_, i, r)| (i, r)).collect()
+    }
+
     /// Desktop's `markReplyThreadRead`: an unread thread is read through `through`, else through its newest reply,
     /// and its thread receipt goes to that reply.
     pub fn mark_thread_read(&mut self, chat_id: &str, root: &str, through: Option<&str>) {
