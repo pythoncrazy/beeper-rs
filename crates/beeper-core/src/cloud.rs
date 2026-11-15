@@ -303,15 +303,25 @@ pub fn ai_services(homeserver: &str) -> String {
     format!("https://{host}/proxy/_/v1")
 }
 
+/// The file name and type of a voice note (Desktop's `toFile` defaults), and of a Talk to Type recording.
+pub const VOICE_NOTE_FILE: (&str, &str) = ("speech.mp3", "audio/mpeg");
+pub const TALK_FILE: (&str, &str) = ("a.wav", "audio/wav");
+
 /// Desktop's Whisper transcription (`xre`): `audio.transcriptions.create` of the OpenAI SDK with `whisper-1` at
-/// `base`, and the Matrix access token as the API key. Like Desktop, the file is "speech.mp3" of type `audio/mpeg`.
-pub async fn transcribe(base: &str, token: &str, audio: Vec<u8>, language: Option<&str>) -> Result<String, String> {
+/// `base`, and the Matrix access token as the API key. The file has a name and a type: Desktop sends each voice note
+/// as [`VOICE_NOTE_FILE`] and Talk to Type as [`TALK_FILE`].
+pub async fn transcribe(
+    base: &str,
+    token: &str,
+    (audio, (name, mime)): (Vec<u8>, (&str, &str)),
+    language: Option<&str>,
+) -> Result<String, String> {
     let b = matrix_sdk::ruma::TransactionId::new();
     let part =
         |name: &str, extra: &str| format!("--{b}\r\nContent-Disposition: form-data; name=\"{name}\"{extra}\r\n\r\n");
     let fields = [("model", "whisper-1")].into_iter().chain(language.map(|l| ("language", l)));
     let mut body: Vec<u8> = fields.flat_map(|(k, v)| format!("{}{v}\r\n", part(k, "")).into_bytes()).collect();
-    body.extend(part("file", "; filename=\"speech.mp3\"\r\nContent-Type: audio/mpeg").bytes());
+    body.extend(part("file", &format!("; filename=\"{name}\"\r\nContent-Type: {mime}")).bytes());
     body.extend(audio);
     body.extend(format!("\r\n--{b}--\r\n").bytes());
     let res = http_client()
@@ -468,16 +478,19 @@ mod tests {
             let body = body.as_str().expect("a multipart body");
             assert_eq!((method, path), ("POST", "/proxy/_/v1/audio/transcriptions"));
             assert!(body.contains("name=\"model\"\r\n\r\nwhisper-1\r\n"), "{body}");
-            assert!(body.contains("filename=\"speech.mp3\"\r\nContent-Type: audio/mpeg\r\n\r\nOggS\r\n--"), "{body}");
-            match body.contains("name=\"language\"\r\n\r\nde\r\n") {
+            let de = body.contains("name=\"language\"\r\n\r\nde\r\n");
+            let file =
+                if de { "speech.mp3\"\r\nContent-Type: audio/mpeg" } else { "a.wav\"\r\nContent-Type: audio/wav" };
+            assert!(body.contains(&format!("filename=\"{file}\r\n\r\nOggS\r\n--")), "{body}");
+            match de {
                 true => (200, json!({ "text": "Hallo" })),
                 false => (401, json!({ "error": { "message": "Invalid token" } })),
             }
         })
         .await;
         let base = format!("{url}/proxy/_/v1");
-        assert_eq!(transcribe(&base, "t", b"OggS".to_vec(), Some("de")).await, Ok("Hallo".into()));
-        assert_eq!(transcribe(&base, "t", b"OggS".to_vec(), None).await, Err("Invalid token".into()));
+        assert_eq!(transcribe(&base, "t", (b"OggS".to_vec(), VOICE_NOTE_FILE), Some("de")).await, Ok("Hallo".into()));
+        assert_eq!(transcribe(&base, "t", (b"OggS".to_vec(), TALK_FILE), None).await, Err("Invalid token".into()));
     }
 
     #[tokio::test]

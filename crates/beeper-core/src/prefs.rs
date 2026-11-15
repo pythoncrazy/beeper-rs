@@ -535,6 +535,7 @@ pub fn hotkey_feature(name: &str) -> Option<&'static str> {
         "Remind Later" => Some("remind-later"),
         "Message: Send Later" => Some("scheduled-message"),
         "Undo Pending Send" => Some("undo-send"),
+        "Message: Talk to Type" => Some("voice-transcription"),
         _ => None,
     }
 }
@@ -595,6 +596,7 @@ pub const HOTKEYS: &[(&str, &str, &str)] = &[
     ("Message: Quote & Reply", "Messages", "ctrl+r"),
     ("Message: Quote or Edit Selected Message", "Messages", "enter"),
     ("Message: Record Audio", "Messages", "ctrl+shift+a"),
+    ("Message: Talk to Type", "Messages", "ctrl+shift+t"),
     ("Message: Send GIF", "Messages", "ctrl+shift+g"),
     ("Message: Send Later", "Messages", "ctrl+shift+l"),
     ("Message: Send Message and Archive", "Messages", "ctrl+enter"),
@@ -625,7 +627,6 @@ pub const FIXED_HOTKEYS: &[(&str, &str, &str)] = &[
 
 /// Desktop's hotkeys that neither list shows, but that a recorded hotkey cannot take. Copy has no name.
 pub const HIDDEN_HOTKEYS: &[(&str, &str, &str)] = &[
-    ("Message: Talk to Type", "Messages", "ctrl+shift+t"),
     ("Chat: Create New Group", "Chats", "ctrl+shift+n"),
     ("Select First 9 Commands Modifier", "App", "ctrl+alt"),
     ("", "Messages", "ctrl+c"),
@@ -963,7 +964,7 @@ mod tests {
         let conflict = |name, combo| hotkey_conflict(name, combo, hotkey_default);
         assert_eq!(conflict("Search", "ctrl+j"), Some("Command Bar"));
         assert_eq!(conflict("Search", "ctrl+k"), None, "a hotkey does not conflict with itself");
-        assert_eq!(conflict("Search", "ctrl+shift+t"), Some("Message: Talk to Type"), "hidden hotkeys count");
+        assert_eq!(conflict("Search", "ctrl+shift+n"), Some("Chat: Create New Group"), "hidden hotkeys count");
         assert_eq!(conflict("Search", "ctrl+c"), Some(""));
         assert_eq!(conflict("Send Message", "enter"), None, "both can share Enter across groups");
         assert_eq!(conflict("Search", "enter"), Some("Message: Quote or Edit Selected Message"));
