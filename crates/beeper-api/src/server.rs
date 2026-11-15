@@ -495,6 +495,9 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     if let ("GET" | "POST", ["v1", "app", "setup", rest @ ..]) = (method.as_str(), &segs[..]) {
         return e2ee_setup(store, &method, rest, &req);
     }
+    if method == "GET" {
+        return get(store, &segs, &req);
+    }
     let mut st = store.write();
     let reply = dispatch(&mut st, &method, &segs, &req);
     if st.start_flush() {
@@ -660,21 +663,46 @@ fn verification_not_found() -> Response {
     error(StatusCode::NOT_FOUND, "Verification not found", "verification_not_found")
 }
 
-fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
-    match (method, path) {
-        ("GET", ["v1", "info"]) => ok(&info(st)),
-        ("GET", ["v1", "spec"]) => Ok(Response {
+/// The GET routes only read the store, so they share its lock with each other and with the UI.
+fn get(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
+    if path == ["v1", "assets", "serve"] {
+        let file = asset_file(&store.read(), r)?;
+        return serve_asset(file, r);
+    }
+    let st = &*store.read();
+    match path {
+        ["v1", "info"] => ok(&info(st)),
+        ["v1", "spec"] => Ok(Response {
             status: StatusCode::OK,
             headers: vec![("content-type", JSON.into())],
             body: OPENAPI_SPEC_JSON.as_bytes().to_vec(),
         }),
-        ("GET", []) => empty(StatusCode::FOUND, vec![("location", "/v1/info".into())]),
-        ("GET", ["v1", "accounts"]) => ok(&st.accounts),
-        ("GET", ["v1", "accounts", id, rest @ ..]) => account(st, id, rest, r),
-        ("GET", ["v1", "labels"]) => ok(&st.labels),
+        [] => empty(StatusCode::FOUND, vec![("location", "/v1/info".into())]),
+        ["v1", "accounts"] => ok(&st.accounts),
+        ["v1", "accounts", id, rest @ ..] => account(st, id, rest, r),
+        ["v1", "labels"] => ok(&st.labels),
+        ["v1", "bridges", rest @ ..] => bridge_get(st, rest),
+        ["v1", "chats"] => list_chats(st, r),
+        ["v1", "chats", "search"] => search_chats(st, r),
+        ["v1", "chats", id, rest @ ..] => {
+            let idx = st.resolve_chat_idx(id).ok_or_else(|| missing("Chat not found"))?;
+            match rest {
+                [] => ok(&st.chats[idx]),
+                ["messages"] => list_messages(st, idx, r),
+                ["messages", mid] => ok(&st.messages[st.message_in_chat(id, mid).map_err(store_error)?.1]),
+                _ => Err(no_route()),
+            }
+        }
+        ["v1", "messages", "search"] => search_messages(st, r),
+        ["v1", "search"] => unified_search(st, r),
+        _ => Err(no_route()),
+    }
+}
+
+fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
+    match (method, path) {
         (_, ["v1", "bridges", rest @ ..]) => bridges(st, method, rest, r),
         (_, ["v1", "chats", rest @ ..]) => chats(st, method, rest, r),
-        ("GET", ["v1", "messages", "search"]) => search_messages(st, r),
         ("POST", ["v1", "assets", "upload"]) => upload_multipart(st, r),
         ("POST", ["v1", "assets", "upload", "base64"]) => {
             let bytes = base64_decode(r.need("content")?).filter(|b| !b.is_empty());
@@ -687,8 +715,6 @@ fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply
             let (path, _) = st.resolve_asset_path(url).ok_or_else(failed)?;
             ok(&json!({ "srcURL": path_to_file_url(&path) }))
         }
-        ("GET", ["v1", "assets", "serve"]) => serve_asset(st, r),
-        ("GET", ["v1", "search"]) => unified_search(st, r),
         ("POST", ["v1", "focus"]) => focus(st, r),
         _ => Err(no_route()),
     }
@@ -828,7 +854,7 @@ fn login_step(id: &str, step_type: &str, instructions: Option<String>) -> Bridge
     }
 }
 
-fn bridges(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
+fn bridge_get(st: &BeeperStore, path: &[&str]) -> Reply {
     let [id, rest @ ..] = path else {
         let catalog: Vec<Value> = NETWORK_SPECS
             .iter()
@@ -847,10 +873,9 @@ fn bridges(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply 
     };
     let spec = network_spec(id).ok_or_else(|| missing("Bridge not found"))?;
     let name = spec.display_name;
-    let session_exists = |st: &BeeperStore, sid: &str| st.bridge_sessions.get(sid).is_some_and(|s| s.bridge_id == *id);
-    match (method, rest) {
-        ("GET", []) => ok(&bridge_summary(st, spec)),
-        ("GET", ["capabilities"]) => ok(&json!({
+    match rest {
+        [] => ok(&bridge_summary(st, spec)),
+        ["capabilities"] => ok(&json!({
             "bridgeID": spec.bridge_id,
             "bridgeType": spec.bridge_type,
             "capabilities": {
@@ -867,7 +892,7 @@ fn bridges(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply 
                 "cloud": spec.supports_cloud
             }
         })),
-        ("GET", ["login-flows"]) => {
+        ["login-flows"] => {
             let flows: Vec<BridgeLoginFlow> = [
                 ("qr_login", format!("Scan {name} QR Code"), "Link your account by scanning a QR code"),
                 (
@@ -888,9 +913,23 @@ fn bridges(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply 
             .collect();
             ok(&json!({ "bridgeID": spec.bridge_id, "bridgeType": spec.bridge_type, "flows": flows }))
         }
-        ("GET", ["logins"]) => ok(
+        ["logins"] => ok(
             &json!({ "bridgeID": spec.bridge_id, "bridgeType": spec.bridge_type, "logins": bridge_summary(st, spec).logins }),
         ),
+        ["login-sessions", sid] => {
+            let session = st.bridge_sessions.get(*sid).filter(|s| s.bridge_id == *id);
+            ok(session.ok_or_else(|| missing("Bridge login session not found"))?)
+        }
+        _ => Err(no_route()),
+    }
+}
+
+fn bridges(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
+    let [id, rest @ ..] = path else { return Err(no_route()) };
+    let spec = network_spec(id).ok_or_else(|| missing("Bridge not found"))?;
+    let name = spec.display_name;
+    let session_exists = |st: &BeeperStore, sid: &str| st.bridge_sessions.get(sid).is_some_and(|s| s.bridge_id == *id);
+    match (method, rest) {
         ("DELETE", ["logins", login_id]) => {
             let pos = st.bridge_accounts.iter().position(|b| b.bridge_id == *id && b.login_id == *login_id);
             st.bridge_accounts.remove(pos.ok_or_else(|| missing("Bridge login not found"))?);
@@ -943,7 +982,6 @@ fn bridges(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply 
             st.bridge_sessions.insert(session_id, session.clone());
             ok(&session)
         }
-        ("GET", ["login-sessions", sid]) if session_exists(st, sid) => ok(&st.bridge_sessions[*sid]),
         ("DELETE", ["login-sessions", sid]) if session_exists(st, sid) => {
             st.bridge_sessions.remove(*sid);
             ok(&json!({ "cancelled": true }))
@@ -990,17 +1028,17 @@ fn candidates(index: &InvertedIndex, query: Option<&str>, len: usize) -> Vec<usi
     }
 }
 
+fn list_chats(st: &BeeperStore, r: &Req) -> Reply {
+    let accounts = r.qs("accountIDs");
+    let all = accounts.is_empty();
+    let mut items: Vec<&Chat> = st.chats.iter().filter(|c| all || accounts.contains(&c.account_id.as_str())).collect();
+    items.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+    let (oldest, newest) = (items.last().map(|c| c.id.clone()), items.first().map(|c| c.id.clone()));
+    page(items, oldest, newest)
+}
+
 fn chats(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
     match (method, path) {
-        ("GET", []) => {
-            let accounts = r.qs("accountIDs");
-            let all = accounts.is_empty();
-            let mut items: Vec<&Chat> =
-                st.chats.iter().filter(|c| all || accounts.contains(&c.account_id.as_str())).collect();
-            items.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
-            let (oldest, newest) = (items.last().map(|c| c.id.clone()), items.first().map(|c| c.id.clone()));
-            page(items, oldest, newest)
-        }
         ("POST", []) => create_chat(st, r),
         ("POST", ["start"]) => {
             let account_id = r.need("accountID")?;
@@ -1027,7 +1065,6 @@ fn chats(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
             );
             ok(&json!({ "chatID": chat.id, "status": status }))
         }
-        ("GET", ["search"]) => search_chats(st, r),
         (_, [id, rest @ ..]) => {
             let idx = st.resolve_chat_idx(id).ok_or_else(|| missing("Chat not found"))?;
             chat(st, method, idx, id, rest, r)
@@ -1101,7 +1138,6 @@ fn search_chats(st: &BeeperStore, r: &Req) -> Reply {
 fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str], r: &Req) -> Reply {
     let success = |st: &BeeperStore| ok(&json!({ "chatID": st.chats[idx].id, "success": true }));
     match (method, rest) {
-        ("GET", []) => ok(&st.chats[idx]),
         ("PATCH", []) => {
             let draft = r.body.get("draft");
             let new_draft = draft.filter(|d| !d.is_null()).map(|_| r.parse("draft")).transpose()?;
@@ -1139,9 +1175,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
             st.set_reminder(idx, None);
             empty(StatusCode::NO_CONTENT, Vec::new())
         }
-        ("GET", ["messages"]) => list_messages(st, idx, r),
         ("POST", ["messages"]) => send_message(st, id, r),
-        ("GET", ["messages", mid]) => ok(&st.messages[st.message_in_chat(id, mid).map_err(store_error)?.1]),
         ("PUT", ["messages", mid]) => {
             let text = r.need("text")?;
             let (cid, msg) = st.edit_message(id, mid, text.into()).map_err(store_error)?;
@@ -1406,15 +1440,19 @@ fn attachment_file(st: &BeeperStore, url: &str) -> Result<std::path::PathBuf, Re
     }
 }
 
-fn serve_asset(st: &BeeperStore, r: &Req) -> Reply {
+fn asset_file(st: &BeeperStore, r: &Req) -> Result<(std::path::PathBuf, String), Response> {
     let url = r.need_q("url")?;
-    let (path, mime) = match url.starts_with("file://") {
-        true => (attachment_file(st, url)?, "application/octet-stream".into()),
+    match url.starts_with("file://") {
+        true => Ok((attachment_file(st, url)?, "application/octet-stream".into())),
         false => st.resolve_asset_path(url).ok_or_else(|| {
             let (status, message) = asset_failure(url);
             error(status, message, "SERVE_ASSET_ERROR")
-        })?,
-    };
+        }),
+    }
+}
+
+/// Reads the file after the caller releases the store lock.
+fn serve_asset((path, mime): (std::path::PathBuf, String), r: &Req) -> Reply {
     let bytes = std::fs::read(&path).map_err(|e| {
         // Windows reports "Access is denied" for a directory.
         let message = match path.is_dir() {

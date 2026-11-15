@@ -601,6 +601,11 @@ async fn lifecycle() {
     assert_eq!(info.server.port, port);
     assert_eq!(info.endpoints.ws_events, format!("http://127.0.0.1:{port}/v1/ws"));
     assert_eq!(info.endpoints.mcp, format!("http://127.0.0.1:{port}/v0/mcp"));
+    {
+        let _ui = store.read();
+        let chats = timeout(Duration::from_secs(5), client.list_chats()).await;
+        assert!(!chats.expect("a GET shares the store lock with the UI").items.is_empty());
+    }
 
     let rpc = |id: u32, method: &str, params: Value| json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
     let hello =
