@@ -3802,6 +3802,26 @@ fn new_chats_start_like_desktop() {
 }
 
 #[test]
+fn contacts_without_a_phone_number_resolve_like_desktop() {
+    let mut app = demo_app("contact-username");
+    let account = rail_accounts(&app.store.read()).into_iter().find(|a| a.contains("telegram")).expect("telegram");
+    let caps =
+        serde_json::json!({ "resolve_identifier": { "create_dm": true, "any_phone": true, "lookup_username": true } });
+    let _ = app.update(UiMessage::Capabilities(account.clone(), Ok(caps)));
+    let lee: User =
+        serde_json::from_value(serde_json::json!({ "id": "contact:t:lee", "fullName": "Lee", "username": "lee" }))
+            .expect("a user");
+    app.store.write().set_contacts(vec![lee.clone()]);
+    let _ = app.update(UiMessage::NewChat);
+    let _ = app.update(UiMessage::ToggleContact(lee.id.clone()));
+    let nets = &app.contact_networks.as_ref().expect("the networks").1;
+    assert!(
+        matches!(&nets[..], [(a, None)] if *a == account),
+        "Desktop looks up the username, and any_phone needs a phone number"
+    );
+}
+
+#[test]
 fn new_chat_accounts_filter_like_desktop() {
     let mut app = demo_app("new-chat-accounts");
     let account = rail_accounts(&app.store.read()).into_iter().find(|a| a.contains("telegram")).expect("telegram");

@@ -6751,12 +6751,12 @@ impl BeeperGuiApp {
                     return Task::none();
                 }
                 let st = self.store.read();
-                let contact = st.contacts.iter().find(|u| u.id == id).expect("a listed contact");
-                let phone = contact.phone_number.clone().expect("contacts have a phone number");
+                let c = st.contacts.iter().find(|u| u.id == id).expect("a listed contact").clone();
                 let accounts: Vec<String> =
                     rail_accounts(&st).into_iter().filter(|a| self.can(a, "create_dm")).collect();
                 drop(st);
-                let (nets, tasks) = self.resolve_identifiers(&id, &accounts, Some(&phone), None, None);
+                let (phone, email, username) = (c.phone_number.as_deref(), c.email.as_deref(), c.username.as_deref());
+                let (nets, tasks) = self.resolve_identifiers(&id, &accounts, phone, email, username);
                 self.contact_networks = Some((id, nets));
                 return tasks;
             }
