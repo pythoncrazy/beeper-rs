@@ -12,6 +12,48 @@ use std::sync::Arc;
 
 pub type Stack = layer::Stack<Layer>;
 
+/// `damage::diff` without the items that both lists start or end with, so
+/// that an added or removed item does not damage all the items after it.
+pub fn diff<T>(
+    previous: &[T],
+    current: &[T],
+    bounds: impl Fn(&T) -> Vec<Rectangle>,
+    diff: impl Fn(&T, &T) -> Vec<Rectangle>,
+) -> Vec<Rectangle> {
+    let same = |(a, b): &(&T, &T)| diff(a, b).is_empty();
+    let head = previous.iter().zip(current).take_while(same).count();
+    let (previous, current) = (&previous[head..], &current[head..]);
+    let tail = previous
+        .iter()
+        .rev()
+        .zip(current.iter().rev())
+        .take_while(same)
+        .count();
+
+    damage::diff(
+        &previous[..previous.len() - tail],
+        &current[..current.len() - tail],
+        bounds,
+        diff,
+    )
+}
+
+/// `damage::list` with the lists trimmed like [`diff`].
+fn list<T>(
+    previous: &[T],
+    current: &[T],
+    bounds: impl Fn(&T) -> Vec<Rectangle>,
+    are_equal: impl Fn(&T, &T) -> bool,
+) -> Vec<Rectangle> {
+    diff(previous, current, &bounds, |a, b| {
+        if are_equal(a, b) {
+            vec![]
+        } else {
+            bounds(a).into_iter().chain(bounds(b)).collect()
+        }
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct Layer {
     pub bounds: Rectangle,
@@ -214,7 +256,7 @@ impl Layer {
             return vec![previous.bounds, current.bounds];
         }
 
-        let mut damage = damage::list(
+        let mut damage = list(
             &previous.quads,
             &current.quads,
             |(quad, _)| {
@@ -229,7 +271,7 @@ impl Layer {
             },
         );
 
-        let text = damage::diff(
+        let text = diff(
             &previous.text,
             &current.text,
             |item| {
@@ -240,7 +282,7 @@ impl Layer {
                     .collect()
             },
             |text_a, text_b| {
-                damage::list(
+                list(
                     text_a.as_slice(),
                     text_b.as_slice(),
                     |text| {
@@ -254,7 +296,7 @@ impl Layer {
             },
         );
 
-        let primitives = damage::list(
+        let primitives = list(
             &previous.primitives,
             &current.primitives,
             |item| match item {
@@ -285,7 +327,7 @@ impl Layer {
             },
         );
 
-        let images = damage::list(
+        let images = list(
             &previous.images,
             &current.images,
             |image| vec![image.bounds().expand(1.0)],

@@ -176,7 +176,7 @@ pub fn present(
     let damage = last_layers
         .and_then(|last_layers| {
             (surface.background_color == background_color).then(|| {
-                damage::diff(
+                crate::layer::diff(
                     last_layers,
                     renderer.layers(),
                     |layer| vec![layer.bounds],

@@ -966,6 +966,21 @@ mod tests {
     }
 
     #[test]
+    fn a_removed_row_damages_only_the_bounds_of_the_row() {
+        use iced::advanced::renderer::{Quad, Renderer as _};
+        use iced::{Point, Rectangle, Size};
+        let row = |i: usize| Rectangle::new(Point::new(0.0, i as f32 * 20.0), Size::new(100.0, 20.0));
+        let rows = |from: usize| {
+            let mut renderer = iced_tiny_skia::Renderer::new(Font::DEFAULT, 16.into());
+            (from..10).for_each(|i| renderer.fill_quad(Quad { bounds: row(i), ..Quad::default() }, Color::BLACK));
+            renderer
+        };
+        let (mut all, mut rest) = (rows(0), rows(1));
+        let damage = iced_tiny_skia::Layer::damage(&all.layers()[0], &rest.layers()[0]);
+        assert_eq!(damage, [row(0).expand(1.0)], "the rows after the removed row keep their pixels");
+    }
+
+    #[test]
     fn inter_draws_every_desktop_face_and_script() {
         ensure_fonts_loaded();
         let mut fs = font_system().write().unwrap();
