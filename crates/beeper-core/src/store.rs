@@ -153,7 +153,7 @@ struct Seed {
     messages: Vec<Message>,
 }
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 const SCHEMA: &str = "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
      CREATE TABLE chats (id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;
      CREATE TABLE assets (upload_id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;";
@@ -189,6 +189,12 @@ fn messages_schema() -> String {
 /// Schema 6 adds the outbox: the JSON of each `Outgoing`, and the file of a media message.
 const OUTBOX: &str =
     "CREATE TABLE outbox (id INTEGER PRIMARY KEY, chat_id TEXT NOT NULL, json TEXT NOT NULL, bytes BLOB) STRICT;";
+/// Schema 7 changes the cross-signing and backup secrets of the state from texts to flags, like Desktop's.
+fn secret_flags() -> String {
+    let flag = |k: &str| format!("'$.secrets.{k}', json(iif(value ->> '$.secrets.{k}' IN ('', 0), 'false', 'true'))");
+    let keys = ["master_key", "self_signing_key", "user_signing_key", "megolm_backup_key"].map(flag).join(", ");
+    format!("UPDATE kv SET value = json_set(value, {keys}) WHERE key = '{KEY_STATE}';")
+}
 const KEY_STATE: &str = "state";
 const KEY_BRIDGES: &str = "bridges";
 const KEY_SETTINGS: &str = "settings";
@@ -260,10 +266,10 @@ fn demo_state() -> BeeperStateRecord {
         key_backup: true,
         has_backed_up_code: true,
         secrets: BeeperStateSecrets {
-            master_key: "mk_ed25519_beeper_rs_master".to_string(),
-            self_signing_key: "ssk_ed25519_beeper_rs_self".to_string(),
-            user_signing_key: "usk_ed25519_beeper_rs_user".to_string(),
-            megolm_backup_key: "mbk_curve25519_beeper_rs_backup".to_string(),
+            master_key: true,
+            self_signing_key: true,
+            user_signing_key: true,
+            megolm_backup_key: true,
             recovery_code: DEFAULT_RECOVERY_CODE.to_string(),
         },
     }
@@ -430,6 +436,7 @@ impl BeeperStore {
                         messages_schema()
                     ),
                     OUTBOX.to_string(),
+                    secret_flags(),
                 ];
                 for (from, sql) in (version..).zip(&steps[version as usize - 1..]) {
                     conn.execute_batch(&format!("BEGIN; {sql} PRAGMA user_version = {}; COMMIT;", from + 1))
@@ -537,7 +544,6 @@ impl BeeperStore {
     pub fn app_state(&self) -> AppState {
         let r = &self.beeper_state;
         let state = r.app_state();
-        let has = |k: &String| !k.is_empty();
         AppState {
             state,
             matrix: (state != "needs-login").then(|| AppMatrix {
@@ -551,11 +557,11 @@ impl BeeperStore {
                 cross_signing: r.cross_signing,
                 verified: r.verified,
                 secrets: AppSecrets {
-                    master_key: has(&r.secrets.master_key),
-                    self_signing_key: has(&r.secrets.self_signing_key),
-                    user_signing_key: has(&r.secrets.user_signing_key),
-                    megolm_backup_key: has(&r.secrets.megolm_backup_key),
-                    recovery_key: has(&r.secrets.recovery_code),
+                    master_key: r.secrets.master_key,
+                    self_signing_key: r.secrets.self_signing_key,
+                    user_signing_key: r.secrets.user_signing_key,
+                    megolm_backup_key: r.secrets.megolm_backup_key,
+                    recovery_key: !r.secrets.recovery_code.is_empty(),
                 },
                 key_backup: r.key_backup,
                 first_sync_done: r.first_sync_done,
@@ -2422,6 +2428,32 @@ mod tests {
         assert!(
             matches!(&st.outbox[..], [(_, c, super::Outgoing::Flag(crate::matrix::ChatFlag::Muted, true))] if c == super::NOTE_CHAT_ID),
             "the new outbox keeps a change"
+        );
+        drop(st);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn schema_6_migrates_to_secret_flags() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-schema-6-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23398, None);
+        config.demo = true;
+        drop(super::BeeperStore::from_config(config.clone()));
+        // Schema 6 keeps the secrets as texts, and an empty text is a secret that this device does not have.
+        rusqlite::Connection::open(&config.db_path)
+            .unwrap()
+            .execute_batch(
+                "UPDATE kv SET value = json_set(value, '$.secrets.master_key', 'mk', '$.secrets.self_signing_key', '',
+                     '$.secrets.user_signing_key', 'usk', '$.secrets.megolm_backup_key', '') WHERE key = 'state';
+                 PRAGMA user_version = 6;",
+            )
+            .unwrap();
+        let st = super::BeeperStore::from_config(config);
+        let s = &st.beeper_state.secrets;
+        assert_eq!(
+            [s.master_key, s.self_signing_key, s.user_signing_key, s.megolm_backup_key],
+            [true, false, true, false]
         );
         drop(st);
         std::fs::remove_dir_all(dir).unwrap();
