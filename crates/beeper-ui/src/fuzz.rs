@@ -2065,6 +2065,7 @@ fn devices_offer_the_app_like_desktop() {
     assert!(!app.app_qr, "another tab hides the QR code again");
     let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::Devices));
     let device = |name: &str, model: Option<&str>, kind: Option<&str>| beeper_core::matrix::DeviceInfo {
+        id: name.into(),
         name: name.into(),
         model: model.map(Into::into),
         kind: kind.map(Into::into),
