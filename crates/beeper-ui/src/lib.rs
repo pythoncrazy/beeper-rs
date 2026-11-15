@@ -361,7 +361,6 @@ pub enum UiMessage {
     MarkUnreadFromHere(String, String),
     /// Desktop's Mark as Read of the message menu.
     MarkReadThrough(String, String),
-    RetranscribeVoice(String),
     /// The poll message and all the own answers.
     VotePoll(String, Vec<String>),
     ToggleAttachMenu,
@@ -6079,9 +6078,6 @@ impl BeeperGuiApp {
             UiMessage::MarkReadThrough(cid, mid) => {
                 self.store.write().mark_read_through(&cid, &mid);
                 self.refresh_theme_and_tray();
-            }
-            UiMessage::RetranscribeVoice(mid) => {
-                self.status_banner = self.store.write().retranscribe_voice_note(&mid);
             }
             UiMessage::VotePoll(mid, answers) => {
                 let mut st = self.store.write();

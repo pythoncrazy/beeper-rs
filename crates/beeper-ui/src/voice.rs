@@ -353,12 +353,9 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::Voice(Msg::Menu))
         });
         let line = row![play, wave, txt(time, 11.0).line_height(Pixels(14.0)).color(fg)].push(speed);
-        let transcript = a.transcript.clone().map(|t| {
-            button(txt(t, 12.0).color(fg.scale_alpha(0.75)))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [fg; 3], 0.0))
-                .on_press(UiMessage::RetranscribeVoice(m.id.clone()))
-        });
+        // Desktop's `transcribed-message`: the transcript in quotes, in the bubble text color, and a click does nothing.
+        let transcript =
+            a.transcript.as_ref().map(|t| txt(format!("\"{t}\""), 13.0).line_height(Pixels(16.0)).color(fg));
         let width = 22.0 + 20.0 + 8.0 + WAVE_W + 8.0 + text_width(&total, 11.0, Weight::Normal);
         container(column![line.spacing(8).align_y(Center)].push(transcript).spacing(6))
             .width(width)
@@ -489,6 +486,18 @@ mod tests {
         let clip = decode(include_bytes!("../assets/voice_test.ogg")).unwrap();
         assert!((clip.secs() - 1.5).abs() < 0.01, "{}", clip.secs());
         assert_eq!(clip.peaks.iter().copied().fold(0.0, f32::max), 1.0);
+    }
+
+    /// Desktop's transcript: in quotes, and a click on it does nothing.
+    #[test]
+    fn transcripts_like_desktop() {
+        let mut app = crate::fuzz::demo_app("voice-transcript");
+        let _ = app.update(UiMessage::SelectChat("!wa_eric:beeper.com".into()));
+        let mut sim = iced_test::simulator(app.view_main());
+        let quote =
+            "\"Native Rust + Iced GPU rendering makes Beeper feel instantaneous across Linux, macOS, and Windows.\"";
+        let _ = sim.click(quote).expect("the transcript shows in quotes");
+        assert!(sim.into_messages().all(|m| !matches!(m, UiMessage::Voice(_))), "the click does nothing");
     }
 
     /// A demo app with two decoded 10 ms voice notes, `v0` and `v1`, in the first chat.

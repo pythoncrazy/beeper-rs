@@ -2055,18 +2055,6 @@ impl BeeperStore {
         }
     }
 
-    pub fn retranscribe_voice_note(&mut self, message_id: &str) -> String {
-        let m_idx = self.msg_idx_by_id[message_id];
-        let label = crate::prefs::LANGUAGES[self.settings.pref("appLanguage") as usize];
-        let msg = self.update_message(m_idx, |m| {
-            let att =
-                m.attachments.iter_mut().find(|a| a.is_voice_note == Some(true)).expect("message has a voice note");
-            let old = att.transcript.as_deref().expect("voice note has a transcript");
-            att.transcript = Some(format!("[Re-transcribed ({label})]: {old}"));
-        });
-        msg.attachments.into_iter().find_map(|a| a.transcript).unwrap()
-    }
-
     /// Desktop's `sendPoll`: a pending poll message with the options `1`, `2`, ..., and its poll start event.
     pub fn send_poll(&mut self, chat: &str, question: String, answers: Vec<String>, multiple: bool, undisclosed: bool) {
         assert!(answers.len() >= 2, "a poll has two options");
