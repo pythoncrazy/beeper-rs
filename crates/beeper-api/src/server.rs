@@ -1056,6 +1056,7 @@ fn bridges(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply 
                 state: "CONNECTED".into(),
                 remote_name: None,
                 remote_profile: None,
+                remote_error: None,
             });
             st.rebuild_accounts_from_bridges();
             st.persist_state_to_sqlite();

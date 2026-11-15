@@ -60,6 +60,7 @@ pub fn cloud_accounts(bridges: &Value) -> Result<Vec<BridgeAccountInfo>, CloudEr
                     .map(|p| serde_json::from_value(p.clone()))
                     .transpose()
                     .map_err(|e| bad(&format!("{id} remote_profile: {e}")))?,
+                remote_error: field(r, "message").filter(|_| r["has_error"] == true),
             });
         }
     }
@@ -390,6 +391,17 @@ pub async fn link_preview(url: String) -> Result<Option<PagePreview>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloud_accounts_read_remote_errors() {
+        let bridges = json!({ "discordgo": { "bridgeState": { "bridgeType": "discordgo" }, "remoteState": {
+            "d1": { "state_event": "BAD_CREDENTIALS", "has_error": true, "message": "Token expired" } } },
+            "signal": { "bridgeState": { "bridgeType": "signal" }, "remoteState": {
+            "s1": { "state_event": "CONNECTED", "has_error": false, "message": "ok" } } } });
+        let mut errors: Vec<_> = cloud_accounts(&bridges).unwrap().into_iter().map(|a| a.remote_error).collect();
+        errors.sort();
+        assert_eq!(errors, [None, Some("Token expired".to_string())]);
+    }
 
     #[test]
     fn profile_follows_desktop_subscription_action() {
