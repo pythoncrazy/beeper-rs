@@ -677,7 +677,9 @@ async fn lifecycle() {
         (&login["status"], &login["removeScopes"]),
         (&json!("connected"), &json!(["current-device", "all-devices"]))
     );
-    assert!(pager.request("GET", "/v1/bridges/whatsapp/login-flows", None).await.1["items"].is_array());
+    // A demo account has no Beeper Cloud bridges to log in to.
+    let (status, flows) = pager.request("GET", "/v1/bridges/whatsapp/login-flows", None).await;
+    assert_eq!((status, &flows["code"]), (StatusCode::CONFLICT, &json!("needs_login")));
     assert_eq!(accounts[0]["bridge"], json!({ "id": "whatsapp", "type": "whatsapp", "provider": "local" }));
     let account = &accounts[2];
     assert_eq!(
@@ -1045,10 +1047,8 @@ async fn lifecycle() {
         (StatusCode::CONFLICT, &json!("verification_action_not_available"), &details)
     );
 
-    let bridge_sess = client.connect_bridge_session("linkedin", "user_input_login", "on_device").await;
-    assert_eq!(bridge_sess.step.step_type, "complete");
-    let accounts = client.list_accounts().await;
-    assert!(accounts.iter().any(|a| a.account_id == "acc_linkedin"));
+    let (status, _) = client.request("POST", "/v1/bridges/linkedin/login-sessions", Some(json!({}))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "a demo account adds no account");
 
     let mut ws_rx = client.connect_ws(vec!["*".to_string()]).await;
 

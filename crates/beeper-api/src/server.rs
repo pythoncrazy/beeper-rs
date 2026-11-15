@@ -2,10 +2,11 @@ use crate::codec::{base64_decode, base64_encode_standard, sha1, url_decode};
 use crate::http::{
     http_date, parse_query, read_message, read_ws_frame, weak_etag, write_ws_frame, HttpMessage, StatusCode,
 };
+use beeper_core::bridge_login;
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{
-    millis_from_iso, millis_from_rfc3339, network_spec, now_rfc3339_millis, APP_BUNDLE_ID, APP_NAME, APP_VERSION,
-    NETWORK_SPECS, OPENAPI_SPEC_JSON,
+    cloud_bridge, millis_from_iso, millis_from_rfc3339, network_spec, now_rfc3339_millis, APP_BUNDLE_ID, APP_NAME,
+    APP_VERSION, NETWORK_SPECS, OPENAPI_SPEC_JSON,
 };
 use beeper_core::connect::{READ, WRITE};
 use beeper_core::matrix::{self, ChatFlag, Outgoing};
@@ -558,6 +559,9 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     if let ("GET", ["focus", rest @ ..]) = (method.as_str(), &segs[..]) {
         return focus_page(&mut store.write(), rest, &req);
     }
+    if let Some(reply) = bridge_login(store, cloud, &method, &segs, &req) {
+        return reply;
+    }
     if method == "GET" {
         return get(store, &segs, &req);
     }
@@ -765,7 +769,7 @@ fn get(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
 
 fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
     match (method, path) {
-        (_, ["v1", "bridges", rest @ ..]) => bridges(st, method, rest, r),
+        (_, ["v1", "bridges", rest @ ..]) => bridges(st, method, rest),
         (_, ["v1", "chats", rest @ ..]) => chats(st, method, rest, r),
         ("POST", ["v1", "assets", "upload"]) => match r.msg.header("content-type").unwrap_or_default() {
             t if t.contains("multipart/form-data") => upload_multipart(st, r),
@@ -911,15 +915,127 @@ fn account(st: &BeeperStore, id: &str, rest: &[&str], r: &Req) -> Reply {
     }
 }
 
-fn login_step(id: &str, step_type: &str, instructions: Option<String>) -> BridgeLoginStep {
-    BridgeLoginStep {
-        step_id: id.into(),
-        step_type: step_type.into(),
-        instructions,
-        user_input: None,
-        display_and_wait: None,
-        cookies: None,
-        complete: None,
+/// Desktop's routes that call a Beeper Cloud bridge through the homeserver: the provisioning capabilities, the
+/// login flows, and the login sessions (`createLoginSession`, `submitLoginStep` and `cancelLoginSession`). The
+/// bridge calls run without the store lock.
+fn bridge_login(store: &SharedStore, cloud: &Cloud, method: &str, segs: &[&str], r: &Req) -> Option<Reply> {
+    let ["v1", "bridges", id, rest @ ..] = segs else { return None };
+    match (method, rest) {
+        ("GET", ["capabilities" | "login-flows"])
+        | ("POST", ["login-sessions"] | ["login-sessions", _, "steps", _])
+        | ("DELETE", ["login-sessions", _]) => Some(bridge_call(store, cloud, method, id, rest, r)),
+        _ => None,
+    }
+}
+
+fn bridge_call(store: &SharedStore, cloud: &Cloud, method: &str, id: &str, rest: &[&str], r: &Req) -> Reply {
+    // Desktop's `assertSupportedBridgeID`, with the network IDs of `/v1/bridges` and the cloud bridge IDs.
+    let cloud_id = |n: &NetworkSpec| cloud_bridge(n).filter(|b| n.bridge_id == id || *b == id);
+    let bridge = NETWORK_SPECS.iter().find_map(cloud_id);
+    let bridge = bridge.ok_or_else(|| error(StatusCode::BAD_REQUEST, "Invalid bridgeID", "invalid_parameter"))?;
+    let p = {
+        let st = store.read();
+        if st.config.demo || !st.signed_in() {
+            return Err(error(StatusCode::CONFLICT, "Sign in to Beeper Desktop first", "needs_login"));
+        }
+        let s = &st.beeper_state;
+        matrix::Provision {
+            homeserver: s.homeserver.clone(),
+            access_token: s.access_token.clone(),
+            user_id: s.user_id.clone(),
+            bridge_id: bridge.into(),
+            login_id: String::new(),
+        }
+    };
+    let rt = tokio::runtime::Handle::current();
+    let flows = |p: matrix::Provision| -> Result<Vec<bridge_login::Flow>, Response> {
+        let flows = rt.block_on(bridge_login::flows(p, cloud.api_url.clone())).map_err(|e| failed(&e))?;
+        Ok(store.read().features.login_flows(bridge, flows))
+    };
+    let session = |sid: &str| {
+        let st = store.read();
+        let found = st.bridge_sessions.get(sid).filter(|s| s.view["bridgeID"] == id).cloned();
+        found.ok_or_else(|| missing("Bridge login session not found"))
+    };
+    // Desktop's `buildLoginSession`: the session with the mapped step, kept for the next calls.
+    let keep = |sid: &str, login: Value, account: Value, step: bridge_login::Step| {
+        let view = view::login_session(sid, id, login, account, &step.raw);
+        store.write().bridge_sessions.insert(sid.into(), BridgeLoginSession { view: view.clone(), step });
+        ok(&view)
+    };
+    match (method, rest) {
+        ("GET", ["capabilities"]) => ok(&rt.block_on(matrix::capabilities(p)).map_err(|e| failed(&e))?),
+        ("GET", ["login-flows"]) => {
+            let items: Vec<Value> = flows(p)?
+                .into_iter()
+                .map(|f| {
+                    let mut v = json!({ "id": f.id });
+                    for (k, x) in [("name", f.name), ("description", f.description)] {
+                        if !x.is_empty() {
+                            v[k] = x.into();
+                        }
+                    }
+                    v
+                })
+                .collect();
+            ok(&json!({ "items": items }))
+        }
+        ("POST", ["login-sessions"]) => {
+            let (account_id, login_id) = (r.str("accountID"), r.str("loginID"));
+            let (login, configured) = {
+                let st = store.read();
+                let found = account_id.map(|a| st.bridge_accounts.iter().find(|b| b.account_id == a));
+                if found == Some(None) {
+                    return Err(missing("Account not found or has no bridge login ID"));
+                }
+                let found = found.flatten();
+                if found.is_some_and(|b| b.bridge_id != bridge) {
+                    return Err(error(
+                        StatusCode::BAD_REQUEST,
+                        "Account does not belong to this bridge",
+                        "INVALID_ACCOUNT",
+                    ));
+                }
+                let login = login_id.map(str::to_string).or(found.map(|b| b.login_id.clone()));
+                let mine = st.bridge_accounts.iter().filter(|b| b.bridge_id == bridge);
+                (login.clone(), mine.clone().count() > 0 && !mine.clone().any(|b| Some(&b.login_id) == login.as_ref()))
+            };
+            if configured && !store.read().features.multi_account(bridge) {
+                let message = "Adding another account to this bridge is disabled";
+                return Err(error(StatusCode::CONFLICT, message, "MULTI_ACCOUNT_DISABLED"));
+            }
+            let flow = match r.str("flowID") {
+                Some(f) => f.to_string(),
+                None => flows(p.clone())?.into_iter().next().map(|f| f.id).ok_or_else(|| {
+                    error(StatusCode::CONFLICT, "No login flow is available for this bridge", "NO_LOGIN_FLOW")
+                })?,
+            };
+            let p = matrix::Provision { login_id: login.clone().unwrap_or_default(), ..p };
+            let (sid, step) = rt.block_on(bridge_login::start(p, flow)).map_err(|e| failed(&e))?;
+            keep(&sid, login.map_or(Value::Null, Value::from), account_id.map_or(Value::Null, Value::from), step)
+        }
+        ("POST", ["login-sessions", sid, "steps", step_id]) => {
+            let s = session(sid)?;
+            let kind = r.need("type")?;
+            if s.view["currentStep"]["stepID"] != *step_id || s.view["currentStep"]["type"] != kind {
+                let message = "Login step does not match the current session state";
+                return Err(error(StatusCode::CONFLICT, message, "INVALID_LOGIN_STEP"));
+            }
+            let fields = match kind {
+                "display_and_wait" => Value::Null,
+                _ => r.body.get("fields").cloned().unwrap_or(json!({})),
+            };
+            let p = matrix::Provision { login_id: s.view["loginID"].as_str().unwrap_or_default().into(), ..p };
+            let step = rt.block_on(bridge_login::submit(p, sid.to_string(), s.step, fields)).map_err(|e| failed(&e))?;
+            keep(sid, s.view["loginID"].clone(), s.view["accountID"].clone(), step)
+        }
+        ("DELETE", ["login-sessions", sid]) => {
+            session(sid)?;
+            rt.block_on(bridge_login::cancel(p, sid.to_string())).map_err(|e| failed(&e))?;
+            store.write().bridge_sessions.remove(*sid);
+            ok(&json!({ "bridgeID": id, "loginSessionID": sid, "status": "cancelled" }))
+        }
+        _ => unreachable!("bridge_login picks the routes"),
     }
 }
 
@@ -928,65 +1044,24 @@ fn bridge_get(st: &BeeperStore, path: &[&str]) -> Reply {
         return ok(&json!({ "items": NETWORK_SPECS.iter().map(|s| view::bridge(st, s)).collect::<Vec<_>>() }));
     };
     let spec = network_spec(id).ok_or_else(|| missing("Bridge not found"))?;
-    let name = spec.display_name;
     match rest {
         [] => ok(&view::bridge(st, spec)),
-        ["capabilities"] => ok(&json!({
-            "bridgeID": spec.bridge_id,
-            "bridgeType": spec.bridge_type,
-            "capabilities": {
-                "reactions": true,
-                "replies": true,
-                "edits": true,
-                "deletes": true,
-                "typingNotifications": true,
-                "readReceipts": true,
-                "polls": spec.supports_polls,
-                "e2ee": spec.supports_e2ee,
-                "smsMms": spec.supports_sms_mms,
-                "onDevice": spec.supports_on_device,
-                "cloud": spec.supports_cloud
-            }
-        })),
-        ["login-flows"] => {
-            let flows: Vec<BridgeLoginFlow> = [
-                ("qr_login", format!("Scan {name} QR Code"), "Link your account by scanning a QR code"),
-                (
-                    "user_input_login",
-                    format!("{name} Credentials / Phone"),
-                    "Sign in with phone number, username, or token",
-                ),
-                (
-                    "cookie_import",
-                    format!("Import {name} Browser Session"),
-                    "One-click browser cookie & session import",
-                ),
-                ("on_device_local", format!("On-Device {name} Bridge"), "Direct local Mautrix bridge connection"),
-            ]
-            .into_iter()
-            .take(if spec.supports_on_device { 4 } else { 3 })
-            .map(|(id, name, d)| BridgeLoginFlow { id: id.into(), name, description: Some(d.into()) })
-            .collect();
-            ok(&json!({ "items": flows }))
-        }
         ["logins"] => ok(&json!({ "items": view::logins(st, spec.bridge_id) })),
         ["logins", login_id] => {
             let login = view::logins(st, spec.bridge_id).into_iter().find(|l| l.login_id == *login_id);
             ok(&login.ok_or_else(|| missing("Bridge login not found"))?)
         }
         ["login-sessions", sid] => {
-            let session = st.bridge_sessions.get(*sid).filter(|s| s.bridge_id == *id);
-            ok(session.ok_or_else(|| missing("Bridge login session not found"))?)
+            let session = st.bridge_sessions.get(*sid).filter(|s| s.view["bridgeID"] == *id);
+            ok(&session.ok_or_else(|| missing("Bridge login session not found"))?.view)
         }
         _ => Err(no_route()),
     }
 }
 
-fn bridges(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
+fn bridges(st: &mut BeeperStore, method: &str, path: &[&str]) -> Reply {
     let [id, rest @ ..] = path else { return Err(no_route()) };
     let spec = network_spec(id).ok_or_else(|| missing("Bridge not found"))?;
-    let name = spec.display_name;
-    let session_exists = |st: &BeeperStore, sid: &str| st.bridge_sessions.get(sid).is_some_and(|s| s.bridge_id == *id);
     match (method, rest) {
         ("DELETE", ["logins", login_id]) => {
             let pos = st.bridge_accounts.iter().position(|b| b.bridge_id == *id && b.login_id == *login_id);
@@ -995,87 +1070,6 @@ fn bridges(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply 
             st.persist_state_to_sqlite();
             ok(&json!({ "bridge": view::bridge(st, spec) }))
         }
-        ("POST", ["login-sessions"]) => {
-            let session_id = st.next_id("lsess");
-            let flow_id = r.need("flowID")?;
-            let step = match flow_id {
-                "qr_login" => BridgeLoginStep {
-                    display_and_wait: Some(BridgeLoginStepDisplay {
-                        data: Some(format!("BEEPER_BRIDGE_QR:{id}:{session_id}")),
-                        message: Some("Waiting for mobile scan...".into()),
-                    }),
-                    ..login_step(
-                        "step_qr_wait",
-                        "display_and_wait",
-                        Some(format!("Scan this QR code in your {name} mobile app")),
-                    )
-                },
-                "cookie_import" => BridgeLoginStep {
-                    cookies: Some(BridgeLoginStepCookies {
-                        names: vec!["session_token".into(), "auth_id".into()],
-                        url: format!("https://{id}.com"),
-                    }),
-                    ..login_step("step_cookies", "cookies", Some(format!("Import session cookies for {name}")))
-                },
-                "user_input_login" | "on_device_local" if flow_id == "user_input_login" || spec.supports_on_device => {
-                    let fields = [
-                        ("username", "Phone or Username", "string"),
-                        ("code", "Verification Code / Password", "password"),
-                    ]
-                    .map(|(id, name, t)| BridgeLoginField { id: id.into(), name: name.into(), field_type: t.into() })
-                    .to_vec();
-                    BridgeLoginStep {
-                        user_input: Some(BridgeLoginStepUserInput { fields }),
-                        ..login_step("step_credentials", "user_input", Some(format!("Enter {name} login credentials")))
-                    }
-                }
-                _ => return Err(bad("unknown flowID")),
-            };
-            let session = BridgeLoginSession {
-                login_session_id: session_id.clone(),
-                bridge_id: spec.bridge_id.into(),
-                flow_id: flow_id.into(),
-                step,
-            };
-            st.bridge_sessions.insert(session_id, session.clone());
-            ok(&session)
-        }
-        ("DELETE", ["login-sessions", sid]) if session_exists(st, sid) => {
-            st.bridge_sessions.remove(*sid);
-            ok(&json!({ "bridgeID": spec.bridge_id, "loginSessionID": sid, "status": "cancelled" }))
-        }
-        ("POST", ["login-sessions", sid, "steps", _]) if session_exists(st, sid) => {
-            let mode: BridgeMode = r.parse("mode")?;
-            let login_id = st.next_id(&format!("login_{id}"));
-            st.bridge_accounts.retain(|b| b.bridge_id != *id);
-            st.bridge_accounts.push(BridgeAccountInfo {
-                account_id: format!("acc_{id}"),
-                bridge_id: spec.bridge_id.into(),
-                bridge_type: spec.bridge_type.into(),
-                is_running: true,
-                login_id: login_id.clone(),
-                mode,
-                network_name: name.into(),
-                state: "CONNECTED".into(),
-                remote_name: None,
-                remote_profile: None,
-                remote_error: None,
-            });
-            st.rebuild_accounts_from_bridges();
-            st.persist_state_to_sqlite();
-            let session = BridgeLoginSession {
-                login_session_id: sid.to_string(),
-                bridge_id: spec.bridge_id.into(),
-                flow_id: "completed".into(),
-                step: BridgeLoginStep {
-                    complete: Some(BridgeLoginStepComplete { user_login_id: login_id }),
-                    ..login_step("complete", "complete", None)
-                },
-            };
-            st.bridge_sessions.insert(sid.to_string(), session.clone());
-            ok(&session)
-        }
-        (_, ["login-sessions", ..]) => Err(missing("Bridge login session not found")),
         _ => Err(no_route()),
     }
 }

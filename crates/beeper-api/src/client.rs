@@ -137,14 +137,6 @@ impl BeeperClient {
         (status, if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).expect("setup step JSON") })
     }
 
-    pub async fn connect_bridge_session(&self, bridge_id: &str, flow_id: &str, mode: &str) -> BridgeLoginSession {
-        let base = format!("/v1/bridges/{bridge_id}/login-sessions");
-        let sess: BridgeLoginSession = self.json("POST", &base, Some(json!({ "flowID": flow_id }))).await;
-        let path = format!("{base}/{}/steps/{}", sess.login_session_id, sess.step.step_id);
-        let body = json!({ "mode": mode, "inputs": { "username": "+14155550199", "code": "994812" } });
-        self.json("POST", &path, Some(body)).await
-    }
-
     pub async fn list_accounts(&self) -> Vec<Account> {
         self.json("GET", "/v1/accounts", None).await
     }
