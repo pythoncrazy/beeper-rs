@@ -28,6 +28,11 @@ pub(crate) static GLYPHS: LazyLock<[svg::Handle; 4]> = LazyLock::new(|| {
     .map(glyph)
 });
 
+/// Desktop's `VideoRenderErrorIcon`, the Material `error_outline`.
+static ERROR: LazyLock<svg::Handle> = LazyLock::new(|| {
+    glyph_in("0 0 24 24", "M11 15h2v2h-2zm0-8h2v6h-2zm.99-5C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z")
+});
+
 /// Desktop's `speed025` to `speed2`, the icons of `voice::RATES`.
 static SPEEDS: LazyLock<[svg::Handle; 8]> = LazyLock::new(|| {
     [
@@ -44,7 +49,11 @@ static SPEEDS: LazyLock<[svg::Handle; 8]> = LazyLock::new(|| {
 });
 
 fn glyph(d: &str) -> svg::Handle {
-    let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="{d}"/></svg>"#);
+    glyph_in("0 0 20 20", d)
+}
+
+fn glyph_in(view: &str, d: &str) -> svg::Handle {
+    let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}"><path d="{d}"/></svg>"#);
     svg::Handle::from_memory(svg.into_bytes())
 }
 
@@ -108,6 +117,8 @@ pub struct Video {
     full: Option<(u32, u32)>,
     /// The "Playback Speed" submenu is open.
     pub sub: bool,
+    /// The video could not load.
+    failed: bool,
 }
 
 #[derive(Clone)]
@@ -260,6 +271,7 @@ impl BeeperGuiApp {
                     muted: false,
                     full: None,
                     sub: false,
+                    failed: false,
                 });
                 return Task::perform(
                     async move {
@@ -276,10 +288,9 @@ impl BeeperGuiApp {
                     v.since = Some(Instant::now());
                     v.restart();
                 }
-                (Some(_), Err(e)) => {
+                (Some(v), Err(e)) => {
                     eprintln!("video failed: {e}");
-                    self.video = None;
-                    self.status_banner = tr("Something went wrong displaying video").into();
+                    (v.failed, v.since) = (true, None);
                 }
                 (None, _) => {}
             },
@@ -431,6 +442,23 @@ impl BeeperGuiApp {
             Place::Inline(ai) => Some(UiMessage::Video(Msg::Open(mid.into(), ai, w.round() as u32, h.round() as u32))),
             _ => v.is_some_and(|v| v.media.is_some()).then_some(UiMessage::Video(Msg::Toggle)),
         };
+        // Desktop's `video-error` card: the icon, the text and a Download button, at least 200 px wide.
+        if v.is_some_and(|v| v.failed) {
+            let p = &self.pal;
+            let edge = p.text.scale_alpha(0.5);
+            let download = button(crate::semi(crate::i18n::trx("Download", "video error action"), 13.0).color(p.text))
+                .padding([4, 10])
+                .style(crate::style::bordered_btn([CLEAR; 3], [p.text; 3], edge, 1.0, 99.0))
+                .on_press(UiMessage::Download(mid.into(), None));
+            let text = crate::semi(tr("Something went wrong displaying video"), 13.0).color(p.text);
+            let (text, download) = (
+                container(text).padding(Padding::ZERO.top(13.0)),
+                container(download).padding(Padding::ZERO.top(10.0)),
+            );
+            let card = column![tinted(&ERROR, 32.0, p.text), text, download].align_x(Center);
+            let card = container(card).center_x(w.max(200.0)).center_y(h);
+            return card.style(crate::style::bordered_box(p.window, edge, 1.0, 8.0)).into();
+        }
         let surface = button(base).padding(0).style(btn_style([CLEAR; 3], [CLEAR; 3], r)).on_press_maybe(click);
         let Some(v) = v else {
             let play = button(tinted(&crate::voice::ICONS[0], 20.0, Color::from_rgb8(0x20, 0x21, 0x24)))

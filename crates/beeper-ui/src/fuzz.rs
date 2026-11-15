@@ -1494,6 +1494,15 @@ fn inline_videos_open_the_carousel_like_desktop() {
     let _ = sim.simulate(iced_test::simulator::click());
     let speed = sim.into_messages().any(|m| matches!(m, UiMessage::Video(video::Msg::Rate(1.25))));
     assert!(speed, "the speed button goes to the next speed");
+    // A video that cannot load shows Desktop's error card with a Download button in place of the video.
+    let _ = app.update(UiMessage::CloseCarousel);
+    let _ = app.update(UiMessage::Video(video::Msg::Play("$clip".into(), clip.into(), 320, 180)));
+    let _ = app.update(UiMessage::Video(video::Msg::Loaded(clip.into(), Err("bad file".into()))));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 700.0), app.view_main());
+    assert!(sim.find("Something went wrong displaying video").is_ok(), "the error card shows");
+    let _ = sim.click("Download").expect("the Download button");
+    let download = sim.into_messages().any(|m| matches!(m, UiMessage::Download(m, None) if m == "$clip"));
+    assert!(download, "the card downloads the video");
 }
 
 /// Desktop's carousel zoom: a double click or `+` zooms in, so that a click beside the image hits the image and does
