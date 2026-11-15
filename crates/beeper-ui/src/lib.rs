@@ -13259,14 +13259,16 @@ impl BeeperGuiApp {
                 }
                 _ => {
                     let meta = file_label(a).into_iter().chain(a.file_size.map(human_size)).collect::<Vec<_>>();
-                    let info = column![clamp(&name, 206.0, 2, 14.0, Weight::Semibold).line_height(Pixels(17.0))]
+                    // Desktop's `AttachmentFileRow`: at most 240 px wide, the name in `body-sm` on two lines at most,
+                    // and the details in `label-sm`.
+                    let info = column![clamp(&name, 186.0, 2, 13.0, Weight::Semibold).line_height(Pixels(16.0))]
                         .push(
                             (!meta.is_empty())
-                                .then(|| txt(meta.join(" · "), 12.0).line_height(Pixels(15.0)).color(p.sub)),
+                                .then(|| txt(meta.join(" · "), 11.0).line_height(Pixels(14.0)).color(p.sub)),
                         )
                         .spacing(4);
                     let line = row![tinted(file_icon(a), 24.0, p.strong), info].spacing(8).align_y(Center);
-                    button(container(line).max_width(238))
+                    button(container(line).max_width(240.0 - 2.0 * BUBBLE_PAD_X))
                         .padding([8, 11])
                         .style(btn_style([p.received; 3], [p.strong; 3], 17.0))
                         .on_press(UiMessage::Download(m.id.clone(), Some(ai)))

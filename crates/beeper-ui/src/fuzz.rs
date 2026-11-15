@@ -1443,6 +1443,17 @@ fn galleries_select_and_have_a_menu_like_desktop() {
     assert!(app.pane.selected_msgs.is_empty(), "a menu without an action unselects the gallery");
 }
 
+/// Desktop's `AttachmentFileRow`: the name in `body-sm` (16 px lines) and the details in `label-sm` (14 px lines).
+#[test]
+fn file_rows_like_desktop() {
+    let mut app = demo_app("file-rows");
+    let _ = app.update(UiMessage::SelectChat("!tg_rust:beeper.com".into()));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 900.0), app.view_main());
+    let meta = format!("PDF · {}", human_size(128_500));
+    assert_eq!(sim.find(meta.as_str()).expect("the file details").bounds().height, 14.0);
+    assert_eq!(sim.find("beeper-v4-spec.pdf").expect("the file name").bounds().height, 16.0);
+}
+
 /// Desktop's carousel shows every attachment of the chat but audio: a video plays with its controls, and a file is a
 /// link that downloads it. A step away from a playing video pauses it.
 #[test]
