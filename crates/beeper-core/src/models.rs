@@ -85,16 +85,30 @@ pub struct FileRule {
 pub type FileRules = std::collections::BTreeMap<String, FileRule>;
 /// Desktop's `OBe.file`: the file features of a Beeper room without `com.beeper.room_features`.
 pub fn beeper_files() -> FileRules {
-    let all =
-        |m: &[&str]| FileRule { mime_types: m.iter().map(|m| (m.to_string(), 2)).collect(), ..Default::default() };
-    FileRules::from([
-        (FILE_IMAGE.into(), all(&["image/jpeg", "image/png", "image/gif", "image/webp"])),
-        (FILE_AUDIO.into(), all(&["audio/mpeg", "audio/mp4", "audio/ogg", "audio/wav", "audio/webm", "audio/aac"])),
-        (FILE_VIDEO.into(), all(&["video/mp4", "video/webm", "video/ogg", "video/mov", "video/quicktime"])),
-        (FILE_GIF.into(), all(&["image/gif"])),
-        (FILE_VOICE.into(), all(&["audio/ogg"])),
-        (FILE_FILE.into(), FileRule { max_size: Some(100_000_000), ..all(&["*/*"]) }),
-    ])
+    default_files(&serde_json::Value::Null)
+}
+
+/// Desktop's `roomFeatures` of a room without `com.beeper.room_features`: the `file` of the `defaultFeatures` of the
+/// `m.bridge` protocol, else of the bridge (Desktop's `lP`), else of the generic bridge.
+pub fn default_files(bridge: &serde_json::Value) -> FileRules {
+    static TABLE: std::sync::LazyLock<std::collections::HashMap<String, FileRules>> = std::sync::LazyLock::new(|| {
+        serde_json::from_str(include_str!("room_files.json")).expect("the default room features parse")
+    });
+    // Desktop's `Od` entries that share a table.
+    let table = |k: &str| match k {
+        "android-sms" | "dummybridge" | "google-messages" | "gvoice" => TABLE.get("generic"),
+        "facebook" | "instagram" | "instagramgo" => TABLE.get("facebookgo"),
+        k => TABLE.get(k),
+    };
+    // Desktop's `lP` leaves out Google Messages and the iMessage cloud bridges.
+    let platform = match bridge["com.beeper.bridge_name"].as_str() {
+        None | Some("hungryserv") => Some("beeper"),
+        Some("androidsms") => Some("android-sms"),
+        Some("gmessages" | "imessage" | "imessagecloud" | "imessagego") => None,
+        name => name,
+    };
+    let rules = bridge["protocol"]["id"].as_str().and_then(table).or_else(|| platform.and_then(table));
+    rules.unwrap_or_else(|| table("generic").expect("a generic table")).clone()
 }
 /// The `com.beeper.room_features` formatting keys of Desktop's formatting menu buttons, in menu order.
 pub const FORMATS: [&str; 9] = [
@@ -1519,6 +1533,24 @@ impl BeeperSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rooms_without_features_take_the_bridge_defaults_like_desktop() {
+        let files = |bridge: serde_json::Value| default_files(&bridge);
+        let beeper = beeper_files();
+        assert_eq!(beeper[FILE_FILE].max_size, Some(100_000_000), "Desktop's `OBe`");
+        assert_eq!(beeper[FILE_VOICE].mime_types["audio/ogg"], 2);
+        let whatsapp = files(serde_json::json!({ "com.beeper.bridge_name": "whatsapp" }));
+        assert_eq!(whatsapp[FILE_GIF].mime_types, [("image/gif".into(), -2), ("video/mp4".into(), 2)].into());
+        assert_eq!(whatsapp[FILE_IMAGE].max_size, Some(2000 * 1024 * 1024));
+        let telegram = files(serde_json::json!({ "com.beeper.bridge_name": "x", "protocol": { "id": "telegram" } }));
+        assert_eq!(telegram[FILE_IMAGE].max_size, Some(10 * 1024 * 1024), "the protocol comes first");
+        let instagram = files(serde_json::json!({ "com.beeper.bridge_name": "instagramgo" }));
+        assert_eq!(instagram["m.sticker"].mime_types["image/webp"], 2);
+        let generic = files(serde_json::json!({ "com.beeper.bridge_name": "gmessages" }));
+        assert_eq!(generic[FILE_IMAGE].max_size, Some(20 * 1024 * 1024), "Desktop leaves Google Messages out");
+        assert!(files(serde_json::json!({ "com.beeper.bridge_name": "groupme" })).is_empty());
+    }
 
     #[test]
     fn verification_actions_follow_desktop() {

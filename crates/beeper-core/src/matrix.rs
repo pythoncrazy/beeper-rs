@@ -1,14 +1,13 @@
 use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
-    beeper_files, timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat,
-    ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageRules, Older,
-    PollData, PollOption, PollRules, Reaction, SendError, ThreadFollows, Timers, Transcription, User,
-    VerificationDevice, VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS,
-    ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, DEFAULT_TIMERS,
-    DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS,
-    MEMBER_KICK, MSG_MENTION, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REPORT_SPAM, TRANSCRIPTION,
-    TRANSCRIPTIONS_ROOM, USER_BLOCKED,
+    timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatParticipants,
+    ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageRules, Older, PollData, PollOption,
+    PollRules, Reaction, SendError, ThreadFollows, Timers, Transcription, User, VerificationDevice, VerificationError,
+    VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES,
+    BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME,
+    DISAPPEARING_TIMER, EDITS, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, NO_UNBLOCK,
+    PERSONAL_AVATAR, PERSONAL_NAME, REPORT_SPAM, TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -246,6 +245,15 @@ pub(crate) fn file_rules(f: &Value) -> FileRules {
         .collect()
 }
 
+/// The file features of a room, and whether the room has its own room features. Desktop takes the defaults of the
+/// bridge for a room without room features or with empty ones.
+pub(crate) fn file_features(features: Option<&Value>, bridge: &Value) -> (FileRules, bool) {
+    match features.filter(|f| f.as_object().is_some_and(|f| !f.is_empty())) {
+        Some(f) => (file_rules(f), true),
+        None => (crate::models::default_files(bridge), false),
+    }
+}
+
 /// The `Chat::block` bits from the room features and the `m.bridge` channel.
 fn block_bits(features: Option<&Value>, bridge: &Value) -> u8 {
     let on = |f: Option<&Value>, k: &str, bit: u8| u8::from(f.is_some_and(|f| f[k] == true)) * bit;
@@ -313,6 +321,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     let levels = state(room, "m.room.power_levels").await.unwrap_or(Value::Null);
     let users_default = levels["users_default"].as_i64().unwrap_or(0).try_into().expect("power level");
     let features = state(room, "com.beeper.room_features").await;
+    let (file, room_features) = file_features(features.as_ref(), &bridge);
     let tombstone = state(room, "m.room.tombstone").await;
     let member_actions = features.as_ref().map_or(ALL_MEMBER_ACTIONS, |f| {
         let on = |k: &str| f["member_actions"][k].as_i64().is_some_and(|l| l > 0);
@@ -413,8 +422,8 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         formatting: features.as_ref().map_or(ALL_FORMATS, |f| {
             FORMATS.iter().enumerate().filter(|(_, k)| f["formatting"][**k] == 2).fold(0, |m, (i, _)| m | 1 << i)
         }),
-        file: features.as_ref().map_or_else(beeper_files, file_rules),
-        room_features: features.is_some(),
+        file,
+        room_features,
         polls: features.as_ref().map_or(Some(BEEPER_POLLS), poll_rules),
         messages: features.as_ref().map_or(BEEPER_MESSAGES, message_rules),
         disappearing: state(room, DISAPPEARING_TIMER).await.and_then(|t| t["timer"].as_u64()).filter(|&t| t > 0),
