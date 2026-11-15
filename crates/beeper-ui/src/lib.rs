@@ -41,6 +41,7 @@ mod video;
 mod vlist;
 mod voice;
 mod wants;
+mod zoom;
 
 use crate::i18n::{tr, trf, trn, trnx, trs, trx, trxf};
 use crate::login::{Login, LoginMsg};
@@ -13823,7 +13824,7 @@ impl BeeperGuiApp {
             }
             _ => Space::new().into(),
         };
-        let main = container(mouse_area(shown).on_press(UiMessage::Noop)).center(Fill).padding(8);
+        let main = container(zoom::zoom(shown, vlist::key((mid, ai)), UiMessage::CloseCarousel)).padding(8);
         let step = |next: bool| -> El<'a> {
             let arrow = svg(SYS_ARROW_BACK.clone())
                 .width(20)
