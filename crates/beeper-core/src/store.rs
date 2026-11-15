@@ -1051,6 +1051,11 @@ impl BeeperStore {
         !self.beeper_state.access_token.is_empty()
     }
 
+    /// Desktop's `hasConnectedNetwork`: a chat account other than Beeper and AI.
+    pub fn has_connected_network(&self) -> bool {
+        self.bridge_accounts.iter().any(|a| !matches!(a.bridge_id.as_str(), "hungryserv" | "ai"))
+    }
+
     /// Desktop's `applyAppLocale`: a signed-in account without an app language uses English.
     fn pin_app_locale(&mut self) {
         if self.signed_in() && !self.settings.prefs.contains_key("appLanguage") {

@@ -1026,19 +1026,14 @@ async fn lifecycle() {
     let _ = login.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Session(session, profile, accounts)))));
     assert!(login.login.busy, "the sign-in waits for the encrypted messaging check");
     let none = beeper_core::matrix::E2eeSetup { cross_signing: true, verified: true, devices: Vec::new() };
+    // The check reads `verified` into the state of the app.
+    login_store.write().beeper_state.verified = true;
     let _ = login.update(UiMessage::Login(LoginMsg::E2ee(Ok(none))));
-    assert_eq!(login.login.screen, Screen::Accounts);
     assert_eq!(login_store.read().accounts.len(), 4);
-    let _ = login.update(UiMessage::StoreChanged);
-    assert!(login.login_window.is_some(), "the onboarding stays open until Continue");
-    shows(&login, &["WhatsApp", "Discord", "Bluesky", "6 free accounts remaining.", "Continue"]);
-    let _ = login.update(UiMessage::Login(LoginMsg::Query("sig".into())));
-    shows(&login, &["Signal"]);
-    assert!(simulator(login.view_login()).find("WhatsApp").is_err(), "search filters the networks");
-    let _ = login.update(UiMessage::Login(LoginMsg::Query("zzz".into())));
-    shows(&login, &["No networks found"]);
-    let _ = login.update(UiMessage::Login(LoginMsg::Continue));
-    assert!(login.login_window.is_none() && login.main_window.is_some());
+    assert!(
+        login.login_window.is_none() && login.main_window.is_some(),
+        "connected chat accounts skip Connect Chat Accounts"
+    );
     assert_eq!(login.pane.selected_chat_id.as_deref(), Some(NOTE_CHAT_ID));
     assert!(simulator(login.view_main()).find("Note").is_ok());
     let _ = login.update(UiMessage::ShareAnalytics);

@@ -2442,8 +2442,9 @@ pub async fn e2ee_setup(store: SharedStore) -> Result<E2eeSetup, String> {
     let me = client.user_id().expect("signed-in client has a user ID").to_owned();
     let encryption = client.encryption();
     let identity = encryption.request_user_identity(&me).await.map_err(|e| e.to_string())?;
-    let own = encryption.get_own_device().await.map_err(|e| e.to_string())?;
-    let verified = own.expect("signed-in client has its own device").is_cross_signed_by_owner();
+    // The state of the app follows the check, so that the onboarding sees the same `verified`.
+    refresh_e2ee(&client, &store).await;
+    let verified = store.read().beeper_state.verified;
     let mut devices = Vec::new();
     for d in self::devices(client.clone()).await? {
         let id = d.id.as_str().into();

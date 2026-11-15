@@ -2,7 +2,7 @@
 //! onboarding screens of encrypted messaging after the sign-in.
 use crate::emoji::EMOJI_FONT;
 use crate::i18n::{tr, trx};
-use crate::login::{actions, art, brand_gradient, heading, LoginMsg, Screen};
+use crate::login::{actions, art, brand_gradient, heading, Login, LoginMsg, Screen};
 use crate::style::{bold, btn_style, fill_box, fw, ic, icon, semi, shadow_box, t, txt, Palette, CLEAR};
 use crate::{BeeperGuiApp, El, Toast, UiMessage};
 use beeper_core::matrix::E2eeSetup;
@@ -198,13 +198,11 @@ impl BeeperGuiApp {
         let waits = |id: &String| st.app_verification().is_some_and(|v| v.id == *id && v.state == "requested");
         let answered = self.verify.note.take_if(|n| !waits(&n.1));
         drop(st);
-        Task::batch(answered.map(|n| close_note(n.0)).into_iter().chain([self.verification_toasts()]))
+        let next = if self.login_window.is_some() { self.advance_onboarding() } else { Task::none() };
+        Task::batch(answered.map(|n| close_note(n.0)).into_iter().chain([next, self.verification_toasts()]))
     }
 
     fn verification_toasts(&mut self) -> Task<UiMessage> {
-        if self.login_window.is_some() {
-            self.advance_onboarding();
-        }
         let st = self.store.read();
         let now = st.app_verification().map(|v| (v.id.clone(), v.state, v.direction, device_name(v)));
         drop(st);
@@ -363,10 +361,7 @@ impl BeeperGuiApp {
         let l = &mut self.login;
         l.busy = false;
         match r {
-            Ok(s) if s.verified => {
-                self.advance_onboarding();
-                return Task::none();
-            }
+            Ok(s) if s.verified => return self.advance_onboarding(),
             Ok(s) if !s.cross_signing => l.screen = Screen::Preamble,
             Ok(s) if s.devices.is_empty() => l.screen = Screen::RecoveryKey,
             Ok(s) => (l.screen, l.devices) = (Screen::Verify, s.devices),
@@ -397,21 +392,27 @@ impl BeeperGuiApp {
         id.map_or_else(Task::none, |id| cancel(self.store.clone(), id))
     }
 
-    /// Desktop's `advanceOnboarding`: the next screen once this device is verified.
-    pub(crate) fn advance_onboarding(&mut self) {
-        let (verified, syncing) = {
+    /// Desktop's `advanceOnboarding`: the next screen once this device is verified. An account with a connected chat
+    /// account skips Connect Chat Accounts, like Desktop's `completeSigninIn`.
+    pub(crate) fn advance_onboarding(&mut self) -> Task<UiMessage> {
+        let (verified, syncing, connected) = {
             let st = self.store.read();
-            (st.beeper_state.verified, st.syncing)
+            (st.beeper_state.verified, st.syncing, st.has_connected_network())
         };
         let screen = self.login.screen;
         let confirmed = screen == Screen::ConfirmKey && self.store.read().pending_recovery_key.is_none();
         let checking = self.login.signing_in() || matches!(screen, Screen::Verify | Screen::RecoveryKey) || confirmed;
         self.login.screen = match (checking, screen, verified, syncing) {
-            (true, Screen::Verify | Screen::RecoveryKey, false, _) => return,
+            (true, Screen::Verify | Screen::RecoveryKey, false, _) => return Task::none(),
             (true, _, _, true) => Screen::Syncing,
+            (true, _, true, false) | (false, Screen::Syncing, true, false) if connected => {
+                self.login = Login::default();
+                return self.enter_app();
+            }
             (true, _, _, false) | (false, Screen::Syncing, _, false) => Screen::Accounts,
-            _ => return,
+            _ => return Task::none(),
         };
+        Task::none()
     }
 
     /// Desktop's `AwaitVerification`: the request to the other devices, then their QR code or their emojis.
@@ -904,9 +905,17 @@ mod tests {
         let _ = app.update(VerifyMsg::Match(true).into());
         shows(&app, &["Waiting for you to verify on your other device..."]);
 
+        let accounts = std::mem::take(&mut app.store.write().bridge_accounts);
         app.store.write().beeper_state.verified = true;
         let _ = app.update(UiMessage::StoreChanged);
         assert_eq!(app.login.screen, Screen::Accounts, "a verified device goes on to the accounts");
+        shows(&app, &["WhatsApp", "Discord", "Bluesky", "10 free accounts remaining."]);
+        assert!(simulator(app.view_login()).find("Continue").is_err(), "Continue needs a connected chat account");
+        let _ = app.update(LoginMsg::Query("sig".into()).into());
+        shows(&app, &["Signal"]);
+        assert!(simulator(app.view_login()).find("WhatsApp").is_err(), "search filters the networks");
+        let _ = app.update(LoginMsg::Query("zzz".into()).into());
+        shows(&app, &["No networks found"]);
 
         app.login.screen = Screen::Code;
         app.store.write().beeper_state.verified = false;
@@ -915,6 +924,11 @@ mod tests {
         shows(&app, &["Next"]);
         let _ = app.update(LoginMsg::Recovered(Err("bad key".into())).into());
         shows(&app, &["Error: bad key"]);
+
+        app.store.write().bridge_accounts = accounts;
+        app.store.write().beeper_state.verified = true;
+        let _ = app.update(LoginMsg::Recovered(Ok(())).into());
+        assert!(app.login_window.is_none(), "a connected chat account skips Connect Chat Accounts");
     }
 
     #[test]
@@ -928,6 +942,7 @@ mod tests {
     #[test]
     fn a_new_account_saves_and_confirms_its_recovery_key_like_desktop() {
         let mut app = crate::fuzz::demo_app("verify-new-key");
+        app.store.write().bridge_accounts.clear();
         app.login_window = Some(window::Id::unique());
         let none = E2eeSetup { cross_signing: false, verified: false, devices: Vec::new() };
         let _ = app.e2ee_checked(Ok(none));
@@ -976,7 +991,7 @@ mod tests {
         edit_recovery_key(&mut input, Action::Edit(Edit::Backspace));
         assert_eq!(input.text(), "EsTG-bqMm-dUDy\ndK");
         let mut app = crate::fuzz::demo_app("verify-key-focus");
-        app.login.screen = Screen::RecoveryKey;
+        (app.login.screen, app.store.write().beeper_state.verified) = (Screen::RecoveryKey, false);
         let key = "EsTG bqMm dUDy dKth xAyD 45dS HhyC WKc9 CF6B xsFi J5FQ t8u2";
         let _ = app.update(LoginMsg::KeyOnFocus(Some("not a key".into())).into());
         assert!(!app.login.busy, "a clipboard without a key does nothing");
