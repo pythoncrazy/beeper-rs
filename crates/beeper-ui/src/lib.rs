@@ -14276,7 +14276,7 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `composeTextareaPlaceholder`.
-    fn composer_placeholder(&self, chat: &Chat) -> String {
+    fn composer_placeholder(&self, st: &BeeperStore, chat: &Chat) -> String {
         let pane = self.pane();
         if pane.thread_root.is_some() {
             return tr("Reply in thread…").into();
@@ -14292,7 +14292,13 @@ impl BeeperGuiApp {
             (true, true) => " to join the group",
             (true, false) => " to accept the request",
         };
-        format!("{to} on {}{request}", network_name(&chat.account_id))
+        // Desktop's `bridgeProtocolDisplayName`: the user of the account, when you have more accounts of its bridge.
+        let kind = st.bridge_accounts.iter().find(|b| b.account_id == chat.account_id).map(|b| &b.bridge_type);
+        let several = kind.is_some_and(|k| st.bridge_accounts.iter().filter(|b| &b.bridge_type == k).count() > 1);
+        let user = Some(account_user(st, &chat.account_id)).filter(|u| several && !u.is_empty());
+        let net = network_name(&chat.account_id);
+        let net = user.map_or(net.to_string(), |u| format!("{net} ({u})"));
+        format!("{to} on {net}{request}")
     }
 
     fn view_composer<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {
@@ -14420,7 +14426,7 @@ impl BeeperGuiApp {
             }
         };
         let (pri, sec) = composer_buttons(st);
-        let placeholder = self.composer_placeholder(chat);
+        let placeholder = self.composer_placeholder(st, chat);
         let suggesting = self.suggestions(st).is_some();
         let formats = chat.formatting;
         let keys = ["Message: Send Message and Archive", "Send Message", "Insert New Line"]

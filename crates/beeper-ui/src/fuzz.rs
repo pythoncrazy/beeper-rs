@@ -986,7 +986,7 @@ fn show_replies_like_desktop() {
     }
     assert_eq!(app.pane.reply_thread.as_ref(), Some(&one));
     let place = format!("Reply to {} on {}", chat.title, network_name(&chat.account_id));
-    assert_eq!(app.composer_placeholder(&chat), place, "the composer replies in the chain");
+    assert_eq!(app.composer_placeholder(&app.store.read(), &chat), place, "the composer replies in the chain");
     let edit = text_editor::Edit::Paste(Arc::new("third answer".into()));
     let _ = app.update(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)));
     let _ = app.update(UiMessage::SubmitComposer);
@@ -1987,14 +1987,27 @@ fn selected_message_commands_like_desktop() {
 #[test]
 fn composer_placeholder_like_desktop() {
     let app = demo_app("placeholder");
-    let mut chat = app.visible_chats(&app.store.read())[0].clone();
+    let st = app.store.read();
+    let mut chat = app.visible_chats(&st)[0].clone();
     let net = network_name(&chat.account_id);
     chat.title = "x".repeat(130);
-    assert_eq!(app.composer_placeholder(&chat), format!("Message {}... on {net}", "x".repeat(125)), "128 characters");
+    let place = |chat: &Chat| app.composer_placeholder(&st, chat);
+    assert_eq!(place(&chat), format!("Message {}... on {net}", "x".repeat(125)), "128 characters");
     (chat.title, chat.is_request, chat.chat_type) = ("Ann".into(), Some(true), "single".into());
-    assert_eq!(app.composer_placeholder(&chat), format!("Message Ann on {net} to accept the request"));
+    assert_eq!(place(&chat), format!("Message Ann on {net} to accept the request"));
     chat.chat_type = "group".into();
-    assert_eq!(app.composer_placeholder(&chat), format!("Message Ann on {net} to join the group"));
+    assert_eq!(place(&chat), format!("Message Ann on {net} to join the group"));
+    // Desktop's `bridgeProtocolDisplayName`: a second account of the bridge adds the user of the account.
+    drop(st);
+    let b = app.store.read().bridge_accounts.iter().find(|b| b.remote_profile.is_some()).cloned().unwrap();
+    let two = beeper_core::models::BridgeAccountInfo { account_id: format!("{}-2", b.account_id), ..b.clone() };
+    app.store.write().bridge_accounts.push(two);
+    let st = app.store.read();
+    (chat.account_id, chat.is_request) = (b.account_id.clone(), None);
+    let user = account_user(&st, &b.account_id);
+    assert!(!user.is_empty());
+    let want = format!("Message Ann on {} ({user})", network_name(&b.account_id));
+    assert_eq!(app.composer_placeholder(&st, &chat), want);
 }
 
 #[test]
