@@ -3364,6 +3364,8 @@ struct MediaWindow {
     sent_by: u8,
     oldest: bool,
     search: Option<String>,
+    /// The tab before the last tab change, and when the change was.
+    tab_at: Option<(usize, std::time::Instant)>,
     /// Where the filter menu is open.
     menu: Option<Point>,
     /// The item whose context menu is open, as (message, attachment or link index), and where.
@@ -3382,6 +3384,17 @@ fn deletable(st: &BeeperStore, m: &Message) -> bool {
         && m.is_sender == Some(true)
         && m.is_deleted != Some(true)
         && MessageRules::young(rules.delete_max_age, &m.timestamp)
+}
+
+/// The time of the slide of Desktop's `BrandSegmentControl` highlight, in seconds.
+const TAB_SLIDE: f32 = 0.25;
+
+/// The left edge and the width of a `BrandSegmentControl` highlight at the part `t` of its slide between two
+/// segments of `widths`, 4 px apart, with the `cubic-bezier(.4, 0, .2, 1)` curve.
+fn slide(widths: &[f32], (from, to): (usize, usize), t: f32) -> (f32, f32) {
+    let left = |i: usize| widths[..i].iter().sum::<f32>() + 4.0 * i as f32;
+    let k = cubic_bezier(t.min(1.0), [0.4, 0.0, 0.2, 1.0]);
+    (left(from) + (left(to) - left(from)) * k, widths[from] + (widths[to] - widths[from]) * k)
 }
 
 /// Desktop's Media window page size.
@@ -6852,6 +6865,7 @@ impl BeeperGuiApp {
                     sent_by: 0,
                     oldest: false,
                     search: None,
+                    tab_at: None,
                     menu: None,
                     item_menu: None,
                     select: false,
@@ -6861,7 +6875,8 @@ impl BeeperGuiApp {
                 return Task::batch([open.map(UiMessage::WindowOpened), self.load_media()]);
             }
             UiMessage::MediaTab(tab) => {
-                self.media_mut().tab = tab;
+                let w = self.media_mut();
+                (w.tab_at, w.tab) = (Some((w.tab, std::time::Instant::now())), tab);
                 return self.media_reload();
             }
             UiMessage::MediaSentBy(n) => {
@@ -9210,6 +9225,8 @@ impl BeeperGuiApp {
             || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
             || self.pref_flash.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 2.0)
             || (self.login_window.is_some() && (self.login.busy || self.login.animated()));
+        let tab_at = self.media_window.as_ref().and_then(|w| w.tab_at);
+        let animated = animated || tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE);
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
             .then(|| Subscription::run(tray::events).map(UiMessage::Tray));
         let online = cfg!(target_os = "linux").then(|| Subscription::run(portal::online).map(UiMessage::Online));
@@ -15757,16 +15774,25 @@ impl BeeperGuiApp {
         let items = media_items(&st, &media, w);
         // Desktop's `label-sm` (11/14) and `body-sm` (13/16) type of the Media window.
         let sub = |s: String| txt(s, 11.0).line_height(Pixels(14.0)).color(p.on_secondary);
-        let tabs = MEDIA_TABS.iter().enumerate().map(|(i, label)| -> El<'a> {
-            let bg = if i == w.tab { p.chip } else { CLEAR };
+        // Desktop's `BrandSegmentControl`: the highlight slides to the selected tab in `0.25s`.
+        let widths = MEDIA_TABS.map(|l| text_width(tr(l), 11.0, Weight::Normal) + 16.0);
+        let (from, t) = w.tab_at.map_or((w.tab, 1.0), |(from, at)| (from, at.elapsed().as_secs_f32() / TAB_SLIDE));
+        let (x, hw) = slide(&widths, (from, w.tab), t);
+        let highlight = container(Space::new().width(hw).height(18)).style(fill_box(p.chip, 20.0));
+        let tabs = MEDIA_TABS.iter().zip(widths).enumerate().map(|(i, (label, width))| -> El<'a> {
             let label = txt(tr(label), 11.0).line_height(Pixels(14.0)).color(p.strong);
-            button(label)
+            button(container(label).center_x(Fill))
+                .width(width)
                 .padding([2, 8])
-                .style(btn_style([bg; 3], [p.strong; 3], 20.0))
+                .style(btn_style([CLEAR; 3], [p.strong; 3], 20.0))
                 .on_press(UiMessage::MediaTab(i))
                 .into()
         });
-        let tabs = container(Row::with_children(tabs).spacing(4)).padding(4).style(fill_box(p.card, 20.0));
+        // The highlight layer comes first, under the labels, so it sets the size of the stack.
+        let total = widths.iter().sum::<f32>() + 4.0 * (widths.len() - 1) as f32;
+        let under = container(highlight).padding(Padding::ZERO.left(x)).width(total);
+        let tabs = stack![under, Row::with_children(tabs).spacing(4)];
+        let tabs = container(tabs).padding(4).style(fill_box(p.card, 20.0));
         let control = |glyph: &svg::Handle, size: f32, on: bool, msg| -> El<'a> {
             let (bg, fg) = if on { (p.chip, p.strong) } else { (CLEAR, p.on_secondary) };
             let b = button(container(tinted(glyph, size, fg)).center(28)).padding(0);
@@ -20097,5 +20123,13 @@ mod tests {
         assert_eq!(filmstrip(&size, 1, 3, None), (0, 3));
         assert_eq!([Some(2), Some(25)].map(|from| filmstrip(&size, 0, 30, from)), [(2, 12), (20, 30)], "a scroll");
         assert_eq!(medium_date(20_743), "Oct 17, 2026");
+        let widths = [50.0, 40.0, 30.0];
+        let round = |(x, w): (f32, f32)| (x.round(), w.round());
+        assert_eq!(
+            [0.0, 1.0, 2.0].map(|t| round(slide(&widths, (0, 2), t))),
+            [(0.0, 50.0), (98.0, 30.0), (98.0, 30.0)]
+        );
+        let (x, w) = slide(&widths, (0, 2), 0.5);
+        assert!(x > 49.0 && w < 40.0, "the highlight is past the middle at half the time: {x} {w}");
     }
 }
