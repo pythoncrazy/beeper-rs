@@ -2831,6 +2831,18 @@ fn account_status_like_desktop() {
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::Accounts));
     let _ = simulator(app.view_settings());
     let _ = simulator(app.view_rail());
+    app.store.write().bridge_accounts[0].remote_error = Some("Token expired".into());
+    let _ = app.update(UiMessage::OpenAccount(Some(account.clone())));
+    let mut sim = simulator(app.view_settings());
+    assert!(sim.find("Account Disconnected").is_ok() && sim.find("Token expired").is_ok());
+    let _ = sim.click("Remove Account").expect("the Remove Account button of the account page");
+    for m in sim.into_messages() {
+        let _ = app.update(m);
+    }
+    assert!(simulator(app.view_settings()).find("Remove from All Devices").is_ok(), "the button asks first");
+    let _ = app.update(UiMessage::Ask(None));
+    let _ = app.update(UiMessage::OpenAccount(Some("hungryserv".into())));
+    assert!(simulator(app.view_settings()).find("Remove Account").is_err(), "the Beeper account has no button");
 }
 
 #[test]

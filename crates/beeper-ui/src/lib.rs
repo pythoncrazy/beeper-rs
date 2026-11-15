@@ -16271,7 +16271,30 @@ impl BeeperGuiApp {
             toggle("Show message previews", props.previews, set(|q| q.previews ^= true)),
             pref_row(p, tr("Sound"), None, None, sound),
         ]);
-        vec![head.into(), card.into(), group(p, Some(tr("Settings")), rows.collect())]
+        // Desktop's `AccountDisconnected` banner, without the Reconnect button of the bridge login.
+        let disconnected = bridge.and_then(|b| b.remote_error.clone()).map(|message| {
+            let banner = column![
+                svg(ERROR_CIRCLE.clone()).width(20).height(20),
+                semi(tr("Account Disconnected"), 13.0).color(p.strong),
+                txt(message, 11.0).color(p.strong).center(),
+            ]
+            .spacing(8)
+            .align_x(Center);
+            let fill = if self.dark { p.prefs_group } else { p.chip };
+            container(banner).width(Fill).padding([12, 8]).style(fill_box(fill, 8.0)).into()
+        });
+        // Desktop's `AccountDeleteButton`.
+        let remove = bridge.map(|_| {
+            let label = semi(tr("Remove Account"), 13.0).color(p.danger).width(Fill).center();
+            button(label)
+                .padding([5, 0])
+                .width(Fill)
+                .style(btn_style([CLEAR; 3], [p.danger; 3], 0.0))
+                .on_press(UiMessage::AskRemoveAccount(id.into()))
+                .into()
+        });
+        let settings = group(p, Some(tr("Settings")), rows.collect());
+        [Some(head.into()), disconnected, Some(card.into()), Some(settings), remove].into_iter().flatten().collect()
     }
 
     /// A settings item with the id that search results scroll to, and the flash of a picked result.
