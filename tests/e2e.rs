@@ -17,7 +17,7 @@ use beeper_core::{
 use beeper_ui::{
     login::{Login, LoginMsg, Outcome, Screen},
     search_settings,
-    style::{fw, icon, ALL_FONTS},
+    style::{all_fonts, fw, icon},
     write_rgba_png, BeeperGuiApp, InboxTab, SearchFilters, SearchPick, SettingsHit, SettingsTab, UiMessage,
 };
 use iced::font::Weight;
@@ -183,7 +183,7 @@ async fn lifecycle() {
     let fs = iced_test::renderer::graphics::text::font_system();
     {
         let mut w = fs.write().expect("font system");
-        for bytes in ALL_FONTS {
+        for bytes in all_fonts() {
             w.load_font(bytes.into());
         }
         let raw = w.raw();

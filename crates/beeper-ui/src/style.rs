@@ -67,15 +67,32 @@ pub mod icon {
     pub const MESSAGE_SQUARE: char = '\u{e117}';
 }
 
-pub const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
-pub const FONT_MEDIUM: &[u8] = include_bytes!("../assets/fonts/Inter-Medium.ttf");
-pub const FONT_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
-pub const FONT_BOLD: &[u8] = include_bytes!("../assets/fonts/Inter-Bold.ttf");
-pub const FONT_ITALIC: &[u8] = include_bytes!("../assets/fonts/Inter-Italic.ttf");
-pub const FONT_ICONS: &[u8] = include_bytes!("../assets/fonts/icons.ttf");
-pub const FONT_EMOJI: &[u8] = include_bytes!("../assets/fonts/Twemoji.Mozilla.ttf");
-pub const ALL_FONTS: [&[u8]; 7] =
-    [FONT_REGULAR, FONT_MEDIUM, FONT_SEMIBOLD, FONT_BOLD, FONT_ITALIC, FONT_ICONS, FONT_EMOJI];
+macro_rules! font {
+    ($file:literal) => {
+        include_bytes!(concat!("../assets/fonts/", $file)).as_slice()
+    };
+}
+
+pub const FONT_EMOJI: &[u8] = font!("Twemoji.Mozilla.ttf");
+/// The Inter 3.18 WOFF files of Desktop, unpacked to TrueType once. WOFF keeps the binary 1.3 MB smaller.
+static INTER: LazyLock<[Vec<u8>; 8]> = LazyLock::new(|| {
+    [
+        font!("Inter-Regular.woff"),
+        font!("Inter-Italic.woff"),
+        font!("Inter-Medium.woff"),
+        font!("Inter-MediumItalic.woff"),
+        font!("Inter-SemiBold.woff"),
+        font!("Inter-SemiBoldItalic.woff"),
+        font!("Inter-Bold.woff"),
+        font!("Inter-BoldItalic.woff"),
+    ]
+    .map(woff_to_sfnt)
+});
+
+/// The Inter 3.18 faces of Desktop, the icons, and Twemoji.
+pub fn all_fonts() -> impl Iterator<Item = &'static [u8]> {
+    INTER.iter().map(Vec::as_slice).chain([font!("icons.ttf"), FONT_EMOJI])
+}
 pub const CLEAR: Color = Color::TRANSPARENT;
 
 static LOAD_FONTS: Once = Once::new();
@@ -110,7 +127,7 @@ pub fn ensure_fonts_loaded() {
         let empty = cosmic_text::FontSystem::new_with_locale_and_db(String::new(), Default::default());
         let (locale, db) = std::mem::replace(fs.raw(), empty).into_locale_and_db();
         *fs.raw() = cosmic_text::FontSystem::new_with_locale_and_db_and_fallback(locale, db, TwemojiFirst);
-        for bytes in ALL_FONTS {
+        for bytes in all_fonts() {
             fs.load_font(bytes.into());
         }
         if let Some(woff) = desktop_asars().find_map(|p| knicknack_woff(&p)) {
@@ -825,6 +842,27 @@ mod tests {
         ];
         for (token, field, light, dark) in rows {
             assert_eq!((field(&BEEPER_LIGHT), field(&BEEPER_DARK)), (light, dark), "{token}");
+        }
+    }
+
+    #[test]
+    fn inter_draws_every_desktop_face_and_script() {
+        ensure_fonts_loaded();
+        let mut fs = font_system().write().unwrap();
+        for weight in [Weight::Normal, Weight::Medium, Weight::Semibold, Weight::Bold] {
+            for style in [iced::font::Style::Normal, iced::font::Style::Italic] {
+                let mut buf = cosmic_text::Buffer::new(fs.raw(), cosmic_text::Metrics::new(13.0, 16.0));
+                let font = Font { style, ..fw(weight) };
+                let text = "Aa Жж Ωω Ếế ₂ → ≠";
+                buf.set_text(fs.raw(), text, &to_attributes(font), cosmic_text::Shaping::Advanced, None);
+                let runs: Vec<_> = buf.layout_runs().flat_map(|r| r.glyphs.iter().map(|g| g.font_id)).collect();
+                assert_eq!(runs.len(), text.chars().count());
+                for id in runs {
+                    let face = fs.raw().db().face(id).unwrap();
+                    assert_eq!(face.families[0].0, "Inter");
+                    assert_eq!((face.weight.0, face.style), (to_attributes(font).weight.0, to_attributes(font).style));
+                }
+            }
         }
     }
 }
