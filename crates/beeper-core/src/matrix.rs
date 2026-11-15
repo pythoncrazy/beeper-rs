@@ -2204,7 +2204,9 @@ pub async fn import_crypto(dir: &std::path::Path, c: &DesktopCrypto) -> Result<(
 
 pub async fn recover(store: SharedStore, key: String) -> Result<(), String> {
     let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
-    client.encryption().recovery().recover(key.trim()).await.map_err(|e| match e {
+    // Desktop formats the key in groups with dashes, and reads only its letters and digits.
+    let key: String = key.chars().filter(char::is_ascii_alphanumeric).collect();
+    client.encryption().recovery().recover(&key).await.map_err(|e| match e {
         RecoveryError::SecretStorage(SecretStorageError::SecretStorageKey(e)) => format!("Invalid recovery key: {e}"),
         e => e.to_string(),
     })?;
@@ -2232,8 +2234,43 @@ fn track(store: &SharedStore, id: &str, change: impl FnOnce(&mut AppVerification
     st.emit_ws("setup.updated", "", None, None, None);
 }
 
+/// Desktop's check of encrypted messaging after the sign-in (`pre-verification`).
+#[derive(Clone)]
+pub struct E2eeSetup {
+    /// The account has a cross-signing identity.
+    pub cross_signing: bool,
+    pub verified: bool,
+    /// The other devices that the account signed, which can verify this device.
+    pub devices: Vec<DeviceInfo>,
+}
+
+/// Waits for the Matrix client of a new sign-in, and reads what its encrypted messaging needs.
+pub async fn e2ee_setup(store: SharedStore) -> Result<E2eeSetup, String> {
+    let client = loop {
+        if let Some(c) = store.read().matrix.clone() {
+            break c;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    let me = client.user_id().expect("signed-in client has a user ID").to_owned();
+    let encryption = client.encryption();
+    let identity = encryption.request_user_identity(&me).await.map_err(|e| e.to_string())?;
+    let own = encryption.get_own_device().await.map_err(|e| e.to_string())?;
+    let verified = own.expect("signed-in client has its own device").is_cross_signed_by_owner();
+    let mut devices = Vec::new();
+    for d in self::devices(client.clone()).await? {
+        let id = d.id.as_str().into();
+        let device = encryption.get_device(&me, id).await.map_err(|e| e.to_string())?;
+        if !d.current && device.is_some_and(|d| d.is_cross_signed_by_owner()) {
+            devices.push(d);
+        }
+    }
+    Ok(E2eeSetup { cross_signing: identity.is_some(), verified, devices })
+}
+
 #[derive(Clone)]
 pub struct DeviceInfo {
+    pub id: String,
     pub name: String,
     /// `device_model` and `device_type` of Beeper's `com.beeper.device_metadata.<device ID>` account data.
     pub model: Option<String>,
@@ -2252,6 +2289,7 @@ pub async fn devices(client: Client) -> Result<Vec<DeviceInfo>, String> {
         let meta = global(&client, &format!("com.beeper.device_metadata.{}", d.device_id)).await;
         let field = |k: &str| meta[k].as_str().filter(|v| !v.is_empty()).map(str::to_string);
         out.push(DeviceInfo {
+            id: d.device_id.to_string(),
             name: d.display_name.unwrap_or_else(|| "Unknown".into()),
             model: field("device_model"),
             kind: field("device_type"),

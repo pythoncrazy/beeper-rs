@@ -4720,7 +4720,8 @@ impl BeeperGuiApp {
             (None, true) => {
                 let name = format!("beeper-rs {:?}", self.os);
                 let verified = st.beeper_state.verified;
-                let me = DeviceInfo { name, model: None, kind: None, last_seen_ms: None, verified, current: true };
+                let id = st.beeper_state.device_id.clone();
+                let me = DeviceInfo { id, name, model: None, kind: None, last_seen_ms: None, verified, current: true };
                 drop(st);
                 self.devices = Some(Ok(vec![me]));
                 Task::none()
@@ -8641,12 +8642,14 @@ impl BeeperGuiApp {
                 }
                 return iced::exit();
             }
+            // A sign-in through the Desktop API goes on to the check of encrypted messaging, like a sign-in here.
             UiMessage::StoreChanged
                 if self.login_window.is_some()
-                    && self.login.screen != login::Screen::Accounts
+                    && !self.login.busy
+                    && self.login.signing_in()
                     && self.store.read().signed_in() =>
             {
-                self.login.screen = login::Screen::Accounts;
+                return self.check_e2ee();
             }
             UiMessage::StoreChanged => {
                 if let Some((room, quote)) =
