@@ -197,6 +197,8 @@ pub fn forward_launches(first: std::os::unix::net::UnixListener, tx: tokio::sync
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::single_instance;
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
 
     #[test]
     fn a_later_launch_hands_its_arguments_to_the_first() {
@@ -206,7 +208,10 @@ mod tests {
         assert!(single_instance(dir, &["beeper://focus".into()]).is_none(), "a later launch stops");
         let args: Vec<String> = serde_json::from_reader(first.accept().expect("the later launch").0).unwrap();
         assert_eq!(args, ["beeper://focus"]);
-        drop((first, profile));
+        // A stop closes the socket in all processes. A child that another test starts has a copy of the socket until
+        // it runs its program, so a drop does not stop the socket. A shutdown does.
+        UnixStream::from(OwnedFd::from(first)).shutdown(std::net::Shutdown::Both).expect("stop the socket");
+        drop(profile);
         assert!(single_instance(dir, &[]).is_some(), "a launch after a stop replaces the old socket");
     }
 }
