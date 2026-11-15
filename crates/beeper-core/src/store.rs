@@ -431,6 +431,8 @@ pub struct BeeperStore {
     pub sas_confirm: Option<tokio::sync::oneshot::Sender<bool>>,
     /// The new recovery key of a reset, until the user types it again.
     pub pending_recovery_key: Option<String>,
+    /// Desktop's `INITIAL_SYNC_PROGRESS`: the rooms that the first sync read, and all its rooms.
+    pub initial_sync: (usize, usize),
     /// Desktop SDK's UI auth token: the Beeper JWT that answers the user-interactive auth of the homeserver.
     pub ui_auth_token: Option<String>,
     /// The changes for the homeserver, with their outbox row and chat, in the order of the rows.
@@ -587,6 +589,7 @@ impl BeeperStore {
             syncing: false,
             sas_confirm: None,
             pending_recovery_key: None,
+            initial_sync: (0, 0),
             ui_auth_token: None,
             outbox: Vec::new(),
             bookmarks_room: None,

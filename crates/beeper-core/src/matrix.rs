@@ -2776,12 +2776,15 @@ pub async fn run(store: SharedStore) {
     sync_profile(&client, &store).await;
     store.write().inbox_rules = global(&client, RULES).await;
     let first = !store.read().beeper_state.first_sync_done;
-    futures_util::stream::iter(client.joined_rooms())
+    let rooms = client.joined_rooms();
+    store.write().initial_sync = (0, rooms.len());
+    futures_util::stream::iter(rooms)
         .for_each_concurrent(8, |room| {
             let store = store.clone();
             async move {
                 let events = if first || has_utd(&store, &room).await { history(&room).await.0 } else { Vec::new() };
-                sync_room(&store, &room, events).await
+                sync_room(&store, &room, events).await;
+                store.write().initial_sync.0 += 1;
             }
         })
         .await;

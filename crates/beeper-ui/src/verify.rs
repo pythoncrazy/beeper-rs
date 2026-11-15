@@ -1,7 +1,7 @@
 //! Desktop's device verification: the toast of a request from another device, the `VerificationModal` window, and the
 //! onboarding screens of encrypted messaging after the sign-in.
 use crate::emoji::EMOJI_FONT;
-use crate::i18n::{tr, trx};
+use crate::i18n::{tr, trn_named, trx};
 use crate::login::{actions, art, brand_gradient, heading, Login, LoginMsg, Screen};
 use crate::style::{bold, btn_style, fill_box, fw, ic, icon, semi, shadow_box, t, txt, Palette, CLEAR};
 use crate::{BeeperGuiApp, El, Toast, UiMessage};
@@ -11,7 +11,7 @@ use iced::font::Weight;
 use iced::widget::{
     button, column, container, mouse_area, rich_text, row, span, svg, text_editor, tooltip, Column, Space,
 };
-use iced::{border, window, Center, Fill, Padding, Pixels, Size, Task, Theme};
+use iced::{border, window, Center, Color, Fill, Padding, Pixels, Size, Task, Theme};
 use std::sync::LazyLock;
 
 /// The size of Desktop's `VERIFICATION` modal window.
@@ -324,13 +324,57 @@ pub(crate) enum Brand {
 
 /// Desktop's `BrandButton` with `size: "small"`: a full-width pill.
 pub(crate) fn brand_btn<'a>(p: &Palette, label: &'a str, variant: Brand, msg: UiMessage) -> El<'a> {
-    brand_btn_maybe(p, label, variant, Some(msg))
+    brand_btn_maybe(p, label, variant, Some(msg), false)
 }
 
-/// `brand_btn`, which is disabled without a message.
-pub(crate) fn brand_btn_maybe<'a>(p: &Palette, label: &'a str, variant: Brand, msg: Option<UiMessage>) -> El<'a> {
+/// `brand_btn`, which is disabled without a message, and shows Desktop's dots while `loading`.
+pub(crate) fn brand_btn_maybe<'a>(
+    p: &Palette,
+    label: &'a str,
+    variant: Brand,
+    msg: Option<UiMessage>,
+    loading: bool,
+) -> El<'a> {
     let label = t(label, 13.0, Weight::Medium).line_height(Pixels(14.95));
-    crate::login::brand_button(p, label.into(), variant, msg, false)
+    crate::login::brand_button(p, label.into(), variant, msg, loading)
+}
+
+/// Desktop's `SpinnerIcon`, which turns once in 1.2 s.
+pub(crate) fn spinner<'a>(size: f32, color: Color) -> El<'a> {
+    let turn = crate::login::EPOCH.elapsed().as_secs_f32() / 1.2 * std::f32::consts::TAU;
+    svg(SPINNER.clone())
+        .width(size)
+        .height(size)
+        .rotation(iced::Rotation::Solid(iced::Radians(turn)))
+        .style(move |_, _| svg::Style { color: Some(color) })
+        .into()
+}
+
+static SPINNER: LazyLock<svg::Handle> = LazyLock::new(|| {
+    svg::Handle::from_memory(br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#000" d="M2.6290048,13.5685338 C2.70070755,13.9998397 3.10847664,14.2913557 3.53978255,14.2196529 C3.97108846,14.1479502 4.26260443,13.7401811 4.19090168,13.3088752 C4.11950255,12.8793956 4.08333333,12.4421541 4.08333333,12 C4.08333333,7.62774573 7.62774573,4.08333333 12,4.08333333 C16.3722543,4.08333333 19.9166667,7.62774573 19.9166667,12 C19.9166667,16.3722543 16.3722543,19.9166667 12,19.9166667 C11.5627746,19.9166667 11.2083333,20.2711079 11.2083333,20.7083333 C11.2083333,21.1455588 11.5627746,21.5 12,21.5 C17.2467051,21.5 21.5,17.2467051 21.5,12 C21.5,6.75329488 17.2467051,2.5 12,2.5 C6.75329488,2.5 2.5,6.75329488 2.5,12 C2.5,12.5292358 2.54335318,13.0533227 2.6290048,13.5685338 Z"/></svg>"##.as_slice())
+});
+
+/// Desktop's `ProgressCircle` of 250 px with a 10 px ring: `current` of `max` in the brand color from the top.
+fn progress_circle<'a>(p: &Palette, current: usize, max: usize) -> El<'a> {
+    let share = if max == 0 { 0.0 } else { (current as f32 / max as f32).clamp(0.0, 1.0) };
+    let hex = |c: Color| {
+        let [r, g, b, _] = c.into_rgba8();
+        format!("#{r:02x}{g:02x}{b:02x}")
+    };
+    let len = std::f32::consts::TAU * 115.0;
+    let ring = |color: Color, dash: String| {
+        format!(
+            r#"<circle cx="125" cy="125" r="115" fill="none" stroke="{}" stroke-width="10" stroke-linecap="round" {dash} transform="rotate(-90 125 125)"/>"#,
+            hex(color)
+        )
+    };
+    let progress = (share > 0.0).then(|| ring(p.accent, format!(r#"stroke-dasharray="{} {len}""#, share * len)));
+    let svg_text = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 250 250">{}{}</svg>"#,
+        ring(p.chip, String::new()),
+        progress.unwrap_or_default()
+    );
+    svg(svg::Handle::from_memory(svg_text.into_bytes())).width(205).height(205).into()
 }
 
 /// Desktop's `QRCode` of `data`: the bytes in error correction level L, 4 pixels for each module, and a
@@ -395,16 +439,22 @@ impl BeeperGuiApp {
     /// Desktop's `advanceOnboarding`: the next screen once this device is verified. An account with a connected chat
     /// account skips Connect Chat Accounts, like Desktop's `completeSigninIn`.
     pub(crate) fn advance_onboarding(&mut self) -> Task<UiMessage> {
-        let (verified, syncing, connected) = {
+        // Desktop's `IndicateSyncing` waits for the keys and the first sync of a verified device.
+        let (verified, waiting, connected) = {
             let st = self.store.read();
-            (st.beeper_state.verified, st.syncing, st.has_connected_network())
+            let s = &st.beeper_state;
+            (s.verified, st.syncing || s.verified && s.stage() != "done", st.has_connected_network())
         };
         let screen = self.login.screen;
         let confirmed = screen == Screen::ConfirmKey && self.store.read().pending_recovery_key.is_none();
         let checking = self.login.signing_in() || matches!(screen, Screen::Verify | Screen::RecoveryKey) || confirmed;
-        self.login.screen = match (checking, screen, verified, syncing) {
+        self.login.screen = match (checking, screen, verified, waiting) {
             (true, Screen::Verify | Screen::RecoveryKey, false, _) => return Task::none(),
-            (true, _, _, true) => Screen::Syncing,
+            (true, _, _, true) => {
+                (self.login.screen, self.login.late) = (Screen::Syncing, false);
+                let late = async { tokio::time::sleep(std::time::Duration::from_secs(60)).await };
+                return Task::perform(late, |()| LoginMsg::KeysLate.into());
+            }
             (true, _, true, false) | (false, Screen::Syncing, true, false) if connected => {
                 self.login = Login::default();
                 return self.enter_app();
@@ -432,7 +482,8 @@ impl BeeperGuiApp {
         let note = |s: &'static str| txt(tr(s), 13.0).color(p.strong).center().width(Fill);
         let (middle, bottom): (El<'_>, Vec<El<'_>>) = match (l.waiting, emojis, qr) {
             (true, _, _) => {
-                (Space::new().into(), vec![note("Waiting for you to verify on your other device...").into()])
+                let wait = column![spinner(39.0, p.strong), note("Waiting for you to verify on your other device...")];
+                (container(wait.spacing(16).align_x(Center)).center(Fill).into(), Vec::new())
             }
             (false, Some(sas), _) => {
                 let glyphs = sas.emojis.into_iter().map(|e| {
@@ -531,8 +582,8 @@ impl BeeperGuiApp {
     pub(crate) fn view_onboarding_key(&self) -> El<'_> {
         let l = &self.login;
         let p = &self.pal;
-        let next = (!l.key_input.text().trim().is_empty() && !l.busy).then(|| LoginMsg::SubmitRecoveryKey.into());
-        let next = brand_btn_maybe(p, trx("Next", "button label"), Brand::Primary, next);
+        let next = (!l.key_input.text().trim().is_empty()).then(|| LoginMsg::SubmitRecoveryKey.into());
+        let next = brand_btn_maybe(p, trx("Next", "button label"), Brand::Primary, next, l.busy);
         let error = l.error.as_deref().map(|e| txt(e, 12.0).color(p.text_danger).center().width(Fill));
         column![
             Space::new().height(40),
@@ -545,18 +596,51 @@ impl BeeperGuiApp {
         .into()
     }
 
-    /// Desktop's `IndicateSyncing`, while the first sync of the chats runs.
+    /// Desktop's `IndicateSyncing`, while the keys and the first sync of the chats come: the stage, the progress of
+    /// the sync, and after 60 s without the keys from the other device, the recovery key.
     pub(crate) fn view_onboarding_syncing(&self) -> El<'_> {
-        column![
-            Space::new().height(34),
-            heading(tr("Syncing your data"), 28.0),
-            container(
-                txt(tr("We're syncing your chats. This may take a while..."), 13.0).color(self.pal.strong).center()
-            )
-            .center(Fill)
-            .padding(18),
-        ]
-        .into()
+        let p = &self.pal;
+        let st = self.store.read();
+        let stage = st.beeper_state.stage();
+        let (processed, total) = st.initial_sync;
+        drop(st);
+        let new = self.login.new_account();
+        let title = match stage {
+            _ if new => tr("Welcome to Beeper!"),
+            "awaiting-secrets" => tr("Setting up encryption…"),
+            "awaiting-key-backup" => tr("Restoring encryption keys…"),
+            _ => tr("Syncing your data"),
+        };
+        let paragraph = |s: String| txt(s, 13.0).color(p.strong).center().width(Fill);
+        let body: El<'_> = match (new, self.login.late && stage == "awaiting-secrets") {
+            (true, _) => column![spinner(64.0, p.strong), paragraph(tr("We're getting your account ready...").into())]
+                .spacing(24)
+                .align_x(Center)
+                .into(),
+            (false, true) => {
+                let text = "Your other device has not sent your private keys yet. You may want to verify with your recovery key instead.";
+                let key = brand_btn(
+                    p,
+                    trx("Use your Recovery Key", "button label"),
+                    Brand::Primary,
+                    LoginMsg::UseRecoveryKey.into(),
+                );
+                column![paragraph(tr(text).into()), key].spacing(24).into()
+            }
+            _ if processed == 0 || total == 0 => {
+                paragraph(tr("We're syncing your chats. This may take a while...").into()).into()
+            }
+            _ => {
+                let (one, many) =
+                    ("Synced %(processed)d of %(total)d chat.", "Synced %(processed)d of %(total)d chats.");
+                paragraph(trn_named(one, many, total, &[("processed", &processed), ("total", &total)])).into()
+            }
+        };
+        let circle = (!new).then(|| container(progress_circle(p, processed, total)).center_x(Fill));
+        column![Space::new().height(34), heading(title, 28.0)]
+            .push(circle)
+            .push(container(body).center(Fill).padding(18))
+            .into()
     }
 }
 
@@ -704,7 +788,7 @@ impl BeeperGuiApp {
                 (tr("Save Your Recovery Key"), container(key).padding([24, 18]).into(), next)
             }
         };
-        let next = brand_btn_maybe(p, trx("Next", "button label"), Brand::Primary, next);
+        let next = brand_btn_maybe(p, trx("Next", "button label"), Brand::Primary, next, false);
         column![Space::new().height(40), heading(title, 28.0), middle, Space::new().height(Fill)]
             .push(error)
             .push(actions(vec![warning, next], 24.0))
@@ -862,6 +946,33 @@ mod tests {
         let _ = app.verification_changed();
         assert_eq!(app.status_banner, "Authentication confirmed, restoring the cryptographic state");
         assert!(app.verify.window.is_none(), "a scan closes the modal");
+    }
+
+    #[test]
+    fn indicate_syncing_waits_for_the_keys_and_counts_the_chats_like_desktop() {
+        let mut app = crate::fuzz::demo_app("verify-syncing");
+        app.login_window = Some(window::Id::unique());
+        (app.login.screen, app.store.write().beeper_state.secrets.megolm_backup_key) = (Screen::RecoveryKey, false);
+        let _ = app.update(LoginMsg::Recovered(Ok(())).into());
+        assert_eq!(app.login.screen, Screen::Syncing, "a verified device waits for its keys");
+        let shows = |app: &BeeperGuiApp, texts: &[&str]| {
+            let mut sim = simulator(app.view_login());
+            for text in texts {
+                assert!(sim.find(*text).is_ok(), "the screen shows {text}");
+            }
+        };
+        assert_eq!(app.store.read().beeper_state.stage(), "awaiting-secrets");
+        shows(&app, &["We're syncing your chats. This may take a while..."]);
+        let _ = app.update(LoginMsg::KeysLate.into());
+        shows(&app, &["Use your Recovery Key"]);
+        let _ = app.update(LoginMsg::UseRecoveryKey.into());
+        assert_eq!(app.login.screen, Screen::RecoveryKey, "the recovery key gives the keys");
+
+        app.login.screen = Screen::Syncing;
+        (app.store.write().beeper_state.secrets.megolm_backup_key, app.store.write().initial_sync) = (true, (3, 40));
+        shows(&app, &["Synced 3 of 40 chats."]);
+        let _ = app.update(UiMessage::StoreChanged);
+        assert!(app.login_window.is_none(), "the keys and the sync end the wait");
     }
 
     #[test]
