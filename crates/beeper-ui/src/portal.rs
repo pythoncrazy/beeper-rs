@@ -4,10 +4,20 @@ use std::path::{Path, PathBuf};
 
 pub const PORTAL: &str = "org.freedesktop.portal.Desktop";
 
-/// The files that the user picks in the file chooser of the portal at `dest`, or none on cancel. With `images`, the
-/// chooser picks one image like Desktop's `showOpenDialog` with the "Images" filter.
+/// What Desktop's `showOpenDialog` and `showSaveDialog` pick.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pick {
+    Files,
+    /// One image, with Desktop's "Images" filter.
+    Image,
+    Folder,
+    /// The path to save a file with this name.
+    Save(String),
+}
+
+/// The paths that the user picks in the file chooser of the portal at `dest`, or none on cancel.
 #[cfg(target_os = "linux")]
-pub async fn open_files(dest: String, title: String, images: bool) -> Result<Vec<PathBuf>, String> {
+pub async fn open_files(dest: String, title: String, pick: Pick) -> Result<Vec<PathBuf>, String> {
     use iced::futures::StreamExt;
     use std::collections::HashMap;
     use zbus::zvariant::{OwnedValue, Value};
@@ -26,13 +36,19 @@ pub async fn open_files(dest: String, title: String, images: bool) -> Result<Vec
         .expect("a valid match rule")
         .build();
     let mut answers = zbus::MessageStream::for_match_rule(rule, bus, Some(1)).await.map_err(s)?;
-    let mut options = HashMap::from([("handle_token", Value::from(token)), ("multiple", Value::from(!images))]);
-    if images {
-        let globs = IMAGES.iter().map(|e| (0u32, format!("*.{e}"))).collect::<Vec<_>>();
-        options.insert("filters", Value::from(vec![(crate::tr("Images").to_string(), globs)]));
+    let mut options = HashMap::from([("handle_token", Value::from(token))]);
+    let method = if matches!(pick, Pick::Save(_)) { "SaveFile" } else { "OpenFile" };
+    match pick {
+        Pick::Files => drop(options.insert("multiple", Value::from(true))),
+        Pick::Image => {
+            let globs = IMAGES.iter().map(|e| (0u32, format!("*.{e}"))).collect::<Vec<_>>();
+            options.insert("filters", Value::from(vec![(crate::tr("Images").to_string(), globs)]));
+        }
+        Pick::Folder => drop(options.insert("directory", Value::from(true))),
+        Pick::Save(name) => drop(options.insert("current_name", Value::from(name))),
     }
     let (obj, iface) = ("/org/freedesktop/portal/desktop", Some("org.freedesktop.portal.FileChooser"));
-    bus.call_method(Some(dest.as_str()), obj, iface, "OpenFile", &("", title, options)).await.map_err(s)?;
+    bus.call_method(Some(dest.as_str()), obj, iface, method, &("", title, options)).await.map_err(s)?;
     let answer = answers.next().await.expect("the portal answers the request").map_err(s)?;
     let (code, results): (u32, HashMap<String, OwnedValue>) =
         answer.body().deserialize().expect("Response carries a code and the results");
@@ -78,7 +94,7 @@ async fn watch_network(
 const IMAGES: [&str; 5] = ["jpg", "jpeg", "png", "gif", "webp"];
 
 #[cfg(not(target_os = "linux"))]
-pub async fn open_files(_dest: String, _title: String, _images: bool) -> Result<Vec<PathBuf>, String> {
+pub async fn open_files(_dest: String, _title: String, _pick: Pick) -> Result<Vec<PathBuf>, String> {
     Err("The file chooser needs the Linux desktop portal".into())
 }
 
@@ -185,7 +201,8 @@ mod tests {
             let iface = "org.freedesktop.portal.Request";
             conn.emit_signal(Some(sender), &path, iface, "Response", &(0u32, results)).await.unwrap();
         };
-        let (_, got) = block_on(iced::futures::future::join(serve, open_files(name.clone(), "Open".into(), false)));
+        let (_, got) =
+            block_on(iced::futures::future::join(serve, open_files(name.clone(), "Open".into(), Pick::Files)));
         assert_eq!(got, Ok(vec![PathBuf::from("/tmp/x.txt")]));
     }
 }

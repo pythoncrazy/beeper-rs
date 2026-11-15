@@ -101,7 +101,7 @@ impl BeeperGuiApp {
             Msg::Name(v) => f.name = Some(v),
             Msg::Email(v) => f.email = Some(v),
             Msg::PickAvatar => {
-                let pick = portal::open_files(portal::PORTAL.into(), tr("Images").to_string(), true);
+                let pick = portal::open_files(portal::PORTAL.into(), tr("Images").to_string(), portal::Pick::Image);
                 return Task::perform(pick, |r| UiMessage::Profile(Msg::AvatarPicked(r)));
             }
             Msg::AvatarPicked(Ok(paths)) => {

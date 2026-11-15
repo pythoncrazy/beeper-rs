@@ -10,6 +10,8 @@ pub enum Control {
     Multi(&'static [&'static str]),
     /// Desktop's "Share Analytics", the `analyticsDisabled` field of the Beeper account.
     Analytics,
+    /// Desktop's "Downloads location", [`crate::models::BeeperSettings::downloads_dir`].
+    Downloads,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +57,11 @@ impl Pref {
         match self.control {
             Control::Toggle(on) => on as u8,
             Control::Select(_, i) | Control::Slider(i) => i,
-            Control::Archive(..) | Control::Microphone | Control::Multi(_) | Control::Analytics => {
+            Control::Archive(..)
+            | Control::Microphone
+            | Control::Multi(_)
+            | Control::Analytics
+            | Control::Downloads => {
                 unreachable!("the row {} has no value", self.key)
             }
         }
@@ -66,7 +72,11 @@ impl Pref {
             Control::Toggle(_) => 1,
             Control::Select(options, _) => options.len() as u8 - 1,
             Control::Slider(_) => 100,
-            Control::Archive(..) | Control::Microphone | Control::Multi(_) | Control::Analytics => {
+            Control::Archive(..)
+            | Control::Microphone
+            | Control::Multi(_)
+            | Control::Analytics
+            | Control::Downloads => {
                 unreachable!("the row {} has no value", self.key)
             }
         }
@@ -121,6 +131,11 @@ const fn t(key: &'static str, label: &'static str, on: bool) -> Pref {
         name: None,
         control: Control::Toggle(on),
     }
+}
+
+/// A row with its own control and no value.
+const fn custom(key: &'static str, label: &'static str, control: Control) -> Pref {
+    Pref { key, label, desc: None, args: &[], badge: None, feature: None, requires: None, name: None, control }
 }
 
 const fn s(key: &'static str, label: &'static str, options: &'static [&'static str], default: u8) -> Pref {
@@ -206,6 +221,10 @@ pub const GENERAL: &[Item] = &[
         t("keepEmoticons", "Disable automatic replacement of emoticons with emojis", false),
         t("autoCopyOtp", "Auto copy OTP/2FA codes", true).desc("If the chat is muted, you'll still be notified."),
         s("upArrow", "Press ↑ in the composer to:", &["Move focus to the message list", "Edit your last message"], 0),
+    ]),
+    Item::Group(&[
+        custom("downloadsDir", "Downloads location", Control::Downloads).named("Downloads Preferences"),
+        t("alwaysAskDownload", "Always ask where to save files before downloading", false),
     ]),
     Item::Group(&[
         t("startMinimized", "Keep %s minimized on launch", false).args(&["Beeper"]),
@@ -763,6 +782,7 @@ pub const SYNCED: &[(&str, Ad)] = &[
     ("notificationDelay", Ad::Desktop("debounce_notifications", Values::Secs(&[0, 10, 30, 60, 120, 300]))),
     ("repeatNotification", Ad::Desktop("renotify_unread_delay", Values::Secs(&[0, 120, 300, 600]))),
     ("fontSize", Ad::Desktop("font_size", Values::Num(FONT_SIZES))),
+    ("alwaysAskDownload", b("always_ask_download_location")),
     ("transcribeWithOpenai", b("transcribe_with_openai")),
     ("mentionLlms", b("mention_llms")),
 ];

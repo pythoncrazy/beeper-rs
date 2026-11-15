@@ -99,6 +99,7 @@ impl Default for BeeperSettings {
             spaces_order: Vec::new(),
             ever_labeled: false,
             labels_intro_seen: false,
+            downloads_dir: String::new(),
         }
     }
 }
