@@ -12230,9 +12230,10 @@ impl BeeperGuiApp {
         let on_wall = self.wallpaper_fg(st, chat, thread);
         let muted = on_wall.unwrap_or(p.muted);
         let mine = m.is_sender == Some(true);
-        if m.is_deleted == Some(true) {
+        let italic = iced::Font { style: iced::font::Style::Italic, ..fw(Weight::Normal) };
+        // Desktop keeps the row of a deleted message, with its sender, its menu and its selection.
+        let deleted = (m.is_deleted == Some(true)).then(|| {
             let fg = on_wall.unwrap_or(mix(p.card, p.text, 0.8));
-            let italic = iced::Font { style: iced::font::Style::Italic, ..fw(Weight::Normal) };
             let icon = svg(TRASH.clone())
                 .width(13.0 * 448.0 / 512.0)
                 .height(13)
@@ -12241,16 +12242,10 @@ impl BeeperGuiApp {
                 icon,
                 txt(tr("This message has been deleted"), 13.0).line_height(Pixels(16.0)).font(italic).color(fg)
             ];
-            let pill = container(body.spacing(5).align_y(iced::Bottom))
+            container(body.spacing(5).align_y(iced::Bottom))
                 .padding(Padding::new(13.0).top(9.0).bottom(7.0))
-                .style(bordered_box(CLEAR, mix(p.card, p.received, 0.8), 1.0, 17.0));
-            let side = if mine { Right } else { iced::Left };
-            let edited = m.edited().then(|| {
-                let label = txt(tr("Edited"), 11.0).line_height(Pixels(15.0)).color(p.muted);
-                container(label).padding([0.0, BUBBLE_PAD_X]).align_x(side).width(Fill)
-            });
-            return head.push(container(pill).align_x(side).width(Fill)).push(edited).into();
-        }
+                .style(bordered_box(CLEAR, mix(p.card, p.received, 0.8), 1.0, 17.0))
+        });
         let group = chat.chat_type == "group";
         let selected = ms.iter().any(|g| self.pane().selected_msgs.contains(&g.id));
         let rise = send_rise(st, m).unwrap_or(1.0);
@@ -12263,8 +12258,11 @@ impl BeeperGuiApp {
             (false, _) => (dim(p.received), dim(p.strong)),
         };
         let poll = m.poll.as_ref().filter(|_| st.feature("enable-polls").on && chat.polls.is_some());
+        // Desktop's `isE2EE` message that the keys did not decrypt yet.
+        let utd = m.text.as_deref() == Some(beeper_core::matrix::UTD_TEXT);
         let text = match (&m.poll, poll) {
             (Some(p), None) => p.fallback.clone(),
+            _ if utd => tr("This message is waiting for decryption.").into(),
             _ => m.text.clone().unwrap_or_default(),
         };
         // Desktop shows the previews of all the links of a message. The demo has previews of the links in its text.
@@ -12391,7 +12389,9 @@ impl BeeperGuiApp {
         if let Some(poll) = poll {
             parts = parts.push(self.view_poll(st, chat, m, poll, (bg, fg)));
         }
-        if m.message_type.as_deref() == Some("HIDDEN") {
+        if let Some(pill) = deleted {
+            parts = parts.push(pill);
+        } else if m.message_type.as_deref() == Some("HIDDEN") {
             let bold = |s: String| span::<(), _>(s).font(fw(Weight::Bold));
             let head = container(txt(tr("Hidden event"), 13.0).font(fw(Weight::Bold)))
                 .padding([2.6, 5.2])
@@ -12406,6 +12406,14 @@ impl BeeperGuiApp {
             parts = parts.push(section.style(bordered_box(CLEAR, p.chip, 2.0, 4.0)));
         } else if jumbo(&text) {
             parts = parts.push(container(txt(text.clone(), 48.0)).padding([0, 12]));
+        } else if utd {
+            let line = txt(text.clone(), 13.0).line_height(Pixels(16.0)).font(italic).color(fg.scale_alpha(0.8));
+            let time = st.settings.on("showTimestamps").then(|| {
+                let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
+                txt(time, 11.0).color(if mine { sent_meta } else { p.sub })
+            });
+            let body = row![line].push(time).spacing(4).align_y(Bottom);
+            parts = parts.push(container(body).padding([9.0, BUBBLE_PAD_X]).style(fill_box(bg, 17.0)));
         } else if !text.is_empty() && poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
             let ts = st
                 .settings
