@@ -17410,6 +17410,29 @@ enum Pill {
 /// "Relaunch app" closed the app; `main` starts it again.
 pub static RELAUNCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The iced executor on the tokio runtime of the caller, so the GUI does not start a second runtime.
+struct Executor(tokio::runtime::Handle);
+
+impl iced::Executor for Executor {
+    fn new() -> std::io::Result<Self> {
+        Ok(Self(tokio::runtime::Handle::current()))
+    }
+
+    fn spawn(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
+        drop(self.0.spawn(future));
+    }
+
+    fn block_on<T>(&self, future: impl std::future::Future<Output = T>) -> T {
+        self.0.block_on(future)
+    }
+
+    fn enter<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _rt = self.0.enter();
+        f()
+    }
+}
+
+/// Runs the GUI on the tokio runtime that the calling thread entered.
 pub fn run_native_gui(store: SharedStore) -> iced::Result {
     let st = store.read();
     i18n::set(st.settings.pref("appLanguage"));
@@ -17424,6 +17447,7 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
     }
     drop(st);
     let app = iced::daemon(move || BeeperGuiApp::boot(store.clone()), BeeperGuiApp::update, BeeperGuiApp::view)
+        .executor::<Executor>()
         .title(BeeperGuiApp::title)
         .subscription(BeeperGuiApp::subscription)
         .theme(|a: &BeeperGuiApp, _| a.iced_theme())
@@ -17833,6 +17857,18 @@ mod fuzz;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gui_tasks_run_on_the_runtime_of_the_caller() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).build().expect("build a runtime");
+        let _rt = rt.enter();
+        let executor = <Executor as iced::Executor>::new().expect("an executor on the entered runtime");
+        let (tx, rx) = std::sync::mpsc::channel();
+        iced::Executor::spawn(&executor, async move {
+            tx.send(tokio::runtime::Handle::current().metrics().num_workers()).expect("the test waits");
+        });
+        assert_eq!(rx.recv().expect("the task runs"), 1);
+    }
 
     #[test]
     fn ease_out_quint_matches_css() {
