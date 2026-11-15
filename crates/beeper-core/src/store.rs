@@ -3,7 +3,7 @@ use crate::config::{
     DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN, DEFAULT_USER_ID, SEED_JSON,
     WS_CHANNEL_CAPACITY,
 };
-use crate::matrix::{Outgoing, ThreadSend};
+use crate::matrix::{Mention, Outgoing, ThreadSend};
 use crate::models::*;
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
@@ -2209,22 +2209,35 @@ impl BeeperStore {
         chat.id == target || members.any(|id| self.resolve_canonical_chat_id(id).as_deref() == Some(target))
     }
 
+    /// Edits the text of a message here, and queues the edit with its mention pills for the homeserver. Returns the
+    /// chat ID of the message and the edited message.
     pub fn edit_message(
         &mut self,
         chat_or_local_id: &str,
         message_id: &str,
-        new_text: String,
+        text: String,
+        mentions: Vec<Mention>,
     ) -> Result<(String, Message), &'static str> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let msg = self.update_message(m_idx, |m| {
-            m.html = crate::codec::markdown_html(&new_text);
-            if let Some(prev) = m.text.replace(new_text) {
+            m.html = crate::codec::markdown_html(&text);
+            if let Some(prev) = m.text.replace(text.clone()) {
                 m.edit_history.push(EditHistoryEntry { text: prev, timestamp: now_rfc3339_millis() });
             }
         });
+        self.queue(&chat_id, Outgoing::Edit { target: msg.id.clone(), text, mentions });
         Ok((chat_id, msg))
     }
 
+    /// Deletes a message for everyone: here, and with a redaction that the outbox sends. Returns the chat ID of the
+    /// message.
+    pub fn redact_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, &'static str> {
+        let chat_id = self.delete_message(chat_or_local_id, message_id)?;
+        self.queue(&chat_id, Outgoing::Redact { target: message_id.into() });
+        Ok(chat_id)
+    }
+
+    /// Deletes a message here only, as for a redaction that a sync shows. Returns the chat ID of the message.
     pub fn delete_message(&mut self, chat_or_local_id: &str, message_id: &str) -> Result<String, &'static str> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let removed = self.messages[m_idx].removed;
@@ -2458,6 +2471,8 @@ impl BeeperStore {
         self.recent_emoji.truncate(100);
     }
 
+    /// Adds the reaction of the user here, and queues it for the homeserver. Returns the chat ID of the message and the
+    /// transaction ID of the reaction.
     pub fn add_reaction(
         &mut self,
         chat_or_local_id: &str,
@@ -2480,22 +2495,27 @@ impl BeeperStore {
                 sort_key: String::new(),
             });
         });
+        let out = Outgoing::React { txn: tx_id.clone(), target: message_id.into(), key: reaction_key.into() };
+        self.queue(&chat_id, out);
         Ok((chat_id, tx_id))
     }
 
+    /// Removes the reactions of the user with the key here, and queues the redaction of the first one for the
+    /// homeserver. Returns the chat ID of the message.
     pub fn remove_reaction(
         &mut self,
         chat_or_local_id: &str,
         message_id: &str,
         reaction_key: &str,
-    ) -> Result<(String, String), &'static str> {
+    ) -> Result<String, &'static str> {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let mine = |r: &Reaction| r.reaction_key == reaction_key && self.is_me(&r.participant_id);
         let ids: Vec<String> =
             self.messages[m_idx].reactions.iter().filter(|r| mine(r)).map(|r| r.id.clone()).collect();
         let first = ids.first().ok_or("Reaction not found")?.clone();
         self.update_message(m_idx, |m| m.reactions.retain(|r| !ids.contains(&r.id)));
-        Ok((chat_id, first))
+        self.queue(&chat_id, Outgoing::Redact { target: first });
+        Ok(chat_id)
     }
 
     pub fn toggle_bookmark(&mut self, message_id: &str) -> bool {
