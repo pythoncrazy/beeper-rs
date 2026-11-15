@@ -497,6 +497,47 @@ pub const FIXED_HOTKEYS: &[(&str, &str, &str)] = &[
     ("Strikethrough Text Selection", "Composer", "ctrl+shift+x"),
 ];
 
+/// Desktop's hotkeys that neither list shows, but that a recorded hotkey cannot take. Copy has no name.
+pub const HIDDEN_HOTKEYS: &[(&str, &str, &str)] = &[
+    ("Message: Talk to Type", "Messages", "ctrl+shift+t"),
+    ("Chat: Create New Group", "Chats", "ctrl+shift+n"),
+    ("Select First 9 Commands Modifier", "App", "ctrl+alt"),
+    ("", "Messages", "ctrl+c"),
+];
+
+/// Desktop's `modifierOnly` hotkeys, which record only modifiers.
+pub const MODIFIER_ONLY: &[&str] = &["Switch First 9 Chats Modifier", "Switch First 9 Spaces Modifier"];
+
+/// Desktop's `allowSingleKey` hotkeys, which can be one navigation or function key.
+pub const SINGLE_KEY: &[&str] = &["Undo Pending Send"];
+
+/// Desktop's `canShare` of a hotkey: the keys that it can share with a hotkey of another group.
+pub fn hotkey_shares(name: &str) -> &'static [&'static str] {
+    match name {
+        "Message: Quote or Edit Selected Message" | "Send Message" | "Insert New Line" => &["enter"],
+        "Select Previous Message" | "Undo Pending Send" => &["up"],
+        "Switch First 9 Chats Modifier" | "Select First 9 Commands Modifier" => &["ctrl+alt"],
+        _ => &[],
+    }
+}
+
+/// Desktop's `gRt`: the hotkey other than `name` whose keys have the combination `combo`, unless the two hotkeys
+/// are in different groups and both can share it. `keys` gives the keys of a reassignable hotkey.
+pub fn hotkey_conflict<'a>(name: &str, combo: &str, keys: impl Fn(&'static str) -> &'a str) -> Option<&'static str> {
+    let parts: Vec<&str> = combo.split('+').collect();
+    let mods = ["ctrl", "shift", "alt"].map(|m| parts.contains(&m));
+    let key = parts.last().copied().filter(|p| !["ctrl", "shift", "alt"].contains(p)).unwrap_or("");
+    let group = |n: &str| HOTKEYS.iter().find(|h| h.0 == n).expect("a reassignable hotkey").1;
+    let shared = |n: &str| hotkey_shares(n).contains(&combo) && hotkey_shares(name).contains(&combo);
+    let reassignable = HOTKEYS.iter().map(|h| (h.0, h.1, keys(h.0)));
+    let fixed = FIXED_HOTKEYS.iter().chain(HIDDEN_HOTKEYS).map(|h| -> (&str, &str, &'a str) { (h.0, h.1, h.2) });
+    reassignable
+        .chain(fixed)
+        .filter(|h| h.0 != name && hotkey_has(h.2, mods, key))
+        .find(|h| !(h.1 != group(name) && shared(h.0)))
+        .map(|h| h.0)
+}
+
 /// match-sorter's rank of `text` for `query`, which Desktop uses to filter and sort lists: 7 for the same text,
 /// down to 1 and a fraction for the letters in order. None does not match.
 pub fn match_rank(text: &str, query: &str) -> Option<f32> {
@@ -786,6 +827,19 @@ mod tests {
                 assert!(combos().all(|c| !k.split(", ").any(|x| x == c)), "{name} and {other} ({g}) share {keys}");
             }
         }
+    }
+
+    #[test]
+    fn hotkey_conflicts_like_desktop() {
+        let conflict = |name, combo| hotkey_conflict(name, combo, hotkey_default);
+        assert_eq!(conflict("Search", "ctrl+j"), Some("Command Bar"));
+        assert_eq!(conflict("Search", "ctrl+k"), None, "a hotkey does not conflict with itself");
+        assert_eq!(conflict("Search", "ctrl+shift+t"), Some("Message: Talk to Type"), "hidden hotkeys count");
+        assert_eq!(conflict("Search", "ctrl+c"), Some(""));
+        assert_eq!(conflict("Send Message", "enter"), None, "both can share Enter across groups");
+        assert_eq!(conflict("Search", "enter"), Some("Message: Quote or Edit Selected Message"));
+        assert_eq!(conflict("Switch First 9 Chats Modifier", "ctrl+alt"), Some("Switch First 9 Spaces Modifier"));
+        assert_eq!(hotkey_conflict("Search", "ctrl+j", |n| if n == "Command Bar" { "ctrl+m" } else { "" }), None);
     }
 
     #[test]
