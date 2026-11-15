@@ -1124,7 +1124,7 @@ fn chat_commands_like_desktop() {
     let cmds = app.commands(&app.store.read(), "");
     let titled = |t: &str| cmds.iter().find(|c| c.title == t).unwrap_or_else(|| panic!("no command {t}"));
     assert_eq!(cmds[0].title, "Remind me later");
-    assert!(titled("Report spam").msg.is_none(), "no network reports chats here");
+    assert!(cmds.iter().all(|c| c.title != "Report spam" && c.title != "Block"), "the demo has no blocking");
     assert_eq!(titled("Send file").hotkey, Some("Chat: Send File"));
     assert_eq!(titled("Filter by account").category, "Filter Chats");
     let open = cmds.iter().find(|c| c.hotkey == Some("Open User Profile")).expect("a profile command");
@@ -4047,6 +4047,81 @@ fn request_head_like_desktop() {
     assert!(matches!(&picked[..], [UiMessage::OpenUrl(u)] if *u == url));
     let _ = app.update(UiMessage::AcceptRequest(id));
     assert!(simulator(app.view_conversation()).find("View Profile").is_err(), "only requests have the header");
+}
+
+#[test]
+fn blocking_like_desktop() {
+    let mut app = demo_app("blocking");
+    let (id, title) = {
+        let mut st = app.store.write();
+        st.features.flags["features"]["*"]["block-users"] = true.into();
+        let dm = |c: &Chat| c.chat_type == "single" && c.id != NOTE_CHAT_ID && c.is_pinned != Some(true);
+        let i = st.chats.iter().position(dm).expect("a DM");
+        st.update_chat(i, |c| {
+            (c.is_request, c.can_accept_request, c.block) = (Some(true), true, BLOCK_USER | REPORT_SPAM)
+        });
+        (st.chats[i].id.clone(), st.chats[i].title.clone())
+    };
+    let clicks = |view: El<'_>, labels: &[&str]| -> Vec<UiMessage> {
+        let mut sim = simulator(view);
+        for label in labels {
+            let _ = sim.click(*label).unwrap_or_else(|_| panic!("{label}"));
+        }
+        sim.into_messages().collect()
+    };
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let block = app.commands(&app.store.read(), "spam").into_iter().find(|c| c.title == "Block").expect("Block");
+    assert!(matches!(block.msg, Some(UiMessage::AskBlock(c, true)) if c == id));
+    let picked = clicks(app.view_chat_menu(&id, false, 900.0), &["Block…"]);
+    assert!(matches!(&picked[..], [UiMessage::AskBlock(c, true)] if *c == id));
+    let picked = clicks(app.view_conversation(), &["Block"]);
+    assert!(matches!(&picked[..], [UiMessage::AskBlock(c, true)] if *c == id), "the request notice has Block");
+    let _ = app.update(UiMessage::AskBlock(id.clone(), true));
+    {
+        let mut sim = simulator(app.view_confirm(ASK_BLOCK));
+        assert!(sim.find(format!("Block {title}?").as_str()).is_ok());
+        let _ = sim.click("Report spam").expect("Report spam");
+        for m in sim.into_messages().collect::<Vec<_>>() {
+            let _ = app.update(m);
+        }
+    }
+    for m in clicks(app.view_confirm(ASK_BLOCK), &["Block"]) {
+        let _ = app.update(m);
+    }
+    let blocked = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.user_blocked(&st.chats[st.chat_idx_by_id[&id]])
+    };
+    assert!(blocked(&app) && app.confirm.is_none());
+    assert_eq!(app.status_banner, format!("{title} blocked"));
+    assert!(app.toast.as_ref().is_some_and(|t| t.right.is_none()), "a spam report cannot be undone");
+    assert!(app.pane.selected_chat_id.is_none(), "a blocked request closes");
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    {
+        let mut conversation = simulator(app.view_conversation());
+        assert!(conversation.find(format!("You blocked {title}. ").as_str()).is_ok());
+        assert!(conversation.find("Block").is_err(), "the request notice drops Block");
+    }
+    let picked = clicks(app.view_conversation(), &["Unblock"]);
+    assert!(matches!(&picked[..], [UiMessage::AskBlock(c, false)] if *c == id), "the composer link unblocks");
+    let picked = clicks(app.view_info(), &["Unblock"]);
+    assert!(matches!(&picked[..], [UiMessage::AskBlock(c, false)] if *c == id));
+    let _ = app.update(UiMessage::AskBlock(id.clone(), false));
+    for m in clicks(app.view_confirm(ASK_UNBLOCK), &["Unblock"]) {
+        let _ = app.update(m);
+    }
+    assert!(!blocked(&app) && app.status_banner == format!("{title} unblocked"));
+    let _ = app.update(UiMessage::UndoAction);
+    assert!(blocked(&app), "Undo blocks again");
+    let network = {
+        let mut st = app.store.write();
+        let i = st.chat_idx_by_id[&id];
+        st.update_chat(i, |c| c.block |= NO_UNBLOCK);
+        network_name(&st.chats[i].account_id)
+    };
+    let notice = format!("You blocked {title}. Unblock them in {network}.");
+    assert!(simulator(app.view_conversation()).find(notice.as_str()).is_ok());
+    assert!(simulator(app.view_chat_menu(&id, false, 900.0)).find("Unblock…").is_err());
 }
 
 #[test]

@@ -462,7 +462,13 @@ impl BeeperGuiApp {
             }
             let delete = (c.delete_modes != 0).then(|| UiMessage::AskDeleteChat(id()));
             v.push(cmd(e, trx("Delete", "chat command"), delete).keys(&["delete", "leave"]));
-            v.push(cmd(e, tr("Report spam"), None));
+            v.extend(crate::block_action(st, c).map(|block| {
+                let msg = Some(UiMessage::AskBlock(id(), block));
+                match block {
+                    true => cmd(e, trx("Block", "chat command"), msg).keys(&["spam", "report"]),
+                    false => cmd(e, trx("Unblock", "chat command"), msg),
+                }
+            }));
             v.push(cmd(e, tr("Open in new window"), Some(UiMessage::OpenChatWindow(id()))));
         }
         v.push(

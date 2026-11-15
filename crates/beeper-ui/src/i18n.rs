@@ -351,7 +351,15 @@ mod tests {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
         let mut calls = 0;
         // Desktop's catalogs have no entry for these strings, so Desktop shows them in English too.
-        let english = ["label setting\u{4}Mute"];
+        let english = [
+            "label setting\u{4}Mute",
+            "chat command\u{4}Block",
+            "chat command\u{4}Unblock",
+            "action to block the other person in a DM\u{4}Block",
+            "action to block the other person in a DM\u{4}Block…",
+            "action to unblock the other person in a DM\u{4}Unblock",
+            "action to unblock the other person in a DM\u{4}Unblock…",
+        ];
         for file in std::fs::read_dir(dir).unwrap() {
             let src = std::fs::read_to_string(file.unwrap().path()).unwrap();
             for (call, n) in [("trx(\"", 2), ("trxf(\"", 2), ("trnx(\"", 3)] {

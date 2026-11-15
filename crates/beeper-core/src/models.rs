@@ -12,6 +12,12 @@ pub const CHAT_HIDDEN: u16 = 1 << 8;
 pub const CHAT_REQUEST: u16 = 1 << 9;
 pub const DELETE_FOR_ME: u8 = 1 << 0;
 pub const DELETE_FOR_EVERYONE: u8 = 1 << 1;
+/// The `Chat::block` bits: the `block_user`, `no_unblock` and `report_spam` room features, and Desktop's
+/// `userBlocked`, the `com.beeper.user_blocked` of the `m.bridge` channel.
+pub const BLOCK_USER: u8 = 1 << 0;
+pub const NO_UNBLOCK: u8 = 1 << 1;
+pub const REPORT_SPAM: u8 = 1 << 2;
+pub const USER_BLOCKED: u8 = 1 << 3;
 /// Desktop's `canCurrentUserEditTitle`, `canCurrentUserEditAvatar` and `canCurrentUserEditDescription`, by state event.
 pub const EDITS: [&str; 3] = ["m.room.name", "m.room.avatar", "m.room.topic"];
 /// Desktop's `member_actions` room features.
@@ -515,6 +521,9 @@ pub struct Chat {
     /// Whether the bridge accepts a message request with a button (`message_request.accept_with_button`).
     #[serde(rename = "canAcceptRequest", default)]
     pub can_accept_request: bool,
+    /// The `BLOCK_USER`, `NO_UNBLOCK`, `REPORT_SPAM` and `USER_BLOCKED` bits of a DM.
+    #[serde(default)]
+    pub block: u8,
     /// The `EDITS` that the user can send, one bit each.
     #[serde(default = "all_edits")]
     pub edits: u8,

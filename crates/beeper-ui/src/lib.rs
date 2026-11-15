@@ -183,11 +183,24 @@ fn composer_with(text: &str) -> text_editor::Content {
 }
 
 /// Desktop's `getComposerUnavailableNotice`: the reason that the chat has no composer, under the last message. An
-/// upgraded chat whose new room is in the list shows a link in place of the composer.
-fn unavailable(st: &BeeperStore, chat: &Chat) -> Option<&'static str> {
+/// upgraded chat whose new room is in the list shows a link in place of the composer, and a blocked person that you
+/// can unblock shows an Unblock link.
+fn unavailable(st: &BeeperStore, chat: &Chat) -> Option<String> {
     match &chat.replacement_room {
-        Some(room) => st.resolve_chat_idx(room).is_none().then_some("Chat was upgraded."),
-        None => chat.is_read_only.then_some("Messaging isn't available in this chat"),
+        Some(room) => st.resolve_chat_idx(room).is_none().then(|| tr("Chat was upgraded.").into()),
+        None if st.user_blocked(chat) => (chat.block & NO_UNBLOCK != 0).then(|| {
+            let network = network_name(&chat.account_id);
+            trf("You blocked %1$s. Unblock them in %2$s.", &[&chat.title, &network])
+        }),
+        None => chat.is_read_only.then(|| tr("Messaging isn't available in this chat").into()),
+    }
+}
+
+/// Desktop's Block (true) or Unblock action of a DM, when the bridge supports it.
+fn block_action(st: &BeeperStore, c: &Chat) -> Option<bool> {
+    match st.user_blocked(c) {
+        true => (c.block & NO_UNBLOCK == 0).then_some(false),
+        false => st.can_block(c).then_some(true),
     }
 }
 
@@ -682,6 +695,12 @@ pub enum UiMessage {
     AskDeleteChat(String),
     AskLeaveChat(String),
     LeaveRoom(String),
+    /// Desktop's `confirmBlockUser` (true) or `confirmUnblockUser` of a DM.
+    AskBlock(String, bool),
+    /// Desktop's `setUserBlockedOrAlert`, as (chat, block, report spam).
+    BlockUser(String, bool, bool),
+    /// The "Report spam" checkbox of the Block dialog.
+    ReportSpam(bool),
     BeginSelecting(String),
     ToggleSelected(String),
     SelectionSet(ChatFlag, bool),
@@ -1569,6 +1588,11 @@ const ASK_LEAVE_CHAT: u8 = 14;
 const ASK_MAKE_ADMIN: u8 = 15;
 const ASK_REMOVE_MEMBER: u8 = 16;
 const ASK_REMOVE_ACCOUNT: u8 = 17;
+/// Desktop's `confirmBlockUser` and `confirmUnblockUser`, then their "%s Is Disconnected" dialogs.
+const ASK_BLOCK: u8 = 18;
+const ASK_UNBLOCK: u8 = 19;
+const ASK_BLOCK_OFFLINE: u8 = 20;
+const ASK_UNBLOCK_OFFLINE: u8 = 21;
 const SETTINGS_SIZE: Size = Size::new(793.0, 705.0);
 /// The dialogs over the Settings window.
 const SETTINGS_DIALOGS: [u8; 7] = [
@@ -4065,6 +4089,8 @@ pub struct BeeperGuiApp {
     pub devices: Option<Result<Vec<DeviceInfo>, String>>,
     pub confirm: Option<u8>,
     delete_target: Option<String>,
+    /// The "Report spam" checkbox of the Block dialog.
+    report_spam: bool,
     mods: keyboard::Modifiers,
     reminder_menu: Option<Point>,
     audio: voice::Player,
@@ -4295,6 +4321,7 @@ impl BeeperGuiApp {
             mics: None,
             confirm: None,
             delete_target: None,
+            report_spam: false,
             reminder_menu: None,
             audio,
             recorder: None,
@@ -6969,7 +6996,9 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let chat = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
                 let open = chat.is_some_and(|i| {
-                    unavailable(&st, &st.chats[i]).is_none() && st.chats[i].replacement_room.is_none()
+                    unavailable(&st, &st.chats[i]).is_none()
+                        && st.chats[i].replacement_room.is_none()
+                        && !st.user_blocked(&st.chats[i])
                 });
                 drop(st);
                 let quiet = self.confirm.is_none()
@@ -7577,6 +7606,9 @@ impl BeeperGuiApp {
             }
             UiMessage::SelectionMenu(menu, x) => self.selection_menu = Some((menu, x)),
             UiMessage::AskLeaveChat(id) => (self.confirm, self.delete_target) = (Some(ASK_LEAVE_CHAT), Some(id)),
+            UiMessage::AskBlock(id, block) => self.ask_block(id, block),
+            UiMessage::BlockUser(id, block, spam) => return self.block_user(&id, block, spam),
+            UiMessage::ReportSpam(on) => self.report_spam = on,
             UiMessage::LeaveRoom(id) => {
                 self.confirm = None;
                 self.store.write().leave_room(&id);
@@ -10966,6 +10998,13 @@ impl BeeperGuiApp {
                     menu_rule(p),
                     item(tr("Delete Chat"), "", (c.delete_modes != 0).then(|| UiMessage::AskDeleteChat(c.id.clone()))),
                 ]
+                .push(block_action(&st, c).filter(|_| n == 0).map(|block| {
+                    let label = match block {
+                        true => trx("Block…", "action to block the other person in a DM"),
+                        false => trx("Unblock…", "action to unblock the other person in a DM"),
+                    };
+                    item(label, "", Some(UiMessage::AskBlock(c.id.clone(), block)))
+                }))
                 .push(selecting.then(|| menu_rule(p)))
                 .push(selecting.then(|| item(
                     tr("Open in New Window"),
@@ -11289,6 +11328,49 @@ impl BeeperGuiApp {
             self.mark_read(st, idx);
         }
         st.set_chat_flag(idx, ChatFlag::Archived, Some(on))
+    }
+
+    /// Desktop's `confirmBlockUser` (true) and `confirmUnblockUser`: the dialog, with "Report spam" off.
+    fn ask_block(&mut self, id: String, block: bool) {
+        self.chat_menu = None;
+        self.show_command_palette = false;
+        self.report_spam = false;
+        (self.confirm, self.delete_target) = (Some(if block { ASK_BLOCK } else { ASK_UNBLOCK }), Some(id));
+    }
+
+    /// Desktop's `setUserBlockedOrAlert` and `setUserBlocked`: a disconnected account asks to reconnect first. Then
+    /// the bridge blocks or unblocks, a toast tells it with Undo when it can be undone, and a blocked request closes.
+    fn block_user(&mut self, id: &str, block: bool, spam: bool) -> Task<UiMessage> {
+        let mut st = self.store.write();
+        let c = &st.chats[st.chat_idx_by_id[id]];
+        if st.bridge_accounts.iter().any(|b| b.account_id == c.account_id && b.state == "BAD_CREDENTIALS") {
+            (self.confirm, self.delete_target) =
+                (Some(if block { ASK_BLOCK_OFFLINE } else { ASK_UNBLOCK_OFFLINE }), Some(id.into()));
+            return Task::none();
+        }
+        let (title, request) = (c.title.clone(), block && c.is_request == Some(true));
+        let can_undo = !block || (!spam && c.block & NO_UNBLOCK == 0);
+        self.confirm = None;
+        st.set_user_blocked(id, block, spam);
+        drop(st);
+        // The Undo of a blocked request opens it again, so the chat that is open stays open.
+        let open = self.pane.selected_chat_id.as_deref() == Some(id);
+        let selected = request && open;
+        let mut undo = vec![UiMessage::BlockUser(id.into(), !block, false)];
+        undo.extend(open.then(|| UiMessage::SelectChat(id.into())));
+        let text = trf(if block { "%s blocked" } else { "%s unblocked" }, &[&title]);
+        match can_undo {
+            true => {
+                let what = trf(if block { "Block %s" } else { "Unblock %s" }, &[&title]);
+                self.act(what, UiMessage::Commands(undo), Some((text, None)));
+            }
+            false => self.show(Toast { strong: true, ..Toast::new(text) }),
+        }
+        if selected {
+            self.leave_chat(&mut self.store.write(), None);
+            self.pane.selected_chat_id = None;
+        }
+        self.update(UiMessage::StoreChanged)
     }
 
     fn set_reminder(&mut self, cid: &str, at: Option<i64>, no_reply: Option<bool>) {
@@ -12164,8 +12246,8 @@ impl BeeperGuiApp {
         Some(container(banner).padding(Padding::new(8.0).top(0.0).left(0.0)).into())
     }
 
-    /// Desktop's message request box (`T2t`) under the messages, with its Decline and Accept buttons.
-    fn view_request<'a>(&self, chat: &Chat) -> Option<El<'a>> {
+    /// Desktop's message request box (`T2t`) under the messages, with its Block, Decline and Accept buttons.
+    fn view_request<'a>(&self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
         if chat.is_request != Some(true) {
             return None;
         }
@@ -12186,7 +12268,12 @@ impl BeeperGuiApp {
             button(label).padding([4, 8]).style(btn_style([p.card; 3], [fg; 3], 100.0)).on_press(msg)
         };
         let id = &chat.id;
+        let block = (st.can_block(chat) && !st.user_blocked(chat)).then(|| {
+            let label = trx("Block", "action to block the other person in a DM");
+            pill(label, hex(0xdc362e), UiMessage::AskBlock(id.clone(), true))
+        });
         let buttons = row![]
+            .push(block)
             .push(decline.then(|| pill(tr("Decline"), hex(0xdc362e), UiMessage::DeleteChat(id.clone(), false))))
             .push(accept.then(|| pill(tr("Accept"), p.strong, UiMessage::AcceptRequest(id.clone()))))
             .spacing(8);
@@ -12253,11 +12340,9 @@ impl BeeperGuiApp {
         let col = col.push(st.typing.get(cid).filter(|_| in_chat).map(|ids| self.typing_bubble(chat, ids)));
         let col = col.push(self.incognito_mark_read(&st, chat));
         let col = col.push(in_chat.then(|| self.view_scheduled(&st, chat)));
-        let col = col.push(in_chat.then(|| self.view_request(chat)));
+        let col = col.push(in_chat.then(|| self.view_request(&st, chat)));
         let col = col.push(unavailable(&st, chat).map(|t| {
-            container(txt(tr(t), 13.0).line_height(Pixels(16.0)).color(p.sub).align_x(Center))
-                .center_x(Fill)
-                .center_y(52)
+            container(txt(t, 13.0).line_height(Pixels(16.0)).color(p.sub).align_x(Center)).center_x(Fill).center_y(52)
         }));
         // Desktop's `messages-list` keeps the messages at the bottom when they do not fill the view.
         let scroller = |col| {
@@ -12354,21 +12439,29 @@ impl BeeperGuiApp {
             container(bar).padding([8, 14]).style(bordered_box(p.elevated, p.chip, 1.0, 10.0))
         });
         let verify = verify.map(|v| container(v).padding([0, 12]));
-        // Desktop's `ThreadComposerDisabled` of an upgraded chat: a link to the new chat in place of the composer.
-        let upgraded = chat.replacement_room.as_deref().and_then(|r| st.resolve_chat_idx(r)).map(|i| -> El<'_> {
+        // Desktop's `ThreadComposerDisabled` in place of the composer: a link to the new chat of an upgraded chat, or
+        // "You blocked __NAME__. Unblock".
+        let disabled = |lead: String, link: &str, end: &str, msg| -> El<'_> {
             let part = |t: String, c: Color| txt(t, 13.0).line_height(Pixels(16.0)).color(c);
-            let link = row![
-                part(format!("{} ", tr("Chat was upgraded.")), p.sub),
-                part(tr("Click here to follow the conversation").to_string(), p.text),
-                part(".".into(), p.sub)
-            ];
+            let link = row![part(lead, p.sub), part(link.into(), p.text), part(end.into(), p.sub)];
             let link = button(container(link).center_x(Fill).center_y(36))
                 .padding(8)
                 .style(btn_style([CLEAR; 3], [p.sub; 3], 0.0))
-                .on_press(UiMessage::SelectChat(st.chats[i].id.clone()));
+                .on_press(msg);
             container(link).style(fill_box(p.card, 0.0)).into()
+        };
+        let upgraded = chat.replacement_room.as_deref().and_then(|r| st.resolve_chat_idx(r)).map(|i| {
+            let lead = format!("{} ", tr("Chat was upgraded."));
+            let msg = UiMessage::SelectChat(st.chats[i].id.clone());
+            disabled(lead, tr("Click here to follow the conversation"), ".", msg)
         });
-        let composer = match upgraded {
+        let blocked = (st.user_blocked(chat) && chat.block & NO_UNBLOCK == 0).then(|| {
+            let lead = tr("You blocked __NAME__. __UNBLOCK__").replace("__NAME__", &chat.title);
+            let lead = lead.trim_end_matches("__UNBLOCK__").to_string();
+            let unblock = trx("Unblock", "action to unblock the other person in a DM");
+            disabled(lead, unblock, "", UiMessage::AskBlock(chat.id.clone(), false))
+        });
+        let composer = match upgraded.or(blocked) {
             Some(link) => Some(link),
             None => unavailable(&st, chat).is_none().then(|| self.view_composer(&st, chat)),
         };
@@ -14333,6 +14426,19 @@ impl BeeperGuiApp {
             .push(other.and_then(|u| self.view_contact(&st, chat, u)))
             .push(timers)
             .push(container(note).padding(Padding::ZERO.top(8.0)))
+            .push(block_action(&st, chat).map(|block| {
+                // Desktop's `BrandChatInfoBlockUser` row.
+                let (label, fg) = match block {
+                    true => (trx("Block", "action to block the other person in a DM"), p.text_danger),
+                    false => (trx("Unblock", "action to unblock the other person in a DM"), p.accent),
+                };
+                let row = button(txt(label, 13.0).line_height(Pixels(16.0)).color(fg))
+                    .padding([8, 11])
+                    .width(Fill)
+                    .style(btn_style([p.chip; 3], [fg; 3], 10.0))
+                    .on_press(UiMessage::AskBlock(cid.clone(), block));
+                container(row).padding(Padding::ZERO.top(8.0))
+            }))
             .push((chat.member_actions & MEMBER_LEAVE != 0).then(|| {
                 let leave = button(semi(tr("Leave Chat"), 14.0).line_height(Pixels(18.0)).color(p.strong))
                     .padding([0, 8])
@@ -16839,9 +16945,59 @@ impl BeeperGuiApp {
                 tr("This can expose the Beeper Desktop API to the public internet based on your firewall settings. Only enable if you know what you are doing.").into(),
                 vec![(tr("Allow Remote Access"), UiMessage::RemoteAccess(true))],
             ),
+            ASK_BLOCK..=ASK_UNBLOCK_OFFLINE => {
+                let id = self.delete_target.clone().expect("a DM to block");
+                let st = self.store.read();
+                let c = &st.chats[st.chat_idx_by_id[&id]];
+                let network = network_name(&c.account_id);
+                match dialog {
+                    ASK_BLOCK => {
+                        let body = match c.block & NO_UNBLOCK {
+                            0 => trf("They'll also be blocked on %s.", &[&network]),
+                            _ => trf(
+                                "They'll also be blocked on %1$s. You'll need %2$s to unblock them later.",
+                                &[&network, &network],
+                            ),
+                        };
+                        let block = UiMessage::BlockUser(id, true, self.report_spam && c.block & REPORT_SPAM != 0);
+                        let label = trx("Block", "action to block the other person in a DM");
+                        (trf("Block %s?", &[&c.title]), body, vec![(label, block)])
+                    }
+                    ASK_UNBLOCK => (
+                        trf("Unblock %s?", &[&c.title]),
+                        trf("They'll also be unblocked on %s.", &[&network]),
+                        vec![(
+                            trx("Unblock", "action to unblock the other person in a DM"),
+                            UiMessage::BlockUser(id, false, false),
+                        )],
+                    ),
+                    _ => {
+                        let body = match dialog {
+                            ASK_BLOCK_OFFLINE => "Reconnect %1$s to block %2$s.",
+                            _ => "Reconnect %1$s to unblock %2$s.",
+                        };
+                        let again = reconnect(&st, &c.account_id);
+                        let again = again.unwrap_or_else(|| UiMessage::OpenAccountSettings(c.account_id.clone()));
+                        let again = vec![(tr("Reconnect"), UiMessage::Commands(vec![UiMessage::Ask(None), again]))];
+                        (trf("%s Is Disconnected", &[&network]), trf(body, &[&network, &c.title]), again)
+                    }
+                }
+            }
             _ => unreachable!("dialog {dialog}"),
         };
-        self.dialog(title, body, actions, (tr("Cancel"), UiMessage::Ask(None)))
+        let spam = (dialog == ASK_BLOCK).then(|| self.report_spam_box()).flatten();
+        self.dialog_with(title, body, spam, actions, (tr("Cancel"), UiMessage::Ask(None)))
+    }
+
+    /// The "Report spam" checkbox of the Block dialog, when the bridge reports spam.
+    fn report_spam_box(&self) -> Option<El<'_>> {
+        let st = self.store.read();
+        let c = &st.chats[st.chat_idx_by_id[self.delete_target.as_deref().expect("a DM to block")]];
+        (c.block & REPORT_SPAM != 0).then(|| {
+            let label = txt(tr("Report spam"), 13.0).color(self.pal.text);
+            let line = row![checkbox(&self.pal, self.report_spam), label].spacing(6).align_y(Center);
+            mouse_area(line).on_press(UiMessage::ReportSpam(!self.report_spam)).into()
+        })
     }
 
     /// A confirmation dialog over a window, with its actions after the cancel button.
@@ -16849,6 +17005,18 @@ impl BeeperGuiApp {
         &'a self,
         title: String,
         body: String,
+        actions: Vec<(&'static str, UiMessage)>,
+        cancel: (&'static str, UiMessage),
+    ) -> El<'a> {
+        self.dialog_with(title, body, None, actions, cancel)
+    }
+
+    /// A confirmation dialog with `extra` under its text, like the checkbox of Electron's `showMessageBox`.
+    fn dialog_with<'a>(
+        &'a self,
+        title: String,
+        body: String,
+        extra: Option<El<'a>>,
         actions: Vec<(&'static str, UiMessage)>,
         (no, cancel): (&'static str, UiMessage),
     ) -> El<'a> {
@@ -16860,16 +17028,16 @@ impl BeeperGuiApp {
                 .on_press(msg)
                 .into()
         };
-        let card = column![
-            bold(title, 14.0).color(p.strong),
-            txt(body, 13.0).color(p.text),
-            row![Space::new().width(Fill), pill_btn(p, no, cancel.clone())]
-                .extend(actions.into_iter().map(action))
-                .spacing(8)
-        ]
-        .spacing(10)
-        .padding(16)
-        .width(340);
+        let card = column![bold(title, 14.0).color(p.strong), txt(body, 13.0).color(p.text)]
+            .push(extra)
+            .push(
+                row![Space::new().width(Fill), pill_btn(p, no, cancel.clone())]
+                    .extend(actions.into_iter().map(action))
+                    .spacing(8),
+            )
+            .spacing(10)
+            .padding(16)
+            .width(340);
         mouse_area(
             container(
                 mouse_area(container(card).style(shadow_box(p.elevated, p.menu_border, 12.0, 24.0)))

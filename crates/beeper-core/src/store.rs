@@ -949,6 +949,7 @@ impl BeeperStore {
             img_url: None,
             delete_modes: 0,
             can_accept_request: false,
+            block: 0,
             edits: 0,
             member_actions: 0,
             formatting: ALL_FORMATS,
@@ -1113,6 +1114,28 @@ impl BeeperStore {
         assert!(c.is_request == Some(true) && c.can_accept_request, "{id} is not a request that can be accepted");
         self.update_chat(idx, |c| c.is_request = Some(false));
         self.queue(id, Outgoing::AcceptRequest);
+    }
+
+    /// Desktop's `canBlockUser`: the account has blocking, and the bridge blocks the other person of the DM.
+    pub fn can_block(&self, c: &Chat) -> bool {
+        self.feature("block-users").on && c.block & BLOCK_USER != 0
+    }
+
+    /// Desktop's `isUserBlocked`.
+    pub fn user_blocked(&self, c: &Chat) -> bool {
+        self.can_block(c) && c.block & USER_BLOCKED != 0
+    }
+
+    /// Desktop's `setUserBlocked`: the bridge blocks (true) or unblocks the other person of a DM, and reports spam
+    /// when `report_spam`.
+    pub fn set_user_blocked(&mut self, id: &str, block: bool, report_spam: bool) {
+        let idx = self.chat_idx_by_id[id];
+        let bits = self.chats[idx].block;
+        assert!(self.can_block(&self.chats[idx]), "{id} does not support blocking");
+        assert!(block || bits & NO_UNBLOCK == 0, "{id} does not support unblocking");
+        assert!(!report_spam || block && bits & REPORT_SPAM != 0, "{id} reports spam only while blocking");
+        self.update_chat(idx, |c| c.block = c.block & !USER_BLOCKED | (u8::from(block) * USER_BLOCKED));
+        self.queue(id, Outgoing::BlockUser { block, report_spam });
     }
 
     /// Sets or dismisses a chat reminder here and on the homeserver.
@@ -1695,6 +1718,7 @@ impl BeeperStore {
             participants: ChatParticipants { has_more: false, total: items.len(), items },
             delete_modes: 0,
             can_accept_request: false,
+            block: 0,
             edits: 0,
             member_actions: 0,
             formatting: ALL_FORMATS,
