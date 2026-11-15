@@ -711,6 +711,9 @@ pub enum UiMessage {
     /// Desktop's `openAttachmentPicker`.
     PickFiles,
     FilesPicked(Result<Vec<std::path::PathBuf>, String>),
+    /// Desktop's "Change" of "Downloads location", and the picked folder.
+    PickDownloads,
+    DownloadsPicked(Result<Vec<std::path::PathBuf>, String>),
     FilesLoaded(Result<Vec<PendingMedia>, String>),
     /// A file drag enters (true) or leaves a window.
     FileHover(window::Id, bool),
@@ -1425,6 +1428,14 @@ fn donut(parts: &[(storage::Kind, u64)]) -> svg::Handle {
 }
 
 /// `dir/name`, or `dir/stem (n).ext` with the first free `n`.
+/// Desktop's `downloadsDirPath`: the chosen folder, or the downloads folder of the OS.
+fn downloads_dir(s: &BeeperSettings) -> std::path::PathBuf {
+    match s.downloads_dir.as_str() {
+        "" => beeper_core::platform::resolve_home_dir(&std::env::vars().collect()).join("Downloads"),
+        dir => dir.into(),
+    }
+}
+
 fn unused_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let (stem, ext) = match name.rsplit_once('.') {
         Some((s, e)) if !s.is_empty() => (s, format!(".{e}")),
@@ -6028,7 +6039,7 @@ impl BeeperGuiApp {
                 self.prune_wallpapers();
             }
             UiMessage::PickWallpaper(chat) => {
-                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), true);
+                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Image);
                 return Task::perform(pick, move |r| UiMessage::WallpaperPicked(chat.clone(), r));
             }
             UiMessage::WallpaperPicked(chat, r) => match r.map(|paths| paths.into_iter().next()) {
@@ -6759,7 +6770,7 @@ impl BeeperGuiApp {
                 let client = st.matrix.clone();
                 self.status_banner = trf("Downloading %s", &[&files[0].1]);
                 self.sticky_banner = Some(self.status_banner.clone());
-                let dir = beeper_core::platform::resolve_home_dir(&std::env::vars().collect()).join("Downloads");
+                let (dir, ask) = (downloads_dir(&st.settings), st.settings.on("alwaysAskDownload"));
                 return Task::perform(
                     async move {
                         let mut last = String::new();
@@ -6768,9 +6779,22 @@ impl BeeperGuiApp {
                             if name.trim_matches('.').is_empty() {
                                 return Err(format!("bad file name {name:?}"));
                             }
+                            // Desktop's `always_ask_download_location`: the save dialog picks each path.
+                            let path = match ask {
+                                true => {
+                                    let save = portal::Pick::Save(name.clone());
+                                    let picked = portal::open_files(portal::PORTAL.into(), tr("Save").into(), save);
+                                    match picked.await?.into_iter().next() {
+                                        Some(path) => path,
+                                        None => continue,
+                                    }
+                                }
+                                false => {
+                                    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                                    unused_path(&dir, &name)
+                                }
+                            };
                             let bytes = beeper_core::matrix::media(client.clone(), url).await?;
-                            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-                            let path = unused_path(&dir, &name);
                             std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
                             last = path.file_name().expect("a file path").to_string_lossy().into_owned();
                         }
@@ -7381,8 +7405,21 @@ impl BeeperGuiApp {
             }
             UiMessage::PickFiles => {
                 let title = tr("Open").to_string();
-                return Task::perform(portal::open_files(portal::PORTAL.into(), title, false), UiMessage::FilesPicked);
+                return Task::perform(
+                    portal::open_files(portal::PORTAL.into(), title, portal::Pick::Files),
+                    UiMessage::FilesPicked,
+                );
             }
+            UiMessage::PickDownloads => {
+                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Folder);
+                return Task::perform(pick, UiMessage::DownloadsPicked);
+            }
+            UiMessage::DownloadsPicked(Ok(dirs)) => {
+                if let Some(dir) = dirs.into_iter().next() {
+                    self.patch_settings(|s| s.downloads_dir = dir.display().to_string());
+                }
+            }
+            UiMessage::DownloadsPicked(Err(e)) => self.fail(Toast::new(e)),
             UiMessage::FilesPicked(r) => match r {
                 Ok(paths) => {
                     let load = move || paths.iter().map(|p| portal::load_file(p)).collect();
@@ -16773,7 +16810,7 @@ impl BeeperGuiApp {
     fn group_edit(&mut self, edit: GroupEdit) -> Task<UiMessage> {
         match edit {
             GroupEdit::Pick => {
-                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), true);
+                let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Image);
                 return Task::perform(pick, |r| UiMessage::Group(GroupEdit::Picked(r)));
             }
             GroupEdit::Picked(Ok(paths)) => {
@@ -17636,6 +17673,14 @@ impl BeeperGuiApp {
                     false => (!off).then_some(UiMessage::SetPref(r.key, 1 - v)),
                 };
                 toggle_faded(p, v == 1 && !locked, press.clone(), if off { 0.5 } else { 1.0 })
+            }
+            prefs::Control::Downloads => {
+                let change = button(med(tr("Change"), 12.0).color(p.text))
+                    .padding([4, 10])
+                    .style(pill_style(p))
+                    .on_press(UiMessage::PickDownloads);
+                let dir = downloads_dir(s).display().to_string();
+                return pref_row(p, tr(r.label), Some(&dir), None, change.into());
             }
             prefs::Control::Analytics => {
                 press = Some(UiMessage::ShareAnalytics);

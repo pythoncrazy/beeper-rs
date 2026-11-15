@@ -1170,6 +1170,8 @@ pub struct BeeperSettings {
     pub ever_labeled: bool,
     /// Desktop's local `labels_intro_seen`: New Label shows its intro only the first time.
     pub labels_intro_seen: bool,
+    /// Desktop's local `downloads_dir_path`, or empty for the downloads folder of the OS.
+    pub downloads_dir: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

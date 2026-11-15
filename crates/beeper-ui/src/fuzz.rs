@@ -40,7 +40,13 @@ fn prefs() -> impl Iterator<Item = (SettingsTab, &'static prefs::Pref)> {
     let tab = |page| *SettingsTab::ALL.iter().find(|t| t.meta().0 == page).expect("a settings tab");
     prefs::all()
         .filter(|(_, p)| {
-            !matches!(p.control, prefs::Control::Microphone | prefs::Control::Multi(_) | prefs::Control::Analytics)
+            !matches!(
+                p.control,
+                prefs::Control::Microphone
+                    | prefs::Control::Multi(_)
+                    | prefs::Control::Analytics
+                    | prefs::Control::Downloads
+            )
         })
         .filter(|(_, p)| p.key != "appLanguage")
         .map(move |(page, p)| (tab(page), p))
@@ -2142,6 +2148,21 @@ fn profile_page_like_desktop() {
     assert_eq!(app.profile.change_email.as_ref().map(|c| c.1), Some(true), "the email saves");
     let hits = search_settings(&app.store.read(), "recovery code");
     assert_eq!(hits.first(), Some(&SettingsHit::Section(SettingsTab::Profile, true)));
+}
+
+#[test]
+fn downloads_location_like_desktop() {
+    let mut app = demo_app("downloads-location");
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
+    let os = downloads_dir(&app.store.read().settings);
+    assert!(os.ends_with("Downloads"), "the downloads folder of the OS is the default");
+    let _ = app.update(UiMessage::DownloadsPicked(Ok(vec!["/tmp/picked".into()])));
+    assert_eq!(downloads_dir(&app.store.read().settings), std::path::PathBuf::from("/tmp/picked"));
+    let _ = app.update(UiMessage::DownloadsPicked(Ok(vec![])));
+    assert_eq!(app.store.read().settings.downloads_dir, "/tmp/picked", "a cancel keeps the folder");
+    let hits = search_settings(&app.store.read(), "downloads");
+    let labels: Vec<String> = hits.into_iter().map(SettingsHit::label).collect();
+    assert!(labels.contains(&"Downloads Preferences".to_string()), "{labels:?}");
 }
 
 #[test]
