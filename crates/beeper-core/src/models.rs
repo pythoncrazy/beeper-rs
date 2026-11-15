@@ -214,13 +214,16 @@ impl BeeperStateRecord {
         }
     }
 
-    /// Desktop's `authenticationStage` after the verification: the keys and the sync that the onboarding waits for.
+    /// Desktop's `authenticationStage`: the step of the onboarding. The app shows the main window only at "done".
     pub fn stage(&self) -> &'static str {
-        match (self.has_secrets(), self.key_backup, self.first_sync_done) {
-            (false, _, _) => "awaiting-secrets",
-            (true, false, _) => "awaiting-key-backup",
-            (true, true, false) => "syncing",
-            (true, true, true) => "done",
+        match (self.verified, self.has_secrets(), self.key_backup, self.first_sync_done) {
+            (true, false, _, _) => "awaiting-secrets",
+            (true, true, false, _) => "awaiting-key-backup",
+            (true, true, true, false) => "syncing",
+            (true, true, true, true) => "done",
+            (false, ..) if self.device_id.is_empty() => "pre-login",
+            (false, ..) if self.initialized => "pre-verification",
+            (false, ..) => "unknown",
         }
     }
 }
