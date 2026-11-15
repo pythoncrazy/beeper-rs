@@ -5,7 +5,7 @@ use beeper_core::models::{
 use beeper_core::store::{BeeperStore, StoreLock};
 use beeper_ui::{
     login::{Login, LoginMsg, Screen},
-    style::{all_fonts, fw},
+    style::{ensure_fonts_loaded, fw},
     BeeperGuiApp, El, SettingsTab, UiMessage,
 };
 use iced::{font::Weight, Size, Theme};
@@ -13,11 +13,8 @@ use iced_test::simulator::Simulator;
 use std::path::{Path, PathBuf};
 
 fn shot(out: &Path, name: &str, size: (f32, f32), theme: &Theme, el: El<'_>) {
-    let settings = iced::Settings {
-        default_font: fw(Weight::Normal),
-        fonts: all_fonts().map(Into::into).collect(),
-        ..iced::Settings::default()
-    };
+    ensure_fonts_loaded();
+    let settings = iced::Settings { default_font: fw(Weight::Normal), ..iced::Settings::default() };
     let path = out.join(format!("{name}-tiny-skia.png"));
     if path.exists() {
         std::fs::remove_file(&path).expect("remove old shot");
