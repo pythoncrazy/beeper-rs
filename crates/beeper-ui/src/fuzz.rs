@@ -768,13 +768,40 @@ fn send_later_like_desktop() {
     assert!(simulator(app.view_main()).find("Send Later message canceled by reply.").is_ok());
     let _ = app.update(UiMessage::Unschedule(vec![s.id.clone()]));
     assert!(app.store.read().scheduled.is_empty());
-    app.store.write().schedule(&id, "now".into(), None, now_unix_millis() - 1, false);
+    app.store.write().schedule(&id, "now".into(), None, (now_unix_millis() - 1, false), None);
     let _ = app.update(UiMessage::CheckScheduled);
     let st = app.store.read();
     assert!(
         st.scheduled.is_empty() && st.messages.last().unwrap().text.as_deref() == Some("now"),
         "a due message sends"
     );
+    drop(st);
+    // Desktop's `scheduleCurrentDraft` keeps each content part, and a new file keeps the Send Later time.
+    let path = std::env::temp_dir().join(format!("beeper-rs-{}-later.pdf", std::process::id()));
+    std::fs::write(&path, b"%PDF").unwrap();
+    let file = portal::load_file(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let _ = app.update(UiMessage::SendLater(Some((at, false))));
+    let _ = app.update(UiMessage::FilesLoaded(vec![Ok(file.clone()), Ok(file)]));
+    assert_eq!(app.pane.send_later, Some((at, false)));
+    let _ = app.update(UiMessage::ComposerChanged("two files".into()));
+    let _ = app.update(UiMessage::SubmitComposer);
+    let parts = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.scheduled
+            .iter()
+            .map(|s| (s.text.clone(), s.upload.as_ref().map(|u| st.assets[u].file_name.clone())))
+            .collect::<Vec<_>>()
+    };
+    let name = Some(format!("beeper-rs-{}-later.pdf", std::process::id()));
+    assert_eq!(parts(&app), [("two files".into(), None), (String::new(), name.clone()), (String::new(), name.clone())]);
+    assert!(simulator(app.view_main()).find(name.as_deref().unwrap()).is_ok(), "a file part shows its name");
+    let ids: Vec<String> = app.store.read().scheduled.iter().map(|s| s.id.clone()).collect();
+    let _ = app.update(UiMessage::SendNow(ids));
+    let st = app.store.read();
+    let last = &st.chat_msg_indices[&id][st.chat_msg_indices[&id].len() - 3..];
+    let sent: Vec<_> = last.iter().map(|&i| (st.messages[i].text.clone(), st.messages[i].attachments.len())).collect();
+    assert_eq!(sent, [(Some("two files".into()), 0), (None, 1), (None, 1)], "the files send from the uploads");
 }
 
 #[test]

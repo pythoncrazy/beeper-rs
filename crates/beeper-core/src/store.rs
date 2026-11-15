@@ -738,8 +738,16 @@ impl BeeperStore {
         self.put_kv(KEY_SCHEDULED, &serde_json::to_string(&self.scheduled).expect("serialize scheduled messages"));
     }
 
-    /// Desktop's `scheduleCurrentDraft`.
-    pub fn schedule(&mut self, chat_id: &str, text: String, reply_to: Option<String>, send_on: i64, no_reply: bool) {
+    /// Desktop's `scheduleMessages` for one content part: a text, or a stored upload with `text` as its caption.
+    pub fn schedule(
+        &mut self,
+        chat_id: &str,
+        text: String,
+        reply_to: Option<String>,
+        at: (i64, bool),
+        upload: Option<String>,
+    ) {
+        let (send_on, no_reply) = at;
         let chat_id = self.resolve_canonical_chat_id(chat_id).expect("schedule in a known chat");
         let id = self.next_id("pending");
         let added_on = crate::config::now_unix_millis();
@@ -752,6 +760,7 @@ impl BeeperStore {
             send_on,
             send_only_on_no_response: no_reply,
             canceled: false,
+            upload,
         };
         self.scheduled.push(s);
         self.persist_scheduled();
