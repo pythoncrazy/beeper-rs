@@ -7958,7 +7958,9 @@ impl BeeperGuiApp {
             }
             UiMessage::WindowFocused(focused) => {
                 self.focused = focused;
-                let key = (focused && self.login.screen == login::Screen::RecoveryKey && self.login_window.is_some())
+                let screen = self.login.screen;
+                let clipboard = matches!(screen, login::Screen::RecoveryKey | login::Screen::Code);
+                let key = (focused && clipboard && self.login_window.is_some())
                     .then(|| iced::clipboard::read().map(|t| LoginMsg::KeyOnFocus(t).into()));
                 return Task::batch([self.close_notifications()].into_iter().chain(key));
             }
