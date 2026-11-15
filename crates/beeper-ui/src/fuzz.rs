@@ -953,6 +953,8 @@ fn mentions_like_desktop() {
     let _ = app.update(UiMessage::PickSuggestion(0));
     let text = app.pane.composer.text();
     assert!(text.starts_with("a ") && !text.contains(':') && text.ends_with(' '), "an emoji replaces its query");
+    let _ = app.update(UiMessage::PickSuggestion(0));
+    assert_eq!(app.pane.composer.text(), text, "the second click of a double click picks nothing");
 }
 
 #[test]
@@ -3413,6 +3415,9 @@ fn add_members_like_desktop() {
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
     assert!(chat(&app).participants.items.iter().any(|u| u.id == pick.id));
     assert!(!app.show_command_palette);
+    let total = chat(&app).participants.total;
+    let _ = app.update(UiMessage::AddMember(id.clone(), Box::new(pick)));
+    assert_eq!(chat(&app).participants.total, total, "the second click of a double click adds nobody");
 }
 
 #[test]

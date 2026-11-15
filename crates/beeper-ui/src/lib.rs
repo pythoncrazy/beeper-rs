@@ -5065,7 +5065,7 @@ impl BeeperGuiApp {
         let top = &mut self.pane.top;
         (top.tries, top.waiting) = (if count == Some(before) { top.tries + 1 } else { 0 }, true);
         let wait = Duration::from_millis((100 * 2u64.pow(top.tries)).min(3000));
-        Task::perform(tokio::time::sleep(wait), |()| UiMessage::LoadOlder)
+        Task::perform(async move { tokio::time::sleep(wait).await }, |()| UiMessage::LoadOlder)
     }
 
     fn push_outbox(&mut self) -> Task<UiMessage> {
@@ -5601,7 +5601,8 @@ impl BeeperGuiApp {
                 return stop;
             }
             UiMessage::PickSuggestion(i) => {
-                let (at, picks) = self.suggestions(&self.store.read()).expect("an open autocomplete");
+                // The second click of a double click hits the list that the first pick closed.
+                let Some((at, picks)) = self.suggestions(&self.store.read()) else { return Task::none() };
                 let mut text = self.pane.composer.text();
                 let caret = format::offset(&text, self.pane.composer.cursor().position);
                 let pick = match &picks[i.min(picks.len() - 1)] {
@@ -6704,7 +6705,13 @@ impl BeeperGuiApp {
                     Err(e) => format!("Export failed: {e}"),
                 };
             }
-            UiMessage::AddMember(chat, user) => self.store.write().add_member(&chat, *user),
+            UiMessage::AddMember(chat, user) => {
+                let mut st = self.store.write();
+                // The second click of a double click hits the row of the person that the first click added.
+                if st.chats[st.chat_idx_by_id[&chat]].participants.items.iter().all(|u| u.id != user.id) {
+                    st.add_member(&chat, *user);
+                }
+            }
             UiMessage::CommandHighlight(i) => self.cmd_index = i,
             UiMessage::Commands(msgs) => {
                 return Task::batch(msgs.into_iter().map(|m| self.update(m)).collect::<Vec<_>>())
@@ -7524,9 +7531,8 @@ impl BeeperGuiApp {
             }
             UiMessage::CopyField(i, value) => {
                 self.integrations.copied = Some(i);
-                let done = Task::perform(tokio::time::sleep(std::time::Duration::from_secs(2)), move |()| {
-                    UiMessage::CopyDone(i)
-                });
+                let wait = async { tokio::time::sleep(std::time::Duration::from_secs(2)).await };
+                let done = Task::perform(wait, move |()| UiMessage::CopyDone(i));
                 return Task::batch([iced::clipboard::write(value), done]);
             }
             UiMessage::CopyDone(i) => {
