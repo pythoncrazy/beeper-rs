@@ -6,8 +6,9 @@ use crate::models::{
     PollRules, Reaction, SendError, ThreadFollows, Timers, Transcription, User, VerificationDevice, VerificationError,
     VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES,
     BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME,
-    DISAPPEARING_TIMER, EDITS, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, NO_UNBLOCK,
-    PERSONAL_AVATAR, PERSONAL_NAME, REPORT_SPAM, TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
+    DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK,
+    MSG_MENTION, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REPORT_SPAM, TRANSCRIPTION, TRANSCRIPTIONS_ROOM,
+    USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -1046,11 +1047,11 @@ async fn sync_space(store: &SharedStore, room: &Room) {
 }
 
 async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>) {
-    if room.room_id() == BOOKMARKS_ROOM {
-        return sync_bookmarks(store, room, events).await;
-    }
-    if room.room_id() == TRANSCRIPTIONS_ROOM {
-        return sync_transcriptions(store, events);
+    match room.room_id().as_str() {
+        BOOKMARKS_ROOM => return sync_bookmarks(store, room, events).await,
+        TRANSCRIPTIONS_ROOM => return sync_transcriptions(store, events),
+        id if MANAGED_ROOMS.contains(&id) => return,
+        _ => {}
     }
     let create = state(room, "m.room.create").await.expect("rooms have a create event");
     if create["com.beeper.label"] == true {
@@ -3750,6 +3751,25 @@ mod tests {
         assert!(!st.chat_idx_by_id.contains_key(BOOKMARKS_ROOM), "the bookmarks room is not a chat");
         drop(st);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Desktop's `managedRoomEventHandlers` take the events of the managed rooms, and the transcriptions room is not
+    /// in the chat list, so these rooms are never chats. Desktop shows `!tips:beeper.local` as a chat.
+    #[tokio::test]
+    async fn managed_rooms_are_not_chats_like_desktop() {
+        use crate::models::MANAGED_ROOMS;
+        for room in MANAGED_ROOMS.into_iter().chain(["!tips:beeper.local"]) {
+            let text = stub_event("$t", "m.room.message", json!({ "msgtype": "m.text", "body": "hi" }));
+            let name = format!("managed-{}", &room[1..room.find(':').expect("a room ID")]);
+            let (store, dir) = stub_history(&name, Vec::new(), (room, vec![text])).await;
+            sync_stub_room(&store, room).await;
+            let st = store.read();
+            let chat = !MANAGED_ROOMS.contains(&room);
+            assert_eq!(st.chat_idx_by_id.contains_key(room), chat, "{room} is a chat: {chat}");
+            assert_eq!(st.messages.iter().any(|m| m.chat_id == room), chat, "{room} has messages: {chat}");
+            drop(st);
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     #[test]
