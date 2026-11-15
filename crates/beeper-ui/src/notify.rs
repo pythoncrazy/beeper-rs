@@ -142,7 +142,7 @@ impl BeeperGuiApp {
     pub(crate) fn message_sound(&self, m: &Message) {
         use crate::sound::{play, Sound};
         let st = self.store.read();
-        let Some(&i) = st.chat_idx_by_id.get(&m.chat_id) else { return };
+        let Some(i) = st.resolve_chat_idx(&m.chat_id) else { return };
         let mine = m.is_sender == Some(true);
         let hour_old = now_unix_millis() - millis_from_rfc3339(&m.timestamp).expect("RFC 3339 timestamp") > 3_600_000;
         let sound = match (mine, st.settings.pref("soundEffects")) {
@@ -203,8 +203,7 @@ impl BeeperGuiApp {
     /// Desktop's `sendQueuedNotifications` and `renotifyIfUnread`.
     pub(crate) fn notify_timer(&mut self, chat: String, timer: u64) -> Task<UiMessage> {
         let st = self.store.read();
-        let unread = st.chat_idx_by_id.get(&chat).is_some_and(|&i| {
-            let c = &st.chats[i];
+        let unread = st.find_chat(&chat).is_some_and(|c| {
             c.unread_count > 0
                 && !st.notifications_muted(c)
                 && c.is_hidden_from_inbox != Some(true)
@@ -232,7 +231,7 @@ impl BeeperGuiApp {
         let (before, last) = self.pending.typing.entry(chat.clone()).or_default();
         let started: Vec<String> = now.iter().filter(|u| !before.contains(u)).cloned().collect();
         *before = now;
-        let Some(c) = st.chat_idx_by_id.get(&chat).map(|&i| &st.chats[i]) else { return Task::none() };
+        let Some(c) = st.find_chat(&chat) else { return Task::none() };
         let shown = cfg!(target_os = "linux")
             && self.pane.selected_chat_id.as_ref() != Some(&chat)
             && !st.notifications_muted(c)
@@ -295,7 +294,7 @@ impl BeeperGuiApp {
             return None;
         }
         let st = self.store.read();
-        let chat = &st.chats[*st.chat_idx_by_id.get(&m.chat_id)?];
+        let chat = st.find_chat(&m.chat_id)?;
         let group = chat.chat_type == "group";
         let prefs = &st.settings;
         let otp_network = matches!(account_network(&chat.account_id).kind, IMessage | GoogleMessages | GoogleVoice);

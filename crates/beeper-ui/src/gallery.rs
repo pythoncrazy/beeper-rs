@@ -253,7 +253,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_gallery_reactions<'a>(&self, ids: &[String]) -> El<'a> {
         let st = self.store.read();
         let ms: Vec<&Message> = ids.iter().map(|i| &st.messages[st.msg_idx_by_id[i]]).collect();
-        let chat = &st.chats[st.chat_idx_by_id[&ms[0].chat_id]];
+        let chat = st.chat(&ms[0].chat_id);
         crate::popover::popover(Space::new(), self.reaction_list(chat, &ms), true).into()
     }
 

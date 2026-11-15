@@ -346,7 +346,7 @@ impl BeeperGuiApp {
                 let target = self.delete_target.as_deref().expect("a member");
                 let (cid, uid) = target.split_once(' ').map(|(c, u)| (c.to_string(), u.to_string())).expect("chat and user");
                 let st = self.store.read();
-                let c = &st.chats[st.chat_idx_by_id[&cid]];
+                let c = st.chat(&cid);
                 let name = member_name(c.participants.items.iter().find(|u| u.id == uid).expect("a member of the chat"));
                 match dialog {
                     ASK_MAKE_ADMIN => (
@@ -456,7 +456,7 @@ impl BeeperGuiApp {
             ASK_BLOCK..=ASK_UNBLOCK_OFFLINE => {
                 let id = self.delete_target.clone().expect("a DM to block");
                 let st = self.store.read();
-                let c = &st.chats[st.chat_idx_by_id[&id]];
+                let c = st.chat(&id);
                 let network = network_name(&c.account_id);
                 match dialog {
                     ASK_BLOCK => {
@@ -509,7 +509,7 @@ impl BeeperGuiApp {
     /// The "Report spam" checkbox of the Block dialog, when the bridge reports spam.
     fn report_spam_box(&self) -> Option<El<'_>> {
         let st = self.store.read();
-        let c = &st.chats[st.chat_idx_by_id[self.delete_target.as_deref().expect("a DM to block")]];
+        let c = st.chat(self.delete_target.as_deref().expect("a DM to block"));
         (c.block & REPORT_SPAM != 0).then(|| {
             let label = txt(tr("Report spam"), 13.0).color(self.pal.text);
             let line = row![checkbox(&self.pal, self.report_spam), label].spacing(6).align_y(Center);
@@ -1052,7 +1052,7 @@ impl BeeperGuiApp {
     /// Desktop's `setPersonalRoomName`, with its toast and Undo.
     pub(crate) fn set_personal_name(&mut self, chat: String, name: Option<String>) {
         let mut st = self.store.write();
-        let c = &st.chats[st.chat_idx_by_id[&chat]];
+        let c = st.chat(&chat);
         let old = c.personal_parts().0;
         let what = match &name {
             Some(_) => trf("Rename %s for you", &[&c.room_title()]),

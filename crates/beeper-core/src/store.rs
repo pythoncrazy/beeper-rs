@@ -487,7 +487,7 @@ pub struct BeeperStore {
     pub accounts: Vec<Account>,
     pub labels: Vec<Label>,
     pub chats: Vec<Chat>,
-    pub chat_idx_by_id: HashMap<String, usize>,
+    pub(crate) chat_idx_by_id: HashMap<String, usize>,
     /// The `activity_key` of each chat, for Desktop's chat order `ORDER BY timestamp DESC`.
     pub chat_order: BTreeSet<(i64, String)>,
     local_chat_idx_by_id: HashMap<String, usize>,
@@ -1996,6 +1996,22 @@ impl BeeperStore {
         format!("{prefix}_{}_{}", crate::config::now_unix_millis(), self.next_seq)
     }
 
+    /// The index in `chats` of the chat with the ID. It panics for an unknown chat.
+    pub fn chat_idx(&self, id: &str) -> usize {
+        *self.chat_idx_by_id.get(id).unwrap_or_else(|| panic!("{id} is not a known chat"))
+    }
+
+    /// The chat with the ID. It panics for an unknown chat.
+    pub fn chat(&self, id: &str) -> &Chat {
+        &self.chats[self.chat_idx(id)]
+    }
+
+    /// The chat with the ID or the local chat ID, or `None` for an unknown chat.
+    pub fn find_chat(&self, chat_or_local_id: &str) -> Option<&Chat> {
+        self.resolve_chat_idx(chat_or_local_id).map(|i| &self.chats[i])
+    }
+
+    /// The index in `chats` of the chat with the ID or the local chat ID, or `None` for an unknown chat.
     pub fn resolve_chat_idx(&self, chat_or_local_id: &str) -> Option<usize> {
         self.chat_idx_by_id.get(chat_or_local_id).or_else(|| self.local_chat_idx_by_id.get(chat_or_local_id)).copied()
     }
