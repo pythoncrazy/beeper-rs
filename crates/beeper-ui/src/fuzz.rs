@@ -1,5 +1,5 @@
 //! Random clicks, keys and messages on every window of a demo account, with every value of every preference.
-//! `FUZZ_SEED` is the first of the four seeds, and `FUZZ_STEPS` is the number of steps of each seed.
+//! `FUZZ_SEED` is the first of the 16 seeds, and `FUZZ_STEPS` is the number of steps of each seed.
 
 use super::*;
 use beeper_core::config::CentralConfig;
@@ -1996,7 +1996,7 @@ fn random_input_does_not_panic() {
         |k, default| std::env::var(k).map_or(default, |n| n.parse().unwrap_or_else(|_| panic!("{k} is a number")));
     let (seed, steps) = (var("FUZZ_SEED", 0), var("FUZZ_STEPS", 100));
     std::thread::scope(|s| {
-        for seed in seed..seed + 4 {
+        for seed in seed..seed + 16 {
             s.spawn(move || run(seed, steps as usize));
         }
     });
