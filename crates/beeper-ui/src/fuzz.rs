@@ -1178,6 +1178,42 @@ fn the_composer_pill_quotes_like_desktop() {
     assert!(simulator(app.view_main()).find("Editing message").is_err(), "Desktop has no edit banner");
 }
 
+/// Desktop's Media window: the filter menu opens at the cursor, the selection bar counts with its plural string, and a
+/// link row shows the preview image of the link.
+#[test]
+fn media_window_menu_and_rows_like_desktop() {
+    let mut app = demo_app("media-rows");
+    let _ = app.update(UiMessage::OpenMedia);
+    let id = app.media_window.as_ref().map(|w| w.id).expect("a media window");
+    let _ = app.update(UiMessage::WindowResized(id, Size::new(1000.0, 720.0)));
+    app.cursor.set(Point::new(900.0, 40.0));
+    let _ = app.update(UiMessage::MediaMenu(true));
+    assert_eq!(app.media_window.as_ref().unwrap().menu, Some(Point::new(900.0, 40.0)), "the menu opens at the cursor");
+    let _ = app.update(UiMessage::MediaMenu(false));
+    let (mid, k) = {
+        let mut st = app.store.write();
+        let items = crate::media_items(&st, app.media_window.as_ref().unwrap());
+        let (i, k) = items[0];
+        st.messages[i].attachments[k].file_size = Some(2048);
+        (st.messages[i].id.clone(), k)
+    };
+    let _ = app.update(UiMessage::MediaSelect(true));
+    let _ = app.update(UiMessage::MediaPick(mid, k));
+    let count = format!("1 selected ({})", human_size(2048));
+    assert!(simulator(app.view(id)).find(count.as_str()).is_ok(), "the selection bar counts the items");
+    let _ = app.update(UiMessage::MediaSelect(false));
+    let img = "https://example.com/preview.png";
+    {
+        let mut st = app.store.write();
+        let i = *st.chat_msg_indices["!note_self:beeper.com"].last().expect("a note");
+        let url = "https://example.com/page".into();
+        st.messages[i].links = vec![MessageLink { url, img: Some(img.into()), ..Default::default() }];
+    }
+    let _ = app.update(UiMessage::MediaTab(1));
+    drop(app.view(id));
+    assert!(app.wants.media.borrow().contains(img), "the row loads the preview image");
+}
+
 /// Desktop's Media window viewer has Delete only when the chat deletes for everyone, you sent the message, and the
 /// network time limit has not passed. The delete dialog shows over the viewer and Escape closes it first.
 #[test]
