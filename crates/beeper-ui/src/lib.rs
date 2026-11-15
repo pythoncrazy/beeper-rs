@@ -670,6 +670,12 @@ pub enum UiMessage {
     SystemTheme(iced::theme::Mode),
     SetPref(&'static str, u8),
     ToggleHotkey(&'static str),
+    /// Desktop's click on a `ShortcutRecorder`, which starts to record keys for the hotkey.
+    RecordHotkey(&'static str),
+    /// The Save (true) or Cancel (false) button of the recorder.
+    HotkeyRecorder(bool),
+    /// The Revert button of a hotkey with keys other than the default.
+    RevertHotkey(&'static str),
     RevertHotkeys,
     HotkeyQuery(String),
     /// Opens Desktop's Keyboard Shortcuts list with the search text, or closes it.
@@ -881,8 +887,67 @@ fn hotkey_key(key: &Key) -> Option<String> {
         Key::Named(Named::ArrowRight) => "right".into(),
         Key::Named(Named::Enter) => "enter".into(),
         Key::Named(Named::Tab) => "tab".into(),
+        Key::Named(
+            n @ (Named::Backspace
+            | Named::Delete
+            | Named::Home
+            | Named::End
+            | Named::PageUp
+            | Named::PageDown
+            | Named::F1
+            | Named::F2
+            | Named::F3
+            | Named::F4
+            | Named::F5
+            | Named::F6
+            | Named::F7
+            | Named::F8
+            | Named::F9
+            | Named::F10
+            | Named::F11
+            | Named::F12
+            | Named::F13
+            | Named::F14
+            | Named::F15
+            | Named::F16
+            | Named::F17
+            | Named::F18
+            | Named::F19
+            | Named::F20
+            | Named::F21
+            | Named::F22
+            | Named::F23
+            | Named::F24),
+        ) => format!("{n:?}").to_lowercase(),
         _ => return None,
     })
+}
+
+/// The text of Desktop's relaunch toast after a hotkey change.
+const HOTKEYS_RELAUNCH: &str = "%s has to be relaunched for all hotkey changes to take effect";
+
+/// Desktop's `ShortcutRecorder` while it records: the hotkey, the modifiers (Ctrl, Shift, Alt) and the key pressed
+/// since the recording started, and whether Escape moved the focus to the Save and Cancel buttons.
+#[derive(Debug, Clone)]
+pub struct HotkeyRec {
+    pub name: &'static str,
+    mods: [bool; 3],
+    key: Option<String>,
+    buttons: bool,
+}
+
+impl HotkeyRec {
+    /// The combination in Desktop's format, like "ctrl+shift+k".
+    fn combo(&self) -> String {
+        let mods = ["ctrl", "shift", "alt"].into_iter().zip(self.mods).filter(|m| m.1).map(|m| m.0);
+        mods.chain(self.key.as_deref()).collect::<Vec<_>>().join("+")
+    }
+
+    /// The hotkey that already uses the combination.
+    fn conflict(&self, s: &BeeperSettings) -> Option<&'static str> {
+        let combo = self.combo();
+        (!combo.is_empty()).then(|| prefs::hotkey_conflict(self.name, &combo, |n| s.hotkey_keys(n)))?
+    }
 }
 
 /// Desktop's hotkey list hides the hotkeys of the features that the account does not show.
@@ -2192,6 +2257,8 @@ macro_rules! svg_static {
 svg_static!(CHEVRON_LEFT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
 svg_static!(CALL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M16.193 17.842q-2.605 0-5.146-1.136t-4.625-3.218q-2.083-2.084-3.219-4.625T2.068 3.717q0-.375.25-.625a.85.85 0 0 1 .625-.25h3.375q.292 0 .52.198a.76.76 0 0 1 .272.468l.541 2.917q.042.333-.02.563a.9.9 0 0 1-.23.395l-2.02 2.042q.416.77.989 1.49.573.718 1.26 1.385.645.646 1.355 1.198.708.552 1.5 1.01l1.958-1.958q.187-.188.49-.281.301-.094.593-.052l2.875.583a.97.97 0 0 1 .48.302.73.73 0 0 1 .187.49v3.375q0 .375-.25.625a.85.85 0 0 1-.625.25"/></svg>"##);
 svg_static!(ADD_ACCOUNT, include_bytes!("../assets/add_account.svg"));
+// Desktop's `undo` icon of the Revert button of a hotkey.
+svg_static!(REVERT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M212.333 224.333H12c-6.627 0-12-5.373-12-12V12C0 5.373 5.373 0 12 0h48c6.627 0 12 5.373 12 12v78.112C117.773 39.279 184.26 7.47 258.175 8.007c136.906.994 246.448 111.623 246.157 248.532C504.041 393.258 393.12 504 256.333 504c-64.089 0-122.496-24.313-166.51-64.215-5.099-4.622-5.334-12.554-.467-17.42l33.967-33.967c4.474-4.474 11.662-4.717 16.401-.525C170.76 415.336 211.58 432 256.333 432c97.268 0 176-78.716 176-176 0-97.267-78.716-176-176-176-58.496 0-110.28 28.476-142.274 72.333h98.274c6.627 0 12 5.373 12 12v48c0 6.627-5.373 12-12 12z"/></svg>"##);
 svg_static!(CLAUDE_LOGO, include_bytes!("../assets/integrations/claude.svg"));
 svg_static!(ERROR_CIRCLE, include_bytes!("../assets/settings/error_circle.svg"));
 svg_static!(CURSOR_LOGO, include_bytes!("../assets/integrations/cursor.svg"));
@@ -3680,6 +3747,7 @@ pub struct BeeperGuiApp {
     pub active_tab: InboxTab,
     pub selected_account_filter: Option<String>,
     pub hotkey_query: String,
+    pub hotkey_rec: Option<HotkeyRec>,
     /// The search text of the open Keyboard Shortcuts list, and whether the list scrolled down.
     pub hotkeys_modal: Option<String>,
     /// Desktop's `FileDropOverlay` shows, and Shift was down at a drop, so the dropped files are sent.
@@ -3915,6 +3983,7 @@ impl BeeperGuiApp {
             active_tab: InboxTab::AllChats,
             selected_account_filter: None,
             hotkey_query: String::new(),
+            hotkey_rec: None,
             hotkeys_modal: None,
             dropping: false,
             drop_send: false,
@@ -4298,6 +4367,10 @@ impl BeeperGuiApp {
     /// Desktop's keys of the settings window: Ctrl F focuses the search, ↑ and ↓ move through the results, and Enter is
     /// the submit of the input. Escape in an input clears the search, and Escape elsewhere closes the window.
     fn settings_key(&mut self, key: Key, mods: keyboard::Modifiers) -> Task<UiMessage> {
+        if self.hotkey_rec.is_some() {
+            self.record_key(&key, mods);
+            return Task::none();
+        }
         if mods.command() && key == Key::Character("f".into()) {
             return operation::focus("settings-search");
         }
@@ -4324,6 +4397,72 @@ impl BeeperGuiApp {
             _ => {}
         }
         Task::none()
+    }
+
+    /// Desktop's `ShortcutRecorder` keys: Escape moves the focus to the Save and Cancel buttons, where Enter and Escape
+    /// press them. Other keys add to the recorded combination, which has at most one key that is not a modifier.
+    fn record_key(&mut self, key: &Key, mods: keyboard::Modifiers) {
+        let conflict = self.hotkey_rec.as_ref().and_then(|r| r.conflict(&self.store.read().settings));
+        let rec = self.hotkey_rec.as_mut().expect("the recorder records");
+        match key {
+            Key::Named(Named::Escape | Named::Enter) if rec.buttons => {
+                if *key == Key::Named(Named::Enter) && conflict.is_none() {
+                    self.save_hotkey();
+                } else {
+                    self.hotkey_rec = None;
+                }
+                return;
+            }
+            Key::Named(Named::Escape) => return rec.buttons = true,
+            _ if rec.buttons => return,
+            _ => {}
+        }
+        if conflict.is_some() {
+            (rec.mods, rec.key) = ([false; 3], None);
+        }
+        let held = [mods.control() || mods.command(), mods.shift(), mods.alt()];
+        let pressed = match key {
+            Key::Named(Named::Control) => [true, false, false],
+            Key::Named(Named::Shift) => [false, true, false],
+            Key::Named(Named::Alt) => [false, false, true],
+            _ => {
+                let Some(k) = hotkey_key(key) else { return };
+                if prefs::MODIFIER_ONLY.contains(&rec.name) || rec.key.is_some() {
+                    return;
+                }
+                rec.key = Some(k);
+                [false; 3]
+            }
+        };
+        rec.mods = std::array::from_fn(|i| rec.mods[i] || held[i] || pressed[i]);
+    }
+
+    /// Desktop's Save of the `ShortcutRecorder`: it checks the modifiers and stores the combination, unless another
+    /// hotkey uses it.
+    fn save_hotkey(&mut self) {
+        let rec = self.hotkey_rec.clone().expect("the recorder records");
+        const NAVIGATION: [&str; 11] =
+            ["up", "down", "left", "right", "tab", "backspace", "delete", "home", "end", "pageup", "pagedown"];
+        let combo = rec.combo();
+        let has_mod = rec.mods.contains(&true);
+        let function =
+            |k: &str| k.strip_prefix('f').and_then(|n| n.parse().ok()).is_some_and(|n: u8| (1..=24).contains(&n));
+        let single = prefs::SINGLE_KEY.contains(&rec.name)
+            && !has_mod
+            && rec.key.as_deref().is_some_and(|k| NAVIGATION.contains(&k) || function(k));
+        let error = match (combo == "enter" || single, prefs::MODIFIER_ONLY.contains(&rec.name)) {
+            (false, true) if !has_mod => Some("You must use a modifier key like Ctrl, Shift or Option/Alt"),
+            (false, false) if !has_mod => Some("You must also use a modifier key like Ctrl, Shift or Option/Alt"),
+            (false, false) if rec.key.is_none() => Some("You must also use a non-modifier key"),
+            _ => None,
+        };
+        if let Some(e) = error {
+            return self.show(Toast::new(tr(e).into()));
+        }
+        if rec.conflict(&self.store.read().settings).is_none() {
+            self.patch_settings(|s| drop(s.keybindings.insert(rec.name.into(), combo)));
+            (self.hotkey_rec, self.relaunch_toast) = (None, Some(HOTKEYS_RELAUNCH));
+        }
     }
 
     fn scan_storage(&self) -> Task<UiMessage> {
@@ -7898,16 +8037,33 @@ impl BeeperGuiApp {
                     return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed);
                 }
             }
-            UiMessage::ToggleHotkey(name) => self.patch_settings(|s| {
-                match s.hotkey_keys(name) {
-                    "disabled" if prefs::hotkey_default(name) == "disabled" => {
-                        s.keybindings.insert(name.into(), "".into())
-                    }
-                    "disabled" => s.keybindings.remove(name),
-                    _ => s.keybindings.insert(name.into(), "disabled".into()),
-                };
-            }),
-            UiMessage::RevertHotkeys => self.patch_settings(|s| s.keybindings.clear()),
+            UiMessage::ToggleHotkey(name) => {
+                self.patch_settings(|s| {
+                    match s.hotkey_keys(name) {
+                        "disabled" if prefs::hotkey_default(name) == "disabled" => {
+                            s.keybindings.insert(name.into(), "".into())
+                        }
+                        "disabled" => s.keybindings.remove(name),
+                        _ => s.keybindings.insert(name.into(), "disabled".into()),
+                    };
+                });
+                (self.hotkey_rec, self.relaunch_toast) = (None, Some(HOTKEYS_RELAUNCH));
+            }
+            UiMessage::RecordHotkey(name) => {
+                if self.hotkey_rec.as_ref().is_none_or(|r| r.name != name) {
+                    self.hotkey_rec = Some(HotkeyRec { name, mods: [false; 3], key: None, buttons: false });
+                }
+            }
+            UiMessage::HotkeyRecorder(false) => self.hotkey_rec = None,
+            UiMessage::HotkeyRecorder(true) => self.save_hotkey(),
+            UiMessage::RevertHotkey(name) => {
+                self.patch_settings(|s| drop(s.keybindings.remove(name)));
+                (self.hotkey_rec, self.relaunch_toast) = (None, Some(HOTKEYS_RELAUNCH));
+            }
+            UiMessage::RevertHotkeys => {
+                self.patch_settings(|s| s.keybindings.clear());
+                return self.update(UiMessage::Relaunch);
+            }
             UiMessage::HotkeyQuery(q) => self.hotkey_query = q,
             UiMessage::HotkeysModal(q) => {
                 self.hotkeys_scrolled &= q.is_some();
@@ -13889,8 +14045,8 @@ impl BeeperGuiApp {
     fn view_toast(&self, left: f32) -> Option<El<'_>> {
         let p = &self.pal;
         let banner = match self.relaunch_toast {
-            Some(t) => tr(t),
-            None => &self.status_banner,
+            Some(t) => trs(t, &["Beeper"]),
+            None => self.status_banner.clone(),
         };
         let pill = |(kind, text): (Pill, String)| -> El<'_> {
             let icon = (kind == Pill::Syncing).then(|| tinted(&MAT_SYNC, 12.0, p.strong));
@@ -15847,22 +16003,56 @@ impl BeeperGuiApp {
             .padding([4, 6])
             .style(pill_style(p))
             .on_press(UiMessage::RevertHotkeys);
+        let icon_btn = |glyph: El<'static>, msg| {
+            button(glyph).padding(0).style(btn_style([CLEAR; 3], [p.muted; 3], 0.0)).on_press(msg)
+        };
         let hotkey = |name: &'static str| -> El<'_> {
             let keys = s.hotkey_keys(name);
+            let rec = self.hotkey_rec.as_ref().filter(|r| r.name == name);
+            let conflict = rec.and_then(|r| r.conflict(s));
+            let shown = rec.map_or_else(|| keys.to_string(), HotkeyRec::combo);
             let recorder = (keys != "disabled").then(|| {
-                let label: El<'_> = match keys {
-                    "" => txt(tr("Record Shortcut"), 11.0).color(p.muted).into(),
-                    k => txt(prefs::hotkey_label(k), 13.0).line_height(Pixels(18.0)).color(p.text).into(),
+                let ink = match (conflict, rec) {
+                    (Some(_), _) => p.danger,
+                    (None, Some(_)) => p.muted,
+                    (None, None) => p.text,
                 };
-                container(label).center_x(160).center_y(20).style(bordered_box(CLEAR, edge, 1.0, 4.0))
+                let label: El<'_> = match prefs::hotkey_label(&shown) {
+                    l if l.is_empty() => txt(tr("Record Shortcut"), 11.0).color(p.muted).into(),
+                    l => txt(l, 13.0).line_height(Pixels(18.0)).color(ink).into(),
+                };
+                let buttons = match rec {
+                    Some(_) => row![]
+                        .push(conflict.is_none().then(|| {
+                            icon_btn(ic(icon::CHECK, 12.0).color(p.muted).into(), UiMessage::HotkeyRecorder(true))
+                        }))
+                        .push(icon_btn(ic(icon::CLOSE, 12.0).color(p.muted).into(), UiMessage::HotkeyRecorder(false))),
+                    None => row![].push(
+                        (keys != prefs::hotkey_default(name))
+                            .then(|| icon_btn(tinted(&REVERT, 12.0, p.muted), UiMessage::RevertHotkey(name))),
+                    ),
+                };
+                let border = match (conflict, rec) {
+                    (Some(_), _) => p.danger,
+                    (None, Some(_)) => p.accent,
+                    (None, None) => edge,
+                };
+                let label =
+                    mouse_area(container(label).center_x(160).center_y(20)).on_press(UiMessage::RecordHotkey(name));
+                let buttons =
+                    container(buttons.spacing(6).align_y(Center)).align_right(160).center_y(20).padding([0, 2]);
+                container(stack![label, buttons]).style(bordered_box(CLEAR, border, 1.0, 4.0))
             });
-            row![ell(tr(name), 226.0, 13.0, Weight::Normal).color(p.text).width(Fill)]
+            let line = row![ell(tr(name), 226.0, 13.0, Weight::Normal).color(p.text).width(Fill)]
                 .push(recorder)
                 .push(toggle(p, keys != "disabled", Some(UiMessage::ToggleHotkey(name))))
                 .spacing(6)
-                .align_y(Center)
-                .padding([8, 0])
-                .into()
+                .align_y(Center);
+            let warning = conflict.map(|other| {
+                let text = trf("%1$s is already used by %2$s", &[&prefs::hotkey_label(&shown), &tr(other)]);
+                container(txt(text, 11.7).color(p.text.scale_alpha(0.8))).align_right(Fill).padding([4, 0])
+            });
+            column![line].push(warning).padding([8, 0]).into()
         };
         let listed = prefs::HOTKEYS.iter().filter(|h| hotkey_shown(st, h.0));
         let shown = prefs::match_sort(listed, &self.hotkey_query, |h| tr(h.0).into());

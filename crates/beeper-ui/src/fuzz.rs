@@ -1996,6 +1996,47 @@ fn settings_nav_follows_the_plan() {
 }
 
 #[test]
+fn hotkey_recorder_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("hotkey-recorder");
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Hotkeys));
+    let ch = |c: &str| Key::Character(c.into());
+    let keys = |app: &BeeperGuiApp| app.store.read().settings.hotkey_keys("Search").to_string();
+    let _ = app.update(UiMessage::RecordHotkey("Search"));
+    let _ = app.settings_key(ch("k"), Modifiers::empty());
+    let _ = app.update(UiMessage::HotkeyRecorder(true));
+    assert_eq!(app.status_banner, "You must also use a modifier key like Ctrl, Shift or Option/Alt");
+    let _ = app.update(UiMessage::HotkeyRecorder(false));
+    let _ = app.update(UiMessage::RecordHotkey("Search"));
+    let _ = app.settings_key(ch("j"), Modifiers::CTRL);
+    assert!(simulator(app.view_settings()).find("Ctrl J is already used by Command Bar").is_ok());
+    let _ = app.update(UiMessage::HotkeyRecorder(true));
+    assert_eq!(keys(&app), "ctrl+k", "a used combination is not saved");
+    let _ = app.settings_key(Key::Named(Named::Shift), Modifiers::SHIFT);
+    let _ = app.settings_key(ch("k"), Modifiers::SHIFT | Modifiers::CTRL);
+    let _ = app.settings_key(ch("q"), Modifiers::SHIFT | Modifiers::CTRL);
+    let _ = app.settings_key(Key::Named(Named::Escape), Modifiers::empty());
+    let _ = app.settings_key(Key::Named(Named::Enter), Modifiers::empty());
+    assert_eq!(keys(&app), "ctrl+shift+k", "a new key starts again, and a second key is ignored");
+    assert!(app.hotkey_rec.is_none() && app.relaunch_toast.is_some());
+    let mut sim = simulator(app.view_settings());
+    assert!(sim.find("Ctrl Shift K").is_ok());
+    drop(sim);
+    assert!(simulator(app.view_main())
+        .find("Beeper has to be relaunched for all hotkey changes to take effect")
+        .is_ok());
+    let _ = app.update(UiMessage::RevertHotkey("Search"));
+    assert_eq!(keys(&app), "ctrl+k");
+    let _ = app.update(UiMessage::RecordHotkey("Switch First 9 Chats Modifier"));
+    let _ = app.settings_key(Key::Named(Named::Control), Modifiers::empty());
+    let _ = app.settings_key(ch("x"), Modifiers::CTRL);
+    let _ = app.settings_key(Key::Named(Named::Shift), Modifiers::CTRL);
+    let _ = app.update(UiMessage::HotkeyRecorder(true));
+    let modifiers = app.store.read().settings.hotkey_keys("Switch First 9 Chats Modifier").to_string();
+    assert_eq!(modifiers, "ctrl+shift", "a modifier hotkey records only modifiers");
+}
+
+#[test]
 fn polls_like_desktop() {
     let mut app = demo_app("polls");
     let (chat, mid) = ("!tg_rust:beeper.com", "msg_1004");
