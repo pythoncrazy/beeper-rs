@@ -17,6 +17,8 @@ image = { version = "0.25", default-features = false, features = ["gif", "png", 
 iced = { version = "0.14.0", default-features = false, features = ["svg", "image-without-codecs", "advanced", "linux-theme-detection", "wgpu-bare", "tiny-skia", "tokio", "x11", "wayland", "web-colors", "crisp"] }
 spellbook = "0.4.2"
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+qrcodegen = "1.8.0"
+regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wgpu = { version = "27.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan"] }
@@ -29,4 +31,6 @@ wgpu = { version = "27.0.1", default-features = false, features = ["std", "parki
 wgpu = { version = "27.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "dx12"] }
 
 [dev-dependencies]
+beeper-core = { workspace = true, features = ["stub"] }
+iced_runtime = "0.14.0"
 iced_test = "0.14.0"

@@ -1,3 +1,4 @@
+mod add_account;
 mod anim;
 mod chat_theme;
 mod commands;
@@ -846,6 +847,9 @@ pub enum UiMessage {
     PillHover(bool),
     Login(LoginMsg),
     Verify(verify::VerifyMsg),
+    /// Desktop's `openNewAccountInNewWindow` for a network, or `reauthenticate` for a login of it.
+    OpenAddAccount(String, Option<String>),
+    AddAccount(window::Id, add_account::AddMsg),
 }
 
 struct StoreFeed(SharedStore, u8);
@@ -3957,6 +3961,7 @@ pub struct BeeperGuiApp {
     pub delete_in: Option<window::Id>,
     pub spaces_window: Option<SpacesDraft>,
     pub group_window: Option<GroupDraft>,
+    pub add_accounts: Vec<add_account::AddAccount>,
     /// The Chat Info group description while it is edited, and whether it shows all of its lines.
     pub info_desc: Option<text_editor::Content>,
     pub info_more: bool,
@@ -4154,6 +4159,7 @@ impl BeeperGuiApp {
             poll_windows: Vec::new(),
             label_window: None,
             group_window: None,
+            add_accounts: Vec::new(),
             info_desc: None,
             info_more: false,
             info_all: false,
@@ -4596,6 +4602,7 @@ impl BeeperGuiApp {
             _ if self.spaces_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Spaces"),
             _ if self.group_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Group"),
             _ if Some(id) == self.verify.window => "Beeper",
+            _ if let Some(title) = self.add_account_title(id) => return title,
             _ if let Some((_, _, mid)) = self.vote_windows.iter().find(|w| w.0 == id) => {
                 let st = self.store.read();
                 let total =
@@ -5571,7 +5578,8 @@ impl BeeperGuiApp {
         let lists = self.chat_windows.iter().map(|w| w.0).chain(self.theme_windows.iter().map(|w| w.0));
         let lists = lists.chain(self.labels_windows.iter().map(|w| w.0)).chain(self.vote_windows.iter().map(|w| w.0));
         let group = self.group_window.as_ref().map(|d| d.id);
-        singles.chain([group]).flatten().chain(lists).chain(self.poll_windows.iter().map(|w| w.id)).collect()
+        let lists = lists.chain(self.poll_windows.iter().map(|w| w.id)).chain(self.add_accounts.iter().map(|a| a.id));
+        singles.chain([group]).flatten().chain(lists).collect()
     }
 
     /// Desktop's `hideToTray` (`Du`), which hides the sub-windows and then the main window, and `showWindow`, which
@@ -6716,6 +6724,7 @@ impl BeeperGuiApp {
                     || self.vote_windows.iter().any(|w| w.0 == id)
                     || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
                     || self.group_window.as_ref().is_some_and(|d| d.id == id)
+                    || self.add_accounts.iter().any(|a| a.id == id)
                 {
                     return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
                 }
@@ -8381,6 +8390,9 @@ impl BeeperGuiApp {
                 self.save_subwindows();
                 return Task::batch([open.discard(), near, select]);
             }
+            UiMessage::WindowClosed(id) if self.add_accounts.iter().any(|a| a.id == id) => {
+                return self.add_account_closed(id);
+            }
             UiMessage::WindowClosed(id) => {
                 if let Some(w) = self.chat_windows.iter().find(|w| w.0 == id) {
                     save_draft(&mut self.store.write(), &w.1);
@@ -8461,6 +8473,8 @@ impl BeeperGuiApp {
             UiMessage::PillHover(on) => self.pill_hover = on,
             UiMessage::Login(m) => return self.update_login(m),
             UiMessage::Verify(m) => return self.update_verify(m),
+            UiMessage::OpenAddAccount(network, login) => return self.open_add_account(&network, login),
+            UiMessage::AddAccount(id, m) => return self.update_add_account(id, m),
             UiMessage::KeyPressed(Key::Named(k @ (Named::Enter | Named::Escape)), m)
                 if self.recorder.is_some() && m.is_empty() =>
             {
@@ -8883,6 +8897,8 @@ impl BeeperGuiApp {
             self.view_login()
         } else if Some(id) == self.verify.window {
             self.view_verify()
+        } else if let Some(a) = self.add_accounts.iter().find(|a| a.id == id) {
+            self.view_add_account(a)
         } else if let Some((_, chat)) = self.theme_windows.iter().find(|w| w.0 == id) {
             self.view_chat_theme(chat)
         } else if let Some((_, chat)) = self.labels_windows.iter().find(|w| w.0 == id) {
@@ -15830,10 +15846,7 @@ impl BeeperGuiApp {
                     column![head, column![card, foot].spacing(11)].spacing(8).into()
                 }]
                 .into_iter()
-                .chain(
-                    self.adding_account
-                        .then(|| group(p, None, vec![login::network_grid(&st.bridge_accounts, "", p.strong)])),
-                )
+                .chain(self.adding_account.then(|| group(p, None, vec![login::network_grid(st, "", p.strong)])))
                 .collect()
             }
             SettingsTab::General => self.pref_items(prefs::GENERAL, st),
