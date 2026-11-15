@@ -11299,30 +11299,34 @@ impl BeeperGuiApp {
             labels.then(|| open_sub(2, trx("Label", "thread context menu submenu label"))),
             open_sub(1, tr("Remind Me")),
             close_sub(
-                column![
-                    menu_rule(p),
-                    item(tr("Delete Chat"), "", (c.delete_modes != 0).then(|| UiMessage::AskDeleteChat(c.id.clone()))),
-                ]
-                .push(block_action(&st, c).filter(|_| n == 0).map(|block| {
-                    let label = match block {
-                        true => trx("Block…", "action to block the other person in a DM"),
-                        false => trx("Unblock…", "action to unblock the other person in a DM"),
-                    };
-                    item(label, "", Some(UiMessage::AskBlock(c.id.clone(), block)))
-                }))
-                .push(selecting.then(|| menu_rule(p)))
-                .push(selecting.then(|| item(
-                    tr("Open in New Window"),
-                    "",
-                    Some(UiMessage::OpenChatWindow(c.id.clone()))
-                )))
-                .push(selecting.then(|| item(tr("Begin Selecting"), "", Some(UiMessage::BeginSelecting(c.id.clone())))))
-                .push(menu_rule(p))
-                .push(item(
-                    tr("Report a Problem"),
-                    "Ctrl Shift P",
-                    Some(UiMessage::OpenUrl(ISSUES_URL.into()))
-                ))
+                column![menu_rule(p)]
+                    .push(st.feature("delete-chats").on.then(|| {
+                        item(
+                            tr("Delete Chat"),
+                            "",
+                            (c.delete_modes != 0).then(|| UiMessage::AskDeleteChat(c.id.clone())),
+                        )
+                    }))
+                    .push(block_action(&st, c).filter(|_| n == 0).map(|block| {
+                        let label = match block {
+                            true => trx("Block…", "action to block the other person in a DM"),
+                            false => trx("Unblock…", "action to unblock the other person in a DM"),
+                        };
+                        item(label, "", Some(UiMessage::AskBlock(c.id.clone(), block)))
+                    }))
+                    .push(selecting.then(|| menu_rule(p)))
+                    .push(selecting.then(|| item(
+                        tr("Open in New Window"),
+                        "",
+                        Some(UiMessage::OpenChatWindow(c.id.clone()))
+                    )))
+                    .push(selecting.then(|| item(
+                        tr("Begin Selecting"),
+                        "",
+                        Some(UiMessage::BeginSelecting(c.id.clone()))
+                    )))
+                    .push(menu_rule(p))
+                    .push(item(tr("Report a Problem"), "Ctrl Shift P", Some(UiMessage::OpenUrl(ISSUES_URL.into()))))
             ),
         ];
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));

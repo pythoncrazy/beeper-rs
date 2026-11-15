@@ -39,6 +39,7 @@ impl Flags {
                 "labels-v2": false, "android-inbox-rewrite": true, "enable-disappearing-message-timer-config": true,
                 "enable-threads": true,
                 "personal-room-overrides": true,
+                "delete-chats": true,
             } },
             "freebies": [
                 { "name": "voice-transcription", "type": "count", "default_limit": 5 },
@@ -135,7 +136,7 @@ impl Flags {
             | "enable-polls"
             | "enable-disappearing-message-timer-config"
             | "personal-room-overrides" => self.flag(key),
-            "archive-as-unread" | "enable-threads" | "block-users" => {
+            "archive-as-unread" | "enable-threads" | "block-users" | "delete-chats" => {
                 let on = self.flag(key).on;
                 Feature { show: on, on, upgrade: false }
             }

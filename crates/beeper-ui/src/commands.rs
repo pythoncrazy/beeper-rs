@@ -466,8 +466,10 @@ impl BeeperGuiApp {
                 let sub = (!archived).then(|| tr("Hides chat until new messages received"));
                 v.push(cmd(e, title, flag(ChatFlag::Archived)).sub(sub).hotkey("Chat: Toggle Archive"));
             }
-            let delete = (c.delete_modes != 0).then(|| UiMessage::AskDeleteChat(id()));
-            v.push(cmd(e, trx("Delete", "chat command"), delete).keys(&["delete", "leave"]));
+            if st.feature("delete-chats").on {
+                let delete = (c.delete_modes != 0).then(|| UiMessage::AskDeleteChat(id()));
+                v.push(cmd(e, trx("Delete", "chat command"), delete).keys(&["delete", "leave"]));
+            }
             v.extend(crate::block_action(st, c).map(|block| {
                 let msg = Some(UiMessage::AskBlock(id(), block));
                 match block {
