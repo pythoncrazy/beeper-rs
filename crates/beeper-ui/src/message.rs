@@ -468,7 +468,10 @@ impl BeeperGuiApp {
         ]
         .spacing(2)
         .align_y(Center);
-        let pill = button(name_row)
+        // Desktop's `thread-header-status`: the activity of the other person of a 1:1 chat under the name.
+        let typing = st.typing.get(cid).filter(|ids| chat.chat_type == "single" && ids.len() == 1);
+        let status = typing.map(|_| txt("typing", 10.0).line_height(Pixels(12.0)).color(p.sub));
+        let pill = button(column![name_row].push(status).align_x(Center))
             .padding(Padding::new(6.0).left(10.5).right(2.5))
             .style(btn_style([p.window, p.selected, p.selected], [p.text; 3], 14.0))
             .on_press(UiMessage::ToggleRightPanel);

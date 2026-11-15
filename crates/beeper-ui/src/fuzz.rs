@@ -2999,6 +2999,25 @@ fn scroll_to_bottom_shows_when_you_scroll_up_like_desktop() {
     assert!(app.pane.scrolled_up.is_none(), "another chat opens at its bottom");
 }
 
+/// Desktop's `thread-header-status`: "typing" under the name of a 1:1 chat while the other person types.
+#[test]
+fn the_header_shows_typing_in_a_dm_like_desktop() {
+    let mut app = demo_app("header-typing");
+    let (dm, group) = {
+        let st = app.store.read();
+        let dm = st.chats.iter().find(|c| c.chat_type == "single" && c.participants.items.len() == 2).unwrap();
+        let group = st.chats.iter().find(|c| c.chat_type == "group").unwrap();
+        let peer = |c: &Chat| c.participants.items.iter().find(|u| u.is_self != Some(true)).unwrap().id.clone();
+        ((dm.id.clone(), peer(dm)), (group.id.clone(), peer(group)))
+    };
+    for (chat, user) in [&dm, &group] {
+        app.store.write().typing.insert(chat.clone(), vec![user.clone()]);
+        let _ = app.update(UiMessage::SelectChat(chat.clone()));
+        let shown = simulator(app.view_main()).find("typing").is_ok();
+        assert_eq!(shown, *chat == dm.0, "only a 1:1 chat shows the activity in its header");
+    }
+}
+
 #[test]
 fn deleted_and_encrypted_messages_look_like_desktop() {
     let note = "!note_self:beeper.com";
