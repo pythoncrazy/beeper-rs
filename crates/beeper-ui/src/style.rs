@@ -821,6 +821,8 @@ palette! {
     range_edge: Color = hex(0x767676), hex(0x858585);
     /// `--color-background-menu-opaque`.
     menu: Color = hex(0xededed), hex(0x232323);
+    /// `--color-border-translucent-weak`.
+    border_weak: Color = hexa(0x000000, 0.05), hexa(0xffffff, 0.05);
     /// `--color-border-translucent-strong`.
     menu_border: Color = hexa(0x000000, 0.15), hexa(0xffffff, 0.15);
     /// `--color-background-menu-option-hover`.

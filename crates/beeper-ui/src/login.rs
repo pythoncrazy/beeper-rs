@@ -39,11 +39,14 @@ const NO_EMAIL_LOGIN: &str = "The server does not support email-based login. Try
 /// Desktop's `logo-google.svg`.
 const GOOGLE_G: &str = r##"<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M23.52 12.2724C23.52 11.4216 23.4432 10.6044 23.3016 9.81836H12V14.46H18.4584C18.3247 15.1942 18.0435 15.8937 17.6318 16.5162C17.2202 17.1386 16.6865 17.6712 16.0632 18.0816V21.0936H19.9416C22.2108 19.0032 23.52 15.9264 23.52 12.2724Z" fill="#4285F4"/><path fill-rule="evenodd" d="M12 24C15.24 24 17.9568 22.926 19.9416 21.0924L16.0632 18.0816C14.9892 18.8016 13.6152 19.2276 12 19.2276C8.87399 19.2276 6.22799 17.1156 5.28599 14.28H1.27679V17.388C2.27521 19.3761 3.80684 21.0474 5.70051 22.2151C7.59418 23.3827 9.77527 24.0007 12 24Z" fill="#34A853"/><path fill-rule="evenodd" d="M5.286 14.2801C5.046 13.5601 4.9092 12.7921 4.9092 12.0001C4.9092 11.2081 5.046 10.4401 5.286 9.72006V6.61206H1.2768C0.436818 8.28391 -0.00043132 10.1291 3.19265e-07 12.0001C3.19265e-07 13.9369 0.4632 15.7681 1.2768 17.3881L5.2848 14.2801H5.286Z" fill="#FBBC05"/><path fill-rule="evenodd" d="M12 4.7724C13.7616 4.7724 15.3432 5.3784 16.5876 6.5676L20.0292 3.126C17.9508 1.188 15.234 0 12 0C7.30799 0 3.25199 2.688 1.27679 6.612L5.28479 9.72C6.23039 6.8832 8.87519 4.7724 12 4.7724Z" fill="#EA4335"/></svg>"##;
 
-/// Desktop's `EmailFill` and `OutlineChevronDownSmall` icons.
-static ICONS: LazyLock<[svg::Handle; 2]> = LazyLock::new(|| {
+/// Desktop's `EmailFill`, `OutlineChevronDownSmall`, `Done`, `Sync` and `CloseSmall` icons.
+static ICONS: LazyLock<[svg::Handle; 5]> = LazyLock::new(|| {
     [
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 14"><path fill="currentColor" d="M9.914 7.734q-.383 0-.75-.32L1.36.54Q1.985.134 2.945.133h13.946q.96 0 1.578.406l-7.805 6.875q-.36.32-.75.32M.695 12.336a2.5 2.5 0 0 1-.148-.5 3.5 3.5 0 0 1-.055-.656V2.555q0-.407.055-.696.063-.288.133-.406l5.797 5.11zm2.016 1.266q-.43 0-.766-.094a1.8 1.8 0 0 1-.547-.25l5.946-5.945 1.14 1.015q.345.298.704.453.36.15.726.149.367 0 .727-.149.366-.156.71-.453l1.141-1.015 5.945 5.945q-.218.156-.554.25a2.8 2.8 0 0 1-.758.094zm16.43-1.266-5.782-5.773 5.797-5.11q.063.117.125.406.063.29.063.696v8.625q0 .375-.063.656a3 3 0 0 1-.14.5"/></svg>"#,
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none"><path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="m7.958 15-4.75-4.75 1.188-1.187 3.562 3.562 7.646-7.646 1.188 1.188z"/></svg>"#,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M3.334 16.667v-1.666h2.291l-.333-.292q-1.084-.959-1.521-2.187a7.4 7.4 0 0 1-.437-2.48q0-2.312 1.385-4.114t3.615-2.386v1.75a4.940 4.940 0 0 0-2.417 1.844A4.930 4.930 0 0 0 5 10.042q0 .938.354 1.823.354.886 1.104 1.636l.209.208v-2.042h1.667v5zm8.333-.208v-1.75a4.940 4.940 0 0 0 2.417-1.844A4.930 4.930 0 0 0 15 9.960q0-.938-.354-1.823a4.900 4.900 0 0 0-1.104-1.635l-.208-.209v2.042h-1.667v-5h5v1.667h-2.292l.334.291q1.020 1.020 1.490 2.220.468 1.197.468 2.447 0 2.313-1.386 4.115t-3.614 2.385"/></svg>"#,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M7.042 13.999 6 12.957l2.938-2.958L6 7.060 7.042 6.020 10 8.957l2.938-2.937 1.041 1.041L11.042 10l2.937 2.958-1.041 1.042L10 11.060z"/></svg>"#,
     ]
     .map(|s| svg::Handle::from_memory(s.as_bytes()))
 });
@@ -215,6 +218,8 @@ pub struct Login {
     pub email: String,
     pub code: String,
     pub username: String,
+    /// The usernames that the server suggests, which the sync icon of the field goes through.
+    suggestions: Vec<String>,
     /// The error under the heading of a screen, and Desktop's red error toast at the top of the window.
     pub error: Option<String>,
     pub toast: Option<String>,
@@ -287,6 +292,8 @@ pub enum LoginMsg {
     Resend,
     Username(String),
     SubmitUsername,
+    /// The sync icon of the username field: the next suggestion.
+    NextSuggestion,
     SubmitCode,
     Menu,
     StartOver,
@@ -347,6 +354,24 @@ fn email_mismatch(v: &str) -> Option<String> {
     } else {
         "Please enter an email address.".into()
     })
+}
+
+/// Desktop's username input (`Lzt`): lower case `a-z`, `0-9` and `-` only.
+fn username_input(v: &str) -> String {
+    v.to_lowercase().chars().filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-').collect()
+}
+
+/// Desktop's username rules (`Pzt`): 3 to 32 of `a-z`, `0-9` and `-` with no `-` at the ends, and not a name that
+/// ends with "bot", has "beep", "support" or "admin" in it, or is all digits.
+fn username_ok(name: &str) -> bool {
+    let end = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
+    (3..=32).contains(&name.len())
+        && name.chars().all(|c| end(c) || c == '-')
+        && name.starts_with(end)
+        && name.ends_with(end)
+        && !name.ends_with("bot")
+        && !["beep", "support", "admin"].iter().any(|w| name.contains(w))
+        && !name.chars().all(|c| c.is_ascii_digit())
 }
 
 /// An error of beeper-rs itself, which shows in the toast like a network error.
@@ -557,13 +582,30 @@ pub(crate) fn art<'a>(i: usize, height: f32) -> El<'a> {
 /// as a small chip over the top edge once the field has text. Enter submits the form through the key handler of
 /// the window, like Desktop's Enter hotkey.
 fn field<'a>(p: &Palette, id: &'static str, hint: &'a str, value: &'a str, on: fn(String) -> LoginMsg) -> El<'a> {
+    field_with_icons(p, id, hint, value, on, Vec::new())
+}
+
+/// A `field` with `BrandInput`'s `rightIcons`: icons 8 px from the right edge, 2 px apart.
+fn field_with_icons<'a>(
+    p: &Palette,
+    id: &'static str,
+    hint: &'a str,
+    value: &'a str,
+    on: fn(String) -> LoginMsg,
+    icons: Vec<El<'a>>,
+) -> El<'a> {
+    let room = if icons.is_empty() { 12.0 } else { 8.0 + 22.0 * icons.len() as f32 };
     let input = text_input(hint, value)
         .id(id)
         .on_input(move |v| on(v).into())
         .size(14)
         .line_height(iced::Pixels(18.0))
-        .padding([10, 12])
+        .padding(Padding::new(10.0).left(12.0).right(room))
         .style(input_style(p.chip, p.on_secondary, p.on_secondary, p.accent, 19.0));
+    let icons = (!icons.is_empty()).then(|| {
+        container(row(icons).spacing(2).align_y(Center)).align_right(Fill).center_y(38).padding(Padding::ZERO.right(8))
+    });
+    let input = stack![input].push(icons);
     // `translate(26px, -60%) scale(0.6875)` of the label, with its origin at the left middle of the field.
     let chip = (!value.is_empty()).then(|| {
         let hint = txt(hint, 14.0 * 0.6875).line_height(iced::Pixels(18.0 * 0.6875)).color(p.on_secondary);
@@ -575,7 +617,7 @@ fn field<'a>(p: &Palette, id: &'static str, hint: &'a str, value: &'a str, on: f
 
 impl BeeperGuiApp {
     pub fn login_window_settings() -> window::Settings {
-        window::Settings { resizable: false, min_size: None, ..Self::window_settings(Size::new(330.0, 620.0)) }
+        window::Settings { resizable: false, ..Self::window_settings(Size::new(330.0, 620.0)) }
     }
 
     pub fn refresh_cloud_accounts(&self) -> Task<UiMessage> {
@@ -586,12 +628,13 @@ impl BeeperGuiApp {
         )
     }
 
+    /// Desktop's `showHomePage` after the onboarding: the same window becomes the main window, resizable, at
+    /// 1200x800.
     pub fn enter_app(&mut self) -> Task<UiMessage> {
-        let login = self.login_window.take().expect("login window is open");
+        let id = self.login_window.take().expect("login window is open");
         self.select_chat(NOTE_CHAT_ID);
-        let (id, open) = window::open(self.main_window_settings());
         self.main_window = Some(id);
-        Task::batch([open.map(UiMessage::WindowOpened), window::close(login)])
+        Task::batch([window::set_resizable(id, true), window::resize(id, crate::MAIN_SIZE)])
     }
 
     fn background(
@@ -685,15 +728,17 @@ impl BeeperGuiApp {
                 });
             }
             LoginMsg::Username(v) => {
-                l.username = v;
+                l.username = username_input(&v);
                 (l.error, l.toast) = (None, None);
             }
+            LoginMsg::NextSuggestion => {
+                let at = l.suggestions.iter().position(|s| *s == l.username).map_or(0, |i| i + 1);
+                let name = l.suggestions[at % l.suggestions.len()].clone();
+                return self.update_login(LoginMsg::Username(name));
+            }
             LoginMsg::SubmitUsername => {
-                let (request, lead, name) = (l.request.clone(), l.lead_token.clone(), l.username.trim().to_string());
-                if name.is_empty() {
-                    l.error = Some("Please enter a username.".into());
-                    return Task::none();
-                }
+                let (request, lead, name) = (l.request.clone(), l.lead_token.clone(), l.username.clone());
+                assert!(username_ok(&name), "Next takes a valid username only");
                 return self.background(move |c| session(c, &c.register(&request, &lead, &name)?));
             }
             LoginMsg::Menu => {}
@@ -782,7 +827,8 @@ impl BeeperGuiApp {
                     }
                     Ok(Outcome::Lead(token, suggestions)) => {
                         l.lead_token = token;
-                        l.username = suggestions.into_iter().next().unwrap_or_default();
+                        l.username = suggestions.first().map(|s| username_input(s)).unwrap_or_default();
+                        l.suggestions = suggestions;
                         return self.show_screen(Screen::Username);
                     }
                     Ok(Outcome::Read(data)) => {
@@ -827,9 +873,6 @@ impl BeeperGuiApp {
 
     pub fn view_login(&self) -> El<'_> {
         let (l, p) = (&self.login, &self.pal);
-        let error = column![]
-            .push(l.error.as_deref().map(|e| txt(e, 12.0).color(p.text_danger).center().width(Fill)))
-            .padding(Padding::new(0.0).left(18.0).right(18.0).bottom(if l.error.is_some() { 12.0 } else { 0.0 }));
         let link = |s: &'static str, m: UiMessage| span(s).color(p.accent).link(m);
         let body: El<'_> = match l.screen {
             Screen::Import => {
@@ -1035,14 +1078,20 @@ impl BeeperGuiApp {
                 .padding([0, 16]);
                 let divider = container(Space::new()).width(Fill).height(1).style(fill_box(p.chip, 0.0));
                 let grid = scrollable(network_grid(&st, &l.query, p, p.fg)).height(Fill);
-                let go_on = container(brand_button(
-                    p,
-                    label(tr("Continue"), None),
-                    Brand::Primary,
-                    Some(LoginMsg::Continue.into()),
-                    false,
-                ))
-                .padding(Padding::new(12.0).top(8.0));
+                // Desktop's continue bar shows once a network account is connected (`hasConnectedNetwork`).
+                let go_on = (!st.bridge_accounts.is_empty()).then(|| {
+                    let go_on = brand_button(
+                        p,
+                        label(tr("Continue"), None),
+                        Brand::Primary,
+                        Some(LoginMsg::Continue.into()),
+                        false,
+                    );
+                    column![
+                        container(Space::new()).width(Fill).height(1).style(fill_box(p.border_weak, 0.0)),
+                        container(go_on).padding(12)
+                    ]
+                });
                 let remaining = FREE_ACCOUNTS.saturating_sub(st.bridge_accounts.len());
                 let foot = txt(
                     trn("%d free account remaining.", "%d free accounts remaining.", remaining, &[&remaining]),
@@ -1055,7 +1104,7 @@ impl BeeperGuiApp {
                         container(svg(headline).width(width).height(48)).center_x(Fill)
                     },
                     Space::new().height(8),
-                    container(column![search, divider, grid, go_on]).height(Fill).style(card_style(p.card)),
+                    container(column![search, divider, grid].push(go_on)).height(Fill).style(card_style(p.card)),
                     container(foot).center_x(Fill).center_y(31),
                 ]
                 .padding([0, 8])
@@ -1067,26 +1116,73 @@ impl BeeperGuiApp {
             Screen::Preamble => self.view_onboarding_preamble(),
             Screen::NewKey | Screen::ConfirmKey => self.view_onboarding_new_key(),
             Screen::Reset => self.view_onboarding_reset(),
-            Screen::Username => column![
-                Space::new().height(34),
-                heading(tr("Pick a Username"), 32.0),
-                container(art(0, 314.0)).height(Fill).center_y(Fill),
-                error,
-                actions(
-                    vec![
-                        field(p, USERNAME_INPUT, tr("Username"), &l.username, LoginMsg::Username),
-                        brand_button(
-                            p,
-                            label(trx("Next", "button label"), None),
-                            Brand::Primary,
-                            self.login_act(Stop::Next),
-                            l.busy
-                        ),
-                    ],
-                    52.0
-                ),
-            ]
-            .into(),
+            Screen::Username => {
+                // Desktop checks a name from 3 characters on, and shows the same text for every name it refuses.
+                let valid = (l.username.len() >= 3).then(|| username_ok(&l.username));
+                let refused = (valid == Some(false)).then(|| tr("Username is not available. Try something else."));
+                let icon = |i: usize, size: f32, color: Color, msg: Option<UiMessage>| -> El<'_> {
+                    let glyph = svg(ICONS[i].clone())
+                        .width(size)
+                        .height(size)
+                        .style(move |_, _| svg::Style { color: Some(color) });
+                    match msg {
+                        Some(m) => button(container(glyph).center(20))
+                            .padding(0)
+                            .style(btn_style([CLEAR; 3], [color; 3], 4.0))
+                            .on_press(m)
+                            .into(),
+                        None => container(glyph).center(20).into(),
+                    }
+                };
+                // `--color-solids-green` and `--color-on-surface-variant`.
+                let (green, grey) = (Color::from_rgb8(25, 186, 59), p.muted);
+                let icons = [
+                    (valid == Some(true)).then(|| icon(2, 20.0, green, None)),
+                    (!l.suggestions.is_empty()).then(|| icon(3, 18.0, grey, Some(LoginMsg::NextSuggestion.into()))),
+                    (!l.username.is_empty())
+                        .then(|| icon(4, 20.0, grey, Some(LoginMsg::Username(String::new()).into()))),
+                ];
+                let name = field_with_icons(
+                    p,
+                    USERNAME_INPUT,
+                    tr("Username"),
+                    &l.username,
+                    LoginMsg::Username,
+                    icons.into_iter().flatten().collect(),
+                );
+                // Desktop's floating `small` error, 20 px over the field: a layer, so that it moves nothing.
+                let error =
+                    l.error.as_deref().or(refused).map(|e| txt(e, 10.4).color(p.text_danger).center().width(Fill));
+                let over_form = 20.0 + 38.0 + 8.0 + 33.0 + 52.0;
+                let error = column![
+                    Space::new().height(Fill),
+                    column![].push(error).padding([0, 18]),
+                    Space::new().height(over_form)
+                ];
+                let screen = column![
+                    Space::new().height(34),
+                    heading(tr("Pick a Username"), 32.0),
+                    // The room of the floating label, so that the gaps are Desktop's.
+                    Space::new().height(FLOAT_LABEL),
+                    Space::new().height(Fill),
+                    art(0, 314.0),
+                    Space::new().height(Fill),
+                    actions(
+                        vec![
+                            name,
+                            brand_button(
+                                p,
+                                label(trx("Next", "button label"), None),
+                                Brand::Primary,
+                                self.login_act(Stop::Next),
+                                l.busy
+                            ),
+                        ],
+                        52.0
+                    ),
+                ];
+                stack![screen, error].into()
+            }
         };
         let ink = p.text;
         let chevron = svg(ICONS[1].clone()).width(18).height(18).style(move |_, _| svg::Style { color: Some(ink) });
@@ -1132,7 +1228,11 @@ impl BeeperGuiApp {
             (Stop::Fresh, _) => LoginMsg::Fresh.into(),
             (Stop::Import, _) => LoginMsg::Import.into(),
             (Stop::Field | Stop::Next, Screen::Email) => LoginMsg::SubmitEmail.into(),
-            (Stop::Field | Stop::Next, Screen::Username) => LoginMsg::SubmitUsername.into(),
+            // Desktop disables Next until the name is valid.
+            (Stop::Field | Stop::Next, Screen::Username) if username_ok(&self.login.username) => {
+                LoginMsg::SubmitUsername.into()
+            }
+            (Stop::Field | Stop::Next, Screen::Username) => return None,
             (Stop::Field, Screen::Code) => LoginMsg::SubmitCode.into(),
             (stop, screen) => unreachable!("{screen:?} has no {stop:?}"),
         };
@@ -1202,6 +1302,28 @@ mod tests {
         drop(super::welcome_scene());
         login.screen = super::Screen::Email;
         assert!(!login.animated(), "the Lottie frames of the other screens stay");
+    }
+
+    #[test]
+    fn username_rules_like_desktop() {
+        assert_eq!(super::username_input("Alex_R.S-2 é"), "alexrs-2");
+        for (name, ok) in [
+            ("alex", true),
+            ("a-b", true),
+            ("ab", false),
+            ("-ab", false),
+            ("ab-", false),
+            (&"a".repeat(33), false),
+            (&"a".repeat(32), true),
+            ("robot", false),
+            ("beeperfan", false),
+            ("mysupport", false),
+            ("theadmin", false),
+            ("12345", false),
+            ("123a", true),
+        ] {
+            assert_eq!(super::username_ok(name), ok, "{name}");
+        }
     }
 
     #[test]
