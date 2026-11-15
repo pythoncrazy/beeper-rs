@@ -1295,6 +1295,66 @@ fn photos_group_into_galleries_like_desktop() {
     assert!(sim.find("01:15").is_ok(), "a video tile shows its duration");
 }
 
+/// Desktop's gallery selection and menu: a click selects the gallery, Ctrl and a tile select one photo, and a right
+/// click selects the gallery and shows "Reactions", "Download All" and "Forward All…". A menu that closes without an
+/// action unselects the gallery.
+#[test]
+fn galleries_select_and_have_a_menu_like_desktop() {
+    let mut app = demo_app("gallery-menu");
+    let (chat, ids) = {
+        let st = app.store.read();
+        let chat = st.messages.iter().find(|m| m.attachments.iter().any(|a| a.attachment_type == "img")).unwrap();
+        let chat = chat.chat_id.clone();
+        let msgs: Vec<&Message> = st.chat_msg_indices[&chat].iter().map(|&i| &st.messages[i]).collect();
+        let starts = gallery::starts(&st, &msgs, &vec![0; msgs.len()]);
+        let first = (1..msgs.len()).find(|&i| starts[i] != i).map(|i| starts[i]).expect("a demo gallery");
+        let ids: Vec<String> =
+            (first..msgs.len()).filter(|&i| starts[i] == first).map(|i| msgs[i].id.clone()).collect();
+        (chat, ids)
+    };
+    {
+        let mut st = app.store.write();
+        let i = st.msg_idx_by_id[&ids[1]];
+        let key = "🎉".into();
+        let reaction = Reaction {
+            id: "r".into(),
+            participant_id: "@x:beeper.com".into(),
+            reaction_key: key,
+            animated: None,
+            img_url: None,
+            sort_key: String::new(),
+        };
+        st.messages[i].reactions = vec![reaction];
+    }
+    let _ = app.update(UiMessage::SelectChat(chat));
+    let _ = app.update(UiMessage::Gallery(gallery::Msg::Click(ids.clone())));
+    assert_eq!(app.pane.selected_msgs, ids, "a click selects the gallery");
+    app.mods = Modifiers::CTRL;
+    let _ = app.update(UiMessage::Gallery(gallery::Msg::Tile(ids[1].clone())));
+    assert!(!app.pane.selected_msgs.contains(&ids[1]) && app.carousel.is_none(), "Ctrl and a tile unselect a photo");
+    app.mods = Modifiers::empty();
+    let _ = app.update(UiMessage::Gallery(gallery::Msg::Tile(ids[1].clone())));
+    assert!(app.carousel.is_some(), "a tile opens the carousel");
+    let _ = app.update(UiMessage::CloseCarousel);
+    let _ = app.update(UiMessage::Gallery(gallery::Msg::Menu(ids.clone())));
+    assert_eq!(app.pane.selected_msgs, ids, "a right click selects the gallery");
+    let mut sim = simulator(app.view_main());
+    for label in ["Reactions", "Download All", "Forward All…"] {
+        assert!(sim.find(label).is_ok(), "{label} shows");
+    }
+    assert!(sim.find("Copy").is_err(), "the gallery menu is not the message menu");
+    let _ = sim.click("Reactions").expect("Reactions");
+    let msgs: Vec<UiMessage> = sim.into_messages().collect();
+    let [UiMessage::MessageMenu(m)] = &msgs[..] else { panic!("one menu action") };
+    assert!(matches!(&**m, UiMessage::Gallery(gallery::Msg::Reactions(r, _)) if *r == ids));
+    let _ = app.update(msgs.into_iter().next().unwrap());
+    assert!(app.pane.gallery_reactions.is_some() && app.pane.selected_msgs == ids, "the list shows");
+    let _ = app.update(UiMessage::CloseModals);
+    let _ = app.update(UiMessage::Gallery(gallery::Msg::Menu(ids.clone())));
+    let _ = app.update(UiMessage::CloseModals);
+    assert!(app.pane.selected_msgs.is_empty(), "a menu without an action unselects the gallery");
+}
+
 /// Desktop's carousel shows every attachment of the chat but audio: a video plays with its controls, and a file is a
 /// link that downloads it. A step away from a playing video pauses it.
 #[test]

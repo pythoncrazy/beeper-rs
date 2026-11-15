@@ -742,6 +742,7 @@ pub enum UiMessage {
     ResolveMedia(String, String, String),
     MediaResolved(String, String, String, Result<(), String>),
     Video(video::Msg),
+    Gallery(gallery::Msg),
     Pasted(Result<Option<Png>, String>),
     DiscardAttachment(usize),
     /// Desktop's `openAttachmentPicker`.
@@ -3763,6 +3764,10 @@ pub struct Pane {
     pub attachments: Vec<PendingMedia>,
     pub composer_links: Vec<(String, LinkState)>,
     pub message_menu: Option<(String, Point)>,
+    /// The messages of the gallery whose menu is open.
+    pub gallery_menu: Vec<String>,
+    /// The reactions list of the messages of a gallery, at a point, from the gallery menu.
+    pub gallery_reactions: Option<(Vec<String>, Point)>,
     /// The composer context menu, with the misspelled word and its suggestions.
     pub edit_menu: Option<(Point, Option<Typo>)>,
     /// The selected messages, and the message that a Shift click selects from.
@@ -6576,6 +6581,7 @@ impl BeeperGuiApp {
                 self.video.iter_mut().for_each(|v| v.sub = false);
                 self.audio.sub = false;
                 self.pane.message_menu = Some((mid, self.cursor.get()));
+                self.pane.gallery_menu.clear();
             }
             UiMessage::SelectMessages(mids) => self.pane.selected_msgs = mids,
             UiMessage::CopySelected(stamp) => {
@@ -7654,6 +7660,7 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::Video(msg) => return self.video(msg),
+            UiMessage::Gallery(msg) => return self.gallery(msg),
             UiMessage::Pasted(r) => match r {
                 Ok(img) => {
                     self.pane.send_later = self.pane.send_later.filter(|_| img.is_none());
@@ -8178,6 +8185,7 @@ impl BeeperGuiApp {
                     || self.show_filter_menu
                     || self.chat_menu.is_some()
                     || self.pane.message_menu.is_some()
+                    || self.pane.gallery_reactions.is_some()
                     || self.pane.thread_menu.is_some()
                     || self.unread_menu.is_some()
                     || self.pane.edit_menu.is_some()
@@ -8196,7 +8204,11 @@ impl BeeperGuiApp {
                     self.forward = None;
                     self.show_filter_menu = false;
                     self.chat_menu = None;
-                    self.pane.message_menu = None;
+                    // Desktop unselects the gallery when its menu closes without an action.
+                    if self.pane.message_menu.take().is_some() && !self.pane.gallery_menu.is_empty() {
+                        self.pane.selected_msgs.clear();
+                    }
+                    self.pane.gallery_reactions = None;
                     self.pane.thread_menu = None;
                     self.unread_menu = None;
                     self.pane.edit_menu = None;
@@ -10042,10 +10054,15 @@ impl BeeperGuiApp {
                 at.y.min(self.pane().size.height - 435.0 - 8.0),
             )
         });
-        message_menu.or(edit_menu).or(react)
+        let gallery =
+            self.pane().gallery_reactions.as_ref().map(|(ids, at)| (self.view_gallery_reactions(ids), at.x, at.y));
+        message_menu.or(edit_menu).or(react).or(gallery)
     }
 
     fn view_message_menu(&self, mid: &str) -> (El<'_>, f32, f32) {
+        if let Some(menu) = self.view_gallery_menu(mid) {
+            return menu;
+        }
         let p = &self.pal;
         let st = self.store.read();
         let m = &st.messages[st.msg_idx_by_id[mid]];
@@ -13361,25 +13378,8 @@ impl BeeperGuiApp {
         let parts: El<'a> = if reactions.is_empty() {
             parts.into()
         } else {
-            let keys = reaction_keys(ms);
-            let min_w = keys.len() as f32 * 36.0 + 2.0 * BUBBLE_PAD_X;
-            let order = keys.iter().flat_map(|&k| reactions.iter().filter(move |x| x.reaction_key == k));
-            let all: Vec<_> = order.copied().collect();
-            let (shown, more) = if all.len() <= 20 { (&all[..], 0) } else { (&all[..19], all.len() - 19) };
-            let list = shown.iter().fold(Column::new(), |col, x| {
-                let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
-                let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(&x.participant_id);
-                let line = row![
-                    container(txt(x.reaction_key.clone(), 17.0)).padding(Padding::ZERO.right(10.0)),
-                    container(self.face(u.and_then(|u| u.img_url.as_deref()), name, 20.0, 0.5))
-                        .padding(Padding::ZERO.right(8.0)),
-                    med(name.to_string(), 13.0).color(p.text),
-                ]
-                .align_y(Center);
-                col.push(container(line).padding([4, 8]))
-            });
-            let list = list.push((more > 0).then(|| container(txt(format!("and {more} more"), 13.0)).padding([4, 8])));
-            let list = container(list).padding([2, 4]).style(bordered_box(p.menu, p.menu_border, 1.0, 6.0));
+            let min_w = reaction_keys(ms).len() as f32 * 36.0 + 2.0 * BUBBLE_PAD_X;
+            let list = self.reaction_list(chat, ms);
             let look = PillLook {
                 group,
                 own: if p.card.r < 0.5 { hex(0x1b43aa) } else { hex(0xcbd9ff) },
@@ -13557,11 +13557,18 @@ impl BeeperGuiApp {
                 (column![].push(quote).push(line).into(), head)
             }
         };
+        let (menu, click) = match ms.len() {
+            1 => (UiMessage::OpenMessageMenu(m.id.clone()), UiMessage::ClickMessage(m.id.clone())),
+            _ => {
+                let ids: Vec<String> = ms.iter().map(|g| g.id.clone()).collect();
+                (UiMessage::Gallery(gallery::Msg::Menu(ids.clone())), UiMessage::Gallery(gallery::Msg::Click(ids)))
+            }
+        };
         let line = mouse_area(line)
             .on_enter(UiMessage::HoverEnter(m.id.clone()))
             .on_exit(UiMessage::HoverExit(m.id.clone()))
-            .on_right_press(UiMessage::OpenMessageMenu(m.id.clone()))
-            .on_press(UiMessage::ClickMessage(m.id.clone()))
+            .on_right_press(menu)
+            .on_press(click)
             .on_double_click(UiMessage::DoubleClickMessage(m.id.clone()));
         column![head, line].into()
     }
@@ -15062,6 +15069,31 @@ impl BeeperGuiApp {
         let right = self.pane.size.width - 8.0 - 28.0 * if reply.is_some() { 4.0 } else { 3.0 };
         let react = (c.messages.react && live).then(|| UiMessage::ReactAt(m.id.clone(), Point::new(right, 39.0)));
         (react, reply)
+    }
+
+    /// Desktop's reactions list of messages `ms`: each reaction with the face and the name of its sender, in key
+    /// order, and "and N more" after 19 when there are more than 20.
+    fn reaction_list<'a>(&self, chat: &Chat, ms: &[&Message]) -> El<'a> {
+        let p = &self.pal;
+        let reactions: Vec<&Reaction> = ms.iter().flat_map(|m| &m.reactions).collect();
+        let keys = reaction_keys(ms);
+        let order = keys.iter().flat_map(|&k| reactions.iter().filter(move |x| x.reaction_key == k));
+        let all: Vec<_> = order.copied().collect();
+        let (shown, more) = if all.len() <= 20 { (&all[..], 0) } else { (&all[..19], all.len() - 19) };
+        let list = shown.iter().fold(Column::new(), |col, x| {
+            let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
+            let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(&x.participant_id);
+            let line = row![
+                container(txt(x.reaction_key.clone(), 17.0)).padding(Padding::ZERO.right(10.0)),
+                container(self.face(u.and_then(|u| u.img_url.as_deref()), name, 20.0, 0.5))
+                    .padding(Padding::ZERO.right(8.0)),
+                med(name.to_string(), 13.0).color(p.text),
+            ]
+            .align_y(Center);
+            col.push(container(line).padding([4, 8]))
+        });
+        let list = list.push((more > 0).then(|| container(txt(format!("and {more} more"), 13.0)).padding([4, 8])));
+        container(list).padding([2, 4]).style(bordered_box(p.menu, p.menu_border, 1.0, 6.0)).into()
     }
 
     /// Desktop's `MessageReactions` pills of messages `ms`: each key with up to three faces when `look.group` or when
