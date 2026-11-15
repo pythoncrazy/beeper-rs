@@ -474,11 +474,13 @@ dependencies = [
  "beeper-api",
  "beeper-core",
  "beeper-ui",
+ "chrono",
  "iced",
  "iced_test",
  "rusqlite",
  "serde_json",
  "tokio",
+ "unicode-width",
  "wayland-client",
  "x11rb",
 ]

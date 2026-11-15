@@ -262,9 +262,13 @@ pub fn parse_query(raw: &str) -> Map<String, Value> {
     query
 }
 
+/// `path` with the query of `params`. A repeated key gives an array, like the `arrayFormat: 'repeat'` of the SDK.
 pub fn query_string(path: &str, params: &[(&str, &str)]) -> String {
     let pairs: Vec<String> = params.iter().map(|(k, v)| format!("{}={}", url_encode(k), url_encode(v))).collect();
-    format!("{path}?{}", pairs.join("&"))
+    match pairs.is_empty() {
+        true => path.to_string(),
+        false => format!("{path}?{}", pairs.join("&")),
+    }
 }
 
 /// The close code of a frame larger than the `max` of [`read_ws_frame`], like the `ws` package.

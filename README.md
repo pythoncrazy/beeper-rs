@@ -84,6 +84,19 @@ curl -s -H "Authorization: Bearer bp_tok_beeper_rs_default_secret" http://127.0.
 curl -s -H "Authorization: Bearer bp_tok_beeper_rs_default_secret" http://127.0.0.1:23374/v1/chats | jq
 ```
 
+### 4. Use the Command-Line Client
+
+The binary has the client commands of the Beeper CLI (`beeper`). The commands, flags, text output, `--json` envelope, and exit codes are the same. Use them with Beeper Desktop or with a `beeper-rs` server:
+
+```bash
+export BEEPER_ACCESS_TOKEN=bp_tok_beeper_rs_default_secret
+cargo run -- status --base-url http://127.0.0.1:23374
+cargo run -- chats list --limit 5 --base-url http://127.0.0.1:23374
+cargo run -- chats --help
+```
+
+The CLI keeps `config.json` and `targets/` in the `cli` folder of the beeper-rs data folder. It does not use `~/.beeper` of the Beeper CLI. Set `BEEPER_CLI_CONFIG_DIR` to use a different folder.
+
 ## Development Workflow
 
 1. Create a feature branch from `main` for each change.
