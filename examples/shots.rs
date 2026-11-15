@@ -1,5 +1,5 @@
 use beeper_core::config::CentralConfig;
-use beeper_core::models::{AppVerification, ThemeChoice, VerificationSas, VerificationSasEmoji};
+use beeper_core::models::{AppVerification, ThemeChoice, VerificationDevice, VerificationSas, VerificationSasEmoji};
 use beeper_core::store::{BeeperStore, StoreLock};
 use beeper_ui::{
     login::{Login, LoginMsg, Screen},
@@ -96,12 +96,13 @@ fn main() {
             state: "sas_ready",
             methods: vec!["sas"],
             available_actions: vec!["sas.confirm", "cancel"],
-            other_device: None,
+            other_user_id: None,
+            other_device: Some(VerificationDevice { id: "PHONE".into(), name: Some("Pixel 9".into()) }),
             sas: Some(VerificationSas { emojis, decimals: "1234 5678 9012".into() }),
             error: None,
         });
     }
-    shot(&out, "settings_sas", (800.0, 740.0), &theme, app.view_settings());
+    shot(&out, "verification_sas", (330.0, 480.0), &theme, app.view_verify());
     for screen in [Screen::Welcome, Screen::Email, Screen::Code, Screen::Username, Screen::Accounts] {
         app.login = Login::default();
         let _ = app.update(UiMessage::Login(LoginMsg::Show(screen)));

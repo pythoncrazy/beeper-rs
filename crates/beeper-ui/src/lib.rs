@@ -39,6 +39,7 @@ mod tray {
     }
 }
 pub mod style;
+mod verify;
 mod video;
 mod vlist;
 mod voice;
@@ -748,8 +749,6 @@ pub enum UiMessage {
     DismissAllReminders,
     Logout,
     LoggedOut(Result<(), String>),
-    VerifySasNow,
-    SasMatch(bool),
     StorageScanned(Vec<storage::Entry>),
     /// The age choice of the clear for all chats (0) or for the open chat (1).
     StorageAge(usize, usize),
@@ -840,6 +839,7 @@ pub enum UiMessage {
     Online(bool),
     PillHover(bool),
     Login(LoginMsg),
+    Verify(verify::VerifyMsg),
 }
 
 struct StoreFeed(SharedStore, u8);
@@ -3956,6 +3956,7 @@ pub struct BeeperGuiApp {
     /// The window that `BEEPER_SCREENSHOT_EXIT` or `BEEPER_SCREENSHOT_SETTINGS` captures after its next frame.
     shot: Option<window::Id>,
     pub login: Login,
+    pub verify: verify::Verify,
     pub cloud: Arc<Cloud>,
     pub avatars: images::Images<image::Handle>,
     wants: wants::Wants,
@@ -4145,6 +4146,7 @@ impl BeeperGuiApp {
             vote_windows: Vec::new(),
             shot: None,
             login: Login::new(source),
+            verify: Default::default(),
             cloud,
             avatars: images::Images::new(64 << 20),
             wants: wants::Wants::default(),
@@ -4573,6 +4575,7 @@ impl BeeperGuiApp {
             },
             _ if self.spaces_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Spaces"),
             _ if self.group_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Group"),
+            _ if Some(id) == self.verify.window => "Beeper",
             _ if let Some((_, _, mid)) = self.vote_windows.iter().find(|w| w.0 == id) => {
                 let st = self.store.read();
                 let total =
@@ -7722,15 +7725,6 @@ impl BeeperGuiApp {
                 return self.load_older();
             }
             UiMessage::LoadedOlder(r) => return self.loaded_older(r),
-            UiMessage::VerifySasNow => {
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                self.store.write().sas_confirm = Some(tx);
-                return Task::perform(beeper_core::matrix::verify(self.store.clone(), rx), UiMessage::Verified);
-            }
-            UiMessage::SasMatch(same) => {
-                let tx = self.store.write().sas_confirm.take().expect("emojis are shown once");
-                tx.send(same).ok();
-            }
             UiMessage::StorageScanned(all) => {
                 self.storage.chart = Some(donut(&storage_totals(&all)));
                 self.storage.all = Some(all);
@@ -8370,6 +8364,7 @@ impl BeeperGuiApp {
                 self.label_settings.retain(|w| w.id != id);
                 self.spaces_window = self.spaces_window.take().filter(|d| d.id != id);
                 self.group_window = self.group_window.take().filter(|d| d.id != id);
+                self.verify.window = self.verify.window.filter(|w| *w != id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
                 } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
@@ -8418,7 +8413,7 @@ impl BeeperGuiApp {
                     self.select_chat(NOTE_CHAT_ID);
                 }
                 self.refresh_theme_and_tray();
-                return self.close_notifications();
+                return Task::batch([self.close_notifications(), self.verification_changed()]);
             }
             UiMessage::FocusRequested(chat) => {
                 if let Some(id) = chat {
@@ -8432,6 +8427,7 @@ impl BeeperGuiApp {
             UiMessage::Online(on) => self.online = on,
             UiMessage::PillHover(on) => self.pill_hover = on,
             UiMessage::Login(m) => return self.update_login(m),
+            UiMessage::Verify(m) => return self.update_verify(m),
             UiMessage::KeyPressed(Key::Named(k @ (Named::Enter | Named::Escape)), m)
                 if self.recorder.is_some() && m.is_empty() =>
             {
@@ -8841,6 +8837,8 @@ impl BeeperGuiApp {
             self.view_media(w)
         } else if Some(id) == self.login_window {
             self.view_login()
+        } else if Some(id) == self.verify.window {
+            self.view_verify()
         } else if let Some((_, chat)) = self.theme_windows.iter().find(|w| w.0 == id) {
             self.view_chat_theme(chat)
         } else if let Some((_, chat)) = self.labels_windows.iter().find(|w| w.0 == id) {
@@ -15256,29 +15254,11 @@ impl BeeperGuiApp {
 
     fn sas_row<'a>(&self, st: &BeeperStore) -> El<'a> {
         let p = &self.pal;
-        let v = st.app_verification();
-        let (desc, control): (Option<&str>, El<'a>) = match (v.map(|v| v.state), v.and_then(|v| v.sas.as_ref())) {
-            (Some("requested" | "ready"), _) => (Some("Accept the request on your other device."), Space::new().into()),
-            (Some("sas_ready"), Some(sas)) => {
-                let emojis = sas.emojis.iter().map(|e| {
-                    column![txt(e.emoji.clone(), 24.0), txt(e.description.clone(), 11.0).color(p.sub)]
-                        .spacing(4)
-                        .align_x(Center)
-                        .width(Fill)
-                        .into()
-                });
-                let buttons = row![
-                    pill_btn(p, tr("They don't match"), UiMessage::SasMatch(false)),
-                    pill_btn(p, tr("They match"), UiMessage::SasMatch(true))
-                ]
-                .spacing(8);
-                let title = txt("Compare the emojis on both devices", 13.0).color(p.text);
-                let buttons = row![Space::new().width(Fill), buttons];
-                return column![title, Row::with_children(emojis), buttons].spacing(12).padding([13, 14]).into();
-            }
-            _ => (None, pill_btn(p, tr("Verify"), UiMessage::VerifySasNow)),
+        let control = match st.app_verification().map(|v| v.state) {
+            Some("requested" | "ready" | "sas_ready") => Space::new().into(),
+            _ => pill_btn(p, tr("Verify"), verify::VerifyMsg::Start.into()),
         };
-        pref_row(p, "Verify with another device", desc, None, control)
+        pref_row(p, "Verify with another device", None, None, control)
     }
 
     /// Desktop's `TakeBeeperWithYou` card.

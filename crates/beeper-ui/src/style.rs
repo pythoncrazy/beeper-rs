@@ -696,6 +696,8 @@ palette! {
     divider: Color = hexa(0x202124, 0.2), hexa(0xf6f6f6, 0.2);
     /// `--color-background-elevated`.
     elevated: Color = hex(0xffffff), hex(0x232323);
+    /// `--color-primary-container`.
+    primary_container: Color = hex(0xffffff), hex(0x1c1c1d);
     /// `--color-tertiary-container`: the composer.
     input: Color = hex(0xf4f4f5), hex(0x1c1c1d);
     /// `--bubble-out-bg`.

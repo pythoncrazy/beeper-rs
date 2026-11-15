@@ -649,15 +649,7 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
                     details,
                 ));
             }
-            let request = rt.block_on(matrix::start_verification(store, purpose)).map_err(|e| failed(&e))?;
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            store.write().sas_confirm = Some(tx);
-            let s = store.clone();
-            rt.spawn(async move {
-                if let Err(e) = matrix::run_verification(s.clone(), request, rx).await {
-                    s.write().matrix_error = Some(e);
-                }
-            });
+            rt.block_on(matrix::start_verification(store, purpose)).map_err(|e| failed(&e))?;
             progress(store, true)
         }
         ("GET", ["verifications", id]) => {
@@ -684,6 +676,7 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
             signed_in()?;
             available(&store.read(), id, action)?;
             match action {
+                "accept" => rt.block_on(matrix::accept_verification(store, id)).map_err(|e| failed(&e))?,
                 "cancel" => rt.block_on(matrix::cancel_verification(store, id)).map_err(|e| failed(&e))?,
                 "sas.confirm" => {
                     let tx = store.write().sas_confirm.take().ok_or_else(verification_not_found)?;
@@ -691,7 +684,7 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
                 }
                 // beeper-rs starts the emoji comparison when the request is ready.
                 "sas.start" => {}
-                _ => unreachable!("beeper-rs has no incoming or QR code verification that allows {action}"),
+                _ => unreachable!("beeper-rs has no QR code verification that allows {action}"),
             }
             progress(store, true)
         }
