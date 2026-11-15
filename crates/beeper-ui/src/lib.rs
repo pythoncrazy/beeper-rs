@@ -6723,7 +6723,8 @@ impl BeeperGuiApp {
                 return operation::focus("forward-input");
             }
             UiMessage::ForwardSend => {
-                let Forward { mids, picked, .. } = self.forward.take().expect("the forward dialog is open");
+                // The second click of a double click on Send hits the dialog that the first click closed.
+                let Some(Forward { mids, picked, .. }) = self.forward.take() else { return Task::none() };
                 assert!(!picked.is_empty() && !mids.is_empty(), "forward needs a chat and a message");
                 let mut st = self.store.write();
                 for cid in &picked {
@@ -7047,7 +7048,8 @@ impl BeeperGuiApp {
                 self.chat_created(Some(n), &account, None, r, "creating group chat")
             }
             UiMessage::DeleteNewChat(id) => {
-                let i = self.new_chats.iter().position(|d| d.id == id).expect("new chat exists");
+                // The second click of a double click on the close button hits the draft that the first click removed.
+                let Some(i) = self.new_chats.iter().position(|d| d.id == id) else { return Task::none() };
                 self.new_chats.remove(i);
                 self.chat_menu = None;
                 if self.creating_chat != Some(id) {
@@ -7492,7 +7494,9 @@ impl BeeperGuiApp {
                     return self.update(UiMessage::DismissBanner);
                 }
             }
-            UiMessage::DismissOlderToast(i) => _ = self.older_toasts.remove(i),
+            // The second click of a double click on a close button can come after the first click removed the toast.
+            UiMessage::DismissOlderToast(i) if i < self.older_toasts.len() => _ = self.older_toasts.remove(i),
+            UiMessage::DismissOlderToast(_) => {}
             UiMessage::ToastAction(older, action) => {
                 let _ = match older {
                     Some(i) => self.update(UiMessage::DismissOlderToast(i)),
@@ -8781,6 +8785,9 @@ impl BeeperGuiApp {
             self.view_edit_group(d)
         } else if let Some((_, chat, mid)) = self.vote_windows.iter().find(|w| w.0 == id) {
             self.view_poll_votes(chat, mid)
+        } else if self.chat_windows.iter().any(|w| w.0 == id && w.1.selected_chat_id.is_none()) {
+            // A chat window that left its chat closes, and draws nothing until it is closed.
+            Space::new().into()
         } else {
             self.view_main()
         }

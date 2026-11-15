@@ -1205,6 +1205,20 @@ fn carousel_zooms_like_desktop() {
     assert_eq!(closes, 2, "the zoomed image covers the point beside it");
 }
 
+/// Escape in a chat window leaves its chat and closes the window, which iced can draw again before it closes.
+#[test]
+fn chat_windows_that_left_their_chat_draw_nothing() {
+    let mut app = demo_app("chat-window-left");
+    let ids: Vec<String> = app.visible_chats(&app.store.read()).iter().take(2).map(|c| c.id.clone()).collect();
+    let _ = app.update(UiMessage::SelectChat(ids[0].clone()));
+    let _ = app.update(UiMessage::OpenChatWindow(ids[1].clone()));
+    let _ = app.update(UiMessage::ToggleCommandPalette);
+    app.cmd_bar_commands_mode = true;
+    let id = app.chat_windows[0].0;
+    app.chat_windows[0].1.selected_chat_id = None;
+    drop(simulator(app.view(id)));
+}
+
 #[test]
 fn typing_focuses_the_composer_like_desktop() {
     let mut app = demo_app("typefocus");
@@ -1401,8 +1415,9 @@ fn forward_selected_messages_like_desktop() {
     let before = texts(&app, &target).len();
     let _ = app.update(UiMessage::ForwardPick(target.clone()));
     let _ = app.update(UiMessage::ForwardSend);
+    let _ = app.update(UiMessage::ForwardSend);
     let after = texts(&app, &target);
-    assert_eq!(after[before..], source[n - 2..], "the messages arrive in timeline order");
+    assert_eq!(after[before..], source[n - 2..], "the messages arrive in timeline order, once for a double click");
 }
 
 /// Desktop's `virtua` lists: the chat list and the timeline build only the rows near the viewport, and build the
@@ -2686,6 +2701,8 @@ fn toasts_stack_like_desktop() {
         let _ = app.update(UiMessage::ToastTick);
     }
     assert!(app.older_toasts.is_empty() && app.status_banner.is_empty(), "each toast closes after its timeout");
+    let _ = app.update(UiMessage::DismissOlderToast(0));
+    assert!(app.older_toasts.is_empty(), "the second click of a double click on a close button closes nothing");
 }
 
 #[test]
@@ -4038,6 +4055,10 @@ fn new_chat_accounts_filter_like_desktop() {
     assert!(app.new_chat_account.is_none(), "a new draft shows all accounts");
     let _ = app.update(UiMessage::ToggleNewChatAccounts);
     assert!(!found(&app, "Telegram") && found(&app, "WhatsApp"), "a bridge without create_dm is not listed");
+    let (n, drafts) = (app.creating_chat.expect("a draft"), app.new_chats.len());
+    let _ = app.update(UiMessage::DeleteNewChat(n));
+    let _ = app.update(UiMessage::DeleteNewChat(n));
+    assert_eq!(app.new_chats.len(), drafts - 1, "the second click of a double click removes nothing");
 }
 
 #[test]
