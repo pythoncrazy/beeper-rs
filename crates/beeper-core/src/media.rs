@@ -4,7 +4,7 @@ use crate::models::{
     FileRule, FileRules, FILE_AUDIO, FILE_FILE, FILE_GIF, FILE_IMAGE, FILE_STICKER, FILE_VIDEO, FILE_VOICE,
 };
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Desktop's absolute upload limit `Tn`.
@@ -390,6 +390,47 @@ fn number(v: &Value) -> Option<f64> {
     v.as_str().and_then(|s| s.parse().ok())
 }
 
+/// Desktop's `getDecodableCodecs`: the codecs of `ffmpeg -decoders`, read once. A failed read gives no codecs, and the
+/// next call reads again.
+fn decoders() -> HashSet<String> {
+    static DECODERS: std::sync::Mutex<Option<HashSet<String>>> = std::sync::Mutex::new(None);
+    let mut known = DECODERS.lock().expect("the decoder list");
+    if known.is_none() {
+        let args = ["-hide_banner", "-decoders"].map(std::ffi::OsStr::new);
+        let out = match run("ffmpeg", &args) {
+            Ok(out) => String::from_utf8_lossy(&out).into_owned(),
+            Err(e) => {
+                eprintln!("getDecodableCodecs: could not read decoders from ffmpeg: {e}");
+                return HashSet::new();
+            }
+        };
+        // The list starts after the line of dashes, and the second word of each line is the codec.
+        let dashes = |l: &&str| !l.trim().is_empty() && l.trim().chars().all(|c| c == '-');
+        let lines = out.lines().skip_while(|l| !dashes(l)).skip(1);
+        *known = Some(lines.filter_map(|l| l.split_whitespace().nth(1)).map(str::to_string).collect());
+    }
+    known.clone().expect("the decoders were read")
+}
+
+/// Desktop's `canDecodeMedia`: ffmpeg can decode each video and audio stream of the file. Without the decoder list
+/// Desktop does not block the file, and a file that ffprobe cannot read is not decodable.
+pub fn can_decode(path: &Path) -> bool {
+    let decoders = decoders();
+    if decoders.is_empty() {
+        return true;
+    }
+    let v = match ffprobe(&["-v", "error", "-show_entries", "stream=codec_name,codec_type", "-of", "json"], path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("canDecodeMedia: ffprobe could not read {}: {e}", path.display());
+            return false;
+        }
+    };
+    let streams = v["streams"].as_array().into_iter().flatten();
+    let media = streams.filter(|s| matches!(s["codec_type"].as_str(), Some("video" | "audio")));
+    media.into_iter().all(|s| s["codec_name"].as_str().is_none_or(|c| decoders.contains(c)))
+}
+
 /// Desktop's `getVideoMetadata` result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VideoMeta {
@@ -678,6 +719,9 @@ mod tests {
         let lavfi = ["-f", "lavfi", "-i", "testsrc=size=320x240:duration=1", "-f", "lavfi", "-i", "sine=duration=1"];
         let mkv = ffmpeg(&lavfi, &dir.join("a.mkv"));
         let wav = ffmpeg(&["-f", "lavfi", "-i", "sine=duration=1"], &dir.join("d.wav"));
+        assert!(can_decode(&dir.join("a.mkv")) && can_decode(&dir.join("d.wav")), "ffmpeg decodes its own codecs");
+        std::fs::write(dir.join("g.mkv"), b"not a video").unwrap();
+        assert!(!can_decode(&dir.join("g.mkv")), "ffprobe cannot read it");
         let upload = |name: &str, mime: &str, dims| Upload {
             name: name.into(),
             path: PathBuf::new(),

@@ -8485,14 +8485,25 @@ impl BeeperGuiApp {
             UiMessage::DownloadsPicked(Err(e)) => self.fail(Toast::new(e)),
             UiMessage::FilesPicked(r) => match r {
                 Ok(paths) => {
-                    // Desktop's `attachFiles` logs the error of a file and shows "Couldn't attach %s".
+                    let st = self.store.read();
+                    let chat = &st.chats[st
+                        .resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat"))
+                        .expect("chat exists")];
+                    let (rules, resizes) = (chat.file.clone(), chat.room_features);
+                    drop(st);
+                    // Desktop's `attachFiles` logs the error of a file and shows "Couldn't attach %s". A file that
+                    // `TBe` takes goes through the codec check of `_Be` here, away from the window.
                     let load = move || {
                         let load = |p: &std::path::PathBuf| {
                             let name = p.file_name().map_or(p.display().to_string(), |n| n.to_string_lossy().into());
-                            portal::load_file(p).map_err(|e| {
+                            let f = portal::load_file(p).map_err(|e| {
                                 eprintln!("attachFiles: failed to attach {name}: {e}");
                                 format!("Couldn't attach {name}")
-                            })
+                            })?;
+                            match portal::check(&f, &rules, resizes) {
+                                Ok(()) => portal::decodable(&f, p, &rules).map(|()| f),
+                                Err(_) => Ok(f),
+                            }
                         };
                         paths.iter().map(load).collect()
                     };

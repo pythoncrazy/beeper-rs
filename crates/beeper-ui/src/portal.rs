@@ -260,6 +260,22 @@ pub fn check(f: &PendingMedia, rules: &FileRules, resizes: bool) -> Result<(), S
     }
 }
 
+/// Desktop's `_Be` after `TBe`: a video or an audio file that the room takes only after a conversion needs codecs that
+/// ffmpeg can decode.
+pub fn decodable(f: &PendingMedia, path: &Path, rules: &FileRules) -> Result<(), String> {
+    if !matches!(f.mime.split('/').next(), Some("video" | "audio")) {
+        return Ok(());
+    }
+    let dims = Some(f.size).filter(|&(w, h)| w > 0 && h > 0);
+    let size = f.bytes.len() as u64;
+    let facts = Facts { mime: f.mime.clone(), size, dims, duration: f.duration, sent: Sent::File };
+    match decide(&facts, rules) {
+        Action::SendAsIs | Action::Reject(_) => Ok(()),
+        _ if beeper_core::media::can_decode(path) => Ok(()),
+        _ => Err(format!("Can't convert {} to a format this chat accepts", f.name)),
+    }
+}
+
 /// Desktop's `Pf`: seconds as "4.5s", "2m 5s" or "1h 2m 5s".
 fn duration(s: f64) -> String {
     if s < 60.0 {
@@ -353,6 +369,15 @@ mod tests {
         rules.remove(FILE_FILE);
         let flac = "This file type (audio/flac) is not supported and cannot be converted to a supported format";
         assert_eq!(check(&file("a.flac", "audio/flac", 9, (0, 0), None), &rules).unwrap(), flac);
+        // Desktop's `_Be`: a file that needs a conversion needs codecs that ffmpeg decodes.
+        let path = std::env::temp_dir().join(format!("beeper-rs-decode-{}.mkv", std::process::id()));
+        std::fs::write(&path, b"not a video").unwrap();
+        let mkv = file("a.mkv", "video/x-matroska", 9, (9, 9), Some(1.0));
+        let broken = Err("Can't convert a.mkv to a format this chat accepts".to_string());
+        assert_eq!(decodable(&mkv, &path, &beeper), broken);
+        let mp4 = file("a.mp4", "video/mp4", 9, (9, 9), Some(1.0));
+        assert_eq!(decodable(&mp4, &path, &beeper), Ok(()), "a file that goes as it is");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
