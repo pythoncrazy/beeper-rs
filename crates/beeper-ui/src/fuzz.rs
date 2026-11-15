@@ -1047,9 +1047,31 @@ fn media_carousel_draws() {
     let mut app = demo_app("mediacarousel");
     let _ = app.update(UiMessage::OpenMedia);
     let id = app.media_window.as_ref().map(|w| w.id).expect("a media window");
-    let mid = app.store.read().messages.iter().find(|m| !m.attachments.is_empty()).map(|m| m.id.clone()).unwrap();
-    let _ = app.update(UiMessage::OpenCarousel(mid, 0, true));
+    let (mid, ai, chat) = {
+        let st = app.store.read();
+        let items = crate::media_items(&st, app.media_window.as_ref().expect("a media window"));
+        let (i, ai) =
+            *items.iter().find(|&&(i, k)| st.messages[i].attachments[k].attachment_type == "img").expect("an image");
+        (st.messages[i].id.clone(), ai, st.messages[i].chat_id.clone())
+    };
+    let _ = app.update(UiMessage::OpenCarousel(mid.clone(), ai, true));
     drop(app.view(id));
+    let _ = app.update(UiMessage::ToggleFlag(chat.clone(), ChatFlag::LowPriority));
+    drop(app.view(id));
+    let _ = app.update(UiMessage::StoreChanged);
+    assert!(app.carousel.is_none(), "the carousel closes when its image leaves the Media window");
+    let _ = app.update(UiMessage::ToggleFlag(chat.clone(), ChatFlag::LowPriority));
+    let _ = app.update(UiMessage::SelectChat(chat.clone()));
+    let _ = app.update(UiMessage::OpenCarousel(mid.clone(), ai, false));
+    for next in [false, true] {
+        let steps = app.carousel_items(&app.store.read()).expect("the chat carousel shows the image").0.len();
+        (0..=steps).for_each(|_| drop(app.update(UiMessage::CarouselStep(next))));
+    }
+    let _ = app.update(UiMessage::OpenCarousel(mid.clone(), ai, false));
+    app.store.write().delete_message(&chat, &mid).expect("a sync deletes the image");
+    drop(simulator(app.view_main()));
+    let _ = app.update(UiMessage::StoreChanged);
+    assert!(app.carousel.is_none(), "the carousel closes when a sync deletes its image");
 }
 
 /// Desktop's `GalleryGrouper`: photos of one sender, 60 seconds apart and 2 minutes from the first, show as one

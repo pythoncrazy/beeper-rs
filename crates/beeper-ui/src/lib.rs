@@ -6283,10 +6283,14 @@ impl BeeperGuiApp {
                 return self.load_media();
             }
             UiMessage::CarouselStep(next) => {
-                let (items, at) = self.carousel_items(&self.store.read());
-                let to = if next { at + 1 } else { at.checked_sub(1).expect("a previous image") };
+                // The second click of a double click on an arrow can step past the first or the last image.
+                let item = self.carousel_items(&self.store.read()).and_then(|(items, at)| {
+                    let to = if next { at + 1 } else { at.checked_sub(1)? };
+                    items.into_iter().nth(to)
+                });
+                let Some(item) = item else { return Task::none() };
                 let c = self.carousel.as_mut().expect("the carousel is open");
-                (c.mid, c.ai) = items.into_iter().nth(to).expect("a next image");
+                (c.mid, c.ai) = item;
                 return self.load_media();
             }
             UiMessage::RotateCarousel => {
@@ -8149,7 +8153,11 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let left = self.pane.selected_chat_id.as_deref().is_some_and(|c| st.resolve_chat_idx(c).is_none());
                 self.selection.retain(|c| st.resolve_chat_idx(c).is_some());
+                let gone = self.carousel.is_some() && self.carousel_items(&st).is_none();
                 drop(st);
+                if gone {
+                    self.carousel = None;
+                }
                 if left {
                     (self.pane.selected_chat_id, self.chat_menu) = (None, None);
                     self.select_chat(NOTE_CHAT_ID);
@@ -8850,9 +8858,10 @@ impl BeeperGuiApp {
         let confirm = confirm.map(|d| self.view_confirm(d));
         let shows = |c: &&Carousel| {
             let st = self.store.read();
-            !c.in_media && Some(&st.messages[st.msg_idx_by_id[&c.mid]].chat_id) == self.pane().selected_chat_id.as_ref()
+            let chat = st.msg_idx_by_id.get(&c.mid).map(|&i| &st.messages[i].chat_id);
+            !c.in_media && chat.is_some() && chat == self.pane().selected_chat_id.as_ref()
         };
-        let carousel = self.carousel.as_ref().filter(shows).map(|c| self.view_carousel(c));
+        let carousel = self.carousel.as_ref().filter(shows).and_then(|c| self.view_carousel(c));
         let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q));
         let layers = stack![base].push(toast).push(menu).push(scrim).push(palette_menu).push(select).push(confirm);
         let token = self.token_ask.as_ref().map(|a| self.view_token_ask(a));
@@ -13722,8 +13731,9 @@ impl BeeperGuiApp {
     }
 
     /// The (message, attachment index) items of the carousel, and the position of the shown one:
-    /// the images and GIFs of the open chat, oldest first, or the Media window items.
-    fn carousel_items(&self, st: &BeeperStore) -> (Vec<(String, usize)>, usize) {
+    /// the images and GIFs of the open chat, oldest first, or the Media window items. It is `None` when the shown item
+    /// is gone: a sync deleted its message, or its chat left the Media window.
+    fn carousel_items(&self, st: &BeeperStore) -> Option<(Vec<(String, usize)>, usize)> {
         let c = self.carousel.as_ref().expect("the carousel is open");
         let items: Vec<_> = match c.in_media {
             true => media_items(st, self.media_window.as_ref().expect("the Media window is open"))
@@ -13731,7 +13741,7 @@ impl BeeperGuiApp {
                 .map(|(i, k)| (st.messages[i].id.clone(), k))
                 .collect(),
             false => {
-                let chat = &st.messages[st.msg_idx_by_id[&c.mid]].chat_id;
+                let chat = &st.messages[*st.msg_idx_by_id.get(&c.mid)?].chat_id;
                 let messages = st.chat_msg_indices[chat].iter().map(|&i| &st.messages[i]);
                 messages
                     .flat_map(|m| {
@@ -13743,12 +13753,14 @@ impl BeeperGuiApp {
                     .collect()
             }
         };
-        let at = items.iter().position(|(m, k)| *m == c.mid && *k == c.ai).expect("the carousel shows its item");
-        (items, at)
+        let at = items.iter().position(|(m, k)| *m == c.mid && *k == c.ai)?;
+        Some((items, at))
     }
 
     fn carousel_key(&mut self, key: &Key, mods: keyboard::Modifiers) -> Task<UiMessage> {
-        let (items, at) = self.carousel_items(&self.store.read());
+        let Some((items, at)) = self.carousel_items(&self.store.read()) else {
+            return self.update(UiMessage::CloseCarousel);
+        };
         let c = self.carousel.clone().expect("the carousel is open");
         match key.as_ref() {
             Key::Named(Named::Escape) => self.update(UiMessage::CloseCarousel),
@@ -13784,14 +13796,15 @@ impl BeeperGuiApp {
         }
     }
 
-    fn view_carousel<'a>(&'a self, car: &Carousel) -> El<'a> {
+    /// The carousel, or `None` until the next store change closes a carousel whose item is gone.
+    fn view_carousel<'a>(&'a self, car: &Carousel) -> Option<El<'a>> {
         let p = &self.pal;
         let st = self.store.read();
+        let (items, at) = self.carousel_items(&st)?;
         let (mid, ai) = (car.mid.as_str(), car.ai);
         let m = &st.messages[st.msg_idx_by_id[mid]];
         let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
         let a = &m.attachments[ai];
-        let (items, at) = self.carousel_items(&st);
         let h24 = st.settings.pref("timeFormat") == 1;
         let white = Color::WHITE;
         let control = |h: &svg::Handle, msg| {
@@ -13868,9 +13881,8 @@ impl BeeperGuiApp {
             .push((at > 0).then(|| step(false)))
             .push((at + 1 < items.len()).then(|| step(true)))
             .push(strip);
-        mouse_area(container(layer).width(Fill).height(Fill).style(fill_box(Color::BLACK.scale_alpha(0.85), 0.0)))
-            .on_press(UiMessage::CloseCarousel)
-            .into()
+        let scrim = container(layer).width(Fill).height(Fill).style(fill_box(Color::BLACK.scale_alpha(0.85), 0.0));
+        Some(mouse_area(scrim).on_press(UiMessage::CloseCarousel).into())
     }
 
     /// The status toast at the bottom left of a window, `left` from its edge.
@@ -14279,7 +14291,7 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::MediaMenu(false))
         });
         drop(st);
-        let carousel = self.carousel.as_ref().filter(|c| c.in_media).map(|c| self.view_carousel(c));
+        let carousel = self.carousel.as_ref().filter(|c| c.in_media).and_then(|c| self.view_carousel(c));
         let ask = w.deleting.as_ref().map(|(pairs, _)| {
             let n = pairs.len();
             let body = match n {
