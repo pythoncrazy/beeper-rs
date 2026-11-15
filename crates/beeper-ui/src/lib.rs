@@ -6429,6 +6429,7 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::OpenCarousel(mid, ai, in_media) => {
+                self.leave_carousel_video();
                 self.carousel = Some(Carousel { mid, ai, turns: 0, in_media });
                 return self.load_media();
             }
@@ -6439,6 +6440,7 @@ impl BeeperGuiApp {
                     items.into_iter().nth(to)
                 });
                 let Some(item) = item else { return Task::none() };
+                self.leave_carousel_video();
                 let c = self.carousel.as_mut().expect("the carousel is open");
                 (c.mid, c.ai) = item;
                 return self.load_media();
@@ -6447,7 +6449,10 @@ impl BeeperGuiApp {
                 let c = self.carousel.as_mut().expect("the carousel is open");
                 c.turns = (c.turns + 1) % 4;
             }
-            UiMessage::CloseCarousel => self.carousel = None,
+            UiMessage::CloseCarousel => {
+                self.leave_carousel_video();
+                self.carousel = None;
+            }
             UiMessage::OpenMedia => {
                 if let Some(w) = &self.media_window {
                     return window::gain_focus(w.id);
@@ -13904,9 +13909,9 @@ impl BeeperGuiApp {
         })))
     }
 
-    /// The (message, attachment index) items of the carousel, and the position of the shown one:
-    /// the images and GIFs of the open chat, oldest first, or the Media window items. It is `None` when the shown item
-    /// is gone: a sync deleted its message, or its chat left the Media window.
+    /// The (message, attachment index) items of the carousel, and the position of the shown one: like Desktop's
+    /// `getCarouselAttachments`, the attachments of the open chat other than audio, oldest first, or the Media window
+    /// items. It is `None` when the shown item is gone: a sync deleted its message, or its chat left the Media window.
     fn carousel_items(&self, st: &BeeperStore) -> Option<(Vec<(String, usize)>, usize)> {
         let c = self.carousel.as_ref().expect("the carousel is open");
         let items: Vec<_> = match c.in_media {
@@ -13919,9 +13924,7 @@ impl BeeperGuiApp {
                 let messages = st.chat_msg_indices[chat].iter().map(|&i| &st.messages[i]);
                 messages
                     .flat_map(|m| {
-                        let shown = |(_, a): &(usize, &Attachment)| {
-                            matches!(a.attachment_type.as_str(), "img" | "video") || a.is_gif == Some(true)
-                        };
+                        let shown = |(_, a): &(usize, &Attachment)| a.attachment_type != "audio";
                         m.attachments.iter().enumerate().filter(shown).map(|(ai, _)| (m.id.clone(), ai))
                     })
                     .collect()
@@ -14009,15 +14012,44 @@ impl BeeperGuiApp {
             stack![container(title).center_x(Fill).center_y(34), container(controls).align_right(Fill).center_y(34)];
         let url = a.poster_img.as_ref().or(a.src_url.as_ref());
         let turn = iced::Radians(-std::f32::consts::FRAC_PI_2 * f32::from(car.turns));
-        let shown: El<'a> = match url.and_then(|u| self.media_at(u)) {
-            Some(Ok(frames)) => {
-                anim::gif(anim::playing(frames, st.settings.on("autoplayGifs")), self.started, move |f| {
-                    image(f).content_fit(iced::ContentFit::ScaleDown).rotation(iced::Rotation::Solid(turn))
-                })
+        let frames = url.and_then(|u| self.media_at(u)).and_then(|f| f.as_ref().ok());
+        // Desktop's `renderAttachment`: a video plays with its controls and does not zoom, and a file is a link that
+        // downloads it.
+        let main: El<'a> = match (a.attachment_type.as_str(), a.is_gif == Some(true), a.src_url.as_deref()) {
+            ("video", false, Some(src)) => {
+                let area = match car.in_media {
+                    true => self.media_window.as_ref().expect("the Media window is open").size,
+                    false => self.pane().size,
+                };
+                let (w, h) = a
+                    .size
+                    .as_ref()
+                    .map_or((240.0, 160.0), |s| (s.width.unwrap_or(240) as f32, s.height.unwrap_or(160) as f32));
+                let k = ((area.width - 16.0) / w).min((area.height - 66.0) / h);
+                let poster: El<'a> = match frames {
+                    Some(f) => image(f[0].0.clone()).width(w * k).height(h * k).into(),
+                    None => Space::new().width(w * k).height(h * k).into(),
+                };
+                let video = mouse_area(self.view_video(mid, src, poster, w * k, h * k)).on_press(UiMessage::Noop);
+                container(video).center(Fill).padding(8).into()
             }
-            _ => Space::new().into(),
+            ("img" | "video", ..) => {
+                let shown: El<'a> = match frames {
+                    Some(frames) => {
+                        anim::gif(anim::playing(frames, st.settings.on("autoplayGifs")), self.started, move |f| {
+                            image(f).content_fit(iced::ContentFit::ScaleDown).rotation(iced::Rotation::Solid(turn))
+                        })
+                    }
+                    None => Space::new().into(),
+                };
+                container(zoom::zoom(shown, vlist::key((mid, ai)), UiMessage::CloseCarousel)).padding(8).into()
+            }
+            _ => {
+                let name = txt(a.file_name.clone().expect("attachment file name"), 13.0).color(white);
+                let link = button(name).padding(0).style(btn_style([CLEAR; 3], [white; 3], 0.0));
+                container(link.on_press(UiMessage::Download(mid.to_string(), Some(ai)))).center(Fill).into()
+            }
         };
-        let main = container(zoom::zoom(shown, vlist::key((mid, ai)), UiMessage::CloseCarousel)).padding(8);
         let step = |next: bool| -> El<'a> {
             let arrow = svg(SYS_ARROW_BACK.clone())
                 .width(20)

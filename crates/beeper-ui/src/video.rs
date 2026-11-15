@@ -292,6 +292,14 @@ impl BeeperGuiApp {
         Task::none()
     }
 
+    /// Desktop unmounts the video of the carousel when the carousel shows another item or closes.
+    pub(crate) fn leave_carousel_video(&mut self) {
+        let mid = self.carousel.as_ref().map(|c| c.mid.as_str());
+        if let Some(v) = self.video.as_mut().filter(|v| Some(v.mid.as_str()) == mid) {
+            v.pause();
+        }
+    }
+
     pub(crate) fn video_ticks(&self) -> Option<Subscription<UiMessage>> {
         let v = self.video.as_ref().filter(|v| v.media.is_some() && (v.playing() || v.shown == 0));
         v.map(|_| iced::time::every(Duration::from_secs_f32(1.0 / FPS)).map(|_| UiMessage::Video(Msg::Tick)))
