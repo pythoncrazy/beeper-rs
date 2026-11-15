@@ -4769,14 +4769,6 @@ impl BeeperGuiApp {
         Task::perform(async move { tokio::time::sleep(wait).await }, |()| UiMessage::LoadOlder)
     }
 
-    fn push_outbox(&mut self) -> Task<UiMessage> {
-        let can = self.store.read().can_flush();
-        match can && self.store.write().start_flush() {
-            true => Task::perform(beeper_core::matrix::flush(self.store.clone()), UiMessage::Pushed),
-            false => Task::none(),
-        }
-    }
-
     /// The hotkey with the modifiers and the key, or with the modifiers alone before the digit 1 to 9.
     fn find_hotkey(&self, key: &Key, mods: keyboard::Modifiers) -> Option<(&'static str, usize)> {
         let name = hotkey_key(key)?;
@@ -7333,10 +7325,7 @@ impl BeeperGuiApp {
                 return self.quit();
             }
             UiMessage::Pushed(Err(e)) => self.fail(Toast::new(format!("Could not send to Matrix: {e}"))),
-            UiMessage::RetrySend(id) => {
-                self.store.write().retry_send(&id);
-                return self.push_outbox();
-            }
+            UiMessage::RetrySend(id) => self.store.write().retry_send(&id),
             UiMessage::RemoveUnsent(id) => self.store.write().remove_unsent(&id),
             UiMessage::TimelineScrolled(up) => self.timeline_scrolled(up),
             UiMessage::ScrollToBottom => {
@@ -8237,7 +8226,7 @@ impl BeeperGuiApp {
         if self.store.read().matrix_error.is_some() {
             self.status_banner = self.store.write().matrix_error.take().expect("a Matrix error");
         }
-        Task::batch([self.load_avatars(), self.load_media(), self.push_outbox()])
+        Task::batch([self.load_avatars(), self.load_media()])
     }
 
     /// Desktop's `hydrateMissingBookmarks` while Chat Info is open: fetches the bookmarked messages of the open chat

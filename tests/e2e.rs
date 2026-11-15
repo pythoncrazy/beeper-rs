@@ -1493,10 +1493,9 @@ async fn lifecycle() {
     {
         let cid = store.read().chats[0].id.clone();
         let was = store.read().chats[0].is_muted == Some(true);
-        store.write().config.demo = false;
+        take_outbox(&mut store.write());
         let _ = gui.update(UiMessage::ToggleFlag(cid.clone(), ChatFlag::Muted));
         let mut st = store.write();
-        st.config.demo = true;
         assert_eq!(st.chats[0].is_muted, Some(!was), "the mute toggle changes the chat");
         let queued = matches!(take_outbox(&mut st).as_slice(), [(c, Outgoing::Flag(ChatFlag::Muted, on))] if *c == cid && *on != was);
         assert!(queued, "the mute toggle goes to the homeserver");
@@ -1515,12 +1514,11 @@ async fn lifecycle() {
         let _ = gui.update(UiMessage::ChatSub(Some(1)));
         assert!(simulator(gui.view_main()).find("In an Hour").is_ok(), "Remind Me opens the presets");
         let at = beeper_core::config::now_unix_millis() + 3_600_000;
-        store.write().config.demo = false;
+        take_outbox(&mut store.write());
         let _ = gui.update(UiMessage::SetReminder(cid.clone(), Some(at)));
         let _ = gui.update(UiMessage::SetReminder(cid.clone(), None));
         {
             let mut st = store.write();
-            st.config.demo = true;
             let sent: Vec<_> = take_outbox(&mut st)
                 .into_iter()
                 .map(|(_, o)| match o {
@@ -1622,10 +1620,9 @@ async fn lifecycle() {
         let _ = gui.update(UiMessage::OpenChatMenu(doomed.clone()));
         let _ = gui.update(UiMessage::AskDeleteChat(doomed.clone()));
         assert!(gui.chat_menu.is_none() && simulator(gui.view_main()).find("Delete for Everyone").is_ok());
-        store.write().config.demo = false;
+        take_outbox(&mut store.write());
         let _ = gui.update(UiMessage::DeleteChat(doomed.clone(), true));
         let mut st = store.write();
-        st.config.demo = true;
         let sent = matches!(take_outbox(&mut st).as_slice(), [(c, Outgoing::DeleteChat { for_everyone: true })] if *c == doomed);
         assert!(sent && st.resolve_chat_idx(&doomed).is_none(), "Delete Chat asks the bridge and drops the chat");
         let picks: Vec<String> =

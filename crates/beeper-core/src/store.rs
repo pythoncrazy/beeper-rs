@@ -542,7 +542,8 @@ pub struct BeeperStore {
     /// Desktop's `mx_removed_messages` after the history of the removed-messages room is read: the removal events by
     /// the event ID of the removed message.
     pub removals: Option<HashMap<String, Vec<String>>>,
-    pub pushing: bool,
+    /// Wakes the push task of the Matrix sync loop when the outbox has a new change.
+    pub(crate) outbox_ready: std::sync::Arc<tokio::sync::Notify>,
     /// Flags whose change the homeserver has, with the value and the sync after which a sync shows the change.
     pub sent_flags: HashMap<(String, ChatFlag), (bool, u64)>,
     /// The number of syncs of the Matrix sync loop.
@@ -700,7 +701,7 @@ impl BeeperStore {
             bookmarks: HashMap::new(),
             bookmarked: HashMap::new(),
             removals: None,
-            pushing: false,
+            outbox_ready: Default::default(),
             sent_flags: HashMap::new(),
             syncs: 0,
             sent: HashMap::new(),
@@ -1385,10 +1386,8 @@ impl BeeperStore {
         &self.chats[self.chat_idx_by_id[NOTE_CHAT_ID]].participants.items[0]
     }
 
+    /// Adds a change to the outbox, which the push task of the Matrix sync loop sends.
     pub fn queue(&mut self, chat_id: &str, out: Outgoing) {
-        if self.config.demo {
-            return;
-        }
         let bytes = match &out {
             Outgoing::Media { bytes, .. } => Some(bytes.as_slice()),
             _ => None,
@@ -1397,6 +1396,7 @@ impl BeeperStore {
         self.exec("INSERT INTO outbox (chat_id, json, bytes) VALUES (?1, ?2, ?3)", params![chat_id, json, bytes]);
         let row = self.db.lock().unwrap().last_insert_rowid();
         self.outbox.push((row, chat_id.into(), out));
+        self.outbox_ready.notify_one();
     }
 
     /// The outbox row `id`, or all rows in order.
@@ -1421,9 +1421,8 @@ impl BeeperStore {
     }
 
     /// The next change for the homeserver. At the end of the outbox the push stops.
-    pub fn next_outgoing(&mut self) -> Option<(i64, String, Outgoing)> {
+    pub(crate) fn next_outgoing(&mut self) -> Option<(i64, String, Outgoing)> {
         let next = self.outbox.iter().position(|o| !self.waits_for_retry(&o.2)).filter(|_| self.matrix.is_some());
-        self.pushing = next.is_some();
         next.map(|i| self.outbox.remove(i))
     }
 
@@ -1450,6 +1449,7 @@ impl BeeperStore {
     pub fn retry_send(&mut self, id: &str) {
         let i = self.find_message(id).expect("a failed message");
         self.update_message(i, |m| m.send_error.as_mut().expect("a failed message").retrying = true);
+        self.outbox_ready.notify_one();
     }
 
     /// Desktop's `removeErroredMessage` for a send that the homeserver did not take: the local echo and its change.
@@ -1541,17 +1541,6 @@ impl BeeperStore {
         self.update_chat(idx, |c| c.reminder = reminder.clone());
         let id = self.chats[idx].id.clone();
         self.queue(&id, Outgoing::Reminder(reminder));
-    }
-
-    /// Whether `start_flush` starts a flush.
-    pub fn can_flush(&self) -> bool {
-        !self.pushing && self.matrix.is_some() && self.outbox.iter().any(|o| !self.waits_for_retry(&o.2))
-    }
-
-    pub fn start_flush(&mut self) -> bool {
-        let start = self.can_flush();
-        self.pushing |= start;
-        start
     }
 
     /// The user ID of the user on an account: the user of the account, or the Beeper user for the Beeper chats.
@@ -3082,7 +3071,6 @@ mod tests {
             .unwrap();
         let mut st = super::BeeperStore::from_config(config.clone());
         assert_eq!(ids(&st), want, "the message search stays");
-        st.config.demo = false;
         st.queue(super::NOTE_CHAT_ID, super::Outgoing::Flag(super::ChatFlag::Muted, true));
         drop(st);
         let st = super::BeeperStore::from_config(config);
@@ -3325,7 +3313,6 @@ mod tests {
     fn sends_build_the_echo_and_the_change_of_each_file() {
         use super::{Draft, MediaInfo, OutFile, Outgoing};
         let mut st = super::BeeperStore::from_config(crate::testing::demo_config("send-files"));
-        st.config.demo = false;
         let chat = "!tg_rust:beeper.com";
         let file = |name: &str, mime: &str| OutFile {
             bytes: vec![1, 2],
@@ -3364,7 +3351,6 @@ mod tests {
     fn bookmarks_follow_the_bookmarks_room() {
         let config = crate::testing::demo_config("bookmarks");
         let mut st = super::BeeperStore::from_config(config);
-        st.config.demo = false;
         let m = st.messages[0].clone();
         assert!(st.toggle_bookmark(&m.id) && st.outbox.is_empty(), "without the bookmarks room a bookmark is local");
         let b = super::Bookmark { room_id: m.chat_id.clone(), event_id: "$b".into(), order: 1 };
@@ -3389,7 +3375,6 @@ mod tests {
     fn transcriptions_go_to_the_transcriptions_room() {
         let config = crate::testing::demo_config("transcribed");
         let mut st = super::BeeperStore::from_config(config);
-        st.config.demo = false;
         let t = super::Transcription { transcription: "Hi".into(), engine: "openai-whisper".into(), language: None };
         st.transcribed("msg_1003", t.clone());
         let i = st.find_message("msg_1003").unwrap();
@@ -3401,7 +3386,6 @@ mod tests {
     fn personal_name_and_photo_like_desktop() {
         let config = crate::testing::demo_config("personal");
         let mut st = super::BeeperStore::from_config(config);
-        st.config.demo = false;
         let id = "!tg_rust:beeper.com";
         let chat = |st: &super::BeeperStore| st.chats[st.chat_idx_by_id[id]].clone();
         let (room, img) = (chat(&st).title, chat(&st).img_url);

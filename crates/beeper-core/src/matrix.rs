@@ -1688,7 +1688,7 @@ fn sticker_content(content: &mut Value, s: Box<Sticker>, caption: bool, dims: Op
 /// Pushes the outbox to the homeserver. A message that fails keeps an error, like Desktop's failed echoes. A removal
 /// that fails stays pending for the next launch, like Desktop's `resendPendingRemovals`. Other changes that fail are
 /// dropped, and the error comes back.
-pub async fn flush(store: SharedStore) -> Result<(), String> {
+async fn flush(store: SharedStore) -> Result<(), String> {
     loop {
         let Some((row, chat, out)) = store.write().next_outgoing() else { return Ok(()) };
         // A failed change waits for Retry only with a local echo that shows the error.
@@ -1713,10 +1713,20 @@ pub async fn flush(store: SharedStore) -> Result<(), String> {
                 if !pending {
                     st.pushed(row, None, None);
                 }
-                st.pushing = false;
                 return Err(e);
             }
         }
+    }
+}
+
+/// The push task of the sync loop: it pushes the outbox at the start and after each change that the store queues.
+async fn push_loop(store: SharedStore) {
+    let ready = store.read().outbox_ready.clone();
+    loop {
+        if let Err(e) = flush(store.clone()).await {
+            store.write().matrix_error = Some(format!("Could not send to Matrix: {e}"));
+        }
+        ready.notified().await;
     }
 }
 
@@ -3193,6 +3203,7 @@ pub async fn run(store: SharedStore) {
         let mut st = store.write();
         (st.matrix, st.syncing) = (Some(client.clone()), true);
     }
+    tokio::spawn(push_loop(store.clone()));
     tokio::spawn(retry_undecrypted(client.clone(), store.clone()));
     tokio::spawn(retry_after_backup(client.clone(), store.clone()));
     // Like Desktop's SDK, the state is `initialized` when the device knows the identity of the account. When the
@@ -3411,6 +3422,16 @@ mod tests {
         let client = store.read().matrix.clone().expect("a Matrix client");
         let room = client.get_room(&matrix_sdk::ruma::OwnedRoomId::try_from(id).expect("a room ID")).expect("the room");
         super::sync_room(store, &room, Vec::new()).await;
+    }
+
+    /// Waits until the push task of the sync loop makes `done` true.
+    async fn pushed_until(store: &crate::store::SharedStore, done: impl Fn(&crate::store::BeeperStore) -> bool) {
+        let wait = async {
+            while !done(&store.read()) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), wait).await.expect("the push task ends in time");
     }
 
     fn stub_event(id: &str, kind: &str, content: Value) -> Value {
@@ -4043,42 +4064,28 @@ mod tests {
         .await;
         let dir = crate::testing::temp_dir("outbox");
         let store = stub_store(&dir, &url).await;
-        let room = store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).unwrap();
-        super::sync_room(&store, &room, Vec::new()).await;
-        let txn = {
-            let mut st = store.write();
-            let (_, txn, _) = st.send_message("!room:x", Some("hi".into()), None, None).expect("a local echo");
-            let out = super::Outgoing::Send {
-                txn: txn.clone(),
-                text: "hi".into(),
-                reply_to: None,
-                preview: None,
-                mentions: Vec::new(),
-                thread: None,
-            };
-            st.queue("!room:x", out);
-            txn
+        sync_stub_room(&store, "!room:x").await;
+        let pushes = tokio::spawn(super::push_loop(store.clone()));
+        let draft = crate::store::Draft { text: Some("hi".into()), ..Default::default() };
+        let txn = store.write().send("!room:x", draft).expect("a local echo").1.remove(0);
+        let error = |st: &crate::store::BeeperStore| {
+            (st.stored_message(&txn).expect("the local echo").send_error, st.outbox.len())
         };
-        let error = |store: &crate::store::SharedStore| {
-            let mut st = store.write();
-            let i = st.find_message(&txn).expect("the local echo");
-            (st.messages[i].send_error.clone(), st.outbox.len(), st.start_flush())
-        };
-        assert!(store.write().start_flush());
+        pushed_until(&store, |st| error(st).0.is_some()).await;
         super::flush(store.clone()).await.expect("a failed message is not a flush error");
-        let (e, queued, again) = error(&store);
+        let (e, queued) = error(&store.read());
         let e = e.expect("the local echo keeps the error");
         assert!(e.message.as_deref().is_some_and(|m| m.contains("stub refusal")) && !e.retrying, "{e:?}");
-        assert_eq!((queued, again), (1, false), "the send waits in the outbox for Retry");
+        assert_eq!(queued, 1, "the send waits in the outbox for Retry");
+        pushes.abort();
+        assert!(pushes.await.is_err_and(|e| e.is_cancelled()));
         drop(store);
         let store = stub_store(&dir, &url).await;
-        assert_eq!(error(&store).0.map(|e| e.retrying), Some(false), "the error and the outbox persist");
+        tokio::spawn(super::push_loop(store.clone()));
+        assert_eq!(error(&store.read()).0.map(|e| e.retrying), Some(false), "the error and the outbox persist");
         fail.store(false, Relaxed);
         store.write().retry_send(&txn);
-        assert!(store.write().start_flush());
-        super::flush(store.clone()).await.expect("the retry goes through");
-        assert_eq!(error(&store), (None, 0, false), "the homeserver took the message");
-        drop(store);
+        pushed_until(&store, |st| error(st) == (None, 0)).await;
         let cfg = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23392, None);
         assert!(crate::store::BeeperStore::from_config(cfg).outbox.is_empty(), "the outbox row is gone");
     }
@@ -4263,7 +4270,6 @@ mod tests {
         }
         assert_eq!(state(&store, "$a"), (true, false, false), "a redaction ends the removal");
         assert_eq!(state(&store, "$b"), (true, true, false), "a removal deletes the message at once");
-        assert!(store.write().start_flush());
         assert!(super::flush(store.clone()).await.is_err(), "the removal fails");
         // The changes for the removed-messages room, with the path after the room.
         let room = format!("/_matrix/client/v3/rooms/{REMOVED_MESSAGES_ROOM}/");
@@ -4277,7 +4283,6 @@ mod tests {
         failing.store(false, Relaxed);
         let store = stub_store(&dir, &url).await;
         assert_eq!(state(&store, "$b"), (true, true, false), "the removal persists");
-        assert!(store.write().start_flush());
         super::flush(store.clone()).await.expect("the pending removal goes again after a restart");
         let (path, body) = changes().pop().expect("the removal");
         assert!(path.starts_with("send/com.beeper.removed_message/~beeper-"), "{path}");
