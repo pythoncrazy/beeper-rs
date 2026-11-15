@@ -2,7 +2,7 @@ use crate::config::account_network;
 use crate::models::{BridgeAccountInfo, BridgeMode, MatrixSession, Plan, Profile, User};
 use serde_json::{json, Value};
 use std::future::Future;
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 use std::time::Duration;
 
 const GUEST_TOKEN: &str = "BEEPER-PRIVATE-API-PLEASE-DONT-USE";
@@ -23,7 +23,6 @@ pub enum CodeResult {
 }
 
 pub struct Cloud {
-    http: reqwest::Client,
     pub api_url: String,
     pub homeserver: String,
 }
@@ -110,8 +109,7 @@ fn block_on<F: Future>(f: F) -> F::Output {
 impl Cloud {
     pub fn new(api_url: &str, homeserver: &str) -> Self {
         install_tls();
-        let http = reqwest::Client::builder().timeout(Duration::from_secs(20)).build().expect("build the HTTP client");
-        Self { http, api_url: api_url.into(), homeserver: homeserver.into() }
+        Self { api_url: api_url.into(), homeserver: homeserver.into() }
     }
 
     fn call(&self, url: &str, token: Option<&str>, body: Option<&Value>) -> Result<Value, CloudError> {
@@ -126,7 +124,7 @@ impl Cloud {
         token: Option<&str>,
         body: Option<&Value>,
     ) -> Result<Value, CloudError> {
-        let req = self.http.request(method, url);
+        let req = http_client().request(method, url);
         let req = match body {
             Some(b) => req.header("content-type", "application/json").body(b.to_string()),
             None => req,
@@ -287,12 +285,24 @@ pub struct KlipyGif {
     pub mp4_size: (u32, u32),
 }
 
-pub(crate) fn http_client() -> &'static reqwest::Client {
-    static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    HTTP.get_or_init(|| {
+fn shared(cell: &'static OnceLock<reqwest::Client>, timeout: Option<Duration>) -> &'static reqwest::Client {
+    cell.get_or_init(|| {
         install_tls();
-        reqwest::Client::builder().timeout(Duration::from_secs(20)).build().expect("build the HTTP client")
+        let builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(20));
+        timeout.into_iter().fold(builder, |b, t| b.timeout(t)).build().expect("build the HTTP client")
     })
+}
+
+/// The shared HTTP client: one connection pool, and a 20-second limit for each request.
+pub(crate) fn http_client() -> &'static reqwest::Client {
+    static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
+    shared(&HTTP, Some(Duration::from_secs(20)))
+}
+
+/// The shared HTTP client with no request limit, for bridge steps that answer only when the user acts.
+pub(crate) fn wait_client() -> &'static reqwest::Client {
+    static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
+    shared(&HTTP, None)
 }
 
 /// Desktop's OpenAI `baseURL` (`uke`): Beeper's proxy beside the homeserver, with "matrix." changed to "ai-services.".

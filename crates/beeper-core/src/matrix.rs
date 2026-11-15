@@ -2231,13 +2231,13 @@ impl Provision {
 
     /// A POST without a timeout, because `display_and_wait` steps answer only when the user acts.
     pub(crate) async fn post(&self, path: &str, body: String) -> Result<String, String> {
-        let req = reqwest::Client::new().post(self.url(path)).bearer_auth(&self.access_token);
+        let req = crate::cloud::wait_client().post(self.url(path)).bearer_auth(&self.access_token);
         bridge_reply(req.header("content-type", "application/json").body(body).send().await).await
     }
 
     /// The JSON reply, or `None` when the homeserver or the bridge does not know the path (`M_NOT_FOUND`).
     pub(crate) async fn get(&self, path: &str) -> Result<Option<Value>, String> {
-        let resp = reqwest::Client::new().get(self.url(path)).bearer_auth(&self.access_token).send().await;
+        let resp = crate::cloud::http_client().get(self.url(path)).bearer_auth(&self.access_token).send().await;
         if resp.as_ref().is_ok_and(|r| r.status() == reqwest::StatusCode::NOT_FOUND) {
             return Ok(None);
         }
@@ -2253,7 +2253,7 @@ pub async fn remove_account(p: Provision, api_url: String, sole: bool) -> Result
         return p.post(&path, "{}".into()).await.map(drop);
     }
     let url = format!("{}/bridge/{}", api_url.trim_end_matches('/'), crate::codec::url_encode(&p.bridge_id));
-    let resp = reqwest::Client::new().delete(url).bearer_auth(&p.access_token).send().await;
+    let resp = crate::cloud::http_client().delete(url).bearer_auth(&p.access_token).send().await;
     resp.map_err(|e| e.to_string())?.error_for_status().map(drop).map_err(|e| e.to_string())
 }
 

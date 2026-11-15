@@ -98,7 +98,7 @@ fn flow_list(v: Value) -> Result<Vec<Flow>, String> {
 /// The SDK's `startCloudBridge`: the Beeper API starts the bridge of the user.
 async fn start_bridge(p: &Provision, api_url: &str) -> Result<(), String> {
     let url = format!("{}/bridge/{}/start", api_url.trim_end_matches('/'), crate::codec::url_encode(&p.bridge_id));
-    let resp = reqwest::Client::new().post(url).bearer_auth(&p.access_token).send().await;
+    let resp = crate::cloud::http_client().post(url).bearer_auth(&p.access_token).send().await;
     let resp = resp.map_err(|e| e.without_url().to_string())?;
     resp.error_for_status().map(drop).map_err(|e| e.without_url().to_string())
 }
