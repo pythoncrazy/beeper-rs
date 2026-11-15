@@ -3,7 +3,7 @@
 use crate::i18n::{tr, trf, trn, trx};
 use crate::style::{
     bar, bold, bordered_box, btn_style, ell, fill_box, fw, ic, icon, input_style, med, mix, scroll_style, semi,
-    shadow_box, txt, CLEAR,
+    shadow_box, text_width, txt, CLEAR,
 };
 use crate::{
     badge, blocked_chats, chat_search_subtitle, checkbox, checkbox_plus, delete_dialog, grouped_rows, human_size,
@@ -539,12 +539,17 @@ impl BeeperGuiApp {
     ) -> El<'a> {
         let p = &self.pal;
         let action = |(label, msg): (&'static str, UiMessage)| {
-            button(med(label, 13.0).color(Color::WHITE))
+            button(med(label, 13.0).color(Color::WHITE).wrapping(iced::widget::text::Wrapping::None))
                 .padding([5, 12])
                 .style(btn_style([p.accent; 3], [Color::WHITE; 3], 6.0))
                 .on_press(msg)
                 .into()
         };
+        // Like a native message box, the dialog is 340 wide and grows to keep its buttons on one line.
+        let buttons: f32 = std::iter::once((no, Weight::Normal, 12.0))
+            .chain(actions.iter().map(|a| (a.0, Weight::Medium, 24.0)))
+            .map(|(label, weight, pad)| text_width(label, 13.0, weight) + pad + 8.0)
+            .sum();
         let card = column![bold(title, 14.0).color(p.strong), txt(body, 13.0).color(p.text)]
             .push(extra)
             .push(
@@ -554,7 +559,7 @@ impl BeeperGuiApp {
             )
             .spacing(10)
             .padding(16)
-            .width(340);
+            .width(buttons.max(308.0) + 40.0);
         mouse_area(
             container(
                 mouse_area(container(card).style(shadow_box(p.elevated, p.menu_border, 12.0, 24.0)))

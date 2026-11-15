@@ -128,7 +128,7 @@ impl BeeperGuiApp {
                     false => return close_note(note),
                 }
             }
-            VerifyMsg::Noted(_, Err(e)) => self.status_banner = format!("Notifications failed: {e}"),
+            VerifyMsg::Noted(_, Err(e)) => eprintln!("notification: {e}"),
             VerifyMsg::Done(_, Ok(())) => {}
             VerifyMsg::Done(what, Err(e)) => self.fail(Toast::new(if what.is_empty() { e } else { tr(what).into() })),
         }

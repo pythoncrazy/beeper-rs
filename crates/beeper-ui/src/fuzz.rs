@@ -3015,6 +3015,7 @@ fn deleted_and_encrypted_messages_look_like_desktop() {
     };
     let mut sim = simulator(app.view_main());
     assert!(sim.find("This message is waiting for decryption.").is_ok(), "an encrypted message waits for its keys");
+    assert!(sim.find("Edited").is_err(), "Desktop shows no Edited label on a deleted message");
     let _ = sim.click("This message has been deleted");
     let clicked = sim.into_messages().any(|m| matches!(m, UiMessage::ClickMessage(id) if id == deleted));
     assert!(clicked, "a deleted message keeps its row and its click selection");
