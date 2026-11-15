@@ -1096,6 +1096,47 @@ fn photos_group_into_galleries_like_desktop() {
     assert!(sim.find("01:15").is_ok(), "a video tile shows its duration");
 }
 
+/// Desktop's carousel zoom: a double click or `+` zooms in, so that a click beside the image hits the image and does
+/// not close the carousel, and `-` zooms out again.
+#[test]
+fn carousel_zooms_like_desktop() {
+    let mut app = demo_app("carousel-zoom");
+    let (chat, mid, url) = {
+        let st = app.store.read();
+        let m = st.messages.iter().find(|m| m.attachments.iter().any(|a| a.attachment_type == "img")).unwrap();
+        (m.chat_id.clone(), m.id.clone(), m.attachments[0].src_url.clone().unwrap())
+    };
+    let frames = vec![(image::Handle::from_rgba(200, 100, vec![255; 200 * 100 * 4]), 0)];
+    app.media.insert(url, Some(Ok(frames)));
+    let _ = app.update(UiMessage::SelectChat(chat));
+    let _ = app.update(UiMessage::OpenCarousel(mid, 0, false));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 720.0), app.view_main());
+    let (middle, beside) = (Point::new(500.0, 389.0), Point::new(650.0, 389.0));
+    let click = |sim: &mut Simulator<UiMessage>, at: Point| {
+        sim.point_at(at);
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: at })]);
+        let _ = sim.simulate(iced_test::simulator::click());
+    };
+    let settle = |sim: &mut Simulator<UiMessage>| {
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let _ = sim.simulate([iced::Event::Window(window::Event::RedrawRequested(later))]);
+    };
+    click(&mut sim, middle);
+    click(&mut sim, middle);
+    settle(&mut sim);
+    click(&mut sim, Point::new(10.0, 600.0));
+    click(&mut sim, beside);
+    let _ = sim.tap_key(Key::Character("-".into()));
+    settle(&mut sim);
+    click(&mut sim, beside + Vector::new(0.0, 20.0));
+    let _ = sim.tap_key(Key::Character("=".into()));
+    settle(&mut sim);
+    click(&mut sim, beside);
+    // Only the click on the free space and the click beside the image at scale 1.22 close the carousel.
+    let closes = sim.into_messages().filter(|m| matches!(m, UiMessage::CloseCarousel)).count();
+    assert_eq!(closes, 2, "the zoomed image covers the point beside it");
+}
+
 #[test]
 fn typing_focuses_the_composer_like_desktop() {
     let mut app = demo_app("typefocus");
