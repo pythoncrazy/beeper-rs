@@ -71,10 +71,9 @@ fn s(v: &Value) -> Option<String> {
 
 fn body(c: &Value) -> Option<String> {
     let (b, p) = (s(&c["body"])?, &c["com.beeper.per_message_profile"]);
-    match (s(&p["displayname"]), p["has_fallback"] == true) {
-        (Some(n), true) => Some(b.strip_prefix(&format!("{n}: ")).expect("profile fallback prefix").into()),
-        _ => Some(b),
-    }
+    // Other clients can set `has_fallback` without the fallback in the body. Desktop shows the body then.
+    let fallback = s(&p["displayname"]).filter(|_| p["has_fallback"] == true).map(|n| format!("{n}: "));
+    Some(fallback.and_then(|f| b.strip_prefix(&f).map(str::to_string)).unwrap_or(b))
 }
 
 fn caption(c: &Value) -> Option<String> {
@@ -410,7 +409,7 @@ fn url_field(url: &Value, file: &Value) -> Option<String> {
     match file.as_object() {
         Some(f) => Some(format!(
             "{}?{ENCRYPTED_FILE}={}",
-            s(&file["url"]).expect("encrypted files have a URL"),
+            s(&file["url"])?,
             crate::codec::url_encode(&Value::Object(f.clone()).to_string())
         )),
         None => s(url),
@@ -419,7 +418,7 @@ fn url_field(url: &Value, file: &Value) -> Option<String> {
 
 fn attachment(c: &Value, kind: &str) -> Attachment {
     let info = &c["info"];
-    let dim = |k: &str| info[k].as_u64().map(|n| u32::try_from(n).expect("media dimension"));
+    let dim = |k: &str| info[k].as_u64().and_then(|n| u32::try_from(n).ok());
     let voice = c.get("org.matrix.msc3245.voice").is_some();
     Attachment {
         attachment_type: kind.into(),
@@ -556,11 +555,12 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
     let profile_name = s(&c["com.beeper.per_message_profile"]["displayname"]);
     let user = matrix_sdk::ruma::UserId::parse(&sender).expect("sender is a user ID");
     let member = room.get_member_no_sync(&user).await.expect("read room member");
-    let order = e["unsigned"]["com.beeper.hs.order"].as_i64().expect("Beeper events carry com.beeper.hs.order");
+    // Desktop's `hs.order ?? 0` and `key || ""`: other clients and servers can leave them out.
+    let order = e["unsigned"]["com.beeper.hs.order"].as_i64().unwrap_or(0);
     let reaction = (message_type == "REACTION").then(|| Reaction {
         id: id.clone(),
         participant_id: sender.clone(),
-        reaction_key: s(&rel["key"]).expect("reaction key"),
+        reaction_key: rel["key"].as_str().unwrap_or_default().into(),
         animated: None,
         img_url: None,
         sort_key: sort_key(order),
@@ -1036,25 +1036,33 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                 });
             }
         }
+        // Desktop finds the target of an event only in the room of the event.
+        let here = |st: &BeeperStore, id: &str| {
+            st.msg_idx_by_id.get(id).copied().filter(|&i| st.messages[i].chat_id == chat_id)
+        };
         for id in non_messages {
-            if st.msg_idx_by_id.contains_key(&id) {
+            if here(&st, &id).is_some() {
                 st.remove_message(&chat_id, &id).expect("remove a decrypted placeholder");
             }
         }
         for op in ops {
             match op {
                 Op::Upsert(m) => st.upsert_message(*m),
-                Op::Vote(target, voter, answers) => st.update_poll(&target, |p| p.respond(&voter, &answers)),
-                Op::EndPoll(target) => st.update_poll(&target, |p| p.ended = true),
+                Op::Vote(target, voter, answers) if here(&st, &target).is_some() => {
+                    st.update_poll(&target, |p| p.respond(&voter, &answers));
+                }
+                Op::EndPoll(target) if here(&st, &target).is_some() => st.update_poll(&target, |p| p.ended = true),
+                Op::Vote(..) | Op::EndPoll(_) => {}
                 Op::React(target, r, mut preview) => {
-                    let target_msg = st.msg_idx_by_id.get(&target).map(|&i| &st.messages[i]);
+                    let target_idx = here(&st, &target);
+                    let target_msg = target_idx.map(|i| &st.messages[i]);
                     let target_mine = target_msg.is_some_and(|m| m.is_sender == Some(true));
                     let who = match preview.is_sender == Some(true) {
                         true => Some("You"),
                         false => group.then(|| preview.sender_name.as_deref().expect("sender name")),
                     };
                     preview.text = Some(reaction_text(&r.reaction_key, target_msg, who));
-                    if let Some(&i) = st.msg_idx_by_id.get(&target) {
+                    if let Some(i) = target_idx {
                         st.update_message(i, |m| {
                             m.reactions.retain(|x| x.id != r.id);
                             m.reactions.push(r);
@@ -1074,7 +1082,7 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                     }
                 }
                 Op::Edit { target, text, html, links, attachments, message_type, unresolved_media, timestamp } => {
-                    if let Some(&i) = st.msg_idx_by_id.get(&target) {
+                    if let Some(i) = here(&st, &target) {
                         st.update_message(i, |m| {
                             let prev = match text {
                                 Some(t) => m.text.replace(t).unwrap_or_default(),
@@ -1095,10 +1103,10 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                         });
                     }
                 }
-                Op::Remove(id) if st.msg_idx_by_id.get(&id).is_some_and(|&i| st.messages[i].chat_id == chat_id) => {
+                Op::Remove(id) if here(&st, &id).is_some() => {
                     st.remove_message(&chat_id, &id).expect("remove a local echo");
                 }
-                Op::Redact(target) if st.msg_idx_by_id.contains_key(&target) => {
+                Op::Redact(target) if here(&st, &target).is_some() => {
                     st.delete_message(&chat_id, &target).expect("redact a known message");
                 }
                 Op::Remove(id) | Op::Redact(id) => {
@@ -1455,12 +1463,16 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             let source = joined_room(&client, &from).await?.event(&event(id)?, None).await.map_err(e)?;
             let mut ev: Value = source.raw().deserialize_as().map_err(|x| x.to_string())?;
             let kind = ev["type"].as_str().expect("an event type").to_string();
-            assert!(matches!(kind.as_str(), "m.room.message" | "m.sticker"), "cannot forward a {kind} event");
+            // Desktop forwards any message, but a poll or a message that is not decrypted has no content to send again.
+            if !matches!(kind.as_str(), "m.room.message" | "m.sticker") {
+                return Err(format!("Cannot forward a {kind} event"));
+            }
             let c = ev["content"].as_object_mut().expect("event content");
             c.remove("m.relates_to");
             c.remove("m.mentions");
-            if matches!(c["msgtype"].as_str(), Some("m.text" | "m.notice" | "m.emote")) {
-                c.insert("body".into(), text.expect("a text message has text").into());
+            let typed = matches!(c.get("msgtype").and_then(Value::as_str), Some("m.text" | "m.notice" | "m.emote"));
+            if let Some(text) = text.filter(|_| typed) {
+                c.insert("body".into(), text.into());
                 c.remove("format");
                 c.remove("formatted_body");
                 if let Some(h) = html {
@@ -1796,11 +1808,12 @@ async fn sync_rules(client: &Client, store: &SharedStore) {
 /// The recent emoji, the skin tone and the feature flags of the global account data.
 async fn sync_account_data(client: &Client, store: &SharedStore) {
     let recent = global(client, "io.element.recent_emoji").await;
+    // Other clients write this list too, so an entry that is not an emoji and a count is skipped.
     let recent = recent["recent_emoji"]
         .as_array()
         .into_iter()
         .flatten()
-        .map(|e| (e[0].as_str().expect("recent emoji key").into(), e[1].as_u64().expect("recent emoji count")));
+        .filter_map(|e| Some((e[0].as_str()?.into(), e[1].as_u64()?)));
     let recent = recent.collect();
     let tone = global(client, "com.beeper.emoji_skin_tone").await["tone"].as_u64().map_or(0, |t| t as u8);
     let (flags, usage) = (global(client, crate::features::FLAGS).await, global(client, crate::features::USAGE).await);
@@ -2370,6 +2383,124 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A store with the stub rooms `!room:x`, whose history is `events`, and `!other:x`, whose history is `other`. The
+    /// stub also gives each event of `events` and sends any event.
+    async fn stub_history(
+        name: &str,
+        events: Vec<Value>,
+        other: Vec<Value>,
+    ) -> (crate::store::SharedStore, std::path::PathBuf) {
+        let mut sync = stub_sync();
+        sync["rooms"]["join"]["!other:x"] = sync["rooms"]["join"]["!room:x"].clone();
+        let url = stub_homeserver(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => {
+                let page = if p.contains("other") { &other } else { &events };
+                (200, json!({ "start": "t", "chunk": page.iter().rev().collect::<Vec<_>>() }))
+            }
+            p if p.contains("/event/") => {
+                let id = crate::codec::url_decode(p.rsplit('/').next().expect("an event ID")).expect("an encoded ID");
+                (200, events.iter().find(|e| e["event_id"] == id.as_str()).expect("a stub event").clone())
+            }
+            p if p.contains("/send/") => (200, json!({ "event_id": "$sent" })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let dir = std::env::temp_dir().join(format!("beeper-rs-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        (stub_store(&dir, &url).await, dir)
+    }
+
+    async fn sync_stub_room(store: &crate::store::SharedStore, id: &str) {
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        let room = client.get_room(&matrix_sdk::ruma::OwnedRoomId::try_from(id).expect("a room ID")).expect("the room");
+        super::sync_room(store, &room, Vec::new()).await;
+    }
+
+    fn stub_event(id: &str, kind: &str, content: Value) -> Value {
+        json!({ "type": kind, "sender": "@me:x", "event_id": id, "origin_server_ts": 1_700_000_000_000i64,
+            "content": content, "unsigned": { "com.beeper.hs.order": 1 } })
+    }
+
+    /// Other clients send events without the fields that Desktop expects, and Desktop shows them as well as it can.
+    #[tokio::test]
+    async fn bad_events_from_other_clients_like_desktop() {
+        let profile = json!({ "displayname": "Ann", "has_fallback": true });
+        let text = json!({ "msgtype": "m.text", "body": "Bob: hi", "com.beeper.per_message_profile": profile });
+        let mut text = stub_event("$a", "m.room.message", text);
+        text["unsigned"] = json!({});
+        let image = json!({ "msgtype": "m.image", "body": "a.png", "info": { "w": 1u64 << 40, "h": 10 }, "file": {} });
+        let reaction = json!({ "m.relates_to": { "rel_type": "m.annotation", "event_id": "$a" } });
+        let events = vec![text, stub_event("$b", "m.room.message", image), stub_event("$c", "m.reaction", reaction)];
+        let (store, dir) = stub_history("bad-events", events, Vec::new()).await;
+        sync_stub_room(&store, "!room:x").await;
+        {
+            let st = store.read();
+            let m = |id: &str| &st.messages[st.msg_idx_by_id[id]];
+            assert_eq!(m("$a").text.as_deref(), Some("Bob: hi"), "a body without the fallback stays");
+            assert_eq!(m("$a").sort_key, crate::store::sort_key(0), "Desktop's hs.order ?? 0");
+            let a = &m("$b").attachments[0];
+            assert!(a.src_url.is_none() && a.size.is_none(), "a file without a URL, and a width that does not fit");
+            assert_eq!(m("$a").reactions.iter().map(|r| r.reaction_key.as_str()).collect::<Vec<_>>(), [""]);
+        }
+        let poll = json!({ "org.matrix.msc3381.poll.start": { "question": { "body": "Q" }, "answers": [] } });
+        let sticker = json!({ "body": "s", "url": "mxc://x/s", "info": {} });
+        let events =
+            vec![stub_event("$p", "org.matrix.msc3381.poll.start", poll), stub_event("$s", "m.sticker", sticker)];
+        let (store, dir2) = stub_history("forward", events, Vec::new()).await;
+        let forward = |event: &str| super::Outgoing::Forward {
+            txn: format!("txn{event}"),
+            from: "!room:x".into(),
+            event: event.into(),
+            text: None,
+            html: None,
+        };
+        store.write().queue("!room:x", forward("$p"));
+        let err = super::flush(store.clone()).await.expect_err("a poll has no content to forward");
+        assert_eq!(err, "Cannot forward a org.matrix.msc3381.poll.start event");
+        store.write().queue("!room:x", forward("$s"));
+        super::flush(store.clone()).await.expect("a sticker has no msgtype and forwards");
+        assert_eq!(store.read().sent.get("txn$s").map(String::as_str), Some("$sent"));
+        // Windows keeps the Matrix store open while the tasks of the SDK end, so the next run removes it.
+        let _ = (std::fs::remove_dir_all(dir), std::fs::remove_dir_all(dir2));
+    }
+
+    /// Desktop finds the target of an event only in the room of the event, so a redaction, an edit, a reaction or a
+    /// vote in one room does not change a message of an other room.
+    #[tokio::test]
+    async fn events_change_only_their_own_room_like_desktop() {
+        let rel = |kind: &str| json!({ "rel_type": kind, "event_id": "$note" });
+        let mut redaction = stub_event("$r", "m.room.redaction", json!({}));
+        redaction["redacts"] = json!("$note");
+        let new = json!({ "msgtype": "m.text", "body": "spoofed" });
+        let edit =
+            json!({ "msgtype": "m.text", "body": "* spoofed", "m.new_content": new, "m.relates_to": rel("m.replace") });
+        let mut reaction = rel("m.annotation");
+        reaction["key"] = json!("👍");
+        let vote =
+            json!({ "m.relates_to": rel("m.reference"), "org.matrix.msc3381.poll.response": { "answers": ["1"] } });
+        let events = vec![
+            redaction,
+            stub_event("$e", "m.room.message", edit),
+            stub_event("$k", "m.reaction", json!({ "m.relates_to": reaction })),
+            stub_event("$v", "org.matrix.msc3381.poll.response", vote),
+        ];
+        let answer = json!({ "id": "1", "org.matrix.msc1767.text": "A" });
+        let poll = json!({ "org.matrix.msc3381.poll.start": { "question": { "body": "Q" }, "answers": [answer] } });
+        let other = vec![stub_event("$note", "org.matrix.msc3381.poll.start", poll)];
+        let (store, dir) = stub_history("own-room", events, other).await;
+        sync_stub_room(&store, "!other:x").await;
+        sync_stub_room(&store, "!room:x").await;
+        let st = store.read();
+        let m = &st.messages[st.msg_idx_by_id["$note"]];
+        assert!(m.is_deleted.is_none() && m.text.as_deref() == Some("Q") && m.reactions.is_empty());
+        assert_eq!(m.poll.as_ref().map(|p| p.voters()), Some(0));
+        drop(st);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// Desktop keeps each cloud login of a bridge as its own account, and puts a room on the login of its receiver.
     #[test]
     fn several_logins_of_a_bridge_like_desktop() {
@@ -2393,6 +2524,26 @@ mod tests {
         assert_eq!(room("whatsapp", None), "whatsapp", "Desktop does not guess between two logins");
         assert_eq!(room("telegram", None), "telegram");
         assert_eq!(room("telegram", Some("t")), "telegram");
+    }
+
+    /// A bridge that answers its contact list without a list gives no contacts, and the other bridges give theirs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn contacts_without_a_list_from_a_bridge() {
+        let url = stub_homeserver(|_, path, _| match path.contains("/whatsapp/") {
+            true => (200, json!({ "contacts": null })),
+            false => (200, json!({ "contacts": [{ "id": "1", "name": "Sam", "identifiers": ["tel:15550100"] }] })),
+        })
+        .await;
+        let on = json!({ "state_event": "CONNECTED" });
+        let bridges = json!({
+            "whatsapp": { "bridgeState": { "bridgeType": "whatsapp" }, "remoteState": { "a": on } },
+            "telegram": { "bridgeState": { "bridgeType": "telegram" }, "remoteState": { "t": on } },
+        });
+        let accounts = crate::cloud::cloud_accounts(&bridges).expect("valid logins");
+        let cloud = crate::cloud::Cloud::new(&url, &url);
+        let users = tokio::task::spawn_blocking(move || cloud.contacts("token", "@me:x", &accounts)).await.unwrap();
+        let users: Vec<_> = users.iter().map(|u| (u.full_name.as_deref(), u.phone_number.as_deref())).collect();
+        assert_eq!(users, [(Some("Sam"), Some("+15550100"))]);
     }
 
     #[tokio::test]

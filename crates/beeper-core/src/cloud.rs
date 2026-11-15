@@ -220,8 +220,10 @@ impl Cloud {
                 "{}/_matrix/client/unstable/com.beeper.bridge/{}/_matrix/provision/v3/contacts?user_id={uid}&login_id={lid}",
                 self.homeserver, a.bridge_id
             );
+            // A bridge that fails, or answers without a list, gives no contacts.
             let Ok(v) = self.call(&url, Some(access_token), None) else { continue };
-            for c in v["contacts"].as_array().expect("contacts is a list") {
+            let Some(list) = v["contacts"].as_array() else { continue };
+            for c in list {
                 let ids = strings(&c["identifiers"]);
                 let key = ids.first().cloned().or_else(|| field(c, "id")).or_else(|| field(c, "mxid"));
                 let Some(name) = field(c, "name").filter(|n| !n.is_empty()) else { continue };
