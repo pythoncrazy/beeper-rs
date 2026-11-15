@@ -950,7 +950,7 @@ fn mentions_like_desktop() {
     assert_eq!(app.pane.composer.text(), format!("hi @{label} @room "), "Enter picks the row");
     let _ = app.update(UiMessage::SubmitComposer);
     let st = app.store.read();
-    let sent = st.outbox.iter().find_map(|(_, o)| match o {
+    let sent = st.outbox.iter().find_map(|(_, _, o)| match o {
         Outgoing::Send { text, mentions, .. } => Some((text.clone(), mentions.clone())),
         _ => None,
     });
@@ -1979,6 +1979,34 @@ fn undo_send_like_desktop() {
     app.store.write().features.flags["features"]["*"]["undo-send"] = false.into();
     send(&mut app, "now");
     assert!(app.queued.is_empty(), "the free plan sends at once");
+}
+
+#[test]
+fn failed_sends_show_retry_and_remove_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("failed-send");
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    app.store.write().config.demo = false;
+    let _ = app.update(UiMessage::ComposerChanged("hi".into()));
+    let _ = app.update(UiMessage::SubmitComposer);
+    let _ = app.update(UiMessage::SendQueued(Some(note.into())));
+    let id = {
+        let mut st = app.store.write();
+        st.config.demo = true;
+        let (row, _, out) = st.outbox.remove(0);
+        let id = out.message().expect("a send has a local echo").to_string();
+        st.pushed(row, Some(&id), Some(("M_FORBIDDEN: refused".into(), true)));
+        id
+    };
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find("Not sent").is_ok() && sim.find("Remove").is_ok(), "a failed send shows its error and actions");
+    let _ = sim.click("Retry");
+    assert!(matches!(sim.into_messages().last(), Some(UiMessage::RetrySend(m)) if *m == id));
+    let _ = app.update(UiMessage::RetrySend(id.clone()));
+    assert!(simulator(app.view_main()).find("Retrying ...").is_ok(), "Retry waits for the homeserver");
+    let _ = app.update(UiMessage::RemoveUnsent(id.clone()));
+    let st = app.store.read();
+    assert!(!st.msg_idx_by_id.contains_key(&id) && st.outbox.is_empty(), "Remove drops the echo and its send");
 }
 
 #[test]

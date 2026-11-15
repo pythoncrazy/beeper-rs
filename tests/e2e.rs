@@ -36,6 +36,17 @@ fn temp_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{name}_{:x}", beeper_ui::style::name_hash(env!("CARGO_MANIFEST_DIR"))))
 }
 
+/// The queued changes for the homeserver, which leave the outbox as if the homeserver took them.
+fn take_outbox(st: &mut BeeperStore) -> Vec<(String, Outgoing)> {
+    let out = std::mem::take(&mut st.outbox);
+    out.into_iter()
+        .map(|(row, chat, o)| {
+            st.pushed(row, None, None);
+            (chat, o)
+        })
+        .collect()
+}
+
 fn temp_dir(name: &str) -> PathBuf {
     let dir = temp_path(name);
     if dir.exists() {
@@ -576,7 +587,7 @@ async fn lifecycle() {
         )
         .unwrap();
         db.execute_batch(
-            "DROP TABLE messages; DROP TABLE messages_fts;
+            "DROP TABLE messages; DROP TABLE messages_fts; DROP TABLE outbox;
              CREATE TABLE messages (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, sort_key TEXT NOT NULL, json TEXT NOT NULL) STRICT;
              PRAGMA user_version = 1;",
         )
@@ -1366,10 +1377,8 @@ async fn lifecycle() {
         let mut st = store.write();
         st.config.demo = true;
         assert_eq!(st.chats[0].is_muted, Some(!was), "the mute toggle changes the chat");
-        let queued =
-            matches!(st.outbox.as_slice(), [(c, Outgoing::Flag(ChatFlag::Muted, on))] if *c == cid && *on != was);
+        let queued = matches!(take_outbox(&mut st).as_slice(), [(c, Outgoing::Flag(ChatFlag::Muted, on))] if *c == cid && *on != was);
         assert!(queued, "the mute toggle goes to the homeserver");
-        st.outbox.clear();
         st.chats[0].is_pinned = Some(true);
         assert!(!st.set_chat_flag(0, ChatFlag::Archived, None), "pinned chats can't be archived");
         assert!(st.outbox.is_empty());
@@ -1391,9 +1400,8 @@ async fn lifecycle() {
         {
             let mut st = store.write();
             st.config.demo = true;
-            let sent: Vec<_> = st
-                .outbox
-                .drain(..)
+            let sent: Vec<_> = take_outbox(&mut st)
+                .into_iter()
                 .map(|(_, o)| match o {
                     Outgoing::Reminder(r) => r.map(|r| r.remind_at_ms),
                     _ => panic!("only reminders are queued"),
@@ -1494,9 +1502,8 @@ async fn lifecycle() {
         let _ = gui.update(UiMessage::DeleteChat(doomed.clone(), true));
         let mut st = store.write();
         st.config.demo = true;
-        let sent = matches!(st.outbox.as_slice(), [(c, Outgoing::DeleteChat { for_everyone: true })] if *c == doomed);
+        let sent = matches!(take_outbox(&mut st).as_slice(), [(c, Outgoing::DeleteChat { for_everyone: true })] if *c == doomed);
         assert!(sent && st.resolve_chat_idx(&doomed).is_none(), "Delete Chat asks the bridge and drops the chat");
-        st.outbox.clear();
         let picks: Vec<String> =
             st.chats.iter().filter(|c| c.is_muted != Some(true)).take(2).map(|c| c.id.clone()).collect();
         drop(st);
@@ -1511,7 +1518,7 @@ async fn lifecycle() {
         for id in &picks {
             let _ = gui.update(UiMessage::ToggleFlag(id.clone(), ChatFlag::Muted));
         }
-        store.write().outbox.clear();
+        take_outbox(&mut store.write());
     }
     let _ = gui.update(rail("1"));
     let _ = gui.update(UiMessage::SelectTheme(ThemeChoice::System));
