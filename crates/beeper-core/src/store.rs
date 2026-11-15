@@ -2615,6 +2615,19 @@ impl BeeperStore {
         .collect()
     }
 
+    /// Desktop's `deletePendingMessage`: removes the uploads `ids` that no draft and no Send Later entry keep.
+    pub fn drop_unused_uploads(&mut self, ids: &[String]) {
+        let drafts = self.chats.iter().flat_map(|c| c.draft.iter().flat_map(|d| &d.attachments));
+        let kept: HashSet<&str> = drafts
+            .map(|a| a.upload_id.as_str())
+            .chain(self.scheduled.iter().filter_map(|s| s.upload.as_deref()))
+            .collect();
+        let unused: HashSet<&String> =
+            ids.iter().filter(|id| !kept.contains(id.as_str()) && self.assets.contains_key(*id)).collect();
+        let unused: Vec<String> = unused.into_iter().cloned().collect();
+        self.forget(&HashSet::new(), &unused);
+    }
+
     /// Drops local messages and uploaded files to free storage, like Desktop's `clearStorage`.
     pub fn forget(&mut self, messages: &HashSet<String>, uploads: &[String]) {
         for id in uploads {

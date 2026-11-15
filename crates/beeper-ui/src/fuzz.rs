@@ -864,11 +864,13 @@ fn send_later_like_desktop() {
     assert_eq!(parts(&app), [("two files".into(), None), (String::new(), name.clone()), (String::new(), name.clone())]);
     assert!(simulator(app.view_main()).find(name.as_deref().unwrap()).is_ok(), "a file part shows its name");
     let ids: Vec<String> = app.store.read().scheduled.iter().map(|s| s.id.clone()).collect();
+    let uploads: Vec<String> = app.store.read().scheduled.iter().filter_map(|s| s.upload.clone()).collect();
     let _ = app.update(UiMessage::SendNow(ids));
     let st = app.store.read();
     let last = &st.chat_msg_indices[&id][st.chat_msg_indices[&id].len() - 3..];
     let sent: Vec<_> = last.iter().map(|&i| (st.messages[i].text.clone(), st.messages[i].attachments.len())).collect();
     assert_eq!(sent, [(Some("two files".into()), 0), (None, 1), (None, 1)], "the files send from the uploads");
+    assert!(uploads.iter().all(|u| !st.assets.contains_key(u)), "a sent Send Later file goes away");
 }
 
 #[test]
@@ -912,6 +914,12 @@ fn drafts_keep_the_composer_like_desktop() {
     assert_eq!(pane.send_later, Some(later));
     assert_eq!(pane.attachments.iter().map(|a| (a.name.as_str(), a.bytes.len())).collect::<Vec<_>>(), [("b.pdf", 4)]);
     assert!(matches!(pane.composer_links[..], [(_, LinkState::Discarded)]), "a removed preview stays removed");
+    // Desktop's `deletePendingMessage`: a sent draft takes its file with it.
+    let upload = saved(&app).attachments[0].upload_id.clone();
+    let _ = app.update(UiMessage::SendLater(None));
+    let _ = app.update(UiMessage::SubmitComposer);
+    let _ = app.update(UiMessage::SaveDrafts);
+    assert!(!app.store.read().assets.contains_key(&upload), "the upload of the sent draft goes away");
 }
 
 #[test]
