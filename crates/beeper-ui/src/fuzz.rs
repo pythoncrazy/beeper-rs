@@ -5358,6 +5358,10 @@ fn link_previews_like_desktop() {
     assert!(msgs.iter().any(|m| matches!(m, UiMessage::OpenUrl(u) if u == tube)), "the card opens the video");
     let page = |m: &UiMessage| matches!(m, UiMessage::OpenUrl(u) if u == "https://example.com/a");
     assert!(msgs.iter().any(page), "the card opens the link");
+    let i = app.store.write().find_message("msg_note_0").expect("the seed message with a link");
+    app.store.write().messages[i].links.clear();
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 900.0), app.view_main());
+    assert!(sim.find("Scaling Laws for Neural Language Models").is_err(), "a link without a preview shows none");
 }
 
 #[test]

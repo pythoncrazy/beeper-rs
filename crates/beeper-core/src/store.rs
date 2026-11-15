@@ -139,19 +139,23 @@ pub const NOTE_CHAT_ID: &str = "!note_self:beeper.com";
 /// Windows can't delete the databases while this process has them open.
 pub const LOGGED_OUT: &str = "logged-out";
 
-#[rustfmt::skip]
-const LINK_PREVIEWS: [(&str, &str, &str); 3] = [
-    ("https://arxiv.org/abs/2001.08361", "Scaling Laws for Neural Language Models", "We study empirical scaling laws for language model performance on the cross-entropy loss. The loss scales as a power-law with model size, dataset size, and the amount of compute used for training."),
-    ("https://github.com/pythoncrazy/navify", "pythoncrazy/navify", "A fast, native Navidrome client written in Rust with iced. Low memory use, instant startup, and a polished desktop interface."),
-    ("https://github.com/pythoncrazy/beeper-rs", "pythoncrazy/beeper-rs", "Ultra-fast, cross-platform, Rust-native drop-in replacement for Beeper Desktop with a compatible Desktop API server."),
-];
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Seed {
     bridges: Vec<BridgeAccountInfo>,
     chats: Vec<Chat>,
     messages: Vec<Message>,
+    labels: Vec<SeedLabel>,
+}
+
+/// A demo label of the seed. The chats of the label have its ID in their `labelIDs`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeedLabel {
+    id: String,
+    name: String,
+    color: Option<u8>,
+    icon: Option<String>,
 }
 
 const SCHEMA_VERSION: i64 = 9;
@@ -516,7 +520,6 @@ pub struct BeeperStore {
     pub launch_tx: broadcast::Sender<Vec<String>>,
     /// Whether the Desktop API server should listen.
     pub api_on: tokio::sync::watch::Sender<bool>,
-    pub link_previews: HashMap<String, LinkPreview>,
     pub matrix: Option<matrix_sdk::Client>,
     pub matrix_error: Option<String>,
     /// Desktop's `isSyncing`: the app is connected to Matrix and waits for its first sync.
@@ -679,12 +682,6 @@ impl BeeperStore {
             chat_search_index: std::sync::OnceLock::new(),
             assets: HashMap::new(),
             assets_by_mxc: HashMap::new(),
-            link_previews: LINK_PREVIEWS
-                .iter()
-                .map(|&(url, title, summary)| {
-                    (url.to_string(), LinkPreview { title: title.into(), summary: summary.into() })
-                })
-                .collect(),
             connect: crate::connect::Connect::default(),
             connect_tx: broadcast::channel(WS_CHANNEL_CAPACITY).0,
             ws_tx: broadcast::channel(WS_CHANNEL_CAPACITY).0,
@@ -1024,23 +1021,12 @@ impl BeeperStore {
         }
         self.rebuild_accounts_from_bridges();
         if self.config.demo {
-            let label = |(id, name, color, icon): (&str, &str, Option<u8>, Option<&str>)| {
-                let rooms = self.chats.iter().filter(|c| c.label_ids.iter().any(|l| l == id));
-                Label {
-                    id: id.into(),
-                    name: name.into(),
-                    color,
-                    icon: icon.map(Into::into),
-                    rooms: rooms.map(|c| c.id.clone()).collect(),
-                    ..Label::default()
-                }
+            let seed: Seed = serde_json::from_str(SEED_JSON).expect("parse bundled seed.json");
+            let label = |l: SeedLabel| {
+                let rooms = self.chats.iter().filter(|c| c.label_ids.contains(&l.id)).map(|c| c.id.clone()).collect();
+                Label { id: l.id, name: l.name, color: l.color, icon: l.icon, rooms, ..Label::default() }
             };
-            let labels = [
-                ("lbl_favorite", "Favorites", Some(6), Some("3257-5950")),
-                ("lbl_work", "Work", Some(11), None),
-                ("lbl_vip", "VIP", None, None),
-            ];
-            self.labels = labels.map(label).into();
+            self.labels = seed.labels.into_iter().map(label).collect();
         }
     }
 
