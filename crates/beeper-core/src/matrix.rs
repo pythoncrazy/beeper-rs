@@ -413,6 +413,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             FORMATS.iter().enumerate().filter(|(_, k)| f["formatting"][**k] == 2).fold(0, |m, (i, _)| m | 1 << i)
         }),
         file: features.as_ref().map_or_else(beeper_files, file_rules),
+        room_features: features.is_some(),
         polls: features.as_ref().map_or(Some(BEEPER_POLLS), poll_rules),
         messages: features.as_ref().map_or(BEEPER_MESSAGES, message_rules),
         disappearing: state(room, DISAPPEARING_TIMER).await.and_then(|t| t["timer"].as_u64()).filter(|&t| t > 0),
@@ -1406,6 +1407,33 @@ pub enum MediaInfo {
     File,
 }
 
+impl MediaInfo {
+    /// The info of a file that is not a voice note, by its MIME type, width, height and length in seconds.
+    pub fn of(mime: &str, dims: Option<(u32, u32)>, duration: Option<f64>) -> MediaInfo {
+        let ms = duration.map(|s| (s * 1000.0).round() as u64);
+        match (mime.split('/').next(), dims, ms) {
+            (Some("image"), Some((w, h)), _) => MediaInfo::Image(w, h),
+            (Some("video"), dims, Some(ms)) => {
+                let (w, h) = dims.unwrap_or_default();
+                MediaInfo::Video(w, h, ms)
+            }
+            (Some("audio"), _, Some(ms)) => MediaInfo::Audio(ms),
+            _ => MediaInfo::File,
+        }
+    }
+
+    /// The width and height, and the length in seconds.
+    fn facts(&self) -> (Option<(u32, u32)>, Option<f64>) {
+        let s = |ms: &u64| Some(*ms as f64 / 1000.0);
+        match self {
+            MediaInfo::Image(w, h) => (Some((*w, *h)), None),
+            MediaInfo::Voice { ms, .. } | MediaInfo::Audio(ms) => (None, s(ms)),
+            MediaInfo::Video(w, h, ms) => (Some((*w, *h)), s(ms)),
+            MediaInfo::File => (None, None),
+        }
+    }
+}
+
 impl Outgoing {
     /// The local echo that the change sends, or the message that it edits.
     pub fn message(&self) -> Option<&str> {
@@ -1418,6 +1446,31 @@ impl Outgoing {
             _ => None,
         }
     }
+}
+
+/// Desktop's `prepareOutgoingMedia` for a room with room features, on a worker thread: the file to upload and its info.
+async fn prepare_media(
+    store: &SharedStore,
+    chat: &str,
+    txn: &str,
+    data: Vec<u8>,
+    name: String,
+    mime: String,
+    info: MediaInfo,
+) -> Result<(Vec<u8>, String, String, MediaInfo), String> {
+    let (rules, dir) = {
+        let st = store.read();
+        let c = &st.chats[st.resolve_chat_idx(chat).expect("the chat of a send exists")];
+        (c.room_features.then(|| c.file.clone()), st.data_dir.join("media").join("outgoing-uploads").join(txn))
+    };
+    let Some(rules) = rules else { return Ok((data, name, mime, info)) };
+    let (dims, duration) = info.facts();
+    let voice = matches!(info, MediaInfo::Voice { .. });
+    let f = crate::media::Upload { name, path: Default::default(), mime, dims, duration, failed: false };
+    let job = move || crate::media::prepare_upload(&dir, &data, f, &rules, voice);
+    let (data, f) = tokio::task::spawn_blocking(job).await.expect("the media thread")?;
+    let info = if voice { info } else { MediaInfo::of(&f.mime, f.dims, f.duration) };
+    Ok((data, f.name, f.mime, info))
 }
 
 /// Pushes the outbox to the homeserver. A message that fails keeps an error, like Desktop's failed echoes. Other
@@ -1690,6 +1743,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             sent(txn, sent_id.await.map_err(e)?.response.event_id);
         }
         Outgoing::Media { txn, bytes: data, name, mime, info, caption, reply_to, thread } => {
+            let (data, name, mime, info) = prepare_media(store, &chat, &txn, data, name, mime, info).await?;
             use matrix_sdk::attachment::{
                 AttachmentConfig, AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo, BaseVideoInfo,
             };

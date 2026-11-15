@@ -542,6 +542,10 @@ pub struct Chat {
     /// Desktop's `roomFeatures.file`: the file kinds that the network accepts.
     #[serde(default = "beeper_files")]
     pub file: FileRules,
+    /// The room has `com.beeper.room_features`. Desktop converts the files for such a room before the upload, so it
+    /// checks the image size only after the conversion. Without them, `file` and the other features are defaults.
+    #[serde(rename = "hasRoomFeatures", default)]
+    pub room_features: bool,
     /// The poll features of the network, or `None` when it has no polls.
     #[serde(default = "beeper_polls")]
     pub polls: Option<PollRules>,

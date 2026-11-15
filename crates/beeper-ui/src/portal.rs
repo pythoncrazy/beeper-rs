@@ -1,5 +1,6 @@
 //! Desktop's `showOpenDialog`: the XDG desktop portal file chooser, and the files it gives.
 use crate::{decode_media, PendingMedia};
+use beeper_core::media::{decide, Action, Facts};
 use beeper_core::models::{FileRule, FileRules, FILE_AUDIO, FILE_FILE, FILE_GIF, FILE_IMAGE, FILE_VIDEO};
 use std::path::{Path, PathBuf};
 
@@ -128,39 +129,14 @@ pub fn load_file(path: &Path) -> Result<PendingMedia, String> {
     let mime = beeper_core::platform::mime_type_of(&name).unwrap_or("application/octet-stream");
     // Desktop's `processAttachment` measures a video, and logs and attaches it without the size when it cannot.
     let measure = mime.starts_with("video/") || mime.starts_with("audio/");
-    let ((w, h), duration) = match measure.then(|| probe(path)).transpose() {
-        Ok(m) => m.unwrap_or_default(),
+    let (size, duration) = match measure.then(|| beeper_core::media::video_meta(path)).transpose() {
+        Ok(m) => m.map_or(((0, 0), None), |m| (m.display, Some(m.duration))),
         Err(e) => {
             eprintln!("processAttachment: could not measure {name}, attaching without dimensions: {e}");
-            Default::default()
+            ((0, 0), None)
         }
     };
-    Ok(PendingMedia { bytes, name, mime: mime.into(), is_gif: false, size: (w, h), frames: vec![], duration })
-}
-
-/// Desktop's `getVideoMetadata`: the shown width and height of the video stream, and the length in seconds.
-fn probe(path: &Path) -> Result<((u32, u32), Option<f64>), String> {
-    let entries = "stream=codec_type,width,height:stream_side_data=rotation:format=duration";
-    let out = std::process::Command::new("ffprobe")
-        .args(["-v", "error", "-show_entries", entries, "-of", "json"])
-        .arg(path)
-        .output()
-        .map_err(|e| format!("Could not start ffprobe: {e}"))?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-    }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("ffprobe writes JSON");
-    let duration = v["format"]["duration"].as_str().and_then(|d| d.parse().ok());
-    let streams = v["streams"].as_array().into_iter().flatten();
-    let Some(s) = streams.into_iter().find(|s| s["codec_type"] == "video") else { return Ok(((0, 0), duration)) };
-    let dim = |k: &str| s[k].as_u64().and_then(|n| u32::try_from(n).ok()).unwrap_or(0);
-    let turned = s["side_data_list"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .any(|d| d["rotation"].as_i64().is_some_and(|r| r % 180 != 0));
-    let (w, h) = (dim("width"), dim("height"));
-    Ok((if turned { (h, w) } else { (w, h) }, duration))
+    Ok(PendingMedia { bytes, name, mime: mime.into(), is_gif: false, size, frames: vec![], duration })
 }
 
 /// Desktop's `Oae`: the `com.beeper.room_features` file kind of a MIME type.
@@ -198,18 +174,6 @@ fn convertible(mime: &str, name: &str, rule: &FileRule) -> bool {
     }
 }
 
-/// Desktop's `oP` for an audio file that the room does not take as it is: an audio type to convert to, or the room
-/// takes it as a file.
-fn audio_sendable(mime: &str, size: u64, rules: &FileRules) -> bool {
-    // Desktop's `uBe` conversion targets, or any audio type.
-    const TARGETS: [&str; 7] = ["audio/aac", "audio/mpeg", "audio/mp4", "audio/x-caf", "video/mp4", "audio/*", "*/*"];
-    let rule = &rules[FILE_AUDIO];
-    let target = rule.mime_types.iter().any(|(m, &l)| l > 0 && TARGETS.contains(&m.as_str()));
-    let best = |rule| levels(mime, rule).into_iter().max();
-    let as_file = rules.get(FILE_FILE).is_some_and(|f| best(f) > Some(0) && f.max_size.is_none_or(|max| size <= max));
-    size <= 500 << 20 && (target || (best(rule) != Some(-2) && as_file))
-}
-
 /// Desktop's `downloadGif`: the URL, the size and the MP4 choice of the format of `g` that the chat takes. That is the
 /// GIF, or the MP4 when the GIF is over the size limit or the chat takes no GIF images, or the tinygif of a GIF over
 /// the size limit in a chat without MP4 GIFs.
@@ -227,8 +191,9 @@ pub fn gif_format<'a>(g: &'a beeper_core::cloud::KlipyGif, rules: &FileRules) ->
     }
 }
 
-/// Desktop's `TBe`: the toast text when the chat does not accept the file.
-pub fn check(f: &PendingMedia, rules: &FileRules) -> Result<(), String> {
+/// Desktop's `TBe`: the toast text when the chat does not accept the file. In a room with room features, Desktop
+/// resizes an image (not a GIF) before the upload, so it does not check the image size.
+pub fn check(f: &PendingMedia, rules: &FileRules, resizes: bool) -> Result<(), String> {
     let mime = f.mime.as_str();
     let top = mime.split('/').next().expect("split gives one part");
     let rule = rules.get(file_kind(mime)).ok_or("This chat doesn't support sending files")?;
@@ -238,7 +203,10 @@ pub fn check(f: &PendingMedia, rules: &FileRules) -> Result<(), String> {
         None => convertible(mime, &f.name, rule),
     };
     let converts = match top {
-        "audio" => audio_sendable(mime, size, rules),
+        "audio" => {
+            let facts = Facts { mime: mime.into(), size, dims: None, duration: f.duration, voice: false };
+            !matches!(decide(&facts, rules), Action::Reject(_))
+        }
         _ => (top == "video" || mime == "image/gif") && convertible(mime, &f.name, rule),
     };
     if !supported && !converts {
@@ -252,7 +220,8 @@ pub fn check(f: &PendingMedia, rules: &FileRules) -> Result<(), String> {
         return Err(format!("File size ({size}) exceeds the maximum allowed size ({max})"));
     }
     let (w, h) = f.size;
-    if w > 0 && matches!(top, "image" | "video") {
+    let resized = resizes && top == "image" && mime != "image/gif" && !f.is_gif;
+    if w > 0 && matches!(top, "image" | "video") && !resized {
         if let Some(max) = rule.max_width.filter(|&max| w > max) {
             return Err(format!("Image width ({w}px) exceeds maximum allowed width ({max}px)"));
         }
@@ -320,7 +289,7 @@ mod tests {
             duration,
         };
         let beeper = beeper_core::models::beeper_files();
-        let check = |f: &PendingMedia, rules: &FileRules| check(f, rules).err();
+        let check = |f: &PendingMedia, rules: &FileRules| check(f, rules, false).err();
         assert_eq!(check(&file("a.png", "image/png", 9, (9, 9), None), &beeper), None);
         assert_eq!(check(&file("a.mkv", "video/x-matroska", 9, (9, 9), None), &beeper), None, "Desktop converts");
         assert_eq!(check(&file("a.png", "image/png", 0, (9, 9), None), &beeper).unwrap(), "Attachment is empty");
@@ -337,6 +306,9 @@ mod tests {
         let webp = "This file type (image/webp) is not supported and cannot be converted to a supported format";
         assert_eq!(check(&image("a.webp", "image/webp"), &rules).unwrap(), webp);
         assert_eq!(check(&image("a.bmp", "image/bmp"), &rules).unwrap(), height, "Desktop converts a BMP");
+        assert_eq!(super::check(&image("a.png", "image/png"), &rules, true), Ok(()), "Desktop resizes it later");
+        let gif = PendingMedia { is_gif: true, ..image("a.png", "image/png") };
+        assert_eq!(super::check(&gif, &rules, true).unwrap_err(), height, "Desktop does not resize a GIF");
         rules.insert(FILE_FILE.into(), FileRule { max_size: Some(1000), ..beeper[FILE_FILE].clone() });
         let big = "File size (2 KB) exceeds the maximum allowed size (1000 B)";
         assert_eq!(check(&pdf, &rules).unwrap(), big);

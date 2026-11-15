@@ -446,6 +446,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 member_actions: 0,
                 formatting: ALL_FORMATS,
                 file: t.get("features").map_or_else(beeper_files, crate::matrix::file_rules),
+                room_features: t.get("features").is_some(),
                 polls: Some(BEEPER_POLLS),
                 messages: BEEPER_MESSAGES,
                 disappearing: t.pointer("/disappearingTimer/timer").and_then(Value::as_u64).filter(|&t| t > 0),

@@ -8,6 +8,7 @@ pub mod connect;
 pub mod features;
 pub mod import;
 pub mod matrix;
+pub mod media;
 pub mod models;
 pub mod platform;
 pub mod prefs;
