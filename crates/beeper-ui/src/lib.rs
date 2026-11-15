@@ -4928,7 +4928,6 @@ impl BeeperGuiApp {
         }
         let mut st = self.store.write();
         self.leave_chat(&mut st, Some(chat_id));
-        let incognito = st.incognito();
         if let Some(old) = self.pane.selected_chat_id.clone() {
             match self.pane.thread.as_ref().and_then(|t| t.thread_root.clone()) {
                 Some(root) => drop(self.open_threads.insert(old, root)),
@@ -4937,9 +4936,8 @@ impl BeeperGuiApp {
         }
         let idx = st.resolve_chat_idx(chat_id).expect("selected chat exists");
         self.pane.selected_chat_id = Some(chat_id.to_string());
-        if let Some(ev) = (!incognito).then(|| st.mark_chat_read(chat_id, false)).flatten() {
-            let cid = st.chats[idx].id.clone();
-            st.queue(&cid, Outgoing::Read(ev));
+        if !st.incognito() {
+            st.mark_read(idx, false);
         }
         let chat = st.chats[idx].clone();
         let draft = chat.draft.clone().unwrap_or_default();
@@ -11356,10 +11354,7 @@ impl BeeperGuiApp {
         if self.expired(&st.chats[idx]) {
             st.set_reminder(idx, None);
         }
-        let cid = st.chats[idx].id.clone();
-        if let Some(ev) = st.mark_chat_read(&cid, true) {
-            st.queue(&cid, Outgoing::Read(ev));
-        }
+        st.mark_read(idx, true);
     }
 
     /// Desktop's `setIsArchived`: archiving marks the chat read when "Mark unread chats as read on archive" is on.

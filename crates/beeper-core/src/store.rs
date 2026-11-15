@@ -2649,6 +2649,17 @@ impl BeeperStore {
         }
     }
 
+    /// Desktop's `markAsRead`: reads the chat here, and queues the read receipt of its newest event when it had unread
+    /// messages. `clear_messages` also takes the unread mark off each message.
+    pub fn mark_read(&mut self, idx: usize, clear_messages: bool) {
+        let id = self.chats[idx].id.clone();
+        if let Some(event) = self.mark_chat_read(&id, clear_messages) {
+            self.queue(&id, Outgoing::Read(event));
+        }
+    }
+
+    /// Reads the chat here only, as the homeserver does for a message that the user sends. Returns the newest event
+    /// of the chat when the chat had unread messages.
     pub fn mark_chat_read(&mut self, chat_or_local_id: &str, clear_messages: bool) -> Option<String> {
         let idx = self.resolve_chat_idx(chat_or_local_id)?;
         let chat_id = self.chats[idx].id.clone();
