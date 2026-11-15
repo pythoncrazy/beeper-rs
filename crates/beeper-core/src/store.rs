@@ -493,7 +493,7 @@ pub struct BeeperStore {
     pub chats: Vec<Chat>,
     pub(crate) chat_idx_by_id: HashMap<String, usize>,
     /// The `activity_key` of each chat, for Desktop's chat order `ORDER BY timestamp DESC`.
-    pub chat_order: BTreeSet<(i64, String)>,
+    chat_order: BTreeSet<(i64, String)>,
     local_chat_idx_by_id: HashMap<String, usize>,
     /// The messages of the loaded chats. SQLite keeps all messages, and `load_chat` loads the messages of a chat.
     pub messages: Vec<Message>,
@@ -505,7 +505,7 @@ pub struct BeeperStore {
     /// The chats that the windows show, which stay loaded.
     pub shown: Vec<String>,
     /// The replies of each thread in timeline order, by the ID of the thread root.
-    pub thread_msg_indices: HashMap<String, Vec<usize>>,
+    thread_msg_indices: HashMap<String, Vec<usize>>,
     /// The search index of the chats by their index, which the first chat search builds.
     chat_search_index: std::sync::OnceLock<InvertedIndex>,
     pub assets: HashMap<String, StoredAsset>,
@@ -2488,7 +2488,12 @@ impl BeeperStore {
         chat.threads && self.feature("enable-threads").on
     }
 
-    /// The replies of the thread of `root` in timeline order.
+    /// The `activity_key` of each chat, oldest first: Desktop's chat order `ORDER BY timestamp DESC` read backwards.
+    pub fn chat_order(&self) -> &BTreeSet<(i64, String)> {
+        &self.chat_order
+    }
+
+    /// The loaded replies of the thread of `root` in timeline order.
     pub fn thread_replies(&self, root: &str) -> impl DoubleEndedIterator<Item = &Message> {
         self.thread_msg_indices.get(root).into_iter().flatten().map(|&i| &self.messages[i])
     }
