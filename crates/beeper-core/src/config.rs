@@ -98,6 +98,7 @@ impl Default for BeeperSettings {
             spaces_order: Vec::new(),
             ever_labeled: false,
             labels_intro_seen: false,
+            recovery_reminder_dismissed_at: 0,
             downloads_dir: String::new(),
             quick_reaction: "❤️".into(),
             quick_reactions: ["👍", "❤️", "😂"].map(String::from).to_vec(),
