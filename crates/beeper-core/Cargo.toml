@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-# The stub homeserver and bridges of `bridge_stub`, for the tests of other crates.
+# The stub homeserver and bridges of `bridge_stub` and the fixtures of `testing`, for the tests of other crates.
 stub = []
 
 [dependencies]

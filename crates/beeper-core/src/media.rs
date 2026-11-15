@@ -709,8 +709,7 @@ mod tests {
 
     #[test]
     fn uploads_convert_like_desktop() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-media-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testing::temp_dir("media");
         let ffmpeg = |args: &[&str], out: &Path| {
             let args: Vec<&std::ffi::OsStr> = args.iter().map(std::ffi::OsStr::new).chain([out.as_os_str()]).collect();
             run("ffmpeg", &args).expect("ffmpeg makes a test file");
@@ -756,6 +755,5 @@ mod tests {
         rules.get_mut(FILE_IMAGE).unwrap().mime_types.insert("image/png".into(), 0);
         let broken = send(b"not an image", upload("f.png", "image/png", Some((300, 200))), &rules).unwrap_err();
         assert!(broken.starts_with("Failed to resize image: "), "{broken}");
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

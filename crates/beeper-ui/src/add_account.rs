@@ -657,8 +657,7 @@ mod tests {
     async fn stub_app(name: &str) -> (BeeperGuiApp, beeper_core::bridge_stub::Bridges) {
         use beeper_core::models::{MatrixSession, Profile};
         let (url, bridges) = beeper_core::bridge_stub::homeserver().await;
-        let dir = std::env::temp_dir().join(format!("beeper-rs-add-account-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = beeper_core::testing::temp_dir(&format!("add-account-{name}"));
         let config = beeper_core::config::CentralConfig::new(dir, "127.0.0.1".into(), 23631, None);
         let store = beeper_core::store::StoreLock::shared(beeper_core::store::BeeperStore::from_config(config));
         let session = MatrixSession {

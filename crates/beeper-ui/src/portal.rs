@@ -302,8 +302,7 @@ mod tests {
 
     #[test]
     fn files_load_like_desktop() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-load-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = beeper_core::testing::temp_dir("portal-load");
         let mut png = Vec::new();
         ::image::RgbaImage::new(3, 2).write_to(&mut std::io::Cursor::new(&mut png), ::image::ImageFormat::Png).unwrap();
         std::fs::write(dir.join("a.bin"), &png).unwrap();
@@ -322,7 +321,6 @@ mod tests {
         let video = load_file(&mp4).unwrap();
         assert_eq!((video.mime.as_str(), video.size, video.frames.len()), ("video/mp4", (32, 24), 1), "a thumbnail");
         assert!(video_frames(&mp4, true).unwrap().len() > 1, "the MP4 of a GIF plays");
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

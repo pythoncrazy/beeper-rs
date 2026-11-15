@@ -1069,9 +1069,8 @@ mod tests {
     fn a_restart_before_the_end_of_the_onboarding_continues_it_like_desktop() {
         use beeper_core::config::CentralConfig;
         use beeper_core::store::{BeeperStore, StoreLock};
-        let dir = std::env::temp_dir().join(format!("beeper-rs-verify-restart-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let config = CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23391, None);
+        let config =
+            CentralConfig::new(beeper_core::testing::temp_dir("verify-restart"), "127.0.0.1".into(), 23391, None);
         let session = beeper_core::models::MatrixSession {
             user_id: "@me:beeper.com".into(),
             access_token: "t".into(),
@@ -1101,7 +1100,6 @@ mod tests {
         drop(st);
         let app = boot();
         assert!(app.main_window.is_some() && app.login_window.is_none(), "a done onboarding shows the chats");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

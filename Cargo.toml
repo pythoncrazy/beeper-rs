@@ -41,6 +41,7 @@ wayland-client = "0.31.15"
 x11rb = { version = "0.13.2", default-features = false }
 
 [dev-dependencies]
+beeper-core = { workspace = true, features = ["stub"] }
 iced = { version = "0.14.0", default-features = false }
 iced_test = "0.14.0"
 rusqlite.workspace = true

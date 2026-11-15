@@ -54,13 +54,11 @@ struct Demo {
 
 /// A demo server on a free port, with its own data dir and CLI config dir.
 fn demo(name: &str) -> Demo {
-    let dir = std::env::temp_dir().join(format!("beeper_rs_cli_{name}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = beeper_core::testing::temp_dir(&format!("cli-{name}"));
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
     let listener = rt.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
     let port = listener.local_addr().unwrap().port();
-    let mut cfg = CentralConfig::new(dir.join("data"), "127.0.0.1".into(), port, None);
-    cfg.demo = true;
+    let cfg = CentralConfig { demo: true, ..CentralConfig::new(dir.join("data"), "127.0.0.1".into(), port, None) };
     let store = StoreLock::shared(BeeperStore::from_config(cfg));
     let token = store.read().beeper_state.access_token.clone();
     rt.spawn(serve_http(listener, store));

@@ -16,10 +16,9 @@ async fn server(name: &str) -> u16 {
 /// A signed-in server with cloud accounts, its port, and the stub bridges.
 async fn server_with(name: &str, accounts: Vec<BridgeAccountInfo>) -> (u16, Bridges) {
     let (url, bridges) = homeserver().await;
-    let dir = std::env::temp_dir().join(format!("beeper-rs-bridge-login-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
+    let dir = beeper_core::testing::temp_dir(&format!("bridge-login-{name}"));
     let mut cfg = CentralConfig::new(dir, "127.0.0.1".into(), port, None);
     (cfg.api_url, cfg.homeserver) = (url.clone(), url.clone());
     let store = StoreLock::shared(BeeperStore::from_config(cfg));

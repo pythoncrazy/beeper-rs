@@ -30,10 +30,11 @@ fn main() {
     let dark = args.next().as_deref() == Some("dark");
     std::fs::create_dir_all(&out).expect("create shot dir");
     let real = args.next().map(PathBuf::from);
-    let data =
-        real.clone().unwrap_or_else(|| std::env::temp_dir().join(format!("beeper-rs-shots-{}", std::process::id())));
-    let mut cfg = CentralConfig::new(data.clone(), "127.0.0.1".into(), 23390, None);
-    cfg.demo = real.is_none();
+    let cfg = match &real {
+        Some(dir) => CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23390, None),
+        None => beeper_core::testing::demo_config(if dark { "shots-dark" } else { "shots-light" }),
+    };
+    let data = cfg.data_dir.clone();
     let store = StoreLock::shared(BeeperStore::from_config(cfg));
     let mut app = BeeperGuiApp::new(store);
     let (choice, theme) = if dark { (ThemeChoice::Dark, Theme::Dark) } else { (ThemeChoice::Light, Theme::Light) };

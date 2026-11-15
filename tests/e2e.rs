@@ -13,6 +13,7 @@ use beeper_core::{
         resolve_original_beeper_data_dir, DisplayServerKind, OsKind,
     },
     store::{BeeperStore, Setup, SharedStore, StoreLock, NOTE_CHAT_ID},
+    testing::temp_dir,
 };
 use beeper_ui::{
     login::{Login, LoginMsg, Outcome, Screen},
@@ -31,11 +32,6 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::time::{timeout, Duration};
 
-/// A path in the temporary folder with the hash of this checkout, so that several checkouts can test at the same time.
-fn temp_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("{name}_{:x}", beeper_ui::style::name_hash(env!("CARGO_MANIFEST_DIR"))))
-}
-
 /// The queued changes for the homeserver, which leave the outbox as if the homeserver took them.
 fn take_outbox(st: &mut BeeperStore) -> Vec<(String, Outgoing)> {
     let out = std::mem::take(&mut st.outbox);
@@ -45,14 +41,6 @@ fn take_outbox(st: &mut BeeperStore) -> Vec<(String, Outgoing)> {
             (chat, o)
         })
         .collect()
-}
-
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = temp_path(name);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).expect("remove stale test dir");
-    }
-    dir
 }
 
 #[cfg(target_os = "linux")]
@@ -1694,7 +1682,7 @@ async fn lifecycle() {
         emu.run(&app_prog, Instruction::parse("expect \"Note to self\"").unwrap());
         let shot = emu.screenshot(&app_prog, &Theme::Dark, 1.0);
         assert_eq!((shot.size.width, shot.size.height), (1264, 893));
-        let emu_png = temp_path("beeper_rs_iced_dark").with_extension("png");
+        let emu_png = temp_dir("iced-shot").join("dark.png");
         write_rgba_png(&emu_png, shot.size.width, shot.size.height, &shot.rgba);
         assert!(emu_png.exists());
     })
@@ -1704,12 +1692,9 @@ async fn lifecycle() {
     #[cfg(target_os = "linux")]
     {
         let bin_exe = env!("CARGO_BIN_EXE_beeper-rs");
-        let png = |name| temp_path(name).with_extension("png").into_os_string().into_string().unwrap();
-        let (wl_png, wl_settings_png, x_png) =
-            (png("beeper_rs_wayland_window"), png("beeper_rs_wayland_settings"), png("beeper_rs_xvfb_window"));
-        for png in [&wl_png, &wl_settings_png, &x_png].into_iter().filter(|p| std::path::Path::new(p).exists()) {
-            std::fs::remove_file(png).unwrap();
-        }
+        let shots = temp_dir("gui-shots");
+        let png = |name| shots.join(name).with_extension("png").into_os_string().into_string().unwrap();
+        let (wl_png, wl_settings_png, x_png) = (png("wayland_window"), png("wayland_settings"), png("xvfb_window"));
         let run_gui = |name: &str, hide: &str, envs: &[(&str, &str)]| {
             let data = temp_dir(&format!("BeeperRs_gui_{name}"));
             let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port().to_string();
@@ -1747,7 +1732,6 @@ async fn lifecycle() {
         };
 
         let wl_runtime = temp_dir("beeper_wl");
-        std::fs::create_dir_all(&wl_runtime).unwrap();
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&wl_runtime, std::fs::Permissions::from_mode(0o700)).unwrap();

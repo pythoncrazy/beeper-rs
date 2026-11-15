@@ -14,3 +14,5 @@ pub mod platform;
 pub mod prefs;
 pub mod storage;
 pub mod store;
+#[cfg(any(test, feature = "stub"))]
+pub mod testing;

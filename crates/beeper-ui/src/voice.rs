@@ -1050,10 +1050,7 @@ mod tests {
 
     /// A demo app with two decoded 10 ms voice notes, `v0` and `v1`, in the first chat.
     fn two_notes(name: &str) -> (BeeperGuiApp, String) {
-        let dir = std::env::temp_dir().join(format!("BeeperRs_voice_{name}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut cfg = beeper_core::config::CentralConfig::new(dir, "127.0.0.1".into(), 23390, None);
-        cfg.demo = true;
+        let cfg = beeper_core::testing::demo_config(&format!("voice-{name}"));
         let mut st = beeper_core::store::BeeperStore::from_config(cfg);
         let (chat, account) = (st.chats[0].id.clone(), st.chats[0].account_id.clone());
         for (i, url) in ["mxc://a", "mxc://b"].iter().enumerate() {
