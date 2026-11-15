@@ -247,9 +247,9 @@ pub(crate) fn file_rules(f: &Value) -> FileRules {
 
 /// The file features of a room, and whether the room has its own room features. Desktop takes the defaults of the
 /// bridge for a room without room features or with empty ones.
-pub(crate) fn file_features(features: Option<&Value>, bridge: &Value) -> (FileRules, bool) {
+pub(crate) fn file_features(features: Option<&Value>, bridge: &Value) -> (crate::models::Files, bool) {
     match features.filter(|f| f.as_object().is_some_and(|f| !f.is_empty())) {
-        Some(f) => (file_rules(f), true),
+        Some(f) => (crate::models::Files::new(file_rules(f)), true),
         None => (crate::models::default_files(bridge), false),
     }
 }

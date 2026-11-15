@@ -83,15 +83,61 @@ pub struct FileRule {
 }
 /// The file kinds that a chat accepts.
 pub type FileRules = std::collections::BTreeMap<String, FileRule>;
+
+/// The file kinds of a chat. Chats with the same rules share one copy, so many chats on a few networks keep a few
+/// rule sets in memory.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Files(std::sync::Arc<FileRules>);
+
+impl Files {
+    /// The shared copy of `rules`.
+    pub fn new(rules: FileRules) -> Files {
+        static POOL: std::sync::Mutex<Vec<std::sync::Arc<FileRules>>> = std::sync::Mutex::new(Vec::new());
+        let mut pool = POOL.lock().expect("the pool of file rules");
+        if let Some(shared) = pool.iter().find(|r| ***r == rules) {
+            return Files(shared.clone());
+        }
+        let shared = std::sync::Arc::new(rules);
+        pool.push(shared.clone());
+        Files(shared)
+    }
+}
+
+impl std::ops::Deref for Files {
+    type Target = FileRules;
+    fn deref(&self) -> &FileRules {
+        &self.0
+    }
+}
+
+/// A change makes a copy for this chat only.
+impl std::ops::DerefMut for Files {
+    fn deref_mut(&mut self) -> &mut FileRules {
+        std::sync::Arc::make_mut(&mut self.0)
+    }
+}
+
+impl Serialize for Files {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Files {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Files, D::Error> {
+        FileRules::deserialize(d).map(Files::new)
+    }
+}
+
 /// Desktop's `OBe.file`: the file features of a Beeper room without `com.beeper.room_features`.
-pub fn beeper_files() -> FileRules {
+pub fn beeper_files() -> Files {
     default_files(&serde_json::Value::Null)
 }
 
 /// Desktop's `roomFeatures` of a room without `com.beeper.room_features`: the `file` of the `defaultFeatures` of the
 /// `m.bridge` protocol, else of the bridge (Desktop's `lP`), else of the generic bridge.
-pub fn default_files(bridge: &serde_json::Value) -> FileRules {
-    static TABLE: std::sync::LazyLock<std::collections::HashMap<String, FileRules>> = std::sync::LazyLock::new(|| {
+pub fn default_files(bridge: &serde_json::Value) -> Files {
+    static TABLE: std::sync::LazyLock<std::collections::HashMap<String, Files>> = std::sync::LazyLock::new(|| {
         serde_json::from_str(include_str!("room_files.json")).expect("the default room features parse")
     });
     // Desktop's `Od` entries that share a table.
@@ -573,7 +619,7 @@ pub struct Chat {
     pub formatting: u16,
     /// Desktop's `roomFeatures.file`: the file kinds that the network accepts.
     #[serde(default = "beeper_files")]
-    pub file: FileRules,
+    pub file: Files,
     /// The room has `com.beeper.room_features`. Desktop converts the files for such a room before the upload, so it
     /// checks the image size only after the conversion. Without them, `file` and the other features are defaults.
     #[serde(rename = "hasRoomFeatures", default)]
@@ -1568,6 +1614,18 @@ mod tests {
         let generic = files(serde_json::json!({ "com.beeper.bridge_name": "gmessages" }));
         assert_eq!(generic[FILE_IMAGE].max_size, Some(20 * 1024 * 1024), "Desktop leaves Google Messages out");
         assert!(files(serde_json::json!({ "com.beeper.bridge_name": "groupme" })).is_empty());
+    }
+
+    #[test]
+    fn chats_share_equal_file_rules() {
+        let parse = || serde_json::from_str::<Files>(r#"{ "m.file": { "mime_types": { "*/*": 2 } } }"#).unwrap();
+        let (a, b) = (parse(), parse());
+        assert!(std::sync::Arc::ptr_eq(&a.0, &b.0), "equal rules share one copy");
+        assert!(std::sync::Arc::ptr_eq(&beeper_files().0, &beeper_files().0), "the defaults too");
+        let mut c = b.clone();
+        c.remove(FILE_FILE);
+        assert!(c.is_empty() && a.len() == 1, "a change makes a copy for one chat");
+        assert_eq!(serde_json::to_value(&a).unwrap(), serde_json::json!({ "m.file": { "mime_types": { "*/*": 2 } } }));
     }
 
     #[test]
