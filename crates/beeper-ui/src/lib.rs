@@ -516,6 +516,8 @@ pub enum UiMessage {
     StepMessage(bool, bool),
     /// Open the emoji picker at the cursor to react to a message.
     React(String),
+    /// Open the emoji picker at a point to react to a message.
+    ReactAt(String, Point),
     /// An action picked in the message menu, which closes it.
     MessageMenu(Box<UiMessage>),
     CopyText(String),
@@ -2534,7 +2536,9 @@ svg_static!(SYS_ARROW_BACK, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox
 
 svg_static!(SYS_ROTATE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M10 18.25q-1.083 0-2.052-.302a6.9 6.9 0 0 1-1.802-.865L7.229 16a5.5 5.5 0 0 0 2.771.75q2.271 0 3.885-1.615Q15.5 13.521 15.5 11.25t-1.615-3.906-4.01-1.594l1.188 1.188L10 8 7 5l3-3 1.063 1.063L9.875 4.25q3-.063 5.063 2.01T17 11.25q0 1.458-.552 2.73a7.1 7.1 0 0 1-1.5 2.218 7.1 7.1 0 0 1-2.219 1.5A6.8 6.8 0 0 1 10 18.25m-5-2-5-5 5-5 5 5zm0-2.125 2.875-2.875L5 8.375 2.125 11.25z"/></svg>"##);
 
-svg_static!(SYS_DOWNLOAD, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M10 13.333 5.833 9.166 7 7.958l2.167 2.167V3.333h1.666v6.792L13 7.958l1.167 1.208zm-5 3.333q-.687 0-1.177-.49A1.6 1.6 0 0 1 3.333 15v-2.5H5V15h10v-2.5h1.667V15q0 .687-.49 1.177t-1.177.49z"/></svg>"##);
+svg_static!(SYS_EMOJI, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M12.917 9.167q.52 0 .885-.365t.365-.885-.365-.885a1.2 1.2 0 0 0-.885-.365q-.522 0-.886.365a1.2 1.2 0 0 0-.364.885q0 .52.364.885t.886.365m-5.834 0q.522 0 .886-.365t.364-.885q0-.52-.364-.885a1.2 1.2 0 0 0-.886-.365q-.52 0-.885.365a1.2 1.2 0 0 0-.365.885q0 .52.365.885t.885.365M10 14.584q1.416 0 2.573-.802a4.57 4.57 0 0 0 1.677-2.115h-8.5a4.57 4.57 0 0 0 1.677 2.115q1.156.802 2.573.802m0 3.75a8.1 8.1 0 0 1-3.25-.657 8.4 8.4 0 0 1-2.646-1.78 8.4 8.4 0 0 1-1.781-2.647A8.1 8.1 0 0 1 1.667 10q0-1.729.656-3.25a8.4 8.4 0 0 1 1.781-2.646 8.4 8.4 0 0 1 2.646-1.78A8.1 8.1 0 0 1 10 1.666q1.73 0 3.25.656a8.4 8.4 0 0 1 2.646 1.781 8.4 8.4 0 0 1 1.781 2.646 8.1 8.1 0 0 1 .656 3.25 8.1 8.1 0 0 1-.656 3.25 8.4 8.4 0 0 1-1.781 2.646 8.4 8.4 0 0 1-2.646 1.781 8.1 8.1 0 0 1-3.25.657m0-1.667q2.792 0 4.73-1.938 1.936-1.937 1.937-4.729 0-2.79-1.938-4.729Q12.792 3.334 10 3.334T5.27 5.27t-1.937 4.73q0 2.79 1.938 4.729Q7.209 16.667 10 16.667"/></svg>"##);
+svg_static!(SYS_REPLY, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M15.833 15.834V12.5a2.4 2.4 0 0 0-.729-1.77 2.4 2.4 0 0 0-1.77-.73H5.687l3 3L7.5 14.167l-5-5 5-5 1.188 1.167-3 3h7.645q1.73 0 2.948 1.218 1.22 1.22 1.219 2.948v3.334z"/></svg>"##);
+svg_static!(SYS_DOWNLOAD,br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M10 13.333 5.833 9.166 7 7.958l2.167 2.167V3.333h1.666v6.792L13 7.958l1.167 1.208zm-5 3.333q-.687 0-1.177-.49A1.6 1.6 0 0 1 3.333 15v-2.5H5V15h10v-2.5h1.667V15q0 .687-.49 1.177t-1.177.49z"/></svg>"##);
 
 /// Desktop's system icons file-default, videocam, link, sms, tune, search and done.
 static MEDIA_ICONS: std::sync::LazyLock<[svg::Handle; 7]> = std::sync::LazyLock::new(|| {
@@ -3425,6 +3429,26 @@ fn toggle_reaction(st: &BeeperStore, chat: &str, ms: &[&Message], key: &str) -> 
         1 => toggles.next().expect("the message has the reaction"),
         _ => UiMessage::Commands(toggles.collect()),
     }
+}
+
+/// The reaction keys of messages `ms`, sorted and each once.
+fn reaction_keys<'a>(ms: &[&'a Message]) -> Vec<&'a str> {
+    let mut keys: Vec<&str> = ms.iter().flat_map(|m| &m.reactions).map(|r| r.reaction_key.as_str()).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    keys
+}
+
+/// The look of reaction pills: faces also for one reaction (in groups), the colors with and without your reaction and
+/// on hover (if it changes), the text and "+N" colors, the ring color and width, and the gap between the pills.
+struct PillLook {
+    group: bool,
+    own: Color,
+    other: Color,
+    hover: Option<Color>,
+    fg: (Color, Color),
+    ring: (Color, f32),
+    gap: f32,
 }
 
 fn gap_below(m: &Message, next: &Message) -> f32 {
@@ -6449,6 +6473,7 @@ impl BeeperGuiApp {
                 };
             }
             UiMessage::React(mid) => return self.open_emoji(Some((mid, self.cursor.get()))),
+            UiMessage::ReactAt(mid, at) => return self.open_emoji(Some((mid, at))),
             UiMessage::MessageMenu(msg) => {
                 self.pane.message_menu = None;
                 return self.update(*msg);
@@ -9165,9 +9190,10 @@ impl BeeperGuiApp {
         };
         let carousel = self.carousel.as_ref().filter(shows).and_then(|c| self.view_carousel(c));
         let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q));
-        let layers = stack![base].push(toast).push(menu).push(scrim).push(palette_menu).push(select).push(confirm);
+        // The menus and the emoji picker of the carousel show over it.
+        let layers = stack![base].push(toast).push(carousel).push(menu).push(scrim).push(palette_menu).push(select);
         let token = self.token_ask.as_ref().map(|a| self.view_token_ask(a));
-        layers.push(carousel).push(hotkeys).push(token).into()
+        layers.push(confirm).push(hotkeys).push(token).into()
     }
 
     /// Desktop's `BeeperConnectAccessTokenRequestModal`, over the main window.
@@ -12577,9 +12603,7 @@ impl BeeperGuiApp {
         let parts: El<'a> = if reactions.is_empty() {
             parts.into()
         } else {
-            let mut keys: Vec<&str> = reactions.iter().map(|r| r.reaction_key.as_str()).collect();
-            keys.sort_unstable();
-            keys.dedup();
+            let keys = reaction_keys(ms);
             let min_w = keys.len() as f32 * 36.0 + 2.0 * BUBBLE_PAD_X;
             let order = keys.iter().flat_map(|&k| reactions.iter().filter(move |x| x.reaction_key == k));
             let all: Vec<_> = order.copied().collect();
@@ -12598,38 +12622,16 @@ impl BeeperGuiApp {
             });
             let list = list.push((more > 0).then(|| container(txt(format!("and {more} more"), 13.0)).padding([4, 8])));
             let list = container(list).padding([2, 4]).style(bordered_box(p.menu, p.menu_border, 1.0, 6.0));
-            let ring = if on_wall.is_some() { CLEAR } else { p.card };
-            let pills = keys.into_iter().fold(Row::new().spacing(2), |r, k| {
-                let reactors: Vec<_> = reactions.iter().filter(|x| x.reaction_key == k).collect();
-                let n = reactors.len();
-                let own = reactors.iter().any(|x| st.is_me(&x.participant_id));
-                let mut pill = row![txt(k.to_string(), 16.0).line_height(Pixels(15.0))].spacing(4).align_y(Center);
-                if group || n > 1 {
-                    for x in reactors.iter().take(3) {
-                        let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
-                        let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(&x.participant_id);
-                        pill = pill.push(self.face(u.and_then(|u| u.img_url.as_deref()), name, 16.0, 0.5));
-                    }
-                    if n > 3 {
-                        pill = pill.push(semi(format!("+{}", n - 3), 11.0).color(p.on_secondary));
-                    }
-                }
-                let fill = if own {
-                    if p.card.r < 0.5 {
-                        hex(0x1b43aa)
-                    } else {
-                        hex(0xcbd9ff)
-                    }
-                } else {
-                    p.received
-                };
-                r.push(
-                    button(pill)
-                        .padding([6, 7])
-                        .style(bordered_btn([fill, p.selected, p.selected], [p.text; 3], ring, 2.0, 14.0))
-                        .on_press(toggle_reaction(st, &chat.id, ms, k)),
-                )
-            });
+            let look = PillLook {
+                group,
+                own: if p.card.r < 0.5 { hex(0x1b43aa) } else { hex(0xcbd9ff) },
+                other: p.received,
+                hover: Some(p.selected),
+                fg: (p.text, p.on_secondary),
+                ring: (if on_wall.is_some() { CLEAR } else { p.card }, 2.0),
+                gap: 2.0,
+            };
+            let pills = self.reaction_pills(st, chat, ms, &look);
             stack![
                 container(column![parts, Space::new().width(min_w)].align_x(if mine { Right } else { iced::Left }))
                     .padding(Padding::ZERO.bottom(21.0)),
@@ -14222,6 +14224,7 @@ impl BeeperGuiApp {
         let (video, full) = (video.is_some(), video.is_some_and(video::Video::is_full));
         match key.as_ref() {
             Key::Named(Named::Escape) if full => self.video(video::Msg::Fullscreen),
+            Key::Named(Named::Escape) if self.pane.emoji.is_some() => self.update(UiMessage::CloseModals),
             Key::Named(Named::Escape) => self.update(UiMessage::CloseCarousel),
             Key::Character("f") if mods.is_empty() && video => self.video(video::Msg::Fullscreen),
             Key::Named(Named::ArrowLeft) if mods.is_empty() && at > 0 => self.update(UiMessage::CarouselStep(false)),
@@ -14254,6 +14257,50 @@ impl BeeperGuiApp {
             true => st.me().full_name.as_deref().expect("self name"),
             false => m.sender_name.as_deref().expect("sender name"),
         }
+    }
+
+    /// The React and Reply actions of the chat carousel on message `m`, like Desktop's `ChatCarousel`: React opens the
+    /// emoji picker 4 px below the React button, with its right edge at the right edge of the button, and Reply closes
+    /// the carousel.
+    fn carousel_actions(&self, car: &Carousel, m: &Message, c: &Chat) -> (Option<UiMessage>, Option<UiMessage>) {
+        let live = !car.in_media && m.is_deleted != Some(true);
+        let reply = (c.messages.reply && live)
+            .then(|| UiMessage::Commands(vec![UiMessage::CloseCarousel, UiMessage::StartReply(m.id.clone())]));
+        let right = self.pane.size.width - 8.0 - 28.0 * if reply.is_some() { 4.0 } else { 3.0 };
+        let react = (c.messages.react && live).then(|| UiMessage::ReactAt(m.id.clone(), Point::new(right, 39.0)));
+        (react, reply)
+    }
+
+    /// Desktop's `MessageReactions` pills of messages `ms`: each key with up to three faces when `look.group` or when
+    /// several people reacted, and "+N" for more. A click adds or removes your reaction on all the messages.
+    fn reaction_pills<'a>(
+        &self,
+        st: &BeeperStore,
+        chat: &Chat,
+        ms: &[&Message],
+        look: &PillLook,
+    ) -> Row<'a, UiMessage> {
+        reaction_keys(ms).into_iter().fold(Row::new().spacing(look.gap), |r, k| {
+            let reactors: Vec<_> = ms.iter().flat_map(|m| &m.reactions).filter(|x| x.reaction_key == k).collect();
+            let n = reactors.len();
+            let own = reactors.iter().any(|x| st.is_me(&x.participant_id));
+            let mut pill = row![txt(k.to_string(), 16.0).line_height(Pixels(15.0))].spacing(4).align_y(Center);
+            if look.group || n > 1 {
+                for x in reactors.iter().take(3) {
+                    let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
+                    let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(&x.participant_id);
+                    pill = pill.push(self.face(u.and_then(|u| u.img_url.as_deref()), name, 16.0, 0.5));
+                }
+                if n > 3 {
+                    pill = pill.push(semi(format!("+{}", n - 3), 11.0).color(look.fg.1));
+                }
+            }
+            let fill = if own { look.own } else { look.other };
+            let hover = look.hover.unwrap_or(fill);
+            let style = bordered_btn([fill, hover, hover], [look.fg.0; 3], look.ring.0, look.ring.1, 14.0);
+            let pill = button(pill).padding([4.0 + look.ring.1, 5.0 + look.ring.1]).style(style);
+            r.push(pill.on_press(toggle_reaction(st, &chat.id, ms, k)))
+        })
     }
 
     /// The carousel, or `None` until the next store change closes a carousel whose item is gone.
@@ -14309,9 +14356,14 @@ impl BeeperGuiApp {
             }
             None => control(&SYS_ROTATE, action("Rotate"), vec!["R"], Some(UiMessage::RotateCarousel)),
         };
+        let (react, reply) = self.carousel_actions(car, m, c);
+        let react = react.map(|msg| control(&SYS_EMOJI, action("React"), vec![], Some(msg)));
+        let reply = reply.map(|msg| control(&SYS_REPLY, action("Reply"), vec![], Some(msg)));
         let download = Some(UiMessage::Download(mid.to_string(), Some(ai)));
         let controls = row![]
             .push(go)
+            .push(react)
+            .push(reply)
             .push(turn_or_full)
             .push(control(&SYS_DOWNLOAD, action("Download"), vec!["D"], download))
             .push(control(&ROW_ACTIONS[6], action("Close"), vec!["Escape"], Some(UiMessage::CloseCarousel)))
@@ -14388,11 +14440,26 @@ impl BeeperGuiApp {
             container(mouse_area(row.style(fill_box(Color::BLACK.scale_alpha(0.45), 0.0))).on_press(UiMessage::Noop))
                 .align_bottom(Fill)
         });
+        // Desktop's `carousel-reactions` in a chat: the reactions of the message, 16 px above the bottom in the middle.
+        let reactions = (!car.in_media && !m.reactions.is_empty() && m.is_deleted != Some(true)).then(|| {
+            let look = PillLook {
+                group: c.chat_type == "group",
+                own: Color { a: 0.6, ..p.accent },
+                other: Color::BLACK.scale_alpha(0.6),
+                hover: None,
+                fg: (white, white),
+                ring: (white.scale_alpha(0.2), 1.0),
+                gap: 4.0,
+            };
+            let pills = mouse_area(self.reaction_pills(&st, c, &[m], &look)).on_press(UiMessage::Noop);
+            container(pills).align_bottom(Fill).center_x(Fill).padding(Padding::new(24.0).top(0.0).bottom(16.0))
+        });
         let body = column![container(head).padding(8).height(50), main];
         let layer = stack![body]
             .push((at > 0).then(|| step(false)))
             .push((at + 1 < items.len()).then(|| step(true)))
             .push(video.and_then(|(src, _)| self.view_carousel_video_controls(&src)))
+            .push(reactions)
             .push(strip);
         let scrim = container(layer).width(Fill).height(Fill).style(fill_box(Color::BLACK.scale_alpha(0.85), 0.0));
         Some(mouse_area(scrim).on_press(UiMessage::CloseCarousel).into())

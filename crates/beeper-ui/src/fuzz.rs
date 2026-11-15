@@ -1274,6 +1274,56 @@ fn carousel_zooms_like_desktop() {
     assert_eq!(closes, 2, "the zoomed image covers the point beside it");
 }
 
+/// Desktop's chat carousel: React opens the emoji picker under its button, Reply closes the carousel and starts a reply,
+/// and the reactions of the message show at the bottom.
+#[test]
+fn carousel_react_and_reply_like_desktop() {
+    let mut app = demo_app("carousel-react");
+    let (chat, mid) = {
+        let mut st = app.store.write();
+        let i = st.messages.iter().position(|m| m.attachments.iter().any(|a| a.attachment_type == "img")).unwrap();
+        let reaction = Reaction {
+            id: "r".into(),
+            participant_id: "@x:beeper.com".into(),
+            reaction_key: "🎉".into(),
+            animated: None,
+            img_url: None,
+            sort_key: String::new(),
+        };
+        st.messages[i].reactions = vec![reaction];
+        (st.messages[i].chat_id.clone(), st.messages[i].id.clone())
+    };
+    let _ = app.update(UiMessage::SelectChat(chat.clone()));
+    app.pane.size = Size::new(1000.0, 720.0);
+    let _ = app.update(UiMessage::OpenCarousel(mid.clone(), 0, false));
+    let click = |app: &BeeperGuiApp, at: Point| -> Vec<UiMessage> {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 720.0), app.view_main());
+        sim.point_at(at);
+        let _ = sim.simulate(iced_test::simulator::click());
+        sim.into_messages().collect()
+    };
+    let react = click(&app, Point::new(870.0, 25.0));
+    assert!(
+        matches!(&react[..], [UiMessage::ReactAt(m, at)] if *m == mid && *at == Point::new(880.0, 39.0)),
+        "React opens the picker under its button: {react:?}"
+    );
+    let reply = click(&app, Point::new(898.0, 25.0));
+    assert!(
+        matches!(&reply[..], [UiMessage::Commands(c)] if matches!(&c[..], [UiMessage::CloseCarousel, UiMessage::StartReply(m)] if *m == mid)),
+        "Reply closes the carousel and starts a reply"
+    );
+    let toggle = {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 720.0), app.view_main());
+        let _ = sim.click("🎉").expect("the reaction shows");
+        sim.into_messages().collect::<Vec<_>>()
+    };
+    assert!(matches!(&toggle[..], [UiMessage::ToggleReaction(c, m, k)] if *c == chat && *m == mid && k == "🎉"));
+    let _ = app.update(react.into_iter().next().unwrap());
+    assert!(simulator(app.view_main()).find("Search").is_ok(), "the picker shows over the carousel");
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Escape), Modifiers::empty()));
+    assert!(app.pane.emoji.is_none() && app.carousel.is_some(), "Escape closes the picker first");
+}
+
 /// Desktop's carousel controls have tooltips with their keys.
 #[test]
 fn carousel_tooltips_like_desktop() {
