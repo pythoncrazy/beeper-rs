@@ -12,7 +12,13 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 pub struct BeeperClient {
     pub host_port: String,
     pub access_token: String,
+    /// Prints each request and its status on stderr, like the `debug` log level of the SDK.
+    pub debug: bool,
 }
+
+/// A failed request, with the text of the Desktop API SDK: `<status> <message>`, or `Connection error.`.
+#[derive(Debug)]
+pub struct ApiError(pub String);
 
 const REDIRECT_URI: &str = "http://127.0.0.1:0/callback";
 
@@ -26,9 +32,57 @@ fn message_path(chat_id: &str, message_id: &str, rest: &str) -> String {
 
 impl BeeperClient {
     pub fn new(base_url: impl Into<String>, access_token: impl Into<String>) -> Self {
-        let base_url = base_url.into();
-        let host = base_url.strip_prefix("http://").expect("base_url starts with http://");
-        Self { host_port: host.split('/').next().unwrap().to_string(), access_token: access_token.into() }
+        Self::try_new(&base_url.into(), access_token).expect("base_url starts with http://")
+    }
+
+    /// A client of a base URL from the user. The client speaks plain HTTP only.
+    pub fn try_new(base_url: &str, access_token: impl Into<String>) -> Result<Self, String> {
+        let host =
+            base_url.strip_prefix("http://").ok_or(format!("Only http:// base URLs are supported: {base_url}"))?;
+        let host_port = host.split('/').next().expect("split gives one item").to_string();
+        let host_port = if host_port.contains(':') { host_port } else { format!("{host_port}:80") };
+        Ok(Self { host_port, access_token: access_token.into(), debug: false })
+    }
+
+    /// A request for the CLI: the body of a 2xx reply as JSON (`Null` when it is empty, a string when it is not
+    /// JSON), else the SDK error text.
+    pub async fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, ApiError> {
+        let bytes = self.call_raw(method, path, body).await?;
+        Ok(match bytes.is_empty() {
+            true => Value::Null,
+            false => serde_json::from_slice(&bytes)
+                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())),
+        })
+    }
+
+    /// The status and the body of a request, or `Connection error.` when the server does not answer.
+    pub async fn fetch(&self, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Vec<u8>), ApiError> {
+        let accept = [("accept", "application/json")];
+        let (status, bytes) =
+            self.try_send(method, path, &accept, body).await.map_err(|_| ApiError("Connection error.".into()))?;
+        if self.debug {
+            eprintln!("[beeper-api] {method} {path} -> {}", status.0);
+        }
+        Ok((status.0, bytes))
+    }
+
+    /// Like [`Self::call`], with the raw body of the reply.
+    pub async fn call_raw(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Vec<u8>, ApiError> {
+        let (status, bytes) = self.fetch(method, path, body).await?;
+        if status < 400 {
+            return Ok(bytes);
+        }
+        let error: Option<Value> = serde_json::from_slice(&bytes).ok();
+        let msg = match &error {
+            Some(Value::Object(e)) if e.get("message").is_some_and(|m| !m.is_null()) => match &e["message"] {
+                Value::String(m) => m.clone(),
+                m => m.to_string(),
+            },
+            Some(e) => e.to_string(),
+            None if !bytes.is_empty() => String::from_utf8_lossy(&bytes).into_owned(),
+            None => "status code (no body)".into(),
+        };
+        Err(ApiError(format!("{status} {msg}")))
     }
 
     pub async fn send(
@@ -38,6 +92,16 @@ impl BeeperClient {
         headers: &[(&str, &str)],
         body: Option<&Value>,
     ) -> (StatusCode, Vec<u8>) {
+        self.try_send(method, path, headers, body).await.expect("send the HTTP request to the Beeper server")
+    }
+
+    async fn try_send(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<&Value>,
+    ) -> std::io::Result<(StatusCode, Vec<u8>)> {
         let body = body.map(|v| serde_json::to_vec(v).unwrap());
         let len = body.as_ref().map_or(0, Vec::len);
         let mut head = format!(
@@ -52,11 +116,12 @@ impl BeeperClient {
         }
         headers.iter().for_each(|(k, v)| write!(head, "{k}: {v}\r\n").unwrap());
         head.push_str("\r\n");
-        let mut stream = TcpStream::connect(&self.host_port).await.expect("connect to Beeper server");
-        stream.write_all(&[head.into_bytes(), body.unwrap_or_default()].concat()).await.expect("write HTTP request");
-        let resp = read_message(&mut stream, &mut Vec::new(), |_| usize::MAX).await.expect("read HTTP response");
-        let status = resp.start_line.split(' ').nth(1).and_then(|s| s.parse().ok()).expect("HTTP status code");
-        (StatusCode(status), resp.body)
+        let mut stream = TcpStream::connect(&self.host_port).await?;
+        stream.write_all(&[head.into_bytes(), body.unwrap_or_default()].concat()).await?;
+        let bad = |_| std::io::Error::new(std::io::ErrorKind::InvalidData, "a bad HTTP response");
+        let resp = read_message(&mut stream, &mut Vec::new(), |_| usize::MAX).await.map_err(bad)?;
+        let status = resp.start_line.split(' ').nth(1).and_then(|s| s.parse().ok()).ok_or_else(|| bad(None))?;
+        Ok((StatusCode(status), resp.body))
     }
 
     async fn json<T: DeserializeOwned>(&self, method: &str, path: &str, body: Option<Value>) -> T {

@@ -1,4 +1,6 @@
 #![recursion_limit = "256"]
+mod cli;
+
 use beeper_api::{client::BeeperClient, server::serve_http};
 use beeper_core::{
     config::{migrate_legacy_data_dir, CentralConfig, APP_VERSION, DEFAULT_PAS_HOST, DEFAULT_PAS_PORT, SERVER_ENVS},
@@ -108,9 +110,13 @@ fn parse(argv: impl IntoIterator<Item = String>) -> Result<Args, (String, i32)> 
     Ok(args)
 }
 
-/// The help in oclif's layout.
+/// The help in oclif's layout, with the client commands and topics.
 fn help() -> String {
-    let commands = COMMANDS.map(|(name, _, text)| format!("  {name:<6} {text}")).join("\n");
+    let rows = COMMANDS.iter().map(|(name, _, text)| (name.to_string(), text.to_string()));
+    let mut rows: Vec<(String, String)> = rows.chain(cli::commands::root_rows()).collect();
+    rows.sort();
+    let width = rows.iter().map(|r| r.0.len()).max().expect("a command");
+    let commands = rows.iter().map(|(name, text)| format!("  {name:<width$} {text}")).collect::<Vec<_>>().join("\n");
     let flags = FLAGS.map(|(names, value, text, _)| {
         let (short, long): (Vec<&str>, Vec<&str>) = names.iter().partition(|n| !n.starts_with("--"));
         let short = short.first().map_or("    ".into(), |s| format!("{s}, "));
@@ -191,11 +197,18 @@ mod display {
 const MAX_WORKERS: usize = 4;
 
 fn main() {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().is_some_and(|word| cli::is_cli(word)) {
+        std::process::exit(cli::run(&argv));
+    }
     let env = |key: &str, flag: &str| std::env::var(key).ok().map(|v| format!("{flag}={v}"));
     let argv = [env("BEEPER_PAS_HOST", "--host"), env("BEEPER_PAS_PORT", "--port")].into_iter().flatten();
     let Args { command, host: launch_host, port, profile, data_dir, domain, demo, link } =
         parse(argv.chain(std::env::args().skip(1))).unwrap_or_else(|(error, code)| {
-            eprintln!("Error: {error}\nSee more help with --help\n\n{USAGE}");
+            match code {
+                127 => eprintln!(" ›   Warning: {error}\n ›   Error: Run {BIN} help for a list of available commands."),
+                _ => eprintln!("Error: {error}\nSee more help with --help\n\n{USAGE}"),
+            }
             std::process::exit(code)
         });
     match command {
