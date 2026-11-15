@@ -31,7 +31,7 @@ impl BeeperClient {
         Self { host_port: host.split('/').next().unwrap().to_string(), access_token: access_token.into() }
     }
 
-    async fn send(
+    pub async fn send(
         &self,
         method: &str,
         path: &str,
