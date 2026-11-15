@@ -3,13 +3,13 @@
 use crate::emoji::EMOJI_FONT;
 use crate::i18n::{tr, trx};
 use crate::login::{actions, art, brand_gradient, heading, LoginMsg, Screen, DANGER, FIELD, HINT, INK, LINK};
-use crate::style::{bold, btn_style, fill_box, fw, ic, icon, input_style, semi, shadow_box, t, txt, Palette, CLEAR};
+use crate::style::{bold, btn_style, fill_box, fw, ic, icon, semi, shadow_box, t, txt, Palette, CLEAR};
 use crate::{BeeperGuiApp, El, Toast, UiMessage};
 use beeper_core::matrix::E2eeSetup;
 use beeper_core::store::SharedStore;
 use iced::font::Weight;
 use iced::widget::{
-    button, column, container, mouse_area, rich_text, row, span, svg, text_input, tooltip, Column, Space,
+    button, column, container, mouse_area, rich_text, row, span, svg, text_editor, tooltip, Column, Space,
 };
 use iced::{border, window, Background, Center, Color, Fill, Padding, Pixels, Size, Task, Theme};
 use std::sync::LazyLock;
@@ -492,19 +492,13 @@ impl BeeperGuiApp {
     pub(crate) fn view_onboarding_key(&self) -> El<'_> {
         let l = &self.login;
         let p = &crate::style::BEEPER_LIGHT;
-        let input = text_input("", &l.recovery_key)
-            .on_input(|v| LoginMsg::RecoveryKey(v).into())
-            .on_submit(LoginMsg::SubmitRecoveryKey.into())
-            .size(14)
-            .padding([10, 12])
-            .style(input_style(FIELD, INK, HINT, LINK, 12.0));
-        let next = (!l.recovery_key.is_empty() && !l.busy).then(|| LoginMsg::SubmitRecoveryKey.into());
+        let next = (!l.key_input.text().trim().is_empty() && !l.busy).then(|| LoginMsg::SubmitRecoveryKey.into());
         let next = brand_btn_maybe(p, trx("Next", "button label"), Brand::Primary, next);
         let error = l.error.as_deref().map(|e| txt(e, 12.0).color(DANGER).center().width(Fill));
         column![
             Space::new().height(40),
             heading(tr("Enter your Recovery Key"), 28.0),
-            container(input).padding([24, 18]),
+            key_input(&l.key_input, l.error.is_some()),
             Space::new().height(Fill),
         ]
         .push(error)
@@ -537,6 +531,49 @@ pub(crate) fn format_recovery_key(key: &str) -> String {
     let chars: Vec<char> = beeper_core::matrix::recovery_key_chars(key).chars().take(48).collect();
     let groups: Vec<String> = chars.chunks(4).map(|g| g.iter().collect()).collect();
     groups.chunks(3).map(|line| line.join("-")).collect::<Vec<_>>().join("\n")
+}
+
+/// Desktop's `RecoveryCodeInput`: the key in 4 lines of 3 dash groups, and "Paste from Clipboard".
+fn key_input<'a>(content: &'a text_editor::Content, error: bool) -> El<'a> {
+    let edge = if error { DANGER } else { CLEAR };
+    let editor = text_editor(content)
+        .on_action(|a| LoginMsg::KeyEdit(a).into())
+        .size(17)
+        .height(4.0 * 17.0 * 1.3 + 24.0)
+        .padding(12)
+        .style(move |_: &Theme, _| text_editor::Style {
+            background: FIELD.into(),
+            border: border::rounded(12).color(edge).width(1),
+            placeholder: HINT,
+            value: INK,
+            selection: LINK.scale_alpha(0.3),
+        });
+    let paste = txt(trx("Paste from Clipboard", "button label"), 12.0).color(HINT);
+    let paste = button(paste).padding(4).style(btn_style([CLEAR, FIELD, FIELD], [HINT; 3], 6.0));
+    column![editor, paste.on_press(LoginMsg::PasteKey.into())].spacing(4).align_x(Center).padding([24, 18]).into()
+}
+
+/// An edit of `RecoveryCodeInput`: the key keeps its format, and the caret stays after the same character.
+pub(crate) fn edit_recovery_key(content: &mut text_editor::Content, action: text_editor::Action) {
+    let edit = action.is_edit();
+    content.perform(action);
+    if !edit {
+        return;
+    }
+    let (text, at) = (content.text(), content.cursor().position);
+    let lines: Vec<&str> = text.split('\n').collect();
+    let count = |s: &str| s.chars().filter(char::is_ascii_alphanumeric).count();
+    let before = lines[..at.line].iter().map(|l| count(l)).sum::<usize>()
+        + lines.get(at.line).map_or(0, |l| count(&l.chars().take(at.column).collect::<String>()));
+    // Desktop's caret: after the same character, and after the dash or the line end that follows a full group.
+    let formatted = format_recovery_key(&text);
+    let caret =
+        ((0..before.min(48)).map(|i| 1 + usize::from(i % 4 == 3 && i < 47)).sum::<usize>()).min(formatted.len());
+    let line = formatted[..caret].matches('\n').count();
+    let column = caret - formatted[..caret].rfind('\n').map_or(0, |i| i + 1);
+    *content = text_editor::Content::with_text(&formatted);
+    let position = text_editor::Position { line, column };
+    content.move_to(text_editor::Cursor { position, selection: None });
 }
 
 /// Desktop's `isValidRecoveryCode`: 48 letters and digits.
@@ -583,14 +620,8 @@ impl BeeperGuiApp {
         let error = l.error.as_deref().map(|e| txt(e, 12.0).color(DANGER).center().width(Fill));
         let (title, middle, next): (&str, El<'_>, Option<UiMessage>) = match l.screen {
             Screen::ConfirmKey => {
-                let input = text_input("", &l.recovery_key)
-                    .on_input(|v| LoginMsg::RecoveryKey(v).into())
-                    .on_submit(LoginMsg::SubmitConfirmKey.into())
-                    .size(14)
-                    .padding([10, 12])
-                    .style(input_style(FIELD, INK, HINT, LINK, 12.0));
-                let next = valid_recovery_key(&l.recovery_key).then(|| LoginMsg::SubmitConfirmKey.into());
-                (tr("Confirm your Recovery Key"), container(input).padding([24, 18]).into(), next)
+                let next = valid_recovery_key(&l.key_input.text()).then(|| LoginMsg::SubmitConfirmKey.into());
+                (tr("Confirm your Recovery Key"), key_input(&l.key_input, l.error.is_some()), next)
             }
             _ => {
                 let key: El<'_> = match &l.new_key {
@@ -841,10 +872,10 @@ mod tests {
         shows(&app, &["Copy to Clipboard", "EsTG-bqMm-dUDy\ndKth-xAyD-45dS\nHhyC-WKc9-CF6B\nxsFi-J5FQ-t8u2"]);
         let _ = app.update(LoginMsg::KeyNext.into());
         shows(&app, &["Confirm your Recovery Key"]);
-        let _ = app.update(LoginMsg::RecoveryKey("x".repeat(48)).into());
+        let _ = app.update(LoginMsg::Pasted(Some("x".repeat(48))).into());
         let _ = app.update(LoginMsg::SubmitConfirmKey.into());
         shows(&app, &["The Recovery Key you entered doesn't match your Recovery Key."]);
-        let _ = app.update(LoginMsg::RecoveryKey(format_recovery_key(key)).into());
+        let _ = app.update(LoginMsg::Pasted(Some(key.into())).into());
         let _ = app.update(LoginMsg::SubmitConfirmKey.into());
         assert_eq!(app.login.screen, Screen::Accounts);
         assert!(app.store.read().beeper_state.has_backed_up_code);
@@ -852,5 +883,30 @@ mod tests {
         app.login.screen = Screen::Verify;
         let _ = app.update(LoginMsg::LostKey.into());
         shows(&app, &["Reset your Recovery Key", "Warning", "Reset Recovery Key", "Cancel"]);
+    }
+
+    #[test]
+    fn recovery_key_input_formats_the_key_and_keeps_the_caret_like_desktop() {
+        use text_editor::{Action, Edit};
+        let mut input = text_editor::Content::new();
+        for c in "EsTGbqMmdUDy-dKth".chars() {
+            edit_recovery_key(&mut input, Action::Edit(Edit::Insert(c)));
+        }
+        assert_eq!(input.text(), "EsTG-bqMm-dUDy\ndKth", "the 13th character starts the second line");
+        assert_eq!(input.cursor().position, text_editor::Position { line: 1, column: 4 });
+        edit_recovery_key(&mut input, Action::Edit(Edit::Backspace));
+        edit_recovery_key(&mut input, Action::Edit(Edit::Backspace));
+        assert_eq!(input.text(), "EsTG-bqMm-dUDy\ndK");
+        let mut app = crate::fuzz::demo_app("verify-key-focus");
+        app.login.screen = Screen::RecoveryKey;
+        let key = "EsTG bqMm dUDy dKth xAyD 45dS HhyC WKc9 CF6B xsFi J5FQ t8u2";
+        let _ = app.update(LoginMsg::KeyOnFocus(Some("not a key".into())).into());
+        assert!(!app.login.busy, "a clipboard without a key does nothing");
+        let _ = app.update(LoginMsg::KeyOnFocus(Some(key.into())).into());
+        assert!(app.login.busy, "a recovery key on the clipboard is submitted when the window gets the focus");
+        assert_eq!(app.login.key_input.text(), format_recovery_key(key));
+        let _ = app.update(LoginMsg::Recovered(Err("bad key".into())).into());
+        let _ = app.update(LoginMsg::KeyOnFocus(Some(key.into())).into());
+        assert!(!app.login.busy, "a key that failed is not submitted again");
     }
 }
