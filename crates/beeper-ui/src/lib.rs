@@ -3813,6 +3813,7 @@ fn save_draft(st: &mut BeeperStore, pane: &Pane) {
     };
     let idx = st.resolve_chat_idx(chat).expect("the open chat exists");
     let old: Vec<ChatDraftAttachment> = st.chats[idx].draft.iter().flat_map(|d| d.attachments.clone()).collect();
+    let old_ids: Vec<String> = old.iter().map(|a| a.upload_id.clone()).collect();
     let kept = |(a, f): (&ChatDraftAttachment, &PendingMedia)| {
         st.assets.get(&a.upload_id).is_some_and(|s| s.file_name == f.name && s.file_size == f.bytes.len() as u64)
     };
@@ -3844,6 +3845,8 @@ fn save_draft(st: &mut BeeperStore, pane: &Pane) {
     if draft != st.chats[idx].draft {
         st.patch_chat(chat, true, None, None).expect("clear draft");
         st.patch_chat(chat, false, draft, None).expect("save draft");
+        // A sent draft or a changed file leaves its upload behind.
+        st.drop_unused_uploads(&old_ids);
     }
 }
 
@@ -5812,6 +5815,8 @@ impl BeeperGuiApp {
                             continue;
                         }
                     };
+                    // Desktop removes the file of a sent message.
+                    st.drop_unused_uploads(&[id]);
                     let (att, out) = file_echo(&mut self.media, &mut st, f);
                     let (_, txn, _) = st
                         .send_message(&s.chat_id, text.clone(), s.reply_to.clone(), Some(att))
