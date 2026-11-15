@@ -817,6 +817,36 @@ mod tests {
         assert_eq!(app.toast.as_ref().map(|t| t.text.as_str()), Some("Reconnected to WhatsApp"));
     }
 
+    /// Desktop's `network-status` banner, the Reconnect button of the account page and the Reconnect item of the
+    /// account menu, for a cloud account whose bridge asks for a new login.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_logged_out_account_offers_reconnect() {
+        let (mut app, _) = stub_app("reconnect").await;
+        let out = serde_json::json!({ "state_event": "BAD_CREDENTIALS", "has_error": true, "message": "Logged out" });
+        let bridges = serde_json::json!({ "whatsapp": { "bridgeState": { "bridgeType": "whatsapp" }, "remoteState": { "15550100": out } } });
+        let accounts = beeper_core::cloud::cloud_accounts(&bridges).expect("valid bridge states");
+        app.store.write().set_cloud_accounts(accounts);
+        let again =
+            |m: UiMessage| matches!(m, UiMessage::OpenAddAccount(n, Some(l)) if n == "whatsapp" && l == "15550100");
+        assert!(iced_test::simulator(app.view_sidebar()).find("WhatsApp disconnected").is_err(), "only in its space");
+        app.selected_account_filter = Some("whatsapp".into());
+        let mut sim = iced_test::simulator(app.view_sidebar());
+        assert!(sim.find("WhatsApp disconnected").is_ok());
+        sim.click("Reconnect").expect("the Reconnect of the banner");
+        assert!(sim.into_messages().any(again));
+        let _ = app.update(UiMessage::OpenSettings(crate::SettingsTab::Accounts));
+        let _ = app.update(UiMessage::OpenAccount(Some("whatsapp".into())));
+        let mut sim = iced_test::simulator(app.view_settings());
+        assert!(sim.find("Account Disconnected").is_ok() && sim.find("Logged out").is_ok());
+        sim.click("Reconnect").expect("the Reconnect of the account page");
+        assert!(sim.into_messages().any(again));
+        let mut sim = iced_test::simulator(app.account_menu("whatsapp", crate::SpaceMenu::Rail).0);
+        sim.click("Reconnect").expect("the Reconnect of the account menu");
+        assert!(sim.into_messages().any(again));
+        settle(&mut app, UiMessage::OpenAddAccount("whatsapp".into(), Some("15550100".into()))).await;
+        assert_eq!(app.add_accounts[0].login, "15550100", "the window logs the account in again");
+    }
+
     /// The X cookie step of the stub: beeper-rs cannot open Desktop's browser window that reads the cookies.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_cookie_login_shows_the_browser_step() {

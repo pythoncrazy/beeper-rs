@@ -3293,6 +3293,7 @@ fn account_status_like_desktop() {
     let _ = app.update(UiMessage::OpenAccount(Some(account.clone())));
     let mut sim = simulator(app.view_settings());
     assert!(sim.find("Account Disconnected").is_ok() && sim.find("Token expired").is_ok());
+    assert!(sim.find("Reconnect").is_err(), "a demo account cannot log in again");
     let _ = sim.click("Remove Account").expect("the Remove Account button of the account page");
     for m in sim.into_messages() {
         let _ = app.update(m);

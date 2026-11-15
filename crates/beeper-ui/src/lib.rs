@@ -2917,6 +2917,15 @@ fn status_text(st: &BeeperStore, account_id: &str) -> Option<&'static str> {
     }
 }
 
+/// Desktop's `reauthenticate` of an account whose bridge asks for a new login (`computedRequiresReauth`): it opens
+/// the Add Account window for the login. beeper-rs logs in to the Beeper Cloud bridges only.
+fn reconnect(st: &BeeperStore, account: &str) -> Option<UiMessage> {
+    let b = st.bridge_accounts.iter().find(|b| b.account_id == account && b.state == "BAD_CREDENTIALS")?;
+    let cloud = beeper_core::config::find_network(&b.bridge_id).and_then(beeper_core::config::cloud_bridge);
+    let can = !st.config.demo && b.mode == BridgeMode::Cloud && cloud.is_some();
+    can.then(|| UiMessage::OpenAddAccount(b.bridge_id.clone(), Some(b.login_id.clone())))
+}
+
 /// Desktop's `remoteHasError` of the account of an account or network space: the status that the space shows.
 fn space_error(st: &BeeperStore, id: &str) -> Option<&'static str> {
     rail_label(st, id).is_none().then(|| status_text(st, &rail_owner(st, id))).flatten()
@@ -10511,10 +10520,13 @@ impl BeeperGuiApp {
                 menu_item(p, None, tr("Account Settings…").into(), "", Some(settings)),
             ],
         };
+        // Desktop's Reconnect item (`App:89486`) of an account whose bridge asks for a new login.
+        let again = reconnect(&st, account).filter(|_| kind != SpaceMenu::Gear);
+        let again = again.map(|m| column![menu_rule(p), menu_item(p, None, tr("Reconnect").into(), "", Some(m))]);
         let col = column![
             select,
             mouse_area(inbox).on_enter(UiMessage::ChatSub(Some(0))),
-            mouse_area(rest).on_enter(UiMessage::ChatSub((kind == SpaceMenu::Options).then_some(1)))
+            mouse_area(rest.push(again)).on_enter(UiMessage::ChatSub((kind == SpaceMenu::Options).then_some(1)))
         ];
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         (menu.into(), sub.map(Into::into))
@@ -11928,9 +11940,32 @@ impl BeeperGuiApp {
         let pill = self.view_global_audio(&st, w - 18.0).map(|pill| {
             container(pill).padding(Padding::ZERO.left(8.0).right(10.0).bottom(8.0)).height(Fill).align_bottom(Fill)
         });
-        let sidebar = stack![column![header, list].padding(Padding::ZERO.left(8.0))].push(pill);
+        let status = self.view_network_status(&st);
+        let sidebar = stack![column![header].push(status).push(list).padding(Padding::ZERO.left(8.0))].push(pill);
         let sidebar = container(sidebar).width(w).height(Fill);
         mouse_area(sidebar).on_right_press(UiMessage::OpenChatMenu(SIDEBAR_MENU.into())).into()
+    }
+
+    /// Desktop's `network-status` banner of `AppStatus` over the chat list: the account of the selected space is
+    /// disconnected. A click logs it in again when its bridge asks for that, or else opens its settings.
+    fn view_network_status(&self, st: &BeeperStore) -> Option<El<'_>> {
+        let p = &self.pal;
+        let id = self.selected_account_filter.as_deref().filter(|id| self.online && rail_label(st, id).is_none())?;
+        let owner = rail_owner(st, id);
+        let b = st.bridge_accounts.iter().find(|b| b.account_id == owner)?;
+        let again = reconnect(st, &owner);
+        if b.state != "BAD_CREDENTIALS" && b.remote_error.is_none() {
+            return None;
+        }
+        let name = account_network(&b.bridge_id).display_name;
+        let cta = again.is_some().then(|| semi(tr("Reconnect"), 11.0).color(p.accent));
+        let text = txt(format!("{name} {}", tr("disconnected")), 12.0).color(p.fg).width(Fill);
+        let line =
+            row![svg(brand_svg(brand_key(&owner))).width(22).height(22), text].push(cta).spacing(8).align_y(Center);
+        let msg = again.unwrap_or(UiMessage::OpenAccountSettings(owner));
+        let banner =
+            button(line).padding([0, 8]).height(40).style(btn_style([p.hover; 3], [p.fg; 3], 12.0)).on_press(msg);
+        Some(container(banner).padding(Padding::new(8.0).top(0.0).left(0.0)).into())
     }
 
     /// Desktop's message request box (`T2t`) under the messages, with its Decline and Accept buttons.
@@ -17064,13 +17099,21 @@ impl BeeperGuiApp {
             toggle("Show message previews", props.previews, set(|q| q.previews ^= true)),
             pref_row(p, tr("Sound"), None, None, sound),
         ]);
-        // Desktop's `AccountDisconnected` banner, without the Reconnect button of the bridge login.
+        // Desktop's `AccountDisconnected` banner, with Reconnect when the bridge asks for a new login.
+        let again = reconnect(st, id);
         let disconnected = bridge.and_then(|b| b.remote_error.clone()).map(|message| {
+            let again = again.map(|m| {
+                button(med(tr("Reconnect"), 11.0))
+                    .padding([4, 8])
+                    .style(btn_style([Color::WHITE; 3], [p.accent; 3], 20.0))
+                    .on_press(m)
+            });
             let banner = column![
                 svg(ERROR_CIRCLE.clone()).width(20).height(20),
                 semi(tr("Account Disconnected"), 13.0).color(p.strong),
                 txt(message, 11.0).color(p.strong).center(),
             ]
+            .push(again)
             .spacing(8)
             .align_x(Center);
             let fill = if self.dark { p.prefs_group } else { p.chip };
