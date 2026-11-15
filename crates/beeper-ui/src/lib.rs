@@ -14,6 +14,7 @@ pub mod login;
 mod notify;
 mod popover;
 mod portal;
+mod profile;
 mod record;
 mod sound;
 mod spell;
@@ -208,6 +209,7 @@ fn filter_hit(i: usize, c: &Chat, st: &BeeperStore) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
+    Profile,
     Accounts,
     General,
     Appearance,
@@ -224,12 +226,15 @@ pub enum SettingsTab {
 
 #[derive(Clone, Copy)]
 pub enum TabIcon {
+    /// The avatar of the Beeper account.
+    Avatar,
     Glyph(char),
     Svg(&'static [u8]),
 }
 
 impl SettingsTab {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
+        Self::Profile,
         Self::Accounts,
         Self::General,
         Self::Appearance,
@@ -258,6 +263,7 @@ impl SettingsTab {
     /// Desktop's `searchKeywords` of the section.
     pub fn keywords(self) -> &'static [&'static str] {
         match self {
+            Self::Profile => &["recovery code", "show recovery key", "backup key", "encryption key"],
             Self::Integrations => &[
                 "beeper desktop api",
                 "mcp",
@@ -285,7 +291,8 @@ impl SettingsTab {
     /// The name, the icon, and the token of the icon tile color.
     pub fn meta(self) -> (&'static str, TabIcon, Token) {
         use TabIcon::{Glyph, Svg};
-        let tabs: [(_, _, Token); 12] = [
+        let tabs: [(_, _, Token); 13] = [
+            ("Profile", TabIcon::Avatar, |_| CLEAR),
             ("Accounts", Glyph(icon::AT_SIGN), |_| hex(0x9745ea)),
             ("General", Svg(include_bytes!("../assets/settings/general.svg")), |_| hex(0x0eb3ef)),
             ("Appearance", Svg(include_bytes!("../assets/settings/appearance.svg")), |_| hex(0xd833ca)),
@@ -451,6 +458,7 @@ pub enum UiMessage {
     /// Desktop's disappearing messages select: a chat and a timer in ms, or 0 for Off.
     SetDisappearing(String, u64),
     Group(GroupEdit),
+    Profile(profile::Msg),
     /// Opens the New label window with these chats picked.
     OpenCreateLabel(Vec<String>),
     /// Desktop's `toggleLabel` for the chats of a menu: the clicked chat, or the selected chats.
@@ -3748,6 +3756,7 @@ pub struct BeeperGuiApp {
     pub selected_account_filter: Option<String>,
     pub hotkey_query: String,
     pub hotkey_rec: Option<HotkeyRec>,
+    pub profile: profile::ProfileForm,
     /// The search text of the open Keyboard Shortcuts list, and whether the list scrolled down.
     pub hotkeys_modal: Option<String>,
     /// Desktop's `FileDropOverlay` shows, and Shift was down at a drop, so the dropped files are sent.
@@ -3984,6 +3993,7 @@ impl BeeperGuiApp {
             selected_account_filter: None,
             hotkey_query: String::new(),
             hotkey_rec: None,
+            profile: profile::ProfileForm::default(),
             hotkeys_modal: None,
             dropping: false,
             drop_send: false,
@@ -6124,6 +6134,7 @@ impl BeeperGuiApp {
                 return open;
             }
             UiMessage::Group(e) => return self.group_edit(e),
+            UiMessage::Profile(m) => return self.update_profile(m),
             UiMessage::ToggleLabel(label, chat, add) => self.toggle_label(label, chat, add, true),
             UiMessage::SwitchLabel(label, chat, add) => self.toggle_label(label, vec![chat], add, false),
             UiMessage::OpenEditLabels(chat) => {
@@ -7061,6 +7072,13 @@ impl BeeperGuiApp {
             }
             UiMessage::SelectSettingsTab(SettingsTab::Help) | UiMessage::OpenSettings(SettingsTab::Help) => {
                 return Task::done(UiMessage::OpenUrl("https://help.beeper.com/?ref=desktop-app".into()));
+            }
+            UiMessage::SelectSettingsTab(t)
+                if self.active_settings_tab == SettingsTab::Profile
+                    && t != SettingsTab::Profile
+                    && self.profile.dirty(self.store.read().me()) =>
+            {
+                self.profile.leaving = Some(t);
             }
             UiMessage::SelectSettingsTab(t) => {
                 let top = operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
@@ -14910,6 +14928,7 @@ impl BeeperGuiApp {
             let (_, glyph, tint) = tab.meta();
             let em = if small { 11.0 } else { 13.0 };
             let glyph: El = match glyph {
+                TabIcon::Avatar => self.face(me.img_url.as_deref(), &name, if small { 16.0 } else { 20.0 }, 0.0),
                 TabIcon::Glyph(g) => ic(g, em).color(Color::WHITE.scale_alpha(alpha)).into(),
                 TabIcon::Svg(doc) => {
                     let (w, h) = svg_size(doc);
@@ -14920,27 +14939,35 @@ impl BeeperGuiApp {
             let (size, radius) = if small { (16, 4.0) } else { (20, 6.0) };
             container(glyph).center(size).style(fill_box(fill, radius))
         };
-        let (pill, pill_w) = plan_pill(p, st.whoami.plan);
+        let pill_w = plan_pill(p, st.whoami.plan).1;
         // Desktop's 34 px avatar shrinks to 28.6 px beside the full width details.
         let av = 28.6;
         let detail_w = 231.0 - av - 16.0 - pill_w;
-        let profile = row![
-            container(self.face(me.img_url.as_deref(), &name, av, 0.0)).height(34),
-            column![ell(&name, detail_w, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(p.strong)]
-                .push(
-                    me.email
-                        .as_deref()
-                        .map(|e| ell(e, detail_w, 10.0, Weight::Normal).line_height(Pixels(12.0)).color(p.strong))
-                )
-                .width(Fill),
-            pill
-        ]
-        .spacing(8)
-        .align_y(Center)
-        .padding([6, 8]);
+        let profile = || {
+            row![
+                container(self.face(me.img_url.as_deref(), &name, av, 0.0)).height(34),
+                column![ell(&name, detail_w, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(p.strong)]
+                    .push(
+                        me.email
+                            .as_deref()
+                            .map(|e| ell(e, detail_w, 10.0, Weight::Normal).line_height(Pixels(12.0)).color(p.strong))
+                    )
+                    .width(Fill),
+                plan_pill(p, st.whoami.plan).0
+            ]
+            .spacing(8)
+            .align_y(Center)
+            .padding([6, 8])
+        };
         let tabs: Vec<_> = SettingsTab::listed(&st).collect();
         let nav = tabs.iter().enumerate().fold(Column::new(), |c, (i, &tab)| {
             let on = tab == self.active_settings_tab;
+            let style = btn_style([if on { p.hover } else { CLEAR }, p.hover, p.hover], [p.text; 3], 8.0);
+            if tab == SettingsTab::Profile {
+                return c.push(
+                    button(profile()).padding(0).width(Fill).style(style).on_press(UiMessage::SelectSettingsTab(tab)),
+                );
+            }
             // Desktop's `allProperAccounts`: the Beeper account and the chat accounts.
             let count = (tab == SettingsTab::Accounts).then(|| {
                 container(txt((st.accounts.len() + 1).to_string(), 11.0).color(p.strong))
@@ -14954,18 +14981,13 @@ impl BeeperGuiApp {
                 .height(if on { 44 } else { 43 })
                 .padding([0, 8]);
             let next_on = tabs.get(i + 1).is_some_and(|n| *n == self.active_settings_tab);
-            c.push(
-                button(line)
-                    .padding(0)
-                    .width(Fill)
-                    .style(btn_style([if on { p.hover } else { CLEAR }, p.hover, p.hover], [p.text; 3], 8.0))
-                    .on_press(UiMessage::SelectSettingsTab(tab)),
+            c.push(button(line).padding(0).width(Fill).style(style).on_press(UiMessage::SelectSettingsTab(tab))).push(
+                (!on).then(|| {
+                    let rule = if next_on { CLEAR } else { p.divider };
+                    container(container(Space::new()).width(Fill).height(1).style(fill_box(rule, 0.0)))
+                        .padding(Padding::ZERO.left(36.0))
+                }),
             )
-            .push((!on).then(|| {
-                let rule = if next_on { CLEAR } else { p.divider };
-                container(container(Space::new()).width(Fill).height(1).style(fill_box(rule, 0.0)))
-                    .padding(Padding::ZERO.left(36.0))
-            }))
         });
         // Desktop's search results: the query in each label is at full color, and the rest at half.
         let q = self.settings_query.to_lowercase();
@@ -15013,7 +15035,7 @@ impl BeeperGuiApp {
             c.push(mouse_area(line).on_enter(UiMessage::SettingsFocus(i)).on_release(UiMessage::PickSetting(hit)))
         });
         let list: El = match self.settings_query.trim().is_empty() {
-            true => column![profile, nav].into(),
+            true => nav.into(),
             false => container(results).padding(Padding::ZERO.top(3)).into(),
         };
         let left = column![
@@ -15053,7 +15075,8 @@ impl BeeperGuiApp {
                     .height(Fill);
                 mouse_area(menu).on_press(UiMessage::CloseChatMenu).on_right_press(UiMessage::CloseChatMenu)
             });
-        stack![base.style(fill_box(p.window, 0.0))].push(menu).push(add).push(confirm).into()
+        let profile = self.profile_overlay();
+        stack![base.style(fill_box(p.window, 0.0))].push(menu).push(add).push(confirm).push(profile).into()
     }
 
     /// Desktop's `BeeperConnectAddTokenModal`, over the Settings window.
@@ -15576,6 +15599,7 @@ impl BeeperGuiApp {
             SettingsTab::Integrations => self.integrations_page(st),
             SettingsTab::Storage => vec![self.storage_page(st)],
             SettingsTab::Help => unreachable!("the Help tab opens the help center"),
+            SettingsTab::Profile => self.profile_page(st),
             SettingsTab::About => {
                 let title =
                     column![bold("Beeper", 19.5).color(p.text), txt(format!("v{APP_VERSION}"), 13.0).color(p.weak)]

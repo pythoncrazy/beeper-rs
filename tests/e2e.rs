@@ -91,8 +91,11 @@ async fn fake_beeper_cloud() -> String {
                         ("/user", _)
                             if m.start_line.starts_with("PATCH ")
                                 && auth.starts_with("Bearer syt_")
-                                && b["analyticsDisabled"].is_boolean() =>
+                                && (b["analyticsDisabled"].is_boolean() || b["email"].is_string()) =>
                         {
+                            (200, json!({}))
+                        }
+                        ("/user", _) if m.start_line.starts_with("DELETE ") && auth.starts_with("Bearer syt_") => {
                             (200, json!({}))
                         }
                         ("/whoami", _) if auth.starts_with("Bearer syt_") => {
@@ -775,6 +778,14 @@ async fn lifecycle() {
     .await
     .unwrap();
     assert_eq!(saved, (Ok(()), Err(404)), "Share Analytics patches analyticsDisabled of the user");
+    let profile_cloud = cloud.clone();
+    let profile_calls = tokio::task::spawn_blocking(move || {
+        let c = beeper_core::cloud::Cloud::new(&profile_cloud, &profile_cloud);
+        (c.set_email("syt_alex", "new@example.com"), c.delete_account("syt_alex"), c.delete_account("bad").is_err())
+    })
+    .await
+    .unwrap();
+    assert_eq!(profile_calls, (Ok(()), Ok(()), true), "the profile page patches the email and deletes the user");
     let _ = login.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Session(session, profile, accounts)))));
     assert_eq!(login.login.screen, Screen::Accounts);
     assert_eq!(login_store.read().accounts.len(), 4);

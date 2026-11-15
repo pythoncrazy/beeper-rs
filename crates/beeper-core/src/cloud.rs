@@ -202,6 +202,17 @@ impl Cloud {
         self.send(reqwest::Method::PATCH, &url, Some(access_token), Some(&body)).map(drop)
     }
 
+    /// Desktop's `bapi.setEmail`: the server sends a confirmation to the new email.
+    pub fn set_email(&self, access_token: &str, email: &str) -> Result<(), CloudError> {
+        let url = format!("{}/user", self.api_url);
+        self.send(reqwest::Method::PATCH, &url, Some(access_token), Some(&json!({ "email": email }))).map(drop)
+    }
+
+    /// Desktop's `bapi.deleteAccount`, which deletes the Beeper account for good.
+    pub fn delete_account(&self, access_token: &str) -> Result<(), CloudError> {
+        self.send(reqwest::Method::DELETE, &format!("{}/user", self.api_url), Some(access_token), None).map(drop)
+    }
+
     pub fn finish(&self, jwt: &str) -> Result<(MatrixSession, Profile, Vec<BridgeAccountInfo>), CloudError> {
         let session = self.matrix_login(jwt)?;
         let (profile, accounts) = self.whoami(&session.access_token)?;

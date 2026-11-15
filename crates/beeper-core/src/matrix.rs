@@ -1839,6 +1839,27 @@ async fn sync_profile(client: &Client, store: &SharedStore) {
     });
 }
 
+/// Desktop's `userProfileStore.setAvatar` and `setFullName`: uploads the avatar image with its MIME type, sets the
+/// name, and reads the profile again.
+pub async fn set_profile(
+    store: SharedStore,
+    name: Option<String>,
+    avatar: Option<(Vec<u8>, String)>,
+) -> Result<(), String> {
+    let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
+    let e = |e: &dyn std::fmt::Display| e.to_string();
+    if let Some((bytes, mime)) = avatar {
+        let mime: mime::Mime = mime.parse().expect("an image MIME type");
+        let url = client.media().upload(&mime, bytes, None).await.map_err(|x| e(&x))?.content_uri;
+        client.account().set_avatar_url(Some(&url)).await.map_err(|x| e(&x))?;
+    }
+    if let Some(name) = name {
+        client.account().set_display_name(Some(&name)).await.map_err(|x| e(&x))?;
+    }
+    sync_profile(&client, &store).await;
+    Ok(())
+}
+
 /// Applies Desktop's synced preferences to the settings.
 async fn sync_prefs(client: &Client, store: &SharedStore) {
     let mut events = std::collections::BTreeMap::<&'static str, Value>::new();

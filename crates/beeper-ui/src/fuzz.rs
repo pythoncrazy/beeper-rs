@@ -2037,6 +2037,55 @@ fn hotkey_recorder_like_desktop() {
 }
 
 #[test]
+fn profile_page_like_desktop() {
+    use crate::profile::Msg;
+    let mut app = demo_app("profile-page");
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::Profile));
+    let me = app.store.read().me().clone();
+    let username = me.username.clone().expect("a username");
+    let shows = |app: &BeeperGuiApp, text: &str| simulator(app.view_settings()).find(text).is_ok();
+    assert!(
+        shows(&app, "Beeper Profile") && shows(&app, "Your username is how other people can contact you on Beeper.")
+    );
+    assert!(!shows(&app, "Save"), "Save shows only after a change");
+    let _ = app.update(UiMessage::Profile(Msg::Name("New Name".into())));
+    assert!(shows(&app, "Save"));
+    let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::General));
+    assert_eq!(app.active_settings_tab, SettingsTab::Profile, "unsaved changes keep the page");
+    assert!(shows(&app, "You have unsaved changes"));
+    let _ = app.update(UiMessage::Profile(Msg::Leave(false)));
+    assert_eq!(app.active_settings_tab, SettingsTab::General);
+    assert!(app.profile.name.is_none(), "Discard drops the edit");
+    let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::Profile));
+    let _ = app.update(UiMessage::Profile(Msg::Menu));
+    assert!(shows(&app, "Show Recovery Key") && shows(&app, "Logout") && shows(&app, "Delete account"));
+    let _ = app.update(UiMessage::Profile(Msg::Delete(Some("nobody".into()))));
+    assert!(!app.profile.menu, "a menu item closes the menu");
+    assert!(shows(&app, &format!("To confirm, type your username {username} below.")));
+    let _ = app.update(UiMessage::Profile(Msg::ConfirmDelete));
+    assert_eq!(app.profile.delete.as_ref().map(|d| d.1), Some(false), "a wrong username does not delete");
+    let _ = app.update(UiMessage::Profile(Msg::Delete(Some(username))));
+    let _ = app.update(UiMessage::Profile(Msg::ConfirmDelete));
+    assert_eq!(app.profile.delete.as_ref().map(|d| d.1), Some(true));
+    let _ = app.update(UiMessage::Profile(Msg::Deleted(Err("offline".into()))));
+    assert!(shows(&app, "Error deleting your account: offline"));
+    let _ = app.update(UiMessage::Profile(Msg::Delete(None)));
+    let _ = app.update(UiMessage::Profile(Msg::Email("new@example.com".into())));
+    let _ = app.update(UiMessage::Profile(Msg::Save));
+    assert!(shows(&app, "Change Email") && shows(&app, "Confirm New Email"));
+    let _ = app.update(UiMessage::Profile(Msg::EmailField(0, "wrong@example.com".into())));
+    let _ = app.update(UiMessage::Profile(Msg::EmailField(2, "new@example.com".into())));
+    let _ = app.update(UiMessage::Profile(Msg::SaveEmail));
+    assert_eq!(app.profile.change_email.as_ref().map(|c| c.1), Some(false), "the current email must match");
+    let current = me.email.clone().expect("an email");
+    let _ = app.update(UiMessage::Profile(Msg::EmailField(0, current.to_uppercase())));
+    let _ = app.update(UiMessage::Profile(Msg::SaveEmail));
+    assert_eq!(app.profile.change_email.as_ref().map(|c| c.1), Some(true), "the email saves");
+    let hits = search_settings(&app.store.read(), "recovery code");
+    assert_eq!(hits.first(), Some(&SettingsHit::Section(SettingsTab::Profile, true)));
+}
+
+#[test]
 fn polls_like_desktop() {
     let mut app = demo_app("polls");
     let (chat, mid) = ("!tg_rust:beeper.com", "msg_1004");
