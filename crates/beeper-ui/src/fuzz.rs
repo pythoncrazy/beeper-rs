@@ -1277,6 +1277,34 @@ fn media_viewer_deletes_like_desktop() {
     assert_eq!(app.status_banner, "These messages can’t be deleted");
 }
 
+/// Desktop's filmstrip of the Media window viewer scrolls with the wheel, and a step centers the current item again.
+#[test]
+fn media_filmstrip_scrolls_like_desktop() {
+    let mut app = demo_app("media-strip");
+    let _ = app.update(UiMessage::OpenMedia);
+    let id = app.media_window.as_ref().map(|w| w.id).expect("a media window");
+    let size = Size::new(300.0, 720.0);
+    let _ = app.update(UiMessage::WindowResized(id, size));
+    let (mid, ai) = {
+        let st = app.store.read();
+        let items = crate::media_items(&st, app.media_window.as_ref().unwrap());
+        (st.messages[items[0].0].id.clone(), items[0].1)
+    };
+    let _ = app.update(UiMessage::OpenCarousel(mid, ai, true));
+    let wheel = {
+        let mut sim = Simulator::with_size(Default::default(), size, app.view(id));
+        sim.point_at(Point::new(150.0, 700.0));
+        let delta = mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 };
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::WheelScrolled { delta })]);
+        sim.into_messages().collect::<Vec<_>>()
+    };
+    assert!(matches!(&wheel[..], [UiMessage::ScrollFilmstrip(1.0)]), "the wheel scrolls the filmstrip");
+    let _ = app.update(UiMessage::ScrollFilmstrip(2.0));
+    assert_eq!(app.carousel.as_ref().unwrap().strip, Some(2));
+    let _ = app.update(UiMessage::CarouselStep(true));
+    assert_eq!(app.carousel.as_ref().unwrap().strip, None, "a step centers the current item");
+}
+
 #[test]
 fn media_carousel_draws() {
     let mut app = demo_app("mediacarousel");
