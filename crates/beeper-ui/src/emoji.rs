@@ -260,6 +260,8 @@ pub enum EmojiMsg {
 pub struct Picker {
     /// The message that a pick reacts to and where the picker opens, or `None` for the composer.
     pub(crate) react: Option<(String, iced::Point)>,
+    /// The quick reaction that a pick sets in Settings: 0 is the Quick React emoji, 1 to 3 the custom reactions.
+    pub(crate) pref: Option<u8>,
     query: String,
     hover: Option<usize>,
     skins_open: bool,
@@ -328,6 +330,9 @@ impl BeeperGuiApp {
             EmojiMsg::Close(_) => {}
             EmojiMsg::Pick(i) => {
                 let tone = self.store.read().skin_tone;
+                if let Some(slot) = self.pane.emoji.take_if(|pk| pk.pref.is_some()).and_then(|pk| pk.pref) {
+                    return self.update(UiMessage::SetQuickEmoji(slot, DATA.emojis[i].skinned(tone)));
+                }
                 if let Some((mid, _)) = self.pane.emoji.take_if(|pk| pk.react.is_some()).and_then(|pk| pk.react) {
                     let cid = self.pane.selected_chat_id.clone().expect("an open chat");
                     return self.update(UiMessage::ToggleReaction(cid, mid, DATA.emojis[i].skinned(tone)));
@@ -681,6 +686,9 @@ fn frequent_emoji(st: &beeper_core::store::BeeperStore) -> Vec<usize> {
 
 /// Desktop's `topEmoji`: the 3 most used emoji, then 👍 ❤️ 😂.
 pub(crate) fn quick_reactions(st: &beeper_core::store::BeeperStore) -> Vec<String> {
+    if st.settings.on("quickReactionsCustomized") {
+        return st.settings.quick_reactions.clone();
+    }
     let top = frequent_emoji(st).into_iter().take(3).map(|i| DATA.emojis[i].skinned(st.skin_tone));
     let mut out: Vec<String> = Vec::new();
     for e in top.chain(["👍", "❤️", "😂"].map(String::from)) {

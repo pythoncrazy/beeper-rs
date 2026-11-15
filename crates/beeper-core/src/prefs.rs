@@ -12,6 +12,14 @@ pub enum Control {
     Analytics,
     /// Desktop's "Downloads location", [`crate::models::BeeperSettings::downloads_dir`].
     Downloads,
+    /// Desktop's `QuickReactionEmojiPreference`: the emoji button of [`crate::models::BeeperSettings::quick_reaction`].
+    /// The General row shows only when a double click on a message reacts.
+    ReactionEmoji {
+        general: bool,
+    },
+    /// Desktop's `QuickReactionsSettings` under "Show quick reactions": the frequent emoji, or the
+    /// [`crate::models::BeeperSettings::quick_reactions`] that the toggle picks.
+    QuickReactions(&'static Pref),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +69,9 @@ impl Pref {
             | Control::Microphone
             | Control::Multi(_)
             | Control::Analytics
-            | Control::Downloads => {
+            | Control::Downloads
+            | Control::ReactionEmoji { .. }
+            | Control::QuickReactions(_) => {
                 unreachable!("the row {} has no value", self.key)
             }
         }
@@ -76,7 +86,9 @@ impl Pref {
             | Control::Microphone
             | Control::Multi(_)
             | Control::Analytics
-            | Control::Downloads => {
+            | Control::Downloads
+            | Control::ReactionEmoji { .. }
+            | Control::QuickReactions(_) => {
                 unreachable!("the row {} has no value", self.key)
             }
         }
@@ -176,6 +188,10 @@ pub const FONT_SIZES: &[&str] = &[
 pub const LANGUAGES: &[&str] =
     &["System", "English", "Deutsch", "Español", "Français", "日本語", "Português do Brasil"];
 pub const ARCHIVE_AGE_DAYS: [i64; 6] = [3, 7, 14, 28, 90, 365];
+/// Desktop's `quick_reactions_customized`: the quick reactions are the custom emoji.
+pub const QUICK_REACTIONS_CUSTOMIZED: Pref = t("quickReactionsCustomized", "", false);
+/// Desktop's `message_double_click_reaction`, any emoji, which [`crate::models::BeeperSettings`] keeps as text.
+pub const QUICK_REACTION: &str = "message_double_click_reaction";
 pub const ARCHIVE_SCOPE: Pref = s("archiveScope", "", &["all", "read"], 0);
 pub const ARCHIVE_AGE: Pref = s("archiveAge", "", &["3 days", "7 days", "14 days", "28 days", "3 months", "1 year"], 0);
 
@@ -206,6 +222,7 @@ pub const GENERAL: &[Item] = &[
             &["Do nothing", "Open the reaction picker", "Reply", "Forward", "Show menu", "React with..."],
             2,
         ),
+        custom("doubleClickEmoji", "Quick reaction emoji", Control::ReactionEmoji { general: true }),
     ]),
     Item::Group(&[
         s("undoSendDelay", "Allow undo send (%s) for", UNDO_SEND_DELAYS, 0)
@@ -287,7 +304,8 @@ pub const APPEARANCE: &[Item] = &[
         t("loadEmbeds", "Load external embeds automatically", true),
         t("incognitoIndicator", "Show incognito mode indicator", true).plus("stealth-mode").requires("incognito"),
         t("quickReactions", "Show quick reactions", true),
-        s("quickReactionEmoji", "Quick reaction emoji", &["❤️", "👍", "😂", "😮", "😢", "🔥"], 0)
+        custom("quickReactionsFooter", "", Control::QuickReactions(&QUICK_REACTIONS_CUSTOMIZED)),
+        custom("quickReactionEmoji", "Quick reaction emoji", Control::ReactionEmoji { general: false })
             .desc("Used for quick react keyboard shortcut (%s)")
             .args(const { &[cmd!("", " Shift R")] }),
         t("reactionsOnSelect", "Show reactions when a message is selected", false),
@@ -417,6 +435,7 @@ pub fn rows() -> impl Iterator<Item = (&'static str, &'static Pref)> {
 pub fn all() -> impl Iterator<Item = (&'static str, &'static Pref)> {
     rows().flat_map(|(page, p)| match p.control {
         Control::Archive(scope, age) => vec![(page, scope), (page, age)],
+        Control::QuickReactions(customized) => vec![(page, customized)],
         _ => vec![(page, p)],
     })
 }
@@ -759,7 +778,7 @@ pub const SYNCED: &[(&str, Ad)] = &[
     ("balanceText", b("balance_message_text")),
     ("loadEmbeds", b("load_iframes_automatically")),
     ("quickReactions", b("quick_reactions_enabled")),
-    ("quickReactionEmoji", v("message_double_click_reaction", &["❤️", "👍", "😂", "😮", "😢", "🔥"])),
+    ("quickReactionsCustomized", b("quick_reactions_customized")),
     ("reactionsOnSelect", b("show_reactions_on_selection")),
     ("feedbackWidget", b("show_send_feedback_button")),
     ("formattingMenu", b("show_formatting_menu")),
@@ -788,7 +807,7 @@ pub const SYNCED: &[(&str, Ad)] = &[
 ];
 
 /// The keys of the preferences that earlier versions stored. The settings drop them on load.
-pub const RETIRED: &[&str] = &["shareAnalytics"];
+pub const RETIRED: &[&str] = &["shareAnalytics", "quickReactionEmoji"];
 
 pub fn synced(key: &str) -> Option<Ad> {
     SYNCED.iter().find(|(k, _)| *k == key).map(|(_, a)| *a)

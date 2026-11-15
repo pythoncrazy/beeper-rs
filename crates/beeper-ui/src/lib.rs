@@ -714,6 +714,9 @@ pub enum UiMessage {
     /// Desktop's "Change" of "Downloads location", and the picked folder.
     PickDownloads,
     DownloadsPicked(Result<Vec<std::path::PathBuf>, String>),
+    /// Opens the emoji picker for a quick reaction (see [`emoji::Picker::pref`]), or closes it.
+    QuickEmoji(Option<u8>),
+    SetQuickEmoji(u8, String),
     FilesLoaded(Result<Vec<PendingMedia>, String>),
     /// A file drag enters (true) or leaves a window.
     FileHover(window::Id, bool),
@@ -969,7 +972,21 @@ fn hotkey_shown(st: &BeeperStore, name: &str) -> bool {
 
 /// Desktop's `Rx`: a settings row of a feature shows when the account shows the feature.
 fn shown(st: &BeeperStore, r: &prefs::Pref) -> bool {
-    r.feature.is_none_or(|f| st.feature(f).show)
+    let control = match r.control {
+        prefs::Control::ReactionEmoji { general: true } => st.settings.choice("messageDoubleClick") == "React with...",
+        prefs::Control::QuickReactions(_) => st.settings.on("quickReactions"),
+        _ => true,
+    };
+    r.feature.is_none_or(|f| st.feature(f).show) && control
+}
+
+/// Desktop's `EmojiPickerButton` of a quick reaction in Settings, which opens the emoji picker for `slot`.
+fn emoji_button<'a>(p: &Palette, emoji: &str, slot: u8) -> El<'a> {
+    button(txt(emoji.to_string(), 16.0))
+        .padding([4, 5])
+        .style(bordered_btn([CLEAR; 3], [p.text; 3], p.chip, 1.0, 100.0))
+        .on_press(UiMessage::QuickEmoji(Some(slot)))
+        .into()
 }
 
 /// Desktop's settings search: each matching section, then its matching rows, then the other sections when a row
@@ -4835,7 +4852,7 @@ impl BeeperGuiApp {
     fn quick_react(&self, mid: String) -> UiMessage {
         let chat = self.pane().selected_chat_id.clone().expect("an open chat");
         let st = self.store.read();
-        UiMessage::ToggleReaction(chat, mid, st.settings.choice("quickReactionEmoji").into())
+        UiMessage::ToggleReaction(chat, mid, st.settings.quick_reaction.clone())
     }
 
     /// Desktop's composer autocomplete (`TextAreaAutocomplete`) for the "@" or ":" word before the caret: the byte
@@ -7409,6 +7426,23 @@ impl BeeperGuiApp {
                     portal::open_files(portal::PORTAL.into(), title, portal::Pick::Files),
                     UiMessage::FilesPicked,
                 );
+            }
+            UiMessage::QuickEmoji(Some(slot)) => {
+                let open = self.open_emoji(None);
+                self.pane.emoji.as_mut().expect("the picker is open").pref = Some(slot);
+                return open;
+            }
+            UiMessage::QuickEmoji(None) => self.pane.emoji = None,
+            UiMessage::SetQuickEmoji(0, e) => {
+                self.patch_settings(|s| s.quick_reaction = e);
+                let mut st = self.store.write();
+                let client = st.matrix.clone();
+                if let Some(((kind, content), c)) = beeper_core::matrix::quick_reaction_write(&mut st).zip(client) {
+                    return Task::perform(beeper_core::matrix::set_global(c, kind, content), UiMessage::Pushed);
+                }
+            }
+            UiMessage::SetQuickEmoji(slot, e) => {
+                self.patch_settings(|s| s.quick_reactions[usize::from(slot) - 1] = e);
             }
             UiMessage::PickDownloads => {
                 let pick = portal::open_files(portal::PORTAL.into(), tr("Open").to_string(), portal::Pick::Folder);
@@ -11836,7 +11870,7 @@ impl BeeperGuiApp {
         let secondary = st.settings.pref("secondaryComposerButton") != 6;
         let picker = self
             .view_emoji_picker(&st)
-            .filter(|_| self.pane().emoji.as_ref().is_some_and(|pk| pk.react.is_none()))
+            .filter(|_| self.pane().emoji.as_ref().is_some_and(|pk| pk.react.is_none() && pk.pref.is_none()))
             .map(|e| {
                 let right = if secondary { 112.0 } else { 82.0 };
                 container(e).align_right(Fill).align_bottom(Fill).padding(Padding::ZERO.right(right).bottom(36.0))
@@ -12640,7 +12674,7 @@ impl BeeperGuiApp {
             }
             .filter(|_| on);
             let active = (id == 2 && self.pane().picker == Some(Picker::Gif))
-                || (id == 0 && self.pane().emoji.as_ref().is_some_and(|pk| pk.react.is_none()));
+                || (id == 0 && self.pane().emoji.as_ref().is_some_and(|pk| pk.react.is_none() && pk.pref.is_none()));
             let color = if active { p.strong } else { p.on_secondary };
             let bg = if active { p.hover } else { CLEAR };
             let glyph = svg(COMPOSER_ICONS[usize::from(id) + 2].clone())
@@ -15131,7 +15165,12 @@ impl BeeperGuiApp {
                 mouse_area(menu).on_press(UiMessage::CloseChatMenu).on_right_press(UiMessage::CloseChatMenu)
             });
         let profile = self.profile_overlay();
-        stack![base.style(fill_box(p.window, 0.0))].push(menu).push(add).push(confirm).push(profile).into()
+        let picker = self.pane.emoji.as_ref().filter(|pk| pk.pref.is_some()).map(|_| {
+            let picker = self.view_emoji_picker(&self.store.read()).expect("the picker is open");
+            let picker = container(mouse_area(picker).on_press(UiMessage::Noop)).center(Fill);
+            mouse_area(picker).on_press(UiMessage::QuickEmoji(None))
+        });
+        stack![base.style(fill_box(p.window, 0.0))].push(menu).push(add).push(confirm).push(profile).push(picker).into()
     }
 
     /// Desktop's `BeeperConnectAddTokenModal`, over the Settings window.
@@ -17673,6 +17712,36 @@ impl BeeperGuiApp {
                     false => (!off).then_some(UiMessage::SetPref(r.key, 1 - v)),
                 };
                 toggle_faded(p, v == 1 && !locked, press.clone(), if off { 0.5 } else { 1.0 })
+            }
+            prefs::Control::ReactionEmoji { .. } => {
+                press = Some(UiMessage::QuickEmoji(Some(0)));
+                emoji_button(p, &s.quick_reaction, 0)
+            }
+            prefs::Control::QuickReactions(customized) => {
+                let custom = s.on(customized.key);
+                let choice = |label: &'static str, on: bool, value: u8| {
+                    let dot = container(
+                        container(Space::new()).center(6).style(fill_box(if on { Color::WHITE } else { CLEAR }, 3.0)),
+                    )
+                    .center(14)
+                    .style(bordered_box(
+                        if on { p.accent } else { CLEAR },
+                        if on { p.accent } else { p.sub },
+                        1.0,
+                        7.0,
+                    ));
+                    let label = txt(label, 13.0).color(p.text);
+                    button(row![dot, label].spacing(8).align_y(Center))
+                        .padding(0)
+                        .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
+                        .on_press(UiMessage::SetPref(customized.key, value))
+                };
+                let emojis = s.quick_reactions.iter().zip(1..).map(|(e, slot)| emoji_button(p, e, slot));
+                let own = row![choice(trx("Custom", "quick reactions option"), custom, 1)].extend(emojis);
+                return column![choice(tr("Use my most frequent emoji"), !custom, 0), own.spacing(8).align_y(Center)]
+                    .spacing(8)
+                    .padding(Padding::new(13.0).top(0.0))
+                    .into();
             }
             prefs::Control::Downloads => {
                 let change = button(med(tr("Change"), 12.0).color(p.text))

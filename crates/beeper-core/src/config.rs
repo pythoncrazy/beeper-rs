@@ -100,6 +100,8 @@ impl Default for BeeperSettings {
             ever_labeled: false,
             labels_intro_seen: false,
             downloads_dir: String::new(),
+            quick_reaction: "❤️".into(),
+            quick_reactions: ["👍", "❤️", "😂"].map(String::from).to_vec(),
         }
     }
 }
