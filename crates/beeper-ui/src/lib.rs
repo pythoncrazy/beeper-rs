@@ -446,6 +446,12 @@ pub enum UiMessage {
     UnreadThreadsMenu(bool),
     /// Desktop's `markAllUnreadThreadsAsRead`.
     MarkAllThreadsRead,
+    /// Desktop's `setThreadFollowing` of the chat, the root and the follow.
+    FollowThread(String, String, bool),
+    /// Desktop's `setFollowAllThreads` of the chat.
+    FollowAllThreads(String, bool),
+    /// Desktop's "Open in New Window" of a thread: the window "Thread in %s" of the chat and the root.
+    OpenThreadWindow(String, String),
     ToggleFlag(String, ChatFlag),
     ToggleRead(String),
     MarkRead(String),
@@ -4547,7 +4553,8 @@ impl BeeperGuiApp {
 
     /// Desktop's `subwindow-state`: the chat and settings windows to open again at the next launch.
     fn save_subwindows(&self) {
-        let threads = self.chat_windows.iter().filter_map(|w| w.1.selected_chat_id.as_deref());
+        let chats = self.chat_windows.iter().filter(|w| w.1.thread_root.is_none());
+        let threads = chats.filter_map(|w| w.1.selected_chat_id.as_deref());
         let threads =
             threads.map(|t| serde_json::json!({"windowId": format!("thread-{t}"), "type": "thread", "threadId": t}));
         let prefs = self.settings_window.map(|_| serde_json::json!({"windowId": "prefs", "type": "prefs"}));
@@ -4720,7 +4727,8 @@ impl BeeperGuiApp {
             (None, true) => {
                 let name = format!("beeper-rs {:?}", self.os);
                 let verified = st.beeper_state.verified;
-                let me = DeviceInfo { name, model: None, kind: None, last_seen_ms: None, verified, current: true };
+                let id = st.beeper_state.device_id.clone();
+                let me = DeviceInfo { id, name, model: None, kind: None, last_seen_ms: None, verified, current: true };
                 drop(st);
                 self.devices = Some(Ok(vec![me]));
                 Task::none()
@@ -4760,7 +4768,11 @@ impl BeeperGuiApp {
                 Some((_, pane)) => {
                     let st = self.store.read();
                     let chat = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
-                    return chat.map_or("Beeper".into(), |i| st.chats[i].title.clone());
+                    let title = chat.map_or("Beeper".into(), |i| st.chats[i].title.clone());
+                    return match pane.thread_root {
+                        Some(_) => trf("Thread in %s", &[&title]),
+                        None => title,
+                    };
                 }
                 None => {
                     let st = self.store.read();
@@ -6156,6 +6168,9 @@ impl BeeperGuiApp {
             UiMessage::OpenThread(chat, root) => self.open_thread(chat, root),
             UiMessage::UnreadThreadsMenu(open) => self.unread_menu = open.then(|| self.cursor.get()),
             UiMessage::MarkAllThreadsRead => self.mark_all_threads_read(),
+            UiMessage::FollowThread(chat, root, on) => self.follow_thread(&chat, &root, on),
+            UiMessage::FollowAllThreads(chat, on) => self.follow_all_threads(&chat, on),
+            UiMessage::OpenThreadWindow(chat, root) => return self.open_thread_window(chat, root),
             UiMessage::HideReplies => (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), None),
             UiMessage::FoldScheduled(collapsed) => {
                 self.pane.sched_fold.0 = collapsed;
@@ -8207,6 +8222,9 @@ impl BeeperGuiApp {
                     self.pane.selected_msgs.clear();
                 } else if self.pane.reply_thread.is_some() {
                     self.pane.reply_thread = None;
+                } else if self.pane.thread_root.is_some() {
+                    // Desktop's `onEscapePressed` closes the thread window.
+                    self.pane.selected_chat_id = None;
                 } else if self.pane.selected_chat_id.is_some() {
                     self.leave_chat(&mut self.store.write(), None);
                     self.pane.selected_chat_id = None;
@@ -8641,12 +8659,14 @@ impl BeeperGuiApp {
                 }
                 return iced::exit();
             }
+            // A sign-in through the Desktop API goes on to the check of encrypted messaging, like a sign-in here.
             UiMessage::StoreChanged
                 if self.login_window.is_some()
-                    && self.login.screen != login::Screen::Accounts
+                    && !self.login.busy
+                    && self.login.signing_in()
                     && self.store.read().signed_in() =>
             {
-                self.login.screen = login::Screen::Accounts;
+                return self.check_e2ee();
             }
             UiMessage::StoreChanged => {
                 if let Some((room, quote)) =
@@ -9215,6 +9235,7 @@ impl BeeperGuiApp {
         let base = match in_main {
             true => self.view_full_video(false).unwrap_or_else(|| self.view_body(open)),
             false => container(match shown {
+                true if self.pane().thread_root.is_some() => self.view_thread_window(),
                 true => self.view_conversation(),
                 false => Space::new().into(),
             })
@@ -9315,6 +9336,13 @@ impl BeeperGuiApp {
                             _ => 0.0,
                         }
                         + if st.resolve_chat_idx(cid).is_some_and(|i| can_edit_group(&st.chats[i])) {
+                            MENU_ITEM
+                        } else {
+                            0.0
+                        }
+                        + if self.selection.len() <= 1
+                            && st.resolve_chat_idx(cid).is_some_and(|i| st.threaded(&st.chats[i]))
+                        {
                             MENU_ITEM
                         } else {
                             0.0
@@ -10085,6 +10113,11 @@ impl BeeperGuiApp {
                 let label = tr("Reply in thread…").into();
                 vec![item(label, "Ctrl ↓", Some(UiMessage::ShowThread(mid.clone())))]
             }),
+            (self.pane().thread_root.is_none()
+                && live
+                && st.threaded(chat)
+                && st.thread_replies(&mid).next().is_some())
+            .then(|| vec![(self.follow_item(&st, chat, &mid), MENU_ITEM)]),
             privately
                 .then(|| vec![item(tr("Reply Privately…").into(), "", Some(UiMessage::ReplyPrivately(mid.clone())))]),
             Some(vec![
@@ -10794,6 +10827,11 @@ impl BeeperGuiApp {
                         "Ctrl P",
                         pin
                     ))
+                    .push((n <= 1 && st.threaded(c)).then(|| {
+                        let on = c.follows.follows_all(c.participants.total);
+                        let label = tr(if on { "Stop Following All Threads" } else { "Follow All Threads" });
+                        item(label, "", Some(UiMessage::FollowAllThreads(c.id.clone(), !on)))
+                    }))
                     .push(can_edit_group(c).then(|| {
                         let open = UiMessage::OpenEditGroup(c.id.clone());
                         item(tr("Edit Group..."), "", (!on(c.is_request)).then_some(open))
@@ -12297,6 +12335,51 @@ impl BeeperGuiApp {
         st.mark_thread_read(&cid, &root, None);
     }
 
+    /// Desktop's `setThreadFollowing`.
+    fn follow_thread(&mut self, chat: &str, root: &str, on: bool) {
+        (self.pane.message_menu, self.pane.thread_menu) = (None, None);
+        let mut st = self.store.write();
+        let cid = st.chats[st.resolve_chat_idx(chat).expect("a known chat")].id.clone();
+        st.follow_thread(&cid, root, on);
+    }
+
+    /// Desktop's `setFollowAllThreads`.
+    fn follow_all_threads(&mut self, chat: &str, on: bool) {
+        self.chat_menu = None;
+        let mut st = self.store.write();
+        let cid = st.chats[st.resolve_chat_idx(chat).expect("a known chat")].id.clone();
+        st.follow_all_threads(&cid, on);
+    }
+
+    /// Desktop's `fhe`: "Follow Thread" or "Unfollow Thread" of the thread of `root` in `chat`.
+    fn follow_item<'a>(&self, st: &BeeperStore, chat: &Chat, root: &str) -> El<'a> {
+        let on = st.follows_thread(chat, root);
+        let label = tr(if on { "Unfollow Thread" } else { "Follow Thread" }).to_string();
+        menu_item(&self.pal, None, label, "", Some(UiMessage::FollowThread(chat.id.clone(), root.into(), !on)))
+    }
+
+    /// Desktop's `ThreadedRepliesBrowserWindow`: a window of 380 by 700 with the thread of `root` in `chat`.
+    fn open_thread_window(&mut self, chat: String, root: String) -> Task<UiMessage> {
+        let size = Size::new(380.0, 700.0);
+        let (id, open) = window::open(Self::window_settings(size));
+        let pane = Pane { selected_chat_id: Some(chat), thread_root: Some(root), size, ..Pane::default() };
+        self.chat_windows.push((id, pane));
+        open.discard()
+    }
+
+    /// The thread window: Desktop's `ThreadedRepliesHeader` with the title over the thread.
+    fn view_thread_window(&self) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read();
+        let cid = self.pane().selected_chat_id.as_deref().expect("a thread window has a chat");
+        let title = st.resolve_chat_idx(cid).map_or("Beeper".into(), |i| st.chats[i].title.clone());
+        drop(st);
+        let title =
+            semi(trf("Thread in %s", &[&title]), 14.0).color(p.text).wrapping(iced::widget::text::Wrapping::None);
+        let header = container(title).center_x(Fill).center_y(36).padding([0, 4]).clip(true);
+        stack![self.view_conversation(), header].into()
+    }
+
     /// Desktop's `showUnreadThreads`: leaves the chat for the Unread threads view.
     fn show_unread_threads(&mut self) {
         if self.pane.selected_chat_id.is_some() {
@@ -12386,12 +12469,13 @@ impl BeeperGuiApp {
         let (cid, root) =
             (thread.selected_chat_id.clone().expect("a chat"), thread.thread_root.clone().expect("a root"));
         let st = self.store.read();
-        let unread = st.thread_unread(&st.chats[st.resolve_chat_idx(&cid).expect("a known chat")], &root).0 > 0;
+        let chat = &st.chats[st.resolve_chat_idx(&cid).expect("a known chat")];
+        let (unread, follow) = (st.thread_unread(chat, &root).0 > 0, self.follow_item(&st, chat, &root));
         drop(st);
         let view = UiMessage::Commands(vec![
             UiMessage::CloseModals,
-            UiMessage::JumpTo(cid, root.clone()),
-            UiMessage::SelectMessages(vec![root]),
+            UiMessage::JumpTo(cid.clone(), root.clone()),
+            UiMessage::SelectMessages(vec![root.clone()]),
         ]);
         let read = unread.then(|| {
             [
@@ -12399,10 +12483,16 @@ impl BeeperGuiApp {
                 (menu_rule(p), 11.0),
             ]
         });
+        let window =
+            UiMessage::Commands(vec![UiMessage::HideThread, UiMessage::OpenThreadWindow(cid.clone(), root.clone())]);
         let rows: Vec<(El, f32)> = read
             .into_iter()
             .flatten()
-            .chain([(menu_item(p, None, tr("View in Chat").into(), "", Some(view)), MENU_ITEM)])
+            .chain([
+                (follow, MENU_ITEM),
+                (menu_item(p, None, tr("Open in New Window").into(), "", Some(window)), MENU_ITEM),
+                (menu_item(p, None, tr("View in Chat").into(), "", Some(view)), MENU_ITEM),
+            ])
             .collect();
         let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
         let col = Column::with_children(rows.into_iter().map(|r| r.0));

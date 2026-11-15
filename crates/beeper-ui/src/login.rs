@@ -6,6 +6,7 @@ use crate::{BeeperGuiApp, El, UiMessage};
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{account_network, NETWORK_SPECS};
 use beeper_core::import::{read_beeper_data, BeeperData};
+use beeper_core::matrix::{DeviceInfo, E2eeSetup};
 use beeper_core::models::{BridgeAccountInfo, MatrixSession, Profile};
 use beeper_core::store::{BeeperStore, Setup, NOTE_CHAT_ID};
 use iced::gradient::Linear;
@@ -18,12 +19,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
 const FRAME: Color = Color::from_rgb8(226, 226, 226);
-const FIELD: Color = Color::from_rgb8(239, 239, 240);
-const INK: Color = Color::from_rgb8(32, 33, 36);
+pub(crate) const FIELD: Color = Color::from_rgb8(239, 239, 240);
+pub(crate) const INK: Color = Color::from_rgb8(32, 33, 36);
 const TERMS: Color = Color::from_rgb8(23, 23, 23);
-const HINT: Color = Color::from_rgb8(130, 130, 134);
-const LINK: Color = Color::from_rgb8(13, 79, 251);
-const DANGER: Color = Color::from_rgb8(205, 43, 49);
+pub(crate) const HINT: Color = Color::from_rgb8(130, 130, 134);
+pub(crate) const LINK: Color = Color::from_rgb8(13, 79, 251);
+pub(crate) const DANGER: Color = Color::from_rgb8(205, 43, 49);
 const HEADING: Color = Color::from_rgb8(132, 100, 238);
 const EMAIL_INPUT: &str = "login-email";
 const CODE_INPUT: &str = "login-code";
@@ -49,6 +50,10 @@ pub enum Screen {
     Email,
     Code,
     Username,
+    /// Desktop's `AwaitVerification`, `AwaitRecoveryCode` and `IndicateSyncing`.
+    Verify,
+    RecoveryKey,
+    Syncing,
     Accounts,
 }
 
@@ -61,14 +66,24 @@ pub struct Login {
     pub error: Option<String>,
     request: String,
     lead_token: String,
-    busy: bool,
+    pub busy: bool,
     menu: bool,
     query: String,
     source: Option<PathBuf>,
     import: Option<Arc<BeeperData>>,
+    /// The other devices that can verify this device, "Try another way" was pressed, and "They match" was pressed.
+    pub devices: Vec<DeviceInfo>,
+    pub another_way: bool,
+    pub waiting: bool,
+    pub recovery_key: String,
 }
 
 impl Login {
+    /// The screens before the sign-in ends.
+    pub fn signing_in(&self) -> bool {
+        matches!(self.screen, Screen::Import | Screen::Welcome | Screen::Email | Screen::Code | Screen::Username)
+    }
+
     pub fn new(source: Option<PathBuf>) -> Self {
         Login { screen: if source.is_some() { Screen::Import } else { Screen::Welcome }, source, ..Login::default() }
     }
@@ -100,6 +115,13 @@ pub enum LoginMsg {
     Query(String),
     Continue,
     Done(Result<Outcome, String>),
+    E2ee(Result<E2eeSetup, String>),
+    AnotherWay,
+    /// "Enter Recovery Key", which cancels the verification.
+    UseRecoveryKey,
+    RecoveryKey(String),
+    SubmitRecoveryKey,
+    Recovered(Result<(), String>),
 }
 
 impl From<LoginMsg> for UiMessage {
@@ -112,7 +134,10 @@ fn previous(s: Screen) -> Option<Screen> {
     match s {
         Screen::Email => Some(Screen::Welcome),
         Screen::Code => Some(Screen::Email),
-        Screen::Import | Screen::Welcome | Screen::Username | Screen::Accounts => None,
+        Screen::RecoveryKey => Some(Screen::Verify),
+        Screen::Import | Screen::Welcome | Screen::Username | Screen::Verify | Screen::Syncing | Screen::Accounts => {
+            None
+        }
     }
 }
 
@@ -225,7 +250,7 @@ fn pill<'a>(content: El<'a>, height: f32, bg: Option<Color>, msg: Option<UiMessa
         .into()
 }
 
-fn actions(items: Vec<El<'_>>, bottom: f32) -> El<'_> {
+pub(crate) fn actions(items: Vec<El<'_>>, bottom: f32) -> El<'_> {
     column(items).spacing(8).padding(Padding::new(0.0).left(18.0).right(18.0).bottom(bottom)).into()
 }
 
@@ -233,8 +258,8 @@ fn label<'a>(s: &'a str, lead: Option<El<'a>>) -> El<'a> {
     row![].push(lead).push(med(s, 13.0)).spacing(6).align_y(Center).into()
 }
 
-fn heading<'a>(s: &'a str, size: f32) -> El<'a> {
-    container(bold(s, size).color(HEADING).line_height(iced::widget::text::LineHeight::Absolute(40.0.into())))
+pub(crate) fn heading<'a>(s: &'a str, size: f32) -> El<'a> {
+    container(bold(s, size).color(HEADING).line_height(iced::widget::text::LineHeight::Absolute(40.0.into())).center())
         .center_x(Fill)
         .into()
 }
@@ -366,6 +391,23 @@ impl BeeperGuiApp {
                 self.login = Login::default();
                 return self.enter_app();
             }
+            LoginMsg::E2ee(r) => return self.e2ee_checked(r),
+            LoginMsg::AnotherWay => l.another_way = true,
+            LoginMsg::UseRecoveryKey => return self.use_recovery_key(),
+            LoginMsg::RecoveryKey(v) => {
+                l.recovery_key = v;
+                l.error = None;
+            }
+            LoginMsg::SubmitRecoveryKey => {
+                l.busy = true;
+                let recover = beeper_core::matrix::recover(self.store.clone(), l.recovery_key.clone());
+                return Task::perform(recover, |r| LoginMsg::Recovered(r).into());
+            }
+            LoginMsg::Recovered(r) => {
+                l.busy = false;
+                l.error = r.err().map(|e| tr("Error: %(message)s").replace("%(message)s", &e));
+                self.advance_onboarding();
+            }
             LoginMsg::Done(r) => {
                 l.busy = false;
                 l.error = r.as_ref().err().cloned();
@@ -405,7 +447,7 @@ impl BeeperGuiApp {
                         None => {
                             let homeserver = self.cloud.homeserver.clone();
                             self.store.write().sign_in(session, homeserver, &profile, accounts);
-                            l.screen = Screen::Accounts;
+                            return self.check_e2ee();
                         }
                     },
                     Ok(Outcome::Imported(data, session, profile, accounts)) => {
@@ -413,7 +455,8 @@ impl BeeperGuiApp {
                         let mut st = self.store.write();
                         st.import_beeper(Arc::unwrap_or_clone(data));
                         st.sign_in(session, homeserver, &profile, accounts);
-                        l.screen = Screen::Accounts;
+                        drop(st);
+                        return self.check_e2ee();
                     }
                 }
             }
@@ -599,6 +642,9 @@ impl BeeperGuiApp {
                 .padding([0, 8])
                 .into()
             }
+            Screen::Verify => self.view_onboarding_verify(),
+            Screen::RecoveryKey => self.view_onboarding_key(),
+            Screen::Syncing => self.view_onboarding_syncing(),
             Screen::Username => column![
                 Space::new().height(34),
                 heading(tr("Pick a Username"), 28.0),

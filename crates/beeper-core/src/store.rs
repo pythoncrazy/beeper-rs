@@ -1735,6 +1735,11 @@ impl BeeperStore {
         let sent = self.compose(chat_or_local_id, text, Some(t.quoted.clone()), attachment, Some(t))?;
         let idx = self.chat_idx_by_id[&sent.0];
         self.update_chat(idx, |c| drop(c.thread_reads.insert(t.root.clone(), sent.2.sort_key.clone())));
+        // Desktop's `refollowThread`: a reply ends an unfollow.
+        if self.chats[idx].follows.unfollowed.contains(&t.root) {
+            let follows = self.update_chat(idx, |c| c.follows.unfollowed.retain(|r| *r != t.root)).follows;
+            self.queue(&sent.0, Outgoing::ThreadFollows(follows));
+        }
         Ok(sent)
     }
 
@@ -1865,6 +1870,20 @@ impl BeeperStore {
     pub fn thread_send(&self, root: &str, chosen: Option<String>, broadcast: bool) -> ThreadSend {
         let newest = || self.thread_replies(root).next_back().map_or_else(|| root.to_string(), |m| m.id.clone());
         ThreadSend { root: root.into(), chosen: chosen.is_some(), quoted: chosen.unwrap_or_else(newest), broadcast }
+    }
+
+    /// Desktop's `setThreadFollowing`: follows or unfollows the thread of `root` explicitly.
+    pub fn follow_thread(&mut self, chat_id: &str, root: &str, on: bool) {
+        let idx = self.chat_idx_by_id[chat_id];
+        let follows = self.update_chat(idx, |c| c.follows.set(root, on)).follows;
+        self.queue(chat_id, Outgoing::ThreadFollows(follows));
+    }
+
+    /// Desktop's `setFollowAllThreads`.
+    pub fn follow_all_threads(&mut self, chat_id: &str, on: bool) {
+        let idx = self.chat_idx_by_id[chat_id];
+        let follows = self.update_chat(idx, |c| c.follows.follow_all = Some(on)).follows;
+        self.queue(chat_id, Outgoing::ThreadFollows(follows));
     }
 
     /// Desktop's `followsThread`. The user takes part in a thread with its root or a reply.
