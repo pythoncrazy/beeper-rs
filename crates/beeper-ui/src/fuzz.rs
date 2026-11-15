@@ -924,6 +924,47 @@ fn unread_threads_like_desktop() {
     assert_eq!(app.badge_count(), badge - 1, "Desktop counts one more with unread threads");
 }
 
+/// Desktop's thread follows: "Unfollow Thread" in the message menu, which drops the thread from the unread threads,
+/// a reply that follows the thread again, "Stop Following All Threads" in the chat menu, and the thread window.
+#[test]
+fn thread_follows_like_desktop() {
+    let mut app = demo_app("thread-follows");
+    let (chat, root) = ("!sl_infra:beeper.com", "msg_1007");
+    app.select_chat(chat);
+    let _ = app.update(UiMessage::OpenMessageMenu(root.into()));
+    let mut sim = simulator(app.view_main());
+    let _ = sim.click("Unfollow Thread").expect("a room of 3 members follows all threads");
+    for m in sim.into_messages().collect::<Vec<_>>() {
+        let _ = app.update(m);
+    }
+    let follows = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.chats[st.chat_idx_by_id[chat]].follows.clone()
+    };
+    assert_eq!(follows(&app).unfollowed, [root]);
+    let st = app.store.read();
+    assert!(st.unread_threads(0..st.chats.len()).is_empty(), "an unfollowed thread is not unread");
+    drop(st);
+    let _ = app.update(UiMessage::ShowThread(root.into()));
+    let edit = text_editor::Edit::Paste(Arc::new("back".into()));
+    let _ = app.update(UiMessage::InThread(Box::new(UiMessage::ComposerEdit(text_editor::Action::Edit(edit)))));
+    let _ = app.update(UiMessage::InThread(Box::new(UiMessage::SubmitComposer)));
+    assert!(follows(&app).unfollowed.is_empty(), "a reply ends the unfollow like Desktop's refollowThread");
+    let _ = app.update(UiMessage::OpenChatMenu(chat.into()));
+    let mut sim = simulator(app.view_main());
+    let _ = sim.click("Stop Following All Threads").expect("the chat menu of a room with threads");
+    for m in sim.into_messages().collect::<Vec<_>>() {
+        let _ = app.update(m);
+    }
+    assert_eq!(follows(&app).follow_all, Some(false));
+    let _ = app.update(UiMessage::OpenThreadWindow(chat.into(), root.into()));
+    let id = app.chat_windows.last().expect("a thread window").0;
+    assert_eq!(app.title(id), "Thread in #desktop-release");
+    let _ = app.update(UiMessage::InWindow(id, Box::new(UiMessage::CloseModals)));
+    let pane = &app.chat_windows.iter().find(|w| w.0 == id).expect("the window closes later").1;
+    assert!(pane.selected_chat_id.is_none(), "Escape closes the thread window");
+}
+
 #[test]
 fn pickers_check_the_network_like_desktop() {
     let mut app = demo_app("pickers");
@@ -2024,6 +2065,7 @@ fn devices_offer_the_app_like_desktop() {
     assert!(!app.app_qr, "another tab hides the QR code again");
     let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::Devices));
     let device = |name: &str, model: Option<&str>, kind: Option<&str>| beeper_core::matrix::DeviceInfo {
+        id: name.into(),
         name: name.into(),
         model: model.map(Into::into),
         kind: kind.map(Into::into),

@@ -173,19 +173,9 @@ fn invalid(f: &Field, v: &str) -> Option<String> {
 
 /// The QR code of a `display_and_wait` step as an SVG, like Desktop's `QRCodeSVG` with level `M`.
 fn qr_svg(data: &str) -> svg::Handle {
-    use qrcodegen::{QrCode, QrCodeEcc};
-    let code = QrCode::encode_text(data, QrCodeEcc::Medium).expect("the QR data fits in a QR code");
-    let n = code.size();
-    let mut path = String::new();
-    for y in 0..n {
-        for x in (0..n).filter(|&x| code.get_module(x, y)) {
-            path.push_str(&format!("M{x},{y}h1v1h-1z"));
-        }
-    }
-    let svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {n} {n}" shape-rendering="crispEdges"><path fill="#fff" d="M0,0h{n}v{n}H0z"/><path fill="#000" d="{path}"/></svg>"##
-    );
-    svg::Handle::from_memory(svg.into_bytes())
+    let code =
+        qrcodegen::QrCode::encode_text(data, qrcodegen::QrCodeEcc::Medium).expect("the QR data fits in a QR code");
+    crate::style::qr_svg(&code, 0)
 }
 
 impl AddAccount {

@@ -471,6 +471,8 @@ async fn lifecycle() {
     let _ =
         gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Imported(data, session, profile.clone(), Vec::new())))));
     assert_eq!(before, originals(&orig_dir), "Beeper Desktop files must never be modified");
+    let none = beeper_core::matrix::E2eeSetup { cross_signing: false, verified: false, devices: Vec::new() };
+    let _ = gui.update(UiMessage::Login(LoginMsg::E2ee(Ok(none))));
     assert_eq!(gui.login.screen, Screen::Accounts, "an imported session shows the chat accounts");
     let _ = gui.update(UiMessage::CloudAccounts(Err("offline".into())));
     assert_eq!(gui.status_banner, "Could not load your chat accounts: offline");
@@ -1008,6 +1010,9 @@ async fn lifecycle() {
     .unwrap();
     assert_eq!(profile_calls, (Ok(()), Ok(()), true), "the profile page patches the email and deletes the user");
     let _ = login.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Session(session, profile, accounts)))));
+    assert!(login.login.busy, "the sign-in waits for the encrypted messaging check");
+    let none = beeper_core::matrix::E2eeSetup { cross_signing: false, verified: false, devices: Vec::new() };
+    let _ = login.update(UiMessage::Login(LoginMsg::E2ee(Ok(none))));
     assert_eq!(login.login.screen, Screen::Accounts);
     assert_eq!(login_store.read().accounts.len(), 4);
     let _ = login.update(UiMessage::StoreChanged);

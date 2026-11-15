@@ -554,14 +554,28 @@ impl ThreadFollows {
         Some(Self { follow_all: v["follow_all"].as_bool(), followed: followed?, unfollowed: ids("unfollowed")? })
     }
 
+    /// Desktop's `followsAllThreads`: the follow-all state, which is on in a room with 20 `members` or fewer.
+    pub fn follows_all(&self, members: usize) -> bool {
+        self.follow_all.unwrap_or(members <= 20)
+    }
+
     /// Desktop's `followsThread`: the explicit follow, else whether the user `participated`, else the follow-all
-    /// state, which is on in a room with 20 `members` or fewer.
+    /// state.
     pub fn follows(&self, root: &str, members: usize, participated: bool) -> bool {
         match (self.followed.iter().any(|r| r == root), self.unfollowed.iter().any(|r| r == root)) {
             (true, _) => true,
             (_, true) => false,
-            _ => participated || self.follow_all.unwrap_or(members <= 20),
+            _ => participated || self.follows_all(members),
         }
+    }
+
+    /// Desktop's `setThreadFollowing` (`Fp`): the thread of `root` moves to the newest 1000 follows or unfollows.
+    pub fn set(&mut self, root: &str, on: bool) {
+        self.followed.retain(|r| r != root);
+        self.unfollowed.retain(|r| r != root);
+        let list = if on { &mut self.followed } else { &mut self.unfollowed };
+        list.push(root.into());
+        list.drain(..list.len().saturating_sub(1000));
     }
 }
 
@@ -991,6 +1005,17 @@ pub struct VerificationSas {
     pub decimals: String,
 }
 
+fn base64<S: serde::Serializer>(data: &[u8], s: S) -> Result<S::Ok, S::Error> {
+    s.collect_str(&crate::codec::base64_encode_standard(data))
+}
+
+/// The QR code that this device shows. The API sends it as base64, like Desktop's `qr_data`.
+#[derive(Debug, Clone, Serialize)]
+pub struct VerificationQr {
+    #[serde(serialize_with = "base64")]
+    pub data: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct VerificationDevice {
     pub id: String,
@@ -1020,6 +1045,8 @@ pub struct AppVerification {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub other_device: Option<VerificationDevice>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub qr: Option<VerificationQr>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sas: Option<VerificationSas>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<VerificationError>,
@@ -1034,6 +1061,7 @@ impl AppVerification {
             "ready" if self.methods.contains(&"sas") => vec!["cancel", "sas.start"],
             "ready" => vec!["cancel"],
             "sas_ready" => vec!["sas.confirm", "cancel"],
+            "qr_scanned" => vec!["qr.confirmScanned", "cancel"],
             _ => Vec::new(),
         }
     }
@@ -1380,6 +1408,7 @@ mod tests {
             available_actions: Vec::new(),
             other_user_id: Some("@me:x".into()),
             other_device: Some(VerificationDevice { id: "DEV".into(), name: Some("Pixel".into()) }),
+            qr: None,
             sas: None,
             error: None,
         };
@@ -1390,6 +1419,8 @@ mod tests {
         assert_eq!(v.actions(), ["cancel", "sas.start"]);
         v.state = "sas_ready";
         assert_eq!(v.actions(), ["sas.confirm", "cancel"]);
+        v.state = "qr_scanned";
+        assert_eq!(v.actions(), ["qr.confirmScanned", "cancel"]);
         v.state = "done";
         assert!(v.actions().is_empty());
         let json = serde_json::to_value(&v).expect("a verification is JSON");
