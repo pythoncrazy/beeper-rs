@@ -403,7 +403,7 @@ pub enum UiMessage {
     /// The GIFs of a query.
     GifsLoaded(String, Result<Vec<KlipyGif>, String>),
     PickGif(KlipyGif),
-    GifDownloaded(KlipyGif, Result<(Vec<u8>, Frames), String>),
+    GifDownloaded(Result<PendingMedia, String>),
     SetReminder(String, Option<i64>),
     OpenSubMenu(commands::SubMenu),
     CmdNoReply(bool),
@@ -5202,6 +5202,35 @@ impl BeeperGuiApp {
         ok
     }
 
+    /// Desktop's `downloadGif`: downloads the format of the GIF that the open chat takes. An MP4 is measured like a
+    /// picked video.
+    fn download_gif(&self, g: KlipyGif) -> Task<UiMessage> {
+        let st = self.store.read();
+        let chat = &st.chats
+            [st.resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat")).expect("chat exists")];
+        let Some((url, size, mp4)) = portal::gif_format(&g, &chat.file) else { return Task::none() };
+        let (url, name) = (url.to_string(), format!("{}.{}", g.id, if mp4 { "mp4" } else { "gif" }));
+        let load = async move {
+            let bytes = beeper_core::cloud::http_bytes(&url).await?;
+            let load = move || match mp4 {
+                true => {
+                    let path = std::env::temp_dir().join(format!("beeper-rs-{}-{name}", std::process::id()));
+                    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+                    let f = portal::load_file(&path);
+                    std::fs::remove_file(&path).expect("remove the downloaded GIF");
+                    Ok(PendingMedia { is_gif: true, size, ..f? })
+                }
+                false => {
+                    let frames = decode_media(bytes.clone())?;
+                    let mime = "image/gif".into();
+                    Ok(PendingMedia { bytes, name, mime, is_gif: true, size, frames, duration: None })
+                }
+            };
+            tokio::task::spawn_blocking(load).await.expect("GIF load thread")
+        };
+        Task::perform(load, UiMessage::GifDownloaded)
+    }
+
     /// Desktop's `processAttachment`: attaches each file that the open chat accepts, and shows a toast for the others.
     fn attach_files(&mut self, files: Vec<Result<PendingMedia, String>>) {
         let st = self.store.read();
@@ -8155,31 +8184,13 @@ impl BeeperGuiApp {
             }
             UiMessage::PickGif(g) => {
                 self.pane.picker = None;
-                let url = g.gif_url.clone();
-                return Task::perform(
-                    async move {
-                        let bytes = beeper_core::cloud::http_bytes(&url).await?;
-                        let b = bytes.clone();
-                        let frames = tokio::task::spawn_blocking(move || decode_media(b)).await;
-                        Ok((bytes, frames.expect("media decode task")?))
-                    },
-                    move |r| UiMessage::GifDownloaded(g, r),
-                );
+                return self.download_gif(g);
             }
-            UiMessage::GifDownloaded(_, Ok(_)) if self.pane.editing_message_id.is_some() => {
+            UiMessage::GifDownloaded(Ok(_)) if self.pane.editing_message_id.is_some() => {
                 self.status_banner = tr("Attachments can't be added while editing a message").into();
             }
-            UiMessage::GifDownloaded(g, r) => match r {
-                Ok((bytes, frames)) => {
-                    let gif = PendingMedia {
-                        bytes,
-                        name: format!("{}.gif", g.id),
-                        mime: "image/gif".into(),
-                        is_gif: true,
-                        size: g.gif_size,
-                        frames,
-                        duration: None,
-                    };
+            UiMessage::GifDownloaded(r) => match r {
+                Ok(gif) => {
                     if !self.store.read().settings.on("autoSendGifs") {
                         self.pane.attachments.push(gif);
                         return Task::none();

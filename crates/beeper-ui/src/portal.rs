@@ -210,6 +210,23 @@ fn audio_sendable(mime: &str, size: u64, rules: &FileRules) -> bool {
     size <= 500 << 20 && (target || (best(rule) != Some(-2) && as_file))
 }
 
+/// Desktop's `downloadGif`: the URL, the size and the MP4 choice of the format of `g` that the chat takes. That is the
+/// GIF, or the MP4 when the GIF is over the size limit or the chat takes no GIF images, or the tinygif of a GIF over
+/// the size limit in a chat without MP4 GIFs.
+pub fn gif_format<'a>(g: &'a beeper_core::cloud::KlipyGif, rules: &FileRules) -> Option<(&'a str, (u32, u32), bool)> {
+    let rule = rules.get(FILE_GIF);
+    let full = |mime: &str| rule.is_some_and(|r| r.mime_types.get(mime) == Some(&2));
+    let max = rule.and_then(|r| r.max_size).or(rules.get(FILE_FILE).and_then(|r| r.max_size));
+    let fits = max.is_none_or(|max| g.gif_bytes.is_none_or(|b| b <= max));
+    let (mp4, gif) = (full("video/mp4"), full("image/gif") && (fits || !full("video/mp4")));
+    match (gif, mp4) {
+        (true, _) if fits => Some((&g.gif_url, g.gif_size, false)),
+        (true, _) => Some((&g.preview_url, g.preview_size, false)),
+        (false, true) => Some((&g.mp4_url, g.mp4_size, true)),
+        (false, false) => None,
+    }
+}
+
 /// Desktop's `TBe`: the toast text when the chat does not accept the file.
 pub fn check(f: &PendingMedia, rules: &FileRules) -> Result<(), String> {
     let mime = f.mime.as_str();
@@ -331,6 +348,32 @@ mod tests {
         rules.remove(FILE_FILE);
         let flac = "This file type (audio/flac) is not supported and cannot be converted to a supported format";
         assert_eq!(check(&file("a.flac", "audio/flac", 9, (0, 0), None), &rules).unwrap(), flac);
+    }
+
+    #[test]
+    fn gifs_pick_the_format_of_the_chat_like_desktop() {
+        let g = beeper_core::cloud::KlipyGif {
+            id: "g".into(),
+            preview_url: "tiny".into(),
+            preview_size: (1, 1),
+            gif_url: "gif".into(),
+            gif_size: (2, 2),
+            gif_bytes: Some(5000),
+            mp4_url: "mp4".into(),
+            mp4_size: (3, 3),
+        };
+        let mut rules = beeper_core::models::beeper_files();
+        let url = |rules: &FileRules| gif_format(&g, rules).map(|(u, _, mp4)| (u.to_string(), mp4));
+        assert_eq!(url(&rules), Some(("gif".into(), false)));
+        let gif = rules.get_mut(FILE_GIF).unwrap();
+        (gif.max_size, gif.mime_types) = (Some(1000), [("image/gif".into(), 2), ("video/mp4".into(), 2)].into());
+        assert_eq!(url(&rules), Some(("mp4".into(), true)), "a big GIF sends its MP4");
+        rules.get_mut(FILE_GIF).unwrap().mime_types = [("image/gif".into(), 2)].into();
+        assert_eq!(url(&rules), Some(("tiny".into(), false)), "a big GIF without MP4 sends its tinygif");
+        rules.get_mut(FILE_GIF).unwrap().mime_types = [("video/mp4".into(), 2)].into();
+        assert_eq!(url(&rules), Some(("mp4".into(), true)), "a chat without image/gif takes the MP4");
+        rules.remove(FILE_GIF);
+        assert_eq!(url(&rules), None);
     }
 
     /// A portal on the session bus under a private name answers with a file.
