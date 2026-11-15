@@ -841,7 +841,7 @@ impl BeeperGuiApp {
             LoginMsg::KeyNext => (l.screen, l.key_input, l.error) = (Screen::ConfirmKey, Default::default(), None),
             LoginMsg::SubmitConfirmKey => {
                 match beeper_core::matrix::confirm_recovery_key(&self.store, &l.key_input.text()) {
-                    Ok(()) => self.advance_onboarding(),
+                    Ok(()) => return self.advance_onboarding(),
                     Err(e) => l.error = Some(e),
                 }
             }
@@ -849,7 +849,7 @@ impl BeeperGuiApp {
             LoginMsg::Recovered(r) => {
                 l.busy = false;
                 l.error = r.err().map(|e| tr("Error: %(message)s").replace("%(message)s", &e));
-                self.advance_onboarding();
+                return self.advance_onboarding();
             }
             LoginMsg::Done(r) => {
                 l.busy = false;
@@ -1130,7 +1130,7 @@ impl BeeperGuiApp {
                 let divider = container(Space::new()).width(Fill).height(1).style(fill_box(p.chip, 0.0));
                 let grid = scrollable(network_grid(&st, &l.query, p, p.fg)).height(Fill);
                 // Desktop's continue bar shows once a network account is connected (`hasConnectedNetwork`).
-                let go_on = (!st.bridge_accounts.is_empty()).then(|| {
+                let go_on = st.has_connected_network().then(|| {
                     let go_on = brand_button(
                         p,
                         label(tr("Continue"), None),
