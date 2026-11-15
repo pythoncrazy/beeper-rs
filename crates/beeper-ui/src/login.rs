@@ -1,6 +1,7 @@
 use crate::i18n::{tr, trf, trn, trx};
 use crate::style::{
-    bold, bordered_box, brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, CLEAR,
+    bold, bordered_box, brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, Palette,
+    CLEAR,
 };
 use crate::{BeeperGuiApp, El, UiMessage};
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
@@ -18,13 +19,6 @@ use iced::{border, window, Background, Center, Color, Degrees, Fill, Gradient, P
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
-const FRAME: Color = Color::from_rgb8(226, 226, 226);
-pub(crate) const FIELD: Color = Color::from_rgb8(239, 239, 240);
-pub(crate) const INK: Color = Color::from_rgb8(32, 33, 36);
-const TERMS: Color = Color::from_rgb8(23, 23, 23);
-pub(crate) const HINT: Color = Color::from_rgb8(130, 130, 134);
-pub(crate) const LINK: Color = Color::from_rgb8(13, 79, 251);
-pub(crate) const DANGER: Color = Color::from_rgb8(205, 43, 49);
 const HEADING: Color = Color::from_rgb8(132, 100, 238);
 const EMAIL_INPUT: &str = "login-email";
 const CODE_INPUT: &str = "login-code";
@@ -185,7 +179,7 @@ pub fn addable() -> impl Iterator<Item = &'static beeper_core::models::NetworkSp
 
 /// The Connect grid. A tile opens the Add Account window of its network (Desktop's `wj`) when beeper-rs can add
 /// an account on it. A demo account adds none.
-pub fn network_grid(st: &BeeperStore, query: &str, ink: Color) -> El<'static> {
+pub fn network_grid(st: &BeeperStore, query: &str, p: &Palette, ink: Color) -> El<'static> {
     let (accounts, features) = (&st.bridge_accounts, &st.features);
     let q = query.trim().to_lowercase();
     let tiles: Vec<El<'static>> = addable()
@@ -200,7 +194,7 @@ pub fn network_grid(st: &BeeperStore, query: &str, ink: Color) -> El<'static> {
                     .into()
             };
             let chip = (count > 0).then(|| {
-                container(row((0..count.min(4)).map(dot)).spacing(2)).padding(2).style(fill_box(FIELD, 999.0))
+                container(row((0..count.min(4)).map(dot)).spacing(2)).padding(2).style(fill_box(p.chip, 999.0))
             });
             let tile = column![
                 svg(brand_svg(n.bridge_id)).width(36).height(36),
@@ -223,17 +217,14 @@ pub fn network_grid(st: &BeeperStore, query: &str, ink: Color) -> El<'static> {
                 .padding(0)
                 .style(btn_style([CLEAR; 3], [ink; 3], 8.0))
                 .on_press_maybe(open.then(|| UiMessage::OpenAddAccount(n.bridge_id.into(), None)));
-            let tip = container(txt(tip, 13.0).color(INK)).padding([6, 12]).style(shadow_box(
-                Color::WHITE,
-                FIELD,
-                16.0,
-                10.0,
-            ));
+            let tip = container(txt(tip, 13.0).color(p.strong))
+                .padding([6, 12])
+                .style(shadow_box(p.elevated, p.chip, 16.0, 10.0));
             tooltip(tile, tip, tooltip::Position::Bottom).into()
         })
         .collect();
     if tiles.is_empty() {
-        return container(txt(tr("No networks found"), 13.0).color(HINT)).center_x(Fill).padding(24).into();
+        return container(txt(tr("No networks found"), 13.0).color(p.on_secondary)).center_x(Fill).padding(24).into();
     }
     let mut rows = Vec::new();
     let mut tiles = tiles.into_iter().peekable();
@@ -245,18 +236,13 @@ pub fn network_grid(st: &BeeperStore, query: &str, ink: Color) -> El<'static> {
     column(rows).spacing(24).padding(8).into()
 }
 
-fn card_style(_: &Theme) -> container::Style {
+fn card_style(bg: Color) -> impl Fn(&Theme) -> container::Style {
     let shadow = iced::Shadow {
         color: Color::from_rgba(0.0, 0.0, 0.0, 0.03),
         offset: iced::Vector::new(0.0, 2.0),
         blur_radius: 4.0,
     };
-    container::Style {
-        background: Some(Color::WHITE.into()),
-        border: border::rounded(12),
-        shadow,
-        ..Default::default()
-    }
+    move |_| container::Style { background: Some(bg.into()), border: border::rounded(12), shadow, ..Default::default() }
 }
 
 pub(crate) fn brand_gradient() -> Background {
@@ -266,8 +252,8 @@ pub(crate) fn brand_gradient() -> Background {
     Background::Gradient(Gradient::Linear(g))
 }
 
-fn pill<'a>(content: El<'a>, height: f32, bg: Option<Color>, msg: Option<UiMessage>) -> El<'a> {
-    let fg = if bg.is_some() { INK } else { Color::WHITE };
+fn pill<'a>(p: &Palette, content: El<'a>, height: f32, bg: Option<Color>, msg: Option<UiMessage>) -> El<'a> {
+    let fg = if bg.is_some() { p.strong } else { Color::WHITE };
     button(container(content).center_x(Fill).center_y(height))
         .width(Fill)
         .padding(0)
@@ -299,14 +285,21 @@ pub(crate) fn art<'a>(i: usize, height: f32) -> El<'a> {
     svg(ART[i].clone()).width(Fill).height(height).into()
 }
 
-fn field<'a>(id: &'static str, hint: &'a str, value: &'a str, on: fn(String) -> LoginMsg, submit: LoginMsg) -> El<'a> {
+fn field<'a>(
+    p: &Palette,
+    id: &'static str,
+    hint: &'a str,
+    value: &'a str,
+    on: fn(String) -> LoginMsg,
+    submit: LoginMsg,
+) -> El<'a> {
     text_input(hint, value)
         .id(id)
         .on_input(move |v| on(v).into())
         .on_submit(submit.into())
         .size(14)
         .padding([10, 12])
-        .style(input_style(FIELD, INK, HINT, LINK, 19.0))
+        .style(input_style(p.chip, p.strong, p.on_secondary, p.accent, 19.0))
         .into()
 }
 
@@ -535,12 +528,12 @@ impl BeeperGuiApp {
     }
 
     pub fn view_login(&self) -> El<'_> {
-        let l = &self.login;
+        let (l, p) = (&self.login, &self.pal);
         let go = |m: LoginMsg| (!l.busy).then(|| m.into());
         let error = column![]
-            .push(l.error.as_deref().map(|e| txt(e, 12.0).color(DANGER).center().width(Fill)))
+            .push(l.error.as_deref().map(|e| txt(e, 12.0).color(p.text_danger).center().width(Fill)))
             .padding(Padding::new(0.0).left(18.0).right(18.0).bottom(if l.error.is_some() { 12.0 } else { 0.0 }));
-        let link = |s: &'static str, m: UiMessage| span(s).color(LINK).link(m);
+        let link = |s: &'static str, m: UiMessage| span(s).color(p.accent).link(m);
         let body: El<'_> = match l.screen {
             Screen::Import => {
                 let dir = l.source.as_deref().expect("import screen has a Beeper Desktop dir").display().to_string();
@@ -554,11 +547,12 @@ impl BeeperGuiApp {
                     error,
                     actions(
                         vec![
-                            container(txt(info, 12.0).color(HINT).center().width(Fill))
+                            container(txt(info, 12.0).color(p.on_secondary).center().width(Fill))
                                 .padding(Padding::ZERO.bottom(8))
                                 .into(),
-                            pill(label("Start Fresh", None), 36.0, Some(FIELD), go(LoginMsg::Fresh)),
+                            pill(p, label("Start Fresh", None), 36.0, Some(p.chip), go(LoginMsg::Fresh)),
                             pill(
+                                p,
                                 label(if l.busy { "Copying…" } else { "Copy from Beeper Desktop" }, None),
                                 36.0,
                                 None,
@@ -572,11 +566,11 @@ impl BeeperGuiApp {
             }
             Screen::Welcome => {
                 let terms = rich_text![
-                    span("By continuing, you agree to our ").color(TERMS),
+                    span("By continuing, you agree to our ").color(p.text),
                     link("terms\nof use", UiMessage::OpenUrl("https://www.beeper.com/terms".into())),
-                    span(" and have read our ").color(TERMS),
+                    span(" and have read our ").color(p.text),
                     link("privacy policy", UiMessage::OpenUrl("https://www.beeper.com/privacy".into())),
-                    span(".").color(TERMS),
+                    span(".").color(p.text),
                 ]
                 .on_link_click(|m: UiMessage| m)
                 .size(11)
@@ -592,12 +586,14 @@ impl BeeperGuiApp {
                         vec![
                             container(terms).padding(Padding::ZERO.bottom(8)).into(),
                             pill(
+                                p,
                                 label("Continue with Google", Some(google.into())),
                                 36.0,
-                                Some(FIELD),
+                                Some(p.chip),
                                 go(LoginMsg::Google)
                             ),
                             pill(
+                                p,
                                 label(tr("Continue with Email"), Some(mail.into())),
                                 36.0,
                                 None,
@@ -618,8 +614,8 @@ impl BeeperGuiApp {
                 error,
                 actions(
                     vec![
-                        field(EMAIL_INPUT, tr("Email"), &l.email, LoginMsg::Email, LoginMsg::SubmitEmail),
-                        pill(label(trx("Next", "button label"), None), 33.0, None, go(LoginMsg::SubmitEmail)),
+                        field(p, EMAIL_INPUT, tr("Email"), &l.email, LoginMsg::Email, LoginMsg::SubmitEmail),
+                        pill(p, label(trx("Next", "button label"), None), 33.0, None, go(LoginMsg::SubmitEmail)),
                     ],
                     24.0
                 ),
@@ -629,18 +625,18 @@ impl BeeperGuiApp {
                 let active = l.code.len().min(5);
                 let slots = row((0..6).map(|i| {
                     let digit: Option<El<'_>> =
-                        l.code.chars().nth(i).map(|c| semi(c.to_string(), 28.0).color(INK).into());
+                        l.code.chars().nth(i).map(|c| semi(c.to_string(), 28.0).color(p.strong).into());
                     let caret = (i == l.code.len())
-                        .then(|| container(Space::new()).width(1.5).height(28).style(fill_box(INK, 0.0)).into());
+                        .then(|| container(Space::new()).width(1.5).height(28).style(fill_box(p.strong, 0.0)).into());
                     let edge = match (&l.error, i == active) {
-                        (Some(_), _) => DANGER,
-                        (None, true) => LINK,
+                        (Some(_), _) => p.text_danger,
+                        (None, true) => p.accent,
                         (None, false) => CLEAR,
                     };
                     container(digit.or(caret).unwrap_or_else(|| Space::new().into()))
                         .center_x(41)
                         .center_y(56)
-                        .style(bordered_box(FIELD, edge, 1.5, 12.0))
+                        .style(bordered_box(p.chip, edge, 1.5, 12.0))
                         .into()
                 }))
                 .spacing(8);
@@ -653,8 +649,8 @@ impl BeeperGuiApp {
                 let otp = stack![container(slots).center_x(Fill), container(capture).height(56)].height(56);
                 let info = format!("Check {}\nfor your login code", l.email.trim());
                 let foot = rich_text![
-                    span("Didn't get a code? ").color(HINT),
-                    span(tr("Resend")).color(LINK).link(UiMessage::Login(LoginMsg::Resend))
+                    span("Didn't get a code? ").color(p.on_secondary),
+                    span(tr("Resend")).color(p.accent).link(UiMessage::Login(LoginMsg::Resend))
                 ]
                 .on_link_click(move |m: UiMessage| if l.busy { UiMessage::Noop } else { m })
                 .size(11)
@@ -669,10 +665,16 @@ impl BeeperGuiApp {
                     error,
                     actions(
                         vec![
-                            container(txt(info, 13.0).color(HINT).center().width(Fill))
+                            container(txt(info, 13.0).color(p.on_secondary).center().width(Fill))
                                 .padding(Padding::ZERO.bottom(8))
                                 .into(),
-                            pill(label(tr("Open Email"), None), 33.0, None, Some(UiMessage::OpenUrl("mailto:".into()))),
+                            pill(
+                                p,
+                                label(tr("Open Email"), None),
+                                33.0,
+                                None,
+                                Some(UiMessage::OpenUrl("mailto:".into()))
+                            ),
                             container(foot).padding(Padding::ZERO.top(8)).into(),
                         ],
                         24.0
@@ -683,30 +685,31 @@ impl BeeperGuiApp {
             Screen::Accounts => {
                 let st = self.store.read();
                 let search = row![
-                    ic(icon::SEARCH, 16.0).color(HINT),
+                    ic(icon::SEARCH, 16.0).color(p.tertiary),
                     text_input(tr("Search..."), &l.query)
                         .on_input(|v| LoginMsg::Query(v).into())
                         .size(14)
                         .padding([10, 0])
-                        .style(input_style(CLEAR, INK, HINT, CLEAR, 0.0)),
+                        .style(input_style(CLEAR, p.fg, p.tertiary, CLEAR, 0.0)),
                 ]
                 .spacing(10)
                 .align_y(Center)
                 .padding([0, 16]);
-                let divider = container(Space::new()).width(Fill).height(1).style(fill_box(FIELD, 0.0));
-                let grid = scrollable(network_grid(&st, &l.query, Color::BLACK)).height(Fill);
-                let go_on = container(pill(label(tr("Continue"), None), 30.0, None, Some(LoginMsg::Continue.into())))
-                    .padding(Padding::new(12.0).top(8.0));
+                let divider = container(Space::new()).width(Fill).height(1).style(fill_box(p.chip, 0.0));
+                let grid = scrollable(network_grid(&st, &l.query, p, p.fg)).height(Fill);
+                let go_on =
+                    container(pill(p, label(tr("Continue"), None), 30.0, None, Some(LoginMsg::Continue.into())))
+                        .padding(Padding::new(12.0).top(8.0));
                 let remaining = FREE_ACCOUNTS.saturating_sub(st.bridge_accounts.len());
                 let foot = txt(
                     trn("%d free account remaining.", "%d free accounts remaining.", remaining, &[&remaining]),
                     12.0,
                 )
-                .color(Color::from_rgb8(128, 128, 128));
+                .color(p.on_secondary);
                 column![
                     container(bold(tr("Connect Chat Accounts"), 26.0).color(HEADING)).center_x(Fill).center_y(48),
                     Space::new().height(8),
-                    container(column![search, divider, grid, go_on]).height(Fill).style(card_style),
+                    container(column![search, divider, grid, go_on]).height(Fill).style(card_style(p.card)),
                     container(foot).center_x(Fill).center_y(31),
                 ]
                 .padding([0, 8])
@@ -726,32 +729,33 @@ impl BeeperGuiApp {
                 actions(
                     vec![
                         field(
+                            p,
                             USERNAME_INPUT,
                             tr("Username"),
                             &l.username,
                             LoginMsg::Username,
                             LoginMsg::SubmitUsername
                         ),
-                        pill(label(trx("Next", "button label"), None), 33.0, None, go(LoginMsg::SubmitUsername)),
+                        pill(p, label(trx("Next", "button label"), None), 33.0, None, go(LoginMsg::SubmitUsername)),
                     ],
                     52.0
                 ),
             ]
             .into(),
         };
-        let chevron = button(container(ic(icon::EXPAND_MORE, 16.0).color(INK)).center(28))
+        let chevron = button(container(ic(icon::EXPAND_MORE, 16.0).color(p.strong)).center(28))
             .padding(0)
-            .style(btn_style([CLEAR, FIELD, FIELD], [INK; 3], 6.0))
+            .style(btn_style([CLEAR, p.chip, p.chip], [p.strong; 3], 6.0))
             .on_press(LoginMsg::Menu.into());
         let controls = container(chevron).align_right(Fill).height(36).padding(Padding::ZERO.top(2).right(2));
         let onboarding = l.screen == Screen::Accounts;
         let page = container(column![controls, body]).width(Fill).height(Fill);
-        let page = if onboarding { page } else { page.style(fill_box(Color::WHITE, 8.0)) };
+        let page = if onboarding { page } else { page.style(fill_box(p.primary_container, 8.0)) };
         let item = |s: &'static str, m: UiMessage| -> El<'static> {
-            button(txt(s, 13.0).color(INK))
+            button(txt(s, 13.0).color(p.strong))
                 .width(Fill)
                 .padding([6, 10])
-                .style(btn_style([CLEAR, FIELD, FIELD], [INK; 3], 6.0))
+                .style(btn_style([CLEAR, p.chip, p.chip], [p.strong; 3], 6.0))
                 .on_press(m)
                 .into()
         };
@@ -764,14 +768,14 @@ impl BeeperGuiApp {
             };
             let items = column![].push(back).push(last).padding(4).width(160);
             mouse_area(
-                container(container(items).style(shadow_box(Color::WHITE, FIELD, 8.0, 14.0)))
+                container(container(items).style(shadow_box(p.elevated, p.chip, 8.0, 14.0)))
                     .align_right(Fill)
                     .height(Fill)
                     .padding(Padding::ZERO.top(34).right(6)),
             )
             .on_press(LoginMsg::Menu.into())
         });
-        let (pad, frame) = if onboarding { (0, FIELD) } else { (8, FRAME) };
+        let (pad, frame) = if onboarding { (0, p.chip) } else { (8, p.window) };
         container(stack![page].push(menu)).padding(pad).style(fill_box(frame, 0.0)).into()
     }
 }

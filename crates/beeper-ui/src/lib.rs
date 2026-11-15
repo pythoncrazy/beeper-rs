@@ -16891,7 +16891,7 @@ impl BeeperGuiApp {
                     column![head, column![card, foot].spacing(11)].spacing(8).into()
                 }]
                 .into_iter()
-                .chain(self.adding_account.then(|| group(p, None, vec![login::network_grid(st, "", p.strong)])))
+                .chain(self.adding_account.then(|| group(p, None, vec![login::network_grid(st, "", p, p.strong)])))
                 .collect()
             }
             SettingsTab::General => self.pref_items(prefs::GENERAL, st),

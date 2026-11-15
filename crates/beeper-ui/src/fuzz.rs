@@ -5452,6 +5452,34 @@ fn signed_out_app(name: &str) -> BeeperGuiApp {
     app
 }
 
+/// The pixels of the sign-in window at points of its 330x620 layout.
+fn login_pixels(app: &BeeperGuiApp, points: &[(u32, u32)]) -> Vec<Color> {
+    let mut sim = Simulator::with_size(Default::default(), Size::new(330.0, 620.0), app.view_login());
+    let dir = std::env::temp_dir().join(format!("beeper-rs-login-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let _ = sim.snapshot(&app.iced_theme()).unwrap().matches_image(dir.join("login"));
+    let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+    let shot = ::image::open(&png).unwrap().into_rgba8();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let k = shot.width() / 330;
+    points
+        .iter()
+        .map(|&(x, y)| Color::from_rgb8(shot[(x * k, y * k)][0], shot[(x * k, y * k)][1], shot[(x * k, y * k)][2]))
+        .collect()
+}
+
+/// The sign-in window follows the system theme, like Desktop's `prefers-color-scheme`.
+#[test]
+fn sign_in_window_follows_the_system_theme() {
+    let mut app = signed_out_app("sign-in-dark");
+    for (mode, p) in [(iced::theme::Mode::Light, style::BEEPER_LIGHT), (iced::theme::Mode::Dark, style::BEEPER_DARK)] {
+        let _ = app.update(UiMessage::SystemTheme(mode));
+        // The frame, the card, and the Google button.
+        let want = [p.window, p.primary_container, p.chip];
+        assert_eq!(login_pixels(&app, &[(3, 3), (20, 60), (40, 526)]), want, "{mode:?}");
+    }
+}
+
 /// Every hotkey and tray action on the sign-in window, before and after sign-in. None panics, and Ctrl+, opens the
 /// Settings window, which Desktop draws empty before sign-in.
 #[test]

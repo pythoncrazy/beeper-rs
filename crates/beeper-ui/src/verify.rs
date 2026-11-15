@@ -2,7 +2,7 @@
 //! onboarding screens of encrypted messaging after the sign-in.
 use crate::emoji::EMOJI_FONT;
 use crate::i18n::{tr, trx};
-use crate::login::{actions, art, brand_gradient, heading, LoginMsg, Screen, DANGER, FIELD, HINT, INK, LINK};
+use crate::login::{actions, art, brand_gradient, heading, LoginMsg, Screen};
 use crate::style::{bold, btn_style, fill_box, fw, ic, icon, semi, shadow_box, t, txt, Palette, CLEAR};
 use crate::{BeeperGuiApp, El, Toast, UiMessage};
 use beeper_core::matrix::E2eeSetup;
@@ -380,7 +380,7 @@ impl BeeperGuiApp {
     /// Desktop's `AwaitVerification`: the request to the other devices, then their QR code or their emojis.
     pub(crate) fn view_onboarding_verify(&self) -> El<'_> {
         let l = &self.login;
-        let p = &crate::style::BEEPER_LIGHT;
+        let p = &self.pal;
         let st = self.store.read();
         let v = st.app_verification().filter(|v| v.purpose == "login");
         let emojis = v.and_then(|v| v.sas.clone().filter(|_| v.state == "sas_ready"));
@@ -391,7 +391,7 @@ impl BeeperGuiApp {
         let use_key = || secondary(trx("Enter Recovery Key", "button label"), LoginMsg::UseRecoveryKey.into());
         let emojis_btn =
             || can_emojis.then(|| secondary(trx("Confirm using emojis", "button label"), VerifyMsg::Emojis.into()));
-        let note = |s: &'static str| txt(tr(s), 13.0).color(INK).center().width(Fill);
+        let note = |s: &'static str| txt(tr(s), 13.0).color(p.strong).center().width(Fill);
         let (middle, bottom): (El<'_>, Vec<El<'_>>) = match (l.waiting, emojis, qr) {
             (true, _, _) => {
                 (Space::new().into(), vec![note("Waiting for you to verify on your other device...").into()])
@@ -399,9 +399,9 @@ impl BeeperGuiApp {
             (false, Some(sas), _) => {
                 let glyphs = sas.emojis.into_iter().map(|e| {
                     let glyph = txt(e.emoji, 28.0).line_height(1.0).font(EMOJI_FONT);
-                    let tip = container(txt(e.description, 12.0).color(INK))
+                    let tip = container(txt(e.description, 12.0).color(p.strong))
                         .padding([4, 8])
-                        .style(fill_box(Color::WHITE, 6.0));
+                        .style(fill_box(p.elevated, 6.0));
                     tooltip(glyph, tip, tooltip::Position::Bottom).into()
                 });
                 let buttons = vec![
@@ -411,7 +411,7 @@ impl BeeperGuiApp {
                     brand_btn(p, trx("They match", "button label"), Brand::Primary, VerifyMsg::Match(true).into()),
                     secondary(trx("They don't match", "button label"), VerifyMsg::Match(false).into()),
                     use_key(),
-                    lost_link(),
+                    lost_link(p),
                 ];
                 (container(row(glyphs).spacing(4)).center(Fill).into(), buttons)
             }
@@ -427,40 +427,41 @@ impl BeeperGuiApp {
                 ];
                 buttons.extend(emojis_btn());
                 buttons.push(use_key());
-                buttons.push(lost_link());
+                buttons.push(lost_link(p));
                 (container(plate).center(Fill).into(), buttons)
             }
             (false, None, None) => {
                 let devices = self.login.devices.iter().take(5).map(|d| -> El<'_> {
                     let seen = d.last_seen_ms.map(|t| {
-                        txt(tr("seen %(lastSeen)s").replace("%(lastSeen)s", &crate::ago(t)), 11.0).color(HINT)
+                        txt(tr("seen %(lastSeen)s").replace("%(lastSeen)s", &crate::ago(t)), 11.0).color(p.on_secondary)
                     });
-                    column![txt(d.name.clone(), 13.0).color(INK)].push(seen).into()
+                    column![txt(d.name.clone(), 13.0).color(p.strong)].push(seen).into()
                 });
                 let devices: El<'_> = match self.login.devices.is_empty() {
-                    true => txt(tr("No devices found"), 13.0).color(HINT).into(),
+                    true => txt(tr("No devices found"), 13.0).color(p.on_secondary).into(),
                     false => Column::with_children(devices).spacing(6).into(),
                 };
-                let tip = container(devices).padding([8, 12]).style(shadow_box(Color::WHITE, FIELD, 8.0, 10.0));
-                let another = row![semi(tr("another device"), 17.0).color(INK), ic(icon::INFO, 16.0).color(HINT)]
-                    .spacing(4)
-                    .align_y(Center);
+                let tip = container(devices).padding([8, 12]).style(shadow_box(p.elevated, p.chip, 8.0, 10.0));
+                let another =
+                    row![semi(tr("another device"), 17.0).color(p.strong), ic(icon::INFO, 16.0).color(p.on_secondary)]
+                        .spacing(4)
+                        .align_y(Center);
                 let title = column![
-                    semi("Open Beeper", 17.0).color(INK),
+                    semi("Open Beeper", 17.0).color(p.strong),
                     row![
-                        semi("on ", 17.0).color(INK),
+                        semi("on ", 17.0).color(p.strong),
                         tooltip(another, tip, tooltip::Position::Top),
-                        semi(" and", 17.0).color(INK)
+                        semi(" and", 17.0).color(p.strong)
                     ]
                     .align_y(Center),
-                    semi("follow instructions to verify", 17.0).color(INK),
+                    semi("follow instructions to verify", 17.0).color(p.strong),
                 ]
                 .align_x(Center)
                 .width(Fill);
                 let link = |s: &'static str, m: UiMessage| -> El<'_> {
-                    button(txt(s, 13.0).color(LINK))
+                    button(txt(s, 13.0).color(p.accent))
                         .padding(0)
-                        .style(btn_style([CLEAR; 3], [LINK; 3], 0.0))
+                        .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
                         .on_press(m)
                         .into()
                 };
@@ -475,13 +476,13 @@ impl BeeperGuiApp {
                         buttons.push(note(trx("or", "verification method divider")).into());
                         buttons.extend(emojis_btn());
                         buttons.push(use_key());
-                        buttons.push(lost_link());
+                        buttons.push(lost_link(p));
                     }
                 }
                 (container(svg(VERIFY_ART.clone()).width(241).height(224)).center(Fill).into(), buttons)
             }
         };
-        let error = l.error.as_deref().map(|e| txt(e, 12.0).color(DANGER).center().width(Fill));
+        let error = l.error.as_deref().map(|e| txt(e, 12.0).color(p.text_danger).center().width(Fill));
         column![Space::new().height(34), heading(trx("Verify", "onboarding verification heading"), 36.0), middle]
             .push(error)
             .push(actions(bottom, 24.0))
@@ -491,18 +492,18 @@ impl BeeperGuiApp {
     /// Desktop's `AwaitRecoveryCode`.
     pub(crate) fn view_onboarding_key(&self) -> El<'_> {
         let l = &self.login;
-        let p = &crate::style::BEEPER_LIGHT;
+        let p = &self.pal;
         let next = (!l.key_input.text().trim().is_empty() && !l.busy).then(|| LoginMsg::SubmitRecoveryKey.into());
         let next = brand_btn_maybe(p, trx("Next", "button label"), Brand::Primary, next);
-        let error = l.error.as_deref().map(|e| txt(e, 12.0).color(DANGER).center().width(Fill));
+        let error = l.error.as_deref().map(|e| txt(e, 12.0).color(p.text_danger).center().width(Fill));
         column![
             Space::new().height(40),
             heading(tr("Enter your Recovery Key"), 28.0),
-            key_input(&l.key_input, l.error.is_some()),
+            key_input(p, &l.key_input, l.error.is_some()),
             Space::new().height(Fill),
         ]
         .push(error)
-        .push(actions(vec![next, lost_link()], 24.0))
+        .push(actions(vec![next, lost_link(p)], 24.0))
         .into()
     }
 
@@ -511,18 +512,21 @@ impl BeeperGuiApp {
         column![
             Space::new().height(34),
             heading(tr("Syncing your data"), 28.0),
-            container(txt(tr("We're syncing your chats. This may take a while..."), 13.0).color(INK).center())
-                .center(Fill)
-                .padding(18),
+            container(
+                txt(tr("We're syncing your chats. This may take a while..."), 13.0).color(self.pal.strong).center()
+            )
+            .center(Fill)
+            .padding(18),
         ]
         .into()
     }
 }
 
 /// Desktop's "Lost your recovery key?" link.
-fn lost_link<'a>() -> El<'a> {
-    let label = txt(tr("Lost your recovery key?"), 13.0).color(LINK);
-    let link = button(label).padding(0).style(btn_style([CLEAR; 3], [LINK; 3], 0.0)).on_press(LoginMsg::LostKey.into());
+fn lost_link<'a>(p: &Palette) -> El<'a> {
+    let label = txt(tr("Lost your recovery key?"), 13.0).color(p.accent);
+    let link =
+        button(label).padding(0).style(btn_style([CLEAR; 3], [p.accent; 3], 0.0)).on_press(LoginMsg::LostKey.into());
     container(link).center_x(Fill).into()
 }
 
@@ -534,22 +538,23 @@ pub(crate) fn format_recovery_key(key: &str) -> String {
 }
 
 /// Desktop's `RecoveryCodeInput`: the key in 4 lines of 3 dash groups, and "Paste from Clipboard".
-fn key_input<'a>(content: &'a text_editor::Content, error: bool) -> El<'a> {
-    let edge = if error { DANGER } else { CLEAR };
+fn key_input<'a>(p: &Palette, content: &'a text_editor::Content, error: bool) -> El<'a> {
+    let p = *p;
+    let edge = if error { p.text_danger } else { CLEAR };
     let editor = text_editor(content)
         .on_action(|a| LoginMsg::KeyEdit(a).into())
         .size(17)
         .height(4.0 * 17.0 * 1.3 + 24.0)
         .padding(12)
         .style(move |_: &Theme, _| text_editor::Style {
-            background: FIELD.into(),
+            background: p.chip.into(),
             border: border::rounded(12).color(edge).width(1),
-            placeholder: HINT,
-            value: INK,
-            selection: LINK.scale_alpha(0.3),
+            placeholder: p.on_secondary,
+            value: p.strong,
+            selection: p.accent.scale_alpha(0.3),
         });
-    let paste = txt(trx("Paste from Clipboard", "button label"), 12.0).color(HINT);
-    let paste = button(paste).padding(4).style(btn_style([CLEAR, FIELD, FIELD], [HINT; 3], 6.0));
+    let paste = txt(trx("Paste from Clipboard", "button label"), 12.0).color(p.on_secondary);
+    let paste = button(paste).padding(4).style(btn_style([CLEAR, p.chip, p.chip], [p.on_secondary; 3], 6.0));
     column![editor, paste.on_press(LoginMsg::PasteKey.into())].spacing(4).align_x(Center).padding([24, 18]).into()
 }
 
@@ -599,7 +604,7 @@ impl BeeperGuiApp {
 
     /// Desktop's `RecoveryCodePreamble`, for an account without cross-signing.
     pub(crate) fn view_onboarding_preamble(&self) -> El<'_> {
-        let p = &crate::style::BEEPER_LIGHT;
+        let p = &self.pal;
         let text = tr("If you lose your device you'll need your Recovery Key to access your encrypted chat backup.");
         let save = brand_btn(p, trx("Save Key", "button label"), Brand::Primary, LoginMsg::NewKey.into());
         column![
@@ -607,35 +612,35 @@ impl BeeperGuiApp {
             heading(tr("Save Your Recovery Key"), 28.0),
             container(art(2, 240.0)).center(Fill),
         ]
-        .push(actions(vec![txt(text, 13.0).color(INK).center().width(Fill).into(), save], 24.0))
+        .push(actions(vec![txt(text, 13.0).color(p.strong).center().width(Fill).into(), save], 24.0))
         .into()
     }
 
     /// Desktop's `AwaitNewRecoveryCode`: the new key to copy, then the key again to confirm that it was saved.
     pub(crate) fn view_onboarding_new_key(&self) -> El<'_> {
         let l = &self.login;
-        let p = &crate::style::BEEPER_LIGHT;
+        let p = &self.pal;
         let warning = tr("WARNING: Beeper does not store your Recovery Key for you. If you lose your Recovery Key, you may lose access to your encrypted chat backup.");
-        let warning = txt(warning, 11.0).color(DANGER).center().width(Fill).into();
-        let error = l.error.as_deref().map(|e| txt(e, 12.0).color(DANGER).center().width(Fill));
+        let warning = txt(warning, 11.0).color(p.text_danger).center().width(Fill).into();
+        let error = l.error.as_deref().map(|e| txt(e, 12.0).color(p.text_danger).center().width(Fill));
         let (title, middle, next): (&str, El<'_>, Option<UiMessage>) = match l.screen {
             Screen::ConfirmKey => {
                 let next = valid_recovery_key(&l.key_input.text()).then(|| LoginMsg::SubmitConfirmKey.into());
-                (tr("Confirm your Recovery Key"), key_input(&l.key_input, l.error.is_some()), next)
+                (tr("Confirm your Recovery Key"), key_input(p, &l.key_input, l.error.is_some()), next)
             }
             _ => {
                 let key: El<'_> = match &l.new_key {
                     Some(key) => {
                         let copy = if l.copied { tr("Copied!") } else { tr("Copy to Clipboard") };
                         let body = column![
-                            txt(format_recovery_key(key), 17.0).color(INK).center(),
-                            txt(copy, 12.0).color(HINT),
+                            txt(format_recovery_key(key), 17.0).color(p.strong).center(),
+                            txt(copy, 12.0).color(p.on_secondary),
                         ]
                         .spacing(12)
                         .align_x(Center);
                         button(container(body).center_x(Fill).padding(16))
                             .padding(0)
-                            .style(btn_style([FIELD; 3], [INK; 3], 12.0))
+                            .style(btn_style([p.chip; 3], [p.strong; 3], 12.0))
                             .on_press(LoginMsg::CopyKey.into())
                             .into()
                     }
@@ -654,12 +659,12 @@ impl BeeperGuiApp {
 
     /// Desktop's `ConfirmResetRecoveryCode`.
     pub(crate) fn view_onboarding_reset(&self) -> El<'_> {
-        let p = &crate::style::BEEPER_LIGHT;
+        let p = &self.pal;
         let bullet = |s: &'static str| -> El<'_> {
-            row![txt("•", 13.0).color(INK), txt(tr(s), 13.0).color(INK)].spacing(8).into()
+            row![txt("•", 13.0).color(p.strong), txt(tr(s), 13.0).color(p.strong)].spacing(8).into()
         };
         let warning = column![
-            semi(trx("Warning", "recovery key reset warning heading"), 15.0).color(DANGER),
+            semi(trx("Warning", "recovery key reset warning heading"), 15.0).color(p.text_danger),
             bullet("All of your data is encrypted with your Recovery Key. All your accounts will be disconnected. Your chat history and settings will be lost."),
             bullet("Only use this option if you no longer have access to your other devices. You’ll need to re-verify all your other devices after reset."),
         ]
@@ -667,7 +672,7 @@ impl BeeperGuiApp {
         .padding([0, 24]);
         let reset = brand_btn(p, trx("Reset Recovery Key", "button label"), Brand::Danger, LoginMsg::NewKey.into());
         let back = brand_btn(p, trx("Cancel", "button label"), Brand::Muted, LoginMsg::Show(Screen::Verify).into());
-        let title = bold(tr("Reset your Recovery Key"), 28.0).color(DANGER).center().width(Fill);
+        let title = bold(tr("Reset your Recovery Key"), 28.0).color(p.text_danger).center().width(Fill);
         column![Space::new().height(40), container(title).padding([0, 8]), container(warning).center(Fill)]
             .push(actions(vec![reset, back], 24.0))
             .into()
