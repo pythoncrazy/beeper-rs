@@ -8,10 +8,13 @@ use serde_json::{json, Value};
 
 /// The topics: the name, the description, and the command that runs for the topic alone.
 const TOPICS: &[(&str, &str, Option<&str>)] = &[
+    ("accounts", "Manage connected chat-network accounts", Some("accounts list")),
     ("api", "Call raw Desktop API endpoints", None),
     ("auth", "Inspect and clear stored authentication", None),
+    ("bridges", "List bridges that can connect or reconnect chat accounts", Some("bridges list")),
     ("chats", "List, search, manage, and modify chats", Some("chats list")),
     ("config", "Manage local CLI configuration", None),
+    ("contacts", "List, search, and inspect contacts", Some("contacts list")),
     ("messages", "List, search, show, edit, delete, and export messages", None),
     ("send", "Send text, files, and reactions", None),
 ];
@@ -24,7 +27,7 @@ pub fn topic(name: &str) -> Option<&'static Topic> {
 
 /// Every command, topic by topic.
 pub fn all() -> impl Iterator<Item = &'static Cmd> + Clone {
-    [CORE, super::chats::COMMANDS, super::messages::COMMANDS].into_iter().flatten()
+    [CORE, super::accounts::COMMANDS, super::chats::COMMANDS, super::messages::COMMANDS].into_iter().flatten()
 }
 
 const NO_AUTH: Flag = Flag::b("no-auth", "Call a public API path without a bearer token");
@@ -263,7 +266,7 @@ fn config_set(c: &mut Ctx) -> Res {
     let next = (!value.is_empty()).then_some(value);
     match &next {
         Some(v) => config.insert(key.clone(), json!(v)),
-        None => config.remove(&key),
+        None => config.shift_remove(&key),
     };
     write_json(&config_dir().join("config.json"), &config)?;
     let message = if next.is_some() { format!("Set {key}") } else { format!("Cleared {key}") };
