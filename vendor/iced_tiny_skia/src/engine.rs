@@ -84,60 +84,90 @@ impl Engine {
             let half_width = physical_bounds.width / 2.0;
             let half_height = physical_bounds.height / 2.0;
 
-            let colors = (y..y + height)
-                .flat_map(|y| (x..x + width).map(move |x| (x as f32, y as f32)))
-                .filter_map(|(x, y)| {
-                    tiny_skia::Size::from_wh(half_width, half_height).map(
-                        |size| {
-                            let shadow_distance = rounded_box_sdf(
-                                Vector::new(
-                                    x - physical_bounds.position().x
-                                        - (shadow.offset.x
-                                            * transformation.scale_factor())
-                                        - half_width,
-                                    y - physical_bounds.position().y
-                                        - (shadow.offset.y
-                                            * transformation.scale_factor())
-                                        - half_height,
-                                ),
+            // Only the pixels in the clip bounds change. The fill of an opaque
+            // quad covers its inside, so the shadow there is not computed.
+            let (x0, y0) = (
+                x.max(clip_bounds.x.max(0.0) as u32),
+                y.max(clip_bounds.y.max(0.0) as u32),
+            );
+            let (x1, y1) = (
+                (x + width).min((clip_bounds.x + clip_bounds.width).ceil() as u32),
+                (y + height).min((clip_bounds.y + clip_bounds.height).ceil() as u32),
+            );
+            let opaque = matches!(background, Background::Color(c) if c.a >= 1.0);
+            let inset = radii.iter().copied().fold(0.0, f32::max) + 1.0;
+            let inside = |start: f32, end: f32, lo: u32, hi: u32| {
+                let (lo, hi) = (lo as f32, hi as f32);
+                ((start + inset).ceil().clamp(lo, hi) as u32, (end - inset).floor().clamp(lo, hi) as u32)
+            };
+            let (cx0, cx1) = inside(physical_bounds.x, physical_bounds.x + physical_bounds.width, x0, x1);
+            let (cy0, cy1) = inside(physical_bounds.y, physical_bounds.y + physical_bounds.height, y0, y1);
+            let parts = if opaque && cx0 < cx1 && cy0 < cy1 {
+                vec![(x0, y0, x1, cy0), (x0, cy1, x1, y1), (x0, cy0, cx0, cy1), (cx1, cy0, x1, cy1)]
+            } else {
+                vec![(x0, y0, x1, y1)]
+            };
+
+            for (px0, py0, px1, py1) in parts {
+                if px0 >= px1 || py0 >= py1 {
+                    continue;
+                }
+                let colors = (py0..py1)
+                    .flat_map(|y| (px0..px1).map(move |x| (x as f32, y as f32)))
+                    .filter_map(|(x, y)| {
+                        tiny_skia::Size::from_wh(half_width, half_height).map(
+                            |size| {
+                                let shadow_distance = rounded_box_sdf(
+                                    Vector::new(
+                                        x - physical_bounds.position().x
+                                            - (shadow.offset.x
+                                                * transformation.scale_factor())
+                                            - half_width,
+                                        y - physical_bounds.position().y
+                                            - (shadow.offset.y
+                                                * transformation.scale_factor())
+                                            - half_height,
+                                    ),
+                                    size,
+                                    &radii,
+                                )
+                                .max(0.0);
+                                let shadow_alpha = 1.0
+                                    - smoothstep(
+                                        -shadow.blur_radius
+                                            * transformation.scale_factor(),
+                                        shadow.blur_radius
+                                            * transformation.scale_factor(),
+                                        shadow_distance,
+                                    );
+
+                                let mut color = into_color(shadow.color);
+                                color.apply_opacity(shadow_alpha);
+
+                                color.to_color_u8().premultiply()
+                            },
+                        )
+                    })
+                    .collect();
+
+                if let Some(pixmap) =
+                    tiny_skia::IntSize::from_wh(px1 - px0, py1 - py0)
+                        .and_then(|size| {
+                            tiny_skia::Pixmap::from_vec(
+                                bytemuck::cast_vec(colors),
                                 size,
-                                &radii,
                             )
-                            .max(0.0);
-                            let shadow_alpha = 1.0
-                                - smoothstep(
-                                    -shadow.blur_radius
-                                        * transformation.scale_factor(),
-                                    shadow.blur_radius
-                                        * transformation.scale_factor(),
-                                    shadow_distance,
-                                );
-
-                            let mut color = into_color(shadow.color);
-                            color.apply_opacity(shadow_alpha);
-
-                            color.to_color_u8().premultiply()
-                        },
-                    )
-                })
-                .collect();
-
-            if let Some(pixmap) = tiny_skia::IntSize::from_wh(width, height)
-                .and_then(|size| {
-                    tiny_skia::Pixmap::from_vec(
-                        bytemuck::cast_vec(colors),
-                        size,
-                    )
-                })
-            {
-                pixels.draw_pixmap(
-                    x as i32,
-                    y as i32,
-                    pixmap.as_ref(),
-                    &tiny_skia::PixmapPaint::default(),
-                    tiny_skia::Transform::default(),
-                    Some(clip_mask),
-                );
+                        })
+                {
+                    pixels.draw_pixmap(
+                        px0 as i32,
+                        py0 as i32,
+                        pixmap.as_ref(),
+                        &tiny_skia::PixmapPaint::default(),
+                        tiny_skia::Transform::default(),
+                        Some(clip_mask),
+                    );
+                }
             }
         }
 
