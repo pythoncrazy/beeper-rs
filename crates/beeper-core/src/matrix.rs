@@ -5,9 +5,9 @@ use crate::models::{
     ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageRules, Older,
     PollData, PollOption, PollRules, Reaction, SendError, ThreadFollows, Timers, User, VerificationDevice,
     VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS,
-    BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME,
-    DISAPPEARING_TIMER, EDITS, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, NO_UNBLOCK,
-    PERSONAL_AVATAR, PERSONAL_NAME, REPORT_SPAM, USER_BLOCKED,
+    BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, DEFAULT_TIMERS, DELETE_FOR_EVERYONE,
+    DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK,
+    MSG_MENTION, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REPORT_SPAM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -1008,12 +1008,12 @@ async fn sync_space(store: &SharedStore, room: &Room) {
 }
 
 async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>) {
+    if room.room_id() == BOOKMARKS_ROOM {
+        return sync_bookmarks(store, room, events).await;
+    }
     let create = state(room, "m.room.create").await.expect("rooms have a create event");
     if create["com.beeper.label"] == true {
         return sync_label(store, room).await;
-    }
-    if create["type"] == "com.beeper.bookmarks" {
-        return sync_bookmarks(store, room, events).await;
     }
     if create["type"].is_string() {
         return sync_space(store, room).await;
@@ -2875,21 +2875,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// A store with the stub rooms `!room:x`, whose history is `events`, and `!other:x`, whose history is `other`. The
-    /// stub also gives each event of `events` and sends any event.
+    /// A store with the stub rooms `!room:x`, whose history is `events`, and `other.0`, whose history is `other.1`.
+    /// The stub also gives each event of `events` and sends any event.
     async fn stub_history(
         name: &str,
         events: Vec<Value>,
-        other: Vec<Value>,
+        other: (&'static str, Vec<Value>),
     ) -> (crate::store::SharedStore, std::path::PathBuf) {
         let mut sync = stub_sync();
-        sync["rooms"]["join"]["!other:x"] = sync["rooms"]["join"]["!room:x"].clone();
+        sync["rooms"]["join"][other.0] = sync["rooms"]["join"]["!room:x"].clone();
         let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
             "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
             "/_matrix/client/v3/sync" => (200, sync.clone()),
             "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
             p if p.ends_with("/messages") => {
-                let page = if p.contains("other") { &other } else { &events };
+                let room = crate::codec::url_decode(p).expect("an encoded room ID");
+                let page = if room.contains(other.0) { &other.1 } else { &events };
                 (200, json!({ "start": "t", "chunk": page.iter().rev().collect::<Vec<_>>() }))
             }
             p if p.contains("/event/") => {
@@ -2926,7 +2927,7 @@ mod tests {
         let image = json!({ "msgtype": "m.image", "body": "a.png", "info": { "w": 1u64 << 40, "h": 10 }, "file": {} });
         let reaction = json!({ "m.relates_to": { "rel_type": "m.annotation", "event_id": "$a" } });
         let events = vec![text, stub_event("$b", "m.room.message", image), stub_event("$c", "m.reaction", reaction)];
-        let (store, dir) = stub_history("bad-events", events, Vec::new()).await;
+        let (store, dir) = stub_history("bad-events", events, ("!other:x", Vec::new())).await;
         sync_stub_room(&store, "!room:x").await;
         {
             let st = store.read();
@@ -2941,7 +2942,7 @@ mod tests {
         let sticker = json!({ "body": "s", "url": "mxc://x/s", "info": {} });
         let events =
             vec![stub_event("$p", "org.matrix.msc3381.poll.start", poll), stub_event("$s", "m.sticker", sticker)];
-        let (store, dir2) = stub_history("forward", events, Vec::new()).await;
+        let (store, dir2) = stub_history("forward", events, ("!other:x", Vec::new())).await;
         let forward = |event: &str| super::Outgoing::Forward {
             txn: format!("txn{event}"),
             from: "!room:x".into(),
@@ -2982,7 +2983,7 @@ mod tests {
         let answer = json!({ "id": "1", "org.matrix.msc1767.text": "A" });
         let poll = json!({ "org.matrix.msc3381.poll.start": { "question": { "body": "Q" }, "answers": [answer] } });
         let other = vec![stub_event("$note", "org.matrix.msc3381.poll.start", poll)];
-        let (store, dir) = stub_history("own-room", events, other).await;
+        let (store, dir) = stub_history("own-room", events, ("!other:x", other)).await;
         sync_stub_room(&store, "!other:x").await;
         sync_stub_room(&store, "!room:x").await;
         let st = store.read();
@@ -3437,6 +3438,24 @@ mod tests {
         let peers = json!({ "users_default": 100, "kick": 50, "state_default": 50 });
         assert_eq!(manage(&peers, ALL_MEMBER_ACTIONS, "@me:x", "@other:x", false), 0, "equal power in Matrix rooms");
         assert_eq!(manage(&peers, ALL_MEMBER_ACTIONS, "@me:x", "@other:x", true), MANAGE_ROLE, "any power in bridges");
+    }
+
+    /// Desktop finds the bookmarks room by its room ID, reads all of it, and does not show it as a chat.
+    #[tokio::test]
+    async fn bookmarks_come_from_the_managed_room_like_desktop() {
+        use crate::models::BOOKMARKS_ROOM;
+        let rel = json!({ "event_id": "$m", "room_id": "!room:x", "rel_type": "com.beeper.bookmark" });
+        let bookmark = stub_event("$b", "com.beeper.bookmark", json!({ "com.beeper.relates_to": rel }));
+        let text = stub_event("$m", "m.room.message", json!({ "msgtype": "m.text", "body": "hi" }));
+        let (store, dir) = stub_history("bookmarks-room", vec![text], (BOOKMARKS_ROOM, vec![bookmark])).await;
+        sync_stub_room(&store, "!room:x").await;
+        sync_stub_room(&store, BOOKMARKS_ROOM).await;
+        let st = store.read();
+        assert_eq!(st.bookmarks_room.as_deref(), Some(BOOKMARKS_ROOM));
+        assert_eq!(st.messages[st.msg_idx_by_id["$m"]].is_bookmarked, Some(true));
+        assert!(!st.chat_idx_by_id.contains_key(BOOKMARKS_ROOM), "the bookmarks room is not a chat");
+        drop(st);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
