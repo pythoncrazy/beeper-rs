@@ -825,6 +825,10 @@ pub enum UiMessage {
     /// The server saved `analyticsDisabled`, or failed and the toggle goes back to the first value.
     AnalyticsSaved(bool, Result<(), String>),
     Ask(Option<u8>),
+    /// "Logout" of another device in Settings > Devices, its confirmation, and the end of the logout.
+    AskLogoutDevice(String),
+    LogoutDevice(String),
+    DeviceLoggedOut(String, Result<(), String>),
     ReminderMenu,
     OrderReminders(u8),
     DismissAllReminders,
@@ -1612,10 +1616,13 @@ const ASK_BLOCK_OFFLINE: u8 = 20;
 const ASK_UNBLOCK_OFFLINE: u8 = 21;
 /// Desktop's "Privacy notice" before the first transcription of a voice note.
 const ASK_TRANSCRIBE: u8 = 22;
+/// Desktop's logout of another device of the account in Settings > Devices.
+const ASK_LOGOUT_DEVICE: u8 = 23;
 const SETTINGS_SIZE: Size = Size::new(793.0, 705.0);
 /// The dialogs over the Settings window.
-const SETTINGS_DIALOGS: [u8; 7] = [
+const SETTINGS_DIALOGS: [u8; 8] = [
     ASK_LOGOUT,
+    ASK_LOGOUT_DEVICE,
     ASK_CLEAR_STORAGE,
     ASK_CLEAR_CACHE,
     ASK_CLEAR_CHAT,
@@ -4359,6 +4366,8 @@ pub struct BeeperGuiApp {
     pub devices: Option<Result<Vec<DeviceInfo>, String>>,
     pub confirm: Option<u8>,
     delete_target: Option<String>,
+    /// Desktop's `loading` of the device list: a logout of another device runs.
+    devices_busy: bool,
     /// The "Report spam" checkbox of the Block dialog.
     report_spam: bool,
     mods: keyboard::Modifiers,
@@ -4600,6 +4609,7 @@ impl BeeperGuiApp {
             mics: None,
             confirm: None,
             delete_target: None,
+            devices_busy: false,
             report_spam: false,
             reminder_menu: None,
             audio,
@@ -5126,6 +5136,27 @@ impl BeeperGuiApp {
                 Task::none()
             }
         }
+    }
+
+    /// Desktop's `deleteDevices`: logs out another device, then loads the list again. A refused auth opens
+    /// `ReauthRequiredModal`, which logs out the device again after the sign-in code.
+    fn logout_device(&mut self, id: String) -> Task<UiMessage> {
+        (self.confirm, self.devices_busy) = (None, true);
+        let logout = beeper_core::matrix::delete_device(self.store.clone(), id.clone());
+        Task::perform(logout, move |r| UiMessage::DeviceLoggedOut(id.clone(), r))
+    }
+
+    fn device_logged_out(&mut self, id: String, r: Result<(), String>) -> Task<UiMessage> {
+        match r {
+            Ok(()) => return self.load_devices(),
+            Err(e) if e == beeper_core::matrix::REAUTH => return self.open_reauth(UiMessage::LogoutDevice(id)),
+            Err(_) => {
+                self.devices_busy = false;
+                let text = "Couldn't delete device. Please report a problem if this keeps happening.";
+                self.fail(Toast::new(text.into()));
+            }
+        }
+        Task::none()
     }
 
     pub fn title(&self, id: window::Id) -> String {
@@ -7905,7 +7936,10 @@ impl BeeperGuiApp {
                 (self.account_page, self.app_qr) = (None, false);
                 return Task::batch([top, self.load_devices()]);
             }
-            UiMessage::DevicesLoaded(r) => self.devices = Some(r),
+            UiMessage::DevicesLoaded(r) => (self.devices, self.devices_busy) = (Some(r), false),
+            UiMessage::AskLogoutDevice(id) => (self.confirm, self.delete_target) = (Some(ASK_LOGOUT_DEVICE), Some(id)),
+            UiMessage::LogoutDevice(id) => return self.logout_device(id),
+            UiMessage::DeviceLoggedOut(id, r) => return self.device_logged_out(id, r),
             UiMessage::MicsLoaded(r) => {
                 if let Err(e) = &r {
                     eprintln!("Unable to load audio input devices: {e}");
@@ -9197,7 +9231,10 @@ impl BeeperGuiApp {
                 self.group_window = self.group_window.take().filter(|d| d.id != id);
                 self.blocked_window = self.blocked_window.filter(|w| *w != id);
                 self.verify.window = self.verify.window.filter(|w| *w != id);
-                self.reauth.window = self.reauth.window.filter(|w| *w != id);
+                // Desktop's `ReauthRequiredModal` closed without a code ends the logout of a device.
+                if self.reauth.window.take_if(|w| *w == id).is_some() {
+                    self.devices_busy = false;
+                }
                 self.enter_key.window = self.enter_key.window.filter(|w| *w != id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
@@ -17328,12 +17365,16 @@ impl BeeperGuiApp {
                 .push(d.model.clone().map(|m| txt(m, 11.0).color(p.sub)))
                 .push(d.last_seen_ms.map(|t| txt(trf("Last seen: %s", &[&ago(t)]), 11.0).color(p.sub)))
                 .width(Fill);
+            // Desktop's `DeviceRow`: each device has "Logout", which is disabled while the list loads.
+            let ask = match d.current {
+                true => UiMessage::Ask(Some(ASK_LOGOUT)),
+                false => UiMessage::AskLogoutDevice(d.id.clone()),
+            };
             let logout = button(semi(tr("Logout"), 12.0).color(p.strong))
                 .padding([4, 8])
                 .style(btn_style([p.hover, p.selected, p.selected], [p.strong; 3], 20.0))
-                .on_press(UiMessage::Ask(Some(ASK_LOGOUT)));
-            let line: El<'a> =
-                row![tile, text].push(d.current.then_some(logout)).spacing(12).align_y(Center).padding([8, 12]).into();
+                .on_press_maybe((!self.devices_busy).then_some(ask));
+            let line: El<'a> = row![tile, text, logout].spacing(12).align_y(Center).padding([8, 12]).into();
             [(i > 0).then(|| divider(p.prefs_border, 0.0)), Some(line)].into_iter().flatten()
         });
         column![
@@ -17352,6 +17393,15 @@ impl BeeperGuiApp {
                     title,
                     tr("This will disconnect all chat accounts on this device.").into(),
                     vec![(tr("Logout"), UiMessage::Logout)],
+                )
+            }
+            ASK_LOGOUT_DEVICE => {
+                let id = self.delete_target.clone().expect("a device to log out");
+                let name = self.devices.iter().flatten().flatten().find(|d| d.id == id).map(|d| d.name.clone());
+                (
+                    trf("Logout of %s?", &[&name.as_deref().unwrap_or(tr("this device"))]),
+                    tr("This will disconnect all chat accounts on this device.").into(),
+                    vec![(tr("Logout"), UiMessage::LogoutDevice(id))],
                 )
             }
             ASK_DISMISS_REMINDERS => (
