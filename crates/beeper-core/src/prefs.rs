@@ -12,6 +12,8 @@ pub enum Control {
     Analytics,
     /// Desktop's "Downloads location", [`crate::models::BeeperSettings::downloads_dir`].
     Downloads,
+    /// Desktop's `BlockedUsersPref`: the number of blocked people, which opens the Blocked users window.
+    BlockedUsers,
     /// Desktop's `QuickReactionEmojiPreference`: the emoji button of [`crate::models::BeeperSettings::quick_reaction`].
     /// The General row shows only when a double click on a message reacts.
     ReactionEmoji {
@@ -70,6 +72,7 @@ impl Pref {
             | Control::Multi(_)
             | Control::Analytics
             | Control::Downloads
+            | Control::BlockedUsers
             | Control::ReactionEmoji { .. }
             | Control::QuickReactions(_) => {
                 unreachable!("the row {} has no value", self.key)
@@ -87,6 +90,7 @@ impl Pref {
             | Control::Multi(_)
             | Control::Analytics
             | Control::Downloads
+            | Control::BlockedUsers
             | Control::ReactionEmoji { .. }
             | Control::QuickReactions(_) => {
                 unreachable!("the row {} has no value", self.key)
@@ -203,6 +207,7 @@ pub const GENERAL: &[Item] = &[
             .desc("Incognito mode keeps chats unread even when you click on them and doesn't notify recipients you've read them. Respond or hit %s to mark a chat as read.")
             .args(const { &[cmd!("", " Shift U")] }),
         t("typingIndicators", "Show recipients I'm typing", true).plus("stealth-mode"),
+        custom("blockedUsers", "Blocked users", Control::BlockedUsers).gated("block-users"),
     ]),
     Item::Group(&[s("appLanguage", "App language", LANGUAGES, 0)]),
     Item::Group(&[

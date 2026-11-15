@@ -46,6 +46,7 @@ fn prefs() -> impl Iterator<Item = (SettingsTab, &'static prefs::Pref)> {
                     | prefs::Control::Multi(_)
                     | prefs::Control::Analytics
                     | prefs::Control::Downloads
+                    | prefs::Control::BlockedUsers
                     | prefs::Control::ReactionEmoji { .. }
                     | prefs::Control::QuickReactions(_)
             )
@@ -4226,6 +4227,38 @@ fn blocking_like_desktop() {
     let notice = format!("You blocked {title}. Unblock them in {network}.");
     assert!(simulator(app.view_conversation()).find(notice.as_str()).is_ok());
     assert!(simulator(app.view_chat_menu(&id, false, 900.0)).find("Unblock…").is_err());
+}
+
+#[test]
+fn blocked_users_like_desktop() {
+    let mut app = demo_app("blocked-users");
+    let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::General));
+    assert!(simulator(app.view_settings()).find("Blocked users").is_err(), "the block-users flag is off");
+    app.store.write().features.flags["features"]["*"]["block-users"] = true.into();
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_settings());
+        let _ = sim.click("Blocked users").expect("the Blocked users row");
+        sim.into_messages().collect()
+    };
+    assert!(matches!(&picked[..], [UiMessage::OpenBlockedUsers]));
+    let _ = app.update(UiMessage::OpenBlockedUsers);
+    assert!(app.blocked_window.is_some());
+    assert!(simulator(app.view_blocked_users()).find("No Blocked Users").is_ok());
+    let (id, title) = {
+        let mut st = app.store.write();
+        let i = st.chats.iter().position(|c| c.chat_type == "single" && c.id != NOTE_CHAT_ID).expect("a DM");
+        st.update_chat(i, |c| c.block = BLOCK_USER | USER_BLOCKED);
+        (st.chats[i].id.clone(), st.chats[i].title.clone())
+    };
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_blocked_users());
+        let _ = sim.click(title.as_str()).expect("the blocked person");
+        sim.into_messages().collect()
+    };
+    assert!(matches!(&picked[..], [UiMessage::OpenBlockedUser(c)] if *c == id));
+    let _ = app.update(UiMessage::OpenBlockedUser(id.clone()));
+    assert!(app.pane.selected_chat_id.as_deref() == Some(id.as_str()) && app.show_right_panel);
+    assert!(simulator(app.view_settings()).find("1").is_ok(), "the row counts the blocked people");
 }
 
 #[test]
