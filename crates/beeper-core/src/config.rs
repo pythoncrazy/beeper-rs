@@ -26,7 +26,6 @@ pub const DATA_FOLDER_PREFIX: &str = "beeper-rs";
 const LEGACY_DATA_FOLDER_PREFIX: &str = "BeeperRs";
 const LEGACY_DATA_FILES: [&str; 4] = ["beeper-rs.db", "beeper-rs.db-wal", "beeper-rs.db-shm", "media"];
 pub const ORIGINAL_BEEPER_FOLDER_PREFIX: &str = "BeeperTexts";
-pub const OPENAPI_SPEC_JSON: &str = include_str!("../assets/openapi.json");
 pub const SEED_JSON: &str = include_str!("../assets/seed.json");
 
 #[derive(Debug, Clone)]
