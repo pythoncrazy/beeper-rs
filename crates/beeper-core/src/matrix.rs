@@ -43,7 +43,7 @@ use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::events::tag::{TagInfo, TagName};
 use matrix_sdk::ruma::events::{GlobalAccountDataEventType, Mentions, RoomAccountDataEventType, StateEventType};
 use matrix_sdk::ruma::serde::Raw;
-use matrix_sdk::ruma::{OwnedEventId, OwnedUserId};
+use matrix_sdk::ruma::{OwnedDeviceId, OwnedEventId, OwnedUserId};
 use matrix_sdk::{Client, LoopCtrl, Room, RoomMemberships, SessionMeta, SessionTokens};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -2671,6 +2671,19 @@ pub async fn devices(client: Client) -> Result<Vec<DeviceInfo>, String> {
         });
     }
     Ok(out)
+}
+
+/// Desktop's `deleteDevicesByID` for another device of the account. The homeserver asks for auth, which the Beeper
+/// JWT gives.
+pub async fn delete_device(store: SharedStore, id: String) -> Result<(), String> {
+    let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
+    let ids = [OwnedDeviceId::from(id)];
+    if let Err(x) = client.delete_devices(&ids, None).await {
+        let uiaa = x.as_uiaa_response().ok_or_else(|| x.to_string())?;
+        let auth = jwt_auth(&store, uiaa.session.clone())?;
+        client.delete_devices(&ids, Some(auth)).await.map_err(|x| auth_error(x.into()))?;
+    }
+    Ok(())
 }
 
 pub async fn logout(store: SharedStore) -> Result<(), String> {

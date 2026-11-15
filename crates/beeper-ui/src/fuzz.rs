@@ -2484,6 +2484,30 @@ fn devices_offer_the_app_like_desktop() {
     ])));
     let mut sim = simulator(app.view_settings());
     assert!(sim.find("Linux PC").is_ok() && sim.find("iPad Air").is_ok(), "the device metadata model shows");
+
+    // Desktop's "Logout" of another device: a confirmation, then `deleteDevices` with the auth of the Beeper JWT.
+    let _ = sim.click("Logout");
+    for m in sim.into_messages() {
+        let _ = app.update(m);
+    }
+    let mut sim = simulator(app.view_settings());
+    assert!(sim.find("Logout of Beeper Desktop?").is_ok(), "the dialog names the device");
+    assert!(sim.find("This will disconnect all chat accounts on this device.").is_ok());
+    drop(sim);
+    let _ = app.update(UiMessage::LogoutDevice("Beeper Desktop".into()));
+    assert!(app.confirm.is_none() && app.devices_busy, "the logout runs");
+    let mut sim = simulator(app.view_settings());
+    let _ = sim.click("Logout");
+    assert_eq!(sim.into_messages().count(), 0, "the buttons are disabled while the logout runs");
+    let refused = Err(beeper_core::matrix::REAUTH.into());
+    let _ = app.update(UiMessage::DeviceLoggedOut("Beeper Desktop".into(), refused));
+    let modal = app.reauth.window.expect("a refused JWT asks for a sign-in code");
+    let _ = app.update(UiMessage::WindowClosed(modal));
+    assert!(!app.devices_busy, "a closed modal ends the logout");
+    let _ = app.update(UiMessage::LogoutDevice("Beeper Desktop".into()));
+    let _ = app.update(UiMessage::DeviceLoggedOut("Beeper Desktop".into(), Err("M_UNKNOWN".into())));
+    assert!(!app.devices_busy);
+    assert_eq!(app.status_banner, "Couldn't delete device. Please report a problem if this keeps happening.");
 }
 
 #[test]

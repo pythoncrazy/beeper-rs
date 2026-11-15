@@ -838,7 +838,7 @@ impl BeeperGuiApp {
                     // Desktop's `ReauthRequiredModal` asks for a sign-in code, then the key is made again.
                     Err(e) if e == beeper_core::matrix::REAUTH => {
                         l.error = Some(e);
-                        return self.open_reauth();
+                        return self.open_reauth(LoginMsg::NewKey.into());
                     }
                     Err(e) => l.error = Some(e),
                 }

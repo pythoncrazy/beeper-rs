@@ -23,6 +23,8 @@ pub struct Reauth {
     code: String,
     pub busy: bool,
     error: Option<String>,
+    /// The step that needed the auth, which runs again with the new Beeper JWT.
+    retry: Option<UiMessage>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,13 +49,13 @@ async fn cloud<T: Send + 'static>(cloud: Arc<Cloud>, f: impl FnOnce(&Cloud) -> T
 }
 
 impl BeeperGuiApp {
-    /// Opens Desktop's `ReauthRequiredModal`, and asks the Beeper cloud to email a sign-in code.
-    pub(crate) fn open_reauth(&mut self) -> Task<UiMessage> {
+    /// Opens Desktop's `ReauthRequiredModal`, and asks the Beeper cloud to email a sign-in code. The code runs `retry`.
+    pub(crate) fn open_reauth(&mut self, retry: UiMessage) -> Task<UiMessage> {
         if let Some(id) = self.reauth.window {
             return window::gain_focus(id);
         }
         let (id, open) = self.open_child(SIZE);
-        self.reauth = Reauth { window: Some(id), ..Reauth::default() };
+        self.reauth = Reauth { window: Some(id), retry: Some(retry), ..Reauth::default() };
         let open = open.chain(operation::focus(CODE_INPUT));
         // Like Desktop, an account without an email gets no code.
         let Some(email) = self.store.read().whoami.email.clone() else { return open };
@@ -97,7 +99,8 @@ impl BeeperGuiApp {
             ReauthMsg::Done(Ok(jwt)) => {
                 self.store.write().ui_auth_token = Some(jwt);
                 let close = self.reauth.window.take().map_or_else(Task::none, window::close);
-                return Task::batch([close, self.make_recovery_key()]);
+                let retry = self.reauth.retry.take().expect("the modal has a step to run again");
+                return Task::batch([close, self.update(retry)]);
             }
         }
         Task::none()
