@@ -5806,6 +5806,40 @@ fn sign_in_code_screen_like_desktop() {
     assert_eq!(login_pixels(&app, &[(28, 375), (20, 393)]), [app.pal.primary_container, red]);
 }
 
+/// Desktop's username screen and the end of the onboarding: the sync icon goes through the suggestions, Next waits
+/// for a valid name, Continue waits for a connected account, and the same window becomes the main window.
+#[test]
+fn sign_in_username_and_continue_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    use login::{LoginMsg, Outcome, Screen};
+    let mut app = signed_out_app("sign-in-username");
+    let id = app.login_window.expect("the sign-in window");
+    let lead = Outcome::Lead("lead".into(), vec!["alex-rs".into(), "alex2".into()]);
+    let _ = app.update(LoginMsg::Done(Ok(lead)).into());
+    assert_eq!((app.login.screen, app.login.username.as_str()), (Screen::Username, "alex-rs"));
+    let _ = app.update(LoginMsg::NextSuggestion.into());
+    assert_eq!(app.login.username, "alex2", "the sync icon shows the next suggestion");
+    let _ = app.update(LoginMsg::Username("SupportBot".into()).into());
+    assert_eq!(app.login.username, "supportbot", "the field takes lower case letters, digits and dashes");
+    assert!(simulator(app.view_login()).find("Username is not available. Try something else.").is_ok());
+    let _ = app.update(UiMessage::WindowKey(id, Key::Named(Named::Enter), Modifiers::empty()));
+    assert!(!app.login.busy, "Enter does not send a name that Next refuses");
+    let _ = app.update(LoginMsg::Username("alex-rs".into()).into());
+    let _ = app.update(UiMessage::WindowKey(id, Key::Named(Named::Enter), Modifiers::empty()));
+    assert!(app.login.busy, "Enter sends a valid name");
+
+    app.login.screen = Screen::Accounts;
+    assert!(app.store.read().bridge_accounts.is_empty());
+    assert!(simulator(app.view_login()).find("Continue").is_err(), "Continue waits for a connected account");
+    let mut done = demo_app("sign-in-continue");
+    (done.login_window, done.main_window) = (done.main_window, None);
+    done.login.screen = Screen::Accounts;
+    assert!(simulator(done.view_login()).find("Continue").is_ok());
+    let window = done.login_window;
+    let _ = done.update(LoginMsg::Continue.into());
+    assert_eq!((done.login_window, done.main_window), (None, window), "the sign-in window becomes the main window");
+}
+
 /// The keyboard of the sign-in window, like Desktop: Tab goes through the controls in their order, Enter presses
 /// the focused control or submits the form, and Escape closes the menu. Errors show in the toast, and an email
 /// that is not valid shows Chromium's message.

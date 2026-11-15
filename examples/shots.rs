@@ -142,6 +142,11 @@ fn main() {
     let refused = beeper_core::cloud::CloudError { status: 401, message: "Invalid code. Please try again.".into() };
     let _ = app.update(UiMessage::Login(LoginMsg::Done(Err(refused))));
     shot(&out, "login_code_error", (330.0, 620.0), &theme, app.view_login());
+    let lead = beeper_ui::login::Outcome::Lead("lead".into(), vec!["alex-rs".into(), "alex2".into()]);
+    let _ = app.update(UiMessage::Login(LoginMsg::Done(Ok(lead))));
+    shot(&out, "login_username_suggested", (330.0, 620.0), &theme, app.view_login());
+    let _ = app.update(UiMessage::Login(LoginMsg::Username("supportbot".into())));
+    shot(&out, "login_username_refused", (330.0, 620.0), &theme, app.view_login());
     if real.is_none() {
         std::fs::remove_dir_all(data).expect("remove shot data dir");
     }
