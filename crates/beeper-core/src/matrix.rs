@@ -3,10 +3,10 @@ use crate::import::DesktopCrypto;
 use crate::models::{
     timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatParticipants,
     ChatReminder, EditHistoryEntry, Label, Message, MessageLink, MessageRules, Older, PollData, PollOption, PollRules,
-    Reaction, Timers, User, VerificationDevice, VerificationError, VerificationSas, VerificationSasEmoji, ALL_FILES,
-    ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE,
-    DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS,
-    MEMBER_KICK, MSG_MENTION,
+    Reaction, SendError, Timers, User, VerificationDevice, VerificationError, VerificationSas, VerificationSasEmoji,
+    ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BOOKMARK, DEFAULT_TIMERS,
+    DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE, FORMATS, MANAGE_KICK,
+    MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -63,6 +63,8 @@ enum Op {
     /// A poll response: the poll, the voter and the answers.
     Vote(String, String, Vec<String>),
     EndPoll(String),
+    /// A `com.beeper.message_send_status`: the message, whether it reached a user, and the error.
+    SendStatus(String, bool, Option<SendError>),
 }
 
 fn s(v: &Value) -> Option<String> {
@@ -536,6 +538,13 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
             });
         }
         "m.room.encrypted" => (Some(UTD_TEXT.into()), Vec::new(), "TEXT"),
+        // Desktop's `handleMessageSendStatus`: a bridge took the message, or could not send it.
+        "com.beeper.message_send_status" => {
+            let ok = matches!(c["status"].as_str(), Some("SUCCESS" | "PENDING"));
+            let error = (!ok).then(|| SendError { message: s(&c["message"]), retrying: false });
+            let delivered = c["delivered_to_users"].as_array().is_some_and(|u| !u.is_empty());
+            return Some(Op::SendStatus(s(&rel["event_id"])?, delivered, error));
+        }
         "org.matrix.msc3381.poll.response" | "m.poll.response" => {
             return Some(Op::Vote(s(&rel["event_id"])?, sender, poll_answers(c)));
         }
@@ -591,6 +600,7 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         seen: Default::default(),
         timer: (message_type == "DISAPPEARING_TIMER").then(|| c["timer"].as_u64().unwrap_or(0)),
         send_error: None,
+        is_delivered: false,
         flags: match c["m.mentions"]["user_ids"].as_array() {
             Some(ids) if ids.iter().any(|u| u == room.own_user_id().as_str()) => MSG_MENTION,
             _ => 0,
@@ -1059,6 +1069,14 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
                 }
                 Op::EndPoll(target) if here(&st, &target).is_some() => st.update_poll(&target, |p| p.ended = true),
                 Op::Vote(..) | Op::EndPoll(_) => {}
+                Op::SendStatus(target, delivered, error) => {
+                    let i = here(&st, &target);
+                    if let Some(i) =
+                        i.filter(|&i| (st.messages[i].is_delivered, &st.messages[i].send_error) != (delivered, &error))
+                    {
+                        st.update_message(i, |m| (m.is_delivered, m.send_error) = (delivered, error));
+                    }
+                }
                 Op::React(target, r, mut preview) => {
                     let target_idx = here(&st, &target);
                     let target_msg = target_idx.map(|i| &st.messages[i]);
@@ -2657,7 +2675,7 @@ mod tests {
         super::flush(store.clone()).await.expect("a failed message is not a flush error");
         let (e, queued, again) = error(&store);
         let e = e.expect("the local echo keeps the error");
-        assert!(e.message.contains("stub refusal") && !e.retrying, "{e:?}");
+        assert!(e.message.as_deref().is_some_and(|m| m.contains("stub refusal")) && !e.retrying, "{e:?}");
         assert_eq!((queued, again), (1, false), "the send waits in the outbox for Retry");
         drop(store);
         let store = stub_store(&dir, &url).await;
@@ -2670,6 +2688,42 @@ mod tests {
         drop(store);
         let cfg = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23392, None);
         assert!(crate::store::BeeperStore::from_config(cfg).outbox.is_empty(), "the outbox row is gone");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn message_send_statuses_mark_delivered_and_failed_messages_like_desktop() {
+        let status = |i: i64, target: i64, content: Value| {
+            let mut content = content;
+            content["m.relates_to"] = json!({ "rel_type": "m.reference", "event_id": format!("$e{target}") });
+            json!({ "type": "com.beeper.message_send_status", "sender": "@bot:x", "event_id": format!("$s{i}"),
+                "origin_server_ts": 1_700_000_100_000i64, "content": content, "unsigned": { "com.beeper.hs.order": 10 + i } })
+        };
+        let url = stub_homeserver(move |_, path, _| match path.split('?').next().expect("a path") {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => {
+                let delivered = status(1, 1, json!({ "status": "SUCCESS", "delivered_to_users": ["@alice:x"] }));
+                let failed = status(2, 2, json!({ "status": "FAIL_PERMANENT", "message": "Network down" }));
+                (200, json!({ "start": "t2", "chunk": [failed, delivered, stub_message(2), stub_message(1)] }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let dir = std::env::temp_dir().join(format!("beeper-rs-mss-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = stub_store(&dir, &url).await;
+        let room = store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).unwrap();
+        super::sync_room(&store, &room, Vec::new()).await;
+        let st = store.read();
+        let m = |id: &str| &st.messages[st.msg_idx_by_id[id]];
+        assert!(m("$e1").is_delivered && m("$e1").send_error.is_none(), "a delivered message");
+        let error = crate::models::SendError { message: Some("Network down".into()), retrying: false };
+        assert_eq!((m("$e2").is_delivered, m("$e2").send_error.as_ref()), (false, Some(&error)), "a failed message");
+        assert_eq!(st.chat_msg_indices["!room:x"].len(), 2, "send statuses are no timeline rows");
+        drop(st);
+        drop(store);
         let _ = std::fs::remove_dir_all(dir);
     }
 

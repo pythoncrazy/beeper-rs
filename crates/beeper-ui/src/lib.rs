@@ -3146,6 +3146,12 @@ fn ease_out_quint(x: f32) -> f32 {
     bezier((lo + hi) / 2.0, 1.0, 1.0)
 }
 
+/// Desktop's `IJ`: when a pending message shows "Still sending...", 5 s after it, or 12 s with attachments.
+fn still_sending_at(m: &Message) -> i64 {
+    let wait = if m.attachments.is_empty() { 5_000 } else { 12_000 };
+    millis_from_rfc3339(&m.timestamp).expect("RFC 3339 timestamp") + wait
+}
+
 /// Desktop's `animate-on-insert` for your pending message, with "Enable message animations" on: the eased
 /// progress of its 260 ms `message-send-insert` animation.
 fn send_rise(st: &BeeperStore, m: &Message) -> Option<f32> {
@@ -8776,6 +8782,15 @@ impl BeeperGuiApp {
             (rising, (pending.filter_map(|c| Some(c.reminder.as_ref()?.remind_at_ms)).min(), send))
         };
         let wait = |at: i64| std::time::Duration::from_millis((at - now_unix_millis()).max(1) as u64);
+        let late = {
+            let st = self.store.read();
+            let open = self.pane.selected_chat_id.as_ref().and_then(|c| st.chat_msg_indices.get(c));
+            let echoes = open.into_iter().flatten().map(|&i| &st.messages[i]);
+            let echoes = echoes.filter(|m| m.send_error.is_none() && pending(&st, m));
+            echoes.map(still_sending_at).filter(|&at| at > now_unix_millis()).min()
+        };
+        // "Sending..." turns into "Still sending..." at its time.
+        let late = late.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::AnimationTick));
         let remind = due.0.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::CheckReminders));
         let send = due.1.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::CheckScheduled));
         let typed = std::iter::once(&self.pane).chain(self.chat_windows.iter().map(|w| &w.1));
@@ -8818,6 +8833,7 @@ impl BeeperGuiApp {
                 .chain(toast)
                 .chain(shot)
                 .chain(remind)
+                .chain(late)
                 .chain(send)
                 .chain(queued)
                 .chain(typing)
@@ -11978,6 +11994,7 @@ impl BeeperGuiApp {
         let mut col = Column::new().padding(Padding::new(8.0).right(8.0 + GUTTER).top(96.0).bottom(0.0));
         col = col.push((!thread).then(|| self.top_of_thread(st, chat)));
         let last_live = msgs.iter().rposition(|m| m.is_deleted != Some(true));
+        let any_pending = msgs.iter().any(|m| pending(st, m));
         let mut last_seen: HashMap<&str, (&str, &str)> = HashMap::new();
         let mut replied: HashSet<&str> = HashSet::new();
         for m in msgs.iter().rev() {
@@ -12086,8 +12103,24 @@ impl BeeperGuiApp {
                         false => trf(if played { "Played %s" } else { "Seen %s" }, &[&day_label(ts)]),
                     })
                 }
+            } else if m.send_error.is_some() || m.is_deleted == Some(true) || m.is_sender != Some(true) {
+                None
+            } else if pending(st, m) {
+                let queued = self.queued.iter().any(|q| q.sends.iter().any(|s| s.0 == m.id));
+                let late = still_sending_at(m) <= now_unix_millis();
+                Some(
+                    tr(if queued {
+                        "Queued"
+                    } else if late {
+                        "Still sending..."
+                    } else {
+                        "Sending..."
+                    })
+                    .into(),
+                )
             } else {
-                (Some(end - 1) == last_live && m.is_sender == Some(true)).then(|| tr("Sent").into())
+                (Some(end - 1) == last_live && !any_pending)
+                    .then(|| tr(if m.is_delivered { "Delivered" } else { "Sent" }).into())
             };
             let chained = i > 0 && roots[i - 1] == roots[i];
             let split = roots.get(end).is_some_and(|r| *r != roots[end - 1]);
@@ -12315,7 +12348,12 @@ impl BeeperGuiApp {
                     let label = if m.edited() { tr("Failed to edit") } else { tr("Not sent") };
                     let icon = svg(ERROR_OUTLINE.clone()).width(20).height(20);
                     let icon = icon.style(|_, _| svg::Style { color: Some(ON_ERROR_CONTAINER) });
-                    let tip = self.tip(icon.into(), e.message.clone(), vec![], tooltip::Position::Left);
+                    let tip = self.tip(
+                        icon.into(),
+                        e.message.clone().unwrap_or_else(|| tr("Unknown error occurred").into()),
+                        vec![],
+                        tooltip::Position::Left,
+                    );
                     let meta = row![txt(label, 11.0).color(ON_ERROR_CONTAINER), tip].spacing(4).align_y(Center);
                     (crate::style::text_width(label, 11.0, Weight::Normal) + 28.0, Some(meta.into()))
                 }
@@ -12517,22 +12555,30 @@ impl BeeperGuiApp {
             ]
             .into()
         };
-        // Desktop's error actions of a local echo that the homeserver did not take.
-        let actions = failed.filter(|_| m.id.starts_with("msg_")).map(|e| {
+        // Desktop's error actions: Retry and Remove for a local echo, and Delete for a message that a bridge did not
+        // send. A failed edit has none.
+        let pending = pending(st, m);
+        let actions = failed.filter(|_| pending || !m.edited()).map(|e| {
             let action = |label: String, msg: Option<UiMessage>| {
                 button(txt(label, 12.0).line_height(Pixels(16.0)))
                     .padding([4, 8])
                     .style(btn_style([p.received; 3], [p.text; 3], 9999.0))
                     .on_press_maybe(msg)
             };
-            let retry = match e.retrying {
+            let retry = pending.then(|| match e.retrying {
                 true => action(format!("{} ...", tr("Retrying")), None),
                 false => action(tr("Retry").into(), Some(UiMessage::RetrySend(m.id.clone()))),
-            };
-            let remove = (!m.edited()).then(|| {
-                action(trx("Remove", "message error action").into(), Some(UiMessage::RemoveUnsent(m.id.clone())))
             });
-            container(row![retry].push(remove).spacing(4)).padding(Padding::ZERO.top(4.0))
+            let remove = (!m.edited()).then(|| match pending {
+                true => {
+                    action(trx("Remove", "message error action").into(), Some(UiMessage::RemoveUnsent(m.id.clone())))
+                }
+                false => action(
+                    trx("Delete", "message error action").into(),
+                    Some(UiMessage::DeleteMessage(chat.id.clone(), m.id.clone())),
+                ),
+            });
+            container(row![].push(retry).push(remove).spacing(4)).padding(Padding::ZERO.top(4.0))
         });
         let parts =
             column![parts].push(edits).push(actions).push(footer).align_x(if mine { Right } else { iced::Left });

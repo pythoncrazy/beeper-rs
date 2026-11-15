@@ -835,9 +835,13 @@ pub struct Message {
     /// Desktop's `action.timer` of a `DISAPPEARING_TIMER` row: the new timer in ms, or 0 for Off.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub timer: Option<u64>,
-    /// Desktop's `sendStatus` of a message that the homeserver did not take: `isErrored`, or `isRetrying` again.
+    /// Desktop's `sendStatus` of a message that the homeserver or the bridge did not take: `isErrored`, or
+    /// `isRetrying` again.
     #[serde(rename = "sendError", skip_serializing_if = "Option::is_none", default)]
     pub send_error: Option<SendError>,
+    /// Desktop's `isDelivered`: the bridge delivered the message to a user.
+    #[serde(rename = "isDelivered", skip_serializing_if = "std::ops::Not::not", default)]
+    pub is_delivered: bool,
     #[serde(skip)]
     pub flags: u16,
 }
@@ -845,7 +849,7 @@ pub struct Message {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SendError {
     /// The reason, which the error tooltip shows.
-    pub message: String,
+    pub message: Option<String>,
     pub retrying: bool,
 }
 
