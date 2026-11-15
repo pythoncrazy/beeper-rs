@@ -49,9 +49,9 @@ use crate::i18n::{tr, trf, trn, trnx, trs, trx, trxf};
 use crate::login::{Login, LoginMsg};
 
 use crate::style::{
-    bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded, fill_box,
-    fw, glow_box, gutter_style, hex, ic, icon, initials, input_style, med, mix, pick, pick_menu_style, pick_style,
-    scroll_style, semi, shadow_box, stable_bar, text_width, txt, Palette, Token, ALL_FONTS, AVATAR_GRADIENTS, CLEAR,
+    all_fonts, bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded,
+    fill_box, fw, glow_box, gutter_style, hex, ic, icon, initials, input_style, med, mix, pick, pick_menu_style,
+    pick_style, scroll_style, semi, shadow_box, stable_bar, text_width, txt, Palette, Token, AVATAR_GRADIENTS, CLEAR,
     GUTTER, SOLID_BARS,
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
@@ -18005,7 +18005,7 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         .scale_factor(|a: &BeeperGuiApp, _| a.zoom)
         .style(|a: &BeeperGuiApp, _| iced::theme::Style { background_color: a.pal.window, text_color: a.pal.text })
         .default_font(fw(Weight::Normal));
-    ALL_FONTS.into_iter().fold(app, |app, f| app.font(f)).run()
+    all_fonts().fold(app, |app, f| app.font(f)).run()
 }
 
 /// Desktop's `cR`: the icon of a new label.

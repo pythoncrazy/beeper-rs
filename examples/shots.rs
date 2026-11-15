@@ -3,7 +3,7 @@ use beeper_core::models::{AppVerification, ThemeChoice, VerificationSas, Verific
 use beeper_core::store::{BeeperStore, StoreLock};
 use beeper_ui::{
     login::{Login, LoginMsg, Screen},
-    style::{fw, ALL_FONTS},
+    style::{all_fonts, fw},
     BeeperGuiApp, El, SettingsTab, UiMessage,
 };
 use iced::{font::Weight, Size, Theme};
@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 fn shot(out: &Path, name: &str, size: (f32, f32), theme: &Theme, el: El<'_>) {
     let settings = iced::Settings {
         default_font: fw(Weight::Normal),
-        fonts: ALL_FONTS.iter().map(|f| (*f).into()).collect(),
+        fonts: all_fonts().map(Into::into).collect(),
         ..iced::Settings::default()
     };
     let path = out.join(format!("{name}-tiny-skia.png"));
