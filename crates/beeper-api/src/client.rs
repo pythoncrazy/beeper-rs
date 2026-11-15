@@ -183,8 +183,8 @@ impl BeeperClient {
         self.json("PUT", &message_path(chat_id, message_id, ""), Some(json!({ "text": text }))).await
     }
 
-    pub async fn delete_message(&self, chat_id: &str, message_id: &str) -> Value {
-        self.json("DELETE", &message_path(chat_id, message_id, ""), None).await
+    pub async fn delete_message(&self, chat_id: &str, message_id: &str) -> StatusCode {
+        self.send("DELETE", &message_path(chat_id, message_id, ""), &[], None).await.0
     }
 
     pub async fn add_reaction(&self, chat_id: &str, message_id: &str, reaction_key: &str) -> Value {
