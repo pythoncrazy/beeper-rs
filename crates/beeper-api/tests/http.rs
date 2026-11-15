@@ -125,6 +125,45 @@ async fn websocket_frames_over_64_kb_close_with_1009() {
 }
 
 #[tokio::test]
+async fn websocket_drops_events_that_repeat_within_250_ms() {
+    use beeper_api::http::{read_ws_frame, write_ws_frame};
+    let (port, token) = server("ws-repeat").await;
+    let upgrade = format!("GET /v1/ws HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\nauthorization: Bearer {token}\r\n\r\n");
+    let mut ws = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    ws.write_all(upgrade.as_bytes()).await.unwrap();
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        head.push(ws.read_u8().await.unwrap());
+    }
+    let (_, ready) = timeout(Duration::from_secs(5), read_ws_frame(&mut ws, 1 << 20)).await.unwrap().unwrap();
+    assert!(String::from_utf8_lossy(&ready).contains("\"ready\""));
+    write_ws_frame(&mut ws, 0x1, br#"{"type":"subscriptions.set","chatIDs":["*"]}"#, true).await.unwrap();
+    let mute = |on: bool| {
+        let body = format!("{{\"isMuted\":{on}}}");
+        let request = format!("PATCH /v1/chats/!wa_family:beeper.com HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+        async move { text(port, &request).await }
+    };
+    let (_, ack) = timeout(Duration::from_secs(5), read_ws_frame(&mut ws, 1 << 20)).await.unwrap().unwrap();
+    assert!(String::from_utf8_lossy(&ack).contains("subscriptions.updated"));
+    mute(true).await;
+    mute(true).await;
+    // A chat event carries no chat, so the same event shows again after the window.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    mute(false).await;
+    let mut frames = Vec::new();
+    while let Ok(Ok((_, payload))) = timeout(Duration::from_millis(500), read_ws_frame(&mut ws, 1 << 20)).await {
+        let v: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        frames.push((v["seq"].as_u64().unwrap(), v["type"].as_str().unwrap().to_string()));
+    }
+    let seqs: Vec<u64> = frames.iter().map(|f| f.0).collect();
+    assert_eq!(seqs, (1..=frames.len() as u64).collect::<Vec<_>>(), "seq counts only the sent events");
+    assert!(
+        frames.len() == 2 && frames.iter().all(|f| f.1 == "chat.upserted"),
+        "the repeated mute is dropped: {frames:?}"
+    );
+}
+
+#[tokio::test]
 async fn repeated_and_bracket_query_keys_are_arrays() {
     use beeper_api::codec::url_encode;
     use serde_json::{json, Value};
