@@ -837,6 +837,61 @@ fn show_replies_like_desktop() {
     assert!(simulator(app.view_main()).find("Jump to Message").is_ok());
 }
 
+/// Desktop's threaded replies: the replies button and the root line in the chat, the thread pane with its divider and
+/// its composer, which sends a thread reply with "Also send to chat", and "Reply in thread…".
+#[test]
+fn threads_like_desktop() {
+    let mut app = demo_app("threads");
+    let (chat, root) = ("!sl_infra:beeper.com", "msg_1007");
+    app.select_chat(chat);
+    {
+        let st = app.store.read();
+        let ids: Vec<&str> = app.timeline(&st).0.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"msg_1010") && !ids.contains(&"msg_1011"), "a reply only in the thread stays out");
+    }
+    let mut sim = simulator(app.view_main());
+    assert!(sim.find("Replying to: ").is_ok(), "a reply also sent to the chat shows its root");
+    let _ = sim.click("4 replies").expect("the replies button under the root");
+    for m in sim.into_messages().collect::<Vec<_>>() {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.pane.thread.as_ref().and_then(|t| t.thread_root.as_deref()), Some(root));
+    {
+        let mut sim = simulator(app.view_main());
+        for t in ["Thread", "4 replies", "Eric Migicovsky", "Also sent to the chat"] {
+            assert!(sim.find(t).is_ok(), "the thread pane shows {t}");
+        }
+    }
+    let in_thread = |m: UiMessage| UiMessage::InThread(Box::new(m));
+    assert!(simulator(app.view_main()).find("Also send to chat").is_err(), "an empty composer hides the toggle");
+    let edit = text_editor::Edit::Paste(Arc::new("done".into()));
+    let _ = app.update(in_thread(UiMessage::ComposerEdit(text_editor::Action::Edit(edit))));
+    assert!(simulator(app.view_main()).find("Also send to chat").is_ok(), "a draft shows the toggle in Slack");
+    let _ = app.update(in_thread(UiMessage::SetBroadcast(true)));
+    let _ = app.update(in_thread(UiMessage::SubmitComposer));
+    {
+        let st = app.store.read();
+        let m = st.messages.last().unwrap();
+        assert_eq!((m.text.as_deref(), m.thread_root.as_deref(), m.broadcast), (Some("done"), Some(root), true));
+        assert_eq!(m.linked_message_id.as_deref(), Some("msg_1011"), "the reply falls back to the newest reply");
+        let c = &st.chats[st.chat_idx_by_id[chat]];
+        assert_eq!(c.preview.as_ref().map(|p| p.id.as_str()), Some(m.id.as_str()), "it is also sent to the chat");
+    }
+    let thread = app.pane.thread.as_ref().unwrap();
+    assert!(thread.composer.text().trim().is_empty() && !thread.broadcast, "a send clears the thread composer");
+    let _ = app.update(UiMessage::HideThread);
+    assert!(app.pane.thread.is_none());
+    let _ = app.update(UiMessage::OpenMessageMenu(root.into()));
+    let mut sim = simulator(app.view_main());
+    let _ = sim.click("Reply in thread…").expect("the message menu replies in the thread");
+    for m in sim.into_messages().collect::<Vec<_>>() {
+        let _ = app.update(m);
+    }
+    assert!(app.pane.thread.is_some() && !app.show_right_panel, "the thread pane takes the place of Chat Info");
+    let _ = app.update(UiMessage::ToggleRightPanel);
+    assert!(app.pane.thread.is_none() && app.show_right_panel, "Chat Info takes the place of the thread pane");
+}
+
 #[test]
 fn pickers_check_the_network_like_desktop() {
     let mut app = demo_app("pickers");

@@ -421,6 +421,20 @@ pub enum UiMessage {
     /// Desktop's `showReplyThread`: shows the reply chain of the message over the timeline.
     ShowReplies(String),
     HideReplies,
+    /// Desktop's `showThreadedReplies`: opens the thread pane of a message, or of the thread of a reply.
+    ShowThread(String),
+    /// Desktop's `hideThreadedReplies`.
+    HideThread,
+    /// A message of the thread pane, which the thread pane handles.
+    InThread(Box<UiMessage>),
+    /// Desktop's `setBroadcastOutsideThread`: "Also send to chat".
+    SetBroadcast(bool),
+    /// The thread pane edge follows the pointer from a press, to the point, until the release (`None`).
+    ThreadDrag(Option<Point>),
+    /// Desktop's double click on the thread pane edge: the default width.
+    ResetThreadWidth,
+    /// Desktop's "More Options" of the thread pane.
+    ThreadMenu,
     ToggleFlag(String, ChatFlag),
     ToggleRead(String),
     MarkRead(String),
@@ -1542,6 +1556,12 @@ const STORAGE_DAYS: [i64; 4] = [0, 30, 90, 120];
 /// Desktop's default "Quick reaction emoji".
 /// Wide enough for "Copy Entire Message with Timestamp" on one line.
 const MESSAGE_MENU_W: f32 = 270.0;
+/// Desktop's default `threadedRepliesPaneFraction`.
+const THREAD_FRACTION: f32 = 0.5;
+/// Desktop's width of the edge that resizes the thread pane.
+const THREAD_GRIP: f32 = 8.0;
+/// Desktop's `minSidebarWidth`, the least width of the thread pane and of the chat beside it.
+const MIN_PANE_W: f32 = 240.0;
 const REMINDER_ORDERS: [&str; 4] = [
     "Order by Least Time Remaining",
     "Order by Most Time Remaining",
@@ -2037,10 +2057,10 @@ fn pin_columns(width: f32, n: usize) -> usize {
 
 /// The message that the chat list previews: the newest shown message, or a newer reaction.
 fn preview_message<'s>(st: &'s BeeperStore, c: &'s Chat) -> Option<&'s Message> {
-    let m = st
-        .chat_msg_indices
-        .get(&c.id)
-        .and_then(|v| v.iter().rev().map(|&i| &st.messages[i]).find(|m| m.is_deleted != Some(true) && !m.silent()));
+    // Desktop's `shouldPreview` leaves out the replies only in a thread.
+    let threads = st.feature("enable-threads").on;
+    let shown = |m: &&Message| m.is_deleted != Some(true) && !m.silent() && !m.thread_only(threads);
+    let m = st.chat_msg_indices.get(&c.id).and_then(|v| v.iter().rev().map(|&i| &st.messages[i]).find(shown));
     let reaction = c
         .preview
         .as_ref()
@@ -2302,6 +2322,9 @@ macro_rules! svg_static {
 svg_static!(CHEVRON_LEFT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
 svg_static!(CALL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M16.193 17.842q-2.605 0-5.146-1.136t-4.625-3.218q-2.083-2.084-3.219-4.625T2.068 3.717q0-.375.25-.625a.85.85 0 0 1 .625-.25h3.375q.292 0 .52.198a.76.76 0 0 1 .272.468l.541 2.917q.042.333-.02.563a.9.9 0 0 1-.23.395l-2.02 2.042q.416.77.989 1.49.573.718 1.26 1.385.645.646 1.355 1.198.708.552 1.5 1.01l1.958-1.958q.187-.188.49-.281.301-.094.593-.052l2.875.583a.97.97 0 0 1 .48.302.73.73 0 0 1 .187.49v3.375q0 .375-.25.625a.85.85 0 0 1-.625.25"/></svg>"##);
 svg_static!(ADD_ACCOUNT, include_bytes!("../assets/add_account.svg"));
+// Desktop's `reply-in-thread` and `chevron-compact-right` icons, the Material `view_sidebar` and `chevron_forward`.
+svg_static!(VIEW_SIDEBAR, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M16,20H2V4h14V20z M18,8h4V4h-4V8z M18,20h4v-4h-4V20z M18,14h4v-4h-4V14z"/></svg>"##);
+svg_static!(CHEVRON_FORWARD, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M504-480 320-664l56-56 240 240-240 240-56-56 184-184Z"/></svg>"##);
 // Desktop's `undo` icon of the Revert button of a hotkey.
 svg_static!(REVERT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M212.333 224.333H12c-6.627 0-12-5.373-12-12V12C0 5.373 5.373 0 12 0h48c6.627 0 12 5.373 12 12v78.112C117.773 39.279 184.26 7.47 258.175 8.007c136.906.994 246.448 111.623 246.157 248.532C504.041 393.258 393.12 504 256.333 504c-64.089 0-122.496-24.313-166.51-64.215-5.099-4.622-5.334-12.554-.467-17.42l33.967-33.967c4.474-4.474 11.662-4.717 16.401-.525C170.76 415.336 211.58 432 256.333 432c97.268 0 176-78.716 176-176 0-97.267-78.716-176-176-176-58.496 0-110.28 28.476-142.274 72.333h98.274c6.627 0 12 5.373 12 12v48c0 6.627-5.373 12-12 12z"/></svg>"##);
 svg_static!(CLAUDE_LOGO, include_bytes!("../assets/integrations/claude.svg"));
@@ -2969,13 +2992,26 @@ fn in_rail_entry(st: &BeeperStore, id: &str, c: &Chat) -> bool {
 /// Desktop's `rootMessageIDs`: the first message of the reply chain of `m`, which can be a message that is not loaded.
 fn reply_root<'s>(st: &'s BeeperStore, mut m: &'s Message) -> &'s str {
     let mut seen = HashSet::new();
-    while let Some(r) = m.linked_message_id.as_deref().filter(|r| *r != m.id && seen.insert(&m.id)) {
+    while m.thread_root.is_none() {
+        let Some(r) = m.linked_message_id.as_deref().filter(|r| *r != m.id && seen.insert(&m.id)) else { return &m.id };
         match st.msg_idx_by_id.get(r) {
             Some(&i) => m = &st.messages[i],
             None => return r,
         }
     }
-    &m.id
+    m.thread_root.as_deref().expect("the loop ends at a thread reply")
+}
+
+/// Desktop's `canBroadcastOutsideThread`: threads in a Slack (Desktop's `slackgo`) or a Beeper chat.
+fn can_broadcast(st: &BeeperStore, chat: &Chat) -> bool {
+    st.threaded(chat) && matches!(account_network(&chat.account_id).bridge_type, "slack" | "hungryserv")
+}
+
+/// Desktop's `canReplyInThread`: a message of the chat of a room with threads, which is not a thread reply, not
+/// deleted and not an action, in a chat that you can write to.
+fn can_thread(st: &BeeperStore, chat: &Chat, m: &Message) -> bool {
+    let action = membership(m) || m.timer.is_some();
+    !chat.is_read_only && st.threaded(chat) && m.thread_root.is_none() && m.is_deleted != Some(true) && !action
 }
 
 fn network_label(account_id: &str) -> &'static str {
@@ -3726,6 +3762,14 @@ pub struct Pane {
     pub draft_due: bool,
     /// Desktop's `ScrollToBottom`: whether you scrolled up from the bottom of the timeline, and since when.
     pub scrolled_up: Option<(bool, std::time::Instant)>,
+    /// Desktop's `ThreadedRepliesView`: the root of the thread that this pane shows in place of the chat.
+    pub thread_root: Option<String>,
+    /// Desktop's `openThreadedReplies`: the pane of the open thread, at the right of the chat.
+    pub thread: Option<Box<Pane>>,
+    /// Desktop's `broadcastOutsideThread` of the thread composer: "Also send to chat".
+    pub broadcast: bool,
+    /// The "More Options" menu of the thread pane.
+    pub thread_menu: Option<Point>,
 }
 
 /// Desktop's `TopOfThread`, which loads older messages while the top of the timeline is on screen.
@@ -3778,6 +3822,26 @@ impl Pane {
     fn reply_target(&mut self) -> Option<String> {
         self.reply_to_message_id.take().or_else(|| self.reply_thread.clone())
     }
+
+    /// The local echo of a message to `reply_to` with `text` and `att`, with Desktop's `threadSendOptions` in a
+    /// thread pane: the transaction, the message that it replies to, and the thread.
+    fn compose(
+        &self,
+        st: &mut BeeperStore,
+        chat: &str,
+        text: Option<String>,
+        reply_to: Option<String>,
+        att: Option<Attachment>,
+    ) -> (String, Option<String>, Option<beeper_core::matrix::ThreadSend>) {
+        let Some(root) = self.thread_root.as_deref() else {
+            let (_, txn, _) = st.send_message(chat, text, reply_to.clone(), att).expect("send a message");
+            return (txn, reply_to, None);
+        };
+        let chosen = reply_to.filter(|r| r == root || st.thread_replies(root).any(|m| m.id == *r));
+        let t = st.thread_send(root, chosen, self.broadcast);
+        let (_, txn, _) = st.send_in_thread(chat, text, att, &t).expect("send a thread reply");
+        (txn, Some(t.quoted.clone()), Some(t))
+    }
 }
 
 /// The tab, the filters and the account of a chat list.
@@ -3815,6 +3879,14 @@ pub struct BeeperGuiApp {
     chat_windows: Vec<(window::Id, Pane)>,
     /// The chat window that `view` is drawing, so `pane` gives its pane.
     drawing: std::cell::Cell<Option<window::Id>>,
+    /// `view` draws the thread pane of the drawn pane.
+    drawing_thread: std::cell::Cell<bool>,
+    /// Desktop's `threadedRepliesPaneFraction`: the part of the chat area that the thread pane takes.
+    thread_fraction: f32,
+    /// The width of the chat area at the last draw, where a drag of the thread pane edge starts.
+    thread_area: std::cell::Cell<f32>,
+    /// The thread pane edge follows the pointer.
+    thread_drag: bool,
     pub store: SharedStore,
     pub os: OsKind,
     pub display_server: DisplayServerKind,
@@ -4055,6 +4127,10 @@ impl BeeperGuiApp {
             pane: Pane { size: MAIN_SIZE, ..Pane::default() },
             chat_windows: Vec::new(),
             drawing: Default::default(),
+            drawing_thread: Default::default(),
+            thread_fraction: THREAD_FRACTION,
+            thread_area: Default::default(),
+            thread_drag: false,
             store,
             os,
             display_server,
@@ -4812,7 +4888,7 @@ impl BeeperGuiApp {
         let pending = st.scheduled.iter().any(|s| s.chat_id == chat.id && !s.canceled);
         let later = draft.send_later.filter(|&(at, _)| at > now_unix_millis());
         (self.pane.send_later, self.pane.sched_fold, self.pane.sched_menu) = (later, (pending, pending), None);
-        self.pane.reply_thread = None;
+        (self.pane.reply_thread, self.pane.thread, self.pane.thread_menu) = (None, None, None);
         // A running load or retry of the last chat goes on to this chat when it ends.
         (self.pane.top.shown, self.pane.top.tries) = (false, 0);
         self.video = None;
@@ -4891,11 +4967,23 @@ impl BeeperGuiApp {
 
     /// The messages of the open chat in timeline order, and which of them Desktop lets you select.
     fn timeline<'a>(&self, st: &'a BeeperStore) -> (Vec<&'a Message>, Vec<bool>) {
-        let all = &st.chat_msg_indices[self.pane().selected_chat_id.as_deref().expect("an open chat")];
-        let msgs: Vec<&Message> = all.iter().map(|&i| &st.messages[i]).collect();
+        let msgs = self.pane_msgs(st);
         let members = st.settings.on("membershipEvents");
         let live = msgs.iter().map(|m| m.is_deleted != Some(true) && (members || !membership(m))).collect();
         (msgs, live)
+    }
+
+    /// The messages of the pane: Desktop's `messageListData` of the chat without the replies only in threads, or
+    /// Desktop's `getReplyThreadListData` of the thread of the pane: its root and its replies.
+    fn pane_msgs<'a>(&self, st: &'a BeeperStore) -> Vec<&'a Message> {
+        let cid = self.pane().selected_chat_id.as_deref().expect("an open chat");
+        if let Some(root) = &self.pane().thread_root {
+            let root_msg = st.msg_idx_by_id.get(root).map(|&i| &st.messages[i]);
+            return root_msg.into_iter().chain(st.thread_replies(root)).collect();
+        }
+        let threaded = st.threaded(&st.chats[st.resolve_chat_idx(cid).expect("an open chat")]);
+        let all = st.chat_msg_indices.get(cid).into_iter().flatten().map(|&i| &st.messages[i]);
+        all.filter(|m| !m.thread_only(threaded)).collect()
     }
 
     /// The arrow keys select messages when no panel is open and the composer is empty.
@@ -5152,14 +5240,14 @@ impl BeeperGuiApp {
                     }
                     _ => None,
                 });
-                let (_, txn, _) =
-                    st.send_message(&chat_id, Some(text.clone()), reply_to.clone(), None).expect("send message");
+                let (txn, to, thread) =
+                    self.pane.compose(&mut st, &chat_id, Some(text.clone()), reply_to.clone(), None);
                 if let Some(link) = preview.as_ref().and_then(|(v, _)| beeper_core::matrix::link(v)) {
                     let i = st.msg_idx_by_id[&txn];
                     st.update_message(i, |m| m.links = vec![link]);
                 }
-                let reply_to = reply_to.take();
-                sends.push((txn.clone(), Outgoing::Send { txn, text, reply_to, preview, mentions, thread: None }));
+                reply_to = None;
+                sends.push((txn.clone(), Outgoing::Send { txn, text, reply_to: to, preview, mentions, thread }));
             }
             for PendingMedia { bytes, name, mime, is_gif, size, frames } in files {
                 let image = !frames.is_empty();
@@ -5177,12 +5265,11 @@ impl BeeperGuiApp {
                     src_url: image.then_some(key),
                     ..Default::default()
                 };
-                let (_, txn, _) =
-                    st.send_message(&chat_id, caption.clone(), reply_to.clone(), Some(att)).expect("send media");
+                let (txn, to, thread) =
+                    self.pane.compose(&mut st, &chat_id, caption.clone(), reply_to.take(), Some(att));
                 let info = if image { MediaInfo::Image(size.0, size.1) } else { MediaInfo::File };
                 let caption = caption.clone();
-                let out =
-                    Outgoing::Media { txn: txn.clone(), bytes, name, mime, info, caption, reply_to: reply_to.take() };
+                let out = Outgoing::Media { txn: txn.clone(), bytes, name, mime, info, caption, reply_to: to, thread };
                 sends.push((txn, out));
             }
             // Desktop's `queuePendingMessages` sends the earlier queue of the chat first.
@@ -5198,12 +5285,15 @@ impl BeeperGuiApp {
                 }
                 _ => sends.into_iter().for_each(|(_, out)| st.queue(&chat_id, out)),
             }
-            st.mark_chat_read(&chat_id, true);
+            // A reply in the thread pane reads the thread, not the chat.
+            if self.pane.thread_root.is_none() {
+                st.mark_chat_read(&chat_id, true);
+            }
         }
         if edit {
             self.pane.end_edit();
         } else {
-            self.pane.composer = composer_with("");
+            (self.pane.composer, self.pane.broadcast) = (composer_with(""), false);
             self.pane.composer_links.clear();
         }
         drop(st);
@@ -5524,10 +5614,15 @@ impl BeeperGuiApp {
             "Show Replies" => chat.and_then(|_| {
                 let st = self.store.read();
                 let msgs = self.timeline(&st).0;
+                let chat = &st.chats[st
+                    .resolve_chat_idx(self.pane.selected_chat_id.as_ref().expect("an open chat"))
+                    .expect("a known chat")];
                 self.pane.selected_msgs.iter().find_map(|id| {
                     let m = &st.messages[st.msg_idx_by_id[id]];
                     let replied = || msgs.iter().any(|r| r.id != m.id && reply_root(&st, r) == m.id);
-                    m.linked_message_id.clone().or_else(|| replied().then(|| m.id.clone())).map(UiMessage::ShowReplies)
+                    let thread = || can_thread(&st, chat, m).then(|| UiMessage::ShowThread(m.id.clone()));
+                    let chain = || replied().then(|| UiMessage::ShowReplies(m.id.clone()));
+                    m.linked_message_id.clone().map(UiMessage::ShowReplies).or_else(thread).or_else(chain)
                 })
             }),
             _ => unreachable!("{name} has no action"),
@@ -5550,9 +5645,13 @@ impl BeeperGuiApp {
 
     /// The pane of the window that `view` draws; in `update`, the pane of the window that sent the message.
     fn pane(&self) -> &Pane {
-        match self.drawing.get() {
+        let pane = match self.drawing.get() {
             Some(id) => &self.chat_windows.iter().find(|w| w.0 == id).expect("a drawn chat window").1,
             None => &self.pane,
+        };
+        match self.drawing_thread.get() {
+            true => pane.thread.as_deref().expect("a drawn thread pane"),
+            false => pane,
         }
     }
 
@@ -5991,6 +6090,13 @@ impl BeeperGuiApp {
                 return self.update(UiMessage::StartEdit(id, text));
             }
             UiMessage::ShowReplies(id) => (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), Some(id)),
+            UiMessage::ShowThread(id) => self.show_thread(&id),
+            UiMessage::HideThread => (self.pane.thread, self.pane.thread_menu) = (None, None),
+            UiMessage::InThread(msg) => return self.in_thread(*msg),
+            UiMessage::SetBroadcast(on) => self.pane.broadcast = on,
+            UiMessage::ThreadDrag(at) => self.drag_thread(at),
+            UiMessage::ResetThreadWidth => self.thread_fraction = THREAD_FRACTION,
+            UiMessage::ThreadMenu => self.pane.thread_menu = Some(self.cursor.get()),
             UiMessage::HideReplies => (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), None),
             UiMessage::FoldScheduled(collapsed) => {
                 self.pane.sched_fold.0 = collapsed;
@@ -7351,7 +7457,11 @@ impl BeeperGuiApp {
                 std::process::exit(0);
             }
             UiMessage::LoggedOut(Err(e)) => self.fail(Toast::new(format!("Could not log out: {e}"))),
-            UiMessage::ToggleRightPanel => self.show_right_panel = !self.show_right_panel,
+            UiMessage::ToggleRightPanel => {
+                // Desktop shows Chat Info or the thread pane, not both.
+                let closed = self.pane.thread.take().is_some();
+                self.show_right_panel = closed || !self.show_right_panel;
+            }
             UiMessage::ToggleMembers(id) => {
                 if !self.pane.open_members.remove(&id) {
                     self.pane.open_members.insert(id);
@@ -7781,7 +7891,8 @@ impl BeeperGuiApp {
             UiMessage::RemoveUnsent(id) => self.store.write().remove_unsent(&id),
             UiMessage::TimelineScrolled(up) => self.timeline_scrolled(up),
             UiMessage::ScrollToBottom => {
-                return operation::scroll_to("timeline", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
+                let id = if self.pane.thread_root.is_some() { "thread-timeline" } else { "timeline" };
+                return operation::scroll_to(id, operation::AbsoluteOffset { x: 0.0, y: 0.0 });
             }
             UiMessage::TopShown(shown) => {
                 self.pane.top.shown = shown;
@@ -7986,6 +8097,7 @@ impl BeeperGuiApp {
                     || self.show_filter_menu
                     || self.chat_menu.is_some()
                     || self.pane.message_menu.is_some()
+                    || self.pane.thread_menu.is_some()
                     || self.pane.edit_menu.is_some()
                     || self.pane.sched_menu.is_some()
                     || self.reminder_menu.is_some()
@@ -8003,6 +8115,7 @@ impl BeeperGuiApp {
                     self.show_filter_menu = false;
                     self.chat_menu = None;
                     self.pane.message_menu = None;
+                    self.pane.thread_menu = None;
                     self.pane.edit_menu = None;
                     self.pane.sched_menu = None;
                     self.reminder_menu = None;
@@ -8351,6 +8464,9 @@ impl BeeperGuiApp {
                         self.set_sidebar_hidden(narrow(size));
                     }
                     self.pane.size = size;
+                    if let Some(t) = self.pane.thread.as_mut() {
+                        t.size = size;
+                    }
                 }
                 if let Some(w) = self.chat_windows.iter_mut().find(|w| w.0 == id) {
                     w.1.size = size;
@@ -8798,6 +8914,13 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
+        let thread_drag = self.thread_drag.then(|| {
+            iced::event::listen_with(|e, _, _| match e {
+                Event::Mouse(mouse::Event::CursorMoved { position }) => Some(UiMessage::ThreadDrag(Some(position))),
+                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::ThreadDrag(None)),
+                _ => None,
+            })
+        });
         let rail_press = (self.rail_hover.is_some() && self.rail_drag.is_none()).then(|| {
             iced::event::listen_with(|e, _, _| match e {
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => Some(UiMessage::RailPress),
@@ -8871,6 +8994,7 @@ impl BeeperGuiApp {
             [changes, focus, tokens, launches, keys, system]
                 .into_iter()
                 .chain(drag)
+                .chain(thread_drag)
                 .chain(rail_press)
                 .chain(rail_drag)
                 .chain(poll_drag)
@@ -8948,14 +9072,17 @@ impl BeeperGuiApp {
             .on_press(UiMessage::DragStart)
             .on_double_click(UiMessage::ResetSidebarWidth)
             .interaction(mouse::Interaction::ResizingHorizontally);
+        let thread = open && self.creating_chat.is_none() && self.selection.is_empty() && self.pane().thread.is_some();
         let pane = match self.creating_chat {
             Some(_) => self.view_new_chat(),
-            None if open => self.view_conversation(),
+            None if open && !thread => self.view_conversation(),
             None => container(Space::new()).width(Fill).height(Fill).style(fill_box(p.card, 10.0)).into(),
         };
-        let info = (self.show_right_panel && open).then(|| self.view_info());
+        let info = (self.show_right_panel && open && !thread).then(|| self.view_info());
         let pad = Padding::new(8.0).left(if self.sidebar_hidden { 8.0 } else { 0.0 });
-        let right: El<'_> = if self.selection.is_empty() {
+        let right: El<'_> = if thread {
+            iced::widget::responsive(move |size| self.view_split(size.width, pad)).into()
+        } else if self.selection.is_empty() {
             row![container(pane).padding(pad).width(Fill)].push(info).into()
         } else {
             let content = container(row![pane].push(info)).padding(8).style(fill_box(p.selected, 18.0));
@@ -9130,39 +9257,6 @@ impl BeeperGuiApp {
             let y = at.y.min(self.pane().size.height - h - 8.0);
             (self.view_chat_menu(cid, left, self.pane().size.height - 8.0 - y), if left { x - sub_w } else { x }, y)
         });
-        let message_menu = self.pane().message_menu.as_ref().map(|(mid, at)| {
-            let (menu, h, top) = self.view_message_menu(mid);
-            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
-            let (sub, sub_w) = match self.view_speed_menu(mid) {
-                Some(sub) => (Some(sub), video::SPEED_MENU_W),
-                None => (self.view_voice_speed(top), voice::rate_menu_w()),
-            };
-            let left = sub.is_some() && x + MESSAGE_MENU_W + sub_w > self.pane().size.width;
-            let (x, menu) = match left {
-                true => (x - sub_w, row![].push(sub).push(menu).into()),
-                false => (x, row![menu].push(sub).into()),
-            };
-            (menu, x, at.y.min(self.pane().size.height - h - 8.0))
-        });
-        let edit_menu = self.pane().edit_menu.as_ref().map(|(at, word)| {
-            let (menu, h) = self.view_edit_menu(word.as_ref());
-            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
-            (menu, x, at.y.min(self.pane().size.height - h - 8.0))
-        });
-        let edit_menu = edit_menu.or_else(|| {
-            let (ids, items, at) = self.pane().sched_menu.as_ref()?;
-            let (menu, h) = self.view_scheduled_menu(ids, *items);
-            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
-            Some((menu, x, at.y.min(self.pane().size.height - h - 8.0)))
-        });
-        let react = self.pane().emoji.as_ref().and_then(|pk| pk.react.as_ref()).map(|(_, at)| {
-            let x = if at.x + 352.0 > self.pane().size.width { at.x - 352.0 } else { at.x };
-            (
-                self.view_emoji_picker(&self.store.read()).expect("the picker is open"),
-                x,
-                at.y.min(self.pane().size.height - 435.0 - 8.0),
-            )
-        });
         let selection_menu = self.selection_menu.map(|(i, x)| {
             let (menu, h) = self.view_selection_menu(i);
             let w = if i == 0 { SUB_MENU_W[1] } else { 233.0 };
@@ -9180,12 +9274,23 @@ impl BeeperGuiApp {
             .on_right_press(close)
             .into()
         };
-        let main_menu = main_menu.or(message_menu).or(edit_menu).or(react).or(selection_menu.filter(|_| in_main));
+        let main_menu = main_menu.or(self.pane_menu()).or(selection_menu.filter(|_| in_main));
         let (menu, palette_menu) =
             match (self.show_command_palette || self.forward.is_some()) && self.chat_menu.is_some() {
                 true => (None, main_menu.map(|m| layer(m, UiMessage::CloseChatMenu))),
                 false => (main_menu.map(|m| layer(m, UiMessage::CloseModals)), None),
             };
+        // The menus of the thread pane, whose messages the thread pane handles.
+        let menu = menu.or_else(|| {
+            let open = self.pane().thread.is_some();
+            self.drawing_thread.set(open);
+            let thread = open.then(|| self.pane_menu()).flatten();
+            self.drawing_thread.set(false);
+            let thread = thread.map(|(m, x, y)| (Element::from(m).map(|m| UiMessage::InThread(Box::new(m))), x, y));
+            thread.map(|m| layer(m, UiMessage::InThread(Box::new(UiMessage::CloseModals))))
+        });
+        let menu =
+            menu.or_else(|| Some(layer(self.view_thread_menu(self.pane().thread_menu?), UiMessage::CloseModals)));
         let toast = self.view_toast(76.0);
         let elsewhere = self.delete_in.is_some_and(|w| self.label_asking(w));
         let confirm = self.confirm.filter(|d| !SETTINGS_DIALOGS.contains(d) && !elsewhere);
@@ -9796,6 +9901,44 @@ impl BeeperGuiApp {
     }
 
     /// The message menu, its height and the top of its Playback Speed row.
+    /// The message menu, the composer menus or the reaction picker of the drawn pane, with their place.
+    fn pane_menu(&self) -> Option<(El<'_>, f32, f32)> {
+        let message_menu = self.pane().message_menu.as_ref().map(|(mid, at)| {
+            let (menu, h, top) = self.view_message_menu(mid);
+            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
+            let (sub, sub_w) = match self.view_speed_menu(mid) {
+                Some(sub) => (Some(sub), video::SPEED_MENU_W),
+                None => (self.view_voice_speed(top), voice::rate_menu_w()),
+            };
+            let left = sub.is_some() && x + MESSAGE_MENU_W + sub_w > self.pane().size.width;
+            let (x, menu) = match left {
+                true => (x - sub_w, row![].push(sub).push(menu).into()),
+                false => (x, row![menu].push(sub).into()),
+            };
+            (menu, x, at.y.min(self.pane().size.height - h - 8.0))
+        });
+        let edit_menu = self.pane().edit_menu.as_ref().map(|(at, word)| {
+            let (menu, h) = self.view_edit_menu(word.as_ref());
+            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
+            (menu, x, at.y.min(self.pane().size.height - h - 8.0))
+        });
+        let edit_menu = edit_menu.or_else(|| {
+            let (ids, items, at) = self.pane().sched_menu.as_ref()?;
+            let (menu, h) = self.view_scheduled_menu(ids, *items);
+            let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
+            Some((menu, x, at.y.min(self.pane().size.height - h - 8.0)))
+        });
+        let react = self.pane().emoji.as_ref().and_then(|pk| pk.react.as_ref()).map(|(_, at)| {
+            let x = if at.x + 352.0 > self.pane().size.width { at.x - 352.0 } else { at.x };
+            (
+                self.view_emoji_picker(&self.store.read()).expect("the picker is open"),
+                x,
+                at.y.min(self.pane().size.height - 435.0 - 8.0),
+            )
+        });
+        message_menu.or(edit_menu).or(react)
+    }
+
     fn view_message_menu(&self, mid: &str) -> (El<'_>, f32, f32) {
         let p = &self.pal;
         let st = self.store.read();
@@ -9860,6 +10003,10 @@ impl BeeperGuiApp {
             }),
             (rules.reply && live)
                 .then(|| vec![item(tr("Reply…").into(), "Ctrl R", Some(UiMessage::StartReply(mid.clone())))]),
+            (self.pane().thread_root.is_none() && can_thread(&st, chat, m)).then(|| {
+                let label = tr("Reply in thread…").into();
+                vec![item(label, "Ctrl ↓", Some(UiMessage::ShowThread(mid.clone())))]
+            }),
             privately
                 .then(|| vec![item(tr("Reply Privately…").into(), "", Some(UiMessage::ReplyPrivately(mid.clone())))]),
             Some(vec![
@@ -11825,17 +11972,16 @@ impl BeeperGuiApp {
         let cid = self.pane().selected_chat_id.as_deref().expect("a chat is selected");
         let chat = &st.chats[st.resolve_chat_idx(cid).expect("selected chat exists")];
         let (hide, members) = (st.settings.on("hideDeleted"), st.settings.on("membershipEvents"));
-        let msgs: Vec<&Message> = st.chat_msg_indices.get(cid).map_or_else(Vec::new, |v| {
-            v.iter()
-                .map(|&i| &st.messages[i])
-                .filter(|m| !(hide && m.is_deleted == Some(true)) && (members || !membership(m)))
-                .collect()
-        });
+        let msgs: Vec<&Message> = self.pane_msgs(&st);
+        let msgs: Vec<&Message> =
+            msgs.into_iter().filter(|m| !(hide && m.is_deleted == Some(true)) && (members || !membership(m))).collect();
+        // Desktop's `ThreadedRepliesView` hides the typing indicator, and its list has no scheduled messages.
+        let in_chat = self.pane().thread_root.is_none();
         let col = self.view_messages(&st, chat, &msgs, false);
-        let col = col.push(st.typing.get(cid).map(|ids| self.typing_bubble(chat, ids)));
+        let col = col.push(st.typing.get(cid).filter(|_| in_chat).map(|ids| self.typing_bubble(chat, ids)));
         let col = col.push(self.incognito_mark_read(&st, chat));
-        let col = col.push(self.view_scheduled(&st, chat));
-        let col = col.push(self.view_request(chat));
+        let col = col.push(in_chat.then(|| self.view_scheduled(&st, chat)));
+        let col = col.push(in_chat.then(|| self.view_request(chat)));
         let col = col.push(unavailable(&st, chat).map(|t| {
             container(txt(tr(t), 13.0).line_height(Pixels(16.0)).color(p.sub).align_x(Center))
                 .center_x(Fill)
@@ -11851,7 +11997,7 @@ impl BeeperGuiApp {
         let bottom = iced::widget::sensor(Space::new()).key(chat.id.clone()).anticipate(1);
         let col =
             col.push(bottom.on_show(|_| UiMessage::TimelineScrolled(false)).on_hide(UiMessage::TimelineScrolled(true)));
-        let list = lift::tight(scroller(col).id("timeline"));
+        let list = lift::tight(scroller(col).id(if in_chat { "timeline" } else { "thread-timeline" }));
         let replies = self.pane().reply_thread.as_ref().map(|id| {
             let root = st.msg_idx_by_id.get(id).map_or(id.as_str(), |&i| reply_root(&st, &st.messages[i]));
             let chain: Vec<&Message> = msgs.iter().copied().filter(|m| reply_root(&st, m) == root).collect();
@@ -11892,7 +12038,8 @@ impl BeeperGuiApp {
         });
         let wallpaper = chat_theme::resolve(&st.settings.chat_appearance, Some(cid), self.dark, &st.data_dir)
             .0
-            .map(|(paint, _)| paint);
+            .map(|(paint, _)| paint)
+            .filter(|_| in_chat);
         let fade: El<'_> = match wallpaper.clone() {
             Some(paint) => iced::widget::responsive(move |size| {
                 container(chat_theme::fade(paint.clone(), size)).height(chat_theme::FADE).into()
@@ -11922,8 +12069,11 @@ impl BeeperGuiApp {
         let header = mouse_area(container(header).width(Fill))
             .on_double_click(UiMessage::ToggleMaximize(self.drawing.get()))
             .on_right_press(UiMessage::OpenChatMenu(cid.into()));
-        let overlay = stack![fade, header].push(feedback).push(reminder);
-        let verify = (st.matrix.is_some() && !st.beeper_state.verified).then(|| {
+        let overlay = match in_chat {
+            true => stack![fade, header].push(feedback).push(reminder),
+            false => stack![fade],
+        };
+        let verify = (in_chat && st.matrix.is_some() && !st.beeper_state.verified).then(|| {
             let note = txt("Verify this device to read your encrypted messages.", 12.0).color(p.text);
             let go = pill_btn(p, tr("Verify"), UiMessage::OpenSettings(SettingsTab::Devices));
             let bar = row![note, Space::new().width(Fill), go].align_y(Center);
@@ -11983,6 +12133,163 @@ impl BeeperGuiApp {
             .clip(true)
             .style(move |t| container::Style { shadow, ..card(t) })
             .into()
+    }
+
+    /// Desktop's `showThreadedReplies`: the thread pane of the thread of message `id`, in place of Chat Info.
+    fn show_thread(&mut self, id: &str) {
+        let root = {
+            let st = self.store.read();
+            st.msg_idx_by_id.get(id).and_then(|&i| st.messages[i].thread_root.clone()).unwrap_or_else(|| id.into())
+        };
+        if self.pane.thread.as_ref().is_none_or(|t| t.thread_root.as_ref() != Some(&root)) {
+            let chat = self.pane.selected_chat_id.clone();
+            let pane =
+                Pane { selected_chat_id: chat, thread_root: Some(root), size: self.pane.size, ..Pane::default() };
+            self.pane.thread = Some(Box::new(pane));
+        }
+        (self.show_right_panel, self.pane.thread_menu) = (false, None);
+    }
+
+    /// Handles a message of the thread pane with the thread pane in place of the pane of the chat.
+    fn in_thread(&mut self, msg: UiMessage) -> Task<UiMessage> {
+        let Some(mut thread) = self.pane.thread.take() else { return Task::none() };
+        std::mem::swap(&mut self.pane, &mut thread);
+        let task = self.handle(msg);
+        std::mem::swap(&mut self.pane, &mut thread);
+        self.pane.thread = Some(thread);
+        task.map(|m| UiMessage::InThread(Box::new(m)))
+    }
+
+    /// Desktop's `useResizeHandle` of the thread pane: a press or a release toggles the drag, and the edge follows the
+    /// pointer, which leaves at least `MIN_PANE_W` to the pane and to the chat.
+    fn drag_thread(&mut self, at: Option<Point>) {
+        let Some(at) = at else { return self.thread_drag = !self.thread_drag };
+        let area = self.thread_area.get() - THREAD_GRIP;
+        let w = self.pane.size.width / self.zoom - 8.0 - at.x;
+        self.thread_fraction = w.min(area - MIN_PANE_W).max(MIN_PANE_W) / area;
+    }
+
+    /// The chat and Desktop's `ThreadedRepliesPane` at its right, which takes `thread_fraction` of the `area`.
+    fn view_split(&self, area: f32, pad: Padding) -> El<'_> {
+        self.thread_area.set(area);
+        let w = (self.thread_fraction * (area - THREAD_GRIP)).min(area - THREAD_GRIP - MIN_PANE_W).max(MIN_PANE_W);
+        let line = self
+            .thread_drag
+            .then(|| container(Space::new()).width(2).height(Fill).style(fill_box(self.pal.accent, 0.0)));
+        let grip = mouse_area(
+            container(row![Space::new().width(THREAD_GRIP - 2.0)].push(line)).width(THREAD_GRIP).height(Fill),
+        )
+        .on_press(UiMessage::ThreadDrag(None))
+        .on_double_click(UiMessage::ResetThreadWidth)
+        .interaction(mouse::Interaction::ResizingHorizontally);
+        let chat = container(self.view_conversation()).padding(pad.right(0.0)).width(Fill);
+        row![chat, grip, container(self.view_thread_pane()).width(w + 8.0).padding(Padding::new(8.0).left(0.0))].into()
+    }
+
+    /// Desktop's `ThreadedRepliesPane`: the thread with its composer, which handles its own messages, under the
+    /// header with "More Options" and "Close".
+    fn view_thread_pane(&self) -> El<'_> {
+        let p = &self.pal;
+        self.drawing_thread.set(true);
+        let view = Element::from(self.view_conversation()).map(|m| UiMessage::InThread(Box::new(m)));
+        self.drawing_thread.set(false);
+        let button = |glyph: char, label: &'static str, msg: UiMessage| -> El<'_> {
+            let b = button(container(ic(glyph, 16.0).color(p.text)).center(28))
+                .padding(0)
+                .style(btn_style([CLEAR, p.chip, p.chip], [p.text; 3], 8.0))
+                .on_press(msg);
+            self.tip(b.into(), tr(label), vec![], tooltip::Position::Bottom).into()
+        };
+        let title = container(semi(tr("Thread"), 14.0).color(p.text)).center_x(Fill);
+        let header = row![button(icon::MORE_HORIZ, "More Options", UiMessage::ThreadMenu), title]
+            .push(button(icon::CLOSE, "Close", UiMessage::HideThread))
+            .spacing(2)
+            .padding([0, 4])
+            .height(36)
+            .align_y(Center);
+        let header = mouse_area(header).on_right_press(UiMessage::ThreadMenu);
+        stack![view, header].into()
+    }
+
+    /// Desktop's `threadedRepliesMenu` of the thread pane at `at`.
+    fn view_thread_menu(&self, at: Point) -> (El<'_>, f32, f32) {
+        let p = &self.pal;
+        let thread = self.pane().thread.as_deref().expect("a thread pane");
+        let (cid, root) =
+            (thread.selected_chat_id.clone().expect("a chat"), thread.thread_root.clone().expect("a root"));
+        let view = UiMessage::Commands(vec![
+            UiMessage::CloseModals,
+            UiMessage::JumpTo(cid, root.clone()),
+            UiMessage::SelectMessages(vec![root]),
+        ]);
+        let rows = [menu_item(p, None, tr("View in Chat").into(), "", Some(view))];
+        let h = 8.0 + rows.len() as f32 * MENU_ITEM;
+        let col = Column::with_children(rows);
+        let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let x = if at.x + 233.0 > self.pane().size.width { at.x - 233.0 } else { at.x };
+        (menu.into(), x, at.y.min(self.pane().size.height - h - 8.0))
+    }
+
+    /// Desktop's `ThreadRepliesButton` under the root of a thread: up to 3 repliers, the reply count, the unread count
+    /// of a followed thread with a mention mark, and a chevron.
+    fn thread_replies_button<'a>(&'a self, st: &BeeperStore, chat: &Chat, root: &str) -> Option<El<'a>> {
+        let p = &self.pal;
+        let replies: Vec<&Message> = st.thread_replies(root).collect();
+        if replies.is_empty() {
+            return None;
+        }
+        let mut seen = HashSet::new();
+        let faces = replies
+            .iter()
+            .filter(|m| seen.insert(m.sender_id.as_str()))
+            .filter_map(|m| chat.participants.items.iter().find(|u| u.id == m.sender_id));
+        let faces =
+            faces.take(3).map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or(&u.id), 16.0, 0.5));
+        let n = replies.len();
+        let label = semi(trn("%d reply", "%d replies", n, &[&n]), 11.0).line_height(Pixels(15.0)).color(p.text);
+        let (unread, at) = if st.follows_thread(chat, root) { st.thread_unread(chat, root) } else { (0, 0) };
+        let badge = (unread > 0).then(|| {
+            let mark = (at > 0).then(|| semi("@", 10.0).color(Color::WHITE));
+            let count = semi(unread.to_string(), 10.0).line_height(Pixels(12.0)).color(Color::WHITE);
+            container(row![].push(mark).push(count).spacing(2).align_y(Center))
+                .center_y(16)
+                .padding([0, 5])
+                .style(fill_box(p.accent, 16.0))
+        });
+        let chevron = container(tinted(&CHEVRON_FORWARD, 14.0, p.tertiary)).padding(Padding::ZERO.right(2.0));
+        let line = Row::with_children(faces).push(label).push(badge).push(chevron).spacing(4).align_y(Center);
+        let ring = if self.wallpaper_fg(st, chat, false).is_some() { CLEAR } else { p.card };
+        let b = button(line)
+            .padding([6, 7])
+            .style(bordered_btn([p.received, p.selected, p.selected], [p.text; 3], ring, 2.0, 14.0))
+            .on_press(UiMessage::ShowThread(root.into()));
+        Some(b.into())
+    }
+
+    /// Desktop's `ThreadRootLine` above a reply that is also sent to the chat: "Replying to:" and the root.
+    fn thread_root_line<'a>(&'a self, st: &BeeperStore, root: &str, mine: bool) -> El<'a> {
+        let p = &self.pal;
+        let preview = st.msg_idx_by_id.get(root).and_then(|&i| preview_body(&st.messages[i])).unwrap_or_default();
+        let label = format!("{} ", tr("Replying to:"));
+        let room = 300.0 - 2.0 * BUBBLE_PAD_X - crate::style::text_width(&label, 11.0, Weight::Semibold);
+        let line = row![
+            semi(label, 11.0).line_height(Pixels(14.0)).color(p.sub),
+            ell(&preview, room, 11.0, Weight::Normal).line_height(Pixels(14.0)).color(p.sub)
+        ];
+        let line = container(line)
+            .max_width(300)
+            .clip(true)
+            .padding(Padding::new(0.0).left(BUBBLE_PAD_X).right(BUBBLE_PAD_X).bottom(2.0));
+        let line = mouse_area(line).on_press(UiMessage::ShowThread(root.into()));
+        container(line).width(Fill).align_x(if mine { Right } else { iced::Left }).into()
+    }
+
+    /// Desktop's `ThreadRepliesDivider` under the root in the thread pane: "%d reply" between two lines.
+    fn thread_divider<'a>(&self, n: usize) -> El<'a> {
+        let p = &self.pal;
+        let line = || container(Space::new()).width(Fill).height(1).style(fill_box(p.rule, 0.0));
+        let label = semi(trn("%d reply", "%d replies", n, &[&n]), 11.0).line_height(Pixels(14.0)).color(p.sub);
+        row![line(), label, line()].spacing(6).align_y(Center).padding([8, 0]).into()
     }
 
     /// Desktop's `UnreadDivider`: "New", or the incognito line with the days left of a free trial.
@@ -12097,8 +12404,13 @@ impl BeeperGuiApp {
                 run_start[i] = run_start[i - 1];
             }
         }
-        let mut col = Column::new().padding(Padding::new(8.0).right(8.0 + GUTTER).top(96.0).bottom(0.0));
-        col = col.push((!thread).then(|| self.top_of_thread(st, chat)));
+        // Desktop's `ThreadedRepliesView` lists the root and the replies of a thread under its header, and loads older
+        // messages of the chat only until the root loads.
+        let root = self.pane().thread_root.as_deref();
+        let top = if root.is_some() { 38.0 } else { 96.0 };
+        let mut col = Column::new().padding(Padding::new(8.0).right(8.0 + GUTTER).top(top).bottom(0.0));
+        let loaded = root.is_some_and(|r| msgs.first().is_some_and(|m| m.id == r));
+        col = col.push((!thread && !loaded).then(|| self.top_of_thread(st, chat)));
         let last_live = msgs.iter().rposition(|m| m.is_deleted != Some(true));
         let any_pending = msgs.iter().any(|m| pending(st, m));
         let mut last_seen: HashMap<&str, (&str, &str)> = HashMap::new();
@@ -12113,7 +12425,15 @@ impl BeeperGuiApp {
                 replied.insert(m.sender_id.as_str());
             }
         }
-        let first_unread = msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true));
+        // Desktop's `getReplyThreadListData`: the thread pane divides at the first reply of others after the read mark.
+        let first_unread = match root {
+            Some(r) => chat.thread_reads.get(r).and_then(|read| {
+                let unread =
+                    |m: &&Message| m.sort_key > *read && m.is_sender != Some(true) && m.is_deleted != Some(true);
+                msgs.iter().position(|m| m.thread_root.as_deref() == Some(r) && unread(m))
+            }),
+            None => msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true)),
+        };
         let first_unread = first_unread.filter(|_| !thread);
         let (h24, group) = (st.settings.pref("timeFormat") == 1, chat.chat_type == "group");
         let roots: Vec<&str> = msgs.iter().map(|m| reply_root(st, m)).collect();
@@ -12230,7 +12550,7 @@ impl BeeperGuiApp {
             };
             let chained = i > 0 && roots[i - 1] == roots[i];
             let split = roots.get(end).is_some_and(|r| *r != roots[end - 1]);
-            let replies = if !thread && split { counts[end - 1] } else { 0 };
+            let replies = if !thread && split && !st.threaded(chat) { counts[end - 1] } else { 0 };
             let ms = &msgs[i..end];
             let view = self.view_message(st, chat, ms, (first, last, chained, thread), (status, replies), head);
             let view = match send_rise(st, m) {
@@ -12243,7 +12563,11 @@ impl BeeperGuiApp {
                 container(Space::new()).width(Fill).height(Fill).style(fill_box(p.accent.scale_alpha(0.4 * a), 0.0))
             });
             let cell = container(stack![view].push(flash));
-            (if thread { cell } else { cell.id(format!("msg-{}", m.id)) }).into()
+            let cell = if thread || root.is_some() { cell } else { cell.id(format!("msg-{}", m.id)) };
+            match root.filter(|r| *r == m.id).map(|r| st.thread_replies(r).count()).filter(|&n| n > 0) {
+                Some(n) => column![cell, self.thread_divider(n)].into(),
+                None => cell.into(),
+            }
         };
         let keys: Vec<u64> = msgs.iter().map(|m| vlist::key(&m.id)).collect();
         let list = if thread { &self.pane().thread_list } else { &self.pane().timeline };
@@ -12320,7 +12644,13 @@ impl BeeperGuiApp {
                 .padding(Padding::ZERO.left(11.0)),
             );
         }
-        let linked = m.linked_message_id.as_ref().filter(|_| !thread);
+        // Desktop's `Wle`: in the chat of a room with threads, a reply that is also sent to the chat shows its root in
+        // place of a quote. The thread pane does not quote the fallback reply of a thread reply.
+        let (threaded, in_pane) = (st.threaded(chat), self.pane().thread_root.is_some());
+        let root_line = m.thread_root.as_deref().filter(|_| threaded && !in_pane && !thread && m.broadcast);
+        parts = parts.push(root_line.map(|r| self.thread_root_line(st, r, mine)));
+        let linked =
+            m.linked_message_id.as_ref().filter(|_| !thread && root_line.is_none() && !(in_pane && m.fallback));
         let quote = linked.and_then(|r| st.msg_idx_by_id.get(r)).map(|&i| {
             let q = &st.messages[i];
             let q_mine = q.is_sender == Some(true);
@@ -12587,8 +12917,11 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::ShowReplies(m.id.clone()))
                 .into()
         });
+        let broadcast = (in_pane && m.broadcast).then(|| -> El<'a> {
+            txt(tr("Also sent to the chat"), 11.0).line_height(Pixels(14.0)).color(muted).into()
+        });
         let mut footer: Vec<El<'a>> =
-            [status.map(|t| label(t).into()), replies, edited].into_iter().flatten().collect();
+            [status.map(|t| label(t).into()), replies, broadcast, edited].into_iter().flatten().collect();
         if !mine {
             footer.reverse();
         }
@@ -12679,8 +13012,15 @@ impl BeeperGuiApp {
             });
             container(row![].push(retry).push(remove).spacing(4)).padding(Padding::ZERO.top(4.0))
         });
-        let parts =
-            column![parts].push(edits).push(actions).push(footer).align_x(if mine { Right } else { iced::Left });
+        // Desktop's `ThreadRepliesButton` shows under the root in the chat of a room with threads.
+        let thread_button =
+            (threaded && !in_pane && !thread).then(|| self.thread_replies_button(st, chat, &m.id)).flatten();
+        let thread_button = thread_button.map(|b| container(b).padding(Padding::ZERO.top(2.0)));
+        let parts = column![parts].push(edits).push(actions).push(thread_button).push(footer).align_x(if mine {
+            Right
+        } else {
+            iced::Left
+        });
         let tools = (self.pane().hovered_msg.as_ref() == Some(&m.id)).then(|| {
             let b = |c: char, msg: UiMessage| -> El<'a> {
                 let style = move |_: &Theme, s| button::Style {
@@ -12694,6 +13034,18 @@ impl BeeperGuiApp {
             };
             let live = m.is_deleted != Some(true);
             let reply = (chat.messages.reply && live).then(|| b(icon::REPLY, UiMessage::StartReply(m.id.clone())));
+            let in_thread = (!in_pane && can_thread(st, chat, m)).then(|| -> El<'a> {
+                let style = move |_: &Theme, s| button::Style {
+                    text_color: match s {
+                        button::Status::Hovered => brightness(muted, 0.8),
+                        _ => muted,
+                    },
+                    ..Default::default()
+                };
+                let glyph = container(tinted(&VIEW_SIDEBAR, 20.0, muted)).center(32);
+                let b = button(glyph).padding(0).style(style).on_press(UiMessage::ShowThread(m.id.clone()));
+                self.tip(b.into(), tr("Reply in thread"), vec![], tooltip::Position::Top).into()
+            });
             let react = (chat.messages.react && live).then(|| {
                 mouse_area(b(icon::SMILE, UiMessage::React(m.id.clone())))
                     .on_enter(UiMessage::ShowQuickReactions)
@@ -12731,7 +13083,8 @@ impl BeeperGuiApp {
             let time = (file.is_some() && text.is_empty() && st.settings.on("showTimestamps")).then(|| -> El<'a> {
                 txt(format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1), 11.0).color(muted).into()
             });
-            let all: Vec<El<'a>> = [download, time, reply, react].into_iter().flatten().chain(quick).collect();
+            let all: Vec<El<'a>> =
+                [download, time, reply, in_thread, react].into_iter().flatten().chain(quick).collect();
             match mine {
                 true => Row::with_children(all.into_iter().rev()),
                 false => Row::with_children(all),
@@ -12798,6 +13151,9 @@ impl BeeperGuiApp {
     /// Desktop's `composeTextareaPlaceholder`.
     fn composer_placeholder(&self, chat: &Chat) -> String {
         let pane = self.pane();
+        if pane.thread_root.is_some() {
+            return tr("Reply in thread…").into();
+        }
         let to = match (pane.send_later, pane.reply_thread.is_some() || pane.reply_to_message_id.is_some()) {
             (Some(_), _) => "Send Later".into(),
             (None, reply) => {
@@ -12925,7 +13281,7 @@ impl BeeperGuiApp {
             .map(|h| st.settings.hotkey_keys(h).to_string());
         let undo = self.queued_here().then(|| st.settings.hotkey_keys("Undo Pending Send").to_string());
         let input = text_editor(&self.pane().composer)
-            .id("composer-input")
+            .id(if self.pane().thread_root.is_some() { "thread-composer-input" } else { "composer-input" })
             .placeholder(placeholder)
             .on_action(UiMessage::ComposerEdit)
             .key_binding(move |k| match k.key.as_ref() {
@@ -13089,8 +13445,19 @@ impl BeeperGuiApp {
             });
         let links: Vec<El<'a>> = links.collect();
         let links = (!links.is_empty()).then(|| Column::with_children(links).spacing(4));
+        // Desktop's "Also send to chat" of the thread composer of Slack and Beeper chats, once it has a draft.
+        let pane = self.pane();
+        let draft = !pane.composer.text().trim().is_empty() || !pane.attachments.is_empty();
+        let shown = pane.thread_root.is_some() && pane.editing_message_id.is_none() && (draft || pane.broadcast);
+        let broadcast = (shown && can_broadcast(st, chat)).then(|| -> El<'a> {
+            let label = txt(tr("Also send to chat"), 13.0).line_height(Pixels(16.0)).color(p.sub);
+            let line = row![checkbox(p, pane.broadcast), label].spacing(4).align_y(Center);
+            let toggle = mouse_area(container(line).padding(Padding::ZERO.left(1.0).bottom(6.0)));
+            toggle.on_press(UiMessage::SetBroadcast(!pane.broadcast)).into()
+        });
         // Desktop's `messageInputExternal`: the quote, the attachments and the link previews inside the pill.
-        let external: Vec<El<'a>> = [quote, pending.map(El::from), links.map(El::from)].into_iter().flatten().collect();
+        let external: Vec<El<'a>> =
+            [broadcast, quote, pending.map(El::from), links.map(El::from)].into_iter().flatten().collect();
         let external = (!external.is_empty()).then(|| {
             let inner = Column::with_children(external).spacing(8);
             container(inner).padding(Padding { top: 8.0, right: 8.0, bottom: 0.0, left: 12.0 })
@@ -16714,10 +17081,11 @@ impl BeeperGuiApp {
         out
     }
 
-    /// Desktop's `--on-wallpaper-fg` of `chat` outside of a reply chain, when its chat theme has a wallpaper.
+    /// Desktop's `--on-wallpaper-fg` of `chat` outside of a reply chain and of a thread pane, when its chat theme has
+    /// a wallpaper.
     fn wallpaper_fg(&self, st: &BeeperStore, chat: &Chat, thread: bool) -> Option<Color> {
         let wallpaper = chat_theme::resolve(&st.settings.chat_appearance, Some(&chat.id), self.dark, &st.data_dir).0;
-        wallpaper.filter(|_| !thread).map(|(_, fg)| fg)
+        wallpaper.filter(|_| !thread && self.pane().thread_root.is_none()).map(|(_, fg)| fg)
     }
 
     /// The color, text color and metadata color of sent bubbles in `chat`, or in the default chat theme.
