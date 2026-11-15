@@ -1213,6 +1213,32 @@ fn carousel_zooms_like_desktop() {
     assert_eq!(closes, 2, "the zoomed image covers the point beside it");
 }
 
+/// Desktop's carousel controls have tooltips with their keys.
+#[test]
+fn carousel_tooltips_like_desktop() {
+    let mut app = demo_app("carousel-tips");
+    let (chat, mid) = {
+        let st = app.store.read();
+        let m = st.messages.iter().find(|m| m.attachments.iter().any(|a| a.attachment_type == "img")).unwrap();
+        (m.chat_id.clone(), m.id.clone())
+    };
+    let _ = app.update(UiMessage::SelectChat(chat));
+    let _ = app.update(UiMessage::OpenCarousel(mid, 0, false));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 720.0), app.view_main());
+    let close = Point::new(982.0, 25.0);
+    sim.point_at(close);
+    let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: close })]);
+    // The simulator does not find the text of overlays, so the test reads the pixels of the tooltip.
+    let dir = std::env::temp_dir().join(format!("beeper-rs-tip-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("tip"));
+    let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+    let shot = ::image::open(&png).unwrap().into_rgba8();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let k = shot.width() / 1000;
+    assert_eq!(shot.get_pixel(887 * k, 45 * k).0, [255; 4], "the Close tooltip shows under the button");
+}
+
 /// Escape in a chat window leaves its chat and closes the window, which iced can draw again before it closes.
 #[test]
 fn chat_windows_that_left_their_chat_draw_nothing() {
