@@ -189,6 +189,11 @@ fn cli_lists_shows_and_changes_chats() {
 
     let pinned = d.run(&["chats", "pin", "--chat", "local_x5", "--json"]).json();
     assert_eq!(pinned["data"]["id"], "!sl_design:beeper.com");
+    let reminded = d.run(&["chats", "remind", "--chat", "local_x5", "--when", "2030-01-01T00:00:00Z", "--json"]).json();
+    assert_eq!(
+        reminded["data"],
+        json!({ "message": "Reminder set", "detail": "2030-01-01T00:00:00Z", "chatID": "local_x5", "remindAt": "2030-01-01T00:00:00Z" })
+    );
     let cleared = d.run(&["chats", "unremind", "--chat", "local_x5", "--json"]).json();
     assert_eq!(cleared["data"], json!({ "message": "Reminder cleared", "chatID": "local_x5" }));
     let bad = d.run(&["chats", "disappear", "--chat", "local_x5", "--seconds", "x", "--json"]);

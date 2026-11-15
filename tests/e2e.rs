@@ -1080,8 +1080,13 @@ async fn lifecycle() {
     assert_eq!(client.focus(None, None, None).await, StatusCode::OK);
     assert_eq!(focus_rx.recv().await.unwrap(), None);
     assert_eq!(client.focus(Some("!missing:beeper.com"), None, None).await, StatusCode::NOT_FOUND);
-    assert_eq!(client.focus(None, Some("msg_missing"), None).await, StatusCode::NOT_FOUND);
-    assert_eq!(client.focus(None, None, Some("No chat")).await, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        client.focus(None, Some("msg_missing"), None).await,
+        StatusCode::OK,
+        "a message without a chat only focuses"
+    );
+    assert_eq!(focus_rx.recv().await.unwrap(), None);
+    assert_eq!(client.focus(None, None, Some("No chat")).await, StatusCode(500));
 
     let merged_resp = client
         .merge_chats(
@@ -1095,7 +1100,7 @@ async fn lifecycle() {
     let send_resp = client.send_message(&merged_chat_id, Some("Routed message via merged chat"), None, None).await;
     assert_eq!(send_resp["chatID"], "!im_sarah:beeper.com");
     let sent_msg_id = send_resp["pendingMessageID"].as_str().unwrap().to_string();
-    assert_eq!(client.focus(None, Some(&sent_msg_id), None).await, StatusCode::OK);
+    assert_eq!(client.focus(Some("!im_sarah:beeper.com"), Some(&sent_msg_id), None).await, StatusCode::OK);
     assert_eq!(focus_rx.recv().await.unwrap().as_deref(), Some("!im_sarah:beeper.com"));
 
     let mut next = async || timeout(Duration::from_secs(2), ws_rx.recv()).await.unwrap().unwrap();

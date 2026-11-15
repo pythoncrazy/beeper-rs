@@ -200,6 +200,7 @@ pub(super) struct ApiChat<'a> {
     img_url: Option<&'a str>,
     #[serde(rename = "type")]
     chat_type: &'static str,
+    is_read_only: bool,
     participants: Participants<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_activity: Option<&'a str>,
@@ -333,6 +334,7 @@ pub(super) fn chat<'a>(
         description: c.description.as_deref(),
         img_url: c.img_url.as_deref(),
         chat_type: if c.chat_type == "group" { "group" } else { "single" },
+        is_read_only: c.is_read_only,
         participants: Participants {
             items: shown.iter().map(participant).collect(),
             has_more: shown.len() < members.len(),
