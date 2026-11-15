@@ -219,7 +219,8 @@ impl BeeperClient {
         self.json("GET", &query_string("/v1/search", &[("query", query)]), None).await
     }
 
-    pub async fn connect_ws(&self, chat_ids: Vec<String>) -> UnboundedReceiver<WsEvent> {
+    /// Opens `/v1/ws` and sends `subscriptions.set`. The receiver gets every frame, `ready` first.
+    pub async fn connect_ws(&self, chat_ids: Vec<String>) -> UnboundedReceiver<Value> {
         let mut stream = TcpStream::connect(&self.host_port).await.expect("connect TCP to /v1/ws");
         let upgrade = format!(
             "GET /v1/ws HTTP/1.1\r\nhost: {}\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\nauthorization: Bearer {}\r\n\r\n",
@@ -239,7 +240,7 @@ impl BeeperClient {
         tokio::spawn(async move {
             let mut reader = std::io::Cursor::new(leftover).chain(stream);
             while let Ok((0x1, payload)) = read_ws_frame(&mut reader, usize::MAX).await {
-                if tx.send(serde_json::from_slice(&payload).expect("parse WS event")).is_err() {
+                if tx.send(serde_json::from_slice(&payload).expect("parse WS frame")).is_err() {
                     break;
                 }
             }

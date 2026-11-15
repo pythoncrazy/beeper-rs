@@ -627,6 +627,22 @@ async fn lifecycle() {
 
     let (_, _, pages, pager) = spawn_e2e_beeper_instance("pages", None).await;
     let (_, accounts) = pager.request("GET", "/v1/accounts", None).await;
+    let mut ws = pager.connect_ws(vec!["*".into(), "!x".into()]).await;
+    assert_eq!(ws.recv().await.unwrap()["type"], "ready");
+    let refused = ws.recv().await.unwrap();
+    let message = "chatIDs cannot combine '*' with specific IDs";
+    assert_eq!(refused, json!({ "type": "error", "code": "INVALID_PAYLOAD", "message": message }));
+    let mut ws = pager.connect_ws(vec!["!wa_eric:beeper.com".into(), "!wa_eric:beeper.com".into()]).await;
+    assert_eq!(ws.recv().await.unwrap()["type"], "ready");
+    assert_eq!(ws.recv().await.unwrap()["chatIDs"], json!(["!wa_eric:beeper.com"]), "unique chat IDs");
+    pager.send_message("!tg_rust:beeper.com", Some("not subscribed"), None, None).await;
+    pager.send_message("!wa_eric:beeper.com", Some("subscribed"), None, None).await;
+    let event = ws.recv().await.unwrap();
+    assert_eq!(
+        (&event["type"], &event["chatID"], &event["seq"]),
+        (&json!("message.upserted"), &json!("!wa_eric:beeper.com"), &json!(1))
+    );
+    assert_eq!(event["entries"][0]["text"], "subscribed");
     let (_, bridges) = pager.request("GET", "/v1/bridges", None).await;
     let whatsapp = bridges["items"].as_array().unwrap().iter().find(|b| b["id"] == "whatsapp").unwrap();
     assert_eq!(
@@ -1045,8 +1061,12 @@ async fn lifecycle() {
     assert_eq!(client.focus(None, Some(&sent_msg_id), None).await, StatusCode::OK);
     assert_eq!(focus_rx.recv().await.unwrap().as_deref(), Some("!im_sarah:beeper.com"));
 
-    let ws_ev = timeout(Duration::from_secs(2), ws_rx.recv()).await.unwrap().unwrap();
-    assert!(!ws_ev.event_type.is_empty());
+    let mut next = async || timeout(Duration::from_secs(2), ws_rx.recv()).await.unwrap().unwrap();
+    assert_eq!(next().await, json!({ "type": "ready", "version": 1, "chatIDs": [] }));
+    assert_eq!(next().await, json!({ "type": "subscriptions.updated", "chatIDs": ["*"], "app": { "state": false } }));
+    let ws_ev = next().await;
+    assert_eq!((&ws_ev["seq"], ws_ev["ids"].as_array().unwrap().len()), (&json!(1), 1), "{ws_ev}");
+    assert!(ws_ev["ts"].is_string() && ws_ev["chatID"].is_string() && ws_ev.get("message").is_none());
 
     let edit_resp =
         client.edit_message("!im_sarah:beeper.com", &sent_msg_id, "Routed message via merged chat (edited v2)").await;
