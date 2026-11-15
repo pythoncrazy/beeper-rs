@@ -617,17 +617,7 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     if method == "GET" {
         return get(store, &segs, &req);
     }
-    let mut st = store.write();
-    let reply = dispatch(&mut st, &method, &segs, &req);
-    if st.start_flush() {
-        let s = store.clone();
-        tokio::spawn(async move {
-            if let Err(e) = beeper_core::matrix::flush(s.clone()).await {
-                s.write().matrix_error = Some(e);
-            }
-        });
-    }
-    reply
+    dispatch(&mut store.write(), &method, &segs, &req)
 }
 
 /// Desktop's `{verification, session}` body of the verification routes.

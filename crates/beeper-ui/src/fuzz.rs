@@ -1365,7 +1365,6 @@ fn mentions_like_desktop() {
         let mut st = app.store.write();
         let i = st.resolve_chat_idx(&id).unwrap();
         st.update_chat(i, |c| c.can_mention_room = true);
-        st.config.demo = false;
     }
     assert_eq!(rows(&app)[0], ("room".to_string(), ROOM_MENTION.to_string()), "\"@room\" comes first");
     let _ = app.update(UiMessage::SubmitComposer);
@@ -2873,7 +2872,8 @@ fn undo_send_like_desktop() {
     assert!(app.queued.is_empty(), "the free plan sends at once");
 }
 
-/// Turns off the demo, so that changes go to the outbox. The seed messages count as messages that the homeserver took.
+/// Turns off the demo, so that own messages show their send status. The seed messages count as messages that the
+/// homeserver took.
 fn online(app: &BeeperGuiApp) {
     let mut st = app.store.write();
     st.config.demo = false;
