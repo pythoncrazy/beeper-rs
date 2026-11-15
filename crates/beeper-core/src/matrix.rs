@@ -228,7 +228,7 @@ fn message_rules(f: &Value) -> MessageRules {
         edit_max_age: f["edit_max_age"].as_u64().filter(|&s| s > 0),
         delete: level("delete") == 2,
         delete_max_age: f["delete_max_age"].as_u64().filter(|&s| s > 0),
-        delete_for_me: f["delete_for_me"] == true,
+        delete_for_me: f["delete_for_me"] == true && level("delete") < 1,
         react: level("reaction") > 0,
         reply: level("reply") > 0,
     }

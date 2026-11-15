@@ -7,8 +7,8 @@ use crate::{
 use crate::{ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_MARK_ALL_READ};
 use beeper_core::matrix::ChatFlag;
 use beeper_core::models::{
-    AccountProps, Chat, Message, MessageRules, ThemeChoice, User, CHAT_UNREAD, MANAGE_KICK, MANAGE_ROLE, MEMBER_INVITE,
-    MEMBER_KICK, MEMBER_LEAVE,
+    AccountProps, Chat, Message, ThemeChoice, User, CHAT_UNREAD, MANAGE_KICK, MANAGE_ROLE, MEMBER_INVITE, MEMBER_KICK,
+    MEMBER_LEAVE,
 };
 use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
@@ -400,11 +400,11 @@ impl BeeperGuiApp {
                     v.push(cmd(e, trx("Edit", "message command"), edit).hotkey("Message: Edit"));
                 }
             }
-            let mine: Vec<&Message> = picked.iter().copied().filter(|m| m.is_sender == Some(true)).collect();
-            if rules.delete && live && !mine.is_empty() {
-                let young = mine.iter().all(|m| MessageRules::young(rules.delete_max_age, &m.timestamp));
-                let ask = UiMessage::AskDeleteMessage(mine.iter().map(|m| m.id.clone()).collect());
-                v.push(cmd(e, tr("Delete for everyone"), young.then_some(ask)).keys(&["unsend"]));
+            // Desktop's `ghe` with the source "Command Bar", only without pending messages.
+            let sent = picked.iter().all(|m| !crate::pending(st, m));
+            if sent && crate::delete_dialog(st, &picked).is_some() {
+                let ask = UiMessage::AskDeleteMessage(picked.iter().map(|m| m.id.clone()).collect());
+                v.push(cmd(e, tr("Delete…"), Some(ask)).keys(&["unsend", "remove"]));
             } else if !rules.delete && !rules.delete_for_me {
                 let name = crate::network_name(&picked[0].account_id);
                 v.push(cmd(e, trf("Delete message is not supported for %s yet", &[&name]), None));

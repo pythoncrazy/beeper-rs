@@ -1995,7 +1995,7 @@ fn selected_message_commands_like_desktop() {
     let _ = app.update(UiMessage::SelectMessages(linked[..1].to_vec()));
     let cmds = app.commands(&app.store.read(), "");
     let titles: Vec<&str> = cmds.iter().take_while(|c| c.category == "Message").map(|c| c.title.as_str()).collect();
-    let all = ["Edit", "Delete for everyone", "Forward", "Copy", "Copy with timestamps", "Open link", "Unselect"];
+    let all = ["Edit", "Delete…", "Forward", "Copy", "Copy with timestamps", "Open link", "Unselect"];
     assert_eq!(titles, [&all[..], &["Reply", "Send later"]].concat());
     assert!(matches!(&cmds[5].msg, Some(UiMessage::OpenUrl(u)) if u.starts_with("https://")));
     let _ = app.update(cmds[6].msg.clone().unwrap());
@@ -5563,12 +5563,98 @@ fn message_actions_follow_room_features_like_desktop() {
         app.commands(&app.store.read(), "").into_iter().filter(|c| c.category == "Message").map(|c| c.title).collect()
     };
     let t = titles(&app);
-    assert!(t.contains(&"Delete for everyone".into()) && t.contains(&"Edit".into()) && !t.contains(&"Reply".into()));
+    assert!(t.contains(&"Delete…".into()) && t.contains(&"Edit".into()) && !t.contains(&"Reply".into()));
     set(&mut app, MessageRules { delete: false, ..old });
-    assert!(simulator(app.view_message_menu(&mine).0).find("Delete…").is_err());
+    assert!(simulator(app.view_message_menu(&mine).0).find("Delete…").is_ok(), "Remove from Beeper stays");
+    app.store.write().delete_message(&id, &mine).expect("delete the message");
+    assert!(simulator(app.view_message_menu(&mine).0).find("Delete…").is_err(), "a deleted message has no Delete…");
     assert!(titles(&app).contains(&format!("Delete message is not supported for {network} yet")));
-    let _ = app.update(UiMessage::AskDeleteMessage(vec![mine.clone(), mine.clone()]));
-    assert!(simulator(app.view_main()).find("Are you sure you want to delete 2 messages?").is_ok());
+}
+
+/// Desktop's "Delete message?" dialog: your messages get the button of the deletion mode of the room, sent
+/// messages get "Remove from Beeper", and the text tells where the removed messages stay.
+#[test]
+fn delete_dialog_removes_from_beeper_like_desktop() {
+    let mut app = demo_app("delete-dialog");
+    let (cid, mine, theirs) = {
+        let st = app.store.read();
+        let c = st.chats.iter().find(|c| {
+            let ms = st.messages.iter().filter(|m| m.chat_id == c.id && m.text.is_some() && !m.silent());
+            c.chat_type == "single"
+                && ms.clone().any(|m| m.is_sender == Some(true))
+                && ms.clone().any(|m| m.is_sender != Some(true))
+        });
+        let c = c.expect("a DM with messages of both people");
+        let ms = || st.messages.iter().filter(|m| m.chat_id == c.id && m.text.is_some() && !m.silent());
+        let id = |mine: bool| ms().rfind(|m| (m.is_sender == Some(true)) == mine).expect("a message").id.clone();
+        (c.id.clone(), id(true), id(false))
+    };
+    let rules = |app: &mut BeeperGuiApp, delete: bool, delete_for_me: bool| {
+        let mut st = app.store.write();
+        let i = st.chat_idx_by_id[&cid];
+        st.update_chat(i, |c| {
+            c.messages = MessageRules { delete, delete_for_me, delete_max_age: None, ..BEEPER_MESSAGES }
+        });
+    };
+    let dialog = |app: &mut BeeperGuiApp, ids: &[&String]| -> (String, String, Vec<&'static str>) {
+        let _ = app.update(UiMessage::AskDeleteMessage(ids.iter().map(|id| id.to_string()).collect()));
+        let st = app.store.read();
+        let ms: Vec<Message> = ids.iter().map(|id| stored(&st, id)).collect();
+        let (body, buttons) = delete_dialog(&st, &ms.iter().collect::<Vec<_>>()).expect("a delete dialog");
+        let title = trn("Delete message?", "Delete messages?", ms.len(), &[]);
+        (title, body, buttons.into_iter().map(|b| b.0).collect())
+    };
+    let (title, network, name) = {
+        let st = app.store.read();
+        let c = &st.chats[st.chat_idx_by_id[&cid]];
+        ("Delete message?".to_string(), network_name(&c.account_id), c.title.clone())
+    };
+    rules(&mut app, true, false);
+    let note = format!("Removing it from Beeper keeps it on {network} for you and {name}.");
+    assert_eq!(
+        dialog(&mut app, &[&mine]),
+        (title.clone(), note.clone(), vec!["Delete for Everyone", "Remove from Beeper"])
+    );
+    for text in ["Delete message?", note.as_str(), "Delete for Everyone", "Remove from Beeper", "Cancel"] {
+        assert!(simulator(app.view_main()).find(text).is_ok(), "{text}");
+    }
+    rules(&mut app, false, true);
+    assert_eq!(dialog(&mut app, &[&mine]).2, ["Delete for Me", "Remove from Beeper"]);
+    rules(&mut app, false, false);
+    assert_eq!(dialog(&mut app, &[&mine]).2, ["Remove from Beeper"]);
+    rules(&mut app, true, false);
+    assert!(simulator(app.view_message_menu(&theirs).0).find("Delete…").is_ok(), "received messages have Delete…");
+    let both = dialog(&mut app, &[&mine, &theirs]);
+    let note = format!("Removing them from Beeper keeps them on {network} for you and {name}.");
+    assert_eq!(both, ("Delete messages?".into(), note, vec!["Remove from Beeper"]), "only your messages get a mode");
+    let _ = app.update(UiMessage::RemoveFromBeeper(vec![mine.clone(), theirs.clone()]));
+    {
+        let st = app.store.read();
+        assert!([&mine, &theirs].iter().all(|id| stored(&st, id).removed && stored(&st, id).text.is_none()));
+    }
+    assert!(app.confirm.is_none(), "the button closes the dialog");
+    let _ = app.update(UiMessage::SelectChat(cid.clone()));
+    assert!(simulator(app.view_main()).find("Removed from Beeper").is_ok(), "the row of a removed message");
+    assert!(simulator(app.view_message_menu(&mine).0).find("Delete…").is_err(), "a removed message has no Delete…");
+    let account = stored(&app.store.read(), &mine).account_id;
+    let note = |account: &str, kind: &str, title: &str| {
+        let mut st = app.store.write();
+        let i = st.chat_idx_by_id[&cid];
+        st.update_chat(i, |c| (c.account_id, c.chat_type, c.title) = (account.into(), kind.into(), title.into()));
+        let m = stored(&st, &mine);
+        removal_note(&st, &[&m])
+    };
+    assert_eq!(note("hungryserv", "group", "G"), "Removing it from Beeper keeps it for you and the group.");
+    assert_eq!(note("hungryserv", "single", "Ann"), "Removing it from Beeper keeps it for you and Ann.");
+    assert_eq!(note("hungryserv", "single", " "), "Removing it from Beeper does not delete it for other people.");
+    assert_eq!(
+        note(&account, "group", "G"),
+        format!("Removing it from Beeper keeps it on {network} for you and the group.")
+    );
+    assert_eq!(
+        note(&account, "single", ""),
+        format!("Removing it from Beeper keeps it on {network} for everyone in this chat.")
+    );
 }
 
 #[test]

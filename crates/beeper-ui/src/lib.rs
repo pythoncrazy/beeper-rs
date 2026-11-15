@@ -376,6 +376,8 @@ pub enum UiMessage {
     StartReply(String),
     StartEdit(String, String),
     DeleteMessage(String, String),
+    /// Desktop's `removeFromBeeper` of the messages.
+    RemoveFromBeeper(Vec<String>),
     ToggleReaction(String, String, String),
     ToggleBookmark(String),
     MarkUnreadFromHere(String, String),
@@ -636,7 +638,7 @@ pub enum UiMessage {
     /// Save the attachments of a message, or only one of them, to the downloads folder.
     Download(String, Option<usize>),
     Downloaded(Result<String, String>),
-    /// Desktop's Delete for Everyone confirmation of your messages.
+    /// Desktop's "Delete message?" dialog of the messages.
     AskDeleteMessage(Vec<String>),
     ArchiveStale,
     /// Archives the inbox chats, or only the read ones, with no activity in the days, after Desktop's confirmation.
@@ -3501,6 +3503,104 @@ fn deletable(st: &BeeperStore, m: &Message) -> bool {
         && m.is_sender == Some(true)
         && m.is_deleted != Some(true)
         && MessageRules::young(rules.delete_max_age, &m.timestamp)
+}
+
+/// Desktop's `ghe`: the text and the buttons of the delete dialog of messages, or None without buttons. Your messages
+/// get "Delete for Everyone" or "Delete for Me" by the deletion mode of their rooms when no message of others is in
+/// `ms`, and the messages that the homeserver took get "Remove from Beeper". A deleted message has no buttons.
+fn delete_dialog(st: &BeeperStore, ms: &[&Message]) -> Option<(String, Vec<(&'static str, UiMessage)>)> {
+    if ms.iter().any(|m| m.is_deleted == Some(true)) {
+        return None;
+    }
+    let (mine, others): (Vec<&Message>, Vec<&Message>) =
+        ms.iter().copied().filter(|m| !m.silent()).partition(|m| m.is_sender == Some(true));
+    // Desktop's `Vit`.
+    let mode = |m: &Message| {
+        let rules = st.chats[st.chat_idx_by_id[&m.chat_id]].messages;
+        match rules.delete {
+            true => MessageRules::young(rules.delete_max_age, &m.timestamp).then_some("Delete for Everyone"),
+            false => rules.delete_for_me.then_some("Delete for Me"),
+        }
+    };
+    let modes: Vec<Option<&'static str>> = mine.iter().map(|m| mode(m)).collect();
+    let label = modes.first().copied().flatten().filter(|&l| others.is_empty() && modes.iter().all(|&m| m == Some(l)));
+    let delete = mine.iter().map(|m| UiMessage::DeleteMessage(m.chat_id.clone(), m.id.clone())).collect();
+    let mut buttons: Vec<(&'static str, UiMessage)> =
+        label.map(|l| (trx(l, "confirmation button"), UiMessage::Commands(delete))).into_iter().collect();
+    let removable: Vec<&Message> = ms.iter().copied().filter(|m| !m.silent() && !pending(st, m)).collect();
+    if !removable.is_empty() {
+        let ids = removable.iter().map(|m| m.id.clone()).collect();
+        buttons.push((trx("Remove from Beeper", "confirmation button"), UiMessage::RemoveFromBeeper(ids)));
+    }
+    let n = mine.len();
+    let body = match (removable.is_empty(), n) {
+        (false, _) => removal_note(st, &removable),
+        (true, 1) => tr("Are you sure you want to delete this message?").into(),
+        (true, n) => {
+            trn("Are you sure you want to delete %d message?", "Are you sure you want to delete %d messages?", n, &[&n])
+        }
+    };
+    (!buttons.is_empty()).then_some((body, buttons))
+}
+
+/// Desktop's `Git`: where "Remove from Beeper" keeps the messages `ms`, by their chat.
+fn removal_note(st: &BeeperStore, ms: &[&Message]) -> String {
+    let n = ms.len();
+    let c = &st.chats[st.chat_idx_by_id[&ms[0].chat_id]];
+    if ms.iter().any(|m| m.chat_id != c.id) {
+        let (one, many) = (
+            "Removing it from Beeper keeps it on its original network.",
+            "Removing them from Beeper keeps them on their original networks.",
+        );
+        return trn(one, many, n, &[]);
+    }
+    let (title, network) = (c.title.trim(), network_name(&c.account_id));
+    let ((one, many), args): ((&'static str, &'static str), Vec<&dyn std::fmt::Display>) =
+        match (c.account_id == "hungryserv", c.chat_type == "group", title.is_empty()) {
+            (true, true, _) => (
+                (
+                    "Removing it from Beeper keeps it for you and the group.",
+                    "Removing them from Beeper keeps them for you and the group.",
+                ),
+                vec![],
+            ),
+            (true, false, false) => (
+                (
+                    "Removing it from Beeper keeps it for you and %s.",
+                    "Removing them from Beeper keeps them for you and %s.",
+                ),
+                vec![&title],
+            ),
+            (true, false, true) => (
+                (
+                    "Removing it from Beeper does not delete it for other people.",
+                    "Removing them from Beeper does not delete them for other people.",
+                ),
+                vec![],
+            ),
+            (false, true, _) => (
+                (
+                    "Removing it from Beeper keeps it on %s for you and the group.",
+                    "Removing them from Beeper keeps them on %s for you and the group.",
+                ),
+                vec![&network],
+            ),
+            (false, false, false) => (
+                (
+                    "Removing it from Beeper keeps it on %1$s for you and %2$s.",
+                    "Removing them from Beeper keeps them on %1$s for you and %2$s.",
+                ),
+                vec![&network, &title],
+            ),
+            (false, false, true) => (
+                (
+                    "Removing it from Beeper keeps it on %s for everyone in this chat.",
+                    "Removing them from Beeper keeps them on %s for everyone in this chat.",
+                ),
+                vec![&network],
+            ),
+        };
+    trn(one, many, n, &args)
 }
 
 /// The time of the slide of Desktop's `BrandSegmentControl` highlight, in seconds.
@@ -6593,6 +6693,7 @@ impl BeeperGuiApp {
                 st.delete_message(&cid, &mid).expect("delete message");
                 st.queue(&cid, Outgoing::Redact { target: mid });
             }
+            UiMessage::RemoveFromBeeper(ids) => self.remove_from_beeper(ids),
             UiMessage::ToggleReaction(cid, mid, key) => {
                 let mut st = self.store.write();
                 let mine = stored(&st, &mid)
@@ -10663,6 +10764,13 @@ impl BeeperGuiApp {
         row![Space::new().width(Fill), bubble].into()
     }
 
+    /// Desktop's "Remove from Beeper" button of the delete dialog.
+    fn remove_from_beeper(&mut self, ids: Vec<String>) {
+        self.confirm = None;
+        let mut st = self.store.write();
+        ids.iter().for_each(|id| st.remove_from_beeper(id));
+    }
+
     /// The message menu, its height and the top of its Playback Speed row.
     /// The message menu, the composer menus or the reaction picker of the drawn pane, with their place.
     fn pane_menu(&self) -> Option<(El<'_>, f32, f32)> {
@@ -10821,11 +10929,10 @@ impl BeeperGuiApp {
         .flatten()
         .collect();
         let top = head.iter().map(|r| r.1).sum::<f32>() + 11.0;
-        let delete = (mine && rules.delete && live).then(|| {
-            let delete = MessageRules::young(rules.delete_max_age, &m.timestamp)
-                .then(|| UiMessage::AskDeleteMessage(vec![mid.clone()]));
-            item(tr("Delete…").into(), "", delete)
-        });
+        // Desktop's `Zit`: no Delete… for the message that you edit.
+        let editing = self.pane().editing_message_id.as_ref() == Some(&mid);
+        let delete = (!editing && delete_dialog(&st, &[m]).is_some())
+            .then(|| item(tr("Delete…").into(), "", Some(UiMessage::AskDeleteMessage(vec![mid.clone()]))));
         let tail: Vec<(El, f32)> = self.voice_menu_rows(&st, m).into_iter().chain(delete).collect();
         let rows: Vec<(El, f32)> = [
             Some(head),
@@ -13798,10 +13905,8 @@ impl BeeperGuiApp {
                 .width(13.0 * 448.0 / 512.0)
                 .height(13)
                 .style(move |_, _| svg::Style { color: Some(fg) });
-            let body = row![
-                icon,
-                txt(tr("This message has been deleted"), 13.0).line_height(Pixels(16.0)).font(italic).color(fg)
-            ];
+            let text = tr(if m.removed { "Removed from Beeper" } else { "This message has been deleted" });
+            let body = row![icon, txt(text, 13.0).line_height(Pixels(16.0)).font(italic).color(fg)];
             container(body.spacing(5).align_y(iced::Bottom))
                 .padding(Padding::new(13.0).top(9.0).bottom(7.0))
                 .style(bordered_box(CLEAR, mix(p.card, p.received, 0.8), 1.0, 17.0))
@@ -17545,17 +17650,10 @@ impl BeeperGuiApp {
             }
             ASK_DELETE_MESSAGE => {
                 let st = self.store.read();
-                let mids: Vec<&str> = self.delete_target.as_deref().expect("messages to delete").split(' ').collect();
-                let n = mids.len();
-                let delete = mids.iter().map(|&mid| {
-                    UiMessage::DeleteMessage(stored(&st, mid).chat_id, mid.into())
-                });
-                let body = match n {
-                    1 => tr("Are you sure you want to delete this message?").into(),
-                    _ => trf("Are you sure you want to delete %s?", &[&trn("%d message", "%d messages", n, &[&n])]),
-                };
-                let delete = vec![(tr("Delete"), UiMessage::Commands(delete.collect()))];
-                (trn("Delete message", "Delete messages", n, &[]), body, delete)
+                let ids = self.delete_target.as_deref().expect("messages to delete").split(' ');
+                let ms: Vec<Message> = ids.map(|id| stored(&st, id)).collect();
+                let (body, buttons) = delete_dialog(&st, &ms.iter().collect::<Vec<_>>()).expect("the menu checks");
+                (trn("Delete message?", "Delete messages?", ms.len(), &[]), body, buttons)
             }
             d @ (ASK_ARCHIVE_READ | ASK_ARCHIVE_ALL) => {
                 let read = d == ASK_ARCHIVE_READ;
