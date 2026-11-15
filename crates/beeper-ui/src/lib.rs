@@ -6,6 +6,7 @@ mod dashed;
 mod deeplink;
 pub mod emoji;
 mod format;
+mod gallery;
 mod i18n;
 mod images;
 mod lift;
@@ -682,6 +683,7 @@ pub enum UiMessage {
     CloudAccounts(Result<(Profile, Vec<BridgeAccountInfo>), String>),
     AvatarLoaded(String, Result<image::Handle, String>),
     MediaLoaded(String, Result<Frames, String>),
+    TileBaked(String, image::Handle),
     Voice(voice::Msg),
     Record(record::Msg),
     RetryMedia(String),
@@ -3291,6 +3293,21 @@ fn brightness(c: Color, k: f32) -> Color {
     Color { r: c.r * k, g: c.g * k, b: c.b * k, ..c }
 }
 
+/// Desktop's click on a reaction of a message or a gallery: it removes your reaction from all the messages that have
+/// it, or adds it to all the messages that have the reaction.
+fn toggle_reaction(st: &BeeperStore, chat: &str, ms: &[&Message], key: &str) -> UiMessage {
+    let has = |m: &&&Message, mine: bool| {
+        m.reactions.iter().any(|r| r.reaction_key == key && (!mine || st.is_me(&r.participant_id)))
+    };
+    let mine = ms.iter().any(|m| has(&m, true));
+    let mut toggles =
+        ms.iter().filter(|m| has(m, mine)).map(|m| UiMessage::ToggleReaction(chat.into(), m.id.clone(), key.into()));
+    match ms.len() {
+        1 => toggles.next().expect("the message has the reaction"),
+        _ => UiMessage::Commands(toggles.collect()),
+    }
+}
+
 fn gap_below(m: &Message, next: &Message) -> f32 {
     let ms = |m: &Message| millis_from_rfc3339(&m.timestamp).expect("message timestamp");
     match (ms(next) - ms(m)).abs() / 60_000 {
@@ -3836,6 +3853,8 @@ pub struct BeeperGuiApp {
     pub avatars: images::Images<image::Handle>,
     wants: wants::Wants,
     pub media: images::Images<Result<Frames, String>>,
+    /// The baked gallery tiles (`gallery.rs`).
+    tiles: images::Images<image::Handle>,
     pub resolving_media: HashMap<String, bool>,
     video: Option<video::Video>,
     started: std::time::Instant,
@@ -4021,6 +4040,7 @@ impl BeeperGuiApp {
             avatars: images::Images::new(64 << 20),
             wants: wants::Wants::default(),
             media: images::Images::new(512 << 20),
+            tiles: images::Images::new(64 << 20),
             resolving_media: HashMap::new(),
             video: None,
             started: std::time::Instant::now(),
@@ -7132,6 +7152,7 @@ impl BeeperGuiApp {
             UiMessage::MediaLoaded(url, r) => {
                 self.media.insert(url, Some(r));
             }
+            UiMessage::TileBaked(key, h) => self.tiles.insert(key, Some(h)),
             UiMessage::RetryMedia(url) => {
                 self.media.remove(&url);
                 return self.load_media();
@@ -8306,13 +8327,14 @@ impl BeeperGuiApp {
     /// Starts the loads of the media that a view asked for, when a client or HTTPS can load them.
     fn load_media(&mut self) -> Task<UiMessage> {
         let client = self.store.read().matrix.clone();
-        let loadable = |u: &String| client.is_some() || u.starts_with("https://");
+        let loadable = |u: &String| client.is_some() || u.starts_with("https://") || u.starts_with("data:");
         let (urls, rest) = std::mem::take(&mut *self.wants.media.borrow_mut()).into_iter().partition(loadable);
         *self.wants.media.borrow_mut() = rest;
         let urls: Vec<String> = urls.into_iter().filter(|u| !self.media.contains_key(u)).collect();
         self.media.extend(urls.iter().map(|u| (u.clone(), None)));
         let audio = self.load_audio();
         let bookmarks = self.load_bookmarks();
+        let tiles = self.bake_tiles();
         Task::batch(urls.into_iter().map(|url| {
             let (client, u) = (client.clone(), url.clone());
             Task::perform(
@@ -8326,6 +8348,7 @@ impl BeeperGuiApp {
         }))
         .chain(audio)
         .chain(bookmarks)
+        .chain(tiles)
     }
 
     /// Desktop's `hydrateMissingBookmarks` while Chat Info is open: fetches the bookmarked messages of the open chat
@@ -11692,8 +11715,14 @@ impl BeeperGuiApp {
             let n = later.entry(roots[i]).or_insert(0);
             (counts[i], *n) = (*n, *n + 1);
         }
+        let gallery = gallery::starts(st, msgs, &counts);
         let item = |i: usize| -> El<'a> {
-            let (m, prev) = (msgs[i], i.checked_sub(1).map(|j| msgs[j]));
+            // Desktop's `GalleryGrouper` shows a gallery at its first message.
+            if gallery[i] != i {
+                return Column::new().into();
+            }
+            let end = i + gallery[i..].iter().take_while(|&&s| s == i).count();
+            let (m, prev, tail) = (msgs[i], i.checked_sub(1).map(|j| msgs[j]), msgs[end - 1]);
             let day_changed = prev.is_none_or(|q| day_num(&q.timestamp) != day_num(&m.timestamp));
             let mut head = Column::new().push(prev.map(|q| Space::new().height(gap_below(q, m))));
             if day_changed {
@@ -11701,7 +11730,7 @@ impl BeeperGuiApp {
                 let pill = container(label).padding([5, 9]).style(bordered_box(p.card, p.chip, 1.0, 12.0));
                 head = head.push(container(pill).center_x(Fill).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
             }
-            if Some(i) == first_unread {
+            if first_unread.is_some_and(|u| (i..end).contains(&u)) {
                 head = head.push(self.unread_divider(st));
             }
             if let Some(timer) = m.timer {
@@ -11739,11 +11768,11 @@ impl BeeperGuiApp {
                 return rows.into();
             }
             let first = day_changed || prev.is_none_or(|q| q.sender_id != m.sender_id || membership(q));
-            let last = msgs.get(i + 1).is_none_or(|n| {
-                n.sender_id != m.sender_id || membership(n) || day_num(&n.timestamp) != day_num(&m.timestamp)
+            let last = msgs.get(end).is_none_or(|n| {
+                n.sender_id != m.sender_id || membership(n) || day_num(&n.timestamp) != day_num(&tail.timestamp)
             });
             let mut viewers: Vec<(&str, &str)> =
-                last_seen.iter().filter(|(_, &(mid, _))| mid == m.id).map(|(&u, &(_, ts))| (u, ts)).collect();
+                last_seen.iter().filter(|(_, &(mid, _))| mid == tail.id).map(|(&u, &(_, ts))| (u, ts)).collect();
             viewers.sort_by_key(|&(_, ts)| ts);
             let status = if let Some(&(_, ts)) = viewers.last() {
                 if group {
@@ -11772,12 +11801,13 @@ impl BeeperGuiApp {
                     })
                 }
             } else {
-                (Some(i) == last_live && m.is_sender == Some(true)).then(|| tr("Sent").into())
+                (Some(end - 1) == last_live && m.is_sender == Some(true)).then(|| tr("Sent").into())
             };
             let chained = i > 0 && roots[i - 1] == roots[i];
-            let split = roots.get(i + 1).is_some_and(|r| *r != roots[i]);
-            let replies = if !thread && split { counts[i] } else { 0 };
-            let view = self.view_message(st, chat, m, (first, last, chained, thread), (status, replies), head);
+            let split = roots.get(end).is_some_and(|r| *r != roots[end - 1]);
+            let replies = if !thread && split { counts[end - 1] } else { 0 };
+            let ms = &msgs[i..end];
+            let view = self.view_message(st, chat, ms, (first, last, chained, thread), (status, replies), head);
             let view = match send_rise(st, m) {
                 Some(t) => lift::lift(view, 14.0 * (1.0 - t), 0.97 + 0.03 * t).into(),
                 None => view,
@@ -11795,16 +11825,17 @@ impl BeeperGuiApp {
         col.push(list.view(&keys, true, 48.0, UiMessage::Relist, item))
     }
 
+    /// A message, or the gallery of the messages `ms`.
     fn view_message<'a>(
         &'a self,
         st: &BeeperStore,
         chat: &Chat,
-        m: &Message,
+        ms: &[&Message],
         (first, last, chained, thread): (bool, bool, bool, bool),
         (status, replies): (Option<String>, usize),
         head: Column<'a, UiMessage>,
     ) -> El<'a> {
-        let p = &self.pal;
+        let (p, m) = (&self.pal, ms[0]);
         let (sent, sent_fg, sent_meta) = self.sent_colors(st, Some(&chat.id));
         let on_wall = self.wallpaper_fg(st, chat, thread);
         let muted = on_wall.unwrap_or(p.muted);
@@ -11831,7 +11862,7 @@ impl BeeperGuiApp {
             return head.push(container(pill).align_x(side).width(Fill)).push(edited).into();
         }
         let group = chat.chat_type == "group";
-        let selected = self.pane().selected_msgs.contains(&m.id);
+        let selected = ms.iter().any(|g| self.pane().selected_msgs.contains(&g.id));
         let rise = send_rise(st, m).unwrap_or(1.0);
         let dim = move |c: Color| (if selected { brightness(c, 0.7) } else { c }).scale_alpha(rise);
         let (bg, fg) = if mine { (dim(sent), dim(sent_fg)) } else { (dim(p.received), dim(p.strong)) };
@@ -11901,7 +11932,10 @@ impl BeeperGuiApp {
             let card = container(body).width(if wraps { Length::Fixed(360.0) } else { Shrink });
             parts = parts.push(card.max_width(360).style(fill_box(dim(p.link_card), 17.0)));
         }
-        for (ai, a) in m.attachments.iter().enumerate() {
+        if ms.len() > 1 {
+            parts = parts.push(self.view_gallery(ms));
+        }
+        for (ai, a) in m.attachments.iter().enumerate().filter(|_| ms.len() == 1) {
             let name = a.file_name.clone().expect("attachment file name");
             let content: El<'a> = match (a.is_voice_note == Some(true), a.attachment_type.as_str()) {
                 (_, "audio") if self.playable(a) => self.view_audio(m, a, mine, fg, bg),
@@ -12122,21 +12156,23 @@ impl BeeperGuiApp {
             });
             container(line).padding([0.0, BUBBLE_PAD_X])
         });
-        let tail = if footer.is_some() { 15.0 } else { 0.0 } + if m.reactions.is_empty() { 0.0 } else { 21.0 };
+        // Desktop's `_fe`: a gallery shows the reactions of all its messages.
+        let reactions: Vec<&Reaction> = ms.iter().flat_map(|g| &g.reactions).collect();
+        let tail = if footer.is_some() { 15.0 } else { 0.0 } + if reactions.is_empty() { 0.0 } else { 21.0 };
         let edits = open.then(|| {
             m.edit_history.iter().fold(Column::new().spacing(2), |c, e| {
                 c.push(txt(format!("{} · {}", e.text, format_short_ts(&e.timestamp, false)), 11.0).color(p.muted))
             })
         });
-        let parts: El<'a> = if m.reactions.is_empty() {
+        let parts: El<'a> = if reactions.is_empty() {
             parts.into()
         } else {
-            let mut keys: Vec<&str> = m.reactions.iter().map(|r| r.reaction_key.as_str()).collect();
+            let mut keys: Vec<&str> = reactions.iter().map(|r| r.reaction_key.as_str()).collect();
             keys.sort_unstable();
             keys.dedup();
             let min_w = keys.len() as f32 * 36.0 + 2.0 * BUBBLE_PAD_X;
-            let order = keys.iter().flat_map(|&k| m.reactions.iter().filter(move |x| x.reaction_key == k));
-            let all: Vec<_> = order.collect();
+            let order = keys.iter().flat_map(|&k| reactions.iter().filter(move |x| x.reaction_key == k));
+            let all: Vec<_> = order.copied().collect();
             let (shown, more) = if all.len() <= 20 { (&all[..], 0) } else { (&all[..19], all.len() - 19) };
             let list = shown.iter().fold(Column::new(), |col, x| {
                 let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
@@ -12154,7 +12190,7 @@ impl BeeperGuiApp {
             let list = container(list).padding([2, 4]).style(bordered_box(p.menu, p.menu_border, 1.0, 6.0));
             let ring = if on_wall.is_some() { CLEAR } else { p.card };
             let pills = keys.into_iter().fold(Row::new().spacing(2), |r, k| {
-                let reactors: Vec<_> = m.reactions.iter().filter(|x| x.reaction_key == k).collect();
+                let reactors: Vec<_> = reactions.iter().filter(|x| x.reaction_key == k).collect();
                 let n = reactors.len();
                 let own = reactors.iter().any(|x| st.is_me(&x.participant_id));
                 let mut pill = row![txt(k.to_string(), 16.0).line_height(Pixels(15.0))].spacing(4).align_y(Center);
@@ -12181,7 +12217,7 @@ impl BeeperGuiApp {
                     button(pill)
                         .padding([6, 7])
                         .style(bordered_btn([fill, p.selected, p.selected], [p.text; 3], ring, 2.0, 14.0))
-                        .on_press(UiMessage::ToggleReaction(chat.id.clone(), m.id.clone(), k.to_string())),
+                        .on_press(toggle_reaction(st, &chat.id, ms, k)),
                 )
             });
             stack![
@@ -13692,8 +13728,9 @@ impl BeeperGuiApp {
                 let messages = st.chat_msg_indices[chat].iter().map(|&i| &st.messages[i]);
                 messages
                     .flat_map(|m| {
-                        let shown =
-                            |(_, a): &(usize, &Attachment)| a.attachment_type == "img" || a.is_gif == Some(true);
+                        let shown = |(_, a): &(usize, &Attachment)| {
+                            matches!(a.attachment_type.as_str(), "img" | "video") || a.is_gif == Some(true)
+                        };
                         m.attachments.iter().enumerate().filter(shown).map(|(ai, _)| (m.id.clone(), ai))
                     })
                     .collect()
