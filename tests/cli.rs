@@ -142,9 +142,9 @@ fn cli_status_doctor_config_and_api_match_upstream() {
 
     let info = d.run(&["api", "get", "/v1/info"]).json();
     assert_eq!(info["data"]["server"]["base_url"], d.base);
-    let missing = d.run(&["api", "get", "/v1/nothing", "--no-auth"]);
+    let missing = d.run(&["api", "get", "/v1/accounts", "--no-auth"]);
     assert_eq!(missing.code, 1);
-    assert!(missing.stderr.contains("│ GET /v1/nothing failed: 401 "), "{}", missing.stderr);
+    assert!(missing.stderr.contains("│ GET /v1/accounts failed: 401 "), "{}", missing.stderr);
 }
 
 #[test]
