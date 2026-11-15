@@ -554,14 +554,28 @@ impl ThreadFollows {
         Some(Self { follow_all: v["follow_all"].as_bool(), followed: followed?, unfollowed: ids("unfollowed")? })
     }
 
+    /// Desktop's `followsAllThreads`: the follow-all state, which is on in a room with 20 `members` or fewer.
+    pub fn follows_all(&self, members: usize) -> bool {
+        self.follow_all.unwrap_or(members <= 20)
+    }
+
     /// Desktop's `followsThread`: the explicit follow, else whether the user `participated`, else the follow-all
-    /// state, which is on in a room with 20 `members` or fewer.
+    /// state.
     pub fn follows(&self, root: &str, members: usize, participated: bool) -> bool {
         match (self.followed.iter().any(|r| r == root), self.unfollowed.iter().any(|r| r == root)) {
             (true, _) => true,
             (_, true) => false,
-            _ => participated || self.follow_all.unwrap_or(members <= 20),
+            _ => participated || self.follows_all(members),
         }
+    }
+
+    /// Desktop's `setThreadFollowing` (`Fp`): the thread of `root` moves to the newest 1000 follows or unfollows.
+    pub fn set(&mut self, root: &str, on: bool) {
+        self.followed.retain(|r| r != root);
+        self.unfollowed.retain(|r| r != root);
+        let list = if on { &mut self.followed } else { &mut self.unfollowed };
+        list.push(root.into());
+        list.drain(..list.len().saturating_sub(1000));
     }
 }
 

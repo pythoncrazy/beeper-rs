@@ -1321,6 +1321,8 @@ pub enum Outgoing {
     },
     Flag(ChatFlag, bool),
     Reminder(Option<ChatReminder>),
+    /// Desktop's `com.beeper.thread_follows` room account data with a new `com.beeper.revision_id`.
+    ThreadFollows(ThreadFollows),
     DeleteChat {
         for_everyone: bool,
     },
@@ -1594,6 +1596,12 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             }
             ChatFlag::MarkedUnread => room.set_unread_flag(on).await.map_err(e)?,
         },
+        Outgoing::ThreadFollows(follows) => {
+            let mut v = serde_json::to_value(follows).expect("thread follows JSON");
+            v["com.beeper.revision_id"] = matrix_sdk::ruma::TransactionId::new().to_string().into();
+            let raw = Raw::from_json(serde_json::value::to_raw_value(&v).expect("thread follows JSON"));
+            room.set_account_data_raw(THREAD_FOLLOWS.into(), raw).await.map_err(e)?;
+        }
         Outgoing::Reminder(at) => {
             let v = at.map_or(serde_json::json!({}), |r| {
                 serde_json::json!({ "remind_at_ms": r.remind_at_ms, "dismiss_on_incoming_message": r.dismiss_on_incoming_message })
@@ -2835,7 +2843,8 @@ mod tests {
             thread: Some(t),
         };
         store.write().queue("!room:x", out);
-        super::flush(store.clone()).await.expect("send the thread receipt and the reply");
+        store.write().follow_thread("!room:x", "$e1", true);
+        super::flush(store.clone()).await.expect("send the thread receipt, the reply and the follow");
         let sent = sent.lock().unwrap();
         let (receipt, body) = sent.iter().find(|(p, _)| p.contains("/receipt/")).expect("a thread receipt");
         assert!(receipt.ends_with("/receipt/m.read/$e5"), "{receipt}");
@@ -2844,6 +2853,13 @@ mod tests {
         let rel = json!({ "rel_type": "m.thread", "event_id": "$e1", "is_falling_back": true, "m.in_reply_to": { "event_id": "$e5" } });
         assert_eq!((&body["m.relates_to"], &body["com.beeper.broadcast_outside_thread"]), (&rel, &json!(true)));
         assert_eq!(body["m.mentions"], json!({}), "Desktop does not mention the sender of the fallback reply");
+        let (_, body) =
+            sent.iter().find(|(p, _)| p.ends_with("/account_data/com.beeper.thread_follows")).expect("a follow");
+        assert_eq!(
+            (&body["followed"], &body["unfollowed"], &body["follow_all"]),
+            (&json!(["$e1"]), &json!([]), &json!(false))
+        );
+        assert!(body["com.beeper.revision_id"].is_string(), "Desktop writes a new revision");
         drop(sent);
         let _ = std::fs::remove_dir_all(dir);
     }
