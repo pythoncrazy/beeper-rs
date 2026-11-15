@@ -3814,12 +3814,12 @@ fn file_echo(
     if image {
         media.insert(key.clone(), Some(Ok(frames)));
     }
-    let ms = duration.map(|s| (s * 1000.0).round() as u64);
-    let (kind, info) = match (mime.split('/').next(), ms) {
-        _ if image => ("img", MediaInfo::Image(size.0, size.1)),
-        (Some("video"), Some(ms)) => ("video", MediaInfo::Video(size.0, size.1, ms)),
-        (Some("audio"), Some(ms)) => ("audio", MediaInfo::Audio(ms)),
-        _ => ("file", MediaInfo::File),
+    let info = MediaInfo::of(&mime, (size.0 > 0).then_some(size), duration);
+    let kind = match info {
+        MediaInfo::Image(..) => "img",
+        MediaInfo::Video(..) => "video",
+        MediaInfo::Audio(_) => "audio",
+        _ => "file",
     };
     let att = Attachment {
         attachment_type: kind.into(),
@@ -5350,8 +5350,10 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let chat = &st.chats
             [st.resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat")).expect("chat exists")];
-        let checked: Vec<_> =
-            files.into_iter().map(|f| f.and_then(|f| portal::check(&f, &chat.file).map(|()| f))).collect();
+        let checked: Vec<_> = files
+            .into_iter()
+            .map(|f| f.and_then(|f| portal::check(&f, &chat.file, chat.room_features).map(|()| f)))
+            .collect();
         drop(st);
         for f in checked {
             match f {

@@ -13,7 +13,7 @@ tokio.workspace = true
 rodio = { version = "0.23", default-features = false, features = ["playback", "recording"] }
 unicode-script = "0.5.8"
 arboard = { version = "3.7.0", default-features = false, features = ["image-data"] }
-image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg", "webp"] }
+image.workspace = true
 iced = { version = "0.14.0", default-features = false, features = ["svg", "image-without-codecs", "advanced", "linux-theme-detection", "wgpu-bare", "tiny-skia", "tokio", "x11", "wayland", "web-colors", "crisp"] }
 spellbook = "0.4.2"
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
