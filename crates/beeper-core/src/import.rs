@@ -1,7 +1,7 @@
 use crate::config::rfc3339_from_millis;
 use crate::models::{
-    beeper_files, Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, Older, Reaction,
-    SpaceOrder, ThemeChoice, ThreadFollows, Transcription, User, ALL_FORMATS, BEEPER_MESSAGES, BEEPER_POLLS,
+    Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, Older, Reaction, SpaceOrder, ThemeChoice,
+    ThreadFollows, Transcription, User, ALL_FORMATS, BEEPER_MESSAGES, BEEPER_POLLS,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
@@ -400,6 +400,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
             });
             let account_id = account.or_else(|| str_field(&t, "accountID")).unwrap_or_else(|| "hungryserv".into());
             let bridge = t.pointer("/extra/bridge").unwrap_or(&Value::Null);
+            let (file, room_features) = crate::matrix::file_features(t.get("features"), bridge);
             let preview = read_reaction_preview(&t, &id, &account_id, group, &items);
             let ms = t.get("timestamp").and_then(Value::as_i64).or(ts);
             let last_activity = preview.as_ref().map(|p| p.timestamp.clone()).or_else(|| ms.map(rfc3339_from_millis));
@@ -445,8 +446,8 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 edits: 0,
                 member_actions: 0,
                 formatting: ALL_FORMATS,
-                file: t.get("features").map_or_else(beeper_files, crate::matrix::file_rules),
-                room_features: t.get("features").is_some(),
+                file,
+                room_features,
                 polls: Some(BEEPER_POLLS),
                 messages: BEEPER_MESSAGES,
                 disappearing: t.pointer("/disappearingTimer/timer").and_then(Value::as_u64).filter(|&t| t > 0),
