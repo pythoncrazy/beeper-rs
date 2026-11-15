@@ -634,9 +634,15 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
             })?;
             progress(store, false)
         }
-        ("POST", ["verification", "recovery-key", "reset"] | ["verification", "recovery-key", "reset", "confirm"]) => {
+        ("POST", ["verification", "recovery-key", "reset"]) => {
             not_ready()?;
-            Err(failed("Reset of the recovery key is not supported"))
+            let key = rt.block_on(matrix::new_recovery_key(store)).map_err(|e| failed(&e))?;
+            ok(&json!({ "recoveryKey": key, "session": store.read().app_state() }))
+        }
+        ("POST", ["verification", "recovery-key", "reset", "confirm"]) => {
+            not_ready()?;
+            matrix::confirm_recovery_key(store, r.need("recoveryKey")?).map_err(|e| failed(&e))?;
+            progress(store, false)
         }
         ("GET", ["verifications"]) => {
             signed_in()?;

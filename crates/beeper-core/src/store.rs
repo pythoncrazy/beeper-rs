@@ -344,6 +344,8 @@ pub struct BeeperStore {
     /// Desktop's `isSyncing`: the app is connected to Matrix and waits for its first sync.
     pub syncing: bool,
     pub sas_confirm: Option<tokio::sync::oneshot::Sender<bool>>,
+    /// The new recovery key of a reset, until the user types it again.
+    pub pending_recovery_key: Option<String>,
     /// The changes for the homeserver, with their outbox row and chat, in the order of the rows.
     pub outbox: Vec<(i64, String, Outgoing)>,
     /// Desktop's bookmarks room, after its history is read.
@@ -491,6 +493,7 @@ impl BeeperStore {
             matrix_error: None,
             syncing: false,
             sas_confirm: None,
+            pending_recovery_key: None,
             outbox: Vec::new(),
             bookmarks_room: None,
             bookmarks: HashMap::new(),

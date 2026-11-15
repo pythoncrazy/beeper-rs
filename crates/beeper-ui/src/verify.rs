@@ -2,8 +2,8 @@
 //! onboarding screens of encrypted messaging after the sign-in.
 use crate::emoji::EMOJI_FONT;
 use crate::i18n::{tr, trx};
-use crate::login::{actions, brand_gradient, heading, LoginMsg, Screen, DANGER, FIELD, HINT, INK, LINK};
-use crate::style::{btn_style, fill_box, fw, ic, icon, input_style, semi, shadow_box, t, txt, Palette, CLEAR};
+use crate::login::{actions, art, brand_gradient, heading, LoginMsg, Screen, DANGER, FIELD, HINT, INK, LINK};
+use crate::style::{bold, btn_style, fill_box, fw, ic, icon, input_style, semi, shadow_box, t, txt, Palette, CLEAR};
 use crate::{BeeperGuiApp, El, Toast, UiMessage};
 use beeper_core::matrix::E2eeSetup;
 use beeper_core::store::SharedStore;
@@ -269,6 +269,7 @@ pub(crate) enum Brand {
     Primary,
     Secondary,
     Muted,
+    Danger,
 }
 
 /// Desktop's `BrandButton` with `size: "small"`: a full-width pill.
@@ -283,6 +284,7 @@ pub(crate) fn brand_btn_maybe<'a>(p: &Palette, label: &'a str, variant: Brand, m
         (true, Brand::Primary) => (brand_gradient(), Color::WHITE, CLEAR),
         (true, Brand::Secondary) => (Background::from(CLEAR), p.accent, p.accent),
         (true, Brand::Muted) => (Background::from(p.chip), p.strong, CLEAR),
+        (true, Brand::Danger) => (Background::from(p.danger), Color::WHITE, CLEAR),
     };
     button(container(t(label, 13.0, Weight::Medium).color(fg)).center_x(Fill))
         .width(Fill)
@@ -324,21 +326,26 @@ impl BeeperGuiApp {
         let l = &mut self.login;
         l.busy = false;
         match r {
-            Ok(s) if !s.cross_signing || s.verified => {
+            Ok(s) if s.verified => {
                 self.advance_onboarding();
                 return Task::none();
             }
+            Ok(s) if !s.cross_signing => l.screen = Screen::Preamble,
             Ok(s) if s.devices.is_empty() => l.screen = Screen::RecoveryKey,
             Ok(s) => (l.screen, l.devices) = (Screen::Verify, s.devices),
             Err(e) => (l.screen, l.error) = (Screen::Verify, Some(e)),
         }
         match l.screen {
-            Screen::Verify => call("Failed to start verification", {
-                let s = self.store.clone();
-                async move { beeper_core::matrix::start_verification(&s, "login").await }
-            }),
+            Screen::Verify => self.start_login_verification(),
             _ => Task::none(),
         }
+    }
+
+    /// Desktop's `AwaitVerification` asks the other devices to verify this device each time it shows.
+    pub(crate) fn start_login_verification(&mut self) -> Task<UiMessage> {
+        (self.login.another_way, self.login.waiting) = (false, false);
+        let s = self.store.clone();
+        call("Failed to start verification", async move { beeper_core::matrix::start_verification(&s, "login").await })
     }
 
     /// "Enter Recovery Key": cancels the verification and asks for the recovery key.
@@ -360,7 +367,8 @@ impl BeeperGuiApp {
             (st.beeper_state.verified, st.syncing)
         };
         let screen = self.login.screen;
-        let checking = self.login.signing_in() || matches!(screen, Screen::Verify | Screen::RecoveryKey);
+        let confirmed = screen == Screen::ConfirmKey && self.store.read().pending_recovery_key.is_none();
+        let checking = self.login.signing_in() || matches!(screen, Screen::Verify | Screen::RecoveryKey) || confirmed;
         self.login.screen = match (checking, screen, verified, syncing) {
             (true, Screen::Verify | Screen::RecoveryKey, false, _) => return,
             (true, _, _, true) => Screen::Syncing,
@@ -403,6 +411,7 @@ impl BeeperGuiApp {
                     brand_btn(p, trx("They match", "button label"), Brand::Primary, VerifyMsg::Match(true).into()),
                     secondary(trx("They don't match", "button label"), VerifyMsg::Match(false).into()),
                     use_key(),
+                    lost_link(),
                 ];
                 (container(row(glyphs).spacing(4)).center(Fill).into(), buttons)
             }
@@ -418,6 +427,7 @@ impl BeeperGuiApp {
                 ];
                 buttons.extend(emojis_btn());
                 buttons.push(use_key());
+                buttons.push(lost_link());
                 (container(plate).center(Fill).into(), buttons)
             }
             (false, None, None) => {
@@ -465,6 +475,7 @@ impl BeeperGuiApp {
                         buttons.push(note(trx("or", "verification method divider")).into());
                         buttons.extend(emojis_btn());
                         buttons.push(use_key());
+                        buttons.push(lost_link());
                     }
                 }
                 (container(svg(VERIFY_ART.clone()).width(241).height(224)).center(Fill).into(), buttons)
@@ -497,7 +508,7 @@ impl BeeperGuiApp {
             Space::new().height(Fill),
         ]
         .push(error)
-        .push(actions(vec![next], 24.0))
+        .push(actions(vec![next, lost_link()], 24.0))
         .into()
     }
 
@@ -511,6 +522,124 @@ impl BeeperGuiApp {
                 .padding(18),
         ]
         .into()
+    }
+}
+
+/// Desktop's "Lost your recovery key?" link.
+fn lost_link<'a>() -> El<'a> {
+    let label = txt(tr("Lost your recovery key?"), 13.0).color(LINK);
+    let link = button(label).padding(0).style(btn_style([CLEAR; 3], [LINK; 3], 0.0)).on_press(LoginMsg::LostKey.into());
+    container(link).center_x(Fill).into()
+}
+
+/// Desktop's display of a recovery key: 12 groups of 4 characters with dashes, 3 groups on each line.
+pub(crate) fn format_recovery_key(key: &str) -> String {
+    let chars: Vec<char> = beeper_core::matrix::recovery_key_chars(key).chars().take(48).collect();
+    let groups: Vec<String> = chars.chunks(4).map(|g| g.iter().collect()).collect();
+    groups.chunks(3).map(|line| line.join("-")).collect::<Vec<_>>().join("\n")
+}
+
+/// Desktop's `isValidRecoveryCode`: 48 letters and digits.
+pub(crate) fn valid_recovery_key(key: &str) -> bool {
+    beeper_core::matrix::recovery_key_chars(key).len() == 48
+}
+
+impl BeeperGuiApp {
+    /// Desktop's `beginResetCrossSigning` on the "Save Your Recovery Key" screen.
+    pub(crate) fn make_recovery_key(&mut self) -> Task<UiMessage> {
+        let l = &mut self.login;
+        (l.screen, l.new_key, l.copied, l.error, l.busy) = (Screen::NewKey, None, false, None, true);
+        let s = self.store.clone();
+        Task::perform(async move { beeper_core::matrix::new_recovery_key(&s).await }, |r| LoginMsg::MadeKey(r).into())
+    }
+
+    /// "Lost your recovery key?": cancels the verification and shows the reset warning.
+    pub(crate) fn lost_key(&mut self) -> Task<UiMessage> {
+        let cancel = self.use_recovery_key();
+        self.login.screen = Screen::Reset;
+        cancel
+    }
+
+    /// Desktop's `RecoveryCodePreamble`, for an account without cross-signing.
+    pub(crate) fn view_onboarding_preamble(&self) -> El<'_> {
+        let p = &crate::style::BEEPER_LIGHT;
+        let text = tr("If you lose your device you'll need your Recovery Key to access your encrypted chat backup.");
+        let save = brand_btn(p, trx("Save Key", "button label"), Brand::Primary, LoginMsg::NewKey.into());
+        column![
+            Space::new().height(40),
+            heading(tr("Save Your Recovery Key"), 28.0),
+            container(art(2, 240.0)).center(Fill),
+        ]
+        .push(actions(vec![txt(text, 13.0).color(INK).center().width(Fill).into(), save], 24.0))
+        .into()
+    }
+
+    /// Desktop's `AwaitNewRecoveryCode`: the new key to copy, then the key again to confirm that it was saved.
+    pub(crate) fn view_onboarding_new_key(&self) -> El<'_> {
+        let l = &self.login;
+        let p = &crate::style::BEEPER_LIGHT;
+        let warning = tr("WARNING: Beeper does not store your Recovery Key for you. If you lose your Recovery Key, you may lose access to your encrypted chat backup.");
+        let warning = txt(warning, 11.0).color(DANGER).center().width(Fill).into();
+        let error = l.error.as_deref().map(|e| txt(e, 12.0).color(DANGER).center().width(Fill));
+        let (title, middle, next): (&str, El<'_>, Option<UiMessage>) = match l.screen {
+            Screen::ConfirmKey => {
+                let input = text_input("", &l.recovery_key)
+                    .on_input(|v| LoginMsg::RecoveryKey(v).into())
+                    .on_submit(LoginMsg::SubmitConfirmKey.into())
+                    .size(14)
+                    .padding([10, 12])
+                    .style(input_style(FIELD, INK, HINT, LINK, 12.0));
+                let next = valid_recovery_key(&l.recovery_key).then(|| LoginMsg::SubmitConfirmKey.into());
+                (tr("Confirm your Recovery Key"), container(input).padding([24, 18]).into(), next)
+            }
+            _ => {
+                let key: El<'_> = match &l.new_key {
+                    Some(key) => {
+                        let copy = if l.copied { tr("Copied!") } else { tr("Copy to Clipboard") };
+                        let body = column![
+                            txt(format_recovery_key(key), 17.0).color(INK).center(),
+                            txt(copy, 12.0).color(HINT),
+                        ]
+                        .spacing(12)
+                        .align_x(Center);
+                        button(container(body).center_x(Fill).padding(16))
+                            .padding(0)
+                            .style(btn_style([FIELD; 3], [INK; 3], 12.0))
+                            .on_press(LoginMsg::CopyKey.into())
+                            .into()
+                    }
+                    None => Space::new().height(120).into(),
+                };
+                let next = l.new_key.is_some().then(|| LoginMsg::KeyNext.into());
+                (tr("Save Your Recovery Key"), container(key).padding([24, 18]).into(), next)
+            }
+        };
+        let next = brand_btn_maybe(p, trx("Next", "button label"), Brand::Primary, next);
+        column![Space::new().height(40), heading(title, 28.0), middle, Space::new().height(Fill)]
+            .push(error)
+            .push(actions(vec![warning, next], 24.0))
+            .into()
+    }
+
+    /// Desktop's `ConfirmResetRecoveryCode`.
+    pub(crate) fn view_onboarding_reset(&self) -> El<'_> {
+        let p = &crate::style::BEEPER_LIGHT;
+        let bullet = |s: &'static str| -> El<'_> {
+            row![txt("•", 13.0).color(INK), txt(tr(s), 13.0).color(INK)].spacing(8).into()
+        };
+        let warning = column![
+            semi(trx("Warning", "recovery key reset warning heading"), 15.0).color(DANGER),
+            bullet("All of your data is encrypted with your Recovery Key. All your accounts will be disconnected. Your chat history and settings will be lost."),
+            bullet("Only use this option if you no longer have access to your other devices. You’ll need to re-verify all your other devices after reset."),
+        ]
+        .spacing(12)
+        .padding([0, 24]);
+        let reset = brand_btn(p, trx("Reset Recovery Key", "button label"), Brand::Danger, LoginMsg::NewKey.into());
+        let back = brand_btn(p, trx("Cancel", "button label"), Brand::Muted, LoginMsg::Show(Screen::Verify).into());
+        let title = bold(tr("Reset your Recovery Key"), 28.0).color(DANGER).center().width(Fill);
+        column![Space::new().height(40), container(title).padding([0, 8]), container(warning).center(Fill)]
+            .push(actions(vec![reset, back], 24.0))
+            .into()
     }
 }
 
@@ -677,5 +806,51 @@ mod tests {
         shows(&app, &["Enter your Recovery Key", "Next"]);
         let _ = app.update(LoginMsg::Recovered(Err("bad key".into())).into());
         shows(&app, &["Error: bad key"]);
+    }
+
+    #[test]
+    fn recovery_keys_show_in_groups_and_need_48_characters() {
+        let key = "EsTG bqMm dUDy dKth xAyD 45dS HhyC WKc9 CF6B xsFi J5FQ t8u2";
+        assert_eq!(format_recovery_key(key), "EsTG-bqMm-dUDy\ndKth-xAyD-45dS\nHhyC-WKc9-CF6B\nxsFi-J5FQ-t8u2");
+        assert!(valid_recovery_key(&format_recovery_key(key)), "the dashes of Desktop's format do not count");
+        assert!(!valid_recovery_key("EsTG-bqMm"));
+    }
+
+    #[test]
+    fn a_new_account_saves_and_confirms_its_recovery_key_like_desktop() {
+        let mut app = crate::fuzz::demo_app("verify-new-key");
+        app.login_window = Some(window::Id::unique());
+        let none = E2eeSetup { cross_signing: false, verified: false, devices: Vec::new() };
+        let _ = app.e2ee_checked(Ok(none));
+        assert_eq!(app.login.screen, Screen::Preamble, "an account without cross-signing makes a recovery key");
+        let shows = |app: &BeeperGuiApp, texts: &[&str]| {
+            let mut sim = simulator(app.view_login());
+            for text in texts {
+                assert!(sim.find(*text).is_ok(), "the screen shows {text}");
+            }
+        };
+        shows(&app, &["Save Your Recovery Key", "Save Key"]);
+        let _ = app.update(LoginMsg::NewKey.into());
+        assert_eq!(app.login.screen, Screen::NewKey);
+        let key = "EsTG bqMm dUDy dKth xAyD 45dS HhyC WKc9 CF6B xsFi J5FQ t8u2";
+        app.store.write().pending_recovery_key = Some(key.into());
+        app.store.write().beeper_state.verified = true;
+        let _ = app.update(LoginMsg::MadeKey(Ok(key.into())).into());
+        let _ = app.update(UiMessage::StoreChanged);
+        assert_eq!(app.login.screen, Screen::NewKey, "the key stays until it is confirmed");
+        shows(&app, &["Copy to Clipboard", "EsTG-bqMm-dUDy\ndKth-xAyD-45dS\nHhyC-WKc9-CF6B\nxsFi-J5FQ-t8u2"]);
+        let _ = app.update(LoginMsg::KeyNext.into());
+        shows(&app, &["Confirm your Recovery Key"]);
+        let _ = app.update(LoginMsg::RecoveryKey("x".repeat(48)).into());
+        let _ = app.update(LoginMsg::SubmitConfirmKey.into());
+        shows(&app, &["The Recovery Key you entered doesn't match your Recovery Key."]);
+        let _ = app.update(LoginMsg::RecoveryKey(format_recovery_key(key)).into());
+        let _ = app.update(LoginMsg::SubmitConfirmKey.into());
+        assert_eq!(app.login.screen, Screen::Accounts);
+        assert!(app.store.read().beeper_state.has_backed_up_code);
+
+        app.login.screen = Screen::Verify;
+        let _ = app.update(LoginMsg::LostKey.into());
+        shows(&app, &["Reset your Recovery Key", "Warning", "Reset Recovery Key", "Cancel"]);
     }
 }

@@ -54,6 +54,12 @@ pub enum Screen {
     Verify,
     RecoveryKey,
     Syncing,
+    /// Desktop's `RecoveryCodePreamble`, `AwaitNewRecoveryCode` (which shows the new key, then asks for it again) and
+    /// `ConfirmResetRecoveryCode`.
+    Preamble,
+    NewKey,
+    ConfirmKey,
+    Reset,
     Accounts,
 }
 
@@ -76,6 +82,9 @@ pub struct Login {
     pub another_way: bool,
     pub waiting: bool,
     pub recovery_key: String,
+    /// The new recovery key, and whether "Copy to Clipboard" copied it.
+    pub new_key: Option<String>,
+    pub copied: bool,
 }
 
 impl Login {
@@ -122,6 +131,15 @@ pub enum LoginMsg {
     RecoveryKey(String),
     SubmitRecoveryKey,
     Recovered(Result<(), String>),
+    /// "Save Key", and "Reset Recovery Key": a new recovery key.
+    NewKey,
+    MadeKey(Result<String, String>),
+    CopyKey,
+    /// "Next" under the new key, which asks for it again.
+    KeyNext,
+    SubmitConfirmKey,
+    /// "Lost your recovery key?", which cancels the verification.
+    LostKey,
 }
 
 impl From<LoginMsg> for UiMessage {
@@ -134,10 +152,16 @@ fn previous(s: Screen) -> Option<Screen> {
     match s {
         Screen::Email => Some(Screen::Welcome),
         Screen::Code => Some(Screen::Email),
-        Screen::RecoveryKey => Some(Screen::Verify),
-        Screen::Import | Screen::Welcome | Screen::Username | Screen::Verify | Screen::Syncing | Screen::Accounts => {
-            None
-        }
+        Screen::RecoveryKey | Screen::Reset => Some(Screen::Verify),
+        Screen::ConfirmKey => Some(Screen::NewKey),
+        Screen::Import
+        | Screen::Welcome
+        | Screen::Username
+        | Screen::Verify
+        | Screen::Syncing
+        | Screen::Preamble
+        | Screen::NewKey
+        | Screen::Accounts => None,
     }
 }
 
@@ -264,7 +288,7 @@ pub(crate) fn heading<'a>(s: &'a str, size: f32) -> El<'a> {
         .into()
 }
 
-fn art<'a>(i: usize, height: f32) -> El<'a> {
+pub(crate) fn art<'a>(i: usize, height: f32) -> El<'a> {
     svg(ART[i].clone()).width(Fill).height(height).into()
 }
 
@@ -332,6 +356,9 @@ impl BeeperGuiApp {
             LoginMsg::Show(s) => {
                 l.screen = s;
                 l.error = None;
+                if s == Screen::Verify {
+                    return self.start_login_verification();
+                }
                 if s == Screen::Email {
                     return operation::focus(EMAIL_INPUT);
                 }
@@ -403,6 +430,26 @@ impl BeeperGuiApp {
                 let recover = beeper_core::matrix::recover(self.store.clone(), l.recovery_key.clone());
                 return Task::perform(recover, |r| LoginMsg::Recovered(r).into());
             }
+            LoginMsg::NewKey => return self.make_recovery_key(),
+            LoginMsg::MadeKey(r) => {
+                l.busy = false;
+                match r {
+                    Ok(key) => l.new_key = Some(key),
+                    Err(e) => l.error = Some(e),
+                }
+            }
+            LoginMsg::CopyKey => {
+                l.copied = true;
+                return iced::clipboard::write(l.new_key.clone().expect("a shown key"));
+            }
+            LoginMsg::KeyNext => (l.screen, l.recovery_key, l.error) = (Screen::ConfirmKey, String::new(), None),
+            LoginMsg::SubmitConfirmKey => {
+                match beeper_core::matrix::confirm_recovery_key(&self.store, &l.recovery_key) {
+                    Ok(()) => self.advance_onboarding(),
+                    Err(e) => l.error = Some(e),
+                }
+            }
+            LoginMsg::LostKey => return self.lost_key(),
             LoginMsg::Recovered(r) => {
                 l.busy = false;
                 l.error = r.err().map(|e| tr("Error: %(message)s").replace("%(message)s", &e));
@@ -645,6 +692,9 @@ impl BeeperGuiApp {
             Screen::Verify => self.view_onboarding_verify(),
             Screen::RecoveryKey => self.view_onboarding_key(),
             Screen::Syncing => self.view_onboarding_syncing(),
+            Screen::Preamble => self.view_onboarding_preamble(),
+            Screen::NewKey | Screen::ConfirmKey => self.view_onboarding_new_key(),
+            Screen::Reset => self.view_onboarding_reset(),
             Screen::Username => column![
                 Space::new().height(34),
                 heading(tr("Pick a Username"), 28.0),
