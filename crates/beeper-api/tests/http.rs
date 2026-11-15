@@ -411,6 +411,44 @@ async fn assets_upload_and_serve_like_desktop() {
         attachment["id"].as_str().unwrap().starts_with("mxc://") && attachment["id"] == attachment["srcURL"],
         "{attachment}"
     );
+
+    // The attachment `type` of the request marks stickers, voice notes and GIFs.
+    let chat = "/v1/chats/!wa_eric:beeper.com/messages";
+    let mut kinds = Vec::new();
+    for kind in ["sticker", "voice-note", "gif"] {
+        let message = json!({ "attachment": { "uploadID": up["uploadID"], "type": kind } }).to_string();
+        let id = body(&send("POST", chat, json, &message).await)["pendingMessageID"].as_str().unwrap().to_string();
+        let shown = body(&send("GET", &format!("{chat}/{id}"), "", "").await);
+        let a = &shown["attachments"][0];
+        kinds.push((shown["type"].clone(), a["isSticker"].clone(), a["isVoiceNote"].clone(), a["isGif"].clone()));
+        // Desktop edits no sticker.
+        let edit = body(&send("PUT", &format!("{chat}/{id}"), json, r#"{"text":"x"}"#).await);
+        assert_eq!(edit["code"] == "EDIT_NOT_ALLOWED", kind == "sticker", "{kind}: {edit}");
+    }
+    let (t, f) = (json!(true), json!(false));
+    assert_eq!(
+        kinds,
+        [
+            (json!("STICKER"), t.clone(), f.clone(), f.clone()),
+            (json!("VOICE"), f.clone(), t.clone(), f.clone()),
+            (json!("IMAGE"), f.clone(), f.clone(), t.clone()),
+        ]
+    );
+
+    // A sent message has the user of the account as its sender, and an edit returns the message.
+    let id =
+        body(&send("POST", chat, json, r#"{"text":"hello"}"#).await)["pendingMessageID"].as_str().unwrap().to_string();
+    let edited = body(&send("PUT", &format!("{chat}/{id}"), json, r#"{"text":"hello again"}"#).await);
+    let accounts = body(&send("GET", "/v1/accounts", "", "").await);
+    let me =
+        accounts.as_array().unwrap().iter().find(|a| a["accountID"] == "acc_whatsapp").unwrap()["user"]["id"].clone();
+    assert_eq!(
+        (&edited["id"], &edited["messageID"], &edited["success"], &edited["text"], &edited["senderID"]),
+        (&json!(id), &json!(id), &json!(true), &json!("hello again"), &me)
+    );
+    assert!(edited["editedTimestamp"].is_string(), "{edited}");
+    let kept = send("DELETE", &format!("{chat}/{id}?forEveryone=false"), "", "").await;
+    assert!(kept.starts_with("HTTP/1.1 400 "), "{kept}");
 }
 
 #[tokio::test]

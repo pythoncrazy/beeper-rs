@@ -81,6 +81,11 @@ pub fn mime_type_of(name: &str) -> Option<&'static str> {
     MIME_TYPES.iter().find(|(_, exts)| exts.contains(&ext.as_str())).map(|(m, _)| *m)
 }
 
+/// Whether the text is a MIME type that Matrix media can carry.
+pub fn is_mime(text: &str) -> bool {
+    text.parse::<mime::Mime>().is_ok()
+}
+
 /// The file extension of a MIME type, like `mime.extension`.
 pub fn extension_of(mime: &str) -> Option<&'static str> {
     MIME_TYPES.iter().find(|(m, _)| *m == mime).map(|(_, exts)| exts[0])
