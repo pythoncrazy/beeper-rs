@@ -3,12 +3,12 @@ use crate::import::DesktopCrypto;
 use crate::models::{
     timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatParticipants,
     ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageRules, Older, PollData, PollOption,
-    PollRules, Reaction, SendError, ThreadFollows, Timers, Transcription, User, VerificationDevice, VerificationError,
-    VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES,
-    BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME,
-    DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK,
-    MSG_MENTION, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REMOVED_MESSAGE, REMOVED_MESSAGES_ROOM, REPORT_SPAM,
-    TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
+    PollRules, Reaction, SendError, Sticker, StickerPack, StickerSource, ThreadFollows, Timers, Transcription, User,
+    VerificationDevice, VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS,
+    ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BLOCK_USER, BOOKMARK, BOOKMARKS_ROOM, DEFAULT_TIMERS,
+    DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FORMATS, MANAGED_ROOMS, MANAGE_KICK, MANAGE_ROLE,
+    MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, NO_UNBLOCK, PERSONAL_AVATAR, PERSONAL_NAME, REMOVED_MESSAGE,
+    REMOVED_MESSAGES_ROOM, REPORT_SPAM, TRANSCRIPTION, TRANSCRIPTIONS_ROOM, USER_BLOCKED,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -1467,6 +1467,9 @@ pub enum Outgoing {
         /// Desktop's `isGif`: a GIF, or the MP4 of a GIF.
         #[serde(default)]
         gif: bool,
+        /// Desktop's `stickerPackImage`: the pack image of a sticker from the sticker picker.
+        #[serde(default)]
+        sticker: Option<Box<Sticker>>,
     },
 }
 
@@ -1590,10 +1593,11 @@ async fn prepare_media(
     chat: &str,
     txn: &str,
     data: Vec<u8>,
-    name: String,
-    mime: String,
+    (name, mime): (String, String),
     info: MediaInfo,
+    sticker: bool,
 ) -> Result<(Vec<u8>, String, String, MediaInfo), String> {
+    use crate::media::Sent;
     let (rules, dir) = {
         let st = store.read();
         let c = &st.chats[st.resolve_chat_idx(chat).expect("the chat of a send exists")];
@@ -1602,11 +1606,54 @@ async fn prepare_media(
     let Some(rules) = rules else { return Ok((data, name, mime, info)) };
     let (dims, duration) = info.facts();
     let voice = matches!(info, MediaInfo::Voice { .. });
+    let sent = match (voice, sticker) {
+        (true, _) => Sent::Voice,
+        (_, true) => Sent::Sticker,
+        _ => Sent::File,
+    };
     let f = crate::media::Upload { name, path: Default::default(), mime, dims, duration, failed: false };
-    let job = move || crate::media::prepare_upload(&dir, &data, f, &rules, voice);
+    let job = move || crate::media::prepare_upload(&dir, &data, f, &rules, sent);
     let (data, f) = tokio::task::spawn_blocking(job).await.expect("the media thread")?;
     let info = if voice { info } else { MediaInfo::of(&f.mime, f.dims, f.duration) };
     Ok((data, f.name, f.mime, info))
+}
+
+/// Desktop's `sendMessageInternal` of a sticker: the content of the image without `msgtype` and `filename`, with the
+/// body of the pack image, Desktop's info, the thumbnail of the pack info when it tells of the same file (`FI`), and
+/// the pack of the sticker (`com.beeper.msc4459.image_source_packs`).
+fn sticker_content(content: &mut Value, s: Box<Sticker>, caption: bool, dims: Option<(u32, u32)>) {
+    let c = content.as_object_mut().expect("message JSON");
+    c.remove("msgtype");
+    c.remove("filename");
+    if !caption {
+        let body = s.body.or(s.source.as_ref().map(|x| x.shortcode.clone())).unwrap_or_else(|| "Sticker".into());
+        c.insert("body".into(), body.into());
+    }
+    let mut info = serde_json::Map::new();
+    info.insert("mimetype".into(), c["info"]["mimetype"].clone());
+    if let Some((w, h)) = dims {
+        info.insert("w".into(), w.into());
+        info.insert("h".into(), h.into());
+    }
+    info.insert("size".into(), c["info"]["size"].clone());
+    let same = ["mimetype", "w", "h"].iter().all(|k| s.info[k] == info[*k])
+        && (s.info["size"].is_null() || s.info["size"] == info["size"]);
+    for k in ["thumbnail_url", "thumbnail_info", "thumbnail_file"].into_iter().filter(|k| same && !s.info[k].is_null())
+    {
+        info.insert(k.into(), s.info[k].clone());
+    }
+    c.insert("info".into(), info.into());
+    let url = c
+        .get("url")
+        .or(c.get("file").map(|f| &f["url"]))
+        .and_then(Value::as_str)
+        .expect("an uploaded file")
+        .to_string();
+    if let Some(x) = s.source {
+        let source =
+            serde_json::json!({ url: { "room_id": x.room_id, "state_key": x.state_key, "shortcode": x.shortcode } });
+        c.insert("com.beeper.msc4459.image_source_packs".into(), source);
+    }
 }
 
 /// Pushes the outbox to the homeserver. A message that fails keeps an error, like Desktop's failed echoes. A removal
@@ -1882,8 +1929,19 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             let sent_id = room.send_raw(&kind, ev["content"].take()).with_transaction_id(txn.as_str().into());
             sent(txn, sent_id.await.map_err(e)?.response.event_id);
         }
-        Outgoing::Media { txn, bytes: data, name, mime, info, caption, reply_to, thread, gif } => {
-            let (data, name, mime, info) = prepare_media(store, &chat, &txn, data, name, mime, info).await?;
+        Outgoing::Media { txn, bytes: data, name, mime, info, caption, reply_to, thread, gif, sticker } => {
+            // Desktop's `Kf`: a sticker goes as `m.sticker` when the room features take its type, else as an image.
+            let sticker = sticker.filter(|_| {
+                let st = store.read();
+                let c = &st.chats[st.resolve_chat_idx(&chat).expect("the chat of a send exists")];
+                c.room_features && crate::media::takes_sticker(&c.file, &mime)
+            });
+            let (data, name, mime, info) =
+                prepare_media(store, &chat, &txn, data, (name, mime), info, sticker.is_some()).await?;
+            let dims = match info {
+                MediaInfo::Image(w, h) | MediaInfo::Video(w, h, _) => Some((w, h)),
+                _ => None,
+            };
             use matrix_sdk::attachment::{AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo, BaseVideoInfo};
             use matrix_sdk::room::reply::{EnforceThread, Reply};
             use matrix_sdk::ruma::events::room::message::{AddMentions, ReplyWithinThread, RoomMessageEventContent};
@@ -1932,6 +1990,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                 )),
                 false => MediaSource::Plain(client.media().upload(&mime, data, None).await.map_err(e)?.content_uri),
             };
+            let caption_given = caption.is_some();
             let content = RoomMessageEventContent::new(media_type(&mime, name, source, caption, info));
             let content = match reply {
                 Some(r) => room.make_reply_event(content.into(), r).await.map_err(|x| x.to_string())?,
@@ -1945,7 +2004,14 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             if broadcast {
                 content["com.beeper.broadcast_outside_thread"] = true.into();
             }
-            let id = room.send_raw("m.room.message", content).with_transaction_id(txn.as_str().into());
+            let kind = match sticker {
+                Some(s) => {
+                    sticker_content(&mut content, s, caption_given, dims);
+                    "m.sticker"
+                }
+                None => "m.room.message",
+            };
+            let id = room.send_raw(kind, content).with_transaction_id(txn.as_str().into());
             sent(txn, id.await.map_err(e)?.response.event_id);
         }
         Outgoing::CreateLabel(_) => unreachable!("a label has no room before it is created"),
@@ -2274,6 +2340,119 @@ async fn global(client: &Client, kind: &str) -> Value {
     let raw =
         client.account().account_data_raw(GlobalAccountDataEventType::from(kind)).await.expect("read account data");
     raw.map_or(Value::Null, |r| r.deserialize_as().expect("account data JSON"))
+}
+
+/// Desktop's room image pack event types (`_u`): the stable type, and the older type that it replaces (`MR`).
+const PACK_TYPES: [&str; 2] = ["m.room.image_pack", "im.ponies.room_emotes"];
+/// Desktop's `space_children` depth limit (`RT`) of the packs of the spaces of a room.
+const PACK_DEPTH: usize = 5;
+
+/// Desktop's `imagePackStore.fetchStickerPacks` with `getImagePacksForRoom`: the packs with stickers of `room`, of
+/// its spaces up to 5 levels up, of the rooms that `m.image_pack.rooms` lists, and the own `m.image_pack`.
+pub async fn sticker_packs(store: SharedStore, room: String) -> Result<Vec<StickerPack>, String> {
+    let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
+    // Desktop's `space_children`: the `m.space.child` state of the joined spaces.
+    let mut parents: HashMap<String, Vec<String>> = HashMap::new();
+    for space in client.joined_rooms().into_iter().filter(|r| r.is_space()) {
+        for child in states(&space, "m.space.child".into()).await {
+            if child["content"].as_object().is_some_and(|c| !c.is_empty()) {
+                let child = child["state_key"].as_str().expect("a state event has a state key").to_string();
+                parents.entry(child).or_default().push(space.room_id().to_string());
+            }
+        }
+    }
+    let mut rooms = vec![room];
+    let mut level = rooms.clone();
+    for _ in 0..PACK_DEPTH {
+        let up: Vec<String> = level.iter().flat_map(|r| parents.get(r).into_iter().flatten()).cloned().collect();
+        level.clear();
+        for r in up {
+            if !rooms.contains(&r) {
+                rooms.push(r.clone());
+                level.push(r);
+            }
+        }
+    }
+    let mut packs = Vec::new();
+    for r in &rooms {
+        packs.extend(room_packs(&client, r).await);
+    }
+    // Desktop's `withGlobalPacks`: the packs of other rooms that you added to all rooms.
+    let global_rooms = global(&client, "m.image_pack.rooms").await;
+    for (r, keys) in global_rooms["rooms"].as_object().into_iter().flatten() {
+        let keys = keys.as_object();
+        for p in room_packs(&client, r).await {
+            if keys.is_some_and(|k| k.contains_key(&p.2))
+                && !packs.iter().any(|q| (&q.0, &q.1, &q.2) == (&p.0, &p.1, &p.2))
+            {
+                packs.push(p);
+            }
+        }
+    }
+    let stable = |p: &(String, &str, String, Value)| p.1 == PACK_TYPES[0];
+    let replaced: HashSet<(String, String)> =
+        packs.iter().filter(|p| stable(p)).map(|p| (p.0.clone(), p.2.clone())).collect();
+    packs.retain(|p| stable(p) || !replaced.contains(&(p.0.clone(), p.2.clone())));
+    let mut packs: Vec<StickerPack> = packs
+        .into_iter()
+        .map(|(room, kind, key, content)| {
+            let source = Some((room.as_str(), key.as_str()));
+            sticker_pack(&content, format!("{kind}|{room}|{key}"), &key, source)
+        })
+        .collect();
+    let own = global(&client, "m.image_pack").await;
+    if !own.is_null() {
+        packs.push(sticker_pack(&own, "account".into(), "", None));
+    }
+    packs.retain(|p| !p.stickers.is_empty());
+    Ok(packs)
+}
+
+/// The image packs of a known room: the room, the event type, the state key and the content.
+async fn room_packs(client: &Client, room: &str) -> Vec<(String, &'static str, String, Value)> {
+    let Some(r) = matrix_sdk::ruma::RoomId::parse(room).ok().and_then(|id| client.get_room(&id)) else {
+        return Vec::new();
+    };
+    let mut packs = Vec::new();
+    for kind in PACK_TYPES {
+        for mut e in states(&r, kind.into()).await {
+            let key = e["state_key"].as_str().expect("a state event has a state key").to_string();
+            // Desktop's `applyPackEvent` drops a pack with empty content.
+            if e["content"].as_object().is_some_and(|c| !c.is_empty()) {
+                packs.push((room.to_string(), kind, key, e["content"].take()));
+            }
+        }
+    }
+    packs
+}
+
+/// Desktop's `U0e` and `z0e`: the pack of image pack `content` and its images for stickers, one for each URL with all
+/// its shortcodes. `source` is the room and the state key of a pack in a room.
+fn sticker_pack(content: &Value, id: String, key: &str, source: Option<(&str, &str)>) -> StickerPack {
+    // Desktop's `Ej`: an image without a usage is an emoji and a sticker.
+    let sticker = |usage: &Value| usage.as_array().is_none_or(|u| u.is_empty() || u.iter().any(|x| x == "sticker"));
+    let mut stickers: Vec<Sticker> = Vec::new();
+    let images = content["images"].as_object().into_iter().flatten();
+    let images =
+        images.filter(|(_, i)| sticker(if i["usage"].is_null() { &content["pack"]["usage"] } else { &i["usage"] }));
+    for (code, (url, i)) in images.filter_map(|(c, i)| Some((c, (s(&i["url"]).filter(|u| !u.is_empty())?, i)))) {
+        match stickers.iter_mut().find(|x| x.url == url) {
+            Some(x) => x.shortcodes.push(code.clone()),
+            None => {
+                let (body, info) = (s(&i["body"]), i["info"].clone());
+                stickers.push(Sticker { url, shortcodes: vec![code.clone()], body, info, source: None });
+            }
+        }
+    }
+    for x in &mut stickers {
+        x.source = source.map(|(room_id, state_key)| StickerSource {
+            room_id: room_id.into(),
+            state_key: state_key.into(),
+            shortcode: x.shortcodes[0].clone(),
+        });
+    }
+    let title = s(&content["pack"]["display_name"]).unwrap_or_else(|| key.into());
+    StickerPack { id, title, avatar: s(&content["pack"]["avatar_url"]), stickers }
 }
 
 /// Applies a change of the inbox rules to every room.
@@ -3398,6 +3577,7 @@ mod tests {
             reply_to: Some(t.quoted.clone()),
             thread: Some(t),
             gif: false,
+            sticker: None,
         };
         store.write().queue("!room:x", file);
         let gif = super::Outgoing::Media {
@@ -3410,6 +3590,7 @@ mod tests {
             reply_to: None,
             thread: None,
             gif: true,
+            sticker: None,
         };
         store.write().queue("!room:x", gif);
         store.write().follow_thread("!room:x", "$e1", true);
@@ -3436,6 +3617,119 @@ mod tests {
             (&json!(["$e1"]), &json!([]), &json!(false))
         );
         assert!(body["com.beeper.revision_id"].is_string(), "Desktop writes a new revision");
+        drop(sent);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Desktop's sticker packs: the packs of the room, its space, the rooms of `m.image_pack.rooms` and the account,
+    /// the sticker images of each pack, and the `m.sticker` event of a sticker.
+    #[tokio::test]
+    async fn sticker_packs_like_desktop() {
+        let state = |kind: &str, key: &str, content: Value| {
+            json!({ "type": kind, "state_key": key, "sender": "@me:x", "event_id": format!("${kind}{key}"),
+                "origin_server_ts": 1, "content": content })
+        };
+        let img = |url: &str, usage: Value| {
+            let info = json!({ "mimetype": "image/png", "w": 2, "h": 2, "thumbnail_url": "mxc://x/t" });
+            json!({ "url": url, "usage": usage, "body": "b", "info": info })
+        };
+        let pack = |code: &str, url: &str| json!({ "images": { code: img(url, Value::Null) } });
+        let joined = |events: Vec<Value>| json!({ "state": { "events": events }, "timeline": { "events": [] } });
+        let member = state("m.room.member", "@me:x", json!({ "membership": "join" }));
+        let mut sync = stub_sync();
+        let features = json!({ "file": { "m.sticker": { "mime_types": { "image/png": 2 } } } });
+        let cats = json!({ "pack": { "display_name": "Cats" }, "images": { "cat": img("mxc://x/cat", Value::Null),
+            "kitty": img("mxc://x/cat", Value::Null), "smile": img("mxc://x/e", json!(["emoticon"])) } });
+        let dogs = json!({ "pack": { "usage": ["sticker"] }, "images": { "dog": img("mxc://x/dog", Value::Null) } });
+        let room = sync["rooms"]["join"]["!room:x"]["state"]["events"].as_array_mut().unwrap();
+        room.extend([
+            state("com.beeper.room_features", "", features),
+            state("m.room.image_pack", "a", cats),
+            state("im.ponies.room_emotes", "a", pack("old", "mxc://x/old")),
+            state("im.ponies.room_emotes", "b", dogs),
+            state("m.room.image_pack", "gone", json!({})),
+        ]);
+        let space = json!({ "creator": "@me:x", "room_version": "10", "type": "m.space" });
+        sync["rooms"]["join"]["!space:x"] = joined(vec![
+            state("m.room.create", "", space),
+            member.clone(),
+            state("m.space.child", "!room:x", json!({ "via": ["x"] })),
+            state("m.room.image_pack", "", pack("fox", "mxc://x/fox")),
+        ]);
+        let create = state("m.room.create", "", json!({ "creator": "@me:x", "room_version": "10" }));
+        sync["rooms"]["join"]["!other:x"] = joined(vec![
+            create,
+            member,
+            state("m.room.image_pack", "g", pack("owl", "mxc://x/owl")),
+            state("m.room.image_pack", "h", pack("bat", "mxc://x/bat")),
+        ]);
+        sync["account_data"] = json!({ "events": [
+            { "type": "m.image_pack", "content": pack("own", "mxc://x/own") },
+            { "type": "m.image_pack.rooms", "content": { "rooms": { "!other:x": { "g": {} } } } },
+        ] });
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url =
+            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/sync" => (200, sync.clone()),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                "/_matrix/client/v1/media/config" => (200, json!({ "m.upload.size": 1_000_000 })),
+                "/_matrix/media/v3/upload" => (200, json!({ "content_uri": "mxc://x/f" })),
+                p if p.ends_with("/members") => (200, json!({ "chunk": [] })),
+                p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": [] })),
+                _ if method == "GET" => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+                p => {
+                    log.lock().unwrap().push((p.to_string(), body));
+                    (200, json!({ "event_id": "$sent" }))
+                }
+            })
+            .await;
+        let dir = std::env::temp_dir().join(format!("beeper-rs-stickers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = stub_store(&dir, &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        let packs = super::sticker_packs(store.clone(), "!room:x".into()).await.expect("the packs");
+        let ids: Vec<(&str, &str)> = packs.iter().map(|p| (p.id.as_str(), p.title.as_str())).collect();
+        let want = [
+            ("m.room.image_pack|!room:x|a", "Cats"),
+            ("im.ponies.room_emotes|!room:x|b", "b"),
+            ("m.room.image_pack|!space:x|", ""),
+            ("m.room.image_pack|!other:x|g", "g"),
+            ("account", ""),
+        ];
+        assert_eq!(ids, want, "the room, its space, the global rooms and the account, and the stable type wins");
+        let cat = packs[0].stickers.clone();
+        assert_eq!(cat.len(), 1, "one sticker for each URL, and no emoticons");
+        assert_eq!(
+            (cat[0].shortcodes.clone(), packs[4].stickers[0].source.clone()),
+            (vec!["cat".into(), "kitty".into()], None)
+        );
+        let mut png = Vec::new();
+        ::image::RgbaImage::new(2, 2).write_to(&mut std::io::Cursor::new(&mut png), ::image::ImageFormat::Png).unwrap();
+        let sticker = super::Outgoing::Media {
+            txn: "sticker".into(),
+            bytes: png.clone(),
+            name: "cat.png".into(),
+            mime: "image/png".into(),
+            info: super::MediaInfo::Image(2, 2),
+            caption: None,
+            reply_to: None,
+            thread: None,
+            gif: false,
+            sticker: Some(Box::new(cat[0].clone())),
+        };
+        store.write().queue("!room:x", sticker);
+        super::flush(store.clone()).await.expect("send the sticker");
+        let sent = sent.lock().unwrap();
+        let (_, body) = sent.iter().find(|(p, _)| p.contains("/send/m.sticker/")).expect("an m.sticker event");
+        let info = json!({ "mimetype": "image/png", "w": 2, "h": 2, "size": png.len(), "thumbnail_url": "mxc://x/t" });
+        let source = json!({ "mxc://x/f": { "room_id": "!room:x", "state_key": "a", "shortcode": "cat" } });
+        assert_eq!(
+            (&body["body"], &body["info"], &body["url"], &body["com.beeper.msc4459.image_source_packs"]),
+            (&json!("b"), &info, &json!("mxc://x/f"), &source)
+        );
+        assert!(body.get("msgtype").is_none() && body.get("filename").is_none());
         drop(sent);
         let _ = std::fs::remove_dir_all(dir);
     }

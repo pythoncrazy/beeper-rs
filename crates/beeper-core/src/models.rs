@@ -1460,6 +1460,40 @@ pub struct BeeperSettings {
     pub quick_reaction: String,
     /// Desktop's local `customQuickReactions`: the custom quick reactions.
     pub quick_reactions: Vec<String>,
+    /// Desktop's local `recent_stickers`: the last 24 stickers that you picked, the newest first.
+    pub recent_stickers: Vec<Sticker>,
+}
+
+/// Desktop's image pack with stickers (`OCt` and `z0e`): the id, the tab title, the avatar, and the stickers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StickerPack {
+    pub id: String,
+    pub title: String,
+    pub avatar: Option<String>,
+    pub stickers: Vec<Sticker>,
+}
+
+/// Desktop's sticker of a pack: the image URL with its shortcodes, the body and the info of its first image, and
+/// Desktop's `source` (`tTt`) of a pack in a room.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Sticker {
+    pub url: String,
+    pub shortcodes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub info: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<StickerSource>,
+}
+
+/// Desktop's `com.beeper.msc4459.image_source_packs` entry of a sticker: the room and the state key of its pack, and
+/// its first shortcode.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StickerSource {
+    pub room_id: String,
+    pub state_key: String,
+    pub shortcode: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

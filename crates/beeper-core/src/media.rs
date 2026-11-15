@@ -1,6 +1,8 @@
 //! Desktop's `prepareOutgoingMedia`: before the upload to a room with room features, ffmpeg converts videos and audio
 //! files, and the `image` codecs resize or compress images, so that the room takes them.
-use crate::models::{FileRule, FileRules, FILE_AUDIO, FILE_FILE, FILE_GIF, FILE_IMAGE, FILE_VIDEO, FILE_VOICE};
+use crate::models::{
+    FileRule, FileRules, FILE_AUDIO, FILE_FILE, FILE_GIF, FILE_IMAGE, FILE_STICKER, FILE_VIDEO, FILE_VOICE,
+};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -18,7 +20,15 @@ pub struct Facts {
     pub dims: Option<(u32, u32)>,
     /// The length in seconds.
     pub duration: Option<f64>,
-    pub voice: bool,
+    pub sent: Sent,
+}
+
+/// Desktop's `isVoiceNote` and `isSticker`: a file that goes as a voice note or a sticker, and not by its MIME type.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Sent {
+    File,
+    Voice,
+    Sticker,
 }
 
 /// What Desktop's `Cc` does with a file in a room.
@@ -79,6 +89,17 @@ fn supports(mime: &str, types: &BTreeMap<String, i8>, min: i8) -> bool {
     level.is_some_and(|l| l >= min)
 }
 
+/// Desktop's `Px`: the animated sticker types.
+pub fn animated(mime: &str) -> bool {
+    matches!(mime, "video/lottie+json" | "application/x-tgsticker" | "image/tgs")
+}
+
+/// Desktop's `nw`: the room takes `mime` as a sticker. An animated sticker needs full support.
+pub fn takes_sticker(rules: &FileRules, mime: &str) -> bool {
+    let (mime, rule) = (base(mime), rules.get(FILE_STICKER));
+    rule.is_some_and(|r| r.mime_types.is_empty() || supports(&mime, &r.mime_types, if animated(&mime) { 2 } else { 1 }))
+}
+
 /// Desktop's `cw`: the first conversion target of the top type that the room lists.
 fn target(mime: &str, listed: &[&str]) -> Option<&'static str> {
     let t = top(mime)?;
@@ -103,7 +124,8 @@ pub fn decide(f: &Facts, rules: &FileRules) -> Action {
         return Action::SendAsIs;
     }
     let mut kind = match kind_top {
-        _ if f.voice => FILE_VOICE,
+        _ if f.sent == Sent::Sticker => FILE_STICKER,
+        _ if f.sent == Sent::Voice => FILE_VOICE,
         _ if base == "image/gif" => FILE_GIF,
         Some("image") => FILE_IMAGE,
         Some("audio") => FILE_AUDIO,
@@ -111,7 +133,7 @@ pub fn decide(f: &Facts, rules: &FileRules) -> Action {
         _ => FILE_FILE,
     };
     let fallback = |kind| match kind {
-        FILE_GIF => FILE_IMAGE,
+        FILE_GIF | FILE_STICKER => FILE_IMAGE,
         FILE_VOICE => FILE_AUDIO,
         _ => kind,
     };
@@ -231,16 +253,16 @@ pub fn prepare_upload(
     bytes: &[u8],
     f: Upload,
     rules: &FileRules,
-    voice: bool,
+    sent: Sent,
 ) -> Result<(Vec<u8>, Upload), String> {
     let io = |e: std::io::Error| e.to_string();
     let path = dir.join("original").join(safe(&f.name));
     std::fs::create_dir_all(path.parent().expect("a parent folder")).map_err(io)?;
     std::fs::write(&path, bytes).map_err(io)?;
-    let r = prepare(Upload { path, ..f }, rules, voice, dir).and_then(|u| {
+    let r = prepare(Upload { path, ..f }, rules, sent, dir).and_then(|u| {
         let u = backfill(u);
         let bytes = std::fs::read(&u.path).map_err(io)?;
-        enforce(&u, bytes.len() as u64, rules, voice)?;
+        enforce(&u, bytes.len() as u64, rules, sent)?;
         Ok((bytes, u))
     });
     if let Err(e) = std::fs::remove_dir_all(dir) {
@@ -250,11 +272,11 @@ pub fn prepare_upload(
 }
 
 /// Desktop's `_p`: the file as it is, or converted in `dir` like the room features ask.
-fn prepare(f: Upload, rules: &FileRules, voice: bool, dir: &Path) -> Result<Upload, String> {
+fn prepare(f: Upload, rules: &FileRules, sent: Sent, dir: &Path) -> Result<Upload, String> {
     let mut f = Upload { dims: f.dims.filter(|&(w, h)| w > 0 && h > 0), ..f };
     let Some(class) = class(&f.name, &f.mime).filter(|_| base(&f.mime) != "image/gif") else { return Ok(f) };
     let size = std::fs::metadata(&f.path).map_err(|e| e.to_string())?.len();
-    let facts = |f: &Upload| Facts { mime: f.mime.clone(), size, dims: f.dims, duration: f.duration, voice };
+    let facts = |f: &Upload| Facts { mime: f.mime.clone(), size, dims: f.dims, duration: f.duration, sent };
     let mut action = decide(&facts(&f), rules);
     if action == Action::MissingInfo {
         match measure(&f.path, class) {
@@ -311,8 +333,8 @@ fn backfill(f: Upload) -> Upload {
 }
 
 /// Desktop's `vp`: the error of a file that the room still does not take after the conversion.
-fn enforce(f: &Upload, size: u64, rules: &FileRules, voice: bool) -> Result<(), String> {
-    let action = decide(&Facts { mime: f.mime.clone(), size, dims: f.dims, duration: f.duration, voice }, rules);
+fn enforce(f: &Upload, size: u64, rules: &FileRules, sent: Sent) -> Result<(), String> {
+    let action = decide(&Facts { mime: f.mime.clone(), size, dims: f.dims, duration: f.duration, sent }, rules);
     match action {
         Action::SendAsIs => Ok(()),
         Action::MissingInfo if !f.failed => Ok(()),
@@ -589,7 +611,8 @@ mod tests {
 
     #[test]
     fn decisions_follow_the_room_features_like_desktop() {
-        let facts = |mime: &str, size, dims, duration| Facts { mime: mime.into(), size, dims, duration, voice: false };
+        let facts =
+            |mime: &str, size, dims, duration| Facts { mime: mime.into(), size, dims, duration, sent: Sent::File };
         let png = |dims| facts("image/png", 9, dims, None);
         assert_eq!(decide(&png(None), &FileRules::new()), Action::SendAsIs, "a room without file features");
         assert_eq!(decide(&png(Some((9, 9))), &beeper_files()), Action::SendAsIs);
@@ -630,11 +653,17 @@ mod tests {
         let mp4_audio = Action::Transcode { mime: "audio/mp4", strong: false, dims: None };
         assert_eq!(decide(&flac, &rules), mp4_audio);
         rules.remove(FILE_VOICE);
-        let voice = Facts { voice: true, ..facts("audio/ogg", 9, None, None) };
+        let voice = Facts { sent: Sent::Voice, ..facts("audio/ogg", 9, None, None) };
         assert_eq!(decide(&voice, &rules), mp4_audio, "a voice note falls back to audio");
         rules.remove(FILE_AUDIO);
         let missing = Action::Reject("Capability type org.matrix.msc3245.voice not listed in room features".into());
         assert_eq!(decide(&voice, &rules), missing);
+        let sticker = Facts { sent: Sent::Sticker, ..facts("image/png", 9, Some((9, 9)), None) };
+        rules.insert(FILE_IMAGE.into(), rule(&[("image/png", 2)]));
+        assert_eq!(decide(&sticker, &rules), Action::SendAsIs, "a sticker falls back to images");
+        rules.insert(FILE_STICKER.into(), rule(&[("image/webp", 2)]));
+        let webp = Action::Transcode { mime: "image/webp", strong: false, dims: None };
+        assert_eq!(decide(&sticker, &rules), webp, "a sticker follows the sticker features");
     }
 
     #[test]
@@ -663,7 +692,7 @@ mod tests {
             (FILE_AUDIO.into(), rule(&[("audio/mpeg", 2)])),
         ]);
         let work = dir.join("work");
-        let send = |bytes: &[u8], f, rules: &FileRules| prepare_upload(&work, bytes, f, rules, false);
+        let send = |bytes: &[u8], f, rules: &FileRules| prepare_upload(&work, bytes, f, rules, Sent::File);
         let (bytes, f) = send(&mkv, upload("a.mkv", "video/x-matroska", Some((320, 240))), &rules).unwrap();
         assert_eq!((f.name.as_str(), f.mime.as_str(), f.dims), ("a.mp4", "video/mp4", Some((160, 120))));
         assert!(f.duration.is_some_and(|d| d > 0.9) && &bytes[4..8] == b"ftyp", "an MP4 with its length");
