@@ -14069,8 +14069,12 @@ impl BeeperGuiApp {
             .filter(|_| on);
             let active = (id == 2 && self.pane().picker == Some(Picker::Gif))
                 || (id == 0 && self.pane().emoji.as_ref().is_some_and(|pk| pk.react.is_none() && pk.pref.is_none()));
-            let color = if active { p.strong } else { p.on_secondary };
-            let bg = if active { p.hover } else { CLEAR };
+            // Desktop's `Emoji-module__active`: the open emoji picker turns its button `--color-primary`.
+            let (color, bg) = match (active, id) {
+                (true, 0) => (p.accent, CLEAR),
+                (true, _) => (p.strong, p.hover),
+                (false, _) => (p.on_secondary, CLEAR),
+            };
             let glyph = svg(COMPOSER_ICONS[usize::from(id) + 2].clone())
                 .width(20)
                 .height(20)
@@ -14167,7 +14171,8 @@ impl BeeperGuiApp {
             })
             .highlight_with::<format::Marks>(marks, |f, _| *f)
             .size(13)
-            .padding([9, 2])
+            .line_height(Pixels(16.0))
+            .padding([10, 2])
             .height(Shrink)
             .max_height(self.pane().size.height / 2.0)
             .style(move |_, _| text_editor::Style {
@@ -14328,7 +14333,7 @@ impl BeeperGuiApp {
             Some(r) => row![self.view_recorder(r), send],
             None => row![plus, pill, send],
         };
-        column![extras, line.spacing(8).align_y(Center).padding(Padding::new(8.0).top(4.0))].into()
+        column![extras, line.spacing(8).align_y(Center).padding(8)].into()
     }
 
     fn view_info(&self) -> El<'_> {
