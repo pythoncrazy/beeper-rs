@@ -97,7 +97,7 @@ pub struct Player {
     /// Desktop's `aiStore.transcriptionState` by message: the language, and whether it failed, else it is in flight.
     transcribing: HashMap<String, (String, bool)>,
     /// The transcription that waits for the privacy notice: the message, a new transcription, and the language.
-    asked: Option<(String, bool, Option<String>)>,
+    pub(crate) asked: Option<(String, bool, Option<String>)>,
 }
 
 /// Desktop's `activationConstraint`: a drag starts after the cursor moves this far.
@@ -284,10 +284,15 @@ impl BeeperGuiApp {
             }
             Msg::Allow(on) => {
                 self.confirm = None;
-                let (mid, again, language) =
-                    self.audio.asked.take().expect("the privacy notice asks for a transcription");
+                // Without a voice note, the notice asks for Talk to Type.
+                let asked = self.audio.asked.take();
                 let set = self.handle(UiMessage::SetPref("transcribeWithOpenai", u8::from(on)));
-                return if on { Task::batch([set, self.transcribe(mid, again, language, false)]) } else { set };
+                let next = match asked {
+                    _ if !on => Task::none(),
+                    Some((mid, again, language)) => self.transcribe(mid, again, language, false),
+                    None => self.record(crate::record::Msg::Talk),
+                };
+                return Task::batch([set, next]);
             }
             Msg::Spin => {}
             Msg::Loaded(url, clip) => {
@@ -775,7 +780,9 @@ impl BeeperGuiApp {
             let ext = audio_ext(&a);
             let mp3 = tokio::task::spawn_blocking(move || whisper_audio(bytes, &ext));
             let bytes = mp3.await.expect("the MP3 task").map_err(toast)?;
-            beeper_core::cloud::transcribe(&base, &token, bytes, code.as_deref()).await.map_err(failed)
+            beeper_core::cloud::transcribe(&base, &token, (bytes, beeper_core::cloud::VOICE_NOTE_FILE), code.as_deref())
+                .await
+                .map_err(failed)
         };
         Task::perform(run, move |r| UiMessage::Voice(Msg::Transcribed(mid, language, r)))
     }

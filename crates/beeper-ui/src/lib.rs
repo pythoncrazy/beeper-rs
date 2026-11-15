@@ -4271,6 +4271,7 @@ pub struct BeeperGuiApp {
     reminder_menu: Option<Point>,
     audio: voice::Player,
     recorder: Option<record::Recorder>,
+    talk: Option<record::Talk>,
     queued: Vec<Queued>,
     /// The system microphone and the other inputs, listed when General settings open.
     mics: Option<Result<(String, Vec<String>), String>>,
@@ -4505,6 +4506,7 @@ impl BeeperGuiApp {
             reminder_menu: None,
             audio,
             recorder: None,
+            talk: None,
             queued: Vec::new(),
             selection: Vec::new(),
             select_mode: false,
@@ -6039,6 +6041,7 @@ impl BeeperGuiApp {
                 })
             }
             "Message: Record Audio" => chat.map(|_| UiMessage::Record(record::Msg::Start)),
+            "Message: Talk to Type" => chat.map(|_| UiMessage::Record(record::Msg::Talk)),
             "Message: Send GIF" => chat.map(|_| UiMessage::TogglePicker(Picker::Gif)),
             "Message: Send Sticker" => chat.map(|_| UiMessage::TogglePicker(Picker::Sticker)),
             "Show Replies" => chat.and_then(|_| {
@@ -9110,7 +9113,7 @@ impl BeeperGuiApp {
             UiMessage::OpenAddAccount(network, login) => return self.open_add_account(&network, login),
             UiMessage::AddAccount(id, m) => return self.update_add_account(id, m),
             UiMessage::KeyPressed(Key::Named(k @ (Named::Enter | Named::Escape)), m)
-                if self.recorder.is_some() && m.is_empty() =>
+                if (self.recorder.is_some() || self.talk.is_some()) && m.is_empty() =>
             {
                 return self.record(record::Msg::Key(k));
             }
@@ -14201,6 +14204,7 @@ impl BeeperGuiApp {
                 2 => Some(UiMessage::TogglePicker(Picker::Gif)),
                 3 => Some(UiMessage::PickFiles),
                 4 => Some(UiMessage::OpenSendLater),
+                1 => Some(UiMessage::Record(record::Msg::Talk)),
                 5 => Some(UiMessage::Record(record::Msg::Start)),
                 6 => Some(UiMessage::OpenPollCreator(chat.id.clone())),
                 _ => None,
@@ -14468,9 +14472,10 @@ impl BeeperGuiApp {
         let stickers = (self.pane().picker == Some(Picker::Sticker))
             .then(|| container(txt(tr("No sticker packs yet."), 14.0).color(p.text)).center_x(Fill).center_y(200));
         let extras = Column::new().push(gif_picker).push(stickers);
-        let line: Row<'a, UiMessage> = match &self.recorder {
-            Some(r) => row![self.view_recorder(r), send],
-            None => row![plus, pill, send],
+        let line: Row<'a, UiMessage> = match (&self.recorder, &self.talk) {
+            (Some(r), _) => row![self.view_recorder(r), send],
+            (None, Some(t)) => row![self.view_talk(t), send],
+            (None, None) => row![plus, pill, send],
         };
         column![extras, line.spacing(8).align_y(Center).padding(8)].into()
     }
@@ -17345,7 +17350,7 @@ impl BeeperGuiApp {
             ASK_TRANSCRIBE => {
                 let body = trf(
                     "%s works by sharing audio clips with OpenAI via our servers. You can always change this in Settings.",
-                    &[&tr("Transcribing voice notes")],
+                    &[&tr(if self.audio.asked.is_some() { "Transcribing voice notes" } else { "Talk to Type" })],
                 );
                 let allow = vec![(tr("Allow Access"), UiMessage::Voice(voice::Msg::Allow(true)))];
                 let disable = (tr("Disable"), UiMessage::Voice(voice::Msg::Allow(false)));

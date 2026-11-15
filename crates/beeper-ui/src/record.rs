@@ -6,7 +6,7 @@ use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{mouse, renderer, Clipboard, Renderer as _, Shell};
 use iced::keyboard::key::Named;
-use iced::widget::{button, container, responsive, row, slider, stack, svg, tooltip, Row, Space};
+use iced::widget::{button, container, responsive, row, slider, stack, svg, text_editor, tooltip, Row, Space};
 use iced::{
     window, Center, Color, Element, Event, Fill, Length, Padding, Rectangle, Renderer, Size, Subscription, Task,
 };
@@ -42,6 +42,12 @@ struct Take {
 
 pub struct Recorder(Arc<Take>);
 
+/// Desktop's `TalkToType`: the take of the microphone, then "Typing your message..." while Whisper transcribes it.
+pub struct Talk {
+    take: Recorder,
+    typing: bool,
+}
+
 impl Drop for Recorder {
     fn drop(&mut self) {
         self.0.stop.store(true, Relaxed);
@@ -58,6 +64,10 @@ pub enum Msg {
     Key(Named),
     Tick,
     Encoded(String, Option<String>, Clip, Vec<f32>, Result<Vec<u8>, String>),
+    /// Desktop's `SHOW_TRANSCRIBE_BAR`: Talk to Type.
+    Talk,
+    /// The transcript of Talk to Type, or its error.
+    Typed(Result<String, String>),
 }
 
 /// Desktop's `enumerateDevices`: the system default and the other inputs, by name.
@@ -124,6 +134,17 @@ fn encode(samples: &[f32]) -> Result<Vec<u8>, String> {
     }
 }
 
+/// A WAV file of mono 16-bit samples at `HZ`, like the `audio/wav` of Desktop's Talk to Type recorder.
+fn wav(samples: &[f32]) -> Vec<u8> {
+    let data: Vec<u8> = samples.iter().flat_map(|s| ((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).collect();
+    let n = |v: usize| u32::try_from(v).expect("a WAV under 4 GiB").to_le_bytes();
+    let format = [1u16, 1].map(u16::to_le_bytes).concat();
+    let rate = [n(HZ), n(HZ * 2)].concat();
+    let block = [2u16, 16].map(u16::to_le_bytes).concat();
+    [&b"RIFF"[..], &n(36 + data.len()), b"WAVEfmt ", &n(16), &format, &rate, &block, b"data", &n(data.len()), &data]
+        .concat()
+}
+
 /// `toWaveform`: at most 100 of the live levels.
 fn waveform(levels: &[f32]) -> Vec<f32> {
     let n = levels.len().min(100);
@@ -188,8 +209,51 @@ impl BeeperGuiApp {
         if matches!(msg, Msg::Start) && !self.supports(crate::Picker::Audio) {
             return Task::none();
         }
+        // Desktop's Talk to Type keys: space and enter stop the take, and escape cancels it.
+        if let (Msg::Key(k), Some(t)) = (&msg, &self.talk) {
+            return match k {
+                Named::Escape => {
+                    self.talk = None;
+                    Task::none()
+                }
+                _ if t.typing => Task::none(),
+                _ => self.talk_done(),
+            };
+        }
         let paused = || self.recorder.as_ref().is_some_and(|r| r.0.paused.load(Relaxed));
         match msg {
+            Msg::Talk => {
+                let st = self.store.read();
+                if !st.feature("talk-to-type").on {
+                    drop(st);
+                    return self.handle(UiMessage::OpenSettings(crate::SettingsTab::BeeperPlus));
+                }
+                // Desktop's privacy notice (`oL`) asks first.
+                if !st.settings.on("transcribeWithOpenai") {
+                    drop(st);
+                    self.confirm = Some(crate::ASK_TRANSCRIBE);
+                    return Task::none();
+                }
+                let name = st.settings.microphone.clone();
+                drop(st);
+                let take = Arc::new(Take::default());
+                self.talk = Some(Talk { take: Recorder(take.clone()), typing: false });
+                let run = async move {
+                    tokio::task::spawn_blocking(move || capture(&take, &name)).await.expect("capture runs")
+                };
+                return Task::perform(run, |r| UiMessage::Record(Msg::Ended(r)));
+            }
+            Msg::Typed(Ok(text)) => {
+                self.talk = None;
+                let end = text_editor::Action::Move(text_editor::Motion::DocumentEnd);
+                let paste = text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(text)));
+                let edits = [end, paste].map(|a| self.handle(UiMessage::ComposerEdit(a)));
+                return Task::batch(edits.into_iter().chain([iced::widget::operation::focus("composer-input")]));
+            }
+            Msg::Typed(Err(e)) => {
+                self.talk = None;
+                self.status_banner = crate::trf("Something went wrong transcribing the audio recording: %s", &[&e]);
+            }
             Msg::Start => {
                 let take = Arc::new(Take::default());
                 self.recorder = Some(Recorder(take.clone()));
@@ -201,7 +265,7 @@ impl BeeperGuiApp {
             }
             Msg::Ended(Ok(())) => {}
             Msg::Ended(Err(e)) => {
-                self.recorder = None;
+                (self.recorder, self.talk) = (None, None);
                 self.status_banner = format!("Could not record audio: {e}");
             }
             Msg::Pause => {
@@ -267,6 +331,21 @@ impl BeeperGuiApp {
         Task::none()
     }
 
+    /// Desktop's Talk to Type after the take: the Whisper transcript of the WAV take.
+    fn talk_done(&mut self) -> Task<UiMessage> {
+        let t = self.talk.as_mut().expect("Talk to Type records");
+        t.typing = true;
+        t.take.0.stop.store(true, Relaxed);
+        let samples = std::mem::take(&mut *t.take.0.samples.lock().unwrap());
+        let st = self.store.read();
+        let (base, token) =
+            (beeper_core::cloud::ai_services(&st.beeper_state.homeserver), st.beeper_state.access_token.clone());
+        drop(st);
+        let file = beeper_core::cloud::TALK_FILE;
+        let run = async move { beeper_core::cloud::transcribe(&base, &token, (wav(&samples), file), None).await };
+        Task::perform(run, |r| UiMessage::Record(Msg::Typed(r)))
+    }
+
     /// `prepareAudioForSending`: stop the recording, encode it, and send it to the open chat.
     pub(crate) fn send_take(&mut self) -> Task<UiMessage> {
         let r = self.recorder.take().expect("a recording sends");
@@ -292,6 +371,9 @@ impl BeeperGuiApp {
             }
             _ => None,
         });
+        if self.talk.is_some() {
+            return Some(space);
+        }
         let paused = self.recorder.as_ref()?.0.paused.load(Relaxed);
         let tick = (!paused).then(|| iced::time::every(Duration::from_secs(1)).map(|_| UiMessage::Record(Msg::Tick)));
         Some(Subscription::batch([space].into_iter().chain(tick)))
@@ -360,9 +442,73 @@ impl BeeperGuiApp {
     }
 }
 
+impl BeeperGuiApp {
+    /// Desktop's `TalkToType` in place of the composer input: the cancel button, and "Talk then press space" with the
+    /// live waveform in a yellow ring, or "Typing your message...".
+    pub(crate) fn view_talk<'a>(&'a self, t: &'a Talk) -> El<'a> {
+        let p = &self.pal;
+        let cancel = button(tinted(&ICONS[4], 20.0, p.on_secondary))
+            .padding(8)
+            .style(btn_style([CLEAR; 3], [p.on_secondary; 3], 18.0))
+            .on_press(UiMessage::Record(Msg::Key(Named::Escape)));
+        let cancel = self.tip(cancel.into(), crate::tr("Cancel Talk to Type"), vec![], tooltip::Position::Top);
+        let dot = container(Space::new()).width(8).height(8).style(fill_box(YELLOW, 4.0));
+        let line = match t.typing {
+            true => row![dot, txt(crate::tr("Typing your message..."), 13.0).color(p.sub)],
+            false => row![dot, txt(crate::tr("Talk then press space"), 13.0).color(p.sub)]
+                .push(container(Element::new(Live(&t.take.0, p.on_secondary))).padding(Padding::ZERO.left(8.0))),
+        };
+        let wrapper = container(line.spacing(8).align_y(Center))
+            .padding([0, 14])
+            .width(Fill)
+            .center_y(36)
+            .style(bordered_box(CLEAR, YELLOW, 2.0, 24.0));
+        let wrapper = iced::widget::mouse_area(wrapper);
+        let wrapper = if t.typing { wrapper } else { wrapper.on_press(UiMessage::Record(Msg::Key(Named::Space))) };
+        row![cancel, wrapper].align_y(Center).width(Fill).into()
+    }
+}
+
+/// `--color-solids-yellow`, the color of Talk to Type.
+const YELLOW: Color = hex(0xebaa00);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Desktop's Talk to Type: the privacy notice, "Talk then press space", "Typing your message...", and the
+    /// transcript at the end of the draft. A take is a mono 16-bit WAV.
+    #[test]
+    fn talk_to_type_like_desktop() {
+        let w = wav(&[0.0, 1.0]);
+        assert!(w.len() == 48 && w.starts_with(b"RIFF") && &w[8..16] == b"WAVEfmt " && w[44..] == [0, 0, 0xff, 0x7f]);
+        let mut app = crate::fuzz::demo_app("talk");
+        let mut plus = beeper_core::features::Flags::free_plan();
+        app.store.write().features = plus.clone();
+        let _ = app.update(UiMessage::SelectChat("!wa_eric:beeper.com".into()));
+        let has = |app: &BeeperGuiApp, s: &str| iced_test::simulator(app.view_main()).find(s).is_ok();
+        let _ = app.update(UiMessage::Record(Msg::Talk));
+        assert!(app.talk.is_none() && app.confirm.is_none(), "Talk to Type has no free uses");
+        plus.flags["features"]["*"]["voice-transcription"] = serde_json::json!(true);
+        app.store.write().features = plus;
+        let _ = app.update(UiMessage::Record(Msg::Talk));
+        assert!(app.confirm == Some(crate::ASK_TRANSCRIBE) && app.talk.is_none(), "the privacy notice comes first");
+        let notice = "Talk to Type works by sharing audio clips with OpenAI via our servers. You can always change this in Settings.";
+        assert!(has(&app, notice));
+        let _ = app.update(UiMessage::Voice(voice::Msg::Allow(true)));
+        assert!(app.talk.is_some() && has(&app, "Talk then press space"));
+        let _ = app.update(UiMessage::Record(Msg::Key(Named::Space)));
+        assert!(has(&app, "Typing your message..."));
+        let _ = app.update(UiMessage::Record(Msg::Typed(Ok("hello there".into()))));
+        assert!(app.talk.is_none() && app.pane.composer.text().trim_end().ends_with("hello there"));
+        let _ = app.update(UiMessage::Record(Msg::Talk));
+        let _ = app.update(UiMessage::Record(Msg::Key(Named::Escape)));
+        assert!(app.talk.is_none(), "escape cancels");
+        let _ = app.update(UiMessage::Record(Msg::Talk));
+        let _ = app.update(UiMessage::Record(Msg::Key(Named::Enter)));
+        let _ = app.update(UiMessage::Record(Msg::Typed(Err("HTTP 500".into()))));
+        assert_eq!(app.status_banner, "Something went wrong transcribing the audio recording: HTTP 500");
+    }
 
     #[test]
     fn pauses_to_preview_and_cancels_like_desktop() {
