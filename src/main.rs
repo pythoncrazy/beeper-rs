@@ -201,6 +201,13 @@ fn main() {
     if argv.first().is_some_and(|word| cli::is_cli(word)) {
         std::process::exit(cli::run(&argv));
     }
+    // `help <command>` is the help of a client command, like oclif.
+    if let ["help", words @ ..] = argv.as_slice().iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        if words.first().is_some_and(|word| cli::is_cli(word)) {
+            let words: Vec<String> = words.iter().map(|w| w.to_string()).chain(["--help".into()]).collect();
+            std::process::exit(cli::run(&words));
+        }
+    }
     let env = |key: &str, flag: &str| std::env::var(key).ok().map(|v| format!("{flag}={v}"));
     let argv = [env("BEEPER_PAS_HOST", "--host"), env("BEEPER_PAS_PORT", "--port")].into_iter().flatten();
     let Args { command, host: launch_host, port, profile, data_dir, domain, demo, link } =

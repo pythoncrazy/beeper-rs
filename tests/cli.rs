@@ -32,6 +32,15 @@ fn bad_command_lines_print_the_usage_and_exit_with_the_oclif_codes() {
     assert_eq!(run(&["chatz"]), (Some(127), String::new(), not_found.into()));
     let (code, help, _) = run(&["help"]);
     assert!(code == Some(0) && help.starts_with("Beeper chat app"), "{help}");
+    assert!(
+        help.contains("\n  chats    List, search, manage, and modify chats\n"),
+        "the root help lists the client topics: {help}"
+    );
+    let (code, help, _) = run(&["help", "send", "text"]);
+    assert!(
+        code == Some(0) && help.starts_with("Send a text message\n\nUSAGE\n  $ beeper-rs send text --to <value>"),
+        "{help}"
+    );
     let (code, version, _) = run(&["-V"]);
     assert!(code == Some(0) && version.starts_with("beeper-rs/"), "{version}");
 }
