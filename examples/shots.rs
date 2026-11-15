@@ -123,6 +123,13 @@ fn main() {
         let _ = app.update(UiMessage::Login(LoginMsg::Show(screen)));
         shot(&out, &format!("login_{screen:?}").to_lowercase(), (330.0, 620.0), &theme, app.view_login());
     }
+    let _ = app.update(UiMessage::Login(LoginMsg::Show(Screen::Email)));
+    let _ = app.update(UiMessage::Login(LoginMsg::SubmitEmail));
+    let _ = app.update(UiMessage::Login(LoginMsg::Menu));
+    shot(&out, "login_email_toast_menu", (330.0, 620.0), &theme, app.view_login());
+    let _ = app.update(UiMessage::Login(LoginMsg::Email("foo".into())));
+    let _ = app.update(UiMessage::Login(LoginMsg::SubmitEmail));
+    shot(&out, "login_email_invalid", (330.0, 620.0), &theme, app.view_login());
     if real.is_none() {
         std::fs::remove_dir_all(data).expect("remove shot data dir");
     }

@@ -1,7 +1,7 @@
 use crate::i18n::{tr, trf, trn, trx};
 use crate::style::{
-    bold, bordered_box, brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, Palette,
-    CLEAR,
+    bold, bordered_box, brand_svg, btn_style, fill_box, glow_box, ic, icon, input_style, med, semi, shadow_box, txt,
+    Palette, CLEAR,
 };
 use crate::{BeeperGuiApp, El, UiMessage};
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
@@ -11,6 +11,7 @@ use beeper_core::matrix::{DeviceInfo, E2eeSetup};
 use beeper_core::models::{BridgeAccountInfo, MatrixSession, Profile};
 use beeper_core::store::{BeeperStore, Setup, NOTE_CHAT_ID};
 use iced::gradient::Linear;
+use iced::keyboard::{key::Named, Key, Modifiers};
 use iced::widget::{
     button, column, container, mouse_area, operation, rich_text, row, scrollable, span, stack, svg, text_editor,
     text_input, tooltip, Space,
@@ -23,6 +24,9 @@ const HEADING: Color = Color::from_rgb8(132, 100, 238);
 const EMAIL_INPUT: &str = "login-email";
 const CODE_INPUT: &str = "login-code";
 const USERNAME_INPUT: &str = "login-username";
+const TERMS_URL: &str = "https://www.beeper.com/terms-onboarding";
+/// Desktop's `--color-on-error-container`: the error toast.
+const ERROR_RED: Color = Color::from_rgb8(220, 54, 46);
 const NO_EMAIL_LOGIN: &str = "The server does not support email-based login. Try logging in with a username instead.";
 
 const WELCOME_ART: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 314 396"><defs><linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8f6cf6"/><stop offset="1" stop-color="#2f5cf8"/></linearGradient></defs><ellipse cx="157" cy="330" rx="66" ry="7" fill="#e3e3e6"/><g transform="rotate(-9 157 190)"><path d="M77 120h160a28 28 0 0 1 28 28v76a28 28 0 0 1-28 28h-96l-38 30v-30h-26a28 28 0 0 1-28-28v-76a28 28 0 0 1 28-28z" fill="url(#b)"/><circle cx="117" cy="186" r="13" fill="#fff"/><circle cx="157" cy="186" r="13" fill="#fff"/><circle cx="197" cy="186" r="13" fill="#fff" opacity=".6"/></g><rect x="22" y="62" width="40" height="40" rx="12" fill="#34c759" transform="rotate(-12 42 82)"/><rect x="250" y="46" width="34" height="34" rx="10" fill="#ff8a3d" transform="rotate(14 267 63)"/><rect x="262" y="262" width="30" height="30" rx="9" fill="#ff4f9a" transform="rotate(-10 277 277)"/><circle cx="40" cy="268" r="17" fill="#ffd23f"/><circle cx="34" cy="263" r="2.6" fill="#3a2e00"/><circle cx="46" cy="263" r="2.6" fill="#3a2e00"/><path d="M32 272q8 7 16 0" stroke="#3a2e00" stroke-width="2.4" fill="none" stroke-linecap="round"/><path d="M226 92l5 13 13 5-13 5-5 13-5-13-13-5 13-5z" fill="#ffd23f"/><path d="M92 300l3 8 8 3-8 3-3 8-3-8-8-3 8-3z" fill="#ffd23f"/><circle cx="136" cy="44" r="7" fill="#9b7cf9"/><circle cx="292" cy="170" r="6" fill="#2f5cf8"/></svg>"##;
@@ -32,6 +36,10 @@ const EMAIL_ART: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 const CODE_ART: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 314 240"><defs><linearGradient id="l" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8b6cf3"/><stop offset="1" stop-color="#5b43d6"/></linearGradient></defs><path d="M127 104V82a30 30 0 0 1 60 0v22" fill="none" stroke="#9d86f5" stroke-width="16" stroke-linecap="round"/><rect x="104" y="98" width="106" height="98" rx="20" fill="url(#l)"/><circle cx="157" cy="138" r="13" fill="#fff"/><path d="M151 146h12l4 26h-20z" fill="#fff"/><circle cx="28" cy="118" r="10" fill="#2ecc5a"/><circle cx="66" cy="196" r="9" fill="#2ecc5a"/><circle cx="246" cy="60" r="10" fill="#2ecc5a"/><circle cx="226" cy="190" r="8" fill="#2ecc5a"/><circle cx="296" cy="140" r="9" fill="#2ecc5a"/><circle cx="96" cy="84" r="8" fill="#2ecc5a"/></svg>"##;
 
 const GOOGLE_G: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>"##;
+
+static BUBBLE_ARROW: LazyLock<svg::Handle> = LazyLock::new(|| {
+    svg::Handle::from_memory(br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 9"><path d="M0 0.5h16L8 8.5z" fill="#fff" stroke="#a0a0a0"/><path d="M0 0h16v1H0z" fill="#fff"/></svg>"##.as_slice())
+});
 
 static ART: LazyLock<[svg::Handle; 4]> =
     LazyLock::new(|| [WELCOME_ART, EMAIL_ART, CODE_ART, GOOGLE_G].map(|s| svg::Handle::from_memory(s.as_bytes())));
@@ -57,13 +65,79 @@ pub enum Screen {
     Accounts,
 }
 
+/// The controls that Tab reaches on a screen, in Desktop's DOM order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    Menu,
+    Terms,
+    Google,
+    Email,
+    Field,
+    Next,
+    OpenEmail,
+    Resend,
+    Fresh,
+    Import,
+}
+
+impl Screen {
+    fn stops(self) -> &'static [Stop] {
+        match self {
+            Screen::Import => &[Stop::Menu, Stop::Fresh, Stop::Import],
+            Screen::Welcome => &[Stop::Menu, Stop::Terms, Stop::Google, Stop::Email],
+            Screen::Email | Screen::Username => &[Stop::Menu, Stop::Field, Stop::Next],
+            Screen::Code => &[Stop::Menu, Stop::Field, Stop::OpenEmail, Stop::Resend],
+            Screen::Verify
+            | Screen::RecoveryKey
+            | Screen::Reset
+            | Screen::Syncing
+            | Screen::Preamble
+            | Screen::NewKey
+            | Screen::ConfirmKey
+            | Screen::Accounts => &[],
+        }
+    }
+
+    /// The text field of the screen, which Desktop focuses when the screen shows.
+    fn field(self) -> Option<&'static str> {
+        match self {
+            Screen::Email => Some(EMAIL_INPUT),
+            Screen::Code => Some(CODE_INPUT),
+            Screen::Username => Some(USERNAME_INPUT),
+            _ => None,
+        }
+    }
+
+    /// Desktop's `OnboardingFrame` menu: Go Back to `previousScreen`, Report a Problem, and Start Over before the
+    /// sign-in or Logout after it, when `withStartOver` is set.
+    fn menu(self) -> (Option<Screen>, Option<(&'static str, UiMessage)>) {
+        let start_over = Some(("Start Over", LoginMsg::StartOver.into()));
+        let logout = Some(("Logout", UiMessage::Logout));
+        match self {
+            Screen::Import | Screen::Welcome | Screen::Syncing | Screen::NewKey => (None, None),
+            Screen::Email => (Some(Screen::Welcome), None),
+            Screen::Code => (Some(Screen::Email), start_over),
+            Screen::Username => (None, start_over),
+            Screen::Verify | Screen::Preamble | Screen::Accounts => (None, logout),
+            Screen::RecoveryKey | Screen::Reset => (Some(Screen::Verify), logout),
+            Screen::ConfirmKey => (Some(Screen::NewKey), logout),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Login {
     pub screen: Screen,
     pub email: String,
     pub code: String,
     pub username: String,
+    /// The error under the heading of a screen, and Desktop's red error toast at the top of the window.
     pub error: Option<String>,
+    pub toast: Option<String>,
+    /// The bubble of Chromium's `type=email` check over the email field.
+    pub invalid: Option<String>,
+    /// The index of the control in `Screen::stops` that has the keyboard focus.
+    pub focus: Option<usize>,
     request: String,
     lead_token: String,
     pub busy: bool,
@@ -115,11 +189,13 @@ pub enum LoginMsg {
     Resend,
     Username(String),
     SubmitUsername,
+    SubmitCode,
     Menu,
     StartOver,
+    CloseToast,
     Query(String),
     Continue,
-    Done(Result<Outcome, String>),
+    Done(Result<Outcome, CloudError>),
     E2ee(Result<E2eeSetup, String>),
     AnotherWay,
     /// "Enter Recovery Key", which cancels the verification.
@@ -149,21 +225,35 @@ impl From<LoginMsg> for UiMessage {
     }
 }
 
-fn previous(s: Screen) -> Option<Screen> {
-    match s {
-        Screen::Email => Some(Screen::Welcome),
-        Screen::Code => Some(Screen::Email),
-        Screen::RecoveryKey | Screen::Reset => Some(Screen::Verify),
-        Screen::ConfirmKey => Some(Screen::NewKey),
-        Screen::Import
-        | Screen::Welcome
-        | Screen::Username
-        | Screen::Verify
-        | Screen::Syncing
-        | Screen::Preamble
-        | Screen::NewKey
-        | Screen::Accounts => None,
-    }
+/// Chromium's message for a value that is not a valid `type=email` address (`EmailInputType::TypeMismatchText`).
+fn email_mismatch(v: &str) -> Option<String> {
+    let local_ok = |c: char| c.is_ascii_alphanumeric() || ".!#$%&'*+/=?^_`{|}~-".contains(c);
+    let domain_ok = |c: char| c.is_alphanumeric() || c == '-' || c == '.';
+    let label_ok = |l: &str| l.len() <= 63 && !l.starts_with('-') && !l.ends_with('-');
+    let Some((local, domain)) = v.split_once('@') else {
+        return Some(format!("Please include an '@' in the email address. '{v}' is missing an '@'."));
+    };
+    let bad = |part: &str, ok: &dyn Fn(char) -> bool| part.chars().find(|c| !ok(*c));
+    Some(if local.is_empty() {
+        format!("Please enter a part followed by '@'. '{v}' is incomplete.")
+    } else if domain.is_empty() {
+        format!("Please enter a part following '@'. '{v}' is incomplete.")
+    } else if let Some(c) = bad(local, &local_ok) {
+        format!("A part followed by '@' should not contain the symbol '{c}'.")
+    } else if let Some(c) = bad(domain, &domain_ok) {
+        format!("A part following '@' should not contain the symbol '{c}'.")
+    } else if domain.starts_with('.') || domain.ends_with('.') || domain.contains("..") {
+        format!("'.' is used at a wrong position in '{domain}'.")
+    } else if domain.split('.').all(label_ok) {
+        return None;
+    } else {
+        "Please enter an email address.".into()
+    })
+}
+
+/// An error of beeper-rs itself, which shows in the toast like a network error.
+fn local_error(message: String) -> CloudError {
+    CloudError { status: 0, message }
 }
 
 fn session(cloud: &Cloud, jwt: &str) -> Result<Outcome, CloudError> {
@@ -245,6 +335,40 @@ fn card_style(bg: Color) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style { background: Some(bg.into()), border: border::rounded(12), shadow, ..Default::default() }
 }
 
+/// Desktop's onboarding error toast: 300x32 at the top of the window, with an info icon and a close button.
+fn toast<'a>(p: &Palette, text: &'a str) -> El<'a> {
+    let close = button(ic(icon::CLOSE, 14.0).color(Color::WHITE))
+        .padding(3)
+        .style(btn_style([CLEAR; 3], [Color::WHITE; 3], 4.0))
+        .on_press(LoginMsg::CloseToast.into());
+    let line = row![
+        ic(icon::INFO, 20.0).color(Color::WHITE),
+        txt(text, 13.0).line_height(iced::Pixels(16.0)).color(Color::WHITE).width(Fill),
+        close
+    ]
+    .spacing(6)
+    .align_y(Center);
+    let card =
+        container(line).padding([0, 6]).width(300).center_y(32).style(glow_box(ERROR_RED, p.shadow, 10.0, 1.0, 10.0));
+    container(card).center_x(Fill).padding(Padding::ZERO.top(44)).into()
+}
+
+/// Chromium's validation bubble over the email field, with its orange "!" icon and its arrow.
+fn bubble(text: &str) -> El<'_> {
+    let mark =
+        container(bold("!", 15.0).color(Color::WHITE)).center(22).style(fill_box(Color::from_rgb8(232, 89, 12), 2.0));
+    let line = row![mark, txt(text, 14.0).line_height(iced::Pixels(16.0)).color(Color::BLACK).width(Fill)].spacing(8);
+    let card = container(line).padding(8).width(162).style(shadow_box(
+        Color::WHITE,
+        Color::from_rgb8(160, 160, 160),
+        2.0,
+        4.0,
+    ));
+    let arrow = svg(BUBBLE_ARROW.clone()).width(16).height(9);
+    let tip = container(column![card, container(arrow).padding(Padding::ZERO.left(8))]);
+    container(tip).align_bottom(Fill).padding(Padding::ZERO.left(85).bottom(112)).into()
+}
+
 pub(crate) fn brand_gradient() -> Background {
     let g = Linear::new(Degrees(190.1))
         .add_stop(0.0, Color::from_rgb8(99, 83, 242))
@@ -285,18 +409,11 @@ pub(crate) fn art<'a>(i: usize, height: f32) -> El<'a> {
     svg(ART[i].clone()).width(Fill).height(height).into()
 }
 
-fn field<'a>(
-    p: &Palette,
-    id: &'static str,
-    hint: &'a str,
-    value: &'a str,
-    on: fn(String) -> LoginMsg,
-    submit: LoginMsg,
-) -> El<'a> {
+/// A text field. Enter submits the form through the key handler of the window, like Desktop's Enter hotkey.
+fn field<'a>(p: &Palette, id: &'static str, hint: &'a str, value: &'a str, on: fn(String) -> LoginMsg) -> El<'a> {
     text_input(hint, value)
         .id(id)
         .on_input(move |v| on(v).into())
-        .on_submit(submit.into())
         .size(14)
         .padding([10, 12])
         .style(input_style(p.chip, p.strong, p.on_secondary, p.accent, 19.0))
@@ -324,9 +441,12 @@ impl BeeperGuiApp {
         Task::batch([open.map(UiMessage::WindowOpened), window::close(login)])
     }
 
-    fn background(&mut self, f: impl FnOnce(&Cloud) -> Result<Outcome, String> + Send + 'static) -> Task<UiMessage> {
+    fn background(
+        &mut self,
+        f: impl FnOnce(&Cloud) -> Result<Outcome, CloudError> + Send + 'static,
+    ) -> Task<UiMessage> {
         self.login.busy = true;
-        self.login.error = None;
+        (self.login.error, self.login.toast) = (None, None);
         let cloud = self.cloud.clone();
         Task::perform(
             async move { tokio::task::spawn_blocking(move || f(&cloud)).await.expect("login window worker thread") },
@@ -334,11 +454,19 @@ impl BeeperGuiApp {
         )
     }
 
-    fn cloud_task(
-        &mut self,
-        f: impl FnOnce(&Cloud) -> Result<Outcome, CloudError> + Send + 'static,
-    ) -> Task<UiMessage> {
-        self.background(move |c| f(c).map_err(|e| e.message))
+    /// Shows `screen` with its text field focused, like Desktop's `autoFocus`.
+    fn show_screen(&mut self, screen: Screen) -> Task<UiMessage> {
+        let l = &mut self.login;
+        (l.screen, l.error, l.toast, l.invalid) = (screen, None, None, None);
+        l.focus = screen.stops().iter().position(|s| *s == Stop::Field);
+        // Desktop mounts a new email form, so the screen shows empty.
+        if screen == Screen::Email {
+            l.email.clear();
+        }
+        if screen == Screen::Verify {
+            return self.start_login_verification();
+        }
+        screen.field().map_or_else(Task::none, operation::focus)
     }
 
     pub fn update_login(&mut self, msg: LoginMsg) -> Task<UiMessage> {
@@ -347,35 +475,33 @@ impl BeeperGuiApp {
         match msg {
             LoginMsg::Import => {
                 let dir = l.source.clone().expect("import screen has a Beeper Desktop dir");
-                return self.background(move |_| read_beeper_data(&dir).map(|d| Outcome::Read(Arc::new(d))));
+                return self.background(move |_| {
+                    read_beeper_data(&dir).map(|d| Outcome::Read(Arc::new(d))).map_err(local_error)
+                });
             }
             LoginMsg::Fresh => {
                 self.store.write().finish_setup(Setup::Fresh);
                 self.login = Login::default();
             }
-            LoginMsg::Show(s) => {
-                l.screen = s;
-                l.error = None;
-                if s == Screen::Verify {
-                    return self.start_login_verification();
-                }
-                if s == Screen::Email {
-                    return operation::focus(EMAIL_INPUT);
-                }
-            }
-            LoginMsg::Google => l.error = Some("Google sign-in is not available in beeper-rs. Use email.".into()),
+            LoginMsg::Show(s) => return self.show_screen(s),
+            LoginMsg::Google => l.toast = Some("Google sign-in is not available in beeper-rs. Use email.".into()),
             LoginMsg::Email(v) => {
                 l.email = v;
-                l.error = None;
+                (l.toast, l.invalid) = (None, None);
+                l.focus = Screen::Email.stops().iter().position(|s| *s == Stop::Field);
             }
             LoginMsg::SubmitEmail | LoginMsg::Resend => {
                 let email = l.email.trim().to_string();
                 if email.is_empty() {
-                    l.error = Some(tr("Please enter your email.").into());
+                    l.toast = Some(tr("Please enter your email.").into());
                     return Task::none();
                 }
+                if let Some(e) = email_mismatch(&email) {
+                    l.invalid = Some(e);
+                    return operation::focus(EMAIL_INPUT);
+                }
                 l.code.clear();
-                return self.cloud_task(move |c| {
+                return self.background(move |c| {
                     let (request, methods) = c.start_login()?;
                     if !methods.iter().any(|m| m == "email") {
                         return Err(CloudError { status: 409, message: NO_EMAIL_LOGIN.into() });
@@ -386,22 +512,26 @@ impl BeeperGuiApp {
             }
             LoginMsg::Code(v) => {
                 let code: String = v.chars().filter(char::is_ascii_digit).take(6).collect();
-                let submit = code.len() == 6 && code != l.code && !l.busy;
-                l.code = code.clone();
-                l.error = None;
+                let submit = code.len() == 6 && code != l.code;
+                l.code = code;
+                (l.error, l.toast) = (None, None);
                 if submit {
-                    let request = l.request.clone();
-                    return self.cloud_task(move |c| match c.send_login_code(&request, &code)? {
-                        CodeResult::Token(jwt) => session(c, &jwt),
-                        CodeResult::Registration { lead_token, username_suggestions } => {
-                            Ok(Outcome::Lead(lead_token, username_suggestions))
-                        }
-                    });
+                    return self.update_login(LoginMsg::SubmitCode);
                 }
+            }
+            LoginMsg::SubmitCode if l.busy => {}
+            LoginMsg::SubmitCode => {
+                let (request, code) = (l.request.clone(), l.code.clone());
+                return self.background(move |c| match c.send_login_code(&request, &code)? {
+                    CodeResult::Token(jwt) => session(c, &jwt),
+                    CodeResult::Registration { lead_token, username_suggestions } => {
+                        Ok(Outcome::Lead(lead_token, username_suggestions))
+                    }
+                });
             }
             LoginMsg::Username(v) => {
                 l.username = v;
-                l.error = None;
+                (l.error, l.toast) = (None, None);
             }
             LoginMsg::SubmitUsername => {
                 let (request, lead, name) = (l.request.clone(), l.lead_token.clone(), l.username.trim().to_string());
@@ -409,9 +539,10 @@ impl BeeperGuiApp {
                     l.error = Some("Please enter a username.".into());
                     return Task::none();
                 }
-                return self.cloud_task(move |c| session(c, &c.register(&request, &lead, &name)?));
+                return self.background(move |c| session(c, &c.register(&request, &lead, &name)?));
             }
             LoginMsg::Menu => {}
+            LoginMsg::CloseToast => l.toast = None,
             LoginMsg::StartOver => self.login = Login::new(l.source.take()),
             LoginMsg::Query(q) => l.query = q,
             LoginMsg::Continue => {
@@ -473,19 +604,21 @@ impl BeeperGuiApp {
             }
             LoginMsg::Done(r) => {
                 l.busy = false;
-                l.error = r.as_ref().err().cloned();
                 match r {
-                    Err(_) => {}
+                    // The code and username screens show a refusal of the server under the heading, and other
+                    // errors in the toast.
+                    Err(e) if matches!(l.screen, Screen::Code | Screen::Username) && (400..500).contains(&e.status) => {
+                        l.error = Some(e.message);
+                    }
+                    Err(e) => l.toast = Some(e.message),
                     Ok(Outcome::Requested(request)) => {
                         l.request = request;
-                        l.screen = Screen::Code;
-                        return operation::focus(CODE_INPUT);
+                        return self.show_screen(Screen::Code);
                     }
                     Ok(Outcome::Lead(token, suggestions)) => {
                         l.lead_token = token;
                         l.username = suggestions.into_iter().next().unwrap_or_default();
-                        l.screen = Screen::Username;
-                        return operation::focus(USERNAME_INPUT);
+                        return self.show_screen(Screen::Username);
                     }
                     Ok(Outcome::Read(data)) => {
                         l.import = Some(data);
@@ -494,7 +627,7 @@ impl BeeperGuiApp {
                     Ok(Outcome::Session(session, profile, accounts)) => match l.import.take() {
                         Some(data) if data.crypto.as_ref().is_some_and(|c| c.user_id != session.user_id) => {
                             let user = &data.crypto.as_ref().expect("checked above").user_id;
-                            l.error = Some(format!("Sign in as {user} to finish the import."));
+                            l.toast = Some(format!("Sign in as {user} to finish the import."));
                             l.import = Some(data);
                         }
                         Some(data) => {
@@ -502,7 +635,7 @@ impl BeeperGuiApp {
                             return self.background(move |_| {
                                 if let Some(c) = &data.crypto {
                                     let import = beeper_core::matrix::import_crypto(&dir, c);
-                                    tokio::runtime::Handle::current().block_on(import)?;
+                                    tokio::runtime::Handle::current().block_on(import).map_err(local_error)?;
                                 }
                                 Ok(Outcome::Imported(data, session, profile, accounts))
                             });
@@ -529,7 +662,6 @@ impl BeeperGuiApp {
 
     pub fn view_login(&self) -> El<'_> {
         let (l, p) = (&self.login, &self.pal);
-        let go = |m: LoginMsg| (!l.busy).then(|| m.into());
         let error = column![]
             .push(l.error.as_deref().map(|e| txt(e, 12.0).color(p.text_danger).center().width(Fill)))
             .padding(Padding::new(0.0).left(18.0).right(18.0).bottom(if l.error.is_some() { 12.0 } else { 0.0 }));
@@ -544,19 +676,18 @@ impl BeeperGuiApp {
                     Space::new().height(40),
                     heading("Your Chats", 36.0),
                     container(art(0, 300.0)).height(Fill).center_y(Fill),
-                    error,
                     actions(
                         vec![
                             container(txt(info, 12.0).color(p.on_secondary).center().width(Fill))
                                 .padding(Padding::ZERO.bottom(8))
                                 .into(),
-                            pill(p, label("Start Fresh", None), 36.0, Some(p.chip), go(LoginMsg::Fresh)),
+                            pill(p, label("Start Fresh", None), 36.0, Some(p.chip), self.login_act(Stop::Fresh)),
                             pill(
                                 p,
                                 label(if l.busy { "Copying…" } else { "Copy from Beeper Desktop" }, None),
                                 36.0,
                                 None,
-                                go(LoginMsg::Import)
+                                self.login_act(Stop::Import)
                             ),
                         ],
                         24.0
@@ -565,9 +696,12 @@ impl BeeperGuiApp {
                 .into()
             }
             Screen::Welcome => {
+                // Chromium's focus ring of a link: a 1 px orange outline.
+                let ring = (l.focus.map(|i| l.screen.stops()[i]) == Some(Stop::Terms))
+                    .then(|| border::rounded(2).color(Color::from_rgb8(229, 151, 0)).width(1));
                 let terms = rich_text![
                     span("By continuing, you agree to our ").color(p.text),
-                    link("terms\nof use", UiMessage::OpenUrl("https://www.beeper.com/terms".into())),
+                    link("terms\nof use", UiMessage::OpenUrl(TERMS_URL.into())).border_maybe(ring),
                     span(" and have read our ").color(p.text),
                     link("privacy policy", UiMessage::OpenUrl("https://www.beeper.com/privacy".into())),
                     span(".").color(p.text),
@@ -581,7 +715,6 @@ impl BeeperGuiApp {
                 let mail = ic(icon::EMAIL, 16.0).color(Color::WHITE);
                 column![
                     container(art(0, 372.0)).height(Fill).center_y(Fill),
-                    error,
                     actions(
                         vec![
                             container(terms).padding(Padding::ZERO.bottom(8)).into(),
@@ -590,14 +723,14 @@ impl BeeperGuiApp {
                                 label("Continue with Google", Some(google.into())),
                                 36.0,
                                 Some(p.chip),
-                                go(LoginMsg::Google)
+                                self.login_act(Stop::Google)
                             ),
                             pill(
                                 p,
                                 label(tr("Continue with Email"), Some(mail.into())),
                                 36.0,
                                 None,
-                                go(LoginMsg::Show(Screen::Email))
+                                self.login_act(Stop::Email)
                             ),
                         ],
                         24.0
@@ -611,11 +744,10 @@ impl BeeperGuiApp {
                 Space::new().height(36),
                 art(1, 314.0),
                 Space::new().height(Fill),
-                error,
                 actions(
                     vec![
-                        field(p, EMAIL_INPUT, tr("Email"), &l.email, LoginMsg::Email, LoginMsg::SubmitEmail),
-                        pill(p, label(trx("Next", "button label"), None), 33.0, None, go(LoginMsg::SubmitEmail)),
+                        field(p, EMAIL_INPUT, tr("Email"), &l.email, LoginMsg::Email),
+                        pill(p, label(trx("Next", "button label"), None), 33.0, None, self.login_act(Stop::Next)),
                     ],
                     24.0
                 ),
@@ -668,13 +800,7 @@ impl BeeperGuiApp {
                             container(txt(info, 13.0).color(p.on_secondary).center().width(Fill))
                                 .padding(Padding::ZERO.bottom(8))
                                 .into(),
-                            pill(
-                                p,
-                                label(tr("Open Email"), None),
-                                33.0,
-                                None,
-                                Some(UiMessage::OpenUrl("mailto:".into()))
-                            ),
+                            pill(p, label(tr("Open Email"), None), 33.0, None, self.login_act(Stop::OpenEmail)),
                             container(foot).padding(Padding::ZERO.top(8)).into(),
                         ],
                         24.0
@@ -728,15 +854,8 @@ impl BeeperGuiApp {
                 error,
                 actions(
                     vec![
-                        field(
-                            p,
-                            USERNAME_INPUT,
-                            tr("Username"),
-                            &l.username,
-                            LoginMsg::Username,
-                            LoginMsg::SubmitUsername
-                        ),
-                        pill(p, label(trx("Next", "button label"), None), 33.0, None, go(LoginMsg::SubmitUsername)),
+                        field(p, USERNAME_INPUT, tr("Username"), &l.username, LoginMsg::Username),
+                        pill(p, label(trx("Next", "button label"), None), 33.0, None, self.login_act(Stop::Next)),
                     ],
                     52.0
                 ),
@@ -751,31 +870,104 @@ impl BeeperGuiApp {
         let onboarding = l.screen == Screen::Accounts;
         let page = container(column![controls, body]).width(Fill).height(Fill);
         let page = if onboarding { page } else { page.style(fill_box(p.primary_container, 8.0)) };
-        let item = |s: &'static str, m: UiMessage| -> El<'static> {
-            button(txt(s, 13.0).color(p.strong))
-                .width(Fill)
-                .padding([6, 10])
-                .style(btn_style([CLEAR, p.chip, p.chip], [p.strong; 3], 6.0))
-                .on_press(m)
-                .into()
-        };
+        let (pad, frame) = if onboarding { (0.0, p.chip) } else { (8.0, p.window) };
+        // Desktop's menu is a native menu, over the toast.
         let menu = l.menu.then(|| {
-            let back = previous(l.screen).map(|s| item(tr("Go Back"), LoginMsg::Show(s).into()));
-            let last = if onboarding {
-                item(tr("Report a Problem"), UiMessage::OpenUrl(crate::ISSUES_URL.into()))
-            } else {
-                item(tr("Start Over"), LoginMsg::StartOver.into())
-            };
-            let items = column![].push(back).push(last).padding(4).width(160);
-            mouse_area(
-                container(container(items).style(shadow_box(p.elevated, p.chip, 8.0, 14.0)))
-                    .align_right(Fill)
-                    .height(Fill)
-                    .padding(Padding::ZERO.top(34).right(6)),
-            )
-            .on_press(LoginMsg::Menu.into())
+            let (back, last) = l.screen.menu();
+            let item =
+                |label: &'static str, hotkey, msg| crate::menu_item(p, None, tr(label).into(), hotkey, Some(msg));
+            let items = column![]
+                .push(back.map(|s| item("Go Back", "", LoginMsg::Show(s).into())))
+                .push(item("Report a Problem", "Ctrl Shift P", UiMessage::OpenUrl(crate::ISSUES_URL.into())))
+                .push(last.map(|(label, msg)| item(label, "", msg)));
+            let items = container(items.padding([4, 0])).width(210).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+            let at = Padding::ZERO.top(34.0 + pad).right(6.0 + pad);
+            mouse_area(container(items).align_right(Fill).height(Fill).padding(at)).on_press(LoginMsg::Menu.into())
         });
-        let (pad, frame) = if onboarding { (0, p.chip) } else { (8, p.window) };
-        container(stack![page].push(menu)).padding(pad).style(fill_box(frame, 0.0)).into()
+        stack![container(page).padding(pad).style(fill_box(frame, 0.0))]
+            .push(l.toast.as_deref().map(|t| toast(p, t)))
+            .push(l.invalid.as_deref().map(bubble))
+            .push(menu)
+            .into()
+    }
+
+    /// What a control does when it is clicked or pressed with the keyboard. A busy screen disables its buttons.
+    fn login_act(&self, stop: Stop) -> Option<UiMessage> {
+        let msg: UiMessage = match (stop, self.login.screen) {
+            (Stop::Menu, _) => return Some(LoginMsg::Menu.into()),
+            (Stop::Terms, _) => return Some(UiMessage::OpenUrl(TERMS_URL.into())),
+            (Stop::OpenEmail, _) => return Some(UiMessage::OpenUrl("mailto:".into())),
+            (Stop::Google, _) => LoginMsg::Google.into(),
+            (Stop::Email, _) => LoginMsg::Show(Screen::Email).into(),
+            (Stop::Resend, _) => LoginMsg::Resend.into(),
+            (Stop::Fresh, _) => LoginMsg::Fresh.into(),
+            (Stop::Import, _) => LoginMsg::Import.into(),
+            (Stop::Field | Stop::Next, Screen::Email) => LoginMsg::SubmitEmail.into(),
+            (Stop::Field | Stop::Next, Screen::Username) => LoginMsg::SubmitUsername.into(),
+            (Stop::Field, Screen::Code) => LoginMsg::SubmitCode.into(),
+            (stop, screen) => unreachable!("{screen:?} has no {stop:?}"),
+        };
+        (!self.login.busy).then_some(msg)
+    }
+
+    /// A key in the sign-in window: the sign-in hotkeys, Tab and Shift+Tab through `Screen::stops`, Enter on the
+    /// focused control or on the form (Desktop's Enter hotkey of the onboarding forms), and Escape on the menu.
+    pub fn login_key(&mut self, key: Key, mods: Modifiers) -> Task<UiMessage> {
+        if let Some((h, digit)) = self.find_hotkey(&key, mods).filter(|(h, _)| crate::SIGN_IN_HOTKEYS.contains(h)) {
+            return self.run_hotkey(h, digit);
+        }
+        let l = &mut self.login;
+        let stops = l.screen.stops();
+        match key {
+            Key::Named(Named::Escape) => l.menu = false,
+            Key::Named(Named::Tab) if !stops.is_empty() && (mods - Modifiers::SHIFT).is_empty() => {
+                let n = stops.len();
+                let at = match (l.focus, mods.shift()) {
+                    (None, false) => 0,
+                    (None, true) => n - 1,
+                    (Some(i), false) => (i + 1) % n,
+                    (Some(i), true) => (i + n - 1) % n,
+                };
+                l.focus = Some(at);
+                // Focusing an ID that no widget has takes the focus from the text field.
+                let id = if stops[at] == Stop::Field { l.screen.field().expect("a screen with a field") } else { "" };
+                return operation::focus(id);
+            }
+            Key::Named(Named::Enter) if mods.is_empty() => {
+                let stop = l.focus.map(|i| stops[i]).or(l.screen.field().map(|_| Stop::Field));
+                return stop.and_then(|s| self.login_act(s)).map_or_else(Task::none, |m| self.update(m));
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+
+    /// Text typed in the sign-in window outside a text field: Space presses the focused control.
+    pub fn login_text(&mut self, text: &str) -> Task<UiMessage> {
+        let l = &self.login;
+        let stop = l.focus.map(|i| l.screen.stops()[i]).filter(|s| *s != Stop::Field && text == " ");
+        stop.and_then(|s| self.login_act(s)).map_or_else(Task::none, |m| self.update(m))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn email_check_like_chromium() {
+        let rows = [
+            ("alex@example.com", None),
+            ("a.b+c@sub-1.example.co", None),
+            ("foo", Some("Please include an '@' in the email address. 'foo' is missing an '@'.")),
+            ("@foo", Some("Please enter a part followed by '@'. '@foo' is incomplete.")),
+            ("foo@", Some("Please enter a part following '@'. 'foo@' is incomplete.")),
+            ("f(o@x.com", Some("A part followed by '@' should not contain the symbol '('.")),
+            ("foo@x_y.com", Some("A part following '@' should not contain the symbol '_'.")),
+            ("foo@a@b", Some("A part following '@' should not contain the symbol '@'.")),
+            ("foo@x..com", Some("'.' is used at a wrong position in 'x..com'.")),
+            ("foo@-x.com", Some("Please enter an email address.")),
+        ];
+        for (v, want) in rows {
+            assert_eq!(super::email_mismatch(v).as_deref(), want, "{v}");
+        }
     }
 }
