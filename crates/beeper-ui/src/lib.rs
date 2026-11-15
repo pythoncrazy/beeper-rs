@@ -575,6 +575,8 @@ pub enum UiMessage {
     CloseCarousel,
     /// Open the carousel menu at the cursor, or close it.
     CarouselMenu(bool),
+    /// Scroll the filmstrip of the Media window by a number of items.
+    ScrollFilmstrip(f32),
     /// Open Desktop's Media window, or focus it.
     OpenMedia,
     /// Show the Media, Links or Docs tab of the Media window.
@@ -3321,7 +3323,8 @@ struct Forward {
 }
 
 /// The attachment that a carousel shows, its quarter turns and when the last one started, if it shows the Media window items, the inline size of
-/// the video that opened it, which plays again when the carousel closes on it, and where its menu is open.
+/// the video that opened it, which plays again when the carousel closes on it, where its menu is open, and the first
+/// item of the filmstrip after a scroll.
 #[derive(Clone)]
 struct Carousel {
     mid: String,
@@ -3331,6 +3334,7 @@ struct Carousel {
     in_media: bool,
     resume: Option<(u32, u32)>,
     menu: Option<Point>,
+    strip: Option<usize>,
 }
 
 /// Desktop's Media window: its tab (Media, Links or Docs), its size, how many items it shows,
@@ -3404,10 +3408,11 @@ fn media_items(st: &BeeperStore, w: &MediaWindow) -> Vec<(usize, usize)> {
     items.into_iter().map(|(_, i, k)| (i, k)).collect()
 }
 
-/// The items that the Media window filmstrip shows around the current one, as a range.
-fn filmstrip(size: &Size, at: usize, len: usize) -> (usize, usize) {
+/// The items that the Media window filmstrip shows, as a range: from the scrolled item `from`, or around the current
+/// one, like Desktop's `scrollToIndex(i, { align: "center" })`.
+fn filmstrip(size: &Size, at: usize, len: usize, from: Option<usize>) -> (usize, usize) {
     let n = ((size.width - 20.0) / 52.0) as usize;
-    let start = at.saturating_sub(n / 2).min(len.saturating_sub(n));
+    let start = from.unwrap_or(at.saturating_sub(n / 2)).min(len.saturating_sub(n));
     (start, (start + n).min(len))
 }
 
@@ -6741,7 +6746,8 @@ impl BeeperGuiApp {
             }
             UiMessage::OpenCarousel(mid, ai, in_media) => {
                 self.leave_carousel_video();
-                self.carousel = Some(Carousel { mid, ai, turns: 0, turned: None, in_media, resume: None, menu: None });
+                self.carousel =
+                    Some(Carousel { mid, ai, turns: 0, turned: None, in_media, resume: None, menu: None, strip: None });
                 self.fit_carousel_video();
                 return self.load_media();
             }
@@ -6754,10 +6760,11 @@ impl BeeperGuiApp {
                 let Some(item) = item else { return Task::none() };
                 self.leave_carousel_video();
                 let c = self.carousel.as_mut().expect("the carousel is open");
-                (c.mid, c.ai, c.resume, c.menu) = (item.0, item.1, None, None);
+                (c.mid, c.ai, c.resume, c.menu, c.strip) = (item.0, item.1, None, None, None);
                 self.fit_carousel_video();
                 return self.load_media();
             }
+            UiMessage::ScrollFilmstrip(by) => return self.scroll_filmstrip(by),
             UiMessage::CarouselMenu(open) => {
                 let at = self.cursor.get();
                 self.carousel.as_mut().expect("the carousel is open").menu = open.then_some(at);
@@ -15073,6 +15080,16 @@ impl BeeperGuiApp {
         Some((src, ((w * k).round() as u32, (h * k).round() as u32)))
     }
 
+    /// Desktop's filmstrip scrolls with the wheel. A step or a new item centers the current item again.
+    fn scroll_filmstrip(&mut self, by: f32) -> Task<UiMessage> {
+        let Some((items, at)) = self.carousel_items(&self.store.read()) else { return Task::none() };
+        let size = self.media_window.as_ref().expect("the Media window is open").size;
+        let c = self.carousel.as_mut().expect("the carousel is open");
+        let (start, _) = filmstrip(&size, at, items.len(), c.strip);
+        c.strip = Some((start as f32 + by).round().max(0.0) as usize);
+        Task::none()
+    }
+
     fn carousel_key(&mut self, key: &Key, mods: keyboard::Modifiers) -> Task<UiMessage> {
         let Some((items, at)) = self.carousel_items(&self.store.read()) else {
             return self.update(UiMessage::CloseCarousel);
@@ -15320,18 +15337,26 @@ impl BeeperGuiApp {
             }
         };
         let strip = car.in_media.then(|| {
-            let (start, end) =
-                filmstrip(&self.media_window.as_ref().expect("the Media window is open").size, at, items.len());
+            let size = self.media_window.as_ref().expect("the Media window is open").size;
+            let (start, end) = filmstrip(&size, at, items.len(), car.strip);
             let thumbs = items[start..end].iter().enumerate().map(|(k, (mid, ai))| -> El<'a> {
                 let a = &st.messages[st.msg_idx_by_id[mid]].attachments[*ai];
                 let edge = if start + k == at { p.accent } else { CLEAR };
-                let face = container(self.thumb(a, 44.0, 6.0)).padding(2).style(bordered_box(CLEAR, edge, 2.0, 8.0));
+                let face = container(self.thumb(a, 44.0, 6.0)).padding(2);
+                let face = face.style(bordered_box(white.scale_alpha(0.1), edge, 2.0, 8.0));
                 let open = UiMessage::OpenCarousel(mid.clone(), *ai, true);
                 button(face).padding(0).style(btn_style([CLEAR; 3], [white; 3], 8.0)).on_press(open).into()
             });
             let row = container(Row::with_children(thumbs).spacing(4)).padding([6, 10]).width(Fill);
-            container(mouse_area(row.style(fill_box(Color::BLACK.scale_alpha(0.45), 0.0))).on_press(UiMessage::Noop))
-                .align_bottom(Fill)
+            let scroll = |d: mouse::ScrollDelta| {
+                let by = match d {
+                    mouse::ScrollDelta::Lines { x, y } => -(x + y),
+                    mouse::ScrollDelta::Pixels { x, y } => -(x + y) / 52.0,
+                };
+                UiMessage::ScrollFilmstrip(by)
+            };
+            let row = mouse_area(row.style(fill_box(Color::BLACK.scale_alpha(0.45), 0.0))).on_scroll(scroll);
+            container(row.on_press(UiMessage::Noop)).align_bottom(Fill)
         });
         // Desktop's `carousel-reactions` in a chat: the reactions of the message, 16 px above the bottom in the middle.
         let reactions = (!car.in_media && !m.reactions.is_empty() && m.is_deleted != Some(true)).then(|| {
@@ -19829,8 +19854,9 @@ mod tests {
             ["PDF", "Audio", "File"]
         );
         let size = Size::new(540.0, 720.0);
-        assert_eq!([0, 9, 29].map(|at| filmstrip(&size, at, 30)), [(0, 10), (4, 14), (20, 30)]);
-        assert_eq!(filmstrip(&size, 1, 3), (0, 3));
+        assert_eq!([0, 9, 29].map(|at| filmstrip(&size, at, 30, None)), [(0, 10), (4, 14), (20, 30)]);
+        assert_eq!(filmstrip(&size, 1, 3, None), (0, 3));
+        assert_eq!([Some(2), Some(25)].map(|from| filmstrip(&size, 0, 30, from)), [(2, 12), (20, 30)], "a scroll");
         assert_eq!(medium_date(20_743), "Oct 17, 2026");
     }
 }
