@@ -5507,7 +5507,8 @@ fn signed_out_app(name: &str) -> BeeperGuiApp {
 /// The pixels of the sign-in window at points of its 330x620 layout.
 fn login_pixels(app: &BeeperGuiApp, points: &[(u32, u32)]) -> Vec<Color> {
     let mut sim = Simulator::with_size(Default::default(), Size::new(330.0, 620.0), app.view_login());
-    let dir = std::env::temp_dir().join(format!("beeper-rs-login-{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("beeper-rs-login-{}-{:?}", std::process::id(), std::thread::current().id()));
     std::fs::create_dir_all(&dir).unwrap();
     let _ = sim.snapshot(&app.iced_theme()).unwrap().matches_image(dir.join("login"));
     let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
@@ -5530,6 +5531,33 @@ fn sign_in_window_follows_the_system_theme() {
         let want = [p.window, p.primary_container, p.chip];
         assert_eq!(login_pixels(&app, &[(3, 3), (20, 60), (40, 526)]), want, "{mode:?}");
     }
+}
+
+/// Desktop's brand controls on the email screen: the label of the field floats over it once it has text, and Next
+/// shows its loading dots on the disabled color while the request runs.
+#[test]
+fn sign_in_brand_controls_like_desktop() {
+    use login::{LoginMsg, Screen};
+    let mut app = signed_out_app("sign-in-brand");
+    let _ = app.update(LoginMsg::Show(Screen::Email).into());
+    // The heading spans x 30 to 300 at y 106 in Desktop 4.3.308, with its letter spacing, in its gradient colors.
+    let row: Vec<(u32, u32)> = (0..330).map(|x| (x, 106)).collect();
+    let ink: Vec<u32> = login_pixels(&app, &row).iter().zip(0..).filter(|(c, _)| c.g < 0.6).map(|(_, x)| x).collect();
+    let (left, right) = (ink[0], ink[ink.len() - 1]);
+    assert!(
+        left.abs_diff(30) <= 1 && right.abs_diff(300) <= 1,
+        "the heading has the width of Desktop's: {left}..{right}"
+    );
+    let next = (40, 571);
+    assert!(login_pixels(&app, &[next])[0].b > 0.9, "Next has the brand gradient");
+    // The floating label shows over the top edge of the field, at y 503.
+    let label: Vec<(u32, u32)> = (55..95).map(|x| (x, 503)).collect();
+    let inked = |app: &BeeperGuiApp| login_pixels(app, &label).iter().any(|c| c.r < 0.8);
+    assert!(!inked(&app), "the label is the placeholder of the empty field");
+    let _ = app.update(LoginMsg::Email("alex@example.com".into()).into());
+    assert!(inked(&app), "the label floats over the field with text");
+    app.login.busy = true;
+    assert_eq!(login_pixels(&app, &[next]), [app.pal.chip], "a loading button is disabled");
 }
 
 /// The keyboard of the sign-in window, like Desktop: Tab goes through the controls in their order, Enter presses

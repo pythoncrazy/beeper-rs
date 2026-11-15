@@ -492,6 +492,48 @@ pub fn qr_svg(code: &qrcodegen::QrCode, margin: i32) -> svg::Handle {
     svg::Handle::from_memory(svg.into_bytes())
 }
 
+/// Desktop's `BrandHeading` with `gradient`: one line of Inter Bold at `size` px with the `-0.75` px letter spacing
+/// of `--semantic-typo-letter-spacing-display-md`, filled with `linear-gradient(180deg, #9e7ef8, #6a4be5)` over a
+/// line box of `line` px. iced text has no gradient and no letter spacing, so the glyph outlines go into an SVG,
+/// made once for each text. Returns the SVG and its width.
+pub fn gradient_text(s: &str, size: f32, line: f32) -> (svg::Handle, f32) {
+    use cosmic_text::Command::{Close, CurveTo, LineTo, MoveTo, QuadTo};
+    const SPACING: f32 = -0.75;
+    thread_local!(static MEMO: Memo<(String, u32, u32), (svg::Handle, f32)> = RefCell::default());
+    memo(&MEMO, (s.to_owned(), size.to_bits(), line.to_bits()), || {
+        ensure_fonts_loaded();
+        let mut fs = font_system().write().expect("font system");
+        let mut buf = cosmic_text::Buffer::new(fs.raw(), cosmic_text::Metrics::new(size, line));
+        buf.set_text(fs.raw(), s, &to_attributes(fw(Weight::Bold)), cosmic_text::Shaping::Advanced, None);
+        let mut swash = cosmic_text::SwashCache::new();
+        let (mut d, mut width) = (String::new(), 0.0);
+        let runs: Vec<_> = buf.layout_runs().map(|r| (r.line_y, r.line_w, r.glyphs.to_vec())).collect();
+        assert_eq!(runs.len(), 1, "a heading is one line: {s}");
+        for (baseline, w, glyphs) in runs {
+            width = w + SPACING * glyphs.len() as f32;
+            for (i, g) in glyphs.iter().enumerate() {
+                let x = g.x + g.font_size * g.x_offset + SPACING * i as f32;
+                let y = baseline - g.font_size * g.y_offset;
+                let key = g.physical((0.0, 0.0), 1.0).cache_key;
+                let p = |vx: f32, vy: f32| format!("{:.2} {:.2}", x + vx, y - vy);
+                for c in swash.get_outline_commands(fs.raw(), key).expect("Inter has outlines") {
+                    d.push_str(&match *c {
+                        MoveTo(a) => format!("M{}", p(a.x, a.y)),
+                        LineTo(a) => format!("L{}", p(a.x, a.y)),
+                        QuadTo(a, b) => format!("Q{} {}", p(a.x, a.y), p(b.x, b.y)),
+                        CurveTo(a, b, e) => format!("C{} {} {}", p(a.x, a.y), p(b.x, b.y), p(e.x, e.y)),
+                        Close => "Z".into(),
+                    });
+                }
+            }
+        }
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {line}"><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="{line}"><stop stop-color="#9e7ef8"/><stop offset="1" stop-color="#6a4be5"/></linearGradient><path fill="url(#g)" d="{d}"/></svg>"##
+        );
+        (svg::Handle::from_memory(svg.into_bytes()), width)
+    })
+}
+
 pub fn brand_svg(bridge_id: &str) -> svg::Handle {
     BRAND_SVGS[bridge_id][0].clone()
 }

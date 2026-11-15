@@ -11,7 +11,7 @@ use iced::font::Weight;
 use iced::widget::{
     button, column, container, mouse_area, rich_text, row, span, svg, text_editor, tooltip, Column, Space,
 };
-use iced::{border, window, Background, Center, Color, Fill, Padding, Pixels, Size, Task, Theme};
+use iced::{border, window, Center, Fill, Padding, Pixels, Size, Task, Theme};
 use std::sync::LazyLock;
 
 /// The size of Desktop's `VERIFICATION` modal window.
@@ -279,23 +279,8 @@ pub(crate) fn brand_btn<'a>(p: &Palette, label: &'a str, variant: Brand, msg: Ui
 
 /// `brand_btn`, which is disabled without a message.
 pub(crate) fn brand_btn_maybe<'a>(p: &Palette, label: &'a str, variant: Brand, msg: Option<UiMessage>) -> El<'a> {
-    let (bg, fg, edge) = match (msg.is_some(), variant) {
-        (false, _) => (Background::from(p.chip), p.on_secondary, CLEAR),
-        (true, Brand::Primary) => (brand_gradient(), Color::WHITE, CLEAR),
-        (true, Brand::Secondary) => (Background::from(CLEAR), p.accent, p.accent),
-        (true, Brand::Muted) => (Background::from(p.chip), p.strong, CLEAR),
-        (true, Brand::Danger) => (Background::from(p.danger), Color::WHITE, CLEAR),
-    };
-    button(container(t(label, 13.0, Weight::Medium).color(fg)).center_x(Fill))
-        .width(Fill)
-        .padding([8, 10])
-        .style(move |_: &Theme, _| button::Style {
-            background: Some(bg),
-            border: border::rounded(9999).color(edge).width(1),
-            ..Default::default()
-        })
-        .on_press_maybe(msg)
-        .into()
+    let label = t(label, 13.0, Weight::Medium).line_height(Pixels(14.95));
+    crate::login::brand_button(p, label.into(), variant, msg, false)
 }
 
 /// Desktop's `QRCode` of `data`: the bytes in error correction level L, 4 pixels for each module, and a
@@ -814,7 +799,7 @@ mod tests {
                 assert!(sim.find(*text).is_ok(), "the screen shows {text}");
             }
         };
-        shows(&app, &["Verify", "Open Beeper", "another device", "follow instructions to verify", "Try another way"]);
+        shows(&app, &["Open Beeper", "another device", "follow instructions to verify", "Try another way"]);
         let _ = app.update(LoginMsg::AnotherWay.into());
         shows(&app, &["or", "Enter Recovery Key"]);
 
@@ -839,7 +824,7 @@ mod tests {
         app.store.write().beeper_state.verified = false;
         let _ = app.e2ee_checked(Ok(setup(Vec::new())));
         assert_eq!(app.login.screen, Screen::RecoveryKey, "without another device the recovery key verifies");
-        shows(&app, &["Enter your Recovery Key", "Next"]);
+        shows(&app, &["Next"]);
         let _ = app.update(LoginMsg::Recovered(Err("bad key".into())).into());
         shows(&app, &["Error: bad key"]);
     }
@@ -865,7 +850,7 @@ mod tests {
                 assert!(sim.find(*text).is_ok(), "the screen shows {text}");
             }
         };
-        shows(&app, &["Save Your Recovery Key", "Save Key"]);
+        shows(&app, &["Save Key"]);
         let _ = app.update(LoginMsg::NewKey.into());
         assert_eq!(app.login.screen, Screen::NewKey);
         let key = "EsTG bqMm dUDy dKth xAyD 45dS HhyC WKc9 CF6B xsFi J5FQ t8u2";
@@ -876,7 +861,7 @@ mod tests {
         assert_eq!(app.login.screen, Screen::NewKey, "the key stays until it is confirmed");
         shows(&app, &["Copy to Clipboard", "EsTG-bqMm-dUDy\ndKth-xAyD-45dS\nHhyC-WKc9-CF6B\nxsFi-J5FQ-t8u2"]);
         let _ = app.update(LoginMsg::KeyNext.into());
-        shows(&app, &["Confirm your Recovery Key"]);
+        assert_eq!(app.login.screen, Screen::ConfirmKey);
         let _ = app.update(LoginMsg::Pasted(Some("x".repeat(48))).into());
         let _ = app.update(LoginMsg::SubmitConfirmKey.into());
         shows(&app, &["The Recovery Key you entered doesn't match your Recovery Key."]);

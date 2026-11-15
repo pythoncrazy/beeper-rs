@@ -965,11 +965,11 @@ async fn lifecycle() {
     shows(&login, &["Continue with Google", "Continue with Email"]);
     let _ = login.update(UiMessage::Login(LoginMsg::Show(Screen::Email)));
     let _ = login.update(UiMessage::Login(LoginMsg::SubmitEmail));
-    shows(&login, &["Enter your Email", "Next", "Please enter your email."]);
+    shows(&login, &["Next", "Please enter your email."]);
     let _ = login.update(UiMessage::Login(LoginMsg::Email("alex@example.com".into())));
     let _ = login.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Requested("req_1".into())))));
     assert_eq!(login.login.screen, Screen::Code);
-    shows(&login, &["Enter Code", "Check alex@example.com\nfor your login code", "Open Email"]);
+    shows(&login, &["Check alex@example.com\nfor your login code", "Open Email"]);
     let _ = login.update(UiMessage::Login(LoginMsg::Code("12 34 56".into())));
     assert_eq!(login.login.code, "123456");
     let refused = beeper_core::cloud::CloudError { status: 401, message: "Invalid code".into() };
@@ -1019,10 +1019,7 @@ async fn lifecycle() {
     assert_eq!(login_store.read().accounts.len(), 4);
     let _ = login.update(UiMessage::StoreChanged);
     assert!(login.login_window.is_some(), "the onboarding stays open until Continue");
-    shows(
-        &login,
-        &["Connect Chat Accounts", "WhatsApp", "Discord", "Bluesky", "6 free accounts remaining.", "Continue"],
-    );
+    shows(&login, &["WhatsApp", "Discord", "Bluesky", "6 free accounts remaining.", "Continue"]);
     let _ = login.update(UiMessage::Login(LoginMsg::Query("sig".into())));
     shows(&login, &["Signal"]);
     assert!(simulator(login.view_login()).find("WhatsApp").is_err(), "search filters the networks");

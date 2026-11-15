@@ -1,8 +1,9 @@
 use crate::i18n::{tr, trf, trn, trx};
 use crate::style::{
-    bold, bordered_box, brand_svg, btn_style, fill_box, glow_box, ic, icon, input_style, med, semi, shadow_box, txt,
-    Palette, CLEAR,
+    bold, bordered_box, brand_svg, btn_style, fill_box, glow_box, gradient_text, ic, icon, input_style, med, semi,
+    shadow_box, txt, Palette, CLEAR,
 };
+use crate::verify::Brand;
 use crate::{BeeperGuiApp, El, UiMessage};
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{account_network, NETWORK_SPECS};
@@ -20,7 +21,10 @@ use iced::{border, window, Background, Center, Color, Degrees, Fill, Gradient, P
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
-const HEADING: Color = Color::from_rgb8(132, 100, 238);
+/// The room over a `field` for its floating label: the label rises 60 % of the 38 px field and is 26.125 px high.
+const FLOAT_LABEL: f32 = 38.0 * 0.6 + 38.0 * 0.6875 / 2.0 - 38.0 / 2.0;
+/// The start of the animations of the sign-in window.
+static EPOCH: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
 const EMAIL_INPUT: &str = "login-email";
 const CODE_INPUT: &str = "login-code";
 const USERNAME_INPUT: &str = "login-username";
@@ -35,7 +39,17 @@ const EMAIL_ART: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 
 const CODE_ART: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 314 240"><defs><linearGradient id="l" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8b6cf3"/><stop offset="1" stop-color="#5b43d6"/></linearGradient></defs><path d="M127 104V82a30 30 0 0 1 60 0v22" fill="none" stroke="#9d86f5" stroke-width="16" stroke-linecap="round"/><rect x="104" y="98" width="106" height="98" rx="20" fill="url(#l)"/><circle cx="157" cy="138" r="13" fill="#fff"/><path d="M151 146h12l4 26h-20z" fill="#fff"/><circle cx="28" cy="118" r="10" fill="#2ecc5a"/><circle cx="66" cy="196" r="9" fill="#2ecc5a"/><circle cx="246" cy="60" r="10" fill="#2ecc5a"/><circle cx="226" cy="190" r="8" fill="#2ecc5a"/><circle cx="296" cy="140" r="9" fill="#2ecc5a"/><circle cx="96" cy="84" r="8" fill="#2ecc5a"/></svg>"##;
 
-const GOOGLE_G: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>"##;
+/// Desktop's `logo-google.svg`.
+const GOOGLE_G: &str = r##"<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M23.52 12.2724C23.52 11.4216 23.4432 10.6044 23.3016 9.81836H12V14.46H18.4584C18.3247 15.1942 18.0435 15.8937 17.6318 16.5162C17.2202 17.1386 16.6865 17.6712 16.0632 18.0816V21.0936H19.9416C22.2108 19.0032 23.52 15.9264 23.52 12.2724Z" fill="#4285F4"/><path fill-rule="evenodd" d="M12 24C15.24 24 17.9568 22.926 19.9416 21.0924L16.0632 18.0816C14.9892 18.8016 13.6152 19.2276 12 19.2276C8.87399 19.2276 6.22799 17.1156 5.28599 14.28H1.27679V17.388C2.27521 19.3761 3.80684 21.0474 5.70051 22.2151C7.59418 23.3827 9.77527 24.0007 12 24Z" fill="#34A853"/><path fill-rule="evenodd" d="M5.286 14.2801C5.046 13.5601 4.9092 12.7921 4.9092 12.0001C4.9092 11.2081 5.046 10.4401 5.286 9.72006V6.61206H1.2768C0.436818 8.28391 -0.00043132 10.1291 3.19265e-07 12.0001C3.19265e-07 13.9369 0.4632 15.7681 1.2768 17.3881L5.2848 14.2801H5.286Z" fill="#FBBC05"/><path fill-rule="evenodd" d="M12 4.7724C13.7616 4.7724 15.3432 5.3784 16.5876 6.5676L20.0292 3.126C17.9508 1.188 15.234 0 12 0C7.30799 0 3.25199 2.688 1.27679 6.612L5.28479 9.72C6.23039 6.8832 8.87519 4.7724 12 4.7724Z" fill="#EA4335"/></svg>"##;
+
+/// Desktop's `EmailFill` and `OutlineChevronDownSmall` icons.
+static ICONS: LazyLock<[svg::Handle; 2]> = LazyLock::new(|| {
+    [
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 14"><path fill="currentColor" d="M9.914 7.734q-.383 0-.75-.32L1.36.54Q1.985.134 2.945.133h13.946q.96 0 1.578.406l-7.805 6.875q-.36.32-.75.32M.695 12.336a2.5 2.5 0 0 1-.148-.5 3.5 3.5 0 0 1-.055-.656V2.555q0-.407.055-.696.063-.288.133-.406l5.797 5.11zm2.016 1.266q-.43 0-.766-.094a1.8 1.8 0 0 1-.547-.25l5.946-5.945 1.14 1.015q.345.298.704.453.36.15.726.149.367 0 .727-.149.366-.156.71-.453l1.141-1.015 5.945 5.945q-.218.156-.554.25a2.8 2.8 0 0 1-.758.094zm16.43-1.266-5.782-5.773 5.797-5.11q.063.117.125.406.063.29.063.696v8.625q0 .375-.063.656a3 3 0 0 1-.14.5"/></svg>"#,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none"><path d="M6 8l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
+    ]
+    .map(|s| svg::Handle::from_memory(s.as_bytes()))
+});
 
 static BUBBLE_ARROW: LazyLock<svg::Handle> = LazyLock::new(|| {
     svg::Handle::from_memory(br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 9"><path d="M0 0.5h16L8 8.5z" fill="#fff" stroke="#a0a0a0"/><path d="M0 0h16v1H0z" fill="#fff"/></svg>"##.as_slice())
@@ -369,23 +383,66 @@ fn bubble(text: &str) -> El<'_> {
     container(tip).align_bottom(Fill).padding(Padding::ZERO.left(85).bottom(112)).into()
 }
 
+/// Desktop's `--gradient-brand`, `linear-gradient(190.1deg, #6953f2 -7.24%, #0c52f9 109.66%)`.
+/// iced spans a gradient over a shorter line than CSS, so the stops are the CSS colors at the ends of the iced line
+/// in a 278x36 button.
 pub(crate) fn brand_gradient() -> Background {
-    let g = Linear::new(Degrees(190.1))
-        .add_stop(0.0, Color::from_rgb8(99, 83, 242))
-        .add_stop(1.0, Color::from_rgb8(20, 82, 248));
+    lit_gradient(1.0)
+}
+
+/// `brand_gradient` made `k` times brighter, like `filter: brightness(k)`.
+fn lit_gradient(k: f32) -> Background {
+    let c = |r: f32, g: f32, b: f32| {
+        Color::from_rgb((r * k / 255.0).min(1.0), (g * k / 255.0).min(1.0), (b * k / 255.0).min(1.0))
+    };
+    let g = Linear::new(Degrees(190.1)).add_stop(0.0, c(82.5, 82.8, 243.7)).add_stop(1.0, c(36.4, 82.3, 247.2));
     Background::Gradient(Gradient::Linear(g))
 }
 
-fn pill<'a>(p: &Palette, content: El<'a>, height: f32, bg: Option<Color>, msg: Option<UiMessage>) -> El<'a> {
-    let fg = if bg.is_some() { p.strong } else { Color::WHITE };
-    button(container(content).center_x(Fill).center_y(height))
+/// Desktop's `BrandButton` in `size: "small"`: a full-width pill around `content`, 8 px above and below it. Without
+/// a message it is disabled. While `loading` it is disabled and shows three bouncing dots over its hidden content.
+pub(crate) fn brand_button<'a>(
+    p: &Palette,
+    content: El<'a>,
+    variant: Brand,
+    msg: Option<UiMessage>,
+    loading: bool,
+) -> El<'a> {
+    let msg = msg.filter(|_| !loading);
+    let (bg, fg, edge) = match (msg.is_some(), variant) {
+        (false, _) => (Some(p.chip), p.on_secondary, CLEAR),
+        (true, Brand::Primary) => (None, Color::WHITE, CLEAR),
+        (true, Brand::Secondary) => (Some(CLEAR), p.accent, p.accent),
+        (true, Brand::Muted) => (Some(p.chip), p.strong, CLEAR),
+        (true, Brand::Danger) => (Some(p.danger), Color::WHITE, CLEAR),
+    };
+    let dots = loading.then(|| {
+        // `BrandButton-module__bounce`: each dot moves 33 % of its size up and down in 0.5 s, a third apart.
+        let t = EPOCH.elapsed().as_secs_f32() / 0.5;
+        let dot = |k: usize| {
+            let u = t + k as f32 / 3.0;
+            let f = u.fract();
+            let e = f * f * (3.0 - 2.0 * f);
+            let y = 1.32 * (2.0 * if (u as u32).is_multiple_of(2) { 1.0 - e } else { e } - 1.0);
+            let dot = container(Space::new()).width(4).height(4).style(fill_box(fg, 2.0));
+            container(dot).padding(Padding::ZERO.top(2.0 + y)).height(8).into()
+        };
+        container(row((0..3).map(dot)).spacing(8)).center(Fill)
+    });
+    let hover = matches!(variant, Brand::Primary | Brand::Secondary) && msg.is_some();
+    button(stack![container(content).center_x(Fill)].push(dots))
         .width(Fill)
-        .padding(0)
-        .style(move |_: &Theme, s| button::Style {
-            background: Some(bg.map_or_else(brand_gradient, Background::from)),
-            text_color: if s == button::Status::Disabled { fg.scale_alpha(0.6) } else { fg },
-            border: border::rounded(height / 2.0),
-            ..Default::default()
+        .padding([9, 11])
+        .style(move |_: &Theme, s| {
+            // `filter: brightness(1.05)` on hover.
+            let k = if hover && s == button::Status::Hovered { 1.05 } else { 1.0 };
+            let lift = |c: Color| Color { r: (c.r * k).min(1.0), g: (c.g * k).min(1.0), b: (c.b * k).min(1.0), a: c.a };
+            button::Style {
+                background: Some(bg.map_or_else(|| lit_gradient(k), |c| lift(c).into())),
+                text_color: if loading { CLEAR } else { lift(fg) },
+                border: border::rounded(9999).color(edge).width(1),
+                ..Default::default()
+            }
         })
         .on_press_maybe(msg)
         .into()
@@ -395,29 +452,40 @@ pub(crate) fn actions(items: Vec<El<'_>>, bottom: f32) -> El<'_> {
     column(items).spacing(8).padding(Padding::new(0.0).left(18.0).right(18.0).bottom(bottom)).into()
 }
 
+/// The content of a `BrandButton`: 13 px medium text, after an 18 px icon with an 8 px gap.
 fn label<'a>(s: &'a str, lead: Option<El<'a>>) -> El<'a> {
-    row![].push(lead).push(med(s, 13.0)).spacing(6).align_y(Center).into()
+    let text = med(s, 13.0).line_height(iced::Pixels(14.95));
+    row![].push(lead).push(text).spacing(8).align_y(Center).into()
 }
 
-pub(crate) fn heading<'a>(s: &'a str, size: f32) -> El<'a> {
-    container(bold(s, size).color(HEADING).line_height(iced::widget::text::LineHeight::Absolute(40.0.into())).center())
-        .center_x(Fill)
-        .into()
+/// Desktop's `BrandHeading` with `gradient` on a 40 px line.
+pub(crate) fn heading<'a>(s: &str, size: f32) -> El<'a> {
+    let (text, width) = gradient_text(s, size, 40.0);
+    container(svg(text).width(width).height(40)).center_x(Fill).into()
 }
 
 pub(crate) fn art<'a>(i: usize, height: f32) -> El<'a> {
     svg(ART[i].clone()).width(Fill).height(height).into()
 }
 
-/// A text field. Enter submits the form through the key handler of the window, like Desktop's Enter hotkey.
+/// Desktop's `BrandInput` with `floatingPlaceholder`: text in the color of the placeholder, and the placeholder
+/// as a small chip over the top edge once the field has text. Enter submits the form through the key handler of
+/// the window, like Desktop's Enter hotkey.
 fn field<'a>(p: &Palette, id: &'static str, hint: &'a str, value: &'a str, on: fn(String) -> LoginMsg) -> El<'a> {
-    text_input(hint, value)
+    let input = text_input(hint, value)
         .id(id)
         .on_input(move |v| on(v).into())
         .size(14)
+        .line_height(iced::Pixels(18.0))
         .padding([10, 12])
-        .style(input_style(p.chip, p.strong, p.on_secondary, p.accent, 19.0))
-        .into()
+        .style(input_style(p.chip, p.on_secondary, p.on_secondary, p.accent, 19.0));
+    // `translate(26px, -60%) scale(0.6875)` of the label, with its origin at the left middle of the field.
+    let chip = (!value.is_empty()).then(|| {
+        let hint = txt(hint, 14.0 * 0.6875).line_height(iced::Pixels(18.0 * 0.6875)).color(p.on_secondary);
+        let chip = container(hint).padding([10.0 * 0.6875, 12.0 * 0.6875]).style(fill_box(p.card, 99.0));
+        container(chip).padding(Padding::ZERO.left(26))
+    });
+    stack![column![Space::new().height(FLOAT_LABEL), input]].push(chip).into()
 }
 
 impl BeeperGuiApp {
@@ -681,13 +749,19 @@ impl BeeperGuiApp {
                             container(txt(info, 12.0).color(p.on_secondary).center().width(Fill))
                                 .padding(Padding::ZERO.bottom(8))
                                 .into(),
-                            pill(p, label("Start Fresh", None), 36.0, Some(p.chip), self.login_act(Stop::Fresh)),
-                            pill(
+                            brand_button(
                                 p,
-                                label(if l.busy { "Copying…" } else { "Copy from Beeper Desktop" }, None),
-                                36.0,
-                                None,
-                                self.login_act(Stop::Import)
+                                label("Start Fresh", None),
+                                Brand::Muted,
+                                self.login_act(Stop::Fresh),
+                                false
+                            ),
+                            brand_button(
+                                p,
+                                label("Copy from Beeper Desktop", None),
+                                Brand::Primary,
+                                self.login_act(Stop::Import),
+                                l.busy
                             ),
                         ],
                         24.0
@@ -712,25 +786,26 @@ impl BeeperGuiApp {
                 .width(Fill)
                 .center();
                 let google = svg(ART[3].clone()).width(18).height(18);
-                let mail = ic(icon::EMAIL, 16.0).color(Color::WHITE);
+                let mail =
+                    svg(ICONS[0].clone()).width(18).height(18).style(|_, _| svg::Style { color: Some(Color::WHITE) });
                 column![
                     container(art(0, 372.0)).height(Fill).center_y(Fill),
                     actions(
                         vec![
                             container(terms).padding(Padding::ZERO.bottom(8)).into(),
-                            pill(
+                            brand_button(
                                 p,
                                 label("Continue with Google", Some(google.into())),
-                                36.0,
-                                Some(p.chip),
-                                self.login_act(Stop::Google)
+                                Brand::Muted,
+                                self.login_act(Stop::Google),
+                                false
                             ),
-                            pill(
+                            brand_button(
                                 p,
                                 label(tr("Continue with Email"), Some(mail.into())),
-                                36.0,
-                                None,
-                                self.login_act(Stop::Email)
+                                Brand::Primary,
+                                self.login_act(Stop::Email),
+                                false
                             ),
                         ],
                         24.0
@@ -747,7 +822,13 @@ impl BeeperGuiApp {
                 actions(
                     vec![
                         field(p, EMAIL_INPUT, tr("Email"), &l.email, LoginMsg::Email),
-                        pill(p, label(trx("Next", "button label"), None), 33.0, None, self.login_act(Stop::Next)),
+                        brand_button(
+                            p,
+                            label(trx("Next", "button label"), None),
+                            Brand::Primary,
+                            self.login_act(Stop::Next),
+                            l.busy
+                        ),
                     ],
                     24.0
                 ),
@@ -800,7 +881,13 @@ impl BeeperGuiApp {
                             container(txt(info, 13.0).color(p.on_secondary).center().width(Fill))
                                 .padding(Padding::ZERO.bottom(8))
                                 .into(),
-                            pill(p, label(tr("Open Email"), None), 33.0, None, self.login_act(Stop::OpenEmail)),
+                            brand_button(
+                                p,
+                                label(tr("Open Email"), None),
+                                Brand::Primary,
+                                self.login_act(Stop::OpenEmail),
+                                l.busy
+                            ),
                             container(foot).padding(Padding::ZERO.top(8)).into(),
                         ],
                         24.0
@@ -823,9 +910,14 @@ impl BeeperGuiApp {
                 .padding([0, 16]);
                 let divider = container(Space::new()).width(Fill).height(1).style(fill_box(p.chip, 0.0));
                 let grid = scrollable(network_grid(&st, &l.query, p, p.fg)).height(Fill);
-                let go_on =
-                    container(pill(p, label(tr("Continue"), None), 30.0, None, Some(LoginMsg::Continue.into())))
-                        .padding(Padding::new(12.0).top(8.0));
+                let go_on = container(brand_button(
+                    p,
+                    label(tr("Continue"), None),
+                    Brand::Primary,
+                    Some(LoginMsg::Continue.into()),
+                    false,
+                ))
+                .padding(Padding::new(12.0).top(8.0));
                 let remaining = FREE_ACCOUNTS.saturating_sub(st.bridge_accounts.len());
                 let foot = txt(
                     trn("%d free account remaining.", "%d free accounts remaining.", remaining, &[&remaining]),
@@ -833,7 +925,10 @@ impl BeeperGuiApp {
                 )
                 .color(p.on_secondary);
                 column![
-                    container(bold(tr("Connect Chat Accounts"), 26.0).color(HEADING)).center_x(Fill).center_y(48),
+                    {
+                        let (headline, width) = gradient_text(tr("Connect Chat Accounts"), 26.0, 48.0);
+                        container(svg(headline).width(width).height(48)).center_x(Fill)
+                    },
                     Space::new().height(8),
                     container(column![search, divider, grid, go_on]).height(Fill).style(card_style(p.card)),
                     container(foot).center_x(Fill).center_y(31),
@@ -849,22 +944,30 @@ impl BeeperGuiApp {
             Screen::Reset => self.view_onboarding_reset(),
             Screen::Username => column![
                 Space::new().height(34),
-                heading(tr("Pick a Username"), 28.0),
+                heading(tr("Pick a Username"), 32.0),
                 container(art(0, 300.0)).height(Fill).center_y(Fill),
                 error,
                 actions(
                     vec![
                         field(p, USERNAME_INPUT, tr("Username"), &l.username, LoginMsg::Username),
-                        pill(p, label(trx("Next", "button label"), None), 33.0, None, self.login_act(Stop::Next)),
+                        brand_button(
+                            p,
+                            label(trx("Next", "button label"), None),
+                            Brand::Primary,
+                            self.login_act(Stop::Next),
+                            l.busy
+                        ),
                     ],
                     52.0
                 ),
             ]
             .into(),
         };
-        let chevron = button(container(ic(icon::EXPAND_MORE, 16.0).color(p.strong)).center(28))
+        let ink = p.text;
+        let chevron = svg(ICONS[1].clone()).width(18).height(18).style(move |_, _| svg::Style { color: Some(ink) });
+        let chevron = button(container(chevron).center(28))
             .padding(0)
-            .style(btn_style([CLEAR, p.chip, p.chip], [p.strong; 3], 6.0))
+            .style(btn_style([CLEAR; 3], [p.text; 3], 6.0))
             .on_press(LoginMsg::Menu.into());
         let controls = container(chevron).align_right(Fill).height(36).padding(Padding::ZERO.top(2).right(2));
         let onboarding = l.screen == Screen::Accounts;
