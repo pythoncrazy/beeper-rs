@@ -1619,7 +1619,7 @@ async fn prepare_media(
     let (rules, dir) = {
         let st = store.read();
         let c = &st.chats[st.resolve_chat_idx(chat).expect("the chat of a send exists")];
-        (c.room_features.then(|| c.file.clone()), st.data_dir.join("media").join("outgoing-uploads").join(txn))
+        (c.room_features.then(|| c.file.clone()), st.config.data_dir.join("media").join("outgoing-uploads").join(txn))
     };
     let Some(rules) = rules else { return Ok((data, name, mime, info)) };
     let (dims, duration) = info.facts();
@@ -2606,8 +2606,7 @@ async fn sync_prefs(client: &Client, store: &SharedStore) {
     }
     st.synced_prefs = events;
     if settings.prefs != st.settings.prefs || settings.quick_reaction != st.settings.quick_reaction {
-        st.settings = settings;
-        st.persist_state_to_sqlite();
+        st.update_settings(|s| *s = settings);
         st.emit_ws("settings.updated", "", None, None, None);
     }
 }
@@ -2957,7 +2956,7 @@ pub async fn delete_device(store: SharedStore, id: String) -> Result<(), String>
 pub async fn logout(store: SharedStore) -> Result<(), String> {
     let (client, demo, dir) = {
         let st = store.read();
-        (st.matrix.clone(), st.config.demo, st.data_dir.clone())
+        (st.matrix.clone(), st.config.demo, st.config.data_dir.clone())
     };
     if !demo {
         client.ok_or("Matrix is not connected yet")?.logout().await.map_err(|e| e.to_string())?;

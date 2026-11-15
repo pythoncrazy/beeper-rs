@@ -1114,7 +1114,7 @@ mod tests {
         let _ = app.voice(Msg::Drag(450.0));
         let _ = app.voice(Msg::Drop);
         assert_eq!(app.audio.bottom, 58.0);
-        assert_eq!(Player::new(&app.store.read().data_dir).bottom, 58.0, "the place stays");
+        assert_eq!(Player::new(&app.store.read().config.data_dir).bottom, 58.0, "the place stays");
     }
 
     #[test]

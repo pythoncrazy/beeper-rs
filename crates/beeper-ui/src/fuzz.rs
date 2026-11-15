@@ -3436,7 +3436,7 @@ fn chat_theme_like_desktop() {
     });
     assert_eq!(stored, want, "the chat theme is stored like Desktop's chat_appearance");
     let a = app.store.read().settings.chat_appearance.clone();
-    let dir = app.store.read().data_dir.clone();
+    let dir = app.store.read().config.data_dir.clone();
     let (wallpaper, bubble) = crate::chat_theme::resolve(&a, Some(&chat), false, &dir);
     assert!(wallpaper.is_none(), "the chat's own wallpaper wins");
     assert_eq!(
@@ -5441,7 +5441,8 @@ fn double_clicks_like_desktop() {
     let _ = app.update(UiMessage::ResetSidebarWidth);
     let _ = app.update(UiMessage::DragEnd);
     assert_eq!(app.sidebar_width, SIDEBAR_WIDTH);
-    let saved = std::fs::read_to_string(app.store.read().data_dir.join("sidebar-width")).expect("the saved width");
+    let saved =
+        std::fs::read_to_string(app.store.read().config.data_dir.join("sidebar-width")).expect("the saved width");
     assert_eq!(saved.parse::<f32>().expect("a width"), SIDEBAR_WIDTH);
 }
 
@@ -6089,7 +6090,7 @@ fn main_window_keeps_its_state_like_desktop() {
     let s = app.main_window_settings();
     assert_eq!((s.size, s.min_size, s.maximized), (Size::new(1200.0, 800.0), Some(Size::new(330.0, 400.0)), false));
     assert!(matches!(s.position, window::Position::Centered));
-    let path = app.store.read().data_dir.join("window.json");
+    let path = app.store.read().config.data_dir.join("window.json");
     write_window_state(&path, "main", false, Size::new(900.0, 700.0), Some(Point::new(40.0, 30.0)));
     write_window_state(&path, "main", true, Size::new(1440.0, 900.0), Some(Point::new(0.0, 0.0)));
     let s = app.main_window_settings();
