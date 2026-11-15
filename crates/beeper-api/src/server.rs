@@ -23,6 +23,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 mod auth;
 mod mcp;
+mod view;
 
 struct Response {
     status: StatusCode,
@@ -742,7 +743,13 @@ fn get(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
         ["v1", "chats", id, rest @ ..] => {
             let idx = st.resolve_chat_idx(id).ok_or_else(|| missing("Chat not found"))?;
             match rest {
-                [] => ok(&st.chats[idx]),
+                [] => {
+                    let max = r.q("maxParticipantCount").map_or(Ok(100), |v| match v.parse::<i64>() {
+                        Ok(n @ -1..=500) => Ok(n),
+                        _ => Err(bad("maxParticipantCount must be an integer from -1 to 500")),
+                    })?;
+                    ok(&view::chat(st, &st.chats[idx], usize::try_from(max).ok(), false))
+                }
                 ["messages"] => list_messages(st, idx, r),
                 ["messages", mid] => ok(&st.messages[st.message_in_chat(id, mid).map_err(store_error)?.1]),
                 _ => Err(no_route()),
@@ -1092,7 +1099,7 @@ fn chat_page<'a>(
     let input = || r.q("cursor").map(str::to_string);
     let oldest_cursor = chats.last().map_or_else(input, |&(k, _)| cursor(k));
     let newest_cursor = chats.first().map_or_else(input, |&(k, _)| cursor(k));
-    let items = chats.into_iter().map(|(_, c)| c).collect();
+    let items = chats.into_iter().map(|(_, c)| view::chat(st, c, Some(20), true)).collect();
     ok(&CursorPage { items, has_more, oldest_cursor, newest_cursor })
 }
 
@@ -1199,6 +1206,17 @@ fn check_merge(st: &BeeperStore, chat_ids: &[String], default_chat_id: Option<&s
     ids.all(|id| st.resolve_chat_idx(id).is_some()).then_some(()).ok_or_else(|| missing("Chat not found"))
 }
 
+/// Whether each word starts a word of the title and the network of the chat, or with `people` of the names of its
+/// participants: Desktop's `searchTitlesOrNetworkDetailed` and `searchParticipantsDetailed`.
+fn chat_hit(c: &Chat, people: bool, words: &[String]) -> bool {
+    let fields: Vec<&String> = match people {
+        true => c.participants.items.iter().flat_map(|p| [&p.full_name, &p.custom_nickname]).flatten().collect(),
+        false => [Some(&c.title), c.network_name.as_ref()].into_iter().flatten().collect(),
+    };
+    let tokens = tokenize(&fields.into_iter().map(String::as_str).collect::<Vec<_>>().join(" "));
+    words.iter().all(|w| tokens.iter().any(|t| t.starts_with(w.as_str())))
+}
+
 /// Desktop's `searchChats`: the chats by last activity, newest first. The default scope `titles` matches the title
 /// and the network, and the scope `participants` matches the names of the participants.
 fn search_chats(st: &BeeperStore, r: &Req) -> Reply {
@@ -1237,14 +1255,7 @@ fn search_chats(st: &BeeperStore, r: &Req) -> Reply {
         return chat_page(st, r, chat_keys(st, cursor.as_ref(), after), keep, limit);
     };
     let words = tokenize(query);
-    let hit = |c: &Chat| {
-        let fields: Vec<&String> = match people {
-            true => c.participants.items.iter().flat_map(|p| [&p.full_name, &p.custom_nickname]).flatten().collect(),
-            false => [Some(&c.title), c.network_name.as_ref()].into_iter().flatten().collect(),
-        };
-        let tokens = tokenize(&fields.into_iter().map(String::as_str).collect::<Vec<_>>().join(" "));
-        words.iter().all(|w| tokens.iter().any(|t| t.starts_with(w.as_str())))
-    };
+    let hit = |c: &Chat| chat_hit(c, people, &words);
     let past =
         |k: (i64, &str)| cursor.as_ref().is_none_or(|c| k != (c.0, c.1.as_str()) && (k > (c.0, c.1.as_str())) == after);
     let mut keys: Vec<(i64, &str)> = st
@@ -1270,7 +1281,8 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
             if let Some(Some(m)) = &new_merge {
                 check_merge(st, &m.chat_ids, m.default_chat_id.as_deref())?;
             }
-            ok(&st.patch_chat(id, draft.is_some_and(Value::is_null), new_draft, new_merge).map_err(store_error)?)
+            st.patch_chat(id, draft.is_some_and(Value::is_null), new_draft, new_merge).map_err(store_error)?;
+            ok(&view::chat(st, &st.chats[idx], Some(100), false))
         }
         ("POST", ["archive"]) => {
             let archived = r.body["archived"].as_bool().unwrap_or(true);
@@ -1487,30 +1499,41 @@ fn search_messages(st: &BeeperStore, r: &Req) -> Reply {
             }
         };
     let (items, has_more) = take_page(hits.map(|m| &st.messages[m]), limit);
-    let chats: HashMap<&str, &Chat> =
-        items.iter().map(|m| (m.chat_id.as_str(), &st.chats[st.chat_idx_by_id[&m.chat_id]])).collect();
+    let chat = |id: &str| view::chat(st, &st.chats[st.chat_idx_by_id[id]], None, false);
+    let chats: HashMap<&str, view::ApiChat> = items.iter().map(|m| (m.chat_id.as_str(), chat(&m.chat_id))).collect();
     let (oldest, newest) = (items.last().map(|m| &m.sort_key), items.first().map(|m| &m.sort_key));
     ok(&json!({ "items": items, "chats": chats, "hasMore": has_more, "oldestCursor": oldest, "newestCursor": newest }))
 }
 
+/// Desktop's `search`: at most 30 chats that match by title, 30 groups that match by participant, and the first page of
+/// 20 messages of `searchMessages`, each newest first.
 fn unified_search(st: &BeeperStore, r: &Req) -> Reply {
     let q = r.need_q("query")?;
-    let (in_groups, chats): (Vec<&Chat>, Vec<&Chat>) = st
-        .chat_search_index
-        .query_all_tokens(q)
-        .into_iter()
-        .map(|i| &st.chats[i as usize])
-        .partition(|c| c.chat_type == "group");
-    let messages: Vec<&Message> = st.search_messages(q).into_iter().map(|i| &st.messages[i]).collect();
-    let referenced: HashMap<&str, &Chat> =
-        messages.iter().map(|m| (m.chat_id.as_str(), &st.chats[st.chat_idx_by_id[&m.chat_id]])).collect();
+    let words = tokenize(q);
+    let mut found: Vec<&Chat> =
+        st.chat_search_index.query_all_tokens(q).into_iter().map(|i| &st.chats[i as usize]).collect();
+    found.sort_unstable_by_key(|c| std::cmp::Reverse(activity_key(c)));
+    let titles = found.iter().copied().filter(|c| chat_hit(c, false, &words));
+    let chats: Vec<_> = titles.take(30).map(|c| view::chat(st, c, Some(20), false)).collect();
+    let groups = found.iter().copied().filter(|c| c.chat_type == "group" && chat_hit(c, true, &words));
+    let in_groups: Vec<_> = groups.take(30).map(|c| view::chat(st, c, Some(20), false)).collect();
+    let mut hits: Vec<&Message> = st.search_messages(q).into_iter().map(|i| &st.messages[i]).collect();
+    hits.sort_unstable_by(|a, b| b.sort_key.cmp(&a.sort_key));
+    let shown = |m: &&&Message| {
+        let c = &st.chats[st.chat_idx_by_id[&m.chat_id]];
+        m.flags & MSG_DELETED == 0 && c.flags & CHAT_LOW_PRIORITY == 0
+    };
+    let (messages, has_more) = take_page(hits.iter().filter(shown), 20);
+    let chat = |id: &str| view::chat(st, &st.chats[st.chat_idx_by_id[id]], None, false);
+    let referenced: HashMap<&str, view::ApiChat> =
+        messages.iter().map(|m| (m.chat_id.as_str(), chat(&m.chat_id))).collect();
     ok(&json!({
         "results": {
             "chats": chats,
             "in_groups": in_groups,
             "messages": {
                 "chats": referenced,
-                "hasMore": false,
+                "hasMore": has_more,
                 "items": messages,
                 "newestCursor": messages.first().map(|m| &m.sort_key),
                 "oldestCursor": messages.last().map(|m| &m.sort_key)
