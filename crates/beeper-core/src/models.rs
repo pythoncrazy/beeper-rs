@@ -933,6 +933,9 @@ pub struct VerificationSas {
 #[derive(Debug, Clone, Serialize)]
 pub struct VerificationDevice {
     pub id: String,
+    /// The display name of the device, which the UI shows. The API leaves it out, like Desktop.
+    #[serde(skip)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -951,6 +954,8 @@ pub struct AppVerification {
     pub state: &'static str,
     pub methods: Vec<&'static str>,
     pub available_actions: Vec<&'static str>,
+    #[serde(rename = "otherUserID", skip_serializing_if = "Option::is_none")]
+    pub other_user_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub other_device: Option<VerificationDevice>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -960,10 +965,10 @@ pub struct AppVerification {
 }
 
 impl AppVerification {
-    /// Desktop's `getAvailableVerificationActions`, for the outgoing verifications with emojis of beeper-rs.
+    /// Desktop's `getAvailableVerificationActions`.
     pub fn actions(&self) -> Vec<&'static str> {
-        assert_eq!(self.direction, "outgoing", "beeper-rs starts all verifications");
         match self.state {
+            "requested" if self.direction == "incoming" => vec!["accept", "cancel"],
             "requested" => vec!["cancel"],
             "ready" if self.methods.contains(&"sas") => vec!["cancel", "sas.start"],
             "ready" => vec!["cancel"],
@@ -1359,5 +1364,38 @@ impl BeeperSettings {
         self.keybindings.keys().for_each(|h| _ = crate::prefs::hotkey_default(h));
         assert!(self.reminders_order < 4, "reminders order {} is out of range", self.reminders_order);
         assert!((40..=300).contains(&self.zoom_percent), "zoom {}% is out of range", self.zoom_percent);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verification_actions_follow_desktop() {
+        let mut v = AppVerification {
+            id: "flow".into(),
+            purpose: "device",
+            direction: "incoming",
+            state: "requested",
+            methods: Vec::new(),
+            available_actions: Vec::new(),
+            other_user_id: Some("@me:x".into()),
+            other_device: Some(VerificationDevice { id: "DEV".into(), name: Some("Pixel".into()) }),
+            sas: None,
+            error: None,
+        };
+        assert_eq!(v.actions(), ["accept", "cancel"]);
+        v.direction = "outgoing";
+        assert_eq!(v.actions(), ["cancel"]);
+        (v.state, v.methods) = ("ready", vec!["sas"]);
+        assert_eq!(v.actions(), ["cancel", "sas.start"]);
+        v.state = "sas_ready";
+        assert_eq!(v.actions(), ["sas.confirm", "cancel"]);
+        v.state = "done";
+        assert!(v.actions().is_empty());
+        let json = serde_json::to_value(&v).expect("a verification is JSON");
+        assert_eq!(json["otherUserID"], "@me:x");
+        assert_eq!(json["otherDevice"], serde_json::json!({ "id": "DEV" }), "the API leaves out the device name");
     }
 }

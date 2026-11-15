@@ -21,11 +21,13 @@ use matrix_sdk::encryption::verification::{
     CancelInfo, SasState, Verification, VerificationRequest, VerificationRequestState,
 };
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
+use matrix_sdk::event_handler::Ctx;
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
 use matrix_sdk::notification_settings::RoomNotificationMode;
 use matrix_sdk::room::MessagesOptions;
 use matrix_sdk::ruma::api::client::media::get_content_thumbnail::v3::Method;
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType as SendReceiptType;
+use matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent;
 use matrix_sdk::ruma::events::key::verification::VerificationMethod;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::receipt::{ReceiptThread, ReceiptType};
@@ -2093,10 +2095,11 @@ fn mark_verified(st: &mut BeeperStore) {
     st.persist_state_to_sqlite();
 }
 
-/// Desktop's `AppStateTracker.handleAppEvent`: applies a change of the Matrix verification to the tracked one.
-fn track(store: &SharedStore, change: impl FnOnce(&mut AppVerification)) {
+/// Desktop's `AppStateTracker.handleAppEvent`: applies a change of the Matrix verification `id` to the tracked one.
+/// A newer verification replaces the tracked one, like in Desktop, and the changes of the older one stop.
+fn track(store: &SharedStore, id: &str, change: impl FnOnce(&mut AppVerification)) {
     let mut st = store.write();
-    let v = st.verification.as_mut().expect("a started verification");
+    let Some(v) = st.verification.as_mut().filter(|v| v.id == id) else { return };
     change(v);
     v.available_actions = v.actions();
     if v.state == "done" {
@@ -2148,39 +2151,77 @@ pub async fn logout(store: SharedStore) -> Result<(), String> {
 }
 
 /// Desktop's `startVerification`: asks the other devices of the account to verify this device.
-pub async fn start_verification(store: &SharedStore, purpose: &'static str) -> Result<VerificationRequest, String> {
+pub async fn start_verification(store: &SharedStore, purpose: &'static str) -> Result<(), String> {
     let e = |e: &dyn std::fmt::Display| e.to_string();
     let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
     let me = client.user_id().expect("signed-in client has a user ID").to_owned();
     let identity = client.encryption().get_user_identity(&me).await.map_err(|x| e(&x))?;
     let request = identity.ok_or("this account has no cross-signing identity")?.request_verification().await;
-    let request = request.map_err(|x| e(&x))?;
-    store.write().verification = Some(AppVerification {
-        id: request.flow_id().into(),
-        purpose,
-        direction: "outgoing",
-        state: "requested",
-        methods: Vec::new(),
-        available_actions: Vec::new(),
-        other_device: None,
-        sas: None,
-        error: None,
-    });
-    track(store, |_| {});
-    Ok(request)
+    begin(store, request.map_err(|x| e(&x))?, purpose, None);
+    Ok(())
 }
 
-/// Runs a started verification with emojis to its end. `confirm` carries the answer of the user to the emojis.
-pub async fn run_verification(
-    store: SharedStore,
+/// A verification request from another device of the account: Desktop's `VERIFICATION_REQUESTED`.
+async fn verification_requested(ev: ToDeviceKeyVerificationRequestEvent, client: Client, store: Ctx<SharedStore>) {
+    if client.user_id() != Some(&*ev.sender) {
+        return;
+    }
+    let encryption = client.encryption();
+    // The SDK drops the requests that are too old to answer, like the ones of a long time offline.
+    let Some(request) = encryption.get_verification_request(&ev.sender, &ev.content.transaction_id).await else {
+        return;
+    };
+    match encryption.get_device(&ev.sender, &ev.content.from_device).await {
+        Ok(device) => {
+            let name = device.and_then(|d| d.display_name().map(str::to_string));
+            begin(&store, request, "device", Some(VerificationDevice { id: ev.content.from_device.to_string(), name }));
+        }
+        Err(e) => store.write().matrix_error = Some(e.to_string()),
+    }
+}
+
+/// Tracks a new verification like Desktop's `AppStateTracker`, and runs it until it ends. A verification with
+/// `from` a device is incoming.
+fn begin(store: &SharedStore, request: VerificationRequest, purpose: &'static str, from: Option<VerificationDevice>) {
+    let (tx, rx) = oneshot::channel();
+    let id = request.flow_id().to_string();
+    {
+        let mut st = store.write();
+        st.verification = Some(AppVerification {
+            id: id.clone(),
+            purpose,
+            direction: if from.is_some() { "incoming" } else { "outgoing" },
+            state: "requested",
+            methods: Vec::new(),
+            available_actions: Vec::new(),
+            other_user_id: from.is_some().then(|| request.other_user_id().to_string()),
+            other_device: from,
+            sas: None,
+            error: None,
+        });
+        st.sas_confirm = Some(tx);
+    }
+    track(store, &id, |_| {});
+    let s = store.clone();
+    tokio::spawn(async move {
+        if let Err(e) = run_verification(&s, request, rx).await {
+            s.write().matrix_error = Some(e);
+        }
+    });
+}
+
+/// Runs a verification to its end. `confirm` carries the answer of the user to the emojis.
+async fn run_verification(
+    store: &SharedStore,
     request: VerificationRequest,
     confirm: oneshot::Receiver<bool>,
 ) -> Result<(), String> {
     let e = |e: &dyn std::fmt::Display| e.to_string();
+    let id = request.flow_id().to_string();
     let cancelled = |info: CancelInfo| {
         let error = VerificationError { code: info.cancel_code().to_string(), reason: info.reason().into() };
-        track(&store, |v| (v.state, v.error) = ("cancelled", Some(error)));
-        Err(info.reason().to_string())
+        track(store, &id, |v| (v.state, v.error) = ("cancelled", Some(error)));
+        Ok(())
     };
     let mut requests = request.changes();
     let mut sas = None;
@@ -2190,15 +2231,20 @@ pub async fn run_verification(
         tokio::select! {
             state = requests.next() => match state.ok_or("the verification request ended")? {
                 VerificationRequestState::Ready { their_methods, other_device_data, .. } if request.is_ready() => {
-                    track(&store, |v| {
+                    let emojis = their_methods.contains(&VerificationMethod::SasV1);
+                    track(store, &id, |v| {
                         v.state = "ready";
-                        v.methods = their_methods.iter().filter(|m| **m == VerificationMethod::SasV1).map(|_| "sas").collect();
-                        v.other_device = Some(VerificationDevice { id: other_device_data.device_id().to_string() });
+                        v.methods = if emojis { vec!["sas"] } else { Vec::new() };
+                        let name = other_device_data.display_name().map(str::to_string);
+                        v.other_device = Some(VerificationDevice { id: other_device_data.device_id().to_string(), name });
                     });
-                    request.start_sas().await.map_err(|x| e(&x))?;
+                    if emojis {
+                        request.start_sas().await.map_err(|x| e(&x))?;
+                    }
                 }
                 VerificationRequestState::Transitioned { verification: Verification::SasV1(s), .. } => {
-                    if !s.we_started() {
+                    // The device that did not send the start accepts it. `we_started` tells who sent the request.
+                    if matches!(s.state(), SasState::Started { .. }) {
                         s.accept().await.map_err(|x| e(&x))?;
                     }
                     sas_changes = s.changes().boxed();
@@ -2213,7 +2259,7 @@ pub async fn run_verification(
                     let emojis =
                         emojis.map(|x| VerificationSasEmoji { emoji: x.symbol.into(), description: x.description.into() });
                     let shown = VerificationSas { emojis: emojis.collect(), decimals: format!("{a} {b} {c}") };
-                    track(&store, |v| {
+                    track(store, &id, |v| {
                         v.state = "sas_ready";
                         if !v.methods.contains(&"sas") {
                             v.methods.push("sas");
@@ -2227,7 +2273,7 @@ pub async fn run_verification(
                     }
                 }
                 SasState::Done { .. } => {
-                    track(&store, |v| v.state = "done");
+                    track(store, &id, |v| v.state = "done");
                     return Ok(());
                 }
                 SasState::Cancelled(c) => return cancelled(c),
@@ -2237,25 +2283,28 @@ pub async fn run_verification(
     }
 }
 
+/// The Matrix request of the verification with the flow ID `id`, if the SDK still has it.
+async fn verification_request(store: &SharedStore, id: &str) -> Result<Option<VerificationRequest>, String> {
+    let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
+    let me = client.user_id().expect("signed-in client has a user ID");
+    Ok(client.encryption().get_verification_request(me, id).await)
+}
+
+/// Desktop's `acceptVerification`: answers a request from another device.
+pub async fn accept_verification(store: &SharedStore, id: &str) -> Result<(), String> {
+    let request = verification_request(store, id).await?.ok_or("The verification request is gone")?;
+    request.accept().await.map_err(|e| e.to_string())
+}
+
 /// Desktop's `cancelVerification`: cancels the request, or the emojis when they are on the screen.
 pub async fn cancel_verification(store: &SharedStore, id: &str) -> Result<(), String> {
-    let (client, emojis) = {
-        let mut st = store.write();
-        (st.matrix.clone().ok_or("Matrix is not connected yet")?, st.sas_confirm.take())
-    };
-    if let Some(tx) = emojis {
+    if let Some(tx) = store.write().sas_confirm.take() {
         tx.send(false).ok();
     }
-    let me = client.user_id().expect("signed-in client has a user ID").to_owned();
-    match client.encryption().get_verification_request(&me, id).await {
+    match verification_request(store, id).await? {
         Some(request) => request.cancel().await.map_err(|e| e.to_string()),
         None => Ok(()),
     }
-}
-
-pub async fn verify(store: SharedStore, confirm: oneshot::Receiver<bool>) -> Result<(), String> {
-    let request = start_verification(&store, "device").await?;
-    run_verification(store, request, confirm).await
 }
 
 pub async fn run(store: SharedStore) {
@@ -2274,6 +2323,8 @@ pub async fn run(store: SharedStore) {
     }
     tokio::spawn(retry_undecrypted(client.clone(), store.clone()));
     tokio::spawn(retry_after_backup(client.clone(), store.clone()));
+    client.add_event_handler_context(store.clone());
+    client.add_event_handler(verification_requested);
     sync_account_data(&client, &store).await;
     sync_prefs(&client, &store).await;
     sync_profile(&client, &store).await;
