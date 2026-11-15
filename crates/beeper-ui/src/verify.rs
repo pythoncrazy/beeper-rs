@@ -23,6 +23,8 @@ pub struct Verify {
     pub window: Option<window::Id>,
     /// The ID and the state of the verification that the UI saw last.
     seen: Option<(String, &'static str)>,
+    /// Desktop's OS notification of an incoming request: the notification ID and the verification ID.
+    pub note: Option<(u32, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +40,8 @@ pub enum VerifyMsg {
     Emojis,
     /// A click outside the modal, which cancels the verification.
     Outside,
+    /// The OS notification of the incoming request with the ID.
+    Noted(String, Result<u32, String>),
     /// The end of a Matrix call, with the text of the toast that tells its error.
     Done(&'static str, Result<(), String>),
 }
@@ -46,6 +50,11 @@ impl From<VerifyMsg> for UiMessage {
     fn from(m: VerifyMsg) -> Self {
         UiMessage::Verify(m)
     }
+}
+
+/// Closes the OS notification `id`.
+fn close_note(id: u32) -> Task<UiMessage> {
+    Task::future(crate::notify::close(vec![id])).discard()
 }
 
 /// The text of Desktop's toast of a request from the device `name`.
@@ -120,6 +129,14 @@ impl BeeperGuiApp {
                 self.show(Toast::new(tr("Verification cancelled").into()));
                 return Task::batch([cancel(s, id), self.close_verify()]);
             }
+            VerifyMsg::Noted(id, Ok(note)) => {
+                let waits = s.read().app_verification().is_some_and(|v| v.id == id && v.state == "requested");
+                match waits {
+                    true => self.verify.note = Some((note, id)),
+                    false => return close_note(note),
+                }
+            }
+            VerifyMsg::Noted(_, Err(e)) => self.status_banner = format!("Notifications failed: {e}"),
             VerifyMsg::Done(_, Ok(())) => {}
             VerifyMsg::Done(what, Err(e)) => self.fail(Toast::new(if what.is_empty() { e } else { tr(what).into() })),
         }
@@ -139,6 +156,38 @@ impl BeeperGuiApp {
         self.verify.window.take().map_or_else(Task::none, window::close)
     }
 
+    /// Desktop's `sendVerificationNotification`: the OS notification of the request with Accept and Decline.
+    fn notify_request(&self, id: String, text: String) -> Task<UiMessage> {
+        if !cfg!(target_os = "linux") {
+            return Task::none();
+        }
+        let silent = self.store.read().settings.pref("messageSound") == 1;
+        let buttons = vec![
+            ("verificationAccept", trx("Accept", "button label")),
+            ("verificationDecline", trx("Decline", "button label")),
+        ];
+        Task::perform(crate::notify::show(text, String::new(), silent, buttons), move |r| {
+            VerifyMsg::Noted(id, r).into()
+        })
+    }
+
+    /// Desktop's actions of the notification of a request: Accept and Decline answer it, and a click shows the app.
+    pub(crate) fn verification_note_event(&mut self, action: Option<&str>) -> Task<UiMessage> {
+        let (note, id) = self.verify.note.take().expect("the event is of the request notification");
+        let answer = match action {
+            Some("verificationAccept") => VerifyMsg::Accept(id.clone()),
+            Some("verificationDecline") => VerifyMsg::Decline(id.clone()),
+            Some(_) => return self.set_hidden(false),
+            None => return Task::none(),
+        };
+        // Desktop's `acceptVerification` and `cancelVerification` remove the toast and the notification.
+        let name = self.store.read().app_verification().filter(|v| v.id == id).map(device_name);
+        if let Some(name) = name {
+            self.drop_toast(&request_text(&name));
+        }
+        Task::batch([close_note(note), self.update_verify(answer)])
+    }
+
     /// Removes the toast with `text`, like Desktop's `removeToast`.
     fn drop_toast(&mut self, text: &str) {
         if self.status_banner == text {
@@ -152,6 +201,15 @@ impl BeeperGuiApp {
     /// `VERIFICATION_CANCELLED`, for a change
     /// of the tracked verification.
     pub fn verification_changed(&mut self) -> Task<UiMessage> {
+        // Desktop's `clearVerificationNotification` once the request is answered or cancelled.
+        let st = self.store.read();
+        let waits = |id: &String| st.app_verification().is_some_and(|v| v.id == *id && v.state == "requested");
+        let answered = self.verify.note.take_if(|n| !waits(&n.1));
+        drop(st);
+        Task::batch(answered.map(|n| close_note(n.0)).into_iter().chain([self.verification_toasts()]))
+    }
+
+    fn verification_toasts(&mut self) -> Task<UiMessage> {
         if self.login_window.is_some() {
             self.advance_onboarding();
         }
@@ -166,13 +224,15 @@ impl BeeperGuiApp {
         let waiting = tr("Waiting for you to verify on your other device...");
         match state {
             "requested" if direction == "incoming" => {
+                let text = request_text(&name);
+                let note = self.notify_request(id.clone(), text.clone());
                 let buttons = vec![
                     (trx("Accept", "button label"), VerifyMsg::Accept(id.clone()).into()),
                     (trx("Decline", "button label"), VerifyMsg::Decline(id).into()),
                 ];
-                let text = request_text(&name);
                 self.show(Toast { buttons, ..Toast::new(text.clone()) });
                 self.sticky_banner = Some(text);
+                return note;
             }
             // Desktop confirms the scan of its QR code by the other device at once.
             "qr_scanned" => {
@@ -749,6 +809,26 @@ mod tests {
         let _ = app.verification_changed();
         assert!(app.older_toasts.iter().all(|t| t.0.text != "Verification request from Pixel"));
         assert_ne!(app.status_banner, "Verification request from Pixel", "a cancel removes the request toast");
+    }
+
+    #[test]
+    fn request_notification_accepts_declines_and_closes_like_desktop() {
+        let mut app = crate::fuzz::demo_app("verify-notification");
+        let device = Some(VerificationDevice { id: "DEV".into(), name: Some("Pixel".into()) });
+        app.store.write().verification = Some(request(device));
+        let _ = app.verification_changed();
+        let _ = app.update(VerifyMsg::Noted("flow".into(), Ok(7)).into());
+        assert_eq!(app.verify.note, Some((7, "flow".into())));
+        let _ = app.update(UiMessage::NotificationEvent(7, Some("verificationAccept".into())));
+        assert!(app.verify.note.is_none() && app.verify.window.is_some(), "Accept opens the modal");
+        assert_ne!(app.status_banner, "Verification request from Pixel", "Accept removes the toast");
+
+        app.verify.note = Some((8, "flow".into()));
+        app.store.write().verification.as_mut().expect("a verification").state = "cancelled";
+        let _ = app.verification_changed();
+        assert!(app.verify.note.is_none(), "a cancel closes the notification");
+        let _ = app.update(VerifyMsg::Noted("flow".into(), Ok(9)).into());
+        assert!(app.verify.note.is_none(), "a late notification of an ended request closes");
     }
 
     #[test]

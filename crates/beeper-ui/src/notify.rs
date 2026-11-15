@@ -194,7 +194,7 @@ impl BeeperGuiApp {
             self.pending.repeat.insert(chat.clone(), (self.pending.timer, note.clone()));
             wait(secs, UiMessage::NotifyTimer(chat.clone(), self.pending.timer))
         });
-        let show = Task::perform(show(note.title, note.body, note.silent), move |r| {
+        let show = Task::perform(show(note.title, note.body, note.silent, Vec::new()), move |r| {
             UiMessage::Notified(r.map(|id| (id, (chat, message))))
         });
         Task::batch([show].into_iter().chain(again))
@@ -336,7 +336,11 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's notification click: jumps to the message, then shows the window.
-    pub(crate) fn notification_event(&mut self, id: u32, clicked: bool) -> Task<UiMessage> {
+    pub(crate) fn notification_event(&mut self, id: u32, action: Option<String>) -> Task<UiMessage> {
+        if self.verify.note.as_ref().is_some_and(|n| n.0 == id) {
+            return self.verification_note_event(action.as_deref());
+        }
+        let clicked = action.as_deref() == Some("default");
         let Some((chat, msg)) = self.notifications.remove(&id).filter(|_| clicked) else { return Task::none() };
         let focus = self.update(UiMessage::FocusRequested(Some(chat.clone())));
         let jump = (!msg.is_empty()).then(|| self.update(UiMessage::JumpTo(chat, msg)));
@@ -378,10 +382,13 @@ pub(crate) async fn bus() -> Result<&'static zbus::Connection, String> {
     BUS.get_or_try_init(zbus::Connection::session).await.map_err(|e| e.to_string())
 }
 
+/// Shows a notification that a click opens, with `buttons` of an action key and a label.
 #[cfg(target_os = "linux")]
-pub async fn show(title: String, body: String, silent: bool) -> Result<u32, String> {
+pub async fn show(title: String, body: String, silent: bool, buttons: Vec<(&str, &str)>) -> Result<u32, String> {
     let hints = std::collections::HashMap::from([("suppress-sound", zbus::zvariant::Value::from(silent))]);
-    let args = ("Beeper", 0u32, "", title, body, vec!["default", ""], hints, -1i32);
+    let actions: Vec<&str> =
+        [("default", "")].into_iter().chain(buttons).flat_map(|(key, label)| [key, label]).collect();
+    let args = ("Beeper", 0u32, "", title, body, actions, hints, -1i32);
     let path = "/org/freedesktop/Notifications";
     let iface = Some("org.freedesktop.Notifications");
     let reply = bus().await?.call_method(iface, path, iface, "Notify", &args).await.map_err(|e| e.to_string())?;
@@ -389,7 +396,7 @@ pub async fn show(title: String, body: String, silent: bool) -> Result<u32, Stri
 }
 
 #[cfg(target_os = "linux")]
-async fn close(ids: Vec<u32>) -> Result<(), String> {
+pub(crate) async fn close(ids: Vec<u32>) -> Result<(), String> {
     let (path, iface) = ("/org/freedesktop/Notifications", Some("org.freedesktop.Notifications"));
     for id in ids {
         bus().await?.call_method(iface, path, iface, "CloseNotification", &id).await.map_err(|e| e.to_string())?;
@@ -397,9 +404,9 @@ async fn close(ids: Vec<u32>) -> Result<(), String> {
     Ok(())
 }
 
-/// A notification id, and whether the user clicked it or the server closed it.
+/// A notification id, and the action that the user invoked, or `None` when the server closed it.
 #[cfg(target_os = "linux")]
-pub fn events() -> impl iced::futures::Stream<Item = (u32, bool)> {
+pub fn events() -> impl iced::futures::Stream<Item = (u32, Option<String>)> {
     use iced::futures::StreamExt;
     let rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
@@ -417,10 +424,10 @@ pub fn events() -> impl iced::futures::Stream<Item = (u32, bool)> {
             "ActionInvoked" => {
                 let (id, action): (u32, String) =
                     body.deserialize().expect("ActionInvoked carries an id and an action");
-                (action == "default").then_some((id, true))
+                Some((id, Some(action)))
             }
             "NotificationClosed" => {
-                Some((body.deserialize::<(u32, u32)>().expect("NotificationClosed carries an id").0, false))
+                Some((body.deserialize::<(u32, u32)>().expect("NotificationClosed carries an id").0, None))
             }
             _ => None,
         }
@@ -428,17 +435,17 @@ pub fn events() -> impl iced::futures::Stream<Item = (u32, bool)> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub async fn show(_title: String, _body: String, _silent: bool) -> Result<u32, String> {
+pub async fn show(_title: String, _body: String, _silent: bool, _buttons: Vec<(&str, &str)>) -> Result<u32, String> {
     unreachable!("only the Linux build shows notifications")
 }
 
 #[cfg(not(target_os = "linux"))]
-async fn close(_ids: Vec<u32>) -> Result<(), String> {
+pub(crate) async fn close(_ids: Vec<u32>) -> Result<(), String> {
     unreachable!("only the Linux build shows notifications")
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn events() -> iced::futures::stream::Empty<(u32, bool)> {
+pub fn events() -> iced::futures::stream::Empty<(u32, Option<String>)> {
     unreachable!("only the Linux build shows notifications")
 }
 
@@ -480,7 +487,7 @@ mod tests {
             st.messages[st.chat_msg_indices[&chat.id][0]].id.clone()
         };
         app.notifications.insert(7, (chat.id.clone(), mid.clone()));
-        let _ = app.update(UiMessage::NotificationEvent(7, true));
+        let _ = app.update(UiMessage::NotificationEvent(7, Some("default".into())));
         assert_eq!(app.pane.selected_chat_id.as_ref(), Some(&chat.id));
         assert_eq!(app.flash.as_ref().map(|f| &f.0), Some(&mid), "a click jumps to the message");
     }
