@@ -452,8 +452,7 @@ async fn lifecycle() {
         full_name: Some("Émile Zola".into()),
         username: Some("emile".into()),
         email: Some("emile@example.com".into()),
-        subscribed: false,
-        analytics_disabled: true,
+        ..Profile::default()
     };
     let _ =
         gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Imported(data, session, profile.clone(), Vec::new())))));
@@ -775,9 +774,9 @@ async fn lifecycle() {
     assert_eq!(login.pane.selected_chat_id.as_deref(), Some(NOTE_CHAT_ID));
     assert!(simulator(login.view_main()).find("Note").is_ok());
     let _ = login.update(UiMessage::ShareAnalytics);
-    assert!(!login_store.read().analytics_disabled, "Share Analytics turns on at once");
+    assert!(!login_store.read().whoami.analytics_disabled, "Share Analytics turns on at once");
     let _ = login.update(UiMessage::AnalyticsSaved(true, Err("offline".into())));
-    assert!(login_store.read().analytics_disabled, "a failed save turns Share Analytics back off");
+    assert!(login_store.read().whoami.analytics_disabled, "a failed save turns Share Analytics back off");
     assert_eq!(login.status_banner, "Something went wrong: offline");
     drop((login, login_store));
 

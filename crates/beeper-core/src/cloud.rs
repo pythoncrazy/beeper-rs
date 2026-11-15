@@ -1,5 +1,5 @@
 use crate::config::account_network;
-use crate::models::{BridgeAccountInfo, BridgeMode, MatrixSession, Profile, User};
+use crate::models::{BridgeAccountInfo, BridgeMode, MatrixSession, Plan, Profile, User};
 use serde_json::{json, Value};
 use std::future::Future;
 use std::sync::Once;
@@ -64,6 +64,29 @@ pub fn cloud_accounts(bridges: &Value) -> Result<Vec<BridgeAccountInfo>, CloudEr
         }
     }
     Ok(out)
+}
+
+/// The profile of the `userInfo` of `whoami`.
+fn profile(info: &Value) -> Profile {
+    let sub = &info["subscription"];
+    let active = sub["isActive"] == true;
+    let plan = match sub["planId"].as_str() {
+        Some("PLUS") if active => Plan::Plus,
+        Some("PLUS_PLUS") if active => Plan::PlusPlus,
+        _ => Plan::Free,
+    };
+    // Desktop's `subscriptionAction`: app store and Stripe subscribers manage their plan elsewhere.
+    let managed = ["GOOGLEPLAY", "APPSTORE", "REVENUECAT", "STRIPE", "STRIPE_LEGACY"];
+    let provider = sub["provider"].as_str().filter(|_| plan != Plan::Free);
+    Profile {
+        full_name: field(info, "fullName"),
+        username: field(info, "username"),
+        email: field(info, "email"),
+        plan,
+        can_subscribe: provider.is_none_or(|p| !managed.contains(&p))
+            && info["canSubscribe"]["STRIPE"].as_bool().unwrap_or(!active),
+        analytics_disabled: info["analyticsDisabled"] != false,
+    }
 }
 
 fn strings(v: &Value) -> Vec<String> {
@@ -169,16 +192,7 @@ impl Cloud {
 
     pub fn whoami(&self, access_token: &str) -> Result<(Profile, Vec<BridgeAccountInfo>), CloudError> {
         let v = self.call(&format!("{}/whoami", self.api_url), Some(access_token), None)?;
-        let info = &v["userInfo"];
-        let profile = Profile {
-            full_name: field(info, "fullName"),
-            username: field(info, "username"),
-            email: field(info, "email"),
-            subscribed: info["subscription"]["isActive"] == true
-                && matches!(info["subscription"]["planId"].as_str(), Some("PLUS" | "PLUS_PLUS")),
-            analytics_disabled: info["analyticsDisabled"] != false,
-        };
-        Ok((profile, cloud_accounts(&v["user"]["bridges"])?))
+        Ok((profile(&v["userInfo"]), cloud_accounts(&v["user"]["bridges"])?))
     }
 
     /// Desktop's `bapi.setAnalyticsDisabled`.
@@ -363,6 +377,19 @@ pub async fn link_preview(url: String) -> Result<Option<PagePreview>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_follows_desktop_subscription_action() {
+        let free = profile(&json!({ "username": "alex" }));
+        assert_eq!((free.plan, free.can_subscribe, free.analytics_disabled), (Plan::Free, true, true));
+        let stripe = json!({ "subscription": { "isActive": true, "planId": "PLUS", "provider": "STRIPE" }, "analyticsDisabled": false });
+        let stripe = profile(&stripe);
+        assert_eq!((stripe.plan, stripe.can_subscribe, stripe.analytics_disabled), (Plan::Plus, false, false));
+        let ended = json!({ "subscription": { "isActive": false, "planId": "PLUS_PLUS", "provider": "APPSTORE" } });
+        assert_eq!((profile(&ended).plan, profile(&ended).can_subscribe), (Plan::Free, true));
+        let blocked = json!({ "canSubscribe": { "STRIPE": false } });
+        assert!(!profile(&blocked).can_subscribe, "the server can forbid Stripe");
+    }
 
     #[tokio::test]
     async fn klipy_key_and_live_endpoints() {

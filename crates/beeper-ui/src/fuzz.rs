@@ -1721,7 +1721,9 @@ fn ai_settings_like_desktop() {
     let mention = "Will send the 20 most recent messages, including sender names and any @mentioned users.";
     assert!(sim.find(mention).is_ok() && sim.find("Requires a paid subscription.").is_ok());
     let _ = sim.click("Whisper");
-    assert!(sim.into_messages().next().is_none(), "the Plus toggles are locked");
+    let msgs: Vec<_> = sim.into_messages().collect();
+    let upsell = msgs.iter().all(|m| matches!(m, UiMessage::SelectSettingsTab(SettingsTab::BeeperPlus)));
+    assert!(!msgs.is_empty() && upsell, "a locked Plus toggle opens Beeper Plus");
 }
 
 #[test]
@@ -1860,6 +1862,26 @@ fn search_finds_custom_items_like_desktop() {
     assert_eq!(app.active_settings_tab, SettingsTab::Appearance);
     assert_eq!(app.pref_flash.map(|f| f.0), Some("Default chat theme"));
     let _ = simulator(app.view_settings());
+}
+
+#[test]
+fn settings_nav_follows_the_plan() {
+    let mut app = demo_app("settings-nav");
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
+    let mut sim = simulator(app.view_settings());
+    assert!(sim.find("Beeper Plus").is_ok() && sim.find("Free").is_ok(), "a free account can subscribe");
+    let _ = sim.click("Incognito").expect("the incognito row");
+    for m in sim.into_messages() {
+        let _ = app.update(m);
+    }
+    assert_eq!(app.active_settings_tab, SettingsTab::BeeperPlus, "a locked row opens the subscription prompt");
+    let plus = Profile { plan: Plan::PlusPlus, can_subscribe: false, ..Profile::default() };
+    app.store.write().whoami = plus;
+    let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::General));
+    let mut sim = simulator(app.view_settings());
+    assert!(sim.find("Beeper Plus").is_err(), "a subscriber does not see Beeper Plus");
+    assert!(sim.find("PlusPlus").is_ok() && sim.find("++").is_ok());
+    assert!(SettingsTab::listed(&app.store.read()).all(|t| t != SettingsTab::BeeperPlus));
 }
 
 #[test]
