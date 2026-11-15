@@ -503,11 +503,12 @@ pub fn bordered_box(bg: Color, border_col: Color, width: f32, r: f32) -> impl Fn
     }
 }
 
-pub fn glow_box(bg: Color, glow: Color, r: f32, blur: f32) -> impl Fn(&Theme) -> container::Style + Copy {
+/// A box with a CSS `box-shadow: 0 <y> <blur> <glow>`.
+pub fn glow_box(bg: Color, glow: Color, r: f32, y: f32, blur: f32) -> impl Fn(&Theme) -> container::Style + Copy {
     move |_| container::Style {
         background: Some(bg.into()),
         border: Border { radius: r.into(), ..Border::default() },
-        shadow: Shadow { color: glow, offset: Vector::new(0.0, 4.0), blur_radius: blur },
+        shadow: Shadow { color: glow, offset: Vector::new(0.0, y), blur_radius: blur },
         text_color: None,
         snap: false,
     }
@@ -777,6 +778,8 @@ palette! {
     reply_line: Color = hex(0xe1e1e1), hex(0x353535);
     /// `--appearance-color-text-danger`.
     danger: Color = hex(0xff383c), hex(0xff383c);
+    /// The color of `--shadow-medium-15` and `--shadow-large-15`: toasts and tooltips.
+    shadow: Color = hexa(0x000000, 0.15), hexa(0xffffff, 0.2);
     /// `--audio-bar-border`, `--audio-bar-bg`, `--compose-message-accent` and `--color-on-secondary-container`:
     /// `AudioBar`'s ring while recording, its ring while paused, its text, and its live waveform.
     audio_bar: [Color; 4] = [hex(0xe3e9f2), hex(0xf1f4f8), hex(0x7f7f7f), hex(0x828286)],
