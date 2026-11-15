@@ -3321,7 +3321,8 @@ struct MediaWindow {
     sent_by: u8,
     oldest: bool,
     search: Option<String>,
-    menu: bool,
+    /// Where the filter menu is open.
+    menu: Option<Point>,
     /// The item whose context menu is open, as (message, attachment or link index), and where.
     item_menu: Option<(String, usize, Point)>,
     select: bool,
@@ -6747,7 +6748,7 @@ impl BeeperGuiApp {
                     sent_by: 0,
                     oldest: false,
                     search: None,
-                    menu: false,
+                    menu: None,
                     item_menu: None,
                     select: false,
                     picked: Vec::new(),
@@ -6761,12 +6762,12 @@ impl BeeperGuiApp {
             }
             UiMessage::MediaSentBy(n) => {
                 let w = self.media_mut();
-                (w.sent_by, w.menu) = (n, false);
+                (w.sent_by, w.menu) = (n, None);
                 return self.media_reload();
             }
             UiMessage::MediaOldest(on) => {
                 let w = self.media_mut();
-                (w.oldest, w.menu) = (on, false);
+                (w.oldest, w.menu) = (on, None);
                 return self.media_reload();
             }
             UiMessage::MediaSearch(q) => {
@@ -6776,7 +6777,10 @@ impl BeeperGuiApp {
                 let reload = self.media_reload();
                 return if open { Task::batch([reload, operation::focus("media-search")]) } else { reload };
             }
-            UiMessage::MediaMenu(open) => self.media_mut().menu = open,
+            UiMessage::MediaMenu(open) => {
+                let at = self.cursor.get();
+                self.media_mut().menu = open.then_some(at);
+            }
             UiMessage::Modifiers(mods) => {
                 self.mods = mods;
                 if self.cycling && !mods.control() {
@@ -6974,8 +6978,8 @@ impl BeeperGuiApp {
                     let w = self.media_mut();
                     if w.item_menu.is_some() {
                         w.item_menu = None;
-                    } else if w.menu {
-                        w.menu = false;
+                    } else if w.menu.is_some() {
+                        w.menu = None;
                     } else if w.deleting.is_some() {
                         w.deleting = None;
                     } else if let Some(q) = w.search.as_ref().map(|q| (!q.is_empty()).then(String::new)) {
@@ -15486,10 +15490,11 @@ impl BeeperGuiApp {
             container(mark).center(20).style(bordered_box(bg, edge, 1.5, 10.0)).into()
         };
         let items = media_items(&st, w);
-        let sub = |s: String| txt(s, 12.0).line_height(Pixels(15.0)).color(p.on_secondary);
+        // Desktop's `label-sm` (11/14) and `body-sm` (13/16) type of the Media window.
+        let sub = |s: String| txt(s, 11.0).line_height(Pixels(14.0)).color(p.on_secondary);
         let tabs = MEDIA_TABS.iter().enumerate().map(|(i, label)| -> El<'a> {
             let bg = if i == w.tab { p.chip } else { CLEAR };
-            let label = txt(tr(label), 12.0).line_height(Pixels(15.0)).color(p.strong);
+            let label = txt(tr(label), 11.0).line_height(Pixels(14.0)).color(p.strong);
             button(label)
                 .padding([2, 8])
                 .style(btn_style([bg; 3], [p.strong; 3], 20.0))
@@ -15532,7 +15537,7 @@ impl BeeperGuiApp {
             let input = text_input(tr("Search by caption"), q)
                 .id("media-search")
                 .on_input(|q| UiMessage::MediaSearch(Some(q)))
-                .size(14)
+                .size(13)
                 .padding(0)
                 .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
             let close = self.tip(
@@ -15561,7 +15566,7 @@ impl BeeperGuiApp {
             let (lo, hi) = (days.clone().min().expect("a group has items"), days.max().expect("a group has items"));
             let full = |d| i18n::date(i18n::Date::Medium, civil_from_days(d), (0, 0));
             let range = if lo == hi { full(lo) } else { format!("{} - {}", full(lo), full(hi)) };
-            let head = column![bold(label.clone(), 15.0).line_height(Pixels(20.0)).color(p.strong), sub(range)];
+            let head = column![semi(label.clone(), 15.0).line_height(Pixels(20.0)).color(p.strong), sub(range)];
             let col = col.push(container(head).padding(Padding::new(6.0).top(12.0).left(10.0).right(10.0)));
             match w.tab {
                 0 => group.chunks(cols).fold(col, |col, chunk| {
@@ -15569,9 +15574,10 @@ impl BeeperGuiApp {
                         let m = &st.messages[i];
                         let a = &m.attachments[k];
                         let badge = match (a.is_gif == Some(true), a.attachment_type == "video") {
-                            (true, _) => Some(row![semi(tr("GIF"), 12.0)]),
+                            (true, _) => Some(row![semi(tr("GIF"), 11.0).line_height(Pixels(14.0))]),
                             (false, true) => {
-                                let time = a.duration.map(|d| semi(voice::clock(d as f32), 12.0));
+                                let time =
+                                    a.duration.map(|d| semi(voice::clock(d as f32), 11.0).line_height(Pixels(14.0)));
                                 Some(row![tinted(video_icon, 12.0, Color::WHITE)].push(time).spacing(2).align_y(Center))
                             }
                             _ => None,
@@ -15587,7 +15593,7 @@ impl BeeperGuiApp {
                             .add_stop(0.0, CLEAR)
                             .add_stop(1.0, Color::BLACK.scale_alpha(0.55));
                         let name =
-                            ell(Self::sender_name(&st, m), tile - 12.0, 12.0, Weight::Semibold).color(Color::WHITE);
+                            ell(Self::sender_name(&st, m), tile - 12.0, 11.0, Weight::Semibold).color(Color::WHITE);
                         let name =
                             container(name).width(Fill).padding(Padding::new(4.0).top(10.0).left(6.0).right(6.0));
                         let name = container(name.style(move |_| container::Style {
@@ -15622,12 +15628,28 @@ impl BeeperGuiApp {
                 }),
                 _ => group.iter().fold(col, |col, &(i, k)| {
                     let m = &st.messages[i];
-                    let (glyph, size, title, line, press) = match w.tab {
+                    let icon = |glyph, size| -> El<'a> {
+                        container(tinted(glyph, size, p.on_secondary)).center(40).style(fill_box(p.chip, 8.0)).into()
+                    };
+                    let (thumb, title, line, press) = match w.tab {
+                        // Desktop's link thumb: the preview image of the link, or the link icon.
                         1 => {
                             let l = &m.links[k];
                             let host = l.url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(&l.url);
                             let title = if l.title.is_empty() { host.to_string() } else { l.title.clone() };
-                            (link_icon, 16.0, title, l.url.clone(), UiMessage::OpenUrl(l.url.clone()))
+                            let thumb = match l.img.as_deref().map(|u| self.media_at(u)) {
+                                Some(Some(Ok(frames))) => image(frames[0].0.clone())
+                                    .width(40)
+                                    .height(40)
+                                    .content_fit(iced::ContentFit::Cover)
+                                    .border_radius(8.0)
+                                    .into(),
+                                Some(_) => {
+                                    container(Space::new()).width(40).height(40).style(fill_box(p.chip, 8.0)).into()
+                                }
+                                None => icon(link_icon, 16.0),
+                            };
+                            (thumb, title, l.url.clone(), UiMessage::OpenUrl(l.url.clone()))
                         }
                         _ => {
                             let a = &m.attachments[k];
@@ -15635,18 +15657,16 @@ impl BeeperGuiApp {
                             let line = std::iter::once(kind.to_string()).chain(a.file_size.map(human_size));
                             let name = a.file_name.clone().unwrap_or_else(|| tr("Attachment").into());
                             (
-                                file_icon,
-                                18.0,
+                                icon(file_icon, 18.0),
                                 name,
                                 line.collect::<Vec<_>>().join(" · "),
                                 UiMessage::Download(m.id.clone(), Some(k)),
                             )
                         }
                     };
-                    let thumb = container(tinted(glyph, size, p.on_secondary)).center(40).style(fill_box(p.chip, 8.0));
                     let text = column![
-                        ell(&title, text_w, 14.0, Weight::Semibold).line_height(Pixels(17.0)).color(p.strong),
-                        ell(&line, text_w, 12.0, Weight::Normal).line_height(Pixels(15.0)).color(p.on_secondary),
+                        ell(&title, text_w, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(p.strong),
+                        ell(&line, text_w, 11.0, Weight::Normal).line_height(Pixels(14.0)).color(p.on_secondary),
                     ]
                     .width(Fill);
                     let meta = column![sub(Self::sender_name(&st, m).to_string()), sub(relative_date(&m.timestamp))]
@@ -15663,7 +15683,10 @@ impl BeeperGuiApp {
         });
         let more = w.shown < items.len();
         let list: El<'a> = match items.is_empty() {
-            true => container(txt(tr("Nothing here"), 14.0).color(p.on_secondary)).center_x(Fill).padding(16).into(),
+            true => container(txt(tr("Nothing here"), 13.0).line_height(Pixels(16.0)).color(p.on_secondary))
+                .center_x(Fill)
+                .padding(16)
+                .into(),
             false => scrollable(body.push(Space::new().height(8)))
                 .direction(bar())
                 .height(Fill)
@@ -15673,7 +15696,8 @@ impl BeeperGuiApp {
                 )
                 .into(),
         };
-        let title = container(semi(tr("Media"), 14.0).color(p.strong)).center_x(Fill).padding([8, 0]);
+        let title =
+            container(semi(tr("Media"), 13.0).line_height(Pixels(16.0)).color(p.strong)).center_x(Fill).padding([8, 0]);
         let footer = w.select.then(|| {
             let bytes: u64 = match w.tab {
                 1 => 0,
@@ -15685,18 +15709,18 @@ impl BeeperGuiApp {
             };
             let n = w.picked.len();
             let count = match bytes {
-                0 => format!("{n} selected"),
-                _ => format!("{n} selected ({})", human_size(bytes)),
+                0 => trn("%d selected", "%d selected", n, &[&n]),
+                _ => trn("%1$d selected (%2$s)", "%1$d selected (%2$s)", n, &[&n, &human_size(bytes)]),
             };
             let act = |label, msg: Option<UiMessage>| -> El<'a> {
                 let a = if msg.is_some() { 1.0 } else { 0.5 };
                 let b =
-                    button(semi(label, 12.0).line_height(Pixels(15.0)).color(p.strong.scale_alpha(a))).padding([4, 8]);
+                    button(semi(label, 11.0).line_height(Pixels(14.0)).color(p.strong.scale_alpha(a))).padding([4, 8]);
                 b.style(btn_style([p.chip.scale_alpha(a); 3], [p.strong; 3], 12.0)).on_press_maybe(msg).into()
             };
             let picked = w.picked.clone();
             let bar = row![
-                semi(count, 14.0).line_height(Pixels(17.0)).color(p.strong),
+                semi(count, 13.0).line_height(Pixels(16.0)).color(p.strong),
                 Space::new().width(Fill),
                 act(tr("Delete"), (n > 0).then(|| UiMessage::MediaAskDelete(picked))),
                 act(tr("Save"), (n > 0 && w.tab != 1).then_some(UiMessage::MediaSave)),
@@ -15735,7 +15759,8 @@ impl BeeperGuiApp {
                 .on_press(UiMessage::MediaItemMenu(None))
                 .on_right_press(UiMessage::MediaItemMenu(None))
         });
-        let menu = w.menu.then(|| {
+        // Desktop's filter menu is a native menu at the cursor.
+        let menu = w.menu.map(|at| {
             let heading = |label| container(med(label, 11.0).color(p.sub)).padding([6, 13]);
             let radio = |label: &str, on: bool, msg| {
                 let lead = container(on.then(|| ic(icon::CHECK, 14.0))).width(22);
@@ -15752,8 +15777,7 @@ impl BeeperGuiApp {
                 radio(tr("Oldest"), w.oldest, UiMessage::MediaOldest(true)),
             ];
             let menu = container(col.padding([4, 0])).width(180).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
-            let x = (w.size.width - 8.0 - 10.0 - 60.0).min(w.size.width - 8.0 - 180.0);
-            let at = Padding::ZERO.top(8.0 + 33.0 + 44.0).left(x);
+            let at = Padding::ZERO.top(at.y).left(at.x.min(w.size.width - 8.0 - 180.0));
             mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
                 .on_press(UiMessage::MediaMenu(false))
         });
