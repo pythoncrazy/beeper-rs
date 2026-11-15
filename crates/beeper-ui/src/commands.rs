@@ -5,10 +5,9 @@ use crate::{
     has_flag, network_name, shown, BeeperGuiApp, El, InboxTab, SettingsHit, SettingsTab, UiMessage, ASK_LOGOUT,
 };
 use crate::{ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_MARK_ALL_READ};
-use beeper_core::matrix::ChatFlag;
 use beeper_core::models::{
-    AccountProps, Chat, Message, ThemeChoice, User, CHAT_UNREAD, MANAGE_KICK, MANAGE_ROLE, MEMBER_INVITE, MEMBER_KICK,
-    MEMBER_LEAVE,
+    AccountProps, Chat, ChatFlag, Message, ThemeChoice, User, CHAT_UNREAD, MANAGE_KICK, MANAGE_ROLE, MEMBER_INVITE,
+    MEMBER_KICK, MEMBER_LEAVE,
 };
 use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
@@ -351,7 +350,7 @@ impl BeeperGuiApp {
         let inbox = st
             .chats
             .iter()
-            .filter(|o| o.account_id == c.account_id && o.is_request != Some(true) && o.is_low_priority != Some(true));
+            .filter(|o| o.account_id == c.account_id && o.is_request != Some(true) && !o.flag(ChatFlag::LowPriority));
         let mut seen: std::collections::HashSet<&str> = c.participants.items.iter().map(|u| u.id.as_str()).collect();
         let mut people: Vec<&User> = inbox
             .flat_map(|o| &o.participants.items)

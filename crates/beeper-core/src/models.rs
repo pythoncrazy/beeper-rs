@@ -667,6 +667,33 @@ pub struct Chat {
     pub flags: u16,
 }
 
+/// A flag of a chat that the user sets here and on the homeserver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ChatFlag {
+    Archived,
+    Pinned,
+    LowPriority,
+    Muted,
+    MarkedUnread,
+}
+
+impl ChatFlag {
+    /// Every flag, each one time.
+    pub const ALL: [ChatFlag; 5] =
+        [ChatFlag::Archived, ChatFlag::Pinned, ChatFlag::LowPriority, ChatFlag::Muted, ChatFlag::MarkedUnread];
+
+    /// The key of the flag in the JSON of a chat: in the store, in the Desktop API, and in `patchChat`.
+    pub fn api_key(self) -> &'static str {
+        match self {
+            ChatFlag::Archived => "isArchived",
+            ChatFlag::Pinned => "isPinned",
+            ChatFlag::LowPriority => "isLowPriority",
+            ChatFlag::Muted => "isMuted",
+            ChatFlag::MarkedUnread => "isMarkedUnread",
+        }
+    }
+}
+
 /// Desktop's `com.beeper.thread_follows`: the threads of a room that the user follows or unfollows explicitly.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadFollows {
@@ -917,15 +944,42 @@ impl Chat {
         self.file.get(kind).is_some_and(|r| r.mime_types.is_empty() || r.mime_types.values().any(|&l| l > 0))
     }
 
+    /// Whether the flag is on. A flag without a value is off.
+    pub fn flag(&self, flag: ChatFlag) -> bool {
+        let on = match flag {
+            ChatFlag::Archived => self.is_archived,
+            ChatFlag::Pinned => self.is_pinned,
+            ChatFlag::LowPriority => self.is_low_priority,
+            ChatFlag::Muted => self.is_muted,
+            ChatFlag::MarkedUnread => self.is_marked_unread,
+        };
+        on == Some(true)
+    }
+
+    /// The field of the flag. [`Chat::sync_flags`] must run after a change, as in `BeeperStore::update_chat`.
+    pub fn flag_mut(&mut self, flag: ChatFlag) -> &mut Option<bool> {
+        match flag {
+            ChatFlag::Archived => &mut self.is_archived,
+            ChatFlag::Pinned => &mut self.is_pinned,
+            ChatFlag::LowPriority => &mut self.is_low_priority,
+            ChatFlag::Muted => &mut self.is_muted,
+            ChatFlag::MarkedUnread => &mut self.is_marked_unread,
+        }
+    }
+
+    /// Whether the chat has unread messages, or the user marked it unread.
+    pub fn is_unread(&self) -> bool {
+        self.unread_count > 0 || self.flag(ChatFlag::MarkedUnread)
+    }
+
     pub fn sync_flags(&mut self) {
-        let marked = self.is_marked_unread == Some(true);
         self.flags = flag_bits(&[
-            (self.is_pinned == Some(true), CHAT_PINNED),
-            (self.is_archived == Some(true), CHAT_ARCHIVED),
-            (self.is_muted == Some(true), CHAT_MUTED),
-            (self.unread_count > 0 || marked, CHAT_UNREAD),
-            (self.is_low_priority == Some(true), CHAT_LOW_PRIORITY),
-            (marked, CHAT_MARKED_UNREAD),
+            (self.flag(ChatFlag::Pinned), CHAT_PINNED),
+            (self.flag(ChatFlag::Archived), CHAT_ARCHIVED),
+            (self.flag(ChatFlag::Muted), CHAT_MUTED),
+            (self.is_unread(), CHAT_UNREAD),
+            (self.flag(ChatFlag::LowPriority), CHAT_LOW_PRIORITY),
+            (self.flag(ChatFlag::MarkedUnread), CHAT_MARKED_UNREAD),
             (self.merge.is_some(), CHAT_MERGED_PARENT),
             (self.is_hidden_from_inbox == Some(true), CHAT_HIDDEN),
             (self.is_request == Some(true), CHAT_REQUEST),
