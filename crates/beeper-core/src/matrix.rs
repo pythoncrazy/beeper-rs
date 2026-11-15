@@ -3,10 +3,10 @@ use crate::import::DesktopCrypto;
 use crate::models::{
     timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatParticipants,
     ChatReminder, EditHistoryEntry, Label, Message, MessageLink, MessageRules, Older, PollData, PollOption, PollRules,
-    Reaction, SendError, ThreadFollows, Timers, User, VerificationDevice, VerificationError, VerificationSas,
-    VerificationSasEmoji, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS, BOOKMARK,
-    DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE, FORMATS,
-    MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION,
+    Reaction, SendError, ThreadFollows, Timers, User, VerificationDevice, VerificationError, VerificationQr,
+    VerificationSas, VerificationSasEmoji, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS,
+    BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE,
+    FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -18,7 +18,8 @@ use matrix_sdk::encryption::backups::BackupState;
 use matrix_sdk::encryption::recovery::RecoveryError;
 use matrix_sdk::encryption::secret_storage::SecretStorageError;
 use matrix_sdk::encryption::verification::{
-    CancelInfo, SasState, Verification, VerificationRequest, VerificationRequestState,
+    CancelInfo, QrVerificationData, QrVerificationState, SasState, Verification, VerificationRequest,
+    VerificationRequestState,
 };
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk::event_handler::Ctx;
@@ -2273,13 +2274,22 @@ pub async fn logout(store: SharedStore) -> Result<(), String> {
     std::fs::write(dir.join(crate::store::LOGGED_OUT), "").map_err(|e| format!("Could not mark the logout: {e}"))
 }
 
+/// The verification methods of this device: emojis, and QR codes that it shows, or that an API client scans for it.
+const METHODS: [VerificationMethod; 4] = [
+    VerificationMethod::SasV1,
+    VerificationMethod::QrCodeShowV1,
+    VerificationMethod::QrCodeScanV1,
+    VerificationMethod::ReciprocateV1,
+];
+
 /// Desktop's `startVerification`: asks the other devices of the account to verify this device.
 pub async fn start_verification(store: &SharedStore, purpose: &'static str) -> Result<(), String> {
     let e = |e: &dyn std::fmt::Display| e.to_string();
     let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
     let me = client.user_id().expect("signed-in client has a user ID").to_owned();
     let identity = client.encryption().get_user_identity(&me).await.map_err(|x| e(&x))?;
-    let request = identity.ok_or("this account has no cross-signing identity")?.request_verification().await;
+    let identity = identity.ok_or("this account has no cross-signing identity")?;
+    let request = identity.request_verification_with_methods(METHODS.to_vec()).await;
     begin(store, request.map_err(|x| e(&x))?, purpose, None);
     Ok(())
 }
@@ -2319,6 +2329,7 @@ fn begin(store: &SharedStore, request: VerificationRequest, purpose: &'static st
             available_actions: Vec::new(),
             other_user_id: from.is_some().then(|| request.other_user_id().to_string()),
             other_device: from,
+            qr: None,
             sas: None,
             error: None,
         });
@@ -2349,21 +2360,34 @@ async fn run_verification(
     let mut requests = request.changes();
     let mut sas = None;
     let mut sas_changes = futures_util::stream::pending().boxed();
+    let mut qr_changes = futures_util::stream::pending().boxed();
     let mut confirm = Some(confirm);
     loop {
         tokio::select! {
             state = requests.next() => match state.ok_or("the verification request ended")? {
                 VerificationRequestState::Ready { their_methods, other_device_data, .. } if request.is_ready() => {
                     let emojis = their_methods.contains(&VerificationMethod::SasV1);
+                    let scans = their_methods.contains(&VerificationMethod::QrCodeScanV1);
+                    // Desktop's `qr_data`: the QR code for the other device to scan, when it can scan one.
+                    let qr = match scans {
+                        true => request.generate_qr_code().await.map_err(|x| e(&x))?,
+                        false => None,
+                    };
+                    let qr = qr.map(|q| q.to_bytes()).transpose().map_err(|x| e(&x))?;
                     track(store, &id, |v| {
                         v.state = "ready";
-                        v.methods = if emojis { vec!["sas"] } else { Vec::new() };
+                        v.methods = [(scans, "qr"), (emojis, "sas")].into_iter().filter(|m| m.0).map(|m| m.1).collect();
                         let name = other_device_data.display_name().map(str::to_string);
                         v.other_device = Some(VerificationDevice { id: other_device_data.device_id().to_string(), name });
+                        v.qr = qr.map(|data| VerificationQr { data });
                     });
-                    if emojis {
+                    // Desktop starts the emojis when it accepted the request, and waits for a choice when it sent it.
+                    if !request.we_started() && emojis {
                         request.start_sas().await.map_err(|x| e(&x))?;
                     }
+                }
+                VerificationRequestState::Transitioned { verification: Verification::QrV1(qr), .. } => {
+                    qr_changes = qr.changes().boxed();
                 }
                 VerificationRequestState::Transitioned { verification: Verification::SasV1(s), .. } => {
                     // The device that did not send the start accepts it. `we_started` tells who sent the request.
@@ -2402,6 +2426,15 @@ async fn run_verification(
                 SasState::Cancelled(c) => return cancelled(c),
                 _ => {}
             },
+            Some(state) = qr_changes.next() => match state {
+                QrVerificationState::Scanned => track(store, &id, |v| v.state = "qr_scanned"),
+                QrVerificationState::Done { .. } => {
+                    track(store, &id, |v| v.state = "done");
+                    return Ok(());
+                }
+                QrVerificationState::Cancelled(c) => return cancelled(c),
+                _ => {}
+            },
         }
     }
 }
@@ -2416,7 +2449,34 @@ async fn verification_request(store: &SharedStore, id: &str) -> Result<Option<Ve
 /// Desktop's `acceptVerification`: answers a request from another device.
 pub async fn accept_verification(store: &SharedStore, id: &str) -> Result<(), String> {
     let request = verification_request(store, id).await?.ok_or("The verification request is gone")?;
-    request.accept().await.map_err(|e| e.to_string())
+    request.accept_with_methods(METHODS.to_vec()).await.map_err(|e| e.to_string())
+}
+
+/// Desktop's `startSAS`: compares emojis instead of the QR code.
+pub async fn start_sas(store: &SharedStore, id: &str) -> Result<(), String> {
+    let request = verification_request(store, id).await?.ok_or("The verification request is gone")?;
+    request.start_sas().await.map(drop).map_err(|e| e.to_string())
+}
+
+/// Desktop's `confirmQRCodeScanned`: the other device scanned the QR code of this device.
+pub async fn confirm_qr(store: &SharedStore, id: &str) -> Result<(), String> {
+    let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
+    let me = client.user_id().expect("signed-in client has a user ID");
+    match client.encryption().get_verification(me, id).await {
+        Some(Verification::QrV1(qr)) => qr.confirm().await.map_err(|e| e.to_string()),
+        _ => Err("The QR code verification is gone".into()),
+    }
+}
+
+/// Desktop's `handleScannedQRData`: this device scanned the QR code of the other device, as base64.
+pub async fn scan_qr(store: &SharedStore, data: &str) -> Result<(), String> {
+    let bytes = vodozemac::base64_decode(data.trim_end_matches('=')).map_err(|e| e.to_string())?;
+    let data = QrVerificationData::from_bytes(bytes).map_err(|e| e.to_string())?;
+    let request = verification_request(store, data.flow_id()).await?.ok_or("The verification request is gone")?;
+    match request.scan_qr_code(data).await.map_err(|e| e.to_string())? {
+        Some(_) => Ok(()),
+        None => Err("The verification request is not ready for a QR code".into()),
+    }
 }
 
 /// Desktop's `cancelVerification`: cancels the request, or the emojis when they are on the screen.

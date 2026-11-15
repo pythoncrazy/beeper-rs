@@ -2,11 +2,11 @@
 use crate::emoji::EMOJI_FONT;
 use crate::i18n::{tr, trx};
 use crate::login::brand_gradient;
-use crate::style::{fill_box, fw, t, txt};
+use crate::style::{fill_box, fw, t, txt, Palette, CLEAR};
 use crate::{BeeperGuiApp, El, Toast, UiMessage};
 use beeper_core::store::SharedStore;
 use iced::font::Weight;
-use iced::widget::{button, column, container, mouse_area, rich_text, row, span, tooltip};
+use iced::widget::{button, column, container, mouse_area, rich_text, row, span, svg, tooltip};
 use iced::{border, window, Background, Center, Color, Fill, Padding, Pixels, Size, Task, Theme};
 
 /// The size of Desktop's `VERIFICATION` modal window.
@@ -29,6 +29,8 @@ pub enum VerifyMsg {
     Decline(String),
     /// "They match" and "They don't match".
     Match(bool),
+    /// "Confirm using emojis instead" of the QR code.
+    Emojis,
     /// A click outside the modal, which cancels the verification.
     Outside,
     /// The end of a Matrix call, with the text of the toast that tells its error.
@@ -84,6 +86,10 @@ impl BeeperGuiApp {
                 return Task::batch([accept, self.open_verify()]);
             }
             VerifyMsg::Decline(id) => return cancel(s, id),
+            VerifyMsg::Emojis => {
+                let id = s.read().app_verification().map(|v| v.id.clone()).expect("the QR code is of a verification");
+                return call("", async move { beeper_core::matrix::start_sas(&s, &id).await });
+            }
             VerifyMsg::Match(true) => {
                 // An API client can answer the same emojis first.
                 if let Some(tx) = s.write().sas_confirm.take() {
@@ -127,7 +133,8 @@ impl BeeperGuiApp {
         self.older_toasts.retain(|t| t.0.text != text);
     }
 
-    /// Desktop's handlers of `VERIFICATION_REQUESTED`, `VERIFICATION_DONE` and `VERIFICATION_CANCELLED`, for a change
+    /// Desktop's handlers of `VERIFICATION_REQUESTED`, `QR_CODE_SCANNED`, `VERIFICATION_DONE` and
+    /// `VERIFICATION_CANCELLED`, for a change
     /// of the tracked verification.
     pub fn verification_changed(&mut self) -> Task<UiMessage> {
         let st = self.store.read();
@@ -149,6 +156,13 @@ impl BeeperGuiApp {
                 self.show(Toast { buttons, ..Toast::new(text.clone()) });
                 self.sticky_banner = Some(text);
             }
+            // Desktop confirms the scan of its QR code by the other device at once.
+            "qr_scanned" => {
+                let s = self.store.clone();
+                let confirm = call("", async move { beeper_core::matrix::confirm_qr(&s, &id).await });
+                self.show(Toast::new(tr("Authentication confirmed, restoring the cryptographic state").into()));
+                return Task::batch([confirm, self.close_verify()]);
+            }
             "done" => {
                 self.drop_toast(&request_text(&name));
                 self.drop_toast(waiting);
@@ -165,17 +179,30 @@ impl BeeperGuiApp {
         Task::none()
     }
 
-    /// Desktop's `VerificationModal`: "Loading...", then the emojis to compare with the other device.
+    /// Desktop's `VerificationModal`: "Loading...", then the QR code for the other device to scan, or the emojis to
+    /// compare with it.
     pub fn view_verify(&self) -> El<'_> {
         let p = &self.pal;
         let st = self.store.read();
         let v = st.app_verification();
         let emojis = v.and_then(|v| v.sas.as_ref().filter(|_| v.state == "sas_ready" && v.methods.contains(&"sas")));
-        let title = match emojis {
-            Some(_) => tr("Emoji Verification"),
-            None => trx("Loading...", "verification modal title"),
+        let qr = v.and_then(|v| v.qr.as_ref().filter(|_| emojis.is_none() && v.state == "ready"));
+        let title = match (emojis, qr) {
+            (Some(_), _) => tr("Emoji Verification"),
+            (None, Some(_)) => tr("QR Verification"),
+            (None, None) => trx("Loading...", "verification modal title"),
         };
         let title = t(title, 28.0, Weight::ExtraBold).line_height(Pixels(38.0)).color(p.strong).center();
+        let code = qr.map(|qr| -> El<'_> {
+            let emojis = v.is_some_and(|v| v.methods.contains(&"sas")).then(|| {
+                let label = trx("Confirm using emojis instead", "button label");
+                brand_btn(p, label, Brand::Secondary, VerifyMsg::Emojis.into())
+            });
+            let hint = txt(tr("Scan the QR code with your device to verify your session."), 13.0).color(p.strong);
+            let content = column![hint.center().width(Fill)].push(emojis).spacing(16).align_x(Center);
+            let code = qr_code(&qr.data);
+            column![container(code).center_x(Fill).padding([24, 0]), content].into()
+        });
         let body: Option<El<'_>> = emojis.map(|sas| {
             let name = device_name(v.expect("emojis come from a verification"));
             let glyphs = sas.emojis.iter().map(|e| {
@@ -194,25 +221,9 @@ impl BeeperGuiApp {
                 .color(p.muted)
                 .center()
                 .width(Fill);
-            let brand = |label: &'static str, primary: bool, msg: VerifyMsg| -> El<'_> {
-                let (bg, fg) = match primary {
-                    true => (brand_gradient(), Color::WHITE),
-                    false => (Background::from(p.chip), p.strong),
-                };
-                button(container(t(label, 13.0, Weight::Medium).color(fg)).center_x(Fill))
-                    .width(Fill)
-                    .padding([8, 10])
-                    .style(move |_: &Theme, _| button::Style {
-                        background: Some(bg),
-                        border: border::rounded(9999),
-                        ..Default::default()
-                    })
-                    .on_press(msg.into())
-                    .into()
-            };
             let buttons = column![
-                brand(trx("They match", "button label"), true, VerifyMsg::Match(true)),
-                brand(trx("They don't match", "button label"), false, VerifyMsg::Match(false)),
+                brand_btn(p, trx("They match", "button label"), Brand::Primary, VerifyMsg::Match(true).into()),
+                brand_btn(p, trx("They don't match", "button label"), Brand::Muted, VerifyMsg::Match(false).into()),
             ]
             .spacing(8);
             let small = txt(tr("Proceeding will give the other device full access to your Beeper account"), 11.0)
@@ -222,7 +233,7 @@ impl BeeperGuiApp {
             column![glyphs, column![hint, buttons, small].spacing(16).align_x(Center)].into()
         });
         drop(st);
-        let card = column![title].push(body).align_x(Center).width(Fill);
+        let card = column![title].push(code).push(body).align_x(Center).width(Fill);
         let card = container(card)
             .width(Fill)
             .height(Fill)
@@ -233,10 +244,49 @@ impl BeeperGuiApp {
     }
 }
 
+/// The variants of Desktop's `BrandButton` in `size: "small"`.
+#[derive(Clone, Copy)]
+pub(crate) enum Brand {
+    Primary,
+    Secondary,
+    Muted,
+}
+
+/// Desktop's `BrandButton` with `size: "small"`: a full-width pill.
+pub(crate) fn brand_btn<'a>(p: &Palette, label: &'a str, variant: Brand, msg: UiMessage) -> El<'a> {
+    let (bg, fg, edge) = match variant {
+        Brand::Primary => (brand_gradient(), Color::WHITE, CLEAR),
+        Brand::Secondary => (Background::from(CLEAR), p.accent, p.accent),
+        Brand::Muted => (Background::from(p.chip), p.strong, CLEAR),
+    };
+    button(container(t(label, 13.0, Weight::Medium).color(fg)).center_x(Fill))
+        .width(Fill)
+        .padding([8, 10])
+        .style(move |_: &Theme, _| button::Style {
+            background: Some(bg),
+            border: border::rounded(9999).color(edge).width(1),
+            ..Default::default()
+        })
+        .on_press(msg)
+        .into()
+}
+
+/// Desktop's `QRCode` of `data`: the bytes in error correction level L, 4 pixels for each module, and a
+/// margin of 4 modules, like the `qrcode` package of Desktop.
+pub(crate) fn qr_code<'a>(data: &[u8]) -> El<'a> {
+    use qrcodegen::{QrCode, QrCodeEcc, QrSegment};
+    let code =
+        QrCode::encode_segments(&[QrSegment::make_bytes(data)], QrCodeEcc::Low).expect("a QR code holds the data");
+    let px = ((code.size() + 8) * 4) as f32;
+    svg::Svg::new(crate::style::qr_svg(&code, 4)).width(px).height(px).into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use beeper_core::models::{AppVerification, VerificationDevice, VerificationSas, VerificationSasEmoji};
+    use beeper_core::models::{
+        AppVerification, VerificationDevice, VerificationQr, VerificationSas, VerificationSasEmoji,
+    };
     use iced_test::simulator::simulator;
 
     fn request(device: Option<VerificationDevice>) -> AppVerification {
@@ -249,6 +299,7 @@ mod tests {
             available_actions: vec!["accept", "cancel"],
             other_user_id: Some("@alex:beeper.com".into()),
             other_device: device,
+            qr: None,
             sas: None,
             error: None,
         }
@@ -315,5 +366,29 @@ mod tests {
         let _ = app.verification_changed();
         assert!(app.older_toasts.iter().all(|t| t.0.text != "Verification request from Pixel"));
         assert_ne!(app.status_banner, "Verification request from Pixel", "a cancel removes the request toast");
+    }
+
+    #[test]
+    fn modal_shows_the_qr_code_and_a_scan_confirms_it_like_desktop() {
+        let mut app = crate::fuzz::demo_app("verify-qr");
+        let mut v = request(Some(VerificationDevice { id: "DEV".into(), name: None }));
+        (v.direction, v.state, v.methods) = ("outgoing", "ready", vec!["qr", "sas"]);
+        v.qr = Some(VerificationQr { data: b"MATRIX\x02\x02".to_vec() });
+        app.store.write().verification = Some(v);
+        let _ = app.verification_changed();
+        app.verify.window = Some(window::Id::unique());
+        let mut sim = simulator(app.view_verify());
+        for text in ["QR Verification", "Scan the QR code with your device to verify your session."] {
+            assert!(sim.find(text).is_ok(), "the modal shows {text}");
+        }
+        let _ = sim.click("Confirm using emojis instead");
+        assert!(sim.into_messages().any(|m| matches!(m, UiMessage::Verify(VerifyMsg::Emojis))));
+        app.store.write().verification.as_mut().expect("a verification").methods = vec!["qr"];
+        assert!(simulator(app.view_verify()).find("Confirm using emojis instead").is_err(), "no emojis without SAS");
+
+        app.store.write().verification.as_mut().expect("a verification").state = "qr_scanned";
+        let _ = app.verification_changed();
+        assert_eq!(app.status_banner, "Authentication confirmed, restoring the cryptographic state");
+        assert!(app.verify.window.is_none(), "a scan closes the modal");
     }
 }

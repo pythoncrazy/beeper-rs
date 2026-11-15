@@ -674,7 +674,9 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
         }
         ("POST", ["verifications", "qr", "scan"]) => {
             signed_in()?;
-            Err(failed("QR code verification is not supported"))
+            let data = r.need("data")?.to_string();
+            rt.block_on(matrix::scan_qr(store, &data)).map_err(|e| failed(&e))?;
+            progress(store, false)
         }
         ("POST", ["verifications", id, action @ ..]) => {
             let action = match action {
@@ -694,9 +696,9 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
                     let tx = store.write().sas_confirm.take().ok_or_else(verification_not_found)?;
                     tx.send(true).ok();
                 }
-                // beeper-rs starts the emoji comparison when the request is ready.
-                "sas.start" => {}
-                _ => unreachable!("beeper-rs has no QR code verification that allows {action}"),
+                "sas.start" => rt.block_on(matrix::start_sas(store, id)).map_err(|e| failed(&e))?,
+                "qr.confirmScanned" => rt.block_on(matrix::confirm_qr(store, id)).map_err(|e| failed(&e))?,
+                _ => unreachable!("the action table has no {action}"),
             }
             progress(store, true)
         }
