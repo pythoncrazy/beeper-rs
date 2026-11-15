@@ -1300,23 +1300,37 @@ impl BeeperStore {
         });
     }
 
-    /// Drops a chat that the user left, with its messages, and rebuilds the indices.
+    /// Drops a chat that the user left, with its messages. The other messages move without a new search index.
     pub fn remove_chat(&mut self, id: &str) {
         self.remove_label(id);
-        if !self.chat_idx_by_id.contains_key(id) {
-            return;
+        let Some(idx) = self.chat_idx_by_id.remove(id) else { return };
+        if let Some(local) = self.chats.remove(idx).local_chat_id {
+            self.local_chat_idx_by_id.remove(&local);
         }
-        let (chats, messages) = (std::mem::take(&mut self.chats), std::mem::take(&mut self.messages));
-        let live = std::mem::take(&mut self.msg_idx_by_id);
-        (self.chat_idx_by_id, self.local_chat_idx_by_id, self.chat_msg_indices) = Default::default();
-        self.chat_search_index = Default::default();
-        for c in chats.into_iter().filter(|c| c.id != id) {
-            self.push_chat(c, false);
+        for i in self.chat_idx_by_id.values_mut().chain(self.local_chat_idx_by_id.values_mut()).filter(|i| **i > idx) {
+            *i -= 1;
         }
+        self.chat_search_index = InvertedIndex::default();
+        for (i, c) in self.chats.iter().enumerate() {
+            self.chat_search_index.insert_doc(i as u32, &chat_index_text(c));
+        }
+        self.chat_msg_indices.remove(id).expect("a chat has a message list");
+        let messages = std::mem::take(&mut self.messages);
+        let mut moved = vec![usize::MAX; messages.len()];
+        self.messages.reserve(messages.len());
         for (i, m) in messages.into_iter().enumerate() {
-            if m.chat_id != id && live.get(&m.id) == Some(&i) {
-                self.push_message(m, false);
+            if m.chat_id != id && self.msg_idx_by_id.get(&m.id) == Some(&i) {
+                moved[i] = self.messages.len();
+                self.messages.push(m);
             }
+        }
+        self.msg_idx_by_id.retain(|_, i| {
+            *i = moved[*i];
+            *i != usize::MAX
+        });
+        for i in self.chat_msg_indices.values_mut().flatten() {
+            *i = moved[*i];
+            assert_ne!(*i, usize::MAX, "a listed message stays");
         }
         self.exec("DELETE FROM messages WHERE chat_id = ?1", params![id]);
         self.exec("DELETE FROM chats WHERE id = ?1", params![id]);
@@ -2099,6 +2113,42 @@ mod tests {
         let st = super::BeeperStore::from_config(config);
         assert_eq!(ids(&st, "borr"), want, "search finds the same messages after the migration");
         assert_eq!(st.search_messages("orrow"), Vec::<usize>::new(), "only the last word is a prefix");
+        drop(st);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_removed_chat_leaves_the_other_chats_intact() {
+        let dir = std::env::temp_dir().join(format!("beeper-rs-remove-chat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23396, None);
+        config.demo = true;
+        let mut st = super::BeeperStore::from_config(config);
+        let with_messages = |st: &super::BeeperStore| {
+            st.chats.iter().map(|c| c.id.clone()).filter(|c| !st.chat_msg_indices[c].is_empty()).collect::<Vec<_>>()
+        };
+        let (gone, kept) = (with_messages(&st)[0].clone(), with_messages(&st)[1].clone());
+        let tombstone = st.messages[st.chat_msg_indices[&kept][0]].id.clone();
+        st.remove_message(&kept, &tombstone).unwrap();
+        let before: Vec<(String, Vec<String>)> = st
+            .chats
+            .iter()
+            .filter(|c| c.id != gone)
+            .map(|c| (c.id.clone(), st.chat_msg_indices[&c.id].iter().map(|&i| st.messages[i].id.clone()).collect()))
+            .collect();
+        st.remove_chat(&gone);
+        let after: Vec<(String, Vec<String>)> = st
+            .chats
+            .iter()
+            .map(|c| (c.id.clone(), st.chat_msg_indices[&c.id].iter().map(|&i| st.messages[i].id.clone()).collect()))
+            .collect();
+        assert_eq!(after, before);
+        assert_eq!(st.messages.len(), st.msg_idx_by_id.len(), "the tombstones and the messages of the chat are gone");
+        assert!(st.msg_idx_by_id.iter().all(|(id, &i)| st.messages[i].id == *id));
+        assert!(st.chats.iter().enumerate().all(|(i, c)| st.chat_idx_by_id[&c.id] == i));
+        let title = st.chats.last().unwrap().title.clone();
+        let found = st.chat_search_index.query_all_tokens(&title);
+        assert!(found.iter().any(|&i| st.chats[i as usize].title == title), "the chat search finds moved chats");
         drop(st);
         std::fs::remove_dir_all(dir).unwrap();
     }
