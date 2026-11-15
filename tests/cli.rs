@@ -176,3 +176,57 @@ fn cli_lists_shows_and_changes_chats() {
     let bad = d.run(&["chats", "disappear", "--chat", "local_x5", "--seconds", "x", "--json"]);
     assert!(bad.stderr.contains("--seconds must be a positive integer or \\\"off\\\""), "{}", bad.stderr);
 }
+
+#[test]
+fn cli_lists_searches_sends_and_exports_messages() {
+    let d = demo("messages");
+    let ids = d.run(&["messages", "list", "--chat", "local_wa_eric", "--ids"]).stdout;
+    assert_eq!(ids, "msg_1001\nmsg_1000c\nmsg_1000b\nmsg_1000a\n");
+    let asc = d.run(&["messages", "list", "--chat", "Eric Migicovsky", "--limit", "2", "--asc", "--ids"]).stdout;
+    assert_eq!(asc, "msg_1000c\nmsg_1001\n");
+    let show = d.run(&["messages", "show", "--chat", "local_wa_eric", "--id", "msg_1000b"]).stdout;
+    let (head, body) = show.split_once('\n').unwrap();
+    assert!(head.starts_with("▎ you  📎 beeper-rs-v4-architecture.pdf  ♥2   "), "{show}");
+    assert_eq!(unicode_width::UnicodeWidthStr::width(head), 80, "{show}");
+    let text = "  Just migrated the UI to Iced with Inter + Lucide vector rendering and full\n  SQLite WAL persistence. Memory usage is under 28 MB!\n";
+    assert_eq!(body, format!("{text}  msg_1000b  in !wa_eric:beeper.com\n\n"));
+
+    let none = d.run(&["messages", "search", "zzzz"]);
+    assert!(
+        none.stdout.starts_with("▎ No messages matched\n  Nothing found for \"zzzz\".\n\nTry\n"),
+        "{}",
+        none.stdout
+    );
+    assert_eq!(none.stderr, "✓ 0 matches\n");
+    let usage = d.run(&["messages", "search"]);
+    let wrapped =
+        "    AbortError: Provide a search query or at least one filter flag (--chat, \n    --sender, --media, etc.).\n";
+    assert_eq!((usage.code, usage.stderr), (1, wrapped.to_string()));
+    assert_eq!(d.run(&["messages", "search", "--json"]).code, 2, "with --json the exit code is the code of the error");
+
+    let sent = d.run(&["send", "text", "--to", "local_x7", "--message", "hi", "--json"]).json();
+    assert_eq!((sent["data"]["state"].clone(), sent["data"]["chatID"].clone()), (json!("accepted"), json!("local_x7")));
+    let waited = d.run(&["send", "text", "--to", "local_x7", "--message", "hello there", "--wait", "--json"]).json();
+    assert_eq!(
+        (waited["data"]["state"].clone(), waited["data"]["message"]["text"].clone()),
+        (json!("resolved"), json!("hello there"))
+    );
+    let file = d.config.with_file_name("note.txt");
+    std::fs::write(&file, "a note\n").unwrap();
+    let sent = d.run(&["send", "file", "--to", "local_x7", "--file", file.to_str().unwrap(), "--json"]).json();
+    assert_eq!(sent["data"]["accepted"], true);
+    let missing = d.run(&["send", "file", "--to", "local_x7", "--file", "/nonexistent/x.txt"]);
+    assert!(
+        missing.stderr.contains("│   ENOENT: no such file or directory, open '/nonexistent/x.txt'\n"),
+        "{}",
+        missing.stderr
+    );
+    let react =
+        d.run(&["send", "react", "--to", "local_wa_eric", "--id", "msg_1001", "--reaction", "👍", "--json"]).json();
+    assert_eq!(react["data"]["reactionKey"], "👍");
+
+    let export: Value =
+        serde_json::from_str(&d.run(&["messages", "export", "--chat", "local_wa_eric", "--limit", "2"]).stdout)
+            .unwrap();
+    assert_eq!((export["chatID"].clone(), export["count"].clone()), (json!("local_wa_eric"), json!(2)));
+}

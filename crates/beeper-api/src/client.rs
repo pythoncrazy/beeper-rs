@@ -20,6 +20,35 @@ pub struct BeeperClient {
 #[derive(Debug)]
 pub struct ApiError(pub String);
 
+fn json_body(body: Option<&Value>) -> Option<(String, Vec<u8>)> {
+    body.map(|v| ("application/json".into(), serde_json::to_vec(v).expect("JSON values serialize")))
+}
+
+fn json_or_text(bytes: Vec<u8>) -> Value {
+    match bytes.is_empty() {
+        true => Value::Null,
+        false => serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())),
+    }
+}
+
+/// The body of a 2xx or 3xx reply, else the error text of the SDK's `APIError`.
+fn checked(status: u16, bytes: Vec<u8>) -> Result<Vec<u8>, ApiError> {
+    if status < 400 {
+        return Ok(bytes);
+    }
+    let msg = match serde_json::from_slice::<Value>(&bytes).ok() {
+        Some(Value::Object(e)) if e.get("message").is_some_and(|m| !m.is_null()) => match &e["message"] {
+            Value::String(m) => m.clone(),
+            m => m.to_string(),
+        },
+        Some(e) => e.to_string(),
+        None if !bytes.is_empty() => String::from_utf8_lossy(&bytes).into_owned(),
+        None => "status code (no body)".into(),
+    };
+    Err(ApiError(format!("{status} {msg}")))
+}
+
 const REDIRECT_URI: &str = "http://127.0.0.1:0/callback";
 
 fn chat_path(chat_id: &str, rest: &str) -> String {
@@ -47,16 +76,20 @@ impl BeeperClient {
     /// A request for the CLI: the body of a 2xx reply as JSON (`Null` when it is empty, a string when it is not
     /// JSON), else the SDK error text.
     pub async fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, ApiError> {
-        let bytes = self.call_raw(method, path, body).await?;
-        Ok(match bytes.is_empty() {
-            true => Value::Null,
-            false => serde_json::from_slice(&bytes)
-                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())),
-        })
+        Ok(json_or_text(self.call_raw(method, path, body).await?))
     }
 
     /// The status and the body of a request, or `Connection error.` when the server does not answer.
     pub async fn fetch(&self, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Vec<u8>), ApiError> {
+        self.fetch_raw(method, path, json_body(body)).await
+    }
+
+    async fn fetch_raw(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<(String, Vec<u8>)>,
+    ) -> Result<(u16, Vec<u8>), ApiError> {
         let accept = [("accept", "application/json")];
         let (status, bytes) =
             self.try_send(method, path, &accept, body).await.map_err(|_| ApiError("Connection error.".into()))?;
@@ -69,20 +102,24 @@ impl BeeperClient {
     /// Like [`Self::call`], with the raw body of the reply.
     pub async fn call_raw(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Vec<u8>, ApiError> {
         let (status, bytes) = self.fetch(method, path, body).await?;
-        if status < 400 {
-            return Ok(bytes);
+        checked(status, bytes)
+    }
+
+    /// The `assets.upload` of the SDK: a multipart form with the file, then the `fields` (`fileName`, `mimeType`).
+    pub async fn upload(&self, name: &str, bytes: &[u8], fields: &[(&str, &str)]) -> Result<Value, ApiError> {
+        const BOUNDARY: &str = "----beeper-rs-upload";
+        let name = name.replace('"', "%22");
+        let head = format!("--{BOUNDARY}\r\ncontent-disposition: form-data; name=\"file\"; filename=\"{name}\"\r\ncontent-type: application/octet-stream\r\n\r\n");
+        let mut body = [head.as_bytes(), bytes].concat();
+        for (k, v) in fields {
+            body.extend(
+                format!("\r\n--{BOUNDARY}\r\ncontent-disposition: form-data; name=\"{k}\"\r\n\r\n{v}").as_bytes(),
+            );
         }
-        let error: Option<Value> = serde_json::from_slice(&bytes).ok();
-        let msg = match &error {
-            Some(Value::Object(e)) if e.get("message").is_some_and(|m| !m.is_null()) => match &e["message"] {
-                Value::String(m) => m.clone(),
-                m => m.to_string(),
-            },
-            Some(e) => e.to_string(),
-            None if !bytes.is_empty() => String::from_utf8_lossy(&bytes).into_owned(),
-            None => "status code (no body)".into(),
-        };
-        Err(ApiError(format!("{status} {msg}")))
+        body.extend(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        let form = (format!("multipart/form-data; boundary={BOUNDARY}"), body);
+        let (status, bytes) = self.fetch_raw("POST", "/v1/assets/upload", Some(form)).await?;
+        Ok(json_or_text(checked(status, bytes)?))
     }
 
     pub async fn send(
@@ -92,18 +129,19 @@ impl BeeperClient {
         headers: &[(&str, &str)],
         body: Option<&Value>,
     ) -> (StatusCode, Vec<u8>) {
-        self.try_send(method, path, headers, body).await.expect("send the HTTP request to the Beeper server")
+        let sent = self.try_send(method, path, headers, json_body(body)).await;
+        sent.expect("send the HTTP request to the Beeper server")
     }
 
+    /// Sends one request with its content type and body, and reads the reply.
     async fn try_send(
         &self,
         method: &str,
         path: &str,
         headers: &[(&str, &str)],
-        body: Option<&Value>,
+        body: Option<(String, Vec<u8>)>,
     ) -> std::io::Result<(StatusCode, Vec<u8>)> {
-        let body = body.map(|v| serde_json::to_vec(v).unwrap());
-        let len = body.as_ref().map_or(0, Vec::len);
+        let len = body.as_ref().map_or(0, |b| b.1.len());
         let mut head = format!(
             "{method} {path} HTTP/1.1\r\nhost: {}\r\nconnection: close\r\ncontent-length: {len}\r\n",
             self.host_port
@@ -111,13 +149,13 @@ impl BeeperClient {
         if !self.access_token.is_empty() {
             write!(head, "authorization: Bearer {}\r\n", self.access_token).unwrap();
         }
-        if body.is_some() {
-            head.push_str("content-type: application/json\r\n");
+        if let Some((kind, _)) = &body {
+            write!(head, "content-type: {kind}\r\n").unwrap();
         }
         headers.iter().for_each(|(k, v)| write!(head, "{k}: {v}\r\n").unwrap());
         head.push_str("\r\n");
         let mut stream = TcpStream::connect(&self.host_port).await?;
-        stream.write_all(&[head.into_bytes(), body.unwrap_or_default()].concat()).await?;
+        stream.write_all(&[head.into_bytes(), body.map(|b| b.1).unwrap_or_default()].concat()).await?;
         let bad = |_| std::io::Error::new(std::io::ErrorKind::InvalidData, "a bad HTTP response");
         let resp = read_message(&mut stream, &mut Vec::new(), |_| usize::MAX).await.map_err(bad)?;
         let status = resp.start_line.split(' ').nth(1).and_then(|s| s.parse().ok()).ok_or_else(|| bad(None))?;

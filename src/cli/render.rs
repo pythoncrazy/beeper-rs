@@ -302,22 +302,27 @@ fn draw(el: &El, x: f32, y: usize, w: f32, g: &mut Grid) -> usize {
     }
 }
 
-/// The columns of the terminal, or 80 like ink when stdout is not a terminal.
-fn columns() -> usize {
+/// The columns of the terminal on `fd` (1 for stdout, 2 for stderr), or 80 like ink when it is not a terminal.
+pub fn columns(fd: i32) -> usize {
     #[cfg(target_os = "linux")]
-    if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+    {
         #[repr(C)]
         struct WinSize([u16; 4]);
         unsafe extern "C" {
             fn ioctl(fd: i32, request: u64, ...) -> i32;
         }
         let mut size = WinSize([0; 4]);
-        // SAFETY: TIOCGWINSZ writes one `winsize` into `size`.
-        if unsafe { ioctl(1, 0x5413, &mut size) } == 0 && size.0[1] > 0 {
+        // SAFETY: TIOCGWINSZ writes one `winsize` into `size`, and fails on a file that is not a terminal.
+        if unsafe { ioctl(fd, 0x5413, &mut size) } == 0 && size.0[1] > 0 {
             return usize::from(size.0[1]);
         }
     }
     80
+}
+
+/// `wrap-ansi` with `{trim: false, hard: true}` for plain text.
+pub fn wrap_plain(text: &str, cols: usize) -> Vec<String> {
+    wrapped(&[(text.into(), St::default())], cols as f32).iter().map(|l| l.iter().map(|c| c.0).collect()).collect()
 }
 
 /// Whether chalk colors stdout, and whether with 24-bit colors.
@@ -388,7 +393,7 @@ pub fn layout(el: &El, cols: usize, color: Option<bool>) -> String {
 }
 
 pub fn print(el: &El) {
-    println!("{}", layout(el, columns(), color_mode()));
+    println!("{}", layout(el, columns(1), color_mode()));
 }
 
 // ─── formatting (`lib/ink/format.js`) ──────────────────────────────────────────

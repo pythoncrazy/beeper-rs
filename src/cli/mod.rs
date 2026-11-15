@@ -4,6 +4,7 @@
 
 mod chats;
 pub mod commands;
+mod messages;
 mod render;
 
 use beeper_api::client::{ApiError, BeeperClient};
@@ -122,14 +123,20 @@ pub struct CliError {
     pub code: i32,
     pub class: Option<&'static str>,
     pub hint: Option<String>,
+    /// The first line of the stack in the error panel: `Error: ` before the message, or nothing for a system error.
+    pub stack: &'static str,
 }
 
 impl CliError {
     pub fn bug(msg: impl Into<String>) -> Self {
-        Self { msg: msg.into(), code: 1, class: None, hint: None }
+        Self { msg: msg.into(), code: 1, class: None, hint: None, stack: "Error: " }
     }
     pub fn abort(msg: impl Into<String>, code: i32) -> Self {
-        Self { msg: msg.into(), code, class: Some("AbortError"), hint: None }
+        Self { msg: msg.into(), code, class: Some("AbortError"), hint: None, stack: "Error: " }
+    }
+    /// A file system error of Node, whose stack starts with the message.
+    pub fn system(msg: impl Into<String>) -> Self {
+        Self { stack: "", ..Self::bug(msg) }
     }
     fn usage(msg: impl Into<String>) -> Self {
         Self::bug(format!("{}\nSee more help with --help", msg.into()))
@@ -224,30 +231,38 @@ fn parse(cmd: &'static Cmd, argv: &[String]) -> Res<(HashMap<&'static str, Val>,
         let val = match flag.kind {
             Kind::Bool | Kind::AllowNo => Val::Bool(on),
             _ => {
+                if flag.kind != Kind::Many && vals.contains_key(flag.name) {
+                    return Err(CliError::bug(format!("Flag --{} can only be specified once", flag.name)));
+                }
                 let value = inline.or(short_inline).or_else(|| words.next_if(|w| !is_flag(w)));
                 let shown = if name.starts_with("--") { name.clone() } else { format!("--{}", flag.name) };
-                let value = value.ok_or_else(|| CliError::bug(format!("Flag {shown} expects a value")))?;
-                if !flag.options.is_empty() && !flag.options.contains(&value.as_str()) {
-                    let msg = format!("Expected --{}={value} to be one of: {}", flag.name, flag.options.join(", "));
+                let value = value.ok_or_else(|| match flag.options {
+                    [] => CliError::bug(format!("Flag {shown} expects a value")),
+                    options => {
+                        CliError::bug(format!("Flag {shown} expects one of these values: {}", options.join(", ")))
+                    }
+                })?;
+                let mut values = vec![value];
+                if flag.kind == Kind::Many {
+                    values.extend(std::iter::from_fn(|| words.next_if(|w| !w.starts_with('-'))));
+                }
+                if let Some(bad) =
+                    values.iter().find(|v| !flag.options.is_empty() && !flag.options.contains(&v.as_str()))
+                {
+                    let msg = format!("Expected --{}={bad} to be one of: {}", flag.name, flag.options.join(", "));
                     return Err(CliError::usage(msg));
                 }
                 match flag.kind {
-                    Kind::Int => Val::Int(int(&value).ok_or_else(|| {
-                        CliError::usage(format!(
-                            "Parsing --{} \n\tExpected an integer but received: {value}",
-                            flag.name
-                        ))
+                    Kind::Int => Val::Int(int(&values[0]).ok_or_else(|| {
+                        let msg =
+                            format!("Parsing --{} \n\tExpected an integer but received: {}", flag.name, values[0]);
+                        CliError::usage(msg)
                     })?),
-                    Kind::Many => {
-                        let mut all = match vals.remove(flag.name) {
-                            Some(Val::Many(all)) => all,
-                            _ => Vec::new(),
-                        };
-                        all.push(value);
-                        all.extend(std::iter::from_fn(|| words.next_if(|w| !w.starts_with('-'))));
-                        Val::Many(all)
-                    }
-                    _ => Val::Str(value),
+                    Kind::Many => match vals.remove(flag.name) {
+                        Some(Val::Many(all)) => Val::Many([all, values].concat()),
+                        _ => Val::Many(values),
+                    },
+                    _ => Val::Str(values.remove(0)),
                 }
             }
         };
@@ -260,6 +275,9 @@ fn parse(cmd: &'static Cmd, argv: &[String]) -> Res<(HashMap<&'static str, Val>,
         let extra = &args[cmd.args.len()..];
         let s = if extra.len() > 1 { "s" } else { "" };
         return Err(CliError::usage(format!("Unexpected argument{s}: {}", extra.join(", "))));
+    }
+    if args.len() < cmd.args.len() {
+        args.extend(stdin());
     }
     let missing: Vec<&Arg> = cmd.args.iter().skip(args.len()).filter(|a| a.required).collect();
     if !missing.is_empty() {
@@ -307,6 +325,21 @@ fn parse(cmd: &'static Cmd, argv: &[String]) -> Res<(HashMap<&'static str, Val>,
     Ok((vals, args))
 }
 
+/// oclif's `readStdin`: piped input fills the first missing argument, if it arrives within 10 ms.
+fn stdin() -> Option<String> {
+    use std::io::{IsTerminal, Read};
+    if std::io::stdin().is_terminal() {
+        return None;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = tx.send(std::io::stdin().read_to_string(&mut text).map(|_| text));
+    });
+    let text = rx.recv_timeout(std::time::Duration::from_millis(10)).ok()?.ok()?;
+    Some(text.trim().to_string()).filter(|t| !t.is_empty())
+}
+
 fn int(s: &str) -> Option<i64> {
     let digits = s.strip_prefix('-').unwrap_or(s);
     (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then(|| s.parse().ok()).flatten()
@@ -315,6 +348,8 @@ fn int(s: &str) -> Option<i64> {
 /// The state of one command: its parsed flags, the selected target, and the lazily built client.
 pub struct Ctx {
     pub cmd: &'static Cmd,
+    /// The stderr lines that ink writes when the command ends, like the last frame of a spinner.
+    tail: Vec<String>,
     vals: HashMap<&'static str, Val>,
     pub args: Vec<String>,
     rt: tokio::runtime::Runtime,
@@ -463,6 +498,24 @@ impl Ctx {
             }
         }
         Ok(items)
+    }
+
+    /// `withSpinner`: runs `run`, then shows its result line on stderr like the last frame of the ink spinner,
+    /// unless `--quiet`.
+    pub fn spinner<T>(
+        &mut self,
+        label: &str,
+        run: impl FnOnce(&mut Self) -> Res<T>,
+        done: impl Fn(&T) -> String,
+    ) -> Res<T> {
+        let quiet = self.on("quiet");
+        let result = run(self);
+        match (&result, quiet) {
+            (_, true) => {}
+            (Ok(v), false) => self.tail.push(format!("✓ {}", done(v))),
+            (Err(_), false) => self.tail.push(format!("✗ {label}")),
+        }
+        result
     }
 
     /// `printData`: the envelope with `--json`, else the text card of the value.
@@ -657,7 +710,7 @@ fn report(err: &CliError, json: bool, events: bool) -> i32 {
     match (err.class, &err.hint) {
         (None, _) => {
             let bar = "─".repeat(60);
-            let stack: Vec<String> = format!("Error: {}", err.msg).lines().map(|l| format!("│   {l}")).collect();
+            let stack: Vec<String> = format!("{}{}", err.stack, err.msg).lines().map(|l| format!("│   {l}")).collect();
             let version = beeper_core::config::APP_VERSION;
             eprint!(
                 "\n┌─ unexpected error {}\n│ {}\n│\n{}\n│\n│ {BIN} {version} — please report at\n│   https://github.com/pythoncrazy/beeper-rs/issues\n└{bar}\n",
@@ -672,7 +725,10 @@ fn report(err: &CliError, json: bool, events: bool) -> i32 {
             err.code
         }
         (Some(class), None) => {
-            eprintln!("    {class}: {}", err.msg);
+            // oclif's `prettyPrint`: wrapped at the width of stderr less 6, and indented by 4.
+            let text = render::wrap_plain(&format!("{class}: {}", err.msg), render::columns(2) - 6);
+            text.iter()
+                .for_each(|line| eprintln!("{}", if line.is_empty() { String::new() } else { format!("    {line}") }));
             1
         }
     }
@@ -701,8 +757,10 @@ pub fn run(argv: &[String]) -> i32 {
     let (json, events) = (argv.iter().any(|a| a == "--json"), argv.iter().any(|a| a == "--events"));
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("build the tokio runtime");
     let result = parse(cmd, &argv[n..]).and_then(|(vals, args)| {
-        let mut ctx = Ctx { cmd, vals, args, rt, client: None, target: None };
-        (cmd.run)(&mut ctx)
+        let mut ctx = Ctx { cmd, tail: Vec::new(), vals, args, rt, client: None, target: None };
+        let result = (cmd.run)(&mut ctx);
+        ctx.tail.iter().for_each(|line| eprintln!("{line}"));
+        result
     });
     match result {
         Ok(()) => 0,
