@@ -1050,6 +1050,45 @@ fn the_composer_pill_quotes_like_desktop() {
     assert!(simulator(app.view_main()).find("Editing message").is_err(), "Desktop has no edit banner");
 }
 
+/// Desktop's Media window viewer has Delete only when the chat deletes for everyone, you sent the message, and the
+/// network time limit has not passed. The delete dialog shows over the viewer and Escape closes it first.
+#[test]
+fn media_viewer_deletes_like_desktop() {
+    let mut app = demo_app("media-delete");
+    let _ = app.update(UiMessage::OpenMedia);
+    let id = app.media_window.as_ref().map(|w| w.id).expect("a media window");
+    let (mid, ai, chat) = {
+        let mut st = app.store.write();
+        let items = crate::media_items(&st, app.media_window.as_ref().expect("a media window"));
+        let (i, ai) =
+            *items.iter().find(|&&(i, k)| st.messages[i].attachments[k].attachment_type == "img").expect("an image");
+        st.messages[i].is_sender = Some(true);
+        let c = st.chat_idx_by_id[&st.messages[i].chat_id];
+        (st.chats[c].messages.delete, st.chats[c].messages.delete_max_age) = (true, None);
+        (st.messages[i].id.clone(), ai, c)
+    };
+    let _ = app.update(UiMessage::WindowResized(id, Size::new(1000.0, 720.0)));
+    let _ = app.update(UiMessage::OpenCarousel(mid.clone(), ai, true));
+    let click = |app: &BeeperGuiApp| -> Vec<UiMessage> {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 720.0), app.view(id));
+        sim.point_at(Point::new(898.0, 25.0));
+        let _ = sim.simulate(iced_test::simulator::click());
+        sim.into_messages().collect()
+    };
+    let delete = click(&app);
+    assert!(matches!(&delete[..], [UiMessage::MediaAskDelete(v)] if v[..] == [(mid.clone(), ai)]), "Delete shows");
+    let _ = app.update(delete.into_iter().next().unwrap());
+    assert!(simulator(app.view(id)).find("Are you sure you want to delete this message?").is_ok());
+    let _ = app.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), Modifiers::empty()));
+    let w = app.media_window.as_ref().unwrap();
+    assert!(w.deleting.is_none() && app.carousel.is_some(), "Escape closes the dialog first");
+    app.store.write().chats[chat].messages.delete_max_age = Some(60);
+    let go = click(&app);
+    assert!(matches!(&go[..], [UiMessage::GoToMessage(..)]), "an old message has no Delete");
+    let _ = app.update(UiMessage::MediaAskDelete(vec![(mid, ai)]));
+    assert_eq!(app.status_banner, "These messages can’t be deleted");
+}
+
 #[test]
 fn media_carousel_draws() {
     let mut app = demo_app("mediacarousel");

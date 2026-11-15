@@ -2538,6 +2538,7 @@ svg_static!(SYS_ROTATE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 
 svg_static!(SYS_EMOJI, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M12.917 9.167q.52 0 .885-.365t.365-.885-.365-.885a1.2 1.2 0 0 0-.885-.365q-.522 0-.886.365a1.2 1.2 0 0 0-.364.885q0 .52.364.885t.886.365m-5.834 0q.522 0 .886-.365t.364-.885q0-.52-.364-.885a1.2 1.2 0 0 0-.886-.365q-.52 0-.885.365a1.2 1.2 0 0 0-.365.885q0 .52.365.885t.885.365M10 14.584q1.416 0 2.573-.802a4.57 4.57 0 0 0 1.677-2.115h-8.5a4.57 4.57 0 0 0 1.677 2.115q1.156.802 2.573.802m0 3.75a8.1 8.1 0 0 1-3.25-.657 8.4 8.4 0 0 1-2.646-1.78 8.4 8.4 0 0 1-1.781-2.647A8.1 8.1 0 0 1 1.667 10q0-1.729.656-3.25a8.4 8.4 0 0 1 1.781-2.646 8.4 8.4 0 0 1 2.646-1.78A8.1 8.1 0 0 1 10 1.666q1.73 0 3.25.656a8.4 8.4 0 0 1 2.646 1.781 8.4 8.4 0 0 1 1.781 2.646 8.1 8.1 0 0 1 .656 3.25 8.1 8.1 0 0 1-.656 3.25 8.4 8.4 0 0 1-1.781 2.646 8.4 8.4 0 0 1-2.646 1.781 8.1 8.1 0 0 1-3.25.657m0-1.667q2.792 0 4.73-1.938 1.936-1.937 1.937-4.729 0-2.79-1.938-4.729Q12.792 3.334 10 3.334T5.27 5.27t-1.937 4.73q0 2.79 1.938 4.729Q7.209 16.667 10 16.667"/></svg>"##);
 svg_static!(SYS_REPLY, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M15.833 15.834V12.5a2.4 2.4 0 0 0-.729-1.77 2.4 2.4 0 0 0-1.77-.73H5.687l3 3L7.5 14.167l-5-5 5-5 1.188 1.167-3 3h7.645q1.73 0 2.948 1.218 1.22 1.22 1.219 2.948v3.334z"/></svg>"##);
+svg_static!(SYS_DELETE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M5.833 17.5q-.687 0-1.177-.49a1.6 1.6 0 0 1-.49-1.177V5h-.833V3.333H7.5V2.5h5v.833h4.167V5h-.834v10.833q0 .688-.49 1.177-.489.49-1.176.49zM14.167 5H5.833v10.833h8.334zM7.5 14.167h1.667v-7.5H7.5zm3.333 0H12.5v-7.5h-1.667z"/></svg>"##);
 svg_static!(SYS_DOWNLOAD,br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M10 13.333 5.833 9.166 7 7.958l2.167 2.167V3.333h1.666v6.792L13 7.958l1.167 1.208zm-5 3.333q-.687 0-1.177-.49A1.6 1.6 0 0 1 3.333 15v-2.5H5V15h10v-2.5h1.667V15q0 .687-.49 1.177t-1.177.49z"/></svg>"##);
 
 /// Desktop's system icons file-default, videocam, link, sms, tune, search and done.
@@ -3257,9 +3258,14 @@ struct MediaWindow {
     deleting: Option<(Vec<(String, String)>, usize)>,
 }
 
-/// If you can delete a message for everyone, like Desktop's Media window asks.
-fn deletable(m: &Message) -> bool {
-    m.is_sender == Some(true) && m.is_deleted != Some(true)
+/// If you can delete a message for everyone, like Desktop's Media window `G`: the chat fully supports deletion, you
+/// sent the message, and it is younger than the `delete_max_age` of the network.
+fn deletable(st: &BeeperStore, m: &Message) -> bool {
+    let rules = st.chats[st.chat_idx_by_id[&m.chat_id]].messages;
+    rules.delete
+        && m.is_sender == Some(true)
+        && m.is_deleted != Some(true)
+        && MessageRules::young(rules.delete_max_age, &m.timestamp)
 }
 
 /// Desktop's Media window page size.
@@ -6627,11 +6633,12 @@ impl BeeperGuiApp {
                 let mut pairs: Vec<(String, String)> = Vec::new();
                 for (mid, _) in &items {
                     let m = &st.messages[st.msg_idx_by_id[mid]];
-                    if deletable(m) && !pairs.iter().any(|(_, x)| x == mid) {
+                    if deletable(&st, m) && !pairs.iter().any(|(_, x)| x == mid) {
                         pairs.push((m.chat_id.clone(), mid.clone()));
                     }
                 }
-                let skipped = items.iter().filter(|(mid, _)| !deletable(&st.messages[st.msg_idx_by_id[mid]])).count();
+                let skipped =
+                    items.iter().filter(|(mid, _)| !deletable(&st, &st.messages[st.msg_idx_by_id[mid]])).count();
                 drop(st);
                 match pairs.is_empty() {
                     true => self.status_banner = tr("These messages can’t be deleted").into(),
@@ -6774,7 +6781,8 @@ impl BeeperGuiApp {
                         false => self.update(key),
                     };
                 }
-                if self.carousel.as_ref().is_some_and(|c| c.in_media) {
+                let asks = self.media_window.as_ref().is_some_and(|w| w.deleting.is_some());
+                if self.carousel.as_ref().is_some_and(|c| c.in_media) && !asks {
                     return self.carousel_key(&key, mods);
                 }
                 if key == Key::Named(Named::Escape) {
@@ -14356,6 +14364,10 @@ impl BeeperGuiApp {
                 Some(UiMessage::GoToMessage(c.id.clone(), mid.into())),
             )
         });
+        // The Media window viewer has Delete when you can delete the message, like Desktop's `MediaViewer`.
+        let delete = (car.in_media && deletable(&st, m)).then(|| {
+            control(&SYS_DELETE, tr("Delete"), vec![], Some(UiMessage::MediaAskDelete(vec![(mid.into(), ai)])))
+        });
         // Desktop shows Fullscreen in place of Rotate for a video.
         let turn_or_full = match &video {
             Some((src, _)) => {
@@ -14371,6 +14383,7 @@ impl BeeperGuiApp {
         let download = Some(UiMessage::Download(mid.to_string(), Some(ai)));
         let controls = row![]
             .push(go)
+            .push(delete)
             .push(react)
             .push(reply)
             .push(turn_or_full)
@@ -14847,8 +14860,9 @@ impl BeeperGuiApp {
                     )
                     .collect(),
             };
-            actions
-                .extend(deletable(m).then(|| act(tr("Delete…"), UiMessage::MediaAskDelete(vec![(mid.clone(), *k)]))));
+            actions.extend(
+                deletable(&st, m).then(|| act(tr("Delete…"), UiMessage::MediaAskDelete(vec![(mid.clone(), *k)]))),
+            );
             let h = 8.0 + MENU_ITEM * (1 + actions.len()) as f32 + 11.0;
             let col = Column::with_children([go, menu_rule(p)].into_iter().chain(actions));
             let menu = container(col.padding([4, 0])).width(180).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
@@ -14900,7 +14914,8 @@ impl BeeperGuiApp {
                 (tr("Cancel"), UiMessage::MediaDelete(false)),
             )
         });
-        stack![base].push(self.view_toast(8.0)).push(menu).push(item_menu).push(ask).push(carousel).into()
+        // The menus and the delete dialog of the viewer show over it.
+        stack![base].push(self.view_toast(8.0)).push(carousel).push(menu).push(item_menu).push(ask).into()
     }
 
     fn view_forward<'a>(&'a self, f: &'a Forward) -> El<'a> {
