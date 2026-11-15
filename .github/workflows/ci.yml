@@ -6,6 +6,7 @@ on:
     paths-ignore: ["**.md", LICENSE, NOTICE]
   pull_request:
     paths-ignore: ["**.md", LICENSE, NOTICE]
+  workflow_dispatch:
 
 # A new push to a pull request cancels the older run of the pull request.
 concurrency:
@@ -44,7 +45,9 @@ jobs:
           name: screenshots
           path: /tmp/beeper_rs_*.png
 
+  # The project targets Linux for now. Start the macOS and Windows checks by hand from the Actions tab.
   other-os:
+    if: github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
