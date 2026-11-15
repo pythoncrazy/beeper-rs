@@ -477,6 +477,21 @@ static BRAND_SVGS: LazyLock<HashMap<&'static str, [svg::Handle; 3]>> = LazyLock:
         .collect()
 });
 
+/// A QR code as an SVG: black modules on white, with a white `margin` of modules around them.
+pub fn qr_svg(code: &qrcodegen::QrCode, margin: i32) -> svg::Handle {
+    let (n, side) = (code.size(), code.size() + 2 * margin);
+    let mut path = String::new();
+    for y in 0..n {
+        for x in (0..n).filter(|&x| code.get_module(x, y)) {
+            path.push_str(&format!("M{},{}h1v1h-1z", x + margin, y + margin));
+        }
+    }
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {side} {side}" shape-rendering="crispEdges"><path fill="#fff" d="M0,0h{side}v{side}H0z"/><path fill="#000" d="{path}"/></svg>"##
+    );
+    svg::Handle::from_memory(svg.into_bytes())
+}
+
 pub fn brand_svg(bridge_id: &str) -> svg::Handle {
     BRAND_SVGS[bridge_id][0].clone()
 }
