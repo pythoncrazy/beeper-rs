@@ -1543,8 +1543,7 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
             if msg.attachments.len() > 1 || (msg.attachments.len() == 1 && !media) {
                 return refuse("Cannot edit messages with attachments");
             }
-            let (cid, msg) = st.edit_message(id, mid, text.into()).map_err(store_error)?;
-            st.queue(&cid, Outgoing::Edit { target: msg.id.clone(), text: text.into(), mentions: Vec::new() });
+            let (_, msg) = st.edit_message(id, mid, text.into(), Vec::new()).map_err(store_error)?;
             let mut edited = serde_json::to_value(view::message(&msg)).expect("serialize a message");
             (edited["success"], edited["messageID"]) = (true.into(), msg.id.clone().into());
             ok(&edited)
@@ -1563,21 +1562,18 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
                 let message = "This message is too old to delete for everyone on this network";
                 return Err(error(StatusCode::BAD_REQUEST, message, "DELETE_NOT_ALLOWED"));
             }
-            let cid = st.delete_message(id, mid).map_err(store_error)?;
-            st.queue(&cid, Outgoing::Redact { target: (*mid).into() });
+            st.redact_message(id, mid).map_err(store_error)?;
             empty(StatusCode::NO_CONTENT, Vec::new())
         }
         ("POST", ["messages", mid, "reactions"]) => {
             let key = r.need("reactionKey")?;
             let (cid, tx) = st.add_reaction(id, mid, key, r.owned("transactionID")).map_err(store_error)?;
-            st.queue(&cid, Outgoing::React { txn: tx.clone(), target: (*mid).into(), key: key.into() });
             ok(&json!({ "chatID": cid, "messageID": mid, "reactionKey": key, "transactionID": tx, "success": true }))
         }
         // Desktop also takes the key from the query, for keys that a path cannot carry.
         ("DELETE", ["messages", mid, "reactions", rest @ ..]) if rest.len() <= 1 => {
             let key = rest.first().copied().unwrap_or_else(|| r.q("reactionKey").unwrap_or_default());
-            let (cid, target) = st.remove_reaction(id, mid, key).map_err(store_error)?;
-            st.queue(&cid, Outgoing::Redact { target });
+            let cid = st.remove_reaction(id, mid, key).map_err(store_error)?;
             ok(&json!({ "chatID": cid, "messageID": mid, "reactionKey": key, "success": true }))
         }
         _ => Err(no_route()),

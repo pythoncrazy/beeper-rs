@@ -6050,8 +6050,7 @@ impl BeeperGuiApp {
                 );
             }
         } else if let Some(target) = self.pane.editing_message_id.take() {
-            st.edit_message(&chat_id, &target, text.clone()).expect("edit message");
-            st.queue(&chat_id, Outgoing::Edit { target, text, mentions });
+            st.edit_message(&chat_id, &target, text, mentions).expect("edit message");
         } else {
             let mut reply_to = self.pane.reply_target();
             let files = std::mem::take(&mut self.pane.attachments);
@@ -6809,34 +6808,23 @@ impl BeeperGuiApp {
             UiMessage::DeleteMessage(cid, mid) => {
                 self.confirm = None;
                 let mut st = self.store.write();
-                st.delete_message(&cid, &mid).expect("delete message");
-                st.queue(&cid, Outgoing::Redact { target: mid });
+                st.redact_message(&cid, &mid).expect("delete message");
             }
             UiMessage::RemoveFromBeeper(ids) => self.remove_from_beeper(ids),
             UiMessage::ToggleReaction(cid, mid, key) => {
                 let mut st = self.store.write();
-                let mine = stored(&st, &mid)
-                    .reactions
-                    .iter()
-                    .find(|r| r.reaction_key == key && st.is_me(&r.participant_id))
-                    .map(|r| r.id.clone());
-                let mut recent = None;
-                let out = match mine {
-                    Some(target) => {
-                        st.remove_reaction(&cid, &mid, &key).expect("remove reaction");
-                        Outgoing::Redact { target }
+                let mine =
+                    stored(&st, &mid).reactions.iter().any(|r| r.reaction_key == key && st.is_me(&r.participant_id));
+                if mine {
+                    st.remove_reaction(&cid, &mid, &key).expect("remove reaction");
+                } else {
+                    st.add_reaction(&cid, &mid, &key, None).expect("add reaction");
+                    st.add_recent_emoji(&key);
+                    if let Some(c) = st.matrix.clone() {
+                        let content = serde_json::json!({ "recent_emoji": st.recent_emoji });
+                        let write = beeper_core::matrix::set_global(c, "io.element.recent_emoji", content);
+                        return Task::perform(write, UiMessage::Pushed);
                     }
-                    None => {
-                        let (_, txn) = st.add_reaction(&cid, &mid, &key, None).expect("add reaction");
-                        st.add_recent_emoji(&key);
-                        recent = st.matrix.clone().map(|c| (c, serde_json::json!({ "recent_emoji": st.recent_emoji })));
-                        Outgoing::React { txn, target: mid, key }
-                    }
-                };
-                st.queue(&cid, out);
-                if let Some((c, content)) = recent {
-                    let write = beeper_core::matrix::set_global(c, "io.element.recent_emoji", content);
-                    return Task::perform(write, UiMessage::Pushed);
                 }
             }
             UiMessage::ToggleBookmark(mid) => {
@@ -7617,8 +7605,7 @@ impl BeeperGuiApp {
                 if go {
                     let mut st = self.store.write();
                     for (cid, mid) in &pairs {
-                        st.delete_message(cid, mid).expect("delete message");
-                        st.queue(cid, Outgoing::Redact { target: mid.clone() });
+                        st.redact_message(cid, mid).expect("delete message");
                     }
                     drop(st);
                     self.media_mut().picked.retain(|(m, _)| pairs.iter().all(|(_, x)| x != m));
