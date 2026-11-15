@@ -67,6 +67,8 @@ struct Track {
 pub struct Player {
     clips: HashMap<String, Option<Result<Clip, String>>>,
     now: Option<Track>,
+    /// Desktop's `lastPosition` of the other tracks of the chat of the current track, by message.
+    stops: HashMap<String, f32>,
     rate: f32,
     pub menu: Option<Point>,
     /// The Playback Speed submenu of the message menu is open.
@@ -84,6 +86,7 @@ impl Default for Player {
         Self {
             clips: HashMap::new(),
             now: None,
+            stops: HashMap::new(),
             rate: 1.0,
             menu: None,
             sub: false,
@@ -177,6 +180,22 @@ impl Player {
     }
 
     /// Pause at the current position, if playing.
+    /// Makes `track` the current track, like Desktop's `toggleTrack`: the track that played keeps its position, and a
+    /// track of another chat forgets the positions of the old chat. The new track starts where it stopped.
+    fn switch(&mut self, mut track: Track) {
+        if let Some(old) = self.now.take() {
+            if old.chat == track.chat {
+                self.stops.insert(old.mid.clone(), self.pos(&old));
+            } else {
+                self.stops.clear();
+            }
+        }
+        if let Some(at) = self.stops.remove(&track.mid) {
+            track.at = at;
+        }
+        self.now = Some(track);
+    }
+
     pub(crate) fn pause(&mut self) {
         let Some(at) = self.now.as_ref().filter(|t| t.since.is_some()).map(|t| self.pos(t)) else { return };
         let t = self.now.as_mut().expect("a current track");
@@ -202,15 +221,14 @@ impl BeeperGuiApp {
                     audio.output();
                 }
                 _ => {
-                    audio.now = Some(Track { chat, mid, url, at: 0.0, since: Some(Instant::now()) });
+                    audio.pause();
+                    audio.switch(Track { chat, mid, url, at: 0.0, since: Some(Instant::now()) });
                     audio.output();
                 }
             },
             Msg::Skip(forward) => {
                 let (chat, id, url) =
                     self.neighbor(&self.store.read(), forward).expect("only a present neighbor skips");
-                self.audio.pause();
-                self.audio.now.as_mut().expect("a current track").at = 0.0;
                 return self.voice(Msg::Toggle(chat, id, url));
             }
             Msg::Close => {
@@ -226,8 +244,9 @@ impl BeeperGuiApp {
                         t.since = t.since.map(|_| Instant::now());
                     }
                     _ => {
-                        sound::voice(None);
-                        audio.now = Some(Track { chat, mid, url, at, since: None });
+                        audio.pause();
+                        audio.switch(Track { chat, mid, url, at, since: None });
+                        audio.now.as_mut().expect("the new track").at = at;
                     }
                 }
             }
@@ -328,6 +347,8 @@ impl BeeperGuiApp {
         let ready = track.filter(|_| clip.is_some());
         let secs = clip.map_or(a.duration.unwrap_or(0.0) as f32, Clip::secs);
         let pos = ready.map(|t| self.audio.pos(t));
+        // Desktop's waveform shows where a track stopped.
+        let stop = self.audio.stops.get(&m.id).copied().filter(|_| clip.is_some());
         let total = clock(secs);
         let time = pos.map_or(total.clone(), |pos| format!("{}/{total}", clock(pos)));
         let rate = format!("{}x", self.audio.rate);
@@ -338,7 +359,7 @@ impl BeeperGuiApp {
         let toggle = clip.map(|_| UiMessage::Voice(Msg::Toggle(m.chat_id.clone(), m.id.clone(), url.clone())));
         let (wave, progress) = (if mine { fg.scale_alpha(0.5) } else { self.pal.on_secondary }, fg);
         let wave: El<'a> = match clip {
-            Some(c) => waveform([&m.chat_id, &m.id, &url], c, pos.unwrap_or(0.0), wave_w, (wave, progress)),
+            Some(c) => waveform([&m.chat_id, &m.id, &url], c, pos.or(stop).unwrap_or(0.0), wave_w, (wave, progress)),
             None => Space::new().width(wave_w).height(20).into(),
         };
         let playing = track.is_some_and(|t| t.since.is_some());
@@ -539,6 +560,22 @@ mod tests {
         assert_eq!(ended(&mut app), ("v1".into(), true));
         app.store.write().settings.set_pref("autoPlayVoiceNotes", 0);
         assert_eq!(ended(&mut app), ("v0".into(), false));
+    }
+
+    /// Desktop's `lastPosition`: a voice note plays again where it stopped, until a track of another chat plays.
+    #[test]
+    fn voice_notes_resume_like_desktop() {
+        let (mut app, chat) = two_notes("resume");
+        let play = |app: &mut BeeperGuiApp, mid: &str, url: &str, chat: &str| {
+            let _ = app.voice(Msg::Toggle(chat.into(), mid.into(), url.into()));
+            app.audio.now.as_ref().unwrap().at
+        };
+        let _ = app.voice(Msg::Seek(chat.clone(), "v0".into(), "mxc://a".into(), 0.5));
+        assert_eq!(play(&mut app, "v1", "mxc://b", &chat), 0.0);
+        assert!((app.audio.stops["v0"] - 0.005).abs() < 1e-6, "the first note keeps its position");
+        assert!((play(&mut app, "v0", "mxc://a", &chat) - 0.005).abs() < 1e-6, "it plays again from there");
+        let _ = play(&mut app, "v1", "mxc://b", "!other:beeper.com");
+        assert!(!app.audio.stops.contains_key("v0"), "another chat forgets the positions");
     }
 
     #[test]
