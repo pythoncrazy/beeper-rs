@@ -9307,8 +9307,8 @@ impl BeeperGuiApp {
             ),
             (
                 ChatFlag::Muted,
-                [tr("Mute"), tr("Unmute")],
-                [tr("Mute"), tr("Unmute")],
+                [trx("Mute", "thread context menu action"), trx("Unmute", "thread context menu action")],
+                [trx("Mute", "thread context menu action"), trx("Unmute", "thread context menu action")],
                 [&SELECTION_ICONS[2], &SELECTION_ICONS[3]],
                 vec!["Ctrl", "Shift", "M"],
             ),
@@ -9390,20 +9390,22 @@ impl BeeperGuiApp {
             let n = chats.len();
             let count = |f: ChatFlag| chats.iter().filter(|c| has_flag(c, f)).count();
             let some = |f: ChatFlag| (1..n).contains(&count(f));
-            let entry = |label: &'static str, keys: &str, f: ChatFlag, on: bool| {
-                item(tr(label).into(), keys.into(), Some(UiMessage::SelectionSet(f, on)))
+            let entry = |label: &str, keys: &str, f: ChatFlag, on: bool| {
+                item(label.into(), keys.into(), Some(UiMessage::SelectionSet(f, on)))
             };
             let pinned = count(ChatFlag::Pinned);
             [Some(item(trn("%d chat selected", "%d chats selected", n, &[&n]), String::new(), None))]
                 .into_iter()
                 .chain([
-                    some(ChatFlag::Archived).then(|| entry("Unarchive", "Ctrl E", ChatFlag::Archived, false)),
+                    some(ChatFlag::Archived).then(|| entry(tr("Unarchive"), "Ctrl E", ChatFlag::Archived, false)),
                     some(ChatFlag::MarkedUnread)
-                        .then(|| entry("Mark as Read", "Ctrl Shift U", ChatFlag::MarkedUnread, false)),
-                    some(ChatFlag::Muted).then(|| entry("Unmute", "Ctrl Shift M", ChatFlag::Muted, false)),
-                    some(ChatFlag::LowPriority).then(|| entry("Move to Inbox", "", ChatFlag::LowPriority, false)),
-                    (pinned < n).then(|| entry("Pin", "Ctrl P", ChatFlag::Pinned, true)),
-                    (pinned > 0).then(|| entry("Unpin", "Ctrl P", ChatFlag::Pinned, false)),
+                        .then(|| entry(tr("Mark as Read"), "Ctrl Shift U", ChatFlag::MarkedUnread, false)),
+                    some(ChatFlag::Muted).then(|| {
+                        entry(trx("Unmute", "thread context menu action"), "Ctrl Shift M", ChatFlag::Muted, false)
+                    }),
+                    some(ChatFlag::LowPriority).then(|| entry(tr("Move to Inbox"), "", ChatFlag::LowPriority, false)),
+                    (pinned < n).then(|| entry(tr("Pin"), "Ctrl P", ChatFlag::Pinned, true)),
+                    (pinned > 0).then(|| entry(tr("Unpin"), "Ctrl P", ChatFlag::Pinned, false)),
                 ])
                 .flatten()
                 .collect()
@@ -9862,7 +9864,7 @@ impl BeeperGuiApp {
         let delete = (mine && rules.delete && live).then(|| {
             let delete = MessageRules::young(rules.delete_max_age, &m.timestamp)
                 .then(|| UiMessage::AskDeleteMessage(vec![mid.clone()]));
-            item(tr("Delete for Everyone…").into(), "", delete)
+            item(tr("Delete…").into(), "", delete)
         });
         let tail: Vec<(El, f32)> = self.voice_menu_row(m).into_iter().chain(delete).collect();
         let rows: Vec<(El, f32)> = [
@@ -13072,7 +13074,7 @@ impl BeeperGuiApp {
 
         // Desktop lists no sticker packs on Matrix accounts: its Matrix API has no `getStickerPacks`.
         let stickers = (self.pane().picker == Some(Picker::Sticker))
-            .then(|| container(txt(tr("No sticker packs found"), 14.0).color(p.text)).center_x(Fill).center_y(200));
+            .then(|| container(txt(tr("No sticker packs yet."), 14.0).color(p.text)).center_x(Fill).center_y(200));
         let extras = Column::new().push(gif_picker).push(stickers);
         let line: Row<'a, UiMessage> = match &self.recorder {
             Some(r) => row![self.view_recorder(r), send],

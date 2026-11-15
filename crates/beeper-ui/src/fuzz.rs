@@ -851,7 +851,7 @@ fn pickers_check_the_network_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(wa));
     let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
     assert_eq!(app.pane.picker, Some(Picker::Sticker));
-    assert!(simulator(app.view_main()).find("No sticker packs found").is_ok());
+    assert!(simulator(app.view_main()).find("No sticker packs yet.").is_ok());
     let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
     assert_eq!(app.pane.picker, None, "the hotkey closes the open picker");
     let _ = app.update(UiMessage::SelectChat(other.clone()));
@@ -973,7 +973,7 @@ fn chat_commands_like_desktop() {
     let cmds = app.commands(&app.store.read(), "");
     let titled = |t: &str| cmds.iter().find(|c| c.title == t).unwrap_or_else(|| panic!("no command {t}"));
     assert_eq!(cmds[0].title, "Remind me later");
-    assert!(titled("Report as spam").msg.is_none(), "no network reports chats here");
+    assert!(titled("Report spam").msg.is_none(), "no network reports chats here");
     assert_eq!(titled("Send file").hotkey, Some("Chat: Send File"));
     assert_eq!(titled("Filter by account").category, "Filter Chats");
     let open = cmds.iter().find(|c| c.hotkey == Some("Open User Profile")).expect("a profile command");
@@ -4635,7 +4635,7 @@ fn message_actions_follow_room_features_like_desktop() {
     };
     assert!(simulator(app.view_message_menu(&mine).0).find("Reply…").is_err(), "the network has no replies");
     assert!(clicked(&app, "Edit…").is_empty() && clicked(&app, "React…").is_empty(), "disabled like Desktop");
-    let ask = clicked(&app, "Delete for Everyone…");
+    let ask = clicked(&app, "Delete…");
     assert!(
         matches!(&ask[..], [UiMessage::MessageMenu(m)] if matches!(&**m, UiMessage::AskDeleteMessage(v) if v == std::slice::from_ref(&mine)))
     );
@@ -4647,7 +4647,7 @@ fn message_actions_follow_room_features_like_desktop() {
     let t = titles(&app);
     assert!(t.contains(&"Delete for everyone".into()) && t.contains(&"Edit".into()) && !t.contains(&"Reply".into()));
     set(&mut app, MessageRules { delete: false, ..old });
-    assert!(simulator(app.view_message_menu(&mine).0).find("Delete for Everyone…").is_err());
+    assert!(simulator(app.view_message_menu(&mine).0).find("Delete…").is_err());
     assert!(titles(&app).contains(&format!("Delete message is not supported for {network} yet")));
     let _ = app.update(UiMessage::AskDeleteMessage(vec![mine.clone(), mine.clone()]));
     assert!(simulator(app.view_main()).find("Are you sure you want to delete 2 messages?").is_ok());
