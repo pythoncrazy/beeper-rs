@@ -14,6 +14,8 @@ use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::deserialized_responses::{RawAnySyncOrStrippedState, TimelineEvent};
 use matrix_sdk::encryption::backups::BackupState;
+use matrix_sdk::encryption::recovery::RecoveryError;
+use matrix_sdk::encryption::secret_storage::SecretStorageError;
 use matrix_sdk::encryption::verification::{SasState, Verification, VerificationRequestState};
 use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters, MediaThumbnailSettings};
@@ -1974,7 +1976,10 @@ pub async fn import_crypto(dir: &std::path::Path, c: &DesktopCrypto) -> Result<(
 
 pub async fn recover(store: SharedStore, key: String) -> Result<(), String> {
     let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
-    client.encryption().recovery().recover(key.trim()).await.map_err(|e| e.to_string())?;
+    client.encryption().recovery().recover(key.trim()).await.map_err(|e| match e {
+        RecoveryError::SecretStorage(SecretStorageError::SecretStorageKey(e)) => format!("Invalid recovery key: {e}"),
+        e => e.to_string(),
+    })?;
     set_verification(&store, "verified", None);
     Ok(())
 }
