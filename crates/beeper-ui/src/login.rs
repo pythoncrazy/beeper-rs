@@ -21,7 +21,8 @@ use iced::{border, window, Background, Center, Color, Degrees, Fill, Gradient, P
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
-/// The room over a `field` for its floating label: the label rises 60 % of the 38 px field and is 26.125 px high.
+/// The room over a `field` for its floating label: the label rises 60 % of the 38 px field and is 26.125 px high. A
+/// screen with a field puts the same room under its heading, so that its gaps are Desktop's.
 const FLOAT_LABEL: f32 = 38.0 * 0.6 + 38.0 * 0.6875 / 2.0 - 38.0 / 2.0;
 /// The start of the animations of the sign-in window.
 static EPOCH: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
@@ -32,12 +33,6 @@ const TERMS_URL: &str = "https://www.beeper.com/terms-onboarding";
 /// Desktop's `--color-on-error-container`: the error toast.
 const ERROR_RED: Color = Color::from_rgb8(220, 54, 46);
 const NO_EMAIL_LOGIN: &str = "The server does not support email-based login. Try logging in with a username instead.";
-
-const WELCOME_ART: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 314 396"><defs><linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8f6cf6"/><stop offset="1" stop-color="#2f5cf8"/></linearGradient></defs><ellipse cx="157" cy="330" rx="66" ry="7" fill="#e3e3e6"/><g transform="rotate(-9 157 190)"><path d="M77 120h160a28 28 0 0 1 28 28v76a28 28 0 0 1-28 28h-96l-38 30v-30h-26a28 28 0 0 1-28-28v-76a28 28 0 0 1 28-28z" fill="url(#b)"/><circle cx="117" cy="186" r="13" fill="#fff"/><circle cx="157" cy="186" r="13" fill="#fff"/><circle cx="197" cy="186" r="13" fill="#fff" opacity=".6"/></g><rect x="22" y="62" width="40" height="40" rx="12" fill="#34c759" transform="rotate(-12 42 82)"/><rect x="250" y="46" width="34" height="34" rx="10" fill="#ff8a3d" transform="rotate(14 267 63)"/><rect x="262" y="262" width="30" height="30" rx="9" fill="#ff4f9a" transform="rotate(-10 277 277)"/><circle cx="40" cy="268" r="17" fill="#ffd23f"/><circle cx="34" cy="263" r="2.6" fill="#3a2e00"/><circle cx="46" cy="263" r="2.6" fill="#3a2e00"/><path d="M32 272q8 7 16 0" stroke="#3a2e00" stroke-width="2.4" fill="none" stroke-linecap="round"/><path d="M226 92l5 13 13 5-13 5-5 13-5-13-13-5 13-5z" fill="#ffd23f"/><path d="M92 300l3 8 8 3-8 3-3 8-3-8-8-3 8-3z" fill="#ffd23f"/><circle cx="136" cy="44" r="7" fill="#9b7cf9"/><circle cx="292" cy="170" r="6" fill="#2f5cf8"/></svg>"##;
-
-const EMAIL_ART: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 314 314"><ellipse cx="157" cy="262" rx="70" ry="6" fill="#e3e3e6"/><g transform="rotate(-8 160 170)"><rect x="70" y="110" width="180" height="120" rx="14" fill="#f3f3f5" stroke="#c9c9ce" stroke-width="2"/><path d="M74 118l86 66 86-66" fill="none" stroke="#c9c9ce" stroke-width="2" stroke-linejoin="round"/><path d="M74 224l64-50M246 224l-64-50" stroke="#dcdce0" stroke-width="2"/></g><path d="M18 74l112-22-62 74-12-34z" fill="#4f8df8"/><path d="M56 92l74-40-50 60z" fill="#2f6cf2"/><circle cx="62" cy="232" r="28" fill="#2ecc5a"/><path d="M36 228h52M62 204v56M44 212q18 18 36 0M44 248q18-18 36 0" stroke="#1f9e43" stroke-width="2" fill="none"/><circle cx="262" cy="196" r="34" fill="none" stroke="#8463ee" stroke-width="14"/><circle cx="262" cy="196" r="10" fill="#8463ee"/><path d="M236 52l4 11 11 4-11 4-4 11-4-11-11-4 11-4z" fill="#ffd23f"/><path d="M44 152l4 10 10 4-10 4-4 10-4-10-10-4 10-4z" fill="#ffd23f"/><path d="M196 252l3 8 8 3-8 3-3 8-3-8-8-3 8-3z" fill="#ffd23f"/></svg>"##;
-
-const CODE_ART: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 314 240"><defs><linearGradient id="l" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8b6cf3"/><stop offset="1" stop-color="#5b43d6"/></linearGradient></defs><path d="M127 104V82a30 30 0 0 1 60 0v22" fill="none" stroke="#9d86f5" stroke-width="16" stroke-linecap="round"/><rect x="104" y="98" width="106" height="98" rx="20" fill="url(#l)"/><circle cx="157" cy="138" r="13" fill="#fff"/><path d="M151 146h12l4 26h-20z" fill="#fff"/><circle cx="28" cy="118" r="10" fill="#2ecc5a"/><circle cx="66" cy="196" r="9" fill="#2ecc5a"/><circle cx="246" cy="60" r="10" fill="#2ecc5a"/><circle cx="226" cy="190" r="8" fill="#2ecc5a"/><circle cx="296" cy="140" r="9" fill="#2ecc5a"/><circle cx="96" cy="84" r="8" fill="#2ecc5a"/></svg>"##;
 
 /// Desktop's `logo-google.svg`.
 const GOOGLE_G: &str = r##"<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M23.52 12.2724C23.52 11.4216 23.4432 10.6044 23.3016 9.81836H12V14.46H18.4584C18.3247 15.1942 18.0435 15.8937 17.6318 16.5162C17.2202 17.1386 16.6865 17.6712 16.0632 18.0816V21.0936H19.9416C22.2108 19.0032 23.52 15.9264 23.52 12.2724Z" fill="#4285F4"/><path fill-rule="evenodd" d="M12 24C15.24 24 17.9568 22.926 19.9416 21.0924L16.0632 18.0816C14.9892 18.8016 13.6152 19.2276 12 19.2276C8.87399 19.2276 6.22799 17.1156 5.28599 14.28H1.27679V17.388C2.27521 19.3761 3.80684 21.0474 5.70051 22.2151C7.59418 23.3827 9.77527 24.0007 12 24Z" fill="#34A853"/><path fill-rule="evenodd" d="M5.286 14.2801C5.046 13.5601 4.9092 12.7921 4.9092 12.0001C4.9092 11.2081 5.046 10.4401 5.286 9.72006V6.61206H1.2768C0.436818 8.28391 -0.00043132 10.1291 3.19265e-07 12.0001C3.19265e-07 13.9369 0.4632 15.7681 1.2768 17.3881L5.2848 14.2801H5.286Z" fill="#FBBC05"/><path fill-rule="evenodd" d="M12 4.7724C13.7616 4.7724 15.3432 5.3784 16.5876 6.5676L20.0292 3.126C17.9508 1.188 15.234 0 12 0C7.30799 0 3.25199 2.688 1.27679 6.612L5.28479 9.72C6.23039 6.8832 8.87519 4.7724 12 4.7724Z" fill="#EA4335"/></svg>"##;
@@ -55,8 +50,81 @@ static BUBBLE_ARROW: LazyLock<svg::Handle> = LazyLock::new(|| {
     svg::Handle::from_memory(br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 9"><path d="M0 0.5h16L8 8.5z" fill="#fff" stroke="#a0a0a0"/><path d="M0 0h16v1H0z" fill="#fff"/></svg>"##.as_slice())
 });
 
-static ART: LazyLock<[svg::Handle; 4]> =
-    LazyLock::new(|| [WELCOME_ART, EMAIL_ART, CODE_ART, GOOGLE_G].map(|s| svg::Handle::from_memory(s.as_bytes())));
+/// The first frames of Desktop's Lottie animations `username.json`, `email.json` and `lock.json`, made with
+/// velato, and the Google logo.
+static ART: LazyLock<[svg::Handle; 4]> = LazyLock::new(|| {
+    [
+        include_bytes!("../assets/onboarding/lottie-username.svg").as_slice(),
+        include_bytes!("../assets/onboarding/lottie-email.svg"),
+        include_bytes!("../assets/onboarding/lottie-lock.svg"),
+        GOOGLE_G.as_bytes(),
+    ]
+    .map(svg::Handle::from_memory)
+});
+
+/// The layers of Desktop's `AnimatedCompositeIllustration`, bottom first: the shadow, which stays, then the 13
+/// layers that float.
+static SCENE: LazyLock<([svg::Handle; 13], iced::widget::image::Handle)> = LazyLock::new(|| {
+    let svgs = [
+        include_bytes!("../assets/onboarding/composite-beeper-dimension-shadow.svg").as_slice(),
+        include_bytes!("../assets/onboarding/composite-instagram-dimension.svg"),
+        include_bytes!("../assets/onboarding/composite-smile-dimension.svg"),
+        include_bytes!("../assets/onboarding/composite-bubbles-dimension03.svg"),
+        include_bytes!("../assets/onboarding/composite-camera.svg"),
+        include_bytes!("../assets/onboarding/composite-haha.svg"),
+        include_bytes!("../assets/onboarding/composite-haha-small.svg"),
+        include_bytes!("../assets/onboarding/composite-haha-medium.svg"),
+        include_bytes!("../assets/onboarding/composite-lock.svg"),
+        include_bytes!("../assets/onboarding/composite-signal-dimension.svg"),
+        include_bytes!("../assets/onboarding/composite-sparkle.svg"),
+        include_bytes!("../assets/onboarding/composite-telegram-dimension.svg"),
+        include_bytes!("../assets/onboarding/composite-whatsapp-dimension.svg"),
+    ];
+    let pager = iced::widget::image::Handle::from_bytes(include_bytes!("../assets/onboarding/beeper.webp").as_slice());
+    (svgs.map(svg::Handle::from_memory), pager)
+});
+
+/// The size of the welcome illustration.
+const SCENE_SIZE: Size = Size::new(314.0, 396.0);
+
+/// CSS `ease-in-out`, `cubic-bezier(0.42, 0, 0.58, 1)`, at `x` in 0..1.
+fn ease_in_out(x: f32) -> f32 {
+    let bezier = |s: f32, a: f32, b: f32| 3.0 * a * s * (1.0 - s) * (1.0 - s) + 3.0 * b * s * s * (1.0 - s) + s * s * s;
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..20 {
+        let mid = (lo + hi) / 2.0;
+        if bezier(mid, 0.42, 0.58) < x {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    bezier((lo + hi) / 2.0, 0.0, 1.0)
+}
+
+/// Desktop's `AnimatedCompositeIllustration`: the shadow, then 13 layers that each float up and down by
+/// `z / limit * intensity / 2` % of their height, with `z = (n + 1) * 5`, `limit = 13` and `intensity = 0.5`, in
+/// 2 s each way with `easeInOut`, and `z / limit` s ahead of the start.
+fn welcome_scene<'a>() -> El<'a> {
+    let (svgs, pager) = &*SCENE;
+    let t = EPOCH.elapsed().as_secs_f32();
+    let layer = |n: usize, el: El<'a>| -> El<'a> {
+        let r = (n + 1) as f32 * 5.0 / 13.0;
+        let amplitude = r * 0.5 / 2.0 / 100.0 * SCENE_SIZE.height;
+        let u = (t + r) / 2.0;
+        let e = ease_in_out(u.fract());
+        let y = if (u as u32).is_multiple_of(2) { 1.0 - 2.0 * e } else { 2.0 * e - 1.0 };
+        iced::widget::pin(el).y(amplitude * y).into()
+    };
+    let fit = |h: &svg::Handle| -> El<'a> { svg(h.clone()).width(SCENE_SIZE.width).height(SCENE_SIZE.height).into() };
+    let pager = iced::widget::image(pager.clone()).width(SCENE_SIZE.width).height(SCENE_SIZE.height).into();
+    // The pager photo is the third floating layer.
+    let floating = svgs[1..3].iter().map(fit).chain([pager]).chain(svgs[3..].iter().map(fit));
+    let layers = std::iter::once(fit(&svgs[0])).chain(floating.enumerate().map(|(n, el)| layer(n, el)));
+    container(iced::widget::Stack::with_children(layers).width(SCENE_SIZE.width).height(SCENE_SIZE.height))
+        .center(Fill)
+        .into()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Screen {
@@ -172,6 +240,11 @@ pub struct Login {
 }
 
 impl Login {
+    /// The screens with the floating welcome illustration.
+    pub fn animated(&self) -> bool {
+        matches!(self.screen, Screen::Import | Screen::Welcome)
+    }
+
     /// The screens before the sign-in ends.
     pub fn signing_in(&self) -> bool {
         matches!(self.screen, Screen::Import | Screen::Welcome | Screen::Email | Screen::Code | Screen::Username)
@@ -422,7 +495,7 @@ pub(crate) fn brand_button<'a>(
         let dot = |k: usize| {
             let u = t + k as f32 / 3.0;
             let f = u.fract();
-            let e = f * f * (3.0 - 2.0 * f);
+            let e = ease_in_out(f);
             let y = 1.32 * (2.0 * if (u as u32).is_multiple_of(2) { 1.0 - e } else { e } - 1.0);
             let dot = container(Space::new()).width(4).height(4).style(fill_box(fg, 2.0));
             container(dot).padding(Padding::ZERO.top(2.0 + y)).height(8).into()
@@ -743,7 +816,7 @@ impl BeeperGuiApp {
                 column![
                     Space::new().height(40),
                     heading("Your Chats", 36.0),
-                    container(art(0, 300.0)).height(Fill).center_y(Fill),
+                    container(welcome_scene()).height(Fill),
                     actions(
                         vec![
                             container(txt(info, 12.0).color(p.on_secondary).center().width(Fill))
@@ -789,7 +862,8 @@ impl BeeperGuiApp {
                 let mail =
                     svg(ICONS[0].clone()).width(18).height(18).style(|_, _| svg::Style { color: Some(Color::WHITE) });
                 column![
-                    container(art(0, 372.0)).height(Fill).center_y(Fill),
+                    container(welcome_scene()).height(Fill),
+                    Space::new().height(24),
                     actions(
                         vec![
                             container(terms).padding(Padding::ZERO.bottom(8)).into(),
@@ -816,7 +890,8 @@ impl BeeperGuiApp {
             Screen::Email => column![
                 Space::new().height(40),
                 heading(tr("Enter your Email"), 36.0),
-                Space::new().height(36),
+                Space::new().height(FLOAT_LABEL),
+                Space::new().height(Fill),
                 art(1, 314.0),
                 Space::new().height(Fill),
                 actions(
@@ -945,7 +1020,7 @@ impl BeeperGuiApp {
             Screen::Username => column![
                 Space::new().height(34),
                 heading(tr("Pick a Username"), 32.0),
-                container(art(0, 300.0)).height(Fill).center_y(Fill),
+                container(art(0, 314.0)).height(Fill).center_y(Fill),
                 error,
                 actions(
                     vec![
@@ -1055,6 +1130,23 @@ impl BeeperGuiApp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ease_in_out_like_css() {
+        // Chromium's `cubic-bezier(0.42, 0, 0.58, 1)` at 0, 0.25, 0.5, 0.75 and 1.
+        for (x, y) in [(0.0, 0.0), (0.25, 0.1291), (0.5, 0.5), (0.75, 0.8709), (1.0, 1.0)] {
+            assert!((super::ease_in_out(x) - y).abs() < 1e-3, "{x}: {}", super::ease_in_out(x));
+        }
+    }
+
+    #[test]
+    fn the_welcome_illustration_floats_like_desktop() {
+        let mut login = super::Login::default();
+        assert!(login.animated(), "the welcome screen ticks its animation");
+        drop(super::welcome_scene());
+        login.screen = super::Screen::Email;
+        assert!(!login.animated(), "the Lottie frames of the other screens stay");
+    }
+
     #[test]
     fn email_check_like_chromium() {
         let rows = [

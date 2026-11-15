@@ -9207,7 +9207,7 @@ impl BeeperGuiApp {
             || self.chat_windows.iter().any(|w| w.1.top.loading.is_some())
             || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
             || self.pref_flash.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 2.0)
-            || (self.login_window.is_some() && self.login.busy);
+            || (self.login_window.is_some() && (self.login.busy || self.login.animated()));
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
             .then(|| Subscription::run(tray::events).map(UiMessage::Tray));
         let online = cfg!(target_os = "linux").then(|| Subscription::run(portal::online).map(UiMessage::Online));
