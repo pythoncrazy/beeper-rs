@@ -7148,7 +7148,8 @@ impl BeeperGuiApp {
             }
             UiMessage::NotifyTimer(chat, timer) => return self.notify_timer(chat, timer),
             UiMessage::Notified(Ok((id, note))) => _ = self.notifications.insert(id, note),
-            UiMessage::Notified(Err(e)) => self.status_banner = format!("Notifications failed: {e}"),
+            // Like Desktop, a desktop without a notification server shows no notifications and no error.
+            UiMessage::Notified(Err(e)) => eprintln!("notification: {e}"),
             UiMessage::NotificationEvent(id, action) => return self.notification_event(id, action),
             m @ (UiMessage::ToastHover(_) | UiMessage::ToastTick) if self.toast_clock.0 != self.status_banner => {
                 self.toast_clock = (self.status_banner.clone(), self.toast_clock.1, Duration::ZERO);

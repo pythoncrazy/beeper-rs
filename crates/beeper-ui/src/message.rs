@@ -1220,7 +1220,8 @@ impl BeeperGuiApp {
         }
         let open = self.pane().expanded_history_msg_id.as_ref() == Some(&m.id);
         let label = |t: String| txt(t, 12.0).line_height(Pixels(15.0)).color(muted);
-        let edited = m.edited().then(|| -> El<'a> {
+        // Desktop's `EditedLabel` shows on an edited message that is not deleted, failed or retrying.
+        let edited = (m.edited() && m.is_deleted != Some(true) && m.send_error.is_none()).then(|| -> El<'a> {
             let small = |t: &str| txt(t.to_string(), 11.0).line_height(Pixels(14.0));
             if m.edit_history.is_empty() {
                 return small(tr("Edited")).color(muted).into();
