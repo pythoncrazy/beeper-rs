@@ -3902,6 +3902,73 @@ pub enum Picker {
     Audio,
 }
 
+/// The values of the timeline rows that depend on all messages of the list.
+struct Rows {
+    /// The messages, as indices of `messages`.
+    msgs: Vec<usize>,
+    /// The first message of the membership event run of each message.
+    run_start: Vec<usize>,
+    last_live: Option<usize>,
+    any_pending: bool,
+    /// For each person other than you and the sender, the newest message that the person saw before a reply of the
+    /// person, and the time.
+    last_seen: HashMap<String, (usize, String)>,
+    /// The first unread message.
+    unread: Option<usize>,
+    /// Whether each message is in the reply chain of the message before it.
+    chained: Vec<bool>,
+    /// Desktop's `replyCounts`: the messages of the same reply chain after each message.
+    counts: Vec<usize>,
+    /// The first message of the gallery of each message.
+    gallery: Vec<usize>,
+    /// The virtual list key of each message.
+    keys: Vec<u64>,
+}
+
+impl Rows {
+    fn of(st: &BeeperStore, msgs: &[&Message]) -> Self {
+        let n = msgs.len();
+        let mut run_start: Vec<usize> = (0..n).collect();
+        for i in 1..n {
+            let (a, b) = (msgs[i - 1], msgs[i]);
+            if membership(a) && membership(b) && day_num(&a.timestamp) == day_num(&b.timestamp) {
+                run_start[i] = run_start[i - 1];
+            }
+        }
+        let mut last_seen = HashMap::new();
+        let mut replied: HashSet<&str> = HashSet::new();
+        for (k, m) in msgs.iter().enumerate().rev() {
+            for (uid, ts) in &m.seen {
+                if !st.is_me(uid) && uid != &m.sender_id && !replied.contains(uid.as_str()) {
+                    last_seen.entry(uid.clone()).or_insert((k, ts.clone()));
+                }
+            }
+            if m.is_deleted != Some(true) && m.is_sender != Some(true) {
+                replied.insert(m.sender_id.as_str());
+            }
+        }
+        let roots: Vec<&str> = msgs.iter().map(|m| reply_root(st, m)).collect();
+        let mut later: HashMap<&str, usize> = HashMap::new();
+        let mut counts = vec![0; n];
+        for i in (0..n).rev() {
+            let k = later.entry(roots[i]).or_insert(0);
+            (counts[i], *k) = (*k, *k + 1);
+        }
+        Self {
+            msgs: msgs.iter().map(|m| st.msg_idx_by_id[&m.id]).collect(),
+            run_start,
+            last_live: msgs.iter().rposition(|m| m.is_deleted != Some(true)),
+            any_pending: msgs.iter().any(|m| pending(st, m)),
+            last_seen,
+            unread: msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true)),
+            chained: (0..n).map(|i| i > 0 && roots[i - 1] == roots[i]).collect(),
+            gallery: gallery::starts(st, msgs, &counts),
+            counts,
+            keys: msgs.iter().map(|m| vlist::key(&m.id)).collect(),
+        }
+    }
+}
+
 /// The open chat of a window, with its composer and its menus.
 #[derive(Default)]
 pub struct Pane {
@@ -3949,6 +4016,8 @@ pub struct Pane {
     pub top: TopOfThread,
     timeline: vlist::VList,
     thread_list: vlist::VList,
+    /// The messages of the conversation and their rows, for a store generation and a chat.
+    rows: std::cell::RefCell<Option<(u64, String, Rc<Rows>)>>,
     /// Desktop's `stopTypingTimeout`: the chat with a typing notice, and the time of the last key.
     pub typing: Option<(String, std::time::Instant)>,
     /// The mention pills of the composer text, which Desktop sends as `mentionedUserIDs`.
@@ -12519,13 +12588,11 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let cid = self.pane().selected_chat_id.as_deref().expect("a chat is selected");
         let chat = &st.chats[st.resolve_chat_idx(cid).expect("selected chat exists")];
-        let (hide, members) = (st.settings.on("hideDeleted"), st.settings.on("membershipEvents"));
-        let msgs: Vec<&Message> = self.pane_msgs(&st);
-        let msgs: Vec<&Message> =
-            msgs.into_iter().filter(|m| !(hide && m.is_deleted == Some(true)) && (members || !membership(m))).collect();
+        let rows = self.conversation_rows(&st, chat);
+        let msgs: Vec<&Message> = rows.msgs.iter().map(|&i| &st.messages[i]).collect();
         // Desktop's `ThreadedRepliesView` hides the typing indicator, and its list has no scheduled messages.
         let in_chat = self.pane().thread_root.is_none();
-        let col = self.view_messages(&st, chat, &msgs, false);
+        let col = self.view_messages(&st, chat, &msgs, &rows, false);
         let col = col.push(st.typing.get(cid).filter(|_| in_chat).map(|ids| self.typing_bubble(chat, ids)));
         let col = col.push(self.incognito_mark_read(&st, chat));
         let col = col.push(in_chat.then(|| self.view_scheduled(&st, chat)));
@@ -12547,7 +12614,7 @@ impl BeeperGuiApp {
         let replies = self.pane().reply_thread.as_ref().map(|id| {
             let root = st.msg_idx_by_id.get(id).map_or(id.as_str(), |&i| reply_root(&st, &st.messages[i]));
             let chain: Vec<&Message> = msgs.iter().copied().filter(|m| reply_root(&st, m) == root).collect();
-            let list = lift::tight(scroller(self.view_messages(&st, chat, &chain, true)));
+            let list = lift::tight(scroller(self.view_messages(&st, chat, &chain, &Rows::of(&st, &chain), true)));
             // Desktop blurs the chat 8px under a 0.6 background; iced has no backdrop blur.
             mouse_area(container(list).width(Fill).height(Fill).style(fill_box(p.card.scale_alpha(0.85), 0.0)))
                 .on_press(UiMessage::HideReplies)
@@ -13200,21 +13267,32 @@ impl BeeperGuiApp {
 
     /// Desktop's `MessageList`: the messages in timeline order. In a reply chain, the quotes, the reply lines,
     /// the replies buttons and the unread divider do not show.
+    /// The rows of the messages of the conversation of the pane. The pane keeps them until the store changes, so that a
+    /// frame of a long chat does not read all its messages.
+    fn conversation_rows(&self, st: &BeeperStore, chat: &Chat) -> Rc<Rows> {
+        let (memo, generation) = (&self.pane().rows, self.store.generation().expect("a view holds a read lock"));
+        if let Some((_, _, rows)) = memo.borrow().as_ref().filter(|(g, c, _)| *g == generation && *c == chat.id) {
+            return rows.clone();
+        }
+        let (hide, members) = (st.settings.on("hideDeleted"), st.settings.on("membershipEvents"));
+        let msgs: Vec<&Message> = self.pane_msgs(st);
+        let msgs: Vec<&Message> =
+            msgs.into_iter().filter(|m| !(hide && m.is_deleted == Some(true)) && (members || !membership(m))).collect();
+        let rows = Rc::new(Rows::of(st, &msgs));
+        *memo.borrow_mut() = Some((generation, chat.id.clone(), rows.clone()));
+        rows
+    }
+
     fn view_messages<'a>(
         &'a self,
         st: &BeeperStore,
         chat: &Chat,
         msgs: &[&Message],
+        rows: &Rows,
         thread: bool,
     ) -> Column<'a, UiMessage> {
         let p = &self.pal;
-        let mut run_start: Vec<usize> = (0..msgs.len()).collect();
-        for i in 1..msgs.len() {
-            let (a, b) = (msgs[i - 1], msgs[i]);
-            if membership(a) && membership(b) && day_num(&a.timestamp) == day_num(&b.timestamp) {
-                run_start[i] = run_start[i - 1];
-            }
-        }
+        let Rows { run_start, last_live, any_pending, last_seen, unread, chained, counts, gallery, keys, .. } = rows;
         // Desktop's `ThreadedRepliesView` lists the root and the replies of a thread under its header, and loads older
         // messages of the chat only until the root loads.
         let root = self.pane().thread_root.as_deref();
@@ -13222,20 +13300,6 @@ impl BeeperGuiApp {
         let mut col = Column::new().padding(Padding::new(8.0).right(8.0 + GUTTER).top(top).bottom(0.0));
         let loaded = root.is_some_and(|r| msgs.first().is_some_and(|m| m.id == r));
         col = col.push((!thread && !loaded).then(|| self.top_of_thread(st, chat)));
-        let last_live = msgs.iter().rposition(|m| m.is_deleted != Some(true));
-        let any_pending = msgs.iter().any(|m| pending(st, m));
-        let mut last_seen: HashMap<&str, (&str, &str)> = HashMap::new();
-        let mut replied: HashSet<&str> = HashSet::new();
-        for m in msgs.iter().rev() {
-            for (uid, ts) in &m.seen {
-                if !st.is_me(uid) && uid != &m.sender_id && !replied.contains(uid.as_str()) {
-                    last_seen.entry(uid.as_str()).or_insert((m.id.as_str(), ts.as_str()));
-                }
-            }
-            if m.is_deleted != Some(true) && m.is_sender != Some(true) {
-                replied.insert(m.sender_id.as_str());
-            }
-        }
         // Desktop's `getReplyThreadListData`: the thread pane divides at the first reply of others after the read mark.
         let first_unread = match root {
             Some(r) => self.pane().thread_divider.as_ref().and_then(|read| {
@@ -13243,19 +13307,10 @@ impl BeeperGuiApp {
                     |m: &&Message| m.sort_key > *read && m.is_sender != Some(true) && m.is_deleted != Some(true);
                 msgs.iter().position(|m| m.thread_root.as_deref() == Some(r) && unread(m))
             }),
-            None => msgs.iter().position(|m| m.is_deleted != Some(true) && m.is_unread == Some(true)),
+            None => *unread,
         };
         let first_unread = first_unread.filter(|_| !thread);
         let (h24, group) = (st.settings.pref("timeFormat") == 1, chat.chat_type == "group");
-        let roots: Vec<&str> = msgs.iter().map(|m| reply_root(st, m)).collect();
-        // Desktop's `replyCounts`: the messages of the same reply chain after each message.
-        let mut later: HashMap<&str, usize> = HashMap::new();
-        let mut counts = vec![0; msgs.len()];
-        for i in (0..msgs.len()).rev() {
-            let n = later.entry(roots[i]).or_insert(0);
-            (counts[i], *n) = (*n, *n + 1);
-        }
-        let gallery = gallery::starts(st, msgs, &counts);
         let item = |i: usize| -> El<'a> {
             // Desktop's `GalleryGrouper` shows a gallery at its first message.
             if gallery[i] != i {
@@ -13312,7 +13367,7 @@ impl BeeperGuiApp {
                 n.sender_id != m.sender_id || membership(n) || day_num(&n.timestamp) != day_num(&tail.timestamp)
             });
             let mut viewers: Vec<(&str, &str)> =
-                last_seen.iter().filter(|(_, &(mid, _))| mid == tail.id).map(|(&u, &(_, ts))| (u, ts)).collect();
+                last_seen.iter().filter(|(_, (at, _))| *at == end - 1).map(|(u, (_, ts))| (&u[..], &ts[..])).collect();
             viewers.sort_by_key(|&(_, ts)| ts);
             let status = if let Some(&(_, ts)) = viewers.last() {
                 if group {
@@ -13356,14 +13411,13 @@ impl BeeperGuiApp {
                     .into(),
                 )
             } else {
-                (Some(end - 1) == last_live && !any_pending)
+                (Some(end - 1) == *last_live && !any_pending)
                     .then(|| tr(if m.is_delivered { "Delivered" } else { "Sent" }).into())
             };
-            let chained = i > 0 && roots[i - 1] == roots[i];
-            let split = roots.get(end).is_some_and(|r| *r != roots[end - 1]);
+            let split = chained.get(end).is_some_and(|c| !c);
             let replies = if !thread && split && !st.threaded(chat) { counts[end - 1] } else { 0 };
             let ms = &msgs[i..end];
-            let view = self.view_message(st, chat, ms, (first, last, chained, thread), (status, replies), head);
+            let view = self.view_message(st, chat, ms, (first, last, chained[i], thread), (status, replies), head);
             let view = match send_rise(st, m) {
                 Some(t) => lift::lift(view, 14.0 * (1.0 - t), 0.97 + 0.03 * t).into(),
                 None => view,
@@ -13380,9 +13434,8 @@ impl BeeperGuiApp {
                 None => cell.into(),
             }
         };
-        let keys: Vec<u64> = msgs.iter().map(|m| vlist::key(&m.id)).collect();
         let list = if thread { &self.pane().thread_list } else { &self.pane().timeline };
-        col.push(list.view(&keys, true, 48.0, UiMessage::Relist, item))
+        col.push(list.view(keys, true, 48.0, UiMessage::Relist, item))
     }
 
     /// A message, or the gallery of the messages `ms`.

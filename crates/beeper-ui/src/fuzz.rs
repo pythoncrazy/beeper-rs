@@ -2172,6 +2172,25 @@ fn views_keep_the_chat_list_until_the_store_changes() {
     assert!(!app.visible_chats(&app.store.read()).iter().any(|c| c.id == ids[0]), "the archived chat leaves");
 }
 
+/// The rows of the open chat read all its messages once for each store generation: a hover keeps them, and a new
+/// message makes them again.
+#[test]
+fn timeline_rows_stay_until_the_store_changes() {
+    let mut app = demo_app("rows-memo");
+    let id = app.main_window.expect("a main window");
+    let rows = |app: &BeeperGuiApp| {
+        drop(Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id)));
+        app.pane.rows.borrow().clone().expect("the view made the rows").2
+    };
+    let first = rows(&app);
+    assert!(!first.msgs.is_empty(), "the note chat has messages");
+    let _ = app.update(UiMessage::HoverChat(NOTE_CHAT_ID.into(), true));
+    assert!(Rc::ptr_eq(&first, &rows(&app)), "a hover keeps the rows");
+    let _ = app.store.write().send_message(NOTE_CHAT_ID, Some("new".into()), None, None).unwrap();
+    let next = rows(&app);
+    assert_eq!(next.msgs.len(), first.msgs.len() + 1, "a new message makes the rows again");
+}
+
 /// The command bar searches once for each query: the other events keep its finds until the store changes, and the
 /// finds are the newest messages first.
 #[test]
