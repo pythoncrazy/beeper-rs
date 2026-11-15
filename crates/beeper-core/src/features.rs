@@ -59,7 +59,8 @@ impl Flags {
         })
     }
 
-    /// Desktop's `freebieStore.stateFor`: whether a free use or a trial is open, and the free uses left.
+    /// Desktop's `freebieStore.deriveState`: whether a free use or a trial is open, and the free uses left.
+    /// A bad trial end or a missing limit gives Desktop's `NaN`, which is not open.
     fn free(&self, name: &str) -> Option<(bool, i64)> {
         let def = self.flags["freebies"].as_array()?.iter().find(|d| d["name"] == name)?;
         if self.subscribed {
@@ -67,11 +68,15 @@ impl Flags {
         }
         let used = &self.usage[name];
         if def["type"] == "duration" {
-            let ends = used["expires_at"].as_str().map(|t| millis_from_rfc3339(t).expect("an RFC 3339 trial end"));
-            return Some((ends.is_some_and(|t| now_unix_secs() * 1000 < t), i64::from(ends.is_none())));
+            let started = used.get("started_at").is_some();
+            let ends = used["expires_at"].as_str().and_then(millis_from_rfc3339).filter(|_| started);
+            return Some((ends.is_some_and(|t| now_unix_secs() * 1000 < t), i64::from(!started)));
         }
-        let limit = used["limit"].as_i64().or(def["default_limit"].as_i64()).expect("a freebie limit");
-        let left = (limit - used["used"].as_i64().unwrap_or(0)).max(0);
+        let used = used.get("used").map(|_| used);
+        let Some(limit) = used.and_then(|u| u["limit"].as_i64()).or(def["default_limit"].as_i64()) else {
+            return Some((false, 0));
+        };
+        let left = (limit - used.and_then(|u| u["used"].as_i64()).unwrap_or(0)).max(0);
         Some((left > 0, left))
     }
 
@@ -79,8 +84,8 @@ impl Flags {
     pub fn trial_days_left(&self) -> Option<i64> {
         const DAY: i64 = 86_400_000;
         let (open, _) = self.free("incognito")?;
-        let ends = self.usage["incognito"]["expires_at"].as_str()?;
-        let left = millis_from_rfc3339(ends).expect("an RFC 3339 trial end") - now_unix_secs() * 1000;
+        let ends = self.usage["incognito"]["expires_at"].as_str().and_then(millis_from_rfc3339)?;
+        let left = ends - now_unix_secs() * 1000;
         open.then(|| ((left + DAY - 1) / DAY).max(1))
     }
 
@@ -147,5 +152,14 @@ mod tests {
             json!({ "incognito": { "started_at": "2020-01-01T00:00:00Z", "expires_at": "2999-01-01T00:00:00Z" } });
         f.subscribed = false;
         assert_eq!(f.get("stealth-mode", 0), open, "the trial is open");
+        f.usage = json!({ "incognito": { "started_at": "2020-01-01T00:00:00Z", "expires_at": "soon" } });
+        assert_eq!((f.get("stealth-mode", 0), f.trial_days_left()), (lock, None), "a bad trial end is not open");
+        f.usage = json!({ "incognito": { "expires_at": "2999-01-01T00:00:00Z" } });
+        assert_eq!(f.get("stealth-mode", 0), lock, "a trial without a start did not start");
+        f.flags["freebies"][1] = json!({ "name": "remind-later", "type": "count" });
+        f.usage = json!({ "remind-later": { "used": 1 } });
+        assert_eq!(f.get("remind-later", 0), lock, "a missing limit gives no free uses");
+        f.usage = json!({ "scheduled-message": { "limit": 9 } });
+        assert_eq!(f.get("scheduled-message", 2), lock, "a usage without a count keeps the default limit");
     }
 }
