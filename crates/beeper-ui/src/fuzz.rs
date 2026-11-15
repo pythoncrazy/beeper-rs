@@ -6264,6 +6264,15 @@ fn sign_in_username_and_continue_like_desktop() {
     let window = done.login_window;
     let _ = done.update(LoginMsg::Continue.into());
     assert_eq!((done.login_window, done.main_window), (None, window), "the sign-in window becomes the main window");
+    let mut none = demo_app("sign-in-headline");
+    (none.login_window, none.main_window) = (none.main_window, None);
+    none.login.screen = Screen::Accounts;
+    for _ in 0..9 {
+        let _ = none.update(LoginMsg::Headline.into());
+    }
+    assert!(none.main_window.is_none(), "nine clicks on the heading keep the onboarding");
+    let _ = none.update(LoginMsg::Headline.into());
+    assert!(none.main_window.is_some(), "Desktop's tenth click on the heading finishes the onboarding");
 }
 
 /// The keyboard of the sign-in window, like Desktop: Tab goes through the controls in their order, Enter presses

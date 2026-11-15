@@ -8070,7 +8070,16 @@ impl BeeperGuiApp {
             UiMessage::RoomJoined(r) => self.room_joined(r),
             UiMessage::Online(on) => self.online = on,
             UiMessage::PillHover(on) => self.pill_hover = on,
-            UiMessage::Login(m) => return self.update_login(m),
+            UiMessage::Login(m) => {
+                let screen = self.login.screen;
+                let task = self.update_login(m);
+                // Desktop's recovery key fields take the keyboard when their screen opens (`autoFocus`).
+                let keyed = matches!(self.login.screen, login::Screen::RecoveryKey | login::Screen::ConfirmKey);
+                return match keyed && self.login.screen != screen {
+                    true => Task::batch([task, operation::focus(verify::KEY_INPUT)]),
+                    false => task,
+                };
+            }
             UiMessage::Verify(m) => return self.update_verify(m),
             UiMessage::Reauth(m) => return self.update_reauth(m),
             UiMessage::EnterKey(m) => return self.update_enter_key(m),
