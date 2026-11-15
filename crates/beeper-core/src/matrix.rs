@@ -1,12 +1,12 @@
 use crate::config::{now_rfc3339_millis, now_unix_millis, rfc3339_from_millis};
 use crate::import::DesktopCrypto;
 use crate::models::{
-    timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat, ChatParticipants,
-    ChatReminder, EditHistoryEntry, Label, Message, MessageLink, MessageRules, Older, PollData, PollOption, PollRules,
-    Reaction, SendError, ThreadFollows, Timers, User, VerificationDevice, VerificationError, VerificationQr,
-    VerificationSas, VerificationSasEmoji, ALL_FILES, ALL_FORMATS, ALL_MEMBER_ACTIONS, BEEPER_MESSAGES, BEEPER_POLLS,
-    BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER, EDITS, FILE_GIF, FILE_VOICE,
-    FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, PERSONAL_AVATAR, PERSONAL_NAME,
+    beeper_files, timer_distance, AppVerification, Attachment, AttachmentSize, Bookmark, BridgeAccountInfo, Chat,
+    ChatParticipants, ChatReminder, EditHistoryEntry, FileRules, Label, Message, MessageLink, MessageRules, Older,
+    PollData, PollOption, PollRules, Reaction, SendError, ThreadFollows, Timers, User, VerificationDevice,
+    VerificationError, VerificationQr, VerificationSas, VerificationSasEmoji, ALL_FORMATS, ALL_MEMBER_ACTIONS,
+    BEEPER_MESSAGES, BEEPER_POLLS, BOOKMARK, DEFAULT_TIMERS, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DISAPPEARING_TIMER,
+    EDITS, FORMATS, MANAGE_KICK, MANAGE_ROLE, MEMBER_ACTIONS, MEMBER_KICK, MSG_MENTION, PERSONAL_AVATAR, PERSONAL_NAME,
 };
 use crate::prefs::Ad;
 use crate::store::{sort_key, BeeperStore, NetworkSpace, SharedStore, NOTE_CHAT_ID};
@@ -230,6 +230,18 @@ fn message_rules(f: &Value) -> MessageRules {
     }
 }
 
+/// The non-null `file` kinds of `com.beeper.room_features`. The bridge writes the state, so a kind that does not parse
+/// is left out with a log line.
+fn file_rules(f: &Value) -> FileRules {
+    let kinds = f["file"].as_object().into_iter().flatten().filter(|(_, v)| !v.is_null());
+    kinds
+        .filter_map(|(k, v)| {
+            let rule = serde_json::from_value(v.clone()).map_err(|e| eprintln!("room features: file kind {k}: {e}"));
+            Some((k.clone(), rule.ok()?))
+        })
+        .collect()
+}
+
 /// Desktop's poll limits from `com.beeper.room_features`, or `None` when the room has no polls.
 fn poll_rules(f: &Value) -> Option<PollRules> {
     let level = |k: &str| f[k].as_i64().is_some_and(|n| n > 0);
@@ -387,10 +399,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         formatting: features.as_ref().map_or(ALL_FORMATS, |f| {
             FORMATS.iter().enumerate().filter(|(_, k)| f["formatting"][**k] == 2).fold(0, |m, (i, _)| m | 1 << i)
         }),
-        files: features.as_ref().map_or(ALL_FILES, |f| {
-            let has = |kind: &str| f["file"].get(kind).is_some_and(|v| !v.is_null());
-            (u8::from(has("fi.mau.gif")) * FILE_GIF) | (u8::from(has("org.matrix.msc3245.voice")) * FILE_VOICE)
-        }),
+        file: features.as_ref().map_or_else(beeper_files, file_rules),
         polls: features.as_ref().map_or(Some(BEEPER_POLLS), poll_rules),
         messages: features.as_ref().map_or(BEEPER_MESSAGES, message_rules),
         disappearing: state(room, DISAPPEARING_TIMER).await.and_then(|t| t["timer"].as_u64()).filter(|&t| t > 0),
@@ -1367,6 +1376,10 @@ pub enum MediaInfo {
     Image(u32, u32),
     /// A recorded voice note: its length and its waveform, with values from 0 to 1.
     Voice { ms: u64, wave: Vec<f32> },
+    /// The width, height and length in ms of a video.
+    Video(u32, u32, u64),
+    /// The length in ms of an audio file.
+    Audio(u64),
     /// An other file, which Matrix shows by its MIME type.
     File,
 }
@@ -1652,7 +1665,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
         }
         Outgoing::Media { txn, bytes: data, name, mime, info, caption, reply_to, thread } => {
             use matrix_sdk::attachment::{
-                AttachmentConfig, AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo,
+                AttachmentConfig, AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo, BaseVideoInfo,
             };
             use matrix_sdk::room::reply::{EnforceThread, Reply};
             use matrix_sdk::ruma::events::room::message::{AddMentions, ReplyWithinThread};
@@ -1678,6 +1691,18 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                     duration: Some(std::time::Duration::from_millis(ms)),
                     size,
                     waveform: Some(wave),
+                }),
+                MediaInfo::Video(w, h, ms) => AttachmentInfo::Video(BaseVideoInfo {
+                    duration: Some(std::time::Duration::from_millis(ms)),
+                    width: Some(w.into()),
+                    height: Some(h.into()),
+                    size,
+                    blurhash: None,
+                }),
+                MediaInfo::Audio(ms) => AttachmentInfo::Audio(BaseAudioInfo {
+                    duration: Some(std::time::Duration::from_millis(ms)),
+                    size,
+                    waveform: None,
                 }),
                 MediaInfo::File => AttachmentInfo::File(BaseFileInfo { size }),
             };

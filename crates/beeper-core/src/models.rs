@@ -52,10 +52,44 @@ pub const DEFAULT_TIMERS: [u64; 11] = [
     2_592_000_000,
     31_536_000_000,
 ];
-/// The `com.beeper.room_features` file kinds that Desktop checks before it opens a composer picker.
-pub const FILE_GIF: u8 = 1 << 0;
-pub const FILE_VOICE: u8 = 1 << 1;
-pub const ALL_FILES: u8 = FILE_GIF | FILE_VOICE;
+/// Desktop's `es` file kinds of `com.beeper.room_features`.
+pub const FILE_IMAGE: &str = "m.image";
+pub const FILE_AUDIO: &str = "m.audio";
+pub const FILE_VIDEO: &str = "m.video";
+pub const FILE_FILE: &str = "m.file";
+pub const FILE_GIF: &str = "fi.mau.gif";
+pub const FILE_VOICE: &str = "org.matrix.msc3245.voice";
+/// The limits of one file kind of `com.beeper.room_features`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct FileRule {
+    /// The `Xn` level of each MIME type, `type/*` or `*/*`: `Rejected` is -2, `Unsupported` 0, `FullySupported` 2.
+    #[serde(default)]
+    pub mime_types: std::collections::BTreeMap<String, i8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_height: Option<u32>,
+    /// In seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_duration: Option<f64>,
+}
+/// The file kinds that a chat accepts.
+pub type FileRules = std::collections::BTreeMap<String, FileRule>;
+/// Desktop's `OBe.file`: the file features of a Beeper room without `com.beeper.room_features`.
+pub fn beeper_files() -> FileRules {
+    let all =
+        |m: &[&str]| FileRule { mime_types: m.iter().map(|m| (m.to_string(), 2)).collect(), ..Default::default() };
+    FileRules::from([
+        (FILE_IMAGE.into(), all(&["image/jpeg", "image/png", "image/gif", "image/webp"])),
+        (FILE_AUDIO.into(), all(&["audio/mpeg", "audio/mp4", "audio/ogg", "audio/wav", "audio/webm", "audio/aac"])),
+        (FILE_VIDEO.into(), all(&["video/mp4", "video/webm", "video/ogg", "video/mov", "video/quicktime"])),
+        (FILE_GIF.into(), all(&["image/gif"])),
+        (FILE_VOICE.into(), all(&["audio/ogg"])),
+        (FILE_FILE.into(), FileRule { max_size: Some(100_000_000), ..all(&["*/*"]) }),
+    ])
+}
 /// The `com.beeper.room_features` formatting keys of Desktop's formatting menu buttons, in menu order.
 pub const FORMATS: [&str; 9] = [
     "bold",
@@ -489,9 +523,9 @@ pub struct Chat {
     /// The `FORMATS` the network fully supports, one bit each.
     #[serde(default = "all_formats")]
     pub formatting: u16,
-    /// The `FILE_` kinds the network accepts.
-    #[serde(default = "all_files")]
-    pub files: u8,
+    /// Desktop's `roomFeatures.file`: the file kinds that the network accepts.
+    #[serde(default = "beeper_files")]
+    pub file: FileRules,
     /// The poll features of the network, or `None` when it has no polls.
     #[serde(default = "beeper_polls")]
     pub polls: Option<PollRules>,
@@ -725,10 +759,6 @@ fn all_formats() -> u16 {
     ALL_FORMATS
 }
 
-fn all_files() -> u8 {
-    ALL_FILES
-}
-
 fn flag_bits(bits: &[(bool, u16)]) -> u16 {
     bits.iter().filter(|(on, _)| *on).fold(0, |f, (_, bit)| f | bit)
 }
@@ -765,6 +795,11 @@ impl Chat {
         }
         f(self);
         self.set_personal(title, img_url);
+    }
+
+    /// Desktop's `Yc`: the room features list the file kind, with a supported MIME type when they list types.
+    pub fn takes(&self, kind: &str) -> bool {
+        self.file.get(kind).is_some_and(|r| r.mime_types.is_empty() || r.mime_types.values().any(|&l| l > 0))
     }
 
     pub fn sync_flags(&mut self) {
