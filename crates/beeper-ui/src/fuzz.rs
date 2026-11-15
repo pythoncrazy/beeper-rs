@@ -4292,6 +4292,26 @@ fn blocking_like_desktop() {
     assert!(simulator(app.view_chat_menu(&id, false, 900.0)).find("Unblock…").is_err());
 }
 
+/// Desktop shows "Delete Chat" in the chat menu and "Delete" in the command bar only with the delete-chats flag.
+#[test]
+fn delete_chat_follows_the_flag_like_desktop() {
+    let mut app = demo_app("delete-chats");
+    let id = {
+        let mut st = app.store.write();
+        let i = st.chats.iter().position(|c| c.id != NOTE_CHAT_ID).expect("a chat");
+        st.update_chat(i, |c| c.delete_modes = DELETE_FOR_ME);
+        st.chats[i].id.clone()
+    };
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let shown = |app: &BeeperGuiApp| {
+        let menu = simulator(app.view_chat_menu(&id, false, 900.0)).find("Delete Chat").is_ok();
+        (menu, app.commands(&app.store.read(), "delete").iter().any(|c| c.title == "Delete"))
+    };
+    assert_eq!(shown(&app), (true, true));
+    app.store.write().features.flags["features"]["*"]["delete-chats"] = false.into();
+    assert_eq!(shown(&app), (false, false));
+}
+
 #[test]
 fn blocked_users_like_desktop() {
     let mut app = demo_app("blocked-users");
