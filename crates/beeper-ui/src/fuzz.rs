@@ -2,7 +2,9 @@
 //! `FUZZ_SEED` is the first of the 16 seeds, and `FUZZ_STEPS` is the number of steps of each seed.
 
 use super::*;
+use crate::composer::{composer_action, hidden_actions, mention_label};
 use beeper_core::config::CentralConfig;
+use beeper_core::matrix::ROOM_MENTION;
 use beeper_core::store::StoreLock;
 use iced::mouse::{Button, ScrollDelta};
 use iced_test::simulator::{simulator, Simulator};
@@ -3344,7 +3346,7 @@ fn polls_like_desktop() {
 fn poll_creator_like_desktop() {
     let mut app = demo_app("poll-creator");
     let chat = "!tg_rust:beeper.com".to_string();
-    assert!(crate::hidden_actions(&app.store.read()).contains(&6), "Create Poll is behind the plus button");
+    assert!(hidden_actions(&app.store.read()).contains(&6), "Create Poll is behind the plus button");
     let i = app.store.read().chat_idx(&chat);
     let rules = PollRules { hidden_votes: false, end: true, duplicates: false, max_options: 3, max_length: 200 };
     app.store.write().update_chat(i, |c| c.polls = Some(rules));
