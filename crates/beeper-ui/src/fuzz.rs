@@ -1120,6 +1120,50 @@ fn photos_group_into_galleries_like_desktop() {
     assert!(sim.find("01:15").is_ok(), "a video tile shows its duration");
 }
 
+/// Desktop's carousel shows every attachment of the chat but audio: a video plays with its controls, and a file is a
+/// link that downloads it. A step away from a playing video pauses it.
+#[test]
+fn carousel_steps_through_videos_and_files_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("carousel-items");
+    let base = {
+        let st = app.store.read();
+        st.messages[*st.chat_msg_indices[note].last().unwrap()].clone()
+    };
+    let kinds = [("img", "a.png"), ("unknown", "spec.pdf"), ("audio", "voice.ogg"), ("video", "clip.mp4")];
+    {
+        let mut st = app.store.write();
+        for (i, (kind, name)) in kinds.into_iter().enumerate() {
+            let a = Attachment {
+                attachment_type: kind.into(),
+                src_url: Some(format!("https://example.com/{name}")),
+                file_name: Some(name.into()),
+                ..Default::default()
+            };
+            let (id, sort_key) = (format!("$item{i}"), format!("{:016}", 9_000_000 + i));
+            st.upsert_message(Message { id, sort_key, attachments: vec![a], text: None, ..base.clone() });
+        }
+    }
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    let _ = app.update(UiMessage::OpenCarousel("$item0".into(), 0, false));
+    let _ = app.update(UiMessage::CarouselStep(true));
+    let msgs: Vec<UiMessage> = {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1000.0, 700.0), app.view_main());
+        sim.point_at(Point::new(500.0, 375.0));
+        let _ = sim.simulate(iced_test::simulator::click());
+        sim.into_messages().collect()
+    };
+    let download = |m: &UiMessage| matches!(m, UiMessage::Download(m, Some(0)) if m == "$item1");
+    assert!(msgs.iter().any(download), "the link downloads the file");
+    let _ = app.update(UiMessage::CarouselStep(true));
+    assert_eq!(app.carousel.as_ref().unwrap().mid, "$item3", "the carousel skips the audio");
+    let _ =
+        app.update(UiMessage::Video(video::Msg::Play("$item3".into(), "https://example.com/clip.mp4".into(), 2, 2)));
+    drop(app.view_main());
+    let _ = app.update(UiMessage::CarouselStep(false));
+    assert!(!app.video.as_ref().unwrap().playing(), "a step away pauses the video");
+}
+
 /// Desktop's carousel zoom: a double click or `+` zooms in, so that a click beside the image hits the image and does
 /// not close the carousel, and `-` zooms out again.
 #[test]
