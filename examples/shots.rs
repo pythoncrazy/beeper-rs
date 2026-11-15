@@ -72,6 +72,8 @@ fn main() {
     let _ = app.update(UiMessage::BeginSelecting(dm.clone()));
     shot(&out, "main_selecting", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::CloseModals);
+    app.select_chat("!wa_eric:beeper.com");
+    shot(&out, "main_voice", (1200.0, 800.0), &theme, app.view_main());
     app.select_chat("!sl_infra:beeper.com");
     shot(&out, "main_threads", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::ShowUnreadThreads);

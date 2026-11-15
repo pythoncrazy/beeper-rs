@@ -431,6 +431,8 @@ struct ApiAttachment<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     duration: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    transcription: Option<&'a Transcription>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     poster_img: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     size: Option<&'a AttachmentSize>,
@@ -460,13 +462,14 @@ fn attachment(a: &Attachment) -> ApiAttachment<'_> {
         is_sticker: a.is_sticker,
         is_voice_note: a.is_voice_note,
         duration: a.duration,
+        transcription: a.transcription.as_ref(),
         poster_img: a.poster_img.as_deref(),
         size: a.size.as_ref(),
         src_url: a.src_url.as_deref(),
     }
 }
 
-/// Desktop's `sp`. Attachments have no `transcription`: Desktop requires its `engine`, and the store does not keep it.
+/// Desktop's `sp`.
 pub(super) fn message(m: &Message) -> ApiMessage<'_> {
     ApiMessage {
         id: &m.id,

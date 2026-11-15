@@ -670,6 +670,9 @@ pub struct Personal {
 pub const BOOKMARK: &str = "com.beeper.bookmark";
 /// Desktop's `BOOKMARKS_ROOM_ID`: the managed room of the bookmarks on the Beeper homeserver.
 pub const BOOKMARKS_ROOM: &str = "!bookmarks:beeper.local";
+/// The event type and the relation type of a transcription, and Desktop's `TRANSCRIPTIONS_ROOM_ID`, its room.
+pub const TRANSCRIPTION: &str = "com.beeper.transcription";
+pub const TRANSCRIPTIONS_ROOM: &str = "!transcriptions:beeper.local";
 
 /// A `com.beeper.bookmark` event of the bookmarks room, which relates to a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -871,7 +874,16 @@ pub struct Attachment {
     #[serde(rename = "srcURL", skip_serializing_if = "Option::is_none")]
     pub src_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub transcript: Option<String>,
+    pub transcription: Option<Transcription>,
+}
+
+/// Desktop's `attachment.transcription`, from a `com.beeper.transcription` event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Transcription {
+    pub transcription: String,
+    pub engine: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

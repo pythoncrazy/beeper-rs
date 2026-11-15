@@ -1,13 +1,14 @@
 //! Desktop's audio player (`Audio.tsx`): decoding, the waveform, playback speed, and autoplay of the next
 //! voice note.
-use crate::style::{btn_style, fill_box, hidden_slider, ic, icon, semi, shadow_box, text_width, txt, CLEAR};
+use crate::style::{btn_style, clamped, fill_box, hidden_slider, ic, icon, semi, shadow_box, text_width, txt, CLEAR};
 use crate::{menu_item, sound, tinted, tr, BeeperGuiApp, El, UiMessage, AVATAR_SLOTS, MENU_ITEM};
 use beeper_core::models::{Attachment, Message};
 use beeper_core::store::BeeperStore;
 use iced::font::Weight;
+use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, mouse_area, row, slider, stack, svg, Column, Row, Space};
 use iced::{Center, Color, Fill, Padding, Pixels, Point, Subscription, Task};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -18,6 +19,9 @@ pub(crate) const HZ: usize = 48_000;
 const PEAKS: usize = 1024;
 /// `.waveform-container`'s min-width.
 const WAVE_W: f32 = 165.0;
+/// `.transcribed-message`'s max-width and line clamp.
+const QUOTE_W: f32 = 290.0;
+const QUOTE_LINES: usize = 40;
 
 /// Desktop's `play-fill`, `pause-fill`, `rewind`, `forward` and `close`.
 pub(crate) static ICONS: LazyLock<[svg::Handle; 5]> = LazyLock::new(|| {
@@ -86,6 +90,8 @@ pub struct Player {
     grab: Option<(f32, f32, bool)>,
     /// Where `bottom` is saved.
     saved: PathBuf,
+    /// The messages with a clamped transcript that shows all its lines.
+    more: HashSet<String>,
 }
 
 /// Desktop's `activationConstraint`: a drag starts after the cursor moves this far.
@@ -118,6 +124,7 @@ impl Player {
             bottom,
             grab: None,
             saved,
+            more: HashSet::new(),
         }
     }
 }
@@ -140,6 +147,8 @@ pub enum Msg {
     Grab,
     Drag(f32),
     Drop,
+    /// "Show more" or "Show less" of the transcript of a message.
+    More(String),
 }
 
 /// The `-f f32le` arguments that make ffmpeg write mono `HZ` samples.
@@ -298,6 +307,11 @@ impl BeeperGuiApp {
             Msg::Menu => (audio.menu, audio.pill) = (Some(self.cursor.get()), false),
             Msg::PillMenu => (audio.menu, audio.pill, audio.sub) = (Some(self.cursor.get()), true, false),
             Msg::Sub => audio.sub = true,
+            Msg::More(id) => {
+                if !audio.more.remove(&id) {
+                    audio.more.insert(id);
+                }
+            }
             Msg::Rate(rate) => {
                 let playing = audio.now.as_ref().is_some_and(|t| t.since.is_some());
                 audio.pause();
@@ -401,8 +415,16 @@ impl BeeperGuiApp {
             && a.src_url.as_ref().is_some_and(|u| !matches!(self.audio.clips.get(u), Some(Some(Err(_)))))
     }
 
-    /// Desktop's `.audio-player`, in the bubble colors.
-    pub(crate) fn view_audio<'a>(&self, m: &Message, a: &Attachment, mine: bool, fg: Color, bg: Color) -> El<'a> {
+    /// Desktop's `.audio-player`, in the bubble colors, with the time `ts` in its color.
+    pub(crate) fn view_audio<'a>(
+        &self,
+        m: &Message,
+        a: &Attachment,
+        mine: bool,
+        ts: Option<(String, Color)>,
+        fg: Color,
+        bg: Color,
+    ) -> El<'a> {
         let url = a.src_url.clone().expect("a playable attachment has a URL");
         let clip = self.audio.clip(&url);
         let track = self.audio.now.as_ref().filter(|t| t.mid == m.id);
@@ -415,9 +437,46 @@ impl BeeperGuiApp {
         let time = pos.map_or(total.clone(), |pos| format!("{}/{total}", clock(pos)));
         let rate = format!("{}x", self.audio.rate);
         let rate_w = ready.map_or(0.0, |_| 8.0 + text_width(&rate, 11.0, Weight::Semibold) + 8.0);
-        let wave_w =
-            (WAVE_W + text_width(&total, 11.0, Weight::Normal) - text_width(&time, 11.0, Weight::Normal) - rate_w)
-                .max(0.0);
+        let ts_w = ts.as_ref().map_or(0.0, |(t, _)| text_width(t, 11.0, Weight::Normal));
+        let stamp = |(t, c): (String, Color)| txt(t, 11.0).line_height(Pixels(14.0)).color(c);
+        let contents = 20.0 + 8.0 + WAVE_W + 8.0 + text_width(&total, 11.0, Weight::Normal);
+        // Desktop's `transcribed-message`: the transcript in quotes, in the bubble text color, at most `QUOTE_W` wide.
+        // Over `QUOTE_LINES` lines, it is clamped and "Show more" shows all of it. The time floats after the text,
+        // else it goes beside "Show more".
+        let (quote, inner) = match a.transcription.as_ref() {
+            None => (None, contents + ts.as_ref().map_or(0.0, |_| 8.0 + ts_w)),
+            Some(t) => {
+                let q = format!("\"{}\"", t.transcription);
+                let (all, shown) = (
+                    clamped(&q, QUOTE_W, usize::MAX, 13.0, Weight::Normal),
+                    clamped(&q, QUOTE_W, QUOTE_LINES, 13.0, Weight::Normal),
+                );
+                let (over, open) = (all != shown, self.audio.more.contains(&m.id));
+                let float = ts.clone().filter(|_| !over || open);
+                let nbsp = text_width("\u{a0}", 13.0, Weight::Normal);
+                let pad =
+                    float.as_ref().map_or(String::new(), |_| "\u{a0}".repeat(((ts_w + 4.0) / nbsp).ceil() as usize));
+                let body = format!("{}{pad}", if over && !open { &shown } else { &all });
+                let w = text_width(&body, 13.0, Weight::Normal).min(QUOTE_W);
+                let body = txt(body, 13.0).line_height(Pixels(16.0)).color(fg).wrapping(Wrapping::WordOrGlyph);
+                let body = stack![body].push(float.map(|t| container(stamp(t)).align_right(Fill).align_bottom(Fill)));
+                let footer = over.then(|| {
+                    let label = semi(if open { tr("Show less") } else { tr("Show more") }, 13.0);
+                    let toggle = button(label.line_height(Pixels(16.0)).color(self.pal.accent))
+                        .padding(0)
+                        .style(|_, _| button::Style::default())
+                        .on_press(UiMessage::Voice(Msg::More(m.id.clone())));
+                    row![toggle, Space::new().width(Fill)].push(ts.clone().filter(|_| !open).map(stamp))
+                });
+                (Some(column![body].push(footer)), contents.max(w))
+            }
+        };
+        let ts = ts.filter(|_| quote.is_none()).map(stamp);
+        let wave_w = (WAVE_W + inner - contents - ts.as_ref().map_or(0.0, |_| 8.0 + ts_w)
+            + text_width(&total, 11.0, Weight::Normal)
+            - text_width(&time, 11.0, Weight::Normal)
+            - rate_w)
+            .max(0.0);
         let toggle = clip.map(|_| UiMessage::Voice(Msg::Toggle(m.chat_id.clone(), m.id.clone(), url.clone())));
         let (wave, progress) = (if mine { fg.scale_alpha(0.5) } else { self.pal.on_secondary }, fg);
         let wave: El<'a> = match clip {
@@ -435,13 +494,9 @@ impl BeeperGuiApp {
                 .style(btn_style([fg.scale_alpha(0.2); 3], [Color::WHITE; 3], 2.0))
                 .on_press(UiMessage::Voice(Msg::Menu))
         });
-        let line = row![play, wave, txt(time, 11.0).line_height(Pixels(14.0)).color(fg)].push(speed);
-        // Desktop's `transcribed-message`: the transcript in quotes, in the bubble text color, and a click does nothing.
-        let transcript =
-            a.transcript.as_ref().map(|t| txt(format!("\"{t}\""), 13.0).line_height(Pixels(16.0)).color(fg));
-        let width = 22.0 + 20.0 + 8.0 + WAVE_W + 8.0 + text_width(&total, 11.0, Weight::Normal);
-        container(column![line.spacing(8).align_y(Center)].push(transcript).spacing(6))
-            .width(width)
+        let line = row![play, wave, txt(time, 11.0).line_height(Pixels(14.0)).color(fg)].push(speed).push(ts);
+        container(column![line.spacing(8).align_y(Center)].push(quote).spacing(6))
+            .width(22.0 + inner)
             .padding([8, 11])
             .style(fill_box(bg, 22.0))
             .into()
@@ -572,16 +627,40 @@ mod tests {
         assert_eq!(clip.peaks.iter().copied().fold(0.0, f32::max), 1.0);
     }
 
-    /// Desktop's transcript: in quotes, and a click on it does nothing.
+    /// Desktop's transcript: in quotes, with room for the time after it, and a click on it does nothing. Over 40
+    /// lines it is clamped, and "Show more" shows all of it.
     #[test]
     fn transcripts_like_desktop() {
+        use beeper_core::models::Transcription;
+        use iced_test::selector::{Candidate, Target};
+        let quote = |c: Candidate<'_>| {
+            Some(Target::from(c)).filter(|t| matches!(t, Target::Text { content, .. } if content.starts_with('"')))
+        };
+        let content = |t: Target| match t {
+            Target::Text { content, .. } => content,
+            _ => unreachable!("the selector finds texts"),
+        };
         let mut app = crate::fuzz::demo_app("voice-transcript");
         let _ = app.update(UiMessage::SelectChat("!wa_eric:beeper.com".into()));
         let mut sim = iced_test::simulator(app.view_main());
-        let quote =
+        let text = content(sim.click(quote).expect("the transcript shows in quotes"));
+        let want =
             "\"Native Rust + Iced GPU rendering makes Beeper feel instantaneous across Linux, macOS, and Windows.\"";
-        let _ = sim.click(quote).expect("the transcript shows in quotes");
+        assert!(text.strip_prefix(want).is_some_and(|pad| pad.chars().all(|c| c == '\u{a0}') && !pad.is_empty()));
         assert!(sim.into_messages().all(|m| !matches!(m, UiMessage::Voice(_))), "the click does nothing");
+
+        let long =
+            Transcription { transcription: ["word"; 600].join(" "), engine: "openai-whisper".into(), language: None };
+        app.store.write().set_transcription("msg_1000c", long);
+        let mut sim = iced_test::simulator(app.view_main());
+        assert!(content(sim.find(quote).unwrap()).ends_with('…'), "the transcript is clamped");
+        let _ = sim.click("Show more").expect("a long transcript has Show more");
+        for m in sim.into_messages() {
+            let _ = app.update(m);
+        }
+        let mut sim = iced_test::simulator(app.view_main());
+        assert!(content(sim.find(quote).unwrap()).trim_end_matches('\u{a0}').ends_with("word\""), "all of it shows");
+        let _ = sim.click("Show less").expect("an open transcript has Show less");
     }
 
     /// A demo app with two decoded 10 ms voice notes, `v0` and `v1`, in the first chat.

@@ -1,7 +1,7 @@
 use crate::config::rfc3339_from_millis;
 use crate::models::{
     beeper_files, Attachment, AttachmentSize, Chat, ChatParticipants, Message, MessageLink, Older, Reaction,
-    SpaceOrder, ThemeChoice, ThreadFollows, User, ALL_FORMATS, BEEPER_MESSAGES, BEEPER_POLLS,
+    SpaceOrder, ThemeChoice, ThreadFollows, Transcription, User, ALL_FORMATS, BEEPER_MESSAGES, BEEPER_POLLS,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
@@ -500,7 +500,14 @@ fn read_attachment(a: &Value) -> Attachment {
         poster_img: str_field(a, "posterImg"),
         size,
         src_url: str_field(a, "srcURL"),
-        transcript: None,
+        // Desktop's search skips a `transcription.transcription` that is null. Its engine is "unknown" when not known.
+        transcription: a.get("transcription").and_then(|t| {
+            Some(Transcription {
+                transcription: str_field(t, "transcription")?,
+                engine: str_field(t, "engine").unwrap_or_else(|| "unknown".into()),
+                language: str_field(t, "language"),
+            })
+        }),
     }
 }
 
@@ -721,6 +728,18 @@ mod tests {
         let unchanged = serde_json::json!({ "app_locale": "en" });
         assert!(matches!(read_theme(&unchanged), Ok(ThemeChoice::System)), "Desktop's default theme is system");
         assert!(read_theme(&serde_json::json!({ "native_theme_source": 1 })).is_err());
+    }
+
+    /// Desktop's `attachments[0].transcription` stays, and a null transcription is no transcription.
+    #[test]
+    fn transcriptions_import() {
+        let t = |v| read_attachment(&serde_json::json!({ "type": "audio", "transcription": v })).transcription;
+        let full = t(serde_json::json!({ "transcription": "Hi", "engine": "openai-whisper", "language": "de" }));
+        let want =
+            Transcription { transcription: "Hi".into(), engine: "openai-whisper".into(), language: Some("de".into()) };
+        assert_eq!(full, Some(want));
+        assert_eq!(t(serde_json::json!({ "transcription": null, "engine": "openai-whisper" })), None);
+        assert_eq!(t(serde_json::Value::Null), None);
     }
 
     /// A Desktop user who never set up a recovery key has no secrets and no key backup.

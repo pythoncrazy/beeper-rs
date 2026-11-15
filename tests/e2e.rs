@@ -1149,7 +1149,9 @@ async fn lifecycle() {
     assert!(!media_res.items.is_empty() && media_res.items.iter().all(|m| m["attachments"].is_array()));
     let voice =
         media_res.items.iter().flat_map(|m| m["attachments"].as_array().unwrap()).find(|a| a["isVoiceNote"] == true);
-    assert!(voice.unwrap().get("transcript").is_none(), "no store fields");
+    let voice = voice.unwrap();
+    assert_eq!(voice["transcription"]["engine"], "openai-whisper", "Desktop's `Transcription`: {voice}");
+    assert!(voice["transcription"]["transcription"].is_string() && voice["transcription"]["language"] == "en");
 
     let unified = client.unified_search("rust").await;
     assert!(
