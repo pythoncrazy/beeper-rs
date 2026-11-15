@@ -893,6 +893,37 @@ fn threads_like_desktop() {
     assert!(app.pane.thread.is_none() && app.show_right_panel, "Chat Info takes the place of the thread pane");
 }
 
+/// Desktop's unread threads: the "Unread threads" pill and its menu, the Unread threads view with its cards, the badge
+/// count, and the thread pane that reads a thread and keeps its unread divider.
+#[test]
+fn unread_threads_like_desktop() {
+    let mut app = demo_app("unread-threads");
+    let (chat, root) = ("!sl_infra:beeper.com", "msg_1007");
+    let badge = app.badge_count();
+    assert!(simulator(app.view_sidebar()).find("Unread threads").is_ok(), "the pill shows an unread thread");
+    let _ = app.update(UiMessage::UnreadThreadsMenu(true));
+    assert!(simulator(app.view_main()).find("Mark 1 Thread as Read").is_ok());
+    let _ = app.update(UiMessage::CloseModals);
+    let _ = app.update(UiMessage::ShowUnreadThreads);
+    assert!(app.pane.selected_chat_id.is_none() && app.unread_view);
+    {
+        let mut sim = simulator(app.view_main());
+        for t in ["Select a thread", "Ship it"] {
+            assert!(sim.find(t).is_ok(), "the view shows {t}");
+        }
+    }
+    let _ = app.update(UiMessage::OpenThread(chat.into(), root.into()));
+    let thread = app.pane.thread.as_ref().expect("the card opens the thread pane");
+    assert_eq!(thread.thread_divider.as_deref(), Some("0000000000001009"), "the divider stays at the old read mark");
+    {
+        let st = app.store.read();
+        assert_eq!(st.thread_unread(&st.chats[st.chat_idx_by_id[chat]], root), (0, 0), "the open thread is read");
+    }
+    assert!(simulator(app.view_main()).find("You’re all caught up.").is_ok());
+    assert!(simulator(app.view_sidebar()).find("Unread threads").is_err(), "the pill goes with the last unread thread");
+    assert_eq!(app.badge_count(), badge - 1, "Desktop counts one more with unread threads");
+}
+
 #[test]
 fn pickers_check_the_network_like_desktop() {
     let mut app = demo_app("pickers");

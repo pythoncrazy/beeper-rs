@@ -316,6 +316,10 @@ impl BeeperGuiApp {
                 && prefs.on("messageNotifications")
                 && (prefs.on("groupNotifications") || !group)
                 && (m.message_type.as_deref() != Some("REACTION") || prefs.on("notifyReactions"))
+                // Desktop notifies a reply only in a thread when you follow the thread or it mentions you.
+                && m.thread_root.as_deref().is_none_or(|r| {
+                    !m.thread_only(st.threaded(chat)) || m.flags & MSG_MENTION != 0 || st.follows_thread(chat, r)
+                })
                 && !(self.focused
                     && (self.pane.selected_chat_id.as_ref() == Some(&chat.id) || !prefs.on("notifyInFocus")));
         if !shown || !self.notified.insert(m.id.clone()) {
