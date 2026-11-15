@@ -719,6 +719,14 @@ fn remind_submenu_like_desktop() {
     let r = st.chats[st.resolve_chat_idx(&id).unwrap()].reminder.clone().expect("a reminder");
     assert!(r.remind_at_ms == at && !r.dismiss_on_incoming_message, "Always keeps the reminder after a reply");
     drop(st);
+    let pill = format!("{} {}", reminder_day(at), clock(at, false));
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_conversation());
+        let _ = sim.click(pill.as_str()).expect("the reminder pill");
+        sim.into_messages().collect()
+    };
+    let opens = matches!(&picked[..], [UiMessage::OpenSubMenu(commands::SubMenu::Remind(c))] if *c == id);
+    assert!(opens, "the header pill opens Remind Me");
     let _ = app.update(UiMessage::OpenSubMenu(commands::SubMenu::Remind(id.clone())));
     assert!(app.cmd_no_reply, "the choice starts at the setting");
     assert_eq!(labels(&app, "").last().map(String::as_str), Some("dismiss reminder"));
