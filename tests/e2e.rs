@@ -608,6 +608,13 @@ async fn lifecycle() {
     }
 
     let (_, _, pages, pager) = spawn_e2e_beeper_instance("pages", None).await;
+    let (_, accounts) = pager.request("GET", "/v1/accounts", None).await;
+    assert_eq!(accounts[0]["bridge"], json!({ "id": "whatsapp", "type": "whatsapp", "provider": "local" }));
+    let account = &accounts[2];
+    assert_eq!(
+        (&account["loginID"], &account["network"], &account["status"]),
+        (&json!("login_telegram_01"), &json!("Telegram"), &json!("connected"))
+    );
     let (mut listed, mut cursor) = (Vec::new(), None::<String>);
     loop {
         let path = match &cursor {
