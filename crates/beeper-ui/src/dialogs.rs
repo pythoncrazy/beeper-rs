@@ -1371,7 +1371,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_poll_votes(&self, chat: &str, mid: &str) -> El<'_> {
         let p = &self.pal;
         let st = self.store.read();
-        let poll = st.msg_idx_by_id.get(mid).and_then(|&i| st.messages[i].poll.as_ref());
+        let poll = st.loaded(mid).and_then(|m| m.poll.as_ref());
         let Some(poll) = poll else { return container(Space::new()).style(fill_box(p.window, 0.0)).into() };
         let people = st.resolve_chat_idx(chat).map_or(&[][..], |i| &st.chats[i].participants.items[..]);
         let weak = if self.dark { Color::WHITE } else { Color::BLACK }.scale_alpha(0.05);

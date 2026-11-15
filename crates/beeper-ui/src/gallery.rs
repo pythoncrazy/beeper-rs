@@ -220,7 +220,7 @@ impl BeeperGuiApp {
         }
         let p = &self.pal;
         let st = self.store.read();
-        let ms: Vec<&Message> = ids.iter().map(|i| &st.messages[st.msg_idx_by_id[i]]).collect();
+        let ms: Vec<&Message> = ids.iter().map(|i| st.message(i)).collect();
         let at = self.pane().message_menu.as_ref().expect("the menu is open").1;
         let item = |label: String, hotkey, msg| {
             (menu_item(p, None, label, hotkey, Some(UiMessage::MessageMenu(Box::new(msg)))), MENU_ITEM)
@@ -252,7 +252,7 @@ impl BeeperGuiApp {
     /// Desktop's reactions list of the messages of a gallery, at the point of its anchor.
     pub(crate) fn view_gallery_reactions<'a>(&self, ids: &[String]) -> El<'a> {
         let st = self.store.read();
-        let ms: Vec<&Message> = ids.iter().map(|i| &st.messages[st.msg_idx_by_id[i]]).collect();
+        let ms: Vec<&Message> = ids.iter().map(|i| st.message(i)).collect();
         let chat = st.chat(&ms[0].chat_id);
         crate::popover::popover(Space::new(), self.reaction_list(chat, &ms), true).into()
     }

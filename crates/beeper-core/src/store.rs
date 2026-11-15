@@ -497,9 +497,9 @@ pub struct BeeperStore {
     local_chat_idx_by_id: HashMap<String, usize>,
     /// The messages of the loaded chats. SQLite keeps all messages, and `load_chat` loads the messages of a chat.
     pub messages: Vec<Message>,
-    pub msg_idx_by_id: HashMap<String, usize>,
+    pub(crate) msg_idx_by_id: HashMap<String, usize>,
     /// The messages of each loaded chat in timeline order. A chat that is not loaded has no entry.
-    pub chat_msg_indices: HashMap<String, Vec<usize>>,
+    pub(crate) chat_msg_indices: HashMap<String, Vec<usize>>,
     /// The loaded chats, the chat that was used last at the end.
     loaded: Vec<String>,
     /// The chats that the windows show, which stay loaded.
@@ -875,6 +875,38 @@ impl BeeperStore {
         self.loaded.retain(|c| !old.contains(c));
         self.chat_msg_indices.retain(|c, _| !old.contains(c));
         self.compact();
+    }
+
+    /// The index in `messages` of the message with the ID, or `None` when it is not in memory. [`Self::find_message`]
+    /// also loads it.
+    pub fn loaded_idx(&self, id: &str) -> Option<usize> {
+        self.msg_idx_by_id.get(id).copied()
+    }
+
+    /// The index in `messages` of the message with the ID. It panics when the message is not in memory.
+    pub fn message_idx(&self, id: &str) -> usize {
+        self.loaded_idx(id).unwrap_or_else(|| panic!("{id} is not a loaded message"))
+    }
+
+    /// The message with the ID, or `None` when it is not in memory.
+    pub fn loaded(&self, id: &str) -> Option<&Message> {
+        self.loaded_idx(id).map(|i| &self.messages[i])
+    }
+
+    /// The message with the ID. It panics when the message is not in memory.
+    pub fn message(&self, id: &str) -> &Message {
+        &self.messages[self.message_idx(id)]
+    }
+
+    /// The indices in `messages` of the loaded messages of the chat, in timeline order. A chat without loaded
+    /// messages has none; [`Self::load_chat`] loads them.
+    pub fn timeline_indices(&self, chat: &str) -> &[usize] {
+        self.chat_msg_indices.get(chat).map_or(&[], Vec::as_slice)
+    }
+
+    /// The loaded messages of the chat, in timeline order.
+    pub fn timeline(&self, chat: &str) -> impl DoubleEndedIterator<Item = &Message> + ExactSizeIterator + Clone {
+        self.timeline_indices(chat).iter().map(|&i| &self.messages[i])
     }
 
     /// Loads the chat of the stored message `id`, and returns the index of the message.

@@ -123,7 +123,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
     let st = app.store.read();
     let chats: Vec<String> = st.chats.iter().map(|c| c.id.clone()).collect();
     let deletable: Vec<String> = st.chats.iter().filter(|c| c.delete_modes != 0).map(|c| c.id.clone()).collect();
-    let open = app.pane.selected_chat_id.as_deref().and_then(|c| st.chat_msg_indices.get(c)).filter(|m| !m.is_empty());
+    let open = app.pane.selected_chat_id.as_deref().map(|c| st.timeline_indices(c)).filter(|m| !m.is_empty());
     let msgs: Vec<(String, String)> = match open {
         Some(idx) => idx.iter().map(|&i| (st.messages[i].chat_id.clone(), st.messages[i].id.clone())).collect(),
         None => vec![("!note_self:beeper.com".into(), "none".into())],
@@ -408,7 +408,7 @@ fn attachments_send_like_desktop() {
     let _ = app.update(UiMessage::SubmitComposer);
     let last = |app: &BeeperGuiApp, n: usize| {
         let st = app.store.read();
-        let ids = &st.chat_msg_indices[note];
+        let ids = &st.timeline_indices(note);
         let msgs = ids[ids.len() - n..].iter().map(|&i| &st.messages[i]);
         msgs.map(|m| (m.text.clone(), m.attachments.iter().map(|a| a.attachment_type.clone()).collect())).collect()
     };
@@ -448,7 +448,7 @@ fn attachments_send_like_desktop() {
     let _ = app.update(UiMessage::FilesLoaded(vec![Ok(clip)]));
     let _ = app.update(UiMessage::SubmitComposer);
     let st = app.store.read();
-    let a = &st.messages[*st.chat_msg_indices[note].last().unwrap()].attachments[0];
+    let a = &st.messages[*st.timeline_indices(note).last().unwrap()].attachments[0];
     let size = a.size.as_ref().map(|s| (s.width, s.height));
     assert_eq!((a.attachment_type.as_str(), size, a.duration), ("video", Some((Some(64), Some(48))), Some(1.5)));
     drop(st);
@@ -513,7 +513,7 @@ fn auto_sent_gifs_keep_the_composer_like_desktop() {
     };
     let _ = app.update(UiMessage::GifDownloaded(Ok(gif)));
     let st = app.store.read();
-    let last = &st.messages[*st.chat_msg_indices[note].last().unwrap()];
+    let last = &st.messages[*st.timeline_indices(note).last().unwrap()];
     assert!(last.text.is_none() && last.attachments[0].is_gif == Some(true), "only the GIF goes");
     assert_eq!(app.pane.composer.text(), "keep", "the composer keeps its text");
 }
@@ -722,7 +722,7 @@ fn an_edit_keeps_the_draft_like_desktop() {
     let _ = app.update(UiMessage::SubmitComposer);
     assert_eq!(state(&app), draft, "a sent edit gives the draft back");
     let st = app.store.read();
-    assert_eq!(st.messages[st.msg_idx_by_id[&own]].text.as_deref(), Some("new"));
+    assert_eq!(st.message(&own).text.as_deref(), Some("new"));
     drop(st);
     let _ = app.update(UiMessage::CancelComposeMode);
     assert_eq!(state(&app), (draft.0.clone(), None), "the close button removes only the quoted message");
@@ -860,7 +860,7 @@ fn send_later_like_desktop() {
     let _ = app.update(UiMessage::RescheduleTo(vec![s.id.clone()], at, true));
     let mut st = app.store.write();
     let (_, reply, _) = st.send_message(&id, Some("sure".into()), None, None).unwrap();
-    let i = st.msg_idx_by_id[&reply];
+    let i = st.message_idx(&reply);
     let m = st.update_message(i, |m| m.is_sender = Some(false));
     drop(st);
     let _ = app.update(UiMessage::Upserted(Box::new(m)));
@@ -901,7 +901,7 @@ fn send_later_like_desktop() {
     let uploads: Vec<String> = app.store.read().scheduled.iter().filter_map(|s| s.upload.clone()).collect();
     let _ = app.update(UiMessage::SendNow(ids));
     let st = app.store.read();
-    let last = &st.chat_msg_indices[&id][st.chat_msg_indices[&id].len() - 3..];
+    let last = &st.timeline_indices(&id)[st.timeline_indices(&id).len() - 3..];
     let sent: Vec<_> = last.iter().map(|&i| (st.messages[i].text.clone(), st.messages[i].attachments.len())).collect();
     assert_eq!(sent, [(Some("two files".into()), 0), (None, 1), (None, 1)], "the files send from the uploads");
     assert!(uploads.iter().all(|u| !st.assets.contains_key(u)), "a sent Send Later file goes away");
@@ -963,7 +963,7 @@ fn show_replies_like_desktop() {
     let id = app.visible_chats(&app.store.read())[0].id.clone();
     let _ = app.update(UiMessage::SelectChat(id.clone()));
     let mut st = app.store.write();
-    let root = st.messages[*st.chat_msg_indices[&id].last().unwrap()].id.clone();
+    let root = st.messages[*st.timeline_indices(&id).last().unwrap()].id.clone();
     let mut send =
         |text: &str, to: Option<&String>| st.send_message(&id, Some(text.into()), to.cloned(), None).unwrap().1;
     let one = send("first answer", Some(&root));
@@ -1065,7 +1065,7 @@ fn threads_like_desktop() {
     let mut st = app.store.write();
     let t = st.thread_send(root, None, false);
     let (_, id, _) = st.send_in_thread(chat, Some("new".into()), None, &t).unwrap();
-    let i = st.msg_idx_by_id[&id];
+    let i = st.message_idx(&id);
     let m = st.update_message(i, |m| m.is_sender = Some(false));
     let ci = st.chat_idx(chat);
     st.update_chat(ci, |c| drop(c.thread_reads.insert(root.into(), beeper_core::store::sort_key(0))));
@@ -1376,7 +1376,7 @@ fn mentions_like_desktop() {
     let html = format!("<a href=\"https://matrix.to/#/{}\">@{label}</a> hi", ann.id);
     let mut st = app.store.write();
     let (_, own, _) = st.send_message(&id, Some(format!("@{label} hi")), None, None).unwrap();
-    let i = st.msg_idx_by_id[&own];
+    let i = st.message_idx(&own);
     st.update_message(i, |m| m.html = Some(html));
     drop(st);
     let zed = vec![("Zed".to_string(), "@z:x".to_string())];
@@ -1508,7 +1508,7 @@ fn media_window_menu_and_rows_like_desktop() {
     let img = "https://example.com/preview.png";
     {
         let mut st = app.store.write();
-        let i = *st.chat_msg_indices["!note_self:beeper.com"].last().expect("a note");
+        let i = *st.timeline_indices("!note_self:beeper.com").last().expect("a note");
         let url = "https://example.com/page".into();
         st.update_message(i, |m| m.links = vec![MessageLink { url, img: Some(img.into()), ..Default::default() }]);
     }
@@ -1628,7 +1628,7 @@ fn photos_group_into_galleries_like_desktop() {
     let mut app = demo_app("gallery");
     let base = {
         let st = app.store.read();
-        st.messages[*st.chat_msg_indices[note].last().unwrap()].clone()
+        st.messages[*st.timeline_indices(note).last().unwrap()].clone()
     };
     let photo = |i: usize, secs: i64, text: Option<&str>| {
         let img = Attachment {
@@ -1652,7 +1652,7 @@ fn photos_group_into_galleries_like_desktop() {
         st.upsert_message(photo(8, 300, None));
     }
     let st = app.store.read();
-    let msgs: Vec<&Message> = st.chat_msg_indices[note].iter().map(|&i| &st.messages[i]).collect();
+    let msgs: Vec<&Message> = st.timeline(note).collect();
     let starts = gallery::starts(&st, &msgs, &vec![0; msgs.len()]);
     let at = |id: &str| msgs.iter().position(|m| m.id == id).unwrap();
     let first = at("$photo00");
@@ -1676,7 +1676,7 @@ fn galleries_select_and_have_a_menu_like_desktop() {
         let st = app.store.read();
         let chat = st.messages.iter().find(|m| m.attachments.iter().any(|a| a.attachment_type == "img")).unwrap();
         let chat = chat.chat_id.clone();
-        let msgs: Vec<&Message> = st.chat_msg_indices[&chat].iter().map(|&i| &st.messages[i]).collect();
+        let msgs: Vec<&Message> = st.timeline(&chat).collect();
         let starts = gallery::starts(&st, &msgs, &vec![0; msgs.len()]);
         let first = (1..msgs.len()).find(|&i| starts[i] != i).map(|i| starts[i]).expect("a demo gallery");
         let ids: Vec<String> =
@@ -1685,7 +1685,7 @@ fn galleries_select_and_have_a_menu_like_desktop() {
     };
     {
         let mut st = app.store.write();
-        let i = st.msg_idx_by_id[&ids[1]];
+        let i = st.message_idx(&ids[1]);
         let key = "🎉".into();
         let reaction = Reaction {
             id: "r".into(),
@@ -1745,7 +1745,7 @@ fn carousel_steps_through_videos_and_files_like_desktop() {
     let mut app = demo_app("carousel-items");
     let base = {
         let st = app.store.read();
-        st.messages[*st.chat_msg_indices[note].last().unwrap()].clone()
+        st.messages[*st.timeline_indices(note).last().unwrap()].clone()
     };
     let kinds = [("img", "a.png"), ("unknown", "spec.pdf"), ("audio", "voice.ogg"), ("video", "clip.mp4")];
     {
@@ -1790,7 +1790,7 @@ fn inline_videos_open_the_carousel_like_desktop() {
     let mut app = demo_app("carousel-video");
     {
         let mut st = app.store.write();
-        let base = st.messages[*st.chat_msg_indices[note].last().unwrap()].clone();
+        let base = st.messages[*st.timeline_indices(note).last().unwrap()].clone();
         let a = Attachment {
             attachment_type: "video".into(),
             src_url: Some(clip.into()),
@@ -2228,14 +2228,14 @@ fn arrow_keys_step_over_a_deleted_selected_message() {
     let _ = app.update(UiMessage::SelectChat(chat.into()));
     let ids: Vec<String> = {
         let st = app.store.read();
-        st.chat_msg_indices[chat].iter().map(|&i| st.messages[i].id.clone()).collect()
+        st.timeline_indices(chat).iter().map(|&i| st.messages[i].id.clone()).collect()
     };
     assert!(ids.len() >= 3, "the demo chat has messages");
     let mid = ids[ids.len() - 2].clone();
     let _ = app.update(UiMessage::ClickMessage(mid.clone()));
     {
         let mut st = app.store.write();
-        let i = st.msg_idx_by_id[&mid];
+        let i = st.message_idx(&mid);
         st.messages[i].is_deleted = Some(true);
     }
     let _ = app.update(UiMessage::StepMessage(true, false));
@@ -2252,7 +2252,7 @@ fn forward_selected_messages_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(chat.into()));
     let texts = |app: &BeeperGuiApp, cid: &str| -> Vec<Option<String>> {
         let st = app.store.read();
-        st.chat_msg_indices[cid].iter().map(|&i| st.messages[i].text.clone()).collect()
+        st.timeline_indices(cid).iter().map(|&i| st.messages[i].text.clone()).collect()
     };
     let source = texts(&app, chat);
     let n = source.len();
@@ -2277,9 +2277,9 @@ fn long_lists_build_only_the_rows_near_the_viewport() {
     let mut app = demo_app("virtual-lists");
     let (chat, msg) = {
         let st = app.store.read();
-        let has_msgs = |c: &&Chat| st.chat_msg_indices.get(&c.id).is_some_and(|m| !m.is_empty());
+        let has_msgs = |c: &&Chat| !st.timeline_indices(&c.id).is_empty();
         let c = st.chats.iter().filter(|c| c.flags & CHAT_PINNED == 0).find(has_msgs).expect("a chat").clone();
-        (c.clone(), st.messages[st.chat_msg_indices[&c.id][0]].clone())
+        (c.clone(), st.messages[st.timeline_indices(&c.id)[0]].clone())
     };
     {
         let mut st = app.store.write();
@@ -2325,9 +2325,9 @@ fn views_load_only_the_media_that_they_show() {
     let mut app = demo_app("lazy-media");
     let (chat, msg) = {
         let st = app.store.read();
-        let has_msgs = |c: &&Chat| st.chat_msg_indices.get(&c.id).is_some_and(|m| !m.is_empty());
+        let has_msgs = |c: &&Chat| !st.timeline_indices(&c.id).is_empty();
         let c = st.chats.iter().filter(|c| c.flags & CHAT_PINNED == 0).find(has_msgs).expect("a chat").clone();
-        (c.clone(), st.messages[st.chat_msg_indices[&c.id][0]].clone())
+        (c.clone(), st.messages[st.timeline_indices(&c.id)[0]].clone())
     };
     let url = "https://example.com/old.png";
     {
@@ -2531,7 +2531,7 @@ fn messages_select_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(chat.into()));
     let ids: Vec<String> = {
         let st = app.store.read();
-        st.chat_msg_indices[chat].iter().map(|&i| st.messages[i].id.clone()).collect()
+        st.timeline_indices(chat).iter().map(|&i| st.messages[i].id.clone()).collect()
     };
     let n = ids.len();
     let key = |app: &mut BeeperGuiApp, k: Named, m| app.update(UiMessage::KeyPressed(Key::Named(k), m));
@@ -2656,7 +2656,7 @@ fn storage_clears_like_desktop() {
     rt.block_on(beeper_core::storage::clear(app.store.clone(), picked)).unwrap();
     let after = beeper_core::storage::scan(&app.store);
     assert!(after.iter().all(|e| e.chat.as_deref() != Some(NOTE_CHAT_ID)), "the chat has no local data left");
-    assert!(app.store.read().chat_msg_indices[NOTE_CHAT_ID].is_empty());
+    assert!(app.store.read().timeline_indices(NOTE_CHAT_ID).is_empty());
     let counts = [compact(34), compact(1234), compact(15_000), compact(2_500_000), grouped(1234567)];
     assert_eq!(counts, ["34", "1.2K", "15K", "2.5M", "1,234,567"]);
 }
@@ -2836,7 +2836,7 @@ fn undo_send_like_desktop() {
         let _ = app.update(UiMessage::SubmitComposer);
         app.store.read().messages.last().unwrap().id.clone()
     };
-    let count = |app: &BeeperGuiApp| app.store.read().chat_msg_indices[NOTE_CHAT_ID].len();
+    let count = |app: &BeeperGuiApp| app.store.read().timeline_indices(NOTE_CHAT_ID).len();
     let before = count(&app);
     send(&mut app, "oops");
     assert_eq!((count(&app), app.queued.len()), (before + 1, 1), "the message waits");
@@ -2891,7 +2891,7 @@ fn failed_sends_show_retry_and_remove_like_desktop() {
     assert!(simulator(app.view_main()).find("Retrying ...").is_ok(), "Retry waits for the homeserver");
     let _ = app.update(UiMessage::RemoveUnsent(id.clone()));
     let st = app.store.read();
-    assert!(!st.msg_idx_by_id.contains_key(&id) && st.outbox.is_empty(), "Remove drops the echo and its send");
+    assert!(st.loaded(&id).is_none() && st.outbox.is_empty(), "Remove drops the echo and its send");
 }
 
 #[test]
@@ -2917,7 +2917,7 @@ fn own_messages_show_their_send_status_like_desktop() {
     // The views of a debug build are slow, so the test sets the age of the message.
     let age = |app: &BeeperGuiApp, ms: i64| {
         let mut st = app.store.write();
-        let i = st.msg_idx_by_id[&id];
+        let i = st.message_idx(&id);
         st.update_message(i, |m| m.timestamp = beeper_core::config::rfc3339_from_millis(now_unix_millis() - ms));
     };
     age(&app, -60_000);
@@ -2929,14 +2929,14 @@ fn own_messages_show_their_send_status_like_desktop() {
         st.config.demo = true;
         let (row, ..) = st.outbox.remove(0);
         st.pushed(row, Some(&id), None);
-        let echo = st.messages[st.msg_idx_by_id[&id]].clone();
+        let echo = st.message(&id).clone();
         st.remove_message(note, &id).expect("the local echo");
         st.upsert_message(Message { id: "$sent".into(), ..echo });
     }
     assert_eq!(status(&app), [false, false, false, true, false], "the homeserver took the message");
     {
         let mut st = app.store.write();
-        let i = st.msg_idx_by_id["$sent"];
+        let i = st.message_idx("$sent");
         st.update_message(i, |m| m.is_delivered = true);
     }
     assert_eq!(status(&app), [false, false, false, false, true], "a bridge delivered the message");
@@ -2993,9 +2993,9 @@ fn deleted_and_encrypted_messages_look_like_desktop() {
     let deleted = {
         let mut st = app.store.write();
         let ids: Vec<String> =
-            st.chat_msg_indices[note].iter().rev().take(2).map(|&i| st.messages[i].id.clone()).collect();
+            st.timeline_indices(note).iter().rev().take(2).map(|&i| st.messages[i].id.clone()).collect();
         st.delete_message(note, &ids[0]).expect("delete a message");
-        let i = st.msg_idx_by_id[&ids[1]];
+        let i = st.message_idx(&ids[1]);
         st.update_message(i, |m| (m.text, m.html) = (Some(beeper_core::matrix::UTD_TEXT.into()), None));
         ids[0].clone()
     };
@@ -3025,7 +3025,7 @@ fn attachments_show_download_and_time_on_hover_like_desktop() {
     {
         // Captions take the other images of the demo gallery out of it, so that this image shows alone.
         let mut st = app.store.write();
-        let others = st.chat_msg_indices[&chat].iter().copied();
+        let others = st.timeline_indices(&chat).iter().copied();
         let others: Vec<usize> =
             others.filter(|&i| st.messages[i].id != id && !st.messages[i].attachments.is_empty()).collect();
         for i in others {
@@ -3282,7 +3282,7 @@ fn polls_like_desktop() {
     let me = app.store.read().me().id.clone();
     let poll = |app: &BeeperGuiApp| {
         let st = app.store.read();
-        st.messages[st.msg_idx_by_id[mid]].poll.clone().expect("a poll")
+        st.message(mid).poll.clone().expect("a poll")
     };
     let click = |app: &BeeperGuiApp, label: &str| -> Vec<UiMessage> {
         let mut sim = simulator(app.view_main());
@@ -3293,7 +3293,7 @@ fn polls_like_desktop() {
         let mut sim = simulator(app.view_main());
         assert!(sim.find("Select one option").is_ok() && sim.find("2 votes").is_ok());
         let st = app.store.read();
-        let m = &st.messages[st.msg_idx_by_id[mid]];
+        let m = st.message(mid);
         assert_eq!((crate::message_tag(m), crate::preview_body(m)), (Some((crate::POLL_TAG, "Poll", None)), None));
     }
     let mut sim = simulator(app.view_main());
@@ -3376,7 +3376,7 @@ fn poll_creator_like_desktop() {
     assert!(app.poll_windows.is_empty());
     {
         let st = app.store.read();
-        let m = &st.messages[*st.chat_msg_indices[&chat].last().expect("the sent poll")];
+        let m = &st.messages[*st.timeline_indices(&chat).last().expect("the sent poll")];
         let poll = m.poll.as_ref().expect("a poll message");
         let labels: Vec<&str> = poll.options.iter().map(|o| o.label.as_str()).collect();
         assert_eq!((poll.question.as_str(), labels, poll.max_selections), ("Best editor?", vec!["Vim", "Emacs"], 2));
@@ -3384,7 +3384,7 @@ fn poll_creator_like_desktop() {
     }
     let sent = {
         let st = app.store.read();
-        st.messages[*st.chat_msg_indices[&chat].last().expect("the sent poll")].id.clone()
+        st.messages[*st.timeline_indices(&chat).last().expect("the sent poll")].id.clone()
     };
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
     let _ = app.update(UiMessage::OpenMessageMenu(sent.clone()));
@@ -3395,7 +3395,7 @@ fn poll_creator_like_desktop() {
     }
     {
         let st = app.store.read();
-        assert!(st.messages[st.msg_idx_by_id[&sent]].poll.as_ref().expect("a poll").ended);
+        assert!(st.message(&sent).poll.as_ref().expect("a poll").ended);
     }
     let _ = app.update(UiMessage::OpenMessageMenu(sent.clone()));
     assert!(simulator(app.view_main()).find("End Poll").is_err(), "an ended poll has no End Poll");
@@ -4197,14 +4197,14 @@ fn chat_list_mutes_receipts_and_errors_like_desktop() {
     assert_eq!(state(&app), (false, true), "archived rows are grey");
 
     let st = app.store.read();
-    let has_messages = |c: &&Chat| st.chat_msg_indices.get(&c.id).is_some_and(|v| !v.is_empty());
+    let has_messages = |c: &&Chat| !st.timeline_indices(&c.id).is_empty();
     let mut c = st.chats.iter().filter(has_messages).find(|c| c.chat_type == "group").expect("a group").clone();
     let extra = User { id: "@extra:beeper.local".into(), ..c.participants.items[0].clone() };
     c.participants.items.push(extra);
     let me = st.me().id.clone();
     let others: Vec<String> =
         c.participants.items.iter().filter(|u| !st.is_me(&u.id) && u.id != me).map(|u| u.id.clone()).collect();
-    let mut m = st.messages[st.chat_msg_indices[&c.id][0]].clone();
+    let mut m = st.messages[st.timeline_indices(&c.id)[0]].clone();
     (m.id, m.sender_id, m.seen) = ("$event".into(), me, Default::default());
     assert_eq!(receipt_tip(&st, &c, &m).as_deref(), Some("Sent"));
     m.seen.insert(others[0].clone(), String::new());
@@ -4230,7 +4230,7 @@ fn another_chat_drops_the_pending_reveal() {
     let mut app = demo_app("pending-reveal");
     let chats: Vec<String> = {
         let st = app.store.read();
-        let has_messages = |c: &&Chat| st.chat_msg_indices.get(&c.id).is_some_and(|v| !v.is_empty());
+        let has_messages = |c: &&Chat| !st.timeline_indices(&c.id).is_empty();
         st.chats.iter().filter(has_messages).take(2).map(|c| c.id.clone()).collect()
     };
     let _ = app.update(UiMessage::SelectChat(chats[0].clone()));
@@ -4768,7 +4768,7 @@ fn disappearing_timer_changes_in_the_timeline_like_desktop() {
     let id = "!tg_rust:beeper.com".to_string();
     {
         let mut st = app.store.write();
-        let last = st.chat_msg_indices[&id].last().map(|&i| st.messages[i].clone()).expect("a message");
+        let last = st.timeline_indices(&id).last().map(|&i| st.messages[i].clone()).expect("a message");
         let me = st.chat(&id).participants.items.iter().find(|u| u.is_self == Some(true));
         let me = me.expect("the user").id.clone();
         for (n, (sender, timer)) in
@@ -5066,7 +5066,7 @@ fn chat_info_bookmarks_of_messages_that_are_not_loaded() {
     let _ = app.update(UiMessage::SelectChat(id.clone()));
     {
         let mut st = app.store.write();
-        let mut old = st.messages[st.chat_msg_indices[&id][0]].clone();
+        let mut old = st.messages[st.timeline_indices(&id)[0]].clone();
         (old.id, old.text, old.html) = ("$old".into(), Some("Older bookmarked text".into()), None);
         let mark = |order| Bookmark { room_id: id.clone(), event_id: format!("$b{order}"), order };
         st.apply_bookmarks("!bookmarks", vec![("$old".into(), Some(mark(3))), ("$gone".into(), Some(mark(2)))]);
@@ -5098,7 +5098,7 @@ fn chat_info_bookmarks_like_desktop() {
     }
     let (mid, date) = {
         let st = app.store.read();
-        let m = &st.messages[st.chat_msg_indices[&id][0]];
+        let m = &st.messages[st.timeline_indices(&id)[0]];
         (m.id.clone(), list_ts(&m.timestamp, st.settings.pref("timeFormat") == 1))
     };
     let _ = app.update(UiMessage::ToggleBookmark(mid.clone()));
@@ -5342,7 +5342,7 @@ fn link_previews_like_desktop() {
     let tube = "https://youtu.be/dQw4w9WgXcQ";
     {
         let mut st = app.store.write();
-        let i = *st.chat_msg_indices[note].last().expect("a message");
+        let i = *st.timeline_indices(note).last().expect("a message");
         let link = |url: &str, title: &str| MessageLink { url: url.into(), title: title.into(), ..Default::default() };
         st.messages[i].links = vec![link("https://example.com/a", "First page"), link(tube, "A video")];
     }
@@ -5374,7 +5374,7 @@ fn email_links_and_media_items_match_desktop() {
     let mid = {
         let mut st = app.store.write();
         let chat = app.pane.selected_chat_id.clone().expect("a chat");
-        let i = *st.chat_msg_indices[&chat].last().expect("a message");
+        let i = *st.timeline_indices(&chat).last().expect("a message");
         let m = &mut st.messages[i];
         (m.text, m.html, m.links, m.unresolved_media) =
             (Some("Mail a.b@example.com.".into()), None, Vec::new(), Some("{}".into()));
@@ -5598,7 +5598,7 @@ fn reply_privately_like_desktop() {
     let (theirs, mine, account) = {
         let st = app.store.read();
         let c = st.chats.iter().find(|c| c.id == "!tg_rust:beeper.com").expect("the group");
-        let msgs = st.chat_msg_indices[&c.id].iter().map(|&i| &st.messages[i]);
+        let msgs = st.timeline(&c.id);
         let mut msgs = msgs.filter(|m| m.text.is_some() && m.is_deleted != Some(true));
         let theirs = msgs
             .clone()
@@ -5799,7 +5799,7 @@ fn message_menu_speed_and_read_like_desktop() {
     apply(&mut app, picked);
     assert!(!read(&app), "the message is read");
     let st = app.store.read();
-    let left = st.chat_msg_indices[&cid].iter().filter(|&&i| st.messages[i].is_unread == Some(true)).count();
+    let left = st.timeline_indices(&cid).iter().filter(|&&i| st.messages[i].is_unread == Some(true)).count();
     assert_eq!(st.chat(&cid).unread_count as usize, left);
 }
 
