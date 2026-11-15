@@ -6,6 +6,7 @@ mod cursor;
 mod dashed;
 mod deeplink;
 pub mod emoji;
+mod enter_key;
 mod format;
 mod gallery;
 mod i18n;
@@ -801,9 +802,6 @@ pub enum UiMessage {
     /// Picks a row of the composer autocomplete.
     PickSuggestion(usize),
     AnimationTick,
-    RecoveryInputChanged(String),
-    VerifyRecoveryCode,
-    Verified(Result<(), String>),
     Pushed(Result<(), String>),
     /// Desktop's `retryErroredMessage` and `removeErroredMessage` of a failed send.
     RetrySend(String),
@@ -921,6 +919,7 @@ pub enum UiMessage {
     Login(LoginMsg),
     Verify(verify::VerifyMsg),
     Reauth(reauth::ReauthMsg),
+    EnterKey(enter_key::KeyMsg),
     /// Desktop's `openNewAccountInNewWindow` for a network, or `reauthenticate` for a login of it.
     OpenAddAccount(String, Option<String>),
     AddAccount(window::Id, add_account::AddMsg),
@@ -4255,7 +4254,6 @@ pub struct BeeperGuiApp {
     pub new_chat_expanded: bool,
     pub new_chat_chats_expanded: bool,
     pub join_matrix_mode: bool,
-    pub recovery_code_input: String,
     pub devices: Option<Result<Vec<DeviceInfo>, String>>,
     pub confirm: Option<u8>,
     delete_target: Option<String>,
@@ -4363,6 +4361,7 @@ pub struct BeeperGuiApp {
     pub login: Login,
     pub verify: verify::Verify,
     pub reauth: reauth::Reauth,
+    pub enter_key: enter_key::EnterKey,
     pub cloud: Arc<Cloud>,
     pub avatars: images::Images<image::Handle>,
     wants: wants::Wants,
@@ -4490,7 +4489,6 @@ impl BeeperGuiApp {
             new_chat_expanded: false,
             new_chat_chats_expanded: false,
             join_matrix_mode: false,
-            recovery_code_input: String::new(),
             devices: None,
             mics: None,
             confirm: None,
@@ -4565,6 +4563,7 @@ impl BeeperGuiApp {
             login: Login::new(source),
             verify: Default::default(),
             reauth: Default::default(),
+            enter_key: Default::default(),
             cloud,
             avatars: images::Images::new(64 << 20),
             wants: wants::Wants::default(),
@@ -5035,6 +5034,7 @@ impl BeeperGuiApp {
             }
             _ if Some(id) == self.verify.window => "Beeper",
             _ if Some(id) == self.reauth.window => tr("Authentication Required"),
+            _ if Some(id) == self.enter_key.window => self.enter_key_title(),
             _ if let Some(title) = self.add_account_title(id) => return title,
             _ if let Some((_, _, mid)) = self.vote_windows.iter().find(|w| w.0 == id) => {
                 let st = self.store.read();
@@ -7306,6 +7306,9 @@ impl BeeperGuiApp {
                 if self.reauth.window == Some(id) {
                     return self.reauth_key(key);
                 }
+                if self.enter_key.window == Some(id) {
+                    return self.enter_key_key(key);
+                }
                 if self.label_window.as_ref().is_some_and(|d| d.id == id) {
                     return match key {
                         Key::Named(Named::Escape) => window::close(id),
@@ -8231,7 +8234,9 @@ impl BeeperGuiApp {
                 let clipboard = matches!(screen, login::Screen::RecoveryKey | login::Screen::Code);
                 let key = (focused && clipboard && self.login_window.is_some())
                     .then(|| iced::clipboard::read().map(|t| LoginMsg::KeyOnFocus(t).into()));
-                return Task::batch([self.close_notifications()].into_iter().chain(key));
+                let modal = (focused && self.enter_key.window.is_some())
+                    .then(|| iced::clipboard::read().map(|t| enter_key::KeyMsg::OnFocus(t).into()));
+                return Task::batch([self.close_notifications()].into_iter().chain(key).chain(modal));
             }
             UiMessage::UndoSend => {
                 let open = self.pane.selected_chat_id.as_ref();
@@ -8331,13 +8336,6 @@ impl BeeperGuiApp {
                 }
             },
             UiMessage::AnimationTick => {}
-            UiMessage::RecoveryInputChanged(v) => self.recovery_code_input = v,
-            UiMessage::VerifyRecoveryCode => {
-                let key = std::mem::take(&mut self.recovery_code_input);
-                return Task::perform(beeper_core::matrix::recover(self.store.clone(), key), UiMessage::Verified);
-            }
-            UiMessage::Verified(Ok(())) => self.status_banner = tr("This device is verified.").into(),
-            UiMessage::Verified(Err(e)) => self.fail(Toast::new(format!("Could not verify this device: {e}"))),
             UiMessage::Pushed(Ok(())) => {}
             UiMessage::DismissBanner => {
                 (self.status_banner, self.relaunch_toast) = (String::new(), None);
@@ -9030,6 +9028,7 @@ impl BeeperGuiApp {
                 self.blocked_window = self.blocked_window.filter(|w| *w != id);
                 self.verify.window = self.verify.window.filter(|w| *w != id);
                 self.reauth.window = self.reauth.window.filter(|w| *w != id);
+                self.enter_key.window = self.enter_key.window.filter(|w| *w != id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
                 } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
@@ -9096,6 +9095,7 @@ impl BeeperGuiApp {
             UiMessage::Login(m) => return self.update_login(m),
             UiMessage::Verify(m) => return self.update_verify(m),
             UiMessage::Reauth(m) => return self.update_reauth(m),
+            UiMessage::EnterKey(m) => return self.update_enter_key(m),
             UiMessage::OpenAddAccount(network, login) => return self.open_add_account(&network, login),
             UiMessage::AddAccount(id, m) => return self.update_add_account(id, m),
             UiMessage::KeyPressed(Key::Named(k @ (Named::Enter | Named::Escape)), m)
@@ -9540,6 +9540,8 @@ impl BeeperGuiApp {
             self.view_verify()
         } else if Some(id) == self.reauth.window {
             self.view_reauth()
+        } else if Some(id) == self.enter_key.window {
+            self.view_enter_key()
         } else if let Some(a) = self.add_accounts.iter().find(|a| a.id == id) {
             self.view_add_account(a)
         } else if let Some((_, chat)) = self.theme_windows.iter().find(|w| w.0 == id) {
@@ -12740,7 +12742,7 @@ impl BeeperGuiApp {
         };
         let verify = (in_chat && st.matrix.is_some() && !st.beeper_state.verified).then(|| {
             let note = txt("Verify this device to read your encrypted messages.", 12.0).color(p.text);
-            let go = pill_btn(p, tr("Verify"), UiMessage::OpenSettings(SettingsTab::Devices));
+            let go = pill_btn(p, tr("Verify"), enter_key::KeyMsg::Open.into());
             let bar = row![note, Space::new().width(Fill), go].align_y(Center);
             container(bar).padding([8, 14]).style(bordered_box(p.elevated, p.chip, 1.0, 10.0))
         });
@@ -17035,15 +17037,6 @@ impl BeeperGuiApp {
         mouse_area(container(pane).padding(8)).on_press(UiMessage::Noop).into()
     }
 
-    fn sas_row<'a>(&self, st: &BeeperStore) -> El<'a> {
-        let p = &self.pal;
-        let control = match st.app_verification().map(|v| v.state) {
-            Some("requested" | "ready" | "sas_ready") => Space::new().into(),
-            _ => pill_btn(p, tr("Verify"), verify::VerifyMsg::Start.into()),
-        };
-        pref_row(p, "Verify with another device", None, None, control)
-    }
-
     /// Desktop's `TakeBeeperWithYou` card.
     fn take_beeper(&self) -> El<'_> {
         let p = &self.pal;
@@ -17462,31 +17455,14 @@ impl BeeperGuiApp {
             SettingsTab::Appearance => self.pref_items(prefs::APPEARANCE, st),
             SettingsTab::Notifications => self.pref_items(prefs::NOTIFICATIONS, st),
             SettingsTab::Hotkeys => vec![self.hotkeys_page(st)],
+            // Desktop's `DevicesPane`: the app card, the lists of devices, and the error.
             SettingsTab::Devices => {
-                let code = text_input("Recovery code", &self.recovery_code_input)
-                    .on_input(UiMessage::RecoveryInputChanged)
-                    .on_submit(UiMessage::VerifyRecoveryCode)
-                    .size(13)
-                    .padding([6, 10])
-                    .width(200)
-                    .style(input_style(p.input, p.strong, p.sub, p.accent, 6.0));
-                let encryption = group(
-                    p,
-                    Some("Encryption"),
-                    vec![
-                        pref_row(
-                            p,
-                            "Recovery code",
-                            Some("Enter your recovery code to verify this device."),
-                            None,
-                            code.into(),
-                        ),
-                        self.sas_row(st),
-                    ],
-                );
                 let lists = match &self.devices {
                     None => Vec::new(),
-                    Some(Err(e)) => vec![txt(e.clone(), 13.0).color(p.danger).into()],
+                    Some(Err(_)) => {
+                        let error = tr("Failed to fetch devices. Please report a problem if this keeps happening.");
+                        vec![txt(error, 13.0).color(p.danger).into()]
+                    }
                     Some(Ok(all)) => [
                         (tr("Current Device"), all.iter().filter(|d| d.current).collect::<Vec<_>>()),
                         (tr("Verified Devices"), all.iter().filter(|d| !d.current && d.verified).collect()),
@@ -17498,7 +17474,7 @@ impl BeeperGuiApp {
                     .collect(),
                 };
                 let page = column![self.take_beeper(), Space::new().height(8)].extend(lists);
-                vec![page.into(), encryption]
+                vec![page.into()]
             }
             SettingsTab::Ai => self.pref_items(prefs::AI, st),
             SettingsTab::BeeperPlus => vec![group(

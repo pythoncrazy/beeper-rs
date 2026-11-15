@@ -808,9 +808,8 @@ impl BeeperGuiApp {
                 }
             }
             LoginMsg::KeyOnFocus(text) => {
-                let key = beeper_core::matrix::recovery_key_chars(&text.unwrap_or_default());
-                let fresh = crate::verify::valid_recovery_key(&key) && !l.tried_keys.contains(&key);
-                if fresh && l.screen == Screen::RecoveryKey && !l.busy {
+                let key = crate::verify::clipboard_key(text, &l.tried_keys);
+                if let Some(key) = key.filter(|_| l.screen == Screen::RecoveryKey && !l.busy) {
                     l.key_input = text_editor::Content::with_text(&crate::verify::format_recovery_key(&key));
                     return self.update_login(LoginMsg::SubmitRecoveryKey);
                 }

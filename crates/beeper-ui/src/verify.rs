@@ -29,8 +29,6 @@ pub struct Verify {
 
 #[derive(Debug, Clone)]
 pub enum VerifyMsg {
-    /// Desktop's `startVerification` from Settings.
-    Start,
     /// The Accept and Decline buttons of the request toast.
     Accept(String),
     Decline(String),
@@ -87,12 +85,6 @@ impl BeeperGuiApp {
     pub fn update_verify(&mut self, msg: VerifyMsg) -> Task<UiMessage> {
         let s = self.store.clone();
         match msg {
-            VerifyMsg::Start => {
-                let start = call("Failed to start verification", async move {
-                    beeper_core::matrix::start_verification(&s, "device").await
-                });
-                return Task::batch([start, self.open_verify()]);
-            }
             VerifyMsg::Accept(id) => {
                 let accept = call("Failed to start verification", async move {
                     beeper_core::matrix::accept_verification(&s, &id).await
@@ -544,7 +536,7 @@ impl BeeperGuiApp {
         column![
             Space::new().height(40),
             heading(tr("Enter your Recovery Key"), 28.0),
-            key_input(p, &l.key_input, l.error.is_some()),
+            key_input(p, &l.key_input, l.error.is_some(), LOGIN_EDIT, LoginMsg::PasteKey.into()),
             Space::new().height(Fill),
         ]
         .push(error)
@@ -583,24 +575,33 @@ pub(crate) fn format_recovery_key(key: &str) -> String {
 }
 
 /// Desktop's `RecoveryCodeInput`: the key in 4 lines of 3 dash groups, and "Paste from Clipboard".
-fn key_input<'a>(p: &Palette, content: &'a text_editor::Content, error: bool) -> El<'a> {
+pub(crate) fn key_input<'a>(
+    p: &Palette,
+    content: &'a text_editor::Content,
+    error: bool,
+    edit: fn(text_editor::Action) -> UiMessage,
+    on_paste: UiMessage,
+) -> El<'a> {
     let p = *p;
     let edge = if error { p.text_danger } else { CLEAR };
-    let editor = text_editor(content)
-        .on_action(|a| LoginMsg::KeyEdit(a).into())
-        .size(17)
-        .height(4.0 * 17.0 * 1.3 + 24.0)
-        .padding(12)
-        .style(move |_: &Theme, _| text_editor::Style {
+    let editor = text_editor(content).on_action(edit).size(17).height(4.0 * 17.0 * 1.3 + 24.0).padding(12).style(
+        move |_: &Theme, _| text_editor::Style {
             background: p.chip.into(),
             border: border::rounded(12).color(edge).width(1),
             placeholder: p.on_secondary,
             value: p.strong,
             selection: p.accent.scale_alpha(0.3),
-        });
+        },
+    );
     let paste = txt(trx("Paste from Clipboard", "button label"), 12.0).color(p.on_secondary);
     let paste = button(paste).padding(4).style(btn_style([CLEAR, p.chip, p.chip], [p.on_secondary; 3], 6.0));
-    column![editor, paste.on_press(LoginMsg::PasteKey.into())].spacing(4).align_x(Center).padding([24, 18]).into()
+    column![editor, paste.on_press(on_paste)].spacing(4).align_x(Center).padding([24, 18]).into()
+}
+
+/// Desktop's `useAutoSubmitRecoveryCode`: the recovery key on the clipboard, unless it was tried.
+pub(crate) fn clipboard_key(text: Option<String>, tried: &[String]) -> Option<String> {
+    let key = beeper_core::matrix::recovery_key_chars(&text.unwrap_or_default());
+    (valid_recovery_key(&key) && !tried.contains(&key)).then_some(key)
 }
 
 /// An edit of `RecoveryCodeInput`: the key keeps its format, and the caret stays after the same character.
@@ -625,6 +626,9 @@ pub(crate) fn edit_recovery_key(content: &mut text_editor::Content, action: text
     let position = text_editor::Position { line, column };
     content.move_to(text_editor::Cursor { position, selection: None });
 }
+
+/// The edits of the recovery key of the sign-in window.
+const LOGIN_EDIT: fn(text_editor::Action) -> UiMessage = |a| LoginMsg::KeyEdit(a).into();
 
 /// Desktop's `isValidRecoveryCode`: 48 letters and digits.
 pub(crate) fn valid_recovery_key(key: &str) -> bool {
@@ -671,7 +675,11 @@ impl BeeperGuiApp {
         let (title, middle, next): (&str, El<'_>, Option<UiMessage>) = match l.screen {
             Screen::ConfirmKey => {
                 let next = valid_recovery_key(&l.key_input.text()).then(|| LoginMsg::SubmitConfirmKey.into());
-                (tr("Confirm your Recovery Key"), key_input(p, &l.key_input, l.error.is_some()), next)
+                (
+                    tr("Confirm your Recovery Key"),
+                    key_input(p, &l.key_input, l.error.is_some(), LOGIN_EDIT, LoginMsg::PasteKey.into()),
+                    next,
+                )
             }
             _ => {
                 let key: El<'_> = match &l.new_key {
