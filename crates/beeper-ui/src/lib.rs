@@ -12466,8 +12466,13 @@ impl BeeperGuiApp {
             let pill = container(label.spacing(4).align_y(Center))
                 .padding(Padding { top: 2.0, right: 8.0, bottom: 2.0, left: 4.0 })
                 .style(fill_box(mix(p.card, ORANGE, 0.1), 30.0));
-            container(self.tip(pill.into(), tip, vec![], tooltip::Position::Bottom))
-                .padding(Padding::ZERO.top(9.0).left(8.0))
+            // Desktop's `thread-header-reminder` button opens the Remind Me command bar. A chat with a reminder can
+            // always change it.
+            let pill = button(self.tip(pill.into(), tip, vec![], tooltip::Position::Bottom))
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [ORANGE; 3], 30.0))
+                .on_press(UiMessage::OpenSubMenu(commands::SubMenu::Remind(cid.into())));
+            container(pill).padding(Padding::ZERO.top(9.0).left(8.0))
         });
         let feedback = st
             .settings
