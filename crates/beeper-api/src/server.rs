@@ -1778,7 +1778,9 @@ fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
                 _ => MediaInfo::File,
             };
             let (name, mime) = (a.file_name.expect("a file name"), a.mime_type.expect("a MIME type"));
-            Outgoing::Media { txn: txn.clone(), bytes, name, mime, info, caption: text, reply_to, thread: None }
+            // Desktop's `isGif`: a GIF picker file, or a file of the GIF type.
+            let gif = a.is_gif == Some(true) || mime == "image/gif";
+            Outgoing::Media { txn: txn.clone(), bytes, name, mime, info, caption: text, reply_to, thread: None, gif }
         }
     };
     st.queue(&chat_id, out);

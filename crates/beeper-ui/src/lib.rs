@@ -3842,6 +3842,7 @@ fn file_echo(
         caption,
         reply_to,
         thread,
+        gif: is_gif,
     };
     (att, Box::new(out))
 }

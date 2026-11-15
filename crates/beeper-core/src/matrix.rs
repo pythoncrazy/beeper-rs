@@ -1434,6 +1434,9 @@ pub enum Outgoing {
         /// The thread of a thread reply, whose `quoted` is `reply_to`.
         #[serde(default)]
         thread: Option<ThreadSend>,
+        /// Desktop's `isGif`: a GIF, or the MP4 of a GIF.
+        #[serde(default)]
+        gif: bool,
     },
 }
 
@@ -1488,6 +1491,65 @@ impl Outgoing {
             | Outgoing::Media { txn, .. } => Some(txn),
             Outgoing::Edit { target, .. } => Some(target),
             _ => None,
+        }
+    }
+}
+
+/// matrix-sdk's `make_media_type` without a thumbnail: the message of an uploaded file, with the caption as the body.
+fn media_type(
+    mime: &mime::Mime,
+    name: String,
+    source: MediaSource,
+    caption: Option<String>,
+    info: matrix_sdk::attachment::AttachmentInfo,
+) -> matrix_sdk::ruma::events::room::message::MessageType {
+    use matrix_sdk::attachment::AttachmentInfo;
+    use matrix_sdk::ruma::events::room::message::*;
+    use matrix_sdk::ruma::events::room::ImageInfo;
+    let (body, filename) = match caption {
+        Some(caption) => (caption, Some(name)),
+        None => (name, None),
+    };
+    let mimetype = Some(mime.as_ref().to_owned());
+    match mime.type_() {
+        mime::IMAGE => {
+            let mut info = ImageInfo::from(info);
+            info.mimetype = mimetype;
+            let mut c = ImageMessageEventContent::new(body, source).info(Some(Box::new(info)));
+            c.filename = filename;
+            MessageType::Image(c)
+        }
+        mime::AUDIO => {
+            let mut c = AudioMessageEventContent::new(body, source);
+            if let AttachmentInfo::Audio(a) | AttachmentInfo::Voice(a) = &info {
+                if let (Some(duration), Some(wave)) = (a.duration, &a.waveform) {
+                    let max = f32::from(UnstableAmplitude::MAX);
+                    let wave = wave.iter().map(|v| ((v.clamp(0.0, 1.0) * max) as u16).into()).collect();
+                    c.audio = Some(UnstableAudioDetailsContentBlock::new(duration, wave));
+                }
+            }
+            if matches!(info, AttachmentInfo::Voice(_)) {
+                c.voice = Some(UnstableVoiceContentBlock::new());
+            }
+            let mut info = AudioInfo::from(info);
+            info.mimetype = mimetype;
+            let mut c = c.info(Box::new(info));
+            c.filename = filename;
+            MessageType::Audio(c)
+        }
+        mime::VIDEO => {
+            let mut info = VideoInfo::from(info);
+            info.mimetype = mimetype;
+            let mut c = VideoMessageEventContent::new(body, source).info(Some(Box::new(info)));
+            c.filename = filename;
+            MessageType::Video(c)
+        }
+        _ => {
+            let mut info = FileInfo::from(info);
+            info.mimetype = mimetype;
+            let mut c = FileMessageEventContent::new(body, source).info(Some(Box::new(info)));
+            c.filename = filename;
+            MessageType::File(c)
         }
     }
 }
@@ -1786,17 +1848,13 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             let sent_id = room.send_raw(&kind, ev["content"].take()).with_transaction_id(txn.as_str().into());
             sent(txn, sent_id.await.map_err(e)?.response.event_id);
         }
-        Outgoing::Media { txn, bytes: data, name, mime, info, caption, reply_to, thread } => {
+        Outgoing::Media { txn, bytes: data, name, mime, info, caption, reply_to, thread, gif } => {
             let (data, name, mime, info) = prepare_media(store, &chat, &txn, data, name, mime, info).await?;
-            use matrix_sdk::attachment::{
-                AttachmentConfig, AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo, BaseVideoInfo,
-            };
+            use matrix_sdk::attachment::{AttachmentInfo, BaseAudioInfo, BaseFileInfo, BaseImageInfo, BaseVideoInfo};
             use matrix_sdk::room::reply::{EnforceThread, Reply};
-            use matrix_sdk::ruma::events::room::message::{AddMentions, ReplyWithinThread};
+            use matrix_sdk::ruma::events::room::message::{AddMentions, ReplyWithinThread, RoomMessageEventContent};
             // The thread relation of the SDK is Desktop's `buildThreadRelation`, and "Also send to chat" adds its flag.
-            let broadcast = thread.as_ref().is_some_and(|t| t.broadcast).then(|| {
-                serde_json::Map::from_iter([("com.beeper.broadcast_outside_thread".to_string(), true.into())])
-            });
+            let broadcast = thread.as_ref().is_some_and(|t| t.broadcast);
             let (enforce_thread, add_mentions) = match thread.map(|t| t.chosen) {
                 Some(true) => (EnforceThread::Threaded(ReplyWithinThread::Yes), AddMentions::Yes),
                 Some(false) => (EnforceThread::Threaded(ReplyWithinThread::No), AddMentions::No),
@@ -1833,11 +1891,28 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
                 }),
                 MediaInfo::File => AttachmentInfo::File(BaseFileInfo { size }),
             };
-            let caption = caption.map(matrix_sdk::ruma::events::room::message::TextMessageEventContent::plain);
-            let config = AttachmentConfig::new().txn_id(txn.clone().into()).info(info).caption(caption).reply(reply);
-            let config = config.extra_content(broadcast);
-            let parsed_mime = mime.parse().expect("valid media mime");
-            sent(txn, room.send_attachment(&name, &parsed_mime, data, config).await.map_err(e)?.event_id);
+            let mime: mime::Mime = mime.parse().expect("valid media mime");
+            let source = match room.latest_encryption_state().await.map_err(e)?.is_encrypted() {
+                true => MediaSource::Encrypted(Box::new(
+                    client.upload_encrypted_file(&mut data.as_slice()).await.map_err(e)?,
+                )),
+                false => MediaSource::Plain(client.media().upload(&mime, data, None).await.map_err(e)?.content_uri),
+            };
+            let content = RoomMessageEventContent::new(media_type(&mime, name, source, caption, info));
+            let content = match reply {
+                Some(r) => room.make_reply_event(content.into(), r).await.map_err(|x| x.to_string())?,
+                None => content,
+            };
+            // The SDK sends this content in `send_attachment`, but its info cannot carry Desktop's GIF flag.
+            let mut content = serde_json::to_value(content).expect("message JSON");
+            if gif {
+                content["info"]["fi.mau.gif"] = true.into();
+            }
+            if broadcast {
+                content["com.beeper.broadcast_outside_thread"] = true.into();
+            }
+            let id = room.send_raw("m.room.message", content).with_transaction_id(txn.as_str().into());
+            sent(txn, id.await.map_err(e)?.response.event_id);
         }
         Outgoing::CreateLabel(_) => unreachable!("a label has no room before it is created"),
         Outgoing::EditLabel(label, changes) => {
@@ -3257,8 +3332,21 @@ mod tests {
             caption,
             reply_to: Some(t.quoted.clone()),
             thread: Some(t),
+            gif: false,
         };
         store.write().queue("!room:x", file);
+        let gif = super::Outgoing::Media {
+            txn: "gif".into(),
+            bytes: vec![0; 9],
+            name: "g.mp4".into(),
+            mime: "video/mp4".into(),
+            info: super::MediaInfo::Video(3, 2, 1500),
+            caption: Some("hi".into()),
+            reply_to: None,
+            thread: None,
+            gif: true,
+        };
+        store.write().queue("!room:x", gif);
         store.write().follow_thread("!room:x", "$e1", true);
         super::flush(store.clone()).await.expect("send the thread receipt, the reply and the follow");
         let sent = sent.lock().unwrap();
@@ -3272,6 +3360,10 @@ mod tests {
         let (_, body) =
             sent.iter().find(|(p, b)| p.contains("/send/m.room.message/") && b["msgtype"] == "m.file").expect("a file");
         assert_eq!(body["com.beeper.broadcast_outside_thread"], json!(true), "a file has \"Also send to chat\" too");
+        let (_, body) =
+            sent.iter().find(|(p, b)| p.contains("/send/m.room.message/") && b["msgtype"] == "m.video").unwrap();
+        let info = json!({ "mimetype": "video/mp4", "size": 9, "w": 3, "h": 2, "duration": 1500, "fi.mau.gif": true });
+        assert_eq!((&body["info"], &body["body"], &body["filename"]), (&info, &json!("hi"), &json!("g.mp4")));
         let (_, body) =
             sent.iter().find(|(p, _)| p.ends_with("/account_data/com.beeper.thread_follows")).expect("a follow");
         assert_eq!(
