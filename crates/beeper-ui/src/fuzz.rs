@@ -497,10 +497,21 @@ fn auto_sent_gifs_keep_the_composer_like_desktop() {
         preview_size: (2, 2),
         gif_url: String::new(),
         gif_size: (2, 2),
+        gif_bytes: None,
         mp4_url: String::new(),
         mp4_size: (2, 2),
     };
-    let _ = app.update(UiMessage::GifDownloaded(g, Ok((gif, frames))));
+    let size = g.gif_size;
+    let gif = PendingMedia {
+        bytes: gif,
+        name: "g.gif".into(),
+        mime: "image/gif".into(),
+        is_gif: true,
+        size,
+        frames,
+        duration: None,
+    };
+    let _ = app.update(UiMessage::GifDownloaded(Ok(gif)));
     let st = app.store.read();
     let last = &st.messages[*st.chat_msg_indices[note].last().unwrap()];
     assert!(last.text.is_none() && last.attachments[0].is_gif == Some(true), "only the GIF goes");

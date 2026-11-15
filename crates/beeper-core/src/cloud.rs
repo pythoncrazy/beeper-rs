@@ -279,6 +279,8 @@ pub struct KlipyGif {
     pub preview_size: (u32, u32),
     pub gif_url: String,
     pub gif_size: (u32, u32),
+    /// The byte size of the GIF, when KLIPY gives it.
+    pub gif_bytes: Option<u64>,
     pub mp4_url: String,
     pub mp4_size: (u32, u32),
 }
@@ -342,6 +344,7 @@ pub async fn klipy_gifs(query: String) -> Result<Vec<KlipyGif>, String> {
                 preview_size,
                 gif_url,
                 gif_size,
+                gif_bytes: m["gif"]["size"].as_u64(),
                 mp4_url,
                 mp4_size,
             })
