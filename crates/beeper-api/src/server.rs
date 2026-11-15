@@ -9,9 +9,9 @@ use beeper_core::config::{
     NETWORK_SPECS,
 };
 use beeper_core::connect::{Token, READ};
-use beeper_core::matrix::{self, ChatFlag, Outgoing};
+use beeper_core::matrix::{self, ChatFlag, MediaInfo, Outgoing};
 use beeper_core::models::*;
-use beeper_core::platform::{extension_of, mime_type_of, path_to_file_url, OsKind};
+use beeper_core::platform::{extension_of, is_mime, mime_type_of, path_to_file_url, OsKind};
 use beeper_core::store::{activity_key, tokenize, BeeperStore, SharedStore};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
@@ -1494,11 +1494,36 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
         ("POST", ["messages"]) => send_message(st, id, r),
         ("PUT", ["messages", mid]) => {
             let text = r.need("text")?;
+            let (msg, rules) = message_rules(st, id, mid)?;
+            let refuse = |message| Err(error(StatusCode::BAD_REQUEST, message, "EDIT_NOT_ALLOWED"));
+            if !MessageRules::young(rules.edit_max_age, &msg.timestamp) {
+                return refuse("This message is too old to edit on this network");
+            }
+            // Desktop edits the caption of one media file, and no other attachments.
+            let media =
+                ["IMAGE", "VIDEO", "AUDIO", "VOICE", "FILE"].contains(&msg.message_type.as_deref().unwrap_or(""));
+            if msg.attachments.len() > 1 || (msg.attachments.len() == 1 && !media) {
+                return refuse("Cannot edit messages with attachments");
+            }
             let (cid, msg) = st.edit_message(id, mid, text.into()).map_err(store_error)?;
             st.queue(&cid, Outgoing::Edit { target: msg.id.clone(), text: text.into(), mentions: Vec::new() });
-            ok(&json!({ "chatID": cid, "messageID": msg.id, "success": true }))
+            let mut edited = serde_json::to_value(view::message(&msg)).expect("serialize a message");
+            (edited["success"], edited["messageID"]) = (true.into(), msg.id.clone().into());
+            ok(&edited)
         }
         ("DELETE", ["messages", mid]) => {
+            let everyone = match r.body.get("forEveryone") {
+                Some(v) => v.as_bool().ok_or_else(|| bad("forEveryone must be a boolean"))?,
+                None => r.flag("forEveryone", true)?,
+            };
+            if !everyone {
+                return Err(bad("beeper-rs deletes messages only for everyone"));
+            }
+            let (msg, rules) = message_rules(st, id, mid)?;
+            if msg.is_deleted != Some(true) && !MessageRules::young(rules.delete_max_age, &msg.timestamp) {
+                let message = "This message is too old to delete for everyone on this network";
+                return Err(error(StatusCode::BAD_REQUEST, message, "DELETE_NOT_ALLOWED"));
+            }
             let cid = st.delete_message(id, mid).map_err(store_error)?;
             st.queue(&cid, Outgoing::Redact { target: (*mid).into() });
             empty(StatusCode::NO_CONTENT, Vec::new())
@@ -1518,6 +1543,12 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
         }
         _ => Err(no_route()),
     }
+}
+
+/// A message of a chat and the message features of its room.
+fn message_rules(st: &BeeperStore, chat: &str, id: &str) -> Result<(Message, MessageRules), Response> {
+    let (cid, m) = st.message_in_chat(chat, id).map_err(store_error)?;
+    Ok((st.messages[m].clone(), st.chats[st.chat_idx_by_id[&cid]].messages))
 }
 
 /// Desktop's page size of `getRoomMessages`.
@@ -1649,51 +1680,92 @@ fn avatar_file(url: &str) -> Result<(String, Vec<u8>, String), Response> {
     Ok((path_to_file_url(&path), bytes, mime.into()))
 }
 
+/// Desktop's `resolveUploadedMessageAttachment`: the upload, with the name, the type, the size and the length of the
+/// request in place of the stored ones. The `type` of the request marks GIFs, voice notes and stickers.
+fn upload_attachment(st: &BeeperStore, a: &Value) -> Result<(Attachment, std::path::PathBuf), Response> {
+    let missing = || error(StatusCode::BAD_REQUEST, "uploadID is required", "MISSING_UPLOAD_ID");
+    let upload_id = a["uploadID"].as_str().ok_or_else(missing)?;
+    let stored = st.assets.get(upload_id).ok_or_else(|| upload_not_found(upload_id))?;
+    let mime = a["mimeType"].as_str().unwrap_or(&stored.mime_type).to_string();
+    let kind = a["type"].as_str();
+    let dim = |k: &str| a["size"][k].as_f64().map(|n| n as u32);
+    let size = match (dim("width"), dim("height")) {
+        (Some(w), Some(h)) => Some((w, h)),
+        _ => stored.width.zip(stored.height),
+    };
+    let attachment = Attachment {
+        attachment_type: match mime.split('/').next() {
+            Some("image") => "img",
+            Some("video") => "video",
+            Some("audio") => "audio",
+            _ => "unknown",
+        }
+        .into(),
+        id: Some(upload_id.into()),
+        duration: a["duration"].as_f64().or(stored.duration),
+        file_name: Some(a["fileName"].as_str().unwrap_or(&stored.file_name).to_string()),
+        file_size: Some(stored.file_size),
+        is_gif: Some(kind == Some("gif") || mime == "image/gif"),
+        is_sticker: Some(kind == Some("sticker")),
+        is_voice_note: Some(kind == Some("voice-note")),
+        mime_type: Some(mime),
+        size: size.map(|(w, h)| AttachmentSize { width: Some(w), height: Some(h) }),
+        src_url: Some(stored.mxc_url.clone()),
+        ..Attachment::default()
+    };
+    Ok((attachment, st.config.assets_dir.join(&stored.disk_name)))
+}
+
 fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
     let attachment = match &r.body["attachment"] {
         Value::Null => None,
-        a => {
-            let upload_id = a["uploadID"]
-                .as_str()
-                .ok_or_else(|| error(StatusCode::BAD_REQUEST, "uploadID is required", "MISSING_UPLOAD_ID"))?;
-            let stored = st.assets.get(upload_id).ok_or_else(|| upload_not_found(upload_id))?;
-            let stored = stored.clone();
-            let mime = a["mimeType"].as_str().map_or(stored.mime_type, str::to_string);
-            let kind = match mime.split('/').next() {
-                Some("image") => "img",
-                Some("video") => "video",
-                Some("audio") => "audio",
-                _ => "unknown",
-            };
-            Some(Attachment {
-                attachment_type: kind.into(),
-                id: Some(upload_id.into()),
-                duration: a["duration"].as_f64(),
-                file_name: Some(a["fileName"].as_str().map_or(stored.file_name, str::to_string)),
-                file_size: Some(stored.file_size),
-                is_gif: a["isGif"].as_bool(),
-                is_sticker: a["isSticker"].as_bool(),
-                is_voice_note: a["isVoiceNote"].as_bool(),
-                mime_type: Some(mime),
-                poster_img: None,
-                size: None,
-                src_url: Some(stored.mxc_url),
-                transcript: None,
-            })
-        }
+        a => Some(upload_attachment(st, a)?),
     };
     let (text, reply_to) = (r.owned("text"), r.owned("replyToMessageID"));
-    if !st.config.demo && (attachment.is_some() || text.is_none()) {
-        return Err(bad("only text messages can be sent to Matrix"));
+    if text.is_none() && attachment.is_none() {
+        return Err(bad("text or attachment is required"));
     }
-    let (chat_id, pending, _) = st.send_message(id, text.clone(), reply_to.clone(), attachment).map_err(store_error)?;
-    if let Some(text) = text {
-        st.queue(
-            &chat_id,
-            Outgoing::Send { txn: pending.clone(), text, reply_to, preview: None, mentions: Vec::new(), thread: None },
-        );
-    }
-    ok(&json!({ "chatID": chat_id, "pendingMessageID": pending }))
+    let file = match attachment {
+        Some((a, path)) => {
+            let expired = || {
+                let message = format!("Upload expired: {}", a.id.as_deref().expect("an upload ID"));
+                error(StatusCode(410), &message, "UPLOAD_EXPIRED")
+            };
+            if !is_mime(a.mime_type.as_deref().expect("a MIME type")) {
+                return Err(bad("mimeType must be a MIME type"));
+            }
+            Some((std::fs::read(&path).map_err(|_| expired())?, a))
+        }
+        None => None,
+    };
+    let shown = file.as_ref().map(|(_, a)| a.clone());
+    let (chat_id, txn, _) = st.send_message(id, text.clone(), reply_to.clone(), shown).map_err(store_error)?;
+    let out = match file {
+        None => Outgoing::Send {
+            txn: txn.clone(),
+            text: text.expect("a text message"),
+            reply_to,
+            preview: None,
+            mentions: Vec::new(),
+            thread: None,
+        },
+        // The file goes to the network with the text as its caption, like the composer.
+        Some((bytes, a)) => {
+            let info = match (a.is_voice_note, a.size.as_ref()) {
+                (Some(true), _) => {
+                    MediaInfo::Voice { ms: (a.duration.unwrap_or(0.0) * 1000.0) as u64, wave: Vec::new() }
+                }
+                (_, Some(s)) if a.attachment_type == "img" => {
+                    MediaInfo::Image(s.width.expect("a width"), s.height.expect("a height"))
+                }
+                _ => MediaInfo::File,
+            };
+            let (name, mime) = (a.file_name.expect("a file name"), a.mime_type.expect("a MIME type"));
+            Outgoing::Media { txn: txn.clone(), bytes, name, mime, info, caption: text, reply_to, thread: None }
+        }
+    };
+    st.queue(&chat_id, out);
+    ok(&json!({ "chatID": chat_id, "pendingMessageID": txn }))
 }
 
 /// Desktop's `searchMessages`: the newest messages that match the query and the filters, at most 20 for each page,

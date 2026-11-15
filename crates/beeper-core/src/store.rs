@@ -1127,6 +1127,12 @@ impl BeeperStore {
         start
     }
 
+    /// The user ID of the user on an account: the user of the account, or the Beeper user for the Beeper chats.
+    pub fn self_id(&self, account_id: &str) -> String {
+        let account = self.accounts.iter().find(|a| a.account_id == account_id);
+        account.map_or(&self.me().id, |a| &a.user.id).clone()
+    }
+
     pub fn is_me(&self, user_id: &str) -> bool {
         user_id == self.me().id || user_id.starts_with("@self_")
     }
@@ -1787,15 +1793,17 @@ impl BeeperStore {
         let msg_type = match attachment.as_mut() {
             None => "TEXT",
             Some(att) if att.is_voice_note == Some(true) => "VOICE",
+            Some(att) if att.is_sticker == Some(true) => "STICKER",
             Some(att) if att.attachment_type == "img" => "IMAGE",
             Some(att) if att.attachment_type == "video" => "VIDEO",
+            Some(att) if att.attachment_type == "audio" => "AUDIO",
             Some(_) => "FILE",
         };
         let msg = Message {
             id: msg_id.clone(),
             account_id: account_id.clone(),
             chat_id: chat_id.clone(),
-            sender_id: format!("@self_{account_id}:beeper.com"),
+            sender_id: self.self_id(&account_id),
             sender_name: self.me().full_name.clone(),
             sort_key: sort_key(self.next_seq),
             timestamp: now_rfc3339_millis(),
@@ -2015,7 +2023,7 @@ impl BeeperStore {
         let (chat_id, m_idx) = self.message_in_chat(chat_or_local_id, message_id)?;
         let tx_id = transaction_id.unwrap_or_else(|| self.next_id("tx_rx"));
         let rx_id = tx_id.clone();
-        let pid = format!("@self_{}:beeper.com", self.messages[m_idx].account_id);
+        let pid = self.self_id(&self.messages[m_idx].account_id);
         self.update_message(m_idx, |m| {
             m.reactions.retain(|r| !(r.participant_id == pid && r.reaction_key == reaction_key));
             m.reactions.push(Reaction {
