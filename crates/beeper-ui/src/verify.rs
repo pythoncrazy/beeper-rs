@@ -395,7 +395,8 @@ static VERIFY_ART: LazyLock<svg::Handle> =
 impl BeeperGuiApp {
     /// Desktop's `pre-verification` stage: reads what encrypted messaging needs once Matrix is connected.
     pub(crate) fn check_e2ee(&mut self) -> Task<UiMessage> {
-        self.login.busy = true;
+        // The screens of encrypted messaging have no keyboard stops, so the focus of the sign-in screens ends.
+        (self.login.busy, self.login.focus) = (true, None);
         Task::perform(beeper_core::matrix::e2ee_setup(self.store.clone()), |r| LoginMsg::E2ee(r).into())
     }
 
@@ -981,6 +982,11 @@ mod tests {
         let mut app = crate::fuzz::demo_app("verify-onboarding");
         app.login_window = Some(window::Id::unique());
         app.store.write().beeper_state.verified = false;
+        (app.login.screen, app.login.focus) = (Screen::Code, Some(3));
+        let _ = app.check_e2ee();
+        app.login.screen = Screen::RecoveryKey;
+        let _ = app.login_text(" ");
+        assert!(app.login.focus.is_none(), "the keys of the encryption screens find no stale stop of the sign-in");
         let phone = DeviceInfo {
             id: "PHONE".into(),
             name: "Pixel".into(),
