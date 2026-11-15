@@ -405,6 +405,11 @@ fn attachments_send_like_desktop() {
     let files = [file("a.png", &png), file("b.pdf", b"%PDF")];
     let _ = app.update(UiMessage::FilesLoaded(files.iter().cloned().map(Ok).collect()));
     assert!(simulator(app.view_main()).find("PDF ・ 4 B").is_ok(), "a file shows its type and size");
+    let card = file("c.vcf", b"BEGIN:VCARD\nFN:Jo Doe\nTEL:+1\nTEL:+2\nEND:VCARD\n");
+    let _ = app.update(UiMessage::FilesLoaded(vec![Ok(card)]));
+    let shown = |t: &str| simulator(app.view_main()).find(t).is_ok();
+    assert!(["Jo Doe", "Phone Numbers", "+1", "+ 1 more"].into_iter().all(shown), "a contact card");
+    let _ = app.update(UiMessage::DiscardAttachment(2));
     let _ = app.update(UiMessage::ComposerChanged("hi".into()));
     let _ = app.update(UiMessage::SubmitComposer);
     let last = |app: &BeeperGuiApp, n: usize| {
