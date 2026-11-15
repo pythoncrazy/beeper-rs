@@ -14007,9 +14007,12 @@ impl BeeperGuiApp {
         let a = &m.attachments[ai];
         let h24 = st.settings.pref("timeFormat") == 1;
         let white = Color::WHITE;
-        let control = |h: &svg::Handle, msg| {
-            button(tinted(h, 20.0, white)).padding(0).style(btn_style([CLEAR; 3], [white; 3], 0.0)).on_press(msg)
+        // Desktop's carousel controls have a tooltip with their key.
+        let control = |h: &svg::Handle, label: &'static str, key: Vec<&'static str>, msg| -> El<'a> {
+            let b = button(tinted(h, 20.0, white)).padding(0).style(btn_style([CLEAR; 3], [white; 3], 0.0));
+            self.tip(b.on_press(msg).into(), label, key, tooltip::Position::Bottom).into()
         };
+        let action = |s| trx(s, "attachment carousel action");
         let (face, name) = match car.in_media {
             true => {
                 let u = c.participants.items.iter().find(|u| u.id == m.sender_id);
@@ -14024,12 +14027,14 @@ impl BeeperGuiApp {
             .push(txt(format_short_ts(&m.timestamp, h24), 12.0).color(white.scale_alpha(0.7)))
             .spacing(8)
             .align_y(Center);
-        let go = car.in_media.then(|| control(&MEDIA_ICONS[3], UiMessage::GoToMessage(c.id.clone(), mid.into())));
+        let go = car.in_media.then(|| {
+            control(&MEDIA_ICONS[3], tr("Go to Message"), vec![], UiMessage::GoToMessage(c.id.clone(), mid.into()))
+        });
         let controls = row![]
             .push(go)
-            .push(control(&SYS_ROTATE, UiMessage::RotateCarousel))
-            .push(control(&SYS_DOWNLOAD, UiMessage::Download(mid.to_string(), Some(ai))))
-            .push(control(&ROW_ACTIONS[6], UiMessage::CloseCarousel))
+            .push(control(&SYS_ROTATE, action("Rotate"), vec!["R"], UiMessage::RotateCarousel))
+            .push(control(&SYS_DOWNLOAD, action("Download"), vec!["D"], UiMessage::Download(mid.to_string(), Some(ai))))
+            .push(control(&ROW_ACTIONS[6], action("Close"), vec!["Escape"], UiMessage::CloseCarousel))
             .spacing(8);
         let head =
             stack![container(title).center_x(Fill).center_y(34), container(controls).align_right(Fill).center_y(34)];
@@ -14084,7 +14089,12 @@ impl BeeperGuiApp {
                 [white; 3],
                 32.0,
             ));
-            let b = container(b.on_press(UiMessage::CarouselStep(next))).center_y(Fill).padding([0, 24]);
+            let (label, key, at) = match next {
+                true => (tr("Next Attachment"), "→", tooltip::Position::Top),
+                false => (tr("Previous Attachment"), "←", tooltip::Position::Bottom),
+            };
+            let b = self.tip(b.on_press(UiMessage::CarouselStep(next)).into(), label, vec![key], at);
+            let b = container(b).center_y(Fill).padding([0, 24]);
             if next {
                 b.align_right(Fill).into()
             } else {
