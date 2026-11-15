@@ -1,4 +1,5 @@
 //! Desktop's `clientConfigStore.features`, with the free uses of its `freebieStore`.
+use crate::bridge_login::Flow;
 use crate::config::{millis_from_rfc3339, now_unix_secs};
 use serde_json::Value;
 
@@ -89,6 +90,24 @@ impl Flags {
         open.then(|| ((left + DAY - 1) / DAY).max(1))
     }
 
+    /// The SDK's `filterDisabledLoginFlows`: the flag `bridge:{bridge}:login:{flow}` set to false hides a flow,
+    /// unless it hides all of them.
+    pub fn login_flows(&self, bridge: &str, flows: Vec<Flow>) -> Vec<Flow> {
+        let shown: Vec<Flow> = flows
+            .iter()
+            .filter(|f| {
+                let flag = self.flag(&format!("bridge:{bridge}:login:{}", f.id));
+                !flag.show || flag.on
+            })
+            .cloned()
+            .collect();
+        if shown.is_empty() {
+            flows
+        } else {
+            shown
+        }
+    }
+
     /// Desktop's `features[key]`; `scheduled` is the number of pending scheduled messages.
     pub fn get(&self, key: &str, scheduled: usize) -> Feature {
         let with_free = |f: Feature, name: &str| match self.free(name) {
@@ -168,5 +187,16 @@ mod tests {
         assert_eq!(f.get("remind-later", 0), lock, "a missing limit gives no free uses");
         f.usage = json!({ "scheduled-message": { "limit": 9 } });
         assert_eq!(f.get("scheduled-message", 2), lock, "a usage without a count keeps the default limit");
+    }
+
+    #[test]
+    fn feature_flags_hide_login_flows_like_the_sdk() {
+        let flow = |id: &str| Flow { id: id.into(), name: String::new(), description: String::new() };
+        let ids = |flows: Vec<Flow>| flows.into_iter().map(|f| f.id).collect::<Vec<_>>();
+        let mut f = Flags::free_plan();
+        f.flags["features"]["appType:desktop"] = json!({ "bridge:telegram:login:qr": false });
+        assert_eq!(ids(f.login_flows("telegram", vec![flow("phone"), flow("qr")])), ["phone"]);
+        assert_eq!(ids(f.login_flows("signal", vec![flow("qr")])), ["qr"], "the flag is per bridge");
+        assert_eq!(ids(f.login_flows("telegram", vec![flow("qr")])), ["qr"], "a flag does not hide every flow");
     }
 }
