@@ -513,18 +513,14 @@ fn post(c: &mut Ctx) -> Res {
 /// `assets.upload`: the uploaded file, with its `uploadID`.
 pub fn upload(c: &mut Ctx, path: &str, file_name: Option<&str>, mime: Option<&str>) -> Res<Value> {
     let bytes = std::fs::read(path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => CliError::bug(format!("ENOENT: no such file or directory, open '{path}'")),
-        _ => CliError::bug(format!("{e}, open '{path}'")),
+        std::io::ErrorKind::NotFound => CliError::system(format!("ENOENT: no such file or directory, open '{path}'")),
+        _ => CliError::system(format!("{e}, open '{path}'")),
     })?;
-    let name = file_name
-        .map(str::to_string)
-        .or_else(|| std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()));
-    let body = obj([
-        ("content", json!(beeper_core::codec::base64_encode_standard(&bytes))),
-        ("fileName", json!(name)),
-        ("mimeType", json!(mime)),
-    ]);
-    c.call("POST", "/v1/assets/upload/base64", Some(Value::Object(body)))
+    let name = std::path::Path::new(path).file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+    let fields: Vec<(&str, &str)> =
+        [("fileName", file_name), ("mimeType", mime)].into_iter().filter_map(|(k, v)| Some((k, v?))).collect();
+    let client = c.client()?.clone();
+    Ok(c.block(client.upload(&name, &bytes, &fields))?)
 }
 
 fn draft(c: &mut Ctx) -> Res {

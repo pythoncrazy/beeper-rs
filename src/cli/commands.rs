@@ -12,6 +12,8 @@ const TOPICS: &[(&str, &str, Option<&str>)] = &[
     ("auth", "Inspect and clear stored authentication", None),
     ("chats", "List, search, manage, and modify chats", Some("chats list")),
     ("config", "Manage local CLI configuration", None),
+    ("messages", "List, search, show, edit, delete, and export messages", None),
+    ("send", "Send text, files, and reactions", None),
 ];
 
 pub type Topic = (&'static str, &'static str, Option<&'static str>);
@@ -22,7 +24,7 @@ pub fn topic(name: &str) -> Option<&'static Topic> {
 
 /// Every command, topic by topic.
 pub fn all() -> impl Iterator<Item = &'static Cmd> + Clone {
-    [CORE, super::chats::COMMANDS].into_iter().flatten()
+    [CORE, super::chats::COMMANDS, super::messages::COMMANDS].into_iter().flatten()
 }
 
 const NO_AUTH: Flag = Flag::b("no-auth", "Call a public API path without a bearer token");
