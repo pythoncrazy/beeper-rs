@@ -568,7 +568,7 @@ async fn lifecycle() {
     let _ = fresh_gui.update(UiMessage::Login(LoginMsg::Fresh));
     assert_eq!(fresh_gui.login.screen, Screen::Welcome);
     assert_eq!(fresh_gui.store.read().setup, Some(Setup::Fresh));
-    let fresh_dir = fresh_gui.store.read().data_dir.clone();
+    let fresh_dir = fresh_gui.store.read().config.data_dir.clone();
     drop(fresh_gui);
     std::fs::remove_dir_all(&orig_dir).unwrap();
     std::fs::remove_dir_all(&rs_dir).unwrap();
@@ -1442,7 +1442,7 @@ async fn lifecycle() {
         assert!(gui.hotkeys_modal.is_none(), "Escape closes the list");
         let _ = gui.update(UiMessage::KeyPressed(Key::Character("s".into()), Modifiers::CTRL | Modifiers::ALT));
         assert!(gui.sidebar_hidden, "Ctrl Alt S hides the sidebar");
-        let hidden = std::fs::read_to_string(store.read().data_dir.join("sidebar-hidden")).unwrap();
+        let hidden = std::fs::read_to_string(store.read().config.data_dir.join("sidebar-hidden")).unwrap();
         assert_eq!(hidden, "true", "the hidden sidebar stays hidden after a restart");
         let width = gui.sidebar_width;
         let _ = gui.update(UiMessage::DragMoved(iced::Point::new(200.0, 0.0)));

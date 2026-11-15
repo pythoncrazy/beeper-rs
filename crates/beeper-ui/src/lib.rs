@@ -4251,13 +4251,13 @@ impl BeeperGuiApp {
             st.bridge_accounts.iter().filter(|_| st.config.demo).map(|b| (b.account_id.clone(), demo.clone()));
         let resolve = resolve.collect();
         drop(st);
-        let sidebar_width = match std::fs::read_to_string(store.read().data_dir.join("sidebar-width")) {
+        let sidebar_width = match std::fs::read_to_string(store.read().config.data_dir.join("sidebar-width")) {
             Ok(w) => w.parse().expect("a numeric sidebar width"),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => SIDEBAR_WIDTH,
             Err(e) => panic!("read the sidebar width: {e}"),
         };
-        let audio = voice::Player::new(&store.read().data_dir);
-        let sidebar_hidden = match std::fs::read_to_string(store.read().data_dir.join("sidebar-hidden")) {
+        let audio = voice::Player::new(&store.read().config.data_dir);
+        let sidebar_hidden = match std::fs::read_to_string(store.read().config.data_dir.join("sidebar-hidden")) {
             Ok(h) => h.parse().expect("a boolean sidebar-hidden"),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
             Err(e) => panic!("read sidebar-hidden: {e}"),
@@ -4623,7 +4623,7 @@ impl BeeperGuiApp {
     /// Desktop's `windowStateKeeper(key)`: a window opens with its bounds and its maximized state in `window.json`,
     /// else centered with the `size` by default.
     fn saved_window_settings(&self, key: &str, size: Size) -> window::Settings {
-        let state = read_window_state(&self.store.read().data_dir.join("window.json"));
+        let state = read_window_state(&self.store.read().config.data_dir.join("window.json"));
         let saved = &state["windowState"][key];
         let num = |key: &str| saved[key].as_f64().map(|v| v as f32);
         let size = num("width").zip(num("height")).map_or(size, |(w, h)| Size::new(w, h));
@@ -4644,7 +4644,7 @@ impl BeeperGuiApp {
 
     /// Saves the state of window `id` under `key` in `window.json`. A maximized window keeps the bounds from before.
     fn save_window(&self, id: window::Id, key: &'static str) -> Task<UiMessage> {
-        let path = self.store.read().data_dir.join("window.json");
+        let path = self.store.read().config.data_dir.join("window.json");
         let state = window::is_maximized(id).then(move |max| window::size(id).map(move |size| (max, size)));
         let state = state.then(move |(max, size)| window::position(id).map(move |at| (max, size, at)));
         state.map(move |(max, size, at)| write_window_state(&path, key, max, size, at)).discard()
@@ -4679,13 +4679,13 @@ impl BeeperGuiApp {
             threads.map(|t| serde_json::json!({"windowId": format!("thread-{t}"), "type": "thread", "threadId": t}));
         let prefs = self.settings_window.map(|_| serde_json::json!({"windowId": "prefs", "type": "prefs"}));
         let state = serde_json::json!({"openSubwindows": threads.chain(prefs).collect::<Vec<_>>()});
-        let path = self.store.read().data_dir.join("subwindow-state.json");
+        let path = self.store.read().config.data_dir.join("subwindow-state.json");
         std::fs::write(path, state.to_string()).expect("write the subwindow state");
     }
 
     /// Opens the windows of the last session, like Desktop's `setupSubwindowRestoreHandler`.
     fn restore_subwindows(&mut self) -> Task<UiMessage> {
-        let path = self.store.read().data_dir.join("subwindow-state.json");
+        let path = self.store.read().config.data_dir.join("subwindow-state.json");
         let json = match std::fs::read_to_string(path) {
             Ok(json) => json,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Task::none(),
@@ -5606,7 +5606,7 @@ impl BeeperGuiApp {
     fn set_sidebar_hidden(&mut self, hidden: bool) {
         if self.sidebar_hidden != hidden {
             self.sidebar_hidden = hidden;
-            let path = self.store.read().data_dir.join("sidebar-hidden");
+            let path = self.store.read().config.data_dir.join("sidebar-hidden");
             std::fs::write(path, hidden.to_string()).expect("write sidebar-hidden");
         }
     }
@@ -6406,7 +6406,7 @@ impl BeeperGuiApp {
             }
             UiMessage::WallpaperPicked(chat, r) => match r.map(|paths| paths.into_iter().next()) {
                 Ok(Some(path)) => {
-                    let dir = chat_theme::photo_dir(&self.store.read().data_dir);
+                    let dir = chat_theme::photo_dir(&self.store.read().config.data_dir);
                     let ext =
                         path.extension().map_or(String::new(), |e| format!(".{}", e.to_string_lossy().to_lowercase()));
                     let file_name = format!("{}{ext}", beeper_core::connect::random_id());
@@ -8706,7 +8706,7 @@ impl BeeperGuiApp {
             }
             UiMessage::DragEnd => {
                 self.dragging = false;
-                let path = self.store.read().data_dir.join("sidebar-width");
+                let path = self.store.read().config.data_dir.join("sidebar-width");
                 std::fs::write(path, self.sidebar_width.to_string()).expect("write the sidebar width");
             }
             UiMessage::WindowOpened(id) => {
@@ -9123,13 +9123,7 @@ impl BeeperGuiApp {
     }
 
     fn patch_settings(&mut self, f: impl FnOnce(&mut BeeperSettings)) {
-        {
-            let mut st = self.store.write();
-            f(&mut st.settings);
-            st.persist_state_to_sqlite();
-            let on = st.settings.enable_pas_api;
-            st.api_on.send_if_modified(|v| std::mem::replace(v, on) != on);
-        }
+        self.store.write().update_settings(f);
         self.refresh_theme_and_tray();
     }
 
@@ -12599,7 +12593,7 @@ impl BeeperGuiApp {
         let fade = container(Space::new()).width(Fill).height(chat_theme::FADE).style(move |_: &Theme| {
             container::Style { background: Some(Background::Gradient(Gradient::Linear(fade))), ..Default::default() }
         });
-        let wallpaper = chat_theme::resolve(&st.settings.chat_appearance, Some(cid), self.dark, &st.data_dir)
+        let wallpaper = chat_theme::resolve(&st.settings.chat_appearance, Some(cid), self.dark, &st.config.data_dir)
             .0
             .map(|(paint, _)| paint)
             .filter(|_| in_chat);
@@ -16895,14 +16889,15 @@ impl BeeperGuiApp {
     /// Desktop's `--on-wallpaper-fg` of `chat` outside of a reply chain and of a thread pane, when its chat theme has
     /// a wallpaper.
     fn wallpaper_fg(&self, st: &BeeperStore, chat: &Chat, thread: bool) -> Option<Color> {
-        let wallpaper = chat_theme::resolve(&st.settings.chat_appearance, Some(&chat.id), self.dark, &st.data_dir).0;
+        let wallpaper =
+            chat_theme::resolve(&st.settings.chat_appearance, Some(&chat.id), self.dark, &st.config.data_dir).0;
         wallpaper.filter(|_| !thread && self.pane().thread_root.is_none()).map(|(_, fg)| fg)
     }
 
     /// The color, text color and metadata color of sent bubbles in `chat`, or in the default chat theme.
     fn sent_colors(&self, st: &BeeperStore, chat: Option<&str>) -> (Color, Color, Color) {
         let p = &self.pal;
-        match chat_theme::resolve(&st.settings.chat_appearance, chat, self.dark, &st.data_dir).1 {
+        match chat_theme::resolve(&st.settings.chat_appearance, chat, self.dark, &st.config.data_dir).1 {
             Some((bg, fg)) => (bg, fg, fg.scale_alpha(p.sent_meta.a)),
             None => (p.sent, p.sent_fg, p.sent_meta),
         }
@@ -16911,7 +16906,7 @@ impl BeeperGuiApp {
     /// Desktop's `removeOrphanedWallpapers`: deletes the photos in `chat_wallpapers` that no chat theme uses.
     fn prune_wallpapers(&self) {
         let st = self.store.read();
-        let entries = match std::fs::read_dir(chat_theme::photo_dir(&st.data_dir)) {
+        let entries = match std::fs::read_dir(chat_theme::photo_dir(&st.config.data_dir)) {
             Ok(entries) => entries,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
             Err(e) => panic!("read the chat wallpapers: {e}"),
@@ -17158,7 +17153,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let a = &st.settings.chat_appearance;
         let stored = a.theme(chat);
-        let wallpaper = chat_theme::resolve(a, chat, self.dark, &st.data_dir).0;
+        let wallpaper = chat_theme::resolve(a, chat, self.dark, &st.config.data_dir).0;
         let (sent, sent_fg, _) = self.sent_colors(st, chat);
         let id = chat.map(str::to_string);
         let ring = |el: El<'static>, on: bool, radius: f32, msg: UiMessage| -> El<'static> {
@@ -17224,7 +17219,7 @@ impl BeeperGuiApp {
         tiles.push(ring(photo_fill.into(), photo, 10.0, UiMessage::PickWallpaper(id.clone())));
         let papers = chat_theme::COLORS.iter().map(|c| Wallpaper::Color { id: c.0.into() });
         for w in papers.chain(chat_theme::GRADIENTS.iter().map(|g| Wallpaper::Gradient { id: g.0.into() })) {
-            let (paint, _) = chat_theme::paint(&w, self.dark, &st.data_dir).expect("a known wallpaper");
+            let (paint, _) = chat_theme::paint(&w, self.dark, &st.config.data_dir).expect("a known wallpaper");
             tiles.push(tile(chat_theme::fill(paint, Size::new(60.0, 98.0), 9.0), w));
         }
         let footer = chat.map(|c| {
@@ -17323,12 +17318,12 @@ pub fn run_native_gui(store: SharedStore) -> iced::Result {
         std::env::set_var("ICED_BACKEND", "tiny-skia");
     }
     if st.settings.on("spellcheck") {
-        let custom = st.data_dir.join("Custom Dictionary.txt");
+        let custom = st.config.data_dir.join("Custom Dictionary.txt");
         std::thread::spawn(|| spell::load(custom));
     }
     // Only the default data dir registers, so that test and profile launches do not take the links.
     #[cfg(target_os = "linux")]
-    if st.config.profile.is_none() && st.data_dir == beeper_core::platform::current_desktop_data_dir(None) {
+    if st.config.profile.is_none() && st.config.data_dir == beeper_core::platform::current_desktop_data_dir(None) {
         std::thread::spawn(|| deeplink::register().unwrap_or_else(|e| eprintln!("register beeper:// links: {e}")));
     }
     drop(st);

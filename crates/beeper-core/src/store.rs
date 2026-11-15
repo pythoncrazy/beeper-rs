@@ -472,7 +472,6 @@ impl OutFile {
 
 pub struct BeeperStore {
     pub config: CentralConfig,
-    pub data_dir: PathBuf,
     pub setup: Option<Setup>,
     db: Mutex<Connection>,
     pub beeper_state: BeeperStateRecord,
@@ -653,9 +652,8 @@ impl BeeperStore {
         let features =
             if config.demo { crate::features::Flags::free_plan() } else { crate::features::Flags::default() };
         let mut store = Self {
-            data_dir: config.data_dir.clone(),
             setup: None,
-            settings: config.settings.clone(),
+            settings: BeeperSettings::default(),
             config,
             db: Mutex::new(conn),
             verification: None,
@@ -762,6 +760,14 @@ impl BeeperStore {
 
     fn exec(&self, sql: &str, args: &[&dyn ToSql]) {
         self.db.lock().unwrap().prepare_cached(sql).expect("prepare SQL").execute(args).expect("execute SQL");
+    }
+
+    /// Changes the settings and saves them, and turns the Desktop API on or off when "Enable Desktop API" changed.
+    pub fn update_settings(&mut self, f: impl FnOnce(&mut BeeperSettings)) {
+        f(&mut self.settings);
+        self.persist_state_to_sqlite();
+        let on = self.settings.enable_pas_api;
+        self.api_on.send_if_modified(|v| std::mem::replace(v, on) != on);
     }
 
     pub fn persist_state_to_sqlite(&self) {
@@ -1183,7 +1189,7 @@ impl BeeperStore {
     }
 
     pub fn matrix_dir(&self) -> PathBuf {
-        self.data_dir.join("matrix")
+        self.config.data_dir.join("matrix")
     }
 
     pub fn signed_in(&self) -> bool {
