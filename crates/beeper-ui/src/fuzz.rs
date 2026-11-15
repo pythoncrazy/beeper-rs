@@ -5346,11 +5346,16 @@ fn main_window_keeps_its_state_like_desktop() {
     assert_eq!((s.size, s.min_size, s.maximized), (Size::new(1200.0, 800.0), Some(Size::new(330.0, 400.0)), false));
     assert!(matches!(s.position, window::Position::Centered));
     let path = app.store.read().data_dir.join("window.json");
-    write_window_state(&path, false, Size::new(900.0, 700.0), Some(Point::new(40.0, 30.0)));
-    write_window_state(&path, true, Size::new(1440.0, 900.0), Some(Point::new(0.0, 0.0)));
+    write_window_state(&path, "main", false, Size::new(900.0, 700.0), Some(Point::new(40.0, 30.0)));
+    write_window_state(&path, "main", true, Size::new(1440.0, 900.0), Some(Point::new(0.0, 0.0)));
     let s = app.main_window_settings();
     assert_eq!((s.size, s.maximized), (Size::new(900.0, 700.0), true), "a maximized window keeps its old bounds");
     assert!(matches!(s.position, window::Position::Specific(p) if p == Point::new(40.0, 30.0)));
+    // Desktop's Media window keeps its state under `media-viewer`.
+    write_window_state(&path, "media-viewer", false, Size::new(800.0, 600.0), Some(Point::new(10.0, 20.0)));
+    let _ = app.update(UiMessage::OpenMedia);
+    assert_eq!(app.media_window.as_ref().unwrap().size, Size::new(800.0, 600.0), "the Media window opens at its size");
+    assert_eq!(app.main_window_settings().size, Size::new(900.0, 700.0), "the main window keeps its state");
     let main = app.main_window.expect("a main window");
     let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
     let title = app.store.read().chats.iter().find(|c| c.id == beeper_core::store::NOTE_CHAT_ID).unwrap().title.clone();
