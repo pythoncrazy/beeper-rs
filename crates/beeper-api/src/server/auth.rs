@@ -32,6 +32,7 @@ pub(super) fn access_token(msg: &HttpMessage) -> Option<&str> {
 pub(super) fn scope(method: &str, segs: &[&str]) -> Option<&'static str> {
     match (method, segs) {
         (_, [] | ["v1", "info" | "spec"] | [".well-known", ..] | ["register"] | ["v1", "app", "setup", ..]) => None,
+        ("GET", ["focus", ..]) => None,
         ("GET", ["oauth", "userinfo"]) => Some(READ),
         (_, ["oauth", ..]) => None,
         ("GET", _) | ("POST", ["v1", "focus"] | ["v1", "assets", "download"]) => Some(READ),
@@ -215,7 +216,18 @@ fn js(v: Option<&str>) -> String {
         .replace('\u{2029}', "\\u2029")
 }
 
-fn html(status: u16, title: &str, body: &str, mut headers: Vec<(&'static str, String)>) -> Reply {
+/// Desktop's `rejectBrowserRequest`: the routes for other programs refuse the requests of a browser.
+pub(super) fn reject_browser(msg: &HttpMessage) -> Result<(), Response> {
+    let browser = msg.header("user-agent").is_some_and(|a| a.contains("Mozilla/"))
+        && msg.header("accept").is_some_and(|a| a.contains("text/html"));
+    let fetch = ["origin", "referer", "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest"];
+    match browser || fetch.iter().any(|h| msg.header(h).is_some()) {
+        true => Err(api_error(403, "Browser requests are not allowed for this route", "browser_forbidden")),
+        false => Ok(()),
+    }
+}
+
+pub(super) fn html(status: u16, title: &str, body: &str, mut headers: Vec<(&'static str, String)>) -> Reply {
     headers.push(("content-type", "text/html; charset=utf-8".into()));
     let page = fill(PAGE, &[("title", &escape_html(title)), ("body", body)]);
     Ok(Response { status: StatusCode(status), headers, body: page.into_bytes() })

@@ -551,6 +551,9 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     if let ("GET" | "POST", ["v1", "app", "setup", rest @ ..]) = (method.as_str(), &segs[..]) {
         return e2ee_setup(store, &method, rest, &req);
     }
+    if let ("GET", ["focus", rest @ ..]) = (method.as_str(), &segs[..]) {
+        return focus_page(&mut store.write(), rest, &req);
+    }
     if method == "GET" {
         return get(store, &segs, &req);
     }
@@ -760,7 +763,15 @@ fn dispatch(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply
     match (method, path) {
         (_, ["v1", "bridges", rest @ ..]) => bridges(st, method, rest, r),
         (_, ["v1", "chats", rest @ ..]) => chats(st, method, rest, r),
-        ("POST", ["v1", "assets", "upload"]) => upload_multipart(st, r),
+        ("POST", ["v1", "assets", "upload"]) => match r.msg.header("content-type").unwrap_or_default() {
+            t if t.contains("multipart/form-data") => upload_multipart(st, r),
+            t if t.contains("application/json") => upload_json(st, r),
+            _ => Err(error(
+                StatusCode::BAD_REQUEST,
+                "Use application/json or multipart/form-data",
+                "INVALID_CONTENT_TYPE",
+            )),
+        },
         ("POST", ["v1", "assets", "upload", "base64"]) => {
             let bytes = base64_decode(r.need("content")?).filter(|b| !b.is_empty());
             let bytes = bytes.ok_or_else(|| bad("content must be non-empty base64"))?;
@@ -1329,7 +1340,9 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
             st.queue(&cid, Outgoing::React { txn: tx.clone(), target: (*mid).into(), key: key.into() });
             ok(&json!({ "chatID": cid, "messageID": mid, "reactionKey": key, "transactionID": tx, "success": true }))
         }
-        ("DELETE", ["messages", mid, "reactions", key]) => {
+        // Desktop also takes the key from the query, for keys that a path cannot carry.
+        ("DELETE", ["messages", mid, "reactions", rest @ ..]) if rest.len() <= 1 => {
+            let key = rest.first().copied().unwrap_or_else(|| r.q("reactionKey").unwrap_or_default());
             let (cid, target) = st.remove_reaction(id, mid, key).map_err(store_error)?;
             st.queue(&cid, Outgoing::Redact { target });
             ok(&json!({ "chatID": cid, "messageID": mid, "reactionKey": key, "success": true }))
@@ -1662,6 +1675,44 @@ fn asset_json(asset: StoredAsset) -> Value {
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Desktop's JSON form of `POST /v1/assets/upload`: `{content, fileName, mimeType}` with base64 content.
+fn upload_json(st: &mut BeeperStore, r: &Req) -> Reply {
+    let field = |k: &str, message: &str, code: &str| {
+        r.str(k).filter(|v| !v.is_empty()).ok_or_else(|| error(StatusCode::BAD_REQUEST, message, code))
+    };
+    let content = field("content", "Missing required field: content (base64 string)", "MISSING_CONTENT")?;
+    let file_name = field("fileName", "Missing required field: fileName", "MISSING_FILENAME")?;
+    let mime = field("mimeType", "Missing required field: mimeType", "MISSING_MIMETYPE")?;
+    let bytes = base64_decode(content).filter(|b| !b.is_empty());
+    let bytes = bytes.ok_or_else(|| error(StatusCode::BAD_REQUEST, "Invalid base64 content", "INVALID_BASE64"))?;
+    ok(&asset_json(st.store_uploaded_asset(file_name.into(), mime.into(), &bytes)))
+}
+
+/// Desktop's `GET /focus{/:chatID{/:messageID}}?draft=`: `POST /v1/focus` for other programs, with an HTML answer.
+fn focus_page(st: &mut BeeperStore, path: &[&str], r: &Req) -> Reply {
+    auth::reject_browser(&r.msg)?;
+    let (chat, draft) = match path {
+        [] => (None, r.q("draft")),
+        [chat] | [chat, _] => (Some(*chat), r.q("draft")),
+        _ => return Err(no_route()),
+    };
+    if draft.is_some() && chat.is_none() {
+        return auth::html(400, "Bad Request", "<h1>Draft text requires a chat ID</h1>", Vec::new());
+    }
+    let idx = chat.map(|c| st.resolve_chat_idx(c));
+    if idx == Some(None) {
+        return auth::html(404, "Not Found", "<h1>Chat not found</h1>", Vec::new());
+    }
+    let idx = idx.flatten();
+    if let (Some(i), Some(text)) = (idx, draft) {
+        let draft = ChatDraft { text: Some(text.into()), ..ChatDraft::default() };
+        st.update_chat(i, |c| c.draft = Some(draft));
+    }
+    st.focus_tx.send(idx.map(|i| st.chats[i].id.clone())).ok();
+    let body = r#"<div class="message">You can close this window</div><div class="hint">Having issues? Contact help@beeper.com.</div>"#;
+    auth::html(200, "Beeper Client API", body, Vec::new())
 }
 
 fn upload_multipart(st: &mut BeeperStore, r: &Req) -> Reply {
