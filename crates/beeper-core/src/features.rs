@@ -109,6 +109,16 @@ impl Flags {
         }
     }
 
+    /// Desktop's `supportsMultipleAccounts` (`WT`): the flag `bridge:{bridge}:multi-account`, else only the
+    /// on-device and self-hosted bridges take more than one account.
+    pub fn multi_account(&self, bridge: &str) -> bool {
+        let flag = self.flag(&format!("bridge:{bridge}:multi-account"));
+        match flag.show {
+            true => flag.on,
+            false => bridge.starts_with("local-") || bridge.starts_with("sh-"),
+        }
+    }
+
     /// Desktop's `features[key]`; `scheduled` is the number of pending scheduled messages.
     pub fn get(&self, key: &str, scheduled: usize) -> Feature {
         let with_free = |f: Feature, name: &str| match self.free(name) {
@@ -199,5 +209,8 @@ mod tests {
         assert_eq!(ids(f.login_flows("telegram", vec![flow("phone"), flow("qr")])), ["phone"]);
         assert_eq!(ids(f.login_flows("signal", vec![flow("qr")])), ["qr"], "the flag is per bridge");
         assert_eq!(ids(f.login_flows("telegram", vec![flow("qr")])), ["qr"], "a flag does not hide every flow");
+        assert!(!f.multi_account("whatsapp") && f.multi_account("local-whatsapp"));
+        f.flags["features"]["*"]["bridge:whatsapp:multi-account"] = json!(true);
+        assert!(f.multi_account("whatsapp"));
     }
 }

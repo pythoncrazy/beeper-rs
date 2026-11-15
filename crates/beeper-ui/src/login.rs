@@ -1,4 +1,4 @@
-use crate::i18n::{tr, trn, trx};
+use crate::i18n::{tr, trf, trn, trx};
 use crate::style::{
     bold, bordered_box, brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, CLEAR,
 };
@@ -7,7 +7,7 @@ use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{account_network, NETWORK_SPECS};
 use beeper_core::import::{read_beeper_data, BeeperData};
 use beeper_core::models::{BridgeAccountInfo, MatrixSession, Profile};
-use beeper_core::store::{Setup, NOTE_CHAT_ID};
+use beeper_core::store::{BeeperStore, Setup, NOTE_CHAT_ID};
 use iced::gradient::Linear;
 use iced::widget::{
     button, column, container, mouse_area, operation, rich_text, row, scrollable, span, stack, svg, text_input,
@@ -127,7 +127,10 @@ pub fn addable() -> impl Iterator<Item = &'static beeper_core::models::NetworkSp
     NETWORK_SPECS[1..].iter().filter(|n| cfg!(target_os = "macos") || n.bridge_id != "imessage")
 }
 
-pub fn network_grid(accounts: &[BridgeAccountInfo], query: &str, ink: Color) -> El<'static> {
+/// The Connect grid. A tile opens the Add Account window of its network (Desktop's `wj`) when beeper-rs can add
+/// an account on it. A demo account adds none.
+pub fn network_grid(st: &BeeperStore, query: &str, ink: Color) -> El<'static> {
+    let (accounts, features) = (&st.bridge_accounts, &st.features);
     let q = query.trim().to_lowercase();
     let tiles: Vec<El<'static>> = addable()
         .filter(|n| n.display_name.to_lowercase().contains(&q) || n.bridge_id.contains(&q))
@@ -151,11 +154,19 @@ pub fn network_grid(accounts: &[BridgeAccountInfo], query: &str, ink: Color) -> 
             .spacing(10)
             .align_x(Center)
             .padding(8);
-            let tip = match count {
-                0 => format!("Connect {} in the Beeper mobile app", n.display_name),
-                1 => "1 active account".to_string(),
-                c => format!("{c} active accounts"),
+            // Desktop's tile tooltip (`App:132302`): beeper-rs adds accounts on the Beeper Cloud bridges only.
+            let bridge = crate::add_account::cloud_bridge(n);
+            let open = !st.config.demo && bridge.is_some_and(|b| count == 0 || features.multi_account(b));
+            let tip = match (bridge, count, open) {
+                (None, ..) => trf("Can't add %s", &[&n.display_name]),
+                (_, 0, _) => trf("Connect %s", &[&n.display_name]),
+                (_, _, true) => tr("Add another").into(),
+                (_, _, false) => trf("You can’t add another %s account", &[&n.display_name]),
             };
+            let tile = button(tile)
+                .padding(0)
+                .style(btn_style([CLEAR; 3], [ink; 3], 8.0))
+                .on_press_maybe(open.then(|| UiMessage::OpenAddAccount(n.bridge_id.into(), None)));
             let tip = container(txt(tip, 13.0).color(INK)).padding([6, 12]).style(shadow_box(
                 Color::WHITE,
                 FIELD,
@@ -557,7 +568,7 @@ impl BeeperGuiApp {
                 .into()
             }
             Screen::Accounts => {
-                let accounts = self.store.read().bridge_accounts.clone();
+                let st = self.store.read();
                 let search = row![
                     ic(icon::SEARCH, 16.0).color(HINT),
                     text_input(tr("Search..."), &l.query)
@@ -570,10 +581,10 @@ impl BeeperGuiApp {
                 .align_y(Center)
                 .padding([0, 16]);
                 let divider = container(Space::new()).width(Fill).height(1).style(fill_box(FIELD, 0.0));
-                let grid = scrollable(network_grid(&accounts, &l.query, Color::BLACK)).height(Fill);
+                let grid = scrollable(network_grid(&st, &l.query, Color::BLACK)).height(Fill);
                 let go_on = container(pill(label(tr("Continue"), None), 30.0, None, Some(LoginMsg::Continue.into())))
                     .padding(Padding::new(12.0).top(8.0));
-                let remaining = FREE_ACCOUNTS.saturating_sub(accounts.len());
+                let remaining = FREE_ACCOUNTS.saturating_sub(st.bridge_accounts.len());
                 let foot = txt(
                     trn("%d free account remaining.", "%d free accounts remaining.", remaining, &[&remaining]),
                     12.0,

@@ -74,6 +74,7 @@ fn windows(app: &BeeperGuiApp) -> Vec<window::Id> {
 fn local(m: &UiMessage) -> bool {
     match m {
         UiMessage::OpenUrl(_)
+        | UiMessage::OpenAddAccount(..)
         | UiMessage::Relaunch
         | UiMessage::NotifyTimer(..)
         | UiMessage::Record(_)
