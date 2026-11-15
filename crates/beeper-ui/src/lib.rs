@@ -539,6 +539,8 @@ pub enum UiMessage {
     CarouselStep(bool),
     RotateCarousel,
     CloseCarousel,
+    /// Open the carousel menu at the cursor, or close it.
+    CarouselMenu(bool),
     /// Open Desktop's Media window, or focus it.
     OpenMedia,
     /// Show the Media, Links or Docs tab of the Media window.
@@ -3228,8 +3230,8 @@ struct Forward {
     query: String,
 }
 
-/// The attachment that a carousel shows, its quarter turns, if it shows the Media window items, and the inline size of
-/// the video that opened it, which plays again when the carousel closes on it.
+/// The attachment that a carousel shows, its quarter turns, if it shows the Media window items, the inline size of
+/// the video that opened it, which plays again when the carousel closes on it, and where its menu is open.
 #[derive(Clone)]
 struct Carousel {
     mid: String,
@@ -3237,6 +3239,7 @@ struct Carousel {
     turns: u8,
     in_media: bool,
     resume: Option<(u32, u32)>,
+    menu: Option<Point>,
 }
 
 /// Desktop's Media window: its tab (Media, Links or Docs), its size, how many items it shows,
@@ -6523,7 +6526,7 @@ impl BeeperGuiApp {
             }
             UiMessage::OpenCarousel(mid, ai, in_media) => {
                 self.leave_carousel_video();
-                self.carousel = Some(Carousel { mid, ai, turns: 0, in_media, resume: None });
+                self.carousel = Some(Carousel { mid, ai, turns: 0, in_media, resume: None, menu: None });
                 self.fit_carousel_video();
                 return self.load_media();
             }
@@ -6536,9 +6539,13 @@ impl BeeperGuiApp {
                 let Some(item) = item else { return Task::none() };
                 self.leave_carousel_video();
                 let c = self.carousel.as_mut().expect("the carousel is open");
-                (c.mid, c.ai, c.resume) = (item.0, item.1, None);
+                (c.mid, c.ai, c.resume, c.menu) = (item.0, item.1, None, None);
                 self.fit_carousel_video();
                 return self.load_media();
+            }
+            UiMessage::CarouselMenu(open) => {
+                let at = self.cursor.get();
+                self.carousel.as_mut().expect("the carousel is open").menu = open.then_some(at);
             }
             UiMessage::RotateCarousel => {
                 let c = self.carousel.as_mut().expect("the carousel is open");
@@ -14242,6 +14249,7 @@ impl BeeperGuiApp {
         match key.as_ref() {
             Key::Named(Named::Escape) if full => self.video(video::Msg::Fullscreen),
             Key::Named(Named::Escape) if self.pane.emoji.is_some() => self.update(UiMessage::CloseModals),
+            Key::Named(Named::Escape) if c.menu.is_some() => self.update(UiMessage::CarouselMenu(false)),
             Key::Named(Named::Escape) => self.update(UiMessage::CloseCarousel),
             Key::Character("f") if mods.is_empty() && video => self.video(video::Msg::Fullscreen),
             Key::Named(Named::ArrowLeft) if mods.is_empty() && at > 0 => self.update(UiMessage::CarouselStep(false)),
@@ -14476,15 +14484,68 @@ impl BeeperGuiApp {
             let pills = mouse_area(self.reaction_pills(&st, c, &[m], &look)).on_press(UiMessage::Noop);
             container(pills).align_bottom(Fill).center_x(Fill).padding(Padding::new(24.0).top(0.0).bottom(16.0))
         });
+        let main = mouse_area(main).on_right_press(UiMessage::CarouselMenu(true));
         let body = column![container(head).padding(8).height(50), main];
         let layer = stack![body]
             .push((at > 0).then(|| step(false)))
             .push((at + 1 < items.len()).then(|| step(true)))
             .push(video.and_then(|(src, _)| self.view_carousel_video_controls(&src)))
             .push(reactions)
-            .push(strip);
+            .push(strip)
+            .push(car.menu.map(|at| self.view_carousel_menu(&st, car, m, c, at)));
         let scrim = container(layer).width(Fill).height(Fill).style(fill_box(Color::BLACK.scale_alpha(0.85), 0.0));
-        Some(mouse_area(scrim).on_press(UiMessage::CloseCarousel).into())
+        // The carousel hides the window under it from the cursor.
+        Some(mouse_area(scrim).interaction(mouse::Interaction::Idle).on_press(UiMessage::CloseCarousel).into())
+    }
+
+    /// Desktop's carousel menu: Download, Copy for an image, and the extra items. In a chat, the extra items are Reply…,
+    /// React…, Forward… and Delete…, and all but React… close the carousel first. In the Media window, they are Go to
+    /// Message and Delete….
+    fn view_carousel_menu<'a>(&'a self, st: &BeeperStore, car: &Carousel, m: &Message, c: &Chat, at: Point) -> El<'a> {
+        let p = &self.pal;
+        let (mid, ai) = (car.mid.clone(), car.ai);
+        let close = |msg| UiMessage::Commands(vec![UiMessage::CloseCarousel, msg]);
+        let action = |s| trx(s, "attachment carousel context menu action").to_string();
+        let image = m.attachments[ai].attachment_type == "img";
+        let mut rows = vec![Some((action("Download"), UiMessage::Download(mid.clone(), Some(ai))))];
+        rows.extend(image.then(|| Some((action("Copy"), UiMessage::CopyImage(mid.clone(), ai)))));
+        let deletable = deletable(st, m);
+        let (first, delete) = match car.in_media {
+            true => (
+                vec![(tr("Go to Message").into(), UiMessage::GoToMessage(c.id.clone(), mid.clone()))],
+                deletable.then(|| (tr("Delete…").into(), UiMessage::MediaAskDelete(vec![(mid.clone(), ai)]))),
+            ),
+            false => {
+                let (react, reply) = self.carousel_actions(car, m, c);
+                let forward = close(UiMessage::Forward(vec![mid.clone()]));
+                let first = [(tr("Reply…"), reply), (tr("React…"), react), (tr("Forward…"), Some(forward))];
+                let first = first.into_iter().filter_map(|(label, msg)| msg.map(|msg| (label.to_string(), msg)));
+                let delete = close(UiMessage::AskDeleteMessage(vec![mid.clone()]));
+                (first.collect(), deletable.then(|| (tr("Delete…").into(), delete)))
+            }
+        };
+        rows.push(None);
+        rows.extend(first.into_iter().map(Some));
+        rows.extend(delete.map(|d| [None, Some(d)]).into_iter().flatten());
+        let h = 8.0 + rows.iter().map(|r| if r.is_some() { MENU_ITEM } else { 11.0 }).sum::<f32>();
+        let rows = rows.into_iter().map(|r| match r {
+            Some((label, msg)) => {
+                let msg = UiMessage::Commands(vec![UiMessage::CarouselMenu(false), msg]);
+                menu_item(p, None, label, "", Some(msg))
+            }
+            None => menu_rule(p),
+        });
+        let menu = container(Column::with_children(rows).padding([4, 0])).width(180);
+        let menu = menu.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        let area = match car.in_media {
+            true => self.media_window.as_ref().expect("the Media window is open").size,
+            false => self.pane.size,
+        };
+        let at = Padding::ZERO.left(at.x.min(area.width - 188.0)).top(at.y.min(area.height - h - 8.0));
+        mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
+            .on_press(UiMessage::CarouselMenu(false))
+            .on_right_press(UiMessage::CarouselMenu(false))
+            .into()
     }
 
     /// The status toast at the bottom left of a window, `left` from its edge.

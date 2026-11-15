@@ -1313,6 +1313,49 @@ fn carousel_zooms_like_desktop() {
     assert_eq!(closes, 2, "the zoomed image covers the point beside it");
 }
 
+/// Desktop's carousel menu: Download and Copy, then Reply…, React… and Forward… in a chat, or Go to Message in the
+/// Media window. Forward… closes the carousel first, and a click beside the menu or Escape closes only the menu.
+#[test]
+fn carousel_menu_like_desktop() {
+    let mut app = demo_app("carousel-menu");
+    let (chat, mid) = {
+        let st = app.store.read();
+        let m = st.messages.iter().find(|m| m.attachments.iter().any(|a| a.attachment_type == "img")).unwrap();
+        (m.chat_id.clone(), m.id.clone())
+    };
+    let _ = app.update(UiMessage::SelectChat(chat));
+    app.pane.size = Size::new(1000.0, 720.0);
+    let _ = app.update(UiMessage::OpenCarousel(mid.clone(), 0, false));
+    let at = Point::new(500.0, 389.0);
+    let right = {
+        let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view_main());
+        sim.point_at(at);
+        let _ = sim.simulate([mouse::Event::ButtonPressed(Button::Right)].map(iced::Event::Mouse));
+        sim.into_messages().collect::<Vec<_>>()
+    };
+    assert!(matches!(&right[..], [UiMessage::CarouselMenu(true)]), "a right click opens the menu");
+    app.cursor.set(at);
+    let _ = app.update(UiMessage::CarouselMenu(true));
+    let mut sim = Simulator::with_size(Default::default(), app.pane.size, app.view_main());
+    for label in ["Download", "Copy", "Reply…", "React…", "Forward…"] {
+        assert!(sim.find(label).is_ok(), "{label} shows");
+    }
+    let _ = sim.click("Forward…").expect("Forward…");
+    sim.point_at(Point::new(700.0, 600.0));
+    let _ = sim.simulate(iced_test::simulator::click());
+    let msgs: Vec<UiMessage> = sim.into_messages().collect();
+    let forward = |m: &UiMessage| matches!(m, UiMessage::Commands(c) if matches!(&c[..], [UiMessage::CarouselMenu(false), UiMessage::Commands(c)] if matches!(&c[..], [UiMessage::CloseCarousel, UiMessage::Forward(f)] if f[..] == [mid.clone()])));
+    assert!(matches!(&msgs[..], [f, UiMessage::CarouselMenu(false)] if forward(f)), "Forward… closes the carousel");
+    let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Escape), Modifiers::empty()));
+    assert!(app.carousel.as_ref().is_some_and(|c| c.menu.is_none()), "Escape closes only the menu");
+    let _ = app.update(UiMessage::OpenMedia);
+    let id = app.media_window.as_ref().unwrap().id;
+    let _ = app.update(UiMessage::OpenCarousel(mid, 0, true));
+    let _ = app.update(UiMessage::CarouselMenu(true));
+    let mut sim = simulator(app.view(id));
+    assert!(sim.find("Go to Message").is_ok() && sim.find("Reply…").is_err(), "the Media window menu");
+}
+
 /// Desktop's chat carousel: React opens the emoji picker under its button, Reply closes the carousel and starts a reply,
 /// and the reactions of the message show at the bottom.
 #[test]
