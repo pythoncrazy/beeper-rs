@@ -709,6 +709,30 @@ fn remind_submenu_like_desktop() {
     let _ = app.update(UiMessage::OpenChatMenu(id.clone()));
     let _ = app.update(UiMessage::ChatSub(Some(1)));
     assert!(simulator(app.view_main()).find("Last Used").is_ok(), "the chat menu offers the last phrase too");
+    assert!(simulator(app.view_main()).find("Upgrade to Beeper Plus").is_err(), "free uses are left");
+    let other = app.visible_chats(&app.store.read()).iter().find(|c| c.reminder.is_none()).map(|c| c.id.clone());
+    let other = other.expect("a chat without a reminder");
+    app.store.write().features.usage = serde_json::json!({ "remind-later": { "used": 5 } });
+    let _ = app.update(UiMessage::OpenChatMenu(other.clone()));
+    let _ = app.update(UiMessage::ChatSub(Some(1)));
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_main());
+        let _ = sim.click("Tomorrow").expect("Tomorrow");
+        let _ = sim.click("Custom…").expect("Custom…");
+        let _ = sim.click("Upgrade to Beeper Plus").expect("Upgrade to Beeper Plus");
+        let acts = |m: &UiMessage| {
+            matches!(
+                m,
+                UiMessage::OpenSettings(_)
+                    | UiMessage::Commands(_)
+                    | UiMessage::OpenSubMenu(_)
+                    | UiMessage::SetReminder(..)
+            )
+        };
+        sim.into_messages().filter(acts).collect()
+    };
+    let upgrade = matches!(&picked[..], [UiMessage::OpenSettings(SettingsTab::BeeperPlus)]);
+    assert!(upgrade, "without free uses only the upgrade works");
 }
 
 #[test]
