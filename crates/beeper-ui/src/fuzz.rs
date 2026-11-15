@@ -2227,6 +2227,20 @@ fn timeline_rows_stay_until_the_store_changes() {
     assert_eq!(next.msgs.len(), first.msgs.len() + 1, "a new message makes the rows again");
 }
 
+/// The chat list reads the unread threads from SQLite once for each store generation.
+#[test]
+fn unread_threads_stay_until_the_store_changes() {
+    let mut app = demo_app("threads-memo");
+    let id = app.main_window.expect("a main window");
+    let threads = |app: &BeeperGuiApp| {
+        drop(Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id)));
+        app.memo.threads.borrow().clone().expect("the chat list read the unread threads")
+    };
+    let first = threads(&app);
+    let _ = app.update(UiMessage::HoverChat(NOTE_CHAT_ID.into(), true));
+    assert!(Rc::ptr_eq(&first, &threads(&app)), "a hover keeps the unread threads");
+}
+
 /// The command bar searches once for each query: the other events keep its finds until the store changes, and the
 /// finds are the newest messages first.
 #[test]

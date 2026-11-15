@@ -4138,10 +4138,15 @@ struct Memo {
     hits: std::cell::RefCell<Option<(HitsKey, Hits)>>,
     /// The stored messages with media, newest first.
     media: std::cell::RefCell<Option<Rc<[Message]>>>,
+    /// The unread threads of all chats, as the chat index and the root.
+    threads: std::cell::RefCell<Option<Threads>>,
 }
 
 /// The query, the filters and the room of a command bar search.
 type HitsKey = (String, SearchFilters, Option<String>);
+
+/// The unread threads of the chats, as the chat index and the root.
+type Threads = Rc<[(usize, String)]>;
 
 /// The text and the media messages that a command bar search finds.
 type Hits = Rc<(Vec<Message>, Vec<Message>)>;
@@ -5147,6 +5152,7 @@ impl BeeperGuiApp {
             self.memo.words.take();
             self.memo.hits.take();
             self.memo.media.take();
+            self.memo.threads.take();
         }
         Some(&self.memo)
     }
@@ -6114,7 +6120,7 @@ impl BeeperGuiApp {
             _ => self.visible_chats(&st).into_iter().filter(|c| counts(c)).count(),
         };
         // Desktop counts one more with unread threads.
-        n as u32 + u32::from(!st.unread_threads(0..st.chats.len()).is_empty())
+        n as u32 + u32::from(!self.unread_threads(&st, None).is_empty())
     }
 
     /// The windows besides the main window, Desktop's `subWindows`.
@@ -12494,7 +12500,7 @@ impl BeeperGuiApp {
             let tiles = pinned.len().div_ceil(cols);
             let row_keys = self.row_keys(&rest);
             // Desktop's "Unread threads" pill comes first.
-            let threads = st.unread_threads(chats.iter().map(|c| st.chat_idx_by_id[&c.id]));
+            let threads = self.unread_threads(&st, Some(&chats));
             let pre = usize::from(!threads.is_empty());
             let keys: Vec<u64> = (0..pre)
                 .map(|_| vlist::key("unread-threads"))
@@ -12905,6 +12911,22 @@ impl BeeperGuiApp {
         self.refresh_theme_and_tray();
     }
 
+    /// Desktop's `unreadThreadEntries` of the chats `listed`, or of all chats. Each thread reads SQLite, so the memo
+    /// keeps the unread threads of all chats until the store changes.
+    fn unread_threads(&self, st: &BeeperStore, listed: Option<&[&Chat]>) -> Vec<(usize, String)> {
+        let memo = self.memo();
+        let all = memo.and_then(|m| m.threads.borrow().clone()).unwrap_or_else(|| {
+            let all: Threads = st.unread_threads(0..st.chats.len()).into();
+            if let Some(m) = memo {
+                *m.threads.borrow_mut() = Some(all.clone());
+            }
+            all
+        });
+        let listed: Option<HashSet<&str>> = listed.map(|l| l.iter().map(|c| c.id.as_str()).collect());
+        let shown = |i: &usize| listed.as_ref().is_none_or(|l| l.contains(st.chats[*i].id.as_str()));
+        all.iter().filter(|(i, _)| shown(i)).cloned().collect()
+    }
+
     /// Desktop's `markAllUnreadThreadsAsRead`.
     fn mark_all_threads_read(&mut self) {
         self.unread_menu = None;
@@ -13041,7 +13063,7 @@ impl BeeperGuiApp {
     fn view_unread_menu(&self, at: Point) -> (El<'_>, f32, f32) {
         let p = &self.pal;
         let st = self.store.read();
-        let n = st.unread_threads(self.visible_chats(&st).iter().map(|c| st.chat_idx_by_id[&c.id])).len();
+        let n = self.unread_threads(&st, Some(&self.visible_chats(&st))).len();
         let label = trn("Mark %d Thread as Read", "Mark %d Threads as Read", n, &[&n]);
         let col = column![menu_item(p, None, label, "", Some(UiMessage::MarkAllThreadsRead))];
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
@@ -13053,7 +13075,7 @@ impl BeeperGuiApp {
     fn view_unread_threads(&self) -> El<'_> {
         let p = &self.pal;
         let st = self.store.read();
-        let threads = st.unread_threads(self.visible_chats(&st).iter().map(|c| st.chat_idx_by_id[&c.id]));
+        let threads = self.unread_threads(&st, Some(&self.visible_chats(&st)));
         let open = self.pane.thread.as_ref().map(|t| (t.selected_chat_id.clone(), t.thread_root.clone()));
         let title = semi(tr("Unread threads"), 14.0).line_height(Pixels(18.0)).color(p.text);
         let count = (!threads.is_empty())
