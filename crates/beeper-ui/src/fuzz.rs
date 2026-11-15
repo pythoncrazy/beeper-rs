@@ -413,13 +413,13 @@ fn attachments_send_like_desktop() {
         msgs.map(|m| (m.text.clone(), m.attachments.iter().map(|a| a.attachment_type.clone()).collect())).collect()
     };
     let sent: Vec<(Option<String>, Vec<String>)> = last(&app, 3);
-    let want = [(Some("hi".into()), vec![]), (None, vec!["img".into()]), (None, vec!["file".into()])];
+    let want = [(Some("hi".into()), vec![]), (None, vec!["img".into()]), (None, vec!["unknown".into()])];
     assert_eq!(sent, want, "the text first, then each attachment");
     assert!(app.pane.attachments.is_empty() && app.pane.composer.text().is_empty());
     let _ = app.update(UiMessage::FilesLoaded(files[1..].iter().cloned().map(Ok).collect()));
     let _ = app.update(UiMessage::ComposerChanged("cap".into()));
     let _ = app.update(UiMessage::SubmitComposer);
-    assert_eq!(last(&app, 1), [(Some("cap".into()), vec!["file".into()])], "one attachment has the text as caption");
+    assert_eq!(last(&app, 1), [(Some("cap".into()), vec!["unknown".into()])], "one attachment has the text as caption");
     let _ = app.update(UiMessage::FilesLoaded(files.iter().cloned().map(Ok).collect()));
     let _ = app.update(UiMessage::DiscardAttachment(0));
     assert_eq!(app.pane.attachments.len(), 1);
@@ -431,7 +431,7 @@ fn attachments_send_like_desktop() {
     let _ = app.update(UiMessage::FileDropped(id, "/none".into()));
     let _ = app.update(UiMessage::FilesLoaded(files[1..].iter().cloned().map(Ok).collect()));
     assert!(!app.dropping && app.pane.attachments.is_empty(), "a drop with Shift sends");
-    assert_eq!(last(&app, 1), [(None, vec!["file".into()])]);
+    assert_eq!(last(&app, 1), [(None, vec!["unknown".into()])]);
     let _ = app.update(UiMessage::Modifiers(Modifiers::empty()));
     let _ = app.update(UiMessage::FileHover(id, true));
     let _ = app.update(UiMessage::FileDropped(id, "/none".into()));

@@ -3,7 +3,7 @@ use crate::config::{
     DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN, DEFAULT_USER_ID, SEED_JSON,
     WS_CHANNEL_CAPACITY,
 };
-use crate::matrix::{Mention, Outgoing, ThreadSend};
+use crate::matrix::{MediaInfo, Mention, Outgoing, ThreadSend};
 use crate::models::*;
 use crate::Error;
 use rusqlite::{params, Connection, OptionalExtension, ToSql};
@@ -396,6 +396,78 @@ pub struct NetworkSpace {
     pub id: String,
     pub account_id: String,
     pub name: String,
+}
+
+/// A message to send, as Desktop's composer sends it: the text is one message and each file is one message, except
+/// one file with text, which takes the text as its caption. The first message takes the reply.
+#[derive(Debug, Clone, Default)]
+pub struct Draft {
+    pub text: Option<String>,
+    pub reply_to: Option<String>,
+    /// The mention pills of the text.
+    pub mentions: Vec<Mention>,
+    /// The link preview of the text, with its image.
+    pub preview: Option<crate::cloud::PagePreview>,
+    /// The root of the thread of a thread reply, and Desktop's "Also send to chat".
+    pub thread: Option<(String, bool)>,
+    pub files: Vec<OutFile>,
+}
+
+/// A file to send, with what the sender knows of it. The store makes the attachment of the local echo and the media
+/// info for the homeserver from it.
+#[derive(Debug, Clone, Default)]
+pub struct OutFile {
+    pub bytes: Vec<u8>,
+    pub name: String,
+    pub mime: String,
+    /// The width and height of an image or a video.
+    pub size: Option<(u32, u32)>,
+    /// The length in seconds of a video, an audio file or a voice note.
+    pub duration: Option<f64>,
+    /// Desktop's `isGif`: a GIF, or the MP4 of a GIF.
+    pub gif: bool,
+    /// Desktop's `isSticker`.
+    pub sticker: bool,
+    /// Desktop's `stickerPackImage`: the pack image of a sticker from the sticker picker.
+    pub pack: Option<Box<Sticker>>,
+    /// The waveform of a recorded voice note, with values from 0 to 1.
+    pub voice: Option<Vec<f32>>,
+    /// The URL that the local echo shows until the homeserver has the file.
+    pub echo_url: Option<String>,
+}
+
+impl OutFile {
+    /// The media info for the homeserver.
+    fn info(&self) -> MediaInfo {
+        assert!(self.sticker || self.pack.is_none(), "a sticker pack image is for a sticker");
+        match &self.voice {
+            Some(wave) => MediaInfo::Voice { ms: (self.duration.unwrap_or(0.0) * 1000.0) as u64, wave: wave.clone() },
+            None => MediaInfo::of(&self.mime, self.size, self.duration),
+        }
+    }
+
+    /// The attachment of the local echo, with the kind that a sync of the sent file shows.
+    fn attachment(&self, info: &MediaInfo) -> Attachment {
+        let kind = match info {
+            MediaInfo::Image(..) => "img",
+            MediaInfo::Video(..) => "video",
+            MediaInfo::Audio(_) | MediaInfo::Voice { .. } => "audio",
+            MediaInfo::File => "unknown",
+        };
+        Attachment {
+            attachment_type: kind.into(),
+            duration: self.duration,
+            file_name: Some(self.name.clone()),
+            file_size: Some(self.bytes.len() as u64),
+            is_gif: Some(self.gif),
+            is_sticker: Some(self.sticker),
+            is_voice_note: Some(self.voice.is_some()),
+            mime_type: Some(self.mime.clone()),
+            size: self.size.map(|(w, h)| AttachmentSize { width: Some(w), height: Some(h) }),
+            src_url: self.echo_url.clone(),
+            ..Attachment::default()
+        }
+    }
 }
 
 pub struct BeeperStore {
@@ -2100,6 +2172,73 @@ impl BeeperStore {
         Ok(self.update_chat(idx, |c| c.draft = draft))
     }
 
+    /// Sends a draft: writes its local echoes and queues them for the homeserver. Returns the chat ID of the send and
+    /// the transaction IDs of the echoes, in order.
+    pub fn send(&mut self, chat_or_local_id: &str, draft: Draft) -> Result<(String, Vec<String>), Error> {
+        let (chat_id, sends) = self.echo_draft(chat_or_local_id, draft)?;
+        let txns = sends.iter().map(|out| out.message().expect("a send has an echo").to_string()).collect();
+        sends.into_iter().for_each(|out| self.queue(&chat_id, out));
+        Ok((chat_id, txns))
+    }
+
+    /// Writes the local echoes of a draft, and returns the chat ID of the send and the changes that send the echoes,
+    /// in order. [`BeeperStore::send`] queues them at once.
+    pub fn echo_draft(&mut self, chat_or_local_id: &str, draft: Draft) -> Result<(String, Vec<Outgoing>), Error> {
+        let Draft { text, mut reply_to, mentions, preview, thread, files } = draft;
+        assert!(text.is_some() || !files.is_empty(), "a draft has text or files");
+        let caption = text.clone().filter(|_| files.len() == 1);
+        let (mut chat_id, mut sends) = (String::new(), Vec::new());
+        if let Some(text) = text.filter(|_| caption.is_none()) {
+            let send =
+                |txn, reply_to, thread| Outgoing::Send { txn, text: text.clone(), reply_to, preview, mentions, thread };
+            let (cid, out) =
+                self.echo_part(chat_or_local_id, Some(text.clone()), reply_to.take(), None, &thread, send)?;
+            if let Outgoing::Send { txn, preview: Some((v, _)), .. } = &out {
+                if let Some(link) = crate::matrix::link(v) {
+                    let i = self.msg_idx_by_id[txn];
+                    self.update_message(i, |m| m.links = vec![link]);
+                }
+            }
+            sends.push(out);
+            chat_id = cid;
+        }
+        for f in files {
+            let info = f.info();
+            let att = Some(f.attachment(&info));
+            let OutFile { bytes, name, mime, gif, pack, .. } = f;
+            let (text, caption) = (caption.clone(), caption.clone());
+            let media = |txn, reply_to, thread| {
+                let sticker = pack;
+                Outgoing::Media { txn, bytes, name, mime, info, caption, reply_to, thread, gif, sticker }
+            };
+            let (cid, out) = self.echo_part(chat_or_local_id, text, reply_to.take(), att, &thread, media)?;
+            sends.push(out);
+            chat_id = cid;
+        }
+        Ok((chat_id, sends))
+    }
+
+    /// The local echo of one message of a draft, and its change from `send`, which takes the transaction ID, the
+    /// quoted message and the thread. In a thread the message quotes the chosen reply, else the newest reply.
+    fn echo_part(
+        &mut self,
+        chat_or_local_id: &str,
+        text: Option<String>,
+        reply_to: Option<String>,
+        att: Option<Attachment>,
+        thread: &Option<(String, bool)>,
+        send: impl FnOnce(String, Option<String>, Option<ThreadSend>) -> Outgoing,
+    ) -> Result<(String, Outgoing), Error> {
+        let Some((root, broadcast)) = thread else {
+            let (chat_id, txn, _) = self.send_message(chat_or_local_id, text, reply_to.clone(), att)?;
+            return Ok((chat_id, send(txn, reply_to, None)));
+        };
+        let chosen = reply_to.filter(|r| r == root || self.thread_replies(root).any(|m| m.id == *r));
+        let t = self.thread_send(root, chosen, *broadcast);
+        let (chat_id, txn, _) = self.send_in_thread(chat_or_local_id, text, att, &t)?;
+        Ok((chat_id, send(txn, Some(t.quoted.clone()), Some(t))))
+    }
+
     /// Adds the local echo of a sent message. Returns the chat ID, the message ID (also the transaction ID) and the echo.
     pub fn send_message(
         &mut self,
@@ -3134,6 +3273,47 @@ mod tests {
         assert_eq!((ids(&st, &a), ids(&st, &b)), (vec![], vec!["!work".to_string()]));
         st.remove_chat("!work");
         assert!(ids(&st, &b).is_empty() && st.labels.iter().all(|l| l.id != "!work"), "a left label room drops");
+    }
+    /// A send writes the echoes and queues their changes in one step. One file takes the text as its caption, a video
+    /// keeps its size and length for the homeserver, and the echo of an other file has the kind that a sync shows.
+    #[test]
+    fn sends_build_the_echo_and_the_change_of_each_file() {
+        use super::{Draft, MediaInfo, OutFile, Outgoing};
+        let mut st = super::BeeperStore::from_config(crate::testing::demo_config("send-files"));
+        st.config.demo = false;
+        let chat = "!tg_rust:beeper.com";
+        let file = |name: &str, mime: &str| OutFile {
+            bytes: vec![1, 2],
+            name: name.into(),
+            mime: mime.into(),
+            ..OutFile::default()
+        };
+        let video = OutFile { size: Some((3, 2)), duration: Some(1.5), ..file("v.mp4", "video/mp4") };
+        let draft = Draft { text: Some("look".into()), files: vec![video], ..Draft::default() };
+        let (cid, txns) = st.send(chat, draft).unwrap();
+        let i = st.find_message(&txns[0]).unwrap();
+        let (m, a) = (&st.messages[i], &st.messages[i].attachments[0]);
+        assert_eq!(
+            (cid.as_str(), txns.len(), m.text.as_deref(), a.attachment_type.as_str()),
+            (chat, 1, Some("look"), "video")
+        );
+        assert!(
+            matches!(&st.outbox[..], [(_, c, Outgoing::Media { info: MediaInfo::Video(3, 2, 1500), caption: Some(t), .. })]
+            if c == chat && t == "look")
+        );
+        let draft =
+            Draft { text: Some("two".into()), files: vec![file("a.zip", "application/zip"); 2], ..Draft::default() };
+        let (_, txns) = st.send(chat, draft).unwrap();
+        let kinds: Vec<_> = txns
+            .iter()
+            .map(|t| st.messages[st.msg_idx_by_id[t]].attachments.first().map(|a| a.attachment_type.clone()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [None, Some("unknown".into()), Some("unknown".into())],
+            "the text and each file go as one message each"
+        );
+        assert_eq!(st.outbox.len(), 4);
     }
     #[test]
     fn bookmarks_follow_the_bookmarks_room() {
