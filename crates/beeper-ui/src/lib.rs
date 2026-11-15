@@ -4912,11 +4912,7 @@ impl BeeperGuiApp {
         let restore = (signed_in && !app.hidden).then(|| app.restore_subwindows());
         let link = app.store.write().config.link.take();
         let link = link.map(|l| app.open_link(&l));
-        // A signed-in device before the end of the onboarding continues it from Desktop's first onboarding screen.
-        let onboard = (!signed_in && app.store.read().signed_in()).then(|| {
-            app.login.screen = login::Screen::Email;
-            app.check_e2ee()
-        });
+        let onboard = (!signed_in && app.store.read().signed_in()).then(|| app.resume_onboarding());
         let tasks =
             [open.map(UiMessage::WindowOpened), iced::system::theme().map(UiMessage::SystemTheme), app.load_avatars()];
         (app, Task::batch(tasks.into_iter().chain(cloud).chain(restore).chain(link).chain(onboard)))
@@ -9553,7 +9549,7 @@ impl BeeperGuiApp {
                     self.select_chat(NOTE_CHAT_ID);
                 }
                 self.refresh_theme_and_tray();
-                return Task::batch([self.close_notifications(), self.verification_changed()]);
+                return Task::batch([self.close_notifications(), self.verification_changed(), self.leave_app()]);
             }
             UiMessage::FocusRequested(chat) => {
                 if let Some(id) = chat {

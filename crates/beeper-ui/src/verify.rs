@@ -452,7 +452,9 @@ impl BeeperGuiApp {
         };
         let screen = self.login.screen;
         let confirmed = screen == Screen::ConfirmKey && self.store.read().pending_recovery_key.is_none();
-        let checking = self.login.signing_in() || matches!(screen, Screen::Verify | Screen::RecoveryKey) || confirmed;
+        // The sign-in screens wait for the result of their Matrix call, for example the check of encrypted messaging.
+        let sign_in_done = self.login.signing_in() && !self.login.busy;
+        let checking = sign_in_done || matches!(screen, Screen::Verify | Screen::RecoveryKey) || confirmed;
         self.login.screen = match (checking, screen, verified, waiting) {
             (true, Screen::Verify | Screen::RecoveryKey, false, _) => return Task::none(),
             (true, _, _, true) => {
@@ -1100,6 +1102,35 @@ mod tests {
         let app = boot();
         assert!(app.main_window.is_some() && app.login_window.is_none(), "a done onboarding shows the chats");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_device_that_loses_its_keys_shows_the_onboarding_again_like_desktop() {
+        type Drop = fn(&mut beeper_core::models::BeeperStateRecord);
+        let drops: [(&str, Drop); 4] = [
+            ("syncing", |s| s.first_sync_done = false),
+            ("awaiting-secrets", |s| s.secrets.megolm_backup_key = false),
+            ("awaiting-key-backup", |s| s.key_backup = false),
+            ("pre-verification", |s| s.verified = false),
+        ];
+        let [.., mut app] = drops.map(|(stage, drop)| {
+            let mut app = crate::fuzz::demo_app(&format!("verify-in-session-{stage}"));
+            let main = app.main_window.expect("the demo shows the chats");
+            drop(&mut app.store.write().beeper_state);
+            assert_eq!(app.store.read().beeper_state.stage(), stage);
+            let _ = app.update(UiMessage::StoreChanged);
+            let back = stage != "syncing";
+            assert_eq!((app.main_window.is_none(), app.login_window == Some(main)), (back, back), "{stage}");
+            app
+        });
+        assert!(app.login.busy && app.login.screen == Screen::Email, "the onboarding checks encrypted messaging");
+        let _ = app.update(UiMessage::StoreChanged);
+        assert_eq!(app.login.screen, Screen::Email, "the onboarding waits for the check");
+        let _ = app.e2ee_checked(Ok(E2eeSetup { cross_signing: true, verified: false, devices: Vec::new() }));
+        assert_eq!(app.login.screen, Screen::RecoveryKey);
+        app.store.write().beeper_state.verified = true;
+        let _ = app.update(LoginMsg::Recovered(Ok(())).into());
+        assert!(app.main_window.is_some() && app.login_window.is_none(), "a done stage shows the chats again");
     }
 
     #[test]
