@@ -1442,7 +1442,7 @@ fn search_chats(st: &BeeperStore, r: &Req) -> Reply {
     let past =
         |k: (i64, &str)| cursor.as_ref().is_none_or(|c| k != (c.0, c.1.as_str()) && (k > (c.0, c.1.as_str())) == after);
     let mut keys: Vec<(i64, &str)> = st
-        .chat_search_index
+        .chat_search()
         .query_all_tokens(query)
         .into_iter()
         .map(|i| &st.chats[i as usize])
@@ -1875,7 +1875,7 @@ fn unified_search(st: &BeeperStore, r: &Req) -> Reply {
     let q = r.need_q("query")?;
     let words = tokenize(q);
     let mut found: Vec<&Chat> =
-        st.chat_search_index.query_all_tokens(q).into_iter().map(|i| &st.chats[i as usize]).collect();
+        st.chat_search().query_all_tokens(q).into_iter().map(|i| &st.chats[i as usize]).collect();
     found.sort_unstable_by_key(|c| std::cmp::Reverse(activity_key(c)));
     let titles = found.iter().copied().filter(|c| chat_hit(c, false, &words));
     let chats: Vec<_> = titles.take(30).map(|c| view::chat(st, c, Some(20), false)).collect();
