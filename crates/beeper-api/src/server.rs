@@ -657,7 +657,11 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
             ok(&json!({ "recoveryKey": key, "session": store.read().app_state() }))
         }
         ("POST", ["verification", "recovery-key", "reset", "confirm"]) => {
-            not_ready()?;
+            // Desktop uploads the new keys at the confirmation. beeper-rs uploads them at the reset, so the account
+            // can be ready while its new key waits for the confirmation.
+            if store.read().pending_recovery_key.is_none() {
+                not_ready()?;
+            }
             matrix::confirm_recovery_key(store, r.need("recoveryKey")?).map_err(|e| failed(&e))?;
             progress(store, false)
         }

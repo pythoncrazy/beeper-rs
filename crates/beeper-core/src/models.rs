@@ -126,17 +126,18 @@ pub struct NetworkSpec {
     pub supports_edit_history: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// The secrets of the account that this device has. The recovery code is the key that the user sees.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BeeperStateSecrets {
-    pub master_key: String,
-    pub self_signing_key: String,
-    pub user_signing_key: String,
-    pub megolm_backup_key: String,
+    pub master_key: bool,
+    pub self_signing_key: bool,
+    pub user_signing_key: bool,
+    pub megolm_backup_key: bool,
     pub recovery_code: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BeeperStateRecord {
     pub access_token: String,
     pub device_id: String,
@@ -156,13 +157,13 @@ impl BeeperStateRecord {
     /// Desktop's `getAppState`: the next setup step of the account.
     pub fn app_state(&self) -> &'static str {
         let s = &self.secrets;
-        let secrets = [&s.master_key, &s.self_signing_key, &s.user_signing_key, &s.megolm_backup_key];
+        let secrets = s.master_key && s.self_signing_key && s.user_signing_key && s.megolm_backup_key;
         match self {
             r if r.user_id.is_empty() && r.device_id.is_empty() && r.access_token.is_empty() => "needs-login",
             r if !r.initialized => "initializing",
             r if !r.cross_signing => "needs-cross-signing-setup",
             r if !r.verified => "needs-verification",
-            r if secrets.iter().any(|k| k.is_empty()) || !r.key_backup => "needs-secrets",
+            r if !secrets || !r.key_backup => "needs-secrets",
             r if !r.first_sync_done => "needs-first-sync",
             _ => "ready",
         }

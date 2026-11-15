@@ -15,7 +15,7 @@ use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::deserialized_responses::{RawAnySyncOrStrippedState, TimelineEvent};
 use matrix_sdk::encryption::backups::BackupState;
-use matrix_sdk::encryption::recovery::RecoveryError;
+use matrix_sdk::encryption::recovery::{RecoveryError, RecoveryState};
 use matrix_sdk::encryption::secret_storage::SecretStorageError;
 use matrix_sdk::encryption::verification::{
     CancelInfo, QrVerificationData, QrVerificationState, SasState, Verification, VerificationRequest,
@@ -2125,20 +2125,34 @@ async fn retry_after_backup(client: Client, store: SharedStore) {
     }
 }
 
+/// Desktop SDK's client state: reads the encrypted messaging state of this device into the Beeper state, and
+/// marks it `initialized`. A device that can cross-sign signs itself.
 async fn refresh_e2ee(client: &Client, store: &SharedStore) {
-    let device = client.encryption().get_own_device().await.expect("read the own device");
+    let encryption = client.encryption();
+    let device = encryption.get_own_device().await.expect("read the own device");
     let device = device.expect("signed-in client has its own device");
-    let can_sign = client.encryption().cross_signing_status().await.is_some_and(|s| s.has_self_signing);
-    if can_sign && !device.is_cross_signed_by_owner() {
-        if let Err(e) = device.verify().await {
-            store.write().matrix_error = Some(format!("Could not sign this device: {e}"));
+    let keys = encryption.cross_signing_status().await.expect("signed-in client has an olm machine");
+    // The new signature shows in the device keys only after the next key query.
+    let mut verified = device.is_cross_signed_by_owner();
+    if keys.has_self_signing && !verified {
+        match device.verify().await {
+            Ok(()) => verified = true,
+            Err(e) => store.write().matrix_error = Some(format!("Could not sign this device: {e}")),
         }
     }
-    let verified = device.is_cross_signed_by_owner();
-    let state = (verified, client.encryption().backups().are_enabled().await);
+    let me = client.user_id().expect("signed-in client has a user ID");
+    let identity = encryption.get_user_identity(me).await.expect("read the own identity").is_some();
+    let backup = encryption.backups().are_enabled().await;
+    let storage = matches!(encryption.recovery().state(), RecoveryState::Enabled | RecoveryState::Incomplete);
     let mut st = store.write();
-    if (st.beeper_state.verified, st.beeper_state.key_backup) != state {
-        (st.beeper_state.verified, st.beeper_state.key_backup) = state;
+    let old = st.beeper_state.clone();
+    let s = &mut st.beeper_state;
+    (s.initialized, s.cross_signing, s.verified, s.secret_storage, s.key_backup) =
+        (true, identity, verified, storage, backup);
+    let secrets = &mut s.secrets;
+    (secrets.master_key, secrets.self_signing_key, secrets.user_signing_key, secrets.megolm_backup_key) =
+        (keys.has_master, keys.has_self_signing, keys.has_user_signing, backup);
+    if st.beeper_state != old {
         st.persist_state_to_sqlite();
         st.emit_ws("setup.updated", "", None, None, None);
     }
@@ -2236,11 +2250,14 @@ pub async fn new_recovery_key(store: &SharedStore) -> Result<String, String> {
         })?,
     }
     let key = encryption.recovery().enable().await.map_err(|x| e(&x))?;
-    let mut st = store.write();
-    st.pending_recovery_key = Some(key.clone());
-    (st.beeper_state.secret_storage, st.beeper_state.has_backed_up_code) = (true, false);
-    mark_verified(&mut st);
-    st.emit_ws("setup.updated", "", None, None, None);
+    {
+        let mut st = store.write();
+        st.pending_recovery_key = Some(key.clone());
+        st.beeper_state.has_backed_up_code = false;
+        st.persist_state_to_sqlite();
+        st.emit_ws("setup.updated", "", None, None, None);
+    }
+    refresh_e2ee(&client, store).await;
     Ok(key)
 }
 
@@ -2270,15 +2287,8 @@ pub async fn recover(store: SharedStore, key: String) -> Result<(), String> {
         RecoveryError::SecretStorage(SecretStorageError::SecretStorageKey(e)) => format!("Invalid recovery key: {e}"),
         e => e.to_string(),
     })?;
-    let mut st = store.write();
-    mark_verified(&mut st);
-    st.emit_ws("setup.updated", "", None, None, None);
+    refresh_e2ee(&client, &store).await;
     Ok(())
-}
-
-fn mark_verified(st: &mut BeeperStore) {
-    (st.beeper_state.verified, st.beeper_state.cross_signing) = (true, true);
-    st.persist_state_to_sqlite();
 }
 
 /// Desktop's `AppStateTracker.handleAppEvent`: applies a change of the Matrix verification `id` to the tracked one.
@@ -2288,8 +2298,10 @@ fn track(store: &SharedStore, id: &str, change: impl FnOnce(&mut AppVerification
     let Some(v) = st.verification.as_mut().filter(|v| v.id == id) else { return };
     change(v);
     v.available_actions = v.actions();
+    // The secrets and the signature of the other device come later, and the next sync reads them.
     if v.state == "done" {
-        mark_verified(&mut st);
+        (st.beeper_state.verified, st.beeper_state.cross_signing) = (true, true);
+        st.persist_state_to_sqlite();
     }
     st.emit_ws("setup.updated", "", None, None, None);
 }
@@ -2604,6 +2616,14 @@ pub async fn run(store: SharedStore) {
     }
     tokio::spawn(retry_undecrypted(client.clone(), store.clone()));
     tokio::spawn(retry_after_backup(client.clone(), store.clone()));
+    // Like Desktop's SDK, the state is `initialized` when the device knows the identity of the account. When the
+    // query fails, the first sync reads the state.
+    client.encryption().wait_for_e2ee_initialization_tasks().await;
+    let me = client.user_id().expect("signed-in client has a user ID").to_owned();
+    match client.encryption().request_user_identity(&me).await {
+        Ok(_) => refresh_e2ee(&client, &store).await,
+        Err(e) => store.write().matrix_error = Some(e.to_string()),
+    }
     client.add_event_handler_context(store.clone());
     client.add_event_handler(verification_requested);
     sync_account_data(&client, &store).await;
@@ -3066,6 +3086,32 @@ mod tests {
         assert_eq!(events.try_recv().expect("an update event").event_type, "setup.updated");
         super::sync_account_data(&client, &store).await;
         assert!(events.try_recv().is_err(), "the same states change nothing");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Desktop's SDK reports `initialized` after it reads the encryption state, and an account without cross-signing
+    /// then needs its setup.
+    #[tokio::test]
+    async fn the_read_e2ee_state_is_initialized_like_desktop() {
+        let url = crate::bridge_stub::serve(|_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/keys/query" => (200, json!({ "device_keys": { "@me:x": {} } })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let dir = std::env::temp_dir().join(format!("beeper-rs-e2ee-state-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = stub_store(&dir, &url).await;
+        assert_eq!(store.read().app_state().state, "initializing");
+        let client = store.read().matrix.clone().expect("a client");
+        super::refresh_e2ee(&client, &store).await;
+        let state = store.read().app_state();
+        assert_eq!(
+            (state.state, state.e2ee.initialized, state.e2ee.cross_signing),
+            ("needs-cross-signing-setup", true, false)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
