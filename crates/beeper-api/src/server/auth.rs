@@ -51,7 +51,7 @@ pub(super) fn refusal((status, message): (u16, String)) -> Response {
 
 /// The MCP refusal, which tells the client where to get a token.
 pub(super) fn mcp_refusal(st: &BeeperStore, msg: &HttpMessage) -> Response {
-    let base = base_url(st, msg);
+    let base = base_url(&st.config, msg);
     let id = serde_json::from_slice::<Value>(&msg.body).ok().and_then(|b| b.get("id").cloned()).unwrap_or(Value::Null);
     let mut resp = json_with(
         StatusCode(401),
@@ -79,7 +79,7 @@ fn loopback(u: &Url) -> bool {
 /// Desktop's `isSameOriginRequest`: no `Origin`, the origin of the server, or a loopback origin on its port.
 fn same_origin(st: &BeeperStore, msg: &HttpMessage) -> Result<(), Response> {
     let Some(origin) = msg.header("origin") else { return Ok(()) };
-    let base = Url::parse(&base_url(st, msg)).expect("parse the base URL");
+    let base = Url::parse(&base_url(&st.config, msg)).expect("parse the base URL");
     let same = Url::parse(origin).is_ok_and(|o| {
         o.origin() == base.origin()
             || (o.scheme() == base.scheme() && o.port() == base.port() && loopback(&o) && loopback(&base))
@@ -243,7 +243,7 @@ pub(super) fn route(store: &SharedStore, method: &str, segs: &[&str], r: &Req, t
             if !["/", "/v1", "/v0/mcp"].contains(&suffix.as_str()) {
                 return Some(Ok(json_with(StatusCode::NOT_FOUND, &json!({ "error": "Not Found" }))));
             }
-            let base = base_url(&store.read(), &r.msg);
+            let base = base_url(&store.read().config, &r.msg);
             let resource = if suffix == "/" { "/v1" } else { &suffix };
             ok(&json!({
                 "resource": format!("{base}{resource}"),
@@ -253,7 +253,7 @@ pub(super) fn route(store: &SharedStore, method: &str, segs: &[&str], r: &Req, t
             }))
         }
         ("GET", [".well-known", "oauth-authorization-server"]) => {
-            let base = base_url(&store.read(), &r.msg);
+            let base = base_url(&store.read().config, &r.msg);
             let mut resp = json_with(
                 StatusCode::OK,
                 &json!({
@@ -437,7 +437,7 @@ fn introspect(st: &BeeperStore, r: &Req) -> Reply {
         "sub": t.id,
         "aud": c.client_id,
         "client_id": c.client_id,
-        "iss": base_url(st, &r.msg),
+        "iss": base_url(&st.config, &r.msg),
         "app": { "version": APP_VERSION, "name": APP_NAME, "bundle_id": APP_BUNDLE_ID },
         "client": compact(json!({
             "id": c.client_id,
@@ -484,7 +484,7 @@ fn register(st: &mut BeeperStore, r: &Req) -> Reply {
         scope,
         created_at: connect::now_ms(),
     };
-    let base = base_url(st, &r.msg);
+    let base = base_url(&st.config, &r.msg);
     let body = compact(json!({
         "client_id": client.client_id,
         "client_name": client.client_name,

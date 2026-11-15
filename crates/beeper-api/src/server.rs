@@ -5,8 +5,8 @@ use crate::http::{
 use beeper_core::bridge_login;
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
 use beeper_core::config::{
-    cloud_bridge, millis_from_iso, millis_from_rfc3339, now_rfc3339_millis, APP_BUNDLE_ID, APP_NAME, APP_VERSION,
-    NETWORK_SPECS,
+    cloud_bridge, millis_from_iso, millis_from_rfc3339, now_rfc3339_millis, CentralConfig, APP_BUNDLE_ID, APP_NAME,
+    APP_VERSION, NETWORK_SPECS,
 };
 use beeper_core::connect::{Token, READ};
 use beeper_core::matrix::{self, ChatFlag, MediaInfo, Outgoing};
@@ -311,14 +311,16 @@ fn parse_body(msg: &HttpMessage) -> Option<Value> {
     })
 }
 
-pub async fn serve_http(listener: TcpListener, store: SharedStore) {
-    let cloud = {
-        let cfg = &store.read().config;
-        Arc::new(Cloud::new(&cfg.api_url, &cfg.homeserver))
-    };
-    loop {
-        let (stream, _) = listener.accept().await.expect("accept TCP connection");
-        tokio::spawn(handle_connection(stream, store.clone(), cloud.clone()));
+/// Serves the Desktop API. It reads the config at once, so that the info and the spec answer while the store is
+/// locked to load its chats.
+pub fn serve_http(listener: TcpListener, store: SharedStore) -> impl std::future::Future<Output = ()> {
+    let config = Arc::new(store.read().config.clone());
+    let cloud = Arc::new(Cloud::new(&config.api_url, &config.homeserver));
+    async move {
+        loop {
+            let (stream, _) = listener.accept().await.expect("accept TCP connection");
+            tokio::spawn(handle_connection(stream, store.clone(), cloud.clone(), config.clone()));
+        }
     }
 }
 
@@ -453,7 +455,7 @@ async fn linger<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(writer: &mut W, rea
 /// The `closeTimeout` of the `ws` package.
 const LINGER: std::time::Duration = std::time::Duration::from_secs(30);
 
-async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc<Cloud>) {
+async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc<Cloud>, config: Arc<CentralConfig>) {
     let mut buf = Vec::new();
     loop {
         let (mut origin, mut api_head) = (None, None);
@@ -521,10 +523,15 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
             origin => {
                 let if_none_match = (msg.method() == "GET").then(|| msg.header("if-none-match")).flatten();
                 let if_none_match = if_none_match.map(String::from);
-                let (store, cloud) = (store.clone(), cloud.clone());
-                let resp = tokio::task::spawn_blocking(move || respond(&store, &cloud, msg).unwrap_or_else(|e| e))
-                    .await
-                    .expect("request handler panicked");
+                let resp = match config_route(&config, &msg) {
+                    Some(resp) => resp,
+                    None => {
+                        let (store, cloud) = (store.clone(), cloud.clone());
+                        tokio::task::spawn_blocking(move || respond(&store, &cloud, msg).unwrap_or_else(|e| e))
+                            .await
+                            .expect("request handler panicked")
+                    }
+                };
                 express(resp, origin, if_none_match.as_deref())
             }
         };
@@ -552,6 +559,21 @@ fn refusal(st: &BeeperStore, head: &HttpMessage) -> Option<Response> {
         Err(resp) => return Some(resp),
     };
     require_auth(st, route, head).err()
+}
+
+/// The info and the spec, which read only the config, so that they answer while the store loads its chats.
+fn config_route(config: &CentralConfig, msg: &HttpMessage) -> Option<Response> {
+    let path = routes::find(msg.method(), msg.path()).ok()?.0.path;
+    parse_body(msg)?;
+    match path {
+        "/v1/info" => Some(json_with(StatusCode::OK, &info(config, &base_url(config, msg)))),
+        "/v1/spec" => Some(Response {
+            status: StatusCode::OK,
+            headers: vec![("content-type", JSON.into()), ("cache-control", "public, max-age=3600".into())],
+            body: routes::spec(&base_url(config, msg)),
+        }),
+        _ => None,
+    }
 }
 
 /// Desktop's order: the route, then the token, then the body.
@@ -775,12 +797,6 @@ fn get(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
     }
     let st = &*store.read();
     match path {
-        ["v1", "info"] => ok(&info(st, &base_url(st, &r.msg))),
-        ["v1", "spec"] => Ok(Response {
-            status: StatusCode::OK,
-            headers: vec![("content-type", JSON.into()), ("cache-control", "public, max-age=3600".into())],
-            body: routes::spec(&base_url(st, &r.msg)),
-        }),
         [] => Ok(redirect("/v1/info", r.msg.header("accept"))),
         ["v1", "accounts"] => ok(&st.accounts),
         ["v1", "accounts", id, rest @ ..] => account(st, id, rest, r),
@@ -870,8 +886,8 @@ fn build_base_url(scheme: &str, host: &str, port: &str) -> String {
 
 /// Desktop's `getBaseURL`: the bind address, or the loopback host name of the request. With remote access, the host,
 /// the scheme and the port of the request after the proxy headers.
-fn base_url(st: &BeeperStore, msg: &HttpMessage) -> String {
-    let (cfg, port) = (&st.config, st.config.port.to_string());
+fn base_url(cfg: &CentralConfig, msg: &HttpMessage) -> String {
+    let port = cfg.port.to_string();
     let bound = build_base_url("http", &cfg.host, &port);
     let first = |k| msg.header(k).map(|v| v.split(',').next().expect("a first item").trim());
     // Express's `req.hostname`.
@@ -941,7 +957,7 @@ fn redirect(to: &str, accept: Option<&str>) -> Response {
     Response { status: StatusCode::FOUND, headers, body: body.into_bytes() }
 }
 
-fn info(st: &BeeperStore, base_url: &str) -> InfoResponse {
+fn info(cfg: &CentralConfig, base_url: &str) -> InfoResponse {
     let base_url = base_url.to_string();
     let oauth = |p: &str| format!("{base_url}/oauth/{p}");
     InfoResponse {
@@ -972,10 +988,10 @@ fn info(st: &BeeperStore, base_url: &str) -> InfoResponse {
             release: "7.0.14".into(),
         },
         server: InfoServer {
-            hostname: st.config.host.clone(),
+            hostname: cfg.host.clone(),
             mcp_enabled: true,
-            port: st.config.port,
-            remote_access: st.config.remote,
+            port: cfg.port,
+            remote_access: cfg.remote,
             status: "running".into(),
             base_url,
         },

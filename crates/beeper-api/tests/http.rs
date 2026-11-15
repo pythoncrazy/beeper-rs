@@ -64,6 +64,41 @@ async fn chunked_bodies_are_decoded_and_conflicts_are_refused() {
     assert_eq!(text(port, &bad_size).await, BAD_REQUEST);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn the_info_and_the_spec_answer_while_the_chats_load() {
+    let dir = std::env::temp_dir().join("beeper-rs-http-loading");
+    let _ = std::fs::remove_dir_all(&dir);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let mut cfg = CentralConfig::new(dir, "127.0.0.1".into(), port, None);
+    cfg.demo = true;
+    let store = StoreLock::shared(BeeperStore::open(cfg));
+    let token = store.read().beeper_state.access_token.clone();
+    let server = serve_http(listener, store.clone());
+    let (locked, load) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+    let loader = std::thread::spawn(move || {
+        let mut st = store.write();
+        locked.0.send(()).unwrap();
+        load.1.recv().unwrap();
+        st.load_chats();
+    });
+    locked.1.recv().unwrap();
+    tokio::spawn(server);
+    for path in ["/v1/info", "/v1/spec"] {
+        let out = text(port, &format!("GET {path} HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n")).await;
+        assert!(out.starts_with("HTTP/1.1 200 "), "{path}: {out}");
+    }
+    let chats =
+        format!("GET /v1/chats HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\nconnection: close\r\n\r\n");
+    let chats = tokio::spawn(async move { text(port, &chats).await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!chats.is_finished(), "the chats wait for the load");
+    load.0.send(()).unwrap();
+    let out = chats.await.unwrap();
+    assert!(out.starts_with("HTTP/1.1 200 ") && out.contains("\"chatID\""), "{out}");
+    loader.join().unwrap();
+}
+
 #[tokio::test]
 async fn bodies_over_the_limit_of_the_route_get_413() {
     let (port, token) = server("limits").await;
