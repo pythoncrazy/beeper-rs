@@ -11087,19 +11087,25 @@ impl BeeperGuiApp {
                 }
                 _ => {
                     let (now, h24) = (now_unix_millis(), st.settings.pref("timeFormat") == 1);
-                    let set = |at| UiMessage::SetReminder(c.id.clone(), Some(at));
-                    let last =
-                        last_used(&st, now).map(|at| item(tr("Last Used"), last_used_label(at, h24), Some(set(at))));
+                    // Desktop's `canSetReminderFor`: Beeper Plus, a free use, or a reminder to change.
+                    let can = st.feature("remind-later").on || c.reminder.is_some();
+                    let set = |at| can.then(|| UiMessage::SetReminder(c.id.clone(), Some(at)));
+                    let last = last_used(&st, now).map(|at| item(tr("Last Used"), last_used_label(at, h24), set(at)));
                     let presets = remind_presets(now).map(|(label, at)| {
-                        let msg = UiMessage::Commands(vec![UiMessage::LastTime(label.into()), set(at)]);
-                        item(tr(label), remind_label(at, h24), Some(msg))
+                        let msg = set(at).map(|set| UiMessage::Commands(vec![UiMessage::LastTime(label.into()), set]));
+                        item(tr(label), remind_label(at, h24), msg)
                     });
-                    let presets = last.into_iter().chain(presets);
+                    let upgrade = (!can).then(|| {
+                        let open = UiMessage::OpenSettings(SettingsTab::BeeperPlus);
+                        [item(tr("Upgrade to Beeper Plus"), String::new(), Some(open)), menu_rule(p)]
+                    });
+                    let presets = upgrade.into_iter().flatten().chain(last).chain(presets);
                     let dismiss = c.reminder.is_some().then(|| UiMessage::SetReminder(c.id.clone(), None));
                     let custom = UiMessage::OpenSubMenu(commands::SubMenu::Remind(c.id.clone()));
-                    let custom = item(tr("Custom…"), String::new(), Some(custom));
+                    let custom = item(tr("Custom…"), String::new(), can.then_some(custom));
                     let dismiss = item(tr("Dismiss Reminder"), String::new(), dismiss);
-                    (presets.chain([menu_rule(p), custom, menu_rule(p), dismiss]).collect(), 2.0)
+                    let rules = if can { 2.0 } else { 3.0 };
+                    (presets.chain([menu_rule(p), custom, menu_rule(p), dismiss]).collect(), rules)
                 }
             };
             let h = 8.0 + items.len() as f32 * MENU_ITEM - rules * (MENU_ITEM - 11.0);
