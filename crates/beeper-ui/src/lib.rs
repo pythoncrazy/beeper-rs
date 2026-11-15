@@ -196,6 +196,13 @@ fn unavailable(st: &BeeperStore, chat: &Chat) -> Option<String> {
     }
 }
 
+/// Desktop's `blockedUsersStore.threads`: the chats whose other person is blocked, by title.
+fn blocked_chats(st: &BeeperStore) -> Vec<&Chat> {
+    let mut chats: Vec<&Chat> = st.chats.iter().filter(|c| st.user_blocked(c)).collect();
+    chats.sort_by_cached_key(|c| c.title.to_lowercase());
+    chats
+}
+
 /// Desktop's Block (true) or Unblock action of a DM, when the bridge supports it.
 fn block_action(st: &BeeperStore, c: &Chat) -> Option<bool> {
     match st.user_blocked(c) {
@@ -701,6 +708,11 @@ pub enum UiMessage {
     BlockUser(String, bool, bool),
     /// The "Report spam" checkbox of the Block dialog.
     ReportSpam(bool),
+    /// Desktop's `BlockedUsersBrowserWindow` from Settings, and its Done button.
+    OpenBlockedUsers,
+    CloseBlockedUsers,
+    /// A row of the Blocked users window: the chat with its Chat Info in the main window.
+    OpenBlockedUser(String),
     BeginSelecting(String),
     ToggleSelected(String),
     SelectionSet(ChatFlag, bool),
@@ -4169,6 +4181,8 @@ pub struct BeeperGuiApp {
     pub delete_in: Option<window::Id>,
     pub spaces_window: Option<SpacesDraft>,
     pub group_window: Option<GroupDraft>,
+    /// Desktop's Blocked users window.
+    blocked_window: Option<window::Id>,
     pub add_accounts: Vec<add_account::AddAccount>,
     /// The Chat Info group description while it is edited, and whether it shows all of its lines.
     pub info_desc: Option<text_editor::Content>,
@@ -4375,6 +4389,7 @@ impl BeeperGuiApp {
             poll_windows: Vec::new(),
             label_window: None,
             group_window: None,
+            blocked_window: None,
             add_accounts: Vec::new(),
             info_desc: None,
             info_more: false,
@@ -4829,6 +4844,7 @@ impl BeeperGuiApp {
                 (true, _) => tr("Chats"),
             },
             _ if self.spaces_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Spaces"),
+            _ if Some(id) == self.blocked_window => tr("Blocked users"),
             _ if let Some(d) = self.group_window.as_ref().filter(|d| d.id == id) => {
                 return tr(if d.personal { "Edit Chat for Me" } else { "Edit Group" }).into();
             }
@@ -5873,7 +5889,7 @@ impl BeeperGuiApp {
         let lists = lists.chain(self.labels_windows.iter().map(|w| w.0)).chain(self.vote_windows.iter().map(|w| w.0));
         let group = self.group_window.as_ref().map(|d| d.id);
         let lists = lists.chain(self.poll_windows.iter().map(|w| w.id)).chain(self.add_accounts.iter().map(|a| a.id));
-        singles.chain([group]).flatten().chain(lists).collect()
+        singles.chain([group, self.blocked_window]).flatten().chain(lists).collect()
     }
 
     /// Desktop's `hideToTray` (`Du`), which hides the sub-windows and then the main window, and `showWindow`, which
@@ -7049,6 +7065,7 @@ impl BeeperGuiApp {
                     || self.vote_windows.iter().any(|w| w.0 == id)
                     || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
                     || self.group_window.as_ref().is_some_and(|d| d.id == id)
+                    || Some(id) == self.blocked_window
                     || self.add_accounts.iter().any(|a| a.id == id)
                 {
                     return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
@@ -7609,6 +7626,9 @@ impl BeeperGuiApp {
             UiMessage::AskBlock(id, block) => self.ask_block(id, block),
             UiMessage::BlockUser(id, block, spam) => return self.block_user(&id, block, spam),
             UiMessage::ReportSpam(on) => self.report_spam = on,
+            UiMessage::OpenBlockedUsers => return self.open_blocked_users(),
+            UiMessage::CloseBlockedUsers => return window::close(self.blocked_window.expect("Blocked users is open")),
+            UiMessage::OpenBlockedUser(id) => return self.open_blocked_user(id),
             UiMessage::LeaveRoom(id) => {
                 self.confirm = None;
                 self.store.write().leave_room(&id);
@@ -8775,6 +8795,7 @@ impl BeeperGuiApp {
                 self.label_settings.retain(|w| w.id != id);
                 self.spaces_window = self.spaces_window.take().filter(|d| d.id != id);
                 self.group_window = self.group_window.take().filter(|d| d.id != id);
+                self.blocked_window = self.blocked_window.filter(|w| *w != id);
                 self.verify.window = self.verify.window.filter(|w| *w != id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
@@ -9291,6 +9312,8 @@ impl BeeperGuiApp {
             self.view_edit_spaces(d)
         } else if let Some(d) = self.group_window.as_ref().filter(|d| d.id == id) {
             self.view_edit_group(d)
+        } else if Some(id) == self.blocked_window {
+            self.view_blocked_users()
         } else if let Some((_, chat, mid)) = self.vote_windows.iter().find(|w| w.0 == id) {
             self.view_poll_votes(chat, mid)
         } else if self.chat_windows.iter().any(|w| w.0 == id && w.1.selected_chat_id.is_none()) {
@@ -18521,6 +18544,71 @@ impl BeeperGuiApp {
         container(column![title, card]).padding(8).style(fill_box(p.window, 0.0)).into()
     }
 
+    /// Desktop's `kCt`: the Blocked users window, once.
+    fn open_blocked_users(&mut self) -> Task<UiMessage> {
+        if let Some(id) = self.blocked_window {
+            return window::gain_focus(id);
+        }
+        let (id, open) = self.open_child(Size::new(342.0, 488.0));
+        self.blocked_window = Some(id);
+        open
+    }
+
+    /// A blocked person of the Blocked users window: their chat opens with its Chat Info in the main window.
+    fn open_blocked_user(&mut self, id: String) -> Task<UiMessage> {
+        self.show_right_panel = true;
+        let main = self.main_window.expect("the main window is open");
+        self.update(UiMessage::SelectChat(id)).chain(window::gain_focus(main))
+    }
+
+    /// Desktop's `ICt`: the blocked people by name, or "No Blocked Users", and Done.
+    fn view_blocked_users(&self) -> El<'_> {
+        let p = &self.pal;
+        let st = self.store.read();
+        let chats = blocked_chats(&st);
+        let title = semi(tr("Blocked users"), 13.0).line_height(Pixels(16.0)).color(p.strong);
+        let list: El<'_> = match chats.is_empty() {
+            true => column![
+                semi(tr("No Blocked Users"), 18.0).line_height(Pixels(26.0)).color(p.strong),
+                txt(tr("When you block someone from a chat, they’ll show up here."), 15.0)
+                    .line_height(Pixels(20.0))
+                    .color(p.sub)
+                    .align_x(Center),
+            ]
+            .spacing(6)
+            .align_x(Center)
+            .padding([0, 12])
+            .into(),
+            false => {
+                let rows = chats.iter().enumerate().map(|(i, c)| -> El<'_> {
+                    let line = row![
+                        self.chat_avatar(c, 24.0, 0.0),
+                        txt(c.title.clone(), 13.0).line_height(Pixels(16.0)).color(p.strong).width(Fill),
+                        ic(icon::CHEVRON_RIGHT, 16.0).color(p.muted),
+                    ]
+                    .spacing(8)
+                    .align_y(Center);
+                    let row = button(container(line).center_y(24))
+                        .padding(8)
+                        .width(Fill)
+                        .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
+                        .on_press(UiMessage::OpenBlockedUser(c.id.clone()));
+                    let rule = container(Space::new()).width(Fill).height(1).style(fill_box(p.prefs_border, 0.0));
+                    column![].push((i > 0).then_some(rule)).push(row).into()
+                });
+                let list = container(Column::with_children(rows)).clip(true).style(fill_box(p.chip, 12.0));
+                scrollable(list).direction(bar()).style(scroll_style(p.scroll)).into()
+            }
+        };
+        let body = column![title, list].spacing(10).padding(Padding::new(12.0).bottom(0.0)).height(Fill);
+        let done = button(med(tr("Done"), 13.0).color(Color::WHITE))
+            .padding([6, 14])
+            .style(btn_style([p.accent; 3], [Color::WHITE; 3], 999.0))
+            .on_press(UiMessage::CloseBlockedUsers);
+        let footer = container(done).align_right(Fill).padding(Padding::new(12.0).top(10.0));
+        container(column![body, footer]).width(Fill).height(Fill).style(fill_box(p.elevated, 0.0)).into()
+    }
+
     fn view_edit_group<'a>(&'a self, d: &'a GroupDraft) -> El<'a> {
         let p = &self.pal;
         let st = self.store.read();
@@ -19330,6 +19418,11 @@ impl BeeperGuiApp {
                     .on_press(UiMessage::PickDownloads);
                 let dir = downloads_dir(s).display().to_string();
                 return pref_row(p, tr(r.label), Some(&dir), None, change.into());
+            }
+            prefs::Control::BlockedUsers => {
+                press = Some(UiMessage::OpenBlockedUsers);
+                let n = txt(blocked_chats(st).len().to_string(), 13.0).color(p.muted);
+                row![n, ic(icon::CHEVRON_RIGHT, 16.0).color(p.muted)].spacing(2).align_y(Center).into()
             }
             prefs::Control::Analytics => {
                 press = Some(UiMessage::ShareAnalytics);
