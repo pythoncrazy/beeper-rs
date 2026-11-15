@@ -430,6 +430,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 threads: false,
                 follows: Default::default(),
                 thread_reads: Default::default(),
+                personal: None,
                 flags: 0,
                 id,
             })
