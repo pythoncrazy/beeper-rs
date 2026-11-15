@@ -160,15 +160,40 @@ pub struct MatrixSession {
     pub device_id: String,
 }
 
-#[derive(Debug, Clone, Default)]
+/// Desktop's `subscriptionPlanId`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Plan {
+    #[default]
+    Free,
+    Plus,
+    PlusPlus,
+}
+
+/// The Beeper account from `whoami`. The default is what Desktop shows before `whoami` answers.
+#[derive(Debug, Clone)]
 pub struct Profile {
     pub full_name: Option<String>,
     pub username: Option<String>,
     pub email: Option<String>,
-    /// Desktop's `hasActiveSubscription`.
-    pub subscribed: bool,
+    /// Desktop's `subscriptionPlanId`. Plus and Plus Plus are Desktop's `hasActiveSubscription`.
+    pub plan: Plan,
+    /// Desktop's `subscriptionAction` is "subscribe", which shows Beeper Plus in Settings.
+    pub can_subscribe: bool,
     /// Desktop's `loggedInUser.analyticsDisabled`, where a missing value is true.
     pub analytics_disabled: bool,
+}
+
+impl Default for Profile {
+    fn default() -> Self {
+        Profile {
+            full_name: None,
+            username: None,
+            email: None,
+            plan: Plan::Free,
+            can_subscribe: true,
+            analytics_disabled: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

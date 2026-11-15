@@ -242,6 +242,12 @@ impl SettingsTab {
         Self::About,
     ];
 
+    /// Desktop's nav items: Beeper Plus shows only when the account can subscribe.
+    pub fn listed(st: &BeeperStore) -> impl Iterator<Item = Self> {
+        let plus = st.whoami.can_subscribe;
+        Self::ALL.into_iter().filter(move |t| *t != Self::BeeperPlus || plus)
+    }
+
     /// The translated name of the section.
     pub fn name(self) -> &'static str {
         tr(self.meta().0)
@@ -895,7 +901,7 @@ pub fn search_settings(st: &BeeperStore, query: &str) -> Vec<SettingsHit> {
     let q = query.to_lowercase();
     let has = |s: &str| s.to_lowercase().contains(&q);
     let mut out = Vec::new();
-    for tab in SettingsTab::ALL {
+    for tab in SettingsTab::listed(st) {
         let rows: Vec<_> = match tab {
             SettingsTab::Accounts => {
                 login::addable().filter(|n| has(n.display_name)).map(|n| SettingsHit::Network(n.display_name)).collect()
@@ -925,7 +931,7 @@ pub fn search_settings(st: &BeeperStore, query: &str) -> Vec<SettingsHit> {
     if out.iter().any(|h| !matches!(h, SettingsHit::Section(..))) {
         let shown: Vec<_> =
             out.iter().filter_map(|h| if let SettingsHit::Section(t, _) = h { Some(*t) } else { None }).collect();
-        out.extend(SettingsTab::ALL.into_iter().filter(|t| !shown.contains(t)).map(|t| SettingsHit::Section(t, false)));
+        out.extend(SettingsTab::listed(st).filter(|t| !shown.contains(t)).map(|t| SettingsHit::Section(t, false)));
     }
     out
 }
@@ -2269,6 +2275,21 @@ fn first_groups<T>(items: &[T], group: impl Fn(&T) -> &'static str) -> Vec<&'sta
         }
         v
     })
+}
+
+/// Desktop's compact `PlusPill` of a plan, and its width.
+fn plan_pill<'a>(p: &Palette, plan: Plan) -> (El<'a>, f32) {
+    let (symbol, name) = match plan {
+        Plan::Free => (None, "Free"),
+        Plan::Plus => (Some("+"), "Plus"),
+        Plan::PlusPlus => (Some("++"), "PlusPlus"),
+    };
+    let w = text_width(name, 10.0, Weight::Semibold)
+        + symbol.map_or(0.0, |s| text_width(s, 12.0, Weight::Semibold) + 2.0)
+        + 12.0;
+    let symbol = symbol.map(|s| semi(s, 12.0).line_height(1.0).color(p.strong));
+    let label = row![].push(symbol).push(semi(name, 10.0).color(p.strong)).spacing(2).align_y(Center);
+    (container(label).padding([4, 6]).style(fill_box(p.chip, 25.0)).into(), w)
 }
 
 fn badge<'a>(p: &Palette, b: prefs::Badge) -> El<'a> {
@@ -6886,8 +6907,8 @@ impl BeeperGuiApp {
             UiMessage::SetMicrophone(name) => self.patch_settings(|s| s.microphone = name),
             UiMessage::ShareAnalytics => {
                 let mut st = self.store.write();
-                let was = st.analytics_disabled;
-                st.analytics_disabled = !was;
+                let was = st.whoami.analytics_disabled;
+                st.whoami.analytics_disabled = !was;
                 let (cloud, token) = (self.cloud.clone(), st.beeper_state.access_token.clone());
                 if !st.config.demo {
                     return Task::perform(
@@ -6902,7 +6923,7 @@ impl BeeperGuiApp {
             }
             UiMessage::AnalyticsSaved(_, Ok(())) => {}
             UiMessage::AnalyticsSaved(was, Err(e)) => {
-                self.store.write().analytics_disabled = was;
+                self.store.write().whoami.analytics_disabled = was;
                 self.fail(Toast::new(trf("Something went wrong: %s", &[&e])));
             }
             UiMessage::Ask(dialog) => (self.confirm, self.reminder_menu) = (dialog, None),
@@ -7052,10 +7073,12 @@ impl BeeperGuiApp {
             }
             UiMessage::SelectTheme(choice) => self.patch_settings(|s| s.theme = choice),
             UiMessage::ToggleSetting(flip) => self.patch_settings(flip),
-            UiMessage::CloudAccounts(Ok((Profile { email, subscribed, analytics_disabled, .. }, accounts))) => {
+            UiMessage::CloudAccounts(Ok((profile, accounts))) => {
                 let (token, uid, demo) = {
                     let mut st = self.store.write();
-                    (st.features.subscribed, st.analytics_disabled) = (subscribed, analytics_disabled);
+                    let email = profile.email.clone();
+                    st.features.subscribed = profile.plan != Plan::Free;
+                    st.whoami = profile;
                     let info = (st.beeper_state.access_token.clone(), st.beeper_state.user_id.clone(), st.config.demo);
                     if st.me().email != email {
                         let i = st.chat_idx_by_id[NOTE_CHAT_ID];
@@ -14685,10 +14708,10 @@ impl BeeperGuiApp {
             let (size, radius) = if small { (16, 4.0) } else { (20, 6.0) };
             container(glyph).center(size).style(fill_box(fill, radius))
         };
-        let free = container(semi("Free", 10.0).color(p.strong)).padding([4, 6]).style(fill_box(p.chip, 25.0));
+        let (pill, pill_w) = plan_pill(p, st.whoami.plan);
         // Desktop's 34 px avatar shrinks to 28.6 px beside the full width details.
         let av = 28.6;
-        let detail_w = 231.0 - av - 16.0 - text_width("Free", 10.0, Weight::Semibold) - 12.0;
+        let detail_w = 231.0 - av - 16.0 - pill_w;
         let profile = row![
             container(self.face(me.img_url.as_deref(), &name, av, 0.0)).height(34),
             column![ell(&name, detail_w, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(p.strong)]
@@ -14698,15 +14721,17 @@ impl BeeperGuiApp {
                         .map(|e| ell(e, detail_w, 10.0, Weight::Normal).line_height(Pixels(12.0)).color(p.strong))
                 )
                 .width(Fill),
-            free
+            pill
         ]
         .spacing(8)
         .align_y(Center)
         .padding([6, 8]);
-        let nav = SettingsTab::ALL.iter().fold(Column::new(), |c, &tab| {
+        let tabs: Vec<_> = SettingsTab::listed(&st).collect();
+        let nav = tabs.iter().enumerate().fold(Column::new(), |c, (i, &tab)| {
             let on = tab == self.active_settings_tab;
+            // Desktop's `allProperAccounts`: the Beeper account and the chat accounts.
             let count = (tab == SettingsTab::Accounts).then(|| {
-                container(txt(st.accounts.len().to_string(), 11.0).color(p.strong))
+                container(txt((st.accounts.len() + 1).to_string(), 11.0).color(p.strong))
                     .center(18)
                     .style(fill_box(p.chip, 9.0))
             });
@@ -14716,7 +14741,7 @@ impl BeeperGuiApp {
                 .align_y(Center)
                 .height(if on { 44 } else { 43 })
                 .padding([0, 8]);
-            let next_on = SettingsTab::ALL.get(tab as usize + 1).is_some_and(|n| *n == self.active_settings_tab);
+            let next_on = tabs.get(i + 1).is_some_and(|n| *n == self.active_settings_tab);
             c.push(
                 button(line)
                     .padding(0)
@@ -17289,20 +17314,26 @@ impl BeeperGuiApp {
         let s = &st.settings;
         let p = &self.pal;
         let locked = r.feature.is_some_and(|f| st.feature(f).locked());
+        // Desktop's `onFeatureInteraction` of a locked row opens the Beeper Plus subscription prompt.
+        let upsell = UiMessage::SelectSettingsTab(SettingsTab::BeeperPlus);
         let mut press = None;
         let control = match r.control {
             prefs::Control::Toggle(_) => {
                 let v = s.pref(r.key);
                 let off = r.requires.is_some_and(|k| !s.on(k)) || locked;
-                press = (!off).then_some(UiMessage::SetPref(r.key, 1 - v));
+                press = match locked {
+                    true => Some(upsell.clone()),
+                    false => (!off).then_some(UiMessage::SetPref(r.key, 1 - v)),
+                };
                 toggle_faded(p, v == 1 && !locked, press.clone(), if off { 0.5 } else { 1.0 })
             }
             prefs::Control::Analytics => {
                 press = Some(UiMessage::ShareAnalytics);
-                toggle_faded(p, !st.analytics_disabled, press.clone(), 1.0)
+                toggle_faded(p, !st.whoami.analytics_disabled, press.clone(), 1.0)
             }
             prefs::Control::Select(..) if locked => {
-                stack![self.pref_select(r, s), iced::widget::opaque(Space::new().width(Fill).height(Fill))].into()
+                let cover = mouse_area(Space::new().width(Fill).height(Fill)).on_press(upsell);
+                stack![self.pref_select(r, s), iced::widget::opaque(cover)].into()
             }
             prefs::Control::Select(..) => self.pref_select(r, s),
             prefs::Control::Multi(labels) => {

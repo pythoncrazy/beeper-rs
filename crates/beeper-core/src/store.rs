@@ -352,8 +352,7 @@ pub struct BeeperStore {
     /// The last synced [`crate::matrix::RULES`].
     pub inbox_rules: serde_json::Value,
     pub features: crate::features::Flags,
-    /// The `analyticsDisabled` field of `whoami`, true until `whoami` answers.
-    pub analytics_disabled: bool,
+    pub whoami: Profile,
     next_seq: i64,
 }
 
@@ -489,7 +488,7 @@ impl BeeperStore {
             skin_tone: 0,
             inbox_rules: serde_json::Value::Null,
             features,
-            analytics_disabled: true,
+            whoami: Profile::default(),
             next_seq: 1000,
         };
         store.load_from_sqlite_or_seed();
@@ -869,6 +868,7 @@ impl BeeperStore {
         self.setup_status = Self::build_setup_from_state(&self.beeper_state);
         self.pin_app_locale();
         self.persist_state_to_sqlite();
+        self.whoami = profile.clone();
         self.ensure_note_chat(profile);
         self.set_cloud_accounts(accounts);
         self.emit_ws(
