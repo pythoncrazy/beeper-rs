@@ -1227,7 +1227,11 @@ fn search_messages(st: &BeeperStore, r: &Req) -> Reply {
     });
     let media = media.collect::<Result<Vec<_>, _>>()?;
     let (sender, chat_ids) = (r.q("sender"), r.qs("chatIDs"));
-    let mut items: Vec<&Message> = candidates(&st.msg_search_index, r.q("query"), st.messages.len())
+    let found = match r.q("query").map(str::trim).filter(|q| !q.is_empty()) {
+        Some(q) => st.search_messages(q),
+        None => (0..st.messages.len()).collect(),
+    };
+    let mut items: Vec<&Message> = found
         .into_iter()
         .map(|i| &st.messages[i])
         .filter(|m| {
@@ -1256,8 +1260,7 @@ fn unified_search(st: &BeeperStore, r: &Req) -> Reply {
         .into_iter()
         .map(|i| &st.chats[i as usize])
         .partition(|c| c.chat_type == "group");
-    let messages: Vec<&Message> =
-        st.msg_search_index.query_all_tokens(q).into_iter().map(|i| &st.messages[i as usize]).collect();
+    let messages: Vec<&Message> = st.search_messages(q).into_iter().map(|i| &st.messages[i]).collect();
     let referenced: HashMap<&str, &Chat> =
         messages.iter().map(|m| (m.chat_id.as_str(), &st.chats[st.chat_idx_by_id[&m.chat_id]])).collect();
     ok(&json!({

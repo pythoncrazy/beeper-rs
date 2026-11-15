@@ -563,7 +563,12 @@ async fn lifecycle() {
             [old_path],
         )
         .unwrap();
-        db.execute_batch("PRAGMA user_version = 1;").unwrap();
+        db.execute_batch(
+            "DROP TABLE messages; DROP TABLE messages_fts;
+             CREATE TABLE messages (id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, sort_key TEXT NOT NULL, json TEXT NOT NULL) STRICT;
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
     }
     beeper_core::config::migrate_legacy_data_dir(&current, Some("dev"));
     assert!(!legacy.exists() && !current.join("index.db").exists(), "the old folder and the stale copy are gone");

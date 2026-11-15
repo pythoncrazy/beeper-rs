@@ -9537,10 +9537,10 @@ impl BeeperGuiApp {
             return hits;
         }
         let found = match q.chars().count() > 1 && f.media.is_empty() {
-            true => st.msg_search_index.query_all_tokens(q),
+            true => st.search_messages(q),
             false => Vec::new(),
         };
-        let found = found.into_iter().map(|i| i as usize).filter(|&i| {
+        let found = found.into_iter().filter(|&i| {
             let m = &st.messages[i];
             m.text.as_deref().is_some_and(|t| !t.is_empty()) && f.keeps(st, room, m)
         });
@@ -9548,8 +9548,8 @@ impl BeeperGuiApp {
         let media = match f.media.is_empty() {
             true => Vec::new(),
             false => {
-                let text: Option<HashSet<usize>> = (q.chars().count() > 1)
-                    .then(|| st.msg_search_index.query_all_tokens(q).into_iter().map(|i| i as usize).collect());
+                let text: Option<HashSet<usize>> =
+                    (q.chars().count() > 1).then(|| st.search_messages(q).into_iter().collect());
                 let titled: Vec<bool> = st.chats.iter().map(|c| c.title.to_lowercase().contains(q)).collect();
                 let hit = |&(i, m): &(usize, &Message)| {
                     text.as_ref().is_none_or(|t| t.contains(&i) || titled[st.chat_idx_by_id[&m.chat_id]])
