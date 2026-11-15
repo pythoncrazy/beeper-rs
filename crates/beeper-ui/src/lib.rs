@@ -7837,7 +7837,9 @@ impl BeeperGuiApp {
             }
             UiMessage::WindowFocused(focused) => {
                 self.focused = focused;
-                return self.close_notifications();
+                let key = (focused && self.login.screen == login::Screen::RecoveryKey && self.login_window.is_some())
+                    .then(|| iced::clipboard::read().map(|t| LoginMsg::KeyOnFocus(t).into()));
+                return Task::batch([self.close_notifications()].into_iter().chain(key));
             }
             UiMessage::UndoSend => {
                 let open = self.pane.selected_chat_id.as_ref();
