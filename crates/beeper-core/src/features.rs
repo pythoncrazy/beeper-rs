@@ -37,6 +37,7 @@ impl Flags {
                 "undo-send": false, "stealth-mode": false, "remind-later": false, "scheduled-message": true,
                 "voice-transcription": false, "ai-in-beeper-chats": false, "enable-polls": true,
                 "labels-v2": false, "android-inbox-rewrite": true, "enable-disappearing-message-timer-config": true,
+                "enable-threads": true,
             } },
             "freebies": [
                 { "name": "voice-transcription", "type": "count", "default_limit": 5 },
@@ -121,7 +122,7 @@ impl Flags {
             "undo-send" | "ai-in-beeper-chats" | "enable-polls" | "enable-disappearing-message-timer-config" => {
                 self.flag(key)
             }
-            "archive-as-unread" => {
+            "archive-as-unread" | "enable-threads" => {
                 let on = self.flag(key).on;
                 Feature { show: on, on, upgrade: false }
             }

@@ -298,6 +298,9 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         timer: None,
         send_error: None,
         is_delivered: false,
+        thread_root: None,
+        broadcast: false,
+        fallback: false,
         flags: 0,
     });
     let text = Some(crate::matrix::reaction_text(&key, target.as_ref(), who));
@@ -328,6 +331,9 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
         timer: None,
         send_error: None,
         is_delivered: false,
+        thread_root: None,
+        broadcast: false,
+        fallback: false,
         flags: 0,
     })
 }
@@ -421,6 +427,9 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 is_read_only: false,
                 replacement_room: None,
                 can_mention_room: false,
+                threads: false,
+                follows: Default::default(),
+                thread_reads: Default::default(),
                 flags: 0,
                 id,
             })
@@ -646,6 +655,9 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                 })
                 .collect(),
             seen: seen_by,
+            thread_root: None,
+            broadcast: false,
+            fallback: false,
             flags: 0,
             id,
         });
