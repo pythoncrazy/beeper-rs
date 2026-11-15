@@ -144,13 +144,13 @@ async fn repeated_and_bracket_query_keys_are_arrays() {
         all.iter().filter(|(x, _)| x == accounts[0]).count()
     );
 
-    let found = get("/v1/messages/search?limit=100".into()).await;
+    let found = get("/v1/messages/search?limit=20".into()).await;
     let mut chats: Vec<&str> = found.iter().map(|(_, c)| c.as_str().unwrap()).collect();
     chats.sort();
     chats.dedup();
     let both = found.iter().filter(|(_, x)| x == chats[0] || x == chats[1]).count();
     let (c, d) = (url_encode(chats[0]), url_encode(chats[1]));
-    assert_eq!(get(format!("/v1/messages/search?limit=100&chatIDs={c}&chatIDs={d}")).await.len(), both);
+    assert_eq!(get(format!("/v1/messages/search?limit=20&chatIDs={c}&chatIDs={d}")).await.len(), both);
 }
 
 /// The head of a response without the `Date` header, and the body.

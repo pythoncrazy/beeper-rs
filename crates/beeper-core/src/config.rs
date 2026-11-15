@@ -292,6 +292,11 @@ pub fn millis_from_rfc3339(s: &str) -> Option<i64> {
     Some(((days * 24 + num(11..13)?) * 60 + num(14..16)?) * 60_000 + num(17..19)? * 1000 + frac)
 }
 
+/// The Unix milliseconds of an ISO 8601 date-time with a UTC offset, like zod's `datetime({ offset: true })`.
+pub fn millis_from_iso(s: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(s).ok().map(|t| t.timestamp_millis())
+}
+
 /// Shifts Unix milliseconds by the local UTC offset at that instant, so day and clock math shows local time.
 pub fn local_millis(utc_ms: i64) -> i64 {
     use chrono::{Offset, TimeZone};

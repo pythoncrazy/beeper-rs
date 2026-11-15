@@ -3,16 +3,20 @@ use crate::http::{
     http_date, parse_query, read_message, read_ws_frame, weak_etag, write_ws_frame, HttpMessage, StatusCode,
 };
 use beeper_core::cloud::{Cloud, CloudError, CodeResult};
-use beeper_core::config::{network_spec, APP_BUNDLE_ID, APP_NAME, APP_VERSION, NETWORK_SPECS, OPENAPI_SPEC_JSON};
+use beeper_core::config::{
+    millis_from_iso, millis_from_rfc3339, network_spec, APP_BUNDLE_ID, APP_NAME, APP_VERSION, NETWORK_SPECS,
+    OPENAPI_SPEC_JSON,
+};
 use beeper_core::connect::{READ, WRITE};
 use beeper_core::matrix::{self, ChatFlag, Outgoing};
 use beeper_core::models::*;
 use beeper_core::platform::{path_to_file_url, OsKind};
-use beeper_core::store::{BeeperStore, InvertedIndex, SharedStore, StoredAsset};
+use beeper_core::store::{activity_key, tokenize, BeeperStore, SharedStore, StoredAsset};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt::Write;
+use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::{Arc, RwLock};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -187,6 +191,27 @@ fn page<T: Serialize>(items: Vec<T>, oldest_cursor: Option<String>, newest_curso
     ok(&CursorPage { items, has_more: false, oldest_cursor, newest_cursor })
 }
 
+/// The `limit` items of a page from an iterator, newest first, and whether the iterator has more items.
+fn take_page<T>(items: impl Iterator<Item = T>, limit: usize) -> (Vec<T>, bool) {
+    let mut items: Vec<T> = items.take(limit + 1).collect();
+    let more = items.len() > limit;
+    items.truncate(limit);
+    (items, more)
+}
+
+/// The items of lists in ascending order, newest first: a merge from the ends of the lists.
+fn newest_first<'a>(lists: Vec<&'a [usize]>, key: impl Fn(usize) -> &'a str + 'a) -> impl Iterator<Item = usize> + 'a {
+    let mut heap: BinaryHeap<(&str, &[usize])> = lists.into_iter().filter_map(|l| Some((key(*l.last()?), l))).collect();
+    std::iter::from_fn(move || {
+        let (_, list) = heap.pop()?;
+        let (&last, rest) = list.split_last().expect("the heap has no empty lists");
+        if let Some(&next) = rest.last() {
+            heap.push((key(next), rest));
+        }
+        Some(last)
+    })
+}
+
 struct Req {
     query: serde_json::Map<String, Value>,
     msg: HttpMessage,
@@ -203,6 +228,32 @@ impl Req {
         match self.query.get(k) {
             Some(Value::Array(values)) => values.iter().map(|v| v.as_str().expect("a string query value")).collect(),
             v => v.and_then(Value::as_str).into_iter().collect(),
+        }
+    }
+
+    /// Desktop's boolean query parameter: `true` or `false`.
+    fn flag(&self, k: &str, default: bool) -> Result<bool, Response> {
+        match self.q(k) {
+            None => Ok(default),
+            Some("true") => Ok(true),
+            Some("false") => Ok(false),
+            Some(_) => Err(bad(&format!("{k} must be true or false"))),
+        }
+    }
+
+    /// An ISO 8601 date-time query parameter, in Unix milliseconds.
+    fn date(&self, k: &str) -> Result<Option<i64>, Response> {
+        let ms =
+            self.q(k).map(|v| millis_from_iso(v).ok_or_else(|| bad(&format!("{k} must be an ISO 8601 date-time"))));
+        ms.transpose()
+    }
+
+    /// Desktop's `direction`: `before` (the default) or `after`.
+    fn after(&self) -> Result<bool, Response> {
+        match self.q("direction") {
+            None | Some("before") => Ok(false),
+            Some("after") => Ok(true),
+            Some(_) => Err(bad("direction must be before or after")),
         }
     }
 
@@ -226,8 +277,12 @@ impl Req {
         serde_json::from_value(self.body[k].clone()).map_err(|e| bad(&format!("{k}: {e}")))
     }
 
-    fn limit(&self, default: usize) -> Result<usize, Response> {
-        self.q("limit").map_or(Ok(default), |v| v.parse().map_err(|_| bad("limit must be an integer")))
+    fn limit(&self, default: usize, max: usize) -> Result<usize, Response> {
+        let limit = self.q("limit").map_or(Ok(default), |v| v.parse().map_err(|_| bad("limit must be an integer")))?;
+        match (1..=max).contains(&limit) {
+            true => Ok(limit),
+            false => Err(bad(&format!("limit must be from 1 to {max}"))),
+        }
     }
 }
 
@@ -1021,20 +1076,51 @@ fn bridges(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply 
     }
 }
 
-fn candidates(index: &InvertedIndex, query: Option<&str>, len: usize) -> Vec<usize> {
-    match query.map(str::trim).filter(|q| !q.is_empty()) {
-        Some(q) => index.query_all_tokens(q).into_iter().map(|i| i as usize).collect(),
-        None => (0..len).collect(),
-    }
+/// One page of chats from keys in `chat_order` order, newest first, with Desktop's chat cursors
+/// `<last activity ms>:<chat>`. Merged member chats show only in their merged chat, like Desktop.
+fn chat_page<'a>(
+    st: &'a BeeperStore,
+    r: &Req,
+    keys: impl Iterator<Item = (i64, &'a str)>,
+    keep: impl Fn(&Chat) -> bool,
+    limit: usize,
+) -> Reply {
+    let chats = keys.map(|k| (k, &st.chats[st.chat_idx_by_id[k.1]]));
+    let (chats, has_more) = take_page(chats.filter(|(_, c)| c.merged_into_chat_id.is_none() && keep(c)), limit);
+    let cursor = |(ms, id): (i64, &str)| Some(format!("{ms}:{id}"));
+    let input = || r.q("cursor").map(str::to_string);
+    let oldest_cursor = chats.last().map_or_else(input, |&(k, _)| cursor(k));
+    let newest_cursor = chats.first().map_or_else(input, |&(k, _)| cursor(k));
+    let items = chats.into_iter().map(|(_, c)| c).collect();
+    ok(&CursorPage { items, has_more, oldest_cursor, newest_cursor })
 }
 
+/// The `chat_order` key of a chat cursor.
+fn chat_cursor(r: &Req) -> Result<Option<(i64, String)>, Response> {
+    let key = |c: &str| c.split_once(':').and_then(|(ms, id)| Some((ms.parse().ok()?, id.to_string())));
+    r.q("cursor").map(|c| key(c).ok_or_else(|| bad("invalid cursor"))).transpose()
+}
+
+/// The `chat_order` keys newest first, past the cursor. Both directions take the newest chats past the cursor, like
+/// Desktop's `ORDER BY timestamp DESC LIMIT`.
+fn chat_keys<'a>(
+    st: &'a BeeperStore,
+    cursor: Option<&(i64, String)>,
+    after: bool,
+) -> impl Iterator<Item = (i64, &'a str)> {
+    let keys = match cursor {
+        None => st.chat_order.range::<(i64, String), _>(..),
+        Some(c) if after => st.chat_order.range((Excluded(c), Unbounded)),
+        Some(c) => st.chat_order.range(..c),
+    };
+    keys.rev().map(|(ms, id)| (*ms, id.as_str()))
+}
+
+/// Desktop's `listChats`: the chats by last activity, newest first.
 fn list_chats(st: &BeeperStore, r: &Req) -> Reply {
-    let accounts = r.qs("accountIDs");
-    let all = accounts.is_empty();
-    let mut items: Vec<&Chat> = st.chats.iter().filter(|c| all || accounts.contains(&c.account_id.as_str())).collect();
-    items.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
-    let (oldest, newest) = (items.last().map(|c| c.id.clone()), items.first().map(|c| c.id.clone()));
-    page(items, oldest, newest)
+    let (after, limit, accounts, cursor) = (r.after()?, r.limit(25, 200)?, r.qs("accountIDs"), chat_cursor(r)?);
+    let keep = |c: &Chat| accounts.is_empty() || accounts.contains(&c.account_id.as_str());
+    chat_page(st, r, chat_keys(st, cursor.as_ref(), after), keep, limit)
 }
 
 fn chats(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
@@ -1112,6 +1198,8 @@ fn check_merge(st: &BeeperStore, chat_ids: &[String], default_chat_id: Option<&s
     ids.all(|id| st.resolve_chat_idx(id).is_some()).then_some(()).ok_or_else(|| missing("Chat not found"))
 }
 
+/// Desktop's `searchChats`: the chats by last activity, newest first. The default scope `titles` matches the title
+/// and the network, and the scope `participants` matches the names of the participants.
 fn search_chats(st: &BeeperStore, r: &Req) -> Reply {
     let (mut mask, mut want) = match r.q("inbox") {
         None => (0, 0),
@@ -1120,19 +1208,55 @@ fn search_chats(st: &BeeperStore, r: &Req) -> Reply {
         Some("primary") => (CHAT_ARCHIVED | CHAT_LOW_PRIORITY, 0),
         Some(_) => return Err(bad("inbox must be primary, low-priority, or archive")),
     };
-    if r.q("unreadOnly") == Some("true") {
+    if r.flag("unreadOnly", false)? {
         (mask, want) = (mask | CHAT_UNREAD, want | CHAT_UNREAD);
     }
+    if !r.flag("includeMuted", true)? {
+        mask |= CHAT_MUTED;
+    }
+    let people = match r.q("scope") {
+        None | Some("titles") => false,
+        Some("participants") => true,
+        Some(_) => return Err(bad("scope must be titles or participants")),
+    };
     let chat_type = r.q("type").filter(|&t| t != "any");
-    let mut items: Vec<&Chat> = candidates(&st.chat_search_index, r.q("query"), st.chats.len())
+    let (after, limit, accounts, label) = (r.after()?, r.limit(50, 200)?, r.qs("accountIDs"), r.q("labelID"));
+    let (active_before, active_after, cursor) =
+        (r.date("lastActivityBefore")?, r.date("lastActivityAfter")?, chat_cursor(r)?);
+    let keep = |c: &Chat| {
+        let ms = || activity_key(c).0;
+        c.flags & mask == want
+            && chat_type.is_none_or(|t| c.chat_type == t)
+            && (accounts.is_empty() || accounts.contains(&c.account_id.as_str()))
+            && label.is_none_or(|l| c.label_ids.iter().any(|id| id == l))
+            && active_before.is_none_or(|b| ms() < b)
+            && active_after.is_none_or(|a| ms() > a)
+    };
+    let Some(query) = r.q("query").map(str::trim).filter(|q| !q.is_empty()) else {
+        return chat_page(st, r, chat_keys(st, cursor.as_ref(), after), keep, limit);
+    };
+    let words = tokenize(query);
+    let hit = |c: &Chat| {
+        let fields: Vec<&String> = match people {
+            true => c.participants.items.iter().flat_map(|p| [&p.full_name, &p.custom_nickname]).flatten().collect(),
+            false => [Some(&c.title), c.network_name.as_ref()].into_iter().flatten().collect(),
+        };
+        let tokens = tokenize(&fields.into_iter().map(String::as_str).collect::<Vec<_>>().join(" "));
+        words.iter().all(|w| tokens.iter().any(|t| t.starts_with(w.as_str())))
+    };
+    let past =
+        |k: (i64, &str)| cursor.as_ref().is_none_or(|c| k != (c.0, c.1.as_str()) && (k > (c.0, c.1.as_str())) == after);
+    let mut keys: Vec<(i64, &str)> = st
+        .chat_search_index
+        .query_all_tokens(query)
         .into_iter()
-        .map(|i| &st.chats[i])
-        .filter(|c| c.flags & mask == want && chat_type.is_none_or(|t| c.chat_type == t))
+        .map(|i| &st.chats[i as usize])
+        .filter(|c| hit(c))
+        .map(|c| (activity_key(c).0, c.id.as_str()))
+        .filter(|&k| past(k))
         .collect();
-    items.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
-    items.truncate(r.limit(50)?);
-    let (oldest, newest) = (items.last().map(|c| c.id.clone()), items.first().map(|c| c.id.clone()));
-    page(items, oldest, newest)
+    keys.sort_unstable_by(|a, b| b.cmp(a));
+    chat_page(st, r, keys.into_iter(), keep, limit)
 }
 
 fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str], r: &Req) -> Reply {
@@ -1202,27 +1326,28 @@ fn chat(st: &mut BeeperStore, method: &str, idx: usize, id: &str, rest: &[&str],
     }
 }
 
+/// Desktop's page size of `getRoomMessages`.
+const MESSAGE_PAGE: usize = 20;
+
+/// Desktop's `listMessages`: one page of the chat and its merged member chats, newest first. The cursor is a sort
+/// key, and both directions take the newest messages past it, like Desktop's `ORDER BY hsOrder DESC LIMIT 20`.
 fn list_messages(st: &BeeperStore, idx: usize, r: &Req) -> Reply {
-    let after = match r.q("direction") {
-        None | Some("before") => false,
-        Some("after") => true,
-        Some(_) => return Err(bad("direction must be before or after")),
-    };
+    let (after, cursor) = (r.after()?, r.q("cursor"));
     let chat = &st.chats[idx];
     let members = chat.merge.iter().flat_map(|m| &m.chat_ids);
     let member_ids = members.map(|id| &st.chats[st.resolve_chat_idx(id).expect("merged member chat exists")].id);
-    let mut items: Vec<&Message> = std::iter::once(&chat.id)
-        .chain(member_ids)
-        .filter_map(|cid| st.chat_msg_indices.get(cid))
-        .flatten()
-        .map(|&m| &st.messages[m])
-        .filter(|m| {
-            r.q("cursor").is_none_or(|cur| if after { m.sort_key.as_str() > cur } else { m.sort_key.as_str() < cur })
-        })
-        .collect();
-    items.sort_by(|a, b| a.sort_key.cmp(&b.sort_key));
-    let (oldest, newest) = (items.first().map(|m| m.sort_key.clone()), items.last().map(|m| m.sort_key.clone()));
-    page(items, oldest, newest)
+    let key = |m: usize| st.messages[m].sort_key.as_str();
+    let lists = std::iter::once(&chat.id).chain(member_ids).map(|cid| {
+        let list = st.chat_msg_indices[cid].as_slice();
+        match cursor {
+            None => list,
+            Some(c) if after => &list[list.partition_point(|&m| key(m) <= c)..],
+            Some(c) => &list[..list.partition_point(|&m| key(m) < c)],
+        }
+    });
+    let (items, has_more) = take_page(newest_first(lists.collect(), key).map(|m| &st.messages[m]), MESSAGE_PAGE);
+    let (oldest, newest) = (items.last().map(|m| m.sort_key.clone()), items.first().map(|m| m.sort_key.clone()));
+    ok(&CursorPage { items, has_more, oldest_cursor: oldest, newest_cursor: newest })
 }
 
 fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
@@ -1275,43 +1400,96 @@ fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
     Ok(json_with(StatusCode::CREATED, &json!({ "chatID": chat_id, "pendingMessageID": pending })))
 }
 
+/// Desktop's `searchMessages`: the newest messages that match the query and the filters, at most 20 for each page,
+/// with the chats of the messages. The cursor is a sort key.
 fn search_messages(st: &BeeperStore, r: &Req) -> Reply {
-    let media = r.qs("mediaTypes").into_iter().map(|t| -> Result<fn(&Message) -> bool, Response> {
-        Ok(match t {
-            "any" => |m| !m.attachments.is_empty(),
-            "image" => |m| m.attachments.iter().any(|a| a.attachment_type == "img"),
-            "video" => |m| m.attachments.iter().any(|a| a.attachment_type == "video"),
-            "audio" => |m| m.attachments.iter().any(|a| a.attachment_type == "audio"),
-            "file" => |m| m.attachments.iter().any(|a| a.attachment_type == "unknown"),
-            "link" => |m| m.text.as_deref().is_some_and(|t| t.contains("http://") || t.contains("https://")),
-            _ => return Err(bad("unknown mediaTypes")),
-        })
-    });
-    let media = media.collect::<Result<Vec<_>, _>>()?;
-    let (sender, chat_ids) = (r.q("sender"), r.qs("chatIDs"));
-    let found = match r.q("query").map(str::trim).filter(|q| !q.is_empty()) {
-        Some(q) => st.search_messages(q),
-        None => (0..st.messages.len()).collect(),
+    let media = r.qs("mediaTypes");
+    if let Some(m) = media.iter().find(|m| !["any", "video", "image", "link", "file"].contains(m)) {
+        return Err(bad(&format!("unknown mediaTypes value {m}")));
+    }
+    let chat_type = r.q("chatType");
+    if chat_type.is_some_and(|t| t != "group" && t != "single") {
+        return Err(bad("chatType must be group or single"));
+    }
+    let (after, cursor, limit, sender) = (r.after()?, r.q("cursor"), r.limit(20, 20)?, r.q("sender"));
+    let (date_after, date_before) = (r.date("dateAfter")?, r.date("dateBefore")?);
+    if date_after.zip(date_before).is_some_and(|(a, b)| a >= b) {
+        return Err(bad("'dateAfter' must be earlier than 'dateBefore' when both are provided."));
+    }
+    let (exclude_low, include_muted, accounts) =
+        (r.flag("excludeLowPriority", true)?, r.flag("includeMuted", true)?, r.qs("accountIDs"));
+    let mut rooms = Vec::new();
+    for id in r.qs("chatIDs") {
+        let chat = &st.chats[st.resolve_chat_idx(id).ok_or_else(|| missing("Chat not found"))?];
+        match &chat.merge {
+            Some(m) => {
+                rooms.extend(m.chat_ids.iter().map(|id| st.resolve_canonical_chat_id(id).expect("member exists")))
+            }
+            None => rooms.push(chat.id.clone()),
+        }
+    }
+    let kind = |m: &Message, k: &str| m.attachments.iter().any(|a| a.attachment_type == k);
+    // The message filters read only the message, and the chat filters also read its chat.
+    let message_ok = |&m: &usize| {
+        let m = &st.messages[m];
+        let ms = || millis_from_rfc3339(&m.timestamp).expect("RFC 3339 message time");
+        m.flags & MSG_DELETED == 0
+            && !matches!(m.message_type.as_deref(), Some("HIDDEN" | "REACTION"))
+            && match sender {
+                None => true,
+                Some("me") => m.is_sender == Some(true),
+                Some("others") => m.is_sender != Some(true),
+                Some(s) => m.sender_id == s,
+            }
+            && date_after.is_none_or(|a| ms() > a)
+            && date_before.is_none_or(|b| ms() < b)
+            && (media.is_empty()
+                || (media.contains(&"any") && !m.attachments.is_empty())
+                || (media.contains(&"image") && kind(m, "img"))
+                || (media.contains(&"video") && kind(m, "video"))
+                || (media.contains(&"file") && kind(m, "unknown"))
+                || (media.contains(&"link") && !m.links.is_empty()))
     };
-    let mut items: Vec<&Message> = found
-        .into_iter()
-        .map(|i| &st.messages[i])
-        .filter(|m| {
-            m.flags & MSG_DELETED == 0
-                && (chat_ids.is_empty() || chat_ids.contains(&m.chat_id.as_str()))
-                && match sender {
-                    None => true,
-                    Some("me") => m.is_sender == Some(true),
-                    Some("others") => m.is_sender != Some(true),
-                    Some(s) => m.sender_id == s,
-                }
-                && (media.is_empty() || media.iter().any(|f| f(m)))
-        })
-        .collect();
-    items.sort_by(|a, b| b.sort_key.cmp(&a.sort_key));
-    items.truncate(r.limit(20)?);
-    let (oldest, newest) = (items.last().map(|m| m.sort_key.clone()), items.first().map(|m| m.sort_key.clone()));
-    page(items, oldest, newest)
+    let chat_ok = |&m: &usize| {
+        let c = &st.chats[st.chat_idx_by_id[&st.messages[m].chat_id]];
+        (accounts.is_empty() || accounts.contains(&c.account_id.as_str()))
+            && chat_type.is_none_or(|t| c.chat_type == t)
+            && !(exclude_low && c.flags & CHAT_LOW_PRIORITY != 0)
+            && (include_muted || c.flags & CHAT_MUTED == 0)
+    };
+    let key = |m: usize| st.messages[m].sort_key.as_str();
+    let past = |k: &str| cursor.is_none_or(|c| if after { k > c } else { k < c });
+    let hits: Box<dyn Iterator<Item = usize>> =
+        match (r.q("query").map(str::trim).filter(|q| !q.is_empty()), &rooms[..]) {
+            (None, [_, ..]) => {
+                let lists = rooms.iter().map(|cid| {
+                    let list = st.chat_msg_indices[cid].as_slice();
+                    match cursor {
+                        None => list,
+                        Some(c) if after => &list[list.partition_point(|&m| key(m) <= c)..],
+                        Some(c) => &list[..list.partition_point(|&m| key(m) < c)],
+                    }
+                });
+                Box::new(newest_first(lists.collect(), key).filter(message_ok).filter(chat_ok))
+            }
+            (query, _) => {
+                // A text query has few hits, so the filters run after the sort. Without one, the message filters run
+                // first, because they drop most messages and need no chat.
+                let room = |m: usize| rooms.is_empty() || rooms.contains(&st.messages[m].chat_id);
+                let mut hits: Vec<usize> = match query {
+                    Some(q) => st.search_messages(q),
+                    None => (0..st.messages.len()).filter(message_ok).collect(),
+                };
+                hits.retain(|&m| past(key(m)) && room(m));
+                hits.sort_unstable_by(|&a, &b| key(b).cmp(key(a)));
+                Box::new(hits.into_iter().filter(message_ok).filter(chat_ok))
+            }
+        };
+    let (items, has_more) = take_page(hits.map(|m| &st.messages[m]), limit);
+    let chats: HashMap<&str, &Chat> =
+        items.iter().map(|m| (m.chat_id.as_str(), &st.chats[st.chat_idx_by_id[&m.chat_id]])).collect();
+    let (oldest, newest) = (items.last().map(|m| &m.sort_key), items.first().map(|m| &m.sort_key));
+    ok(&json!({ "items": items, "chats": chats, "hasMore": has_more, "oldestCursor": oldest, "newestCursor": newest }))
 }
 
 fn unified_search(st: &BeeperStore, r: &Req) -> Reply {
