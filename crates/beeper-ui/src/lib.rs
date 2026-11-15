@@ -3390,6 +3390,11 @@ fn send_rise(st: &BeeperStore, m: &Message) -> Option<f32> {
     (pending && age < 260 && st.settings.on("messageAnimations")).then(|| ease_out_quint(age.max(0) as f32 / 260.0))
 }
 
+/// Desktop's `FocusScope.activate`: a composer action or a message selection activates the scope of its pane.
+fn activates(msg: &UiMessage) -> bool {
+    matches!(msg, UiMessage::ComposerEdit(_) | UiMessage::ClickMessage(_) | UiMessage::SelectMessages(_))
+}
+
 /// Finds the offset of a scrollable that shows a container: in the middle, or with the least scroll when `nearest`.
 /// The offset of the timeline counts from its bottom, because it is anchored there.
 struct Locate(
@@ -3439,7 +3444,8 @@ impl iced::advanced::widget::Operation<f32> for Locate {
             false => y - (view.height - msg.height) / 2.0,
         };
         let top = top.clamp(0.0, max);
-        iced::advanced::widget::operation::Outcome::Some(if self.4 == "timeline" { max - top } else { top })
+        let anchored = matches!(self.4, "timeline" | "thread-timeline");
+        iced::advanced::widget::operation::Outcome::Some(if anchored { max - top } else { top })
     }
 }
 
@@ -4141,6 +4147,9 @@ pub struct Pane {
     pub thread_menu: Option<Point>,
     /// Desktop's `replyThreadDividerOnOpen`: the read mark of the thread when the pane opened.
     pub thread_divider: Option<String>,
+    /// Desktop's active `FocusScope`: the thread pane takes the message keys. The open of the pane, a composer
+    /// action or a message selection in the pane activates it, and one in the chat activates the chat.
+    pub thread_focus: bool,
 }
 
 /// Desktop's `TopOfThread`, which loads older messages while the top of the timeline is on screen.
@@ -4166,6 +4175,15 @@ pub struct Stash {
 }
 
 impl Pane {
+    /// The id of the scrollable of the timeline of the pane.
+    fn scroll_id(&self) -> &'static str {
+        if self.thread_root.is_some() {
+            "thread-timeline"
+        } else {
+            "timeline"
+        }
+    }
+
     /// Desktop's `startEditMessageCommon`: puts the composer state aside, unless an edit already did, and edits `mid`.
     fn start_edit(&mut self, mid: String, text: &str, mentions: Vec<Mention>) {
         if self.editing_message_id.is_none() {
@@ -6350,6 +6368,7 @@ impl BeeperGuiApp {
                 | UiMessage::SendLater(_)
                 | UiMessage::RemoveLinkPreview(_)
         );
+        self.pane.thread_focus &= !activates(&msg);
         match msg {
             UiMessage::SelectTab(tab) => {
                 self.chat_menu = None;
@@ -7194,7 +7213,7 @@ impl BeeperGuiApp {
                 return match self.pane.selected_msgs.last() {
                     Some(mid) => {
                         self.pane.timeline.reveal(vlist::key(mid));
-                        locate(format!("msg-{mid}"), "timeline", true)
+                        locate(format!("msg-{mid}"), self.pane.scroll_id(), true)
                     }
                     None => operation::focus("composer-input"),
                 };
@@ -7731,14 +7750,7 @@ impl BeeperGuiApp {
             UiMessage::ToggleMaximize(id) => {
                 return window::toggle_maximize(id.or(self.main_window).expect("the main window"));
             }
-            UiMessage::JumpTo(cid, mid) => {
-                (self.show_command_palette, self.command_palette_query, self.chat_menu) = (false, String::new(), None);
-                self.select_chat(&cid);
-                let msg = format!("msg-{mid}");
-                self.pane.timeline.reveal(vlist::key(&mid));
-                self.flash = Some((mid, std::time::Instant::now()));
-                return locate(msg, "timeline", false);
-            }
+            UiMessage::JumpTo(cid, mid) => return self.jump_to(cid, mid),
             UiMessage::ExecuteCommandChat(cid) => {
                 self.show_command_palette = false;
                 self.command_palette_query.clear();
@@ -8565,8 +8577,7 @@ impl BeeperGuiApp {
             UiMessage::RemoveUnsent(id) => self.store.write().remove_unsent(&id),
             UiMessage::TimelineScrolled(up) => self.timeline_scrolled(up),
             UiMessage::ScrollToBottom => {
-                let id = if self.pane.thread_root.is_some() { "thread-timeline" } else { "timeline" };
-                return operation::scroll_to(id, operation::AbsoluteOffset { x: 0.0, y: 0.0 });
+                return operation::scroll_to(self.pane.scroll_id(), operation::AbsoluteOffset { x: 0.0, y: 0.0 });
             }
             UiMessage::TopShown(shown) => {
                 self.pane.top.shown = shown;
@@ -9373,6 +9384,13 @@ impl BeeperGuiApp {
                 }
                 match key.as_ref() {
                     Key::Named(Named::Escape) => return self.update(UiMessage::CloseModals),
+                    Key::Named(Named::ArrowUp | Named::ArrowDown | Named::ArrowRight)
+                        if (mods.is_empty() || mods == keyboard::Modifiers::SHIFT)
+                            && self.pane.thread.is_some()
+                            && self.pane.thread_focus =>
+                    {
+                        return self.in_thread(UiMessage::KeyPressed(key, mods));
+                    }
                     Key::Named(Named::ArrowUp | Named::ArrowDown)
                         if (mods.is_empty() || mods == keyboard::Modifiers::SHIFT) && self.can_select_messages() =>
                     {
@@ -12889,7 +12907,7 @@ impl BeeperGuiApp {
         let bottom = iced::widget::sensor(Space::new()).key(chat.id.clone()).anticipate(1);
         let col =
             col.push(bottom.on_show(|_| UiMessage::TimelineScrolled(false)).on_hide(UiMessage::TimelineScrolled(true)));
-        let list = lift::tight(scroller(col).id(if in_chat { "timeline" } else { "thread-timeline" }));
+        let list = lift::tight(scroller(col).id(self.pane().scroll_id()));
         let replies = self.pane().reply_thread.as_ref().map(|id| {
             let root = st.msg_idx_by_id.get(id).map_or(id.as_str(), |&i| reply_root(&st, &st.messages[i]));
             let chain: Vec<&Message> = msgs.iter().copied().filter(|m| reply_root(&st, m) == root).collect();
@@ -13068,7 +13086,7 @@ impl BeeperGuiApp {
                 size: self.pane.size,
                 ..Pane::default()
             };
-            self.pane.thread = Some(Box::new(pane));
+            (self.pane.thread, self.pane.thread_focus) = (Some(Box::new(pane)), true);
         }
         (self.show_right_panel, self.pane.thread_menu) = (false, None);
     }
@@ -13166,13 +13184,37 @@ impl BeeperGuiApp {
         }
     }
 
+    /// Desktop's `jumpToMessage` and `revealMessage`: shows message `mid` of chat `cid` in the timeline of the pane,
+    /// and a reply only in a thread in the thread pane. The thread pane jumps in its own thread.
+    fn jump_to(&mut self, cid: String, mid: String) -> Task<UiMessage> {
+        (self.show_command_palette, self.command_palette_query, self.chat_menu) = (false, String::new(), None);
+        if self.pane.thread_root.is_none() {
+            self.select_chat(&cid);
+            let st = self.store.read();
+            let threads = st.threaded(&st.chats[st.resolve_chat_idx(&cid).expect("a known chat")]);
+            let root = st.msg_idx_by_id.get(&mid).map(|&i| &st.messages[i]).filter(|m| m.thread_only(threads));
+            let root = root.map(|m| m.thread_root.clone().expect("a thread reply"));
+            drop(st);
+            if let Some(root) = root {
+                self.open_thread(cid.clone(), root);
+                return self.in_thread(UiMessage::JumpTo(cid, mid));
+            }
+            self.pane.thread_focus = false;
+        }
+        let msg = format!("msg-{mid}");
+        self.pane.timeline.reveal(vlist::key(&mid));
+        self.flash = Some((mid, std::time::Instant::now()));
+        locate(msg, self.pane.scroll_id(), false)
+    }
+
     /// Handles a message of the thread pane with the thread pane in place of the pane of the chat.
     fn in_thread(&mut self, msg: UiMessage) -> Task<UiMessage> {
         let Some(mut thread) = self.pane.thread.take() else { return Task::none() };
+        let focus = activates(&msg);
         std::mem::swap(&mut self.pane, &mut thread);
         let task = self.handle(msg);
         std::mem::swap(&mut self.pane, &mut thread);
-        self.pane.thread = Some(thread);
+        (self.pane.thread, self.pane.thread_focus) = (Some(thread), self.pane.thread_focus || focus);
         task.map(|m| UiMessage::InThread(Box::new(m)))
     }
 

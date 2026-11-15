@@ -1082,6 +1082,36 @@ fn threads_like_desktop() {
     assert_eq!(st.thread_unread(&st.chats[st.chat_idx_by_id[chat]], root), (0, 0));
 }
 
+/// Desktop's `FocusScope`s: the open thread pane takes the arrow keys until a click in the chat, a composer action
+/// in the pane takes them back, and a jump to a reply only in a thread opens its pane.
+#[test]
+fn thread_pane_keys_like_desktop() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut app = demo_app("thread-keys");
+    let (chat, root) = ("!sl_infra:beeper.com", "msg_1007");
+    app.select_chat(chat);
+    let up = UiMessage::KeyPressed(Key::Named(Named::ArrowUp), Modifiers::empty());
+    let _ = app.update(UiMessage::ShowThread(root.into()));
+    let _ = app.update(up.clone());
+    let thread = |app: &BeeperGuiApp| app.pane.thread.as_ref().unwrap().selected_msgs.clone();
+    assert_eq!((thread(&app), app.pane.selected_msgs.clone()), (vec!["msg_1011".to_string()], vec![]));
+    let _ = app.update(UiMessage::ClickMessage("msg_1010".into()));
+    let _ = app.update(up.clone());
+    assert_eq!(app.pane.selected_msgs, ["msg_1007"], "a click in the chat takes the keys back");
+    assert_eq!(thread(&app), ["msg_1011"]);
+    let _ = app.update(UiMessage::InThread(Box::new(UiMessage::ComposerEdit(text_editor::Action::SelectAll))));
+    let _ = app.update(up);
+    assert_eq!(thread(&app), ["msg_1010"], "a composer action in the pane takes the keys");
+    let draft = app.pane.composer.text();
+    let _ = app.update(UiMessage::InThread(Box::new(UiMessage::JumpTo(chat.into(), root.into()))));
+    assert_eq!(app.pane.composer.text(), draft, "the pane jumps in its thread and keeps the chat");
+    assert_eq!(app.flash.as_ref().map(|f| f.0.as_str()), Some(root));
+    let _ = app.update(UiMessage::HideThread);
+    let _ = app.update(UiMessage::JumpTo(chat.into(), "msg_1011".into()));
+    assert_eq!(app.pane.thread.as_ref().and_then(|t| t.thread_root.as_deref()), Some(root), "the reply opens its pane");
+    assert_eq!(app.flash.as_ref().map(|f| f.0.as_str()), Some("msg_1011"));
+}
+
 /// Desktop's unread threads: the "Unread threads" pill and its menu, the Unread threads view with its cards, the badge
 /// count, and the thread pane that reads a thread and keeps its unread divider.
 #[test]
