@@ -65,6 +65,7 @@ pub const FILE_VIDEO: &str = "m.video";
 pub const FILE_FILE: &str = "m.file";
 pub const FILE_GIF: &str = "fi.mau.gif";
 pub const FILE_VOICE: &str = "org.matrix.msc3245.voice";
+pub const FILE_STICKER: &str = "m.sticker";
 /// The limits of one file kind of `com.beeper.room_features`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct FileRule {

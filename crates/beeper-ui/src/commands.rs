@@ -560,6 +560,12 @@ impl BeeperGuiApp {
             v.push(cmd(e, tr("Send file"), file).keys(file_keys).hotkey("Chat: Send File"));
             let gif = (self.pane.editing_message_id.is_none()).then_some(UiMessage::TogglePicker(crate::Picker::Gif));
             v.push(cmd(e, tr("Send GIF"), gif).keys(&["attachment", "image", "video"]).hotkey("Message: Send GIF"));
+            if st.settings.on("stickerPacks") {
+                let sticker =
+                    self.pane.editing_message_id.is_none().then_some(UiMessage::TogglePicker(crate::Picker::Sticker));
+                let keys = &["attachment", "image", "video"];
+                v.push(cmd(e, tr("Send Sticker"), sticker).keys(keys).hotkey("Message: Send Sticker"));
+            }
             v.push(cmd(e, tr("Export all loaded messages to .txt file"), Some(UiMessage::ExportChat)));
             let a = c.account_id.as_str();
             let props = st.settings.account(a);
