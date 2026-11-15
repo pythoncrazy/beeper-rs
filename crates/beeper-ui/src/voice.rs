@@ -78,6 +78,8 @@ pub struct Player {
     pub menu: Option<Point>,
     /// The Playback Speed submenu of the message menu is open.
     pub sub: bool,
+    /// The Transcription Language submenu of the message menu is open.
+    pub lang: bool,
     /// `menu` is the right-click menu of the global player.
     pub pill: bool,
     /// The global player is closed until a track plays.
@@ -122,6 +124,7 @@ impl Player {
             rate: 1.0,
             menu: None,
             sub: false,
+            lang: false,
             pill: false,
             closed: false,
             ended: None,
@@ -144,6 +147,9 @@ pub enum Msg {
     Menu,
     PillMenu,
     Sub,
+    LangSub,
+    /// A language of the Transcription Language submenu: a new transcription of the message in that language.
+    Language(String, String),
     Rate(f32),
     Tick,
     Skip(bool),
@@ -157,8 +163,8 @@ pub enum Msg {
     More(String),
     /// Desktop's `transcribeAttachment` of a message: again when true, in a language or else the default one.
     Transcribe(String, bool, Option<String>),
-    /// The transcript of a message in a language, or the text of the error toast.
-    Transcribed(String, String, Result<String, String>),
+    /// The transcript of a message in a language, or the error toast, which an automatic transcription does not show.
+    Transcribed(String, String, Result<String, Option<String>>),
     /// The answer to the privacy notice of transcriptions.
     Allow(bool),
     /// A frame of the spinner of a transcription.
@@ -263,7 +269,7 @@ impl BeeperGuiApp {
         }
         let audio = &mut self.audio;
         match msg {
-            Msg::Transcribe(mid, again, language) => return self.transcribe(mid, again, language),
+            Msg::Transcribe(mid, again, language) => return self.transcribe(mid, again, language, false),
             Msg::Transcribed(mid, language, Ok(text)) => {
                 self.audio.transcribing.remove(&mid);
                 let t =
@@ -273,7 +279,7 @@ impl BeeperGuiApp {
             }
             Msg::Transcribed(mid, language, Err(toast)) => {
                 self.audio.transcribing.insert(mid, (language, true));
-                self.status_banner = toast;
+                self.status_banner = toast.unwrap_or_default();
                 return Task::none();
             }
             Msg::Allow(on) => {
@@ -281,7 +287,7 @@ impl BeeperGuiApp {
                 let (mid, again, language) =
                     self.audio.asked.take().expect("the privacy notice asks for a transcription");
                 let set = self.handle(UiMessage::SetPref("transcribeWithOpenai", u8::from(on)));
-                return if on { Task::batch([set, self.transcribe(mid, again, language)]) } else { set };
+                return if on { Task::batch([set, self.transcribe(mid, again, language, false)]) } else { set };
             }
             Msg::Spin => {}
             Msg::Loaded(url, clip) => {
@@ -341,7 +347,19 @@ impl BeeperGuiApp {
             Msg::SeekEnd => audio.output(),
             Msg::Menu => (audio.menu, audio.pill) = (Some(self.cursor.get()), false),
             Msg::PillMenu => (audio.menu, audio.pill, audio.sub) = (Some(self.cursor.get()), true, false),
-            Msg::Sub => audio.sub = true,
+            Msg::Sub => (audio.sub, audio.lang) = (true, false),
+            Msg::LangSub => (audio.sub, audio.lang) = (false, true),
+            // Desktop's `retranscribeWithLanguage`: the paywall when no free transcriptions are left.
+            Msg::Language(mid, code) => {
+                (audio.lang, self.pane.message_menu) = (false, None);
+                let used_up = self.store.read().features.free_uses("voice-transcription").is_some_and(|(u, l)| u >= l);
+                if used_up {
+                    return self.handle(UiMessage::OpenSettings(crate::SettingsTab::BeeperPlus));
+                }
+                if !self.audio.transcribing.get(&mid).is_some_and(|s| !s.1) {
+                    return self.transcribe(mid, true, Some(code), false);
+                }
+            }
             Msg::More(id) => {
                 if !audio.more.remove(&id) {
                     audio.more.insert(id);
@@ -552,17 +570,48 @@ impl BeeperGuiApp {
             .into()
     }
 
-    /// The Playback Speed row of the message menu of a voice message.
-    pub(crate) fn voice_menu_row(&self, m: &Message) -> Option<(El<'_>, f32)> {
-        m.attachments.first().filter(|a| self.playable(a))?;
-        let open = UiMessage::Voice(Msg::Sub);
-        let row = menu_item(&self.pal, None, tr("Playback Speed").into(), "›", Some(open.clone()));
-        Some((mouse_area(row).on_enter(open).into(), MENU_ITEM))
+    /// The "Playback Speed" row of the message menu of a playable audio message, and its "Transcription Language"
+    /// row when the account can transcribe.
+    pub(crate) fn voice_menu_rows(&self, st: &BeeperStore, m: &Message) -> Vec<(El<'_>, f32)> {
+        let Some(a) = m.attachments.first().filter(|a| a.attachment_type == "audio") else { return Vec::new() };
+        let row = |label: &'static str, open: Msg| -> (El<'_>, f32) {
+            let open = UiMessage::Voice(open);
+            let row = menu_item(&self.pal, None, tr(label).into(), "›", Some(open.clone()));
+            (mouse_area(row).on_enter(open).into(), MENU_ITEM)
+        };
+        let speed = self.playable(a).then(|| row("Playback Speed", Msg::Sub));
+        let language = st.feature("voice-transcription").on.then(|| row("Transcription Language", Msg::LangSub));
+        speed.into_iter().chain(language).collect()
     }
 
-    /// The Playback Speed submenu of the message menu, `top` below the top of the menu.
-    pub(crate) fn view_voice_speed(&self, top: f32) -> Option<El<'_>> {
-        self.audio.sub.then(|| column![Space::new().height(top), self.view_rate_menu()].into())
+    /// The open submenu of the message menu of `m` and its width: the Playback Speed menu `top` below the top of the
+    /// menu, or the Transcription Language menu below it, at most `room` tall.
+    pub(crate) fn view_voice_sub(&self, st: &BeeperStore, m: &Message, top: f32, room: f32) -> Option<(El<'_>, f32)> {
+        if self.audio.sub {
+            return Some((column![Space::new().height(top), self.view_rate_menu()].into(), rate_menu_w()));
+        }
+        if !self.audio.lang {
+            return None;
+        }
+        let a = &m.attachments[0];
+        let top = top + if self.playable(a) { MENU_ITEM } else { 0.0 };
+        // Desktop's `getTranscriptionLanguage`: the language of the transcription, else the default language.
+        let pref = beeper_core::prefs::TRANSCRIPTION_CODES[st.settings.pref("transcriptionLanguage") as usize];
+        let current = a.transcription.as_ref().and_then(|t| t.language.as_deref()).unwrap_or(pref);
+        let p = &self.pal;
+        let item = |&(code, name): &(&'static str, &'static str)| {
+            let lead = Some(container((code == current).then(|| ic(icon::CHECK, 14.0))).width(22).into());
+            let pick = UiMessage::Voice(Msg::Language(m.id.clone(), code.into()));
+            menu_item(p, lead, tr(name).into(), "", Some(pick))
+        };
+        let langs = &beeper_core::prefs::TRANSCRIPTION_LANGUAGES;
+        let items = std::iter::once(item(&langs[0])).chain([crate::menu_rule(p)]).chain(langs[1..].iter().map(item));
+        let names = langs.iter().map(|(_, n)| text_width(tr(n), 13.0, Weight::Normal));
+        let w = 10.0 + 16.0 + 22.0 + names.fold(0.0, f32::max);
+        let h = (8.0 + 11.0 + (langs.len() as f32) * MENU_ITEM).min((room - top).max(4.0 * MENU_ITEM));
+        let list = iced::widget::scrollable(Column::with_children(items).padding([4, 0])).height(h);
+        let menu = container(list).width(w).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        Some((column![Space::new().height(top), menu].into(), w))
     }
 
     /// `GlobalAudioControls`, `w` wide, with the parts that Desktop's container queries hide at that width.
@@ -702,7 +751,7 @@ impl BeeperGuiApp {
     /// Desktop's `transcribeAttachment`, after its privacy notice (`oL`): the Whisper transcript of the first
     /// attachment of the message `mid`, in `language` or the default language. Desktop's `fetchLatestRelation` of an
     /// earlier transcription is not done: its endpoint is not known.
-    fn transcribe(&mut self, mid: String, again: bool, language: Option<String>) -> Task<UiMessage> {
+    fn transcribe(&mut self, mid: String, again: bool, language: Option<String>, quiet: bool) -> Task<UiMessage> {
         let st = self.store.read();
         if !st.settings.on("transcribeWithOpenai") {
             drop(st);
@@ -711,7 +760,8 @@ impl BeeperGuiApp {
         }
         let a = crate::stored(&st, &mid).attachments.swap_remove(0);
         assert!(again || a.transcription.is_none(), "the message has no transcription yet");
-        let language = language.unwrap_or_else(|| "auto".into());
+        let default = beeper_core::prefs::TRANSCRIPTION_CODES[st.settings.pref("transcriptionLanguage") as usize];
+        let language = language.unwrap_or_else(|| default.into());
         let code = beeper_core::prefs::transcription_language(&language).map(|_| language.clone());
         let (client, s) = (st.matrix.clone(), &st.beeper_state);
         let (base, token) = (beeper_core::cloud::ai_services(&s.homeserver), s.access_token.clone());
@@ -719,13 +769,29 @@ impl BeeperGuiApp {
         self.audio.transcribing.insert(mid.clone(), (language.clone(), false));
         let url = a.src_url.clone().expect("an audio attachment has a URL");
         let run = async move {
-            let failed = |_| tr("Failed to transcribe audio message").to_string();
+            let toast = move |t: String| (!quiet).then_some(t);
+            let failed = |_| toast(tr("Failed to transcribe audio message").into());
             let bytes = beeper_core::matrix::media(client, url).await.map_err(failed)?;
             let ext = audio_ext(&a);
-            let bytes = tokio::task::spawn_blocking(move || whisper_audio(bytes, &ext)).await.expect("the MP3 task")?;
+            let mp3 = tokio::task::spawn_blocking(move || whisper_audio(bytes, &ext));
+            let bytes = mp3.await.expect("the MP3 task").map_err(toast)?;
             beeper_core::cloud::transcribe(&base, &token, bytes, code.as_deref()).await.map_err(failed)
         };
         Task::perform(run, move |r| UiMessage::Voice(Msg::Transcribed(mid, language, r)))
+    }
+
+    /// Desktop's `autoTranscribeVoiceNote`: quiet transcriptions of the shown voice notes that asked for one.
+    pub(crate) fn auto_transcribe(&mut self) -> Task<UiMessage> {
+        let asked = std::mem::take(&mut *self.wants.transcribe.borrow_mut());
+        let st = self.store.read();
+        // A shown message can get a transcription or leave the store before this frame.
+        let open = |mid: &String| {
+            st.msg_idx_by_id.get(mid).is_some_and(|&i| st.messages[i].attachments[0].transcription.is_none())
+        };
+        let asked: Vec<_> =
+            asked.into_iter().filter(|mid| !self.audio.transcribing.contains_key(mid) && open(mid)).collect();
+        drop(st);
+        Task::batch(asked.into_iter().map(|mid| self.transcribe(mid, false, None, true)).collect::<Vec<_>>())
     }
 
     /// The frames of the spinners while a transcription is in flight.
@@ -741,6 +807,16 @@ impl BeeperGuiApp {
         let state = self.audio.transcribing.get(&m.id);
         let (done, sent) = (a.transcription.is_some(), !crate::pending(st, m));
         let can = st.feature("voice-transcription").on && sent && !done && state.is_none_or(|s| s.1);
+        // Desktop's `autoTranscribeVoiceNote` runs when a voice note shows.
+        let s = &st.settings;
+        if can
+            && state.is_none()
+            && a.is_voice_note == Some(true)
+            && s.on("autoTranscribe")
+            && s.on("transcribeWithOpenai")
+        {
+            self.wants.ask(&self.wants.transcribe, m.id.as_str());
+        }
         let free = st.features.free_uses("voice-transcription");
         let used_up = sent && !can && free.is_some_and(|(used, limit)| used >= limit);
         let small = |s: String, c: Color| txt(s, 11.0).line_height(Pixels(14.0)).color(c);
@@ -872,7 +948,7 @@ mod tests {
         let _ = app.update(UiMessage::Voice(Msg::Allow(true)));
         assert!(app.store.read().settings.on("transcribeWithOpenai"));
         assert!(has(&app, "Transcribing in German…") && app.transcribe_ticks().is_some());
-        let failed = Err("Failed to transcribe audio message".to_string());
+        let failed = Err(Some("Failed to transcribe audio message".to_string()));
         let _ = app.update(UiMessage::Voice(Msg::Transcribed(id.clone(), "de".into(), failed)));
         assert!(has(&app, "Error transcribing audio") && app.status_banner == "Failed to transcribe audio message");
         let again = click(&mut app, "Try Again");
@@ -895,6 +971,48 @@ mod tests {
             matches!(&paywall[..], [UiMessage::OpenSettings(crate::SettingsTab::BeeperPlus)]),
             "no free uses are left"
         );
+    }
+
+    /// Desktop's "Transcription Language" submenu transcribes again in the picked language, and its automatic
+    /// transcription starts a quiet transcription of a shown voice note in the default language.
+    #[test]
+    fn transcription_language_and_auto_transcribe_like_desktop() {
+        let mut app = crate::fuzz::demo_app("voice-language");
+        let id = "msg_1000c".to_string();
+        app.store.write().features = beeper_core::features::Flags::free_plan();
+        let _ = app.update(UiMessage::SelectChat("!wa_eric:beeper.com".into()));
+        let _ = app.update(UiMessage::OpenMessageMenu(id.clone()));
+        let _ = app.update(UiMessage::Voice(Msg::LangSub));
+        let mut sim = iced_test::simulator(app.view_main());
+        assert!(sim.find("Transcription Language").is_ok() && sim.find("Auto-detect").is_ok());
+        let _ = sim.click("German").expect("the languages of Whisper");
+        let picked: Vec<_> = sim.into_messages().collect();
+        assert!(matches!(&picked[..], [UiMessage::Voice(Msg::Language(m, l))] if *m == id && l == "de"));
+        for m in picked {
+            let _ = app.update(m);
+        }
+        assert!(app.pane.message_menu.is_none() && app.confirm == Some(crate::ASK_TRANSCRIBE));
+        assert_eq!(app.audio.asked, Some((id.clone(), true, Some("de".into()))));
+        let _ = app.update(UiMessage::Ask(None));
+        {
+            let mut st = app.store.write();
+            let i = st.find_message(&id).unwrap();
+            st.update_message(i, |m| m.attachments[0].transcription = None);
+            st.settings.set_pref("transcribeWithOpenai", 1);
+            st.settings.set_pref("transcriptionLanguage", 14);
+        }
+        assert!(app.auto_transcribe_asked(&id).is_none(), "auto-transcribe is off");
+        app.store.write().settings.set_pref("autoTranscribe", 1);
+        assert_eq!(app.auto_transcribe_asked(&id), Some(("en".to_string(), false)));
+    }
+
+    impl BeeperGuiApp {
+        /// Draws the open chat, starts the automatic transcriptions, and gives the state of the transcription of `mid`.
+        fn auto_transcribe_asked(&mut self, mid: &str) -> Option<(String, bool)> {
+            let _ = iced_test::simulator(self.view_main());
+            let _ = self.auto_transcribe();
+            self.audio.transcribing.get(mid).cloned()
+        }
     }
 
     /// Desktop's `getAudioExtension` and the files that Whisper rejects.
