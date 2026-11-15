@@ -9,10 +9,10 @@ use beeper_core::config::{
     APP_VERSION, NETWORK_SPECS,
 };
 use beeper_core::connect::{Token, READ};
-use beeper_core::matrix::{self, MediaInfo, Outgoing};
+use beeper_core::matrix;
 use beeper_core::models::*;
 use beeper_core::platform::{extension_of, is_mime, mime_type_of, path_to_file_url, OsKind};
-use beeper_core::store::{activity_key, tokenize, BeeperStore, Query, SharedStore};
+use beeper_core::store::{activity_key, tokenize, BeeperStore, Draft, OutFile, Query, SharedStore};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -1707,103 +1707,45 @@ fn avatar_file(url: &str) -> Result<(String, Vec<u8>, String), Response> {
 
 /// Desktop's `resolveUploadedMessageAttachment`: the upload, with the name, the type, the size and the length of the
 /// request in place of the stored ones. The `type` of the request marks GIFs, voice notes and stickers.
-fn upload_attachment(st: &BeeperStore, a: &Value) -> Result<(Attachment, std::path::PathBuf), Response> {
+fn upload_file(st: &BeeperStore, a: &Value) -> Result<OutFile, Response> {
     let missing = || error(StatusCode::BAD_REQUEST, "uploadID is required", "MISSING_UPLOAD_ID");
     let upload_id = a["uploadID"].as_str().ok_or_else(missing)?;
     let stored = st.assets.get(upload_id).ok_or_else(|| upload_not_found(upload_id))?;
     let mime = a["mimeType"].as_str().unwrap_or(&stored.mime_type).to_string();
+    if !is_mime(&mime) {
+        return Err(bad("mimeType must be a MIME type"));
+    }
+    let expired = || error(StatusCode(410), &format!("Upload expired: {upload_id}"), "UPLOAD_EXPIRED");
+    let bytes = std::fs::read(st.config.assets_dir.join(&stored.disk_name)).map_err(|_| expired())?;
     let kind = a["type"].as_str();
     let dim = |k: &str| a["size"][k].as_f64().map(|n| n as u32);
-    let size = match (dim("width"), dim("height")) {
-        (Some(w), Some(h)) => Some((w, h)),
-        _ => stored.width.zip(stored.height),
-    };
-    let attachment = Attachment {
-        attachment_type: match mime.split('/').next() {
-            Some("image") => "img",
-            Some("video") => "video",
-            Some("audio") => "audio",
-            _ => "unknown",
-        }
-        .into(),
-        id: Some(upload_id.into()),
+    Ok(OutFile {
+        bytes,
+        name: a["fileName"].as_str().unwrap_or(&stored.file_name).to_string(),
+        size: dim("width").zip(dim("height")).or(stored.width.zip(stored.height)),
         duration: a["duration"].as_f64().or(stored.duration),
-        file_name: Some(a["fileName"].as_str().unwrap_or(&stored.file_name).to_string()),
-        file_size: Some(stored.file_size),
-        is_gif: Some(kind == Some("gif") || mime == "image/gif"),
-        is_sticker: Some(kind == Some("sticker")),
-        is_voice_note: Some(kind == Some("voice-note")),
-        mime_type: Some(mime),
-        size: size.map(|(w, h)| AttachmentSize { width: Some(w), height: Some(h) }),
-        src_url: Some(stored.mxc_url.clone()),
-        ..Attachment::default()
-    };
-    Ok((attachment, st.config.assets_dir.join(&stored.disk_name)))
+        gif: kind == Some("gif") || mime == "image/gif",
+        sticker: kind == Some("sticker"),
+        voice: (kind == Some("voice-note")).then(Vec::new),
+        echo_url: Some(stored.mxc_url.clone()),
+        mime,
+        pack: None,
+    })
 }
 
+/// Desktop's `sendMessage`: the text, or the file with the text as its caption, like the composer.
 fn send_message(st: &mut BeeperStore, id: &str, r: &Req) -> Reply {
-    let attachment = match &r.body["attachment"] {
+    let file = match &r.body["attachment"] {
         Value::Null => None,
-        a => Some(upload_attachment(st, a)?),
+        a => Some(upload_file(st, a)?),
     };
     let (text, reply_to) = (r.owned("text"), r.owned("replyToMessageID"));
-    if text.is_none() && attachment.is_none() {
+    if text.is_none() && file.is_none() {
         return Err(bad("text or attachment is required"));
     }
-    let file = match attachment {
-        Some((a, path)) => {
-            let expired = || {
-                let message = format!("Upload expired: {}", a.id.as_deref().expect("an upload ID"));
-                error(StatusCode(410), &message, "UPLOAD_EXPIRED")
-            };
-            if !is_mime(a.mime_type.as_deref().expect("a MIME type")) {
-                return Err(bad("mimeType must be a MIME type"));
-            }
-            Some((std::fs::read(&path).map_err(|_| expired())?, a))
-        }
-        None => None,
-    };
-    let shown = file.as_ref().map(|(_, a)| a.clone());
-    let (chat_id, txn, _) = st.send_message(id, text.clone(), reply_to.clone(), shown).map_err(store_error)?;
-    let out = match file {
-        None => Outgoing::Send {
-            txn: txn.clone(),
-            text: text.expect("a text message"),
-            reply_to,
-            preview: None,
-            mentions: Vec::new(),
-            thread: None,
-        },
-        // The file goes to the network with the text as its caption, like the composer.
-        Some((bytes, a)) => {
-            let info = match (a.is_voice_note, a.size.as_ref()) {
-                (Some(true), _) => {
-                    MediaInfo::Voice { ms: (a.duration.unwrap_or(0.0) * 1000.0) as u64, wave: Vec::new() }
-                }
-                (_, Some(s)) if a.attachment_type == "img" => {
-                    MediaInfo::Image(s.width.expect("a width"), s.height.expect("a height"))
-                }
-                _ => MediaInfo::File,
-            };
-            let (name, mime) = (a.file_name.expect("a file name"), a.mime_type.expect("a MIME type"));
-            // Desktop's `isGif`: a GIF picker file, or a file of the GIF type.
-            let gif = a.is_gif == Some(true) || mime == "image/gif";
-            Outgoing::Media {
-                txn: txn.clone(),
-                bytes,
-                name,
-                mime,
-                info,
-                caption: text,
-                reply_to,
-                thread: None,
-                gif,
-                sticker: None,
-            }
-        }
-    };
-    st.queue(&chat_id, out);
-    ok(&json!({ "chatID": chat_id, "pendingMessageID": txn }))
+    let draft = Draft { text, reply_to, files: file.into_iter().collect(), ..Draft::default() };
+    let (chat_id, txns) = st.send(id, draft).map_err(store_error)?;
+    ok(&json!({ "chatID": chat_id, "pendingMessageID": txns[0] }))
 }
 
 /// Desktop's `searchMessages`: the newest messages that match the query and the filters, at most 20 for each page,

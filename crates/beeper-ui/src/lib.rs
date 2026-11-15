@@ -74,12 +74,12 @@ use beeper_core::config::{
     parse_when_millis, rfc3339_from_millis,
 };
 use beeper_core::import::has_beeper_data;
-use beeper_core::matrix::{DeviceInfo, MediaInfo, Mention, Outgoing, ROOM_MENTION};
+use beeper_core::matrix::{DeviceInfo, Mention, Outgoing, ROOM_MENTION};
 use beeper_core::models::*;
 use beeper_core::platform::{current_original_beeper_data_dir, open_url_or_path_command, DisplayServerKind, OsKind};
 use beeper_core::prefs;
 use beeper_core::storage;
-use beeper_core::store::{BeeperStore, NetworkSpace, Query, SharedStore, NOTE_CHAT_ID};
+use beeper_core::store::{BeeperStore, Draft, NetworkSpace, OutFile, Query, SharedStore, NOTE_CHAT_ID};
 use iced::font::Weight;
 use iced::gradient::Linear;
 use iced::keyboard::{self, key::Named, Key, Modifiers};
@@ -3656,54 +3656,27 @@ fn gif_page(q: String, pos: String) -> Task<UiMessage> {
     Task::perform(beeper_core::cloud::klipy_gifs(q.clone(), pos), move |r| UiMessage::GifsLoaded(q.clone(), more, r))
 }
 
-type MediaOut =
-    Box<dyn FnOnce(String, Option<String>, Option<String>, Option<beeper_core::matrix::ThreadSend>) -> Outgoing>;
-
-/// Desktop's `KFe`: the attachment of the local echo of a file, and the send for its transaction, caption, reply and
-/// thread. A video and an audio file go with their measured length and size. An image keeps its frames in `media`.
-fn file_echo(
-    media: &mut images::Images<Result<Frames, String>>,
-    st: &mut BeeperStore,
-    f: PendingMedia,
-) -> (Attachment, MediaOut) {
+/// Desktop's `KFe`: a composer file to send. A video and an audio file go with their measured length and size. An
+/// image keeps its frames in `media`, under the URL of its local echo.
+fn out_file(media: &mut images::Images<Result<Frames, String>>, st: &mut BeeperStore, f: PendingMedia) -> OutFile {
     let PendingMedia { bytes, name, mime, is_gif, size, frames, duration, sticker } = f;
     let image = !frames.is_empty() && mime.starts_with("image/");
     let key = format!("pasted:{}", st.next_id("img"));
     if image {
         media.insert(key.clone(), Some(Ok(frames)));
     }
-    let info = MediaInfo::of(&mime, (size.0 > 0).then_some(size), duration);
-    let kind = match info {
-        MediaInfo::Image(..) => "img",
-        MediaInfo::Video(..) => "video",
-        MediaInfo::Audio(_) => "audio",
-        _ => "file",
-    };
-    let att = Attachment {
-        attachment_type: kind.into(),
-        duration,
-        file_name: Some(name.clone()),
-        file_size: Some(bytes.len() as u64),
-        is_gif: Some(is_gif),
-        is_sticker: Some(sticker.is_some()),
-        mime_type: Some(mime.clone()),
-        size: (size.0 > 0).then_some(AttachmentSize { width: Some(size.0), height: Some(size.1) }),
-        src_url: image.then_some(key),
-        ..Default::default()
-    };
-    let out = move |txn, caption, reply_to, thread| Outgoing::Media {
-        txn,
+    OutFile {
         bytes,
         name,
         mime,
-        info,
-        caption,
-        reply_to,
-        thread,
+        size: (size.0 > 0).then_some(size),
+        duration,
         gif: is_gif,
-        sticker,
-    };
-    (att, Box::new(out))
+        sticker: sticker.is_some(),
+        pack: sticker,
+        voice: None,
+        echo_url: image.then_some(key),
+    }
 }
 
 fn pref_row<'a>(
@@ -3974,24 +3947,9 @@ impl Pane {
         self.reply_to_message_id.take().or_else(|| self.reply_thread.clone())
     }
 
-    /// The local echo of a message to `reply_to` with `text` and `att`, with Desktop's `threadSendOptions` in a
-    /// thread pane: the transaction, the message that it replies to, and the thread.
-    fn compose(
-        &self,
-        st: &mut BeeperStore,
-        chat: &str,
-        text: Option<String>,
-        reply_to: Option<String>,
-        att: Option<Attachment>,
-    ) -> (String, Option<String>, Option<beeper_core::matrix::ThreadSend>) {
-        let Some(root) = self.thread_root.as_deref() else {
-            let (_, txn, _) = st.send_message(chat, text, reply_to.clone(), att).expect("send a message");
-            return (txn, reply_to, None);
-        };
-        let chosen = reply_to.filter(|r| r == root || st.thread_replies(root).any(|m| m.id == *r));
-        let t = st.thread_send(root, chosen, self.broadcast);
-        let (_, txn, _) = st.send_in_thread(chat, text, att, &t).expect("send a thread reply");
-        (txn, Some(t.quoted.clone()), Some(t))
+    /// The thread of a send from the pane: the root of a thread pane, and its "Also send to chat".
+    fn send_thread(&self) -> Option<(String, bool)> {
+        self.thread_root.clone().map(|root| (root, self.broadcast))
     }
 }
 
@@ -5466,37 +5424,23 @@ impl BeeperGuiApp {
         } else if let Some(target) = self.pane.editing_message_id.take() {
             st.edit_message(&chat_id, &target, text, mentions).expect("edit message");
         } else {
-            let mut reply_to = self.pane.reply_target();
+            let reply_to = self.pane.reply_target();
             let files = std::mem::take(&mut self.pane.attachments);
             let delay =
                 st.feature("undo-send").on.then(|| prefs::UNDO_SEND_MS[usize::from(st.settings.pref("undoSendDelay"))]);
             let delay = delay.filter(|&ms| ms > 0);
             let restore = delay.map(|_| (text.clone(), reply_to.clone(), files.clone()));
-            let mut sends = Vec::new();
-            let caption = caption(&text, &files);
-            if !text.is_empty() && caption.is_none() {
-                let urls = text_urls(&text);
-                let preview = self.pane.composer_links.iter().find_map(|(u, s)| match s {
-                    LinkState::Loaded(v, img) if urls.contains(&u.as_str()) => {
-                        Some((v.clone(), img.as_ref().map(|(b, _)| b.clone())))
-                    }
-                    _ => None,
-                });
-                let (txn, to, thread) =
-                    self.pane.compose(&mut st, &chat_id, Some(text.clone()), reply_to.clone(), None);
-                if let Some(link) = preview.as_ref().and_then(|(v, _)| beeper_core::matrix::link(v)) {
-                    let i = st.msg_idx_by_id[&txn];
-                    st.update_message(i, |m| m.links = vec![link]);
+            let urls = text_urls(&text);
+            let preview = self.pane.composer_links.iter().find_map(|(u, s)| match s {
+                LinkState::Loaded(v, img) if urls.contains(&u.as_str()) => {
+                    Some((v.clone(), img.as_ref().map(|(b, _)| b.clone())))
                 }
-                reply_to = None;
-                sends.push((txn.clone(), Outgoing::Send { txn, text, reply_to: to, preview, mentions, thread }));
-            }
-            for f in files {
-                let (att, out) = file_echo(&mut self.media, &mut st, f);
-                let (txn, to, thread) =
-                    self.pane.compose(&mut st, &chat_id, caption.clone(), reply_to.take(), Some(att));
-                sends.push((txn.clone(), out(txn, caption.clone(), to, thread)));
-            }
+                _ => None,
+            });
+            let files = files.into_iter().map(|f| out_file(&mut self.media, &mut st, f)).collect();
+            let text = Some(text).filter(|t| !t.is_empty());
+            let draft = Draft { text, reply_to, mentions, preview, thread: self.pane.send_thread(), files };
+            let (_, sends) = st.echo_draft(&chat_id, draft).expect("send a message");
             // Desktop's `queuePendingMessages` sends the earlier queue of the chat first.
             if let Some(i) = self.queued.iter().position(|q| q.chat == chat_id) {
                 for (_, out) in self.queued.remove(i).sends {
@@ -5506,9 +5450,10 @@ impl BeeperGuiApp {
             match (delay, restore) {
                 (Some(ms), Some((text, reply_to, files))) => {
                     let due = now_unix_millis() + ms;
+                    let sends = sends.into_iter().map(|o| (o.message().expect("an echo").to_string(), o)).collect();
                     self.queued.push(Queued { chat: chat_id.clone(), due, sends, text, reply_to, files });
                 }
-                _ => sends.into_iter().for_each(|(_, out)| st.queue(&chat_id, out)),
+                _ => sends.into_iter().for_each(|out| st.queue(&chat_id, out)),
             }
             // A reply in the thread pane reads the thread, not the chat.
             if self.pane.thread_root.is_none() {
@@ -5535,20 +5480,8 @@ impl BeeperGuiApp {
                 self.set_archived(&mut st, idx, false);
             }
             let text = Some(s.text).filter(|t| !t.is_empty());
-            let out = match s.upload {
-                None => {
-                    let (_, txn, _) =
-                        st.send_message(&s.chat_id, text.clone(), s.reply_to.clone(), None).expect("send scheduled");
-                    let text = text.expect("a scheduled text part has text");
-                    Outgoing::Send {
-                        txn,
-                        text,
-                        reply_to: s.reply_to,
-                        preview: None,
-                        mentions: Vec::new(),
-                        thread: None,
-                    }
-                }
+            let files = match s.upload {
+                None => Vec::new(),
                 // "Clear storage" can remove the upload before the send.
                 Some(id) => {
                     let f = match st.assets.contains_key(&id) {
@@ -5564,14 +5497,11 @@ impl BeeperGuiApp {
                     };
                     // Desktop removes the file of a sent message.
                     st.drop_unused_uploads(&[id]);
-                    let (att, out) = file_echo(&mut self.media, &mut st, f);
-                    let (_, txn, _) = st
-                        .send_message(&s.chat_id, text.clone(), s.reply_to.clone(), Some(att))
-                        .expect("send scheduled");
-                    out(txn, text, s.reply_to, None)
+                    vec![out_file(&mut self.media, &mut st, f)]
                 }
             };
-            st.queue(&s.chat_id, out);
+            let draft = Draft { text, reply_to: s.reply_to, files, ..Draft::default() };
+            st.send(&s.chat_id, draft).expect("send scheduled");
         }
         drop(st);
         failed.into_iter().for_each(|e| self.fail(Toast::new(e)));

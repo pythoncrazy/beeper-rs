@@ -2,6 +2,7 @@
 use crate::style::{bordered_box, btn_style, fill_box, hex, hidden_slider, txt, CLEAR};
 use crate::voice::{self, Clip, HZ, ICONS};
 use crate::{tinted, BeeperGuiApp, El, UiMessage};
+use beeper_core::store::{Draft, OutFile};
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{mouse, renderer, Clipboard, Renderer as _, Shell};
@@ -292,38 +293,22 @@ impl BeeperGuiApp {
             Msg::Key(k) => unreachable!("the recorder does not take {k:?}"),
             Msg::Tick => {}
             Msg::Encoded(chat, reply_to, clip, wave, Ok(bytes)) => {
-                let ms = (clip.secs() * 1000.0) as u64;
                 let mut st = self.store.write();
                 let key = format!("recorded:{}", st.next_id("voice"));
-                let att = beeper_core::models::Attachment {
-                    attachment_type: "audio".into(),
+                let file = OutFile {
+                    bytes,
+                    name: "voice-note.ogg".into(),
+                    mime: "audio/ogg".into(),
                     duration: Some(f64::from(clip.secs())),
-                    file_name: Some("voice-note.ogg".into()),
-                    file_size: Some(bytes.len() as u64),
-                    is_voice_note: Some(true),
-                    mime_type: Some("audio/ogg".into()),
-                    src_url: Some(key.clone()),
-                    ..Default::default()
+                    voice: Some(wave),
+                    echo_url: Some(key.clone()),
+                    ..OutFile::default()
                 };
-                let (txn, reply_to, thread) = self.pane.compose(&mut st, &chat, None, reply_to, Some(att));
-                if thread.is_none() {
+                let draft = Draft { reply_to, thread: self.pane.send_thread(), files: vec![file], ..Draft::default() };
+                st.send(&chat, draft).expect("send a voice note");
+                if self.pane.thread_root.is_none() {
                     st.mark_chat_read(&chat, true);
                 }
-                let info = beeper_core::matrix::MediaInfo::Voice { ms, wave };
-                let (name, mime) = ("voice-note.ogg".into(), "audio/ogg".into());
-                let out = beeper_core::matrix::Outgoing::Media {
-                    txn,
-                    bytes,
-                    name,
-                    mime,
-                    info,
-                    caption: None,
-                    reply_to,
-                    thread,
-                    gif: false,
-                    sticker: None,
-                };
-                st.queue(&chat, out);
                 drop(st);
                 self.refresh_theme_and_tray();
                 return self.voice(voice::Msg::Loaded(key, Ok(clip)));
