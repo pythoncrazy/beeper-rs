@@ -8,6 +8,8 @@ pub enum Control {
     Microphone,
     /// Desktop's multiselect of a Plus feature, which shows the labels of its default values.
     Multi(&'static [&'static str]),
+    /// Desktop's "Share Analytics", the `analyticsDisabled` field of the Beeper account.
+    Analytics,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,7 +55,7 @@ impl Pref {
         match self.control {
             Control::Toggle(on) => on as u8,
             Control::Select(_, i) | Control::Slider(i) => i,
-            Control::Archive(..) | Control::Microphone | Control::Multi(_) => {
+            Control::Archive(..) | Control::Microphone | Control::Multi(_) | Control::Analytics => {
                 unreachable!("the row {} has no value", self.key)
             }
         }
@@ -64,7 +66,7 @@ impl Pref {
             Control::Toggle(_) => 1,
             Control::Select(options, _) => options.len() as u8 - 1,
             Control::Slider(_) => 100,
-            Control::Archive(..) | Control::Microphone | Control::Multi(_) => {
+            Control::Archive(..) | Control::Microphone | Control::Multi(_) | Control::Analytics => {
                 unreachable!("the row {} has no value", self.key)
             }
         }
@@ -80,6 +82,11 @@ impl Pref {
 
     const fn badge(self, badge: Badge) -> Self {
         Pref { badge: Some(badge), ..self }
+    }
+
+    /// A row that shows only when the account shows the Desktop feature.
+    const fn gated(self, feature: &'static str) -> Self {
+        Pref { feature: Some(feature), ..self }
     }
 
     /// A row of a Desktop feature with a Plus pill.
@@ -146,6 +153,11 @@ const UNDO_SEND_DELAYS: &[&str] =
     &["0 ms (disabled)", "750 ms", "1 second", "2 seconds", "3 seconds", "5 seconds", "10 seconds"];
 const SOUND: &[&str] = &["Default", "None"];
 
+/// Desktop's `font_size` options. The root font size is the value plus 3 px, so the default 13 is 16 px.
+pub const FONT_SIZES: &[&str] = &[
+    "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27",
+    "28", "29", "30", "31", "32", "33", "34", "35", "36",
+];
 pub const LANGUAGES: &[&str] =
     &["System", "English", "Deutsch", "Español", "Français", "日本語", "Português do Brasil"];
 pub const ARCHIVE_AGE_DAYS: [i64; 6] = [3, 7, 14, 28, 90, 365];
@@ -167,7 +179,7 @@ pub const GENERAL: &[Item] = &[
         t("archiveOnReminder", "Archive after setting reminder on chat", false).plus("remind-later"),
     ]),
     Item::Group(&[
-        t("markReadOnArchive", "Mark unread chats as read on archive", false),
+        t("markReadOnArchive", "Mark unread chats as read on archive", false).gated("archive-as-unread"),
         s("afterArchive", "After archive", AFTER, 0),
         Pref { key: "archiveOlder", label: "", desc: None, args: &[], badge: None, feature: None, requires: None, name: None, control: Control::Archive(&ARCHIVE_SCOPE, &ARCHIVE_AGE) },
     ]),
@@ -205,11 +217,21 @@ pub const GENERAL: &[Item] = &[
         t("telegramTopics", "Show Telegram Topics as separate spaces", false),
     ]),
     Item::Group(&[
+        t("hwAcceleration", "Hardware acceleration", true),
         t("hiddenEvents", "Show hidden events in timeline", false),
         s("timeFormat", "Time Format", &["12-hour", "24-hour"], 0),
     ]),
-    Item::Group(&[t("shareAnalytics", "Share Analytics", true)
-        .desc("Allow us to collect anonymous analytics to help improve the app.")]),
+    Item::Group(&[Pref {
+        key: "analytics",
+        label: "Share Analytics",
+        desc: Some("Allow us to collect anonymous analytics to help improve the app."),
+        args: &[],
+        badge: None,
+        feature: None,
+        requires: None,
+        name: None,
+        control: Control::Analytics,
+    }]),
 ];
 
 pub const APPEARANCE: &[Item] = &[
@@ -240,6 +262,8 @@ pub const APPEARANCE: &[Item] = &[
         t("showTimestamps", "Show message timestamps", true),
         t("hideDeleted", "Hide deleted messages", false),
         t("messageAnimations", "Enable message animations", true),
+        t("autoplayGifs", "Autoplay GIFs", true),
+        t("animateAvatars", "Animate avatars and emoji", true),
         t("balanceText", "Balance message text", false),
         t("loadEmbeds", "Load external embeds automatically", true),
         t("incognitoIndicator", "Show incognito mode indicator", true).plus("stealth-mode").requires("incognito"),
@@ -271,6 +295,8 @@ pub const APPEARANCE: &[Item] = &[
     Item::ChatTheme,
     Item::Heading("Zoom"),
     Item::Zoom("You can use %1$s to zoom in and %2$s to zoom out.", const { &[cmd!("", " +"), cmd!("", " -")] }),
+    Item::Heading("Font Size"),
+    Item::Group(&[s("fontSize", "Font size", FONT_SIZES, 4)]),
 ];
 
 pub const NOTIFICATIONS: &[Item] = &[
@@ -567,6 +593,8 @@ pub enum Values {
     Secs(&'static [i64]),
     /// A fraction from 0 to 1, for a slider from 0 to 100.
     Volume,
+    /// The numbers of the option labels.
+    Num(&'static [&'static str]),
 }
 
 /// Where Desktop keeps a preference.
@@ -589,6 +617,10 @@ impl Values {
                 at(values.iter().position(|x| Some(*x) == secs))
             }
             Values::Volume => v.as_f64().filter(|f| (0.0..=1.0).contains(f)).map(|f| (f * 100.0).round() as u8),
+            Values::Num(labels) => {
+                let n = v.as_i64().or_else(|| v.as_str()?.parse().ok());
+                at(labels.iter().position(|x| x.parse().ok() == n))
+            }
         }
     }
 
@@ -598,6 +630,7 @@ impl Values {
             Values::Str(values) => values[usize::from(x)].into(),
             Values::Secs(values) => values[usize::from(x)].to_string().into(),
             Values::Volume => (f64::from(x) / 100.0).into(),
+            Values::Num(labels) => labels[usize::from(x)].parse::<i64>().expect("a number option").into(),
         }
     }
 }
@@ -640,7 +673,6 @@ pub const SYNCED: &[(&str, Ad)] = &[
     ("upArrow", v("compose_up_arrow_action", &["focus_message_list", "edit_last_message"])),
     ("whatsappCommunities", Ad::Event("com.beeper.labs.wa_communities_as_spaces", "wa_communities_as_spaces")),
     ("telegramTopics", Ad::Event("com.beeper.labs.tg_topics_as_spaces", "tg_topics_as_spaces")),
-    ("shareAnalytics", b("share_analytics")),
     ("showSidebar", b("show_space_switcher")),
     ("regularPinned", b("compact_pinned_threads")),
     ("showUnreadCount", b("show_unreads")),
@@ -662,6 +694,8 @@ pub const SYNCED: &[(&str, Ad)] = &[
     ("showTimestamps", b("message_timestamps")),
     ("hideDeleted", b("hide_deleted_messages")),
     ("messageAnimations", b("enable_message_animations")),
+    ("autoplayGifs", b("autoplay_gifs")),
+    ("animateAvatars", b("animate_avatars_and_emoji")),
     ("balanceText", b("balance_message_text")),
     ("loadEmbeds", b("load_iframes_automatically")),
     ("quickReactions", b("quick_reactions_enabled")),
@@ -687,7 +721,13 @@ pub const SYNCED: &[(&str, Ad)] = &[
     ("notifyTyping", b("show_typing_notifications")),
     ("notificationDelay", Ad::Desktop("debounce_notifications", Values::Secs(&[0, 10, 30, 60, 120, 300]))),
     ("repeatNotification", Ad::Desktop("renotify_unread_delay", Values::Secs(&[0, 120, 300, 600]))),
+    ("fontSize", Ad::Desktop("font_size", Values::Num(FONT_SIZES))),
+    ("transcribeWithOpenai", b("transcribe_with_openai")),
+    ("mentionLlms", b("mention_llms")),
 ];
+
+/// The keys of the preferences that earlier versions stored. The settings drop them on load.
+pub const RETIRED: &[&str] = &["shareAnalytics"];
 
 pub fn synced(key: &str) -> Option<Ad> {
     SYNCED.iter().find(|(k, _)| *k == key).map(|(_, a)| *a)
@@ -702,7 +742,7 @@ mod tests {
         for (key, ad) in SYNCED {
             let p = find(key);
             let n = match ad {
-                Ad::Desktop(_, Values::Str(v)) => v.len(),
+                Ad::Desktop(_, Values::Str(v) | Values::Num(v)) => v.len(),
                 Ad::Desktop(_, Values::Secs(v)) => v.len(),
                 Ad::Desktop(_, Values::Bool) | Ad::Event(..) => 2,
                 Ad::Desktop(_, Values::Volume) => 101,
@@ -713,6 +753,15 @@ mod tests {
                 assert_eq!(values.decode(&values.encode(x)), Some(x), "{key}");
             }
         }
+    }
+
+    #[test]
+    fn font_size_reads_desktop_numbers() {
+        let Some(Ad::Desktop("font_size", values)) = synced("fontSize") else { panic!("font size is synced") };
+        assert_eq!(find("fontSize").default_value(), values.decode(&serde_json::json!(13)).unwrap());
+        assert_eq!(values.decode(&serde_json::json!("36")), Some(27), "the combobox writes the option key");
+        assert_eq!(values.decode(&serde_json::json!(40)), None);
+        assert_eq!(values.encode(0), serde_json::json!(9));
     }
 
     #[test]

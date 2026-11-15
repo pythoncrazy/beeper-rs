@@ -1828,6 +1828,14 @@ async fn sync_prefs(client: &Client, store: &SharedStore) {
             events.insert(kind, global(client, kind).await);
         }
     }
+    // Desktop's `setFromAccountData`: without `enable_emoji_autocomplete`, the legacy `disable_emoji_autocomplete`
+    // applies.
+    let desktop = events.get_mut(crate::prefs::DESKTOP_PREFS).expect("Desktop prefs are synced");
+    if desktop["enable_emoji_autocomplete"].is_null() {
+        if let Some(off) = desktop["disable_emoji_autocomplete"].as_bool() {
+            desktop["enable_emoji_autocomplete"] = (!off).into();
+        }
+    }
     let mut st = store.write();
     let mut settings = st.settings.clone();
     for (key, ad) in crate::prefs::SYNCED {

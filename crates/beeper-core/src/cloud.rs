@@ -91,9 +91,21 @@ impl Cloud {
     }
 
     fn call(&self, url: &str, token: Option<&str>, body: Option<&Value>) -> Result<Value, CloudError> {
+        let method = if body.is_some() { reqwest::Method::POST } else { reqwest::Method::GET };
+        self.send(method, url, token, body)
+    }
+
+    fn send(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        token: Option<&str>,
+        body: Option<&Value>,
+    ) -> Result<Value, CloudError> {
+        let req = self.http.request(method, url);
         let req = match body {
-            Some(b) => self.http.post(url).header("content-type", "application/json").body(b.to_string()),
-            None => self.http.get(url),
+            Some(b) => req.header("content-type", "application/json").body(b.to_string()),
+            None => req,
         };
         let req = token.into_iter().fold(req, |r, t| r.bearer_auth(t));
         let (status, text) = block_on(async {
@@ -164,8 +176,16 @@ impl Cloud {
             email: field(info, "email"),
             subscribed: info["subscription"]["isActive"] == true
                 && matches!(info["subscription"]["planId"].as_str(), Some("PLUS" | "PLUS_PLUS")),
+            analytics_disabled: info["analyticsDisabled"] != false,
         };
         Ok((profile, cloud_accounts(&v["user"]["bridges"])?))
+    }
+
+    /// Desktop's `bapi.setAnalyticsDisabled`.
+    pub fn set_analytics_disabled(&self, access_token: &str, disabled: bool) -> Result<(), CloudError> {
+        let url = format!("{}/user", self.api_url);
+        let body = json!({ "analyticsDisabled": disabled });
+        self.send(reqwest::Method::PATCH, &url, Some(access_token), Some(&body)).map(drop)
     }
 
     pub fn finish(&self, jwt: &str) -> Result<(MatrixSession, Profile, Vec<BridgeAccountInfo>), CloudError> {

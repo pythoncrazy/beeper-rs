@@ -352,6 +352,8 @@ pub struct BeeperStore {
     /// The last synced [`crate::matrix::RULES`].
     pub inbox_rules: serde_json::Value,
     pub features: crate::features::Flags,
+    /// The `analyticsDisabled` field of `whoami`, true until `whoami` answers.
+    pub analytics_disabled: bool,
     next_seq: i64,
 }
 
@@ -482,6 +484,7 @@ impl BeeperStore {
             skin_tone: 0,
             inbox_rules: serde_json::Value::Null,
             features,
+            analytics_disabled: true,
             next_seq: 1000,
         };
         store.load_from_sqlite_or_seed();
@@ -652,8 +655,10 @@ impl BeeperStore {
                 pas_port: self.settings.pas_port,
                 ..serde_json::from_str(&s).expect("parse stored settings")
             };
+            self.settings.prefs.retain(|k, _| !crate::prefs::RETIRED.contains(&k.as_str()));
             self.settings.assert_valid();
         }
+        self.pin_app_locale();
         for a in assets {
             let asset: StoredAsset = serde_json::from_str(&a).expect("parse stored asset");
             self.assets_by_mxc.insert(asset.mxc_url.clone(), asset.upload_id.clone());
@@ -819,6 +824,13 @@ impl BeeperStore {
         !self.beeper_state.access_token.is_empty()
     }
 
+    /// Desktop's `applyAppLocale`: a signed-in account without an app language uses English.
+    fn pin_app_locale(&mut self) {
+        if self.signed_in() && !self.settings.prefs.contains_key("appLanguage") {
+            self.settings.set_pref("appLanguage", 1);
+        }
+    }
+
     pub fn set_cloud_accounts(&mut self, accounts: Vec<BridgeAccountInfo>) {
         assert!(self.signed_in(), "cloud accounts need a signed-in session");
         self.bridge_accounts = accounts;
@@ -850,6 +862,7 @@ impl BeeperStore {
             ..BeeperStateRecord::default()
         };
         self.setup_status = Self::build_setup_from_state(&self.beeper_state);
+        self.pin_app_locale();
         self.persist_state_to_sqlite();
         self.ensure_note_chat(profile);
         self.set_cloud_accounts(accounts);

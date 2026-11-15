@@ -97,6 +97,10 @@ impl Flags {
             "undo-send" | "ai-in-beeper-chats" | "enable-polls" | "enable-disappearing-message-timer-config" => {
                 self.flag(key)
             }
+            "archive-as-unread" => {
+                let on = self.flag(key).on;
+                Feature { show: on, on, upgrade: false }
+            }
             "labels-v2" => {
                 let (on, inbox) = (self.flag(key).on, self.flag("android-inbox-rewrite").on);
                 let free = !on && self.free("labels").is_some();
@@ -140,6 +144,9 @@ mod tests {
         assert!(!f.get("enable-polls", 0).on, "a missing flag hides polls");
         assert!(Flags::free_plan().get("enable-polls", 0).on);
         assert!(!f.get("labels-v2", 0).show, "no flag and no freebie hides labels");
+        assert!(!f.get("archive-as-unread", 0).show, "a missing flag hides the archive-as-unread setting");
+        f.flags["features"]["*"]["archive-as-unread"] = json!(true);
+        assert_eq!(f.get("archive-as-unread", 0), Feature { show: true, on: true, upgrade: false });
         assert_eq!(Flags::free_plan().get("labels-v2", 0), Feature { show: true, on: true, upgrade: true });
         f.subscribed = true;
         assert_eq!(f.get("scheduled-message", 0), lock, "subscribers get no free uses");

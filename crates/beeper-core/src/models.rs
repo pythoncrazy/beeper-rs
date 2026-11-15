@@ -167,6 +167,8 @@ pub struct Profile {
     pub email: Option<String>,
     /// Desktop's `hasActiveSubscription`.
     pub subscribed: bool,
+    /// Desktop's `loggedInUser.analyticsDisabled`, where a missing value is true.
+    pub analytics_disabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -88,6 +88,13 @@ async fn fake_beeper_cloud() -> String {
                             let id = format!("@{user}:beeper.com");
                             (200, json!({ "user_id": id, "access_token": format!("syt_{user}"), "device_id": "RSDEV" }))
                         }
+                        ("/user", _)
+                            if m.start_line.starts_with("PATCH ")
+                                && auth.starts_with("Bearer syt_")
+                                && b["analyticsDisabled"].is_boolean() =>
+                        {
+                            (200, json!({}))
+                        }
                         ("/whoami", _) if auth.starts_with("Bearer syt_") => {
                             let user = auth.trim_start_matches("Bearer syt_");
                             let info = json!({ "fullName": format!("{user} Real"), "username": user, "email": format!("{user}@example.com") });
@@ -446,8 +453,10 @@ async fn lifecycle() {
         username: Some("emile".into()),
         email: Some("emile@example.com".into()),
         subscribed: false,
+        analytics_disabled: true,
     };
-    let _ = gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Imported(data, session, profile, Vec::new())))));
+    let _ =
+        gui.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Imported(data, session, profile.clone(), Vec::new())))));
     assert_eq!(before, originals(&orig_dir), "Beeper Desktop files must never be modified");
     assert_eq!(gui.login.screen, Screen::Accounts, "an imported session shows the chat accounts");
     let _ = gui.update(UiMessage::CloudAccounts(Err("offline".into())));
@@ -456,7 +465,8 @@ async fn lifecycle() {
         "remote_profile": { "username": "alex", "phone": "+1 415-555-0142", "avatar": "mxc://beeper.com/a" } } } } });
     let cloud = beeper_core::cloud::cloud_accounts(&bridges).expect("parse the cloud bridges");
     assert_eq!(cloud[0].display_text().as_deref(), Some("+1 415-555-0142"), "the phone comes before the username");
-    let _ = gui.update(UiMessage::CloudAccounts(Ok((Some("zola@example.com".into()), false, cloud))));
+    let profile = Profile { email: Some("zola@example.com".into()), ..profile };
+    let _ = gui.update(UiMessage::CloudAccounts(Ok((profile, cloud))));
     assert_eq!(shared.read().accounts.iter().map(|a| a.account_id.as_str()).collect::<Vec<_>>(), ["signal"]);
     for bad in [
         json!([]),
@@ -737,6 +747,15 @@ async fn lifecycle() {
         ]
     );
     assert!(accounts.iter().all(|a| a.mode == BridgeMode::Cloud && a.network_name != "Beeper"));
+    assert!(profile.analytics_disabled, "whoami without analyticsDisabled disables analytics, as Desktop does");
+    let patch_cloud = cloud.clone();
+    let saved = tokio::task::spawn_blocking(move || {
+        let c = beeper_core::cloud::Cloud::new(&patch_cloud, &patch_cloud);
+        (c.set_analytics_disabled("syt_alex", false), c.set_analytics_disabled("bad", false).map_err(|e| e.status))
+    })
+    .await
+    .unwrap();
+    assert_eq!(saved, (Ok(()), Err(404)), "Share Analytics patches analyticsDisabled of the user");
     let _ = login.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Session(session, profile, accounts)))));
     assert_eq!(login.login.screen, Screen::Accounts);
     assert_eq!(login_store.read().accounts.len(), 4);
@@ -755,6 +774,11 @@ async fn lifecycle() {
     assert!(login.login_window.is_none() && login.main_window.is_some());
     assert_eq!(login.pane.selected_chat_id.as_deref(), Some(NOTE_CHAT_ID));
     assert!(simulator(login.view_main()).find("Note").is_ok());
+    let _ = login.update(UiMessage::ShareAnalytics);
+    assert!(!login_store.read().analytics_disabled, "Share Analytics turns on at once");
+    let _ = login.update(UiMessage::AnalyticsSaved(true, Err("offline".into())));
+    assert!(login_store.read().analytics_disabled, "a failed save turns Share Analytics back off");
+    assert_eq!(login.status_banner, "Something went wrong: offline");
     drop((login, login_store));
 
     let sas_verified = client.verify_device_sas().await;
@@ -1345,9 +1369,10 @@ async fn lifecycle() {
     assert_eq!(gui.active_settings_tab, SettingsTab::Appearance);
     assert!(simulator(gui.view_settings()).find("Show tray icon").is_ok());
     let _ = gui.update(UiMessage::SetPref("appLanguage", 2));
-    assert!(simulator(gui.view_main()).find("Posteingang").is_ok(), "the language changes at once");
+    assert!(simulator(gui.view_main()).find("Inbox").is_ok(), "the language changes after a relaunch");
+    assert!(simulator(gui.view_main()).find("App language will change after relaunch").is_ok());
     let _ = gui.update(UiMessage::SetPref("appLanguage", 1));
-    assert!(simulator(gui.view_main()).find("Inbox").is_ok());
+    let _ = gui.update(UiMessage::DismissBanner);
     let _ = gui.update(UiMessage::CloseModals);
 
     let final_wa_msgs = client.list_messages("!wa_eric:beeper.com").await;
