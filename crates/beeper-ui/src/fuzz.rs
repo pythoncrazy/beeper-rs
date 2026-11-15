@@ -463,6 +463,24 @@ fn attachments_send_like_desktop() {
 }
 
 #[test]
+fn pastes_attach_files_like_desktop() {
+    let mut app = demo_app("paste");
+    let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+    // Ctrl+V in the composer reads the files of the clipboard first, and the window does not paste a second time.
+    let id = app.main_window.expect("a main window");
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id));
+    sim.click(iced::widget::Id::new("composer-input")).expect("a composer");
+    let _ = sim.simulate([key(Key::Character("v".into()), Modifiers::CTRL)]);
+    let msgs: Vec<UiMessage> = sim.into_messages().collect();
+    assert!(matches!(msgs[..], [UiMessage::ComposerEdit(_), UiMessage::Paste]), "{msgs:?}");
+    let files = app.update(UiMessage::Pasted(Ok(Clip::Files(vec!["/tmp/a.pdf".into()]))));
+    assert_eq!(files.units(), 1, "copied files load like picked files");
+    let _ = app.update(UiMessage::Pasted(Ok(Clip::Image((vec![1], (3, 2))))));
+    assert_eq!(app.pane.attachments[0].size, (3, 2), "a copied image attaches");
+    assert_eq!(app.update(UiMessage::Pasted(Ok(Clip::Text))).units(), 2, "a text goes into the composer");
+}
+
+#[test]
 fn auto_sent_gifs_keep_the_composer_like_desktop() {
     let note = "!note_self:beeper.com";
     let mut app = demo_app("gifsend");

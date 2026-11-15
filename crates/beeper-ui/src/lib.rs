@@ -765,7 +765,9 @@ pub enum UiMessage {
     MediaResolved(String, String, String, Result<(), String>),
     Video(video::Msg),
     Gallery(gallery::Msg),
-    Pasted(Result<Option<Png>, String>),
+    /// Ctrl+V and "Paste": Desktop's `paste` handler reads the clipboard.
+    Paste,
+    Pasted(Result<Clip, String>),
     DiscardAttachment(usize),
     /// Desktop's `openAttachmentPicker`.
     PickFiles,
@@ -1980,20 +1982,32 @@ fn encode_uri_component(s: &str) -> String {
     })
 }
 
-async fn clipboard_image() -> Result<Option<Png>, String> {
+/// What a paste gives: Desktop's `clipboardData.files` (the copied files, or a copied image), or else the text.
+#[derive(Debug, Clone)]
+pub enum Clip {
+    Files(Vec<std::path::PathBuf>),
+    Image(Png),
+    Text,
+}
+
+async fn clipboard_paste() -> Result<Clip, String> {
     let read = || {
         let mut c = arboard::Clipboard::new().map_err(|e| format!("Could not read the clipboard: {e}"))?;
+        // The `text/uri-list` of a file manager. iced's X11 clipboard answers every target with its text, which
+        // has no `file://` lines.
+        if let Some(files) = c.get().file_list().ok().filter(|f| !f.is_empty()) {
+            return Ok(Clip::Files(files));
+        }
         let img = match c.get_image() {
-            Err(arboard::Error::ContentNotAvailable) => return Ok(None),
-            // iced's X11 clipboard answers every target, image/png too, with its text.
-            Err(arboard::Error::Unknown { .. }) if c.get_text().is_ok() => return Ok(None),
+            Err(arboard::Error::ContentNotAvailable) => return Ok(Clip::Text),
+            Err(arboard::Error::Unknown { .. }) if c.get_text().is_ok() => return Ok(Clip::Text),
             r => r.map_err(|e| format!("Could not read the clipboard: {e}"))?,
         };
         let size = (u32::try_from(img.width).unwrap(), u32::try_from(img.height).unwrap());
         let px = ::image::RgbaImage::from_raw(size.0, size.1, img.bytes.into_owned()).expect("arboard gives RGBA");
         let mut png = Vec::new();
         px.write_to(&mut std::io::Cursor::new(&mut png), ::image::ImageFormat::Png).expect("encode PNG");
-        Ok(Some((png, size)))
+        Ok(Clip::Image((png, size)))
     };
     tokio::task::spawn_blocking(read).await.expect("clipboard task")
 }
@@ -5998,16 +6012,7 @@ impl BeeperGuiApp {
                         self.pane.composer.perform(text_editor::Action::Edit(text_editor::Edit::Delete));
                         Task::batch([iced::clipboard::write(sel), self.composer_changed(old), focus])
                     }
-                    MenuEdit::Paste => Task::batch([
-                        iced::clipboard::read().map(|t| match t {
-                            Some(t) => {
-                                UiMessage::ComposerEdit(text_editor::Action::Edit(text_editor::Edit::Paste(t.into())))
-                            }
-                            None => UiMessage::Noop,
-                        }),
-                        Task::perform(clipboard_image(), UiMessage::Pasted),
-                        focus,
-                    ]),
+                    MenuEdit::Paste => Task::batch([self.update(UiMessage::Paste), focus]),
                 };
             }
             UiMessage::ComposerEdit(action) if !action.is_edit() => {
@@ -7789,22 +7794,29 @@ impl BeeperGuiApp {
             }
             UiMessage::Video(msg) => return self.video(msg),
             UiMessage::Gallery(msg) => return self.gallery(msg),
+            UiMessage::Paste => return Task::perform(clipboard_paste(), UiMessage::Pasted),
+            // Desktop's `paste` handler: copied files go to the attachments, and a text goes into the composer.
             UiMessage::Pasted(r) => match r {
-                Ok(img) => self.attach_files(
-                    img.map(|(png, size)| {
-                        Ok(PendingMedia {
-                            name: "image.png".into(),
-                            mime: "image/png".into(),
-                            is_gif: false,
-                            size,
-                            frames: vec![(image::Handle::from_bytes(png.clone()), 0)],
-                            bytes: png,
-                            duration: None,
-                        })
-                    })
-                    .into_iter()
-                    .collect(),
-                ),
+                Ok(Clip::Files(paths)) => return self.update(UiMessage::FilesPicked(Ok(paths))),
+                Ok(Clip::Image((png, size))) => self.attach_files(vec![Ok(PendingMedia {
+                    name: "image.png".into(),
+                    mime: "image/png".into(),
+                    is_gif: false,
+                    size,
+                    frames: vec![(image::Handle::from_bytes(png.clone()), 0)],
+                    bytes: png,
+                    duration: None,
+                })]),
+                Ok(Clip::Text) => {
+                    let id = if self.pane.thread_root.is_some() { "thread-composer-input" } else { "composer-input" };
+                    let paste = iced::clipboard::read().map(|t| match t {
+                        Some(t) => {
+                            UiMessage::ComposerEdit(text_editor::Action::Edit(text_editor::Edit::Paste(t.into())))
+                        }
+                        None => UiMessage::Noop,
+                    });
+                    return Task::batch([paste, operation::focus(id)]);
+                }
                 Err(e) => self.status_banner = e,
             },
             UiMessage::DiscardAttachment(i) => drop(self.pane.attachments.remove(i)),
@@ -8987,7 +8999,7 @@ impl BeeperGuiApp {
                         return Task::none();
                     }
                     Key::Character("v") if mods.command() && self.pane.selected_chat_id.is_some() => {
-                        return Task::perform(clipboard_image(), UiMessage::Pasted);
+                        return self.update(UiMessage::Paste);
                     }
                     _ => {}
                 }
@@ -9119,6 +9131,12 @@ impl BeeperGuiApp {
                 if status == iced::event::Status::Captured && modifiers.is_empty() =>
             {
                 Some(UiMessage::InputEscape(id))
+            }
+            // A text field pastes itself. The composer sends `Paste` for Desktop's file paste.
+            Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Character(c), modifiers, .. })
+                if status == iced::event::Status::Captured && modifiers.command() && c.eq_ignore_ascii_case("v") =>
+            {
+                None
             }
             Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
                 if modifiers.command()
@@ -13996,6 +14014,7 @@ impl BeeperGuiApp {
                     {
                         (Some('z'), redo) => return Some(text_editor::Binding::Custom(UiMessage::Undo(redo))),
                         (Some('y'), false) => return Some(text_editor::Binding::Custom(UiMessage::Undo(true))),
+                        (Some('v'), false) => return Some(text_editor::Binding::Custom(UiMessage::Paste)),
                         (Some('b'), false) => 0,
                         (Some('i'), false) => 1,
                         (Some('x'), true) => 2,
