@@ -1457,6 +1457,7 @@ impl BeeperStore {
     /// Adds a chat. A new chat has no stored messages, so it is loaded.
     fn push_chat(&mut self, mut chat: Chat, new: bool) -> usize {
         chat.sync_flags();
+        chat.participants.items.shrink_to_fit();
         chat.flags = self.label_flags(&chat);
         let idx = self.chats.len();
         assert!(self.chat_idx_by_id.insert(chat.id.clone(), idx).is_none(), "duplicate chat {}", chat.id);
@@ -1834,6 +1835,7 @@ impl BeeperStore {
         assert!(self.chat_order.remove(&old_key), "chat {} is in the chat order", old_key.1);
         self.chat_order.insert(activity_key(&self.chats[idx]));
         self.chats[idx].sync_flags();
+        self.chats[idx].participants.items.shrink_to_fit();
         self.chats[idx].flags = self.label_flags(&self.chats[idx]);
         if let (Some(index), Some(old)) = (self.chat_search_index.get_mut(), old) {
             index.remove_doc(idx as u32, &old);
@@ -2887,6 +2889,8 @@ mod tests {
         drop(super::BeeperStore::from_config(config.clone()));
         let mut st = super::BeeperStore::from_config(config);
         assert!(st.chat_msg_indices.is_empty() && st.messages.is_empty(), "a start loads no messages");
+        let fit = st.chats.iter().all(|c| c.participants.items.capacity() == c.participants.items.len());
+        assert!(fit, "the participant lists have no spare room");
         assert_eq!(found(&st, "borr").len(), 2, "the search reads the messages that are not loaded");
         let stored = |st: &super::BeeperStore, c: &str| -> Vec<String> {
             st.stored("chat_id = ?1 ORDER BY sort_key", [c]).into_iter().map(|m| m.id).collect()
