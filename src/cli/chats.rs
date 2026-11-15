@@ -2,8 +2,8 @@
 
 use super::render::Empty;
 use super::{arg, config, js_string, obj, truthy, CliError, Cmd, Ctx, Flag, Res, AMBIGUOUS, NOT_FOUND};
+use beeper_api::client::chat_path;
 use beeper_api::http::query_string;
-use beeper_core::codec::url_encode;
 use serde_json::{json, Value};
 
 pub const CHAT: Flag = Flag::s("chat", "Chat selector (ID, local ID, title, or search text)").req();
@@ -137,10 +137,6 @@ pub const COMMANDS: &[Cmd] = &[
     on_chat("chats unpin", "Unpin a chat", patch),
     on_chat("chats unremind", "Clear a chat reminder", unremind),
 ];
-
-pub fn chat_path(id: &str, rest: &str) -> String {
-    format!("/v1/chats/{}{rest}", url_encode(id))
-}
 
 /// `normalize` of `lib/resolve.js`.
 fn normalize(v: &Value) -> String {

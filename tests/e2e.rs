@@ -1,3 +1,5 @@
+mod common;
+
 use beeper_api::{
     client::BeeperClient,
     http::{query_string, read_message, StatusCode},
@@ -21,6 +23,7 @@ use beeper_ui::{
     style::{ensure_fonts_loaded, fw, icon},
     write_rgba_png, BeeperGuiApp, InboxTab, SearchFilters, SearchPick, SettingsHit, SettingsTab, UiMessage,
 };
+use common::TestClient;
 use iced::font::Weight;
 use iced::{Size, Theme};
 use iced_test::{emulator, simulator, Emulator, Instruction};
@@ -859,7 +862,8 @@ async fn lifecycle() {
     });
     let base = format!("http://127.0.0.1:{port}");
     let mut oauth = BeeperClient::new(&base, "");
-    let oauth_token = oauth.oauth_pkce_login("Beeper Raycast E2E", "super_secret_pkce_verifier_2026_beeper_rs").await;
+    let oauth_token =
+        oauth.oauth_pkce_login("Beeper Raycast E2E", "super_secret_pkce_verifier_2026_beeper_rs").await.unwrap();
     approve.await.unwrap();
     assert!(oauth_token.starts_with("bdapi_") && store.read().connect.tokens.len() == 1);
     assert!(!store.write().connect.tokens_json().contains(&oauth_token), "only the hash is stored");

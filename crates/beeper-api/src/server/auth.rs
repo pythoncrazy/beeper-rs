@@ -4,6 +4,7 @@
 use super::{base_url, json_with, ok, Reply, Req, Response};
 use crate::codec::base64_encode_standard;
 use crate::http::{HttpMessage, StatusCode};
+use beeper_core::codec::escape_html;
 use beeper_core::config::{APP_BUNDLE_ID, APP_NAME, APP_VERSION};
 use beeper_core::connect::{self, ClientInfo, Outcome, Token, READ, WRITE};
 use beeper_core::store::{BeeperStore, SharedStore};
@@ -191,10 +192,6 @@ fn fill(template: &str, values: &[(&str, &str)]) -> String {
         rest = &rest[end + 2..];
     }
     out + rest
-}
-
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }
 
 /// A JavaScript literal that is safe in a `<script>`.

@@ -481,6 +481,7 @@ dependencies = [
  "iced",
  "iced_test",
  "rusqlite",
+ "serde",
  "serde_json",
  "tokio",
  "unicode-width",

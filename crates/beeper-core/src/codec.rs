@@ -126,6 +126,11 @@ pub fn html_text(html: &str) -> String {
     html_blocks(html).into_iter().map(line).collect::<Vec<_>>().join("\n")
 }
 
+/// The text with the five HTML special characters as entities, for text and attribute values.
+pub fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+}
+
 /// Converts composer Markdown to Matrix HTML like Desktop: GFM, a line break is a `<br>`, typed HTML stays text,
 /// and one paragraph is not wrapped. Gives `None` when the text has no formatting.
 pub fn markdown_html(md: &str) -> Option<String> {

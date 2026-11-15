@@ -1,9 +1,10 @@
 //! The `messages`, `send`, and `presence` commands.
 
-use super::chats::{chat_flag, chat_path, resolve_accounts, resolve_chat, upload, CHAT, PICK};
+use super::chats::{chat_flag, resolve_accounts, resolve_chat, upload, CHAT, PICK};
 use super::commands::cmd;
 use super::render::Empty;
 use super::{js_string, obj, pretty, truthy, CliError, Cmd, Ctx, Flag, Res};
+use beeper_api::client::{chat_path, message_path};
 use beeper_api::http::query_string;
 use beeper_core::codec::url_encode;
 use serde_json::{json, Value};
@@ -208,10 +209,6 @@ pub const COMMANDS: &[Cmd] = &[
         ..cmd("send voice", "Send a voice note", send)
     },
 ];
-
-fn message_path(chat: &str, id: &str, rest: &str) -> String {
-    chat_path(chat, &format!("/messages/{}{rest}", url_encode(id)))
-}
 
 fn limit(c: &Ctx, flag: &str) -> usize {
     c.int(flag).map_or(usize::MAX, |n| usize::try_from(n).unwrap_or(0))

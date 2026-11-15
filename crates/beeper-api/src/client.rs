@@ -1,16 +1,18 @@
-use crate::codec::{base64_encode_standard, base64_encode_url_nopad, sha256, url_encode};
+//! A client of the Desktop API over plain HTTP/1.1 and WebSocket, like the request layer of the Desktop API SDK.
+use crate::codec::{base64_encode_url_nopad, sha256, url_encode};
 use crate::http::{query_string, read_message, read_ws_frame, write_ws_frame, StatusCode};
-use beeper_core::models::*;
-use serde::de::DeserializeOwned;
+use beeper_core::connect::random_id;
 use serde_json::{json, Value};
 use std::fmt::Write;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
+/// A client of one Desktop API server, with the access token that it sends.
 #[derive(Clone)]
 pub struct BeeperClient {
+    /// The `host:port` of the server.
     pub host_port: String,
+    /// The bearer token of the requests; empty sends no token.
     pub access_token: String,
     /// Prints each request and its status on stderr, like the `debug` log level of the SDK.
     pub debug: bool,
@@ -19,6 +21,14 @@ pub struct BeeperClient {
 /// A failed request, with the text of the Desktop API SDK: `<status> <message>`, or `Connection error.`.
 #[derive(Debug)]
 pub struct ApiError(pub String);
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ApiError {}
 
 fn json_body(body: Option<&Value>) -> Option<(String, Vec<u8>)> {
     body.map(|v| ("application/json".into(), serde_json::to_vec(v).expect("JSON values serialize")))
@@ -51,15 +61,18 @@ fn checked(status: u16, bytes: Vec<u8>) -> Result<Vec<u8>, ApiError> {
 
 const REDIRECT_URI: &str = "http://127.0.0.1:0/callback";
 
-fn chat_path(chat_id: &str, rest: &str) -> String {
+/// The path of a chat, then `rest`: `/v1/chats/<chat_id><rest>`.
+pub fn chat_path(chat_id: &str, rest: &str) -> String {
     format!("/v1/chats/{}{rest}", url_encode(chat_id))
 }
 
-fn message_path(chat_id: &str, message_id: &str, rest: &str) -> String {
+/// The path of a message, then `rest`: `/v1/chats/<chat_id>/messages/<message_id><rest>`.
+pub fn message_path(chat_id: &str, message_id: &str, rest: &str) -> String {
     chat_path(chat_id, &format!("/messages/{}{rest}", url_encode(message_id)))
 }
 
 impl BeeperClient {
+    /// A client of `base_url`. It panics when the URL does not start with `http://`; see [`Self::try_new`].
     pub fn new(base_url: impl Into<String>, access_token: impl Into<String>) -> Self {
         Self::try_new(&base_url.into(), access_token).expect("base_url starts with http://")
     }
@@ -124,17 +137,6 @@ impl BeeperClient {
         Ok(json_or_text(checked(status, bytes)?))
     }
 
-    pub async fn send(
-        &self,
-        method: &str,
-        path: &str,
-        headers: &[(&str, &str)],
-        body: Option<&Value>,
-    ) -> (StatusCode, Vec<u8>) {
-        let sent = self.try_send(method, path, headers, json_body(body)).await;
-        sent.expect("send the HTTP request to the Beeper server")
-    }
-
     /// Sends one request with its content type and body, and reads the reply.
     async fn try_send(
         &self,
@@ -164,164 +166,51 @@ impl BeeperClient {
         Ok((StatusCode(status), resp.body))
     }
 
-    async fn json<T: DeserializeOwned>(&self, method: &str, path: &str, body: Option<Value>) -> T {
-        let (status, bytes) = self.send(method, path, &[("accept", "application/json")], body.as_ref()).await;
-        assert!(status.0 < 300, "{method} {path} failed with {}: {}", status.0, String::from_utf8_lossy(&bytes));
-        serde_json::from_slice(&bytes).expect("parse JSON response")
-    }
-
-    /// Posts a JSON-RPC message to the MCP server, and returns the first event of the reply.
-    pub async fn mcp(&self, body: Value) -> (StatusCode, Value) {
-        self.mcp_at("/v0/mcp", body).await
-    }
-
-    /// Posts a JSON-RPC message to the MCP URL `path`, which can carry tool filters.
-    pub async fn mcp_at(&self, path: &str, body: Value) -> (StatusCode, Value) {
-        let accept = [("accept", "application/json, text/event-stream")];
-        let (status, bytes) = self.send("POST", path, &accept, Some(&body)).await;
-        let text = String::from_utf8(bytes).expect("UTF-8 MCP reply");
-        let data = text.strip_prefix("event: message\ndata: ").map_or(text.as_str(), |d| d.split('\n').next().unwrap());
-        (status, if data.is_empty() { Value::Null } else { serde_json::from_str(data).expect("JSON-RPC reply") })
-    }
-
-    pub async fn info(&self) -> InfoResponse {
-        self.json("GET", "/v1/info", None).await
-    }
-
-    /// Any request, for its status and JSON body.
-    pub async fn request(&self, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
-        let (status, bytes) = self.send(method, path, &[], body.as_ref()).await;
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
-    }
-
-    /// Desktop's OAuth flow with PKCE: the page of `/oauth/authorize` posts the request, which waits until the user
-    /// approves it in the app.
-    pub async fn oauth_pkce_login(&mut self, client_name: &str, code_verifier: &str) -> String {
+    /// Desktop's OAuth flow with PKCE: it registers `client_name`, opens `/oauth/authorize`, and posts the request of
+    /// the page, which waits until the user approves it in the app. The client then uses the new access token.
+    pub async fn oauth_pkce_login(&mut self, client_name: &str, code_verifier: &str) -> Result<String, ApiError> {
         assert!(code_verifier.len() >= 16, "PKCE code_verifier too short");
+        let text = |v: &Value, key: &str| match &v[key] {
+            Value::String(s) => Ok(s.clone()),
+            _ => Err(ApiError(format!("The OAuth reply has no {key}: {v}"))),
+        };
         let body = json!({ "client_name": client_name, "redirect_uris": [REDIRECT_URI] });
-        let reg: Value = self.json("POST", "/oauth/register", Some(body)).await;
-        let client_id = reg["client_id"].as_str().expect("client_id");
-        let challenge = base64_encode_url_nopad(&sha256(code_verifier.as_bytes()));
+        let client_id = text(&self.call("POST", "/oauth/register", Some(&body)).await?, "client_id")?;
+        let (challenge, state) = (base64_encode_url_nopad(&sha256(code_verifier.as_bytes())), random_id());
         let params = [
-            ("client_id", client_id),
+            ("client_id", client_id.as_str()),
             ("redirect_uri", REDIRECT_URI),
             ("response_type", "code"),
             ("code_challenge", &challenge),
             ("code_challenge_method", "S256"),
-            ("state", "pkce_state_1"),
+            ("state", &state),
         ];
-        let (status, page) = self.send("GET", &query_string("/oauth/authorize", &params), &[], None).await;
-        let page = String::from_utf8(page).expect("UTF-8 authorize page");
-        assert!(status == StatusCode::OK && page.contains("Continue in the app"), "authorize page: {page}");
+        self.call_raw("GET", &query_string("/oauth/authorize", &params), None).await?;
         let body = json!({
             "mode": "oauth2",
             "clientInfo": { "name": client_name, "clientID": client_id },
             "scopes": ["read", "write"],
             "redirectUri": REDIRECT_URI,
             "scope": "read write",
-            "state": "pkce_state_1",
+            "state": state,
             "codeChallenge": challenge,
             "codeChallengeMethod": "S256"
         });
-        let auth: Value = self.json("POST", "/oauth/authorize/callback", Some(body)).await;
-        assert_eq!(auth["state"], "pkce_state_1");
+        let auth = self.call("POST", "/oauth/authorize/callback", Some(&body)).await?;
+        if text(&auth, "state")? != state {
+            return Err(ApiError(format!("The OAuth reply has an other state: {auth}")));
+        }
         let body = json!({
             "grant_type": "authorization_code",
             "client_id": client_id,
-            "code": auth["code"],
+            "code": text(&auth, "code")?,
             "redirect_uri": REDIRECT_URI,
             "code_verifier": code_verifier
         });
-        let tok: Value = self.json("POST", "/oauth/token", Some(body)).await;
-        self.access_token = tok["access_token"].as_str().expect("access_token").to_string();
-        self.access_token.clone()
+        self.access_token = text(&self.call("POST", "/oauth/token", Some(&body)).await?, "access_token")?;
+        Ok(self.access_token.clone())
     }
 
-    pub async fn setup_step(&self, step: &str, body: Value) -> (StatusCode, Value) {
-        let (status, bytes) = self.send("POST", &format!("/v1/app/setup/{step}"), &[], Some(&body)).await;
-        (status, if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).expect("setup step JSON") })
-    }
-
-    pub async fn list_accounts(&self) -> Vec<Account> {
-        self.json("GET", "/v1/accounts", None).await
-    }
-
-    pub async fn list_chats(&self) -> CursorPage<Value> {
-        self.json("GET", "/v1/chats", None).await
-    }
-
-    pub async fn merge_chats(&self, title: &str, chat_ids: Vec<String>, default_chat_id: Option<String>) -> Value {
-        let body = json!({ "mode": "merge", "title": title, "merge": { "chatIDs": chat_ids, "defaultChatID": default_chat_id } });
-        self.json("POST", "/v1/chats", Some(body)).await
-    }
-
-    pub async fn patch_chat_draft(&self, chat_id: &str, draft_text: Option<&str>) -> (StatusCode, Value) {
-        let body = json!({ "draft": draft_text.map(|t| json!({ "text": t })) });
-        let (status, bytes) = self.send("PATCH", &chat_path(chat_id, ""), &[], Some(&body)).await;
-        (status, serde_json::from_slice(&bytes).expect("parse patch response"))
-    }
-
-    pub async fn focus(&self, chat_id: Option<&str>, message_id: Option<&str>, draft_text: Option<&str>) -> StatusCode {
-        let body = json!({ "chatID": chat_id, "messageID": message_id, "draftText": draft_text });
-        self.send("POST", "/v1/focus", &[], Some(&body)).await.0
-    }
-
-    pub async fn list_messages(&self, chat_id: &str) -> CursorPage<Value> {
-        self.json("GET", &chat_path(chat_id, "/messages"), None).await
-    }
-
-    pub async fn send_message(
-        &self,
-        chat_id: &str,
-        text: Option<&str>,
-        reply_to: Option<&str>,
-        upload_id: Option<&str>,
-    ) -> Value {
-        let body = json!({ "text": text, "replyToMessageID": reply_to, "attachment": upload_id.map(|u| json!({ "uploadID": u })) });
-        self.json("POST", &chat_path(chat_id, "/messages"), Some(body)).await
-    }
-
-    pub async fn edit_message(&self, chat_id: &str, message_id: &str, text: &str) -> Value {
-        self.json("PUT", &message_path(chat_id, message_id, ""), Some(json!({ "text": text }))).await
-    }
-
-    pub async fn delete_message(&self, chat_id: &str, message_id: &str) -> StatusCode {
-        self.send("DELETE", &message_path(chat_id, message_id, ""), &[], None).await.0
-    }
-
-    pub async fn add_reaction(&self, chat_id: &str, message_id: &str, reaction_key: &str) -> Value {
-        let body = json!({ "reactionKey": reaction_key });
-        self.json("POST", &message_path(chat_id, message_id, "/reactions"), Some(body)).await
-    }
-
-    pub async fn remove_reaction(&self, chat_id: &str, message_id: &str, reaction_key: &str) -> Value {
-        let path = message_path(chat_id, message_id, &format!("/reactions/{}", url_encode(reaction_key)));
-        self.json("DELETE", &path, None).await
-    }
-
-    pub async fn upload_asset_base64(&self, file_name: &str, mime_type: &str, bytes: &[u8]) -> Value {
-        let body = json!({ "content": base64_encode_standard(bytes), "fileName": file_name, "mimeType": mime_type });
-        self.json("POST", "/v1/assets/upload/base64", Some(body)).await
-    }
-
-    pub async fn serve_asset_range(&self, url: &str, range: Option<&str>) -> (StatusCode, Vec<u8>) {
-        let headers: Vec<(&str, &str)> = range.map(|r| ("range", r)).into_iter().collect();
-        self.send("GET", &query_string("/v1/assets/serve", &[("url", url)]), &headers, None).await
-    }
-
-    pub async fn search_messages(&self, query: &str, media_types: Option<&str>) -> CursorPage<Value> {
-        let params: Vec<(&str, &str)> = [("query", Some(query)), ("mediaTypes", media_types)]
-            .into_iter()
-            .filter_map(|(k, v)| Some((k, v?)))
-            .collect();
-        self.json("GET", &query_string("/v1/messages/search", &params), None).await
-    }
-
-    pub async fn unified_search(&self, query: &str) -> Value {
-        self.json("GET", &query_string("/v1/search", &[("query", query)]), None).await
-    }
-
-    /// Opens `/v1/ws` and sends `subscriptions.set`. The receiver gets every frame, `ready` first.
     /// Opens a WebSocket at `path` with the bearer token, or gives the reason when the server refuses it.
     pub async fn ws_open(&self, path: &str) -> Result<WsConn, String> {
         let failed = |_: std::io::Error| "WebSocket connection failed".to_string();
@@ -345,21 +234,6 @@ impl BeeperClient {
         let (read, write) = stream.into_split();
         Ok(WsConn { read: std::io::Cursor::new(leftover).chain(read), write })
     }
-
-    pub async fn connect_ws(&self, chat_ids: Vec<String>) -> UnboundedReceiver<Value> {
-        let mut ws = self.ws_open("/v1/ws").await.expect("open /v1/ws");
-        let sub = json!({ "type": "subscriptions.set", "chatIDs": chat_ids }).to_string();
-        ws.send(&sub).await.expect("send subscriptions.set");
-        let (tx, rx) = unbounded_channel();
-        tokio::spawn(async move {
-            while let Ok(text) = ws.next().await {
-                if tx.send(serde_json::from_str(&text).expect("parse WS frame")).is_err() {
-                    break;
-                }
-            }
-        });
-        rx
-    }
 }
 
 /// A WebSocket connection of the client.
@@ -369,6 +243,7 @@ pub struct WsConn {
 }
 
 impl WsConn {
+    /// Sends a text frame.
     pub async fn send(&mut self, text: &str) -> std::io::Result<()> {
         write_ws_frame(&mut self.write, 0x1, text.as_bytes(), true).await
     }
@@ -390,6 +265,7 @@ impl WsConn {
         }
     }
 
+    /// Sends a close frame with `code`.
     pub async fn close(&mut self, code: u16) -> std::io::Result<()> {
         write_ws_frame(&mut self.write, 0x8, &code.to_be_bytes(), true).await
     }
