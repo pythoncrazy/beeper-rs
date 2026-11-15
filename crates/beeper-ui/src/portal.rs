@@ -124,19 +124,7 @@ pub fn load_file(path: &Path) -> Result<PendingMedia, String> {
         let mime = format.to_mime_type().to_string();
         return Ok(PendingMedia { is_gif: mime == "image/gif", bytes, name, mime, size, frames });
     }
-    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-    let mime = match ext.as_str() {
-        "mp4" | "m4v" => "video/mp4",
-        "mov" => "video/quicktime",
-        "webm" => "video/webm",
-        "mp3" => "audio/mpeg",
-        "m4a" => "audio/mp4",
-        "ogg" | "opus" => "audio/ogg",
-        "wav" => "audio/wav",
-        "pdf" => "application/pdf",
-        "txt" => "text/plain",
-        _ => "application/octet-stream",
-    };
+    let mime = beeper_core::platform::mime_type_of(&name).unwrap_or("application/octet-stream");
     Ok(PendingMedia { bytes, name, mime: mime.into(), is_gif: false, size: (0, 0), frames: vec![] })
 }
 

@@ -51,6 +51,41 @@ pub fn resolve_home_dir(env_vars: &HashMap<String, String>) -> PathBuf {
     PathBuf::from(env_vars.get("HOME").or_else(|| env_vars.get("USERPROFILE")).expect("HOME or USERPROFILE is set"))
 }
 
+/// The MIME types of Desktop's `mime-types` package for the files of chats, with their extensions. The first
+/// extension is the one that Desktop adds to a file name without one.
+const MIME_TYPES: [(&str, &[&str]); 19] = [
+    ("image/png", &["png"]),
+    ("image/jpeg", &["jpeg", "jpg", "jpe"]),
+    ("image/gif", &["gif"]),
+    ("image/webp", &["webp"]),
+    ("image/heic", &["heic"]),
+    ("image/svg+xml", &["svg", "svgz"]),
+    ("video/mp4", &["mp4", "mp4v", "mpg4", "m4v"]),
+    ("video/quicktime", &["qt", "mov"]),
+    ("video/webm", &["webm"]),
+    ("audio/mpeg", &["mpga", "mp2", "mp2a", "mp3", "m2a", "m3a"]),
+    ("audio/mp4", &["m4a", "mp4a"]),
+    ("audio/ogg", &["oga", "ogg", "spx", "opus"]),
+    ("audio/wav", &["wav"]),
+    ("application/pdf", &["pdf"]),
+    ("application/zip", &["zip"]),
+    ("application/json", &["json", "map"]),
+    ("text/plain", &["txt", "text", "conf", "def", "list", "log", "in", "ini"]),
+    ("text/html", &["html", "htm", "shtml"]),
+    ("text/csv", &["csv"]),
+];
+
+/// The MIME type of a file name by its extension, like `mime.lookup`.
+pub fn mime_type_of(name: &str) -> Option<&'static str> {
+    let ext = Path::new(name).extension()?.to_str()?.to_ascii_lowercase();
+    MIME_TYPES.iter().find(|(_, exts)| exts.contains(&ext.as_str())).map(|(m, _)| *m)
+}
+
+/// The file extension of a MIME type, like `mime.extension`.
+pub fn extension_of(mime: &str) -> Option<&'static str> {
+    MIME_TYPES.iter().find(|(m, _)| *m == mime).map(|(_, exts)| exts[0])
+}
+
 pub fn path_to_file_url(path: &Path) -> String {
     let raw = path.to_string_lossy();
     if raw.starts_with('/') {

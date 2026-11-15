@@ -342,6 +342,78 @@ async fn routes_match_like_express() {
 }
 
 #[tokio::test]
+async fn assets_upload_and_serve_like_desktop() {
+    use serde_json::{json, Value};
+    let (port, token) = server("assets").await;
+    let send = |method: &str, target: &str, headers: &str, body: &str| {
+        let request = format!(
+            "{method} {target} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        async move { String::from_utf8_lossy(&raw(port, request.as_bytes()).await).into_owned() }
+    };
+    let body = |out: &str| serde_json::from_str::<Value>(out.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let json = "content-type: application/json\r\n";
+    // A PNG of 2 x 3 pixels without a name and a type.
+    let png =
+        beeper_api::codec::base64_encode_standard(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x02\0\0\0\x03\x08\x02\0\0\0");
+    let up = body(&send("POST", "/v1/assets/upload/base64", json, &json!({ "content": png }).to_string()).await);
+    let keys: Vec<&str> = up.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(keys, ["uploadID", "srcURL", "fileName", "mimeType", "fileSize", "width", "height"]);
+    assert_eq!(
+        (&up["fileName"], &up["mimeType"], &up["width"], &up["height"]),
+        (&json!("file.png"), &json!("image/png"), &json!(2), &json!(3))
+    );
+    let src = up["srcURL"].as_str().unwrap();
+    assert!(src.starts_with("file://") && src.ends_with("file.png"), "{src}");
+    for name in [".env", "con", "LPT1", "a~b"] {
+        let out =
+            send("POST", "/v1/assets/upload/base64", json, &json!({ "content": png, "fileName": name }).to_string())
+                .await;
+        assert_eq!(body(&out)["code"], "INVALID_FILENAME", "{name}");
+    }
+    let multipart = "content-type: multipart/form-data; boundary=b\r\n";
+    let field = "--b\r\ncontent-disposition: form-data; name=\"fileName\"\r\n\r\nx.txt\r\n--b--\r\n";
+    assert_eq!(body(&send("POST", "/v1/assets/upload", multipart, field).await)["code"], "MISSING_FILE");
+    let download = send("POST", "/v1/assets/download", json, &json!({ "url": src }).to_string()).await;
+    assert_eq!(body(&download), json!({ "error": "URL must be mxc:// or localmxc://" }));
+
+    let serve = format!("/v1/assets/serve?url={}", beeper_api::codec::url_encode(src));
+    let out = send("GET", &serve, "", "").await;
+    let (head, _) = without_date(&out);
+    let etag = head.lines().find_map(|l| l.strip_prefix("ETag: ")).expect("an ETag").to_string();
+    assert!(etag.starts_with("\"29-") && head.contains("\r\nCache-Control: private, max-age=3600\r\n"), "{head}");
+    assert!(
+        head.contains("\r\nContent-Type: image/png\r\nAccept-Ranges: bytes\r\n") && head.contains("Last-Modified: ")
+    );
+    let fresh = send("GET", &serve, &format!("if-none-match: {etag}\r\n"), "").await;
+    assert!(fresh.starts_with("HTTP/1.1 304 ") && fresh.ends_with("\r\n\r\n"), "{fresh}");
+    let ranged = send("GET", &serve, "range: bytes=1-3,5-6\r\n", "").await;
+    assert!(
+        ranged.starts_with("HTTP/1.1 206 ")
+            && ranged.contains("Content-Range: bytes 1-3/29\r\n")
+            && ranged.ends_with("PNG")
+    );
+    let refused = send("GET", &serve, "range: bytes=40-50\r\n", "").await;
+    assert!(
+        refused.starts_with("HTTP/1.1 416 ")
+            && refused.contains("Content-Range: bytes */29\r\n")
+            && refused.ends_with("\r\n\r\n"),
+        "{refused}"
+    );
+
+    let message = json!({ "text": "pic", "attachment": { "uploadID": up["uploadID"] } }).to_string();
+    let sent = body(&send("POST", "/v1/chats/!wa_eric:beeper.com/messages", json, &message).await);
+    let id = sent["pendingMessageID"].as_str().unwrap();
+    let shown = body(&send("GET", &format!("/v1/chats/!wa_eric:beeper.com/messages/{id}"), "", "").await);
+    let attachment = &shown["attachments"][0];
+    assert!(
+        attachment["id"].as_str().unwrap().starts_with("mxc://") && attachment["id"] == attachment["srcURL"],
+        "{attachment}"
+    );
+}
+
+#[tokio::test]
 async fn json_keys_keep_the_order_of_desktop() {
     let (port, _) = server("order").await;
     let get = "GET /.well-known/oauth-authorization-server HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";

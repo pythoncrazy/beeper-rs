@@ -1862,11 +1862,12 @@ async fn e2e_api_rejects_bad_input_and_keeps_serving() {
     let outside = std::env::temp_dir().join("beeper_bad_input_outside.txt");
     std::fs::write(&outside, b"secret").unwrap();
     let uploaded = client.upload_asset_base64("a.txt", "text/plain", b"attachment").await;
-    let (_, saved) = client.request("POST", "/v1/assets/download", Some(json!({ "url": uploaded["srcURL"] }))).await;
+    let (_, refused) = client.request("POST", "/v1/assets/download", Some(json!({ "url": uploaded["srcURL"] }))).await;
+    assert_eq!(refused, json!({ "error": "URL must be mxc:// or localmxc://" }), "an upload has a file URL");
     let denied = br#"{"message":"Access denied: Path must be within allowed attachment directories","code":"SERVE_ASSET_ERROR"}"#;
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut files = vec![
-        (saved["srcURL"].as_str().unwrap().to_string(), 200, &b"attachment"[..]),
+        (uploaded["srcURL"].as_str().unwrap().to_string(), 200, &b"attachment"[..]),
         (path_to_file_url(&outside), 403, denied),
         (path_to_file_url(&data_dir.join("beeper-rs.db")), 403, denied),
         (path_to_file_url(&data_dir.join("nope")), 404, br#"{"message":"File not found","code":"SERVE_ASSET_ERROR"}"#),
