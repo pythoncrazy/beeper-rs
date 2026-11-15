@@ -1108,6 +1108,26 @@ fn mentions_like_desktop() {
     let want = vec![(label.clone(), ann.id.clone()), ("room".to_string(), ROOM_MENTION.to_string())];
     assert_eq!(sent, Some((format!("hi @{label} @room"), want)), "the send has the pills");
     drop(st);
+    // The draft keeps the pills, and an edit takes the pills of the message and gives the draft pills back.
+    let pill = vec![(label.clone(), ann.id.clone())];
+    app.pane.composer = composer_with(&format!("yo @{label}"));
+    app.pane.mentions = pill.clone();
+    let other = app.store.read().chats.iter().find(|c| c.id != id).unwrap().id.clone();
+    let _ = app.update(UiMessage::SelectChat(other));
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    assert_eq!(app.pane.mentions, pill, "the draft keeps the pills");
+    let html = format!("<a href=\"https://matrix.to/#/{}\">@{label}</a> hi", ann.id);
+    let mut st = app.store.write();
+    let (_, own, _) = st.send_message(&id, Some(format!("@{label} hi")), None, None).unwrap();
+    let i = st.msg_idx_by_id[&own];
+    st.update_message(i, |m| m.html = Some(html));
+    drop(st);
+    let zed = vec![("Zed".to_string(), "@z:x".to_string())];
+    app.pane.mentions = zed.clone();
+    let _ = app.update(UiMessage::StartEdit(own, format!("@{label} hi")));
+    assert_eq!(app.pane.mentions, pill, "the edit has the pills of the message");
+    let _ = app.update(UiMessage::CancelComposeMode);
+    assert_eq!((app.pane.mentions.clone(), app.pane.composer.text()), (zed, format!("yo @{label}")));
     let _ = app.update(UiMessage::ComposerChanged("a :smile".into()));
     let _ = app.update(UiMessage::PickSuggestion(0));
     let text = app.pane.composer.text();

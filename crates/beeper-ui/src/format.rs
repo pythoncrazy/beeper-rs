@@ -1,11 +1,13 @@
 //! Desktop's composer formatting menu (`BubbleMenu`): Markdown marks on the selection, sent as Matrix HTML.
 use crate::i18n::tr;
 use crate::popover::above;
-use crate::style::{bordered_box, btn_style, carets, fill_box, semi, shadow_box, txt, CLEAR};
+use crate::style::{bordered_box, btn_style, carets, fill_box, fw, semi, shadow_box, txt, CLEAR};
 use crate::{spell, BeeperGuiApp, El, UiMessage};
+use iced::advanced::text::highlighter::{Format, Highlighter};
+use iced::font::Weight;
 use iced::widget::text_editor::{Content, Cursor, Position};
 use iced::widget::{button, column, container, row, svg, text_input, tooltip, Row, Space};
-use iced::{Border, Center, Color, Fill, Padding, Pixels, Point, Vector};
+use iced::{Border, Center, Color, Fill, Font, Padding, Pixels, Point, Vector};
 use std::ops::Range;
 
 pub const LINK: usize = 3;
@@ -240,9 +242,150 @@ impl BeeperGuiApp {
     }
 }
 
+/// The colors and the mention labels of [`Marks`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct MarkStyle {
+    /// The labels of the mention pills of the composer, without "@".
+    pub mentions: Vec<String>,
+    /// Desktop's `--color-primary` of a `.mention`.
+    pub mention: Color,
+    pub link: Color,
+    /// The color of the Markdown marks and of a strikethrough.
+    pub mark: Color,
+}
+
+type Span = (Range<usize>, Format<Font>);
+
+/// Desktop's composer editor styles: bold, italic, inline code, code blocks, links and mention pills. The Markdown
+/// marks stay visible in a lighter color, and iced has no strikethrough, so a strikethrough has the mark color.
+pub struct Marks {
+    style: MarkStyle,
+    line: usize,
+    /// For each line up to `line`, whether it starts in a code block.
+    code: Vec<bool>,
+}
+
+impl Highlighter for Marks {
+    type Settings = MarkStyle;
+    type Highlight = Format<Font>;
+    type Iterator<'a> = std::vec::IntoIter<Span>;
+
+    fn new(style: &MarkStyle) -> Self {
+        Marks { style: style.clone(), line: 0, code: vec![false] }
+    }
+
+    fn update(&mut self, style: &MarkStyle) {
+        self.style = style.clone();
+        self.change_line(0);
+    }
+
+    fn change_line(&mut self, line: usize) {
+        self.line = line.min(self.code.len() - 1);
+        self.code.truncate(self.line + 1);
+    }
+
+    fn highlight_line(&mut self, line: &str) -> Self::Iterator<'_> {
+        let s = &self.style;
+        let font =
+            |weight, mono: bool| Some(Font { weight, ..if mono { Font::MONOSPACE } else { fw(Weight::Normal) } });
+        let mark = Format { color: Some(s.mark), font: None };
+        let code = Format { color: None, font: font(Weight::Medium, true) };
+        let (inside, fence) = (self.code[self.line], line.trim_start().starts_with("```"));
+        self.code.push(inside != fence);
+        self.line += 1;
+        let mut out = Vec::new();
+        if inside || fence {
+            out.push((0..line.len(), if fence { mark } else { code }));
+            return out.into_iter();
+        }
+        // A list or quote marker at the start of the line.
+        let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+        let start = match line {
+            _ if line.starts_with("> ") || line.starts_with("- ") || line.starts_with("* ") => 2,
+            _ if digits > 0 && line[digits..].starts_with(". ") => digits + 2,
+            _ => 0,
+        };
+        out.extend((start > 0).then_some((0..start, mark)));
+        let bold = Format { color: None, font: font(Weight::Bold, false) };
+        let italic =
+            Format { color: None, font: Some(Font { style: iced::font::Style::Italic, ..fw(Weight::Normal) }) };
+        let strike = Format { color: Some(s.mark), font: None };
+        let pairs =
+            [("`", "`", code), ("**", "**", bold), ("~~", "~~", strike), ("_", "_", italic), ("*", "*", italic)];
+        let link = Format { color: Some(s.link), font: None };
+        let mention = Format { color: Some(s.mention), font: font(Weight::Bold, false) };
+        let mut i = start;
+        while let Some(c) = line[i..].chars().next() {
+            let rest = &line[i..];
+            let word_start = !line[..i].ends_with(|c: char| c.is_alphanumeric());
+            if let Some(l) = s.mentions.iter().find(|l| rest.starts_with('@') && rest[1..].starts_with(l.as_str())) {
+                out.push((i..i + 1 + l.len(), mention));
+                i += 1 + l.len();
+                continue;
+            }
+            let pair = pairs.iter().chain([("[", "](", link)].iter()).find_map(|&(open, close, f)| {
+                let body = rest.strip_prefix(open).filter(|_| word_start || open != "_")?;
+                let end = body.find(close).filter(|&e| e > 0)?;
+                let tail = if open == "[" { body[end..].find(')').map_or(close.len(), |p| p + 1) } else { close.len() };
+                Some((open.len(), end, tail, f))
+            });
+            match pair {
+                Some((open, end, tail, f)) => {
+                    let body = i + open..i + open + end;
+                    out.extend([(i..body.start, mark), (body.clone(), f), (body.end..body.end + tail, mark)]);
+                    i = body.end + tail;
+                }
+                None => i += c.len_utf8(),
+            }
+        }
+        out.into_iter()
+    }
+
+    fn current_line(&self) -> usize {
+        self.line
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marks_style_markdown_and_mentions_like_desktop() {
+        let style =
+            MarkStyle { mentions: vec!["Ann B".into()], mention: Color::BLACK, link: Color::WHITE, mark: Color::WHITE };
+        let mut m = Marks::new(&style);
+        let spans = |m: &mut Marks, line: &str| -> Vec<(String, Option<Color>, Option<Weight>)> {
+            let spans = m.highlight_line(line).map(|(r, f)| (line[r].to_string(), f.color, f.font.map(|f| f.weight)));
+            spans.filter(|(t, ..)| !t.is_empty()).collect()
+        };
+        let white = Some(Color::WHITE);
+        let bold = Some(Weight::Bold);
+        assert_eq!(
+            spans(&mut m, "- hi **you** @Ann B snake_case"),
+            [
+                ("- ".into(), white, None),
+                ("**".into(), white, None),
+                ("you".into(), None, bold),
+                ("**".into(), white, None),
+                ("@Ann B".into(), Some(Color::BLACK), bold)
+            ]
+        );
+        assert_eq!(
+            spans(&mut m, "see [x](https://a.b)")[1..],
+            [("x".into(), white, None), ("](https://a.b)".into(), white, None)]
+        );
+        assert_eq!(spans(&mut m, "```").len(), 1);
+        assert_eq!(
+            spans(&mut m, "**not bold**"),
+            [("**not bold**".into(), None, Some(Weight::Medium))],
+            "a code block"
+        );
+        assert_eq!(spans(&mut m, "```").len(), 1);
+        m.change_line(3);
+        assert_eq!((m.current_line(), spans(&mut m, "x").len()), (3, 1), "line 3 is still in the code block");
+        assert_eq!((spans(&mut m, "```").len(), spans(&mut m, "plain")), (1, vec![]));
+    }
 
     #[test]
     fn diff_finds_the_change() {

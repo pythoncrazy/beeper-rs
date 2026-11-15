@@ -3665,14 +3665,31 @@ fn duration(n: usize, unit: &str) -> String {
     }
 }
 
+/// The mention pills of Matrix HTML: the `matrix.to` links of users, with the label after "@".
+fn html_pills(html: &str) -> Vec<Mention> {
+    let runs = beeper_core::codec::html_blocks(html).into_iter().flat_map(|b| b.runs);
+    let user = |link: &str| {
+        beeper_core::codec::url_decode(link.strip_prefix("https://matrix.to/#/")?).filter(|id| id.starts_with('@'))
+    };
+    runs.filter_map(|r| Some((r.text.strip_prefix('@')?.to_string(), user(r.link.as_deref()?)?))).collect()
+}
+
+/// The mention pills that the text still has, once for each label.
+fn pills(text: &str, mentions: &[Mention]) -> Vec<Mention> {
+    let mut labels = HashSet::new();
+    let kept = mentions.iter().filter(|(label, _)| text.contains(&format!("@{label}")) && labels.insert(label));
+    kept.cloned().collect()
+}
+
 /// Desktop's `persistDraftRecordNow`: saves the composer state of the chat open in `pane` as its draft, or the state
 /// that an edit put aside. The attachments go to the uploads once and stay there while the draft keeps them.
 fn save_draft(st: &mut BeeperStore, pane: &Pane) {
     let Some(chat) = pane.selected_chat_id.as_deref() else { return };
-    let (text, reply, files, links, later) = match &pane.stash {
-        Some(s) => (s.text.clone(), &s.reply_to, &s.attachments, &s.links, s.send_later),
+    let (text, reply, files, links, later, mentions) = match &pane.stash {
+        Some(s) => (s.text.clone(), &s.reply_to, &s.attachments, &s.links, s.send_later, &s.mentions),
         None => {
-            (pane.composer.text(), &pane.reply_to_message_id, &pane.attachments, &pane.composer_links, pane.send_later)
+            let (reply, links) = (&pane.reply_to_message_id, &pane.composer_links);
+            (pane.composer.text(), reply, &pane.attachments, links, pane.send_later, &pane.mentions)
         }
     };
     let idx = st.resolve_chat_idx(chat).expect("the open chat exists");
@@ -3695,12 +3712,14 @@ fn save_draft(st: &mut BeeperStore, pane: &Pane) {
             .collect(),
     };
     let discarded = links.iter().filter(|(_, s)| matches!(s, LinkState::Discarded)).map(|(u, _)| u.clone());
+    let mentions = pills(&text, mentions);
     let draft = ChatDraft {
         text: Some(text).filter(|t| !t.trim().is_empty()),
         attachments,
         reply_to_message_id: reply.clone(),
         send_later: later,
         discarded_links: discarded.collect(),
+        mentions,
     };
     let draft = (draft.text.is_some() || !draft.attachments.is_empty()).then_some(draft);
     if draft != st.chats[idx].draft {
@@ -3870,11 +3889,12 @@ pub struct Stash {
     attachments: Vec<PendingMedia>,
     links: Vec<(String, LinkState)>,
     send_later: Option<(i64, bool)>,
+    mentions: Vec<Mention>,
 }
 
 impl Pane {
     /// Desktop's `startEditMessageCommon`: puts the composer state aside, unless an edit already did, and edits `mid`.
-    fn start_edit(&mut self, mid: String, text: &str) {
+    fn start_edit(&mut self, mid: String, text: &str, mentions: Vec<Mention>) {
         if self.editing_message_id.is_none() {
             self.stash = Some(Stash {
                 text: self.composer.text(),
@@ -3882,10 +3902,12 @@ impl Pane {
                 attachments: std::mem::take(&mut self.attachments),
                 links: std::mem::take(&mut self.composer_links),
                 send_later: self.send_later.take(),
+                mentions: std::mem::take(&mut self.mentions),
             });
         }
         self.editing_message_id = Some(mid);
         self.composer = composer_with(text);
+        self.mentions = mentions;
     }
 
     /// Desktop's `restoreDraftState`: ends the edit and puts the composer state back.
@@ -3895,6 +3917,7 @@ impl Pane {
         self.composer = composer_with(&s.text);
         (self.reply_to_message_id, self.attachments, self.composer_links) = (s.reply_to, s.attachments, s.links);
         self.send_later = s.send_later;
+        self.mentions = s.mentions;
     }
 
     /// Desktop's `getMessageSendOptions`: the quoted message, else the message of the open reply chain.
@@ -4986,7 +5009,7 @@ impl BeeperGuiApp {
         self.pane.scrolled_up = None;
         self.pane.reply_to_message_id = draft.reply_to_message_id;
         (self.pane.editing_message_id, self.pane.stash) = (None, None);
-        self.pane.mentions.clear();
+        self.pane.mentions = draft.mentions;
         self.pane.selected_msgs.clear();
         self.pane.msg_anchor = None;
         (self.info_desc, self.info_more, self.info_all, self.info_bookmarks) = (None, false, false, false);
@@ -5321,12 +5344,7 @@ impl BeeperGuiApp {
         if text.is_empty() && self.pane.attachments.is_empty() {
             return;
         }
-        // The pills that the text still has, once for each label.
-        let mut labels = HashSet::new();
-        let mentions: Vec<Mention> = std::mem::take(&mut self.pane.mentions)
-            .into_iter()
-            .filter(|(label, _)| text.contains(&format!("@{label}")) && labels.insert(label.clone()))
-            .collect();
+        let mentions = pills(&text, &std::mem::take(&mut self.pane.mentions));
         let mut st = self.store.write();
         let idx = st.resolve_chat_idx(&chat_id).expect("chat exists");
         let edit = self.pane.editing_message_id.is_some();
@@ -6099,7 +6117,11 @@ impl BeeperGuiApp {
                 return operation::focus("composer-input");
             }
             UiMessage::StartEdit(mid, old_txt) => {
-                self.pane.start_edit(mid, &old_txt);
+                // The mention pills of the message come back from its `matrix.to` links.
+                let st = self.store.read();
+                let html = st.msg_idx_by_id.get(&mid).and_then(|&i| st.messages[i].html.clone());
+                drop(st);
+                self.pane.start_edit(mid, &old_txt, html.map_or(Vec::new(), |h| html_pills(&h)));
                 return operation::focus("composer-input");
             }
             UiMessage::DeleteMessage(cid, mid) => {
@@ -13796,6 +13818,12 @@ impl BeeperGuiApp {
         let keys = ["Message: Send Message and Archive", "Send Message", "Insert New Line"]
             .map(|h| st.settings.hotkey_keys(h).to_string());
         let undo = self.queued_here().then(|| st.settings.hotkey_keys("Undo Pending Send").to_string());
+        let marks = format::MarkStyle {
+            mentions: self.pane().mentions.iter().map(|(label, _)| label.clone()).collect(),
+            mention: p.accent,
+            link: p.link,
+            mark: p.tertiary,
+        };
         let input = text_editor(&self.pane().composer)
             .id(if self.pane().thread_root.is_some() { "thread-composer-input" } else { "composer-input" })
             .placeholder(placeholder)
@@ -13850,6 +13878,7 @@ impl BeeperGuiApp {
                 }
                 _ => text_editor::Binding::from_key_press(k),
             })
+            .highlight_with::<format::Marks>(marks, |f, _| *f)
             .size(13)
             .padding([9, 2])
             .height(Shrink)
