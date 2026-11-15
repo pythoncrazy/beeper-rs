@@ -811,12 +811,17 @@ pub struct Message {
     pub flags: u16,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MessageLink {
     pub url: String,
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// The preview image, and its size when the preview has it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub img: Option<String>,
+    #[serde(rename = "imgSize", skip_serializing_if = "Option::is_none", default)]
+    pub img_size: Option<AttachmentSize>,
 }
 
 /// Desktop's `ScheduledStore` entry: a Send Later message, kept on this device only.

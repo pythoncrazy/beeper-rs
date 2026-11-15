@@ -634,6 +634,8 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
                         url: str_field(l, "url")?,
                         title: str_field(l, "title").unwrap_or_default(),
                         summary: str_field(l, "description"),
+                        img: str_field(l, "img"),
+                        img_size: l.get("imgSize").and_then(|v| serde_json::from_value(v.clone()).ok()),
                     })
                 })
                 .collect(),

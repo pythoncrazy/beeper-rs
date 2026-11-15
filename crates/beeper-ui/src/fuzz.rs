@@ -1242,7 +1242,7 @@ fn selected_message_commands_like_desktop() {
         let own = st.messages.iter_mut().filter(|m| m.chat_id == "!note_self:beeper.com" && m.is_sender == Some(true));
         let linked = own.filter_map(|m| {
             let url = m.text.as_deref()?.split_whitespace().find(|w| w.starts_with("https://"))?.to_string();
-            m.links = vec![beeper_core::models::MessageLink { url, title: "Title".into(), summary: None }];
+            m.links = vec![beeper_core::models::MessageLink { url, title: "Title".into(), ..Default::default() }];
             Some(m.id.clone())
         });
         linked.collect()
@@ -4059,6 +4059,32 @@ fn new_chat_accounts_filter_like_desktop() {
     let _ = app.update(UiMessage::DeleteNewChat(n));
     let _ = app.update(UiMessage::DeleteNewChat(n));
     assert_eq!(app.new_chats.len(), drafts - 1, "the second click of a double click removes nothing");
+}
+
+/// Desktop shows the previews of all links with "Load external embeds automatically" off, which only gates the
+/// embedded frames. A YouTube link shows its video card, and a click on the card opens the video.
+#[test]
+fn link_previews_like_desktop() {
+    let note = "!note_self:beeper.com";
+    let mut app = demo_app("link-previews");
+    let _ = app.update(UiMessage::SetPref("loadEmbeds", 0));
+    let _ = app.update(UiMessage::SelectChat(note.into()));
+    let tube = "https://youtu.be/dQw4w9WgXcQ";
+    {
+        let mut st = app.store.write();
+        let i = *st.chat_msg_indices[note].last().expect("a message");
+        let link = |url: &str, title: &str| MessageLink { url: url.into(), title: title.into(), ..Default::default() };
+        st.messages[i].links = vec![link("https://example.com/a", "First page"), link(tube, "A video")];
+    }
+    let msgs: Vec<UiMessage> = {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 900.0), app.view_main());
+        for label in ["Scaling Laws for Neural Language Models", "First page", "YouTube", "A video"] {
+            assert!(sim.find(label).is_ok(), "{label} shows");
+        }
+        let _ = sim.click("A video").expect("the video card");
+        sim.into_messages().collect()
+    };
+    assert!(msgs.iter().any(|m| matches!(m, UiMessage::OpenUrl(u) if u == tube)), "the card opens the video");
 }
 
 #[test]

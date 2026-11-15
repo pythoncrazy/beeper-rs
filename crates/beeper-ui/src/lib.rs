@@ -10,6 +10,7 @@ mod gallery;
 mod i18n;
 mod images;
 mod lift;
+mod links;
 pub mod login;
 mod notify;
 mod popover;
@@ -12073,19 +12074,16 @@ impl BeeperGuiApp {
             (Some(p), None) => p.fallback.clone(),
             _ => m.text.clone().unwrap_or_default(),
         };
-        let preview = st
-            .settings
-            .on("loadEmbeds")
-            .then(|| {
-                let link = m.links.first().map(|l| (l.url.as_str(), l.title.as_str(), l.summary.as_deref()));
-                link.or_else(|| {
-                    text.split_whitespace().find_map(|w| {
-                        let lp = st.link_previews.get(w)?;
-                        Some((w, lp.title.as_str(), Some(lp.summary.as_str())))
-                    })
-                })
-            })
-            .flatten();
+        // Desktop shows the previews of all the links of a message. The demo has previews of the links in its text.
+        let demo = text.split_whitespace().find_map(|w| {
+            let lp = st.link_previews.get(w)?;
+            let (title, summary) = (lp.title.clone(), Some(lp.summary.clone()));
+            Some(MessageLink { url: w.to_string(), title, summary, ..MessageLink::default() })
+        });
+        let links: Vec<MessageLink> = match m.links.is_empty() {
+            true => demo.into_iter().collect(),
+            false => m.links.clone(),
+        };
         let mut parts = Column::new().spacing(2).align_x(if mine { Right } else { iced::Left });
         if (group || network_bot(chat, &m.sender_id)) && !mine && first {
             parts = parts.push(
@@ -12111,28 +12109,9 @@ impl BeeperGuiApp {
             let col = column![].push(name).push(pill).spacing(4);
             ((!chained).then(|| col.align_x(if q_mine { Right } else { iced::Left })), q_mine)
         });
-        if let Some((url, title, summary)) = preview {
-            let host = url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(url).to_string();
-            let body =
-                column![]
-                    .push(clamp(title, 338.0, 3, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(dim(p.strong)))
-                    .push(summary.map(|s| {
-                        clamp(s, 338.0, 3, 13.0, Weight::Normal).line_height(Pixels(16.0)).color(dim(p.strong))
-                    }))
-                    .push(
-                        row![
-                            ic(icon::LINK, 12.0).color(dim(p.weak)),
-                            txt(host, 11.0).line_height(Pixels(14.0)).color(dim(p.weak))
-                        ]
-                        .spacing(4)
-                        .align_y(Center),
-                    )
-                    .spacing(8)
-                    .padding([8, 11]);
-            let wraps = text_width(title, 13.0, Weight::Semibold) > 338.0
-                || summary.is_some_and(|s| text_width(s, 13.0, Weight::Normal) > 338.0);
-            let card = container(body).width(if wraps { Length::Fixed(360.0) } else { Shrink });
-            parts = parts.push(card.max_width(360).style(fill_box(dim(p.link_card), 17.0)));
+        // Desktop's `pM`: a link with a title, an image or a summary has a preview.
+        for link in links.iter().filter(|l| !l.title.is_empty() || l.img.is_some() || l.summary.is_some()) {
+            parts = parts.push(self.view_link(link, 0.45 * self.pane().size.width, dim));
         }
         if ms.len() > 1 {
             parts = parts.push(self.view_gallery(ms));
