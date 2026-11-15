@@ -4199,6 +4199,7 @@ impl BeeperGuiApp {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => SIDEBAR_WIDTH,
             Err(e) => panic!("read the sidebar width: {e}"),
         };
+        let audio = voice::Player::new(&store.read().data_dir);
         let sidebar_hidden = match std::fs::read_to_string(store.read().data_dir.join("sidebar-hidden")) {
             Ok(h) => h.parse().expect("a boolean sidebar-hidden"),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
@@ -4287,7 +4288,7 @@ impl BeeperGuiApp {
             confirm: None,
             delete_target: None,
             reminder_menu: None,
-            audio: Default::default(),
+            audio,
             recorder: None,
             queued: Vec::new(),
             selection: Vec::new(),
@@ -9163,6 +9164,7 @@ impl BeeperGuiApp {
                 .chain(tray)
                 .chain(online)
                 .chain(self.audio_ticks())
+                .chain(self.audio_drag())
                 .chain(self.record_events())
                 .chain(self.video_ticks()),
         )
@@ -12082,7 +12084,8 @@ impl BeeperGuiApp {
                 .into()
         };
         let pill = self.view_global_audio(&st, w - 18.0).map(|pill| {
-            container(pill).padding(Padding::ZERO.left(8.0).right(10.0).bottom(8.0)).height(Fill).align_bottom(Fill)
+            let at = Padding::ZERO.left(8.0).right(10.0).bottom(self.audio.bottom);
+            container(pill).padding(at).height(Fill).align_bottom(Fill)
         });
         let status = self.view_network_status(&st);
         let sidebar = stack![column![header].push(status).push(list).padding(Padding::ZERO.left(8.0))].push(pill);
