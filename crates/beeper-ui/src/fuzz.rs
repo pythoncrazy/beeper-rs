@@ -46,6 +46,8 @@ fn prefs() -> impl Iterator<Item = (SettingsTab, &'static prefs::Pref)> {
                     | prefs::Control::Multi(_)
                     | prefs::Control::Analytics
                     | prefs::Control::Downloads
+                    | prefs::Control::ReactionEmoji { .. }
+                    | prefs::Control::QuickReactions(_)
             )
         })
         .filter(|(_, p)| p.key != "appLanguage")
@@ -2163,6 +2165,27 @@ fn downloads_location_like_desktop() {
     let hits = search_settings(&app.store.read(), "downloads");
     let labels: Vec<String> = hits.into_iter().map(SettingsHit::label).collect();
     assert!(labels.contains(&"Downloads Preferences".to_string()), "{labels:?}");
+}
+
+#[test]
+fn quick_reaction_settings_like_desktop() {
+    use crate::emoji::EmojiMsg;
+    let mut app = demo_app("quick-reaction-settings");
+    let _ = app.update(UiMessage::OpenSettings(SettingsTab::General));
+    assert!(simulator(app.view_settings()).find("Quick reaction emoji").is_err(), "only for React with...");
+    let _ = app.update(UiMessage::SetPref("messageDoubleClick", 5));
+    assert!(simulator(app.view_settings()).find("Quick reaction emoji").is_ok());
+    let _ = app.update(UiMessage::SelectSettingsTab(SettingsTab::Appearance));
+    let _ = app.update(UiMessage::SetPref("quickReactionsCustomized", 1));
+    assert_eq!(crate::emoji::quick_reactions(&app.store.read()), ["👍", "❤️", "😂"], "Desktop's custom defaults");
+    let _ = app.update(UiMessage::QuickEmoji(Some(2)));
+    let _ = simulator(app.view_settings());
+    let _ = app.update(UiMessage::Emoji(EmojiMsg::Pick(0)));
+    let custom = crate::emoji::quick_reactions(&app.store.read());
+    assert!(custom[1] != "❤️" && app.pane.emoji.is_none(), "a pick sets the custom reaction: {custom:?}");
+    let _ = app.update(UiMessage::QuickEmoji(Some(0)));
+    let _ = app.update(UiMessage::Emoji(EmojiMsg::Pick(0)));
+    assert_eq!(app.store.read().settings.quick_reaction, custom[1], "any emoji is the Quick React emoji");
 }
 
 #[test]

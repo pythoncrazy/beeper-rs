@@ -1172,6 +1172,10 @@ pub struct BeeperSettings {
     pub labels_intro_seen: bool,
     /// Desktop's local `downloads_dir_path`, or empty for the downloads folder of the OS.
     pub downloads_dir: String,
+    /// Desktop's synced `message_double_click_reaction`: the emoji of Quick React.
+    pub quick_reaction: String,
+    /// Desktop's local `customQuickReactions`: the custom quick reactions.
+    pub quick_reactions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

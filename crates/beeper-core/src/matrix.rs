@@ -1896,8 +1896,11 @@ async fn sync_prefs(client: &Client, store: &SharedStore) {
             settings.set_pref(key, x);
         }
     }
+    if let Some(e) = events[crate::prefs::DESKTOP_PREFS][crate::prefs::QUICK_REACTION].as_str() {
+        settings.quick_reaction = e.to_string();
+    }
     st.synced_prefs = events;
-    if settings.prefs != st.settings.prefs {
+    if settings.prefs != st.settings.prefs || settings.quick_reaction != st.settings.quick_reaction {
         st.settings = settings;
         st.persist_state_to_sqlite();
         st.emit_ws("settings.updated", "", None, None, None);
@@ -1911,6 +1914,16 @@ pub fn pref_write(st: &mut BeeperStore, key: &str) -> Option<(&'static str, Valu
         Ad::Desktop(k, values) => (crate::prefs::DESKTOP_PREFS, k, values.encode(x)),
         Ad::Event(kind, field) => (kind, field, (x == 1).into()),
     };
+    synced_write(st, kind, field, value)
+}
+
+/// The account data write that syncs the Quick React emoji to Desktop.
+pub fn quick_reaction_write(st: &mut BeeperStore) -> Option<(&'static str, Value)> {
+    let emoji = st.settings.quick_reaction.clone().into();
+    synced_write(st, crate::prefs::DESKTOP_PREFS, crate::prefs::QUICK_REACTION, emoji)
+}
+
+fn synced_write(st: &mut BeeperStore, kind: &'static str, field: &str, value: Value) -> Option<(&'static str, Value)> {
     let content = st.synced_prefs.get_mut(kind)?;
     if content.is_null() {
         *content = serde_json::json!({});
