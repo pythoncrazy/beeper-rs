@@ -13470,16 +13470,6 @@ impl BeeperGuiApp {
             _ if utd => tr("This message is waiting for decryption.").into(),
             _ => m.text.clone().unwrap_or_default(),
         };
-        // Desktop shows the previews of all the links of a message. The demo has previews of the links in its text.
-        let demo = text.split_whitespace().find_map(|w| {
-            let lp = st.link_previews.get(w)?;
-            let (title, summary) = (lp.title.clone(), Some(lp.summary.clone()));
-            Some(MessageLink { url: w.to_string(), title, summary, ..MessageLink::default() })
-        });
-        let links: Vec<MessageLink> = match m.links.is_empty() {
-            true => demo.into_iter().collect(),
-            false => m.links.clone(),
-        };
         let mut parts = Column::new().spacing(2).align_x(if mine { Right } else { iced::Left });
         if (group || network_bot(chat, &m.sender_id)) && !mine && first {
             parts = parts.push(
@@ -13512,7 +13502,7 @@ impl BeeperGuiApp {
             ((!chained).then(|| col.align_x(if q_mine { Right } else { iced::Left })), q_mine)
         });
         // Desktop's `pM`: a link with a title, an image or a summary has a preview.
-        for link in links.iter().filter(|l| !l.title.is_empty() || l.img.is_some() || l.summary.is_some()) {
+        for link in m.links.iter().filter(|l| !l.title.is_empty() || l.img.is_some() || l.summary.is_some()) {
             parts = parts.push(self.view_link(link, 0.45 * self.pane().size.width, dim));
         }
         if ms.len() > 1 {

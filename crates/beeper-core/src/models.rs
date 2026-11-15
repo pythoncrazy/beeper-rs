@@ -1057,12 +1057,6 @@ pub struct PollOption {
     pub voter_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LinkPreview {
-    pub title: String,
-    pub summary: String,
-}
-
 /// Desktop's `extra.poll`, from an MSC3381 poll start event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PollData {
