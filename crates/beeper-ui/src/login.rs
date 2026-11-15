@@ -680,6 +680,23 @@ impl BeeperGuiApp {
         Task::batch([window::set_resizable(id, true), window::resize(id, crate::MAIN_SIZE)])
     }
 
+    /// Desktop's `InnerApp`: when encrypted messaging of this device goes back to the verification or to the keys, the
+    /// main window shows the onboarding again at the onboarding size.
+    pub fn leave_app(&mut self) -> Task<UiMessage> {
+        let stage = self.store.read().beeper_state.stage();
+        let back = matches!(stage, "pre-verification" | "awaiting-secrets" | "awaiting-key-backup");
+        let Some(id) = self.main_window.take_if(|_| back && self.login_window.is_none()) else { return Task::none() };
+        (self.login_window, self.login) = (Some(id), Login::default());
+        Task::batch([window::set_resizable(id, false), window::resize(id, SIZE), self.resume_onboarding()])
+    }
+
+    /// Desktop's onboarding of a signed-in device before the stage "done": it starts at the first onboarding screen
+    /// and checks encrypted messaging.
+    pub fn resume_onboarding(&mut self) -> Task<UiMessage> {
+        self.login.screen = Screen::Email;
+        self.check_e2ee()
+    }
+
     fn background(
         &mut self,
         f: impl FnOnce(&Cloud) -> Result<Outcome, CloudError> + Send + 'static,
