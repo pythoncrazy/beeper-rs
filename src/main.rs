@@ -262,7 +262,7 @@ fn main() {
     if let Ok(url) = std::env::var("BEEPER_MATRIX_URL") {
         cfg.homeserver = url;
     }
-    let store: SharedStore = StoreLock::shared(BeeperStore::from_config(cfg));
+    let store: SharedStore = StoreLock::shared(BeeperStore::open(cfg));
     #[cfg(target_os = "linux")]
     if let Some(Some(first)) = first {
         beeper_core::platform::forward_launches(first, store.read().launch_tx.clone());
@@ -275,21 +275,29 @@ fn main() {
             false => host,
         }
     };
-    if !store.read().config.demo {
-        rt.spawn(beeper_core::matrix::run(store.clone()));
-    }
     let bind = move |store: &SharedStore| {
         let listener =
             bind_free(rt, &host, ports.clone()).map_err(|e| format!("bind the Desktop API to {host}: {e}"))?;
         store.write().config.port = listener.local_addr().expect("a bound listener has an address").port();
         Ok::<_, String>(listener)
     };
-    if let Command::Serve = command {
+    // `serve` answers the info and the spec at once. The other requests and Matrix wait for the lock of the load.
+    let server = matches!(command, Command::Serve).then(|| {
         let listener = bind(&store).unwrap_or_else(|e| {
             eprintln!("{e}");
             std::process::exit(1)
         });
-        return rt.block_on(serve_http(listener, store));
+        serve_http(listener, store.clone())
+    });
+    let mut loading = store.write();
+    let server = server.map(|server| rt.spawn(server));
+    if !loading.config.demo {
+        rt.spawn(beeper_core::matrix::run(store.clone()));
+    }
+    loading.load_chats();
+    drop(loading);
+    if let Some(server) = server {
+        return rt.block_on(server).expect("serve the Desktop API");
     }
     let mut on = {
         let st = store.read();

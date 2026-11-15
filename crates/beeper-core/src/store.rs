@@ -477,7 +477,15 @@ pub struct BeeperStore {
 }
 
 impl BeeperStore {
-    pub fn from_config(mut config: CentralConfig) -> Self {
+    pub fn from_config(config: CentralConfig) -> Self {
+        let mut store = Self::open(config);
+        store.load_chats();
+        store
+    }
+
+    /// Opens the store without its chats, which `load_chats` adds. Before that, only the config and the stored
+    /// settings are complete.
+    pub fn open(mut config: CentralConfig) -> Self {
         assert_not_original_beeper_dir(&config.data_dir);
         let logged_out = config.data_dir.join(LOGGED_OUT);
         if logged_out.exists() {
@@ -623,26 +631,7 @@ impl BeeperStore {
             whoami: Profile::default(),
             next_seq: 1000,
         };
-        store.load_from_sqlite_or_seed();
-        if store.config.demo {
-            let label = |(id, name, color, icon): (&str, &str, Option<u8>, Option<&str>)| {
-                let rooms = store.chats.iter().filter(|c| c.label_ids.iter().any(|l| l == id));
-                Label {
-                    id: id.into(),
-                    name: name.into(),
-                    color,
-                    icon: icon.map(Into::into),
-                    rooms: rooms.map(|c| c.id.clone()).collect(),
-                    ..Label::default()
-                }
-            };
-            let labels = [
-                ("lbl_favorite", "Favorites", Some(6), Some("3257-5950")),
-                ("lbl_work", "Work", Some(11), None),
-                ("lbl_vip", "VIP", None, None),
-            ];
-            store.labels = labels.map(label).into();
-        }
+        store.load_from_sqlite();
         store
     }
 
@@ -837,8 +826,8 @@ impl BeeperStore {
         });
     }
 
-    fn load_from_sqlite_or_seed(&mut self) {
-        let (setup, state, bridges, settings, pin_rank, recents, contacts, seq, chats, messages, assets) = {
+    fn load_from_sqlite(&mut self) {
+        let (setup, state, bridges, settings, pin_rank, recents, contacts, assets) = {
             let conn = self.db.lock().unwrap();
             let kv = |k: &str| {
                 conn.query_row("SELECT value FROM kv WHERE key = ?1", [k], |r| r.get::<_, String>(0))
@@ -857,10 +846,6 @@ impl BeeperStore {
                 kv(KEY_PIN_RANK),
                 kv(KEY_RECENT_CHATS),
                 kv(KEY_CONTACTS),
-                kv(KEY_SEQ),
-                rows("SELECT json FROM chats ORDER BY rowid"),
-                conn.query_row("SELECT max(sort_key) FROM messages", [], |r| r.get::<_, Option<String>>(0))
-                    .expect("read the last sort key"),
                 rows("SELECT json FROM assets"),
             )
         };
@@ -907,6 +892,21 @@ impl BeeperStore {
             self.assets_by_mxc.insert(asset.mxc_url.clone(), asset.upload_id.clone());
             self.assets.insert(asset.upload_id.clone(), asset);
         }
+    }
+
+    /// Loads the stored chats, or seeds the chats of a new demo store.
+    pub fn load_chats(&mut self) {
+        let (seq, chats, messages) = {
+            let conn = self.db.lock().unwrap();
+            let mut chats = conn.prepare("SELECT json FROM chats ORDER BY rowid").expect("prepare the chat query");
+            let seq = "SELECT value FROM kv WHERE key = ?1";
+            (
+                conn.query_row(seq, [KEY_SEQ], |r| r.get::<_, String>(0)).optional().expect("read kv"),
+                chats.query_map([], |r| r.get(0)).expect("query chats").collect::<Result<Vec<String>, _>>().unwrap(),
+                conn.query_row("SELECT max(sort_key) FROM messages", [], |r| r.get::<_, Option<String>>(0))
+                    .expect("read the last sort key"),
+            )
+        };
         let fresh = chats.is_empty();
         assert!(!fresh || messages.is_none(), "stored messages without chats");
         if fresh && self.config.demo {
@@ -929,6 +929,25 @@ impl BeeperStore {
             self.ensure_note_chat(&Profile::default());
         }
         self.rebuild_accounts_from_bridges();
+        if self.config.demo {
+            let label = |(id, name, color, icon): (&str, &str, Option<u8>, Option<&str>)| {
+                let rooms = self.chats.iter().filter(|c| c.label_ids.iter().any(|l| l == id));
+                Label {
+                    id: id.into(),
+                    name: name.into(),
+                    color,
+                    icon: icon.map(Into::into),
+                    rooms: rooms.map(|c| c.id.clone()).collect(),
+                    ..Label::default()
+                }
+            };
+            let labels = [
+                ("lbl_favorite", "Favorites", Some(6), Some("3257-5950")),
+                ("lbl_work", "Work", Some(11), None),
+                ("lbl_vip", "VIP", None, None),
+            ];
+            self.labels = labels.map(label).into();
+        }
     }
 
     fn put_kv(&self, key: &str, value: &str) {
