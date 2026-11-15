@@ -1140,6 +1140,18 @@ fn unread_threads_like_desktop() {
     assert_eq!(app.badge_count(), badge - 1, "Desktop counts one more with unread threads");
 }
 
+/// The "Unread threads" pill counts only the threads of the chats in the list.
+#[test]
+fn unread_threads_pill_counts_the_listed_chats() {
+    let mut app = demo_app("unread-threads-listed");
+    let pill = |app: &BeeperGuiApp| simulator(app.view_sidebar()).find("Unread threads").is_ok();
+    assert!(pill(&app), "the inbox lists the chat of the unread thread");
+    let _ = app.update(UiMessage::ToggleFlag("!sl_infra:beeper.com".into(), ChatFlag::Archived));
+    assert!(!pill(&app), "the archived chat takes its thread out of the inbox");
+    let _ = app.update(UiMessage::SelectTab(InboxTab::Archived));
+    assert!(pill(&app), "the archive lists the chat of the unread thread");
+}
+
 /// Desktop's thread follows: "Unfollow Thread" in the message menu, which drops the thread from the unread threads,
 /// a reply that follows the thread again, "Stop Following All Threads" in the chat menu, and the thread window.
 #[test]
