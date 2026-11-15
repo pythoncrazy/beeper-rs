@@ -4462,7 +4462,8 @@ impl BeeperGuiApp {
         let display_server = os.detect_display_server(&std::env::vars().collect());
         let (theme, panel, first_chat, cloud, source) = {
             let st = store.read();
-            let first = st.signed_in().then(|| NOTE_CHAT_ID.to_string());
+            // Desktop's `InnerApp` shows the home page at start only when the onboarding is done.
+            let first = (st.signed_in() && st.beeper_state.stage() == "done").then(|| NOTE_CHAT_ID.to_string());
             let s = &st.settings;
             let cloud = Arc::new(Cloud::new(&st.config.api_url, &st.config.homeserver));
             let source = st
@@ -4699,9 +4700,14 @@ impl BeeperGuiApp {
         let restore = (signed_in && !app.hidden).then(|| app.restore_subwindows());
         let link = app.store.write().config.link.take();
         let link = link.map(|l| app.open_link(&l));
+        // A signed-in device before the end of the onboarding continues it from Desktop's first onboarding screen.
+        let onboard = (!signed_in && app.store.read().signed_in()).then(|| {
+            app.login.screen = login::Screen::Email;
+            app.check_e2ee()
+        });
         let tasks =
             [open.map(UiMessage::WindowOpened), iced::system::theme().map(UiMessage::SystemTheme), app.load_avatars()];
-        (app, Task::batch(tasks.into_iter().chain(cloud).chain(restore).chain(link)))
+        (app, Task::batch(tasks.into_iter().chain(cloud).chain(restore).chain(link).chain(onboard)))
     }
 
     /// Starts the loads of the avatars that a view asked for, when a client can load them.

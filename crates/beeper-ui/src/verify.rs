@@ -1049,6 +1049,45 @@ mod tests {
     }
 
     #[test]
+    fn a_restart_before_the_end_of_the_onboarding_continues_it_like_desktop() {
+        use beeper_core::config::CentralConfig;
+        use beeper_core::store::{BeeperStore, StoreLock};
+        let dir = std::env::temp_dir().join(format!("beeper-rs-verify-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23391, None);
+        let session = beeper_core::models::MatrixSession {
+            user_id: "@me:beeper.com".into(),
+            access_token: "t".into(),
+            device_id: "D".into(),
+            jwt: None,
+        };
+        let mut st = BeeperStore::from_config(config.clone());
+        st.sign_in(session, "http://127.0.0.1:1".into(), &Default::default(), Vec::new());
+        drop(st);
+        let boot = || BeeperGuiApp::boot(StoreLock::shared(BeeperStore::from_config(config.clone()))).0;
+        let app = boot();
+        assert!(app.main_window.is_none(), "an unverified device does not show the chats");
+        assert!(app.login_window.is_some() && app.login.busy, "the onboarding checks encrypted messaging again");
+        assert_eq!(app.login.screen, Screen::Email);
+
+        let mut st = BeeperStore::from_config(config.clone());
+        let s = &mut st.beeper_state;
+        assert_eq!(s.stage(), "unknown", "Desktop waits for the state of encrypted messaging");
+        s.initialized = true;
+        assert_eq!(s.stage(), "pre-verification");
+        (s.verified, s.key_backup, s.first_sync_done) = (true, true, true);
+        assert_eq!(s.stage(), "awaiting-secrets", "a verified device waits for its keys");
+        let k = &mut s.secrets;
+        (k.master_key, k.self_signing_key, k.user_signing_key, k.megolm_backup_key) = (true, true, true, true);
+        assert_eq!(s.stage(), "done");
+        st.persist_state_to_sqlite();
+        drop(st);
+        let app = boot();
+        assert!(app.main_window.is_some() && app.login_window.is_none(), "a done onboarding shows the chats");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn recovery_keys_show_in_groups_and_need_48_characters() {
         let key = "EsTG bqMm dUDy dKth xAyD 45dS HhyC WKc9 CF6B xsFi J5FQ t8u2";
         assert_eq!(format_recovery_key(key), "EsTG-bqMm-dUDy\ndKth-xAyD-45dS\nHhyC-WKc9-CF6B\nxsFi-J5FQ-t8u2");
