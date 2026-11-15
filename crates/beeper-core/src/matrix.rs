@@ -3364,8 +3364,7 @@ mod tests {
             }
         })
         .await;
-        let dir = std::env::temp_dir().join(format!("beeper-rs-older-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testing::temp_dir("older");
         let store = stub_store(&dir, &url).await;
         let room =
             store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).expect("the room");
@@ -3387,8 +3386,6 @@ mod tests {
         let cfg = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23392, None);
         let st = crate::store::BeeperStore::from_config(cfg);
         assert_eq!(st.chats[st.chat_idx_by_id["!room:x"]].older, Older::Start, "the pagination state persists");
-        // Windows keeps the Matrix store open while the tasks of the SDK end, so the next run removes it.
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A store with the stub rooms `!room:x`, whose history is `events`, and `other.0`, whose history is `other.1`.
@@ -3397,7 +3394,7 @@ mod tests {
         name: &str,
         events: Vec<Value>,
         other: (&'static str, Vec<Value>),
-    ) -> (crate::store::SharedStore, std::path::PathBuf) {
+    ) -> crate::store::SharedStore {
         let mut sync = stub_sync();
         sync["rooms"]["join"][other.0] = sync["rooms"]["join"]["!room:x"].clone();
         let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
@@ -3418,9 +3415,7 @@ mod tests {
             _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
         })
         .await;
-        let dir = std::env::temp_dir().join(format!("beeper-rs-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        (stub_store(&dir, &url).await, dir)
+        stub_store(&crate::testing::temp_dir(name), &url).await
     }
 
     async fn sync_stub_room(store: &crate::store::SharedStore, id: &str) {
@@ -3440,7 +3435,7 @@ mod tests {
     async fn changed_flags_stay_until_a_sync_shows_them_like_desktop() {
         use super::archived_upto;
         let text = stub_event("$a", "m.room.message", json!({ "msgtype": "m.text", "body": "hi" }));
-        let (store, dir) = stub_history("local-flags", vec![text], ("!other:x", Vec::new())).await;
+        let store = stub_history("local-flags", vec![text], ("!other:x", Vec::new())).await;
         sync_stub_room(&store, "!room:x").await;
         let flags = |store: &crate::store::SharedStore| {
             let st = store.read();
@@ -3480,7 +3475,6 @@ mod tests {
         assert!(!archived_upto(&c, Some((None, Some(10))), &new), "an unread chat is not archived up to a time");
         c.is_pinned = Some(true);
         assert!(!archived_upto(&c, Some((Some(9), None)), &old), "a pinned chat is never archived");
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -3502,7 +3496,7 @@ mod tests {
         let image = json!({ "msgtype": "m.image", "body": "a.png", "info": { "w": 1u64 << 40, "h": 10 }, "file": {} });
         let reaction = json!({ "m.relates_to": { "rel_type": "m.annotation", "event_id": "$a" } });
         let events = vec![text, stub_event("$b", "m.room.message", image), stub_event("$c", "m.reaction", reaction)];
-        let (store, dir) = stub_history("bad-events", events, ("!other:x", Vec::new())).await;
+        let store = stub_history("bad-events", events, ("!other:x", Vec::new())).await;
         sync_stub_room(&store, "!room:x").await;
         {
             let st = store.read();
@@ -3517,7 +3511,7 @@ mod tests {
         let sticker = json!({ "body": "s", "url": "mxc://x/s", "info": {} });
         let events =
             vec![stub_event("$p", "org.matrix.msc3381.poll.start", poll), stub_event("$s", "m.sticker", sticker)];
-        let (store, dir2) = stub_history("forward", events, ("!other:x", Vec::new())).await;
+        let store = stub_history("forward", events, ("!other:x", Vec::new())).await;
         let forward = |event: &str| super::Outgoing::Forward {
             txn: format!("txn{event}"),
             from: "!room:x".into(),
@@ -3531,8 +3525,6 @@ mod tests {
         store.write().queue("!room:x", forward("$s"));
         super::flush(store.clone()).await.expect("a sticker has no msgtype and forwards");
         assert_eq!(store.read().sent.get("txn$s").map(String::as_str), Some("$sent"));
-        // Windows keeps the Matrix store open while the tasks of the SDK end, so the next run removes it.
-        let _ = (std::fs::remove_dir_all(dir), std::fs::remove_dir_all(dir2));
     }
 
     /// Desktop finds the target of an event only in the room of the event, so a redaction, an edit, a reaction or a
@@ -3558,15 +3550,13 @@ mod tests {
         let answer = json!({ "id": "1", "org.matrix.msc1767.text": "A" });
         let poll = json!({ "org.matrix.msc3381.poll.start": { "question": { "body": "Q" }, "answers": [answer] } });
         let other = vec![stub_event("$note", "org.matrix.msc3381.poll.start", poll)];
-        let (store, dir) = stub_history("own-room", events, ("!other:x", other)).await;
+        let store = stub_history("own-room", events, ("!other:x", other)).await;
         sync_stub_room(&store, "!other:x").await;
         sync_stub_room(&store, "!room:x").await;
         let st = store.read();
         let m = &st.messages[st.msg_idx_by_id["$note"]];
         assert!(m.is_deleted.is_none() && m.text.as_deref() == Some("Q") && m.reactions.is_empty());
         assert_eq!(m.poll.as_ref().map(|p| p.voters()), Some(0));
-        drop(st);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Desktop's threaded replies: the `m.thread` relations of a room with threads, the thread follows, the own
@@ -3622,9 +3612,7 @@ mod tests {
                 }
             })
             .await;
-        let dir = std::env::temp_dir().join(format!("beeper-rs-threads-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = stub_store(&dir, &url).await;
+        let store = stub_store(&crate::testing::temp_dir("threads"), &url).await;
         store.write().features = crate::features::Flags::free_plan();
         sync_stub_room(&store, "!room:x").await;
         let chat = || {
@@ -3725,8 +3713,6 @@ mod tests {
             (&json!(["$e1"]), &json!([]), &json!(false))
         );
         assert!(body["com.beeper.revision_id"].is_string(), "Desktop writes a new revision");
-        drop(sent);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Desktop's sticker packs: the packs of the room, its space, the rooms of `m.image_pack.rooms` and the account,
@@ -3794,9 +3780,7 @@ mod tests {
                 }
             })
             .await;
-        let dir = std::env::temp_dir().join(format!("beeper-rs-stickers-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = stub_store(&dir, &url).await;
+        let store = stub_store(&crate::testing::temp_dir("stickers"), &url).await;
         sync_stub_room(&store, "!room:x").await;
         let packs = super::sticker_packs(store.clone(), "!room:x".into()).await.expect("the packs");
         let ids: Vec<(&str, &str)> = packs.iter().map(|p| (p.id.as_str(), p.title.as_str())).collect();
@@ -3865,7 +3849,6 @@ mod tests {
         let echo = store.read().stored_message(&txn).expect("the echo");
         let a = &echo.attachments[0];
         assert_eq!((a.file_name.as_deref(), a.mime_type.as_deref()), (Some("a.png"), Some("image/png")));
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Desktop's blocking: the `block_user`, `no_unblock` and `report_spam` room features, the
@@ -3899,9 +3882,7 @@ mod tests {
                 }
             })
             .await;
-        let dir = std::env::temp_dir().join(format!("beeper-rs-block-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = stub_store(&dir, &url).await;
+        let store = stub_store(&crate::testing::temp_dir("block"), &url).await;
         sync_stub_room(&store, "!room:x").await;
         let chat = || {
             let st = store.read();
@@ -3922,8 +3903,6 @@ mod tests {
             sent.iter().filter(|(p, _)| p.contains("/send/com.beeper.block_user/")).map(|(_, b)| b).collect();
         let want = [json!({ "block": false, "report_spam": false }), json!({ "block": true, "report_spam": true })];
         assert_eq!(bodies, [&want[0], &want[1]]);
-        drop(sent);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Desktop keeps each cloud login of a bridge as its own account, and puts a room on the login of its receiver.
@@ -3966,9 +3945,7 @@ mod tests {
             _ => (404, json!({ "errcode": "M_UNRECOGNIZED", "error": "not in the stub" })),
         })
         .await;
-        let dir = std::env::temp_dir().join(format!("beeper-rs-bridge-state-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = stub_store(&dir, &url).await;
+        let store = stub_store(&crate::testing::temp_dir("bridge-state"), &url).await;
         let mut events = store.read().ws_tx.subscribe();
         let client = store.read().matrix.clone().expect("a client");
         super::sync_account_data(&client, &store).await;
@@ -3978,7 +3955,6 @@ mod tests {
         assert_eq!(events.try_recv().expect("an update event").event_type, "setup.updated");
         super::sync_account_data(&client, &store).await;
         assert!(events.try_recv().is_err(), "the same states change nothing");
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Desktop's SDK reports `initialized` after it reads the encryption state, and an account without cross-signing
@@ -3993,9 +3969,7 @@ mod tests {
             _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
         })
         .await;
-        let dir = std::env::temp_dir().join(format!("beeper-rs-e2ee-state-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = stub_store(&dir, &url).await;
+        let store = stub_store(&crate::testing::temp_dir("e2ee-state"), &url).await;
         assert_eq!(store.read().app_state().state, "initializing");
         let client = store.read().matrix.clone().expect("a client");
         super::refresh_e2ee(&client, &store).await;
@@ -4009,7 +3983,6 @@ mod tests {
         assert!(e2ee(&store).get("recoveryKeyGeneratedAt").is_none(), "Desktop leaves out a time of 0");
         store.write().beeper_state.recovery_code_generated_at = 1_763_200_000_000;
         assert_eq!(e2ee(&store)["recoveryKeyGeneratedAt"], 1_763_200_000_000_i64);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Like Desktop's SDK, the user-interactive auth of the cross-signing keys sends the Beeper JWT, and without a
@@ -4033,16 +4006,13 @@ mod tests {
             _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
         })
         .await;
-        let dir = std::env::temp_dir().join(format!("beeper-rs-jwt-auth-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = stub_store(&dir, &url).await;
+        let store = stub_store(&crate::testing::temp_dir("jwt-auth"), &url).await;
         assert_eq!(super::new_recovery_key(&store).await, Err(super::REAUTH.into()), "no JWT");
         assert!(sent.lock().unwrap().is_empty());
         store.write().ui_auth_token = Some("old.jwt".into());
         assert_eq!(super::new_recovery_key(&store).await, Err(super::REAUTH.into()), "a refused JWT");
         let auth = json!({ "type": "org.matrix.login.jwt", "session": "s1", "token": "old.jwt", "user": "@me:x" });
         assert_eq!(*sent.lock().unwrap(), [auth]);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A bridge that answers its contact list without a list gives no contacts, and the other bridges give theirs.
@@ -4082,8 +4052,7 @@ mod tests {
             _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
         })
         .await;
-        let dir = std::env::temp_dir().join(format!("beeper-rs-outbox-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testing::temp_dir("outbox");
         let store = stub_store(&dir, &url).await;
         let room = store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).unwrap();
         super::sync_room(&store, &room, Vec::new()).await;
@@ -4123,7 +4092,6 @@ mod tests {
         drop(store);
         let cfg = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23392, None);
         assert!(crate::store::BeeperStore::from_config(cfg).outbox.is_empty(), "the outbox row is gone");
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
@@ -4146,9 +4114,7 @@ mod tests {
             _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
         })
         .await;
-        let dir = std::env::temp_dir().join(format!("beeper-rs-mss-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = stub_store(&dir, &url).await;
+        let store = stub_store(&crate::testing::temp_dir("mss"), &url).await;
         let room = store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).unwrap();
         super::sync_room(&store, &room, Vec::new()).await;
         let st = store.read();
@@ -4157,23 +4123,18 @@ mod tests {
         let error = crate::models::SendError { message: Some("Network down".into()), retrying: false };
         assert_eq!((m("$e2").is_delivered, m("$e2").send_error.as_ref()), (false, Some(&error)), "a failed message");
         assert_eq!(st.chat_msg_indices["!room:x"].len(), 2, "send statuses are no timeline rows");
-        drop(st);
-        drop(store);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
     async fn demo_logout_deletes_local_data() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-logout-{}", std::process::id()));
-        let mut cfg = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23391, None);
-        cfg.demo = true;
+        let cfg = crate::testing::demo_config("logout");
+        let dir = cfg.data_dir.clone();
         let store = crate::store::StoreLock::shared(crate::store::BeeperStore::from_config(cfg.clone()));
         let cached = dir.join("media").join("cached");
         std::fs::write(&cached, "x").expect("write a cached file");
         super::logout(store).await.expect("demo logout");
         crate::store::BeeperStore::from_config(cfg);
         assert!(!cached.exists() && !dir.join(crate::store::LOGGED_OUT).exists(), "the next start deletes the data");
-        std::fs::remove_dir_all(dir).expect("remove the test data dir");
     }
 
     #[test]
@@ -4239,15 +4200,13 @@ mod tests {
         let rel = json!({ "event_id": "$m", "room_id": "!room:x", "rel_type": "com.beeper.bookmark" });
         let bookmark = stub_event("$b", "com.beeper.bookmark", json!({ "com.beeper.relates_to": rel }));
         let text = stub_event("$m", "m.room.message", json!({ "msgtype": "m.text", "body": "hi" }));
-        let (store, dir) = stub_history("bookmarks-room", vec![text], (BOOKMARKS_ROOM, vec![bookmark])).await;
+        let store = stub_history("bookmarks-room", vec![text], (BOOKMARKS_ROOM, vec![bookmark])).await;
         sync_stub_room(&store, "!room:x").await;
         sync_stub_room(&store, BOOKMARKS_ROOM).await;
         let st = store.read();
         assert_eq!(st.bookmarks_room.as_deref(), Some(BOOKMARKS_ROOM));
         assert_eq!(st.messages[st.msg_idx_by_id["$m"]].is_bookmarked, Some(true));
         assert!(!st.chat_idx_by_id.contains_key(BOOKMARKS_ROOM), "the bookmarks room is not a chat");
-        drop(st);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Desktop's "Remove from Beeper": the own removals of the removed-messages room delete their messages, a new
@@ -4296,8 +4255,7 @@ mod tests {
             }
         })
         .await;
-        let dir = std::env::temp_dir().join(format!("beeper-rs-removals-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testing::temp_dir("removals");
         let store = stub_store(&dir, &url).await;
         sync_stub_room(&store, "!room:x").await;
         sync_stub_room(&store, REMOVED_MESSAGES_ROOM).await;
@@ -4335,8 +4293,6 @@ mod tests {
         let (path, body) = changes().pop().expect("the removal");
         assert!(path.starts_with("send/com.beeper.removed_message/~beeper-"), "{path}");
         assert_eq!(body, rel("$b"));
-        drop(store);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -4367,14 +4323,12 @@ mod tests {
         for room in MANAGED_ROOMS.into_iter().chain(["!tips:beeper.local"]) {
             let text = stub_event("$t", "m.room.message", json!({ "msgtype": "m.text", "body": "hi" }));
             let name = format!("managed-{}", &room[1..room.find(':').expect("a room ID")]);
-            let (store, dir) = stub_history(&name, Vec::new(), (room, vec![text])).await;
+            let store = stub_history(&name, Vec::new(), (room, vec![text])).await;
             sync_stub_room(&store, room).await;
             let st = store.read();
             let chat = !MANAGED_ROOMS.contains(&room);
             assert_eq!(st.chat_idx_by_id.contains_key(room), chat, "{room} is a chat: {chat}");
             assert_eq!(st.messages.iter().any(|m| m.chat_id == room), chat, "{room} has messages: {chat}");
-            drop(st);
-            let _ = std::fs::remove_dir_all(dir);
         }
     }
 

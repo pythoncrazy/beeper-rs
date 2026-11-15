@@ -764,13 +764,10 @@ mod tests {
         .expect("the Desktop crypto tables");
         let c = read_crypto(&db).expect("read the keys").expect("an account");
         assert_eq!((c.backup_version.as_deref(), c.secrets.len()), (None, 0));
-        let dir = std::env::temp_dir().join(format!("beeper-rs-import-keys-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::testing::temp_dir("import-keys");
         crate::matrix::import_crypto(&dir, &c).await.expect("the import keeps what Desktop has");
         let store = matrix_sdk::SqliteCryptoStore::open(&dir, None).await.expect("the crypto store");
         let keys = store.load_backup_keys().await.expect("the backup keys");
         assert!(keys.backup_version.is_none() && keys.decryption_key.is_none());
-        // Windows keeps the crypto store open while the pool of the SDK closes, so the next run removes it.
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

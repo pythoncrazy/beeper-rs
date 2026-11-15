@@ -2835,15 +2835,13 @@ mod tests {
 
     #[test]
     fn schema_4_migrates_to_message_search() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-schema-4-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23395, None);
-        config.demo = true;
+        let config = crate::testing::demo_config("schema-4");
         let fresh = super::BeeperStore::from_config(config.clone());
         let ids = |st: &super::BeeperStore, q| -> HashSet<String> { found(st, q) };
         let want = ids(&fresh, "borr");
         assert_eq!(want.len(), 2, "the demo has a message with \"borrow\" and one with \"borrowed\"");
         drop(fresh);
+        let dir = &config.data_dir;
         let v4 = dir.join("v4.db");
         {
             let db = rusqlite::Connection::open(&config.db_path).unwrap();
@@ -2868,16 +2866,11 @@ mod tests {
         let st = super::BeeperStore::from_config(config);
         assert_eq!(ids(&st, "borr"), want, "search finds the same messages after the migration");
         assert!(found(&st, "orrow").is_empty(), "only the last word is a prefix");
-        drop(st);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn schema_5_migrates_to_the_outbox() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-schema-5-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23397, None);
-        config.demo = true;
+        let config = crate::testing::demo_config("schema-5");
         let ids = |st: &super::BeeperStore| -> HashSet<String> { found(st, "borr") };
         let want = ids(&super::BeeperStore::from_config(config.clone()));
         assert_eq!(want.len(), 2);
@@ -2898,17 +2891,12 @@ mod tests {
             matches!(&st.outbox[..], [(_, c, super::Outgoing::Flag(crate::matrix::ChatFlag::Muted, true))] if c == super::NOTE_CHAT_ID),
             "the new outbox keeps a change"
         );
-        drop(st);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// Schema 9 changes the `transcript` text of schema 8 to Desktop's `transcription`, and search finds it.
     #[test]
     fn schema_8_migrates_transcripts() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-schema-8-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23396, None);
-        config.demo = true;
+        let config = crate::testing::demo_config("schema-8");
         let old = "'$.attachments[0].transcript', json ->> '$.attachments[0].transcription.transcription'";
         drop(super::BeeperStore::from_config(config.clone()));
         rusqlite::Connection::open(&config.db_path)
@@ -2924,18 +2912,13 @@ mod tests {
         assert_eq!((t.engine.as_str(), t.language), ("unknown", None));
         assert!(t.transcription.starts_with("Native Rust"));
         assert_eq!(found(&st, "instantaneous"), HashSet::from(["msg_1000c".to_string()]));
-        drop(st);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// A start loads no messages. A chat loads its stored messages on first use, and the chats that were used least
     /// recently unload, except the shown chats.
     #[test]
     fn chats_load_on_demand_and_old_chats_unload() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-load-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23389, None);
-        config.demo = true;
+        let config = crate::testing::demo_config("load");
         drop(super::BeeperStore::from_config(config.clone()));
         let mut st = super::BeeperStore::from_config(config);
         assert!(st.chat_msg_indices.is_empty() && st.messages.is_empty(), "a start loads no messages");
@@ -2981,16 +2964,11 @@ mod tests {
         assert!(st.msg_idx_by_id.iter().all(|(id, &i)| st.messages[i].id == *id));
         assert!(want.iter().all(|c| loaded(&st, c) == stored(&st, c)));
         assert!(st.find_message(&last).is_some() && st.chat_msg_indices.contains_key(&chat), "a lookup loads");
-        drop(st);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn schema_6_migrates_to_secret_flags() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-schema-6-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23398, None);
-        config.demo = true;
+        let config = crate::testing::demo_config("schema-6");
         drop(super::BeeperStore::from_config(config.clone()));
         // Schema 6 keeps the secrets as texts, and an empty text is a secret that this device does not have.
         rusqlite::Connection::open(&config.db_path)
@@ -3008,16 +2986,11 @@ mod tests {
             [s.master_key, s.self_signing_key, s.user_signing_key, s.megolm_backup_key],
             [true, false, true, false]
         );
-        drop(st);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn a_removed_chat_leaves_the_other_chats_intact() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-remove-chat-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23396, None);
-        config.demo = true;
+        let config = crate::testing::demo_config("remove-chat");
         let mut st = super::BeeperStore::from_config(config);
         let with_messages = |st: &super::BeeperStore| {
             st.chats.iter().map(|c| c.id.clone()).filter(|c| !st.chat_msg_indices[c].is_empty()).collect::<Vec<_>>()
@@ -3044,16 +3017,11 @@ mod tests {
         let title = st.chats.last().unwrap().title.clone();
         let found = st.chat_search().query_all_tokens(&title);
         assert!(found.iter().any(|&i| st.chats[i as usize].title == title), "the chat search finds moved chats");
-        drop(st);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn the_chat_search_follows_the_changed_chats() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-chat-search-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23396, None);
-        config.demo = true;
+        let config = crate::testing::demo_config("chat-search");
         let mut st = super::BeeperStore::from_config(config);
         assert!(st.chat_search_index.get().is_none(), "the start does not build the chat search index");
         assert!(st.chat_search().query_all_tokens("zanzibar").is_empty());
@@ -3069,48 +3037,34 @@ mod tests {
         assert_eq!(found, [1, st.chats.len() as u32 - 1]);
         let kept = std::mem::take(&mut st.chat_search_index).into_inner().unwrap();
         assert_eq!(&kept, st.chat_search(), "the changes keep the index equal to a new one");
-        drop(st);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn a_demo_data_folder_stays_offline_without_the_demo_flag() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-demo-folder-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23390, None);
+        let config = crate::config::CentralConfig { demo: false, ..crate::testing::demo_config("demo-folder") };
         assert!(!super::BeeperStore::from_config(config.clone()).config.demo, "a signed-out folder is not a demo");
-        std::fs::remove_dir_all(&dir).unwrap();
-        drop(super::BeeperStore::from_config(crate::config::CentralConfig { demo: true, ..config.clone() }));
+        // A new demo config deletes the folder, and the demo store writes its data.
+        drop(super::BeeperStore::from_config(crate::testing::demo_config("demo-folder")));
         let st = super::BeeperStore::from_config(config);
         assert!(st.config.demo && st.signed_in(), "the demo account does not start the Matrix sync");
-        drop(st);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn sent_messages_come_last() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-send-order-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23392, None);
-        config.demo = true;
+        let config = crate::testing::demo_config("send-order");
         let mut st = super::BeeperStore::from_config(config);
         let chat = st.messages.iter().max_by_key(|m| m.sort_key.clone()).unwrap().chat_id.clone();
         let (_, id, _) = st.send_message(&chat, Some("hi".into()), None, None).unwrap();
         let last = *st.chat_msg_indices[&chat].last().unwrap();
         assert_eq!(st.messages[last].id, id);
         assert_eq!(st.chats[st.chat_idx_by_id[&chat]].preview.as_ref().unwrap().id, id);
-        drop(st);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// Desktop's threaded replies in the demo: a reply only in the thread neither previews the chat nor counts
     /// for an other thread, and an own reply reads the thread.
     #[test]
     fn thread_replies_like_desktop() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-thread-replies-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23392, None);
-        config.demo = true;
+        let config = crate::testing::demo_config("thread-replies");
         let mut st = super::BeeperStore::from_config(config);
         let (chat, root) = ("!sl_infra:beeper.com", "msg_1007");
         let c = st.chats[st.chat_idx_by_id[chat]].clone();
@@ -3146,16 +3100,11 @@ mod tests {
         assert_eq!((st.thread_unread(c, root), &c.thread_reads[root]), ((0, 0), &key), "the reaction is read too");
         st.remove_message(chat, &id).unwrap();
         assert_eq!(st.thread_replies(root).count(), 4, "a removed reply leaves the thread");
-        drop(st);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn labels_set_the_label_ids_of_their_chats() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-labels-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23393, None);
-        config.demo = true;
+        let config = crate::testing::demo_config("labels");
         let mut st = super::BeeperStore::from_config(config);
         let mut plain = st.chats.iter().filter(|c| c.label_ids.is_empty()).map(|c| c.id.clone());
         let (a, b) = (plain.next().unwrap(), plain.next().unwrap());
@@ -3168,15 +3117,10 @@ mod tests {
         assert_eq!((ids(&st, &a), ids(&st, &b)), (vec![], vec!["!work".to_string()]));
         st.remove_chat("!work");
         assert!(ids(&st, &b).is_empty() && st.labels.iter().all(|l| l.id != "!work"), "a left label room drops");
-        drop(st);
-        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn bookmarks_follow_the_bookmarks_room() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-bookmarks-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23394, None);
-        config.demo = true;
+        let config = crate::testing::demo_config("bookmarks");
         let mut st = super::BeeperStore::from_config(config);
         st.config.demo = false;
         let m = st.messages[0].clone();
@@ -3197,16 +3141,11 @@ mod tests {
             if r == "!bookmarks" && *room == m.chat_id && target == "$other"),
             "a message that is not loaded"
         );
-        drop(st);
-        std::fs::remove_dir_all(dir).unwrap();
     }
     /// Desktop's `setTranscription`: the message shows the transcription, and the transcriptions room gets it.
     #[test]
     fn transcriptions_go_to_the_transcriptions_room() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-transcribed-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23394, None);
-        config.demo = true;
+        let config = crate::testing::demo_config("transcribed");
         let mut st = super::BeeperStore::from_config(config);
         st.config.demo = false;
         let t = super::Transcription { transcription: "Hi".into(), engine: "openai-whisper".into(), language: None };
@@ -3215,15 +3154,10 @@ mod tests {
         assert_eq!(st.messages[i].attachments[0].transcription.as_ref(), Some(&t));
         assert!(matches!(&st.outbox[..], [(_, r, super::Outgoing::Transcription { room, target, transcription })]
             if r == super::TRANSCRIPTIONS_ROOM && room == "!tg_rust:beeper.com" && target == "msg_1003" && *transcription == t));
-        drop(st);
-        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn personal_name_and_photo_like_desktop() {
-        let dir = std::env::temp_dir().join(format!("beeper-rs-personal-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut config = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23395, None);
-        config.demo = true;
+        let config = crate::testing::demo_config("personal");
         let mut st = super::BeeperStore::from_config(config);
         st.config.demo = false;
         let id = "!tg_rust:beeper.com";
@@ -3252,7 +3186,5 @@ mod tests {
             matches!(&st.outbox[3..], [(_, _, super::Outgoing::RoomData(k, v)), (_, _, super::Outgoing::PersonalAvatar(None))]
             if k == super::PERSONAL_NAME && *v == serde_json::json!({}))
         );
-        drop(st);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

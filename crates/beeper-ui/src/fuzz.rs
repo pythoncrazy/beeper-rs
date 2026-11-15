@@ -56,13 +56,7 @@ fn prefs() -> impl Iterator<Item = (SettingsTab, &'static prefs::Pref)> {
 }
 
 pub(crate) fn demo_app(name: &str) -> BeeperGuiApp {
-    let checkout = crate::style::name_hash(env!("CARGO_MANIFEST_DIR"));
-    let dir = std::env::temp_dir().join(format!("beeper-rs-fuzz-{checkout:x}")).join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    let mut config = CentralConfig::new(dir, "127.0.0.1".into(), 23391, None);
-    config.demo = true;
-    let store = StoreLock::shared(BeeperStore::from_config(config));
-    BeeperGuiApp::boot(store).0
+    BeeperGuiApp::boot(beeper_core::testing::demo_store(name)).0
 }
 
 fn windows(app: &BeeperGuiApp) -> Vec<window::Id> {
@@ -6114,9 +6108,7 @@ fn main_window_keeps_its_state_like_desktop() {
 
 /// A new install on the sign-in window.
 fn signed_out_app(name: &str) -> BeeperGuiApp {
-    let dir = std::env::temp_dir().join("beeper-rs-fuzz").join(name);
-    let _ = std::fs::remove_dir_all(&dir);
-    let config = CentralConfig::new(dir, "127.0.0.1".into(), 23391, None);
+    let config = CentralConfig::new(beeper_core::testing::temp_dir(name), "127.0.0.1".into(), 23391, None);
     let app = BeeperGuiApp::boot(StoreLock::shared(BeeperStore::from_config(config))).0;
     assert!(app.login_window.is_some() && app.main_window.is_none(), "a new install opens the sign-in window");
     app

@@ -3,6 +3,7 @@
 use beeper_api::server::serve_http;
 use beeper_core::config::CentralConfig;
 use beeper_core::store::{BeeperStore, StoreLock};
+use beeper_core::testing::demo_config;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{timeout, Duration};
@@ -11,14 +12,9 @@ const BAD_REQUEST: &str = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n
 
 /// Starts a demo server, and returns its port and access token.
 async fn server(name: &str) -> (u16, String) {
-    let dir = std::env::temp_dir().join(format!("beeper-rs-http-{name}"));
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).expect("remove the stale test dir");
-    }
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let mut cfg = CentralConfig::new(dir, "127.0.0.1".into(), port, None);
-    cfg.demo = true;
+    let cfg = CentralConfig { port, ..demo_config(&format!("http-{name}")) };
     let store = StoreLock::shared(BeeperStore::from_config(cfg));
     let token = store.read().beeper_state.access_token.clone();
     tokio::spawn(serve_http(listener, store));
@@ -66,12 +62,9 @@ async fn chunked_bodies_are_decoded_and_conflicts_are_refused() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_info_and_the_spec_answer_while_the_chats_load() {
-    let dir = std::env::temp_dir().join("beeper-rs-http-loading");
-    let _ = std::fs::remove_dir_all(&dir);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let mut cfg = CentralConfig::new(dir, "127.0.0.1".into(), port, None);
-    cfg.demo = true;
+    let cfg = CentralConfig { port, ..demo_config("http-loading") };
     let store = StoreLock::shared(BeeperStore::open(cfg));
     let token = store.read().beeper_state.access_token.clone();
     let server = serve_http(listener, store.clone());

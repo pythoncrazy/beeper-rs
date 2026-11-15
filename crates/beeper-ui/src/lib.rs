@@ -21198,13 +21198,11 @@ mod tests {
     #[test]
     fn downloads_name_like_desktop() {
         assert_eq!([0, 1000, 1536, 1 << 20, 5_000_000].map(human_size), ["0 B", "1000 B", "1.5 KB", "1 MB", "4.8 MB"]);
-        let dir = std::env::temp_dir().join(format!("beeper-rs-unused-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = beeper_core::testing::temp_dir("unused-path");
         assert_eq!(unused_path(&dir, "a.png"), dir.join("a.png"));
         std::fs::write(dir.join("a.png"), b"").unwrap();
         assert_eq!(unused_path(&dir, "a.png"), dir.join("a (1).png"));
         assert_eq!(unused_path(&dir, ".env"), dir.join(".env"));
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
