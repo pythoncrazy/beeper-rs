@@ -1058,6 +1058,7 @@ fn shown(st: &BeeperStore, r: &prefs::Pref) -> bool {
     let control = match r.control {
         prefs::Control::ReactionEmoji { general: true } => st.settings.choice("messageDoubleClick") == "React with...",
         prefs::Control::QuickReactions(_) => st.settings.on("quickReactions"),
+        _ if matches!(r.key, "autoTranscribe" | "transcriptionLanguage") => st.settings.on("transcribeWithOpenai"),
         _ => true,
     };
     r.feature.is_none_or(|f| st.feature(f).show) && control
@@ -6934,7 +6935,7 @@ impl BeeperGuiApp {
             }
             UiMessage::OpenMessageMenu(mid) => {
                 self.video.iter_mut().for_each(|v| v.sub = false);
-                self.audio.sub = false;
+                (self.audio.sub, self.audio.lang) = (false, false);
                 self.pane.message_menu = Some((mid, self.cursor.get()));
                 self.pane.gallery_menu.clear();
             }
@@ -9276,7 +9277,7 @@ impl BeeperGuiApp {
         *self.wants.media.borrow_mut() = rest;
         let urls: Vec<String> = urls.into_iter().filter(|u| !self.media.contains_key(u)).collect();
         self.media.extend(urls.iter().map(|u| (u.clone(), None)));
-        let audio = self.load_audio();
+        let audio = Task::batch([self.load_audio(), self.auto_transcribe()]);
         let bookmarks = self.load_bookmarks();
         let tiles = self.bake_tiles();
         Task::batch(urls.into_iter().map(|url| {
@@ -10437,9 +10438,14 @@ impl BeeperGuiApp {
         let message_menu = self.pane().message_menu.as_ref().map(|(mid, at)| {
             let (menu, h, top) = self.view_message_menu(mid);
             let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
+            let y = at.y.min(self.pane().size.height - h - 8.0);
             let (sub, sub_w) = match self.view_speed_menu(mid) {
                 Some(sub) => (Some(sub), video::SPEED_MENU_W),
-                None => (self.view_voice_speed(top), voice::rate_menu_w()),
+                None => {
+                    let st = self.store.read();
+                    let room = self.pane().size.height - y - 8.0;
+                    self.view_voice_sub(&st, &stored(&st, mid), top, room).map_or((None, 0.0), |(e, w)| (Some(e), w))
+                }
             };
             let left = sub.is_some() && x + MESSAGE_MENU_W + sub_w > self.pane().size.width;
             let (x, menu) = match left {
@@ -10589,7 +10595,7 @@ impl BeeperGuiApp {
                 .then(|| UiMessage::AskDeleteMessage(vec![mid.clone()]));
             item(tr("Delete…").into(), "", delete)
         });
-        let tail: Vec<(El, f32)> = self.voice_menu_row(m).into_iter().chain(delete).collect();
+        let tail: Vec<(El, f32)> = self.voice_menu_rows(&st, m).into_iter().chain(delete).collect();
         let rows: Vec<(El, f32)> = [
             Some(head),
             (!tail.is_empty()).then(|| std::iter::once(rule()).chain(tail).collect()),

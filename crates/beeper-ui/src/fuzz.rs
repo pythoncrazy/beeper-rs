@@ -2589,6 +2589,11 @@ fn ai_settings_like_desktop() {
     let msgs: Vec<_> = sim.into_messages().collect();
     let upsell = msgs.iter().all(|m| matches!(m, UiMessage::SelectSettingsTab(SettingsTab::BeeperPlus)));
     assert!(!msgs.is_empty() && upsell, "a locked Plus toggle opens Beeper Plus");
+    let rows = ["Automatically", "Improves accuracy."];
+    let shown = |app: &BeeperGuiApp| rows.map(|r| simulator(app.view_settings()).find(r).is_ok());
+    assert_eq!(shown(&app), [false; 2], "Desktop shows the transcription rows only while Whisper is on");
+    let _ = app.update(UiMessage::SetPref("transcribeWithOpenai", 1));
+    assert_eq!(shown(&app), [true; 2]);
 }
 
 #[test]

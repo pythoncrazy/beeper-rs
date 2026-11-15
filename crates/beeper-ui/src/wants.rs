@@ -16,6 +16,8 @@ pub struct Wants {
     pub media: RefCell<BTreeSet<String>>,
     /// The gallery tiles to bake, as (media URL, width, height, selected).
     pub tiles: RefCell<BTreeSet<(String, u32, u32, bool)>>,
+    /// The shown voice notes to transcribe automatically.
+    pub transcribe: RefCell<BTreeSet<String>>,
     /// A view asked for a URL after the last frame.
     fresh: Cell<bool>,
 }

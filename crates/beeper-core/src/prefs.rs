@@ -396,13 +396,16 @@ pub const AI: &[Item] = &[
         ]),
     }]),
     Item::Heading("Voice Transcription"),
-    Item::Group(&[t(
-        "transcribeWithOpenai",
-        "Use OpenAI's Whisper model for Talk to Type and transcribing voice notes",
-        false,
-    )
-    .plus("talk-to-type")
-    .desc("Privacy: this will send audio clips to OpenAI via our servers.")]),
+    Item::Group(&[
+        t("transcribeWithOpenai", "Use OpenAI's Whisper model for Talk to Type and transcribing voice notes", false)
+            .plus("talk-to-type")
+            .desc("Privacy: this will send audio clips to OpenAI via our servers."),
+        // Desktop shows these two rows only when `transcribeWithOpenai` is on.
+        t("autoTranscribe", "Automatically transcribe voice notes when they are received", false).plus("talk-to-type"),
+        s("transcriptionLanguage", "Default language", &TRANSCRIPTION_NAMES, 0)
+            .plus("voice-transcription")
+            .desc("Improves accuracy."),
+    ]),
     Item::Heading("AI Mentions"),
     Item::Group(&[t("mentionLlms", "Mention an AI to get answers and help in chat", false)
         .plus("ai-in-beeper-chats")
@@ -410,8 +413,9 @@ pub const AI: &[Item] = &[
         .args(&["20"])]),
 ];
 
-/// Desktop's Whisper languages (`yx`) by code. "auto" (`Gd`) detects the language.
-pub const TRANSCRIPTION_LANGUAGES: [(&str, &str); 57] = [
+/// Desktop's "Auto-detect" (`Gd`) and its Whisper languages (`yx`), by code.
+pub const TRANSCRIPTION_LANGUAGES: [(&str, &str); 58] = [
+    ("auto", "Auto-detect"),
     ("af", "Afrikaans"),
     ("ar", "Arabic"),
     ("hy", "Armenian"),
@@ -473,8 +477,21 @@ pub const TRANSCRIPTION_LANGUAGES: [(&str, &str); 57] = [
 
 /// The name of the Whisper language `code`, or None for "auto" and unknown codes (Desktop's `isTranscriptionLanguage`).
 pub fn transcription_language(code: &str) -> Option<&'static str> {
-    TRANSCRIPTION_LANGUAGES.iter().find(|(c, _)| *c == code).map(|(_, name)| *name)
+    TRANSCRIPTION_LANGUAGES[1..].iter().find(|(c, _)| *c == code).map(|(_, name)| *name)
 }
+
+/// The codes (0) or the names (1) of [`TRANSCRIPTION_LANGUAGES`].
+const fn transcription_column(i: usize) -> [&'static str; 58] {
+    let (mut out, mut k) = ([""; 58], 0);
+    while k < out.len() {
+        out[k] = if i == 0 { TRANSCRIPTION_LANGUAGES[k].0 } else { TRANSCRIPTION_LANGUAGES[k].1 };
+        k += 1;
+    }
+    out
+}
+/// The values of Desktop's `transcription_language`.
+pub const TRANSCRIPTION_CODES: [&str; 58] = transcription_column(0);
+const TRANSCRIPTION_NAMES: [&str; 58] = transcription_column(1);
 
 pub const PAGES: [(&str, &[Item]); 4] =
     [("General", GENERAL), ("Appearance", APPEARANCE), ("Notifications", NOTIFICATIONS), ("AI", AI)];
@@ -874,6 +891,8 @@ pub const SYNCED: &[(&str, Ad)] = &[
     ("fontSize", Ad::Desktop("font_size", Values::Num(FONT_SIZES))),
     ("alwaysAskDownload", b("always_ask_download_location")),
     ("transcribeWithOpenai", b("transcribe_with_openai")),
+    ("autoTranscribe", b("auto_transcribe")),
+    ("transcriptionLanguage", v("transcription_language", &TRANSCRIPTION_CODES)),
     ("mentionLlms", b("mention_llms")),
 ];
 
