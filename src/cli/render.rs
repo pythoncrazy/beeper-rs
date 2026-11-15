@@ -1180,6 +1180,53 @@ fn search_view(r: &Value) -> El {
     .concat())
 }
 
+/// `StreamHeader` of `watch` once it is connected.
+pub fn stream_header(label: &str, base: &str) -> El {
+    col(vec![
+        head(MINE, "Watching events", vec![t(format!("  {label}"), MUTED)]),
+        row(vec![t(format!("{base}  ·  press ⌃C to stop"), SUBTLE)]).ml(2),
+    ])
+    .mb(1)
+}
+
+/// The status line of `watch` after the connection closes.
+pub fn stream_status(status: &str) -> El {
+    row(vec![t("⠋", WARN), t(format!("  {status}"), MUTED)])
+}
+
+/// The colors of the event types in `StreamEventLine`.
+const EVENT_TONES: [(&str, &str); 9] = [
+    ("message.new", PRIMARY),
+    ("message.send", MINE),
+    ("message.edit", WARN),
+    ("message.delete", DANGER),
+    ("chat.update", CYAN),
+    ("chat.read", SUBTLE),
+    ("chat.typing", MAGENTA),
+    ("reaction.add", MAGENTA),
+    ("reaction.remove", SUBTLE),
+];
+
+/// `StreamEventLine`: the number, the type, the chat, the message, and the time of a WebSocket frame.
+pub fn stream_event(frame: &Option<Value>, index: usize) -> El {
+    let field = |k: &str| frame.as_ref().and_then(|f| f[k].as_str().map(str::to_string));
+    let kind = match frame {
+        Some(_) => field("type").unwrap_or_else(|| "event".into()),
+        None => "raw".into(),
+    };
+    let ts = field("timestamp").map_or_else(|| Value::from(chrono::Utc::now().to_rfc3339()), Value::from);
+    let tone = EVENT_TONES.iter().find(|e| e.0 == kind).map_or(PRIMARY, |e| e.1);
+    row(vec![
+        t(format!("{index:>4}  "), SUBTLE),
+        t("●", tone),
+        plain("  "),
+        tb(&kind, TEXT),
+        field("chatID").map_or(El::Empty, |c| t(format!("  in {c}"), SUBTLE)),
+        field("messageID").map_or(El::Empty, |m| t(format!("  msg {m}"), SUBTLE)),
+        format_time(&ts).map_or(El::Empty, |time| t(format!("  {time}"), SUBTLE)),
+    ])
+}
+
 /// `detectKind` of `lib/ink/render.js`: the kind of a record from its shape.
 fn kind(r: &Map<String, Value>) -> &'static str {
     let is = |k: &str| r.get(k).is_some_and(Value::is_string);

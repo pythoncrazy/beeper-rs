@@ -81,18 +81,19 @@ impl BeeperClient {
 
     /// The status and the body of a request, or `Connection error.` when the server does not answer.
     pub async fn fetch(&self, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Vec<u8>), ApiError> {
-        self.fetch_raw(method, path, json_body(body)).await
+        self.request_raw(method, path, &[("accept", "application/json")], json_body(body)).await
     }
 
-    async fn fetch_raw(
+    /// Like [`Self::fetch`], with the headers, and the content type and the bytes of the body.
+    pub async fn request_raw(
         &self,
         method: &str,
         path: &str,
+        headers: &[(&str, &str)],
         body: Option<(String, Vec<u8>)>,
     ) -> Result<(u16, Vec<u8>), ApiError> {
-        let accept = [("accept", "application/json")];
         let (status, bytes) =
-            self.try_send(method, path, &accept, body).await.map_err(|_| ApiError("Connection error.".into()))?;
+            self.try_send(method, path, headers, body).await.map_err(|_| ApiError("Connection error.".into()))?;
         if self.debug {
             eprintln!("[beeper-api] {method} {path} -> {}", status.0);
         }
@@ -118,7 +119,8 @@ impl BeeperClient {
         }
         body.extend(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
         let form = (format!("multipart/form-data; boundary={BOUNDARY}"), body);
-        let (status, bytes) = self.fetch_raw("POST", "/v1/assets/upload", Some(form)).await?;
+        let (status, bytes) =
+            self.request_raw("POST", "/v1/assets/upload", &[("accept", "application/json")], Some(form)).await?;
         Ok(json_or_text(checked(status, bytes)?))
     }
 
@@ -320,31 +322,75 @@ impl BeeperClient {
     }
 
     /// Opens `/v1/ws` and sends `subscriptions.set`. The receiver gets every frame, `ready` first.
-    pub async fn connect_ws(&self, chat_ids: Vec<String>) -> UnboundedReceiver<Value> {
-        let mut stream = TcpStream::connect(&self.host_port).await.expect("connect TCP to /v1/ws");
-        let upgrade = format!(
-            "GET /v1/ws HTTP/1.1\r\nhost: {}\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\nauthorization: Bearer {}\r\n\r\n",
-            self.host_port, self.access_token
+    /// Opens a WebSocket at `path` with the bearer token, or gives the reason when the server refuses it.
+    pub async fn ws_open(&self, path: &str) -> Result<WsConn, String> {
+        let failed = |_: std::io::Error| "WebSocket connection failed".to_string();
+        let mut stream = TcpStream::connect(&self.host_port).await.map_err(failed)?;
+        let mut upgrade = format!(
+            "GET {path} HTTP/1.1\r\nhost: {}\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n",
+            self.host_port
         );
-        stream.write_all(upgrade.as_bytes()).await.expect("send WS upgrade request");
+        if !self.access_token.is_empty() {
+            write!(upgrade, "authorization: Bearer {}\r\n", self.access_token).unwrap();
+        }
+        stream.write_all(format!("{upgrade}\r\n").as_bytes()).await.map_err(failed)?;
         let mut leftover = Vec::new();
-        let resp = read_message(&mut stream, &mut leftover, |_| usize::MAX).await.expect("read WS upgrade response");
-        assert!(
-            resp.start_line.starts_with("HTTP/1.1 101"),
-            "expected 101 Switching Protocols, got: {}",
-            resp.start_line
-        );
+        let resp = read_message(&mut stream, &mut leftover, |_| usize::MAX)
+            .await
+            .map_err(|_| "WebSocket connection failed".to_string())?;
+        let status = resp.start_line.split(' ').nth(1).unwrap_or_default();
+        if status != "101" {
+            return Err(format!("Unexpected server response: {status}"));
+        }
+        let (read, write) = stream.into_split();
+        Ok(WsConn { read: std::io::Cursor::new(leftover).chain(read), write })
+    }
+
+    pub async fn connect_ws(&self, chat_ids: Vec<String>) -> UnboundedReceiver<Value> {
+        let mut ws = self.ws_open("/v1/ws").await.expect("open /v1/ws");
         let sub = json!({ "type": "subscriptions.set", "chatIDs": chat_ids }).to_string();
-        write_ws_frame(&mut stream, 0x1, sub.as_bytes(), true).await.expect("send subscriptions.set");
+        ws.send(&sub).await.expect("send subscriptions.set");
         let (tx, rx) = unbounded_channel();
         tokio::spawn(async move {
-            let mut reader = std::io::Cursor::new(leftover).chain(stream);
-            while let Ok((0x1, payload)) = read_ws_frame(&mut reader, usize::MAX).await {
-                if tx.send(serde_json::from_slice(&payload).expect("parse WS frame")).is_err() {
+            while let Ok(text) = ws.next().await {
+                if tx.send(serde_json::from_str(&text).expect("parse WS frame")).is_err() {
                     break;
                 }
             }
         });
         rx
+    }
+}
+
+/// A WebSocket connection of the client.
+pub struct WsConn {
+    read: tokio::io::Chain<std::io::Cursor<Vec<u8>>, tokio::net::tcp::OwnedReadHalf>,
+    write: tokio::net::tcp::OwnedWriteHalf,
+}
+
+impl WsConn {
+    pub async fn send(&mut self, text: &str) -> std::io::Result<()> {
+        write_ws_frame(&mut self.write, 0x1, text.as_bytes(), true).await
+    }
+
+    /// The next text frame, or the close code and reason (1006 when the connection ends without a close frame).
+    /// It answers a ping.
+    pub async fn next(&mut self) -> Result<String, (u16, String)> {
+        loop {
+            match read_ws_frame(&mut self.read, usize::MAX).await {
+                Ok((0x1, text)) => return Ok(String::from_utf8_lossy(&text).into_owned()),
+                Ok((0x8, close)) => {
+                    let code = close.get(..2).map_or(1005, |c| u16::from_be_bytes([c[0], c[1]]));
+                    return Err((code, String::from_utf8_lossy(close.get(2..).unwrap_or_default()).into_owned()));
+                }
+                Ok((0x9, ping)) => drop(write_ws_frame(&mut self.write, 0xA, &ping, true).await),
+                Ok(_) => {}
+                Err(_) => return Err((1006, String::new())),
+            }
+        }
+    }
+
+    pub async fn close(&mut self, code: u16) -> std::io::Result<()> {
+        write_ws_frame(&mut self.write, 0x8, &code.to_be_bytes(), true).await
     }
 }

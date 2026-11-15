@@ -29,7 +29,7 @@ repository.workspace = true
 beeper-core.workspace = true
 beeper-api.workspace = true
 beeper-ui.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["signal"] }
 serde_json.workspace = true
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 unicode-width = "0.2.2"

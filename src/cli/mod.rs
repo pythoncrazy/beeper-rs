@@ -7,6 +7,7 @@ mod chats;
 pub mod commands;
 mod messages;
 mod render;
+mod stream;
 
 use beeper_api::client::{ApiError, BeeperClient};
 use serde_json::{json, Map, Value};
@@ -434,15 +435,20 @@ impl Ctx {
         Ok(self.target()?["baseURL"].as_str().expect("a target has a base URL").to_string())
     }
 
-    /// `createClient`: the token is `BEEPER_ACCESS_TOKEN`, else the stored token of the target.
+    /// `requireToken`: `BEEPER_ACCESS_TOKEN`, else the stored token of the target.
+    pub fn token(&mut self) -> Res<String> {
+        let base = self.base_url()?;
+        let stored = self.target()?.get("auth").and_then(|a| a["accessToken"].as_str()).map(str::to_string);
+        match std::env::var("BEEPER_ACCESS_TOKEN").ok().filter(|t| !t.is_empty()).or(stored) {
+            Some(token) => Ok(token),
+            None => self.no_token(&base),
+        }
+    }
+
+    /// `createClient`: a client of the target with its token.
     pub fn client(&mut self) -> Res<&BeeperClient> {
         if self.client.is_none() {
-            let base = self.base_url()?;
-            let stored = self.target()?.get("auth").and_then(|a| a["accessToken"].as_str()).map(str::to_string);
-            let token = match std::env::var("BEEPER_ACCESS_TOKEN").ok().filter(|t| !t.is_empty()).or(stored) {
-                Some(token) => token,
-                None => self.no_token(&base)?,
-            };
+            let (base, token) = (self.base_url()?, self.token()?);
             let mut client = BeeperClient::try_new(&base, token).map_err(CliError::bug)?;
             client.debug = self.on("debug");
             self.client = Some(client);
@@ -684,6 +690,12 @@ pub fn list_targets() -> Res<Vec<Map<String, Value>>> {
     let mut all: Vec<_> = names.iter().filter_map(|p| read_json(p).ok().flatten()).collect();
     all.sort_by(|a, b| js_string(&a["id"]).cmp(&js_string(&b["id"])));
     Ok(all)
+}
+
+/// `writeEvent`: one NDJSON lifecycle event on stderr.
+pub fn write_event(event: &str, data: Value) {
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("a time after 1970").as_millis();
+    eprintln!("{}", json!({ "event": event, "data": data, "ts": ts as u64 }));
 }
 
 /// Prints `err` like `BeeperCommand.catch`, and returns the exit code.
