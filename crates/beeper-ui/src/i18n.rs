@@ -214,21 +214,29 @@ pub fn trs(s: &'static str, args: &[&str]) -> String {
 
 /// The plural form for `n` of a UI string with placeholders, filled with `args`.
 pub fn trn(one: &'static str, many: &'static str, n: usize, args: &[&dyn Display]) -> String {
-    plural(one, [one, many], n, args)
+    sprintf(plural(one, [one, many], n), args)
 }
 
 /// The plural form for `n` of a UI string that Desktop translates by context.
 pub fn trnx(one: &'static str, many: &'static str, n: usize, context: &str, args: &[&dyn Display]) -> String {
-    plural(&format!("{context}\u{4}{one}"), [one, many], n, args)
+    sprintf(plural(&format!("{context}\u{4}{one}"), [one, many], n), args)
 }
 
-fn plural(key: &str, english: [&str; 2], n: usize, args: &[&dyn Display]) -> String {
+/// The plural form for `n` of a UI string with Desktop's named placeholders such as `%(total)d`, filled with `args`.
+pub fn trn_named(one: &'static str, many: &'static str, n: usize, args: &[(&str, &dyn Display)]) -> String {
+    let fill = |s: String, (name, value): &(&str, &dyn Display)| {
+        ["d", "s"].iter().fold(s, |s, t| s.replace(&format!("%({name}){t}"), &value.to_string()))
+    };
+    args.iter().fold(plural(one, [one, many], n).to_string(), fill)
+}
+
+fn plural(key: &str, english: [&'static str; 2], n: usize) -> &'static str {
     let form = match table().map_or("en", |t| t.0) {
         "ja" => 0,
         "fr" => usize::from(n > 1),
         _ => usize::from(n != 1),
     };
-    sprintf(forms(key).map_or(english[form], |f| &f[form]), args)
+    forms(key).map_or(english[form], |f| &f[form])
 }
 
 fn sprintf(s: &str, args: &[&dyn Display]) -> String {

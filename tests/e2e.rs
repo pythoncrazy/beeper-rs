@@ -1026,8 +1026,14 @@ async fn lifecycle() {
     let _ = login.update(UiMessage::Login(LoginMsg::Done(Ok(Outcome::Session(session, profile, accounts)))));
     assert!(login.login.busy, "the sign-in waits for the encrypted messaging check");
     let none = beeper_core::matrix::E2eeSetup { cross_signing: true, verified: true, devices: Vec::new() };
-    // The check reads `verified` into the state of the app.
-    login_store.write().beeper_state.verified = true;
+    // The check reads the keys of a set-up device into the state of the app.
+    {
+        let mut st = login_store.write();
+        let s = &mut st.beeper_state;
+        (s.verified, s.key_backup, s.first_sync_done) = (true, true, true);
+        let k = &mut s.secrets;
+        (k.master_key, k.self_signing_key, k.user_signing_key, k.megolm_backup_key) = (true, true, true, true);
+    }
     let _ = login.update(UiMessage::Login(LoginMsg::E2ee(Ok(none))));
     assert_eq!(login_store.read().accounts.len(), 4);
     assert!(

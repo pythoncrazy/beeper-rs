@@ -194,10 +194,15 @@ pub struct BeeperStateRecord {
 }
 
 impl BeeperStateRecord {
+    /// This device has the private cross-signing keys and the key of the key backup.
+    fn has_secrets(&self) -> bool {
+        let s = &self.secrets;
+        s.master_key && s.self_signing_key && s.user_signing_key && s.megolm_backup_key
+    }
+
     /// Desktop's `getAppState`: the next setup step of the account.
     pub fn app_state(&self) -> &'static str {
-        let s = &self.secrets;
-        let secrets = s.master_key && s.self_signing_key && s.user_signing_key && s.megolm_backup_key;
+        let secrets = self.has_secrets();
         match self {
             r if r.user_id.is_empty() && r.device_id.is_empty() && r.access_token.is_empty() => "needs-login",
             r if !r.initialized => "initializing",
@@ -206,6 +211,16 @@ impl BeeperStateRecord {
             r if !secrets || !r.key_backup => "needs-secrets",
             r if !r.first_sync_done => "needs-first-sync",
             _ => "ready",
+        }
+    }
+
+    /// Desktop's `authenticationStage` after the verification: the keys and the sync that the onboarding waits for.
+    pub fn stage(&self) -> &'static str {
+        match (self.has_secrets(), self.key_backup, self.first_sync_done) {
+            (false, _, _) => "awaiting-secrets",
+            (true, false, _) => "awaiting-key-backup",
+            (true, true, false) => "syncing",
+            (true, true, true) => "done",
         }
     }
 }

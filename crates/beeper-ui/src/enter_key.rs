@@ -15,7 +15,7 @@ const SIZE: Size = Size::new(500.0, 450.0);
 pub struct EnterKey {
     pub window: Option<window::Id>,
     input: text_editor::Content,
-    busy: bool,
+    pub busy: bool,
     error: Option<String>,
     /// The keys that were tried, which a paste on focus does not submit again.
     tried: Vec<String>,
@@ -101,8 +101,8 @@ impl BeeperGuiApp {
     pub fn view_enter_key(&self) -> El<'_> {
         let k = &self.enter_key;
         let p = &self.pal;
-        let next = (!k.input.text().trim().is_empty() && !k.busy).then(|| KeyMsg::Submit.into());
-        let next = brand_btn_maybe(p, trx("Next", "button label"), Brand::Primary, next);
+        let next = (!k.input.text().trim().is_empty()).then(|| KeyMsg::Submit.into());
+        let next = brand_btn_maybe(p, trx("Next", "button label"), Brand::Primary, next, k.busy);
         let error = k.error.as_deref().map(|e| txt(e, 12.0).color(p.text_danger).center().width(Fill));
         let input = key_input(p, &k.input, k.error.is_some(), |a| KeyMsg::Edit(a).into(), KeyMsg::Paste.into());
         let body = column![Space::new().height(40), heading(self.enter_key_title(), 28.0), input]

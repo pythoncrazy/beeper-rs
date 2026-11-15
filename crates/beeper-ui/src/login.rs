@@ -27,7 +27,7 @@ const FLOAT_LABEL: f32 = 38.0 * 0.6 + 38.0 * 0.6875 / 2.0 - 38.0 / 2.0;
 /// The room of Desktop's floating `small` error over the form of the code screen: 8 px and one line of 10.4 px text.
 const ERROR_ROOM: f32 = 8.0 + 13.0;
 /// The start of the animations of the sign-in window.
-static EPOCH: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
+pub(crate) static EPOCH: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
 /// The size of the sign-in window.
 pub(crate) const SIZE: Size = Size::new(330.0, 620.0);
 const EMAIL_INPUT: &str = "login-email";
@@ -245,6 +245,8 @@ pub struct Login {
     pub devices: Vec<DeviceInfo>,
     pub another_way: bool,
     pub waiting: bool,
+    /// The keys did not come 60 s after `IndicateSyncing` showed.
+    pub late: bool,
     /// Desktop's `RecoveryCodeInput`, and the keys that were tried, which a paste on focus does not submit again.
     pub key_input: text_editor::Content,
     pub tried_keys: Vec<String>,
@@ -256,7 +258,12 @@ pub struct Login {
 impl Login {
     /// The screens with the floating welcome illustration, and the toast of a pasted code until it goes.
     pub fn animated(&self) -> bool {
-        matches!(self.screen, Screen::Import | Screen::Welcome) || self.pasted()
+        matches!(self.screen, Screen::Import | Screen::Welcome | Screen::Syncing) || self.pasted() || self.waiting
+    }
+
+    /// Desktop's `isNewAccount`: the user made the account in this sign-in.
+    pub fn new_account(&self) -> bool {
+        !self.lead_token.is_empty()
     }
 
     /// The toast of a code from the clipboard shows for 3 s.
@@ -327,6 +334,8 @@ pub enum LoginMsg {
     SubmitConfirmKey,
     /// "Lost your recovery key?", which cancels the verification.
     LostKey,
+    /// 60 s on `IndicateSyncing`.
+    KeysLate,
 }
 
 impl From<LoginMsg> for UiMessage {
@@ -846,6 +855,7 @@ impl BeeperGuiApp {
                 }
             }
             LoginMsg::LostKey => return self.lost_key(),
+            LoginMsg::KeysLate => l.late = true,
             LoginMsg::Recovered(r) => {
                 l.busy = false;
                 l.error = r.err().map(|e| tr("Error: %(message)s").replace("%(message)s", &e));

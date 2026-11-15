@@ -21,7 +21,7 @@ pub struct Reauth {
     /// The sign-in request of the Beeper cloud, which emailed the code.
     request: Option<String>,
     code: String,
-    busy: bool,
+    pub busy: bool,
     error: Option<String>,
 }
 
@@ -126,12 +126,8 @@ impl BeeperGuiApp {
             &r.code,
             (!r.busy).then_some(ReauthMsg::Code),
         );
-        let next = brand_btn_maybe(
-            p,
-            trx("Next", "button label"),
-            Brand::Primary,
-            (!r.busy).then(|| ReauthMsg::Submit.into()),
-        );
+        let next =
+            brand_btn_maybe(p, trx("Next", "button label"), Brand::Primary, Some(ReauthMsg::Submit.into()), r.busy);
         let error = r.error.as_deref().map(|e| txt(e, 12.0).color(p.text_danger).center().width(Fill).into());
         let body = column![Space::new().height(40), heading(tr("Check your email"), 36.0)]
             .push(container(hint).padding(Padding::new(16.0).left(24.0).right(24.0)))
