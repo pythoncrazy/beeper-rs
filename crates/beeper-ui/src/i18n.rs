@@ -377,4 +377,15 @@ mod tests {
         }
         assert!(calls > 5, "found {calls} calls");
     }
+
+    /// `scripts/i18n.py` copied the catalogs of Desktop 4.3.308 after the strings of the bookmarks and the threads.
+    #[test]
+    fn catalogs_have_the_new_strings() {
+        for (lang, json) in super::LANGS {
+            let table: std::collections::HashMap<String, Vec<String>> = serde_json::from_str(json).unwrap();
+            for key in ["Bookmarked", "%d new reply", "Download All", "Also send to chat"] {
+                assert!(table.contains_key(key), "{lang} has no {key:?}");
+            }
+        }
+    }
 }
