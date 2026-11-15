@@ -832,7 +832,7 @@ pub struct MessageRules {
     pub delete: bool,
     /// `delete_max_age` in seconds.
     pub delete_max_age: Option<u64>,
-    /// `delete_for_me`.
+    /// `delete_for_me` without partial `delete` support: Desktop's Delete for Me (`Vit`).
     pub delete_for_me: bool,
     /// `reaction` is at least partly supported.
     pub react: bool,
