@@ -102,6 +102,7 @@ impl Default for BeeperSettings {
             downloads_dir: String::new(),
             quick_reaction: "❤️".into(),
             quick_reactions: ["👍", "❤️", "😂"].map(String::from).to_vec(),
+            recent_stickers: Vec::new(),
         }
     }
 }

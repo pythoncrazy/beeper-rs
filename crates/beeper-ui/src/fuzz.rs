@@ -515,6 +515,7 @@ fn auto_sent_gifs_keep_the_composer_like_desktop() {
         size,
         frames,
         duration: None,
+        sticker: None,
     };
     let _ = app.update(UiMessage::GifDownloaded(Ok(gif)));
     let st = app.store.read();
@@ -1184,6 +1185,69 @@ fn thread_follows_like_desktop() {
     assert!(pane.selected_chat_id.is_none(), "Escape closes the thread window");
 }
 
+/// Desktop's `StickerPicker`: the empty text, the packs, an animated sticker that the chat does not take, and the
+/// picked sticker that becomes an attachment, a recent sticker, and a sticker send.
+#[test]
+fn sticker_picker_like_desktop() {
+    let mut app = demo_app("stickers");
+    let chat = app.store.read().chats[0].id.clone();
+    let webp = FileRule { mime_types: [("image/webp".to_string(), 2)].into(), ..FileRule::default() };
+    app.store.write().chats[0].file.insert(FILE_STICKER.into(), webp);
+    let _ = app.update(UiMessage::SetPref("stickerPacks", 1));
+    let _ = app.update(UiMessage::SelectChat(chat.clone()));
+    let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
+    let _ = app.update(UiMessage::StickerPacks(Err("Matrix is not connected yet".into())));
+    assert!(simulator(app.view_main()).find("No sticker packs yet.").is_ok(), "a failed load and no recent stickers");
+    let source = StickerSource { room_id: "!r:x".into(), state_key: "a".into(), shortcode: "cat".into() };
+    let info = serde_json::json!({ "mimetype": "image/png", "w": 2, "h": 2 });
+    let cat =
+        Sticker { url: "mxc://x/cat".into(), shortcodes: vec!["cat".into()], body: None, info, source: Some(source) };
+    let tgs = Sticker {
+        url: "mxc://x/tgs".into(),
+        info: serde_json::json!({ "mimetype": "application/x-tgsticker" }),
+        ..cat.clone()
+    };
+    let pack = StickerPack {
+        id: "m.room.image_pack|!r:x|a".into(),
+        title: "Cats".into(),
+        avatar: None,
+        stickers: vec![cat.clone(), tgs.clone()],
+    };
+    let _ = app.update(UiMessage::StickerPacks(Ok(vec![pack])));
+    assert!(simulator(app.view_main()).find("No sticker packs yet.").is_err());
+    let _ = app.update(UiMessage::PickSticker(tgs));
+    assert_eq!(app.status_banner, "This animated sticker can't be sent in this chat.");
+    assert_eq!(app.pane.picker, None, "a pick closes the picker");
+    let mut png = Vec::new();
+    ::image::RgbaImage::new(2, 2).write_to(&mut std::io::Cursor::new(&mut png), ::image::ImageFormat::Png).unwrap();
+    let frames = decode_media(png.clone()).unwrap();
+    let sticker = Some(Box::new(cat.clone()));
+    let f = PendingMedia {
+        bytes: png,
+        name: "cat.png".into(),
+        mime: "image/png".into(),
+        is_gif: false,
+        size: (2, 2),
+        frames,
+        duration: None,
+        sticker,
+    };
+    let _ = app.update(UiMessage::StickerLoaded(Ok(f)));
+    assert_eq!(app.pane.attachments.len(), 1);
+    assert_eq!(app.store.read().settings.recent_stickers, std::slice::from_ref(&cat), "the pick is a recent sticker");
+    online(&app);
+    app.store.write().features.flags["features"]["*"]["undo-send"] = false.into();
+    let _ = app.update(UiMessage::SubmitComposer);
+    let st = app.store.read();
+    let sent = st.outbox.iter().find_map(|(_, _, o)| match o {
+        Outgoing::Media { sticker, name, .. } => Some((sticker.clone(), name.clone())),
+        _ => None,
+    });
+    assert_eq!(sent, Some((Some(Box::new(cat)), "cat.png".into())), "the attachment goes as a sticker");
+    let echo = st.messages.iter().rev().find(|m| m.chat_id == chat).unwrap();
+    assert_eq!(echo.attachments[0].is_sticker, Some(true));
+}
+
 #[test]
 fn pickers_check_the_network_like_desktop() {
     let mut app = demo_app("pickers");
@@ -1202,7 +1266,6 @@ fn pickers_check_the_network_like_desktop() {
     assert_eq!(cmds.iter().find(|c| c.title == "Send Sticker").and_then(|c| c.hotkey), Some("Message: Send Sticker"));
     let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
     assert_eq!(app.pane.picker, Some(Picker::Sticker));
-    assert!(simulator(app.view_main()).find("No sticker packs yet.").is_ok());
     let _ = app.update(UiMessage::TogglePicker(Picker::Sticker));
     assert_eq!(app.pane.picker, None, "the hotkey closes the open picker");
     let _ = app.update(UiMessage::SelectChat(other.clone()));

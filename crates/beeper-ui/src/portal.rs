@@ -1,6 +1,6 @@
 //! Desktop's `showOpenDialog`: the XDG desktop portal file chooser, and the files it gives.
 use crate::{decode_media, PendingMedia};
-use beeper_core::media::{decide, Action, Facts};
+use beeper_core::media::{decide, Action, Facts, Sent};
 use beeper_core::models::{FileRule, FileRules, FILE_AUDIO, FILE_FILE, FILE_GIF, FILE_IMAGE, FILE_VIDEO};
 use std::path::{Path, PathBuf};
 
@@ -124,7 +124,8 @@ pub fn load_file(path: &Path) -> Result<PendingMedia, String> {
         let size = reader.into_dimensions().map_err(|e| format!("Could not read {name}: {e}"))?;
         let frames = decode_media(bytes.clone())?;
         let mime = format.to_mime_type().to_string();
-        return Ok(PendingMedia { is_gif: mime == "image/gif", bytes, name, mime, size, frames, duration: None });
+        let is_gif = mime == "image/gif";
+        return Ok(PendingMedia { is_gif, bytes, name, mime, size, frames, duration: None, sticker: None });
     }
     let mime = beeper_core::platform::mime_type_of(&name).unwrap_or("application/octet-stream");
     // Desktop's `processAttachment` measures a video, and logs and attaches it without the size when it cannot.
@@ -144,7 +145,7 @@ pub fn load_file(path: &Path) -> Result<PendingMedia, String> {
         }),
         false => vec![],
     };
-    Ok(PendingMedia { bytes, name, mime: mime.into(), is_gif: false, size, frames, duration })
+    Ok(PendingMedia { bytes, name, mime: mime.into(), is_gif: false, size, frames, duration, sticker: None })
 }
 
 /// The first frame of a video, or all the frames of the MP4 of a GIF, which Desktop plays in a loop.
@@ -226,7 +227,7 @@ pub fn check(f: &PendingMedia, rules: &FileRules, resizes: bool) -> Result<(), S
     };
     let converts = match top {
         "audio" => {
-            let facts = Facts { mime: mime.into(), size, dims: None, duration: f.duration, voice: false };
+            let facts = Facts { mime: mime.into(), size, dims: None, duration: f.duration, sent: Sent::File };
             !matches!(decide(&facts, rules), Action::Reject(_))
         }
         _ => (top == "video" || mime == "image/gif") && convertible(mime, &f.name, rule),
@@ -318,6 +319,7 @@ mod tests {
             size,
             frames: vec![],
             duration,
+            sticker: None,
         };
         let beeper = beeper_core::models::beeper_files();
         let check = |f: &PendingMedia, rules: &FileRules| check(f, rules, false).err();

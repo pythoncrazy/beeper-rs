@@ -418,6 +418,12 @@ pub enum UiMessage {
     GifScrolled(f32, f32, f32),
     PickGif(KlipyGif),
     GifDownloaded(Result<PendingMedia, String>),
+    /// Desktop's `imagePackStore.loadStickerPacks` of the open chat.
+    StickerPacks(Result<Vec<StickerPack>, String>),
+    /// A tab of the sticker picker: Recent (`None`) or a pack.
+    StickerTab(Option<String>),
+    PickSticker(Sticker),
+    StickerLoaded(Result<PendingMedia, String>),
     SetReminder(String, Option<i64>),
     OpenSubMenu(commands::SubMenu),
     CmdNoReply(bool),
@@ -1961,6 +1967,8 @@ pub struct PendingMedia {
     pub frames: Frames,
     /// The length in seconds of a video or an audio file.
     pub duration: Option<f64>,
+    /// Desktop's `stickerPackImage` of a sticker from the sticker picker.
+    pub sticker: Option<Box<Sticker>>,
 }
 
 /// A row of the composer autocomplete: an emoji and its name, or a mention label, its user ID and the member.
@@ -2476,6 +2484,7 @@ macro_rules! svg_static {
 }
 
 svg_static!(CHEVRON_LEFT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##);
+svg_static!(TIMER, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path fill="currentColor" d="M6.5 1.553a.58.58 0 0 1-.426-.173A.57.57 0 0 1 5.9.954q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174A.57.57 0 0 1 7.1.952q0 .251-.173.426a.57.57 0 0 1-.425.175m0 8.1a.58.58 0 0 1-.426-.174.57.57 0 0 1-.175-.424q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175m2.1-6.3a.58.58 0 0 1-.426-.174A.57.57 0 0 1 8 2.756q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175m0 4.5a.58.58 0 0 1-.426-.173A.57.57 0 0 1 8 7.255q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175m.6-2.25a.58.58 0 0 1-.426-.173.57.57 0 0 1-.175-.425q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175M5 9.803a4.7 4.7 0 0 1-1.866-.375 4.84 4.84 0 0 1-2.56-2.562A4.7 4.7 0 0 1 .2 4.997q0-.993.375-1.863A4.86 4.86 0 0 1 3.134.578 4.7 4.7 0 0 1 5 .203v.9q-1.625 0-2.762 1.138T1.099 5.003t1.138 2.763 2.762 1.137zm1.674-2.675L4.55 5.003v-3h.9v2.625l1.863 1.863z"/></svg>"##);
 svg_static!(CALL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M16.193 17.842q-2.605 0-5.146-1.136t-4.625-3.218q-2.083-2.084-3.219-4.625T2.068 3.717q0-.375.25-.625a.85.85 0 0 1 .625-.25h3.375q.292 0 .52.198a.76.76 0 0 1 .272.468l.541 2.917q.042.333-.02.563a.9.9 0 0 1-.23.395l-2.02 2.042q.416.77.989 1.49.573.718 1.26 1.385.645.646 1.355 1.198.708.552 1.5 1.01l1.958-1.958q.187-.188.49-.281.301-.094.593-.052l2.875.583a.97.97 0 0 1 .48.302.73.73 0 0 1 .187.49v3.375q0 .375-.25.625a.85.85 0 0 1-.625.25"/></svg>"##);
 svg_static!(ADD_ACCOUNT, include_bytes!("../assets/add_account.svg"));
 // Desktop's `reply-in-thread` and `chevron-compact-right` icons, the Material `view_sidebar` and `chevron_forward`.
@@ -4014,7 +4023,7 @@ fn file_echo(
     st: &mut BeeperStore,
     f: PendingMedia,
 ) -> (Attachment, MediaOut) {
-    let PendingMedia { bytes, name, mime, is_gif, size, frames, duration } = f;
+    let PendingMedia { bytes, name, mime, is_gif, size, frames, duration, sticker } = f;
     let image = !frames.is_empty() && mime.starts_with("image/");
     let key = format!("pasted:{}", st.next_id("img"));
     if image {
@@ -4033,6 +4042,7 @@ fn file_echo(
         file_name: Some(name.clone()),
         file_size: Some(bytes.len() as u64),
         is_gif: Some(is_gif),
+        is_sticker: Some(sticker.is_some()),
         mime_type: Some(mime.clone()),
         size: (size.0 > 0).then_some(AttachmentSize { width: Some(size.0), height: Some(size.1) }),
         src_url: image.then_some(key),
@@ -4048,6 +4058,7 @@ fn file_echo(
         reply_to,
         thread,
         gif: is_gif,
+        sticker,
     };
     (att, Box::new(out))
 }
@@ -4199,6 +4210,9 @@ pub struct Pane {
     pub show_attach_menu: bool,
     /// Desktop's `visiblePicker`.
     pub picker: Option<Picker>,
+    /// The sticker packs of the open sticker picker, until they load, and its selected tab: Recent (`None`) or a pack.
+    pub stickers: Option<Result<Vec<StickerPack>, String>>,
+    pub sticker_tab: Option<Option<String>>,
     /// The URL and text of the formatting menu's link dialog.
     pub link_dialog: Option<(String, String)>,
     pub emoji: Option<emoji::Picker>,
@@ -5630,12 +5644,81 @@ impl BeeperGuiApp {
                 false => {
                     let frames = decode_media(bytes.clone())?;
                     let mime = "image/gif".into();
-                    Ok(PendingMedia { bytes, name, mime, is_gif: true, size, frames, duration: None })
+                    Ok(PendingMedia { bytes, name, mime, is_gif: true, size, frames, duration: None, sticker: None })
                 }
             };
             tokio::task::spawn_blocking(load).await.expect("GIF load thread")
         };
         Task::perform(load, UiMessage::GifDownloaded)
+    }
+
+    /// Desktop's `loadStickerPacks` when the sticker picker opens: the packs of the open chat.
+    fn load_sticker_packs(&mut self) -> Task<UiMessage> {
+        (self.pane.stickers, self.pane.sticker_tab) = (None, None);
+        let room = self.pane.selected_chat_id.clone().expect("an open chat");
+        Task::perform(beeper_core::matrix::sticker_packs(self.store.clone(), room), UiMessage::StickerPacks)
+    }
+
+    /// Desktop's `onSelect` of the sticker picker: an animated sticker needs a chat that takes it, and the image
+    /// comes as an attachment named by its first shortcode.
+    fn pick_sticker(&mut self, s: Sticker) -> Task<UiMessage> {
+        use beeper_core::media::{animated, takes_sticker};
+        self.pane.picker = None;
+        let st = self.store.read();
+        let chat = &st.chats
+            [st.resolve_chat_idx(self.pane.selected_chat_id.as_deref().expect("an open chat")).expect("chat exists")];
+        let mime = s.info["mimetype"].as_str().map(str::to_string);
+        if mime.as_deref().is_some_and(|m| animated(m) && !takes_sticker(&chat.file, m)) {
+            drop(st);
+            self.status_banner = tr("This animated sticker can't be sent in this chat.").into();
+            return Task::none();
+        }
+        let fetch = beeper_core::matrix::media(st.matrix.clone(), s.url.clone());
+        drop(st);
+        let load = async move {
+            let bytes = fetch.await?;
+            let load = move || {
+                let reader = ::image::ImageReader::new(std::io::Cursor::new(&bytes));
+                let reader = reader.with_guessed_format().expect("in memory");
+                let sniffed = reader.format().map(|f| f.to_mime_type().to_string());
+                let dims = reader.into_dimensions().map_err(|e| e.to_string())?;
+                let mime = mime.or(sniffed).ok_or("The sticker has no image type")?;
+                let ext =
+                    mime.split_once('/').map(|(_, t)| t.replace("x-tgsticker", "tgs").replace("lottie+json", "json"));
+                let code = Some(s.shortcodes[0].as_str()).filter(|c| !c.is_empty()).unwrap_or("sticker");
+                let name = format!("{code}.{}", ext.unwrap_or_else(|| "webp".into()));
+                let size = match (s.info["w"].as_u64(), s.info["h"].as_u64()) {
+                    (Some(w), Some(h)) => (w as u32, h as u32),
+                    _ => dims,
+                };
+                let frames = decode_media(bytes.clone())?;
+                let is_gif = mime == "image/gif";
+                Ok(PendingMedia { bytes, name, mime, is_gif, size, frames, duration: None, sticker: Some(Box::new(s)) })
+            };
+            tokio::task::spawn_blocking(load).await.expect("sticker load thread")
+        };
+        Task::perform(load, UiMessage::StickerLoaded)
+    }
+
+    /// Desktop's `addFileBuffers` of a sticker, and `addRecentSticker`: the newest of 24 recent stickers.
+    fn sticker_loaded(&mut self, r: Result<PendingMedia, String>) {
+        let f = match r {
+            Ok(_) if self.pane.editing_message_id.is_some() => {
+                return self.status_banner = tr("Attachments can't be added while editing a message").into();
+            }
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("ComposeMessage: loading sticker failed: {e}");
+                return self.status_banner = tr("Couldn't load this sticker. Try again.").into();
+            }
+        };
+        let s = f.sticker.clone().expect("a sticker");
+        self.pane.attachments.push(f);
+        self.patch_settings(|st| {
+            st.recent_stickers.retain(|r| r.url != s.url);
+            st.recent_stickers.insert(0, *s);
+            st.recent_stickers.truncate(24);
+        });
     }
 
     /// Desktop's `processAttachment`: attaches each file that the open chat accepts, and shows a toast for the others.
@@ -6464,6 +6547,7 @@ impl BeeperGuiApp {
                 | UiMessage::Pasted(_)
                 | UiMessage::DiscardAttachment(_)
                 | UiMessage::GifDownloaded(..)
+                | UiMessage::StickerLoaded(..)
                 | UiMessage::StartReply(_)
                 | UiMessage::CancelComposeMode
                 | UiMessage::SendLater(_)
@@ -8347,6 +8431,7 @@ impl BeeperGuiApp {
                     frames: vec![(image::Handle::from_bytes(png.clone()), 0)],
                     bytes: png,
                     duration: None,
+                    sticker: None,
                 })]),
                 Ok(Clip::Text) => {
                     let id = if self.pane.thread_root.is_some() { "thread-composer-input" } else { "composer-input" };
@@ -8570,6 +8655,9 @@ impl BeeperGuiApp {
             UiMessage::TogglePicker(kind) => {
                 let open = self.pane.picker != Some(kind) && self.supports(kind);
                 self.pane.picker = open.then_some(kind);
+                if open && kind == Picker::Sticker {
+                    return self.load_sticker_packs();
+                }
                 if open && kind == Picker::Gif {
                     self.pane.show_attach_menu = true;
                     let focus = operation::focus("gif-search-input");
@@ -8632,6 +8720,10 @@ impl BeeperGuiApp {
                 self.pane.picker = None;
                 return self.download_gif(g);
             }
+            UiMessage::StickerPacks(r) => self.pane.stickers = Some(r),
+            UiMessage::StickerTab(tab) => self.pane.sticker_tab = Some(tab),
+            UiMessage::PickSticker(s) => return self.pick_sticker(s),
+            UiMessage::StickerLoaded(r) => self.sticker_loaded(r),
             UiMessage::GifDownloaded(Ok(_)) if self.pane.editing_message_id.is_some() => {
                 self.status_banner = tr("Attachments can't be added while editing a message").into();
             }
@@ -14858,9 +14950,7 @@ impl BeeperGuiApp {
             }
         };
 
-        // Desktop lists no sticker packs on Matrix accounts: its Matrix API has no `getStickerPacks`.
-        let stickers = (self.pane().picker == Some(Picker::Sticker))
-            .then(|| container(txt(tr("No sticker packs yet."), 14.0).color(p.text)).center_x(Fill).center_y(200));
+        let stickers = (self.pane().picker == Some(Picker::Sticker)).then(|| self.view_sticker_picker(st));
         let extras = Column::new().push(gif_picker).push(stickers);
         let line: Row<'a, UiMessage> = match (&self.recorder, &self.talk) {
             (Some(r), _) => row![self.view_recorder(r), send],
@@ -14868,6 +14958,81 @@ impl BeeperGuiApp {
             (None, None) => row![plus, pill, send],
         };
         column![extras, line.spacing(8).align_y(Center).padding(8)].into()
+    }
+
+    /// Desktop's `StickerPicker`: the stickers of the selected tab in 4 columns, and the tabs of Recent and of each
+    /// pack. Without packs and recent stickers it shows "No sticker packs yet.".
+    fn view_sticker_picker<'a>(&'a self, st: &BeeperStore) -> El<'a> {
+        let p = &self.pal;
+        let recent = &st.settings.recent_stickers;
+        let packs = match &self.pane().stickers {
+            Some(Ok(packs)) => &packs[..],
+            _ => &[],
+        };
+        let failed = matches!(self.pane().stickers, Some(Err(_)));
+        let tab = self.pane().sticker_tab.clone().or_else(|| match recent.is_empty() {
+            false => Some(None),
+            true => packs.first().map(|x| Some(x.id.clone())),
+        });
+        let shown = match &tab {
+            Some(None) => &recent[..],
+            Some(Some(id)) => packs.iter().find(|x| &x.id == id).map_or(&[][..], |x| &x.stickers[..]),
+            None => &[],
+        };
+        let picture = |url: &str, w: Length, h: f32| -> El<'a> {
+            match self.media_at(url) {
+                Some(Ok(frames)) => anim::gif(frames, self.started, move |f| {
+                    image(f).width(w).height(h).content_fit(iced::ContentFit::Contain)
+                }),
+                _ => Space::new().width(w).height(h).into(),
+            }
+        };
+        // Desktop's grid: 4 columns in 393 px, less the padding of 6 and 8 px and the gaps of 8 px.
+        let cell = (393.0 - 12.0 - 16.0 - 24.0) / 4.0;
+        let body: El<'a> =
+            match (self.pane().stickers.as_ref().is_some_and(|_| packs.is_empty()) || failed) && recent.is_empty() {
+                true => container(txt(tr("No sticker packs yet."), 13.0).line_height(Pixels(16.0)).color(p.muted))
+                    .padding([16, 12])
+                    .center_x(Fill)
+                    .into(),
+                false => {
+                    let rows = shown.chunks(4).map(|row| {
+                        let cells = row.iter().map(|x| {
+                            button(picture(&x.url, Fill, cell))
+                                .padding(0)
+                                .width(Fill)
+                                .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
+                                .on_press(UiMessage::PickSticker(x.clone()))
+                                .into()
+                        });
+                        let rest = (row.len()..4).map(|_| Space::new().width(Fill).into());
+                        Row::with_children(cells.chain(rest)).spacing(8).into()
+                    });
+                    let n = shown.len().div_ceil(4) as f32;
+                    let h = (n * cell + (n - 1.0).max(0.0) * 8.0 + 16.0).min(232.0);
+                    let grid = Column::with_children(rows).spacing(8).padding(8);
+                    scrollable(grid).height(h).width(Fill).style(scroll_style(p.scroll)).into()
+                }
+            };
+        let tab_btn = |icon: El<'a>, on: bool, msg: UiMessage| -> El<'a> {
+            let bg = if on { p.received } else { CLEAR };
+            button(container(icon).center(32))
+                .padding(2)
+                .style(btn_style([bg, p.hover, p.selected], [p.muted; 3], 18.0))
+                .on_press(msg)
+                .into()
+        };
+        let recent_tab = (!recent.is_empty())
+            .then(|| tab_btn(tinted(&TIMER, 20.0, p.muted), tab == Some(None), UiMessage::StickerTab(None)));
+        let pack_tabs = packs.iter().map(|x| {
+            let avatar = x.avatar.as_deref().unwrap_or(&x.stickers[0].url);
+            let on = tab.as_ref().is_some_and(|t| t.as_ref() == Some(&x.id));
+            tab_btn(picture(avatar, Length::Fixed(32.0), 32.0), on, UiMessage::StickerTab(Some(x.id.clone())))
+        });
+        let tabs = Row::new().push(recent_tab).extend(pack_tabs).spacing(4).padding([4, 6]);
+        let rule = container(Space::new().width(Fill).height(1)).style(fill_box(p.border_weak, 0.0));
+        let card = column![body, rule, tabs].width(393).padding(6);
+        container(container(card).style(shadow_box(p.menu, p.menu_border, 8.0, 16.0))).padding([0, 8]).into()
     }
 
     fn view_info(&self) -> El<'_> {
