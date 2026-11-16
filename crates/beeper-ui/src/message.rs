@@ -405,6 +405,40 @@ impl BeeperGuiApp {
         Some(container(col).center_x(Fill).into())
     }
 
+    /// Desktop's `InviteDetailsPane` (`P$t`), which shows in place of the chat for an invite to a Matrix room: the
+    /// room, who invited the user, the topic, and Decline and Accept.
+    fn view_invite_details<'a>(&self, chat: &Chat) -> El<'a> {
+        let p = &self.pal;
+        let inviter = chat.inviter().map(|u| {
+            let name = semi(u.full_name.clone().unwrap_or_default(), 14.0).line_height(Pixels(18.0)).color(p.strong);
+            column![name, txt(format!("({})", u.id), 13.0).line_height(Pixels(16.0)).color(p.sub)].align_x(Center)
+        });
+        let group = chat.chat_type == "group";
+        // Desktop does not translate these.
+        let text = if group { "invited you to the group:" } else { "invited you to chat" };
+        let text = txt(text, 13.0).line_height(Pixels(16.0)).color(p.text);
+        let title = group.then(|| semi(chat.title.clone(), 15.0).line_height(Pixels(20.0)).color(p.strong));
+        let title = title.map(|t| container(t.align_x(Center)).padding(Padding::ZERO.top(10.0)));
+        let about = chat.description.clone().filter(|d| !d.is_empty());
+        let about = about.map(|d| container(txt(d, 13.0).color(p.sub).align_x(Center)).padding([13, 0]));
+        let (accept, decline) = crate::request_answers(chat);
+        let pill = |label: &'static str, fg: Color, msg| {
+            let label = semi(label, 12.0).line_height(Pixels(15.0));
+            button(label).padding([4, 8]).style(bordered_btn([p.card; 3], [fg; 3], p.chip, 1.0, 100.0)).on_press(msg)
+        };
+        let id = &chat.id;
+        let actions = row![]
+            .push(decline.then(|| pill("Decline", hex(0xdc362e), UiMessage::DeleteChat(id.clone(), false))))
+            .push(accept.then(|| pill("Accept", p.strong, UiMessage::AcceptRequest(id.clone()))))
+            .spacing(8);
+        let avatar = container(self.chat_avatar(chat, 40.0, 0.0)).padding(Padding::ZERO.top(14.0).bottom(8.0));
+        let content = column![avatar].push(column![].push(inviter).push(text).align_x(Center)).push(title).push(about);
+        let content = content.push(container(actions).padding(Padding::ZERO.top(12.0))).align_x(Center).max_width(480);
+        let shadow = Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.18), offset: Vector::ZERO, blur_radius: 20.0 };
+        let card = fill_box(p.card, 10.0);
+        container(content).center(Fill).style(move |t| container::Style { shadow, ..card(t) }).into()
+    }
+
     /// Desktop's `IncognitoMarkAsRead`: a link below an unread chat that incognito mode keeps unread.
     fn incognito_mark_read<'a>(&self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
         let unread = chat.is_unread();
@@ -424,6 +458,10 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let cid = self.pane().selected_chat_id.as_deref().expect("a chat is selected");
         let chat = &st.chats[st.resolve_chat_idx(cid).expect("selected chat exists")];
+        // Desktop's `isMatrixRequest`.
+        if chat.is_request == Some(true) && chat.account_id == "hungryserv" {
+            return self.view_invite_details(chat);
+        }
         let rows = self.conversation_rows(&st, chat);
         let msgs: Vec<&Message> = rows.msgs.iter().map(|&i| &st.messages[i]).collect();
         // Desktop's `ThreadedRepliesView` hides the typing indicator, and its list has no scheduled messages.

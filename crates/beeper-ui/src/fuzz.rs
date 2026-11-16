@@ -4426,6 +4426,59 @@ fn request_rows_like_desktop() {
     let _ = app.update(UiMessage::SelectTab(InboxTab::Requests));
     let mut sim = simulator(app.view_sidebar());
     assert!(sim.find("Message Request").is_ok() && sim.find("Group Invitation").is_ok());
+    // Desktop names the inviter of a group invite: the member who added the own pending member.
+    let inviter = {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(&group).expect("the group");
+        let inviter =
+            st.chats[idx].participants.items.iter().find(|u| u.is_self != Some(true)).expect("a member").clone();
+        let me =
+            User { id: "@me:beeper.local".into(), is_self: Some(true), is_pending: Some(true), ..Default::default() };
+        let me = User { added_by: Some(inviter.id.clone()), ..me };
+        st.update_chat(idx, |c| {
+            c.participants.items.retain(|u| u.is_self != Some(true));
+            c.participants.items.push(me);
+        });
+        inviter.full_name.expect("a name")
+    };
+    let invited = format!("Invited by {inviter}");
+    assert!(simulator(app.view_sidebar()).find(invited.as_str()).is_ok(), "{invited}");
+}
+
+/// Desktop's `InviteDetailsPane`: an invite to a Matrix room shows who invited the user to which room, with Decline
+/// and Accept, in place of the chat.
+#[test]
+fn matrix_invites_show_their_details_like_desktop() {
+    let mut app = demo_app("invite-details");
+    let (group, inviter) = {
+        let mut st = app.store.write();
+        let free = |c: &&Chat| c.id != NOTE_CHAT_ID && c.chat_type == "group" && c.flags & CHAT_ARCHIVED == 0;
+        let group = st.chats.iter().find(free).expect("a group").id.clone();
+        let idx = st.resolve_chat_idx(&group).expect("the group");
+        let inviter = st.chats[idx].participants.items.iter().find(|u| u.is_self != Some(true)).unwrap().clone();
+        let me = User {
+            id: "@me:beeper.local".into(),
+            is_self: Some(true),
+            added_by: Some(inviter.id.clone()),
+            ..Default::default()
+        };
+        st.update_chat(idx, |c| {
+            (c.is_request, c.can_accept_request, c.account_id) = (Some(true), true, "hungryserv".into());
+            c.participants.items.retain(|u| u.is_self != Some(true));
+            c.participants.items.push(me);
+        });
+        (group, inviter)
+    };
+    let _ = app.update(UiMessage::SelectChat(group.clone()));
+    let title = app.store.read().chat(&group).title.clone();
+    let mut sim = simulator(app.view_conversation());
+    for text in
+        [inviter.full_name.clone().unwrap(), format!("({})", inviter.id), "invited you to the group:".into(), title]
+    {
+        assert!(sim.find(text.as_str()).is_ok(), "{text}");
+    }
+    let _ = sim.click("Accept").expect("Accept");
+    assert!(sim.into_messages().any(|m| matches!(m, UiMessage::AcceptRequest(id) if id == group)));
 }
 
 #[test]

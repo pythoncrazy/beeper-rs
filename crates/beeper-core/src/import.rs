@@ -237,6 +237,7 @@ fn read_participants(db: &Connection) -> rusqlite::Result<HashMap<String, Vec<Us
             is_network_bot: Some(r.get::<_, Option<i64>>(7)? == Some(1)),
             is_admin: Some(r.get::<_, Option<i64>>(8)? == Some(1)),
             manage: 0,
+            ..Default::default()
         };
         Ok((r.get::<_, String>(0)?, user))
     })?;
