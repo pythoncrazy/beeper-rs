@@ -856,6 +856,7 @@ impl BeeperGuiApp {
     ) -> Column<'a, UiMessage> {
         let p = &self.pal;
         let Rows { run_start, last_live, any_pending, last_seen, unread, chained, counts, gallery, keys, .. } = rows;
+        let last_received = msgs.iter().rposition(|m| m.is_sender != Some(true));
         // Desktop's `ThreadedRepliesView` lists the root and the replies of a thread under its header, and loads older
         // messages of the chat only until the root loads.
         let root = self.pane().thread_root.as_deref();
@@ -929,8 +930,18 @@ impl BeeperGuiApp {
             let last = msgs.get(end).is_none_or(|n| {
                 n.sender_id != m.sender_id || membership(n) || day_num(&n.timestamp) != day_num(&tail.timestamp)
             });
-            let mut viewers: Vec<(&str, &str)> =
-                last_seen.iter().filter(|(_, (at, _))| *at == end - 1).map(|(u, (_, ts))| (&u[..], &ts[..])).collect();
+            // Desktop's `showSeenIcon`: never on an action; in a group on an own message or the last one, and in a
+            // DM on an own message after the last received one.
+            let own = tail.is_sender == Some(true);
+            let seen_icon = !membership(tail)
+                && match group {
+                    true => own || end == msgs.len(),
+                    false => own && last_received.is_none_or(|r| end - 1 > r),
+                };
+            let mut viewers: Vec<(&str, &str)> = (last_seen.iter())
+                .filter(|(_, (at, _))| seen_icon && *at == end - 1)
+                .map(|(u, (_, ts))| (&u[..], &ts[..]))
+                .collect();
             viewers.sort_by_key(|&(_, ts)| ts);
             let status = if let Some(&(_, ts)) = viewers.last() {
                 if group {
