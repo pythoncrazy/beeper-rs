@@ -4340,7 +4340,9 @@ fn account_status_like_desktop() {
     let _ = app.update(UiMessage::OpenSettings(SettingsTab::Accounts));
     let _ = simulator(app.view_settings());
     let _ = simulator(app.view_rail());
+    app.store.write().bridge_accounts[0].state = "CONNECTED".into();
     app.store.write().bridge_accounts[0].remote_error = Some("Token expired".into());
+    assert_eq!(status_text(&app.store.read(), &account), Some("Attention Required"), "another state with an error");
     let _ = app.update(UiMessage::OpenAccount(Some(account.clone())));
     let mut sim = simulator(app.view_settings());
     assert!(sim.find("Account Disconnected").is_ok() && sim.find("Token expired").is_ok());

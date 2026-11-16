@@ -2667,12 +2667,14 @@ fn space_name(st: &BeeperStore, id: &str) -> String {
 
 /// Desktop's `remoteStatusText`: the state of a bridge login that is not connected.
 fn status_text(st: &BeeperStore, account_id: &str) -> Option<&'static str> {
-    match st.bridge_accounts.iter().find(|a| a.account_id == account_id)?.state.as_str() {
+    let a = st.bridge_accounts.iter().find(|a| a.account_id == account_id)?;
+    match a.state.as_str() {
         "TRANSIENT_DISCONNECT" => Some("Connection Interrupted"),
         "UNKNOWN_ERROR" => Some("Disconnected"),
         "UNCONFIGURED" => Some("Connection Required"),
         "BAD_CREDENTIALS" => Some("Reconnect Required"),
-        _ => None,
+        // Desktop's `remoteStatusText` for any other state with `remoteHasError`.
+        _ => a.remote_error.is_some().then_some("Attention Required"),
     }
 }
 
