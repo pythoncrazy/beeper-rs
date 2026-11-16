@@ -3,7 +3,7 @@
 
 use crate::i18n::{tr, trf, trn, trnx, trx, trxf};
 use crate::style::{
-    bold, bordered_box, bordered_btn, btn_style, clamp, ell, fill_box, fw, hex, ic, icon, med, mix, pane_card, pick,
+    bold, bordered_box, bordered_btn, btn_style, clamp, fill_box, fw, hex, ic, icon, med, mix, pane_card, pick,
     scroll_style, semi, shadow_box, stable_bar, txt, Bare, CLEAR, GUTTER,
 };
 use crate::{
@@ -37,6 +37,30 @@ static REPLY_CURVE: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock:
         svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0.5 0.5 25 19"><path{flip} fill="currentColor" fill-rule="evenodd" d="M17 15.5C9.544 15.5 3.5 9.456 3.5 2V.5h-3V2c0 9.113 7.387 16.5 16.5 16.5h6a1.5 1.5 0 0 0 0-3z"/></svg>"#).into_bytes())
     })
 });
+
+/// Whether Desktop's `bfe` shows an attachment of a quote as a picture: an image, or a video.
+fn quote_tile(a: &Attachment) -> bool {
+    matches!(a.attachment_type.as_str(), "img" | "video")
+        || a.mime_type.as_deref().is_some_and(|m| m.starts_with("image/"))
+}
+
+/// The name of a contact card in a quote: the file name without a `1.name.` prefix and without `.vcf`, like Desktop's
+/// `replace(/^\d\.\w+\./, "").replace(".vcf", "")`.
+fn contact_name(file: &str) -> String {
+    let mut parts = file.splitn(3, '.');
+    let prefixed = match (parts.next(), parts.next(), parts.next()) {
+        (Some(d), Some(w), Some(rest))
+            if d.len() == 1
+                && d.as_bytes()[0].is_ascii_digit()
+                && !w.is_empty()
+                && w.chars().all(|c| c.is_alphanumeric() || c == '_') =>
+        {
+            Some(rest)
+        }
+        _ => None,
+    };
+    prefixed.unwrap_or(file).replacen(".vcf", "", 1)
+}
 
 /// Desktop's file type label: the extension in capitals, or a name for some MIME types.
 fn file_label(a: &Attachment) -> Option<String> {
@@ -1104,15 +1128,8 @@ impl BeeperGuiApp {
                 return ((!chained).then(|| column![].push(pill)), false);
             };
             let q_mine = q.is_sender == Some(true);
-            let (edge, fill) = if q_mine { (sent, mix(p.card, sent, 0.3)) } else { (p.received, p.card) };
-            let body = ell(q.text.as_deref().unwrap_or(""), 300.0, 12.0, Weight::Medium).color(p.text);
-            let pill = container(body).padding(8).style(bordered_box(fill, edge, 2.0, 17.0));
-            let pill = mouse_area(pill).on_press(UiMessage::ShowReplies(q.id.clone()));
-            let name = (group && !q_mine).then(|| {
-                container(semi(sender_label(chat, q), 12.0).color(on_wall.unwrap_or(p.strong))).padding([0, 11])
-            });
-            let col = column![].push(name).push(pill).spacing(4);
-            ((!chained).then(|| col.align_x(if q_mine { Right } else { iced::Left })), q_mine)
+            let col = self.linked_message(chat, q, group, on_wall, sent).filter(|_| !chained);
+            (col.map(|c| column![mouse_area(c).on_press(UiMessage::ShowReplies(q.id.clone()))]), q_mine)
         });
         // Desktop's `pM`: a link with a title, an image or a summary has a preview.
         for link in m.links.iter().filter(|l| !l.title.is_empty() || l.img.is_some() || l.summary.is_some()) {
@@ -1655,6 +1672,79 @@ impl BeeperGuiApp {
             .on_press(click)
             .on_double_click(UiMessage::DoubleClickMessage(m.id.clone()));
         column![head, line].into()
+    }
+
+    /// Desktop's `bfe` (`LinkedMessage`) of the quoted message `q`: a box of its media, the tags of its other
+    /// attachments and its deletion, over a box of its text with the spaces collapsed and cut at 128 characters. A
+    /// group names the sender above media, else at the top of the text. A deleted hidden message shows nothing.
+    fn linked_message<'a>(
+        &'a self,
+        chat: &Chat,
+        q: &Message,
+        group: bool,
+        on_wall: Option<Color>,
+        sent: Color,
+    ) -> Option<Column<'a, UiMessage>> {
+        let p = &self.pal;
+        let deleted = q.is_deleted == Some(true);
+        if deleted && q.message_type.as_deref() == Some("HIDDEN") {
+            return None;
+        }
+        let q_mine = q.is_sender == Some(true);
+        let (edge, fill) = if q_mine { (sent, mix(p.card, sent, 0.3)) } else { (p.received, p.card) };
+        let max = 0.45 * self.pane().size.width;
+        let boxed = move |c: El<'a>| container(c).padding(8).max_width(max).style(bordered_box(fill, edge, 2.0, 17.0));
+        let visual = q.attachments.iter().any(|a| quote_tile(a) || a.attachment_type == "audio");
+        let name = || semi(sender_label(chat, q), 12.0).line_height(Pixels(16.0));
+        let items: Vec<El<'a>> = q.attachments.iter().map(|a| self.linked_attachment(a)).collect();
+        let media = (!items.is_empty() || deleted).then(|| {
+            let gone = deleted.then(|| med(tr("Message Deleted"), 13.0).color(p.text));
+            boxed(Row::with_children(items).push(gone).spacing(4).align_y(Center).into())
+        });
+        let text = q.text.as_deref().filter(|_| !deleted).map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
+        let text = text.filter(|t| !t.is_empty()).map(|t| match t.chars().count() > 128 {
+            true => format!("{}...", t.chars().take(125).collect::<String>()),
+            false => t,
+        });
+        let within = (group && !visual).then(|| name().color(p.strong));
+        let text = text.map(|t| boxed(column![].push(within).push(med(t, 13.0).color(p.text)).spacing(2).into()));
+        let above = (group && visual).then(|| {
+            container(name().color(on_wall.unwrap_or(p.strong))).padding(Padding::new(0.0).left(11.0).right(11.0))
+        });
+        let shown = media.is_some() || text.is_some();
+        let col = column![].push(above).push(media).push(text).spacing(8);
+        shown.then(|| col.align_x(if q_mine { Right } else { iced::Left }))
+    }
+
+    /// An attachment in Desktop's `bfe`: a 100 px tile of an image or a video at half opacity, a tag of a sticker, a
+    /// GIF, a voice note, an audio file or a contact card, or the file row of Desktop's `FileAttachment`.
+    fn linked_attachment<'a>(&'a self, a: &Attachment) -> El<'a> {
+        let p = &self.pal;
+        if quote_tile(a) {
+            let tile = a.poster_img.as_ref().or(a.src_url.as_ref()).and_then(|u| self.cover_tile(u, (100, 100)));
+            return match tile {
+                Some(t) => image(t.clone()).width(100).height(100).opacity(0.5_f32).into(),
+                None => container(ic(icon::IMAGE, 24.0).color(p.sub)).center_x(100).center_y(100).into(),
+            };
+        }
+        let name = a.file_name.as_deref().unwrap_or_default();
+        let tag = match () {
+            _ if a.is_sticker == Some(true) => Some(tr("🖼 [Sticker]").to_string()),
+            _ if a.is_gif == Some(true) => Some(tr("🎬 [GIF]").to_string()),
+            _ if a.attachment_type == "audio" && a.is_voice_note == Some(true) => Some(tr("🎤 [Voice Note]").into()),
+            _ if a.attachment_type == "audio" => Some(tr("🎵 [Audio]").to_string()),
+            _ if name.ends_with(".vcf") || a.mime_type.as_deref() == Some("text/x-vcard") => {
+                Some(trf("👤 [Contact: %s]", &[&contact_name(name)]))
+            }
+            _ => None,
+        };
+        if let Some(tag) = tag {
+            return med(tag, 13.0).color(p.text).into();
+        }
+        let meta = file_label(a).into_iter().chain(a.file_size.map(human_size)).collect::<Vec<_>>();
+        let info = column![med(name.to_string(), 13.0).color(p.text)]
+            .push((!meta.is_empty()).then(|| txt(meta.join(" ・ "), 11.0).color(p.sub)));
+        row![tinted(file_icon(a), 20.0, p.text), info].spacing(8).align_y(Center).into()
     }
 
     /// Desktop's `u2t`: a disappearing timer change between two rules, with "Change Setting" on the last one.
