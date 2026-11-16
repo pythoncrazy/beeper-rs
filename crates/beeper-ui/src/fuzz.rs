@@ -3226,6 +3226,51 @@ fn drafts_move_chats_like_desktop() {
     assert_eq!(unpinned(&app).first(), Some(&id), "and comes back to the top of the inbox");
 }
 
+/// Desktop's `showSeenIcon`: a group shows who has seen it on own messages and the last one, not on a received
+/// message in the middle.
+#[test]
+fn seen_lines_like_desktop() {
+    let mut app = demo_app("seen-rule");
+    let id = "!wa_family:beeper.com".to_string();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    // Four received messages from Ann after the one there is.
+    let ids: Vec<String> = {
+        let mut st = app.store.write();
+        let base = st.messages[st.timeline_indices(&id)[0]].clone();
+        (1..=4)
+            .map(|n| {
+                let m = Message {
+                    id: format!("$ann{n}"),
+                    sender_id: "@ann:x".into(),
+                    sender_name: Some("Ann".into()),
+                    is_sender: Some(false),
+                    text: Some(format!("note {n}")),
+                    html: None,
+                    timestamp: format!("2030-01-01T10:0{n}:00Z"),
+                    sort_key: beeper_core::store::sort_key(9_000_000_000_000 + n),
+                    seen: Default::default(),
+                    ..base.clone()
+                };
+                st.upsert_message(m);
+                format!("$ann{n}")
+            })
+            .collect()
+    };
+    let seen = |app: &mut BeeperGuiApp, mid: &str| {
+        let mut st = app.store.write();
+        for m in &ids {
+            let i = st.message_idx(m);
+            let by = if m == mid { vec![("@zed:x".to_string(), "2030-01-01T11:00:00Z".to_string())] } else { vec![] };
+            st.update_message(i, |x| x.seen = by.into_iter().collect());
+        }
+    };
+    let shown = |app: &BeeperGuiApp| simulator(app.view_conversation()).find("Seen by @zed:x").is_ok();
+    seen(&mut app, "$ann2");
+    assert!(!shown(&app), "not under a received message in the middle");
+    seen(&mut app, "$ann4");
+    assert!(shown(&app), "under the last message");
+}
+
 /// Desktop's Join a Matrix room view: a bad address shows Desktop's error under the field, and a known room opens.
 #[test]
 fn join_a_matrix_room_like_desktop() {
