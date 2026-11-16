@@ -420,7 +420,7 @@ impl BeeperGuiApp {
         let title = group.then(|| semi(chat.title.clone(), 15.0).line_height(Pixels(20.0)).color(p.strong));
         let title = title.map(|t| container(t.align_x(Center)).padding(Padding::ZERO.top(10.0)));
         let about = chat.description.clone().filter(|d| !d.is_empty());
-        let about = about.map(|d| container(txt(d, 13.0).color(p.sub).align_x(Center)).padding([13, 0]));
+        let about = about.map(|d| container(txt(d, 13.0).color(p.text).align_x(Center)).padding([13, 0]));
         let (accept, decline) = crate::request_answers(chat);
         let pill = |label: &'static str, fg: Color, msg| {
             let label = semi(label, 12.0).line_height(Pixels(15.0));
