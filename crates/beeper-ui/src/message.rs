@@ -1175,7 +1175,12 @@ impl BeeperGuiApp {
                     let size = a.size.as_ref().and_then(|s| Some((s.width? as f32, s.height? as f32)));
                     let share = if self.sidebar_hidden { 0.85 } else { 0.45 };
                     let (w, h, cover) = media_box(self.pane().size.width, size, share);
-                    let thumb_url = a.poster_img.clone().or_else(|| a.src_url.clone());
+                    // Desktop plays a video with `isGif` inline like a GIF, without sound, again and again.
+                    let looped = is_video && a.is_gif == Some(true) && m.unresolved_media.is_none();
+                    let thumb_url = match looped {
+                        true => a.src_url.as_ref().map(|u| format!("{u}{}", crate::media_view::LOOP)),
+                        false => a.poster_img.clone().or_else(|| a.src_url.clone()),
+                    };
                     let pill = |label: &'a str, alpha: f32| -> El<'a> {
                         container(
                             container(txt(label, 14.0).line_height(1.0).color(Color::WHITE))
@@ -1190,7 +1195,7 @@ impl BeeperGuiApp {
                     };
                     // A cropped still shows from a baked cut (the renderer draws `Cover` and crops past their box).
                     let cut = |u: &String| self.cover_tile(u, (w.round() as u32, h.round() as u32));
-                    let cut = thumb_url.as_ref().filter(|_| cover).and_then(cut);
+                    let cut = thumb_url.as_ref().filter(|_| cover && !looped).and_then(cut);
                     let base: El<'_> = match thumb_url.as_ref().and_then(|u| self.media_at(u)) {
                         Some(Ok(_)) if let Some(t) = cut => image(t.clone()).width(w).height(h).into(),
                         Some(Ok(frames)) => {

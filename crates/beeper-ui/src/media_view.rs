@@ -49,6 +49,32 @@ pub(crate) fn run_ffmpeg(bytes: &[u8], args: &[&str]) -> Result<Vec<u8>, String>
     })
 }
 
+/// The suffix of the media key of a video that plays as a GIF: Desktop's `<video autoPlay loop muted>` of an
+/// attachment with `isGif`, which the bridges send for the GIFs of WhatsApp, Telegram and others.
+pub(crate) const LOOP: &str = "#loop";
+
+/// The frames of a video that plays as a GIF, at most 15 per second, 320 px on the long side and 8 seconds, so that it
+/// takes no more memory than a GIF of its size.
+pub(crate) fn decode_loop(bytes: &[u8]) -> Result<Frames, String> {
+    const FPS: u128 = 15;
+    let scale = format!("fps={FPS},scale='if(gt(iw,ih),min(320,iw),-2)':'if(gt(iw,ih),-2,min(320,ih))'");
+    let out = run_ffmpeg(bytes, &["-t", "8", "-an", "-vf", &scale, "-f", "image2pipe", "-vcodec", "png", "pipe:1"])?;
+    // ffmpeg writes the PNGs back to back, and each ends with its IEND chunk and its CRC.
+    const END: &[u8] = b"IEND\xaeB`\x82";
+    let mut frames = Vec::new();
+    let mut rest = &out[..];
+    while let Some(at) = rest.windows(END.len()).position(|w| w == END) {
+        let (png, next) = rest.split_at(at + END.len());
+        let px = ::image::load_from_memory(png).map_err(|e| format!("Could not decode a frame: {e}"))?.into_rgba8();
+        frames.push((image::Handle::from_rgba(px.width(), px.height(), px.into_raw()), 1000 / FPS));
+        rest = next;
+    }
+    match frames.is_empty() {
+        true => Err("The video has no frames".into()),
+        false => Ok(frames),
+    }
+}
+
 pub(crate) fn decode_media(bytes: Vec<u8>) -> Result<Frames, String> {
     use ::image::AnimationDecoder;
     // A decode here, on a worker thread, keeps the full size decode out of the first frame that draws the image.
@@ -229,8 +255,10 @@ impl BeeperGuiApp {
             Task::perform(
                 async move {
                     let _slot = AVATAR_SLOTS.acquire().await.expect("the media semaphore stays open");
+                    let (u, looped) = u.strip_suffix(LOOP).map_or((u.clone(), false), |u| (u.to_string(), true));
                     let bytes = beeper_core::matrix::media(client, u).await?;
-                    tokio::task::spawn_blocking(move || decode_media(bytes)).await.expect("media decode task")
+                    let decode = move || if looped { decode_loop(&bytes) } else { decode_media(bytes) };
+                    tokio::task::spawn_blocking(decode).await.expect("media decode task")
                 },
                 move |r| UiMessage::MediaLoaded(url, r),
             )

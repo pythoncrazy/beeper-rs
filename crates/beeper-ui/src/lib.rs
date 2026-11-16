@@ -13957,6 +13957,18 @@ mod tests {
         assert!(decode_media(b"\x89PNG".to_vec()).is_err(), "a broken still fails to load");
     }
 
+    /// A video that plays as a GIF decodes to at most 15 frames a second, at most 320 px on its long side.
+    #[test]
+    fn video_gifs_decode_to_frames() {
+        let path = beeper_core::testing::temp_dir("video-gif").join("clip.mp4");
+        let lavfi = ["-f", "lavfi", "-i", "testsrc=size=640x360:rate=30", "-t", "1", "-pix_fmt", "yuv420p", "-y"];
+        assert!(std::process::Command::new("ffmpeg").args(lavfi).arg(&path).output().unwrap().status.success());
+        let frames = crate::media_view::decode_loop(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(frames.len(), 15, "15 frames for one second");
+        assert!(matches!(frames[0], (image::Handle::Rgba { width: 320, height: 180, .. }, 66)));
+        assert!(crate::media_view::decode_loop(b"not a video").is_err());
+    }
+
     #[test]
     fn copy_text_matches_desktop() {
         let mut m: Message = serde_json::from_value(serde_json::json!({
