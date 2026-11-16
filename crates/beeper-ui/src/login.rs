@@ -681,7 +681,7 @@ impl BeeperGuiApp {
         let id = self.login_window.take().expect("login window is open");
         self.select_chat(NOTE_CHAT_ID);
         self.main_window = Some(id);
-        Task::batch([window::set_resizable(id, true), window::resize(id, crate::MAIN_SIZE)])
+        Task::batch([window::set_resizable(id, true), BeeperGuiApp::resize_around(id, crate::MAIN_SIZE)])
     }
 
     /// Desktop's `InnerApp`: when encrypted messaging of this device goes back to the verification or to the keys, the
@@ -691,7 +691,7 @@ impl BeeperGuiApp {
         let back = matches!(stage, "pre-verification" | "awaiting-secrets" | "awaiting-key-backup");
         let Some(id) = self.main_window.take_if(|_| back && self.login_window.is_none()) else { return Task::none() };
         (self.login_window, self.login) = (Some(id), Login::default());
-        Task::batch([window::set_resizable(id, false), window::resize(id, SIZE), self.resume_onboarding()])
+        Task::batch([window::set_resizable(id, false), BeeperGuiApp::resize_around(id, SIZE), self.resume_onboarding()])
     }
 
     /// Desktop's onboarding of a signed-in device before the stage "done": it starts at the first onboarding screen

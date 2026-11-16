@@ -6642,6 +6642,22 @@ fn a_later_launch_shows_the_window_like_desktop() {
     assert!(!app.hidden, "Desktop's second-instance event shows the main window");
 }
 
+/// Desktop's `ga` (`mainWindowSetSize`): the onboarding window grows into the main window around its center and on
+/// the screen, and shrinks back the same way.
+#[test]
+fn the_window_grows_around_its_center_like_desktop() {
+    let screen = Size::new(1440.0, 900.0);
+    let (at, size) = crate::grown(Point::new(555.0, 140.0), Size::new(330.0, 620.0), Size::new(1200.0, 800.0), screen);
+    assert_eq!((at, size), (Point::new(120.0, 50.0), Size::new(1200.0, 800.0)), "centered where the onboarding was");
+    let corner = crate::grown(Point::new(1100.0, 280.0), Size::new(330.0, 620.0), Size::new(1200.0, 800.0), screen);
+    assert_eq!(corner.0, Point::new(240.0, 100.0), "kept on the screen");
+    let small =
+        crate::grown(Point::ORIGIN, Size::new(330.0, 620.0), Size::new(1200.0, 800.0), Size::new(1024.0, 700.0));
+    assert_eq!(small, (Point::ORIGIN, Size::new(1024.0, 700.0)), "no bigger than the screen");
+    let back = crate::grown(Point::new(120.0, 50.0), Size::new(1200.0, 800.0), Size::new(330.0, 620.0), screen);
+    assert_eq!(back.0, Point::new(555.0, 140.0), "and back around the same center");
+}
+
 #[test]
 fn main_window_keeps_its_state_like_desktop() {
     let mut app = demo_app("windowstate");
