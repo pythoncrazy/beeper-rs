@@ -403,7 +403,10 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         is_archived: Some(false),
         is_marked_unread: Some(room.is_marked_unread()),
         is_muted: Some(
-            room.user_defined_notification_mode().await == Some(RoomNotificationMode::MentionsAndKeywordsOnly),
+            // The SDK's `Room::user_defined_notification_mode` is empty for a room the user left, but its rule still
+            // mutes the chat that stays.
+            room.client().notification_settings().await.get_user_defined_room_notification_mode(room.room_id()).await
+                == Some(RoomNotificationMode::MentionsAndKeywordsOnly),
         ),
         is_pinned: Some(tags.contains_key(&TagName::Favorite)),
         is_low_priority: Some(tags.contains_key(&TagName::LowPriority)),
@@ -3630,8 +3633,8 @@ mod tests {
             "unsigned": { "com.beeper.hs.order": i } })
     }
 
-    /// Desktop keeps a chat that the user was removed from: its own member has exited and the removal previews it. A
-    /// chat that was deleted here stays deleted when the leave of its room comes.
+    /// Desktop keeps a chat that the user was removed from: its own member has exited, the removal previews it, and
+    /// it stays muted. A chat that was deleted here stays deleted when the leave of its room comes.
     #[tokio::test]
     async fn a_removal_keeps_the_chat_like_desktop() {
         use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
@@ -3639,7 +3642,14 @@ mod tests {
         let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
             "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
             "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
-            "/_matrix/client/v3/sync" if syncs.fetch_add(1, Relaxed) == 0 => (200, stub_sync()),
+            "/_matrix/client/v3/sync" if syncs.fetch_add(1, Relaxed) == 0 => {
+                // The room is muted: a room rule without actions.
+                let mute = json!({ "rule_id": "!room:x", "default": false, "enabled": true, "actions": [] });
+                let rules = json!({ "type": "m.push_rules", "content": { "global": { "room": [mute] } } });
+                let mut sync = stub_sync();
+                sync["account_data"] = json!({ "events": [rules] });
+                (200, sync)
+            }
             "/_matrix/client/v3/sync" => {
                 let kick = json!({ "type": "m.room.member", "state_key": "@me:x", "sender": "@vic:x",
                     "event_id": "$kick", "origin_server_ts": 1_700_000_000_000_i64, "content": { "membership": "leave" } });
@@ -3659,6 +3669,7 @@ mod tests {
             let st = store.read();
             let c = st.chat("!room:x");
             assert!(c.exited(), "the user's member has exited");
+            assert_eq!(c.is_muted, Some(true), "the room rule still mutes it");
             assert_eq!(c.preview.as_ref().map(|m| m.id.as_str()), Some("$kick"), "the removal previews the chat");
         }
         store.write().remove_chat("!room:x");
