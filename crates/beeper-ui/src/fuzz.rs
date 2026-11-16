@@ -468,11 +468,11 @@ fn attachments_send_like_desktop() {
 fn pastes_attach_files_like_desktop() {
     let mut app = demo_app("paste");
     let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
-    // Ctrl+V in the composer reads the files of the clipboard first, and the window does not paste a second time.
+    // Ctrl+V (Cmd+V on macOS) in the composer reads the files of the clipboard first, and the window does not paste a second time.
     let id = app.main_window.expect("a main window");
     let mut sim = Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id));
     sim.click(iced::widget::Id::new("composer-input")).expect("a composer");
-    let _ = sim.simulate([key(Key::Character("v".into()), Modifiers::CTRL)]);
+    let _ = sim.simulate([key(Key::Character("v".into()), Modifiers::COMMAND)]);
     let msgs: Vec<UiMessage> = sim.into_messages().collect();
     assert!(matches!(msgs[..], [UiMessage::ComposerEdit(_), UiMessage::Paste]), "{msgs:?}");
     let files = app.update(UiMessage::Pasted(Ok(Clip::Files(vec!["/tmp/a.pdf".into()]))));
@@ -1727,9 +1727,12 @@ fn galleries_select_and_have_a_menu_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(chat));
     let _ = app.update(UiMessage::Gallery(gallery::Msg::Click(ids.clone())));
     assert_eq!(app.pane.selected_msgs, ids, "a click selects the gallery");
-    app.mods = Modifiers::CTRL;
+    app.mods = Modifiers::COMMAND;
     let _ = app.update(UiMessage::Gallery(gallery::Msg::Tile(ids[1].clone())));
-    assert!(!app.pane.selected_msgs.contains(&ids[1]) && app.carousel.is_none(), "Ctrl and a tile unselect a photo");
+    assert!(
+        !app.pane.selected_msgs.contains(&ids[1]) && app.carousel.is_none(),
+        "Ctrl/Cmd and a tile unselect a photo"
+    );
     app.mods = Modifiers::empty();
     let _ = app.update(UiMessage::Gallery(gallery::Msg::Tile(ids[1].clone())));
     assert!(app.carousel.is_some(), "a tile opens the carousel");
