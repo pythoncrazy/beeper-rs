@@ -3273,6 +3273,26 @@ fn seen_lines_like_desktop() {
     assert!(shown(&app), "under the last message");
 }
 
+/// Desktop's `accountDisplayName` titles an account space: "<user> · <network>" when the bridge has two accounts.
+#[test]
+fn account_space_titles_like_desktop() {
+    let mut app = demo_app("space-title");
+    let b = app.store.read().bridge_accounts.iter().find(|b| b.remote_profile.is_some()).cloned().unwrap();
+    let two = beeper_core::models::BridgeAccountInfo { account_id: format!("{}-2", b.account_id), ..b.clone() };
+    {
+        let mut st = app.store.write();
+        let mut all = st.bridge_accounts.clone();
+        all.push(two);
+        st.set_cloud_accounts(all);
+    }
+    let title = {
+        let st = app.store.read();
+        format!("{} · {}", account_user(&st, &b.account_id), network_label(&b.account_id))
+    };
+    let _ = app.update(UiMessage::SelectAccount(Some(b.account_id.clone())));
+    assert!(simulator(app.view_sidebar()).find(title.as_str()).is_ok(), "{title}");
+}
+
 /// Desktop's Join a Matrix room view: a bad address shows Desktop's error under the field, and a known room opens.
 #[test]
 fn join_a_matrix_room_like_desktop() {
