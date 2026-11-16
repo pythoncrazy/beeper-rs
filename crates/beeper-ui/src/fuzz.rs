@@ -3059,6 +3059,38 @@ fn previews_name_the_sender_by_the_current_name_like_desktop() {
     assert!(simulator(app.view_conversation()).find("Zed Quux").is_ok(), "the timeline names the sender the same way");
 }
 
+/// Desktop's `selfParticipant.hasExited`: a chat that the user was removed from has no composer, and the removal
+/// previews it without a sender name, as an action.
+#[test]
+fn a_chat_the_user_left_like_desktop() {
+    let mut app = demo_app("exited");
+    let id = {
+        let st = app.store.read();
+        let row = |c: &&Chat| c.chat_type == "group" && c.is_pinned != Some(true);
+        app.visible_chats(&st).into_iter().find(row).expect("a group in the list").id.clone()
+    };
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let composer = || iced::widget::Id::new("composer-input");
+    assert!(simulator(app.view_conversation()).find(composer()).is_ok(), "a composer before");
+    {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(&id).unwrap();
+        st.update_chat(idx, |c| {
+            let other = c.participants.items.iter().find(|u| u.is_self != Some(true)).unwrap().id.clone();
+            for u in c.participants.items.iter_mut().filter(|u| u.is_self == Some(true)) {
+                u.has_exited = Some(true);
+            }
+            c.draft = None;
+            let p = c.preview.as_mut().expect("a preview");
+            (p.sender_id, p.is_sender, p.message_type) = (other, Some(false), Some("MEMBERSHIP".into()));
+            (p.text, p.html, p.attachments, p.links, p.poll) =
+                (Some("Ann left".into()), None, Vec::new(), Vec::new(), None);
+        });
+    }
+    assert!(simulator(app.view_conversation()).find(composer()).is_err(), "no composer after");
+    assert!(simulator(app.view_sidebar()).find("Ann left").is_ok(), "no sender name");
+}
+
 /// Desktop's Join a Matrix room view: a bad address shows Desktop's error under the field, and a known room opens.
 #[test]
 fn join_a_matrix_room_like_desktop() {

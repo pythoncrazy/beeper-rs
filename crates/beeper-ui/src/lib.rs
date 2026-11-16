@@ -1937,8 +1937,10 @@ static TAG_ICONS: std::sync::LazyLock<[svg::Handle; 9]> = std::sync::LazyLock::n
 });
 
 fn preview_sender<'a>(chat: &'a Chat, m: &Message) -> Option<&'a User> {
+    // Desktop's `getLastParticipantName` names no one on an action, like a member change.
     let shown = (chat.chat_type == "group" || network_bot(chat, &m.sender_id))
         && m.is_sender != Some(true)
+        && !m.silent()
         && m.message_type.as_deref() != Some("REACTION");
     chat.participants.items.iter().find(|u| shown && u.id == m.sender_id)
 }
@@ -11209,6 +11211,7 @@ impl BeeperGuiApp {
             };
             let show_sender = !mine
                 && reaction.is_none()
+                && !m.is_some_and(Message::silent)
                 && (media_tag.is_some() || body.is_some())
                 && (c.chat_type == "group" || m.is_some_and(|m| network_bot(c, &m.sender_id)));
             let first =

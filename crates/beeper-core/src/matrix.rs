@@ -44,7 +44,7 @@ use matrix_sdk::ruma::events::tag::{TagInfo, TagName};
 use matrix_sdk::ruma::events::{GlobalAccountDataEventType, Mentions, RoomAccountDataEventType, StateEventType};
 use matrix_sdk::ruma::serde::Raw;
 use matrix_sdk::ruma::{OwnedDeviceId, OwnedEventId, OwnedUserId};
-use matrix_sdk::{Client, LoopCtrl, Room, RoomMemberships, SessionMeta, SessionTokens};
+use matrix_sdk::{Client, LoopCtrl, Room, RoomMemberships, RoomState, SessionMeta, SessionTokens};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use tokio::sync::oneshot;
@@ -1119,6 +1119,38 @@ async fn sync_invite(store: &SharedStore, room: &Room) {
     st.upsert_chat(chat);
 }
 
+/// Desktop keeps a chat that the user left or was removed from: its own member is `hasExited`, and the message of
+/// that leave previews it (`shouldPreview`). A chat that is gone here, as after Delete Chat, stays gone.
+async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
+    let chat = chat_id(room).await;
+    if store.read().resolve_chat_idx(&chat).is_none() {
+        return;
+    }
+    let me = room.own_user_id().to_string();
+    let exit = events.iter().rev().find_map(|e| {
+        let v: Value = serde_json::from_str(e.raw().json().get()).expect("timeline event JSON");
+        (v["type"] == "m.room.member" && v["state_key"] == me.as_str()).then(|| s(&v["event_id"])).flatten()
+    });
+    sync_room(store, room, events).await;
+    let mut st = store.write();
+    let idx = st.chat_idx(&chat);
+    let exit = exit.and_then(|id| st.loaded(&id).cloned());
+    st.update_chat(idx, |c| {
+        match c.participants.items.iter_mut().find(|u| u.id == me) {
+            Some(u) => u.has_exited = Some(true),
+            None => c.participants.items.push(User {
+                id: me,
+                is_self: Some(true),
+                has_exited: Some(true),
+                ..Default::default()
+            }),
+        }
+        if let Some(m) = exit {
+            (c.last_activity, c.preview) = (Some(m.timestamp.clone()), Some(m));
+        }
+    });
+}
+
 async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>) {
     match room.room_id().as_str() {
         BOOKMARKS_ROOM => return sync_bookmarks(store, room, events).await,
@@ -2009,9 +2041,9 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
         return Ok(create_label(store, &client, label).await?);
     }
     let chat = store.read().sent.get(&chat).cloned().unwrap_or(chat);
-    let invited = matrix_sdk::ruma::RoomId::parse(chat.as_str()).ok().and_then(|id| client.get_room(&id));
-    let room = match invited {
-        Some(room) if room.state() == matrix_sdk::RoomState::Invited => room,
+    let known = matrix_sdk::ruma::RoomId::parse(chat.as_str()).ok().and_then(|id| client.get_room(&id));
+    let room = match known {
+        Some(room) if matches!(room.state(), RoomState::Invited | RoomState::Left) => room,
         _ => joined_room(&client, &chat).await?,
     };
     let event = |id: String| {
@@ -2161,7 +2193,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
             room.set_account_data_raw(REMINDER.into(), raw).await.map_err(e)?;
         }
         // Desktop accepts an invite of a Matrix chat by a join, and other requests with the bridge's event.
-        Outgoing::AcceptRequest if room.state() == matrix_sdk::RoomState::Invited => room.join().await.map_err(e)?,
+        Outgoing::AcceptRequest if room.state() == RoomState::Invited => room.join().await.map_err(e)?,
         Outgoing::AcceptRequest => {
             room.send_raw("com.beeper.accept_message_request", serde_json::json!({})).await.map_err(e)?;
         }
@@ -2170,9 +2202,9 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
             room.send_raw("com.beeper.block_user", content).await.map_err(e)?;
         }
         // Desktop's `declineMessageRequest` of a Matrix chat leaves the room.
-        Outgoing::DeleteChat { .. } if room.state() == matrix_sdk::RoomState::Invited => {
-            room.leave().await.map_err(e)?
-        }
+        Outgoing::DeleteChat { .. } if room.state() == RoomState::Invited => room.leave().await.map_err(e)?,
+        // Desktop's `forgetRoom`: a chat that the user left or was removed from goes with its room.
+        Outgoing::DeleteChat { .. } if room.state() == RoomState::Left => room.forget().await.map_err(e)?,
         Outgoing::DeleteChat { for_everyone } => {
             let content = serde_json::json!({ "delete_for_everyone": for_everyone });
             room.send_raw("com.beeper.delete_chat", content).await.map_err(e)?;
@@ -3519,13 +3551,14 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
             for id in resp.rooms.invited.keys() {
                 sync_invite(store, &client.get_room(id).expect("an invited room is known")).await;
             }
-            for id in resp.rooms.left.keys() {
-                // A forgotten room, like a deleted label, is gone from the client.
-                let chat = match client.get_room(id) {
-                    Some(room) => chat_id(&room).await,
-                    None => id.to_string(),
-                };
-                store.write().remove_chat(&chat);
+            for (id, update) in resp.rooms.left {
+                match client.get_room(&id) {
+                    Some(room) if room.state() == RoomState::Left => {
+                        sync_left(store, &room, update.timeline.events).await
+                    }
+                    // A forgotten room, like a deleted label, is gone from the client.
+                    _ => store.write().remove_chat(id.as_str()),
+                }
             }
             for (id, update) in resp.rooms.joined {
                 let room = client.get_room(&id).expect("synced room is known");
@@ -3595,6 +3628,42 @@ mod tests {
         json!({ "type": "m.room.message", "sender": "@me:x", "event_id": format!("$e{i}"),
             "origin_server_ts": 1_700_000_000_000 + i * 1000, "content": { "msgtype": "m.text", "body": format!("m{i}") },
             "unsigned": { "com.beeper.hs.order": i } })
+    }
+
+    /// Desktop keeps a chat that the user was removed from: its own member has exited and the removal previews it. A
+    /// chat that was deleted here stays deleted when the leave of its room comes.
+    #[tokio::test]
+    async fn a_removal_keeps_the_chat_like_desktop() {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        let syncs = AtomicUsize::new(0);
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" if syncs.fetch_add(1, Relaxed) == 0 => (200, stub_sync()),
+            "/_matrix/client/v3/sync" => {
+                let kick = json!({ "type": "m.room.member", "state_key": "@me:x", "sender": "@vic:x",
+                    "event_id": "$kick", "origin_server_ts": 1_700_000_000_000_i64, "content": { "membership": "leave" } });
+                let left = json!({ "state": { "events": [] }, "timeline": { "events": [kick] } });
+                (200, json!({ "next_batch": "s2", "rooms": { "leave": { "!room:x": left } } }))
+            }
+            p if p.ends_with("/messages") => (200, json!({ "start": "t0", "chunk": [] })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("removal"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        let room = client.get_room(matrix_sdk::ruma::room_id!("!room:x")).expect("the joined room");
+        super::sync_room(&store, &room, Vec::new()).await;
+        super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await;
+        {
+            let st = store.read();
+            let c = st.chat("!room:x");
+            assert!(c.exited(), "the user's member has exited");
+            assert_eq!(c.preview.as_ref().map(|m| m.id.as_str()), Some("$kick"), "the removal previews the chat");
+        }
+        store.write().remove_chat("!room:x");
+        super::sync_left(&store, &room, Vec::new()).await;
+        assert!(store.read().resolve_chat_idx("!room:x").is_none(), "a deleted chat stays deleted");
     }
 
     #[tokio::test]

@@ -418,6 +418,9 @@ pub struct User {
     /// Desktop's `addedBy`: who invited a pending member.
     #[serde(default, skip_serializing)]
     pub added_by: Option<String>,
+    /// Desktop's `hasExited`: the member left or was removed.
+    #[serde(rename = "hasExited", default, skip_serializing_if = "Option::is_none")]
+    pub has_exited: Option<bool>,
     /// The `MANAGE_` bits: what the power level of the own user allows on this member.
     #[serde(default, skip_serializing)]
     pub manage: u8,
@@ -912,6 +915,11 @@ fn flag_bits(bits: &[(bool, u16)]) -> u16 {
 }
 
 impl Chat {
+    /// Desktop's `selfParticipant.hasExited`: the user left the chat or was removed from it.
+    pub fn exited(&self) -> bool {
+        self.participants.items.iter().any(|u| u.is_self == Some(true) && u.has_exited == Some(true))
+    }
+
     /// Desktop's `getParticipant(selfParticipant.addedBy)`: the member who invited the own user.
     pub fn inviter(&self) -> Option<&User> {
         let people = &self.participants.items;
