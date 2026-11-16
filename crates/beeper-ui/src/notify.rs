@@ -395,8 +395,8 @@ pub(crate) struct Toast {
     pub body: String,
     pub silent: bool,
     pub buttons: Vec<(String, String)>,
-    /// Linux notifications have no reply field.
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    /// Only macOS notifications have a reply field, like Desktop's (Electron's `hasReply`).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub reply: Option<String>,
 }
 
@@ -409,10 +409,13 @@ mod win;
 #[cfg(target_os = "macos")]
 mod mac;
 
+/// A listener of notification events: the notification ID and the action.
+#[cfg(not(target_os = "linux"))]
+type Listener = iced::futures::channel::mpsc::UnboundedSender<(u32, Option<String>)>;
+
 /// The listeners of the notification events of the platforms that call back on threads of their own.
 #[cfg(not(target_os = "linux"))]
-static LISTENERS: std::sync::Mutex<Vec<iced::futures::channel::mpsc::UnboundedSender<(u32, Option<String>)>>> =
-    std::sync::Mutex::new(Vec::new());
+static LISTENERS: std::sync::Mutex<Vec<Listener>> = std::sync::Mutex::new(Vec::new());
 
 #[cfg(not(target_os = "linux"))]
 static NEXT_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
