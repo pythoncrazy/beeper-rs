@@ -11,9 +11,9 @@ use crate::{
     delete_dialog, ease_out, edit_open, editable, email, enter_key, feedback_btn, file_icon, fmt_phone,
     format_short_ts, gallery, handle, has_older, human_size, lift, locale_string, locate, member_name, membership,
     menu_item, menu_rule, network_bot, pending, pill_btn, profile_link, reminder_day, reply_root, send_rise,
-    short_title, still_sending_at, tinted, today, unavailable, video, vlist, BeeperGuiApp, El, PillLook, UiMessage,
-    BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X, CHEVRON_DOWN, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W,
-    ORANGE, TRASH, VIEW_SIDEBAR,
+    sender_label, short_title, still_sending_at, tinted, today, unavailable, video, vlist, BeeperGuiApp, El, PillLook,
+    UiMessage, BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X, CHEVRON_DOWN, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM,
+    MESSAGE_MENU_W, ORANGE, TRASH, VIEW_SIDEBAR,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::*;
@@ -1574,10 +1574,4 @@ impl BeeperGuiApp {
             r.push(pill.on_press(toggle_reaction(st, &chat.id, ms, k)))
         })
     }
-}
-
-/// Desktop's `messageSender`: the name of the sender's current member, or the name that came with the message.
-fn sender_label(chat: &Chat, m: &Message) -> String {
-    let member = chat.participants.items.iter().find(|u| u.id == m.sender_id);
-    member.map_or_else(|| m.sender_name.clone().expect("sender name"), member_name)
 }

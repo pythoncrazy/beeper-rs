@@ -1765,7 +1765,7 @@ fn bubble_text(c: &Chat, launched: i64, now: i64) -> Option<String> {
     let m = c.preview.as_ref()?;
     let tag = || message_tag(m).map(|(_, l, d)| d.map_or_else(|| l.to_string(), |(d, _)| format!("{l} {d}")));
     let text = preview_body(m).or_else(tag)?;
-    let first = preview_sender(c, m).and(m.sender_name.as_deref()).and_then(|n| n.split(' ').next());
+    let first = preview_sender(c, m).map(sender_first_name);
     Some(first.map_or_else(|| text.clone(), |f| format!("{f}: {text}")))
 }
 
@@ -2444,6 +2444,12 @@ fn sender_first_name(u: &User) -> String {
         (Some(f), Some(ph)) if !digits(ph).is_empty() && digits(f) == digits(ph) => f.into(),
         _ => member_name(u).split_whitespace().next().unwrap_or_default().into(),
     }
+}
+
+/// Desktop's `messageSender`: the name of the sender's current member, or the name that came with the message.
+fn sender_label(chat: &Chat, m: &Message) -> String {
+    let member = chat.participants.items.iter().find(|u| u.id == m.sender_id);
+    member.map_or_else(|| m.sender_name.clone().expect("sender name"), member_name)
 }
 
 /// Desktop's `Fr`: the name of a participant.
@@ -12385,12 +12391,7 @@ impl BeeperGuiApp {
                     (false, _) => c.title.clone(),
                     (true, true) => format!("{} • {}", c.title, chat_network(c)),
                     (true, false) => {
-                        format!(
-                            "{} in {} • {}",
-                            m.sender_name.as_deref().expect("sender name"),
-                            c.title,
-                            chat_network(c)
-                        )
+                        format!("{} in {} • {}", sender_label(c, m), c.title, chat_network(c))
                     }
                 };
                 let head = row![
