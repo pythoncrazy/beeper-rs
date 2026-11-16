@@ -365,14 +365,7 @@ impl BeeperGuiApp {
         let time = txt(format_short_ts(&newest.timestamp, st.settings.pref("timeFormat") == 1), 11.0).color(p.sub);
         let top =
             row![ell(&repliers, 180.0, 13.0, Weight::Normal).color(p.sub), Space::new().width(Fill), time].spacing(8);
-        let badge = (unread > 0).then(|| {
-            let mark = (at > 0).then(|| semi("@", 10.0).color(Color::WHITE));
-            let count = semi(unread.to_string(), 10.0).color(Color::WHITE);
-            container(row![].push(mark).push(count).spacing(2).align_y(Center))
-                .center_y(16)
-                .padding([0, 5])
-                .style(fill_box(p.accent, 16.0))
-        });
+        let badge = thread_badge(p.accent, unread, at);
         let icon = svg(brand_svg(brand_key(&chat.account_id))).width(16).height(16);
         let line = row![
             icon,
@@ -411,14 +404,7 @@ impl BeeperGuiApp {
         let n = replies.len();
         let label = semi(trn("%d reply", "%d replies", n, &[&n]), 11.0).line_height(Pixels(15.0)).color(p.text);
         let (unread, at) = if st.follows_thread(chat, root) { st.thread_unread(chat, root) } else { (0, 0) };
-        let badge = (unread > 0).then(|| {
-            let mark = (at > 0).then(|| semi("@", 10.0).color(Color::WHITE));
-            let count = semi(unread.to_string(), 10.0).color(Color::WHITE);
-            container(row![].push(mark).push(count).spacing(2).align_y(Center))
-                .center_y(16)
-                .padding([0, 5])
-                .style(fill_box(p.accent, 16.0))
-        });
+        let badge = thread_badge(p.accent, unread, at);
         let chevron = container(tinted(&CHEVRON_FORWARD, 14.0, p.tertiary)).padding(Padding::ZERO.right(2.0));
         let line = Row::with_children(faces).push(label).push(badge).push(chevron).spacing(4).align_y(Center);
         let ring = if self.wallpaper_fg(st, chat, false).is_some() { CLEAR } else { p.card };
@@ -454,4 +440,12 @@ impl BeeperGuiApp {
         let label = semi(trn("%d reply", "%d replies", n, &[&n]), 11.0).color(p.sub);
         row![line(), label, line()].spacing(6).align_y(Center).padding([8, 0]).into()
     }
+}
+
+/// The unread count of a thread on an accent pill, with an "@" when a reply mentions the user.
+fn thread_badge<'a>(accent: Color, unread: usize, at: usize) -> Option<El<'a>> {
+    let mark = (at > 0).then(|| semi("@", 10.0).color(Color::WHITE));
+    let count = semi(unread.to_string(), 10.0).color(Color::WHITE);
+    let pill = row![].push(mark).push(count).spacing(2).align_y(Center);
+    (unread > 0).then(|| container(pill).center_y(16).padding([0, 5]).style(fill_box(accent, 16.0)).into())
 }
