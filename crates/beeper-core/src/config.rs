@@ -169,10 +169,6 @@ pub fn cloud_bridge(n: &NetworkSpec) -> Option<&'static str> {
     }
 }
 
-pub fn network_spec(bridge_id: &str) -> Option<&'static NetworkSpec> {
-    NETWORK_SPECS.iter().find(|n| n.bridge_id == bridge_id)
-}
-
 const NETWORK_ALIASES: [(&str, &str); 4] =
     [("messenger", "facebook"), ("imsg", "imessage"), ("matrix", "hungryserv"), ("beeper", "hungryserv")];
 
