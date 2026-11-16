@@ -3145,6 +3145,21 @@ fn long_messages_clamp_like_desktop() {
     assert!(more(&app, "Show more"), "Show less clamps it again");
 }
 
+/// Desktop's `kf` media box in a 1000 px window, at Desktop's 0.45 share.
+#[test]
+fn media_boxes_like_desktop() {
+    use crate::message::media_box;
+    let at = |w, h| media_box(1000.0, Some((w, h)), 0.45);
+    assert_eq!(media_box(1000.0, None, 0.45), (450.0, 400.0, true), "an unknown size is 400 high and crops");
+    assert_eq!(at(100.0, 100.0), (100.0, 100.0, false), "never upscaled");
+    assert_eq!(at(100.0, 50.0), (100.0, 80.0, true), "Desktop's strip rule takes small wide ones too");
+    assert_eq!(at(2000.0, 1000.0), (450.0, 225.0, false), "as wide as the share");
+    assert_eq!(at(500.0, 1000.0), (200.0, 400.0, false), "as high as 400");
+    assert_eq!(at(300.0, 900.0), (160.0, 400.0, true), "a very tall one is 160 by 400, cropped");
+    assert_eq!(at(4000.0, 100.0), (450.0, 80.0, true), "a very wide one is an 80 px strip, cropped");
+    assert_eq!(media_box(1000.0, Some((2000.0, 1000.0)), 0.85).0, 800.0, "a hidden sidebar gives 0.85");
+}
+
 /// Desktop's Join a Matrix room view: a bad address shows Desktop's error under the field, and a known room opens.
 #[test]
 fn join_a_matrix_room_like_desktop() {

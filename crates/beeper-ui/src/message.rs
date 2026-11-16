@@ -93,6 +93,26 @@ fn gap_below(m: &Message, next: &Message) -> f32 {
 /// Desktop's `--color-on-error-container`, the same in the light and dark themes.
 const ON_ERROR_CONTAINER: Color = Color::from_rgb8(0xdc, 0x36, 0x2e);
 
+/// Desktop's `kf`: the box of an inline image or video, at most `share` of the window wide and 400 px high and never
+/// upscaled. A very tall one shows 160×400 and a very wide one an 80 px high strip, both cropped (`cover`), and one of
+/// unknown size is 400 px high. Gives the width, the height and whether it crops.
+pub(crate) fn media_box(window_w: f32, size: Option<(f32, f32)>, share: f32) -> (f32, f32, bool) {
+    const TALL_W: f32 = 160.0;
+    const HIGH: f32 = 400.0;
+    const STRIP: f32 = 80.0;
+    let Some((w, h)) = size.filter(|s| s.0 > 0.0 && s.1 > 0.0) else { return (share * window_w, HIGH, true) };
+    let (o, r) = ((share * window_w).min(w), w / h);
+    let fitted = match w / o > h / HIGH {
+        true => (o, (o / r).min(HIGH), false),
+        false => ((HIGH * r).min(o), HIGH, false),
+    };
+    match r {
+        _ if r > o / STRIP => (o, STRIP, true),
+        _ if r > TALL_W / HIGH => fitted,
+        _ => (TALL_W, HIGH, true),
+    }
+}
+
 /// Desktop's `.message-text` line clamp.
 const MESSAGE_LINES: usize = 40;
 
@@ -1073,11 +1093,9 @@ impl BeeperGuiApp {
                 }
                 (false, "img" | "video") => {
                     let is_video = a.attachment_type == "video";
-                    let (w, h) = a.size.as_ref().map_or((240.0, 160.0), |s| {
-                        let (w, h) = (s.width.unwrap_or(240) as f32, s.height.unwrap_or(160) as f32);
-                        let k = (0.45 * self.pane().size.width / w).min(400.0 / h).min(1.0);
-                        (w * k, h * k)
-                    });
+                    let size = a.size.as_ref().and_then(|s| Some((s.width? as f32, s.height? as f32)));
+                    let share = if self.sidebar_hidden { 0.85 } else { 0.45 };
+                    let (w, h, cover) = media_box(self.pane().size.width, size, share);
                     let thumb_url = a.poster_img.clone().or_else(|| a.src_url.clone());
                     let pill = |label: &'a str, alpha: f32| -> El<'a> {
                         container(
@@ -1091,7 +1109,11 @@ impl BeeperGuiApp {
                         .style(fill_box(Color::BLACK.scale_alpha(alpha), 17.0))
                         .into()
                     };
+                    // A cropped still shows from a baked cut (the renderer draws `Cover` and crops past their box).
+                    let cut = |u: &String| self.cover_tile(u, (w.round() as u32, h.round() as u32));
+                    let cut = thumb_url.as_ref().filter(|_| cover).and_then(cut);
                     let base: El<'_> = match thumb_url.as_ref().and_then(|u| self.media_at(u)) {
+                        Some(Ok(_)) if let Some(t) = cut => image(t.clone()).width(w).height(h).into(),
                         Some(Ok(frames)) => {
                             let frames = anim::playing(frames, st.settings.on("autoplayGifs"));
                             anim::gif(frames, self.started, move |f| image(f).width(w).height(h).border_radius(17.0))

@@ -14,8 +14,8 @@ use std::collections::BTreeSet;
 pub struct Wants {
     pub avatars: RefCell<BTreeSet<String>>,
     pub media: RefCell<BTreeSet<String>>,
-    /// The gallery tiles to bake, as (media URL, width, height, selected).
-    pub tiles: RefCell<BTreeSet<(String, u32, u32, bool)>>,
+    /// The tiles to bake, as (media URL, width, height, look).
+    pub tiles: RefCell<BTreeSet<(String, u32, u32, crate::gallery::Look)>>,
     /// The shown voice notes to transcribe automatically.
     pub transcribe: RefCell<BTreeSet<String>>,
     /// A view asked for a URL after the last frame.
