@@ -93,6 +93,17 @@ fn gap_below(m: &Message, next: &Message) -> f32 {
 /// Desktop's `--color-on-error-container`, the same in the light and dark themes.
 const ON_ERROR_CONTAINER: Color = Color::from_rgb8(0xdc, 0x36, 0x2e);
 
+/// Desktop's `rWe`: a message hides its time when the next one comes from the same sender in the same minute, and is
+/// not hidden or a jumbo emoji.
+pub(crate) fn time_hidden(m: &Message, next: Option<&Message>, h24: bool) -> bool {
+    next.is_some_and(|n| {
+        n.sender_id == m.sender_id
+            && n.message_type.as_deref() != Some("HIDDEN")
+            && !jumbo(n.text.as_deref().unwrap_or_default())
+            && format_short_ts(&n.timestamp, h24) == format_short_ts(&m.timestamp, h24)
+    })
+}
+
 fn jumbo(text: &str) -> bool {
     let modifier = |c: char| matches!(c, '\u{200d}' | '\u{fe0f}' | '\u{20e3}' | '\u{1f3fb}'..='\u{1f3ff}' | '\u{e0020}'..='\u{e007f}');
     let emoji = |c: char| {
@@ -900,7 +911,9 @@ impl BeeperGuiApp {
             let split = chained.get(end).is_some_and(|c| !c);
             let replies = if !thread && split && !st.threaded(chat) { counts[end - 1] } else { 0 };
             let ms = &msgs[i..end];
-            let view = self.view_message(st, chat, ms, (first, last, chained[i], thread), (status, replies), head);
+            let hide_time = time_hidden(m, msgs.get(end).copied(), st.settings.pref("timeFormat") == 1);
+            let flags = (first, last, chained[i], thread, hide_time);
+            let view = self.view_message(st, chat, ms, flags, (status, replies), head);
             let view = match send_rise(st, m) {
                 Some(t) => lift::lift(view, 14.0 * (1.0 - t), 0.97 + 0.03 * t).into(),
                 None => view,
@@ -927,7 +940,7 @@ impl BeeperGuiApp {
         st: &BeeperStore,
         chat: &Chat,
         ms: &[&Message],
-        (first, last, chained, thread): (bool, bool, bool, bool),
+        (first, last, chained, thread, hide_time): (bool, bool, bool, bool, bool),
         (status, replies): (Option<String>, usize),
         head: Column<'a, UiMessage>,
     ) -> El<'a> {
@@ -936,6 +949,7 @@ impl BeeperGuiApp {
         let on_wall = self.wallpaper_fg(st, chat, thread);
         let muted = on_wall.unwrap_or(p.muted);
         let mine = m.is_sender == Some(true);
+        let shows_time = st.settings.on("showTimestamps") && !hide_time;
         let italic = iced::Font { style: iced::font::Style::Italic, ..fw(Weight::Normal) };
         // Desktop keeps the row of a deleted message, with its sender, its menu and its selection.
         let deleted = (m.is_deleted == Some(true)).then(|| {
@@ -1010,7 +1024,7 @@ impl BeeperGuiApp {
             let name = a.file_name.clone().expect("attachment file name");
             let content: El<'a> = match (a.is_voice_note == Some(true), a.attachment_type.as_str()) {
                 (_, "audio") if self.playable(a) => {
-                    let ts = st.settings.on("showTimestamps").then(|| {
+                    let ts = shows_time.then(|| {
                         let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
                         (time, if mine { sent_meta } else { p.sub })
                     });
@@ -1112,17 +1126,14 @@ impl BeeperGuiApp {
             parts = parts.push(container(txt(text.clone(), 48.0)).padding([0, 12]));
         } else if utd {
             let line = txt(text.clone(), 13.0).font(italic).color(fg.scale_alpha(0.8));
-            let time = st.settings.on("showTimestamps").then(|| {
+            let time = shows_time.then(|| {
                 let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
                 txt(time, 11.0).color(if mine { sent_meta } else { p.sub })
             });
             let body = row![line].push(time).spacing(4).align_y(Bottom);
             parts = parts.push(container(body).padding([9.0, BUBBLE_PAD_X]).style(fill_box(bg, 17.0)));
         } else if !text.is_empty() && poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
-            let ts = st
-                .settings
-                .on("showTimestamps")
-                .then(|| format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1));
+            let ts = shows_time.then(|| format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1));
             let room = ts.as_deref().map_or(0.0, |t| crate::style::text_width(t, 11.0, Weight::Normal) + 4.0);
             let time: Option<El<'a>> = ts.map(|t| txt(t, 11.0).color(if mine { sent_meta } else { p.sub }).into());
             // Desktop's `MessageErrorTooltip` takes the place of the time.
@@ -1416,7 +1427,7 @@ impl BeeperGuiApp {
                 let gap = if mine { Padding::ZERO.right(12.0) } else { Padding::ZERO.left(12.0) };
                 container(self.tip(button.into(), tip, vec![], tooltip::Position::Top)).padding(gap).into()
             });
-            let time = (file.is_some() && text.is_empty() && st.settings.on("showTimestamps")).then(|| -> El<'a> {
+            let time = (file.is_some() && text.is_empty() && shows_time).then(|| -> El<'a> {
                 txt(format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1), 11.0).color(muted).into()
             });
             let all: Vec<El<'a>> =
