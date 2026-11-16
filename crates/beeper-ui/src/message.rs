@@ -259,6 +259,17 @@ pub struct TopOfThread {
 }
 
 impl BeeperGuiApp {
+    /// Desktop's `P1t`: loads each quoted message that the timeline does not have, once.
+    pub(crate) fn load_quotes(&mut self) -> Task<UiMessage> {
+        let wanted = std::mem::take(&mut *self.wants.quotes.borrow_mut());
+        let new: Vec<_> = wanted.into_iter().filter(|(_, id)| !self.quotes.contains_key(id)).collect();
+        self.quotes.extend(new.iter().map(|(_, id)| (id.clone(), None)));
+        Task::batch(new.into_iter().map(|(chat, id)| {
+            let fetch = beeper_core::matrix::fetch_message(self.store.clone(), chat, id.clone());
+            Task::perform(fetch, move |r| UiMessage::QuoteLoaded(id.clone(), r.map(Box::new)))
+        }))
+    }
+
     fn typing_bubble<'a>(&self, chat: &Chat, ids: &[String]) -> El<'a> {
         let p = &self.pal;
         let dot = |delay| anim::dot(6.0, p.text, self.started, delay, |t| 0.2 + 0.2 * (1.0 - (2.0 * t - 1.0).abs()));
@@ -1061,8 +1072,22 @@ impl BeeperGuiApp {
         parts = parts.push(root_line.map(|r| self.thread_root_line(st, r, mine)));
         let linked =
             m.linked_message_id.as_ref().filter(|_| !thread && root_line.is_none() && !(in_pane && m.fallback));
-        let quote = linked.and_then(|r| st.loaded_idx(r)).map(|i| {
-            let q = &st.messages[i];
+        let cached = |r: &String| self.quotes.get(r).and_then(|q| q.as_ref()?.as_ref().ok());
+        let quote = linked.map(|r| {
+            let Some(q) = st.loaded(r).or_else(|| cached(r)) else {
+                // Desktop's `L1t`: "Loading…" while `loadMessage` runs, then "Message unavailable".
+                let loading = match self.quotes.get(r) {
+                    None => {
+                        self.wants.ask(&self.wants.quotes, &(chat.id.clone(), r.clone()));
+                        true
+                    }
+                    Some(done) => done.is_none(),
+                };
+                let text = if loading { tr("Loading…") } else { tr("Message unavailable") };
+                let pill =
+                    container(txt(text, 12.0).color(p.sub)).padding(8).style(bordered_box(CLEAR, p.chip, 2.0, 17.0));
+                return ((!chained).then(|| column![].push(pill)), false);
+            };
             let q_mine = q.is_sender == Some(true);
             let (edge, fill) = if q_mine { (sent, mix(p.card, sent, 0.3)) } else { (p.received, p.card) };
             let body = ell(q.text.as_deref().unwrap_or(""), 300.0, 12.0, Weight::Medium).color(p.text);

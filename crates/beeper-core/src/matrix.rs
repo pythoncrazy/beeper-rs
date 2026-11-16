@@ -1896,6 +1896,23 @@ async fn joined_room(client: &matrix_sdk::Client, chat: &str) -> Result<Room, St
     Err(format!("{chat} is not a joined Matrix room"))
 }
 
+/// Desktop's `loadMessage`: one message of a chat by its event, outside the timeline, as a quote of a reply shows it.
+pub async fn fetch_message(store: SharedStore, chat: String, id: String) -> Result<Message, String> {
+    let client = store.read().matrix.clone().ok_or("Matrix is not connected")?;
+    let room = chat_room(&client, &chat).await?;
+    let event =
+        room.event(&OwnedEventId::try_from(id).map_err(|e| e.to_string())?, None).await.map_err(|e| e.to_string())?;
+    let v: Value = serde_json::from_str(event.raw().json().get()).map_err(|e| e.to_string())?;
+    let (account, hidden) = {
+        let st = store.read();
+        (st.find_chat(&chat).map(|c| c.account_id.clone()).unwrap_or_default(), st.settings.on("hiddenEvents"))
+    };
+    match op(&room, &chat, &account, &v, hidden).await {
+        Some(Op::Upsert(m)) => Ok(*m),
+        _ => Err("The event is not a message".into()),
+    }
+}
+
 /// Joins a room by its ID or alias, and returns the room ID.
 pub async fn join(store: SharedStore, room: String) -> Result<String, String> {
     let (room, vias) = room_address(&room).map_err(|e| format!("{e:?}"))?;
@@ -3853,6 +3870,15 @@ mod tests {
         let room = store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).unwrap();
         super::refetch_undecrypted(&store, vec![room]).await;
         assert_eq!(text(&store).as_deref(), Some("decrypted at last"));
+    }
+
+    /// Desktop's `loadMessage`: one message by its event, without adding it to the timeline.
+    #[tokio::test]
+    async fn a_quoted_message_loads_by_event() {
+        let store = stub_history("fetch-message", vec![stub_message(7)], ("!other:x", Vec::new())).await;
+        let m = super::fetch_message(store.clone(), "!room:x".into(), "$e7".into()).await.expect("the message");
+        assert_eq!((m.id.as_str(), m.text.as_deref()), ("$e7", Some("m7")));
+        assert!(store.read().loaded("$e7").is_none(), "the timeline does not get it");
     }
 
     async fn sync_stub_room(store: &crate::store::SharedStore, id: &str) {
