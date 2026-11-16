@@ -72,8 +72,8 @@ enum Op {
     /// A poll response: the poll, the voter and the answers.
     Vote(String, String, Vec<String>),
     EndPoll(String),
-    /// A `com.beeper.message_send_status`: the message, whether it reached a user, and the error.
-    SendStatus(String, bool, Option<SendError>),
+    /// A `com.beeper.message_send_status`: the message, whether it reached a user, the error, and the status.
+    SendStatus(String, bool, Option<SendError>, Box<crate::models::SendStatus>),
 }
 
 fn s(v: &Value) -> Option<String> {
@@ -632,7 +632,18 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
             let ok = matches!(c["status"].as_str(), Some("SUCCESS" | "PENDING"));
             let error = (!ok).then(|| SendError { message: s(&c["message"]), retrying: false });
             let delivered = c["delivered_to_users"].as_array().is_some_and(|u| !u.is_empty());
-            return Some(Op::SendStatus(s(&rel["event_id"])?, delivered, error));
+            // Desktop's `handleMessageSendStatus` keeps the status for `sendStatus`.
+            let status = crate::models::SendStatus {
+                status: s(&c["status"])?,
+                reason: s(&c["reason"]),
+                message: s(&c["message"]),
+                ts: c["ts"].as_i64(),
+                delivered_to_users: (c["delivered_to_users"].as_array().into_iter().flatten())
+                    .filter_map(|u| u.as_str().map(String::from))
+                    .collect(),
+                internal_error: s(&c["internal_error"]),
+            };
+            return Some(Op::SendStatus(s(&rel["event_id"])?, delivered, error, Box::new(status)));
         }
         "org.matrix.msc3381.poll.response" | "m.poll.response" => {
             return Some(Op::Vote(s(&rel["event_id"])?, sender, poll_answers(c)));
@@ -695,6 +706,12 @@ async fn op(room: &Room, chat_id: &str, account_id: &str, e: &Value, hidden: boo
         thread_root: s(&rel["event_id"]).filter(|_| rel["rel_type"] == "m.thread"),
         broadcast: rel["rel_type"] == "m.thread" && c["com.beeper.broadcast_outside_thread"] == true,
         fallback: rel["rel_type"] == "m.thread" && rel["is_falling_back"] != false,
+        // Desktop's `mentions`: the user IDs of `m.mentions`, and none without it.
+        mentions: c["m.mentions"].is_object().then(|| {
+            let ids = c["m.mentions"]["user_ids"].as_array().into_iter().flatten();
+            ids.filter_map(|u| u.as_str().map(String::from)).collect()
+        }),
+        send_status: None,
         flags: match c["m.mentions"]["user_ids"].as_array() {
             Some(ids) if ids.iter().any(|u| u == room.own_user_id().as_str()) => MSG_MENTION,
             _ => 0,
@@ -1316,12 +1333,17 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
                 }
                 Op::EndPoll(target) if here(&st, &target).is_some() => st.update_poll(&target, |p| p.ended = true),
                 Op::Vote(..) | Op::EndPoll(_) => {}
-                Op::SendStatus(target, delivered, error) => {
+                Op::SendStatus(target, delivered, error, status) => {
                     let i = here(&st, &target);
-                    if let Some(i) =
-                        i.filter(|&i| (st.messages[i].is_delivered, &st.messages[i].send_error) != (delivered, &error))
-                    {
-                        st.update_message(i, |m| (m.is_delivered, m.send_error) = (delivered, error));
+                    let m = |i: usize| &st.messages[i];
+                    let changed = |i| {
+                        (m(i).is_delivered, &m(i).send_error, m(i).send_status.as_ref())
+                            != (delivered, &error, Some(&*status))
+                    };
+                    if let Some(i) = i.filter(|&i| changed(i)) {
+                        st.update_message(i, |m| {
+                            (m.is_delivered, m.send_error, m.send_status) = (delivered, error, Some(*status))
+                        });
                     }
                 }
                 Op::React(target, r, mut preview) => {
