@@ -5411,6 +5411,41 @@ fn mute_account_command_like_desktop() {
 }
 
 #[test]
+fn user_hover_cards_like_desktop() {
+    let mut app = demo_app("user-hover-card");
+    let id = "!tg_rust:beeper.com";
+    let _ = app.update(UiMessage::SelectChat(id.into()));
+    let key = format!("{id} @batuhan:beeper.com");
+    let shows = |app: &BeeperGuiApp| simulator(app.view_main()).find("@batuhan").is_ok();
+    let due = |app: &mut BeeperGuiApp| {
+        let n = app.user_hover.r#gen;
+        let _ = app.update(UiMessage::HoverUserDue(n));
+    };
+    // The card waits 300 ms on the trigger, and a pass over the trigger shows nothing.
+    let _ = app.update(UiMessage::HoverUser(Some(key.clone())));
+    let stale = app.user_hover.r#gen;
+    let _ = app.update(UiMessage::HoverUser(None));
+    let _ = app.update(UiMessage::HoverUserDue(stale));
+    assert!(!shows(&app));
+    let _ = app.update(UiMessage::HoverUser(Some(key.clone())));
+    due(&mut app);
+    assert!(shows(&app), "the card shows after the wait");
+    // The pointer crosses from the trigger to the card, which keeps it; leaving the card hides it.
+    let _ = app.update(UiMessage::HoverUser(None));
+    let _ = app.update(UiMessage::HoverUserCard(true));
+    due(&mut app);
+    assert!(shows(&app));
+    let _ = app.update(UiMessage::HoverUserCard(false));
+    due(&mut app);
+    assert!(!shows(&app));
+    // Only the chat of the card shows it.
+    let _ = app.update(UiMessage::HoverUser(Some(key)));
+    due(&mut app);
+    let _ = app.update(UiMessage::SelectChat("!wa_family:beeper.com".into()));
+    assert!(!shows(&app));
+}
+
+#[test]
 fn member_card_like_desktop() {
     let mut app = demo_app("member-card");
     let id = "!tg_rust:beeper.com";

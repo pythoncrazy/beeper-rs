@@ -488,7 +488,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let inviter = chat.inviter().map(|u| {
             let name = semi(u.full_name.clone().unwrap_or_default(), 14.0).line_height(Pixels(18.0)).color(p.strong);
-            column![name, txt(format!("({})", u.id), 13.0).color(p.sub)].align_x(Center)
+            self.user_trigger(chat, &u.id, column![name, txt(format!("({})", u.id), 13.0).color(p.sub)].align_x(Center))
         });
         let group = chat.chat_type == "group";
         // Desktop does not translate these.
@@ -1067,7 +1067,7 @@ impl BeeperGuiApp {
         let named = (group || network_bot(chat, &m.sender_id)) && !mine && first;
         let sender = || {
             let name = sender_label(chat, m);
-            semi(name.clone(), 12.0).color(hex(*pick(&name, &p.names)))
+            self.user_trigger(chat, &m.sender_id, semi(name.clone(), 12.0).color(hex(*pick(&name, &p.names))))
         };
         // Desktop's `hasAttachedMedia`: a message with media names its sender above the bubble, a text bubble inside.
         let media = !m.attachments.is_empty()
@@ -1592,7 +1592,11 @@ impl BeeperGuiApp {
             if last {
                 let url =
                     chat.participants.items.iter().find(|u| u.id == m.sender_id).and_then(|u| u.img_url.as_deref());
-                self.face(url, &sender_label(chat, m), FACE, 0.0)
+                // Desktop's `sender-img`: a click starts a chat with the sender, when the account can.
+                let dm = UiMessage::MessageMember(chat.id.clone(), m.sender_id.clone());
+                let face = mouse_area(self.face(url, &sender_label(chat, m), FACE, 0.0));
+                let face = if self.can(&chat.account_id, "create_dm") { face.on_press(dm) } else { face };
+                self.user_trigger(chat, &m.sender_id, face)
             } else {
                 Space::new().width(FACE).into()
             }
