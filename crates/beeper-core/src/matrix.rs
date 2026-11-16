@@ -2652,11 +2652,23 @@ async fn retry_undecrypted(client: Client, store: SharedStore) {
     }
 }
 
+/// Fetches again the messages of the rooms that wait for their keys, by event, so that a message on an older page
+/// decrypts too: the newest 200 of each room.
 async fn refetch_undecrypted(store: &SharedStore, rooms: Vec<Room>) {
     futures_util::stream::iter(rooms)
         .for_each_concurrent(8, |room| async move {
-            if has_utd(store, &room).await {
-                sync_room(store, &room, history(&room).await).await;
+            let chat = chat_id(&room).await;
+            let waiting = "chat_id = ?1 AND json ->> '$.text' = ?2 ORDER BY sort_key DESC LIMIT 200";
+            let ids: Vec<String> = store.read().stored(waiting, [&chat, UTD_TEXT]).into_iter().map(|m| m.id).collect();
+            let mut events = Vec::new();
+            for id in ids.iter().rev().filter_map(|id| OwnedEventId::try_from(id.as_str()).ok()) {
+                // An event that the homeserver does not give stays waiting.
+                if let Ok(e) = room.event(&id, None).await {
+                    events.push(e);
+                }
+            }
+            if !events.is_empty() {
+                sync_room(store, &room, events).await;
             }
         })
         .await;
@@ -3812,6 +3824,35 @@ mod tests {
         })
         .await;
         stub_store(&crate::testing::temp_dir(name), &url).await
+    }
+
+    /// A message that waits for its key is fetched again by event when keys come, so one on an older page decrypts.
+    #[tokio::test]
+    async fn waiting_messages_decrypt_by_event() {
+        let at = 1_700_000_000_000_i64;
+        let megolm =
+            json!({ "algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "x", "sender_key": "k", "session_id": "s" });
+        let enc = json!({ "type": "m.room.encrypted", "event_id": "$utd", "sender": "@vic:x", "origin_server_ts": at,
+            "content": megolm });
+        let plain = json!({ "type": "m.room.message", "event_id": "$utd", "sender": "@vic:x", "origin_server_ts": at,
+            "content": { "msgtype": "m.text", "body": "decrypted at last" } });
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": [enc.clone()] })),
+            p if p.contains("/event/") => (200, plain.clone()),
+            p if p.contains("/account_data/") || p.contains("/tags/") => (200, json!({})),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("redecrypt"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        let text = |store: &crate::store::SharedStore| store.read().stored_message("$utd").and_then(|m| m.text);
+        assert_eq!(text(&store).as_deref(), Some(super::UTD_TEXT), "the message waits for its key");
+        let room = store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).unwrap();
+        super::refetch_undecrypted(&store, vec![room]).await;
+        assert_eq!(text(&store).as_deref(), Some("decrypted at last"));
     }
 
     async fn sync_stub_room(store: &crate::store::SharedStore, id: &str) {
