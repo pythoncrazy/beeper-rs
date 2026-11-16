@@ -594,7 +594,9 @@ impl BeeperGuiApp {
             let unblock = trx("Unblock", "action to unblock the other person in a DM");
             disabled(lead, unblock, "", UiMessage::AskBlock(chat.id.clone(), false))
         });
+        // Desktop's `ThreadComposer` draws nothing once the user left the chat or was removed from it.
         let composer = match upgraded.or(blocked) {
+            _ if chat.exited() => None,
             Some(link) => Some(link),
             None => unavailable(&st, chat).is_none().then(|| self.view_composer(&st, chat)),
         };
