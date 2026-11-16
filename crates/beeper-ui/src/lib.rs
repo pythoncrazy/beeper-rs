@@ -3984,11 +3984,15 @@ impl BeeperGuiApp {
         app
     }
 
+    /// The pane of the main window and those of the chat windows.
+    fn panes(&self) -> impl Iterator<Item = &Pane> {
+        std::iter::once(&self.pane).chain(self.chat_windows.iter().map(|w| &w.1))
+    }
+
     /// The chats that the windows show stay loaded: the chats of the panes and their threads, of the poll vote
     /// windows, and of the voice note that plays. A chat that a sync removed leaves the windows at `StoreChanged`.
     fn keep_shown(&mut self) {
-        let panes = std::iter::once(&self.pane).chain(self.chat_windows.iter().map(|w| &w.1));
-        let panes = panes.flat_map(|p| std::iter::once(p).chain(p.thread.as_deref()));
+        let panes = self.panes().flat_map(|p| std::iter::once(p).chain(p.thread.as_deref()));
         let chats = panes.filter_map(|p| p.selected_chat_id.as_ref());
         let chats = chats.chain(self.vote_windows.iter().map(|w| &w.1)).chain(self.track_chat());
         let st = self.store.read();
@@ -8406,8 +8410,8 @@ impl BeeperGuiApp {
         let wait = |at: i64| std::time::Duration::from_millis((at - now_unix_millis()).max(1) as u64);
         let late = {
             let st = self.store.read();
-            let open = self.pane.selected_chat_id.as_ref().map(|c| st.timeline_indices(c));
-            let echoes = open.into_iter().flatten().map(|&i| &st.messages[i]);
+            let open = self.panes().filter_map(|p| p.selected_chat_id.as_ref()).map(|c| st.timeline_indices(c));
+            let echoes = open.flatten().map(|&i| &st.messages[i]);
             let echoes = echoes.filter(|m| m.send_error.is_none() && pending(&st, m));
             echoes.map(still_sending_at).filter(|&at| at > now_unix_millis()).min()
         };
@@ -8415,18 +8419,18 @@ impl BeeperGuiApp {
         let late = late.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::AnimationTick));
         let remind = due.0.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::CheckReminders));
         let send = due.1.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::CheckScheduled));
-        let typed = std::iter::once(&self.pane).chain(self.chat_windows.iter().map(|w| &w.1));
-        let typed = typed.filter_map(|p| p.typing.as_ref().map(|t| t.1)).min();
+        let typed = self.panes().filter_map(|p| p.typing.as_ref().map(|t| t.1)).min();
         let typing = typed.map(|t| {
             let left = TYPING_STOP.saturating_sub(t.elapsed()).max(Duration::from_millis(1));
             iced::time::every(left).map(|_| UiMessage::TypingTick)
         });
         let queued = self.queued.iter().map(|q| q.due).min();
         let queued = queued.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::SendQueued(None)));
+        // The loading of older messages and the fade of the scroll button, in each chat window too.
+        let moving =
+            |p: &Pane| p.top.loading.is_some() || p.scrolled_up.is_some_and(|s| s.1.elapsed().as_secs_f32() < 0.2);
         let animated = rising
-            || self.pane.top.loading.is_some()
-            || self.pane.scrolled_up.is_some_and(|s| s.1.elapsed().as_secs_f32() < 0.2)
-            || self.chat_windows.iter().any(|w| w.1.top.loading.is_some())
+            || self.panes().any(moving)
             || self.flash.as_ref().is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 1.5)
             || self.pref_flash.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < 2.0)
             || (self.login_window.is_some() && (self.login.busy || self.login.animated()))
@@ -8442,7 +8446,7 @@ impl BeeperGuiApp {
         let toast = self.toast_running().then(|| iced::time::every(TOAST_TICK).map(|_| UiMessage::ToastTick));
         let tick =
             animated.then(|| iced::time::every(std::time::Duration::from_millis(20)).map(|_| UiMessage::AnimationTick));
-        let due = std::iter::once(&self.pane).chain(self.chat_windows.iter().map(|w| &w.1)).any(|p| p.draft_due);
+        let due = self.panes().any(|p| p.draft_due);
         let drafts = due.then(|| iced::time::every(std::time::Duration::from_secs(5)).map(|_| UiMessage::SaveDrafts));
         let shot = self.shot.map(|_| {
             iced::event::listen_raw(|e, _, id| {
