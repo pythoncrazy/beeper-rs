@@ -700,6 +700,8 @@ pub enum UiMessage {
     AvatarLoaded(String, Result<image::Handle, String>),
     MediaLoaded(String, Result<Frames, String>),
     TileBaked(String, image::Handle),
+    /// A quoted message that the timeline did not have, or why it could not load.
+    QuoteLoaded(String, Result<Box<Message>, String>),
     Voice(voice::Msg),
     Record(record::Msg),
     RetryMedia(String),
@@ -3785,6 +3787,8 @@ pub struct BeeperGuiApp {
     pub media: images::Images<Result<Frames, String>>,
     /// The baked gallery tiles (`gallery.rs`).
     tiles: images::Images<image::Handle>,
+    /// Desktop's account `messages` cache for quotes: a quoted message out of the timeline, `None` while it loads.
+    pub(crate) quotes: HashMap<String, Option<Result<Message, String>>>,
     pub resolving_media: HashMap<String, bool>,
     video: Option<video::Video>,
     started: std::time::Instant,
@@ -3993,6 +3997,7 @@ impl BeeperGuiApp {
             wants: wants::Wants::default(),
             media: images::Images::new(512 << 20),
             tiles: images::Images::new(64 << 20),
+            quotes: HashMap::new(),
             resolving_media: HashMap::new(),
             video: None,
             started: std::time::Instant::now(),
@@ -7667,7 +7672,8 @@ impl BeeperGuiApp {
             }
             UiMessage::Noop => {}
             UiMessage::Relist => return Task::none(),
-            UiMessage::LoadWanted => return Task::batch([self.load_avatars(), self.load_media()]),
+            UiMessage::LoadWanted => return Task::batch([self.load_avatars(), self.load_media(), self.load_quotes()]),
+            UiMessage::QuoteLoaded(id, r) => _ = self.quotes.insert(id, Some(r.map(|m| *m))),
             UiMessage::OpenUrl(url) if url.starts_with(SPOILER) => {
                 self.pane.spoilers.insert(url[SPOILER.len()..].to_string());
             }

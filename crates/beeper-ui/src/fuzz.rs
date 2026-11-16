@@ -3183,6 +3183,29 @@ fn spoilers_like_desktop() {
     assert!(app.pane.spoilers.contains(&mid), "a click shows the spoilers of the message");
 }
 
+/// Desktop's `P1t`: a reply whose quoted message the timeline does not have shows "Loading…" while it loads, then
+/// the quote, or "Message unavailable".
+#[test]
+fn unloaded_quotes_like_desktop() {
+    let mut app = demo_app("quotes");
+    let id = app.store.read().chats.iter().find(|c| c.id != NOTE_CHAT_ID).unwrap().id.clone();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let quoted = {
+        let mut st = app.store.write();
+        let i = st.messages.iter().rposition(|m| m.chat_id == id && m.message_type.as_deref() == Some("TEXT")).unwrap();
+        let old = Message { id: "$old".into(), text: Some("a quote from long ago".into()), ..st.messages[i].clone() };
+        st.update_message(i, |m| m.linked_message_id = Some("$old".into()));
+        old
+    };
+    let shows = |app: &BeeperGuiApp, t: &str| simulator(app.view_conversation()).find(t).is_ok();
+    assert!(shows(&app, "Loading…"), "the quote loads");
+    assert!(app.wants.quotes.borrow().contains(&(id.clone(), "$old".to_string())), "the view asks for it");
+    let _ = app.update(UiMessage::QuoteLoaded("$old".into(), Err("gone".into())));
+    assert!(shows(&app, "Message unavailable"));
+    let _ = app.update(UiMessage::QuoteLoaded("$old".into(), Ok(Box::new(quoted))));
+    assert!(shows(&app, "a quote from long ago"), "the loaded quote shows");
+}
+
 /// Desktop's Join a Matrix room view: a bad address shows Desktop's error under the field, and a known room opens.
 #[test]
 fn join_a_matrix_room_like_desktop() {

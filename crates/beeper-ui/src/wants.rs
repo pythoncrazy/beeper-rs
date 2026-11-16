@@ -16,6 +16,8 @@ pub struct Wants {
     pub media: RefCell<BTreeSet<String>>,
     /// The tiles to bake, as (media URL, width, height, look).
     pub tiles: RefCell<BTreeSet<(String, u32, u32, crate::gallery::Look)>>,
+    /// The quoted messages that the timeline does not have, as (chat, message).
+    pub quotes: RefCell<BTreeSet<(String, String)>>,
     /// The shown voice notes to transcribe automatically.
     pub transcribe: RefCell<BTreeSet<String>>,
     /// A view asked for a URL after the last frame.
