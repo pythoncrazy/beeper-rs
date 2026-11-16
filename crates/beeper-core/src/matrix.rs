@@ -813,6 +813,13 @@ async fn history(room: &Room) -> (Vec<TimelineEvent>, Option<String>) {
 /// or the room has no older events.
 pub async fn load_older(store: SharedStore, chat: String) -> Result<(), String> {
     let client = store.read().matrix.clone().expect("only a Matrix chat loads older messages");
+    // The note chat shows before the homeserver has a note room, and until then it has no history.
+    if chat == NOTE_CHAT_ID && joined_room(&client, &chat).await.is_err() {
+        let mut st = store.write();
+        let idx = st.chat_idx(&chat);
+        st.update_chat(idx, |c| c.older = Older::Start);
+        return Ok(());
+    }
     let room = joined_room(&client, &chat).await?;
     let count = || {
         let mut st = store.write();
@@ -3328,71 +3335,88 @@ pub async fn run(store: SharedStore) {
         st.beeper_state.first_sync_done = true;
         st.persist_state_to_sqlite();
     }
+    // Desktop's SDK catches up at once at the start, so "Syncing..." ends without waiting for a long poll.
+    let now = SyncSettings::default().timeout(std::time::Duration::ZERO);
+    on_sync(&client, &store, client.sync_once(now).await).await;
     let settings = SyncSettings::default().timeout(std::time::Duration::from_secs(30));
     let client2 = client.clone();
     client
         .sync_with_result_callback(settings, |r| {
             let (client, store) = (client2.clone(), store.clone());
             async move {
-                match r {
-                    Err(e) => store.write().matrix_error = Some(e.to_string()),
-                    Ok(resp) => {
-                        {
-                            let mut st = store.write();
-                            // The homeserver answers again, so the changes that waited for it go now.
-                            if st.matrix_error.take().is_some() {
-                                st.outbox_ready.notify_one();
-                            }
-                            st.syncing = false;
-                            st.syncs += 1;
-                        }
-                        refresh_e2ee(&client, &store).await;
-                        sync_account_data(&client, &store).await;
-                        sync_prefs(&client, &store).await;
-                        sync_rules(&client, &store).await;
-                        for id in resp.rooms.invited.keys() {
-                            sync_invite(&store, &client.get_room(id).expect("an invited room is known")).await;
-                        }
-                        for id in resp.rooms.left.keys() {
-                            // A forgotten room, like a deleted label, is gone from the client.
-                            let chat = match client.get_room(id) {
-                                Some(room) => chat_id(&room).await,
-                                None => id.to_string(),
-                            };
-                            store.write().remove_chat(&chat);
-                        }
-                        for (id, update) in resp.rooms.joined {
-                            let room = client.get_room(&id).expect("synced room is known");
-                            sync_room(&store, &room, update.timeline.events).await;
-                            for e in &update.ephemeral {
-                                let v: Value = e.deserialize_as().expect("ephemeral event JSON");
-                                if v["type"] == "m.typing" {
-                                    set_typing(&store, &room, &v["content"]["user_ids"]).await;
-                                } else if v["type"] == "m.receipt" {
-                                    sync_receipts(&store, &room).await;
-                                    let me = room.own_user_id().as_str();
-                                    let receipts = v["content"].as_object().into_iter().flatten();
-                                    if receipts.into_iter().any(|(_, r)| r["m.read"].get(me).is_some()) {
-                                        let chat = chat_id(&room).await;
-                                        let roots = {
-                                            let st = store.read();
-                                            let reads =
-                                                st.chat_idx_by_id.get(&chat).map(|&i| &st.chats[i].thread_reads);
-                                            reads.into_iter().flat_map(|r| r.keys().cloned()).collect()
-                                        };
-                                        sync_thread_reads(&store, &room, roots).await;
-                                    }
-                                }
-                            }
-                        }
-                        store.write().synced();
-                    }
-                }
+                on_sync(&client, &store, r).await;
                 Ok(LoopCtrl::Continue)
             }
         })
         .await
         .expect("Matrix sync loop");
+}
+
+/// Applies a response of the Matrix sync loop: the account data, the rooms, the invites, and the left rooms.
+async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<matrix_sdk::sync::SyncResponse>) {
+    match r {
+        Err(e) => {
+            let mut st = store.write();
+            if st.matrix_error.replace(e.to_string()).is_none() {
+                // The "Offline" pill and the API's app state follow the error.
+                st.emit_ws("setup.updated", "", None, None, None);
+            }
+        }
+        Ok(resp) => {
+            {
+                let mut st = store.write();
+                // The homeserver answers again, so the changes that waited for it go now.
+                let back = st.matrix_error.take().is_some();
+                if back {
+                    st.outbox_ready.notify_one();
+                }
+                // "Syncing..." and "Offline" end with this sync, so the windows draw again.
+                if back || std::mem::replace(&mut st.syncing, false) {
+                    st.emit_ws("setup.updated", "", None, None, None);
+                }
+                st.syncs += 1;
+            }
+            refresh_e2ee(client, store).await;
+            sync_account_data(client, store).await;
+            sync_prefs(client, store).await;
+            sync_rules(client, store).await;
+            for id in resp.rooms.invited.keys() {
+                sync_invite(store, &client.get_room(id).expect("an invited room is known")).await;
+            }
+            for id in resp.rooms.left.keys() {
+                // A forgotten room, like a deleted label, is gone from the client.
+                let chat = match client.get_room(id) {
+                    Some(room) => chat_id(&room).await,
+                    None => id.to_string(),
+                };
+                store.write().remove_chat(&chat);
+            }
+            for (id, update) in resp.rooms.joined {
+                let room = client.get_room(&id).expect("synced room is known");
+                sync_room(store, &room, update.timeline.events).await;
+                for e in &update.ephemeral {
+                    let v: Value = e.deserialize_as().expect("ephemeral event JSON");
+                    if v["type"] == "m.typing" {
+                        set_typing(store, &room, &v["content"]["user_ids"]).await;
+                    } else if v["type"] == "m.receipt" {
+                        sync_receipts(store, &room).await;
+                        let me = room.own_user_id().as_str();
+                        let receipts = v["content"].as_object().into_iter().flatten();
+                        if receipts.into_iter().any(|(_, r)| r["m.read"].get(me).is_some()) {
+                            let chat = chat_id(&room).await;
+                            let roots = {
+                                let st = store.read();
+                                let reads = st.chat_idx_by_id.get(&chat).map(|&i| &st.chats[i].thread_reads);
+                                reads.into_iter().flat_map(|r| r.keys().cloned()).collect()
+                            };
+                            sync_thread_reads(store, &room, roots).await;
+                        }
+                    }
+                }
+            }
+            store.write().synced();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -4197,6 +4221,28 @@ mod tests {
         pushed_until(&store, |st| error(st) == (None, 0)).await;
         let cfg = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23392, None);
         assert!(crate::store::BeeperStore::from_config(cfg).outbox.is_empty(), "the outbox row is gone");
+    }
+
+    /// The first sync of the loop does not wait for a long poll, and its end tells the windows that "Syncing..." is
+    /// over.
+    #[tokio::test]
+    async fn the_first_sync_ends_syncing_and_tells_the_windows() {
+        let url = crate::bridge_stub::serve(|_, path, _| match path.split('?').next().expect("a path") {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("first-sync"), &url).await;
+        let mut events = store.read().ws_tx.subscribe();
+        store.write().syncing = true;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        let now = super::SyncSettings::default().timeout(std::time::Duration::ZERO);
+        super::on_sync(&client, &store, client.sync_once(now).await).await;
+        assert!(!store.read().syncing);
+        let kinds: Vec<String> = std::iter::from_fn(|| events.try_recv().ok()).map(|e| e.event_type).collect();
+        assert!(kinds.iter().any(|k| k == "setup.updated"), "{kinds:?}");
     }
 
     /// Desktop's `createThreadFromInvite`: an invite is a read-only group request with Accept (a join) and Decline.
