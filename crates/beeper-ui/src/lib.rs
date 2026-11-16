@@ -702,6 +702,8 @@ pub enum UiMessage {
     TileBaked(String, image::Handle),
     /// A quoted message that the timeline did not have, or why it could not load.
     QuoteLoaded(String, Result<Box<Message>, String>),
+    /// The dismiss button of the disconnected banner of an account.
+    DismissAccountError(String),
     Voice(voice::Msg),
     Record(record::Msg),
     RetryMedia(String),
@@ -3789,6 +3791,8 @@ pub struct BeeperGuiApp {
     tiles: images::Images<image::Handle>,
     /// Desktop's account `messages` cache for quotes: a quoted message out of the timeline, `None` while it loads.
     pub(crate) quotes: HashMap<String, Option<Result<Message, String>>>,
+    /// Desktop's `dismissError`: the accounts whose disconnected banner was dismissed this session.
+    dismissed_errors: HashSet<String>,
     pub resolving_media: HashMap<String, bool>,
     video: Option<video::Video>,
     started: std::time::Instant,
@@ -3998,6 +4002,7 @@ impl BeeperGuiApp {
             media: images::Images::new(512 << 20),
             tiles: images::Images::new(64 << 20),
             quotes: HashMap::new(),
+            dismissed_errors: HashSet::new(),
             resolving_media: HashMap::new(),
             video: None,
             started: std::time::Instant::now(),
@@ -7675,6 +7680,7 @@ impl BeeperGuiApp {
             UiMessage::Relist => return Task::none(),
             UiMessage::LoadWanted => return Task::batch([self.load_avatars(), self.load_media(), self.load_quotes()]),
             UiMessage::QuoteLoaded(id, r) => _ = self.quotes.insert(id, Some(r.map(|m| *m))),
+            UiMessage::DismissAccountError(id) => _ = self.dismissed_errors.insert(id),
             UiMessage::OpenUrl(url) if url.starts_with(SPOILER) => {
                 self.pane.spoilers.insert(url[SPOILER.len()..].to_string());
             }
@@ -11440,26 +11446,47 @@ impl BeeperGuiApp {
         mouse_area(sidebar).on_right_press(UiMessage::OpenChatMenu(SIDEBAR_MENU.into())).into()
     }
 
-    /// Desktop's `network-status` banner of `AppStatus` over the chat list: the account of the selected space is
-    /// disconnected. A click logs it in again when its bridge asks for that, or else opens its settings.
+    /// Desktop's `AppStatus` over the chat list: a `network-status` banner for each disconnected account of the
+    /// selected space (`mpt`: the account of an account space, the accounts of a label's chats, or every account). A
+    /// click logs it in again when its bridge asks for that, or else opens its settings. In its own space it offers
+    /// "Reconnect", and elsewhere a dismiss button for the session.
     fn view_network_status(&self, st: &BeeperStore) -> Option<El<'_>> {
         let p = &self.pal;
-        let id = self.selected_account_filter.as_deref().filter(|id| self.online && rail_label(st, id).is_none())?;
-        let owner = rail_owner(st, id);
-        let b = st.bridge_accounts.iter().find(|b| b.account_id == owner)?;
-        let again = reconnect(st, &owner);
-        if b.state != "BAD_CREDENTIALS" && b.remote_error.is_none() {
+        if !self.online {
             return None;
         }
-        let name = account_network(&b.bridge_id).display_name;
-        let cta = again.is_some().then(|| semi(tr("Reconnect"), 11.0).color(p.accent));
-        let text = txt(format!("{name} {}", tr("disconnected")), 12.0).color(p.fg).width(Fill);
-        let line =
-            row![svg(brand_svg(brand_key(&owner))).width(22).height(22), text].push(cta).spacing(8).align_y(Center);
-        let msg = again.unwrap_or(UiMessage::OpenAccountSettings(owner));
-        let banner =
-            button(line).padding([0, 8]).height(40).style(btn_style([p.hover; 3], [p.fg; 3], 12.0)).on_press(msg);
-        Some(container(banner).padding(Padding::new(8.0).top(0.0).left(0.0)).into())
+        let space = self.selected_account_filter.as_deref();
+        let own = space.filter(|id| rail_label(st, id).is_none()).map(|id| rail_owner(st, id));
+        let label = space.and_then(|id| rail_label(st, id));
+        let shown = |account: &str| match (&own, label) {
+            (Some(o), _) => o == account,
+            (None, Some(l)) => l.rooms.iter().any(|r| st.find_chat(r).is_some_and(|c| c.account_id == account)),
+            (None, None) => true,
+        };
+        let banners: Vec<El<'_>> = (st.bridge_accounts.iter())
+            .filter(|b| b.state == "BAD_CREDENTIALS" || b.remote_error.is_some())
+            .filter(|b| shown(&b.account_id) && !self.dismissed_errors.contains(&b.account_id))
+            .map(|b| {
+                let again = reconnect(st, &b.account_id);
+                let name = account_network(&b.bridge_id).display_name;
+                let text = txt(format!("{name} {}", tr("disconnected")), 12.0).color(p.fg).width(Fill);
+                let end: Option<El<'_>> = match own.is_some() {
+                    true => again.is_some().then(|| semi(tr("Reconnect"), 11.0).color(p.accent).into()),
+                    false => Some(
+                        button(ic(icon::CLOSE, 14.0).color(p.sub))
+                            .bare(p.sub)
+                            .on_press(UiMessage::DismissAccountError(b.account_id.clone()))
+                            .into(),
+                    ),
+                };
+                let icon = svg(brand_svg(brand_key(&b.account_id))).width(22).height(22);
+                let line = row![icon, text].push(end).spacing(8).align_y(Center);
+                let msg = again.unwrap_or(UiMessage::OpenAccountSettings(b.account_id.clone()));
+                let banner = button(line).padding([0, 8]).height(40).style(btn_style([p.hover; 3], [p.fg; 3], 12.0));
+                container(banner.on_press(msg)).padding(Padding::new(8.0).top(0.0).left(0.0)).into()
+            })
+            .collect();
+        (!banners.is_empty()).then(|| Column::with_children(banners).into())
     }
 
     /// Desktop's message request box (`T2t`) under the messages, with its Block, Decline and Accept buttons.
