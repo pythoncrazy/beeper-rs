@@ -3282,6 +3282,37 @@ fn pins_drag_into_order_like_desktop() {
     assert!(st.pin_rank[&first] > st.pin_rank[&last], "the order stays in the pin ranks");
 }
 
+/// Electron's `autoHideMenuBar` of Desktop's menu bar: Alt on its own shows it and hides it, a key with Alt does not,
+/// a menu runs its item and hides, and the pointer moves between the open menus.
+#[test]
+fn the_menu_bar_shows_with_alt_like_desktop() {
+    let mut app = demo_app("menu-bar");
+    app.focused = true;
+    let id = app.main_window.expect("a main window");
+    let alt = |app: &mut BeeperGuiApp, keys: &[Option<Key>]| {
+        let _ = app.update(UiMessage::Modifiers(Modifiers::ALT));
+        for k in keys.iter().flatten() {
+            let _ = app.update(UiMessage::WindowKey(id, k.clone(), Modifiers::ALT));
+        }
+        let _ = app.update(UiMessage::Modifiers(Modifiers::empty()));
+    };
+    alt(&mut app, &[]);
+    assert_eq!(app.menu_bar, Some(None), "Alt shows the menu bar");
+    let titles: Vec<String> = app.menus().into_iter().map(|m| m.0).collect();
+    assert_eq!(titles, ["Beeper", "File", "Edit", "View", "Window", "Help"]);
+    alt(&mut app, &[]);
+    assert_eq!(app.menu_bar, None, "and Alt hides it");
+    alt(&mut app, &[Some(Key::Character("f".into()))]);
+    assert_eq!(app.menu_bar, None, "Alt with another key is no toggle");
+    let _ = app.update(UiMessage::MenuBar(Some(Some(0))));
+    let _ = app.update(UiMessage::MenuBarHover(3));
+    assert_eq!(app.menu_bar, Some(Some(3)), "an open menu follows the pointer");
+    assert!(simulator(app.view(id)).find("Hide Sidebar").is_ok(), "the View menu shows its items");
+    let hidden = app.sidebar_hidden;
+    let _ = app.update(UiMessage::MenuBarRun(Box::new(UiMessage::RunHotkey("Toggle Sidebar"))));
+    assert_eq!((app.menu_bar, app.sidebar_hidden), (None, !hidden), "the item runs and the menu bar hides");
+}
+
 /// Desktop's `activityTimestamp` and `isArchivedInList`: a draft moves its chat to the top, and out of the archive.
 #[test]
 fn drafts_move_chats_like_desktop() {
