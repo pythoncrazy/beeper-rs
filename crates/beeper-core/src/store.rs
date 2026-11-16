@@ -1630,9 +1630,10 @@ impl BeeperStore {
     fn push_message(&mut self, msg: Message, persist: bool) -> usize {
         let idx = self.insert_message(msg);
         let msg = &self.messages[idx];
-        let shown =
-            !msg.silent() && !msg.thread_only(self.feature("enable-threads").on) && msg.flags & MSG_DELETED == 0;
         let c_idx = self.chat_idx_by_id[&msg.chat_id];
+        // Like the timeline, a thread reply previews a chat that does not show threads.
+        let shown =
+            !msg.silent() && !msg.thread_only(self.threaded(&self.chats[c_idx])) && msg.flags & MSG_DELETED == 0;
         let chat = &mut self.chats[c_idx];
         if shown && chat.preview.as_ref().is_none_or(|p| p.sort_key <= msg.sort_key) {
             self.chat_order.remove(&activity_key(chat));
@@ -1996,7 +1997,8 @@ impl BeeperStore {
 
     /// Desktop's chat preview after its message is deleted: the newest shown message that is left.
     fn last_shown(&self, chat: &str) -> Option<Message> {
-        let (threads, mut last) = (self.feature("enable-threads").on, None);
+        let threads = self.chat_idx_by_id.get(chat).is_some_and(|&i| self.threaded(&self.chats[i]));
+        let mut last = None;
         self.scan_stored("chat_id = ?1 ORDER BY sort_key DESC", [chat], |m| {
             let shown = !m.silent() && !m.thread_only(threads) && m.flags & MSG_DELETED == 0;
             last = shown.then_some(m);
@@ -3296,6 +3298,11 @@ mod tests {
         assert_eq!((st.thread_unread(c, root), &c.thread_reads[root]), ((0, 0), &key), "the reaction is read too");
         st.remove_message(chat, &id).unwrap();
         assert_eq!(st.thread_replies(root).count(), 4, "a removed reply leaves the thread");
+        // A room without threads shows a thread reply in the chat, so the reply previews it.
+        let idx = st.chat_idx_by_id[chat];
+        st.update_chat(idx, |c| c.threads = false);
+        let (_, id, _) = st.send_in_thread(chat, Some("in the chat".into()), None, &t).unwrap();
+        assert_eq!(st.chats[idx].preview.as_ref().unwrap().id, id, "the reply previews the chat");
     }
 
     #[test]
