@@ -1150,6 +1150,8 @@ fn unread_threads_like_desktop() {
     assert!(simulator(app.view_main()).find("You’re all caught up.").is_ok());
     assert!(simulator(app.view_sidebar()).find("Unread threads").is_err(), "the pill goes with the last unread thread");
     assert_eq!(app.badge_count(), badge - 1, "Desktop counts one more with unread threads");
+    app.store.write().beeper_state.access_token.clear();
+    assert_eq!(app.badge_count(), 0, "nothing while signed out");
 }
 
 /// The "Unread threads" pill counts only the threads of the chats in the list.

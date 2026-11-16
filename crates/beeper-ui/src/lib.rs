@@ -5112,6 +5112,10 @@ impl BeeperGuiApp {
     /// Desktop's `updateAppBadgeCount`: the unread chats in all chats or in the chat list, by "Badge count".
     fn badge_count(&self) -> u32 {
         let st = self.store.read();
+        // Desktop's `updateAppBadgeCount` shows nothing while signed out.
+        if !st.signed_in() {
+            return 0;
+        }
         let counts = |c: &Chat| {
             c.flags & (CHAT_HIDDEN | CHAT_ARCHIVED | CHAT_REQUEST) == 0
                 && c.flags & CHAT_UNREAD != 0
