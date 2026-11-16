@@ -1688,7 +1688,7 @@ fn sticker_content(content: &mut Value, s: Box<Sticker>, caption: bool, dims: Op
 /// Pushes the outbox to the homeserver. A message that fails keeps an error, like Desktop's failed echoes. A removal
 /// that fails stays pending for the next launch, like Desktop's `resendPendingRemovals`. Other changes that fail are
 /// dropped, and the error comes back.
-async fn flush(store: SharedStore) -> Result<(), String> {
+async fn flush(store: SharedStore) -> Result<(), PushError> {
     loop {
         let Some((row, chat, out)) = store.write().next_outgoing() else { return Ok(()) };
         // A failed change waits for Retry only with a local echo that shows the error.
@@ -1708,7 +1708,13 @@ async fn flush(store: SharedStore) -> Result<(), String> {
                 }
                 st.pushed(row, message.as_deref(), None);
             }
-            (Err(e), Some(message)) => st.pushed(row, Some(&message), Some((e, retry))),
+            // Like the send queue of Desktop's SDK, a change that the network or the homeserver could not take now
+            // stays pending, and the push tries it again later.
+            (Err(e), _) if e.transient => {
+                st.pushed(row, None, Some((e.message.clone(), true)));
+                return Err(e);
+            }
+            (Err(e), Some(message)) => st.pushed(row, Some(&message), Some((e.message, retry))),
             (Err(e), None) => {
                 if !pending {
                     st.pushed(row, None, None);
@@ -1720,13 +1726,50 @@ async fn flush(store: SharedStore) -> Result<(), String> {
 }
 
 /// The push task of the sync loop: it pushes the outbox at the start and after each change that the store queues.
+/// After a transient error it tries again after 1 s, then twice as long each time up to a minute.
 async fn push_loop(store: SharedStore) {
     let ready = store.read().outbox_ready.clone();
+    let mut wait = None;
     loop {
-        if let Err(e) = flush(store.clone()).await {
-            store.write().matrix_error = Some(format!("Could not send to Matrix: {e}"));
+        match flush(store.clone()).await {
+            Ok(()) => wait = None,
+            Err(e) if e.transient => wait = Some(wait.map_or(1, |w: u64| (w * 2).min(60))),
+            Err(e) => {
+                store.write().matrix_error = Some(format!("Could not send to Matrix: {}", e.message));
+                wait = None;
+            }
         }
-        ready.notified().await;
+        match wait {
+            Some(s) => drop(tokio::time::timeout(std::time::Duration::from_secs(s), ready.notified()).await),
+            None => ready.notified().await,
+        }
+    }
+}
+
+/// An error of a push: its message, and whether the network or the homeserver could take the change later.
+#[derive(Debug)]
+struct PushError {
+    message: String,
+    transient: bool,
+}
+
+impl From<String> for PushError {
+    fn from(message: String) -> Self {
+        Self { message, transient: false }
+    }
+}
+
+impl From<matrix_sdk::Error> for PushError {
+    /// Like matrix-sdk's `RetryKind`: a network failure, a rate limit, or a server error can pass later.
+    fn from(x: matrix_sdk::Error) -> Self {
+        let transient = match &x {
+            matrix_sdk::Error::Http(h) => match h.as_client_api_error() {
+                Some(api) => api.status_code.as_u16() == 429 || api.status_code.is_server_error(),
+                None => matches!(**h, matrix_sdk::HttpError::Reqwest(_)),
+            },
+            _ => false,
+        };
+        Self { message: x.to_string(), transient }
     }
 }
 
@@ -1787,10 +1830,10 @@ fn mention_links(text: &str, users: &[&Mention]) -> String {
     md + rest
 }
 
-async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), String> {
+async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), PushError> {
     let client = store.read().matrix.clone().expect("flush checks the Matrix client");
     if let Outgoing::CreateLabel(label) = out {
-        return create_label(store, &client, label).await;
+        return Ok(create_label(store, &client, label).await?);
     }
     let chat = store.read().sent.get(&chat).cloned().unwrap_or(chat);
     let room = joined_room(&client, &chat).await?;
@@ -1798,7 +1841,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
         let id = store.read().sent.get(&id).cloned().unwrap_or(id);
         OwnedEventId::try_from(id).map_err(|e| e.to_string())
     };
-    let e = |x: matrix_sdk::Error| x.to_string();
+    let e = PushError::from;
     let sent = |txn: String, id: OwnedEventId| store.write().sent.insert(txn, id.to_string());
     match out {
         Outgoing::Send { txn, text, reply_to, preview, mentions, thread } => {
@@ -1957,7 +2000,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), St
             let kind = ev["type"].as_str().expect("an event type").to_string();
             // Desktop forwards any message, but a poll or a message that is not decrypted has no content to send again.
             if !matches!(kind.as_str(), "m.room.message" | "m.sticker") {
-                return Err(format!("Cannot forward a {kind} event"));
+                return Err(format!("Cannot forward a {kind} event").into());
             }
             let c = ev["content"].as_object_mut().expect("event content");
             c.remove("m.relates_to");
@@ -3249,7 +3292,11 @@ pub async fn run(store: SharedStore) {
                     Ok(resp) => {
                         {
                             let mut st = store.write();
-                            (st.matrix_error, st.syncing) = (None, false);
+                            // The homeserver answers again, so the changes that waited for it go now.
+                            if st.matrix_error.take().is_some() {
+                                st.outbox_ready.notify_one();
+                            }
+                            st.syncing = false;
                             st.syncs += 1;
                         }
                         refresh_e2ee(&client, &store).await;
@@ -3531,7 +3578,10 @@ mod tests {
         };
         store.write().queue("!room:x", forward("$p"));
         let err = super::flush(store.clone()).await.expect_err("a poll has no content to forward");
-        assert_eq!(err, "Cannot forward a org.matrix.msc3381.poll.start event");
+        assert_eq!(
+            (err.message.as_str(), err.transient),
+            ("Cannot forward a org.matrix.msc3381.poll.start event", false)
+        );
         store.write().queue("!room:x", forward("$s"));
         super::flush(store.clone()).await.expect("a sticker has no msgtype and forwards");
         assert_eq!(store.read().sent.get("txn$s").map(String::as_str), Some("$sent"));
@@ -4088,6 +4138,38 @@ mod tests {
         pushed_until(&store, |st| error(st) == (None, 0)).await;
         let cfg = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23392, None);
         assert!(crate::store::BeeperStore::from_config(cfg).outbox.is_empty(), "the outbox row is gone");
+    }
+
+    /// Like the send queue of Desktop's SDK, a send that the homeserver cannot take now (here two 503 answers) stays
+    /// pending without an error, and the push sends it again by itself.
+    #[tokio::test]
+    async fn transient_send_errors_retry_by_themselves() {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        let tries = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = tries.clone();
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split('?').next().expect("a path") {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, stub_sync()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t0", "chunk": [] })),
+            p if p.contains("/send/m.room.message/") && counted.fetch_add(1, Relaxed) < 2 => {
+                (503, json!({ "errcode": "M_UNKNOWN", "error": "stub overload" }))
+            }
+            p if p.contains("/send/m.room.message/") => (200, json!({ "event_id": "$sent" })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let dir = crate::testing::temp_dir("outbox-transient");
+        let store = stub_store(&dir, &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        tokio::spawn(super::push_loop(store.clone()));
+        let draft = crate::store::Draft { text: Some("hi".into()), ..Default::default() };
+        let txn = store.write().send("!room:x", draft).expect("a local echo").1.remove(0);
+        pushed_until(&store, |_| tries.load(Relaxed) >= 1).await;
+        assert!(store.read().stored_message(&txn).expect("the echo").send_error.is_none(), "no Not sent");
+        pushed_until(&store, |st| st.sent.contains_key(&txn)).await;
+        assert!(store.read().stored_message(&txn).expect("the echo").send_error.is_none());
+        assert!(tries.load(Relaxed) >= 3 && store.read().outbox.is_empty(), "the third try went through");
     }
 
     #[tokio::test]
