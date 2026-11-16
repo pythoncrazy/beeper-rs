@@ -40,31 +40,22 @@ pub mod icon {
     pub const PERSON: char = '\u{f018}';
     pub const GROUP: char = '\u{f019}';
     pub const CHECK: char = '\u{f01a}';
-    pub const BELL: char = '\u{e059}';
     pub const CLOUD: char = '\u{e088}';
     pub const CIRCLE_PLUS: char = '\u{e081}';
-    pub const CIRCLE_CHECK: char = '\u{e226}';
     pub const LINK: char = '\u{e102}';
     pub const ARROW_UP_RIGHT: char = '\u{e04d}';
     pub const PLUS: char = '\u{e13d}';
     pub const SMILE: char = '\u{e164}';
     pub const AUDIO_LINES: char = '\u{e55a}';
     pub const AT_SIGN: char = '\u{e04e}';
-    pub const SETTINGS: char = '\u{e154}';
     pub const PAINTBRUSH: char = '\u{e2e7}';
-    pub const KEYBOARD: char = '\u{e284}';
-    pub const SPARKLES: char = '\u{e412}';
     pub const PUZZLE: char = '\u{e29c}';
     pub const DATABASE: char = '\u{e0ad}';
-    pub const CIRCLE_HELP: char = '\u{e082}';
     pub const INFO: char = '\u{e0f9}';
-    pub const PENCIL: char = '\u{e1f9}';
-    pub const TRASH_2: char = '\u{e18e}';
     pub const REPLY: char = '\u{e22a}';
     pub const PLAY: char = '\u{e13c}';
     pub const HISTORY: char = '\u{e1f5}';
     pub const BOOKMARK: char = '\u{e060}';
-    pub const MESSAGE_SQUARE: char = '\u{e117}';
 }
 
 macro_rules! font {
