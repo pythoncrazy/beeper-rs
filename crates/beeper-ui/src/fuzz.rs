@@ -3252,6 +3252,33 @@ fn quote_details_like_desktop() {
     assert!(shows(&app, "Message Deleted") && !shows(&app, "secret"), "a deleted quote shows as deleted");
 }
 
+/// Desktop's sortable pinned grid (`lY`): a pin dragged over another pin takes its place, and the drop keeps the
+/// order in `favourites_order`.
+#[test]
+fn pins_drag_into_order_like_desktop() {
+    let mut app = demo_app("pin-drag");
+    let pins = |app: &BeeperGuiApp| -> Vec<String> {
+        let st = app.store.read();
+        app.pins_and_rows(&st).0.iter().map(|c| c.id.clone()).collect()
+    };
+    let before = pins(&app);
+    assert!(before.len() >= 2, "the demo has pins: {before:?}");
+    let (first, last) = (before[0].clone(), before[before.len() - 1].clone());
+    let _ = app.update(UiMessage::PinHover(Some(first.clone())));
+    let _ = app.update(UiMessage::PinPress);
+    let _ = app.update(UiMessage::PinDragMoved(Point::new(10.0, 10.0)));
+    let _ = app.update(UiMessage::PinDragMoved(Point::new(12.0, 12.0)));
+    assert_eq!(pins(&app), before, "a move under 5 px is a click");
+    let _ = app.update(UiMessage::PinDragMoved(Point::new(40.0, 10.0)));
+    let _ = app.update(UiMessage::PinHover(Some(last.clone())));
+    let _ = app.update(UiMessage::PinDragEnd);
+    let after = pins(&app);
+    let want: Vec<String> = before[1..].iter().cloned().chain([first.clone()]).collect();
+    assert_eq!(after, want, "the first pin goes to the place of the last");
+    let st = app.store.read();
+    assert!(st.pin_rank[&first] > st.pin_rank[&last], "the order stays in the pin ranks");
+}
+
 /// Desktop's `activityTimestamp` and `isArchivedInList`: a draft moves its chat to the top, and out of the archive.
 #[test]
 fn drafts_move_chats_like_desktop() {
