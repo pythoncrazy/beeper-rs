@@ -412,10 +412,16 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         is_archived: Some(false),
         is_marked_unread: Some(room.is_marked_unread()),
         is_muted: Some(
-            // The SDK's `Room::user_defined_notification_mode` is empty for a room the user left, but its rule still
-            // mutes the chat that stays.
-            room.client().notification_settings().await.get_user_defined_room_notification_mode(room.room_id()).await
-                == Some(RoomNotificationMode::MentionsAndKeywordsOnly),
+            // Desktop's `mutedRoomIDs` of `com.beeper.muted`, or the room's push rule. The SDK's
+            // `Room::user_defined_notification_mode` is empty for a room the user left, but its rule still mutes it.
+            muted_rooms(&room.client()).await.iter().any(|r| r == room.room_id().as_str())
+                || room
+                    .client()
+                    .notification_settings()
+                    .await
+                    .get_user_defined_room_notification_mode(room.room_id())
+                    .await
+                    == Some(RoomNotificationMode::MentionsAndKeywordsOnly),
         ),
         is_pinned: Some(tags.contains_key(&TagName::Favorite)),
         is_low_priority: Some(tags.contains_key(&TagName::LowPriority)),
@@ -2221,6 +2227,19 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                     false => settings.delete_user_defined_room_rules(room.room_id()).await,
                 }
                 .map_err(|x| x.to_string())?;
+                // Desktop reads the mute from `com.beeper.muted`, so the room goes in or out of its list too.
+                let mut list = global(&client, MUTED).await;
+                let id = room.room_id().as_str();
+                let mut ids: Vec<Value> = list["room_ids"].as_array().cloned().unwrap_or_default();
+                ids.retain(|r| r != id);
+                if on {
+                    ids.push(id.into());
+                }
+                if !list.is_object() {
+                    list = serde_json::json!({});
+                }
+                list["room_ids"] = ids.into();
+                set_global(client.clone(), MUTED, list).await?;
             }
             ChatFlag::MarkedUnread => room.set_unread_flag(on).await.map_err(e)?,
         },
@@ -2698,6 +2717,15 @@ async fn refetch_undecrypted(store: &SharedStore, rooms: Vec<Room>) {
         .await;
 }
 
+/// Desktop's global account data of the muted rooms.
+const MUTED: &str = "com.beeper.muted";
+
+/// The `room_ids` of `com.beeper.muted`.
+async fn muted_rooms(client: &Client) -> Vec<String> {
+    let list = global(client, MUTED).await;
+    list["room_ids"].as_array().into_iter().flatten().filter_map(|r| r.as_str().map(String::from)).collect()
+}
+
 async fn global(client: &Client, kind: &str) -> Value {
     let raw =
         client.account().account_data_raw(GlobalAccountDataEventType::from(kind)).await.expect("read account data");
@@ -2839,7 +2867,34 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
     let tone = global(client, "com.beeper.emoji_skin_tone").await["tone"].as_u64().map_or(0, |t| t as u8);
     let (flags, usage) = (global(client, crate::features::FLAGS).await, global(client, crate::features::USAGE).await);
     let bridges = global(client, BRIDGE_STATE).await;
+    let muted = muted_rooms(client).await;
+    let changed: Vec<String> = {
+        let st = store.read();
+        let old = &st.muted_rooms;
+        muted.iter().filter(|r| !old.contains(r)).chain(old.iter().filter(|r| !muted.contains(r))).cloned().collect()
+    };
+    // A room that another device muted or unmuted through `com.beeper.muted`, unless a change of it is on its way.
+    // An unmute there also drops the room's push rule, so that the mute goes everywhere.
+    let mut flips = Vec::new();
+    for id in &changed {
+        let on = muted.contains(id);
+        let pending = store.read().local_flag(id, ChatFlag::Muted).is_some();
+        if let (false, false, Ok(room)) = (on, pending, matrix_sdk::ruma::RoomId::parse(id.as_str())) {
+            if let Err(e) = client.notification_settings().await.delete_user_defined_room_rules(&room).await {
+                eprintln!("Could not unmute {id}: {e}");
+            }
+        }
+        flips.push((id.clone(), on));
+    }
     let mut st = store.write();
+    st.muted_rooms = muted;
+    for (id, on) in flips {
+        if st.local_flag(&id, ChatFlag::Muted).is_none() {
+            if let Some(i) = st.resolve_chat_idx(&id) {
+                st.update_chat(i, |c| c.is_muted = Some(on));
+            }
+        }
+    }
     st.recent_emoji = recent;
     st.skin_tone = tone;
     // The flags decide what the windows show (polls, Send Later, ...), so a change draws them again.
@@ -3886,6 +3941,44 @@ mod tests {
         let m = super::fetch_message(store.clone(), "!room:x".into(), "$e7".into()).await.expect("the message");
         assert_eq!((m.id.as_str(), m.text.as_deref()), ("$e7", Some("m7")));
         assert!(store.read().loaded("$e7").is_none(), "the timeline does not get it");
+    }
+
+    /// Desktop's `mutedRoomIDs`: a room in `com.beeper.muted` is muted, and a mute here goes in or out of that list.
+    #[tokio::test]
+    async fn mutes_go_through_beeper_muted_like_desktop() {
+        let written = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let w = written.clone();
+        let url =
+            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+                "/_matrix/client/v3/versions" | "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                "/_matrix/client/v3/sync" => {
+                    let muted =
+                        json!({ "type": "com.beeper.muted", "content": { "room_ids": ["!room:x"], "other": 1 } });
+                    let mut sync = stub_sync();
+                    sync["account_data"] = json!({ "events": [muted] });
+                    (200, sync)
+                }
+                p if p.ends_with("/messages") => (200, json!({ "start": "t0", "chunk": [] })),
+                p if method == "PUT" && p.ends_with("/account_data/com.beeper.muted") => {
+                    *w.lock().unwrap() = Some(body);
+                    (200, json!({}))
+                }
+                p if p.contains("/pushrules/") || p.contains("/account_data/") => (200, json!({})),
+                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            })
+            .await;
+        let store = stub_store(&crate::testing::temp_dir("beeper-muted"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        assert_eq!(store.read().chat("!room:x").is_muted, Some(true), "the list mutes it");
+        {
+            let mut st = store.write();
+            let idx = st.chat_idx("!room:x");
+            st.set_chat_flag(idx, crate::models::ChatFlag::Muted, Some(false));
+        }
+        super::flush(store.clone()).await.expect("the stub takes the unmute");
+        let body = written.lock().unwrap().clone().expect("the list was written");
+        assert_eq!(body, json!({ "room_ids": [], "other": 1 }), "the room left the list, the rest stayed");
     }
 
     async fn sync_stub_room(store: &crate::store::SharedStore, id: &str) {
