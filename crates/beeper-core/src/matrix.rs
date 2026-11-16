@@ -2753,7 +2753,11 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
     let mut st = store.write();
     st.recent_emoji = recent;
     st.skin_tone = tone;
-    (st.features.flags, st.features.usage) = (flags, usage);
+    // The flags decide what the windows show (polls, Send Later, ...), so a change draws them again.
+    if (&st.features.flags, &st.features.usage) != (&flags, &usage) {
+        (st.features.flags, st.features.usage) = (flags, usage);
+        st.emit_ws("setup.updated", "", None, None, None);
+    }
     // Desktop's `BRIDGE_STATES_UPDATED`: the homeserver updates the bridge states while the app runs.
     if bridges.is_null() {
         return;
@@ -4206,13 +4210,16 @@ mod tests {
     }
 
     /// Desktop's `BRIDGE_STATES_UPDATED`: a `com.beeper.bridge_state` change in a sync replaces the cloud accounts.
+    /// New feature flags in a sync draw the windows again too.
     #[tokio::test]
-    async fn synced_bridge_states_replace_the_cloud_accounts() {
+    async fn synced_bridge_states_and_flags_update_the_windows() {
         let mut sync = stub_sync();
         let bad = json!({ "state_event": "BAD_CREDENTIALS", "has_error": true, "message": "Logged out" });
         let bridges = json!({ "signal": { "bridgeState": { "bridgeType": "signal" }, "remoteState": { "s": bad } } });
         let event = json!({ "type": "com.beeper.bridge_state", "content": { "bridges": bridges } });
-        sync["account_data"] = json!({ "events": [event] });
+        let flags = json!({ "features": { "*": { "enable-polls": true } } });
+        let flags = json!({ "type": crate::features::FLAGS, "content": flags });
+        sync["account_data"] = json!({ "events": [event, flags] });
         let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
             "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
             "/_matrix/client/v3/sync" => (200, sync.clone()),
@@ -4227,7 +4234,10 @@ mod tests {
         let accounts = store.read().bridge_accounts.clone();
         let accounts: Vec<_> = accounts.iter().map(|a| (a.account_id.as_str(), a.remote_error.as_deref())).collect();
         assert_eq!(accounts, [("signal", Some("Logged out"))]);
-        assert_eq!(events.try_recv().expect("an update event").event_type, "setup.updated");
+        assert!(store.read().feature("enable-polls").on, "the synced flags");
+        for change in ["flags", "bridge states"] {
+            assert_eq!(events.try_recv().expect(change).event_type, "setup.updated", "{change}");
+        }
         super::sync_account_data(&client, &store).await;
         assert!(events.try_recv().is_err(), "the same states change nothing");
     }
