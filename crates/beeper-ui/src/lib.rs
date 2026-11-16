@@ -830,6 +830,10 @@ pub enum UiMessage {
     RailHover(String, Point),
     RailLeave(String),
     RailPress,
+    /// The pointer came onto (true) or left the header card of the chat, or its member list.
+    HeaderHover(bool),
+    /// The 500 ms after the pointer left the header card of this generation ran out.
+    HeaderHoverEnd(u32),
     /// The pointer came onto (`Some`) or left a tile of the pinned grid.
     PinHover(Option<String>),
     /// Desktop's `Drop` of the pinned grid (`lY`): a press, a move and the release of a drag of a pin.
@@ -2475,6 +2479,17 @@ fn sender_label(chat: &Chat, m: &Message) -> String {
     member.map_or_else(|| m.sender_name.clone().expect("sender name"), member_name)
 }
 
+/// Desktop's `mD`: a participant has a name of its own, not only a phone number or an email.
+fn real_name(u: &User) -> bool {
+    let digits = |s: &str| s.chars().filter(char::is_ascii_digit).collect::<String>();
+    let full = u.full_name.as_deref().filter(|f| !f.is_empty());
+    u.custom_nickname.is_some()
+        || u.username.is_some()
+        || full.is_some_and(|f| {
+            !u.phone_number.as_deref().is_some_and(|ph| digits(ph) == digits(f)) && u.email.as_deref() != Some(f)
+        })
+}
+
 /// Desktop's `Fr`: the name of a participant.
 fn member_name(u: &User) -> String {
     [&u.custom_nickname, &u.full_name, &u.username, &u.email]
@@ -3761,6 +3776,8 @@ pub struct BeeperGuiApp {
     pub rail_hover: Option<(String, Point)>,
     pub user_hover: UserHover,
     pub rail_drag: Option<RailDrag>,
+    /// Desktop's header hover (`f` of `Amt`): the member list shows, and the generation of its 500 ms leave delay.
+    pub header_hover: (bool, u32),
     pub pin_hover: Option<String>,
     pub pin_drag: Option<PinDrag>,
     pub main_window: Option<window::Id>,
@@ -3986,6 +4003,7 @@ impl BeeperGuiApp {
             sidebar_hidden,
             dragging: false,
             rail_hover: None,
+            header_hover: (false, 0),
             pin_hover: None,
             pin_drag: None,
             user_hover: UserHover::default(),
@@ -8075,6 +8093,19 @@ impl BeeperGuiApp {
                 let write = beeper_core::matrix::set_global(client, "com.beeper.favourites_order", content);
                 return Task::perform(write, UiMessage::Pushed);
             }
+            UiMessage::HeaderHover(on) => {
+                let h = &mut self.header_hover;
+                h.1 += 1;
+                if on {
+                    h.0 = true;
+                } else {
+                    let n = h.1;
+                    let wait = async { tokio::time::sleep(std::time::Duration::from_millis(500)).await };
+                    return Task::perform(wait, move |()| UiMessage::HeaderHoverEnd(n));
+                }
+            }
+            UiMessage::HeaderHoverEnd(n) if n == self.header_hover.1 => self.header_hover.0 = false,
+            UiMessage::HeaderHoverEnd(_) => {}
             UiMessage::RailPress => {
                 let Some((id, grab)) = self.rail_hover.clone() else { return Task::none() };
                 self.rail_drag = Some(RailDrag { id, grab, from: None, at: Point::ORIGIN, order: None });

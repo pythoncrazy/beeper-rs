@@ -3282,6 +3282,27 @@ fn pins_drag_into_order_like_desktop() {
     assert!(st.pin_rank[&first] > st.pin_rank[&last], "the order stays in the pin ranks");
 }
 
+/// Desktop's header card (`Amt`): the pointer on it shows the members of the chat, which stay 500 ms after it leaves.
+#[test]
+fn the_header_shows_the_members_on_hover_like_desktop() {
+    let mut app = demo_app("header-members");
+    let _ = app.update(UiMessage::SelectChat("!wa_family:beeper.com".into()));
+    let chat = app.store.read().chat("!wa_family:beeper.com").clone();
+    assert!(app.header_members(&chat).is_some(), "a group has members to list");
+    assert!(!app.header_hover.0, "no list before the pointer comes");
+    let _ = app.update(UiMessage::HeaderHover(true));
+    assert!(app.header_hover.0, "the members show");
+    let _ = app.update(UiMessage::HeaderHover(false));
+    let left = app.header_hover.1;
+    assert!(app.header_hover.0, "and stay while the pointer may come back");
+    let _ = app.update(UiMessage::HeaderHover(true));
+    let _ = app.update(UiMessage::HeaderHoverEnd(left));
+    assert!(app.header_hover.0, "coming back keeps them");
+    let _ = app.update(UiMessage::HeaderHover(false));
+    let _ = app.update(UiMessage::HeaderHoverEnd(app.header_hover.1));
+    assert!(!app.header_hover.0, "then they go");
+}
+
 /// Desktop's `activityTimestamp` and `isArchivedInList`: a draft moves its chat to the top, and out of the archive.
 #[test]
 fn drafts_move_chats_like_desktop() {
@@ -4540,7 +4561,7 @@ fn background_menus_like_desktop() {
 
     let chat = app.store.read().chats[0].id.clone();
     let _ = app.update(UiMessage::ClickChat(chat.clone()));
-    let at = Point::new(68.0 + SIDEBAR_WIDTH + 40.0, 60.0);
+    let at = Point::new(68.0 + SIDEBAR_WIDTH + 40.0, 20.0);
     assert_eq!(right_click(&mut app, at), Some(chat.clone()), "the chat header has the chat menu");
     let _ = app.update(UiMessage::CloseModals);
     let _ = app.update(UiMessage::ToggleCommandPalette);
