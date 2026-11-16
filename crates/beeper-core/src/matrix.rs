@@ -362,7 +362,16 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         })
         .collect();
     let tags = room.tags().await.expect("read room tags").unwrap_or_default();
-    let dm = if bridge.is_null() { items.len() <= 2 } else { bridge["com.beeper.room_type.v2"] == "dm" };
+    // Desktop's thread type (`rT`): a note to self is single, a declared DM is single up to two people, and a room
+    // with a name or a declared group DM is a group.
+    let note = state(room, "com.beeper.rooms.note_to_self").await.is_some();
+    let named = room.name().is_some_and(|n| !n.is_empty());
+    let dm = note
+        || match bridge["com.beeper.room_type.v2"].as_str() {
+            Some("dm") => items.len() <= 2,
+            Some("group_dm") => false,
+            _ => !named && items.len() <= 2,
+        };
     let names = |own: bool| items.iter().filter(move |u| u.is_self == Some(own)).filter_map(|u| u.full_name.clone());
     let others: Vec<String> = names(false).collect();
     let title = room.name().filter(|n| !n.is_empty()).unwrap_or_else(|| {
@@ -1066,6 +1075,25 @@ async fn sync_space(store: &SharedStore, room: &Room) {
         Some(i) => st.network_spaces[i] = space,
         None => st.network_spaces.push(space),
     }
+}
+
+/// Desktop's `createThreadFromInvite`: an invite to a room is a read-only message request, from the stripped state
+/// of the room, at the time it came.
+async fn sync_invite(store: &SharedStore, room: &Room) {
+    let (accounts, rules) = {
+        let st = store.read();
+        (st.bridge_accounts.clone(), st.inbox_rules.clone())
+    };
+    let mut chat = chat(room, &accounts, &rules).await;
+    (chat.is_request, chat.can_accept_request, chat.is_read_only) = (Some(true), true, true);
+    // Desktop's `canDeclineRequest` of a Matrix invite is a leave, and an invite has no history to load yet.
+    (chat.delete_modes, chat.older) = (chat.delete_modes | DELETE_FOR_ME, Older::Start);
+    // Desktop makes an invite a group when it has a name, a photo, or more than two people.
+    let group = room.name().is_some() || room.avatar_url().is_some() || chat.participants.items.len() > 2;
+    chat.chat_type = if group { "group" } else { "single" }.into();
+    let mut st = store.write();
+    chat.last_activity = st.find_chat(&chat.id).and_then(|c| c.last_activity.clone()).or(Some(now_rfc3339_millis()));
+    st.upsert_chat(chat);
 }
 
 async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>) {
@@ -1842,7 +1870,11 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
         return Ok(create_label(store, &client, label).await?);
     }
     let chat = store.read().sent.get(&chat).cloned().unwrap_or(chat);
-    let room = joined_room(&client, &chat).await?;
+    let invited = matrix_sdk::ruma::RoomId::parse(chat.as_str()).ok().and_then(|id| client.get_room(&id));
+    let room = match invited {
+        Some(room) if room.state() == matrix_sdk::RoomState::Invited => room,
+        _ => joined_room(&client, &chat).await?,
+    };
     let event = |id: String| {
         let id = store.read().sent.get(&id).cloned().unwrap_or(id);
         OwnedEventId::try_from(id).map_err(|e| e.to_string())
@@ -1989,12 +2021,18 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
             let raw = Raw::from_json(serde_json::value::to_raw_value(&v).expect("reminder JSON"));
             room.set_account_data_raw(REMINDER.into(), raw).await.map_err(e)?;
         }
+        // Desktop accepts an invite of a Matrix chat by a join, and other requests with the bridge's event.
+        Outgoing::AcceptRequest if room.state() == matrix_sdk::RoomState::Invited => room.join().await.map_err(e)?,
         Outgoing::AcceptRequest => {
             room.send_raw("com.beeper.accept_message_request", serde_json::json!({})).await.map_err(e)?;
         }
         Outgoing::BlockUser { block, report_spam } => {
             let content = serde_json::json!({ "block": block, "report_spam": report_spam });
             room.send_raw("com.beeper.block_user", content).await.map_err(e)?;
+        }
+        // Desktop's `declineMessageRequest` of a Matrix chat leaves the room.
+        Outgoing::DeleteChat { .. } if room.state() == matrix_sdk::RoomState::Invited => {
+            room.leave().await.map_err(e)?
         }
         Outgoing::DeleteChat { for_everyone } => {
             let content = serde_json::json!({ "delete_for_everyone": for_everyone });
@@ -3269,6 +3307,9 @@ pub async fn run(store: SharedStore) {
     sync_prefs(&client, &store).await;
     sync_profile(&client, &store).await;
     store.write().inbox_rules = global(&client, RULES).await;
+    for room in client.invited_rooms() {
+        sync_invite(&store, &room).await;
+    }
     let first = !store.read().beeper_state.first_sync_done;
     let rooms = client.joined_rooms();
     store.write().initial_sync = (0, rooms.len());
@@ -3309,6 +3350,9 @@ pub async fn run(store: SharedStore) {
                         sync_account_data(&client, &store).await;
                         sync_prefs(&client, &store).await;
                         sync_rules(&client, &store).await;
+                        for id in resp.rooms.invited.keys() {
+                            sync_invite(&store, &client.get_room(id).expect("an invited room is known")).await;
+                        }
                         for id in resp.rooms.left.keys() {
                             // A forgotten room, like a deleted label, is gone from the client.
                             let chat = match client.get_room(id) {
@@ -4153,6 +4197,52 @@ mod tests {
         pushed_until(&store, |st| error(st) == (None, 0)).await;
         let cfg = crate::config::CentralConfig::new(dir.clone(), "127.0.0.1".into(), 23392, None);
         assert!(crate::store::BeeperStore::from_config(cfg).outbox.is_empty(), "the outbox row is gone");
+    }
+
+    /// Desktop's `createThreadFromInvite`: an invite is a read-only group request with Accept (a join) and Decline.
+    #[tokio::test]
+    async fn invites_are_requests_like_desktop() {
+        let joins = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = joins.clone();
+        let url = crate::bridge_stub::serve(move |method, path, _| match path.split('?').next().expect("a path") {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => {
+                let ev = |kind: &str, key: &str, sender: &str, content: Value| {
+                    json!({ "type": kind, "state_key": key, "sender": sender, "content": content })
+                };
+                let state = [
+                    ev("m.room.name", "", "@vic:x", json!({ "name": "Team room" })),
+                    ev("m.room.member", "@vic:x", "@vic:x", json!({ "membership": "join", "displayname": "Vic" })),
+                    ev("m.room.member", "@me:x", "@vic:x", json!({ "membership": "invite" })),
+                ];
+                let mut sync = stub_sync();
+                sync["rooms"]["invite"] = json!({ "!team:x": { "invite_state": { "events": state } } });
+                (200, sync)
+            }
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if method == "POST" && p.ends_with("/join") => {
+                seen.lock().unwrap().push(p.to_string());
+                (200, json!({ "room_id": "!team:x" }))
+            }
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("invites"), &url).await;
+        let room = {
+            let client = store.read().matrix.clone().expect("a Matrix client");
+            client.get_room(matrix_sdk::ruma::room_id!("!team:x")).expect("the invited room")
+        };
+        super::sync_invite(&store, &room).await;
+        {
+            let st = store.read();
+            let c = st.chat("!team:x");
+            assert_eq!((c.is_request, c.chat_type.as_str(), c.title.as_str()), (Some(true), "group", "Team room"));
+            assert!(c.can_accept_request && c.is_read_only && c.delete_modes & crate::models::DELETE_FOR_ME != 0);
+            assert_eq!(c.older, crate::models::Older::Start, "an invite has no history to load");
+        }
+        store.write().accept_request("!team:x");
+        super::flush(store.clone()).await.expect("the stub takes the join");
+        assert_eq!(joins.lock().unwrap().len(), 1, "Accept joins the room");
     }
 
     /// Like the send queue of Desktop's SDK, a send that the homeserver cannot take now (here two 503 answers) stays
