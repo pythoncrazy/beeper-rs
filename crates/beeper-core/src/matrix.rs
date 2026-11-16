@@ -318,7 +318,9 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     let service = room.service_members().unwrap_or_default();
     let bot = s(&bridge["bridgebot"]);
     let me = room.own_user_id();
-    let members = room.members_no_sync(RoomMemberships::JOIN).await.expect("read room members");
+    // Desktop lists the invited members too, as pending (`isPending`).
+    let members =
+        room.members_no_sync(RoomMemberships::JOIN | RoomMemberships::INVITE).await.expect("read room members");
     let levels = state(room, "m.room.power_levels").await.unwrap_or(Value::Null);
     let users_default = levels["users_default"].as_i64().unwrap_or(0).try_into().expect("power level");
     let features = state(room, "com.beeper.room_features").await;
@@ -357,6 +359,8 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
                 custom_nickname: None,
                 is_network_bot: Some(contents.get(id).is_some_and(|c| c["com.beeper.bridge.is_network_bot"] == true)),
                 is_admin: Some(m.power_level() > UserPowerLevel::Int(users_default)),
+                is_pending: (*m.membership() == matrix_sdk::ruma::events::room::member::MembershipState::Invite)
+                    .then_some(true),
                 manage: manage(&levels, member_actions, me.as_str(), id, !bridge.is_null()),
                 ..Default::default()
             }
@@ -1123,15 +1127,18 @@ async fn sync_invite(store: &SharedStore, room: &Room) {
     // Desktop lists the own invite as a pending member that the inviter added.
     if let Ok(invite) = room.invite_details().await {
         let me = invite.invitee;
-        chat.participants.items.push(User {
-            id: me.user_id().to_string(),
-            full_name: Some(me.name().to_string()),
-            img_url: me.avatar_url().filter(|u| u.is_valid()).map(|u| u.to_string()),
-            is_self: Some(true),
-            is_pending: Some(true),
-            added_by: Some(invite.inviter_id.to_string()),
-            ..Default::default()
-        });
+        let items = &mut chat.participants.items;
+        if !items.iter().any(|u| u.id == me.user_id().as_str()) {
+            items.push(User {
+                id: me.user_id().to_string(),
+                full_name: Some(me.name().to_string()),
+                img_url: me.avatar_url().filter(|u| u.is_valid()).map(|u| u.to_string()),
+                is_self: Some(true),
+                ..Default::default()
+            });
+        }
+        let own = items.iter_mut().find(|u| u.id == me.user_id().as_str()).expect("the own member");
+        (own.is_pending, own.added_by) = (Some(true), Some(invite.inviter_id.to_string()));
         chat.participants.total = chat.participants.items.len();
     }
     (chat.is_request, chat.can_accept_request, chat.is_read_only) = (Some(true), true, true);

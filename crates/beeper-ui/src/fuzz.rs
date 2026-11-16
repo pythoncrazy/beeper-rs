@@ -5257,6 +5257,26 @@ fn chat_info_member_actions_like_desktop() {
     assert!(tall(app.view_info()).find("Tulir Asokan").is_err());
 }
 
+/// Desktop's member tags: an invited member says "Invited" and one who left says "Exited".
+#[test]
+fn member_tags_like_desktop() {
+    let mut app = demo_app("member-tags");
+    let id = "!tg_rust:beeper.com".to_string();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(&id).unwrap();
+        st.update_chat(idx, |c| {
+            let others = c.participants.items.iter_mut().filter(|u| u.is_self != Some(true));
+            for (u, (pending, exited)) in others.zip([(Some(true), None), (None, Some(true))]) {
+                (u.is_pending, u.has_exited) = (pending, exited);
+            }
+        });
+    }
+    let mut sim = tall(app.view_info());
+    assert!(sim.find("Invited").is_ok() && sim.find("Exited").is_ok());
+}
+
 #[test]
 fn member_commands_like_desktop() {
     use crate::commands::{SubMenu, MEMBERS_ADMIN, MEMBERS_DISMISS, MEMBERS_KICK};
