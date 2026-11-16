@@ -321,7 +321,10 @@ fn cli_watches_the_websocket_and_runs_rpc_lines() {
         assert_eq!(watch.wait().unwrap().code(), Some(0), "Ctrl+C closes the socket and exits");
     }
     #[cfg(not(unix))]
-    watch.kill().unwrap();
+    {
+        watch.kill().unwrap();
+        watch.wait().unwrap();
+    }
 
     let mut rpc =
         d.command(&["rpc"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
