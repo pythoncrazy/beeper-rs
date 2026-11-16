@@ -786,6 +786,9 @@ fn get(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
         };
         return serve_asset(file, r);
     }
+    if let ["v1", "chats", id, "messages"] = path {
+        backfill(store, id, r)?;
+    }
     let st = &*store.read();
     match path {
         [] => Ok(redirect("/v1/info", r.msg.header("accept"))),
@@ -1585,11 +1588,41 @@ fn chat_and_members(st: &BeeperStore, idx: usize) -> Vec<&str> {
 /// Desktop's page size of `getRoomMessages`.
 const MESSAGE_PAGE: usize = 20;
 
+/// The chat `idx` and its merged member chats whose rooms have older messages on the homeserver than in the store.
+fn unpaginated(st: &BeeperStore, idx: usize) -> Vec<&str> {
+    let all = chat_and_members(st, idx).into_iter();
+    all.filter(|c| st.matrix.is_some() && st.chat(c).older != Older::Start).collect()
+}
+
+/// Desktop's `fetchMessagesPage`: a page back in time that the store cannot fill waits for the homeserver to give the
+/// chats an older page, like Desktop's `waitForBackfill`.
+fn backfill(store: &SharedStore, id: &str, r: &Req) -> Result<(), Response> {
+    let older: Vec<String> = {
+        let st = store.read();
+        let Some(idx) = st.resolve_chat_idx(id).filter(|_| matches!(r.after(), Ok(false))) else { return Ok(()) };
+        let q = Query::default().chats(&chat_and_members(&st, idx)).past(r.q("cursor"), false);
+        if message_page(&st, &q, MESSAGE_PAGE, |_| true).0.len() == MESSAGE_PAGE {
+            return Ok(());
+        }
+        unpaginated(&st, idx).into_iter().map(String::from).collect()
+    };
+    let rt = tokio::runtime::Handle::current();
+    for chat in older {
+        if let Err(e) = rt.block_on(matrix::load_older(store.clone(), chat.clone())) {
+            eprintln!("Could not load older messages of {chat}: {e}");
+        }
+    }
+    Ok(())
+}
+
 /// Desktop's `listMessages`: one page of the chat and its merged member chats, newest first. The cursor is a sort
-/// key, and both directions take the newest messages past it, like Desktop's `ORDER BY hsOrder DESC LIMIT 20`.
+/// key, and both directions take the newest messages past it, like Desktop's `ORDER BY hsOrder DESC LIMIT 20`. A page
+/// back in time has more while the homeserver has older messages, like Desktop's `is_fully_paginated`.
 fn list_messages(st: &BeeperStore, idx: usize, r: &Req) -> Reply {
-    let q = Query::default().chats(&chat_and_members(st, idx)).past(r.q("cursor"), r.after()?);
+    let after = r.after()?;
+    let q = Query::default().chats(&chat_and_members(st, idx)).past(r.q("cursor"), after);
     let (items, has_more) = message_page(st, &q, MESSAGE_PAGE, |_| true);
+    let has_more = has_more || (!after && !unpaginated(st, idx).is_empty());
     let (oldest, newest) = (items.last().map(|m| m.sort_key.clone()), items.first().map(|m| m.sort_key.clone()));
     let items = items.iter().map(view::message).collect();
     ok(&CursorPage { items, has_more, oldest_cursor: oldest, newest_cursor: newest })

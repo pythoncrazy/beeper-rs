@@ -582,3 +582,29 @@ async fn json_keys_keep_the_order_of_desktop() {
     );
     assert_eq!(text(port, get).await.split_once("\r\n\r\n").unwrap().1, expected);
 }
+
+/// Desktop's `fetchMessagesPage`: a page back in time that the store cannot fill waits for older messages from the
+/// homeserver, and the pages have more until the start of the room.
+#[tokio::test(flavor = "multi_thread")]
+async fn message_pages_load_back_from_the_homeserver_like_desktop() {
+    use beeper_core::testing::{stub_homeserver, stub_room_store, temp_dir};
+    let store = stub_room_store(&temp_dir("http-backfill"), &stub_homeserver().await).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(serve_http(listener, store));
+    let (mut texts, mut cursor, mut more) = (Vec::new(), None::<String>, Vec::new());
+    loop {
+        let after = cursor.as_ref().map_or(String::new(), |c| format!("?cursor={c}"));
+        let get = format!("GET /v1/chats/!room:x/messages{after} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer token\r\nconnection: close\r\n\r\n");
+        let out = text(port, &get).await;
+        let page: serde_json::Value = serde_json::from_str(out.split_once("\r\n\r\n").unwrap().1).unwrap();
+        texts.extend(page["items"].as_array().unwrap().iter().map(|m| m["text"].as_str().unwrap().to_string()));
+        cursor = page["oldestCursor"].as_str().map(str::to_string);
+        more.push(page["hasMore"] == true);
+        if page["hasMore"] == false {
+            break;
+        }
+    }
+    assert_eq!(texts, (1..=70).rev().map(|i| format!("m{i}")).collect::<Vec<_>>(), "every message once, newest first");
+    assert_eq!(more, [true, true, true, false], "full pages of 20 until the start of the room");
+}
