@@ -228,6 +228,8 @@ pub(crate) struct Rows {
     gallery: Vec<usize>,
     /// The virtual list key of each message.
     keys: Vec<u64>,
+    /// The messages that start a day, which show its date.
+    days: Vec<usize>,
 }
 
 impl Rows {
@@ -270,6 +272,9 @@ impl Rows {
             gallery: gallery::starts(st, msgs, &counts),
             counts,
             keys: msgs.iter().map(|m| vlist::key(&m.id)).collect(),
+            days: (0..n)
+                .filter(|&i| i == 0 || day_num(&msgs[i - 1].timestamp) != day_num(&msgs[i].timestamp))
+                .collect(),
         }
     }
 }
@@ -665,6 +670,15 @@ impl BeeperGuiApp {
             .interaction(mouse::Interaction::Idle)
             .on_double_click(UiMessage::ToggleMaximize(self.drawing.get()))
             .on_right_press(UiMessage::OpenChatMenu(cid.into()));
+        // Desktop's `sticky-date-container`: while the timeline scrolls, the date of the day at its top floats under the
+        // header.
+        let sticky = self
+            .pane()
+            .timeline
+            .sticky()
+            .filter(|_| in_chat)
+            .and_then(|i| msgs.get(i))
+            .map(|m| self.day_pill(&m.timestamp).padding(Padding::ZERO.top(80.0).left(GUTTER)));
         let overlay = match in_chat {
             true => stack![fade, header].push(feedback).push(reminder),
             false => stack![fade],
@@ -705,9 +719,10 @@ impl BeeperGuiApp {
             None => unavailable(&st, chat).is_none().then(|| self.view_composer(&st, chat)),
         };
         let jump = self.view_scroll_to_bottom(&st, chat);
-        let pane = column![stack![list, overlay].push(jump).push(replies).push(close).width(Fill).height(Fill)]
-            .push(verify)
-            .push(composer);
+        let pane =
+            column![stack![list, overlay].push(sticky).push(jump).push(replies).push(close).width(Fill).height(Fill)]
+                .push(verify)
+                .push(composer);
         let secondary = st.settings.pref("secondaryComposerButton") != 6;
         let picker = self
             .view_emoji_picker(&st)
@@ -879,7 +894,8 @@ impl BeeperGuiApp {
         thread: bool,
     ) -> Column<'a, UiMessage> {
         let p = &self.pal;
-        let Rows { run_start, last_live, any_pending, last_seen, unread, chained, counts, gallery, keys, .. } = rows;
+        let Rows { run_start, last_live, any_pending, last_seen, unread, chained, counts, gallery, keys, days, .. } =
+            rows;
         let last_received = msgs.iter().rposition(|m| m.is_sender != Some(true));
         // Desktop's `ThreadedRepliesView` lists the root and the replies of a thread under its header, and loads older
         // messages of the chat only until the root loads.
@@ -909,9 +925,7 @@ impl BeeperGuiApp {
             let day_changed = prev.is_none_or(|q| day_num(&q.timestamp) != day_num(&m.timestamp));
             let mut head = Column::new().push(prev.map(|q| Space::new().height(gap_below(q, m))));
             if day_changed {
-                let label = semi(day_label(&m.timestamp), 11.0).color(p.on_secondary);
-                let pill = container(label).padding([5, 9]).style(bordered_box(p.card, p.chip, 1.0, 12.0));
-                head = head.push(container(pill).center_x(Fill).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
+                head = head.push(self.day_pill(&m.timestamp).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
             }
             if first_unread.is_some_and(|u| (i..end).contains(&u)) {
                 head = head.push(self.unread_divider(st));
@@ -1035,7 +1049,15 @@ impl BeeperGuiApp {
             }
         };
         let list = if thread { &self.pane().thread_list } else { &self.pane().timeline };
+        list.sections(days.clone());
         col.push(list.view(keys, true, 48.0, UiMessage::Relist, item))
+    }
+
+    /// Desktop's `MessageDate` pill of the day of `timestamp`, in the middle of its row.
+    fn day_pill<'a>(&self, timestamp: &str) -> iced::widget::Container<'a, UiMessage> {
+        let p = &self.pal;
+        let label = semi(day_label(timestamp), 11.0).color(p.on_secondary);
+        container(container(label).padding([5, 9]).style(bordered_box(p.card, p.chip, 1.0, 12.0))).center_x(Fill)
     }
 
     /// A message, or the gallery of the messages `ms`.
