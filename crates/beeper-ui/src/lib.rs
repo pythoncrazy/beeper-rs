@@ -647,6 +647,10 @@ pub enum UiMessage {
     ToggleNewChatExpanded,
     ToggleNewChatChats,
     ToggleJoinMatrix,
+    /// Join or Enter in the Join a Matrix room view.
+    JoinMatrixRoom,
+    /// The end of a join of the Join a Matrix room view of a draft, and whether the room had no routing servers.
+    MatrixRoomJoined(Option<u32>, Result<String, String>, bool),
     ContactsLoaded(Vec<User>),
     Capabilities(String, Result<serde_json::Value, String>),
     /// The account filter of the New Chat view.
@@ -3638,6 +3642,8 @@ pub struct BeeperGuiApp {
     pub new_chat_expanded: bool,
     pub new_chat_chats_expanded: bool,
     pub join_matrix_mode: bool,
+    /// Desktop's `matrixRoomJoin` of the Join a Matrix room view: a join is going on, and the error of the last one.
+    join_room: (bool, Option<String>),
     pub devices: Option<Result<Vec<DeviceInfo>, String>>,
     pub confirm: Option<u8>,
     delete_target: Option<String>,
@@ -3880,6 +3886,7 @@ impl BeeperGuiApp {
             new_chat_expanded: false,
             new_chat_chats_expanded: false,
             join_matrix_mode: false,
+            join_room: (false, None),
             devices: None,
             mics: None,
             confirm: None,
@@ -6660,13 +6667,15 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::NewChatQueryChanged(q) => {
-                self.new_chat_query = q.clone();
+                (self.new_chat_query, self.join_room.1) = (q.clone(), None);
                 (self.new_chat_lookup, self.new_chat_search) = (None, None);
                 let wait = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
                 return Task::perform(wait, move |()| UiMessage::LookupIdentifier(q.clone()));
             }
             UiMessage::ToggleNewChatExpanded => self.new_chat_expanded = !self.new_chat_expanded,
             UiMessage::ToggleNewChatChats => self.new_chat_chats_expanded = !self.new_chat_chats_expanded,
+            UiMessage::JoinMatrixRoom => return self.join_matrix_room(),
+            UiMessage::MatrixRoomJoined(draft, r, unrouted) => return self.matrix_room_joined(draft, r, unrouted),
             UiMessage::ToggleJoinMatrix => {
                 self.join_matrix_mode = !self.join_matrix_mode;
                 self.new_chat_query.clear();
@@ -7400,8 +7409,7 @@ impl BeeperGuiApp {
                 }
                 if !self.integrations.joining {
                     self.integrations.joining = true;
-                    let client = self.store.read().matrix.clone();
-                    return Task::perform(beeper_core::matrix::join(client, COMMUNITY_ROOM.into()), |r| {
+                    return Task::perform(beeper_core::matrix::join(self.store.clone(), COMMUNITY_ROOM.into()), |r| {
                         UiMessage::CommunityJoined(r.map(drop))
                     });
                 }
@@ -12762,11 +12770,18 @@ impl BeeperGuiApp {
                     .width(Fill)
                     .padding([8, 13])
                     .style(fill_box(p.chip, 0.0));
-            let inputs = row![tinted(&MAT_LINK, 18.0, p.sub), field(tr("Room address or Matrix link"))]
+            let (joining, error) = (self.join_room.0, self.join_room.1.as_deref());
+            let input = field(tr("Room address or Matrix link"));
+            let input = if joining { input } else { input.on_submit(UiMessage::JoinMatrixRoom) };
+            let inputs = row![tinted(&MAT_LINK, 18.0, p.sub), input]
                 .spacing(8)
                 .align_y(Center)
                 .padding(Padding::new(6.0).left(13.0).right(8.0));
-            let body = column![head, inputs, Space::new().height(Fill), footer(tr("Join"), "ENTER", None)];
+            let error = error.map(|e| container(txt(e.to_string(), 12.0).color(p.text_danger)).padding([0, 13]));
+            let ready = !joining && !self.new_chat_query.trim().is_empty();
+            let label = if joining { tr("Joining...") } else { tr("Join") };
+            let join = footer(label, "ENTER", ready.then_some(UiMessage::JoinMatrixRoom));
+            let body = column![head, inputs].push(error).push(Space::new().height(Fill)).push(join);
             return container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0)).into();
         }
         let all = rail_accounts(&st);

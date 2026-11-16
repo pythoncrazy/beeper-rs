@@ -1824,11 +1824,127 @@ async fn joined_room(client: &matrix_sdk::Client, chat: &str) -> Result<Room, St
 }
 
 /// Joins a room by its ID or alias, and returns the room ID.
-pub async fn join(client: Option<matrix_sdk::Client>, room: String) -> Result<String, String> {
+pub async fn join(store: SharedStore, room: String) -> Result<String, String> {
+    let (room, vias) = room_address(&room).map_err(|e| format!("{e:?}"))?;
+    join_via(store, room, vias).await
+}
+
+/// Joins a room by its ID or alias through the `vias` servers, and returns the room ID. Like Desktop's `Uh`, it waits
+/// up to 10 seconds for the sync to bring the room into the store, so that the caller can open it.
+pub async fn join_via(store: SharedStore, room: String, vias: Vec<String>) -> Result<String, String> {
     let room = matrix_sdk::ruma::RoomOrAliasId::parse(room).map_err(|e| e.to_string())?;
-    let client = client.ok_or("Not connected to Matrix")?;
-    let room = client.join_room_by_id_or_alias(&room, &[]).await.map_err(|e| e.to_string())?;
-    Ok(room.room_id().to_string())
+    let vias: Vec<matrix_sdk::ruma::OwnedServerName> =
+        vias.into_iter().map(|v| v.try_into().expect("room_address checks the servers")).collect();
+    let client = store.read().matrix.clone().ok_or("Not connected to Matrix")?;
+    let mut changes = store.read().ws_tx.subscribe();
+    let id = client.join_room_by_id_or_alias(&room, &vias).await.map_err(|e| e.to_string())?.room_id().to_string();
+    let synced = async {
+        while store.read().resolve_chat_idx(&id).is_none() {
+            if let Err(tokio::sync::broadcast::error::RecvError::Closed) = changes.recv().await {
+                return;
+            }
+        }
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), synced).await;
+    Ok(id)
+}
+
+/// Why `room_address` refuses an input, like Desktop's reasons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BadAddress {
+    Empty,
+    MixedSigil,
+    Invalid,
+}
+
+/// Desktop's `parseMatrixRoomInput` (`Lh`): a room alias (`#`), a room ID (`!`), a `https://matrix.to/#/` link, or a
+/// `matrix:` URI, with the `via` servers of a link. Gives the room and the servers.
+pub fn room_address(input: &str) -> Result<(String, Vec<String>), BadAddress> {
+    // Desktop's `xr`: `^(?:[a-zA-Z0-9.-]+|\[[0-9a-fA-F:.]+\])(?::([0-9]{1,5}))?$` with a port up to 65535.
+    fn server(s: &str) -> bool {
+        let (host_ok, port) = match s.strip_prefix('[') {
+            Some(rest) => match rest.split_once(']') {
+                Some((ip, after)) => {
+                    (!ip.is_empty() && ip.chars().all(|c| c.is_ascii_hexdigit() || ":.".contains(c)), after)
+                }
+                None => return false,
+            },
+            None => {
+                let (host, port) = s.find(':').map_or((s, ""), |i| s.split_at(i));
+                (!host.is_empty() && host.chars().all(|c| c.is_ascii_alphanumeric() || ".-".contains(c)), port)
+            }
+        };
+        let port_ok = match port.strip_prefix(':') {
+            Some(p) => {
+                (1..=5).contains(&p.len())
+                    && p.bytes().all(|b| b.is_ascii_digit())
+                    && p.parse::<u32>().is_ok_and(|n| n <= 65535)
+            }
+            None => port.is_empty(),
+        };
+        host_ok && port_ok
+    }
+    // Desktop's `Yo`: the sigil, at most 255 bytes, and a local part and a valid server after the first ':'.
+    fn valid(id: &str, sigil: char) -> bool {
+        if !id.starts_with(sigil) || id.len() > 255 {
+            return false;
+        }
+        match id[1..].find(':').map(|i| i + 1) {
+            None => sigil == '!' && id.len() > 1 && !id.contains('\0'),
+            Some(1) => false,
+            Some(i) => !id[1..i].contains('\0') && server(&id[i + 1..]),
+        }
+    }
+    let target = |id: String, vias: Vec<String>| {
+        let sigil = if id.starts_with('#') { '#' } else { '!' };
+        (valid(&id, sigil)).then_some((id, vias)).ok_or(BadAddress::Invalid)
+    };
+    let decode = |s: &str| crate::codec::url_decode(s);
+    let vias = |query: &str| -> Option<Vec<String>> {
+        let vias: Vec<String> = query
+            .split('&')
+            .filter_map(|kv| kv.strip_prefix("via="))
+            .map(|v| decode(v).unwrap_or_default())
+            .filter(|v| !v.is_empty())
+            .collect();
+        vias.iter().all(|v| server(v)).then_some(vias)
+    };
+    let t = input.trim();
+    if t.is_empty() {
+        return Err(BadAddress::Empty);
+    }
+    if t.starts_with("#!") {
+        return Err(BadAddress::MixedSigil);
+    }
+    if t.starts_with('#') || t.starts_with('!') {
+        return target(t.into(), Vec::new());
+    }
+    if let Some(rest) = t.strip_prefix("https://matrix.to/#/") {
+        let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let mut parts = path.split('/');
+        let id = parts.next().and_then(decode).ok_or(BadAddress::Invalid)?;
+        let event = parts.next().map(|e| decode(e).is_some_and(|e| e.starts_with('$')));
+        if event == Some(false) || parts.next().is_some() {
+            return Err(BadAddress::Invalid);
+        }
+        return target(id, vias(query).ok_or(BadAddress::Invalid)?);
+    }
+    if let Some(rest) = t.strip_prefix("matrix:") {
+        let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let parts: Vec<&str> = path.split('/').collect();
+        let id = parts.get(1).and_then(|p| decode(p)).ok_or(BadAddress::Invalid)?;
+        let event_ok = parts.len() == 2 || (parts.len() == 4 && parts[2] == "e" && decode(parts[3]).is_some());
+        let sigil = match parts[0] {
+            "r" | "room" => '#',
+            "roomid" => '!',
+            _ => return Err(BadAddress::Invalid),
+        };
+        if path.starts_with('/') || !event_ok {
+            return Err(BadAddress::Invalid);
+        }
+        return target(format!("{sigil}{id}"), vias(query).ok_or(BadAddress::Invalid)?);
+    }
+    Err(BadAddress::Invalid)
 }
 
 pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) -> Result<(), String> {
@@ -4556,6 +4672,36 @@ mod tests {
             let chat = !MANAGED_ROOMS.contains(&room);
             assert_eq!(st.chat_idx_by_id.contains_key(room), chat, "{room} is a chat: {chat}");
             assert_eq!(st.messages.iter().any(|m| m.chat_id == room), chat, "{room} has messages: {chat}");
+        }
+    }
+
+    /// Desktop's `parseMatrixRoomInput`: aliases, IDs, matrix.to links and matrix: URIs with their `via` servers.
+    #[test]
+    fn matrix_room_addresses_like_desktop() {
+        use super::{room_address, BadAddress::*};
+        let ok = |s: &str, id: &str, vias: &[&str]| {
+            assert_eq!(room_address(s), Ok((id.into(), vias.iter().map(|v| v.to_string()).collect())), "{s}");
+        };
+        ok(" #room:example.org ", "#room:example.org", &[]);
+        ok("!abc:example.org:8448", "!abc:example.org:8448", &[]);
+        ok("!opaque", "!opaque", &[]);
+        ok("https://matrix.to/#/%23room%3Aexample.org", "#room:example.org", &[]);
+        ok("https://matrix.to/#/!abc:x.org/$ev?via=a.org&via=[::1]:80", "!abc:x.org", &["a.org", "[::1]:80"]);
+        ok("matrix:r/room:example.org", "#room:example.org", &[]);
+        ok("matrix:roomid/abc:x.org/e/ev?via=b.org", "!abc:x.org", &["b.org"]);
+        assert_eq!(room_address("  "), Err(Empty));
+        assert_eq!(room_address("#!x:y"), Err(MixedSigil));
+        for bad in [
+            "room",
+            "#:x.org",
+            "#room:bad_host",
+            "#r:x.org:70000",
+            "https://matrix.to/#/!a:x.org/notevent",
+            "https://matrix.to/#/!a:x.org?via=bad_host",
+            "matrix:u/user:x.org",
+            "matrix:/r/x",
+        ] {
+            assert_eq!(room_address(bad), Err(Invalid), "{bad}");
         }
     }
 
