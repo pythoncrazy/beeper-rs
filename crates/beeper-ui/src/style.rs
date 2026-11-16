@@ -381,6 +381,8 @@ pub fn flow(s: &str, indent: f32, max: f32, lines: usize, size: f32, w: Weight) 
     (s[..fit].to_string(), clamped(s[fit..].trim_start(), max, lines - 1, size, w))
 }
 
+/// Text in the app font. Its line height of `round(size * 1.24)` is Desktop's `--semantic-typo-line-height-*` for the
+/// 10, 11, 12, 13 and 16 px sizes, so only other pairs (14/18, 15/20, 17/24, ...) set their own.
 pub fn t<'a>(s: impl text::IntoFragment<'a>, size: f32, w: Weight) -> text::Text<'a> {
     text(s).size(size).font(fw(w)).line_height(text::LineHeight::Absolute((size * 1.24).round().into()))
 }

@@ -825,7 +825,7 @@ impl BeeperGuiApp {
     /// Desktop's `BeeperConnectAddTokenModal`, over the Settings window.
     fn view_add_token<'a>(&'a self, a: &'a AddToken) -> El<'a> {
         let p = &self.pal;
-        let label = |t: &'static str| txt(tr(t), 12.0).line_height(Pixels(15.0)).color(p.text);
+        let label = |t: &'static str| txt(tr(t), 12.0).color(p.text);
         let content: El<'a> = match &a.token {
             None => {
                 let name = text_input("Cursor", &a.name)
@@ -847,14 +847,10 @@ impl BeeperGuiApp {
                 );
                 let sensitive = column![
                     line("Allow sensitive actions", toggle(p, a.write, Some(UiMessage::AddTokenWrite))),
-                    container(
-                        txt(tr("Grant permission to send messages and modify your account"), 11.0)
-                            .line_height(Pixels(14.0))
-                            .color(p.sub)
-                    )
-                    .padding(Padding::new(8.0).top(0.0))
+                    container(txt(tr("Grant permission to send messages and modify your account"), 11.0).color(p.sub))
+                        .padding(Padding::new(8.0).top(0.0))
                 ];
-                let create = button(semi(tr("Create Access Token"), 12.0).line_height(Pixels(15.0)).color(p.accent))
+                let create = button(semi(tr("Create Access Token"), 12.0).color(p.accent))
                     .padding([4, 8])
                     .style(btn_style([p.accent.scale_alpha(0.1); 3], [p.accent; 3], 20.0))
                     .on_press(UiMessage::CreateToken);
@@ -893,11 +889,9 @@ impl BeeperGuiApp {
                 column![note, shown].spacing(8).align_x(Center).width(Fill).into()
             }
         };
-        let title = container(
-            semi(tr("Create a new token for Beeper Desktop API"), 13.0).line_height(Pixels(16.0)).color(p.strong),
-        )
-        .center_x(Fill)
-        .padding([8, 0]);
+        let title = container(semi(tr("Create a new token for Beeper Desktop API"), 13.0).color(p.strong))
+            .center_x(Fill)
+            .padding([8, 0]);
         let pane = column![title, container(content).padding(Padding::new(16.0).top(16.0))];
         let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.prefs_pane, 10.0));
         mouse_area(container(pane).padding(8)).on_press(UiMessage::Noop).into()
@@ -921,7 +915,7 @@ impl BeeperGuiApp {
             .on_press(UiMessage::ShowAppQr)
             .into(),
         };
-        let heading = semi(tr("Take Beeper with you"), 16.0).line_height(Pixels(20.0)).color(p.strong);
+        let heading = semi(tr("Take Beeper with you"), 16.0).color(p.strong);
         let card = column![svg(TAKE_BEEPER.clone()).width(58).height(48), heading, action].spacing(12).align_x(Center);
         container(card)
             .center_x(Fill)
@@ -1133,7 +1127,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let s = &self.integrations;
         let base = st.config.base_url();
-        let body = |t: &str, color| txt(t.to_string(), 13.0).line_height(Pixels(16.0)).color(color);
+        let body = |t: &str, color| txt(t.to_string(), 13.0).color(color);
         let actions =
             |buttons: Vec<El<'a>>| -> El<'a> { Row::with_children(buttons).spacing(4).padding([14, 13]).into() };
         let copy = |i: u8, value: String| {
@@ -1209,9 +1203,7 @@ impl BeeperGuiApp {
             container(container(copy(0, value)).padding(8).style(fill_box(p.chip.scale_alpha(0.8), 6.0)))
                 .align_right(Fill)
         ];
-        let hint = hint.map(|h| {
-            container(txt(tr(h), 11.0).line_height(Pixels(14.0)).color(p.weak)).padding(Padding::ZERO.bottom(4.0))
-        });
+        let hint = hint.map(|h| container(txt(tr(h), 11.0).color(p.weak)).padding(Padding::ZERO.bottom(4.0)));
         let details = column![].push(install).push(hint).push(container(code).padding([8, 0]));
         let details = details.padding(Padding::new(13.0).top(0.0).bottom(14.0));
         mcp.push(details.into());
@@ -1307,7 +1299,7 @@ impl BeeperGuiApp {
     fn storage_page<'a>(&'a self, st: &BeeperStore) -> El<'a> {
         let p = &self.pal;
         let s = &self.storage;
-        let body = |t: String, color| txt(t, 13.0).line_height(Pixels(16.0)).color(color);
+        let body = |t: String, color| txt(t, 13.0).color(color);
         let h4 = |t| container(body(tr(t).into(), p.muted)).padding([5, 0]);
         let Some(all) = s.all.as_deref() else {
             let loading = container(txt(tr("Loading..."), 14.0).color(p.muted)).center_x(Fill).padding(40);
@@ -1317,7 +1309,7 @@ impl BeeperGuiApp {
         let legend = totals.iter().map(|&(k, bytes)| {
             let (label, color) = kind_meta(k);
             let swatch = container(Space::new()).width(10).height(10).style(fill_box(color, 2.0));
-            let size = semi(human_size(bytes), 13.0).line_height(Pixels(16.0)).color(p.text);
+            let size = semi(human_size(bytes), 13.0).color(p.text);
             row![swatch, column![body(tr(label).into(), p.text), Space::new().width(80)], size]
                 .spacing(8)
                 .align_y(Center)
@@ -1397,11 +1389,7 @@ impl BeeperGuiApp {
                     .style(move |_, _| svg::Style { color: Some(p.muted) });
                 let stats = row![
                     txt(counts.join(" | "), 13.0).color(p.muted),
-                    semi(human_size(bytes), 13.0)
-                        .line_height(Pixels(16.0))
-                        .color(p.text)
-                        .width(80)
-                        .align_x(iced::alignment::Horizontal::Right)
+                    semi(human_size(bytes), 13.0).color(p.text).width(80).align_x(iced::alignment::Horizontal::Right)
                 ]
                 .spacing(16)
                 .align_y(Center);
@@ -1466,7 +1454,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let kinds = storage::Kind::ALL[..4 + which].iter().enumerate().map(|(i, &k)| {
             let on = self.storage.kinds[which] & 1 << i != 0;
-            let label = txt(tr(kind_meta(k).0), 13.0).line_height(Pixels(16.0)).color(p.text);
+            let label = txt(tr(kind_meta(k).0), 13.0).color(p.text);
             button(row![checkbox(p, on), label].spacing(6).align_y(Center))
                 .bare(p.text)
                 .on_press_maybe((!busy).then_some(UiMessage::StorageKind(which, i)))
@@ -1544,7 +1532,7 @@ impl BeeperGuiApp {
         let shown = prefs::match_sort(listed, &self.hotkey_query, |h| tr(h.0).into());
         let groups = first_groups(&shown, |h| h.1).into_iter().map(|group| {
             let rows = shown.iter().filter(|h| h.1 == group).map(|h| hotkey(h.0));
-            let head = txt(tr(group), 13.0).line_height(Pixels(16.0)).color(p.muted);
+            let head = txt(tr(group), 13.0).color(p.muted);
             column![container(head).padding(Padding::ZERO.top(24.0).bottom(12.0))].extend(rows).into()
         });
         let head = row![search, Space::new().width(Fill), revert].align_y(Center).padding(Padding::ZERO.bottom(10.0));

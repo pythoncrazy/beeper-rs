@@ -2160,7 +2160,7 @@ fn plan_pill<'a>(p: &Palette, plan: Plan) -> (El<'a>, f32) {
 fn badge<'a>(p: &Palette, b: prefs::Badge) -> El<'a> {
     match b {
         prefs::Badge::Plus => {
-            let label = row![semi("+", 12.0).line_height(1.0), semi("Plus", 10.0).line_height(Pixels(12.0))];
+            let label = row![semi("+", 12.0).line_height(1.0), semi("Plus", 10.0)];
             container(label.spacing(2).align_y(Center).padding([4, 6])).style(fill_box(p.chip, 25.0)).into()
         }
         prefs::Badge::Labs => {
@@ -3357,10 +3357,7 @@ fn group<'a>(p: &Palette, title: Option<&str>, rows: Vec<El<'a>>) -> El<'a> {
         8.0,
     ));
     column![]
-        .push(
-            title
-                .map(|t| container(txt(t.to_string(), 13.0).line_height(Pixels(16.0)).color(p.muted)).padding([0, 13])),
-        )
+        .push(title.map(|t| container(txt(t.to_string(), 13.0).color(p.muted)).padding([0, 13])))
         .push(card)
         .spacing(6)
         .into()
@@ -8850,7 +8847,6 @@ impl BeeperGuiApp {
                 let notice = column![
                     semi(tr("The request has timed out."), 15.0).line_height(Pixels(20.0)).color(p.strong),
                     txt(tr("To try again you will need to relaunch the third-party app or re-request login in its MCP settings."), 13.0)
-                        .line_height(Pixels(16.0))
                         .color(p.text)
                 ]
                 .spacing(8);
@@ -8858,18 +8854,14 @@ impl BeeperGuiApp {
                 column![notice, row![button("Close", false, UiMessage::TokenClose)]].spacing(16).into()
             }
             false => {
-                let label = |t: &'static str| txt(tr(t), 12.0).line_height(Pixels(15.0)).color(p.text);
+                let label = |t: &'static str| txt(tr(t), 12.0).color(p.text);
                 let sensitive = column![
                     row![label("Allow sensitive actions").width(Fill), toggle(p, a.write, Some(UiMessage::TokenWrite))]
                         .align_y(Center)
                         .height(38)
                         .padding([0, 8]),
-                    container(
-                        txt(tr("Grant permission to send messages and modify your account"), 11.0)
-                            .line_height(Pixels(14.0))
-                            .color(p.sub)
-                    )
-                    .padding(Padding::new(8.0).top(0.0))
+                    container(txt(tr("Grant permission to send messages and modify your account"), 11.0).color(p.sub))
+                        .padding(Padding::new(8.0).top(0.0))
                 ];
                 let expiry = select(p, EXPIRIES, a.expiry, UiMessage::TokenExpiry);
                 let expiry = row![label("Expires in").width(Fill), expiry].align_y(Center).height(38).padding([0, 8]);
@@ -8882,7 +8874,6 @@ impl BeeperGuiApp {
                 ]
                 .spacing(8);
                 let fine = txt(tr("Only approve if you initiated this connection and trust the application."), 12.0)
-                    .line_height(Pixels(15.0))
                     .color(p.sub)
                     .align_x(Center)
                     .width(Fill);
@@ -8894,9 +8885,7 @@ impl BeeperGuiApp {
                 .into()
             }
         };
-        let title = container(semi(tr("Approve connection"), 13.0).line_height(Pixels(16.0)).color(p.strong))
-            .center_x(Fill)
-            .padding([8, 0]);
+        let title = container(semi(tr("Approve connection"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
         let content = column![container(main).padding(Padding::new(0.0).top(32.0).bottom(16.0)), body];
         let pane = column![title, container(content).padding([0, 16])];
         let pane = container(pane).width(Fill).height(Fill).style(fill_box(p.prefs_pane, 10.0));
@@ -9228,7 +9217,7 @@ impl BeeperGuiApp {
             semi(question, 15.0).line_height(Pixels(20.0)).color(fg),
             row![
                 tinted(if poll.ended { &POLL_ENDED } else { &COMPOSER_ICONS[8] }, 16.0, sub),
-                txt(status, 13.0).line_height(Pixels(16.0)).color(sub)
+                txt(status, 13.0).color(sub)
             ]
             .spacing(6)
             .align_y(Center),
@@ -9256,7 +9245,7 @@ impl BeeperGuiApp {
                     container(Space::new().width(16).height(16)).style(bordered_box(CLEAR, ring, 1.5, radius)).into()
                 }
             };
-            let name = txt(o.label.clone(), 13.0).line_height(Pixels(16.0)).color(lf);
+            let name = txt(o.label.clone(), 13.0).color(lf);
             let faces = o.voter_ids.iter().rev().take(3).rev().enumerate().fold(Stack::new(), |s, (i, id)| {
                 let u = chat.participants.items.iter().find(|u| u.id == *id);
                 let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(id);
@@ -9265,9 +9254,8 @@ impl BeeperGuiApp {
                     .style(fill_box(bg, 11.5));
                 s.push(container(face).padding(Padding::ZERO.left(14.0 * i as f32)))
             });
-            let right = (shown && n > 0).then(|| {
-                row![faces, semi(n.to_string(), 13.0).line_height(Pixels(16.0)).color(fg)].spacing(6).align_y(Center)
-            });
+            let right =
+                (shown && n > 0).then(|| row![faces, semi(n.to_string(), 13.0).color(fg)].spacing(6).align_y(Center));
             let line =
                 row![row![check, name].spacing(8).align_y(Center).width(Fill)].push(right).spacing(10).align_y(Center);
             let answers = match (multi, voted) {
@@ -9287,16 +9275,14 @@ impl BeeperGuiApp {
         });
         let options = Column::with_children(options).spacing(if spread { 6 } else { 2 });
         let foot: El<'a> = match shown {
-            true if total > 0 => button(
-                row![semi(votes, 13.0).line_height(Pixels(16.0)), tinted(&CHEVRON_RIGHT, 16.0, footer)].align_y(Center),
-            )
-            .bare(footer)
-            .on_press(UiMessage::OpenPollVotes(chat.id.clone(), m.id.clone()))
-            .into(),
+            true if total > 0 => button(row![semi(votes, 13.0), tinted(&CHEVRON_RIGHT, 16.0, footer)].align_y(Center))
+                .bare(footer)
+                .on_press(UiMessage::OpenPollVotes(chat.id.clone(), m.id.clone()))
+                .into(),
             true => Space::new().into(),
             false => column![]
-                .push((total > 0).then(|| semi(votes, 13.0).line_height(Pixels(16.0)).color(fg)))
-                .push(txt(results, 11.0).line_height(Pixels(14.0)).color(sub))
+                .push((total > 0).then(|| semi(votes, 13.0).color(fg)))
+                .push(txt(results, 11.0).color(sub))
                 .spacing(4)
                 .into(),
         };
@@ -9328,12 +9314,12 @@ impl BeeperGuiApp {
                         true => (tr("Send Later message canceled by reply.").into(), tr("Options"), Weight::Normal),
                         false => (trf("Send %s", &[&send_day(s.send_on, h24)]), tr("Edit"), Weight::Semibold),
                     };
-                    let edit = button(semi(edit, 11.0).line_height(Pixels(14.0)).color(p.accent))
+                    let edit = button(semi(edit, 11.0).color(p.accent))
                         .bare(p.accent)
                         .on_press(UiMessage::ScheduledMenu(ids, false));
                     let line = row![]
                         .push((!s.canceled).then(|| tinted(&COMPOSER_ICONS[6], 12.0, fg)))
-                        .push(txt(text, 11.0).line_height(Pixels(14.0)).font(fw(weight)).color(fg))
+                        .push(txt(text, 11.0).font(fw(weight)).color(fg))
                         .push(edit);
                     container(line.spacing(4).align_y(Center)).center_x(Fill).padding(Padding {
                         top: 4.0,
@@ -9357,11 +9343,7 @@ impl BeeperGuiApp {
                 .height(12)
                 .rotation(Radians(if collapsed { 0.0 } else { std::f32::consts::PI }))
                 .style(move |_, _| svg::Style { color: Some(fg) });
-            let label = row![
-                tinted(&COMPOSER_ICONS[6], 12.0, fg),
-                semi(text, 11.0).line_height(Pixels(14.0)).color(fg),
-                chevron
-            ];
+            let label = row![tinted(&COMPOSER_ICONS[6], 12.0, fg), semi(text, 11.0).color(fg), chevron];
             let toggle = button(label.spacing(4).align_y(Center))
                 .padding([4, 8])
                 .style(bordered_btn([p.card; 3], [fg; 3], p.chip, 1.0, 100.0))
@@ -9377,8 +9359,7 @@ impl BeeperGuiApp {
     fn view_scheduled_bubble(&self, st: &BeeperStore, s: &Scheduled, bg: Color) -> El<'_> {
         let p = &self.pal;
         let fg = if s.canceled { hex(0x808080) } else { p.accent };
-        let line =
-            |t: String| txt(t, 13.0).line_height(Pixels(16.0)).wrapping(iced::widget::text::Wrapping::WordOrGlyph);
+        let line = |t: String| txt(t, 13.0).wrapping(iced::widget::text::Wrapping::WordOrGlyph);
         // A file part shows its file name over its caption.
         let file = s
             .upload
@@ -9532,7 +9513,7 @@ impl BeeperGuiApp {
             let options = options.into_iter().map(|(label, on, m)| {
                 let fg = if on || !any { p.text } else { p.sub };
                 let line = row![
-                    semi(label, 11.0).line_height(Pixels(14.0)).color(fg),
+                    semi(label, 11.0).color(fg),
                     Space::new().width(Fill),
                     ic(icon::CHECK, 16.0).color(if on { fg } else { CLEAR })
                 ]
@@ -9858,8 +9839,8 @@ impl BeeperGuiApp {
         let chat = &st.chats[st.resolve_chat_idx(open).expect("chat exists")];
         let targets = switch_targets(&st, chat).expect("a chat with switch targets");
         let line = || container(Space::new().width(Fill).height(1)).style(fill_box(p.received, 0.0));
-        let header = container(semi(tr("Switch Chat"), 13.0).line_height(Pixels(16.0)).color(p.strong))
-            .padding(Padding::new(12.0).left(27.0).right(8.0));
+        let header =
+            container(semi(tr("Switch Chat"), 13.0).color(p.strong)).padding(Padding::new(12.0).left(27.0).right(8.0));
         // Desktop's card is as wide as its rows, up to 300 px.
         let wide = |c: &Chat| {
             let name = text_width(network_name(&c.account_id), 16.0, Weight::Normal);
@@ -9878,7 +9859,7 @@ impl BeeperGuiApp {
                 0.0,
             );
             let info = column![
-                txt(network_name(&c.account_id).to_string(), 16.0).line_height(Pixels(20.0)).color(p.strong),
+                txt(network_name(&c.account_id).to_string(), 16.0).color(p.strong),
                 txt(account_user(&st, &c.account_id), 12.0).line_height(Pixels(16.0)).color(p.strong.scale_alpha(0.4)),
             ];
             let check = on.then(|| ic(icon::CHECK, 13.0).color(p.strong));
@@ -9945,10 +9926,10 @@ impl BeeperGuiApp {
         let id = handle(u).or_else(|| u.phone_number.as_deref().map(fmt_phone)).or_else(|| u.email.clone());
         let face = container(self.face(u.img_url.as_deref(), &name, 80.0, 0.0)).padding(4).style(lifted(44.0));
         let info = column![semi(name, 14.0).line_height(Pixels(18.0)).color(p.strong).width(Fill).align_x(Center)]
-            .push(id.map(|i| txt(i, 12.0).line_height(Pixels(15.0)).color(p.sub).width(Fill).align_x(Center)));
+            .push(id.map(|i| txt(i, 12.0).color(p.sub).width(Fill).align_x(Center)));
         let muted = btn_style([p.chip; 3], [p.strong; 3], 9999.0);
         let actions = (u.is_self != Some(true) && self.can(&c.account_id, "create_dm")).then(|| {
-            let label = txt(tr("Send Message"), 11.0).line_height(Pixels(14.0));
+            let label = txt(tr("Send Message"), 11.0);
             let send = button(container(label).center_x(Fill)).padding([4, 8]).width(Fill).style(muted);
             let call = u.phone_number.as_ref().map(|n| {
                 let open = UiMessage::Commands(vec![UiMessage::CloseModals, UiMessage::OpenUrl(format!("tel:{n}"))]);
@@ -11294,7 +11275,7 @@ impl BeeperGuiApp {
             let face =
                 sender.map(|u| self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 12.0, 0.5));
             let badge = (expired && previews).then(|| {
-                let label = semi(tr("Reminder"), 11.0).line_height(Pixels(14.0)).color(Color::WHITE.scale_alpha(0.7));
+                let label = semi(tr("Reminder"), 11.0).color(Color::WHITE.scale_alpha(0.7));
                 container(label).padding([0, 3]).style(fill_box(ORANGE.scale_alpha(0.7), 4.0))
             });
             let preview = row![]
@@ -11307,7 +11288,7 @@ impl BeeperGuiApp {
                         return txt(label, 13.0).color(fg).into();
                     }
                     let glyph = tinted(if icon == POLL_TAG { &COMPOSER_ICONS[8] } else { &TAG_ICONS[icon] }, 12.0, fg);
-                    let label = med(label, 10.0).line_height(Pixels(12.0)).color(fg);
+                    let label = med(label, 10.0).color(fg);
                     container(row![glyph, container(label).padding([0, 2])].align_y(Center))
                         .padding([1, 2])
                         .style(fill_box(p.strong.scale_alpha(0.105), 4.0))
@@ -11334,7 +11315,7 @@ impl BeeperGuiApp {
                 .push(count)
                 .spacing(4)
                 .align_y(if compact { Center } else { iced::Alignment::Start });
-            let second = second.map(|r| txt(r.to_string(), 13.0).line_height(Pixels(16.0)).font(body_font).color(fg));
+            let second = second.map(|r| txt(r.to_string(), 13.0).font(body_font).color(fg));
             let preview = column![preview].push(second);
             let avatar = self.chat_avatar(c, av, 1.25);
             let avatar = match network_icons {
@@ -11459,7 +11440,7 @@ impl BeeperGuiApp {
             None => tr("Accept message request?").into(),
         };
         let pill = |label: &str, fg: Color, msg| {
-            let label = semi(label.to_string(), 12.0).line_height(Pixels(15.0));
+            let label = semi(label.to_string(), 12.0);
             button(label).padding([4, 8]).style(btn_style([p.card; 3], [fg; 3], 100.0)).on_press(msg)
         };
         let id = &chat.id;
@@ -11472,7 +11453,7 @@ impl BeeperGuiApp {
             .push(decline.then(|| pill(tr("Decline"), hex(0xdc362e), UiMessage::DeleteChat(id.clone(), false))))
             .push(accept.then(|| pill(tr("Accept"), p.strong, UiMessage::AcceptRequest(id.clone()))))
             .spacing(8);
-        let heading = txt(heading, 13.0).line_height(Pixels(16.0)).color(p.strong).width(Fill).align_x(Center);
+        let heading = txt(heading, 13.0).color(p.strong).width(Fill).align_x(Center);
         let body = column![heading, buttons].spacing(8).align_x(Center);
         let body = container(body).padding(12).width(Fill).max_width(388).style(fill_box(p.chip, 8.0));
         Some(container(body).padding([0, 8]).center_x(Fill).into())
@@ -11507,31 +11488,31 @@ impl BeeperGuiApp {
         };
         // Desktop's grid: 4 columns in 393 px, less the padding of 6 and 8 px and the gaps of 8 px.
         let cell = (393.0 - 12.0 - 16.0 - 24.0) / 4.0;
-        let body: El<'a> =
-            match (self.pane().stickers.as_ref().is_some_and(|_| packs.is_empty()) || failed) && recent.is_empty() {
-                true => container(txt(tr("No sticker packs yet."), 13.0).line_height(Pixels(16.0)).color(p.muted))
-                    .padding([16, 12])
-                    .center_x(Fill)
-                    .into(),
-                false => {
-                    let rows = shown.chunks(4).map(|row| {
-                        let cells = row.iter().map(|x| {
-                            button(picture(&x.url, Fill, cell))
-                                .padding(0)
-                                .width(Fill)
-                                .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
-                                .on_press(UiMessage::PickSticker(x.clone()))
-                                .into()
-                        });
-                        let rest = (row.len()..4).map(|_| Space::new().width(Fill).into());
-                        Row::with_children(cells.chain(rest)).spacing(8).into()
+        let body: El<'a> = match (self.pane().stickers.as_ref().is_some_and(|_| packs.is_empty()) || failed)
+            && recent.is_empty()
+        {
+            true => {
+                container(txt(tr("No sticker packs yet."), 13.0).color(p.muted)).padding([16, 12]).center_x(Fill).into()
+            }
+            false => {
+                let rows = shown.chunks(4).map(|row| {
+                    let cells = row.iter().map(|x| {
+                        button(picture(&x.url, Fill, cell))
+                            .padding(0)
+                            .width(Fill)
+                            .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
+                            .on_press(UiMessage::PickSticker(x.clone()))
+                            .into()
                     });
-                    let n = shown.len().div_ceil(4) as f32;
-                    let h = (n * cell + (n - 1.0).max(0.0) * 8.0 + 16.0).min(232.0);
-                    let grid = Column::with_children(rows).spacing(8).padding(8);
-                    scrollable(grid).height(h).width(Fill).style(scroll_style(p.scroll)).into()
-                }
-            };
+                    let rest = (row.len()..4).map(|_| Space::new().width(Fill).into());
+                    Row::with_children(cells.chain(rest)).spacing(8).into()
+                });
+                let n = shown.len().div_ceil(4) as f32;
+                let h = (n * cell + (n - 1.0).max(0.0) * 8.0 + 16.0).min(232.0);
+                let grid = Column::with_children(rows).spacing(8).padding(8);
+                scrollable(grid).height(h).width(Fill).style(scroll_style(p.scroll)).into()
+            }
+        };
         let tab_btn = |icon: El<'a>, on: bool, msg: UiMessage| -> El<'a> {
             let bg = if on { p.received } else { CLEAR };
             button(container(icon).center(32))
@@ -11757,23 +11738,18 @@ impl BeeperGuiApp {
             let mine: Vec<&Label> =
                 chat.label_ids.iter().filter_map(|id| st.labels.iter().find(|l| l.id == *id)).collect();
             let edit = (!mine.is_empty()).then(|| {
-                button(semi(trx("Edit", "labels section button"), 11.0).line_height(Pixels(14.0)).color(p.accent))
+                button(semi(trx("Edit", "labels section button"), 11.0).color(p.accent))
                     .bare(p.accent)
                     .on_press_maybe(open.clone())
             });
-            let head =
-                row![txt(tr("Labels"), 11.0).line_height(Pixels(14.0)).color(p.strong), Space::new().width(Fill)]
-                    .push(edit)
-                    .align_y(iced::Bottom)
-                    .padding(8);
+            let head = row![txt(tr("Labels"), 11.0).color(p.strong), Space::new().width(Fill)]
+                .push(edit)
+                .align_y(iced::Bottom)
+                .padding(8);
             let body: El = match mine.is_empty() {
                 true => button(
-                    container(
-                        row![ic(icon::PLUS, 16.0), txt(tr("Add to a Label"), 13.0).line_height(Pixels(16.0))]
-                            .spacing(4)
-                            .align_y(Center),
-                    )
-                    .center_x(Fill),
+                    container(row![ic(icon::PLUS, 16.0), txt(tr("Add to a Label"), 13.0)].spacing(4).align_y(Center))
+                        .center_x(Fill),
                 )
                 .padding(8)
                 .width(Fill)
@@ -11816,22 +11792,18 @@ impl BeeperGuiApp {
                 .menu_style(pick_menu_style(p.elevated, p.selected, p.text, p.prefs_border));
                 let pick: El = match can {
                     true => pick.into(),
-                    false => container(
-                        txt(timer_label(chat.disappearing.unwrap_or(0)), 13.0).line_height(Pixels(16.0)).color(fg),
-                    )
-                    .padding([8, 12])
-                    .width(Fill)
-                    .style(fill_box(p.chip, 8.0))
-                    .into(),
+                    false => container(txt(timer_label(chat.disappearing.unwrap_or(0)), 13.0).color(fg))
+                        .padding([8, 12])
+                        .width(Fill)
+                        .style(fill_box(p.chip, 8.0))
+                        .into(),
                 };
                 let arrow =
                     container(tinted(&SELECT_ARROW, 10.0, fg)).align_right(Fill).center_y(Fill).padding([0, 12]);
                 let pick = stack![pick, arrow];
-                let about = txt(tr("For added privacy, new messages disappear after the set time."), 10.0)
-                    .line_height(Pixels(12.0))
-                    .color(p.strong);
-                let head = container(txt(tr("Disappearing messages"), 11.0).line_height(Pixels(14.0)).color(p.strong))
-                    .padding(8);
+                let about =
+                    txt(tr("For added privacy, new messages disappear after the set time."), 10.0).color(p.strong);
+                let head = container(txt(tr("Disappearing messages"), 11.0).color(p.strong)).padding(8);
                 column![head, column![pick, container(about).padding([0, 8])].spacing(4)]
             });
         let note = text_editor(&self.info_note)
@@ -11864,7 +11836,7 @@ impl BeeperGuiApp {
                     true => (trx("Block", "action to block the other person in a DM"), p.text_danger),
                     false => (trx("Unblock", "action to unblock the other person in a DM"), p.accent),
                 };
-                let row = button(txt(label, 13.0).line_height(Pixels(16.0)).color(fg))
+                let row = button(txt(label, 13.0).color(fg))
                     .padding([8, 11])
                     .width(Fill)
                     .style(btn_style([p.chip; 3], [fg; 3], 10.0))
@@ -11926,7 +11898,6 @@ impl BeeperGuiApp {
         };
         let file = |title: String, sub: El<'a>| -> El<'a> {
             let title = txt(crate::style::clamped(&title, TILE - 16.0, 3, 10.0, Weight::Normal).to_string(), 10.0)
-                .line_height(Pixels(12.0))
                 .color(p.strong);
             let bg = if self.dark { Color::BLACK } else { Color::WHITE };
             container(column![title, sub]).padding(8).align_bottom(TILE).width(TILE).style(fill_box(bg, 8.0)).into()
@@ -11963,10 +11934,7 @@ impl BeeperGuiApp {
             })
             .collect();
         let grid: El = match tiles.is_empty() {
-            true => container(txt(tr("Nothing here"), 13.0).line_height(Pixels(16.0)).color(p.sub))
-                .center_x(Fill)
-                .padding([10, 0])
-                .into(),
+            true => container(txt(tr("Nothing here"), 13.0).color(p.sub)).center_x(Fill).padding([10, 0]).into(),
             false => {
                 let mut tiles = tiles.into_iter();
                 let mut rows = Column::new().spacing(8);
@@ -11983,11 +11951,9 @@ impl BeeperGuiApp {
         let toggle = if self.info_media.is_some() { None } else { Some(0) };
         let link = expandable.then(|| {
             let label = tr(if self.info_media.is_some() { "Show less" } else { "Show all" });
-            button(semi(label, 11.0).line_height(Pixels(14.0)).color(p.accent))
-                .bare(p.accent)
-                .on_press(UiMessage::InfoMedia(toggle))
+            button(semi(label, 11.0).color(p.accent)).bare(p.accent).on_press(UiMessage::InfoMedia(toggle))
         });
-        let head = row![txt(tr("Media"), 11.0).line_height(Pixels(14.0)).color(p.strong), Space::new().width(Fill)]
+        let head = row![txt(tr("Media"), 11.0).color(p.strong), Space::new().width(Fill)]
             .push(link)
             .align_y(Center)
             .padding(8);
@@ -12010,11 +11976,9 @@ impl BeeperGuiApp {
         let mut items: Vec<El> = details
             .into_iter()
             .filter_map(|(title, value, kind)| {
-                let title = txt(tr(title), 13.0).line_height(Pixels(16.0)).color(p.sub);
+                let title = txt(tr(title), 13.0).color(p.sub);
                 let menu = UiMessage::OpenChatMenu(format!("contact:{} {kind}", chat.id));
-                let value = button(txt(value?, 13.0).line_height(Pixels(16.0)).color(p.strong))
-                    .bare(p.strong)
-                    .on_press(menu.clone());
+                let value = button(txt(value?, 13.0).color(p.strong)).bare(p.strong).on_press(menu.clone());
                 let value = mouse_area(value).on_right_press(menu);
                 Some(column![container(title).padding([4, 0]), container(value).padding([4, 0])].into())
             })
@@ -12025,10 +11989,10 @@ impl BeeperGuiApp {
         let alts = if u.phone_number.is_some() { alt_chats(st, chat, u) } else { Vec::new() };
         if !alts.is_empty() {
             let accounts: Vec<String> = st.accounts.iter().map(|a| a.account_id.clone()).collect();
-            let title = txt(tr("Message Other Accounts"), 13.0).line_height(Pixels(16.0)).color(p.sub);
+            let title = txt(tr("Message Other Accounts"), 13.0).color(p.sub);
             let rows = alts.iter().map(|c| {
                 let icon = svg(crate::style::brand_svg(brand_key(&c.account_id))).width(16).height(16);
-                let name = txt(account_display_name(st, &c.account_id, &accounts), 13.0).line_height(Pixels(16.0));
+                let name = txt(account_display_name(st, &c.account_id, &accounts), 13.0);
                 button(row![icon, name.color(p.strong)].spacing(4).align_y(Center))
                     .padding([4, 0])
                     .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
@@ -12039,7 +12003,7 @@ impl BeeperGuiApp {
         }
         let content =
             container(Column::with_children(items).spacing(4)).padding(8).width(Fill).style(fill_box(p.chip, 10.0));
-        let head = container(txt(tr("Contact"), 11.0).line_height(Pixels(14.0)).color(p.strong)).padding(8);
+        let head = container(txt(tr("Contact"), 11.0).color(p.strong)).padding(8);
         Some(column![head, content].into())
     }
 
@@ -12079,7 +12043,7 @@ impl BeeperGuiApp {
                             u.map(member_name).or_else(|| m.sender_name.clone()).unwrap_or_else(|| m.sender_id.clone());
                         let title = row![
                             ell(&name, 160.0, 11.0, Weight::Semibold).line_height(Pixels(14.0)).color(p.strong),
-                            txt(list_ts(&m.timestamp, h24), 10.0).line_height(Pixels(12.0)).color(dim)
+                            txt(list_ts(&m.timestamp, h24), 10.0).color(dim)
                         ]
                         .spacing(6)
                         .align_y(iced::Bottom);
@@ -12090,7 +12054,7 @@ impl BeeperGuiApp {
                         (row![face, lines(title.into(), &text)], jump)
                     }
                     None if st.bookmarked.contains_key(target) => {
-                        let title = semi(tr("Message unavailable"), 11.0).line_height(Pixels(14.0)).color(p.strong);
+                        let title = semi(tr("Message unavailable"), 11.0).color(p.strong);
                         let remove = button(ic(icon::CLOSE, 16.0).color(p.sub))
                             .padding(4)
                             .style(btn_style([CLEAR; 3], [p.sub; 3], 8.0))
@@ -12099,8 +12063,7 @@ impl BeeperGuiApp {
                         (row![blank(), lines(title.into(), text), remove], None)
                     }
                     None => {
-                        let title =
-                            semi(tr("Loading…"), 11.0).line_height(Pixels(14.0)).color(p.strong.scale_alpha(0.5));
+                        let title = semi(tr("Loading…"), 11.0).color(p.strong.scale_alpha(0.5));
                         (row![blank(), lines(title.into(), "")], None)
                     }
                 };
@@ -12115,8 +12078,8 @@ impl BeeperGuiApp {
         let body: El = match rows.is_empty() {
             true => container(
                 column![
-                    semi(tr("No Bookmarks"), 11.0).line_height(Pixels(14.0)).color(p.strong),
-                    txt(tr("Bookmarked messages will appear here."), 10.0).line_height(Pixels(12.0)).color(p.sub)
+                    semi(tr("No Bookmarks"), 11.0).color(p.strong),
+                    txt(tr("Bookmarked messages will appear here."), 10.0).color(p.sub)
                 ]
                 .spacing(4)
                 .align_x(Center),
@@ -12128,15 +12091,11 @@ impl BeeperGuiApp {
             false => grouped_rows(p, rows),
         };
         let toggle = expandable.then(|| {
-            button(
-                semi(tr(if self.info_bookmarks { "Show less" } else { "Show all" }), 11.0)
-                    .line_height(Pixels(14.0))
-                    .color(p.accent),
-            )
-            .bare(p.accent)
-            .on_press(UiMessage::InfoBookmarks)
+            button(semi(tr(if self.info_bookmarks { "Show less" } else { "Show all" }), 11.0).color(p.accent))
+                .bare(p.accent)
+                .on_press(UiMessage::InfoBookmarks)
         });
-        let head = row![txt(tr("Bookmarks"), 11.0).line_height(Pixels(14.0)).color(p.strong), Space::new().width(Fill)]
+        let head = row![txt(tr("Bookmarks"), 11.0).color(p.strong), Space::new().width(Fill)]
             .push(toggle)
             .align_y(Center)
             .padding(8);
@@ -12171,8 +12130,7 @@ impl BeeperGuiApp {
         let searchable = all.len() > 6;
         let shown = if self.info_all { rows.len() } else { rows.len().min(6 - usize::from(invite)) };
         let add = invite.then(|| {
-            let face =
-                row![tinted(&ADD_ACCOUNT, 28.0, p.strong), semi(tr("Add Members"), 13.0).line_height(Pixels(16.0))];
+            let face = row![tinted(&ADD_ACCOUNT, 28.0, p.strong), semi(tr("Add Members"), 13.0)];
             button(face.spacing(8).align_y(Center))
                 .padding(4)
                 .width(Fill)
@@ -12189,7 +12147,7 @@ impl BeeperGuiApp {
             let label = row![ell(&name, 224.0 - tag_w - you_w, 13.0, Weight::Semibold)
                 .line_height(Pixels(16.0))
                 .color(p.strong)]
-            .push(you.map(|y| txt(y, 13.0).line_height(Pixels(16.0)).color(p.strong)));
+            .push(you.map(|y| txt(y, 13.0).color(p.strong)));
             let line = row![self.face(u.img_url.as_deref(), &name, 28.0, 0.0), label]
                 .push(Space::new().width(Fill))
                 .push(tag.map(|t| {
@@ -12225,7 +12183,7 @@ impl BeeperGuiApp {
                 true => tinted(&MAT_EXPAND_LESS, 20.0, p.strong),
                 false => ic(icon::EXPAND_MORE, 20.0).color(p.strong).into(),
             };
-            let face = row![semi(toggle_label, 13.0).line_height(Pixels(16.0)), chevron].align_y(Center);
+            let face = row![semi(toggle_label, 13.0), chevron].align_y(Center);
             button(container(face).center_x(Fill))
                 .padding(2)
                 .style(btn_style([CLEAR; 3], [p.strong; 3], 9999.0))
@@ -12238,12 +12196,9 @@ impl BeeperGuiApp {
             .push(toggle)
             .spacing(6)
             .padding(if searchable { Padding::new(8.0).top(0.0) } else { Padding::new(8.0) });
-        let less = (expandable && self.info_all).then(|| {
-            button(semi(tr("Show less"), 11.0).line_height(Pixels(14.0)).color(p.accent))
-                .bare(p.accent)
-                .on_press(UiMessage::InfoAll)
-        });
-        let head = row![txt(tr("Members"), 11.0).line_height(Pixels(14.0)).color(p.strong), Space::new().width(Fill)]
+        let less = (expandable && self.info_all)
+            .then(|| button(semi(tr("Show less"), 11.0).color(p.accent)).bare(p.accent).on_press(UiMessage::InfoAll));
+        let head = row![txt(tr("Members"), 11.0).color(p.strong), Space::new().width(Fill)]
             .push(less)
             .align_y(Center)
             .padding(8);
@@ -12312,7 +12267,7 @@ impl BeeperGuiApp {
         if self.cmd_bar_commands_mode {
             let cmds = self.commands(&st, self.command_palette_query.trim());
             let header = self.cmd_submenu.as_ref().filter(|m| !m.heading().is_empty()).map(|m| {
-                let heading = txt(m.heading(), 13.0).line_height(Pixels(16.0)).color(p.strong);
+                let heading = txt(m.heading(), 13.0).color(p.strong);
                 let clock = match m {
                     commands::SubMenu::AddMembers => Some(tinted(&ADD_ACCOUNT, 20.0, p.strong)),
                     _ => schedule.then(|| tinted(&COMPOSER_ICONS[6], 20.0, p.strong)),
@@ -12336,8 +12291,7 @@ impl BeeperGuiApp {
                 };
                 let line =
                     container(Space::new()).width(Fill).height(2).style(fill_box(p.strong.scale_alpha(0.1), 0.0));
-                let note =
-                    container(txt(note, 13.0).line_height(Pixels(16.0)).color(p.sub)).center_y(44).padding([8, 13]);
+                let note = container(txt(note, 13.0).color(p.sub)).center_y(44).padding([8, 13]);
                 column![line, container(note).width(Fill).style(fill_box(p.chip, iced::border::bottom(18)))]
             });
             let body = column![].push(header).push(inputs).push(self.view_commands(&st, &cmds));
@@ -12499,7 +12453,7 @@ impl BeeperGuiApp {
                 (None, None, Some(a)) => {
                     let kind = file_kind(a.mime_type.as_deref());
                     let name = a.file_name.clone().unwrap_or_else(|| tr("Attachment").into());
-                    card(name, semi(kind, 10.0).line_height(Pixels(12.0)).color(p.text).into())
+                    card(name, semi(kind, 10.0).color(p.text).into())
                 }
                 (None, None, None) => {
                     let text = m.text.clone().expect("a link message has text");
@@ -12814,12 +12768,9 @@ impl BeeperGuiApp {
         };
         if self.join_matrix_mode {
             let back = button(
-                row![
-                    tinted(&SYS_ARROW_BACK, 18.0, p.strong),
-                    txt(tr("Back"), 12.0).line_height(Pixels(15.0)).color(p.strong)
-                ]
-                .spacing(4)
-                .align_y(Center),
+                row![tinted(&SYS_ARROW_BACK, 18.0, p.strong), txt(tr("Back"), 12.0).color(p.strong)]
+                    .spacing(4)
+                    .align_y(Center),
             )
             .padding([4, 6])
             .style(ghost(p, 6.0))
@@ -13140,7 +13091,7 @@ impl BeeperGuiApp {
     ) -> container::Container<'a, UiMessage> {
         let p = &self.pal;
         let segments = labels.enumerate().flat_map(|(i, label)| {
-            let label = txt(label, 11.0).line_height(Pixels(14.0)).color(p.text);
+            let label = txt(label, 11.0).color(p.text);
             let bg = if i == at { p.chip } else { CLEAR };
             let segment = button(label).padding([2, 8]).style(btn_style([bg; 3], [p.text; 3], 20.0)).on_press(msg(i));
             [(i > 0).then(|| Space::new().width(Fill).into()), Some(segment.into())].into_iter().flatten()
@@ -13274,7 +13225,7 @@ impl BeeperGuiApp {
                         .push(muted.then(|| ic(icon::NOTIFICATIONS_OFF, 12.0).color(p.strong)))
                         .spacing(2)
                         .align_y(Center);
-                    let sub = space_subtitle(&st, id).map(|t| txt(t, 11.0).line_height(Pixels(14.0)).color(p.sub));
+                    let sub = space_subtitle(&st, id).map(|t| txt(t, 11.0).color(p.sub));
                     let handle = mouse_area(container(tinted(&DRAG_HANDLE, 20.0, p.sub)).center(28))
                         .interaction(iced::mouse::Interaction::Grab)
                         .on_press(edit(SpacesEdit::Drag(id.clone())));
@@ -13319,15 +13270,12 @@ impl BeeperGuiApp {
                 })
                 .collect()
         };
-        let header =
-            |label: &'static str| container(txt(label, 12.0).line_height(Pixels(15.0)).color(p.sub)).padding([8, 0]);
+        let header = |label: &'static str| container(txt(label, 12.0).color(p.sub)).padding([8, 0]);
         let hidden = found(&d.order[split + 1..]);
         let empty = hidden.is_empty().then(|| {
             let fill = if dragged.is_some() { CLEAR } else { p.received };
-            let msg = container(txt(tr("No Hidden Spaces"), 13.0).line_height(Pixels(16.0)).color(p.sub))
-                .center_x(Fill)
-                .center_y(56)
-                .style(move |_: &Theme| container::Style {
+            let msg = container(txt(tr("No Hidden Spaces"), 13.0).color(p.sub)).center_x(Fill).center_y(56).style(
+                move |_: &Theme| container::Style {
                     background: Some(fill.into()),
                     border: iced::Border {
                         color: p.received,
@@ -13335,7 +13283,8 @@ impl BeeperGuiApp {
                         radius: 12.0.into(),
                     },
                     ..Default::default()
-                });
+                },
+            );
             mouse_area(msg).on_enter(edit(SpacesEdit::Over(String::new())))
         });
         let list = column![header(trx("Pinned", "edit spaces section header"))]
@@ -13360,9 +13309,7 @@ impl BeeperGuiApp {
                 .on_press(edit(SpacesEdit::NewLabel));
             container(link).center_x(Fill).padding(Padding { top: 8.0, right: 0.0, bottom: 4.0, left: 0.0 })
         });
-        let head = container(semi(tr("Edit Spaces"), 13.0).line_height(Pixels(16.0)).color(p.strong))
-            .center_x(Fill)
-            .padding([8, 0]);
+        let head = container(semi(tr("Edit Spaces"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
         let window = container(column![head, card].push(new)).padding(8).style(fill_box(p.window, 0.0));
         let window = mouse_area(window).on_release(edit(SpacesEdit::Drop));
         let Some((id, at)) = &d.menu else {

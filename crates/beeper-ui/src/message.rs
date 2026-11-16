@@ -391,13 +391,11 @@ impl BeeperGuiApp {
         let mono = (!st.settings.on("colorizeNetworkIcons")).then_some(p);
         let avatar = badged(self.chat_avatar(chat, 46.0, 0.0), &chat.account_id, 46.0, 16.0, mono, p.card);
         let title = semi(chat.title.clone(), 15.0).line_height(Pixels(20.0)).color(p.strong);
-        let username = username.map(|u| txt(u, 12.0).line_height(Pixels(15.0)).color(p.sub));
+        let username = username.map(|u| txt(u, 12.0).color(p.sub));
         let about = chat.description.clone().filter(|d| !d.is_empty());
-        let about = about.map(|d| txt(d, 13.0).line_height(Pixels(16.0)).color(p.sub).align_x(Center));
+        let about = about.map(|d| txt(d, 13.0).color(p.sub).align_x(Center));
         let profile = profile_link(chat).map(|url| {
-            button(semi(tr("View Profile"), 13.0).line_height(Pixels(16.0)).color(p.accent))
-                .bare(p.accent)
-                .on_press(UiMessage::OpenUrl(url))
+            button(semi(tr("View Profile"), 13.0).color(p.accent)).bare(p.accent).on_press(UiMessage::OpenUrl(url))
         });
         let col = column![avatar, column![title].push(username).align_x(Center)].push(about).push(profile);
         let col = col.spacing(10).align_x(Center).max_width(480).padding(Padding::new(24.0).bottom(32.0));
@@ -410,19 +408,19 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let inviter = chat.inviter().map(|u| {
             let name = semi(u.full_name.clone().unwrap_or_default(), 14.0).line_height(Pixels(18.0)).color(p.strong);
-            column![name, txt(format!("({})", u.id), 13.0).line_height(Pixels(16.0)).color(p.sub)].align_x(Center)
+            column![name, txt(format!("({})", u.id), 13.0).color(p.sub)].align_x(Center)
         });
         let group = chat.chat_type == "group";
         // Desktop does not translate these.
         let text = if group { "invited you to the group:" } else { "invited you to chat" };
-        let text = txt(text, 13.0).line_height(Pixels(16.0)).color(p.text);
+        let text = txt(text, 13.0).color(p.text);
         let title = group.then(|| semi(chat.title.clone(), 15.0).line_height(Pixels(20.0)).color(p.strong));
         let title = title.map(|t| container(t.align_x(Center)).padding(Padding::ZERO.top(10.0)));
         let about = chat.description.clone().filter(|d| !d.is_empty());
         let about = about.map(|d| container(txt(d, 13.0).color(p.text).align_x(Center)).padding([13, 0]));
         let (accept, decline) = crate::request_answers(chat);
         let pill = |label: &'static str, fg: Color, msg| {
-            let label = semi(label, 12.0).line_height(Pixels(15.0));
+            let label = semi(label, 12.0);
             button(label).padding([4, 8]).style(bordered_btn([p.card; 3], [fg; 3], p.chip, 1.0, 100.0)).on_press(msg)
         };
         let id = &chat.id;
@@ -441,7 +439,7 @@ impl BeeperGuiApp {
         let unread = chat.is_unread();
         (unread && st.incognito_indicator()).then(|| {
             let p = &self.pal;
-            let link = button(semi(tr("Mark as Read"), 11.0).line_height(Pixels(14.0)).color(p.accent))
+            let link = button(semi(tr("Mark as Read"), 11.0).color(p.accent))
                 .bare(p.accent)
                 .on_press(UiMessage::MarkRead(chat.id.clone()));
             let tip = self.tip(link.into(), tr("Mark as Read"), vec!["Ctrl", "Shift", "U"], tooltip::Position::Top);
@@ -467,9 +465,10 @@ impl BeeperGuiApp {
         let col = col.push(self.incognito_mark_read(&st, chat));
         let col = col.push(in_chat.then(|| self.view_scheduled(&st, chat)));
         let col = col.push(in_chat.then(|| self.view_request(&st, chat)));
-        let col = col.push(unavailable(&st, chat).map(|t| {
-            container(txt(t, 13.0).line_height(Pixels(16.0)).color(p.sub).align_x(Center)).center_x(Fill).center_y(52)
-        }));
+        let col = col.push(
+            unavailable(&st, chat)
+                .map(|t| container(txt(t, 13.0).color(p.sub).align_x(Center)).center_x(Fill).center_y(52)),
+        );
         // Desktop's `messages-list` keeps the messages at the bottom when they do not fill the view.
         let scroller = |col| {
             let col = container(col).align_y(Bottom);
@@ -497,14 +496,14 @@ impl BeeperGuiApp {
             container(close).align_right(Fill).padding(16).into()
         });
         let name_row = row![
-            semi(short_title(chat).to_string(), 13.0).line_height(Pixels(16.0)).color(p.fg),
+            semi(short_title(chat).to_string(), 13.0).color(p.fg),
             ic(icon::CHEVRON_RIGHT, 16.0).color(p.tertiary)
         ]
         .spacing(2)
         .align_y(Center);
         // Desktop's `thread-header-status`: the activity of the other person of a 1:1 chat under the name.
         let typing = st.typing.get(cid).filter(|ids| chat.chat_type == "single" && ids.len() == 1);
-        let status = typing.map(|_| txt("typing", 10.0).line_height(Pixels(12.0)).color(p.sub));
+        let status = typing.map(|_| txt("typing", 10.0).color(p.sub));
         let pill = button(column![name_row].push(status).align_x(Center))
             .padding(Padding::new(6.0).left(10.5).right(2.5))
             .style(btn_style([p.window, p.selected, p.selected], [p.text; 3], 14.0))
@@ -576,7 +575,7 @@ impl BeeperGuiApp {
         // Desktop's `ThreadComposerDisabled` in place of the composer: a link to the new chat of an upgraded chat, or
         // "You blocked __NAME__. Unblock".
         let disabled = |lead: String, link: &str, end: &str, msg| -> El<'_> {
-            let part = |t: String, c: Color| txt(t, 13.0).line_height(Pixels(16.0)).color(c);
+            let part = |t: String, c: Color| txt(t, 13.0).color(c);
             let link = row![part(lead, p.sub), part(link.into(), p.text), part(end.into(), p.sub)];
             let link = button(container(link).center_x(Fill).center_y(36))
                 .padding(8)
@@ -666,11 +665,11 @@ impl BeeperGuiApp {
                 .padding([6, 0])
                 .into();
         }
-        let label = txt(format!("🫣 {}", tr("Unread until you reply")), 11.0).line_height(Pixels(14.0));
+        let label = txt(format!("🫣 {}", tr("Unread until you reply")), 11.0);
         let days = st.features.trial_days_left().map(|n| {
             let n = n as usize;
             let days = trn("%d more day of free incognito mode", "%d more days of free incognito mode", n, &[&n]);
-            txt(days, 11.0).line_height(Pixels(14.0)).color(p.sub)
+            txt(days, 11.0).color(p.sub)
         });
         let label = column![label.color(p.on_secondary)].push(days).spacing(2).align_x(Center);
         row![line(), label, line()].spacing(10).align_y(Center).padding([12, 0]).into()
@@ -721,13 +720,12 @@ impl BeeperGuiApp {
         let n = chat.unread_count as usize;
         let body: El<'a> = if n > 0 {
             let count = if n >= 1000 { "999+".to_string() } else { n.to_string() };
-            let count = semi(count, 13.0).line_height(Pixels(16.0)).color(fade(Color::WHITE)).center();
+            let count = semi(count, 13.0).color(fade(Color::WHITE)).center();
             let count = container(count.width(Length::Shrink)).padding([0, 4]).style(fill_box(fade(p.accent), 20.0));
-            let label = semi(trn("New Message", "New Messages", n, &[]), 13.0).line_height(Pixels(16.0));
+            let label = semi(trn("New Message", "New Messages", n, &[]), 13.0);
             let keys = prefs::hotkey_label(st.settings.hotkey_keys("Scroll to the bottom of a chat"));
-            let keys = keys.split(' ').map(|k| -> El<'a> {
-                semi(k.to_string(), 13.0).line_height(Pixels(16.0)).color(fade(p.accent)).center().into()
-            });
+            let keys =
+                keys.split(' ').map(|k| -> El<'a> { semi(k.to_string(), 13.0).color(fade(p.accent)).center().into() });
             let keys = Row::with_children(keys);
             row![count, label.color(fade(p.accent)), keys].spacing(7).align_y(Center).into()
         } else {
@@ -804,7 +802,7 @@ impl BeeperGuiApp {
             let day_changed = prev.is_none_or(|q| day_num(&q.timestamp) != day_num(&m.timestamp));
             let mut head = Column::new().push(prev.map(|q| Space::new().height(gap_below(q, m))));
             if day_changed {
-                let label = semi(day_label(&m.timestamp), 11.0).line_height(Pixels(14.0)).color(p.on_secondary);
+                let label = semi(day_label(&m.timestamp), 11.0).color(p.on_secondary);
                 let pill = container(label).padding([5, 9]).style(bordered_box(p.card, p.chip, 1.0, 12.0));
                 head = head.push(container(pill).center_x(Fill).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
             }
@@ -827,7 +825,7 @@ impl BeeperGuiApp {
                 let dim = self.wallpaper_fg(st, chat, thread).unwrap_or(p.muted).scale_alpha(0.75);
                 if size >= 3 && i == s {
                     let label = row![
-                        txt(format!("{size} Membership Events"), 11.0).line_height(Pixels(14.0)).color(dim),
+                        txt(format!("{size} Membership Events"), 11.0).color(dim),
                         txt(if open { tr("Collapse") } else { tr("Expand") }, 11.0).color(p.accent.scale_alpha(0.75))
                     ];
                     let toggle = button(label.spacing(4))
@@ -839,7 +837,7 @@ impl BeeperGuiApp {
                 }
                 if size < 3 || open {
                     let gap = if size >= 3 { Space::new().height(6) } else { Space::new() };
-                    let line = txt(m.text.clone().expect("membership text"), 11.0).line_height(Pixels(14.0));
+                    let line = txt(m.text.clone().expect("membership text"), 11.0);
                     let line = container(line.color(dim).align_x(Center)).center_x(Fill).padding([2, 0]);
                     rows = rows.push(head.push(gap).push(line));
                 }
@@ -945,7 +943,7 @@ impl BeeperGuiApp {
                 .height(13)
                 .style(move |_, _| svg::Style { color: Some(fg) });
             let text = tr(if m.removed { "Removed from Beeper" } else { "This message has been deleted" });
-            let body = row![icon, txt(text, 13.0).line_height(Pixels(16.0)).font(italic).color(fg)];
+            let body = row![icon, txt(text, 13.0).font(italic).color(fg)];
             container(body.spacing(5).align_y(iced::Bottom))
                 .padding(Padding::new(13.0).top(9.0).bottom(7.0))
                 .style(bordered_box(CLEAR, mix(p.card, p.received, 0.8), 1.0, 17.0))
@@ -1078,10 +1076,7 @@ impl BeeperGuiApp {
                     // Desktop's `AttachmentFileRow`: at most 240 px wide, the name in `body-sm` on two lines at most,
                     // and the details in `label-sm`.
                     let info = column![clamp(&name, 186.0, 2, 13.0, Weight::Semibold).line_height(Pixels(16.0))]
-                        .push(
-                            (!meta.is_empty())
-                                .then(|| txt(meta.join(" · "), 11.0).line_height(Pixels(14.0)).color(p.sub)),
-                        )
+                        .push((!meta.is_empty()).then(|| txt(meta.join(" · "), 11.0).color(p.sub)))
                         .spacing(4);
                     let line = row![tinted(file_icon(a), 24.0, p.strong), info].spacing(8).align_y(Center);
                     button(container(line).max_width(240.0 - 2.0 * BUBBLE_PAD_X))
@@ -1114,7 +1109,7 @@ impl BeeperGuiApp {
         } else if jumbo(&text) {
             parts = parts.push(container(txt(text.clone(), 48.0)).padding([0, 12]));
         } else if utd {
-            let line = txt(text.clone(), 13.0).line_height(Pixels(16.0)).font(italic).color(fg.scale_alpha(0.8));
+            let line = txt(text.clone(), 13.0).font(italic).color(fg.scale_alpha(0.8));
             let time = st.settings.on("showTimestamps").then(|| {
                 let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
                 txt(time, 11.0).color(if mine { sent_meta } else { p.sub })
@@ -1248,10 +1243,10 @@ impl BeeperGuiApp {
             );
         }
         let open = self.pane().expanded_history_msg_id.as_ref() == Some(&m.id);
-        let label = |t: String| txt(t, 12.0).line_height(Pixels(15.0)).color(muted);
+        let label = |t: String| txt(t, 12.0).color(muted);
         // Desktop's `EditedLabel` shows on an edited message that is not deleted, failed or retrying.
         let edited = (m.edited() && m.is_deleted != Some(true) && m.send_error.is_none()).then(|| -> El<'a> {
-            let small = |t: &str| txt(t.to_string(), 11.0).line_height(Pixels(14.0));
+            let small = |t: &str| txt(t.to_string(), 11.0);
             if m.edit_history.is_empty() {
                 return small(tr("Edited")).color(muted).into();
             }
@@ -1264,15 +1259,14 @@ impl BeeperGuiApp {
         });
         let replies = (replies > 0).then(|| -> El<'a> {
             let n = trnx("%d Reply", "%d Replies", replies, "button label for replies to a message", &[&replies]);
-            button(semi(n, 10.0).line_height(Pixels(12.0)).color(muted))
+            button(semi(n, 10.0).color(muted))
                 .padding(0)
                 .style(|_, _| button::Style::default())
                 .on_press(UiMessage::ShowReplies(m.id.clone()))
                 .into()
         });
-        let broadcast = (in_pane && m.broadcast).then(|| -> El<'a> {
-            txt(tr("Also sent to the chat"), 11.0).line_height(Pixels(14.0)).color(muted).into()
-        });
+        let broadcast =
+            (in_pane && m.broadcast).then(|| -> El<'a> { txt(tr("Also sent to the chat"), 11.0).color(muted).into() });
         let mut footer: Vec<El<'a>> =
             [status.map(|t| label(t).into()), replies, broadcast, edited].into_iter().flatten().collect();
         if !mine {
@@ -1511,7 +1505,7 @@ impl BeeperGuiApp {
             0 => trf("%s turned off disappearing messages.", &[&who]),
             t => trf("%1$s set new messages to disappear after %2$s.", &[&who, &timer_distance(t)]),
         };
-        let small = |s: String, c: Color| semi(s, 11.0).line_height(Pixels(14.0)).color(c);
+        let small = |s: String, c: Color| semi(s, 11.0).color(c);
         let change = last.then(|| {
             button(small(tr("Change Setting").into(), p.accent))
                 .padding(Padding::ZERO.left(4.0))

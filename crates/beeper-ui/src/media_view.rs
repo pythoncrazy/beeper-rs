@@ -584,14 +584,14 @@ impl BeeperGuiApp {
         let media = self.media_messages(&st);
         let items = media_items(&st, &media, w);
         // Desktop's `label-sm` (11/14) and `body-sm` (13/16) type of the Media window.
-        let sub = |s: String| txt(s, 11.0).line_height(Pixels(14.0)).color(p.on_secondary);
+        let sub = |s: String| txt(s, 11.0).color(p.on_secondary);
         // Desktop's `BrandSegmentControl`: the highlight slides to the selected tab in `0.25s`.
         let widths = MEDIA_TABS.map(|l| text_width(tr(l), 11.0, Weight::Normal) + 16.0);
         let (from, t) = w.tab_at.map_or((w.tab, 1.0), |(from, at)| (from, at.elapsed().as_secs_f32() / TAB_SLIDE));
         let (x, hw) = slide(&widths, (from, w.tab), t);
         let highlight = container(Space::new().width(hw).height(18)).style(fill_box(p.chip, 20.0));
         let tabs = MEDIA_TABS.iter().zip(widths).enumerate().map(|(i, (label, width))| -> El<'a> {
-            let label = txt(tr(label), 11.0).line_height(Pixels(14.0)).color(p.strong);
+            let label = txt(tr(label), 11.0).color(p.strong);
             button(container(label).center_x(Fill))
                 .width(width)
                 .padding([2, 8])
@@ -676,10 +676,9 @@ impl BeeperGuiApp {
                         let m = &media[i];
                         let a = &m.attachments[k];
                         let badge = match (a.is_gif == Some(true), a.attachment_type == "video") {
-                            (true, _) => Some(row![semi(tr("GIF"), 11.0).line_height(Pixels(14.0))]),
+                            (true, _) => Some(row![semi(tr("GIF"), 11.0)]),
                             (false, true) => {
-                                let time =
-                                    a.duration.map(|d| semi(voice::clock(d as f32), 11.0).line_height(Pixels(14.0)));
+                                let time = a.duration.map(|d| semi(voice::clock(d as f32), 11.0));
                                 Some(row![tinted(video_icon, 12.0, Color::WHITE)].push(time).spacing(2).align_y(Center))
                             }
                             _ => None,
@@ -785,10 +784,7 @@ impl BeeperGuiApp {
         });
         let more = w.shown < items.len();
         let list: El<'a> = match items.is_empty() {
-            true => container(txt(tr("Nothing here"), 13.0).line_height(Pixels(16.0)).color(p.on_secondary))
-                .center_x(Fill)
-                .padding(16)
-                .into(),
+            true => container(txt(tr("Nothing here"), 13.0).color(p.on_secondary)).center_x(Fill).padding(16).into(),
             false => scrollable(body.push(Space::new().height(8)))
                 .direction(bar())
                 .height(Fill)
@@ -798,8 +794,7 @@ impl BeeperGuiApp {
                 )
                 .into(),
         };
-        let title =
-            container(semi(tr("Media"), 13.0).line_height(Pixels(16.0)).color(p.strong)).center_x(Fill).padding([8, 0]);
+        let title = container(semi(tr("Media"), 13.0).color(p.strong)).center_x(Fill).padding([8, 0]);
         let footer = w.select.then(|| {
             let bytes: u64 = match w.tab {
                 1 => 0,
@@ -812,13 +807,12 @@ impl BeeperGuiApp {
             };
             let act = |label, msg: Option<UiMessage>| -> El<'a> {
                 let a = if msg.is_some() { 1.0 } else { 0.5 };
-                let b =
-                    button(semi(label, 11.0).line_height(Pixels(14.0)).color(p.strong.scale_alpha(a))).padding([4, 8]);
+                let b = button(semi(label, 11.0).color(p.strong.scale_alpha(a))).padding([4, 8]);
                 b.style(btn_style([p.chip.scale_alpha(a); 3], [p.strong; 3], 12.0)).on_press_maybe(msg).into()
             };
             let picked = w.picked.clone();
             let bar = row![
-                semi(count, 13.0).line_height(Pixels(16.0)).color(p.strong),
+                semi(count, 13.0).color(p.strong),
                 Space::new().width(Fill),
                 act(tr("Delete"), (n > 0).then(|| UiMessage::MediaAskDelete(picked))),
                 act(tr("Save"), (n > 0 && w.tab != 1).then_some(UiMessage::MediaSave)),

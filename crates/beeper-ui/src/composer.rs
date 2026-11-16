@@ -893,7 +893,7 @@ impl BeeperGuiApp {
                     let ext = std::path::Path::new(&pm.name).extension().map(|e| e.to_string_lossy().to_uppercase());
                     let meta = ext.into_iter().chain([human_size(pm.bytes.len() as u64)]).collect::<Vec<_>>();
                     let name = clamp(&pm.name, 190.0, 2, 11.0, Weight::Semibold).line_height(Pixels(14.0));
-                    let info = column![name, txt(meta.join(" ・ "), 11.0).line_height(Pixels(14.0))].spacing(4);
+                    let info = column![name, txt(meta.join(" ・ "), 11.0)].spacing(4);
                     let icon = &FILE_ICONS[if pm.mime.starts_with("audio") { 3 } else { 0 }];
                     let line = row![tinted(icon, 20.0, p.strong), info].spacing(8).align_y(Center);
                     container(column![line, Space::new().width(158)])
@@ -956,10 +956,7 @@ impl BeeperGuiApp {
                             .as_ref()
                             .map(|(_, h)| image(h.clone()).width(180).height(101).content_fit(iced::ContentFit::Cover));
                         let wide = if img.is_some() { 158.0 } else { 338.0 };
-                        let link = row![
-                            ic(icon::LINK, 12.0).color(p.weak),
-                            txt(host, 11.0).line_height(Pixels(14.0)).color(p.weak)
-                        ];
+                        let link = row![ic(icon::LINK, 12.0).color(p.weak), txt(host, 11.0).color(p.weak)];
                         let text = column![
                             clamp(title, wide, 3, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(p.strong),
                             link.spacing(4).align_y(Center)
@@ -980,7 +977,7 @@ impl BeeperGuiApp {
         let draft = !pane.composer.text().trim().is_empty() || !pane.attachments.is_empty();
         let shown = pane.thread_root.is_some() && pane.editing_message_id.is_none() && (draft || pane.broadcast);
         let broadcast = (shown && can_broadcast(st, chat)).then(|| -> El<'a> {
-            let label = txt(tr("Also send to chat"), 13.0).line_height(Pixels(16.0)).color(p.sub);
+            let label = txt(tr("Also send to chat"), 13.0).color(p.sub);
             let line = row![checkbox(p, pane.broadcast), label].spacing(4).align_y(Center);
             let toggle = mouse_area(container(line).padding(Padding::ZERO.left(1.0).bottom(6.0)));
             toggle.on_press(UiMessage::SetBroadcast(!pane.broadcast)).into()
@@ -999,7 +996,7 @@ impl BeeperGuiApp {
                 let when = if no_reply { trf("%s if no reply", &[&when]) } else { when };
                 let details = row![
                     tinted(&COMPOSER_ICONS[6], 20.0, p.accent),
-                    semi(when, 11.0).line_height(Pixels(14.0)).color(p.accent),
+                    semi(when, 11.0).color(p.accent),
                     tinted(&CHEVRON_DOWN, 14.0, p.accent)
                 ];
                 let details =
