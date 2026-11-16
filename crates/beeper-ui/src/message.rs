@@ -4,7 +4,7 @@
 use crate::i18n::{tr, trf, trn, trnx, trx, trxf};
 use crate::style::{
     bold, bordered_box, bordered_btn, btn_style, clamp, ell, fill_box, fw, hex, ic, icon, med, mix, pane_card, pick,
-    scroll_style, semi, shadow_box, stable_bar, txt, CLEAR, GUTTER,
+    scroll_style, semi, shadow_box, stable_bar, txt, Bare, CLEAR, GUTTER,
 };
 use crate::{
     anim, badged, brightness, can_thread, chat_theme, clock, commands, copy_text, day_label, day_num, day_of,
@@ -396,8 +396,7 @@ impl BeeperGuiApp {
         let about = about.map(|d| txt(d, 13.0).line_height(Pixels(16.0)).color(p.sub).align_x(Center));
         let profile = profile_link(chat).map(|url| {
             button(semi(tr("View Profile"), 13.0).line_height(Pixels(16.0)).color(p.accent))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                .bare(p.accent)
                 .on_press(UiMessage::OpenUrl(url))
         });
         let col = column![avatar, column![title].push(username).align_x(Center)].push(about).push(profile);
@@ -443,8 +442,7 @@ impl BeeperGuiApp {
         (unread && st.incognito_indicator()).then(|| {
             let p = &self.pal;
             let link = button(semi(tr("Mark as Read"), 11.0).line_height(Pixels(14.0)).color(p.accent))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                .bare(p.accent)
                 .on_press(UiMessage::MarkRead(chat.id.clone()));
             let tip = self.tip(link.into(), tr("Mark as Read"), vec!["Ctrl", "Shift", "U"], tooltip::Position::Top);
             container(tip).center_x(Fill).padding(Padding::new(10.0).bottom(6.5).left(0.0).right(0.0)).into()
@@ -1418,8 +1416,7 @@ impl BeeperGuiApp {
                     None => trx("Download", "message attachment action").into(),
                 };
                 let button = button(ic(icon::DOWNLOAD, 20.0))
-                    .padding(0)
-                    .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                    .bare(p.accent)
                     .on_press(UiMessage::Download(m.id.clone(), Some(0)));
                 let gap = if mine { Padding::ZERO.right(12.0) } else { Padding::ZERO.left(12.0) };
                 container(self.tip(button.into(), tip, vec![], tooltip::Position::Top)).padding(gap).into()

@@ -3,7 +3,7 @@
 use crate::i18n::{tr, trf, trn, trx};
 use crate::style::{
     bar, bold, bordered_box, btn_style, ell, fill_box, fw, ic, icon, input_style, med, mix, scroll_style, semi,
-    shadow_box, text_width, txt, CLEAR,
+    shadow_box, text_width, txt, Bare, CLEAR,
 };
 use crate::{
     badge, blocked_chats, chat_search_subtitle, checkbox, checkbox_plus, delete_dialog, grouped_rows, human_size,
@@ -910,8 +910,7 @@ impl BeeperGuiApp {
                     let toggle = more.map(|open| {
                         let label = semi(if open { tr("Show less") } else { tr("Show more") }, 10.0);
                         button(label.line_height(Pixels(12.0)).color(p.accent))
-                            .padding(0)
-                            .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                            .bare(p.accent)
                             .on_press(edit(LabelEdit::More))
                     });
                     row![txt(tr(name), 12.0).line_height(Pixels(15.0)).color(p.sub).width(Fill)]
@@ -1173,13 +1172,7 @@ impl BeeperGuiApp {
         };
         let remove = (can(1) && shown).then(|| {
             let label = txt(tr("Remove Photo"), 11.0).line_height(Pixels(14.0)).color(p.accent);
-            container(
-                button(label)
-                    .padding(0)
-                    .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
-                    .on_press(edit(GroupEdit::Remove)),
-            )
-            .center_x(Fill)
+            container(button(label).bare(p.accent).on_press(edit(GroupEdit::Remove))).center_x(Fill)
         });
         let hint = match d.personal {
             true => Some(c.room_title()).filter(|t| !t.is_empty()).unwrap_or(tr("Chat Name")),

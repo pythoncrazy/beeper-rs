@@ -1,6 +1,6 @@
 //! Desktop's audio player (`Audio.tsx`): decoding, the waveform, playback speed, and autoplay of the next
 //! voice note.
-use crate::style::{btn_style, clamped, fill_box, hidden_slider, ic, icon, semi, shadow_box, text_width, txt, CLEAR};
+use crate::style::{btn_style, clamped, fill_box, hidden_slider, ic, icon, semi, shadow_box, text_width, txt, Bare};
 use crate::{menu_item, sound, tinted, tr, BeeperGuiApp, El, UiMessage, AVATAR_SLOTS, MENU_ITEM};
 use beeper_core::models::{Attachment, Message, Transcription};
 use beeper_core::store::BeeperStore;
@@ -544,10 +544,7 @@ impl BeeperGuiApp {
             None => Space::new().width(wave_w).height(20).into(),
         };
         let playing = track.is_some_and(|t| t.since.is_some());
-        let play = button(tinted(&ICONS[usize::from(playing)], 20.0, fg))
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [fg; 3], 0.0))
-            .on_press_maybe(toggle);
+        let play = button(tinted(&ICONS[usize::from(playing)], 20.0, fg)).bare(fg).on_press_maybe(toggle);
         let speed = ready.map(|_| {
             button(semi(rate, 11.0).line_height(Pixels(14.0)).color(Color::WHITE))
                 .padding([1, 4])
@@ -625,7 +622,7 @@ impl BeeperGuiApp {
         let clip = self.audio.clip(&t.url)?;
         let (p, pos) = (&self.pal, self.audio.pos(t));
         let icon_btn = |i: usize, size: f32, color: Color, msg: Option<UiMessage>| -> El<'a> {
-            let b = button(tinted(&ICONS[i], size, color)).padding(0).style(btn_style([CLEAR; 3], [color; 3], 0.0));
+            let b = button(tinted(&ICONS[i], size, color)).bare(color);
             b.on_press_maybe(msg).into()
         };
         let skip = |i: usize, forward: bool| {
@@ -646,7 +643,7 @@ impl BeeperGuiApp {
         let time = row![].push(elapsed).push(close).spacing(8).align_y(Center).padding(Padding::ZERO.left(4));
         let chat = st.resolve_chat_idx(&t.chat).map(|i| &st.chats[i]).filter(|_| w > 163.0);
         let avatar = chat.map(|c| {
-            let b = button(self.chat_avatar(c, 28.0, 0.0)).padding(0).style(btn_style([CLEAR; 3], [p.strong; 3], 0.0));
+            let b = button(self.chat_avatar(c, 28.0, 0.0)).bare(p.strong);
             b.on_press(UiMessage::SelectChat(c.id.clone()))
         });
         let wave_w = w - 16.0 - avatar.as_ref().map_or(0.0, |_| 28.0) - if w > 101.0 { 60.0 } else { 20.0 } - time_w;

@@ -76,7 +76,7 @@ use crate::threads::{can_thread, Threads, THREAD_FRACTION};
 use crate::style::{
     bar, bordered_box, bordered_btn, brand_svg, btn_style, clamp, clamped, ell, ensure_fonts_loaded, fill_box, fw,
     glow_box, hex, ic, icon, initials, input_style, med, pick, pick_menu_style, pick_style, scroll_style, semi,
-    shadow_box, stable_bar, text_width, txt, Palette, AVATAR_GRADIENTS, CLEAR, GUTTER, SOLID_BARS,
+    shadow_box, stable_bar, text_width, txt, Bare, Palette, AVATAR_GRADIENTS, CLEAR, GUTTER, SOLID_BARS,
 };
 use beeper_core::cloud::{Cloud, KlipyGif};
 use beeper_core::config::{
@@ -3687,8 +3687,7 @@ pub struct BeeperGuiApp {
     pub status_banner: String,
     /// The text of Desktop's toast with a "Relaunch app" button, after a change that needs a relaunch.
     relaunch_toast: Option<&'static str>,
-    /// A button of the toast, shown only while the banner still is the text it was made for.
-    /// Desktop's archive and Low Priority toasts, shown only while the banner still is their text.
+    /// The newest toast with its icon and buttons, shown only while the banner still is the text it was made for.
     toast: Option<Toast>,
     /// The earlier toasts of Desktop's `toasts-list` that still show above the newest, each with the time it showed.
     older_toasts: Vec<(Toast, Duration)>,
@@ -9265,8 +9264,7 @@ impl BeeperGuiApp {
             true if total > 0 => button(
                 row![semi(votes, 13.0).line_height(Pixels(16.0)), tinted(&CHEVRON_RIGHT, 16.0, footer)].align_y(Center),
             )
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [footer; 3], 0.0))
+            .bare(footer)
             .on_press(UiMessage::OpenPollVotes(chat.id.clone(), m.id.clone()))
             .into(),
             true => Space::new().into(),
@@ -9305,8 +9303,7 @@ impl BeeperGuiApp {
                         false => (trf("Send %s", &[&send_day(s.send_on, h24)]), tr("Edit"), Weight::Semibold),
                     };
                     let edit = button(semi(edit, 11.0).line_height(Pixels(14.0)).color(p.accent))
-                        .padding(0)
-                        .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                        .bare(p.accent)
                         .on_press(UiMessage::ScheduledMenu(ids, false));
                     let line = row![]
                         .push((!s.canceled).then(|| tinted(&COMPOSER_ICONS[6], 12.0, fg)))
@@ -11563,15 +11560,11 @@ impl BeeperGuiApp {
             _ => edits.iter().flatten().any(|i| i.1.is_some()).then(|| UiMessage::OpenChatMenu(format!("info:{cid}"))),
         };
         let edit = button(semi(trx("Edit", "chat info edit button"), 11.0).color(p.accent))
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+            .bare(p.accent)
             .on_press_maybe(edit);
         let copy = UiMessage::OpenChatMenu(format!("copy:{cid}"));
         let title = mouse_area(
-            button(semi(chat.title.clone(), 15.0).color(p.strong).center())
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
-                .on_press(copy.clone()),
+            button(semi(chat.title.clone(), 15.0).color(p.strong).center()).bare(p.strong).on_press(copy.clone()),
         )
         .on_right_press(copy);
         let meta = |s: String| {
@@ -11602,7 +11595,7 @@ impl BeeperGuiApp {
         let small =
             |s: &'static str, w: Weight, c: Color| crate::style::t(s, 11.0, w).line_height(Pixels(14.0)).color(c);
         let link = |label: &'static str, w: Weight, msg: UiMessage| {
-            button(small(label, w, p.accent)).padding(0).style(btn_style([CLEAR; 3], [p.accent; 3], 0.0)).on_press(msg)
+            button(small(label, w, p.accent)).bare(p.accent).on_press(msg)
         };
         let desc_head = |btn: Option<_>| {
             row![small(tr("Group Description"), Weight::Normal, p.strong), Space::new().width(Fill)]
@@ -11735,8 +11728,7 @@ impl BeeperGuiApp {
                 chat.label_ids.iter().filter_map(|id| st.labels.iter().find(|l| l.id == *id)).collect();
             let edit = (!mine.is_empty()).then(|| {
                 button(semi(trx("Edit", "labels section button"), 11.0).line_height(Pixels(14.0)).color(p.accent))
-                    .padding(0)
-                    .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                    .bare(p.accent)
                     .on_press_maybe(open.clone())
             });
             let head =
@@ -11962,8 +11954,7 @@ impl BeeperGuiApp {
         let link = expandable.then(|| {
             let label = tr(if self.info_media.is_some() { "Show less" } else { "Show all" });
             button(semi(label, 11.0).line_height(Pixels(14.0)).color(p.accent))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                .bare(p.accent)
                 .on_press(UiMessage::InfoMedia(toggle))
         });
         let head = row![txt(tr("Media"), 11.0).line_height(Pixels(14.0)).color(p.strong), Space::new().width(Fill)]
@@ -11992,8 +11983,7 @@ impl BeeperGuiApp {
                 let title = txt(tr(title), 13.0).line_height(Pixels(16.0)).color(p.sub);
                 let menu = UiMessage::OpenChatMenu(format!("contact:{} {kind}", chat.id));
                 let value = button(txt(value?, 13.0).line_height(Pixels(16.0)).color(p.strong))
-                    .padding(0)
-                    .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
+                    .bare(p.strong)
                     .on_press(menu.clone());
                 let value = mouse_area(value).on_right_press(menu);
                 Some(column![container(title).padding([4, 0]), container(value).padding([4, 0])].into())
@@ -12113,8 +12103,7 @@ impl BeeperGuiApp {
                     .line_height(Pixels(14.0))
                     .color(p.accent),
             )
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+            .bare(p.accent)
             .on_press(UiMessage::InfoBookmarks)
         });
         let head = row![txt(tr("Bookmarks"), 11.0).line_height(Pixels(14.0)).color(p.strong), Space::new().width(Fill)]
@@ -12195,10 +12184,7 @@ impl BeeperGuiApp {
                     .padding([10, 12])
                     .style(input_style(CLEAR, p.strong, p.on_secondary, p.accent, 0.0));
             let clear = (!self.info_query.is_empty()).then(|| {
-                button(ic(icon::CLOSE, 20.0).color(p.sub))
-                    .padding(0)
-                    .style(btn_style([CLEAR; 3], [p.sub; 3], 0.0))
-                    .on_press(UiMessage::InfoQuery(String::new()))
+                button(ic(icon::CLOSE, 20.0).color(p.sub)).bare(p.sub).on_press(UiMessage::InfoQuery(String::new()))
             });
             let bar = row![ic(icon::SEARCH, 20.0).color(p.sub), input].push(clear).align_y(Center).padding([0, 8]);
             container(bar).padding(Padding::ZERO.top(8.0))
@@ -12224,8 +12210,7 @@ impl BeeperGuiApp {
             .padding(if searchable { Padding::new(8.0).top(0.0) } else { Padding::new(8.0) });
         let less = (expandable && self.info_all).then(|| {
             button(semi(tr("Show less"), 11.0).line_height(Pixels(14.0)).color(p.accent))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                .bare(p.accent)
                 .on_press(UiMessage::InfoAll)
         });
         let head = row![txt(tr("Members"), 11.0).line_height(Pixels(14.0)).color(p.strong), Space::new().width(Fill)]
@@ -12679,7 +12664,7 @@ impl BeeperGuiApp {
                 Some(_) => msg.clone(),
                 None => UiMessage::ToastAction(older, Box::new(msg.clone())),
             };
-            button(label).padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0)).on_press(action)
+            button(label).bare(fg).on_press(action)
         };
         // Desktop's 20 px icon sits in a 2rem box with a -8 px margin, so the toast stays 2rem tall.
         let glyph = t.icon.map(|i| container(tinted(&TOAST_ICONS[i], 20.0, fg)).center(20));

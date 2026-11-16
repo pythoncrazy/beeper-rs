@@ -1,7 +1,7 @@
 //! Desktop's inline video player (`Video/index.tsx`): frames streamed from ffmpeg, the sound track, and the hover
 //! controls.
 use crate::i18n::tr;
-use crate::style::{btn_style, fill_box, shadow_box, CLEAR};
+use crate::style::{btn_style, fill_box, shadow_box, Bare, CLEAR};
 use crate::{ic, icon, menu_item, menu_rule, sound, tinted, BeeperGuiApp, El, UiMessage, MENU_ITEM};
 use iced::gradient::Linear;
 use iced::widget::{button, column, container, hover, image, mouse_area, row, slider, stack, svg, Column, Space};
@@ -511,8 +511,7 @@ impl BeeperGuiApp {
     /// A white control of the played video, which works once the video is loaded.
     fn video_button<'a>(&self, v: &Video, glyph: &svg::Handle, msg: UiMessage) -> El<'a> {
         button(tinted(glyph, 20.0, Color::WHITE))
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [Color::WHITE; 3], 0.0))
+            .bare(Color::WHITE)
             .on_press_maybe(v.media.is_some().then_some(msg))
             .into()
     }

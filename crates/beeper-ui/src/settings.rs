@@ -4,7 +4,7 @@
 use crate::i18n::{tr, trf, trn, trnx, trs, trx};
 use crate::style::{
     bar, bold, bordered_box, bordered_btn, brand_svg, btn_style, ell, fill_box, fw, glow_box, gutter_style, hex, ic,
-    icon, input_style, med, scroll_style, semi, text_width, txt, Palette, Token, CLEAR,
+    icon, input_style, med, scroll_style, semi, text_width, txt, Bare, Palette, Token, CLEAR,
 };
 use crate::{
     ago, avatar, badge, blocked_chats, brand_key, checkbox, compact, distance, divider, downloads_dir, duration,
@@ -646,8 +646,7 @@ impl BeeperGuiApp {
             .style(input_style(CLEAR, p.strong, p.text, p.accent, 0.0));
         let clear = (!self.settings_query.is_empty()).then(|| {
             button(ic(icon::CLOSE, 12.0).color(p.strong))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
+                .bare(p.strong)
                 .on_press(UiMessage::SettingsQueryChanged(String::new()))
         });
         // Desktop's 16 px Material icon is scaled by 1.2 without a change to its 16 px box.
@@ -994,10 +993,7 @@ impl BeeperGuiApp {
                     .spacing(8)
                     .align_y(Center)
                     .padding(Padding::new(4.0).left(8.0).right(16.0));
-                    let row = button(line)
-                        .padding(0)
-                        .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
-                        .on_press(UiMessage::OpenAccount(Some(logo.into())));
+                    let row = button(line).bare(p.strong).on_press(UiMessage::OpenAccount(Some(logo.into())));
                     mouse_area(row).on_right_press(UiMessage::OpenChatMenu(format!("prefs:{logo}"))).into()
                 };
                 let me = st.me();
@@ -1034,8 +1030,7 @@ impl BeeperGuiApp {
                 let remaining = login::FREE_ACCOUNTS.saturating_sub(st.bridge_accounts.len());
                 let foot = column![
                     button(med(tr("Add an Account"), 13.0).color(p.accent))
-                        .padding(0)
-                        .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
+                        .bare(p.accent)
                         .on_press(UiMessage::ToggleAddAccount),
                     txt(trn("%d Free Account Remaining", "%d Free Accounts Remaining", remaining, &[&remaining]), 12.0)
                         .color(p.sub)
@@ -1340,10 +1335,7 @@ impl BeeperGuiApp {
             |inner: El<'a>| container(inner).width(Fill).style(bordered_box(p.prefs_group, p.prefs_border, 1.0, 8.0));
         let link = |label: &'static str, color: Color, size: f32, on: bool, msg| {
             let color = if on { color } else { Color { a: 0.4, ..color } };
-            button(txt(tr(label), size).line_height(1.4).color(color))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [color; 3], 0.0))
-                .on_press_maybe(on.then_some(msg))
+            button(txt(tr(label), size).line_height(1.4).color(color)).bare(color).on_press_maybe(on.then_some(msg))
         };
         let warning = || {
             let warn =
@@ -1421,10 +1413,7 @@ impl BeeperGuiApp {
                     .spacing(12)
                     .align_y(Center)
                     .padding([12, 16]);
-                let line = button(line)
-                    .padding(0)
-                    .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
-                    .on_press(UiMessage::StorageChat(id.into()));
+                let line = button(line).bare(p.text).on_press(UiMessage::StorageChat(id.into()));
                 let panel = open.then(|| {
                     let busy = s.clearing == Some(2);
                     let panel = column![
@@ -1479,8 +1468,7 @@ impl BeeperGuiApp {
             let on = self.storage.kinds[which] & 1 << i != 0;
             let label = txt(tr(kind_meta(k).0), 13.0).line_height(Pixels(16.0)).color(p.text);
             button(row![checkbox(p, on), label].spacing(6).align_y(Center))
-                .padding(0)
-                .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
+                .bare(p.text)
                 .on_press_maybe((!busy).then_some(UiMessage::StorageKind(which, i)))
                 .into()
         });
@@ -1503,9 +1491,7 @@ impl BeeperGuiApp {
             .padding([4, 6])
             .style(pill_style(p))
             .on_press(UiMessage::RevertHotkeys);
-        let icon_btn = |glyph: El<'static>, msg| {
-            button(glyph).padding(0).style(btn_style([CLEAR; 3], [p.muted; 3], 0.0)).on_press(msg)
-        };
+        let icon_btn = |glyph: El<'static>, msg| button(glyph).bare(p.muted).on_press(msg);
         let hotkey = |name: &'static str| -> El<'_> {
             let keys = s.hotkey_keys(name);
             let rec = self.hotkey_rec.as_ref().filter(|r| r.name == name);
@@ -1661,10 +1647,7 @@ impl BeeperGuiApp {
                 (b.network_name.clone(), [r.name, r.username, r.phone, r.email])
             }
         };
-        let back = button(tinted(&CHEVRON_LEFT, 16.0, p.strong))
-            .padding(0)
-            .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
-            .on_press(UiMessage::OpenAccount(None));
+        let back = button(tinted(&CHEVRON_LEFT, 16.0, p.strong)).bare(p.strong).on_press(UiMessage::OpenAccount(None));
         let title = row![svg(brand_svg(brand_key(id))).width(28).height(28), semi(network, 14.0).color(p.strong)]
             .spacing(4)
             .align_y(Center);
@@ -1911,8 +1894,7 @@ impl BeeperGuiApp {
                     ));
                     let label = txt(label, 13.0).color(p.text);
                     button(row![dot, label].spacing(8).align_y(Center))
-                        .padding(0)
-                        .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
+                        .bare(p.text)
                         .on_press(UiMessage::SetPref(customized.key, value))
                 };
                 let emojis = s.quick_reactions.iter().zip(1..).map(|(e, slot)| emoji_button(p, e, slot));

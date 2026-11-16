@@ -3,7 +3,7 @@
 use crate::i18n::{tr, trn, trx};
 use crate::style::{
     bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, med, scroll_style, semi, shadow_box,
-    text_width, txt, CLEAR,
+    text_width, txt, Bare, CLEAR,
 };
 use crate::{
     anim, closable_head, cubic_bezier, day_num, deletable, file_kind, format_short_ts, human_size, i18n, iso_millis,
@@ -356,7 +356,7 @@ impl BeeperGuiApp {
         // Desktop's carousel controls have a tooltip with their key.
         let control =
             |h: &svg::Handle, label: &'static str, key: Vec<&'static str>, msg: Option<UiMessage>| -> El<'a> {
-                let b = button(tinted(h, 20.0, white)).padding(0).style(btn_style([CLEAR; 3], [white; 3], 0.0));
+                let b = button(tinted(h, 20.0, white)).bare(white);
                 self.tip(b.on_press_maybe(msg).into(), label, key, tooltip::Position::Bottom).into()
             };
         let action = |s| trx(s, "attachment carousel action");
@@ -443,7 +443,7 @@ impl BeeperGuiApp {
             }
             _ => {
                 let name = txt(a.file_name.clone().expect("attachment file name"), 13.0).color(white);
-                let link = button(name).padding(0).style(btn_style([CLEAR; 3], [white; 3], 0.0));
+                let link = button(name).bare(white);
                 container(link.on_press(UiMessage::Download(mid.to_string(), Some(ai)))).center(Fill).into()
             }
         };

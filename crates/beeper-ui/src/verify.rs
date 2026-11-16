@@ -3,7 +3,7 @@
 use crate::emoji::EMOJI_FONT;
 use crate::i18n::{tr, trn_named, trx};
 use crate::login::{actions, art, brand_gradient, heading, Login, LoginMsg, Screen};
-use crate::style::{bold, btn_style, fill_box, fw, ic, icon, semi, shadow_box, t, txt, Palette, CLEAR};
+use crate::style::{bold, btn_style, fill_box, fw, ic, icon, semi, shadow_box, t, txt, Bare, Palette, CLEAR};
 use crate::{BeeperGuiApp, El, Toast, UiMessage};
 use beeper_core::matrix::E2eeSetup;
 use beeper_core::store::SharedStore;
@@ -555,11 +555,7 @@ impl BeeperGuiApp {
                 .align_x(Center)
                 .width(Fill);
                 let link = |s: &'static str, m: UiMessage| -> El<'_> {
-                    button(txt(s, 13.0).color(p.accent))
-                        .padding(0)
-                        .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
-                        .on_press(m)
-                        .into()
+                    button(txt(s, 13.0).color(p.accent)).bare(p.accent).on_press(m).into()
                 };
                 let mut buttons = vec![title.into()];
                 match l.another_way {
@@ -654,8 +650,7 @@ impl BeeperGuiApp {
 /// Desktop's "Lost your recovery key?" link.
 fn lost_link<'a>(p: &Palette) -> El<'a> {
     let label = txt(tr("Lost your recovery key?"), 13.0).color(p.accent);
-    let link =
-        button(label).padding(0).style(btn_style([CLEAR; 3], [p.accent; 3], 0.0)).on_press(LoginMsg::LostKey.into());
+    let link = button(label).bare(p.accent).on_press(LoginMsg::LostKey.into());
     container(link).center_x(Fill).into()
 }
 
