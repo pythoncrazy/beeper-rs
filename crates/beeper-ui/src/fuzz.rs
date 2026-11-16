@@ -3028,6 +3028,35 @@ fn the_open_chat_reads_new_messages_like_desktop() {
     assert_eq!(unread(&app), 0, "back at the bottom it is read");
 }
 
+/// Desktop's `getLastParticipantName`: a group preview names its sender by the member's current name, so a rename
+/// shows at once.
+#[test]
+fn previews_name_the_sender_by_the_current_name_like_desktop() {
+    let app = demo_app("preview-sender");
+    let (id, sender) = {
+        let st = app.store.read();
+        let c = app.visible_chats(&st).into_iter().find(|c| {
+            let text = |m: &Message| m.message_type.as_deref() == Some("TEXT") && m.poll.is_none();
+            c.chat_type == "group" && c.preview.as_ref().is_some_and(|m| m.is_sender != Some(true) && text(m))
+        });
+        let c = c.expect("a group previewed by someone else");
+        (c.id.clone(), c.preview.as_ref().unwrap().sender_id.clone())
+    };
+    {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(&id).unwrap();
+        st.update_chat(idx, |c| {
+            let u = c.participants.items.iter_mut().find(|u| u.id == sender).expect("the sender is a member");
+            (u.full_name, u.custom_nickname) = (Some("Zed Quux".into()), None);
+            c.draft = None;
+            if let Some(p) = c.preview.as_mut() {
+                (p.text, p.html, p.attachments, p.links) = (Some("hi".into()), None, Vec::new(), Vec::new());
+            }
+        });
+    }
+    assert!(simulator(app.view_sidebar()).find("Zed: hi").is_ok(), "the new first name");
+}
+
 /// Desktop's Join a Matrix room view: a bad address shows Desktop's error under the field, and a known room opens.
 #[test]
 fn join_a_matrix_room_like_desktop() {

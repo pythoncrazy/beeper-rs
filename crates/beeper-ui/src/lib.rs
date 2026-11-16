@@ -2435,6 +2435,17 @@ const SWITCH_CARD: &str = "switch:card";
 /// The `chat_menu` key of Desktop's sidebar background menu (`Gct`).
 const SIDEBAR_MENU: &str = "sidebar:menu";
 
+/// Desktop's `getLastParticipantName`: the first word of the current name of the sender of a chat preview, or the
+/// whole name when it is the phone number.
+fn sender_first_name(u: &User) -> String {
+    let digits = |s: &str| s.chars().filter(char::is_ascii_digit).collect::<String>();
+    let full = u.full_name.as_deref().map(str::trim).filter(|f| !f.is_empty());
+    match (full, &u.phone_number) {
+        (Some(f), Some(ph)) if !digits(ph).is_empty() && digits(f) == digits(ph) => f.into(),
+        _ => member_name(u).split_whitespace().next().unwrap_or_default().into(),
+    }
+}
+
 /// Desktop's `Fr`: the name of a participant.
 fn member_name(u: &User) -> String {
     [&u.custom_nickname, &u.full_name, &u.username, &u.email]
@@ -11213,8 +11224,12 @@ impl BeeperGuiApp {
                 && reaction.is_none()
                 && (media_tag.is_some() || body.is_some())
                 && (c.chat_type == "group" || m.is_some_and(|m| network_bot(c, &m.sender_id)));
-            let first = show_sender.then(|| m?.sender_name.as_deref()?.split(' ').next()).flatten();
-            let body = body.map(|t| match (media_tag.is_none(), first) {
+            let first =
+                m.filter(|_| show_sender).map(|m| match c.participants.items.iter().find(|u| u.id == m.sender_id) {
+                    Some(u) => sender_first_name(u),
+                    None => m.sender_name.as_deref().and_then(|n| n.split(' ').next()).unwrap_or(&m.sender_id).into(),
+                });
+            let body = body.map(|t| match (media_tag.is_none(), &first) {
                 (true, Some(s)) => format!("{s}: {t}"),
                 _ => t,
             });
