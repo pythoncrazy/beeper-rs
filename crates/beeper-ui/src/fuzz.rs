@@ -6190,7 +6190,9 @@ fn chat_info_leave_chat_like_desktop() {
     for m in msgs {
         let _ = app.update(m);
     }
-    assert!(app.confirm.is_none() && app.store.read().resolve_chat_idx(&id).is_none(), "the chat is gone");
+    assert!(app.confirm.is_none() && app.store.read().chat(&id).exited(), "the chat stays, left");
+    let composer = iced::widget::Id::new("composer-input");
+    assert!(simulator(app.view_conversation()).find(composer).is_err(), "without a composer");
 }
 
 #[test]
