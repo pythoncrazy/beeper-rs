@@ -384,6 +384,11 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         }
     });
     let account_id = account_id(&bridge, accounts);
+    // Desktop's `hasExited`: in a room that the user left, the own member stays, exited, and does not count above.
+    let mut items = items;
+    if room.state() == RoomState::Left {
+        items.push(User { id: me.to_string(), is_self: Some(true), has_exited: Some(true), ..Default::default() });
+    }
     let mut chat = Chat {
         id: room.room_id().to_string(),
         is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, &bridge, !dm)),
@@ -810,8 +815,18 @@ async fn page(
     Ok((page.chunk.into_iter().rev().collect(), end))
 }
 
-async fn history(room: &Room) -> (Vec<TimelineEvent>, Option<String>) {
-    page(room, None, HISTORY).await.expect("load room history")
+fn is_forbidden(e: &matrix_sdk::Error) -> bool {
+    matches!(e.client_api_error_kind(), Some(matrix_sdk::ruma::api::error::ErrorKind::Forbidden))
+}
+
+/// The newest page of a room, or nothing when the homeserver does not give it.
+async fn history(room: &Room) -> Vec<TimelineEvent> {
+    page(room, None, HISTORY).await.map_or_else(|e| no_history(room, &e), |p| p.0)
+}
+
+fn no_history(room: &Room, e: &matrix_sdk::Error) -> Vec<TimelineEvent> {
+    eprintln!("Could not load the history of {}: {e}", room.room_id());
+    Vec::new()
 }
 
 /// Desktop's `loadOlderMessages`: loads pages back from the `older` token of the chat until a page adds a message
@@ -825,7 +840,7 @@ pub async fn load_older(store: SharedStore, chat: String) -> Result<(), String> 
         st.update_chat(idx, |c| c.older = Older::Start);
         return Ok(());
     }
-    let room = joined_room(&client, &chat).await?;
+    let room = chat_room(&client, &chat).await?;
     let count = || {
         let mut st = store.write();
         st.load_chat(&chat);
@@ -841,7 +856,12 @@ pub async fn load_older(store: SharedStore, chat: String) -> Result<(), String> 
                 Older::From(token) => Some(token.clone()),
             }
         };
-        let (events, end) = page(&room, from, HISTORY).await.map_err(|e| e.to_string())?;
+        let (events, end) = match page(&room, from, HISTORY).await {
+            Ok(p) => p,
+            // A room that the user left shows its history only as far as the homeserver lets them read it.
+            Err(e) if room.state() == RoomState::Left && is_forbidden(&e) => (Vec::new(), None),
+            Err(e) => return Err(e.to_string()),
+        };
         sync_room(&store, &room, events).await;
         let mut st = store.write();
         let idx = st.chat_idx(&chat);
@@ -1039,7 +1059,10 @@ pub async fn bookmarked_message(client: Client, chat: String, target: String, ac
 async fn all_history(room: &Room) -> Vec<TimelineEvent> {
     let (mut pages, mut from) = (Vec::new(), None);
     loop {
-        let (events, end) = page(room, from, 100).await.expect("load room history");
+        let (events, end) = match page(room, from, 100).await {
+            Ok(p) => p,
+            Err(e) => return pages.into_iter().rev().flatten().chain(no_history(room, &e)).collect(),
+        };
         pages.push(events);
         match end {
             Some(token) => from = Some(token),
@@ -1122,8 +1145,8 @@ async fn sync_invite(store: &SharedStore, room: &Room) {
     st.upsert_chat(chat);
 }
 
-/// Desktop keeps a chat that the user left or was removed from: its own member is `hasExited`, and the message of
-/// that leave previews it (`shouldPreview`). A chat that is gone here, as after Delete Chat, stays gone.
+/// Desktop keeps a chat that the user left or was removed from (its own member `hasExited`, see `chat`), and the
+/// message of that leave previews it (`shouldPreview`). A chat that is gone here, as after Delete Chat, stays gone.
 async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>) {
     let chat = chat_id(room).await;
     if store.read().resolve_chat_idx(&chat).is_none() {
@@ -1137,21 +1160,9 @@ async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>)
     sync_room(store, room, events).await;
     let mut st = store.write();
     let idx = st.chat_idx(&chat);
-    let exit = exit.and_then(|id| st.loaded(&id).cloned());
-    st.update_chat(idx, |c| {
-        match c.participants.items.iter_mut().find(|u| u.id == me) {
-            Some(u) => u.has_exited = Some(true),
-            None => c.participants.items.push(User {
-                id: me,
-                is_self: Some(true),
-                has_exited: Some(true),
-                ..Default::default()
-            }),
-        }
-        if let Some(m) = exit {
-            (c.last_activity, c.preview) = (Some(m.timestamp.clone()), Some(m));
-        }
-    });
+    if let Some(m) = exit.and_then(|id| st.loaded(&id).cloned()) {
+        st.update_chat(idx, |c| (c.last_activity, c.preview) = (Some(m.timestamp.clone()), Some(m)));
+    }
 }
 
 async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>) {
@@ -1186,10 +1197,12 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     let mut older = None;
     if !seen {
         let known: HashSet<String> = events.iter().filter_map(|e| Some(e.event_id()?.to_string())).collect();
-        let (page, end) = history(room).await;
-        older = Some(end.map_or(Older::Start, Older::From));
-        let page = page.into_iter().filter(|e| e.event_id().is_some_and(|id| !known.contains(id.as_str())));
-        events = page.chain(events).collect();
+        // Without the page, `older` stays unknown and the next load of older messages tries again.
+        if let Ok((page, end)) = page(room, None, HISTORY).await.inspect_err(|e| drop(no_history(room, e))) {
+            older = Some(end.map_or(Older::Start, Older::From));
+            let page = page.into_iter().filter(|e| e.event_id().is_some_and(|id| !known.contains(id.as_str())));
+            events = page.chain(events).collect();
+        }
     }
     let (mut ops, mut non_messages, mut roots) = (Vec::new(), Vec::new(), BTreeSet::new());
     let hidden = store.read().settings.on("hiddenEvents");
@@ -1865,6 +1878,15 @@ impl From<matrix_sdk::Error> for PushError {
     }
 }
 
+/// The room of a chat: a joined room, or an invite or a room the user left, which keep their chats.
+async fn chat_room(client: &matrix_sdk::Client, chat: &str) -> Result<Room, String> {
+    let known = matrix_sdk::ruma::RoomId::parse(chat).ok().and_then(|id| client.get_room(&id));
+    match known {
+        Some(room) if matches!(room.state(), RoomState::Invited | RoomState::Left) => Ok(room),
+        _ => joined_room(client, chat).await,
+    }
+}
+
 async fn joined_room(client: &matrix_sdk::Client, chat: &str) -> Result<Room, String> {
     for room in client.joined_rooms() {
         if room.room_id() == chat || chat == NOTE_CHAT_ID && chat_id(&room).await == chat {
@@ -2044,11 +2066,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
         return Ok(create_label(store, &client, label).await?);
     }
     let chat = store.read().sent.get(&chat).cloned().unwrap_or(chat);
-    let known = matrix_sdk::ruma::RoomId::parse(chat.as_str()).ok().and_then(|id| client.get_room(&id));
-    let room = match known {
-        Some(room) if matches!(room.state(), RoomState::Invited | RoomState::Left) => room,
-        _ => joined_room(&client, &chat).await?,
-    };
+    let room = chat_room(&client, &chat).await?;
     let event = |id: String| {
         let id = store.read().sent.get(&id).cloned().unwrap_or(id);
         OwnedEventId::try_from(id).map_err(|e| e.to_string())
@@ -2638,7 +2656,7 @@ async fn refetch_undecrypted(store: &SharedStore, rooms: Vec<Room>) {
     futures_util::stream::iter(rooms)
         .for_each_concurrent(8, |room| async move {
             if has_utd(store, &room).await {
-                sync_room(store, &room, history(&room).await.0).await;
+                sync_room(store, &room, history(&room).await).await;
             }
         })
         .await;
@@ -3488,6 +3506,13 @@ pub async fn run(store: SharedStore) {
     for room in client.invited_rooms() {
         sync_invite(&store, &room).await;
     }
+    // The chats that stay after a leave or a removal, without history to load again.
+    for room in client.left_rooms() {
+        let chat = chat_id(&room).await;
+        if store.read().resolve_chat_idx(&chat).is_some() {
+            sync_room(&store, &room, Vec::new()).await;
+        }
+    }
     let first = !store.read().beeper_state.first_sync_done;
     let rooms = client.joined_rooms();
     store.write().initial_sync = (0, rooms.len());
@@ -3495,7 +3520,7 @@ pub async fn run(store: SharedStore) {
         .for_each_concurrent(8, |room| {
             let store = store.clone();
             async move {
-                let events = if first || has_utd(&store, &room).await { history(&room).await.0 } else { Vec::new() };
+                let events = if first || has_utd(&store, &room).await { history(&room).await } else { Vec::new() };
                 sync_room(&store, &room, events).await;
                 store.write().initial_sync.0 += 1;
             }
@@ -3672,9 +3697,43 @@ mod tests {
             assert_eq!(c.is_muted, Some(true), "the room rule still mutes it");
             assert_eq!(c.preview.as_ref().map(|m| m.id.as_str()), Some("$kick"), "the removal previews the chat");
         }
+        super::load_older(store.clone(), "!room:x".into()).await.expect("its history still loads");
         store.write().remove_chat("!room:x");
         super::sync_left(&store, &room, Vec::new()).await;
         assert!(store.read().resolve_chat_idx("!room:x").is_none(), "a deleted chat stays deleted");
+    }
+
+    /// A homeserver that refuses the history of a room neither stops the sync of the room, which loads it again
+    /// later, nor shows an error for a room the user was banned from, whose history simply ends there.
+    #[tokio::test]
+    async fn refused_history_like_desktop() {
+        use crate::models::Older;
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        let syncs = AtomicUsize::new(0);
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            "/_matrix/client/v3/sync" if syncs.fetch_add(1, Relaxed) == 0 => (200, stub_sync()),
+            "/_matrix/client/v3/sync" => {
+                let ban = json!({ "type": "m.room.member", "state_key": "@me:x", "sender": "@vic:x",
+                    "event_id": "$ban", "origin_server_ts": 1_700_000_000_000_i64, "content": { "membership": "ban" } });
+                let left = json!({ "state": { "events": [] }, "timeline": { "events": [ban] } });
+                (200, json!({ "next_batch": "s2", "rooms": { "leave": { "!room:x": left } } }))
+            }
+            p if p.ends_with("/messages") => (403, json!({ "errcode": "M_FORBIDDEN", "error": "not in room" })),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("refused-history"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        let room = client.get_room(matrix_sdk::ruma::room_id!("!room:x")).expect("the joined room");
+        super::sync_room(&store, &room, Vec::new()).await;
+        assert_eq!(store.read().chat("!room:x").older, Older::Unknown, "the next load tries again");
+        super::on_sync(&client, &store, client.sync_once(super::SyncSettings::default()).await).await;
+        super::load_older(store.clone(), "!room:x".into()).await.expect("no error for a banned room");
+        let st = store.read();
+        assert_eq!(st.chat("!room:x").older, Older::Start, "its history ends there");
+        assert!(st.chat("!room:x").exited(), "a load of the room keeps the user's member exited");
     }
 
     #[tokio::test]
