@@ -14,6 +14,10 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 const OVERSCAN: usize = 15;
+/// How long a list counts as scrolling after its visible span last moved, like `virtua`'s `isScrolling`.
+const SCROLL_IDLE: std::time::Duration = std::time::Duration::from_millis(150);
+/// How far a section start may go above the top before its label floats: the height of Desktop's date pill.
+const LABEL: f32 = 32.0;
 /// The visible height that a list uses before a frame measures it.
 const FIRST_SPAN: f32 = 1600.0;
 
@@ -77,6 +81,12 @@ struct Inner {
     starts: (Vec<u64>, bool, f32, Vec<f32>),
     /// A frame measured a height that `starts` does not have.
     stale: bool,
+    /// The rows that start a section, as ascending indices of the keys: the days of Desktop's messages list.
+    sections: Vec<usize>,
+    /// The start of the section whose label floats over the top while the list scrolls.
+    sticky: Option<usize>,
+    /// When the visible span last moved.
+    moved: Option<std::time::Instant>,
 }
 
 impl VList {
@@ -136,6 +146,7 @@ impl VList {
         Element::new(Rows {
             list: self,
             end,
+            base: shown.start,
             keys: keys[shown.clone()].to_vec(),
             assumed,
             children: shown.map(&mut row).collect(),
@@ -143,6 +154,17 @@ impl VList {
             after: if end { near } else { far },
             relist,
         })
+    }
+
+    /// Sets the rows that start the sections, as ascending indices of the keys of the next views.
+    pub fn sections(&self, starts: Vec<usize>) {
+        self.0.borrow_mut().sections = starts;
+    }
+
+    /// Desktop's `sticky-date-container`: while the list scrolls, the start of the section at the top, whose label has
+    /// gone above the top. A frame where it changes publishes the list message.
+    pub fn sticky(&self) -> Option<usize> {
+        self.0.borrow().sticky
     }
 
     /// Makes the next view build the row of `key` in the middle of the visible span.
@@ -165,6 +187,8 @@ fn rows(layout: Layout<'_>) -> impl Iterator<Item = Layout<'_>> {
 struct Rows<'a, M> {
     list: &'a VList,
     end: bool,
+    /// The index of the first built row in the keys of the view.
+    base: usize,
     keys: Vec<u64>,
     /// The heights that the view gave the rows.
     assumed: Vec<f32>,
@@ -268,8 +292,22 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Rows<'_, M> {
         }
         let top = viewport.y - b.y;
         let at = if self.end { b.height - top - viewport.height } else { top };
+        let now = std::time::Instant::now();
+        if inner.seen.is_some_and(|(old, _)| (old - at).abs() > 0.5) {
+            inner.moved = Some(now);
+            shell.request_redraw_at(now + SCROLL_IDLE);
+        }
         inner.seen = Some((at, viewport.height));
-        if changed || at < inner.safe.0 || at + viewport.height > inner.safe.1 {
+        let scrolling = inner.moved.is_some_and(|t| now.duration_since(t) < SCROLL_IDLE);
+        // The row at the top of the viewport, and how far the top is into it.
+        let first = rows(layout).enumerate().find(|(_, r)| r.bounds().y + r.bounds().height > viewport.y);
+        let first = first.map(|(j, r)| (self.base + j, viewport.y - r.bounds().y));
+        let sticky = first.filter(|_| scrolling).and_then(|(row, into)| {
+            let start = inner.sections[..inner.sections.partition_point(|&s| s <= row)].last().copied()?;
+            (start < row || into > LABEL).then_some(start)
+        });
+        let sticky_changed = std::mem::replace(&mut inner.sticky, sticky) != sticky;
+        if changed || sticky_changed || at < inner.safe.0 || at + viewport.height > inner.safe.1 {
             shell.publish(self.relist.clone());
         }
     }
