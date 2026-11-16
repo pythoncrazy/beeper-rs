@@ -426,6 +426,67 @@ pub struct User {
     pub manage: u8,
 }
 
+impl User {
+    /// Desktop's `U2`: the name that orders the participants.
+    pub fn sort_name(&self) -> &str {
+        [&self.custom_nickname, &self.full_name, &self.username, &self.email, &self.phone_number]
+            .into_iter()
+            .find_map(|n| n.as_deref())
+            .unwrap_or(&self.id)
+    }
+
+    /// Desktop's `Fr(user, true)` (`m3`): the first word of the full name, unless the full name is the phone number.
+    pub fn short_name(&self) -> String {
+        let digits = |s: &str| s.chars().filter(char::is_ascii_digit).collect::<String>();
+        let phone = self.phone_number.as_deref().filter(|p| !digits(p).is_empty());
+        let full = self.full_name.as_deref().filter(|f| !f.is_empty());
+        let first = full.map(|f| match phone.is_some_and(|p| digits(p) == digits(f)) {
+            true => f.to_string(),
+            false => f.split_whitespace().next().unwrap_or(f).to_string(),
+        });
+        let rest = [&self.username, &self.email, &self.phone_number].into_iter().find_map(Clone::clone);
+        self.custom_nickname.clone().or(first).or(rest).unwrap_or_else(|| self.id.clone())
+    }
+}
+
+/// `String.prototype.localeCompare` of the root locale, near enough for names: case-insensitive, with punctuation and
+/// spaces before digits before letters, and lowercase before uppercase on a tie.
+pub fn locale_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let key = |s: &str| -> Vec<(u8, char)> {
+        let class = |c: char| match c {
+            _ if c.is_alphabetic() => 2,
+            _ if c.is_numeric() => 1,
+            _ => 0,
+        };
+        s.chars().map(|c| (class(c), c.to_lowercase().next().unwrap_or(c))).collect()
+    };
+    key(a).cmp(&key(b)).then_with(|| b.cmp(a))
+}
+
+/// Desktop's `t_`: the order of the participants of a chat. Admins first, then the others, pending and exited members
+/// after them, network bots and the own user last, each by name.
+pub fn member_order(a: &User, b: &User) -> std::cmp::Ordering {
+    let rank = |u: &User| {
+        (u.is_self == Some(true), u.is_network_bot == Some(true), u.is_admin != Some(true), u.is_pending == Some(true))
+    };
+    let exited = |u: &User| u.has_exited == Some(true);
+    rank(a).cmp(&rank(b)).then(exited(a).cmp(&exited(b))).then_with(|| locale_cmp(a.sort_name(), b.sort_name()))
+}
+
+/// Desktop's `th` (`Hse`): the title of a group without a name, from the short names of the other members in
+/// [`member_order`]: "A", "A & B", "A, B & C", up to four names, then "A, B, C & 2 others".
+pub fn group_title(members: &[User]) -> String {
+    let mut others: Vec<&User> = members.iter().filter(|u| u.is_self != Some(true)).collect();
+    others.sort_by(|a, b| member_order(a, b));
+    let names: Vec<String> = others.iter().map(|u| u.short_name()).collect();
+    match names.as_slice() {
+        [] => String::new(),
+        [one] => one.clone(),
+        many if many.len() > 4 => format!("{} & {} others", many[..3].join(", "), many.len() - 3),
+        [rest @ .., last] => format!("{} & {last}", rest.join(", ")),
+    }
+}
+
 /// Desktop's `participantsCurrentUserCanKick`.
 pub const MANAGE_KICK: u8 = 1;
 /// Desktop's `participantsCurrentUserCanChangePowerLevels`.
@@ -1791,5 +1852,43 @@ mod tests {
         let json = serde_json::to_value(&v).expect("a verification is JSON");
         assert_eq!(json["otherUserID"], "@me:x");
         assert_eq!(json["otherDevice"], serde_json::json!({ "id": "DEV" }), "the API leaves out the device name");
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    fn user(id: &str, name: Option<&str>) -> User {
+        User { id: id.into(), full_name: name.map(String::from), ..User::default() }
+    }
+
+    /// Desktop's `th` and `t_` over the participants: first names in name order, "&" before the last, "N others" past
+    /// four, and the own user, bots, pending members and admins in their places.
+    #[test]
+    fn group_titles_like_desktop() {
+        let me = User { is_self: Some(true), ..user("@me:x", Some("Me Myself")) };
+        let names = |names: &[&str]| -> Vec<User> {
+            let mut all: Vec<User> =
+                names.iter().enumerate().map(|(i, n)| user(&format!("@u{i}:x"), Some(n))).collect();
+            all.push(me.clone());
+            all
+        };
+        assert_eq!(group_title(&names(&["zed", "Bea Lee", "amy"])), "amy, Bea & zed");
+        assert_eq!(group_title(&names(&["Quinn Park", "olive"])), "olive & Quinn");
+        assert_eq!(group_title(&names(&["Solo Person"])), "Solo");
+        assert_eq!(group_title(&names(&["e", "d", "c", "b", "a"])), "a, b, c & 2 others");
+        assert_eq!(group_title(&names(&["d", "c", "b", "a"])), "a, b, c & d");
+        assert_eq!(group_title(&names(&["user0x", "user_x", "userb"])), "user_x, user0x & userb", "punctuation first");
+        let phone = User { phone_number: Some("+1 415 555 0100".into()), ..user("@p:x", Some("+1 415 555 0100")) };
+        assert_eq!(group_title(&[phone, me.clone()]), "+1 415 555 0100", "a phone number stays whole");
+        assert_eq!(group_title(&[user("@bot:x", None), me.clone()]), "@bot:x", "no name names by user ID");
+        let admin = User { is_admin: Some(true), ..user("@z:x", Some("Zoe")) };
+        let bot = User { is_network_bot: Some(true), ..user("@a:x", Some("Aaron")) };
+        let pending = User { is_pending: Some(true), ..user("@b:x", Some("Ben")) };
+        let mut all = [me, bot, pending, user("@c:x", Some("Cy")), admin];
+        all.sort_by(member_order);
+        let order: Vec<&str> = all.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(order, ["@z:x", "@c:x", "@b:x", "@a:x", "@me:x"], "admins, members, pending, bots, then self");
     }
 }
