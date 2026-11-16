@@ -836,6 +836,12 @@ pub enum UiMessage {
     RailHover(String, Point),
     RailLeave(String),
     RailPress,
+    /// The pointer came onto (`Some`) or left a tile of the pinned grid.
+    PinHover(Option<String>),
+    /// Desktop's `Drop` of the pinned grid (`lY`): a press, a move and the release of a drag of a pin.
+    PinPress,
+    PinDragMoved(Point),
+    PinDragEnd,
     RailDragMoved(Point),
     RailDragEnd,
     WindowOpened(window::Id),
@@ -3761,6 +3767,8 @@ pub struct BeeperGuiApp {
     pub rail_hover: Option<(String, Point)>,
     pub user_hover: UserHover,
     pub rail_drag: Option<RailDrag>,
+    pub pin_hover: Option<String>,
+    pub pin_drag: Option<PinDrag>,
     pub main_window: Option<window::Id>,
     pub settings_window: Option<window::Id>,
     settings_size: Size,
@@ -3984,6 +3992,8 @@ impl BeeperGuiApp {
             sidebar_hidden,
             dragging: false,
             rail_hover: None,
+            pin_hover: None,
+            pin_drag: None,
             user_hover: UserHover::default(),
             rail_drag: None,
             main_window: None,
@@ -8032,6 +8042,42 @@ impl BeeperGuiApp {
                     self.rail_hover = None;
                 }
             }
+            UiMessage::PinHover(id) => {
+                // Desktop's sortable grid moves the dragged pin to the place of the pin under the pointer.
+                let over = id.as_ref().and_then(|over| {
+                    let d = self.pin_drag.as_mut().filter(|d| d.id != *over)?;
+                    Some((over, d.order.as_mut()?, &d.id))
+                });
+                if let Some((over, order, held)) = over {
+                    let from = order.iter().position(|o| o == held).expect("the dragged pin");
+                    let to = order.iter().position(|o| o == over).expect("a pin of the grid");
+                    let pin = order.remove(from);
+                    order.insert(to, pin);
+                }
+                self.pin_hover = id;
+            }
+            UiMessage::PinPress => {
+                let Some(id) = self.pin_hover.clone() else { return Task::none() };
+                self.pin_drag = Some(PinDrag { id, from: None, order: None });
+            }
+            UiMessage::PinDragMoved(at) => {
+                let Some(d) = self.pin_drag.as_mut() else { return Task::none() };
+                if d.order.is_none() && at.distance(*d.from.get_or_insert(at)) > 5.0 {
+                    let st = self.store.read();
+                    let order = self.pins_and_rows(&st).0.iter().map(|c| c.id.clone()).collect();
+                    drop(st);
+                    self.pin_drag.as_mut().expect("a pin drag").order = Some(order);
+                    self.chat_menu = None;
+                }
+            }
+            UiMessage::PinDragEnd => {
+                let Some(shown) = self.pin_drag.take().and_then(|d| d.order) else { return Task::none() };
+                let order = self.store.write().set_pin_order(&shown);
+                let Some(client) = self.store.read().matrix.clone() else { return Task::none() };
+                let content = serde_json::json!({ "Inbox": order });
+                let write = beeper_core::matrix::set_global(client, "com.beeper.favourites_order", content);
+                return Task::perform(write, UiMessage::Pushed);
+            }
             UiMessage::RailPress => {
                 let Some((id, grab)) = self.rail_hover.clone() else { return Task::none() };
                 self.rail_drag = Some(RailDrag { id, grab, from: None, at: Point::ORIGIN, order: None });
@@ -8125,6 +8171,9 @@ impl BeeperGuiApp {
                     _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => {
                         self.save_window(id, "media-viewer").chain(window::close(id))
                     }
+                    _ if self.chat_windows.iter().any(|w| w.0 == id && w.1.thread_root.is_none()) => {
+                        self.save_window(id, POP_OUT).chain(window::close(id))
+                    }
                     (false, _) => window::close(id),
                 };
             }
@@ -8146,7 +8195,8 @@ impl BeeperGuiApp {
                 if let Some(&(id, _)) = open {
                     return window::gain_focus(id);
                 }
-                let size = Size::new(800.0, 600.0);
+                // Desktop's `windowStateKeeper("pop-out-thread")` keeps the size of the last chat window.
+                let size = self.saved_window_settings(POP_OUT, Size::new(800.0, 600.0)).size;
                 let (id, open) = window::open(Self::window_settings(size));
                 self.chat_windows.push((id, Pane { size, ..Pane::default() }));
                 let near = self.cascade(id);
@@ -8541,6 +8591,19 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
+        let pin_press = (self.pin_hover.is_some() && self.pin_drag.is_none()).then(|| {
+            iced::event::listen_with(|e, _, _| match e {
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => Some(UiMessage::PinPress),
+                _ => None,
+            })
+        });
+        let pin_drag = self.pin_drag.is_some().then(|| {
+            iced::event::listen_with(|e, _, _| match e {
+                Event::Mouse(mouse::Event::CursorMoved { position }) => Some(UiMessage::PinDragMoved(position)),
+                Event::Mouse(mouse::Event::ButtonReleased(_)) => Some(UiMessage::PinDragEnd),
+                _ => None,
+            })
+        });
         let rail_drag = self.rail_drag.is_some().then(|| {
             iced::event::listen_with(|e, _, _| match e {
                 Event::Mouse(mouse::Event::CursorMoved { position }) => Some(UiMessage::RailDragMoved(position)),
@@ -8616,6 +8679,8 @@ impl BeeperGuiApp {
                 .chain(thread_drag)
                 .chain(rail_press)
                 .chain(rail_drag)
+                .chain(pin_press)
+                .chain(pin_drag)
                 .chain(poll_drag)
                 .chain(carousel)
                 .chain(tick)
@@ -11184,7 +11249,12 @@ impl BeeperGuiApp {
             .height(52)
             .padding(Padding::ZERO.right(8.0));
         let selected = self.creating_chat.is_none().then_some(self.pane().selected_chat_id.as_deref()).flatten();
-        let (pinned, rest) = self.pins_and_rows(&st);
+        let (mut pinned, rest) = self.pins_and_rows(&st);
+        // The order of a pin drag, which moves the pins under the pointer.
+        let dragged = self.pin_drag.as_ref().filter(|d| d.order.is_some()).map(|d| d.id.as_str());
+        if let Some(order) = self.pin_drag.as_ref().and_then(|d| d.order.as_ref()) {
+            pinned.sort_by_key(|c| order.iter().position(|o| *o == c.id).unwrap_or(usize::MAX));
+        }
         let counts = st.settings.on("showUnreadCount");
         let network_icons = st.settings.on("showNetworkIcons")
             && self.selected_account_filter.as_deref().is_none_or(|id| rail_label(&st, id).is_some());
@@ -11245,11 +11315,17 @@ impl BeeperGuiApp {
                 let colors = if muted { (p.card, p.strong) } else { (p.accent, Color::WHITE) };
                 let bubble = bubble.map(|t| pin_bubble(&t, c.unread_mentions > 0, colors, tile, pin_av, compact));
                 let item = stack![item].push(bubble);
+                // Desktop's `useDropPlaceholder`: the dragged pin marks the place it would drop at.
+                let held = dragged == Some(c.id.as_str());
                 let item = button(item)
                     .padding(0)
-                    .style(btn_style([if on { p.selected } else { CLEAR }; 3], [p.text; 3], 8.0))
+                    .style(btn_style([if on || held { p.selected } else { CLEAR }; 3], [p.text; 3], 8.0))
                     .on_press(pick(c));
-                r.push(container(mouse_area(item).on_right_press(UiMessage::OpenChatMenu(c.id.clone()))).center_x(cell))
+                let item = mouse_area(item)
+                    .on_right_press(UiMessage::OpenChatMenu(c.id.clone()))
+                    .on_enter(UiMessage::PinHover(Some(c.id.clone())))
+                    .on_exit(UiMessage::PinHover(None));
+                r.push(container(item).center_x(cell))
             }))
         };
         let lead = match (selecting, counts) {
@@ -13689,6 +13765,8 @@ pub fn write_rgba_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u
 
 /// Desktop's default size of the main window (`Wg` and `jg`).
 const MAIN_SIZE: Size = Size::new(1200.0, 800.0);
+/// Desktop's `windowStateKeeper` key of the chat windows (`w2` of a window ID that starts with `thread-`).
+const POP_OUT: &str = "pop-out-thread";
 
 /// Desktop's `window.json`, or an empty state before the first save.
 fn read_window_state(path: &std::path::Path) -> serde_json::Value {
@@ -13870,6 +13948,14 @@ fn grown(at: Point, old: Size, size: Size, screen: Size) -> (Point, Size) {
     )
 }
 
+/// A press on a pin of the pinned grid, which Desktop's `Drop` sorts after the cursor moves 5px: the pin, where the
+/// cursor first moved, and the order of the grid while the pin moves.
+pub struct PinDrag {
+    pub id: String,
+    pub from: Option<Point>,
+    pub order: Option<Vec<String>>,
+}
+
 /// A press on a rail space, which Desktop's `Drop` sorts after the cursor moves 5px.
 pub struct RailDrag {
     pub id: String,
@@ -13972,6 +14058,18 @@ mod tests {
         let still = decode_media(png.into_inner()).unwrap();
         assert!(matches!(still[..], [(image::Handle::Rgba { width: 3, height: 2, .. }, 0)]), "a still is decoded");
         assert!(decode_media(b"\x89PNG".to_vec()).is_err(), "a broken still fails to load");
+    }
+
+    /// A video that plays as a GIF decodes to at most 15 frames a second, at most 320 px on its long side.
+    #[test]
+    fn video_gifs_decode_to_frames() {
+        let path = beeper_core::testing::temp_dir("video-gif").join("clip.mp4");
+        let lavfi = ["-f", "lavfi", "-i", "testsrc=size=640x360:rate=30", "-t", "1", "-pix_fmt", "yuv420p", "-y"];
+        assert!(std::process::Command::new("ffmpeg").args(lavfi).arg(&path).output().unwrap().status.success());
+        let frames = crate::media_view::decode_loop(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(frames.len(), 15, "15 frames for one second");
+        assert!(matches!(frames[0], (image::Handle::Rgba { width: 320, height: 180, .. }, 66)));
+        assert!(crate::media_view::decode_loop(b"not a video").is_err());
     }
 
     #[test]

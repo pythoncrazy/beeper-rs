@@ -608,3 +608,58 @@ async fn message_pages_load_back_from_the_homeserver_like_desktop() {
     assert_eq!(texts, (1..=70).rev().map(|i| format!("m{i}")).collect::<Vec<_>>(), "every message once, newest first");
     assert_eq!(more, [true, true, true, false], "full pages of 20 until the start of the room");
 }
+
+/// Desktop's `sp`: a message carries its `sendStatus` (with the time of `ep`), its `mentions`, and reactions that say
+/// whether their key is an emoji, in Desktop's key order.
+#[tokio::test]
+async fn messages_carry_send_status_mentions_and_emoji_like_desktop() {
+    use beeper_core::models::{Reaction, SendStatus};
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let cfg = CentralConfig { port, ..demo_config("http-message-fields") };
+    let store = StoreLock::shared(BeeperStore::from_config(cfg));
+    let (token, chat, mid) = {
+        let mut st = store.write();
+        let i = st.messages.iter().position(|m| m.is_sender == Some(true) && m.chat_id.starts_with('!')).unwrap();
+        let reaction = |key: &str, img: Option<&str>| Reaction {
+            id: key.into(),
+            participant_id: "@x:beeper.com".into(),
+            reaction_key: key.into(),
+            animated: None,
+            img_url: img.map(String::from),
+            sort_key: String::new(),
+        };
+        st.update_message(i, |m| {
+            m.mentions = Some(vec!["@x:beeper.com".into()]);
+            m.send_status = Some(SendStatus {
+                status: "SUCCESS".into(),
+                reason: None,
+                message: None,
+                ts: Some(1_700_000_000_000),
+                delivered_to_users: vec!["@x:beeper.com".into()],
+                internal_error: None,
+            });
+            m.reactions = vec![reaction("👍", None), reaction("party", Some("mxc://x/party"))];
+        });
+        let m = &st.messages[i];
+        (st.beeper_state.access_token.clone(), m.chat_id.clone(), m.id.clone())
+    };
+    tokio::spawn(serve_http(listener, store));
+    let path =
+        format!("/v1/chats/{}/messages/{}", beeper_api::codec::url_encode(&chat), beeper_api::codec::url_encode(&mid));
+    let get = format!("GET {path} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\nconnection: close\r\n\r\n");
+    let out = text(port, &get).await;
+    let body = out.split_once("\r\n\r\n").unwrap().1;
+    let m: serde_json::Value = serde_json::from_str(body).unwrap();
+    let status = serde_json::json!({ "status": "SUCCESS", "timestamp": "2023-11-14T22:13:20.000Z", "deliveredToUsers": ["@x:beeper.com"] });
+    assert_eq!(m["sendStatus"], status, "{body}");
+    assert_eq!(m["mentions"], serde_json::json!(["@x:beeper.com"]));
+    assert_eq!((m["reactions"][0]["emoji"].as_bool(), m["reactions"][1]["emoji"].as_bool()), (Some(true), Some(false)));
+    let keys: Vec<&str> = ["\"isSender\"", "\"sendStatus\"", "\"linkedMessageID\"", "\"mentions\"", "\"reactions\""]
+        .into_iter()
+        .filter(|k| body.contains(k))
+        .collect();
+    let at = |k: &str| body.find(k).unwrap();
+    assert!(keys.windows(2).all(|w| at(w[0]) < at(w[1])), "Desktop's key order: {body}");
+    assert!(body.contains(r#"{"id":"👍","participantID":"@x:beeper.com","emoji":true,"reactionKey":"👍"}"#), "{body}");
+}

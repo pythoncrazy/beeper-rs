@@ -1523,6 +1523,18 @@ impl BeeperStore {
         true
     }
 
+    /// Desktop's `setFavouritesOrder` after a drag in the pinned grid: the pins of `shown` in that order, then the other
+    /// pins in their order. Returns the `com.beeper.favourites_order` inbox list to write.
+    pub fn set_pin_order(&mut self, shown: &[String]) -> Vec<String> {
+        let mut rest: Vec<(usize, String)> =
+            self.pin_rank.iter().filter(|(id, _)| !shown.contains(id)).map(|(id, &r)| (r, id.clone())).collect();
+        rest.sort();
+        let order: Vec<String> = shown.iter().cloned().chain(rest.into_iter().map(|(_, id)| id)).collect();
+        self.pin_rank = order.iter().enumerate().map(|(i, id)| (id.clone(), i)).collect();
+        self.persist_state_to_sqlite();
+        order
+    }
+
     /// Accepts a message request here at once and asks the bridge to accept it, like Desktop.
     pub fn accept_request(&mut self, id: &str) {
         let idx = self.chat_idx_by_id[id];
@@ -2376,6 +2388,8 @@ impl BeeperStore {
             thread_root: thread.map(|t| t.root.clone()),
             broadcast: thread.is_some_and(|t| t.broadcast),
             fallback: thread.is_some_and(|t| !t.chosen),
+            mentions: None,
+            send_status: None,
             flags: 0,
         };
         let m_idx = self.push_message(msg, true);

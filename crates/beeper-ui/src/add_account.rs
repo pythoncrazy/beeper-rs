@@ -649,7 +649,9 @@ mod tests {
     #[test]
     fn every_addable_network_has_a_cloud_bridge_but_bluesky() {
         let none: Vec<_> = crate::login::addable().filter(|n| cloud_bridge(n).is_none()).map(|n| n.bridge_id).collect();
-        assert_eq!(none, ["bluesky"]);
+        // macOS also adds iMessage, which runs on the Mac and not in Beeper Cloud.
+        let local: &[&str] = if cfg!(target_os = "macos") { &["imessage", "bluesky"] } else { &["bluesky"] };
+        assert_eq!(none, local);
         assert_eq!(cloud_bridge(find_network("slackgo").unwrap()), Some("slackgo"));
     }
 

@@ -468,11 +468,11 @@ fn attachments_send_like_desktop() {
 fn pastes_attach_files_like_desktop() {
     let mut app = demo_app("paste");
     let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
-    // Ctrl+V in the composer reads the files of the clipboard first, and the window does not paste a second time.
+    // Ctrl+V (Cmd+V on macOS) in the composer reads the files of the clipboard first, and the window does not paste a second time.
     let id = app.main_window.expect("a main window");
     let mut sim = Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id));
     sim.click(iced::widget::Id::new("composer-input")).expect("a composer");
-    let _ = sim.simulate([key(Key::Character("v".into()), Modifiers::CTRL)]);
+    let _ = sim.simulate([key(Key::Character("v".into()), Modifiers::COMMAND)]);
     let msgs: Vec<UiMessage> = sim.into_messages().collect();
     assert!(matches!(msgs[..], [UiMessage::ComposerEdit(_), UiMessage::Paste]), "{msgs:?}");
     let files = app.update(UiMessage::Pasted(Ok(Clip::Files(vec!["/tmp/a.pdf".into()]))));
@@ -1727,9 +1727,12 @@ fn galleries_select_and_have_a_menu_like_desktop() {
     let _ = app.update(UiMessage::SelectChat(chat));
     let _ = app.update(UiMessage::Gallery(gallery::Msg::Click(ids.clone())));
     assert_eq!(app.pane.selected_msgs, ids, "a click selects the gallery");
-    app.mods = Modifiers::CTRL;
+    app.mods = Modifiers::COMMAND;
     let _ = app.update(UiMessage::Gallery(gallery::Msg::Tile(ids[1].clone())));
-    assert!(!app.pane.selected_msgs.contains(&ids[1]) && app.carousel.is_none(), "Ctrl and a tile unselect a photo");
+    assert!(
+        !app.pane.selected_msgs.contains(&ids[1]) && app.carousel.is_none(),
+        "Ctrl/Cmd and a tile unselect a photo"
+    );
     app.mods = Modifiers::empty();
     let _ = app.update(UiMessage::Gallery(gallery::Msg::Tile(ids[1].clone())));
     assert!(app.carousel.is_some(), "a tile opens the carousel");
@@ -3250,6 +3253,33 @@ fn quote_details_like_desktop() {
     assert!(shows(&app, "🎤 [Voice Note]"), "a media-only quote tags its media");
     quote(&mut app, Message { is_deleted: Some(true), text: Some("secret".into()), ..base });
     assert!(shows(&app, "Message Deleted") && !shows(&app, "secret"), "a deleted quote shows as deleted");
+}
+
+/// Desktop's sortable pinned grid (`lY`): a pin dragged over another pin takes its place, and the drop keeps the
+/// order in `favourites_order`.
+#[test]
+fn pins_drag_into_order_like_desktop() {
+    let mut app = demo_app("pin-drag");
+    let pins = |app: &BeeperGuiApp| -> Vec<String> {
+        let st = app.store.read();
+        app.pins_and_rows(&st).0.iter().map(|c| c.id.clone()).collect()
+    };
+    let before = pins(&app);
+    assert!(before.len() >= 2, "the demo has pins: {before:?}");
+    let (first, last) = (before[0].clone(), before[before.len() - 1].clone());
+    let _ = app.update(UiMessage::PinHover(Some(first.clone())));
+    let _ = app.update(UiMessage::PinPress);
+    let _ = app.update(UiMessage::PinDragMoved(Point::new(10.0, 10.0)));
+    let _ = app.update(UiMessage::PinDragMoved(Point::new(12.0, 12.0)));
+    assert_eq!(pins(&app), before, "a move under 5 px is a click");
+    let _ = app.update(UiMessage::PinDragMoved(Point::new(40.0, 10.0)));
+    let _ = app.update(UiMessage::PinHover(Some(last.clone())));
+    let _ = app.update(UiMessage::PinDragEnd);
+    let after = pins(&app);
+    let want: Vec<String> = before[1..].iter().cloned().chain([first.clone()]).collect();
+    assert_eq!(after, want, "the first pin goes to the place of the last");
+    let st = app.store.read();
+    assert!(st.pin_rank[&first] > st.pin_rank[&last], "the order stays in the pin ranks");
 }
 
 /// Desktop's `activityTimestamp` and `isArchivedInList`: a draft moves its chat to the top, and out of the archive.
@@ -6675,6 +6705,10 @@ fn main_window_keeps_its_state_like_desktop() {
     let _ = app.update(UiMessage::OpenMedia);
     assert_eq!(app.media_window.as_ref().unwrap().size, Size::new(800.0, 600.0), "the Media window opens at its size");
     assert_eq!(app.main_window_settings().size, Size::new(900.0, 700.0), "the main window keeps its state");
+    // Desktop's chat windows keep the size of the last one under `pop-out-thread`.
+    write_window_state(&path, "pop-out-thread", false, Size::new(640.0, 520.0), Some(Point::new(5.0, 5.0)));
+    let _ = app.update(UiMessage::OpenChatWindow(beeper_core::store::NOTE_CHAT_ID.into()));
+    assert_eq!(app.chat_windows.last().map(|w| w.1.size), Some(Size::new(640.0, 520.0)), "a chat window opens at it");
     let main = app.main_window.expect("a main window");
     let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
     let title = app.store.read().chats.iter().find(|c| c.id == beeper_core::store::NOTE_CHAT_ID).unwrap().title.clone();
