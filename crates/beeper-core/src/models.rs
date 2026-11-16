@@ -523,6 +523,9 @@ pub struct ChatDraft {
     /// The mention pills of the text: the label without "@", and the user ID. Desktop keeps them in the editor document.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub mentions: Vec<(String, String)>,
+    /// Desktop's `draftTs`: the Unix milliseconds of the last change of the text or the files.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ts: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -915,6 +918,11 @@ fn flag_bits(bits: &[(bool, u16)]) -> u16 {
 }
 
 impl Chat {
+    /// Desktop's `isArchivedInList`: archived, and without a draft, which brings a chat back to the inbox.
+    pub fn archived_in_list(&self) -> bool {
+        self.flags & CHAT_ARCHIVED != 0 && self.draft.is_none()
+    }
+
     /// Desktop's `selfParticipant.hasExited`: the user left the chat or was removed from it.
     pub fn exited(&self) -> bool {
         self.participants.items.iter().any(|u| u.is_self == Some(true) && u.has_exited == Some(true))

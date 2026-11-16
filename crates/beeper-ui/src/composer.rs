@@ -116,8 +116,13 @@ pub(crate) fn save_draft(st: &mut BeeperStore, pane: &Pane) {
         send_later: later,
         discarded_links: discarded.collect(),
         mentions,
+        ts: None,
     };
-    let draft = (draft.text.is_some() || !draft.attachments.is_empty()).then_some(draft);
+    // Desktop's `applyDraftTime`: the draft time changes with the text or the files.
+    let old = st.chats[idx].draft.as_ref();
+    let same = old.is_some_and(|o| o.text == draft.text && o.attachments == draft.attachments);
+    let ts = if same { old.and_then(|o| o.ts) } else { Some(now_unix_millis()) };
+    let draft = (draft.text.is_some() || !draft.attachments.is_empty()).then_some(ChatDraft { ts, ..draft });
     if draft != st.chats[idx].draft {
         st.patch_chat(chat, true, None, None).expect("clear draft");
         st.patch_chat(chat, false, draft, None).expect("save draft");

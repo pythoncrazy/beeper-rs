@@ -238,7 +238,7 @@ fn filter_hit(i: usize, c: &Chat, st: &BeeperStore) -> bool {
             .is_none_or(|m| m.is_sender != Some(true) && !m.reactions.iter().any(|r| r.participant_id == st.me().id)),
         3 => c.chat_type != "group",
         4 => c.chat_type == "group",
-        F_ARCHIVED => c.flags & CHAT_ARCHIVED != 0,
+        F_ARCHIVED => c.archived_in_list(),
         F_REQUESTS => c.flags & CHAT_REQUEST != 0,
         F_LOW_PRIORITY => c.flags & CHAT_LOW_PRIORITY != 0,
         _ => unreachable!("filter index {i}"),
@@ -4409,7 +4409,8 @@ impl BeeperGuiApp {
             .collect();
         list.extend((0..keep.len()).filter(|&i| keep[i] && !seen[i]));
         let remind_at = |i: usize| st.chats[i].reminder.as_ref().map_or(0, |r| r.remind_at_ms);
-        let activity = |i: usize| &st.chats[i].last_activity;
+        // Desktop's `activityTimestamp`: the newer of the activity and the draft.
+        let activity = |i: usize| beeper_core::store::activity_key(&st.chats[i]).0;
         match (self.active_tab, st.settings.reminders_order) {
             (InboxTab::Reminders, 0) => list.sort_by_key(|&i| (remind_at(i), i)),
             (InboxTab::Reminders, 1) => list.sort_by_key(|&i| (std::cmp::Reverse(remind_at(i)), i)),
@@ -4432,7 +4433,7 @@ impl BeeperGuiApp {
                     c.flags & hidden == 0 && shown(F_ARCHIVED) && shown(F_LOW_PRIORITY) && shown(F_REQUESTS)
                 }
                 InboxTab::Requests => c.flags & CHAT_REQUEST != 0,
-                InboxTab::Archived => c.flags & CHAT_ARCHIVED != 0 && shown(F_REQUESTS),
+                InboxTab::Archived => c.archived_in_list() && shown(F_REQUESTS),
                 InboxTab::LowPriority => c.flags & CHAT_LOW_PRIORITY != 0 && shown(F_ARCHIVED) && shown(F_REQUESTS),
                 InboxTab::Reminders => c.reminder.is_some(),
                 InboxTab::SendLater => st.scheduled.iter().any(|s| s.chat_id == c.id),
