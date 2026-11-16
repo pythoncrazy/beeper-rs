@@ -26,9 +26,13 @@ zbus = { version = "5.19", default-features = false, features = ["async-io"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu = { version = "27.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "metal"] }
+mac-notification-sys = "0.6.15"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 wgpu = { version = "27.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "dx12"] }
+windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications", "Win32_UI_Shell"] }
+windows-registry = "0.6"
+
 
 [dev-dependencies]
 beeper-core = { workspace = true, features = ["stub"] }
