@@ -972,10 +972,10 @@ impl BeeperGuiApp {
         let mut parts = Column::new().spacing(2).align_x(if mine { Right } else { iced::Left });
         if (group || network_bot(chat, &m.sender_id)) && !mine && first {
             parts = parts.push(
-                container(
-                    semi(m.sender_name.clone().expect("sender name"), 11.0)
-                        .color(hex(*pick(m.sender_name.as_deref().expect("sender name"), &p.names))),
-                )
+                {
+                    let name = sender_label(chat, m);
+                    container(semi(name.clone(), 11.0).color(hex(*pick(&name, &p.names))))
+                }
                 .padding(Padding::ZERO.left(11.0)),
             );
         }
@@ -994,8 +994,7 @@ impl BeeperGuiApp {
             let pill = container(body).padding(8).style(bordered_box(fill, edge, 2.0, 17.0));
             let pill = mouse_area(pill).on_press(UiMessage::ShowReplies(q.id.clone()));
             let name = (group && !q_mine).then(|| {
-                container(semi(q.sender_name.clone().expect("sender name"), 12.0).color(on_wall.unwrap_or(p.strong)))
-                    .padding([0, 11])
+                container(semi(sender_label(chat, q), 12.0).color(on_wall.unwrap_or(p.strong))).padding([0, 11])
             });
             let col = column![].push(name).push(pill).spacing(4);
             ((!chained).then(|| col.align_x(if q_mine { Right } else { iced::Left })), q_mine)
@@ -1435,7 +1434,7 @@ impl BeeperGuiApp {
             if last {
                 let url =
                     chat.participants.items.iter().find(|u| u.id == m.sender_id).and_then(|u| u.img_url.as_deref());
-                self.face(url, m.sender_name.as_deref().expect("sender name"), 28.0, 0.0)
+                self.face(url, &sender_label(chat, m), 28.0, 0.0)
             } else {
                 Space::new().width(28).into()
             }
@@ -1581,4 +1580,10 @@ impl BeeperGuiApp {
             r.push(pill.on_press(toggle_reaction(st, &chat.id, ms, k)))
         })
     }
+}
+
+/// Desktop's `messageSender`: the name of the sender's current member, or the name that came with the message.
+fn sender_label(chat: &Chat, m: &Message) -> String {
+    let member = chat.participants.items.iter().find(|u| u.id == m.sender_id);
+    member.map_or_else(|| m.sender_name.clone().expect("sender name"), member_name)
 }

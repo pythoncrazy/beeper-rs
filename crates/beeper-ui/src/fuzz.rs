@@ -3028,11 +3028,11 @@ fn the_open_chat_reads_new_messages_like_desktop() {
     assert_eq!(unread(&app), 0, "back at the bottom it is read");
 }
 
-/// Desktop's `getLastParticipantName`: a group preview names its sender by the member's current name, so a rename
-/// shows at once.
+/// Desktop's `getLastParticipantName` and `messageSender`: a group preview and the timeline name the sender by the
+/// member's current name, so a rename shows at once.
 #[test]
 fn previews_name_the_sender_by_the_current_name_like_desktop() {
-    let app = demo_app("preview-sender");
+    let mut app = demo_app("preview-sender");
     let (id, sender) = {
         let st = app.store.read();
         let c = app.visible_chats(&st).into_iter().find(|c| {
@@ -3055,6 +3055,8 @@ fn previews_name_the_sender_by_the_current_name_like_desktop() {
         });
     }
     assert!(simulator(app.view_sidebar()).find("Zed: hi").is_ok(), "the new first name");
+    let _ = app.update(UiMessage::SelectChat(id));
+    assert!(simulator(app.view_conversation()).find("Zed Quux").is_ok(), "the timeline names the sender the same way");
 }
 
 /// Desktop's Join a Matrix room view: a bad address shows Desktop's error under the field, and a known room opens.
