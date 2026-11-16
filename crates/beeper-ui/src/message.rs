@@ -3,8 +3,8 @@
 
 use crate::i18n::{tr, trf, trn, trnx, trx, trxf};
 use crate::style::{
-    bold, bordered_box, bordered_btn, btn_style, clamp, ell, fill_box, fw, hex, ic, icon, med, mix, pick, scroll_style,
-    semi, shadow_box, stable_bar, txt, CLEAR, GUTTER,
+    bold, bordered_box, bordered_btn, btn_style, clamp, ell, fill_box, fw, hex, ic, icon, med, mix, pane_card, pick,
+    scroll_style, semi, shadow_box, stable_bar, txt, CLEAR, GUTTER,
 };
 use crate::{
     anim, badged, brightness, can_thread, chat_theme, clock, commands, copy_text, day_label, day_num, day_of,
@@ -434,9 +434,7 @@ impl BeeperGuiApp {
         let avatar = container(self.chat_avatar(chat, 40.0, 0.0)).padding(Padding::ZERO.top(14.0).bottom(8.0));
         let content = column![avatar].push(column![].push(inviter).push(text).align_x(Center)).push(title).push(about);
         let content = content.push(container(actions).padding(Padding::ZERO.top(12.0))).align_x(Center).max_width(480);
-        let shadow = Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.18), offset: Vector::ZERO, blur_radius: 20.0 };
-        let card = fill_box(p.card, 10.0);
-        container(content).center(Fill).style(move |t| container::Style { shadow, ..card(t) }).into()
+        container(content).center(Fill).style(pane_card(p.card)).into()
     }
 
     /// Desktop's `IncognitoMarkAsRead`: a link below an unread chat that incognito mode keeps unread.
@@ -631,14 +629,7 @@ impl BeeperGuiApp {
         let wallpaper =
             wallpaper.map(|paint| iced::widget::responsive(move |size| chat_theme::fill(paint.clone(), size, 10.0)));
         let pane = stack![].push(wallpaper).push(pane).push(picker).push(self.view_suggestions(&st)).push(dropping);
-        let shadow = Shadow { color: Color::from_rgba(0.0, 0.0, 0.0, 0.18), offset: Vector::ZERO, blur_radius: 20.0 };
-        let card = fill_box(p.card, 10.0);
-        container(pane)
-            .width(Fill)
-            .height(Fill)
-            .clip(true)
-            .style(move |t| container::Style { shadow, ..card(t) })
-            .into()
+        container(pane).width(Fill).height(Fill).clip(true).style(pane_card(p.card)).into()
     }
 
     /// Desktop's `jumpToMessage` and `revealMessage`: shows message `mid` of chat `cid` in the timeline of the pane,
