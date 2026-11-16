@@ -4,7 +4,7 @@
 use crate::i18n::{tr, trf};
 use crate::style::{
     bordered_box, brand_svg, btn_style, clamp, fill_box, hex, ic, icon, input_style, mix, scroll_style, semi,
-    shadow_box, text_width, txt, CLEAR,
+    shadow_box, text_width, txt, Bare, CLEAR,
 };
 use crate::{
     account_display_name, account_user, anim, brand_key, can_broadcast, checkbox, contact_card, dashed, emoji, format,
@@ -1002,10 +1002,8 @@ impl BeeperGuiApp {
                     semi(when, 11.0).line_height(Pixels(14.0)).color(p.accent),
                     tinted(&CHEVRON_DOWN, 14.0, p.accent)
                 ];
-                let details = button(details.spacing(4).align_y(Center))
-                    .padding(0)
-                    .style(btn_style([CLEAR; 3], [p.accent; 3], 0.0))
-                    .on_press(UiMessage::OpenSendLater);
+                let details =
+                    button(details.spacing(4).align_y(Center)).bare(p.accent).on_press(UiMessage::OpenSendLater);
                 let close = icon_btn(p, icon::CLOSE, 14.0, 20.0, p.accent, UiMessage::SendLater(None));
                 let blue = if p.card.r < 0.5 { hex(0x1b43aa) } else { hex(0xcbd9ff) };
                 let banner = container(row![details, Space::new().width(Fill), close].spacing(2).align_y(Center))

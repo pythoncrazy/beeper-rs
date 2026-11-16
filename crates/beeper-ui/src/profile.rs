@@ -1,7 +1,9 @@
 //! Desktop's Beeper Profile page of Settings (`ProfileSubView`), with its menu and prompts.
 
 use crate::i18n::{tr, trf, trx};
-use crate::style::{bold, bordered_box, btn_style, fill_box, fw, ic, icon, med, semi, shadow_box, txt, Palette, CLEAR};
+use crate::style::{
+    bold, bordered_box, btn_style, fill_box, fw, ic, icon, med, semi, shadow_box, txt, Bare, Palette, CLEAR,
+};
 use crate::{
     menu_item, menu_rule, outline_input, pill_style, plan_pill, portal, round_avatar, tinted, BeeperGuiApp, El,
     PendingMedia, SettingsTab, Toast, UiMessage, CHEVRON_DOWN,
@@ -238,7 +240,7 @@ impl BeeperGuiApp {
             (false, _) => tr("Manage Beeper Plus Subscription"),
         };
         let upsell = st.whoami.can_subscribe.then_some(UiMessage::SelectSettingsTab(SettingsTab::BeeperPlus));
-        let link = button(semi(link, 11.0).color(p.accent)).padding(0).style(btn_style([CLEAR; 3], [p.accent; 3], 0.0));
+        let link = button(semi(link, 11.0).color(p.accent)).bare(p.accent);
         let field = |label: &'static str, value: String, on: Option<fn(String) -> Msg>| -> El<'a> {
             let input = text_input("", &value)
                 .on_input_maybe(on.map(|on| move |v| UiMessage::Profile(on(v))))

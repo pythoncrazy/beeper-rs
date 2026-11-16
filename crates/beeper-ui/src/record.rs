@@ -1,5 +1,5 @@
 //! Desktop's `AudioBar`: record a voice note from the microphone, pause to play it back, and send it as Ogg Opus.
-use crate::style::{bordered_box, btn_style, fill_box, hex, hidden_slider, txt, CLEAR};
+use crate::style::{bordered_box, btn_style, fill_box, hex, hidden_slider, txt, Bare, CLEAR};
 use crate::voice::{self, Clip, HZ, ICONS};
 use crate::{tinted, BeeperGuiApp, El, UiMessage};
 use beeper_core::store::{Draft, OutFile};
@@ -371,9 +371,7 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let [ring, rest, fg, wave] = p.audio_bar;
         let paused = r.0.paused.load(Relaxed);
-        let icon_btn = |h: &svg::Handle, msg| {
-            button(tinted(h, 20.0, fg)).padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0)).on_press(msg)
-        };
+        let icon_btn = |h: &svg::Handle, msg| button(tinted(h, 20.0, fg)).bare(fg).on_press(msg);
         let cancel = button(tinted(&crate::ROW_ACTIONS[6], 20.0, p.on_secondary))
             .padding(8)
             .style(btn_style([CLEAR; 3], [p.on_secondary; 3], 18.0))

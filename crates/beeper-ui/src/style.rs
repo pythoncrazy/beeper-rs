@@ -608,6 +608,18 @@ pub fn shadow_box(bg: Color, border_col: Color, r: f32, blur: f32) -> impl Fn(&T
     }
 }
 
+/// A button without padding or background, its content in `fg` also when hovered or pressed: a text link or a bare
+/// icon.
+pub trait Bare {
+    fn bare(self, fg: Color) -> Self;
+}
+
+impl<M> Bare for button::Button<'_, M> {
+    fn bare(self, fg: Color) -> Self {
+        self.padding(0).style(btn_style([CLEAR; 3], [fg; 3], 0.0))
+    }
+}
+
 pub fn btn_style(bgs: [Color; 3], fgs: [Color; 3], r: f32) -> impl Fn(&Theme, button::Status) -> button::Style + Copy {
     use button::Status::*;
     move |_, s| {
