@@ -705,6 +705,18 @@ fn closing_the_main_window_hides_it_like_desktop() {
     assert!(!app.hidden, "with Quit on close, the window closes");
 }
 
+/// Desktop has one window, so closing it while signed out hides the app too, and opening the app again shows it.
+#[test]
+fn closing_the_sign_in_window_hides_it_like_desktop() {
+    let mut app = demo_app("closelogin");
+    let login = iced::window::Id::unique();
+    (app.main_window, app.login_window) = (None, Some(login));
+    let _ = app.update(UiMessage::CloseRequested(login));
+    assert!(app.hidden && app.login_window == Some(login), "the sign-in window hides instead of quitting");
+    let _ = app.update(UiMessage::FocusRequested(None));
+    assert!(!app.hidden, "opening the app again shows it");
+}
+
 #[test]
 fn an_edit_keeps_the_draft_like_desktop() {
     let note = "!note_self:beeper.com";

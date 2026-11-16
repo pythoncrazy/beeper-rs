@@ -5123,8 +5123,9 @@ impl BeeperGuiApp {
 
     /// Desktop's `hideToTray` (`Du`), which hides the sub-windows and then the main window, and `showWindow`, which
     /// shows the main window.
+    /// Hides or shows the app: the main window, or the sign-in window while signed out (Desktop's single window).
     fn set_hidden(&mut self, hidden: bool) -> Task<UiMessage> {
-        let Some(id) = self.main_window else { return Task::none() };
+        let Some(id) = self.main_window.or(self.login_window) else { return Task::none() };
         self.hidden = hidden;
         self.tray_sent.1 = true;
         match hidden {
@@ -8000,7 +8001,9 @@ impl BeeperGuiApp {
             // Desktop hides the main window on close, with or without the tray: a later launch shows it again.
             UiMessage::CloseRequested(id) => {
                 let quit = self.store.read().settings.on("quitOnClose");
-                return match (Some(id) == self.main_window, quit) {
+                // Desktop's window `close`: it hides the app unless Quit on Close is on, also while signed out.
+                let primary = Some(id) == self.main_window || Some(id) == self.login_window;
+                return match (primary, quit) {
                     (true, false) => self.set_hidden(true),
                     (true, true) => self.save_main_window().chain(window::close(id)),
                     _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => {
@@ -8122,7 +8125,9 @@ impl BeeperGuiApp {
                 if let Some(id) = chat {
                     self.select_chat(&id);
                 }
-                let focus = window::gain_focus(self.main_window.or(self.login_window).expect("a window is open"));
+                let shown = if self.hidden { self.set_hidden(false) } else { Task::none() };
+                let focus =
+                    shown.chain(window::gain_focus(self.main_window.or(self.login_window).expect("a window is open")));
                 return Task::batch([focus, self.load_avatars(), self.load_media(), self.close_notifications()]);
             }
             UiMessage::SecondInstance(args) => return self.second_instance(args),
