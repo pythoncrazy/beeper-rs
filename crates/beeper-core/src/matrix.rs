@@ -1129,6 +1129,12 @@ async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEve
     let (members, group) = (chat.participants.total, chat.chat_type == "group");
     {
         let mut st = store.write();
+        // A pin changed here keeps its local place until the homeserver's `favourites_order` shows it.
+        let rank = match st.local_flag(&chat_id, ChatFlag::Pinned) {
+            Some(true) => rank.or(st.pin_rank.get(&chat_id).copied()),
+            Some(false) => None,
+            None => rank,
+        };
         let old = match rank {
             Some(r) => st.pin_rank.insert(chat_id.clone(), r),
             None => st.pin_rank.remove(&chat_id),
@@ -3459,6 +3465,13 @@ mod tests {
             assert!(st.set_chat_flag(i, super::ChatFlag::Archived, Some(true)));
             assert!(st.set_chat_flag(i, super::ChatFlag::LowPriority, Some(true)));
         }
+        sync_stub_room(&store, "!other:x").await;
+        let pin = |store: &crate::store::SharedStore| store.read().pin_rank.get("!other:x").copied();
+        let i = store.read().chat_idx("!other:x");
+        assert!(store.write().set_chat_flag(i, super::ChatFlag::Pinned, Some(true)));
+        assert_eq!(pin(&store), Some(0), "a new pin goes last in the pin order");
+        sync_stub_room(&store, "!other:x").await;
+        assert_eq!(pin(&store), Some(0), "the pin keeps its place until favourites_order shows it");
         sync_stub_room(&store, "!room:x").await;
         assert_eq!(flags(&store), (Some(true), Some(true)), "the queued changes win over the room state");
         super::flush(store.clone()).await.expect("the stub takes the account data and the tag");
@@ -3472,6 +3485,8 @@ mod tests {
         }
         sync_stub_room(&store, "!room:x").await;
         assert_eq!(flags(&store), (Some(false), Some(false)), "later syncs show the homeserver state");
+        sync_stub_room(&store, "!other:x").await;
+        assert_eq!(pin(&store), None, "the stub's empty favourites_order wins after the sent change");
         let mut c = {
             let st = store.read();
             st.chat("!room:x").clone()

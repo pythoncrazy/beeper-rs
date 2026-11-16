@@ -1501,6 +1501,15 @@ impl BeeperStore {
         }
         self.update_chat(idx, |c| *c.flag_mut(flag) = Some(value));
         let id = self.chats[idx].id.clone();
+        if flag == ChatFlag::Pinned {
+            // Desktop's `favourites_order` edit: a new pin goes last, an unpin leaves the list.
+            let last = self.pin_rank.values().max().map_or(0, |r| r + 1);
+            match value {
+                true => self.pin_rank.insert(id.clone(), last),
+                false => self.pin_rank.remove(&id),
+            };
+            self.persist_state_to_sqlite();
+        }
         self.queue(&id, Outgoing::Flag(flag, value));
         true
     }
