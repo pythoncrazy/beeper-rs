@@ -20,6 +20,14 @@ const RADIUS: f32 = 14.0;
 /// The scale of a baked tile, so that it stays sharp on a 2x screen.
 const BAKE: f32 = 2.0;
 
+/// How a baked tile looks: a gallery tile with its ring (selected or not), or an inline image cropped like Desktop's
+/// `object-fit: cover` in the 17 px corners of a bubble.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Look {
+    Tile(bool),
+    Inline,
+}
+
 /// Desktop's `lbt`: a message that can be in a gallery, with one photo or video and nothing else.
 fn member(st: &BeeperStore, m: &Message, replies: usize) -> bool {
     let [a] = &m.attachments[..] else { return false };
@@ -129,7 +137,7 @@ fn turned((w, h): (f32, f32), turn: f32) -> (f32, f32) {
 /// A tile image: `src` cut to cover a `w` by `h` tile, at `BAKE` times its size, with the round corners and the
 /// `ring` of Desktop's `.tile`: its half pixel border, or the 2 px outline of a selected tile. iced can turn an image,
 /// but it cuts and rounds an image only along the screen axes, so the tile has its corners in its pixels.
-fn bake(src: &image::Handle, (w, h): (u32, u32), (border, thick): (Color, f32)) -> image::Handle {
+fn bake(src: &image::Handle, (w, h): (u32, u32), (border, thick): (Color, f32), radius: f32) -> image::Handle {
     let image::Handle::Rgba { width, height, pixels, .. } = src else { unreachable!("decoded media is RGBA") };
     let full = ::image::RgbaImage::from_raw(*width, *height, pixels.to_vec()).expect("RGBA pixels fill the image");
     let (tw, th) = ((w as f32 * BAKE) as u32, (h as f32 * BAKE) as u32);
@@ -137,7 +145,7 @@ fn bake(src: &image::Handle, (w, h): (u32, u32), (border, thick): (Color, f32)) 
     let (cw, ch) = (((tw as f32 * k) as u32).max(1), ((th as f32 * k) as u32).max(1));
     let cut = ::image::imageops::crop_imm(&full, (width - cw) / 2, (height - ch) / 2, cw, ch).to_image();
     let mut out = ::image::imageops::resize(&cut, tw, th, ::image::imageops::FilterType::Triangle);
-    let (r, half) = (RADIUS * BAKE, [tw as f32 / 2.0, th as f32 / 2.0]);
+    let (r, half) = (radius * BAKE, [tw as f32 / 2.0, th as f32 / 2.0]);
     let edge = border.into_rgba8();
     for (x, y, px) in out.enumerate_pixels_mut() {
         // The signed distance from the rounded edge, negative inside.
@@ -153,8 +161,8 @@ fn bake(src: &image::Handle, (w, h): (u32, u32), (border, thick): (Color, f32)) 
 }
 
 /// The key of a baked tile in `BeeperGuiApp::tiles`.
-fn key(url: &str, (w, h): (u32, u32), dark: bool, selected: bool) -> String {
-    format!("{w}x{h}{}{} {url}", u8::from(dark), u8::from(selected))
+fn key(url: &str, (w, h): (u32, u32), dark: bool, look: Look) -> String {
+    format!("{w}x{h}{}{look:?} {url}", u8::from(dark))
 }
 
 /// Desktop's `.duration` and `.more` labels: white text on a dark pill.
@@ -260,12 +268,23 @@ impl BeeperGuiApp {
     /// The baked tile of `url` once its media loaded, or `None` while a load or a bake runs. While the selected or
     /// the unselected tile bakes after a click, the other one shows.
     fn tile(&self, url: &str, size: (u32, u32), selected: bool) -> Option<&image::Handle> {
+        let tile = |selected| self.baked(url, size, Look::Tile(selected));
+        tile(selected).or_else(|| self.tiles.get(&key(url, size, self.dark, Look::Tile(!selected)))?.as_ref())
+    }
+
+    /// An inline image cut to `size` like Desktop's `object-fit: cover`, once baked.
+    pub(crate) fn cover_tile(&self, url: &str, size: (u32, u32)) -> Option<&image::Handle> {
+        self.baked(url, size, Look::Inline)
+    }
+
+    /// The baked tile, or `None` while it bakes: a view asks for it.
+    fn baked(&self, url: &str, size: (u32, u32), look: Look) -> Option<&image::Handle> {
         let Some(Ok(_)) = self.media_at(url) else { return None };
-        let baked = |selected| self.tiles.get(&key(url, size, self.dark, selected));
-        if baked(selected).is_none() {
-            self.wants.ask(&self.wants.tiles, &(url.to_string(), size.0, size.1, selected));
+        let baked = self.tiles.get(&key(url, size, self.dark, look));
+        if baked.is_none() {
+            self.wants.ask(&self.wants.tiles, &(url.to_string(), size.0, size.1, look));
         }
-        baked(selected).or(baked(!selected)).and_then(Option::as_ref)
+        baked.and_then(Option::as_ref)
     }
 
     /// Bakes the tiles that a view asked for, on worker threads.
@@ -273,14 +292,18 @@ impl BeeperGuiApp {
         let wanted = std::mem::take(&mut *self.wants.tiles.borrow_mut());
         let (border, outline) = (self.pal.prefs_border, self.pal.accent);
         let tasks: Vec<_> = (wanted.into_iter())
-            .filter_map(|(url, w, h, selected)| {
-                let k = key(&url, (w, h), self.dark, selected);
-                let ring = if selected { (outline, 2.0) } else { (border, 0.5) };
+            .filter_map(|(url, w, h, look)| {
+                let k = key(&url, (w, h), self.dark, look);
+                let (ring, radius) = match look {
+                    Look::Tile(true) => ((outline, 2.0), RADIUS),
+                    Look::Tile(false) => ((border, 0.5), RADIUS),
+                    Look::Inline => ((Color::TRANSPARENT, 0.0), 17.0),
+                };
                 // A view asks again for a tile whose media went out of the cache.
                 let Some(Some(Ok(frames))) = self.media.get(&url) else { return None };
                 let src = frames[0].0.clone();
                 (!self.tiles.contains_key(&k)).then(|| {
-                    let bake = move || bake(&src, (w, h), ring);
+                    let bake = move || bake(&src, (w, h), ring, radius);
                     let task = async move { tokio::task::spawn_blocking(bake).await.expect("tile bake task") };
                     (k, task)
                 })
@@ -374,7 +397,8 @@ mod tests {
     #[test]
     fn baked_tiles_have_round_corners() {
         let src = image::Handle::from_rgba(40, 20, vec![255; 40 * 20 * 4]);
-        let image::Handle::Rgba { width, height, pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 0.5)) else {
+        let image::Handle::Rgba { width, height, pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 0.5), RADIUS)
+        else {
             unreachable!()
         };
         assert_eq!((width, height), (60, 60), "a tile bakes at twice its size");
@@ -383,7 +407,9 @@ mod tests {
         assert_eq!(at(30, 30), [255; 4], "the middle keeps the image");
         assert_eq!(at(30, 0), [0, 0, 0, 255], "the edge has the border");
         assert_eq!(at(30, 2), [255; 4], "the half pixel border is thin");
-        let image::Handle::Rgba { pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 2.0)) else { unreachable!() };
+        let image::Handle::Rgba { pixels, .. } = bake(&src, (30, 30), (Color::BLACK, 2.0), RADIUS) else {
+            unreachable!()
+        };
         assert_eq!(
             pixels[((2 * width + 30) * 4) as usize..][..4],
             [0, 0, 0, 255],
