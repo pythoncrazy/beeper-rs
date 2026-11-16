@@ -3113,6 +3113,26 @@ fn times_show_once_a_minute_like_desktop() {
     assert!(!time_hidden(&a, Some(&emoji), false), "a jumbo emoji has no time, so the one before keeps it");
 }
 
+/// Desktop's `.message-text` clamp: a message over 40 lines shows "Show more", which opens all of it.
+#[test]
+fn long_messages_clamp_like_desktop() {
+    let mut app = demo_app("clamp");
+    let id = app.store.read().chats.iter().find(|c| c.id != NOTE_CHAT_ID).unwrap().id.clone();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let mid = {
+        let mut st = app.store.write();
+        let i = st.messages.iter().rposition(|m| m.chat_id == id && m.message_type.as_deref() == Some("TEXT")).unwrap();
+        let long = (1..=60).map(|n| format!("row {n}")).collect::<Vec<_>>().join("\n");
+        st.update_message(i, |m| (m.text, m.html) = (Some(long), None)).id
+    };
+    let more = |app: &BeeperGuiApp, label: &str| simulator(app.view_conversation()).find(label).is_ok();
+    assert!(more(&app, "Show more") && !more(&app, "Show less"), "60 lines are clamped");
+    let _ = app.update(UiMessage::ToggleClamp(mid.clone()));
+    assert!(more(&app, "Show less") && !more(&app, "Show more"), "Show more opens it");
+    let _ = app.update(UiMessage::ToggleClamp(mid));
+    assert!(more(&app, "Show more"), "Show less clamps it again");
+}
+
 /// Desktop's Join a Matrix room view: a bad address shows Desktop's error under the field, and a known room opens.
 #[test]
 fn join_a_matrix_room_like_desktop() {
