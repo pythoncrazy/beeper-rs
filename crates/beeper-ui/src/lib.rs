@@ -12207,21 +12207,33 @@ impl BeeperGuiApp {
         let row = |u: &User| -> El<'a> {
             let you = (u.is_self == Some(true))
                 .then(|| format!(" {}", trx("(You)", "tag shown next to the current user in participant list")));
-            let tag = (u.is_admin == Some(true)).then(|| trx("Admin", "group participant status tag"));
-            let tag_w = tag.map_or(0.0, |t| crate::style::text_width(t, 10.0, Weight::Semibold) + 10.0);
+            // Desktop's tags: Exited, Invited and Admin, and an invited member's name at half opacity.
+            let tags: Vec<&str> = [
+                (u.has_exited == Some(true)).then(|| trx("Exited", "group participant status tag")),
+                (u.is_pending == Some(true)).then(|| trx("Invited", "group participant status tag")),
+                (u.is_admin == Some(true)).then(|| trx("Admin", "group participant status tag")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let tag_w: f32 = tags.iter().map(|t| crate::style::text_width(t, 10.0, Weight::Semibold) + 14.0).sum();
+            let fade = if u.is_pending == Some(true) { 0.5 } else { 1.0 };
             let you_w = you.as_deref().map_or(0.0, |y| crate::style::text_width(y, 13.0, Weight::Normal));
             let name = member_name(u);
-            let label = row![ell(&name, 224.0 - tag_w - you_w, 13.0, Weight::Semibold)
-                .line_height(Pixels(16.0))
-                .color(p.strong)]
-            .push(you.map(|y| txt(y, 13.0).color(p.strong)));
+            let strong = p.strong.scale_alpha(fade);
+            let label =
+                row![ell(&name, 224.0 - tag_w - you_w, 13.0, Weight::Semibold).line_height(Pixels(16.0)).color(strong)]
+                    .push(you.map(|y| txt(y, 13.0).color(strong)));
+            let tags = tags.into_iter().map(|t| -> El<'a> {
+                container(crate::style::t(t, 10.0, Weight::Semibold).line_height(Pixels(12.0)).color(p.strong))
+                    .padding([2, 4])
+                    .style(fill_box(p.card, 4.0))
+                    .into()
+            });
+            // iced draws no widget at half opacity, so only the name of an invited member fades.
             let line = row![self.face(u.img_url.as_deref(), &name, 28.0, 0.0), label]
                 .push(Space::new().width(Fill))
-                .push(tag.map(|t| {
-                    container(crate::style::t(t, 10.0, Weight::Semibold).line_height(Pixels(12.0)).color(p.strong))
-                        .padding([2, 4])
-                        .style(fill_box(p.card, 4.0))
-                }))
+                .push(Row::with_children(tags).spacing(4))
                 .spacing(8)
                 .align_y(Center);
             let menu = UiMessage::OpenChatMenu(format!("member:{} {}", chat.id, u.id));

@@ -1190,6 +1190,8 @@
 "group avatar edit action\u0004Edit":["Editar"],
 "group description edit button\u0004Edit":["Editar"],
 "group description submit button\u0004Done":["Concluído"],
+"group participant status tag\u0004Exited":["Saiu"],
+"group participant status tag\u0004Invited":["Convidado"],
 "gvoice/cookies":["gvoice/cookies"],
 "inbox visibility option\u0004None":["Nenhuma"],
 "input placeholder\u0004Email":["E-mail"],

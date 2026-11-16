@@ -1183,6 +1183,8 @@
 "group avatar edit action\u0004Edit":["編集"],
 "group description edit button\u0004Edit":["編集"],
 "group description submit button\u0004Done":["完了"],
+"group participant status tag\u0004Exited":["退出済み"],
+"group participant status tag\u0004Invited":["招待済み"],
 "gvoice/cookies":["gvoice/cookies"],
 "inbox visibility option\u0004None":["なし"],
 "input placeholder\u0004Email":["メールアドレス"],
