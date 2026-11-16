@@ -342,8 +342,13 @@ fn read_reaction_preview(t: &Value, id: &str, account_id: &str, group: bool, ite
     })
 }
 
-/// Desktop's `mx_threads`: the read mark of each thread, and the follow or unfollow that it keeps.
+/// Desktop's `mx_threads`: the read mark of each thread, and the follow or unfollow that it keeps. Data of a Desktop or
+/// Server before the table came has no thread marks.
 fn read_threads(db: &Connection, chats: &mut [Chat]) -> Result<(), String> {
+    let has = db.query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mx_threads'", [], |_| Ok(()));
+    if has.optional().map_err(|e| e.to_string())?.is_none() {
+        return Ok(());
+    }
     let idx: HashMap<String, usize> = chats.iter().enumerate().map(|(i, c)| (c.id.clone(), i)).collect();
     let mut q = db
         .prepare("SELECT roomID, rootEventID, following, lastReadHsOrder FROM mx_threads ORDER BY rowid")
@@ -365,7 +370,36 @@ fn read_threads(db: &Connection, chats: &mut [Chat]) -> Result<(), String> {
     Ok(())
 }
 
+/// Desktop's `isRoomDone` (`Q_e`) from `com.beeper.inbox.done`: archived up to an order while no message that counts
+/// as unread is newer, or up to a time after the last activity of a read chat. A pinned chat is never done.
+fn room_done(t: &Value, counting: i64) -> bool {
+    let extra = t.get("extra").unwrap_or(&Value::Null);
+    let (order, upto) = (extra["isArchivedUpToOrder"].as_i64(), extra["isArchivedUpto"].as_str());
+    if flag(t, "isPinned") || (order.is_none() && upto.is_none()) {
+        return false;
+    }
+    if let Some(order) = order.filter(|&o| o != 0) {
+        let last = extra["lastNotifiableMessageHsOrder"].as_i64().unwrap_or(0).max(counting);
+        return order >= if last == 0 { i64::MIN } else { last };
+    }
+    let at = upto.and_then(|u| u.get(2..)?.parse::<i64>().ok()).unwrap_or(0);
+    let active = extra["markedUnreadUpdatedAt"].as_i64().unwrap_or(0).max(t["timestamp"].as_i64().unwrap_or(0));
+    let unread = flag(t, "isMarkedUnread") || t["unreadCount"].as_u64().unwrap_or(0) > 0;
+    at > 0 && at >= active && at < crate::connect::now_ms() && !unread
+}
+
 fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &Value) -> Result<Vec<Chat>, String> {
+    // The order of the newest message of each room that counts as unread, for `room_done`.
+    let mut q = db
+        .prepare(
+            "SELECT roomID, MAX(hsOrder) FROM mx_room_messages
+             WHERE COALESCE(json_extract(CAST(message AS TEXT), '$.extra.countsAsUnread'), 1) GROUP BY roomID",
+        )
+        .map_err(|e| e.to_string())?;
+    let counting: HashMap<String, i64> = q
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))))
+        .and_then(Iterator::collect)
+        .map_err(|e| e.to_string())?;
     let mut stmt = db
         .prepare(
             "SELECT threadID, threads.accountID, CAST(thread AS TEXT), timestamp, json_extract(props, '$.note'),
@@ -420,7 +454,11 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 unread_mentions: count("unreadMentionsCount"),
                 description: str_field(&t, "description"),
                 draft: None,
-                is_archived: Some(flag(&t, "isArchived")),
+                // Desktop keeps the archive in `com.beeper.inbox.done`; some data also stores `isArchived`.
+                is_archived: Some(match t.get("isArchived") {
+                    Some(_) => flag(&t, "isArchived"),
+                    None => room_done(&t, counting.get(&id).copied().unwrap_or(0)),
+                }),
                 is_marked_unread: Some(flag(&t, "isMarkedUnread")),
                 is_muted: Some(flag(&t, "mutedUntil")),
                 is_pinned: Some(flag(&t, "isPinned")),
@@ -550,15 +588,24 @@ fn read_messages(db: &Connection, chats: &[Chat]) -> Result<Vec<Message>, String
         })
     })
     .map_err(|e| e.to_string())?;
+    // A Desktop or Server before `threadRootEventID` keeps the thread root in `replyThreadRootID`.
+    let has = |col: &str| {
+        let q = "SELECT 1 FROM pragma_table_info('mx_room_messages') WHERE name = ?1";
+        db.query_row(q, [col], |_| Ok(())).optional().map(|o| o.is_some())
+    };
+    let root = match has("threadRootEventID").map_err(|e| e.to_string())? {
+        true => "threadRootEventID",
+        false => "replyThreadRootID",
+    };
     let mut stmt = db
-        .prepare(
+        .prepare(&format!(
             "SELECT messageID, threadID, timestamp, CAST(message AS TEXT), NULL, 0, NULL FROM messages
              UNION ALL
-             SELECT eventID, roomID, timestamp, CAST(message AS TEXT), hsOrder, isDeleted, threadRootEventID
+             SELECT eventID, roomID, timestamp, CAST(message AS TEXT), hsOrder, isDeleted, {root}
              FROM mx_room_messages
              WHERE type NOT IN ('REACTION', 'MEMBERSHIP', 'HIDDEN')
-             ORDER BY 3, 5",
-        )
+             ORDER BY 3, 5"
+        ))
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
@@ -735,6 +782,28 @@ mod tests {
         let unchanged = serde_json::json!({ "app_locale": "en" });
         assert!(matches!(read_theme(&unchanged), Ok(ThemeChoice::System)), "Desktop's default theme is system");
         assert!(read_theme(&serde_json::json!({ "native_theme_source": 1 })).is_err());
+    }
+
+    /// Desktop's `isRoomDone` from the `com.beeper.inbox.done` that Server and Desktop keep in the thread: an order
+    /// archives until a message that counts as unread is newer, a time archives a read chat with no later activity.
+    #[test]
+    fn archives_import_like_desktop() {
+        let thread = |extra: Value, more: Value| {
+            let mut t = serde_json::json!({ "timestamp": 1_000, "unreadCount": 0, "extra": extra });
+            t.as_object_mut().unwrap().extend(more.as_object().unwrap().clone());
+            t
+        };
+        let order = |o: i64, notifiable: i64| serde_json::json!({ "isArchivedUpto": "ts2000", "isArchivedUpToOrder": o, "lastNotifiableMessageHsOrder": notifiable });
+        let none = serde_json::json!({});
+        assert!(room_done(&thread(order(10, 10), none.clone()), 0), "archived up to its newest message");
+        assert!(!room_done(&thread(order(10, 10), none.clone()), 11), "a newer message that counts unarchives");
+        assert!(!room_done(&thread(order(10, 12), none.clone()), 0), "a newer notifiable message unarchives");
+        assert!(!room_done(&thread(order(10, 10), serde_json::json!({ "isPinned": true })), 0), "pinned stays");
+        let upto = |at: &str| serde_json::json!({ "isArchivedUpto": at });
+        assert!(room_done(&thread(upto("ts2000"), none.clone()), 0), "archived after the last activity");
+        assert!(!room_done(&thread(upto("ts500"), none.clone()), 0), "activity after the archive");
+        assert!(!room_done(&thread(upto("ts2000"), serde_json::json!({ "unreadCount": 1 })), 0), "unread");
+        assert!(!room_done(&thread(none.clone(), none), 0), "never archived");
     }
 
     /// Desktop's `attachments[0].transcription` stays, and a null transcription is no transcription.
