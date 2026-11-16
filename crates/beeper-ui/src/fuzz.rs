@@ -6675,6 +6675,10 @@ fn main_window_keeps_its_state_like_desktop() {
     let _ = app.update(UiMessage::OpenMedia);
     assert_eq!(app.media_window.as_ref().unwrap().size, Size::new(800.0, 600.0), "the Media window opens at its size");
     assert_eq!(app.main_window_settings().size, Size::new(900.0, 700.0), "the main window keeps its state");
+    // Desktop's chat windows keep the size of the last one under `pop-out-thread`.
+    write_window_state(&path, "pop-out-thread", false, Size::new(640.0, 520.0), Some(Point::new(5.0, 5.0)));
+    let _ = app.update(UiMessage::OpenChatWindow(beeper_core::store::NOTE_CHAT_ID.into()));
+    assert_eq!(app.chat_windows.last().map(|w| w.1.size), Some(Size::new(640.0, 520.0)), "a chat window opens at it");
     let main = app.main_window.expect("a main window");
     let _ = app.update(UiMessage::SelectChat(beeper_core::store::NOTE_CHAT_ID.into()));
     let title = app.store.read().chats.iter().find(|c| c.id == beeper_core::store::NOTE_CHAT_ID).unwrap().title.clone();

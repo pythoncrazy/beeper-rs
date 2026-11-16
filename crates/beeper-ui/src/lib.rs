@@ -8122,6 +8122,9 @@ impl BeeperGuiApp {
                     _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => {
                         self.save_window(id, "media-viewer").chain(window::close(id))
                     }
+                    _ if self.chat_windows.iter().any(|w| w.0 == id && w.1.thread_root.is_none()) => {
+                        self.save_window(id, POP_OUT).chain(window::close(id))
+                    }
                     (false, _) => window::close(id),
                 };
             }
@@ -8143,7 +8146,8 @@ impl BeeperGuiApp {
                 if let Some(&(id, _)) = open {
                     return window::gain_focus(id);
                 }
-                let size = Size::new(800.0, 600.0);
+                // Desktop's `windowStateKeeper("pop-out-thread")` keeps the size of the last chat window.
+                let size = self.saved_window_settings(POP_OUT, Size::new(800.0, 600.0)).size;
                 let (id, open) = window::open(Self::window_settings(size));
                 self.chat_windows.push((id, Pane { size, ..Pane::default() }));
                 let near = self.cascade(id);
@@ -13686,6 +13690,8 @@ pub fn write_rgba_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u
 
 /// Desktop's default size of the main window (`Wg` and `jg`).
 const MAIN_SIZE: Size = Size::new(1200.0, 800.0);
+/// Desktop's `windowStateKeeper` key of the chat windows (`w2` of a window ID that starts with `thread-`).
+const POP_OUT: &str = "pop-out-thread";
 
 /// Desktop's `window.json`, or an empty state before the first save.
 fn read_window_state(path: &std::path::Path) -> serde_json::Value {
