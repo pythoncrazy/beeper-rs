@@ -302,7 +302,8 @@ fn draw(el: &El, x: f32, y: usize, w: f32, g: &mut Grid) -> usize {
     }
 }
 
-/// The columns of the terminal on `fd` (1 for stdout, 2 for stderr), or 80 like ink when it is not a terminal.
+/// The columns of the terminal on `fd` (1 for stdout, 2 for stderr). Off a terminal, ink takes a positive `COLUMNS`
+/// for stdout, and 80 otherwise, which oclif also takes for stderr.
 pub fn columns(fd: i32) -> usize {
     #[cfg(target_os = "linux")]
     {
@@ -317,7 +318,62 @@ pub fn columns(fd: i32) -> usize {
             return usize::from(size.0[1]);
         }
     }
-    80
+    let columns = std::env::var("COLUMNS").ok().and_then(|c| c.parse().ok()).filter(|&c| c > 0);
+    columns.filter(|_| fd == 1).unwrap_or(80)
+}
+
+/// wrap-ansi with `hard: true, trim: false`, which oclif's `prettyPrint` uses: rows of at most `cols` characters, broken
+/// at spaces that stay at the end of a row, or start the next one when the row is full; a longer word breaks anywhere.
+pub fn wrap_hard(text: &str, cols: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.split('\n') {
+        let mut rows = vec![String::new()];
+        let width = |r: &String| r.chars().count();
+        for (i, word) in line.split(' ').enumerate() {
+            let len = word.chars().count();
+            let mut row = width(rows.last().expect("a row"));
+            if i > 0 {
+                if row >= cols {
+                    rows.push(String::new());
+                    row = 0;
+                }
+                rows.last_mut().expect("a row").push(' ');
+                row += 1;
+            }
+            if len > cols {
+                let (this, next) = (1 + (len + row).saturating_sub(cols + 1) / cols, (len - 1) / cols);
+                if next < this {
+                    rows.push(String::new());
+                }
+                // wrap-ansi's `wrapWord`: character by character, a new row at each full one.
+                let mut visible = width(rows.last().expect("a row"));
+                for (j, ch) in word.chars().enumerate() {
+                    if visible < cols {
+                        rows.last_mut().expect("a row").push(ch);
+                    } else {
+                        rows.push(ch.to_string());
+                        visible = 0;
+                    }
+                    visible += 1;
+                    if visible == cols && j < len - 1 {
+                        rows.push(String::new());
+                        visible = 0;
+                    }
+                }
+                if visible == 0 && rows.len() > 1 && !rows.last().expect("a row").is_empty() {
+                    let last = rows.pop().expect("a row");
+                    rows.last_mut().expect("a row").push_str(&last);
+                }
+                continue;
+            }
+            if row + len > cols && row > 0 && len > 0 {
+                rows.push(String::new());
+            }
+            rows.last_mut().expect("a row").push_str(word);
+        }
+        out.extend(rows);
+    }
+    out
 }
 
 /// `wrap-ansi` with `{trim: false, hard: true}` for plain text.
@@ -1328,6 +1384,31 @@ pub fn value(v: &Value) -> El {
 
 #[cfg(test)]
 mod tests {
+    /// oclif's warnings as the official CLI wraps them at 74 columns: a full row starts the next one with its
+    /// space, a word that does not fit leaves the space at the end of the row, and a longer word breaks anywhere.
+    #[test]
+    fn warnings_wrap_like_oclif() {
+        let id = "!Vn4mlwA53ibdbuOEySLEnHbq_Gisth58yengPZb18YA";
+        assert_eq!(
+            wrap_hard(&format!("Warning: messages list {id} is not a beeper command."), 74),
+            [format!("Warning: messages list {id} is not"), " a beeper command.".into()]
+        );
+        let words =
+            "Warning: chats show one two three four five six seven eight nine ten eleven is not a beeper command.";
+        assert_eq!(
+            wrap_hard(words, 74),
+            [
+                "Warning: chats show one two three four five six seven eight nine ten ",
+                "eleven is not a beeper command."
+            ]
+        );
+        let a = "a".repeat(85);
+        assert_eq!(
+            wrap_hard(&format!("Warning: chats show {a} b c is not"), 74),
+            [format!("Warning: chats show {}", "a".repeat(54)), format!("{} b c is not", "a".repeat(31))]
+        );
+    }
+
     use super::*;
     use serde_json::json;
 

@@ -90,7 +90,11 @@ fn parse(argv: impl IntoIterator<Item = String>) -> Result<Args, (String, i32)> 
             let command = COMMANDS.iter().find(|c| c.0 == arg).map(|c| c.1);
             match (args.command, command) {
                 (Command::Gui, Some(command)) => args.command = command,
-                (Command::Gui, None) => return Err((format!("{arg} is not a {BIN} command."), 127)),
+                (Command::Gui, None) => {
+                    let words: Vec<String> =
+                        std::iter::once(arg).chain(argv.take_while(|a| !a.starts_with('-'))).collect();
+                    return Err((words.join(" "), 127));
+                }
                 _ => return Err((format!("Unexpected argument: {arg}"), 2)),
             }
             continue;
@@ -213,7 +217,7 @@ fn main() {
     let Args { command, host: launch_host, port, profile, data_dir, domain, demo, link } =
         parse(argv.chain(std::env::args().skip(1))).unwrap_or_else(|(error, code)| {
             match code {
-                127 => eprintln!(" ›   Warning: {error}\n ›   Error: Run {BIN} help for a list of available commands."),
+                127 => drop(cli::not_a_command(&error, None)),
                 _ => eprintln!("Error: {error}\nSee more help with --help\n\n{USAGE}"),
             }
             std::process::exit(code)
@@ -380,7 +384,8 @@ mod tests {
             (&["--bogus"][..], "Nonexistent flag: --bogus".into(), 2),
             (&["-v"], "Nonexistent flag: -v".into(), 2),
             (&["--demo=1"], "Nonexistent flag: --demo=1".into(), 2),
-            (&["chatz"], "chatz is not a beeper-rs command.".into(), 127),
+            (&["chatz"], "chatz".into(), 127),
+            (&["chatz", "list", "--json"], "chatz list".into(), 127),
             (&["serve", "extra"], "Unexpected argument: extra".into(), 2),
             (&["--port"], "Flag --port expects a value".into(), 2),
             (&["--port", "--data-dir", "/tmp/d"], "Flag --port expects a value".into(), 2),

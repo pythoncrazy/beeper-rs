@@ -155,8 +155,12 @@ fn cli_reports_bad_command_lines_like_oclif() {
     assert_eq!(line, want);
     let limit = d.run(&["chats", "list", "--limit", "abc"]);
     assert!(limit.stderr.contains("│ Parsing --limit \n\tExpected an integer but received: abc\n"), "{}", limit.stderr);
+    // The official CLI: a word after a command without arguments makes the words an unknown command.
     let unknown = d.run(&["chats", "zap"]);
-    assert_eq!(unknown.code, 1, "an unknown word after a topic is an argument of its index command");
+    assert_eq!(unknown.code, 127);
+    assert!(unknown.stderr.starts_with(" ›   Warning: chats zap is not a beeper-rs command.\n"), "{}", unknown.stderr);
+    assert!(unknown.stderr.contains("Run beeper-rs help chats for"), "{}", unknown.stderr);
+    assert_eq!(d.run(&["chats", "search", "a", "b"]).code, 1, "a command with arguments refuses extra ones");
     let unknown = d.run(&["messagez"]);
     assert_eq!(unknown.code, 127);
     let help = d.run(&["chats", "--help"]).stdout;
