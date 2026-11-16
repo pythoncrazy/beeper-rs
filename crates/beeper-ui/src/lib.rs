@@ -4757,6 +4757,20 @@ impl BeeperGuiApp {
         Task::perform(load, UiMessage::LoadedOlder)
     }
 
+    /// Desktop's `TopOfThread` loads again when the chat gets older messages while its top is on screen, as when the
+    /// first sync of a joined room brings a page: in the main pane and in each chat window.
+    fn load_older_everywhere(&mut self) -> Task<UiMessage> {
+        let mut tasks = vec![self.load_older()];
+        for i in 0..self.chat_windows.len() {
+            let id = self.chat_windows[i].0;
+            std::mem::swap(&mut self.pane, &mut self.chat_windows[i].1);
+            let task = self.load_older();
+            std::mem::swap(&mut self.pane, &mut self.chat_windows[i].1);
+            tasks.push(task.map(move |m| UiMessage::InWindow(id, Box::new(m))));
+        }
+        Task::batch(tasks)
+    }
+
     /// The end of a load of older messages. A retry follows with Desktop's backoff: 100 ms * 2^tries up to 3 s, with
     /// the tries reset when messages came.
     fn loaded_older(&mut self, r: Result<(), String>) -> Task<UiMessage> {
@@ -8076,7 +8090,8 @@ impl BeeperGuiApp {
                     self.select_chat(NOTE_CHAT_ID);
                 }
                 self.refresh_theme_and_tray();
-                return Task::batch([self.close_notifications(), self.verification_changed(), self.leave_app()]);
+                let older = self.load_older_everywhere();
+                return Task::batch([self.close_notifications(), self.verification_changed(), self.leave_app(), older]);
             }
             UiMessage::FocusRequested(chat) => {
                 if let Some(id) = chat {
