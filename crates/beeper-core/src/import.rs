@@ -427,13 +427,14 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
     rows.into_iter()
         .map(|(id, account, json, ts, note, follow_all)| {
             let t: Value = serde_json::from_str(&json).map_err(|e| format!("thread {id}: {e}"))?;
-            let items = people.remove(&id).unwrap_or_default();
+            let mut items = people.remove(&id).unwrap_or_default();
+            items.sort_by(crate::models::member_order);
             let group = t.get("type").and_then(Value::as_str) == Some("group");
             let others = items.iter().filter(|u| u.is_self != Some(true)).map(display_name).collect::<Vec<_>>();
             let title = str_field(&t, "title").unwrap_or_else(|| match others.as_slice() {
                 [] => "Unnamed chat".into(),
                 [one] => one.to_string(),
-                many if group => many.iter().take(3).copied().collect::<Vec<_>>().join(", "),
+                _ if group => crate::models::group_title(&items),
                 [first, ..] => first.to_string(),
             });
             let account_id = account.or_else(|| str_field(&t, "accountID")).unwrap_or_else(|| "hungryserv".into());

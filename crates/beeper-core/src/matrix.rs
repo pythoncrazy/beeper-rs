@@ -342,7 +342,10 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             .find(|(k, _)| scheme.map_or(!matches!(*k, "tel" | "mailto"), |want| *k == want))
             .map(|(_, v)| v.to_string())
     };
-    let items: Vec<User> = members
+    // Desktop names a member without a display name by its user ID.
+    let unnamed: HashSet<String> =
+        members.iter().filter(|m| m.display_name().is_none()).map(|m| m.user_id().to_string()).collect();
+    let mut items: Vec<User> = members
         .iter()
         .filter(|m| !service.contains(m.user_id()) && bot.as_deref() != Some(m.user_id().as_str()))
         .map(|m| {
@@ -366,6 +369,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             }
         })
         .collect();
+    items.sort_by(crate::models::member_order);
     let tags = room.tags().await.expect("read room tags").unwrap_or_default();
     // Desktop's thread type (`rT`): a note to self is single, a declared DM is single up to two people, and a room
     // with a name or a declared group DM is a group.
@@ -384,12 +388,19 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
             // The own member of an invite has not joined, so an invite may have no joined member to name it by.
             names(true).next().unwrap_or_else(|| room.room_id().to_string())
         } else {
-            others.join(", ")
+            // Desktop's `tIe`: a group is named by its members, a direct chat by the name of the other member.
+            let anonymous = |u: &User| User { full_name: None, ..u.clone() };
+            let titled: Vec<User> =
+                items.iter().map(|u| if unnamed.contains(&u.id) { anonymous(u) } else { u.clone() }).collect();
+            match dm {
+                true => titled.iter().find(|u| u.is_self != Some(true)).map(|u| u.sort_name().to_string()),
+                false => Some(crate::models::group_title(&titled)),
+            }
+            .expect("a chat with other members")
         }
     });
     let account_id = account_id(&bridge, accounts);
     // Desktop's `hasExited`: in a room that the user left, the own member stays, exited, and does not count above.
-    let mut items = items;
     if room.state() == RoomState::Left {
         items.push(User { id: me.to_string(), is_self: Some(true), has_exited: Some(true), ..Default::default() });
     }
@@ -1288,9 +1299,13 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
         st.load_chat(&chat_id);
         // Desktop finds the target of an event only in the room of the event.
         let here = |st: &BeeperStore, id: &str| st.loaded_idx(id).filter(|&i| st.messages[i].chat_id == chat_id);
+        // A placeholder that decrypted to an edit, a reaction or a hidden event was no message, so its order does not
+        // count, like a redacted one: Desktop's `countsAsUnread` row of an edit is the edited message.
+        let mut stale = redacted;
         for id in non_messages {
             if here(&st, &id).is_some() {
                 st.remove_message(&chat_id, &id).expect("remove a decrypted placeholder");
+                stale = true;
             }
         }
         for op in ops {
@@ -1384,7 +1399,7 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
         let msgs = st.timeline(&chat_id);
         let last = msgs.clone().rev().find(|m| m.message_type.as_deref() != Some("MEMBERSHIP")).map(|m| &m.sort_key);
         let stored = msgs.flat_map(|m| &m.reactions).map(|r| &r.sort_key).max();
-        let old = st.chats[idx].notifiable.as_ref().filter(|_| !redacted);
+        let old = st.chats[idx].notifiable.as_ref().filter(|_| !stale);
         let notifiable = [old, last, reacted.as_ref(), stored].into_iter().flatten().max().cloned();
         let notifiable = Some(notifiable.unwrap_or_else(|| sort_key(MIN_SAFE_INTEGER)));
         let archived = st
@@ -3872,6 +3887,43 @@ mod tests {
         let room = store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).unwrap();
         super::refetch_undecrypted(&store, vec![room]).await;
         assert_eq!(text(&store).as_deref(), Some("decrypted at last"));
+    }
+
+    /// An edit that waits for its key is no newer message once it decrypts, so a chat archived up to the edited
+    /// message stays archived, like Desktop, whose edit only changes the row of the edited message.
+    #[tokio::test]
+    async fn a_decrypted_edit_keeps_the_archive_like_desktop() {
+        let msg = stub_message(5);
+        let megolm =
+            json!({ "algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "x", "sender_key": "k", "session_id": "s" });
+        let enc = json!({ "type": "m.room.encrypted", "event_id": "$edit", "sender": "@me:x", "origin_server_ts": 2,
+            "content": megolm, "unsigned": { "com.beeper.hs.order": 9 } });
+        let edit = json!({ "type": "m.room.message", "event_id": "$edit", "sender": "@me:x", "origin_server_ts": 2,
+            "unsigned": { "com.beeper.hs.order": 9 },
+            "content": { "msgtype": "m.text", "body": "* m5!", "m.new_content": { "msgtype": "m.text", "body": "m5!" },
+                "m.relates_to": { "rel_type": "m.replace", "event_id": "$e5" } } });
+        let mut sync = stub_sync();
+        let done = json!({ "type": "com.beeper.inbox.done", "content": { "at_order": 5, "at_ts": 1 } });
+        sync["rooms"]["join"]["!room:x"]["account_data"] = json!({ "events": [done] });
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": [enc.clone(), msg.clone()] })),
+            p if p.contains("/event/") => (200, edit.clone()),
+            p if p.contains("/account_data/") || p.contains("/tags/") => (200, json!({})),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("decrypted-edit"), &url).await;
+        sync_stub_room(&store, "!room:x").await;
+        assert_eq!(store.read().chat("!room:x").is_archived, Some(false), "an undecrypted event may be a message");
+        let room = store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).unwrap();
+        super::refetch_undecrypted(&store, vec![room]).await;
+        let st = store.read();
+        assert_eq!(st.stored_message("$e5").and_then(|m| m.text).as_deref(), Some("m5!"), "the edit applies");
+        assert!(st.stored_message("$edit").is_none(), "the placeholder goes");
+        assert_eq!(st.chat("!room:x").is_archived, Some(true), "archived up to the edited message again");
     }
 
     /// Desktop's `loadMessage`: one message by its event, without adding it to the timeline.
