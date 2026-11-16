@@ -17,6 +17,7 @@ mod lift;
 mod links;
 pub mod login;
 mod media_view;
+mod menubar;
 mod message;
 mod notify;
 mod popover;
@@ -834,6 +835,16 @@ pub enum UiMessage {
     HeaderHover(bool),
     /// The 500 ms after the pointer left the header card of this generation ran out.
     HeaderHoverEnd(u32),
+    /// Desktop's menu bar: hidden (`None`), shown, or shown with a menu open.
+    MenuBar(Option<Option<usize>>),
+    /// The pointer came onto a menu title, which opens its menu while another menu is open.
+    MenuBarHover(usize),
+    /// An item of the menu bar: the menu bar hides, and the item runs.
+    MenuBarRun(Box<UiMessage>),
+    /// The Cut (true) and Copy items of the Edit menu, on the composer.
+    ComposerClip(bool),
+    /// The Minimize item of the Window menu.
+    MinimizeWindow(window::Id),
     /// The pointer came onto (`Some`) or left a tile of the pinned grid.
     PinHover(Option<String>),
     /// Desktop's `Drop` of the pinned grid (`lY`): a press, a move and the release of a drag of a pin.
@@ -3778,6 +3789,10 @@ pub struct BeeperGuiApp {
     pub rail_drag: Option<RailDrag>,
     /// Desktop's header hover (`f` of `Amt`): the member list shows, and the generation of its 500 ms leave delay.
     pub header_hover: (bool, u32),
+    /// Desktop's menu bar, which Alt shows: hidden (`None`), shown, or shown with the menu of an index open.
+    pub menu_bar: Option<Option<usize>>,
+    /// Alt went down with no other key, so that its release toggles the menu bar.
+    alt_alone: bool,
     pub pin_hover: Option<String>,
     pub pin_drag: Option<PinDrag>,
     pub main_window: Option<window::Id>,
@@ -4004,6 +4019,8 @@ impl BeeperGuiApp {
             dragging: false,
             rail_hover: None,
             header_hover: (false, 0),
+            menu_bar: None,
+            alt_alone: false,
             pin_hover: None,
             pin_drag: None,
             user_hover: UserHover::default(),
@@ -5262,6 +5279,10 @@ impl BeeperGuiApp {
     }
 
     fn handle(&mut self, msg: UiMessage) -> Task<UiMessage> {
+        // Another key while Alt is down keeps the release of Alt from toggling the menu bar.
+        if let UiMessage::WindowKey(_, key, _) = &msg {
+            self.alt_alone &= *key == Key::Named(Named::Alt);
+        }
         // Desktop's `persistDraftRecord` after a change of the attachments, the quote, Send Later or the link previews.
         self.pane.draft_due |= matches!(
             msg,
@@ -6242,7 +6263,17 @@ impl BeeperGuiApp {
                 self.media_mut().menu = open.then_some(at);
             }
             UiMessage::Modifiers(mods) => {
-                self.mods = mods;
+                // Electron's `autoHideMenuBar`: Alt on its own shows the menu bar, and hides it again.
+                let was = std::mem::replace(&mut self.mods, mods);
+                match (was == Modifiers::ALT, mods == Modifiers::ALT) {
+                    (false, true) if was.is_empty() => self.alt_alone = true,
+                    (true, false) if mods.is_empty() && std::mem::take(&mut self.alt_alone) => {
+                        if self.main_window.is_some() {
+                            self.menu_bar = if self.menu_bar.is_some() { None } else { Some(None) };
+                        }
+                    }
+                    _ => self.alt_alone = false,
+                }
                 if self.cycling && !mods.control() {
                     self.cycling = false;
                     if let Some(c) = self.pane.selected_chat_id.clone() {
@@ -6379,6 +6410,7 @@ impl BeeperGuiApp {
             UiMessage::WindowKey(id, key, mods) if Some(id) == self.login_window || !self.store.read().signed_in() => {
                 return self.login_key(key, mods);
             }
+            UiMessage::WindowKey(_, Key::Named(Named::Escape), _) if self.menu_bar.is_some() => self.menu_bar = None,
             UiMessage::WindowKey(id, key, mods) => {
                 if Some(id) == self.settings_window {
                     return self.settings_key(key, mods);
@@ -8106,6 +8138,26 @@ impl BeeperGuiApp {
             }
             UiMessage::HeaderHoverEnd(n) if n == self.header_hover.1 => self.header_hover.0 = false,
             UiMessage::HeaderHoverEnd(_) => {}
+            UiMessage::MenuBar(state) => self.menu_bar = state,
+            UiMessage::MenuBarHover(i) => {
+                if let Some(Some(_)) = self.menu_bar {
+                    self.menu_bar = Some(Some(i));
+                }
+            }
+            UiMessage::MenuBarRun(msg) => {
+                self.menu_bar = None;
+                return self.update(*msg);
+            }
+            UiMessage::ComposerClip(cut) => {
+                let Some(text) = self.pane.composer.selection() else { return Task::none() };
+                let copy = iced::clipboard::write(text);
+                if !cut {
+                    return copy;
+                }
+                let delete = self.update(UiMessage::ComposerEdit(text_editor::Action::Edit(text_editor::Edit::Delete)));
+                return Task::batch([copy, delete]);
+            }
+            UiMessage::MinimizeWindow(id) => return window::minimize(id, true),
             UiMessage::RailPress => {
                 let Some((id, grab)) = self.rail_hover.clone() else { return Task::none() };
                 self.rail_drag = Some(RailDrag { id, grab, from: None, at: Point::ORIGIN, order: None });
@@ -8874,6 +8926,17 @@ impl BeeperGuiApp {
             .style(fill_box(self.pal.window, 0.0))
             .into(),
         };
+        // Desktop's menu bar, which Alt shows over the content of the main window.
+        let base = match self.menu_bar.filter(|_| in_main) {
+            Some(open) => column![self.view_menu_bar(open), base].into(),
+            None => base,
+        };
+        let menu_drop = self.menu_bar.flatten().filter(|_| in_main).map(|i| {
+            let (menu, x) = self.view_menu_dropdown(i);
+            let at = Padding::ZERO.left(x).top(menubar::BAR_H);
+            mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
+                .on_press(UiMessage::MenuBar(None))
+        });
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
             (None, true) => Some(self.view_command_palette()),
@@ -9042,8 +9105,15 @@ impl BeeperGuiApp {
         let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q));
         // The menus and the emoji picker of the carousel show over it.
         let hover = self.view_hover_card().filter(|_| in_main);
-        let layers =
-            stack![base].push(toast).push(carousel).push(hover).push(menu).push(scrim).push(palette_menu).push(select);
+        let layers = stack![base]
+            .push(toast)
+            .push(carousel)
+            .push(hover)
+            .push(menu_drop)
+            .push(menu)
+            .push(scrim)
+            .push(palette_menu)
+            .push(select);
         let token = self.token_ask.as_ref().map(|a| self.view_token_ask(a));
         layers.push(confirm).push(hotkeys).push(token).into()
     }
