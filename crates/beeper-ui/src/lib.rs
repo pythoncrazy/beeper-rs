@@ -450,6 +450,12 @@ pub enum UiMessage {
     /// Desktop's `Txe`: undoes the last action, with an "Undo:" toast.
     UndoAction,
     FloatRail(bool),
+    /// The pointer came onto (`Some`, "chat user") or left a trigger of Desktop's `BrandUserHoverCard`.
+    HoverUser(Option<String>),
+    /// The pointer came onto or left the shown user card.
+    HoverUserCard(bool),
+    /// The wait of this generation of the user card ran out.
+    HoverUserDue(u32),
     SetSpacesOrder(Vec<SpaceOrder>),
     /// Puts back the name, color, icon and chats of a label.
     RestoreLabel(Box<Label>),
@@ -2503,7 +2509,8 @@ fn handle(u: &User) -> Option<String> {
 /// Desktop's user card: its width, the part of its 88 px avatar inside the card, and its height with buttons.
 const CARD_W: f32 = 200.0;
 const CARD_FACE_IN: f32 = 88.0 / 3.0;
-const CARD_H: f32 = 88.0 + 8.0 + 18.0 + 15.0 + 8.0 + 28.0 + 8.0;
+/// The height of a user card with only its avatar and name.
+const CARD_H: f32 = 88.0 + 8.0 + 18.0 + 8.0;
 /// The Chat Info context menus: the identity header, the title, a member, a bookmark and a contact detail.
 const INFO_MENUS: [&str; 5] = ["info:", "copy:", "member:", "bookmark:", "contact:"];
 
@@ -3746,6 +3753,7 @@ pub struct BeeperGuiApp {
     pub dragging: bool,
     /// The rail space under the cursor, and where the cursor is in it.
     pub rail_hover: Option<(String, Point)>,
+    pub user_hover: UserHover,
     pub rail_drag: Option<RailDrag>,
     pub main_window: Option<window::Id>,
     pub settings_window: Option<window::Id>,
@@ -3970,6 +3978,7 @@ impl BeeperGuiApp {
             sidebar_hidden,
             dragging: false,
             rail_hover: None,
+            user_hover: UserHover::default(),
             rail_drag: None,
             main_window: None,
             settings_window: None,
@@ -6684,6 +6693,7 @@ impl BeeperGuiApp {
             }
             UiMessage::MessageMember(cid, uid) => {
                 self.chat_menu = None;
+                self.user_hover = UserHover { r#gen: self.user_hover.r#gen + 1, ..UserHover::default() };
                 let st = self.store.read();
                 let c = st.chat(&cid);
                 let user = c.participants.items.iter().find(|u| u.id == uid).cloned().expect("a member of the chat");
@@ -7612,6 +7622,7 @@ impl BeeperGuiApp {
                 return self.video(video::Msg::Fullscreen);
             }
             UiMessage::CloseModals => {
+                self.user_hover.shown = None;
                 if self.show_command_palette
                     || self.forward.is_some()
                     || self.show_filter_menu
@@ -7925,6 +7936,26 @@ impl BeeperGuiApp {
             UiMessage::DragStart => self.dragging = true,
             UiMessage::ResetSidebarWidth => self.sidebar_width = SIDEBAR_WIDTH,
             UiMessage::FloatRail(on) => self.rail_float = on,
+            UiMessage::HoverUser(key) => {
+                let h = &mut self.user_hover;
+                match key {
+                    Some(k) if h.key != k => {
+                        *h = UserHover { key: k, trigger: true, r#gen: h.r#gen, ..UserHover::default() }
+                    }
+                    Some(_) => h.trigger = true,
+                    None => h.trigger = false,
+                }
+                return self.settle_user_hover();
+            }
+            UiMessage::HoverUserCard(on) => {
+                self.user_hover.card = on;
+                return self.settle_user_hover();
+            }
+            UiMessage::HoverUserDue(n) if n == self.user_hover.r#gen => {
+                let h = &mut self.user_hover;
+                h.shown = (h.trigger || h.card).then(|| h.shown.unwrap_or(self.cursor.get()));
+            }
+            UiMessage::HoverUserDue(_) => {}
             UiMessage::DragMoved(pt) => {
                 let width = pt.x - 68.0 - 2.0;
                 if width >= 172.0 {
@@ -8739,10 +8770,9 @@ impl BeeperGuiApp {
         });
         let chat_menu = self.chat_menu.as_ref().filter(|_| menu_open).map(|(cid, at)| {
             if let Some(key) = cid.strip_prefix("card:") {
-                let size = self.pane().size;
-                let x = (at.x - CARD_W / 2.0).clamp(8.0, size.width - CARD_W - 8.0);
-                let below = at.y + 30.0 + CARD_H <= size.height;
-                return (self.view_user_card(key), x, if below { at.y + 30.0 } else { at.y - 30.0 - CARD_H });
+                let (card, h) = self.view_user_card(key);
+                let (x, y) = self.card_spot(*at, 30.0, h);
+                return (card, x, y);
             }
             if cid == SWITCH_CARD {
                 let (card, h) = self.view_switch_card();
@@ -8871,7 +8901,9 @@ impl BeeperGuiApp {
         let carousel = self.carousel.as_ref().filter(shows).and_then(|c| self.view_carousel(c));
         let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q));
         // The menus and the emoji picker of the carousel show over it.
-        let layers = stack![base].push(toast).push(carousel).push(menu).push(scrim).push(palette_menu).push(select);
+        let hover = self.view_hover_card().filter(|_| in_main);
+        let layers =
+            stack![base].push(toast).push(carousel).push(hover).push(menu).push(scrim).push(palette_menu).push(select);
         let token = self.token_ask.as_ref().map(|a| self.view_token_ask(a));
         layers.push(confirm).push(hotkeys).push(token).into()
     }
@@ -9960,9 +9992,64 @@ impl BeeperGuiApp {
         }
     }
 
+    /// Waits Desktop's 300 ms before the user card shows, or 150 ms before it hides, which lets the pointer cross from
+    /// the trigger to the card.
+    fn settle_user_hover(&mut self) -> Task<UiMessage> {
+        let h = &mut self.user_hover;
+        h.r#gen += 1;
+        let ms = match (h.trigger || h.card, h.shown.is_some()) {
+            (true, false) => 300,
+            (false, true) => 150,
+            _ => return Task::none(),
+        };
+        let n = h.r#gen;
+        let wait = async move { tokio::time::sleep(std::time::Duration::from_millis(ms)).await };
+        Task::perform(wait, move |()| UiMessage::HoverUserDue(n))
+    }
+
+    /// Where a user card `h` high shows for the pointer at `at`: centered on it, `gap` below it or above it near the
+    /// bottom.
+    fn card_spot(&self, at: Point, gap: f32, h: f32) -> (f32, f32) {
+        let size = self.pane().size;
+        let x = (at.x - CARD_W / 2.0).clamp(8.0, size.width - CARD_W - 8.0);
+        let below = at.y + gap + h <= size.height;
+        (x, if below { at.y + gap } else { at.y - gap - h })
+    }
+
+    /// A trigger of Desktop's `BrandUserHoverCard`: the card of `uid`, a member of `chat`, shows while the pointer
+    /// rests on `el`.
+    pub(crate) fn user_trigger<'a>(&self, chat: &Chat, uid: &str, el: impl Into<El<'a>>) -> El<'a> {
+        if !chat.participants.items.iter().any(|u| u.id == uid) {
+            return el.into();
+        }
+        mouse_area(el)
+            .on_enter(UiMessage::HoverUser(Some(format!("{} {uid}", chat.id))))
+            .on_exit(UiMessage::HoverUser(None))
+            .into()
+    }
+
+    /// The user card of `user_hover` over the open chat, which keeps the pointer from the chat under it.
+    fn view_hover_card(&self) -> Option<El<'_>> {
+        let h = &self.user_hover;
+        let at = h.shown?;
+        let (cid, uid) = h.key.split_once(' ')?;
+        let st = self.store.read();
+        let c = &st.chats[st.resolve_chat_idx(cid)?];
+        let shown = self.pane().selected_chat_id.as_deref() == Some(c.id.as_str());
+        (shown && c.participants.items.iter().any(|u| u.id == uid)).then_some(())?;
+        drop(st);
+        let (card, high) = self.view_user_card(&h.key);
+        let (x, y) = self.card_spot(at, 12.0, high);
+        let card = mouse_area(card)
+            .on_enter(UiMessage::HoverUserCard(true))
+            .on_exit(UiMessage::HoverUserCard(false))
+            .interaction(mouse::Interaction::Idle);
+        Some(container(card).padding(Padding::ZERO.left(x).top(y)).into())
+    }
+
     /// Desktop's `BrandUserHoverCard` of the member in "chat user": the avatar over the card, the name, the
-    /// username, phone number or email, and the Send Message and call buttons.
-    fn view_user_card(&self, key: &str) -> El<'_> {
+    /// username, phone number or email, and the Send Message and call buttons; and the height of the card.
+    fn view_user_card(&self, key: &str) -> (El<'_>, f32) {
         let p = &self.pal;
         let st = self.store.read();
         let (cid, uid) = key.split_once(' ').expect("a chat and a user");
@@ -9981,6 +10068,7 @@ impl BeeperGuiApp {
         let name = member_name(u);
         let id = handle(u).or_else(|| u.phone_number.as_deref().map(fmt_phone)).or_else(|| u.email.clone());
         let face = container(self.face(u.img_url.as_deref(), &name, 80.0, 0.0)).padding(4).style(lifted(44.0));
+        let high = CARD_H + if id.is_some() { 15.0 } else { 0.0 };
         let info = column![semi(name, 14.0).line_height(Pixels(18.0)).color(p.strong).width(Fill).align_x(Center)]
             .push(id.map(|i| txt(i, 12.0).color(p.sub).width(Fill).align_x(Center)));
         let muted = btn_style([p.chip; 3], [p.strong; 3], 9999.0);
@@ -9993,10 +10081,11 @@ impl BeeperGuiApp {
             });
             row![send.on_press(UiMessage::MessageMember(cid.into(), uid.into()))].push(call).spacing(8).align_y(Center)
         });
+        let high = high + if actions.is_some() { 36.0 } else { 0.0 };
         let card = column![Space::new().height(CARD_FACE_IN), info].push(actions).spacing(8).padding([8, 11]);
         let card = container(card).width(CARD_W).style(lifted(17.0));
         let face = container(face).center_x(CARD_W);
-        stack![column![Space::new().height(88.0 - 8.0 - CARD_FACE_IN), card], face].into()
+        (stack![column![Space::new().height(88.0 - 8.0 - CARD_FACE_IN), card], face].into(), high)
     }
 
     /// The chat menu, with `room` pixels from its top to the bottom of the window.
@@ -13689,6 +13778,18 @@ impl Toast {
             dismiss: None,
         }
     }
+}
+
+/// Desktop's `HoverCard` of a user (`hoverDelay: 300`): the card of "chat user" `key` shows where the pointer is 300 ms
+/// after it rests on a trigger, and stays while the pointer is on the trigger or the card.
+#[derive(Default)]
+pub struct UserHover {
+    pub key: String,
+    pub trigger: bool,
+    pub card: bool,
+    pub shown: Option<Point>,
+    /// Counts the changes, so that only the last wait acts.
+    pub r#gen: u32,
 }
 
 /// A press on a rail space, which Desktop's `Drop` sorts after the cursor moves 5px.
