@@ -1852,9 +1852,15 @@ impl BeeperStore {
         self.queue(id, Outgoing::Leave(true));
     }
 
-    /// Desktop's `leaveChat`: the user leaves the room.
+    /// Desktop's `leaveChat`: the user leaves the room, and the chat stays with the user's member exited, without a
+    /// composer, until the user deletes it.
     pub fn leave_room(&mut self, id: &str) {
-        self.remove_chat(id);
+        let idx = self.chat_idx(id);
+        self.update_chat(idx, |c| {
+            for u in c.participants.items.iter_mut().filter(|u| u.is_self == Some(true)) {
+                u.has_exited = Some(true);
+            }
+        });
         self.queue(id, Outgoing::Leave(false));
     }
 
