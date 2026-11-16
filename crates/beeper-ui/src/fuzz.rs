@@ -2999,6 +2999,35 @@ fn scroll_to_bottom_shows_when_you_scroll_up_like_desktop() {
     assert!(app.pane.scrolled_up.is_none(), "another chat opens at its bottom");
 }
 
+/// Desktop's timeline effect: a message that comes into the open chat reads it while the window is focused and the
+/// timeline is at its bottom; otherwise the chat stays unread until the window is focused or the timeline is back down.
+#[test]
+fn the_open_chat_reads_new_messages_like_desktop() {
+    let mut app = demo_app("open-chat-read");
+    let id = app.store.read().chats.iter().find(|c| c.id != NOTE_CHAT_ID).unwrap().id.clone();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let arrive = |app: &mut BeeperGuiApp| {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(&id).unwrap();
+        st.update_chat(idx, |c| c.unread_count = 1);
+        let m = st.messages.iter().rfind(|m| m.chat_id == id).unwrap().clone();
+        drop(st);
+        let _ = app.update(UiMessage::Upserted(Box::new(m)));
+    };
+    let unread = |app: &BeeperGuiApp| app.store.read().chat(&id).unread_count;
+    arrive(&mut app);
+    assert_eq!(unread(&app), 1, "an unfocused window keeps the chat unread");
+    let _ = app.update(UiMessage::WindowFocused(true));
+    assert_eq!(unread(&app), 0, "focusing the window reads it");
+    arrive(&mut app);
+    assert_eq!(unread(&app), 0, "a new message in view is read");
+    let _ = app.update(UiMessage::TimelineScrolled(true));
+    arrive(&mut app);
+    assert_eq!(unread(&app), 1, "scrolled up, it stays unread");
+    let _ = app.update(UiMessage::TimelineScrolled(false));
+    assert_eq!(unread(&app), 0, "back at the bottom it is read");
+}
+
 /// Desktop's Join a Matrix room view: a bad address shows Desktop's error under the field, and a known room opens.
 #[test]
 fn join_a_matrix_room_like_desktop() {

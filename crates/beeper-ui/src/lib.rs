@@ -7142,6 +7142,9 @@ impl BeeperGuiApp {
                     st.mark_thread_read(&m.chat_id, m.thread_root.as_deref().expect("a thread reply"), None);
                 }
                 drop(st);
+                if open.as_ref() == Some(&m.chat_id) {
+                    self.read_open_chat();
+                }
                 self.send_scheduled(due);
                 self.message_sound(&m);
                 let note = self.notify_message(&m);
@@ -7190,6 +7193,7 @@ impl BeeperGuiApp {
             }
             UiMessage::WindowFocused(focused) => {
                 self.focused = focused;
+                self.read_open_chat();
                 let screen = self.login.screen;
                 let clipboard = matches!(screen, login::Screen::RecoveryKey | login::Screen::Code);
                 let key = (focused && clipboard && self.login_window.is_some())
@@ -7337,7 +7341,10 @@ impl BeeperGuiApp {
             UiMessage::Pushed(Err(e)) => self.fail(Toast::new(format!("Could not send to Matrix: {e}"))),
             UiMessage::RetrySend(id) => self.store.write().retry_send(&id),
             UiMessage::RemoveUnsent(id) => self.store.write().remove_unsent(&id),
-            UiMessage::TimelineScrolled(up) => self.timeline_scrolled(up),
+            UiMessage::TimelineScrolled(up) => {
+                self.timeline_scrolled(up);
+                self.read_open_chat();
+            }
             UiMessage::ScrollToBottom => {
                 return operation::scroll_to(self.pane.scroll_id(), operation::AbsoluteOffset { x: 0.0, y: 0.0 });
             }
@@ -10202,6 +10209,17 @@ impl BeeperGuiApp {
         });
         let (l, r) = if sub_left { (sub, None) } else { (None, sub) };
         row![].push(l).push(menu).push(r).into()
+    }
+
+    /// Desktop's timeline effect (`markAsRead` as the newest message comes into view): the open chat is read while
+    /// its window is focused and the timeline is at its bottom, except in incognito mode.
+    fn read_open_chat(&self) {
+        let at_bottom = self.pane.scrolled_up.is_none_or(|(up, _)| !up);
+        let Some(id) = self.pane.selected_chat_id.as_deref().filter(|_| self.focused && at_bottom) else { return };
+        let mut st = self.store.write();
+        if let Some(idx) = st.resolve_chat_idx(id).filter(|_| !st.incognito() && self.pane.thread_root.is_none()) {
+            st.mark_read(idx, false);
+        }
     }
 
     fn mark_read(&self, st: &mut BeeperStore, idx: usize) {
