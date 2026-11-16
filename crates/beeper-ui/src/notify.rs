@@ -435,11 +435,16 @@ pub(crate) async fn bus() -> Result<&'static zbus::Connection, String> {
 /// Shows a notification that a click opens, and returns its ID.
 #[cfg(target_os = "linux")]
 pub(crate) async fn show(t: Toast) -> Result<u32, String> {
-    let hints = std::collections::HashMap::from([("suppress-sound", zbus::zvariant::Value::from(t.silent))]);
+    use beeper_core::config::{INSTALL_ID, INSTALL_NAME};
+    // The `desktop-entry` hint, which Electron's notifications send too, names the entry whose icon the server shows.
+    let hints = std::collections::HashMap::from([
+        ("suppress-sound", zbus::zvariant::Value::from(t.silent)),
+        ("desktop-entry", zbus::zvariant::Value::from(INSTALL_ID)),
+    ]);
     let buttons = t.buttons.iter().map(|(key, label)| (key.as_str(), label.as_str()));
     let actions: Vec<&str> =
         [("default", "")].into_iter().chain(buttons).flat_map(|(key, label)| [key, label]).collect();
-    let args = ("Beeper", 0u32, "", &t.title, &t.body, actions, hints, -1i32);
+    let args = (INSTALL_NAME, 0u32, "", &t.title, &t.body, actions, hints, -1i32);
     let path = "/org/freedesktop/Notifications";
     let iface = Some("org.freedesktop.Notifications");
     let reply = bus().await?.call_method(iface, path, iface, "Notify", &args).await.map_err(|e| e.to_string())?;
