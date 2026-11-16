@@ -1263,8 +1263,32 @@ pub struct Message {
     /// Desktop's `extra.isReplyFallback`: `linkedMessageID` is the fallback reply of a thread reply, not a quote.
     #[serde(rename = "isReplyFallback", default, skip_serializing_if = "std::ops::Not::not")]
     pub fallback: bool,
+    /// Desktop's `mentions`: the user IDs of the `m.mentions` of the message, or `None` without `m.mentions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<Vec<String>>,
+    /// Desktop's `sendStatus`: the last `com.beeper.message_send_status` of the bridge for the message.
+    #[serde(rename = "sendStatus", default, skip_serializing_if = "Option::is_none")]
+    pub send_status: Option<SendStatus>,
     #[serde(skip)]
     pub flags: u16,
+}
+
+/// A `com.beeper.message_send_status` as Desktop's `handleMessageSendStatus` keeps it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendStatus {
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// When the bridge sent the status, in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ts: Option<i64>,
+    #[serde(default)]
+    pub delivered_to_users: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub internal_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

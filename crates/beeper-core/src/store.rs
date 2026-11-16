@@ -2388,6 +2388,8 @@ impl BeeperStore {
             thread_root: thread.map(|t| t.root.clone()),
             broadcast: thread.is_some_and(|t| t.broadcast),
             fallback: thread.is_some_and(|t| !t.chosen),
+            mentions: None,
+            send_status: None,
             flags: 0,
         };
         let m_idx = self.push_message(msg, true);
