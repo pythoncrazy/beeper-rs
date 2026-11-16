@@ -371,7 +371,8 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
             "SELECT threadID, threads.accountID, CAST(thread AS TEXT), timestamp, json_extract(props, '$.note'),
                     json_extract(props, '$.threadFollowAll')
              FROM threads LEFT JOIN thread_props USING (threadID)
-             WHERE COALESCE(is_label, 0) = 0 AND json_extract(CAST(thread AS TEXT), '$.extra.roomType') IS NULL
+             WHERE COALESCE(is_label, 0) = 0
+             AND COALESCE(json_extract(CAST(thread AS TEXT), '$.extra.roomType'), '') IN ('', 'com.beeper.local')
              AND json_extract(CAST(thread AS TEXT), '$.extra.isNoteToSelf') IS NOT 1
              ORDER BY threads.rowid",
         )

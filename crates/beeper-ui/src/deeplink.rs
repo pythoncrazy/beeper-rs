@@ -51,15 +51,29 @@ fn parse(link: &str) -> Option<(Vec<String>, HashMap<String, String>)> {
     Some((parts, query))
 }
 
-/// Desktop's `registerLinuxConfig` desktop entry. Its name is the app ID, which the window and the launcher badge use.
+/// Desktop's `registerLinuxConfig` desktop entry, as Beeper-RS. Its name is the install ID, which the window and the
+/// launcher badge use.
 #[cfg(target_os = "linux")]
 fn desktop_entry(exe: &str, icon: &str) -> String {
+    use beeper_core::config::{INSTALL_ID, INSTALL_NAME};
     format!(
-        "[Desktop Entry]\nName=Beeper\nExec=\"{exe}\" %u\nType=Application\nTerminal=false\n\
+        "[Desktop Entry]\nName={INSTALL_NAME}\nExec=\"{exe}\" %u\nType=Application\nTerminal=false\n\
          Comment=The ultimate messaging app\nCategories=Network;Chat;\nMimeType=x-scheme-handler/beeper;\n\
-         StartupWMClass={}\nStartupNotify=true\nIcon={icon}\n",
-        beeper_core::config::APP_BUNDLE_ID
+         StartupWMClass={INSTALL_ID}\nStartupNotify=true\nIcon={icon}\n"
     )
+}
+
+/// Removes the entry that older builds installed in `apps` under Desktop's name, which hid Desktop's own entry. Only
+/// an entry with the beeper-rs `icon` goes, so Desktop's entry stays.
+#[cfg(target_os = "linux")]
+fn drop_old_entry(apps: &std::path::Path, icon: &std::path::Path) -> Result<(), String> {
+    let old = apps.join(format!("{}.desktop", beeper_core::config::APP_BUNDLE_ID));
+    match std::fs::read_to_string(&old) {
+        Ok(e) if e.contains(&format!("\nIcon={}\n", icon.display())) => {
+            std::fs::remove_file(&old).map_err(|e| format!("remove {}: {e}", old.display()))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Desktop's `registerLinuxConfig`: installs the desktop entry and the icon, and makes the entry the default handler
@@ -71,8 +85,9 @@ pub fn register() -> Result<(), String> {
     let exe = quotable.ok_or(format!("the program path {} has characters that Exec cannot quote", exe.display()))?;
     let home = std::path::PathBuf::from(std::env::var_os("HOME").ok_or("HOME is not set")?);
     let data = std::env::var_os("XDG_DATA_HOME").map_or_else(|| home.join(".local/share"), Into::into);
-    let name = format!("{}.desktop", beeper_core::config::APP_BUNDLE_ID);
+    let name = format!("{}.desktop", beeper_core::config::INSTALL_ID);
     let (entry, icon) = (data.join("applications").join(&name), data.join("icons/beeper-rs.png"));
+    drop_old_entry(&data.join("applications"), &icon)?;
     let write = |path: &std::path::Path, bytes: &[u8]| {
         let dir = path.parent().expect("a file in a folder");
         let done = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(path, bytes));
@@ -323,6 +338,25 @@ mod tests {
         assert_eq!(chat_link("acc_instagram", "!r:beeper.com"), "beeper://select-thread/instagramgo/!r%3Abeeper.com");
         #[cfg(target_os = "linux")]
         assert!(desktop_entry("/a b/beeper-rs", "/i.png").contains("\nExec=\"/a b/beeper-rs\" %u\n"));
+    }
+
+    /// beeper-rs installs as Beeper-RS next to Desktop, and takes back the entry that older builds wrote under
+    /// Desktop's name, but not Desktop's own entry.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn installs_as_beeper_rs_next_to_desktop() {
+        let entry = desktop_entry("/b/beeper-rs", "/d/icons/beeper-rs.png");
+        assert!(entry.contains("\nName=Beeper-RS\n") && entry.contains("\nStartupWMClass=beeper-rs\n"), "{entry}");
+        let apps = beeper_core::testing::temp_dir("old-entry");
+        let old = apps.join("com.automattic.beeper.desktop.desktop");
+        let icon = std::path::Path::new("/d/icons/beeper-rs.png");
+        std::fs::write(&old, "[Desktop Entry]\nName=Beeper\nIcon=beeper-desktop\n").unwrap();
+        drop_old_entry(&apps, icon).unwrap();
+        assert!(old.exists(), "Desktop's own entry stays");
+        std::fs::write(&old, entry.replace("Beeper-RS", "Beeper")).unwrap();
+        drop_old_entry(&apps, icon).unwrap();
+        assert!(!old.exists(), "the entry of an older build goes");
+        drop_old_entry(&apps, icon).unwrap();
     }
 
     #[test]
