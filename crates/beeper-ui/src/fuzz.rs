@@ -3206,6 +3206,26 @@ fn unloaded_quotes_like_desktop() {
     assert!(shows(&app, "a quote from long ago"), "the loaded quote shows");
 }
 
+/// Desktop's `activityTimestamp` and `isArchivedInList`: a draft moves its chat to the top, and out of the archive.
+#[test]
+fn drafts_move_chats_like_desktop() {
+    let mut app = demo_app("draft-order");
+    let unpinned = |app: &BeeperGuiApp| -> Vec<String> {
+        let st = app.store.read();
+        app.visible_chats(&st).iter().filter(|c| c.is_pinned != Some(true)).map(|c| c.id.clone()).collect()
+    };
+    let id = unpinned(&app).into_iter().rfind(|c| c != NOTE_CHAT_ID).expect("an old chat");
+    let _ = app.update(UiMessage::ToggleFlag(id.clone(), ChatFlag::Archived));
+    assert!(!unpinned(&app).contains(&id), "archived");
+    let _ = app.update(UiMessage::SelectTab(InboxTab::Archived));
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let _ = app.update(UiMessage::TypeInComposer("not done yet".into()));
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    assert!(!unpinned(&app).contains(&id), "a chat with a draft leaves the archive list");
+    let _ = app.update(UiMessage::SelectTab(InboxTab::AllChats));
+    assert_eq!(unpinned(&app).first(), Some(&id), "and comes back to the top of the inbox");
+}
+
 /// Desktop's Join a Matrix room view: a bad address shows Desktop's error under the field, and a known room opens.
 #[test]
 fn join_a_matrix_room_like_desktop() {

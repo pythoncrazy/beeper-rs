@@ -316,9 +316,11 @@ fn demo_state() -> BeeperStateRecord {
 }
 
 /// The key of a chat in `chat_order`: the last activity in Unix milliseconds (0 without activity) and the chat ID.
+/// The order of a chat in the list: Desktop's `activityTimestamp`, the newer of its activity and its draft.
 pub fn activity_key(c: &Chat) -> (i64, String) {
     let ms = c.last_activity.as_deref().map(|t| millis_from_rfc3339(t).expect("RFC 3339 activity"));
-    (ms.unwrap_or(0), c.id.clone())
+    let draft = c.draft.as_ref().and_then(|d| d.ts);
+    (ms.unwrap_or(0).max(draft.unwrap_or(0)), c.id.clone())
 }
 
 /// Desktop's `markRemovedFromBeeper` and `deleteRemovedMessageData`: a deleted message without its content.

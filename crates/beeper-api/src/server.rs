@@ -1941,7 +1941,8 @@ fn focus_page(st: &mut BeeperStore, path: &[&str], r: &Req) -> Reply {
     }
     let idx = idx.flatten();
     if let (Some(i), Some(text)) = (idx, draft) {
-        let draft = ChatDraft { text: Some(text.into()), ..ChatDraft::default() };
+        let ts = Some(beeper_core::config::now_unix_millis());
+        let draft = ChatDraft { text: Some(text.into()), ts, ..ChatDraft::default() };
         st.update_chat(i, |c| c.draft = Some(draft));
     }
     st.focus_tx.send(idx.map(|i| st.chats[i].id.clone())).ok();
@@ -2102,7 +2103,8 @@ fn focus(st: &mut BeeperStore, r: &Req) -> Reply {
     if let Some(idx) = idx.filter(|_| text.is_some() || path.is_some()) {
         let attachments =
             path.into_iter().map(|p| ChatDraftAttachment { upload_id: p.clone(), file_name: Some(p), mime_type: None });
-        let draft = ChatDraft { text, attachments: attachments.collect(), ..ChatDraft::default() };
+        let ts = Some(beeper_core::config::now_unix_millis());
+        let draft = ChatDraft { text, attachments: attachments.collect(), ts, ..ChatDraft::default() };
         st.update_chat(idx, |c| c.draft = Some(draft));
     }
     st.focus_tx.send(idx.map(|i| st.chats[i].id.clone())).ok();
