@@ -354,8 +354,6 @@ fn int(s: &str) -> Option<i64> {
 /// The state of one command: its parsed flags, the selected target, and the lazily built client.
 pub struct Ctx {
     pub cmd: &'static Cmd,
-    /// The stderr lines that ink writes when the command ends, like the last frame of a spinner.
-    tail: Vec<String>,
     vals: HashMap<&'static str, Val>,
     pub args: Vec<String>,
     rt: tokio::runtime::Runtime,
@@ -516,8 +514,8 @@ impl Ctx {
         Ok(items)
     }
 
-    /// `withSpinner`: runs `run`, then shows its result line on stderr like the last frame of the ink spinner,
-    /// unless `--quiet`.
+    /// `withSpinner`: runs `run`, then shows its result line on stderr like the last frame of the ink spinner, before
+    /// the output of the command, unless `--quiet`.
     pub fn spinner<T>(
         &mut self,
         label: &str,
@@ -528,8 +526,8 @@ impl Ctx {
         let result = run(self);
         match (&result, quiet) {
             (_, true) => {}
-            (Ok(v), false) => self.tail.push(format!("✓ {}", done(v))),
-            (Err(_), false) => self.tail.push(format!("✗ {label}")),
+            (Ok(v), false) => eprintln!("✓ {}", done(v)),
+            (Err(_), false) => eprintln!("✗ {label}"),
         }
         result
     }
@@ -756,20 +754,33 @@ fn report(err: &CliError, json: bool, events: bool) -> i32 {
     }
 }
 
+/// oclif's command-not-found `warn` and `error` for the leading `words` of the command line, wrapped at the width of
+/// stderr less 6 after the bang, with the help of their `topic`. Returns oclif's exit code 127.
+pub fn not_a_command(words: &str, topic: Option<&str>) -> i32 {
+    let help = topic.map_or("help".to_string(), |t| format!("help {t}"));
+    let warn = format!("Warning: {words} is not a {BIN} command.");
+    let error = format!("Error: Run {BIN} {help} for a list of available commands.");
+    for line in [warn, error].iter().flat_map(|t| render::wrap_hard(t, render::columns(2) - 6)) {
+        eprintln!(" ›   {line}");
+    }
+    127
+}
+
 /// Runs the client command in `argv` (the words after the program name), and returns the exit code.
 pub fn run(argv: &[String]) -> i32 {
     let help = argv.iter().any(|a| a == "--help" || a == "-h");
     let topic = argv.first().map(String::as_str).and_then(commands::topic);
     let index =
         topic.and_then(|t| t.2).map(|id| (commands::all().find(|c| c.id == id).expect("a topic index exists"), 1));
-    let Some((cmd, n)) = find(argv).or(index) else {
+    // oclif's command lookup: a word after a command without arguments makes the words an unknown command.
+    let found = find(argv).or(index);
+    let found = found.filter(|(c, n)| help || !c.args.is_empty() || argv.get(*n).is_none_or(|a| a.starts_with('-')));
+    let Some((cmd, n)) = found else {
         if let (Some(t), true) = (topic, help) {
             return (println!("{}", commands::topic_help(t)), 0).1;
         }
         let words = argv.iter().take_while(|a| !a.starts_with('-')).cloned().collect::<Vec<_>>().join(" ");
-        let help = topic.map_or("help".to_string(), |t| format!("help {}", t.0));
-        eprintln!(" ›   Warning: {words} is not a {BIN} command.\n ›   Error: Run {BIN} {help} for a list of available commands.");
-        return 127;
+        return not_a_command(&words, topic.map(|t| t.0));
     };
     if help {
         let topic_index = topic.is_some_and(|t| t.2 == Some(cmd.id)) && n == 1 && argv[0] != cmd.id;
@@ -779,10 +790,8 @@ pub fn run(argv: &[String]) -> i32 {
     let (json, events) = (argv.iter().any(|a| a == "--json"), argv.iter().any(|a| a == "--events"));
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("build the tokio runtime");
     let result = parse(cmd, &argv[n..]).and_then(|(vals, args)| {
-        let mut ctx = Ctx { cmd, tail: Vec::new(), vals, args, rt, client: None, target: None };
-        let result = (cmd.run)(&mut ctx);
-        ctx.tail.iter().for_each(|line| eprintln!("{line}"));
-        result
+        let mut ctx = Ctx { cmd, vals, args, rt, client: None, target: None };
+        (cmd.run)(&mut ctx)
     });
     match result {
         Ok(()) => 0,
