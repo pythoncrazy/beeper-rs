@@ -2999,6 +2999,57 @@ fn scroll_to_bottom_shows_when_you_scroll_up_like_desktop() {
     assert!(app.pane.scrolled_up.is_none(), "another chat opens at its bottom");
 }
 
+/// Desktop's Join a Matrix room view: a bad address shows Desktop's error under the field, and a known room opens.
+#[test]
+fn join_a_matrix_room_like_desktop() {
+    let mut app = demo_app("join-matrix");
+    let _ = app.update(UiMessage::NewChat);
+    let _ = app.update(UiMessage::ToggleJoinMatrix);
+    assert!(simulator(app.view_main()).find("Room address or Matrix link").is_ok());
+    for (input, error) in [
+        ("#!x:y", "This starts with both # and !, so it isn't a valid Matrix address."),
+        ("room", "Enter a valid Matrix room address like #room:server, or paste a Matrix room link."),
+    ] {
+        let _ = app.update(UiMessage::NewChatQueryChanged(input.into()));
+        let _ = app.update(UiMessage::JoinMatrixRoom);
+        assert!(app.join_room.1.as_deref().is_some_and(|e| e.starts_with(error)), "{input}");
+        let shown = app.join_room.1.clone().unwrap();
+        assert!(simulator(app.view_main()).find(shown).is_ok(), "the error shows under the field");
+    }
+    let known = app.store.read().chats.iter().find(|c| c.id.starts_with('!') && c.id.contains(':')).unwrap().id.clone();
+    let _ = app.update(UiMessage::NewChatQueryChanged(known.clone()));
+    assert!(app.join_room.1.is_none(), "typing clears the error");
+    let _ = app.update(UiMessage::JoinMatrixRoom);
+    assert!(
+        !app.join_matrix_mode && app.pane.selected_chat_id.as_deref() == Some(known.as_str()),
+        "a known room opens"
+    );
+    assert!(app.new_chats.is_empty(), "the opened room drops its draft");
+    let join = |app: &mut BeeperGuiApp| {
+        let _ = app.update(UiMessage::NewChat);
+        let _ = app.update(UiMessage::ToggleJoinMatrix);
+        app.join_room.0 = true;
+        app.creating_chat
+    };
+    let draft = join(&mut app);
+    let _ = app.update(UiMessage::MatrixRoomJoined(draft, Ok("!new:localhost".into()), false));
+    assert_eq!(
+        app.join_room,
+        (false, Some("You joined the room, but Beeper couldn't open it yet. Try again.".into())),
+        "a room the sync has not brought shows why in the view"
+    );
+    let _ = app.update(UiMessage::MatrixRoomJoined(draft, Ok(known.clone()), false));
+    assert!(app.new_chats.is_empty() && app.pane.selected_chat_id.as_deref() == Some(known.as_str()), "it opens");
+    let draft = join(&mut app);
+    let _ = app.update(UiMessage::SelectChat(known.clone()));
+    let _ = app.update(UiMessage::MatrixRoomJoined(draft, Err("forbidden".into()), true));
+    assert_eq!(
+        app.toast.as_ref().map(|t| t.text.as_str()),
+        Some("Couldn't join this Matrix room without routing information. Try a link with routing information, or check your access."),
+        "after the user left the view the error is a toast"
+    );
+}
+
 /// Desktop's `thread-header-status`: "typing" under the name of a 1:1 chat while the other person types.
 #[test]
 fn the_header_shows_typing_in_a_dm_like_desktop() {

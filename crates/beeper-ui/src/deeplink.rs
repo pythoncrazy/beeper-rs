@@ -110,6 +110,69 @@ impl BeeperGuiApp {
         Task::batch([show, self.follow(link)])
     }
 
+    /// Desktop's `joinMatrixRoomFromInput` (`Wh`) of the Join a Matrix room view: the address is checked first, a
+    /// known room opens, and other rooms are joined through the servers of the link.
+    pub(crate) fn join_matrix_room(&mut self) -> Task<UiMessage> {
+        use beeper_core::matrix::{room_address, BadAddress};
+        let (room, vias) = match room_address(&self.new_chat_query) {
+            Ok(target) => target,
+            Err(reason) => {
+                self.join_room.1 = Some(tr(match reason {
+                    BadAddress::Empty => "Enter a Matrix room address or link.",
+                    BadAddress::MixedSigil => "This starts with both # and !, so it isn't a valid Matrix address. Use a room address like #room:server, or paste a Matrix link for a room ID.",
+                    BadAddress::Invalid => "Enter a valid Matrix room address like #room:server, or paste a Matrix room link.",
+                }).into());
+                return Task::none();
+            }
+        };
+        let draft = self.creating_chat;
+        if self.store.read().resolve_chat_idx(&room).is_some() {
+            return self.open_joined_room(draft, &room);
+        }
+        let unrouted = room.starts_with('!') && vias.is_empty();
+        self.join_room = (true, None);
+        let join = beeper_core::matrix::join_via(self.store.clone(), room, vias);
+        Task::perform(join, move |r| UiMessage::MatrixRoomJoined(draft, r, unrouted))
+    }
+
+    /// The end of a join of the Join a Matrix room view of the `draft`: Desktop opens the room and drops the draft,
+    /// or shows why it could not in the view, or in a toast once the user has left the view.
+    pub(crate) fn matrix_room_joined(
+        &mut self,
+        draft: Option<u32>,
+        r: Result<String, String>,
+        unrouted: bool,
+    ) -> Task<UiMessage> {
+        self.join_room.0 = false;
+        let here = self.join_matrix_mode && self.creating_chat == draft;
+        let error = match r {
+            Ok(id) if here && self.store.read().resolve_chat_idx(&id).is_some() => {
+                return self.open_joined_room(draft, &id)
+            }
+            Ok(_) if here => "You joined the room, but Beeper couldn't open it yet. Try again.",
+            Ok(_) => "The Matrix room was joined, but it was not opened.",
+            Err(e) => {
+                eprintln!("Failed to join Matrix room: {e}");
+                match unrouted {
+                    true => "Couldn't join this Matrix room without routing information. Try a link with routing information, or check your access.",
+                    false => "Couldn't join this Matrix room. Check the address and your access, then try again.",
+                }
+            }
+        };
+        match here {
+            true => self.join_room.1 = Some(tr(error).into()),
+            false => self.show(Toast::new(tr(error).into())),
+        }
+        Task::none()
+    }
+
+    fn open_joined_room(&mut self, draft: Option<u32>, room: &str) -> Task<UiMessage> {
+        self.new_chats.retain(|d| Some(d.id) != draft);
+        self.new_chat_query.clear();
+        self.select_chat(room);
+        Task::none()
+    }
+
     /// Desktop's `joinMatrixRoom` result for a link.
     pub(crate) fn room_joined(&mut self, r: Result<String, String>) {
         let text = match r {
@@ -153,7 +216,7 @@ impl BeeperGuiApp {
                     self.select_chat(&room);
                     return Task::none();
                 }
-                let join = beeper_core::matrix::join(self.store.read().matrix.clone(), room);
+                let join = beeper_core::matrix::join(self.store.clone(), room);
                 return Task::perform(join, UiMessage::RoomJoined);
             }
             "otp" => {
