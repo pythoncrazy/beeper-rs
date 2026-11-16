@@ -358,6 +358,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
                 is_network_bot: Some(contents.get(id).is_some_and(|c| c["com.beeper.bridge.is_network_bot"] == true)),
                 is_admin: Some(m.power_level() > UserPowerLevel::Int(users_default)),
                 manage: manage(&levels, member_actions, me.as_str(), id, !bridge.is_null()),
+                ..Default::default()
             }
         })
         .collect();
@@ -376,7 +377,8 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
     let others: Vec<String> = names(false).collect();
     let title = room.name().filter(|n| !n.is_empty()).unwrap_or_else(|| {
         if others.is_empty() {
-            names(true).next().expect("own membership")
+            // The own member of an invite has not joined, so an invite may have no joined member to name it by.
+            names(true).next().unwrap_or_else(|| room.room_id().to_string())
         } else {
             others.join(", ")
         }
@@ -1092,6 +1094,20 @@ async fn sync_invite(store: &SharedStore, room: &Room) {
         (st.bridge_accounts.clone(), st.inbox_rules.clone())
     };
     let mut chat = chat(room, &accounts, &rules).await;
+    // Desktop lists the own invite as a pending member that the inviter added.
+    if let Ok(invite) = room.invite_details().await {
+        let me = invite.invitee;
+        chat.participants.items.push(User {
+            id: me.user_id().to_string(),
+            full_name: Some(me.name().to_string()),
+            img_url: me.avatar_url().filter(|u| u.is_valid()).map(|u| u.to_string()),
+            is_self: Some(true),
+            is_pending: Some(true),
+            added_by: Some(invite.inviter_id.to_string()),
+            ..Default::default()
+        });
+        chat.participants.total = chat.participants.items.len();
+    }
     (chat.is_request, chat.can_accept_request, chat.is_read_only) = (Some(true), true, true);
     // Desktop's `canDeclineRequest` of a Matrix invite is a leave, and an invite has no history to load yet.
     (chat.delete_modes, chat.older) = (chat.delete_modes | DELETE_FOR_ME, Older::Start);
@@ -4401,6 +4417,8 @@ mod tests {
             assert_eq!((c.is_request, c.chat_type.as_str(), c.title.as_str()), (Some(true), "group", "Team room"));
             assert!(c.can_accept_request && c.is_read_only && c.delete_modes & crate::models::DELETE_FOR_ME != 0);
             assert_eq!(c.older, crate::models::Older::Start, "an invite has no history to load");
+            let me = c.participants.items.iter().find(|u| u.is_self == Some(true)).expect("the own pending member");
+            assert_eq!((me.is_pending, me.added_by.as_deref()), (Some(true), Some("@vic:x")), "vic invited me");
         }
         store.write().accept_request("!team:x");
         super::flush(store.clone()).await.expect("the stub takes the join");

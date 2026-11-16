@@ -11170,7 +11170,11 @@ impl BeeperGuiApp {
                 (false, _) => body,
                 (true, false) => body.or_else(|| Some(tr("Message Request").into())),
                 (true, true) => {
-                    Some(body.map_or(tr("Group Invitation").into(), |b| format!("{}\n{b}", tr("Group Invitation"))))
+                    let head = match c.inviter() {
+                        Some(u) => trs("Invited by %s", &[&member_name(u)]),
+                        None => tr("Group Invitation").into(),
+                    };
+                    Some(body.map_or(head.clone(), |b| format!("{head}\n{b}")))
                 }
             };
             let dot_bg = if self.list_quiet(&st, c) { Color { a: 0.3, ..p.strong } } else { p.accent };

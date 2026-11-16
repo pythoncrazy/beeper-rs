@@ -486,6 +486,7 @@
 "Invalid deep link":["無効なディープリンクです"],
 "Invalid format":["無効なフォーマットです"],
 "Invalid phone code":["無効な電話コード"],
+"Invited by %s":["招待者 %s"],
 "It was deleted or is no longer available.":["削除されたか、利用できなくなりました。"],
 "Italic":["イタリック"],
 "Italicize Text Selection":["選択したテキストを斜体にする"],

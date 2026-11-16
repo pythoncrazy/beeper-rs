@@ -412,6 +412,12 @@ pub struct User {
     pub is_network_bot: Option<bool>,
     #[serde(rename = "isAdmin", skip_serializing_if = "Option::is_none")]
     pub is_admin: Option<bool>,
+    /// Desktop's `isPending`: invited, and not joined yet.
+    #[serde(rename = "isPending", skip_serializing_if = "Option::is_none")]
+    pub is_pending: Option<bool>,
+    /// Desktop's `addedBy`: who invited a pending member.
+    #[serde(default, skip_serializing)]
+    pub added_by: Option<String>,
     /// The `MANAGE_` bits: what the power level of the own user allows on this member.
     #[serde(default, skip_serializing)]
     pub manage: u8,
@@ -906,6 +912,13 @@ fn flag_bits(bits: &[(bool, u16)]) -> u16 {
 }
 
 impl Chat {
+    /// Desktop's `getParticipant(selfParticipant.addedBy)`: the member who invited the own user.
+    pub fn inviter(&self) -> Option<&User> {
+        let people = &self.participants.items;
+        let by = people.iter().find(|u| u.is_self == Some(true))?.added_by.as_deref()?;
+        people.iter().find(|u| u.id == by)
+    }
+
     /// Desktop's `canonicalTitle`: the name of the room without the personal name.
     pub fn room_title(&self) -> &str {
         self.personal.as_ref().map_or(&self.title, |p| &p.room_title)

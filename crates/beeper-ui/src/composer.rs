@@ -39,7 +39,7 @@ pub(crate) type Typo = (std::ops::Range<usize>, Vec<String>);
 /// A row of the composer autocomplete: an emoji and its name, or a mention label, its user ID and the member.
 pub enum Suggestion {
     Emoji(String, &'static str),
-    Mention(String, String, Option<User>),
+    Mention(String, String, Option<Box<User>>),
 }
 
 /// Desktop's `xk`: the label of a mention of `u`.
@@ -297,7 +297,8 @@ impl BeeperGuiApp {
                 let room = chat.can_mention_room && !query.is_empty() && "room".starts_with(&query.to_lowercase());
                 let room = room.then(|| Suggestion::Mention("room".into(), ROOM_MENTION.into(), None));
                 let users = prefs::match_sort_keys(chat.participants.items.iter(), query, key).into_iter();
-                let users = users.map(|u| Suggestion::Mention(mention_label(u), u.id.clone(), Some(u.clone())));
+                let users =
+                    users.map(|u| Suggestion::Mention(mention_label(u), u.id.clone(), Some(Box::new(u.clone()))));
                 room.into_iter().chain(users).take(8).collect()
             }
             b':' if st.settings.on("emojiAutocomplete") => {

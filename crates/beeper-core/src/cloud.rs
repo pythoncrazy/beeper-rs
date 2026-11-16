@@ -259,8 +259,7 @@ impl Cloud {
                     cannot_message: None,
                     custom_nickname: None,
                     is_network_bot: None,
-                    is_admin: None,
-                    manage: 0,
+                    ..Default::default()
                 });
             }
         }
