@@ -562,6 +562,8 @@ pub struct BeeperStore {
     pub skin_tone: u8,
     /// The last synced [`crate::matrix::RULES`].
     pub inbox_rules: serde_json::Value,
+    /// Desktop's `mutedRoomIDs`: the `room_ids` of the global `com.beeper.muted` account data.
+    pub muted_rooms: Vec<String>,
     pub features: crate::features::Flags,
     pub whoami: Profile,
     next_seq: i64,
@@ -713,6 +715,7 @@ impl BeeperStore {
             synced_prefs: BTreeMap::new(),
             skin_tone: 0,
             inbox_rules: serde_json::Value::Null,
+            muted_rooms: Vec::new(),
             features,
             whoami: Profile::default(),
             next_seq: 1000,
