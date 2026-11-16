@@ -36,6 +36,8 @@ pub struct Run {
     pub code: bool,
     pub strike: bool,
     pub link: Option<String>,
+    /// Desktop's `data-mx-spoiler`: hidden until a click shows it.
+    pub spoiler: bool,
 }
 
 /// A paragraph or a list item, with its list marker.
@@ -105,6 +107,7 @@ pub fn html_blocks(html: &str) -> Vec<Block> {
             "code" | "pre" => s.code = true,
             "del" | "s" | "strike" => s.strike = true,
             "a" => s.link = attr(tag, "href"),
+            "span" if tag.contains("data-mx-spoiler") => s.spoiler = true,
             _ => {}
         }
         let drop = name == "mx-reply" || tag.contains("data-mx-profile-fallback");
@@ -120,9 +123,16 @@ pub fn html_blocks(html: &str) -> Vec<Block> {
     blocks
 }
 
+/// The plain text of Matrix HTML, with a spoiler as one "█" per character (Desktop's `ep`).
 pub fn html_text(html: &str) -> String {
-    let line =
-        |b: Block| b.marker.map(|m| m + " ").into_iter().chain(b.runs.into_iter().map(|r| r.text)).collect::<String>();
+    let text = |r: Run| match r.spoiler {
+        true => "█".repeat(match r.text.trim().chars().count() {
+            0 => 3,
+            n => n,
+        }),
+        false => r.text,
+    };
+    let line = |b: Block| b.marker.map(|m| m + " ").into_iter().chain(b.runs.into_iter().map(text)).collect::<String>();
     html_blocks(html).into_iter().map(line).collect::<Vec<_>>().join("\n")
 }
 
@@ -274,6 +284,19 @@ mod tests {
         ] {
             assert_eq!(markdown_html(md).as_deref(), Some(html), "{md:?}");
         }
+    }
+
+    /// Desktop's `data-mx-spoiler`: a run of its own in the timeline, and "█" per character in plain text.
+    #[test]
+    fn spoilers_like_desktop() {
+        let html = "the end: <span data-mx-spoiler>he dies</span>!";
+        let runs = &html_blocks(html)[0].runs;
+        assert_eq!(
+            runs.iter().map(|r| (r.text.as_str(), r.spoiler)).collect::<Vec<_>>(),
+            [("the end: ", false), ("he dies", true), ("!", false)]
+        );
+        assert_eq!(html_text(html), "the end: ███████!");
+        assert_eq!(html_text("<span data-mx-spoiler> </span>"), "███", "an empty spoiler is three blocks");
     }
 
     #[test]

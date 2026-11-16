@@ -3160,6 +3160,29 @@ fn media_boxes_like_desktop() {
     assert_eq!(media_box(1000.0, Some((2000.0, 1000.0)), 0.85).0, 800.0, "a hidden sidebar gives 0.85");
 }
 
+/// Desktop's `.spoiler`: a click shows the spoilers of a message, and the chat list hides them as blocks.
+#[test]
+fn spoilers_like_desktop() {
+    let mut app = demo_app("spoilers");
+    let id = {
+        let st = app.store.read();
+        let row = |c: &&Chat| c.chat_type == "single" && c.is_pinned != Some(true) && c.id != NOTE_CHAT_ID;
+        app.visible_chats(&st).into_iter().find(row).expect("a DM in the list").id.clone()
+    };
+    let mid = {
+        let mut st = app.store.write();
+        let idx = st.resolve_chat_idx(&id).unwrap();
+        let p = st.chats[idx].preview.clone().unwrap();
+        let html = "<span data-mx-spoiler>secret</span>";
+        let p = Message { text: Some("secret".into()), html: Some(html.into()), is_sender: Some(true), ..p };
+        st.update_chat(idx, |c| (c.preview, c.draft) = (Some(p.clone()), None));
+        p.id
+    };
+    assert!(simulator(app.view_sidebar()).find("██████").is_ok(), "the list hides the spoiler");
+    let _ = app.update(UiMessage::OpenUrl(format!("{}{mid}", crate::SPOILER)));
+    assert!(app.pane.spoilers.contains(&mid), "a click shows the spoilers of the message");
+}
+
 /// Desktop's Join a Matrix room view: a bad address shows Desktop's error under the field, and a known room opens.
 #[test]
 fn join_a_matrix_room_like_desktop() {
