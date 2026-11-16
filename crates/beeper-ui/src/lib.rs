@@ -4062,6 +4062,7 @@ impl BeeperGuiApp {
         settings.visible = !app.hidden;
         let (id, open) = window::open(settings);
         *(if signed_in { &mut app.main_window } else { &mut app.login_window }) = Some(id);
+        let open = open.then(move |id| Task::done(id).chain(Self::keep_on_screen(id)));
         let cloud = (signed_in && !app.store.read().config.demo).then(|| app.refresh_cloud_accounts());
         let restore = (signed_in && !app.hidden).then(|| app.restore_subwindows());
         let link = app.store.write().config.link.take();
@@ -4187,6 +4188,53 @@ impl BeeperGuiApp {
             })
         };
         (id, open.then(center))
+    }
+
+    /// Desktop's `ga` (`mainWindowSetSize`): window `id` takes `size`, at most its screen, grows or shrinks around its
+    /// center, and stays on the screen. Without a position (Wayland), it only takes the size.
+    pub(crate) fn resize_around(id: window::Id, size: Size) -> Task<UiMessage> {
+        let state = window::position(id).then(move |at| window::size(id).map(move |old| (at, old)));
+        let state = state.then(move |(at, old)| window::monitor_size(id).map(move |screen| (at, old, screen)));
+        state.then(move |(at, old, screen)| {
+            let screen = screen.unwrap_or(Size::new(f32::INFINITY, f32::INFINITY));
+            let (to, fit) = grown(at.unwrap_or(Point::ORIGIN), old, size, screen);
+            let resize = window::resize(id, fit);
+            match at {
+                Some(_) => Task::batch([resize, window::move_to(id, to)]),
+                None => resize,
+            }
+        })
+    }
+
+    /// Desktop's default place of a window that it opens (`openInNewWindow`, `ao.windowFeatures`): 20 px right of and
+    /// below the main window.
+    pub(crate) fn cascade<T: Send + 'static>(&self, id: window::Id) -> Task<T> {
+        let Some(main) = self.main_window else { return Task::none() };
+        window::position(main).then(move |at| match at {
+            Some(at) => window::move_to(id, at + Vector::new(20.0, 20.0)),
+            None => Task::none(),
+        })
+    }
+
+    /// Desktop's `windowStateKeeper` check of saved bounds (`Yy`, `Ma`): a window more than 50 px off its screen, like
+    /// one saved on a screen that is gone, moves onto the screen and shrinks to fit it.
+    fn keep_on_screen<T: Send + 'static>(id: window::Id) -> Task<T> {
+        const SLACK: f32 = 50.0;
+        let state = window::position(id).then(move |at| window::size(id).map(move |size| (at, size)));
+        let state = state.then(move |(at, size)| window::monitor_size(id).map(move |screen| (at, size, screen)));
+        state.then(move |(at, size, screen)| {
+            let (Some(at), Some(screen)) = (at, screen) else { return Task::none() };
+            let off = at.x < -SLACK
+                || at.y < -SLACK
+                || at.x + size.width > screen.width + SLACK
+                || at.y + size.height > screen.height + SLACK;
+            if !off {
+                return Task::none();
+            }
+            let fit = Size::new(size.width.min(screen.width), size.height.min(screen.height));
+            let to = Point::new(at.x.clamp(0.0, screen.width - fit.width), at.y.clamp(0.0, screen.height - fit.height));
+            Task::batch([window::resize(id, fit), window::move_to(id, to)])
+        })
     }
 
     /// Desktop's `windowStateKeeper("main")`: the main window opens with the bounds and the maximized state of
@@ -8098,11 +8146,7 @@ impl BeeperGuiApp {
                 let size = Size::new(800.0, 600.0);
                 let (id, open) = window::open(Self::window_settings(size));
                 self.chat_windows.push((id, Pane { size, ..Pane::default() }));
-                let main = self.main_window.expect("the chat list is in the main window");
-                let near = window::position(main).then(move |at| match at {
-                    Some(at) => window::move_to(id, at + Vector::new(20.0, 20.0)),
-                    None => Task::none(),
-                });
+                let near = self.cascade(id);
                 let select = self.update(UiMessage::InWindow(id, Box::new(UiMessage::SelectChat(cid))));
                 self.save_subwindows();
                 return Task::batch([open.discard(), near, select]);
@@ -13790,6 +13834,17 @@ pub struct UserHover {
     pub shown: Option<Point>,
     /// Counts the changes, so that only the last wait acts.
     pub r#gen: u32,
+}
+
+/// Desktop's `ga`: the bounds of a window at `at` and `old` size that takes `size`, at most the `screen`, around its
+/// center and on the screen.
+fn grown(at: Point, old: Size, size: Size, screen: Size) -> (Point, Size) {
+    let fit = Size::new(size.width.min(screen.width), size.height.min(screen.height));
+    let place = |at: f32, old: f32, new: f32, room: f32| (at - (new - old) / 2.0).min(room - new).max(0.0).floor();
+    (
+        Point::new(place(at.x, old.width, fit.width, screen.width), place(at.y, old.height, fit.height, screen.height)),
+        fit,
+    )
 }
 
 /// A press on a rail space, which Desktop's `Drop` sorts after the cursor moves 5px.

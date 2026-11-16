@@ -104,7 +104,8 @@ impl BeeperGuiApp {
         let (id, open) = window::open(Self::window_settings(size));
         let pane = Pane { selected_chat_id: Some(chat), thread_root: Some(root), size, ..Pane::default() };
         self.chat_windows.push((id, pane));
-        open.discard()
+        // `ThreadedRepliesBrowserWindow` keeps the place of `ao.windowFeatures`.
+        Task::batch([open.discard(), self.cascade(id)])
     }
 
     /// The thread window: Desktop's `ThreadedRepliesHeader` with the title over the thread.

@@ -446,7 +446,10 @@ impl BeeperGuiApp {
         if let Some(id) = self.settings_window {
             return Task::batch([load, window::gain_focus(id)]);
         }
-        let (id, open) = window::open(Self::window_settings(SETTINGS_SIZE));
+        // Desktop's `openInNewWindow` of "prefs": in the middle of the screen.
+        let centered =
+            window::Settings { position: window::Position::Centered, ..Self::window_settings(SETTINGS_SIZE) };
+        let (id, open) = window::open(centered);
         self.settings_window = Some(id);
         self.save_subwindows();
         Task::batch([load, open.map(UiMessage::WindowOpened)])
