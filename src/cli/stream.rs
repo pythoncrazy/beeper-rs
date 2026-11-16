@@ -233,6 +233,7 @@ fn split_command_line(input: &str) -> Result<Vec<String>, String> {
     Ok(words)
 }
 
+#[cfg(unix)]
 const SIGNALS: [(i32, &str); 6] =
     [(1, "SIGHUP"), (2, "SIGINT"), (6, "SIGABRT"), (9, "SIGKILL"), (11, "SIGSEGV"), (15, "SIGTERM")];
 
@@ -256,8 +257,12 @@ fn rpc_one(request: &Value) -> Result<Value, String> {
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| e.to_string())?;
+    #[cfg(unix)]
     let signal = std::os::unix::process::ExitStatusExt::signal(&out.status)
         .map(|n| SIGNALS.iter().find(|s| s.0 == n).map_or(format!("SIG{n}"), |s| s.1.to_string()));
+    // A Windows process ends with an exit code and never a signal, like the `signal: null` of Node's `spawnSync`.
+    #[cfg(not(unix))]
+    let signal: Option<String> = None;
     let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     let id = request.get("id").cloned().unwrap_or_default();
     Ok(
