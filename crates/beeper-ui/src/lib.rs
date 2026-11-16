@@ -2659,7 +2659,8 @@ fn space_name(st: &BeeperStore, id: &str) -> String {
             (Some(l), _) if l.name.is_empty() => trx("Label", "fallback label space name").into(),
             (Some(l), _) => l.name.clone(),
             (None, Some(n)) => format!("{} ({})", n.name, network_label(&n.account_id)),
-            (None, None) => network_label(id).to_string(),
+            // Desktop's `accountDisplayName`: "<user> · <network>" when the bridge has more than one account.
+            (None, None) => account_display_name(st, id, &rail_accounts(st)),
         },
     }
 }
