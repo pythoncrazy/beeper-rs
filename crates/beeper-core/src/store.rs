@@ -1413,6 +1413,11 @@ impl BeeperStore {
         rows.expect("read the outbox").map(|r| r.expect("read an outbox row")).collect()
     }
 
+    /// Desktop's `hasErroredMessages`: a send of the chat failed and waits for Retry.
+    pub fn has_errored(&self, chat: &str) -> bool {
+        self.outbox.iter().any(|o| o.1 == chat && self.waits_for_retry(&o.2))
+    }
+
     /// A message of the change failed and waits for Retry.
     fn waits_for_retry(&self, out: &Outgoing) -> bool {
         let m = out.message().and_then(|id| self.stored_message(id));
@@ -3262,6 +3267,23 @@ mod tests {
         let last = *st.chat_msg_indices[&chat].last().unwrap();
         assert_eq!(st.messages[last].id, id);
         assert_eq!(st.chats[st.chat_idx_by_id[&chat]].preview.as_ref().unwrap().id, id);
+    }
+
+    /// Desktop's `hasErroredMessages`: a chat whose send failed shows it until Retry starts.
+    #[test]
+    fn a_failed_send_marks_its_chat_like_desktop() {
+        let mut st = super::BeeperStore::from_config(crate::testing::demo_config("errored"));
+        let chat = st.chats.iter().find(|c| c.id != super::NOTE_CHAT_ID).unwrap().id.clone();
+        let draft = super::Draft { text: Some("hi".into()), ..Default::default() };
+        let (_, txns) = st.send(&chat, draft).unwrap();
+        let id = txns[0].clone();
+        assert!(!st.has_errored(&chat), "a send on its way");
+        let row = st.outbox.iter().rev().find(|o| o.1 == chat).expect("the queued send").0;
+        st.outbox.retain(|o| o.0 != row);
+        st.pushed(row, Some(&id), Some(("refused".into(), true)));
+        assert!(st.has_errored(&chat), "the failed send waits for Retry");
+        st.retry_send(&id);
+        assert!(!st.has_errored(&chat), "Retry clears it");
     }
 
     /// Desktop's threaded replies in the demo: a reply only in the thread neither previews the chat nor counts

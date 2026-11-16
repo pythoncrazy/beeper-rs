@@ -11239,9 +11239,11 @@ impl BeeperGuiApp {
                 true => unread.then(|| count_badge(c, dot_bg, Color::WHITE, 12.0)),
                 false => (c.unread_mentions > 0).then(|| ic(icon::AT_SIGN, 12.0).color(p.accent).into()),
             };
+            // Desktop's `indicators`: the unread dot, and a red dot while a send of the chat waits for Retry.
             let dot = (!counts).then(|| {
-                let dot = container(Space::new()).width(6).height(6).style(fill_box(dot_bg, 3.0));
-                container(unread.then_some(dot)).width(12)
+                let dot = |bg| container(Space::new()).width(6).height(6).style(fill_box(bg, 3.0));
+                let errored = st.has_errored(&c.id).then(|| dot(hex(0xf44336)));
+                container(column![].push(unread.then(|| dot(dot_bg))).push(errored).spacing(4)).width(12)
             });
             let count = count
                 .filter(|_| self.hovered_chat.as_ref() != Some(&c.id) || self.row_action(c, hover_action).is_none());
