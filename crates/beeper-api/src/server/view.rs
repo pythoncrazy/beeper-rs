@@ -385,9 +385,15 @@ pub(super) struct ApiMessage<'a> {
     edited_timestamp: Option<&'a str>,
     is_sender: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    send_status: Option<ApiSendStatus<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_hidden: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     is_deleted: Option<bool>,
     #[serde(rename = "linkedMessageID", skip_serializing_if = "Option::is_none")]
     linked_message_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mentions: Option<&'a [String]>,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     links: &'a [MessageLink],
     reactions: Vec<ApiReaction<'a>>,
@@ -403,11 +409,28 @@ pub(super) struct ApiMessage<'a> {
 #[serde(rename_all = "camelCase")]
 struct ApiReaction<'a> {
     id: &'a str,
+    #[serde(rename = "participantID")]
+    participant_id: &'a str,
+    /// Desktop's `emoji`: the key is an emoji, not the `mxc://` URL of a custom image.
+    emoji: bool,
     reaction_key: &'a str,
     #[serde(rename = "imgURL", skip_serializing_if = "Option::is_none")]
     img_url: Option<&'a str>,
-    #[serde(rename = "participantID")]
-    participant_id: &'a str,
+}
+
+/// Desktop's `ep`: the `sendStatus` of a message, with its time.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApiSendStatus<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<&'a str>,
+    status: &'a str,
+    timestamp: String,
+    delivered_to_users: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    internal_error: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -483,17 +506,31 @@ pub(super) fn message(m: &Message) -> ApiMessage<'_> {
         text: m.text.as_deref(),
         edited_timestamp: m.edit_history.last().map(|e| e.timestamp.as_str()),
         is_sender: m.is_sender == Some(true),
+        // Desktop's `ep` gives no status without a time.
+        send_status: m.send_status.as_ref().and_then(|s| {
+            Some(ApiSendStatus {
+                reason: s.reason.as_deref(),
+                message: s.message.as_deref(),
+                status: &s.status,
+                timestamp: rfc3339_from_millis(s.ts?),
+                delivered_to_users: &s.delivered_to_users,
+                internal_error: s.internal_error.as_deref(),
+            })
+        }),
+        is_hidden: (m.message_type.as_deref() == Some("HIDDEN")).then_some(true),
         is_deleted: m.is_deleted,
         linked_message_id: m.linked_message_id.as_deref(),
+        mentions: m.mentions.as_deref(),
         links: &m.links,
         reactions: m
             .reactions
             .iter()
             .map(|r| ApiReaction {
                 id: &r.id,
+                participant_id: &r.participant_id,
+                emoji: !r.reaction_key.starts_with("mxc://") && r.img_url.is_none(),
                 reaction_key: &r.reaction_key,
                 img_url: r.img_url.as_deref(),
-                participant_id: &r.participant_id,
             })
             .collect(),
         seen: &m.seen,
