@@ -984,14 +984,21 @@ impl BeeperGuiApp {
             _ => m.text.clone().unwrap_or_default(),
         };
         let mut parts = Column::new().spacing(2).align_x(if mine { Right } else { iced::Left });
-        if (group || network_bot(chat, &m.sender_id)) && !mine && first {
-            parts = parts.push(
-                {
-                    let name = sender_label(chat, m);
-                    container(semi(name.clone(), 11.0).color(hex(*pick(&name, &p.names))))
-                }
-                .padding(Padding::ZERO.left(11.0)),
-            );
+        let named = (group || network_bot(chat, &m.sender_id)) && !mine && first;
+        let sender = || {
+            let name = sender_label(chat, m);
+            semi(name.clone(), 12.0).color(hex(*pick(&name, &p.names)))
+        };
+        // Desktop's `hasAttachedMedia`: a message with media names its sender above the bubble, a text bubble inside.
+        let media = !m.attachments.is_empty()
+            || m.links.iter().any(|l| !l.title.is_empty() || l.img.is_some() || l.summary.is_some());
+        let text_bubble = m.is_deleted != Some(true)
+            && m.message_type.as_deref() != Some("HIDDEN")
+            && !jumbo(&text)
+            && (utd || (!text.is_empty() && poll.is_none() && m.message_type.as_deref() != Some("VOICE")));
+        let inside = (named && !media && text_bubble).then(|| container(sender()).padding(Padding::ZERO.bottom(2.0)));
+        if named && inside.is_none() {
+            parts = parts.push(container(sender()).padding(Padding::ZERO.left(11.0)));
         }
         // Desktop's `Wle`: in the chat of a room with threads, a reply that is also sent to the chat shows its root in
         // place of a quote. The thread pane does not quote the fallback reply of a thread reply.
@@ -1130,7 +1137,7 @@ impl BeeperGuiApp {
                 let time = format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1);
                 txt(time, 11.0).color(if mine { sent_meta } else { p.sub })
             });
-            let body = row![line].push(time).spacing(4).align_y(Bottom);
+            let body = column![].push(inside).push(row![line].push(time).spacing(4).align_y(Bottom));
             parts = parts.push(container(body).padding([9.0, BUBBLE_PAD_X]).style(fill_box(bg, 17.0)));
         } else if !text.is_empty() && poll.is_none() && m.message_type.as_deref() != Some("VOICE") {
             let ts = shows_time.then(|| format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1));
@@ -1248,8 +1255,9 @@ impl BeeperGuiApp {
                 container(row![].push(marker).push(line)).padding(Padding::ZERO.top(gap)).into()
             }))
             .width(if full { Length::Fixed(max) } else { Length::Shrink });
+            let body = stack![body].push(time.map(|t| container(t).align_right(Fill).align_bottom(Fill)));
             parts = parts.push(
-                container(stack![body].push(time.map(|t| container(t).align_right(Fill).align_bottom(Fill))))
+                container(column![].push(inside).push(body))
                     .padding([9.0, BUBBLE_PAD_X])
                     .max_width(0.45 * self.pane().size.width)
                     .style(fill_box(bg, 17.0)),
