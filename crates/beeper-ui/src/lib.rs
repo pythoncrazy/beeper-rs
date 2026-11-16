@@ -2450,6 +2450,9 @@ fn sender_first_name(u: &User) -> String {
     }
 }
 
+/// The link of a spoiler in a message: a click shows the spoilers of the message.
+pub(crate) const SPOILER: &str = "beeper-spoiler:";
+
 /// Desktop's `messageSender`: the name of the sender's current member, or the name that came with the message.
 fn sender_label(chat: &Chat, m: &Message) -> String {
     let member = chat.participants.items.iter().find(|u| u.id == m.sender_id);
@@ -3422,6 +3425,8 @@ pub struct Pane {
     pub expanded_history_msg_id: Option<String>,
     /// Desktop's `unclampedMessages`: the long messages whose "Show more" is open.
     pub unclamped: HashSet<String>,
+    /// The messages whose spoilers were clicked open (Desktop's `.spoiler.clicked`).
+    pub spoilers: HashSet<String>,
     pub hovered_msg: Option<String>,
     /// The selected emoji autocomplete row.
     pub suggest: usize,
@@ -7663,6 +7668,9 @@ impl BeeperGuiApp {
             UiMessage::Noop => {}
             UiMessage::Relist => return Task::none(),
             UiMessage::LoadWanted => return Task::batch([self.load_avatars(), self.load_media()]),
+            UiMessage::OpenUrl(url) if url.starts_with(SPOILER) => {
+                self.pane.spoilers.insert(url[SPOILER.len()..].to_string());
+            }
             UiMessage::OpenUrl(url) => {
                 let (cmd, args) = open_url_or_path_command(self.os, &url);
                 let open = move || match std::process::Command::new(&cmd).args(args).status() {

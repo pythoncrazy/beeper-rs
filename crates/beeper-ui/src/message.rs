@@ -1249,6 +1249,22 @@ impl BeeperGuiApp {
                         .padding(Padding::from([0.1 * 13.0 * 0.9, 0.33 * 13.0 * 0.9])),
                     false => s,
                 };
+                // Desktop's `.spoiler`: black with the text hidden, and after a click white on 30% black.
+                let s = match (r.spoiler, self.pane().spoilers.contains(&m.id)) {
+                    (true, false) => s
+                        .color(Color::TRANSPARENT)
+                        .background(Color::BLACK)
+                        .border(border::rounded(2))
+                        .padding(Padding::from([1, 2]))
+                        .link(format!("{}{}", crate::SPOILER, m.id)),
+                    (true, true) => {
+                        s.color(Color::WHITE).background(Color::BLACK.scale_alpha(0.3)).padding(Padding::from([1, 2]))
+                    }
+                    _ => s,
+                };
+                if r.spoiler {
+                    return [Some(s), None].into_iter().flatten();
+                }
                 let bold = crate::style::fw(Weight::Bold);
                 let s = match mention {
                     Some(id) if me(&id) => {
