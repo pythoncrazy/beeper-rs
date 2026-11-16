@@ -1178,7 +1178,7 @@ async fn sync_left(store: &SharedStore, room: &Room, events: Vec<TimelineEvent>)
     }
 }
 
-async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>) {
+pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<TimelineEvent>) {
     match room.room_id().as_str() {
         BOOKMARKS_ROOM => return sync_bookmarks(store, room, events).await,
         TRANSCRIPTIONS_ROOM => return sync_transcriptions(store, events),
@@ -2636,7 +2636,7 @@ pub async fn thumbnail(client: Client, url: String) -> Result<Vec<u8>, String> {
     client.media().get_media_content(&request, true).await.map_err(|e| e.to_string())
 }
 
-async fn connect(store: &SharedStore) -> Result<Client, String> {
+pub(crate) async fn connect(store: &SharedStore) -> Result<Client, String> {
     let (s, dir) = {
         let st = store.read();
         (st.beeper_state.clone(), st.matrix_dir())
@@ -3709,45 +3709,8 @@ async fn on_sync(client: &Client, store: &SharedStore, r: matrix_sdk::Result<mat
 
 #[cfg(test)]
 mod tests {
+    use crate::testing::{stub_message, stub_store, stub_sync};
     use serde_json::{json, Value};
-
-    /// A signed-in store in `dir` with a Matrix client that synced the stub homeserver at `url`.
-    async fn stub_store(dir: &std::path::Path, url: &str) -> crate::store::SharedStore {
-        crate::cloud::install_tls();
-        let cfg = crate::config::CentralConfig::new(dir.into(), "127.0.0.1".into(), 23392, None);
-        let mut st = crate::store::BeeperStore::from_config(cfg.clone());
-        if !st.signed_in() {
-            let s = &mut st.beeper_state;
-            (s.homeserver, s.user_id, s.device_id, s.access_token) =
-                (url.into(), "@me:x".into(), "DEV".into(), "token".into());
-            st.persist_state_to_sqlite();
-            // A signed-in start adds the note chat of the user.
-            st = crate::store::BeeperStore::from_config(cfg);
-        }
-        let store = crate::store::StoreLock::shared(st);
-        let client = super::connect(&store).await.expect("connect to the stub homeserver");
-        client.sync_once(super::SyncSettings::default()).await.expect("sync with the stub homeserver");
-        store.write().matrix = Some(client);
-        store
-    }
-
-    /// The `/sync` reply of the stub homeserver: one joined room `!room:x` of the user `@me:x`.
-    fn stub_sync() -> Value {
-        let state = |kind: &str, key: &str, content: Value| {
-            json!({ "type": kind, "state_key": key, "sender": "@me:x", "event_id": format!("${kind}"),
-                "origin_server_ts": 1, "content": content })
-        };
-        let create = state("m.room.create", "", json!({ "creator": "@me:x", "room_version": "10" }));
-        let member = state("m.room.member", "@me:x", json!({ "membership": "join", "displayname": "Me" }));
-        let room = json!({ "state": { "events": [create, member] }, "timeline": { "events": [] } });
-        json!({ "next_batch": "s1", "rooms": { "join": { "!room:x": room } } })
-    }
-
-    fn stub_message(i: i64) -> Value {
-        json!({ "type": "m.room.message", "sender": "@me:x", "event_id": format!("$e{i}"),
-            "origin_server_ts": 1_700_000_000_000 + i * 1000, "content": { "msgtype": "m.text", "body": format!("m{i}") },
-            "unsigned": { "com.beeper.hs.order": i } })
-    }
 
     /// Desktop keeps a chat that the user was removed from: its own member has exited, the removal previews it, and
     /// it stays muted. A chat that was deleted here stays deleted when the leave of its room comes.
@@ -3830,32 +3793,8 @@ mod tests {
     #[tokio::test]
     async fn older_messages_load_back_to_the_start_of_the_room_like_desktop() {
         use crate::models::Older;
-        let url = crate::bridge_stub::serve(|_, path, _| {
-            let (path, query) = path.split_once('?').unwrap_or((path, ""));
-            match path {
-                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
-                "/_matrix/client/v3/sync" => (200, stub_sync()),
-                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
-                p if p.ends_with("/messages") => {
-                    // The stub room has 70 messages, and the token `tN` pages back from message N.
-                    let from = query.split('&').find_map(|kv| kv.strip_prefix("from=t"));
-                    let to: i64 = from.map_or(70, |t| t.parse().expect("a stub token"));
-                    let end = (to - 30).max(0);
-                    let mut page = json!({ "start": format!("t{to}"), "chunk": (end + 1..=to).rev().map(stub_message).collect::<Vec<_>>() });
-                    if end > 0 {
-                        page["end"] = json!(format!("t{end}"));
-                    }
-                    (200, page)
-                }
-                _ => (404, json!({ "errcode": "M_UNRECOGNIZED", "error": "not in the stub" })),
-            }
-        })
-        .await;
         let dir = crate::testing::temp_dir("older");
-        let store = stub_store(&dir, &url).await;
-        let room =
-            store.read().matrix.clone().unwrap().get_room(matrix_sdk::ruma::room_id!("!room:x")).expect("the room");
-        super::sync_room(&store, &room, Vec::new()).await;
+        let store = crate::testing::stub_room_store(&dir, &crate::testing::stub_homeserver().await).await;
         let state = || {
             let st = store.read();
             let texts = st.timeline_indices("!room:x").iter().map(|&i| st.messages[i].text.clone().unwrap());
