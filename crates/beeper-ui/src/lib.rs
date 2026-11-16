@@ -4239,7 +4239,7 @@ impl BeeperGuiApp {
             }),
             #[cfg(target_os = "linux")]
             platform_specific: window::settings::PlatformSpecific {
-                application_id: beeper_core::config::APP_BUNDLE_ID.into(),
+                application_id: beeper_core::config::INSTALL_ID.into(),
                 ..Default::default()
             },
             ..Default::default()

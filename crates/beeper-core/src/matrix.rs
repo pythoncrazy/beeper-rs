@@ -1190,11 +1190,12 @@ pub(crate) async fn sync_room(store: &SharedStore, room: &Room, mut events: Vec<
     if create["com.beeper.label"] == true {
         return sync_label(store, room).await;
     }
-    if create["type"].is_string() {
-        return sync_space(store, room).await;
-    }
-    if state(room, "com.beeper.managed").await.is_some() {
-        return;
+    // Desktop's `computeAccountID`: a space is "$space" and a room of another type is "$other", out of every chat list,
+    // but a `com.beeper.local` room is a chat like an untyped one.
+    match create["type"].as_str() {
+        Some("m.space") => return sync_space(store, room).await,
+        Some(t) if t != "com.beeper.local" => return,
+        _ => {}
     }
     let chat_id = chat_id(room).await;
     let note = chat_id == NOTE_CHAT_ID;
@@ -4945,6 +4946,42 @@ mod tests {
             let chat = !MANAGED_ROOMS.contains(&room);
             assert_eq!(st.chat_idx_by_id.contains_key(room), chat, "{room} is a chat: {chat}");
             assert_eq!(st.messages.iter().any(|m| m.chat_id == room), chat, "{room} has messages: {chat}");
+        }
+    }
+
+    /// Desktop's `computeAccountID` and `getRooms`: a `com.beeper.local` room and a room with `com.beeper.managed`
+    /// state are chats, and a room of another type is in no chat list.
+    #[tokio::test]
+    async fn typed_rooms_like_desktop() {
+        let mut sync = stub_sync();
+        let base = sync["rooms"]["join"]["!room:x"].clone();
+        let typed = |kind: Option<&str>, extra: Option<Value>| {
+            let mut room = base.clone();
+            let events = room["state"]["events"].as_array_mut().expect("state events");
+            if let Some(kind) = kind {
+                events[0]["content"]["type"] = kind.into();
+            }
+            events.extend(extra);
+            room
+        };
+        let managed = json!({ "type": "com.beeper.managed", "state_key": "", "sender": "@me:x",
+            "event_id": "$managed", "origin_server_ts": 1, "content": {} });
+        sync["rooms"]["join"]["!local:x"] = typed(Some("com.beeper.local"), None);
+        sync["rooms"]["join"]["!other:x"] = typed(Some("com.example.other"), None);
+        sync["rooms"]["join"]["!managed:x"] = typed(None, Some(managed));
+        let url = crate::bridge_stub::serve(move |_, path, _| match path.split_once('?').map_or(path, |p| p.0) {
+            "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+            "/_matrix/client/v3/sync" => (200, sync.clone()),
+            "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+            p if p.ends_with("/messages") => (200, json!({ "start": "t", "chunk": [] })),
+            p if p.contains("/account_data/") || p.contains("/tags/") => (200, json!({})),
+            _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("typed-rooms"), &url).await;
+        for (room, chat) in [("!local:x", true), ("!managed:x", true), ("!other:x", false)] {
+            sync_stub_room(&store, room).await;
+            assert_eq!(store.read().chat_idx_by_id.contains_key(room), chat, "{room} is a chat: {chat}");
         }
     }
 

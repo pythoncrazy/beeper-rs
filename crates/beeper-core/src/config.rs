@@ -4,6 +4,11 @@ use std::path::{Path, PathBuf};
 
 pub const APP_BUNDLE_ID: &str = "com.automattic.beeper.desktop";
 pub const APP_NAME: &str = "Beeper";
+/// The Linux desktop entry, window class and launcher name of beeper-rs. They differ from Desktop's
+/// `com.automattic.beeper.desktop` and "Beeper", so that the two apps install side by side. The Desktop API still
+/// answers with Desktop's bundle ID, which clients check.
+pub const INSTALL_ID: &str = "beeper-rs";
+pub const INSTALL_NAME: &str = "Beeper-RS";
 pub const APP_VERSION: &str = "4.3.176";
 pub const DEFAULT_PAS_HOST: &str = "127.0.0.1";
 /// Desktop's Desktop API port. When it is busy, Desktop tries the next 50 ports, then a random port.

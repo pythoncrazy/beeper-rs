@@ -270,7 +270,7 @@ pub fn events() -> impl iced::futures::Stream<Item = Result<Event, String>> {
 /// Shows the unread count on the tray icon and the app badge, and the window state in the tray menu.
 pub async fn update(unread: u32, visible: bool) -> Result<(), String> {
     let bus = crate::notify::bus().await?;
-    let uri = format!("application://{}.desktop", beeper_core::config::APP_BUNDLE_ID);
+    let uri = format!("application://{}.desktop", beeper_core::config::INSTALL_ID);
     let badge = HashMap::from([
         ("count", OwnedValue::from(i64::from(unread))),
         ("count-visible", OwnedValue::from(unread > 0)),
