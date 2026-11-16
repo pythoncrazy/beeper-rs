@@ -3091,6 +3091,28 @@ fn a_chat_the_user_left_like_desktop() {
     assert!(simulator(app.view_sidebar()).find("Ann left").is_ok(), "no sender name");
 }
 
+/// Desktop's `rWe`: only the last of a sender's messages in a minute shows the time.
+#[test]
+fn times_show_once_a_minute_like_desktop() {
+    let base = demo_app("times").store.read().messages[0].clone();
+    let at = |id: &str, sender: &str, ts: &str| Message {
+        id: id.into(),
+        sender_id: sender.into(),
+        timestamp: ts.into(),
+        text: Some("hi".into()),
+        message_type: Some("TEXT".into()),
+        ..base.clone()
+    };
+    let (a, b) = (at("a", "@ann", "2026-11-16T10:15:05Z"), at("b", "@ann", "2026-11-16T10:15:50Z"));
+    use crate::message::time_hidden;
+    assert!(time_hidden(&a, Some(&b), false), "the same sender in the same minute");
+    assert!(!time_hidden(&b, None, false), "the last message shows its time");
+    assert!(!time_hidden(&a, Some(&at("c", "@bob", "2026-11-16T10:15:50Z")), false), "another sender");
+    assert!(!time_hidden(&a, Some(&at("d", "@ann", "2026-11-16T10:16:01Z")), false), "the next minute");
+    let emoji = Message { text: Some("🎉".into()), ..b.clone() };
+    assert!(!time_hidden(&a, Some(&emoji), false), "a jumbo emoji has no time, so the one before keeps it");
+}
+
 /// Desktop's Join a Matrix room view: a bad address shows Desktop's error under the field, and a known room opens.
 #[test]
 fn join_a_matrix_room_like_desktop() {
