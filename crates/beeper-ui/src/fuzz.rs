@@ -4288,6 +4288,25 @@ fn account_status_like_desktop() {
     assert!(simulator(app.view_settings()).find("Remove Account").is_err(), "the Beeper account has no button");
 }
 
+/// Desktop's `AppStatus`: a disconnected account shows its banner in the inbox too, with a dismiss button there, and
+/// in its own space without one.
+#[test]
+fn disconnected_banners_like_desktop() {
+    let mut app = demo_app("status-banners");
+    let (account, name) = {
+        let mut st = app.store.write();
+        let b = &mut st.bridge_accounts[0];
+        b.remote_error = Some("Token expired".into());
+        (b.account_id.clone(), beeper_core::config::account_network(&b.bridge_id).display_name)
+    };
+    let banner = format!("{name} disconnected");
+    assert!(simulator(app.view_sidebar()).find(banner.as_str()).is_ok(), "the inbox shows it");
+    let _ = app.update(UiMessage::DismissAccountError(account.clone()));
+    assert!(simulator(app.view_sidebar()).find(banner.as_str()).is_err(), "dismissed for the session");
+    let _ = app.update(UiMessage::SelectAccount(Some(account)));
+    assert!(simulator(app.view_sidebar()).find(banner.as_str()).is_err(), "a dismissed account stays dismissed");
+}
+
 #[test]
 fn sidebar_view_menus_like_desktop() {
     let mut app = demo_app("view-menus");

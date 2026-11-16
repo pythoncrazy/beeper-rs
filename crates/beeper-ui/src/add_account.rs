@@ -821,7 +821,11 @@ mod tests {
         app.store.write().set_cloud_accounts(accounts);
         let again =
             |m: UiMessage| matches!(m, UiMessage::OpenAddAccount(n, Some(l)) if n == "whatsapp" && l == "15550100");
-        assert!(iced_test::simulator(app.view_sidebar()).find("WhatsApp disconnected").is_err(), "only in its space");
+        {
+            let mut inbox = iced_test::simulator(app.view_sidebar());
+            assert!(inbox.find("WhatsApp disconnected").is_ok(), "the inbox shows it too (Desktop's `mpt`)");
+            assert!(inbox.find("Reconnect").is_err(), "Reconnect shows only in its space");
+        }
         app.selected_account_filter = Some("whatsapp".into());
         let mut sim = iced_test::simulator(app.view_sidebar());
         assert!(sim.find("WhatsApp disconnected").is_ok());
