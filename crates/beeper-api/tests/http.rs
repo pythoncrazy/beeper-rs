@@ -608,3 +608,46 @@ async fn message_pages_load_back_from_the_homeserver_like_desktop() {
     assert_eq!(texts, (1..=70).rev().map(|i| format!("m{i}")).collect::<Vec<_>>(), "every message once, newest first");
     assert_eq!(more, [true, true, true, false], "full pages of 20 until the start of the room");
 }
+
+/// Desktop's `sendAppStateSnapshot` and `processAppStateEvent`: an `app.state` subscription gets the setup state at
+/// once, and then only when it changes, and the store's own `setup.updated` never shows.
+#[tokio::test]
+async fn websocket_sends_the_app_state_like_desktop() {
+    use beeper_api::http::{read_ws_frame, write_ws_frame};
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let cfg = CentralConfig { port, ..demo_config("http-app-state") };
+    let store = StoreLock::shared(BeeperStore::from_config(cfg));
+    let token = store.read().beeper_state.access_token.clone();
+    tokio::spawn(serve_http(listener, store.clone()));
+    let upgrade = format!("GET /v1/ws HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\nauthorization: Bearer {token}\r\n\r\n");
+    let mut ws = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    ws.write_all(upgrade.as_bytes()).await.unwrap();
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        head.push(ws.read_u8().await.unwrap());
+    }
+    async fn next(ws: &mut TcpStream) -> Option<serde_json::Value> {
+        let frame = timeout(Duration::from_millis(500), read_ws_frame(ws, 1 << 20)).await.ok()?.ok()?;
+        Some(serde_json::from_slice(&frame.1).unwrap())
+    }
+    assert_eq!(next(&mut ws).await.unwrap()["type"], "ready");
+    write_ws_frame(&mut ws, 0x1, br#"{"type":"subscriptions.set","chatIDs":["*"],"app":{"state":true}}"#, true)
+        .await
+        .unwrap();
+    assert_eq!(next(&mut ws).await.unwrap()["type"], "subscriptions.updated");
+    let snapshot = next(&mut ws).await.unwrap();
+    assert_eq!((snapshot["type"].as_str(), snapshot["seq"].as_u64()), (Some("app.state.updated"), Some(1)));
+    assert_eq!(snapshot["appState"]["e2ee"]["verified"], store.read().beeper_state.verified);
+    store.read().emit_ws("setup.updated", "", None, None, None);
+    assert!(next(&mut ws).await.is_none(), "an unchanged state sends nothing");
+    {
+        let mut st = store.write();
+        st.beeper_state.key_backup = !st.beeper_state.key_backup;
+        st.emit_ws("setup.updated", "", None, None, None);
+    }
+    let changed = next(&mut ws).await.unwrap();
+    assert_eq!((changed["type"].as_str(), changed["seq"].as_u64()), (Some("app.state.updated"), Some(2)));
+    let keys: Vec<&String> = changed.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["type", "seq", "ts", "appState"], "Desktop's key order");
+}
