@@ -317,6 +317,14 @@ pub fn wraps(s: &str, max: f32, size: f32) -> bool {
     })
 }
 
+/// The lines of `s` wrapped at `max`, as the text widgets lay it out.
+pub fn line_count(s: &str, max: f32, size: f32) -> usize {
+    thread_local!(static MEMO: Memo<(String, u32, u32), usize> = RefCell::default());
+    memo(&MEMO, (s.to_owned(), max.to_bits(), size.to_bits()), || {
+        shape(s, size, Weight::Normal, Some(max), |b| b.layout_runs().count())
+    })
+}
+
 pub fn text_width(s: &str, size: f32, w: Weight) -> f32 {
     glyphs(s, size, w).0
 }

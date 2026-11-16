@@ -804,6 +804,8 @@ pub enum UiMessage {
     Opened(Result<(), String>),
     CloseModals,
     ToggleEditHistory(String),
+    /// "Show more" or "Show less" of a message over 40 lines.
+    ToggleClamp(String),
     HoverEnter(String),
     ShowQuickReactions,
     HoverChat(String, bool),
@@ -3418,6 +3420,8 @@ pub struct Pane {
     pub reply_to_message_id: Option<String>,
     pub editing_message_id: Option<String>,
     pub expanded_history_msg_id: Option<String>,
+    /// Desktop's `unclampedMessages`: the long messages whose "Show more" is open.
+    pub unclamped: HashSet<String>,
     pub hovered_msg: Option<String>,
     /// The selected emoji autocomplete row.
     pub suggest: usize,
@@ -7644,6 +7648,11 @@ impl BeeperGuiApp {
                     self.active_tab = InboxTab::AllChats;
                 } else {
                     self.status_banner.clear();
+                }
+            }
+            UiMessage::ToggleClamp(mid) => {
+                if !self.pane.unclamped.remove(&mid) {
+                    self.pane.unclamped.insert(mid);
                 }
             }
             UiMessage::ToggleEditHistory(mid) => {

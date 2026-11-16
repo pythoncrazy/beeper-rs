@@ -93,6 +93,40 @@ fn gap_below(m: &Message, next: &Message) -> f32 {
 /// Desktop's `--color-on-error-container`, the same in the light and dark themes.
 const ON_ERROR_CONTAINER: Color = Color::from_rgb8(0xdc, 0x36, 0x2e);
 
+/// Desktop's `.message-text` line clamp.
+const MESSAGE_LINES: usize = 40;
+
+/// The clamp of a message over [`MESSAGE_LINES`] lines at `max` wide: the blocks that show whole, and the lines left for
+/// the next one. `None` when the message fits.
+fn clamp_blocks<'s>(blocks: impl Iterator<Item = &'s str>, max: f32) -> Option<(usize, usize)> {
+    let mut used = 0;
+    for (i, b) in blocks.enumerate() {
+        let n = crate::style::line_count(b, max, 13.0).max(1);
+        if used + n > MESSAGE_LINES {
+            return Some((i, MESSAGE_LINES - used));
+        }
+        used += n;
+    }
+    None
+}
+
+/// The first `lines` lines of `t` at `max` wide, keeping its line breaks, with "…" where a line is cut.
+fn cut_lines(t: &str, max: f32, lines: usize) -> String {
+    let (mut out, mut used) = (Vec::new(), 0);
+    for line in t.split('\n') {
+        let n = crate::style::line_count(line, max, 13.0).max(1);
+        if used + n > lines {
+            if lines > used {
+                out.push(crate::style::clamped(line, max, lines - used, 13.0, Weight::Normal).to_string());
+            }
+            break;
+        }
+        used += n;
+        out.push(line.to_string());
+    }
+    out.join("\n")
+}
+
 /// Desktop's `rWe`: a message hides its time when the next one comes from the same sender in the same minute, and is
 /// not hidden or a jumbo emoji.
 pub(crate) fn time_hidden(m: &Message, next: Option<&Message>, h24: bool) -> bool {
@@ -1218,19 +1252,37 @@ impl BeeperGuiApp {
                     .into_iter()
                     .flatten()
             };
-            let blocks: Vec<(Option<String>, Vec<_>)> = match m.html.as_deref() {
+            let blocks: Vec<(Option<String>, Vec<_>, String)> = match m.html.as_deref() {
                 Some(html) => beeper_core::codec::html_blocks(html)
                     .into_iter()
-                    .map(|b| (b.marker, b.runs.into_iter().flat_map(rich).collect()))
+                    .map(|b| {
+                        let plain = b.runs.iter().map(|r| r.text.as_str()).collect();
+                        (b.marker, b.runs.into_iter().flat_map(rich).collect(), plain)
+                    })
                     .collect(),
-                None => vec![(None, text.split_inclusive(' ').flat_map(plain).collect())],
+                None => vec![(None, text.split_inclusive(' ').flat_map(plain).collect(), text.clone())],
             };
-            let (mut prev_item, last) = (None, blocks.len() - 1);
+            let max = 0.45 * self.pane().size.width - 2.0 * BUBBLE_PAD_X;
+            // Desktop's `.message-text` clamps a message at 40 lines, and "Show more" opens it. The whole blocks that
+            // fit show as they are, and the block that crosses the limit shows its first lines as plain text.
+            let clamp = clamp_blocks(blocks.iter().map(|b| b.2.as_str()), max);
+            let open = self.pane().unclamped.contains(&m.id);
+            let (room, time, footer_time) = match clamp {
+                Some(_) => (0.0, None, time),
+                None => (room, time, None),
+            };
+            let (blocks, cut) = match clamp {
+                Some((whole, left)) if !open => {
+                    let cut = blocks.get(whole).map(|b| b.2.clone()).filter(|_| left > 0);
+                    (blocks.into_iter().take(whole).collect(), cut.map(|t| (t, left)))
+                }
+                _ => (blocks, None),
+            };
+            let (mut prev_item, last) = (None, blocks.len().saturating_sub(1));
             let nbsp = crate::style::text_width("\u{a0}", 13.0, Weight::Normal);
             let pad = "\u{a0}".repeat((room / nbsp).ceil() as usize);
-            let max = 0.45 * self.pane().size.width - 2.0 * BUBBLE_PAD_X;
             let full = !st.settings.on("balanceText") && crate::style::wraps(&format!("{text}{pad}"), max, 13.0);
-            let body = Column::with_children(blocks.into_iter().enumerate().map(|(i, (marker, mut spans))| {
+            let body = Column::with_children(blocks.into_iter().enumerate().map(|(i, (marker, mut spans, _))| {
                 // iced does not draw an empty last line.
                 if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
                     spans.push(span("\u{200b}").size(13.0));
@@ -1255,9 +1307,22 @@ impl BeeperGuiApp {
                 container(row![].push(marker).push(line)).padding(Padding::ZERO.top(gap)).into()
             }))
             .width(if full { Length::Fixed(max) } else { Length::Shrink });
-            let body = stack![body].push(time.map(|t| container(t).align_right(Fill).align_bottom(Fill)));
+            let cut = cut.map(|(t, left)| {
+                txt(cut_lines(&t, max, left), 13.0).color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+            });
+            let body =
+                stack![column![body].push(cut)].push(time.map(|t| container(t).align_right(Fill).align_bottom(Fill)));
+            // Desktop's `read-more-button`: the primary color, white on a sent bubble, with the time at its end.
+            let more = clamp.map(|_| {
+                let label = semi(if open { tr("Show less") } else { tr("Show more") }, 14.0);
+                let color = if mine { fg } else { p.accent };
+                let toggle = button(label.line_height(Pixels(18.0)).color(color)).bare(color);
+                let toggle = toggle.on_press(UiMessage::ToggleClamp(m.id.clone()));
+                // A Fill gap would widen the bubble past its text, so the time follows the label.
+                row![toggle].push(footer_time).spacing(8).align_y(Bottom)
+            });
             parts = parts.push(
-                container(column![].push(inside).push(body))
+                container(column![].push(inside).push(body).push(more))
                     .padding([9.0, BUBBLE_PAD_X])
                     .max_width(0.45 * self.pane().size.width)
                     .style(fill_box(bg, 17.0)),
