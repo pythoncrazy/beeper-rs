@@ -5113,6 +5113,15 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `updateAppBadgeCount`: the unread chats in all chats or in the chat list, by "Badge count".
+    /// The open chat shows a composer: it is available, not upgraded, not blocked, and the user did not leave it.
+    fn can_compose(&self) -> bool {
+        let st = self.store.read();
+        let chat = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c)).map(|i| &st.chats[i]);
+        chat.is_some_and(|c| {
+            unavailable(&st, c).is_none() && c.replacement_room.is_none() && !st.user_blocked(c) && !c.exited()
+        })
+    }
+
     fn badge_count(&self) -> u32 {
         let st = self.store.read();
         // Desktop's `updateAppBadgeCount` shows nothing while signed out.
@@ -5349,6 +5358,7 @@ impl BeeperGuiApp {
                 return self.update(UiMessage::PickSuggestion(self.pane.suggest));
             }
             UiMessage::SubmitComposer if self.recorder.is_some() => return self.send_take(),
+            UiMessage::SubmitComposer if !self.can_compose() => {}
             UiMessage::SubmitComposer => {
                 self.submit_composer(false);
                 return self.typing(false);
@@ -5397,8 +5407,11 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let html = st.loaded(&mid).and_then(|m| m.html.clone());
                 drop(st);
+                // Desktop scrolls the edited message into view (`scrollIntoView` of the editing target).
+                self.pane.timeline.reveal(vlist::key(&mid));
+                let shown = locate(format!("msg-{mid}"), self.pane.scroll_id(), false);
                 self.pane.start_edit(mid, &old_txt, html.map_or(Vec::new(), |h| html_pills(&h)));
-                return operation::focus("composer-input");
+                return Task::batch([operation::focus("composer-input"), shown]);
             }
             UiMessage::DeleteMessage(cid, mid) => {
                 self.confirm = None;
@@ -6252,14 +6265,7 @@ impl BeeperGuiApp {
             UiMessage::WindowText(id, text) if Some(id) == self.login_window => return self.login_text(&text),
             UiMessage::WindowText(..) => {}
             UiMessage::TypeInComposer(text) => {
-                let st = self.store.read();
-                let chat = self.pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
-                let open = chat.is_some_and(|i| {
-                    unavailable(&st, &st.chats[i]).is_none()
-                        && st.chats[i].replacement_room.is_none()
-                        && !st.user_blocked(&st.chats[i])
-                });
-                drop(st);
+                let open = self.can_compose();
                 let quiet = self.confirm.is_none()
                     && !self.show_command_palette
                     && self.forward.is_none()

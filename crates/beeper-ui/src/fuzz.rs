@@ -3102,6 +3102,8 @@ fn a_chat_the_user_left_like_desktop() {
         });
     }
     assert!(simulator(app.view_conversation()).find(composer()).is_err(), "no composer after");
+    let _ = app.update(UiMessage::TypeInComposer("typed anyway".into()));
+    assert!(app.pane.composer.text().is_empty(), "typing goes nowhere without a composer");
     assert!(simulator(app.view_sidebar()).find("Ann left").is_ok(), "no sender name");
 }
 
