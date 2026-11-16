@@ -9175,6 +9175,26 @@ impl BeeperGuiApp {
             _ => tr("Select one option"),
         };
         let question = if poll.question.is_empty() { tr("Poll").into() } else { poll.question.clone() };
+        let results = tr("Results will be displayed when the poll ends");
+        // Desktop's `.Poll-module__wrapper` is as wide as its content, from 240 to 380 px with its 14 px sides.
+        let width = {
+            let (semi_w, txt_w) =
+                (|s: &str| text_width(s, 13.0, Weight::Semibold), |s| text_width(s, 13.0, Weight::Normal));
+            let side = if spread { 16.0 } else { 8.0 };
+            let rows = poll.options.iter().map(|o| {
+                let n = o.voter_ids.len();
+                let faces = 23.0 + 14.0 * n.clamp(1, 3).saturating_sub(1) as f32;
+                let right = if shown && n > 0 { 10.0 + faces + 6.0 + semi_w(&n.to_string()) } else { 0.0 };
+                side + 16.0 + 8.0 + txt_w(&o.label) + right
+            });
+            let foot = match shown {
+                true if total > 0 => semi_w(&votes) + 16.0,
+                true => 0.0,
+                false => text_width(results, 11.0, Weight::Normal).max(if total > 0 { semi_w(&votes) } else { 0.0 }),
+            };
+            let head = [text_width(&question, 15.0, Weight::Semibold), 22.0 + txt_w(status), foot];
+            (rows.chain(head).fold(0.0, f32::max) + 28.0).clamp(240.0, 380.0)
+        };
         let head = column![
             semi(question, 15.0).line_height(Pixels(20.0)).color(fg),
             row![
@@ -9248,15 +9268,13 @@ impl BeeperGuiApp {
             true => Space::new().into(),
             false => column![]
                 .push((total > 0).then(|| semi(votes, 13.0).line_height(Pixels(16.0)).color(fg)))
-                .push(
-                    txt(tr("Results will be displayed when the poll ends"), 11.0).line_height(Pixels(14.0)).color(sub),
-                )
+                .push(txt(results, 11.0).line_height(Pixels(14.0)).color(sub))
                 .spacing(4)
                 .into(),
         };
         let foot = (!shown || total > 0).then(|| container(foot).padding(Padding::ZERO.top(10.0)));
-        let body = column![head, Space::new().height(10), options].push(foot).push(Space::new().width(240));
-        container(body).padding(Padding::new(14.0).bottom(12.0)).max_width(380).style(fill_box(bg, 17.0)).into()
+        let body = column![head, Space::new().height(10), options].push(foot);
+        container(body).padding(Padding::new(14.0).bottom(12.0)).width(width).style(fill_box(bg, 17.0)).into()
     }
 
     fn view_scheduled<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
