@@ -113,6 +113,10 @@ pub(crate) fn media_box(window_w: f32, size: Option<(f32, f32)>, share: f32) -> 
     }
 }
 
+/// Desktop's `--cv-avatar-size` and the margin of `.sender-img-container`: the sender avatar of a group message.
+const FACE: f32 = 34.0;
+const FACE_GAP: f32 = 8.0;
+
 /// Desktop's `.message-text` line clamp.
 const MESSAGE_LINES: usize = 40;
 
@@ -1577,16 +1581,16 @@ impl BeeperGuiApp {
             if last {
                 let url =
                     chat.participants.items.iter().find(|u| u.id == m.sender_id).and_then(|u| u.img_url.as_deref());
-                self.face(url, &sender_label(chat, m), 28.0, 0.0)
+                self.face(url, &sender_label(chat, m), FACE, 0.0)
             } else {
-                Space::new().width(28).into()
+                Space::new().width(FACE).into()
             }
         });
         let line: El<'a> = if mine {
             row![Space::new().width(Fill)].push(tools).push(parts).spacing(6).align_y(Center).into()
         } else {
             let body = row![parts].push(tools).spacing(6).align_y(Center);
-            row![].push(side).push(body).push(Space::new().width(Fill)).spacing(6).align_y(Bottom).into()
+            row![].push(side).push(body).push(Space::new().width(Fill)).spacing(FACE_GAP).align_y(Bottom).into()
         };
         let (line, head): (El<'a>, El<'a>) = match quote {
             None => (line, head.into()),
@@ -1602,7 +1606,7 @@ impl BeeperGuiApp {
                     match q_mine {
                         true => row![Space::new().width(Fill), c.padding(Padding::ZERO.right(14.0))].into(),
                         false => row![]
-                            .push(group.then(|| Space::new().width(34)))
+                            .push(group.then(|| Space::new().width(FACE + FACE_GAP)))
                             .push(c.padding(Padding::ZERO.left(14.0)))
                             .into(),
                     }
@@ -1616,7 +1620,7 @@ impl BeeperGuiApp {
                     if q_mine {
                         row![Space::new().width(Fill), q].into()
                     } else {
-                        row![].push(group.then(|| Space::new().width(34))).push(q).into()
+                        row![].push(group.then(|| Space::new().width(FACE + FACE_GAP))).push(q).into()
                     }
                 });
                 (column![].push(quote).push(line).into(), head)
