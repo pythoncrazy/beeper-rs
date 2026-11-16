@@ -217,19 +217,14 @@ impl BeeperGuiApp {
                     selection: p.accent.scale_alpha(0.45),
                 })
         };
-        let field = |name: &'static str, input| {
-            column![txt(tr(name), 11.0).line_height(Pixels(14.0)).color(p.sub), input].spacing(2)
-        };
+        let field = |name: &'static str, input| column![txt(tr(name), 11.0).color(p.sub), input].spacing(2);
         let (u, l) = (url.to_owned(), label.to_owned());
         let url_in = input("link-url", "https://example.com", url)
             .on_input(move |u| UiMessage::LinkDialog(Some((u, l.clone()))));
         let text_in = input("link-text", tr("Link text (optional)"), label)
             .on_input(move |l| UiMessage::LinkDialog(Some((u.clone(), l))));
         let btn = |name: &'static str, bg: Color, fg: Color, msg: Option<UiMessage>| {
-            button(semi(tr(name), 10.0).line_height(Pixels(12.0)))
-                .padding([4, 10])
-                .style(btn_style([bg; 3], [fg; 3], 8.0))
-                .on_press_maybe(msg)
+            button(semi(tr(name), 10.0)).padding([4, 10]).style(btn_style([bg; 3], [fg; 3], 8.0)).on_press_maybe(msg)
         };
         let buttons = row![
             Space::new().width(Fill),

@@ -496,7 +496,7 @@ impl BeeperGuiApp {
         let rate = format!("{}x", self.audio.rate);
         let rate_w = ready.map_or(0.0, |_| 8.0 + text_width(&rate, 11.0, Weight::Semibold) + 8.0);
         let ts_w = ts.as_ref().map_or(0.0, |(t, _)| text_width(t, 11.0, Weight::Normal));
-        let stamp = |(t, c): (String, Color)| txt(t, 11.0).line_height(Pixels(14.0)).color(c);
+        let stamp = |(t, c): (String, Color)| txt(t, 11.0).color(c);
         let contents = 20.0 + 8.0 + WAVE_W + 8.0 + text_width(&total, 11.0, Weight::Normal);
         // Desktop's `transcribed-message`: the transcript in quotes, in the bubble text color, at most `QUOTE_W` wide.
         // Over `QUOTE_LINES` lines, it is clamped and "Show more" shows all of it. The time floats after the text,
@@ -518,7 +518,7 @@ impl BeeperGuiApp {
                     float.as_ref().map_or(String::new(), |_| "\u{a0}".repeat(((ts_w + 4.0) / nbsp).ceil() as usize));
                 let body = format!("{}{pad}", if over && !open { &shown } else { &all });
                 let w = text_width(&body, 13.0, Weight::Normal).min(QUOTE_W);
-                let body = txt(body, 13.0).line_height(Pixels(16.0)).color(quote_fg).wrapping(Wrapping::WordOrGlyph);
+                let body = txt(body, 13.0).color(quote_fg).wrapping(Wrapping::WordOrGlyph);
                 let body = stack![body].push(float.map(|t| container(stamp(t)).align_right(Fill).align_bottom(Fill)));
                 let footer = over.then(|| {
                     let label = semi(if open { tr("Show less") } else { tr("Show more") }, 13.0);
@@ -546,12 +546,12 @@ impl BeeperGuiApp {
         let playing = track.is_some_and(|t| t.since.is_some());
         let play = button(tinted(&ICONS[usize::from(playing)], 20.0, fg)).bare(fg).on_press_maybe(toggle);
         let speed = ready.map(|_| {
-            button(semi(rate, 11.0).line_height(Pixels(14.0)).color(Color::WHITE))
+            button(semi(rate, 11.0).color(Color::WHITE))
                 .padding([1, 4])
                 .style(btn_style([fg.scale_alpha(0.2); 3], [Color::WHITE; 3], 2.0))
                 .on_press(UiMessage::Voice(Msg::Menu))
         });
-        let line = row![play, wave, txt(time, 11.0).line_height(Pixels(14.0)).color(fg)].push(speed).push(ts);
+        let line = row![play, wave, txt(time, 11.0).color(fg)].push(speed).push(ts);
         container(column![line.spacing(8).align_y(Center)].push(quote).spacing(6))
             .width(22.0 + inner)
             .padding([8, 11])
@@ -638,7 +638,7 @@ impl BeeperGuiApp {
         let total = format!(" / {}", clock(clip.secs()));
         let elapsed = (w > 135.0).then(|| clock(pos) + if w > 205.0 { &total } else { "" });
         let time_w = 4.0 + elapsed.as_ref().map_or(0.0, |e| text_width(e, 11.0, Weight::Normal) + 8.0) + 10.0;
-        let elapsed = elapsed.map(|e| txt(e, 11.0).line_height(Pixels(14.0)).color(p.strong));
+        let elapsed = elapsed.map(|e| txt(e, 11.0).color(p.strong));
         let close = icon_btn(4, 10.0, p.strong, Some(UiMessage::Voice(Msg::Close)));
         let time = row![].push(elapsed).push(close).spacing(8).align_y(Center).padding(Padding::ZERO.left(4));
         let chat = st.resolve_chat_idx(&t.chat).map(|i| &st.chats[i]).filter(|_| w > 163.0);
@@ -821,7 +821,7 @@ impl BeeperGuiApp {
         }
         let free = st.features.free_uses("voice-transcription");
         let used_up = sent && !can && free.is_some_and(|(used, limit)| used >= limit);
-        let small = |s: String, c: Color| txt(s, 11.0).line_height(Pixels(14.0)).color(c);
+        let small = |s: String, c: Color| txt(s, 11.0).color(c);
         let count = free.filter(|&(used, limit)| used > 0 && limit > used).map(|(used, limit)| {
             let n = (limit - used) as usize;
             small(crate::trn("%d free transcription left", "%d free transcriptions left", n, &[&n]), p.sub)
@@ -843,7 +843,7 @@ impl BeeperGuiApp {
             _ if !done && !can && !used_up => return None,
             Some((language, true)) => {
                 let again = Msg::Transcribe(m.id.clone(), done, Some(language.clone()));
-                let again = button(semi(tr("Try Again"), 11.0).line_height(Pixels(14.0)).color(p.accent))
+                let again = button(semi(tr("Try Again"), 11.0).color(p.accent))
                     .padding(0)
                     .style(|_, _| button::Style::default())
                     .on_press(UiMessage::Voice(again));

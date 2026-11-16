@@ -262,10 +262,10 @@ impl BeeperGuiApp {
         let at = threads.iter().any(|(i, r)| st.thread_unread(&st.chats[*i], r).1 > 0);
         let count = row![]
             .push(at.then(|| semi("@", 10.0).color(Color::WHITE)))
-            .push(semi(threads.len().to_string(), 10.0).line_height(Pixels(12.0)).color(Color::WHITE));
+            .push(semi(threads.len().to_string(), 10.0).color(Color::WHITE));
         let count =
             container(count.spacing(2).align_y(Center)).center_y(16).padding([0, 5]).style(fill_box(p.accent, 16.0));
-        let label = container(semi(tr("Unread threads"), 13.0).line_height(Pixels(16.0)).color(p.text)).width(Fill);
+        let label = container(semi(tr("Unread threads"), 13.0).color(p.text)).width(Fill);
         let bg = if self.unread_view { p.selected } else { CLEAR };
         let edge = if self.unread_view { CLEAR } else { p.divider };
         let pill = button(row![label, count].spacing(8).align_y(Center))
@@ -367,7 +367,7 @@ impl BeeperGuiApp {
             row![ell(&repliers, 180.0, 13.0, Weight::Normal).color(p.sub), Space::new().width(Fill), time].spacing(8);
         let badge = (unread > 0).then(|| {
             let mark = (at > 0).then(|| semi("@", 10.0).color(Color::WHITE));
-            let count = semi(unread.to_string(), 10.0).line_height(Pixels(12.0)).color(Color::WHITE);
+            let count = semi(unread.to_string(), 10.0).color(Color::WHITE);
             container(row![].push(mark).push(count).spacing(2).align_y(Center))
                 .center_y(16)
                 .padding([0, 5])
@@ -413,7 +413,7 @@ impl BeeperGuiApp {
         let (unread, at) = if st.follows_thread(chat, root) { st.thread_unread(chat, root) } else { (0, 0) };
         let badge = (unread > 0).then(|| {
             let mark = (at > 0).then(|| semi("@", 10.0).color(Color::WHITE));
-            let count = semi(unread.to_string(), 10.0).line_height(Pixels(12.0)).color(Color::WHITE);
+            let count = semi(unread.to_string(), 10.0).color(Color::WHITE);
             container(row![].push(mark).push(count).spacing(2).align_y(Center))
                 .center_y(16)
                 .padding([0, 5])
@@ -436,7 +436,7 @@ impl BeeperGuiApp {
         let label = format!("{} ", tr("Replying to:"));
         let room = 300.0 - 2.0 * BUBBLE_PAD_X - crate::style::text_width(&label, 11.0, Weight::Semibold);
         let line = row![
-            semi(label, 11.0).line_height(Pixels(14.0)).color(p.sub),
+            semi(label, 11.0).color(p.sub),
             ell(&preview, room, 11.0, Weight::Normal).line_height(Pixels(14.0)).color(p.sub)
         ];
         let line = container(line)
@@ -451,7 +451,7 @@ impl BeeperGuiApp {
     pub(crate) fn thread_divider<'a>(&self, n: usize) -> El<'a> {
         let p = &self.pal;
         let line = || container(Space::new()).width(Fill).height(1).style(fill_box(p.rule, 0.0));
-        let label = semi(trn("%d reply", "%d replies", n, &[&n]), 11.0).line_height(Pixels(14.0)).color(p.sub);
+        let label = semi(trn("%d reply", "%d replies", n, &[&n]), 11.0).color(p.sub);
         row![line(), label, line()].spacing(6).align_y(Center).padding([8, 0]).into()
     }
 }
