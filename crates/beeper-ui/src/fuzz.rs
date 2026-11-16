@@ -3210,6 +3210,48 @@ fn unloaded_quotes_like_desktop() {
     assert!(shows(&app, "a quote from long ago"), "the loaded quote shows");
 }
 
+/// Desktop's `bfe`: a quote collapses spaces and cuts its text at 128 characters, names the sender of a group inside
+/// the text box, tags a voice note, and shows a deleted message as deleted.
+#[test]
+fn quote_details_like_desktop() {
+    let mut app = demo_app("quote-details");
+    let id = "!wa_family:beeper.com".to_string();
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let base = {
+        let mut st = app.store.write();
+        let i = st.messages.iter().rposition(|m| m.chat_id == id && m.message_type.as_deref() == Some("TEXT")).unwrap();
+        st.update_message(i, |m| m.linked_message_id = Some("$q".into()));
+        let other = st.chat(&id).participants.items.iter().find(|u| u.is_self != Some(true)).unwrap().id.clone();
+        Message {
+            id: "$q".into(),
+            sender_id: other,
+            is_sender: Some(false),
+            linked_message_id: None,
+            ..st.messages[i].clone()
+        }
+    };
+    let quote = |app: &mut BeeperGuiApp, m: Message| {
+        let _ = app.update(UiMessage::QuoteLoaded("$q".into(), Ok(Box::new(m))));
+    };
+    let name = crate::sender_label(app.store.read().chat(&id), &base);
+    let shows = |app: &BeeperGuiApp, t: &str| simulator(app.view_conversation()).find(t).is_ok();
+    let long = format!("{}\n\n  tail", "word ".repeat(40));
+    quote(&mut app, Message { text: Some(long), attachments: Vec::new(), ..base.clone() });
+    let cut = format!("{}...", "word ".repeat(40).trim_end().chars().take(125).collect::<String>());
+    assert!(shows(&app, &cut), "cut at 128 characters with the spaces collapsed");
+    assert!(shows(&app, &name), "the group names the sender");
+    let voice = Attachment {
+        attachment_type: "audio".into(),
+        is_voice_note: Some(true),
+        file_name: Some("voice.ogg".into()),
+        ..Attachment::default()
+    };
+    quote(&mut app, Message { text: None, attachments: vec![voice], ..base.clone() });
+    assert!(shows(&app, "🎤 [Voice Note]"), "a media-only quote tags its media");
+    quote(&mut app, Message { is_deleted: Some(true), text: Some("secret".into()), ..base });
+    assert!(shows(&app, "Message Deleted") && !shows(&app, "secret"), "a deleted quote shows as deleted");
+}
+
 /// Desktop's `activityTimestamp` and `isArchivedInList`: a draft moves its chat to the top, and out of the archive.
 #[test]
 fn drafts_move_chats_like_desktop() {
