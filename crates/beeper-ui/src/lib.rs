@@ -42,8 +42,14 @@ mod tray {
     pub fn events() -> iced::futures::stream::Empty<Result<Event, String>> {
         unreachable!("only the Linux build shows a tray icon")
     }
-    pub async fn update(_unread: u32, _visible: bool) -> Result<(), String> {
-        Ok(())
+
+    /// Electron's `app.badgeCount` on macOS, which Desktop's `setAppBadgeCount` sets: the count on the Dock icon, and
+    /// none at 0. AppKit takes it on the main thread only, where the app updates.
+    #[cfg(target_os = "macos")]
+    pub fn dock_badge(count: u32) {
+        let Some(mtm) = objc2::MainThreadMarker::new() else { return };
+        let label = (count > 0).then(|| objc2_foundation::NSString::from_str(&count.to_string()));
+        objc2_app_kit::NSApplication::sharedApplication(mtm).dockTile().setBadgeLabel(label.as_deref());
     }
 }
 pub mod style;
@@ -5156,17 +5162,14 @@ impl BeeperGuiApp {
         if self.status_banner.is_empty() && self.older_toasts.is_empty() {
             self.toast_clock.1 = false;
         }
-        if !std::mem::take(&mut self.tray_sent.1) || !cfg!(target_os = "linux") {
+        if !std::mem::take(&mut self.tray_sent.1) {
             return task;
         }
         let now = (self.badge_count(), !self.hidden);
         if self.tray_sent.0.replace(now) == Some(now) {
             return task;
         }
-        let sync = Task::future(tray::update(now.0, now.1))
-            .map(Result::err)
-            .and_then(|e| Task::done(UiMessage::TrayFailed(e)));
-        Task::batch([task, sync])
+        Task::batch([task, badge_sync(now.0, now.1)])
     }
 
     /// Desktop's `updateAppBadgeCount`: the unread chats in all chats or in the chat list, by "Badge count".
@@ -13834,6 +13837,26 @@ pub struct UserHover {
     pub shown: Option<Point>,
     /// Counts the changes, so that only the last wait acts.
     pub r#gen: u32,
+}
+
+/// Desktop's `setAppBadgeCount` and `setTrayUnreadStatus`: the unread count and the window state on the tray icon and
+/// the launcher badge of Linux.
+#[cfg(target_os = "linux")]
+fn badge_sync(unread: u32, visible: bool) -> Task<UiMessage> {
+    Task::future(tray::update(unread, visible)).map(Result::err).and_then(|e| Task::done(UiMessage::TrayFailed(e)))
+}
+
+/// Desktop's `setAppBadgeCount`: the unread count on the Dock icon of macOS.
+#[cfg(target_os = "macos")]
+fn badge_sync(unread: u32, _visible: bool) -> Task<UiMessage> {
+    tray::dock_badge(unread);
+    Task::none()
+}
+
+/// Electron's `app.badgeCount` shows nothing on Windows.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn badge_sync(_unread: u32, _visible: bool) -> Task<UiMessage> {
+    Task::none()
 }
 
 /// Desktop's `ga`: the bounds of a window at `at` and `old` size that takes `size`, at most the `screen`, around its
