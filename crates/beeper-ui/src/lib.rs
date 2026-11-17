@@ -273,7 +273,7 @@ pub enum MenuEdit {
 #[derive(Clone)]
 pub enum UiMessage {
     Noop,
-    /// A virtual list must build other rows.
+    /// A virtual list must build other rows, or its scroll stopped.
     Relist,
     /// A view shows avatars or media that no task loads yet.
     LoadWanted,
@@ -2289,6 +2289,8 @@ pub struct Pane {
     pub menu_selection: Option<String>,
     /// The `href` of the link whose right click opened the message menu: an `https://` or `mailto:` one.
     pub menu_link: Option<String>,
+    /// The message menu is Desktop's video menu, from a right click on the video.
+    pub video_menu: bool,
     /// The quoted message whose right click opened the message menu (Desktop's `selectedLinkedMessage`).
     pub menu_linked: Option<String>,
     /// The messages of the gallery whose menu is open.
@@ -2500,6 +2502,8 @@ pub struct BeeperGuiApp {
     /// The Picture in Picture window and the message of its video, and a video that should go there.
     pip: Option<(window::Id, String)>,
     pip_wanted: bool,
+    /// The video went to Picture in Picture from the video menu, so it stays there while its chat is open.
+    pip_manual: bool,
     pub hotkey_query: String,
     pub hotkey_rec: Option<HotkeyRec>,
     pub profile: profile::ProfileForm,
@@ -2801,6 +2805,7 @@ impl BeeperGuiApp {
             seen_requests: Vec::new(),
             pip: None,
             pip_wanted: false,
+            pip_manual: false,
             hotkey_query: String::new(),
             hotkey_rec: None,
             profile: profile::ProfileForm::default(),
@@ -4226,7 +4231,13 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::Noop => {}
-            UiMessage::Relist => return Task::none(),
+            UiMessage::Relist => {
+                // Above its bottom, the timeline reads through its last row in view; at the bottom its sensor reads.
+                if self.pane.scrolled_up.is_some_and(|(up, _)| up) {
+                    self.read_open_chat();
+                }
+                return Task::none();
+            }
             UiMessage::LoadWanted => return Task::batch([self.load_avatars(), self.load_media(), self.load_quotes()]),
             UiMessage::OpenUrl(url) if url.starts_with(SPOILER) => {
                 self.pane.spoilers.insert(url[SPOILER.len()..].to_string());
@@ -5459,14 +5470,41 @@ impl BeeperGuiApp {
         (stack![column![Space::new().height(88.0 - 8.0 - CARD_FACE_IN), card], face].into(), high)
     }
 
-    /// Desktop's timeline effect (`markAsRead` as the newest message comes into view): the open chat is read while
-    /// its window is focused and the timeline is at its bottom, except in incognito mode.
+    /// Desktop's timeline effect (`markAsRead` through the last message in view, from `onRangeChange`): while its
+    /// window is focused, the open chat is read through the bottom message on screen, all of it at the bottom of the
+    /// timeline, except in incognito mode.
     fn read_open_chat(&self) {
         let at_bottom = self.pane.scrolled_up.is_none_or(|(up, _)| !up);
-        let Some(id) = self.pane.selected_chat_id.as_deref().filter(|_| self.focused && at_bottom) else { return };
-        let mut st = self.store.write();
-        if let Some(idx) = st.resolve_chat_idx(id).filter(|_| !st.incognito() && self.pane.thread_root.is_none()) {
-            st.mark_read(idx, false);
+        let Some(id) = self.pane.selected_chat_id.clone().filter(|_| self.focused && self.pane.thread_root.is_none())
+        else {
+            return;
+        };
+        if self.store.read().incognito() {
+            return;
+        }
+        if at_bottom {
+            let mut st = self.store.write();
+            if let Some(idx) = st.resolve_chat_idx(&id) {
+                st.mark_read(idx, false);
+            }
+            return;
+        }
+        let Some(seen) = self.pane.timeline.last_seen() else { return };
+        let through = {
+            let st = self.store.read();
+            let chat = st.resolve_chat_idx(&id).map(|i| &st.chats[i]).filter(|c| c.is_unread());
+            chat.and_then(|c| {
+                let read = c.last_read_message_sort_key.as_ref();
+                st.timeline_indices(&c.id)
+                    .iter()
+                    .map(|&i| &st.messages[i])
+                    .find(|m| vlist::key(&m.id) == seen)
+                    .filter(|m| read.is_none_or(|r| m.sort_key > *r))
+                    .map(|m| (m.chat_id.clone(), m.id.clone()))
+            })
+        };
+        if let Some((chat, mid)) = through {
+            self.store.write().mark_read_through(&chat, &mid);
         }
     }
 
@@ -5846,12 +5884,13 @@ impl BeeperGuiApp {
     /// goes on inline, and when another video plays.
     fn pip(&mut self) -> Task<UiMessage> {
         if let Some((id, mid)) = self.pip.clone() {
-            let here = self.store.read().loaded(&mid).map(|m| m.chat_id.clone()) == self.pane.selected_chat_id;
+            let here = !self.pip_manual
+                && self.store.read().loaded(&mid).map(|m| m.chat_id.clone()) == self.pane.selected_chat_id;
             let gone = self.video.as_ref().is_none_or(|v| v.mid != mid);
             if !here && !gone {
                 return Task::none();
             }
-            self.pip = None;
+            (self.pip, self.pip_manual) = (None, false);
             if let Some(v) = self.video.as_mut().filter(|_| here) {
                 v.set_pip(false);
             }
