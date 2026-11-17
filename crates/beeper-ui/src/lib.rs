@@ -3904,8 +3904,41 @@ impl BeeperGuiApp {
         );
         self.pane.thread_focus &= !activates(&msg);
         match msg {
+            // Each domain handles its own messages in its module.
+            UiMessage::Accounts(msg) => return self.accounts(msg),
+            UiMessage::Blocking(msg) => return self.blocking(msg),
             UiMessage::ChatList(msg) => return self.chat_list(msg),
+            UiMessage::ChatTheme(msg) => return self.chat_theme(msg),
+            UiMessage::CommandBar(msg) => return self.command_bar(msg),
+            UiMessage::Composer(msg) => return self.composer(msg),
+            UiMessage::Forward(msg) => return self.forward(msg),
+            UiMessage::Gallery(msg) => return self.gallery(msg),
+            UiMessage::Gifs(msg) => return self.gifs(msg),
+            UiMessage::Hotkeys(msg) => return self.hotkeys(msg),
+            UiMessage::Info(msg) => return self.info(msg),
+            UiMessage::Integrations(msg) => return self.integrations(msg),
+            UiMessage::Labels(msg) => return self.labels(msg),
+            UiMessage::Loaded(msg) => return self.loaded(msg),
+            UiMessage::Media(msg) => return self.media_view(msg),
+            UiMessage::Members(msg) => return self.members(msg),
+            UiMessage::MenuBar(msg) => return self.menu_bar(msg),
+            UiMessage::Message(msg) => return self.message(msg),
+            UiMessage::NewChat(msg) => return self.new_chat(msg),
+            UiMessage::Notify(msg) => return self.notify_event(msg),
+            UiMessage::Pins(msg) => return self.pins(msg),
             UiMessage::Rail(msg) => return self.rail(msg),
+            UiMessage::Record(msg) => return self.record(msg),
+            UiMessage::Reminders(msg) => return self.reminders(msg),
+            UiMessage::Scheduled(msg) => return self.scheduled(msg),
+            UiMessage::Settings(msg) => return self.settings(msg),
+            UiMessage::Thread(msg) => return self.threads(msg),
+            UiMessage::Timeline(msg) => return self.timeline_scroll(msg),
+            UiMessage::Toast(msg) => return self.toasts(msg),
+            UiMessage::UserCard(msg) => return self.user_card(msg),
+            UiMessage::Video(msg) => return self.video(msg),
+            UiMessage::Voice(msg) => return self.voice(msg),
+            UiMessage::Window(msg) => return self.windows(msg),
+            UiMessage::Zoom(msg) => return self.set_zoom(msg),
             UiMessage::SelectChat(_) if self.recorder.is_some() => {
                 self.status_banner = tr("Stop recording to switch chats").into();
             }
@@ -3915,12 +3948,6 @@ impl BeeperGuiApp {
                 let previews = self.fetch_link_previews();
                 return Task::batch([previews, self.close_notifications(), operation::focus("composer-input")]);
             }
-            UiMessage::Composer(msg) => return self.composer(msg),
-            UiMessage::Message(msg) => return self.message(msg),
-            UiMessage::Reminders(msg) => return self.reminders(msg),
-            UiMessage::CommandBar(msg) => return self.command_bar(msg),
-            UiMessage::Scheduled(msg) => return self.scheduled(msg),
-            UiMessage::Thread(msg) => return self.threads(msg),
             UiMessage::SwitchCard => self.chat_menu = Some((SWITCH_CARD.into(), self.cursor.get())),
             UiMessage::SwitchChat(id) => self.switch_chat(id),
             UiMessage::InThread(msg) => return self.in_thread(*msg),
@@ -3936,7 +3963,6 @@ impl BeeperGuiApp {
                 return Task::batch(notices);
             }
             UiMessage::SaveDrafts => self.save_drafts(),
-            UiMessage::ChatTheme(msg) => return self.chat_theme(msg),
             UiMessage::OpenPollCreator(chat) => {
                 if let Some(d) = self.poll_windows.iter().find(|d| d.chat == chat) {
                     return window::gain_focus(d.id);
@@ -3962,7 +3988,6 @@ impl BeeperGuiApp {
                 return open;
             }
             UiMessage::Spaces(e) => return self.spaces_edit(e),
-            UiMessage::Info(msg) => return self.info(msg),
             UiMessage::OpenEditGroup(chat) => {
                 self.chat_menu = None;
                 if let Some(d) = &self.group_window {
@@ -3981,7 +4006,6 @@ impl BeeperGuiApp {
             UiMessage::OpenEditForMe(chat) => return self.open_edit_for_me(chat),
             UiMessage::Group(e) => return self.group_edit(e),
             UiMessage::Profile(m) => return self.update_profile(m),
-            UiMessage::Labels(msg) => return self.labels(msg),
             UiMessage::UndoAction => {
                 let Some((what, undo)) = self.undo_stack.pop() else { return Task::none() };
                 let depth = self.undo_stack.len();
@@ -3992,7 +4016,6 @@ impl BeeperGuiApp {
                 self.undo_note = Some(what);
                 return task;
             }
-            UiMessage::Media(msg) => return self.media_view(msg),
             UiMessage::Modifiers(mods) => {
                 // Electron's `autoHideMenuBar`: Alt on its own shows the menu bar, and hides it again.
                 let was = std::mem::replace(&mut self.mods, mods);
@@ -4115,8 +4138,6 @@ impl BeeperGuiApp {
                     }
                 }
             }
-            UiMessage::Forward(msg) => return self.forward(msg),
-            UiMessage::Members(msg) => return self.members(msg),
             UiMessage::Commands(msgs) => {
                 return Task::batch(msgs.into_iter().map(|m| self.update(m)).collect::<Vec<_>>())
             }
@@ -4124,13 +4145,7 @@ impl BeeperGuiApp {
                 self.chat_menu = None;
                 return self.run_hotkey(name, 0);
             }
-            UiMessage::Window(msg) => return self.windows(msg),
-            UiMessage::NewChat(msg) => return self.new_chat(msg),
-            UiMessage::Settings(msg) => return self.settings(msg),
             UiMessage::Ask(dialog) => (self.confirm, self.reminder_menu) = (dialog, None),
-            UiMessage::Blocking(msg) => return self.blocking(msg),
-            UiMessage::Voice(msg) => return self.voice(msg),
-            UiMessage::Record(msg) => return self.record(msg),
             UiMessage::Logout => {
                 self.confirm = None;
                 return Task::perform(beeper_core::matrix::logout(self.store.clone()), UiMessage::LoggedOut);
@@ -4150,14 +4165,10 @@ impl BeeperGuiApp {
                 self.dnd_muted = !self.dnd_muted;
                 self.refresh_theme_and_tray();
             }
-            UiMessage::Accounts(msg) => return self.accounts(msg),
             UiMessage::Capabilities(account, r) => match r {
                 Ok(v) => drop(self.caps.insert(account, v)),
                 Err(e) => eprintln!("provisioning capabilities failed: {e}"),
             },
-            UiMessage::Loaded(msg) => return self.loaded(msg),
-            UiMessage::Video(msg) => return self.video(msg),
-            UiMessage::Gallery(msg) => return self.gallery(msg),
             UiMessage::QuickEmoji(Some(slot)) => {
                 let open = self.open_emoji(None);
                 self.pane.emoji.as_mut().expect("the picker is open").pref = Some(slot);
@@ -4198,9 +4209,6 @@ impl BeeperGuiApp {
                 let note = self.notify_typing(chat);
                 return Task::batch([self.update(UiMessage::StoreChanged), note]);
             }
-            UiMessage::Notify(msg) => return self.notify_event(msg),
-            UiMessage::Toast(msg) => return self.toasts(msg),
-            UiMessage::Gifs(msg) => return self.gifs(msg),
             UiMessage::AnimationTick => {}
             UiMessage::Pushed(Ok(())) => {}
             UiMessage::DismissRecoveryReminder => {
@@ -4208,8 +4216,6 @@ impl BeeperGuiApp {
                 self.patch_settings(|s| s.recovery_reminder_dismissed_at = now);
             }
             UiMessage::Pushed(Err(e)) => self.fail(Toast::new(format!("Could not send to Matrix: {e}"))),
-            UiMessage::Timeline(msg) => return self.timeline_scroll(msg),
-            UiMessage::Integrations(msg) => return self.integrations(msg),
             UiMessage::OpenQuickLook(title, detail) => {
                 self.quick_look_target = Some((title, detail));
             }
@@ -4334,10 +4340,6 @@ impl BeeperGuiApp {
                 self.show(Toast { buttons, right, ..Toast::new(tr(text).into()) });
                 return task;
             }
-            UiMessage::Hotkeys(msg) => return self.hotkeys(msg),
-            UiMessage::Zoom(msg) => return self.set_zoom(msg),
-            UiMessage::UserCard(msg) => return self.user_card(msg),
-            UiMessage::Pins(msg) => return self.pins(msg),
             UiMessage::HeaderHover(on) => {
                 let h = &mut self.header_hover;
                 h.1 += 1;
@@ -4351,7 +4353,6 @@ impl BeeperGuiApp {
             }
             UiMessage::HeaderHoverEnd(n) if n == self.header_hover.1 => self.header_hover.0 = false,
             UiMessage::HeaderHoverEnd(_) => {}
-            UiMessage::MenuBar(msg) => return self.menu_bar(msg),
             UiMessage::InWindow(id, msg) => {
                 let Some(i) = self.chat_windows.iter().position(|w| w.0 == id) else { return self.handle(*msg) };
                 std::mem::swap(&mut self.pane, &mut self.chat_windows[i].1);
