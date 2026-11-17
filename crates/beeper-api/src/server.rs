@@ -1590,14 +1590,17 @@ fn bridge_call(store: &SharedStore, cloud: &Cloud, method: &str, id: &str, rest:
 
 fn bridge_get(st: &BeeperStore, path: &[&str]) -> Reply {
     let [id, rest @ ..] = path else {
-        return ok(&json!({ "items": NETWORK_SPECS.iter().map(|s| view::bridge(st, s)).collect::<Vec<_>>() }));
+        let items: Vec<_> = NETWORK_SPECS.iter().filter(|s| view::listed(s)).map(|s| view::bridge(st, s)).collect();
+        return ok(&json!({ "items": items }));
     };
-    let spec = view::bridge_network(id).ok_or_else(|| missing("Bridge not found"))?;
+    let spec = view::bridge_network(id);
+    // Desktop's login routes read the bridge accounts, so a bridge without accounts has no logins.
+    let logins = || spec.map_or_else(Vec::new, |spec| view::logins(st, spec));
     match rest {
-        [] => ok(&view::bridge(st, spec)),
-        ["logins"] => ok(&json!({ "items": view::logins(st, spec) })),
+        [] => ok(&view::bridge(st, spec.filter(|s| view::listed(s)).ok_or_else(|| missing("Bridge not found"))?)),
+        ["logins"] => ok(&json!({ "items": logins() })),
         ["logins", login_id] => {
-            let login = view::logins(st, spec).into_iter().find(|l| l.login_id == *login_id);
+            let login = logins().into_iter().find(|l| l.login_id == *login_id);
             ok(&login.ok_or_else(|| missing("Bridge login not found"))?)
         }
         ["login-sessions", sid] => {

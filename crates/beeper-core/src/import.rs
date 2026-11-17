@@ -512,6 +512,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 formatting: ALL_FORMATS,
                 file,
                 room_features,
+                features: t.get("features").filter(|f| !f.is_null()).cloned().map(Box::new),
                 polls: Some(BEEPER_POLLS),
                 messages: BEEPER_MESSAGES,
                 allowed_reactions: Vec::new(),

@@ -489,6 +489,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         }),
         file,
         room_features,
+        features: features.clone().map(Box::new),
         polls: features.as_ref().map_or(Some(BEEPER_POLLS), poll_rules),
         messages: features.as_ref().map_or(BEEPER_MESSAGES, message_rules),
         allowed_reactions: (features.as_ref().map(|f| f["allowed_reactions"].as_array().into_iter().flatten()))

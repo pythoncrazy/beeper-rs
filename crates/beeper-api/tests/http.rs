@@ -1234,6 +1234,26 @@ async fn search_messages_filters_orders_and_pages_like_desktop() {
     }
 }
 
+/// Desktop's `listBridges` leaves out the Beeper and iMessage bridges and names each network by its ID, and its
+/// login routes read the bridge accounts, so an unknown bridge has no logins rather than a 404.
+#[tokio::test]
+async fn bridges_list_like_desktop() {
+    let (port, token) = server("bridges").await;
+    let (status, list) = call(port, &token, "GET", "/v1/bridges", "").await;
+    assert_eq!(status, 200);
+    let items = list["items"].as_array().unwrap();
+    let ids: Vec<&str> = items.iter().map(|b| b["id"].as_str().unwrap()).collect();
+    assert!(!ids.contains(&"hungryserv") && !ids.contains(&"imessage"), "{ids:?}");
+    let whatsapp = items.iter().find(|b| b["id"] == "whatsapp").unwrap();
+    assert_eq!((&whatsapp["displayName"], &whatsapp["network"]), (&"WhatsApp".into(), &"whatsapp".into()));
+    let slack = items.iter().find(|b| b["id"] == "slackgo").unwrap();
+    assert_eq!(slack["network"], "slack");
+    let not_found = serde_json::json!({ "message": "Bridge not found", "code": "NOT_FOUND" });
+    assert_eq!(call(port, &token, "GET", "/v1/bridges/hungryserv", "").await, (404, not_found));
+    let none = call(port, &token, "GET", "/v1/bridges/nope/logins", "").await;
+    assert_eq!(none, (200, serde_json::json!({ "items": [] })));
+}
+
 /// Desktop's setup routes check their bodies with zod's `.strict()` objects and answer the first issue, its body
 /// parser answers V8's message for malformed JSON, and the chat routes but `getChat` name a chat they do not find.
 #[tokio::test]
