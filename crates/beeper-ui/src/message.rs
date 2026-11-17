@@ -32,6 +32,7 @@ use crate::{
     ORANGE, OUTLINE_CLOCK, POLL_CHECK, POLL_ENDED, TIMER, TRASH,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
+use beeper_core::matrix::ROOM_MENTION;
 use beeper_core::models::*;
 use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
@@ -432,6 +433,19 @@ fn jumbo(text: &str) -> bool {
 }
 
 /// The values of the timeline rows that depend on all messages of the list.
+/// The parts of `text` around each "@room", and whether each is one.
+fn room_parts(text: &str) -> Vec<(&str, bool)> {
+    let mut parts = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(ROOM_MENTION) {
+        parts.extend((i > 0).then(|| (&rest[..i], false)));
+        parts.push((&rest[i..i + ROOM_MENTION.len()], true));
+        rest = &rest[i + ROOM_MENTION.len()..];
+    }
+    parts.extend((!rest.is_empty()).then_some((rest, false)));
+    parts
+}
+
 /// The container of the unread divider, which a chat scrolls to when it opens.
 const UNREAD_DIVIDER: &str = "unread-divider";
 
@@ -2134,9 +2148,21 @@ impl BeeperGuiApp {
                 }
             };
             let me = |id: &str| id == st.beeper_state.user_id;
+            // Desktop's `DJ`: "@room" in a message that mentions the room, or has no `m.mentions`, is a highlighted
+            // mention.
+            let room_mention = m.text.as_deref().is_some_and(|t| t.contains(ROOM_MENTION))
+                && m.mentions.as_ref().is_none_or(|ids| ids.iter().any(|id| id == ROOM_MENTION));
+            let highlighted = |s: iced::widget::text::Span<'a, String>| {
+                let pill = if mine { Color { a: 0.3, ..fg } } else { p.accent };
+                s.font(crate::style::fw(Weight::Bold))
+                    .color(Color::WHITE)
+                    .background(pill)
+                    .border(border::rounded(4))
+                    .padding(2)
+            };
             let arrow =
                 || span(icon::ARROW_UP_RIGHT.to_string()).font(iced::Font::with_name("icons")).size(11.0).color(fg);
-            let rich = |r: beeper_core::codec::Run| {
+            let rich = |(r, room): (beeper_core::codec::Run, bool)| {
                 if r.emoticon.is_some() {
                     return [Some(span(crate::selectable::IMAGE_SLOT).size(13.0)), None].into_iter().flatten();
                 }
@@ -2180,10 +2206,8 @@ impl BeeperGuiApp {
                 }
                 let bold = crate::style::fw(Weight::Bold);
                 let s = match mention {
-                    Some(id) if me(&id) => {
-                        let pill = if mine { Color { a: 0.3, ..fg } } else { p.accent };
-                        s.font(bold).color(Color::WHITE).background(pill).border(border::rounded(4)).padding(2)
-                    }
+                    _ if room => highlighted(s),
+                    Some(id) if me(&id) => highlighted(s),
                     Some(id) => s.font(bold).color(if mine { fg } else { p.accent }).link(format!(
                         "{}{} {id}",
                         crate::MENTION,
@@ -2195,17 +2219,28 @@ impl BeeperGuiApp {
                 [Some(s), arrow].into_iter().flatten()
             };
             let word = |w: &str| span(w.to_string()).size(13.0).color(fg);
+            // The words of plain text, with a highlighted "@room".
+            let words = |text: &str| -> Vec<iced::widget::text::Span<'a, String>> {
+                let parts = if room_mention { room_parts(text) } else { vec![(text, false)] };
+                parts
+                    .into_iter()
+                    .flat_map(|(t, room)| match room {
+                        true => vec![highlighted(word(t))],
+                        false => t.split_inclusive(' ').map(word).collect(),
+                    })
+                    .collect()
+            };
             // Plain text with Desktop's linkify links: each with its underline and arrow, the rest word by word.
             let plain = |text: &str| {
                 let mut spans = Vec::new();
                 let mut at = 0;
                 for (range, href) in crate::linkify::links(text) {
-                    spans.extend(text[at..range.start].split_inclusive(' ').map(word));
+                    spans.extend(words(&text[at..range.start]));
                     spans.push(span(text[range.clone()].to_string()).size(13.0).color(fg).underline(true).link(href));
                     spans.push(arrow());
                     at = range.end;
                 }
-                spans.extend(text[at..].split_inclusive(' ').map(word));
+                spans.extend(words(&text[at..]));
                 spans
             };
             // Each block: its list marker, spans, plain text, blockquote depth, heading level and custom emoji.
@@ -2218,7 +2253,14 @@ impl BeeperGuiApp {
                         let plain = b.runs.iter().map(|r| r.text.as_str()).collect();
                         let images = b.runs.iter().filter_map(|r| r.emoticon.as_deref()).map(|u| self.still(u));
                         let images = images.collect();
-                        let spans = with_emoji_font(b.runs.into_iter().flat_map(rich).collect());
+                        let runs = b.runs.into_iter().flat_map(|r| match room_mention && r.link.is_none() && !r.code {
+                            true => room_parts(&r.text)
+                                .into_iter()
+                                .map(|(t, room)| (beeper_core::codec::Run { text: t.into(), ..r.clone() }, room))
+                                .collect(),
+                            false => vec![(r, false)],
+                        });
+                        let spans = with_emoji_font(runs.flat_map(rich).collect());
                         (b.marker, heading(spans, b.heading), plain, b.quote, b.heading, images)
                     })
                     .collect(),
@@ -3532,6 +3574,16 @@ mod tests {
         let _ = app.update(UiMessage::Message(Msg::HoverEnter(mine)));
         let _ = app.update(UiMessage::Message(Msg::ShowQuickReactions));
         assert!(!quick_shown(&app), "never on your own");
+    }
+
+    /// Desktop's `DJ` splits the text around each "@room".
+    #[test]
+    fn room_parts_like_desktop() {
+        assert_eq!(
+            super::room_parts("hi @room, see @roommate"),
+            [("hi ", false), ("@room", true), (", see ", false), ("@room", true), ("mate", false)]
+        );
+        assert_eq!(super::room_parts("no mention"), [("no mention", false)]);
     }
 
     /// Desktop's bridge request: no thread header, and a group request names who invited you on which network.
