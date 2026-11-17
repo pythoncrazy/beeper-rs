@@ -300,6 +300,9 @@ fn is_vcard(a: &Attachment) -> bool {
     name.ends_with(".vcf") || a.mime_type.as_deref().is_some_and(|m| m.eq_ignore_ascii_case("text/x-vcard"))
 }
 
+/// The time from one flyover item to the next: the item's ease-out is a quarter in after 32 ms of its 0.2 s.
+const FLYOVER_STAGGER: f32 = 0.032;
+
 /// Desktop's `pm` text: the formatted body with each custom emoji (`data-mx-emoticon`) as 📟 when it has one, else
 /// the text, so a message of custom emoji is a jumbo emoji too.
 fn emoji_text(m: &Message) -> String {
@@ -1953,39 +1956,75 @@ impl BeeperGuiApp {
             .push(transcribe)
             .align_x(if mine { Right } else { iced::Left });
         let tools = (self.pane().hovered_msg.as_ref() == Some(&m.id)).then(|| {
+            // Desktop's flyover (`Yfe`): its items appear one after another, each from 85% of its size and clear to
+            // its full size in 0.2 s, the next one once the one before is a quarter in. The quick reactions follow
+            // once the pointer is on the flyover.
+            let shown = |at: Option<std::time::Instant>, k: usize| {
+                let t = at.map_or(1.0, |at| at.elapsed().as_secs_f32() - k as f32 * FLYOVER_STAGGER) / 0.2;
+                crate::style::cubic_bezier(t.clamp(0.0, 1.0), [0.0, 0.0, 0.58, 1.0])
+            };
+            let hover_at = self.pane().hover_msg_at;
             // Desktop's flyover buttons: a 20 px Material icon, drawn at its 1.2 scale, in 6 px of padding.
-            let b = |c: char, msg: UiMessage| -> El<'a> {
+            let b = |c: char, msg: UiMessage, v: f32| -> El<'a> {
                 let style = move |_: &Theme, s| button::Style {
                     text_color: match s {
                         button::Status::Hovered => brightness(muted, 0.8),
                         _ => muted,
-                    },
+                    }
+                    .scale_alpha(v),
                     ..Default::default()
                 };
-                button(container(ic(c, 20.0 * 1.2)).center(32)).padding(0).style(style).on_press(msg).into()
+                let glyph = ic(c, 20.0 * 1.2 * (0.85 + 0.15 * v));
+                button(container(glyph).center(32)).padding(0).style(style).on_press(msg).into()
             };
             let live = m.is_deleted != Some(true);
-            let reply = (chat.messages.reply && live)
-                .then(|| b(icon::REPLY, UiMessage::Composer(composer::Msg::StartReply(m.id.clone()))));
-            let in_thread = (!in_pane && can_thread(st, chat, m)).then(|| -> El<'a> {
-                let b = b(icon::VIEW_SIDEBAR, UiMessage::Thread(threads::Msg::Show(m.id.clone())));
-                self.tip(b, tr("Reply in thread"), vec![], tooltip::Position::Top).into()
-            });
-            let react = (chat.messages.react && m.reactable()).then(|| {
-                mouse_area(b(icon::MOOD, UiMessage::Message(Msg::React(m.id.clone()))))
-                    .on_enter(UiMessage::Message(Msg::ShowQuickReactions))
-                    .into()
-            });
-            let quick = (self.quick_open && st.settings.on("quickReactions"))
+            let base = [
+                (chat.messages.reply && live).then_some(0),
+                (!in_pane && can_thread(st, chat, m)).then_some(1),
+                (chat.messages.react && m.reactable()).then_some(2),
+            ];
+            let base: Vec<u8> = base.into_iter().flatten().collect();
+            let item = |kind: u8, k: usize| -> El<'a> {
+                let v = shown(hover_at, k);
+                match kind {
+                    0 => b(icon::REPLY, UiMessage::Composer(composer::Msg::StartReply(m.id.clone())), v),
+                    1 => {
+                        let b = b(icon::VIEW_SIDEBAR, UiMessage::Thread(threads::Msg::Show(m.id.clone())), v);
+                        self.tip(b, tr("Reply in thread"), vec![], tooltip::Position::Top).into()
+                    }
+                    _ => b(icon::MOOD, UiMessage::Message(Msg::React(m.id.clone())), v),
+                }
+            };
+            let flyover: Vec<El<'a>> = base.iter().enumerate().map(|(k, &kind)| item(kind, k)).collect();
+            // Desktop's quick reactions go only on received messages, after the other items.
+            let quick = (self.quick_open && st.settings.on("quickReactions") && !mine && base.contains(&2))
                 .then(|| crate::emoji::quick_reactions(st, &chat.allowed_reactions));
-            let quick = quick.into_iter().flatten().map(|e| -> El<'a> {
+            let quick: Vec<String> = quick.unwrap_or_default();
+            let after = hover_at.map(|t| t + std::time::Duration::from_secs_f32(base.len() as f32 * FLYOVER_STAGGER));
+            let start = self.pane().flyover_at.max(after);
+            // `disableReactions`: a quick reaction takes clicks 120 ms after the last one is in.
+            let ready = start.is_none_or(|t| {
+                t.elapsed().as_secs_f32() > (quick.len().saturating_sub(1) as f32 * FLYOVER_STAGGER) + 0.2 + 0.12
+            });
+            let quick = quick.into_iter().enumerate().map(|(j, e)| -> El<'a> {
+                let v = shown(start, j);
                 let msg = UiMessage::Message(Msg::ToggleReaction(chat.id.clone(), m.id.clone(), e.clone()));
-                let glyph = txt(e, 18.0).font(EMOJI_FONT);
+                let glyph = txt(e, 18.0 * (0.85 + 0.15 * v)).font(EMOJI_FONT).color(p.text.scale_alpha(v));
                 button(container(glyph).center(32))
                     .padding(0)
                     .style(btn_style([CLEAR; 3], [p.text; 3], 8.0))
-                    .on_press(msg)
+                    .on_press_maybe(ready.then_some(msg))
                     .into()
+            });
+            // `@container messageContainer (max-width: 24rem)`: a narrow chat shows the first two items only.
+            let room = if self.pane().size.width - 24.0 <= 384.0 { 2 } else { usize::MAX };
+            let flyover: Vec<El<'a>> = flyover.into_iter().chain(quick).take(room).collect();
+            let flyover = (!flyover.is_empty()).then(|| -> El<'a> {
+                let row = match mine {
+                    true => Row::with_children(flyover.into_iter().rev()),
+                    false => Row::with_children(flyover),
+                };
+                mouse_area(row).on_enter(UiMessage::Message(Msg::ShowQuickReactions)).into()
             });
             // Desktop's download button beside an attachment, and the time of a message without text in its flyover.
             // The items of a gallery open in the carousel, so a gallery has no download button here.
@@ -2007,12 +2046,11 @@ impl BeeperGuiApp {
             let time = (file.is_some() && text.is_empty() && shows_time).then(|| -> El<'a> {
                 txt(format_short_ts(&m.timestamp, st.settings.pref("timeFormat") == 1), 11.0).color(muted).into()
             });
-            let all: Vec<El<'a>> =
-                [download, time, reply, in_thread, react].into_iter().flatten().chain(quick).collect();
-            match mine {
-                true => Row::with_children(all.into_iter().rev()),
-                false => Row::with_children(all),
-            }
+            let all: Vec<El<'a>> = match mine {
+                true => [flyover, time, download].into_iter().flatten().collect(),
+                false => [download, time, flyover].into_iter().flatten().collect(),
+            };
+            Row::with_children(all)
         });
         let side = (group && !mine).then(|| -> El<'a> {
             if last {
@@ -2708,9 +2746,16 @@ impl BeeperGuiApp {
             }
             Msg::HoverEnter(id) => {
                 self.quick_open &= self.pane.hovered_msg.as_ref() == Some(&id);
+                if self.pane.hovered_msg.as_ref() != Some(&id) {
+                    (self.pane.hover_msg_at, self.pane.flyover_at) = (Some(std::time::Instant::now()), None);
+                }
                 self.pane.hovered_msg = Some(id);
             }
-            Msg::ShowQuickReactions => self.quick_open = true,
+            Msg::ShowQuickReactions if !self.quick_open => {
+                self.quick_open = true;
+                self.pane.flyover_at = Some(std::time::Instant::now());
+            }
+            Msg::ShowQuickReactions => {}
             Msg::HoverExit(id) => {
                 if self.pane.hovered_msg.as_ref() == Some(&id) {
                     self.pane.hovered_msg = None;
@@ -2931,6 +2976,34 @@ mod tests {
         }
         let mut sim = simulator(app.view_conversation());
         assert!(sim.find(":a:").is_err(), "the image takes the place of the alt text");
+    }
+
+    /// Desktop's flyover (`Yfe`): the quick reactions come once the pointer is on the flyover, only on received
+    /// messages, and its items fade in one after another.
+    #[test]
+    fn flyover_quick_reactions_like_desktop() {
+        let mut app = crate::fuzz::demo_app("flyover");
+        let (chat, theirs, mine) = {
+            let st = app.store.read();
+            let pick = |c: &Chat| {
+                let msgs = st.timeline_indices(&c.id).iter().map(|&i| &st.messages[i]).filter(|m| m.reactable());
+                let msgs: Vec<&Message> = msgs.collect();
+                let theirs = msgs.iter().rev().find(|m| m.is_sender != Some(true))?.id.clone();
+                let mine = msgs.iter().rev().find(|m| m.is_sender == Some(true))?.id.clone();
+                Some((c.id.clone(), theirs, mine))
+            };
+            st.chats.iter().filter(|c| c.messages.react).find_map(pick).expect("a chat with both senders")
+        };
+        let _ = app.update(UiMessage::SelectChat(chat));
+        app.pane.size = Size::new(900.0, 700.0);
+        let quick_shown = |app: &BeeperGuiApp| simulator(app.view_conversation()).find("👍").is_ok();
+        let _ = app.update(UiMessage::Message(Msg::HoverEnter(theirs.clone())));
+        assert!(app.pane.hover_msg_at.is_some() && !quick_shown(&app), "not before the flyover has the pointer");
+        let _ = app.update(UiMessage::Message(Msg::ShowQuickReactions));
+        assert!(app.pane.flyover_at.is_some() && quick_shown(&app), "then on a received message");
+        let _ = app.update(UiMessage::Message(Msg::HoverEnter(mine)));
+        let _ = app.update(UiMessage::Message(Msg::ShowQuickReactions));
+        assert!(!quick_shown(&app), "never on your own");
     }
 
     /// Desktop's reaction pills: one pill a group of skin tones, in the order the groups first appear, and a click
