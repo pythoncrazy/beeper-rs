@@ -5805,6 +5805,46 @@ fn delete_chat_follows_the_flag_like_desktop() {
     assert_eq!(shown(&app), (false, false));
 }
 
+/// Desktop's `confirmDeleteThread` with chats selected: "Delete Chats" with only the delete action that all of them
+/// take, which deletes them all, or a toast when they share none.
+#[test]
+fn deleting_selected_chats_like_desktop() {
+    let mut app = demo_app("delete-selected");
+    let ids: Vec<String> = {
+        let mut st = app.store.write();
+        let others = st.chats.iter().enumerate().filter(|(_, c)| c.id != NOTE_CHAT_ID).map(|(i, _)| i);
+        let picked: Vec<usize> = others.take(4).collect();
+        let modes = [DELETE_FOR_ME | DELETE_FOR_EVERYONE, DELETE_FOR_EVERYONE, DELETE_FOR_ME, DELETE_FOR_EVERYONE];
+        for (&i, m) in picked.iter().zip(modes) {
+            st.update_chat(i, |c| c.delete_modes = m);
+        }
+        picked.iter().map(|&i| st.chats[i].id.clone()).collect()
+    };
+    let select = |app: &mut BeeperGuiApp, a: &str, b: &str| {
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::BeginSelecting(a.into())));
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleSelected(b.into())));
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::AskDelete(a.into())));
+    };
+    select(&mut app, &ids[0], &ids[1]);
+    assert_eq!(app.confirm, Some(ASK_DELETE_CHAT));
+    let picked: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_confirm(ASK_DELETE_CHAT));
+        assert!(sim.find("Delete Chats").is_ok());
+        assert!(sim.find("This action will permanently delete these chats for all participants.").is_ok());
+        assert!(sim.find("Delete for Me").is_err(), "only the action that both chats take");
+        let _ = sim.click("Delete for Everyone").expect("Delete for Everyone");
+        sim.into_messages().collect()
+    };
+    for m in picked {
+        let _ = app.update(m);
+    }
+    let gone = |app: &BeeperGuiApp, id: &str| app.store.read().resolve_chat_idx(id).is_none();
+    assert!(gone(&app, &ids[0]) && gone(&app, &ids[1]) && app.selection.is_empty(), "both chats are deleted");
+    select(&mut app, &ids[2], &ids[3]);
+    assert_eq!(app.status_banner, "Selected chats do not support the same delete action");
+    assert!(!gone(&app, &ids[2]) && !gone(&app, &ids[3]));
+}
+
 #[test]
 fn blocked_users_like_desktop() {
     let mut app = demo_app("blocked-users");
