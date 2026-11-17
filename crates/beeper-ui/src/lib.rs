@@ -45,6 +45,7 @@ pub mod rail;
 mod reauth;
 mod record;
 pub mod reminders;
+mod ring;
 mod scheduled;
 mod selectable;
 pub mod settings;
@@ -2264,6 +2265,9 @@ pub struct Pane {
     pub selected_chat_id: Option<String>,
     /// Desktop's composer `attachments`.
     pub attachments: Vec<PendingMedia>,
+    /// The pending attachment with the keyboard focus, and the one whose Quick Look shows (Desktop's `C_t`).
+    pub att_focus: Option<usize>,
+    pub quick_look: Option<usize>,
     pub composer_links: Vec<(String, LinkState)>,
     pub message_menu: Option<(String, Point)>,
     /// The text selected when the message menu opened, which turns it into the menu for the selection.
@@ -4303,6 +4307,10 @@ impl BeeperGuiApp {
             UiMessage::KeyPressed(key, mods) if self.carousel.as_ref().is_some_and(|c| !c.in_media) => {
                 return self.carousel_key(&key, mods);
             }
+            // Desktop's `C_t` takes every key while a pending attachment has the focus.
+            UiMessage::KeyPressed(key, _) if self.pane.att_focus.is_some() => {
+                return self.update(UiMessage::Composer(composer::Msg::AttachmentKey(key)));
+            }
             UiMessage::KeyPressed(key, mods) => {
                 let z = mods.command() && matches!(key.as_ref(), Key::Character(c) if c.eq_ignore_ascii_case("z"));
                 if z && !mods.shift() && self.shown_undo().is_none() && !self.undo_stack.is_empty() {
@@ -5072,8 +5080,10 @@ impl BeeperGuiApp {
         let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q));
         // The menus and the emoji picker of the carousel show over it.
         let hover = self.view_hover_card().filter(|_| in_main);
+        let quick_look = self.view_attachment_quick_look().filter(|_| in_main);
         let layers = stack![base]
             .push(toast)
+            .push(quick_look)
             .push(carousel)
             .push(hover)
             .push(menu_drop)
