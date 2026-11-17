@@ -1621,6 +1621,10 @@ mod tests {
         }
     }
 
+    fn shows(app: &BeeperGuiApp, text: &str) -> bool {
+        simulator(app.view_login()).find(text).is_ok()
+    }
+
     /// Desktop's texts of a refused code: the server's `errorMessage` under the heading, "Invalid code. Please try
     /// again." once the server counts two retries, and the message of a 5xx in the toast.
     #[tokio::test(flavor = "multi_thread")]
@@ -1642,10 +1646,6 @@ mod tests {
         assert_eq!(texts(&app), (Some("Invalid code. Please try again.".into()), None), "after two retries");
         settle(&mut app, LoginMsg::Code("333333".into()).into()).await;
         assert_eq!(texts(&app), (None, Some("Service unavailable".into())), "a 5xx in the toast");
-    }
-
-    fn shows(app: &BeeperGuiApp, text: &str) -> bool {
-        simulator(app.view_login()).find(text).is_ok()
     }
 
     /// Desktop's `UsernameInput`: the spinner while a name waits for its debounced check, one server check for the
