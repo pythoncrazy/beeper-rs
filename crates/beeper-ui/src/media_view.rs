@@ -28,31 +28,30 @@ use iced::widget::{
 use iced::{border, mouse, window, Center, Color, Fill, Padding, Pixels, Point, Right, Size, Task, Theme};
 use std::rc::Rc;
 
+/// ffmpeg over `bytes`, which it reads from a temporary file of its own: an MP4 or M4A with its `moov` atom at the
+/// end, as many encoders write them, needs an input that ffmpeg can seek, which a pipe is not.
 pub(crate) fn run_ffmpeg(bytes: &[u8], args: &[&str]) -> Result<Vec<u8>, String> {
     use std::io::Write;
-    use std::process::{Command, Stdio};
-    let mut child = Command::new("ffmpeg")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-i")
-        .arg("pipe:0")
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Could not start ffmpeg: {e}"))?;
-    let mut stdin = child.stdin.take().expect("piped stdin");
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            let _ = stdin.write_all(bytes);
-        });
-        let out = child.wait_with_output().map_err(|e| e.to_string())?;
-        match out.status.success() && !out.stdout.is_empty() {
-            true => Ok(out.stdout),
-            false => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
-        }
-    })
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("beeper-rs-ffmpeg-{}-{n}", std::process::id()));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e| e.to_string())?;
+    let out = file.write_all(bytes).map_err(|e| e.to_string()).and_then(|()| {
+        std::process::Command::new("ffmpeg")
+            .args(["-loglevel", "error", "-i"])
+            .arg(&path)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| format!("Could not start ffmpeg: {e}"))
+    });
+    let _ = std::fs::remove_file(&path);
+    let out = out?;
+    match out.status.success() && !out.stdout.is_empty() {
+        true => Ok(out.stdout),
+        false => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+    }
 }
 
 /// The suffix of the media key of a video that plays as a GIF: Desktop's `<video autoPlay loop muted>` of an
@@ -1216,5 +1215,29 @@ impl BeeperGuiApp {
             }
         }
         self.settle()
+    }
+}
+
+#[cfg(test)]
+mod ffmpeg_tests {
+    /// An MP4 with its `moov` atom at the end, as ffmpeg writes it by default, still gives its first frame.
+    #[test]
+    fn a_video_with_its_index_at_the_end_decodes() {
+        let path = std::env::temp_dir().join(format!("beeper-rs-moov-end-{}.mp4", std::process::id()));
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x48:rate=10"])
+            .args(["-pix_fmt", "yuv420p"])
+            .arg(&path)
+            .status();
+        if !made.is_ok_and(|s| s.success()) {
+            return eprintln!("no ffmpeg to make the test video");
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let moov = bytes.windows(4).position(|w| w == b"moov").unwrap();
+        let mdat = bytes.windows(4).position(|w| w == b"mdat").unwrap();
+        assert!(moov > mdat, "the index comes after the media");
+        let frames = super::decode_media(bytes).expect("the first frame");
+        assert_eq!(frames.len(), 1);
     }
 }
