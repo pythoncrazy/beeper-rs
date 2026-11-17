@@ -410,6 +410,9 @@ pub struct User {
     pub custom_nickname: Option<String>,
     #[serde(rename = "isNetworkBot", skip_serializing_if = "Option::is_none")]
     pub is_network_bot: Option<bool>,
+    /// The Matrix user of a contact from the contact list of a bridge (`mxid`), which starts a chat on that account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mxid: Option<String>,
     #[serde(rename = "isAdmin", skip_serializing_if = "Option::is_none")]
     pub is_admin: Option<bool>,
     /// Desktop's `isPending`: invited, and not joined yet.
