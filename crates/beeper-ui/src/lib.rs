@@ -32,6 +32,7 @@ mod linkify;
 mod links;
 mod loads;
 pub mod login;
+mod lottie;
 mod media_view;
 mod members;
 mod menubar;

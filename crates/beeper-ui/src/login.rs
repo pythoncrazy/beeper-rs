@@ -69,17 +69,18 @@ static BUBBLE_ARROW: LazyLock<svg::Handle> = LazyLock::new(|| {
     svg::Handle::from_memory(br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 9"><path d="M0 0.5h16L8 8.5z" fill="#fff" stroke="#a0a0a0"/><path d="M0 0h16v1H0z" fill="#fff"/></svg>"##.as_slice())
 });
 
-/// The first frames of Desktop's Lottie animations `username.json`, `email.json` and `lock.json`, made with
-/// velato, and the Google logo.
-static ART: LazyLock<[svg::Handle; 4]> = LazyLock::new(|| {
+/// Desktop's Lottie animations `username.json`, `email.json`, `lock.json` and `key.json`.
+static ART: LazyLock<[crate::lottie::Animation; 4]> = LazyLock::new(|| {
     [
-        include_bytes!("../assets/onboarding/lottie-username.svg").as_slice(),
-        include_bytes!("../assets/onboarding/lottie-email.svg"),
-        include_bytes!("../assets/onboarding/lottie-lock.svg"),
-        GOOGLE_G.as_bytes(),
+        include_bytes!("../assets/onboarding/username.json").as_slice(),
+        include_bytes!("../assets/onboarding/email.json"),
+        include_bytes!("../assets/onboarding/lock.json"),
+        include_bytes!("../assets/onboarding/key.json"),
     ]
-    .map(svg::Handle::from_memory)
+    .map(crate::lottie::Animation::new)
 });
+
+static GOOGLE: LazyLock<svg::Handle> = LazyLock::new(|| svg::Handle::from_memory(GOOGLE_G.as_bytes()));
 
 /// The layers of Desktop's `AnimatedCompositeIllustration`, bottom first: the shadow, which stays, then the 13
 /// layers that float.
@@ -609,8 +610,9 @@ pub(crate) fn heading<'a>(s: &str, size: f32) -> El<'a> {
     container(svg(text).width(width).height(40)).center_x(Fill).into()
 }
 
+/// Desktop's `Lottie` of a screen: 0 username, 1 email, 2 lock and 3 key.
 pub(crate) fn art<'a>(i: usize, height: impl Into<iced::Length>) -> El<'a> {
-    svg(ART[i].clone()).width(Fill).height(height).into()
+    crate::lottie::lottie(&ART[i], height)
 }
 
 /// Desktop's `BrandInput` with `floatingPlaceholder`: text in the color of the placeholder, and the placeholder
@@ -1130,7 +1132,7 @@ impl BeeperGuiApp {
                     .width(crate::style::balanced_width(&plain, 278.0, 11.0))
                     .center();
                 let terms = container(terms).center_x(Fill);
-                let google = svg(ART[3].clone()).width(18).height(18);
+                let google = svg(GOOGLE.clone()).width(18).height(18);
                 let google_label = trxf("Continue with %s", "button label", &[&"Google"]);
                 let mail =
                     svg(ICONS[0].clone()).width(18).height(18).style(|_, _| svg::Style { color: Some(Color::WHITE) });
@@ -1524,7 +1526,7 @@ mod tests {
         assert!(login.animated(), "the welcome screen ticks its animation");
         drop(super::welcome_scene());
         login.screen = super::Screen::Email;
-        assert!(!login.animated(), "the Lottie frames of the other screens stay");
+        assert!(!login.animated(), "the Lottie animations of the other screens redraw themselves");
     }
 
     #[test]
