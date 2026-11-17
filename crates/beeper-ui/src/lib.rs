@@ -26,6 +26,7 @@ mod info;
 mod integrations;
 mod labels;
 mod lift;
+mod linkify;
 mod links;
 mod loads;
 pub mod login;
@@ -917,9 +918,9 @@ fn truncate(s: String, n: usize) -> String {
 }
 
 /// The links that Desktop previews in the composer.
-fn text_urls(text: &str) -> Vec<&str> {
-    let link = |w: &&str| (w.starts_with("https://") || w.starts_with("http://")) && !w.contains('@');
-    text.split_whitespace().filter(link).collect()
+/// The links of `text`, as Desktop's linkify finds them.
+fn text_urls(text: &str) -> Vec<String> {
+    linkify::links(text).into_iter().map(|(_, href)| href).collect()
 }
 
 /// JavaScript's `encodeURIComponent`, which Desktop uses for chat links.

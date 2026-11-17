@@ -38,6 +38,10 @@ pub struct Run {
     pub link: Option<String>,
     /// Desktop's `data-mx-spoiler`: hidden until a click shows it.
     pub spoiler: bool,
+    pub underline: bool,
+    /// The `data-mx-color` (or `data-mx-bg-color`, which Desktop also applies as the text color) of a span, or a
+    /// `<font color>`.
+    pub color: Option<String>,
 }
 
 /// A paragraph or a list item, with its list marker.
@@ -45,11 +49,16 @@ pub struct Run {
 pub struct Block {
     pub marker: Option<String>,
     pub runs: Vec<Run>,
+    /// How many blockquotes hold it.
+    pub quote: u8,
+    /// The level of a heading, `h1` to `h6`; 0 for other blocks.
+    pub heading: u8,
 }
 
 /// Splits Matrix HTML into blocks of styled runs. Reply and profile fallbacks are removed.
 pub fn html_blocks(html: &str) -> Vec<Block> {
     let (mut blocks, mut lists, mut rest) = (vec![Block::default()], Vec::<Option<u32>>::new(), html);
+    let (mut quote, mut heading) = (0u8, 0u8);
     let mut stack = vec![(Run::default(), false, false)];
     let push = |b: &mut Block, style: &Run, text: &str| match b.runs.last_mut() {
         _ if text.is_empty() => {}
@@ -68,12 +77,24 @@ pub fn html_blocks(html: &str) -> Vec<Block> {
         rest = tail;
         let (close, tag) = tag.strip_prefix('/').map_or((false, tag), |t| (true, t));
         let name = tag.split([' ', '\t', '\n', '/']).next().expect("split yields a part").to_ascii_lowercase();
-        let block =
-            ["p", "div", "li", "ol", "ul", "blockquote", "pre", "tr", "h1", "h2", "h3"].contains(&name.as_str());
+        let level = match name.as_bytes() {
+            [b'h', n @ b'1'..=b'6'] => n - b'0',
+            _ => 0,
+        };
+        let block = ["p", "div", "li", "ol", "ul", "blockquote", "pre", "tr"].contains(&name.as_str()) || level > 0;
         if block && !hidden && (!b.runs.is_empty() || b.marker.is_some()) {
             blocks.push(Block::default());
         }
+        match (close, name.as_str()) {
+            (false, "blockquote") => quote = quote.saturating_add(1),
+            (true, "blockquote") => quote = quote.saturating_sub(1),
+            _ if level > 0 => heading = if close { 0 } else { level },
+            _ => {}
+        }
         let b = blocks.last_mut().expect("there is a block");
+        if b.runs.is_empty() {
+            (b.quote, b.heading) = (quote, heading);
+        }
         match (close, name.as_str()) {
             (false, "ol") => lists.push(Some(0)),
             (false, "ul") => lists.push(None),
@@ -107,8 +128,13 @@ pub fn html_blocks(html: &str) -> Vec<Block> {
             "code" | "pre" => s.code = true,
             "del" | "s" | "strike" => s.strike = true,
             "a" => s.link = attr(tag, "href"),
+            "u" | "ins" => s.underline = true,
             "span" if tag.contains("data-mx-spoiler") => s.spoiler = true,
+            "font" => s.color = attr(tag, "color").or(s.color),
             _ => {}
+        }
+        if name == "span" || name == "font" {
+            s.color = attr(tag, "data-mx-bg-color").or_else(|| attr(tag, "data-mx-color")).or(s.color);
         }
         let drop = name == "mx-reply" || tag.contains("data-mx-profile-fallback");
         stack.push((s, hidden || drop, pre || name == "pre"));
@@ -309,8 +335,28 @@ mod tests {
         assert_eq!(blocks[0].runs[1], Run { bold: true, ..run("team") });
         assert_eq!(blocks[0].runs[3], Run { link: Some("https://x.test/?a=1&b=2".into()), ..run("PR") });
         assert_eq!(blocks[0].runs[5], Run { code: true, ..run("x<y") });
-        assert_eq!(blocks[2], Block { marker: Some("2.".into()), runs: vec![run("two")] });
+        assert_eq!(blocks[2], Block { marker: Some("2.".into()), runs: vec![run("two")], ..Block::default() });
         assert_eq!(html_text(html), "Invite to team & PR\nx<y\n1. one\n2. two\n\nend");
+    }
+
+    /// Desktop's blockquotes, headings, `<u>` and `data-mx-color` (with `data-mx-bg-color` as the text color too).
+    #[test]
+    fn html_blocks_keep_quotes_headings_and_colors() {
+        let html = "<h2>Title</h2><blockquote><p>quoted</p><blockquote>deeper</blockquote></blockquote>after \
+                    <u>under</u> <span data-mx-color=\"#ff0000\">red</span> <font color=\"blue\">blue</font> \
+                    <span data-mx-color=\"#ff0000\" data-mx-bg-color=\"#00ff00\">green</span>";
+        let blocks = html_blocks(html);
+        let shape: Vec<(u8, u8, String)> =
+            blocks.iter().map(|b| (b.quote, b.heading, b.runs.iter().map(|r| r.text.as_str()).collect())).collect();
+        assert_eq!(shape[..3], [(0, 2, "Title".into()), (1, 0, "quoted".into()), (2, 0, "deeper".into())]);
+        let runs = &blocks[3].runs;
+        let color = |text: &str| runs.iter().find(|r| r.text == text).and_then(|r| r.color.clone());
+        assert!(runs.iter().any(|r| r.text == "under" && r.underline));
+        assert_eq!(
+            (color("red"), color("blue"), color("green")),
+            (Some("#ff0000".into()), Some("blue".into()), Some("#00ff00".into()))
+        );
+        assert_eq!(blocks[3].quote, 0, "the quote ends");
     }
 
     #[test]

@@ -330,7 +330,7 @@ impl BeeperGuiApp {
                 let more = *clamped != *full;
                 let shown = if self.info_more { full.clone() } else { clamped.to_string() };
                 let spans = shown.split_inclusive(' ').map(|w| match text_urls(w).first() {
-                    Some(&url) => span(w.to_string()).color(p.accent).link(url.to_string()),
+                    Some(url) => span(w.to_string()).color(p.accent).link(url.clone()),
                     None => span(w.to_string()).color(p.strong),
                 });
                 let text = rich_text(spans.collect::<Vec<_>>())
