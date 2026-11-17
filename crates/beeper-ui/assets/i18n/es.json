@@ -1316,6 +1316,7 @@
 "add an active hours schedule\u0004Add":["Añadir"],
 "all":["todos"],
 "all chats":["todos los chats"],
+"and %s more":["y %s más", "y %s más"],
 "another device":["otro dispositivo"],
 "archive all button\u0004Archive %d chat":["Archivar %d chat", "Archivar %d chats"],
 "archive confirmation button\u0004Archive":["Archivar"],

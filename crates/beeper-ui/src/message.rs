@@ -11,6 +11,7 @@ use crate::loads;
 use crate::media_view;
 use crate::members;
 use crate::reminders::reminder_day;
+use crate::reply_line::{reply_line, Segment, Shape};
 use crate::style::{
     bold, bordered_box, bordered_btn, btn_style, clamp, fill_box, fw, hex, ic, icon, med, mix, pane_card, pick,
     scroll_style, semi, shadow_box, stable_bar, text_width, txt, Bare, CLEAR, GUTTER,
@@ -55,12 +56,6 @@ pub(crate) fn attachment_name(a: &Attachment) -> String {
 /// The HTML elements that keep Desktop from balancing the lines of a message (`MessageText`).
 const BLOCK_TAGS: [&str; 15] =
     ["pre", "blockquote", "table", "ol", "ul", "details", "hr", "p>", "p ", "h1", "h2", "h3", "h4", "h5", "h6"];
-
-static REPLY_CURVE: std::sync::LazyLock<[svg::Handle; 2]> = std::sync::LazyLock::new(|| {
-    ["", r#" transform="matrix(-1 0 0 1 26 0)""#].map(|flip| {
-        svg::Handle::from_memory(format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0.5 0.5 25 19"><path{flip} fill="currentColor" fill-rule="evenodd" d="M17 15.5C9.544 15.5 3.5 9.456 3.5 2V.5h-3V2c0 9.113 7.387 16.5 16.5 16.5h6a1.5 1.5 0 0 0 0-3z"/></svg>"#).into_bytes())
-    })
-});
 
 /// Whether Desktop's `bfe` shows an attachment of a quote as a picture: an image, or a video.
 fn quote_tile(a: &Attachment) -> bool {
@@ -222,6 +217,86 @@ fn gap_below(m: &Message, next: &Message) -> f32 {
     }
 }
 
+/// What Desktop's `C4t` knows of the neighbours of a message in its reply chain, for its `replyLineSegments`.
+#[derive(Clone, Copy, Default)]
+struct Chain {
+    /// `N` and `j`: the message before it and the one after it are in its reply chain (`uR`).
+    prev: bool,
+    next: bool,
+    /// The next message is your own, and it has the same sender.
+    next_mine: bool,
+    next_same: bool,
+    /// The next message is on another day, so no line goes on through a gap below.
+    next_day: bool,
+}
+
+/// Desktop's `replyLineSegments`, by where they go.
+#[derive(Debug, Default, PartialEq)]
+struct Segments {
+    /// `along-linked-message`, beside the quote.
+    quote: Option<Segment>,
+    /// `along-message-body` of your own message, or `along-placeholder-sender-avatar`.
+    body: Option<Segment>,
+    /// `above-sender-avatar`.
+    above_face: Option<Segment>,
+    /// `along-message-footer`, through the gap below too.
+    footer: Option<Segment>,
+}
+
+impl Chain {
+    /// Desktop's `replyLineSegments` of a message that has a quote (`linked`, `T`), shows it (`quote`, `U`) of your
+    /// own message or not, and Desktop's `showSenderImg` (`Q`) from whether the sender changes (`last`).
+    fn segments(self, linked: bool, quote: Option<bool>, mine: bool, group: bool, last: bool) -> (Segments, bool) {
+        use crate::reply_line::Shape::*;
+        let Chain { prev: n, next: j, next_mine, next_same, .. } = self;
+        let (u, z) = (quote.is_some(), quote == Some(true));
+        let (start, end) = (!n && j, !j && (n || u));
+        let can_show = group && !mine;
+        let face = can_show && (last || end);
+        // Desktop's `VJ`.
+        let shape = |mine: bool| match () {
+            _ if end => End,
+            _ if start && !u => Start,
+            _ if mine && !next_mine => Loop,
+            _ => Line,
+        };
+        let body = (mine && (n || j || u)).then(|| Segment::new(shape(true), if u { !z } else { !n }, !j));
+        let placeholder = (can_show && !face && (linked || j)).then(|| Segment::new(shape(false), u && !z, false));
+        let footer =
+            j.then(|| Segment::new(Line, body.is_none() && placeholder.is_none(), !group && (!mine || !next_same)));
+        let segments = Segments {
+            quote: (u && z).then(|| Segment::new(Start, false, !group && !mine)),
+            body: body.or(placeholder),
+            above_face: (face && (u || n)).then(|| Segment::new(Line, u && !z, true)),
+            footer,
+        };
+        (segments, face)
+    }
+}
+
+/// Desktop's `xgt`: a count over 999 in thousands or millions. JavaScript's `toFixed` rounds an exact tie up, where
+/// Rust rounds it to even.
+fn short_count(n: usize) -> String {
+    match n {
+        ..1000 => n.to_string(),
+        1000..1_000_000 => format!("{:.1}K", (n + usize::from(n % 500 == 250)) as f64 / 1e3),
+        _ => format!("{:.2}M", (n + usize::from(n % 250_000 == 125_000)) as f64 / 1e6),
+    }
+}
+
+/// The tooltip of Desktop's `BrandTypingIndicator`, which Desktop does not translate.
+fn typing_tip(names: &[String]) -> String {
+    match names {
+        [one] => format!("{one} is typing…"),
+        [rest @ .., last] if names.len() <= 6 => format!("{} and {last} are typing…", rest.join(", ")),
+        _ => {
+            let more = names.len() - 6;
+            let verb = if more > 1 { "s are" } else { " is" };
+            format!("{} and {more} other{verb} typing…", names[..6].join(", "))
+        }
+    }
+}
+
 /// Desktop's `--color-on-error-container`, the same in the light and dark themes.
 const ON_ERROR_CONTAINER: Color = Color::from_rgb8(0xdc, 0x36, 0x2e);
 
@@ -316,6 +391,9 @@ fn is_vcard(a: &Attachment) -> bool {
     let name = a.file_name.as_deref().unwrap_or_default().to_lowercase();
     name.ends_with(".vcf") || a.mime_type.as_deref().is_some_and(|m| m.eq_ignore_ascii_case("text/x-vcard"))
 }
+
+/// Desktop's `BrandTypingIndicator` `transition: { duration: 0.32 }`.
+pub(crate) const TYPING_FADE: std::time::Duration = std::time::Duration::from_millis(320);
 
 /// The time from one flyover item to the next: the item's ease-out is a quarter in after 32 ms of its 0.2 s.
 const FLYOVER_STAGGER: f32 = 0.032;
@@ -486,23 +564,74 @@ impl BeeperGuiApp {
         }))
     }
 
-    fn typing_bubble<'a>(&self, chat: &Chat, ids: &[String]) -> El<'a> {
+    /// Desktop's `BrandTypingIndicator` shows and hides in 0.32 s, and shows at once while the timeline is not at its
+    /// bottom (`skipEntryAnimation`).
+    pub(crate) fn typing_changed(&mut self, chat: &str) {
+        let ids = self.store.read().typing.get(chat).cloned().unwrap_or_default();
+        let now = std::time::Instant::now();
+        let up =
+            self.panes().any(|p| p.selected_chat_id.as_deref() == Some(chat) && p.scrolled_up.is_some_and(|s| s.0));
+        match self.typing_shown.get_mut(chat) {
+            Some(t) if t.1 && ids.is_empty() => (t.1, t.2) = (false, now),
+            Some(t) if t.1 => t.0 = ids,
+            _ if ids.is_empty() => {}
+            _ => {
+                let at = if up { now.checked_sub(TYPING_FADE).unwrap_or(now) } else { now };
+                self.typing_shown.insert(chat.to_string(), (ids, true, at));
+            }
+        }
+    }
+
+    /// Who types in `chat`, also while the indicator hides, and how far it shows, with framer-motion's `easeInOut`.
+    fn typing_now<'s>(&'s self, st: &'s BeeperStore, chat: &str) -> Option<(&'s [String], f32)> {
+        let typing = st.typing.get(chat).filter(|ids| !ids.is_empty());
+        let Some((ids, on, at)) = self.typing_shown.get(chat) else { return typing.map(|ids| (&ids[..], 1.0)) };
+        let t = at.elapsed().as_secs_f32() / TYPING_FADE.as_secs_f32();
+        let v = if t < 1.0 { crate::style::cubic_bezier(t, [0.42, 0.0, 0.58, 1.0]) } else { 1.0 };
+        let v = if *on { v } else { 1.0 - v };
+        (v > 0.0).then(|| (&typing.unwrap_or(ids)[..], v))
+    }
+
+    /// Desktop's `BrandTypingIndicator` at `v` of its height and opacity. A group shows the first 4 faces in 34 px,
+    /// each `min(20, (34 + 10(n - 1)) / n)` px and 10 px under the next one, which a 2 px ring cuts out (`ode`), each
+    /// with its name as a tooltip. The bubble's tooltip says who types.
+    fn typing_bubble<'a>(&self, st: &BeeperStore, chat: &Chat, ids: &[String], v: f32) -> El<'a> {
         let p = &self.pal;
-        let dot = |delay| anim::dot(6.0, p.text, self.started, delay, |t| 0.2 + 0.2 * (1.0 - (2.0 * t - 1.0).abs()));
-        let bubble =
-            container(row![dot(0), dot(340), dot(670)].spacing(4)).padding([12, 11]).style(fill_box(p.received, 16.0));
+        let ink = p.text.scale_alpha(v);
+        let dot = |delay| anim::dot(6.0, ink, self.started, delay, |t| 0.2 + 0.2 * (1.0 - (2.0 * t - 1.0).abs()));
+        let bubble = container(row![dot(0), dot(340), dot(670)].spacing(4))
+            .padding([12, 11])
+            .style(fill_box(p.received.scale_alpha(v), 16.0));
+        let users: Vec<&User> =
+            ids.iter().filter_map(|id| chat.participants.items.iter().find(|u| u.id == *id)).collect();
+        let names: Vec<String> = users.iter().map(|u| member_name(u)).collect();
+        let bubble: El<'a> = match names.is_empty() {
+            true => bubble.into(),
+            false => self.tip(bubble.into(), typing_tip(&names), vec![], tooltip::Position::Top).into(),
+        };
         let faces = (chat.chat_type == "group").then(|| {
-            let users = ids.iter().filter_map(|id| chat.participants.items.iter().find(|u| u.id == *id));
-            let layers = users.enumerate().map(|(i, u)| {
-                pin(self.face(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), 20.0, 0.0))
-                    .x(i as f32 * 10.0)
-                    .into()
+            let shown = &users[..users.len().min(4)];
+            let n = shown.len().max(1) as f32;
+            let size = 20f32.min((34.0 + 10.0 * (n - 1.0)) / n);
+            let left = (34.0 - (n * size - 10.0 * (n - 1.0))) / 2.0;
+            // The ring takes the color of the timeline, which a wallpaper does not have.
+            let ring = self.wallpaper_fg(st, chat, false).is_none().then(|| p.card.scale_alpha(v));
+            let layers = shown.iter().enumerate().flat_map(|(k, u)| {
+                let x = left + k as f32 * (size - 10.0);
+                let cut = ring.filter(|_| k > 0).map(|c| -> El<'a> {
+                    let disc = container(Space::new()).width(size + 4.0).height(size + 4.0);
+                    pin(disc.style(fill_box(c, size / 2.0 + 2.0))).x(x - 2.0).y(-2.0).into()
+                });
+                let face =
+                    self.face_alpha(u.img_url.as_deref(), u.full_name.as_deref().unwrap_or_default(), size, 0.0, v);
+                let face = self.tip(face, member_name(u), vec![], tooltip::Position::Top);
+                cut.into_iter().chain([pin(face).x(x).into()])
             });
-            container(Stack::with_children(layers)).center_x(34)
+            Stack::with_children(layers).width(34).height(size)
         });
-        container(row![].push(faces).push(bubble).spacing(8).align_y(Center))
-            .padding(Padding::ZERO.left(8.0).top(8.0))
-            .into()
+        // framer-motion's `height` and `marginTop: 8` from 0, with the 30 px of the bubble.
+        let body = container(row![].push(faces).push(bubble).spacing(8).align_y(Center)).height(30.0 * v).clip(true);
+        container(column![Space::new().height(8.0 * v), body]).padding(Padding::ZERO.left(8.0)).into()
     }
 
     /// Electron's context menu over selected text (electron-context-menu as Desktop sets it up): Search with Google
@@ -952,7 +1081,8 @@ impl BeeperGuiApp {
         // Desktop's `ThreadedRepliesView` hides the typing indicator, and its list has no scheduled messages.
         let in_chat = self.pane().thread_root.is_none();
         let col = self.view_messages(&st, chat, &msgs, &rows, false);
-        let col = col.push(st.typing.get(cid).filter(|_| in_chat).map(|ids| self.typing_bubble(chat, ids)));
+        let typing = self.typing_now(&st, cid).filter(|_| in_chat);
+        let col = col.push(typing.map(|(ids, v)| self.typing_bubble(&st, chat, ids, v)));
         let col = col.push(self.incognito_mark_read(&st, chat));
         let col = col.push(in_chat.then(|| self.view_scheduled(&st, chat)));
         let col = col.push(in_chat.then(|| self.view_request(&st, chat)));
@@ -1390,6 +1520,13 @@ impl BeeperGuiApp {
         let (h24, group) = (st.settings.pref("timeFormat") == 1, chat.chat_type == "group");
         let now = now_unix_millis();
         let gone = |m: &Message| m.disappeared(now) && !pending(st, m);
+        // Desktop's `uR` with `groupReplies`, which the thread pane turns off, and without a reply that is also sent to
+        // the chat (`Vb`). The reply chain overlay draws no lines.
+        let broadcast = |m: &Message| st.threaded(chat) && root.is_none() && m.broadcast;
+        let linked = |a: &Message, b: &Message, k: usize| {
+            !thread && root.is_none() && chained[k] && !broadcast(a) && !broadcast(b)
+        };
+        let ink = self.wallpaper_fg(st, chat, thread).unwrap_or(p.reply_line);
         let item = |i: usize| -> El<'a> {
             // Desktop's `GalleryGrouper` shows a gallery at its first message.
             if gallery[i] != i {
@@ -1397,10 +1534,25 @@ impl BeeperGuiApp {
             }
             let end = i + gallery[i..].iter().take_while(|&&s| s == i).count();
             let (m, prev, tail) = (msgs[i], i.checked_sub(1).map(|j| msgs[j]), msgs[end - 1]);
+            let next = msgs.get(end).copied();
+            let mine = m.is_sender == Some(true);
             let day_changed = prev.is_none_or(|q| day_num(&q.timestamp) != day_num(&m.timestamp));
-            let mut head = Column::new().push(prev.map(|q| Space::new().height(gap_below(q, m))));
+            let mut head = Column::new().width(Fill).push(prev.map(|q| Space::new().height(gap_below(q, m))));
             if day_changed {
                 head = head.push(self.day_pill(&m.timestamp).padding(Padding::new(4.0).left(GUTTER).right(0.0)));
+            }
+            // The `along-message-footer` line of the message before goes on through the gap below it, past its
+            // sender's avatar, and the date between two messages of a chain (`MessageDate`) has a line of its own.
+            if let Some(q) = prev.filter(|q| linked(q, m, i)) {
+                let (dm, face) = (!group && !mine, group && q.is_sender != Some(true) && q.sender_id != m.sender_id);
+                let (segment, top, bottom) = match day_changed {
+                    true => (Segment::new(Shape::Line, false, dm), 0.0, if dm { 4.0 } else { 0.0 }),
+                    false => {
+                        let end = !group && (q.is_sender != Some(true) || q.sender_id != m.sender_id);
+                        (Segment::new(Shape::Line, face, end), if face { 4.0 } else { 0.0 }, if dm { 2.0 } else { 0.0 })
+                    }
+                };
+                head = Column::new().push(stack![head].push_under(reply_line(segment, ink, top, bottom)));
             }
             if first_unread.is_some_and(|u| (i..end).contains(&u)) {
                 head = head.push(container(self.unread_divider(st)).id(UNREAD_DIVIDER));
@@ -1451,12 +1603,22 @@ impl BeeperGuiApp {
                 return rows.into();
             }
             let first = day_changed || prev.is_none_or(|q| q.sender_id != m.sender_id || membership(q) || gone(q));
-            let last = msgs.get(end).is_none_or(|n| {
+            let next_day = next.is_none_or(|n| day_num(&n.timestamp) != day_num(&tail.timestamp));
+            // Desktop's `showSenderImg` also shows the avatar before a reply of another chain.
+            let last = next.is_none_or(|n| {
                 n.sender_id != m.sender_id
                     || membership(n)
                     || gone(n)
-                    || day_num(&n.timestamp) != day_num(&tail.timestamp)
+                    || next_day
+                    || (!chained[end] && reply_root(st, n) != n.id)
             });
+            let chain = Chain {
+                prev: prev.is_some_and(|q| linked(q, m, i)),
+                next: next.is_some_and(|n| linked(tail, n, end)),
+                next_mine: next.is_some_and(|n| n.is_sender == Some(true)),
+                next_same: next.is_some_and(|n| n.sender_id == m.sender_id && !membership(n)),
+                next_day,
+            };
             // Desktop's `showSeenIcon`: never on an action; in a group on an own message or the last one, and in a
             // DM on an own message after the last received one.
             let own = tail.is_sender == Some(true);
@@ -1472,60 +1634,61 @@ impl BeeperGuiApp {
             viewers.sort_by_key(|&(_, ts)| ts);
             let status = if let Some(&(_, ts)) = viewers.last() {
                 if group {
-                    // Desktop's `Seen by`: the newest reader first, by first name when no other member has it.
+                    // Desktop's `Seen by`: the newest reader first, by first name when no other member has it, with
+                    // all the full names in its tooltip.
                     let members = || chat.participants.items.iter().filter(|u| u.has_exited != Some(true));
                     let first = |u: &User| u.short_name().to_lowercase();
-                    let names: Vec<String> = viewers
+                    let (names, full): (Vec<String>, Vec<String>) = viewers
                         .iter()
                         .rev()
                         .map(|&(uid, _)| {
                             let Some(u) = chat.participants.items.iter().find(|u| u.id == uid) else {
-                                return uid.to_string();
+                                return (uid.to_string(), uid.to_string());
                             };
                             let full = u.custom_nickname.as_deref().or(u.full_name.as_deref()).unwrap_or(uid);
                             match members().filter(|o| first(o) == first(u)).count() {
-                                1 => u.short_name(),
-                                _ => full.to_string(),
+                                1 => (u.short_name(), full.to_string()),
+                                _ => (full.to_string(), full.to_string()),
                             }
                         })
-                        .collect();
-                    Some(if names.len() <= 4 {
+                        .unzip();
+                    let label = if names.len() <= 4 {
                         trf("Seen by %s", &[&names.join(", ")])
                     } else {
                         let (first, more) = (names[..3].join(", "), names.len() - 3);
                         trn("Seen by %1$s & %2$d other", "Seen by %1$s & %2$d others", more, &[&first, &more])
-                    })
+                    };
+                    Some((label, Some(full.join(", "))))
                 } else {
                     let played = matches!(m.message_type.as_deref(), Some("VOICE" | "AUDIO"));
                     Some(match day_num(ts) == today() {
                         true => trf(if played { "Played at %s" } else { "Seen at %s" }, &[&format_short_ts(ts, h24)]),
                         false => trf(if played { "Played %s" } else { "Seen %s" }, &[&day_label(ts)]),
                     })
+                    .map(|t| (t, None))
                 }
-            } else if m.send_error.is_some() || m.is_deleted == Some(true) || m.is_sender != Some(true) {
+            } else if m.send_error.is_some() || m.is_deleted == Some(true) || !mine {
                 None
             } else if pending(st, m) {
                 let queued = self.queued.iter().any(|q| q.sends.iter().any(|s| s.0 == m.id));
                 let late = still_sending_at(m) <= now_unix_millis();
-                Some(
-                    tr(if queued {
-                        "Queued"
-                    } else if late {
-                        "Still sending..."
-                    } else {
-                        "Sending..."
-                    })
-                    .into(),
-                )
+                let label = tr(if queued {
+                    "Queued"
+                } else if late {
+                    "Still sending..."
+                } else {
+                    "Sending..."
+                });
+                Some((label.into(), None))
             } else {
                 (Some(end - 1) == *last_live && !any_pending)
-                    .then(|| tr(if m.is_delivered { "Delivered" } else { "Sent" }).into())
+                    .then(|| (tr(if m.is_delivered { "Delivered" } else { "Sent" }).into(), None))
             };
             let split = chained.get(end).is_some_and(|c| !c);
             let replies = if !thread && split && !st.threaded(chat) { counts[end - 1] } else { 0 };
             let ms = &msgs[i..end];
-            let hide_time = time_hidden(m, msgs.get(end).copied(), st.settings.pref("timeFormat") == 1);
-            let flags = (first, last, chained[i], thread, hide_time);
+            let hide_time = time_hidden(m, next, st.settings.pref("timeFormat") == 1);
+            let flags = (first, last, chain, thread, hide_time);
             let view = self.view_message(st, chat, ms, flags, (status, replies), head);
             let view = match send_rise(st, m) {
                 Some(t) => lift::lift(view, 14.0 * (1.0 - t), 0.97 + 0.03 * t).into(),
@@ -1611,8 +1774,8 @@ impl BeeperGuiApp {
         st: &BeeperStore,
         chat: &Chat,
         ms: &[&Message],
-        (first, last, chained, thread, hide_time): (bool, bool, bool, bool, bool),
-        (status, replies): (Option<String>, usize),
+        (first, last, chain, thread, hide_time): (bool, bool, Chain, bool, bool),
+        (status, replies): (Option<(String, Option<String>)>, usize),
         head: Column<'a, UiMessage>,
     ) -> El<'a> {
         let (p, m) = (&self.pal, ms[0]);
@@ -1685,9 +1848,26 @@ impl BeeperGuiApp {
         let linked =
             m.linked_message_id.as_ref().filter(|_| !thread && root_line.is_none() && !(in_pane && m.fallback));
         let cached = |r: &String| self.quotes.get(r).and_then(|q| q.as_ref()?.as_ref().ok());
+        // Desktop's `linkedMessage` with its 4 px margin below, and in a group the quoted sender's 24 px avatar at 0.6
+        // beside a quote of someone else (`reply-avatar`), at the bottom of a 34 px column.
+        let quote_row = |quote: El<'a>, q: Option<&Message>| -> El<'a> {
+            let line: El<'a> = match q.is_some_and(|q| q.is_sender == Some(true)) {
+                true => row![Space::new().width(Fill), quote].into(),
+                false => {
+                    let face = group.then(|| {
+                        let u = q.and_then(|q| chat.participants.items.iter().find(|u| u.id == q.sender_id));
+                        let name = q.filter(|_| u.is_some()).map(|q| sender_label(chat, q)).unwrap_or_default();
+                        let face = self.face_alpha(u.and_then(|u| u.img_url.as_deref()), &name, 24.0, 1.0, 0.6);
+                        container(face).center_x(FACE).align_bottom(FACE)
+                    });
+                    row![].push(face).push(quote).spacing(FACE_GAP).align_y(Bottom).into()
+                }
+            };
+            container(line).padding(Padding::ZERO.bottom(4.0)).into()
+        };
         let quote = linked.map(|r| {
             let Some(q) = st.loaded(r).or_else(|| cached(r)) else {
-                // Desktop's `L1t`: "Loading…" while `loadMessage` runs, then "Message unavailable".
+                // Desktop's `L1t`: "Loading…" while `loadMessage` runs, then "Message unavailable", in a dashed box.
                 let loading = match self.quotes.get(r) {
                     None => {
                         self.wants.ask(&self.wants.quotes, &(chat.id.clone(), r.clone()));
@@ -1696,19 +1876,21 @@ impl BeeperGuiApp {
                     Some(done) => done.is_none(),
                 };
                 let text = if loading { tr("Loading…") } else { tr("Message unavailable") };
-                let pill =
-                    container(txt(text, 12.0).color(p.sub)).padding(8).style(bordered_box(CLEAR, p.chip, 2.0, 17.0));
-                return ((!chained).then(|| column![].push(pill)), false);
+                let pill = container(txt(text, 12.0).color(p.sub)).padding(8).style(fill_box(p.card, 17.0));
+                let pill = stack![pill, crate::dashed::dashes(p.chip, 17.0, 2.0)];
+                return ((!chain.prev).then(|| quote_row(pill.into(), None)), false);
             };
             let q_mine = q.is_sender == Some(true);
-            let col = self.linked_message(chat, q, group, on_wall, sent).filter(|_| !chained);
+            let col = self.linked_message(chat, q, group, on_wall, sent).filter(|_| !chain.prev);
             let quote = col.map(|c| {
                 mouse_area(c)
                     .on_press(UiMessage::Message(Msg::ShowReplies(q.id.clone())))
                     .on_right_press(UiMessage::Message(Msg::LinkedMenu(m.id.clone(), q.id.clone())))
             });
-            (quote.map(|q| column![q]), q_mine)
+            (quote.map(|c| quote_row(c.into(), Some(q))), q_mine)
         });
+        let shown = quote.as_ref().and_then(|(q, q_mine)| q.is_some().then_some(*q_mine));
+        let (segments, face) = chain.segments(linked.is_some(), shown, mine, group, last);
         // Desktop's `pM`: a link with a title, an image or a summary has a preview.
         for link in m.links.iter().filter(|l| !l.title.is_empty() || l.img.is_some() || l.summary.is_some()) {
             parts = parts.push(self.view_link(&m.id, link, 0.45 * self.pane().size.width, dim));
@@ -2157,8 +2339,16 @@ impl BeeperGuiApp {
         });
         let broadcast =
             (in_pane && m.broadcast).then(|| -> El<'a> { txt(tr("Also sent to the chat"), 11.0).color(muted).into() });
-        let mut footer: Vec<El<'a>> =
-            [status.map(|t| label(t).into()), replies, broadcast, edited].into_iter().flatten().collect();
+        let mut footer: Vec<El<'a>> = [status.map(|(t, tip)| -> El<'a> {
+            match tip {
+                Some(tip) => self.tip(label(t).into(), tip, vec![], tooltip::Position::Left).into(),
+                None => label(t).into(),
+            }
+        })]
+        .into_iter()
+        .chain([replies, broadcast, edited])
+        .flatten()
+        .collect();
         if !mine {
             footer.reverse();
         }
@@ -2357,7 +2547,7 @@ impl BeeperGuiApp {
             Row::with_children(all)
         });
         let side = (group && !mine).then(|| -> El<'a> {
-            if last {
+            if face {
                 let url =
                     chat.participants.items.iter().find(|u| u.id == m.sender_id).and_then(|u| u.img_url.as_deref());
                 // Desktop's `sender-img`: a click starts a chat with the sender, when the account can.
@@ -2375,40 +2565,32 @@ impl BeeperGuiApp {
             let body = row![parts].push(tools).spacing(6).align_y(Center);
             row![].push(side).push(body).push(Space::new().width(Fill)).spacing(FACE_GAP).align_y(Bottom).into()
         };
-        let (line, head): (El<'a>, El<'a>) = match quote {
-            None => (line, head.into()),
-            Some((q, q_mine)) => {
-                let color = on_wall.unwrap_or(p.reply_line);
-                let bar = || container(Space::new()).width(3).height(Fill).style(fill_box(color, 1.5));
-                let curve = svg(REPLY_CURVE[usize::from(q_mine)].clone())
-                    .width(25)
-                    .height(19)
-                    .style(move |_, _| svg::Style { color: Some(color) });
-                let side = |c: Column<'a, UiMessage>| -> El<'a> {
-                    let c = c.align_x(if q_mine { Right } else { iced::Left });
-                    match q_mine {
-                        true => row![Space::new().width(Fill), c.padding(Padding::ZERO.right(14.0))].into(),
-                        false => row![]
-                            .push(group.then(|| Space::new().width(FACE + FACE_GAP)))
-                            .push(c.padding(Padding::ZERO.left(14.0)))
-                            .into(),
-                    }
-                };
-                let cross = q_mine != mine;
-                // The curve ends level with the middle of the bubble, above the footer and the reactions.
-                let link = column![bar(), curve, Space::new().height(Fill), Space::new().height(tail + 19.0)];
-                let line = if cross { stack![line, side(link)].into() } else { line };
-                let head = if cross && chained { stack![head, side(column![bar()])].into() } else { head.into() };
-                let quote = q.map(|q| -> El<'a> {
-                    if q_mine {
-                        row![Space::new().width(Fill), q].into()
-                    } else {
-                        row![].push(group.then(|| Space::new().width(FACE + FACE_GAP))).push(q).into()
-                    }
-                });
-                (column![].push(quote).push(line).into(), head)
+        // Desktop's reply line segments, under the quote, along the bubble down to its middle (above the footer and
+        // the reactions), and along the footer. The avatar takes the bottom of the row here, so a line above it stops
+        // 4 px over it, and the footer's line starts in the gap below.
+        let ink = on_wall.unwrap_or(p.reply_line);
+        let Segments { quote: beside, body, above_face, footer: below } = segments;
+        let lines = [
+            body.map(|s| reply_line(s, ink, 0.0, tail)),
+            above_face.map(|s| reply_line(s, ink, 0.0, FACE + 4.0)),
+            below.filter(|_| !face && tail > 0.0).map(|s| -> El<'a> {
+                // Desktop's `spaceAbove` of a received message in a DM, and the end of the line before another day.
+                let above = if !mine && !group { 2.0 } else { 0.0 };
+                let s = Segment { round_bottom: s.round_bottom && chain.next_day, ..s };
+                column![Space::new().height(Fill), container(reply_line(s, ink, above, 0.0)).height(tail)].into()
+            }),
+        ];
+        let line = lines.into_iter().flatten().fold(stack![line], |s, l| s.push_under(l));
+        let quote = quote.and_then(|(q, _)| q).map(|q| -> El<'a> {
+            match beside {
+                // Desktop's `margin-bottom: 4px` of the line beside the quote of a received message in a DM.
+                Some(s) => {
+                    stack![q].push_under(reply_line(s, ink, 0.0, if !group && !mine { 4.0 } else { 0.0 })).into()
+                }
+                None => q,
             }
-        };
+        });
+        let line: El<'a> = column![].push(quote).push(line).into();
         let (menu, click) = match ms.len() {
             1 => (UiMessage::Message(Msg::OpenMenu(m.id.clone())), UiMessage::Message(Msg::Click(m.id.clone()))),
             _ => {
@@ -2444,7 +2626,14 @@ impl BeeperGuiApp {
         let q_mine = q.is_sender == Some(true);
         let (edge, fill) = if q_mine { (sent, mix(p.card, sent, 0.3)) } else { (p.received, p.card) };
         let max = 0.45 * self.pane().size.width;
-        let boxed = move |c: El<'a>| container(c).padding(8).max_width(max).style(bordered_box(fill, edge, 2.0, 17.0));
+        // Desktop's `isDeleted` box has a dashed border.
+        let boxed = move |c: El<'a>, dashed: bool| -> El<'a> {
+            let b = container(c).padding(8).max_width(max);
+            match dashed {
+                true => stack![b.style(fill_box(fill, 17.0)), crate::dashed::dashes(edge, 17.0, 2.0)].into(),
+                false => b.style(bordered_box(fill, edge, 2.0, 17.0)).into(),
+            }
+        };
         // Desktop's view-once media, which can be viewed or expired, shows as its pill, and its text as its preview.
         let view = q.view_once() || q.view_once_expired();
         let visual = view || q.attachments.iter().any(|a| quote_tile(a) || a.attachment_type == "audio");
@@ -2454,8 +2643,9 @@ impl BeeperGuiApp {
             false => q.attachments.iter().map(|a| self.linked_attachment(a)).collect(),
         };
         let media = (!items.is_empty() || deleted).then(|| {
-            let gone = (deleted && !view).then(|| med(tr("Message Deleted"), 13.0).color(p.text));
-            boxed(Row::with_children(items).push(gone).spacing(4).align_y(Center).into())
+            let gone = tr(if q.removed { "Removed from Beeper" } else { "Message Deleted" });
+            let gone = (deleted && !view).then(|| med(gone, 13.0).color(p.text));
+            boxed(Row::with_children(items).push(gone).spacing(4).align_y(Center).into(), deleted && !view)
         });
         let text = q.text.as_deref().filter(|_| !deleted).map(|t| match view_once::preview(q) {
             Some(v) => v.to_string(),
@@ -2466,7 +2656,8 @@ impl BeeperGuiApp {
             false => t,
         });
         let within = (group && !visual).then(|| name().color(p.strong));
-        let text = text.map(|t| boxed(column![].push(within).push(med(t, 13.0).color(p.text)).spacing(2).into()));
+        let text =
+            text.map(|t| boxed(column![].push(within).push(med(t, 13.0).color(p.text)).spacing(2).into(), false));
         let above = (group && visual).then(|| {
             container(name().color(on_wall.unwrap_or(p.strong))).padding(Padding::new(0.0).left(11.0).right(11.0))
         });
@@ -2541,8 +2732,6 @@ impl BeeperGuiApp {
         container(line).padding(Padding::ZERO.bottom(6.0).left(GUTTER)).into()
     }
 
-    /// Desktop's reactions list of messages `ms`: each reaction with the face and the name of its sender, by group, and "and N more" after 19 when there are more than 20.
-    /// Desktop's `Tfe`: a custom emoji's image 16 high, or the emoji.
     /// Desktop's `Wfe` in the timeline: the contact card in the colors of the bubble, its first 10 phone numbers and
     /// emails, which start a chat on an account that can message them and else open their Call or Email and Copy menu,
     /// and its Download button.
@@ -2606,6 +2795,7 @@ impl BeeperGuiApp {
         self.media_at(url).and_then(|m| m.as_ref().ok()).and_then(|f| f.first()).map(|f| f.0.clone())
     }
 
+    /// Desktop's `Tfe`: a custom emoji's image 16 high, or the emoji.
     fn reaction_glyph<'a>(&self, x: &Reaction, size: f32, line: f32) -> El<'a> {
         // A key that is itself an image, as stored before keys had their shortcode, shows the image too.
         let url = x.img_url.as_deref().or(Some(x.reaction_key.as_str()).filter(|k| k.starts_with("mxc://")));
@@ -2618,6 +2808,8 @@ impl BeeperGuiApp {
         }
     }
 
+    /// Desktop's reactions list (`Efe`) of messages `ms`: each reaction with the face and the name of its sender, by
+    /// group, and "and N more" after 19 when there are more than 20.
     pub(crate) fn reaction_list<'a>(&self, chat: &Chat, ms: &[&Message]) -> El<'a> {
         let p = &self.pal;
         let all: Vec<&Reaction> = reaction_groups(ms).into_iter().flat_map(|(_, rs)| rs).collect();
@@ -2634,7 +2826,8 @@ impl BeeperGuiApp {
             .align_y(Center);
             col.push(container(line).padding([4, 8]))
         });
-        let list = list.push((more > 0).then(|| container(txt(format!("and {more} more"), 13.0)).padding([4, 8])));
+        let more = (more > 0).then(|| trn("and %s more", "and %s more", more, &[&short_count(more)]));
+        let list = list.push(more.map(|more| container(txt(more, 13.0)).padding([4, 8])));
         container(list).padding([2, 4]).style(bordered_box(p.menu, p.menu_border, 1.0, 6.0)).into()
     }
 
@@ -2662,13 +2855,18 @@ impl BeeperGuiApp {
             let own = reactors.iter().any(|x| st.is_me(&x.participant_id));
             let mut pill = Row::with_children(glyphs.collect::<Vec<El<'a>>>()).spacing(4).align_y(Center);
             if look.group || n > 1 {
-                for x in reactors.iter().take(3) {
+                // `.message-reaction-avatars`: each face 6 px over the one after it, the first on top.
+                let faces = reactors.iter().take(3).enumerate().rev().map(|(k, x)| {
                     let u = chat.participants.items.iter().find(|u| u.id == x.participant_id);
                     let name = u.and_then(|u| u.full_name.as_deref()).unwrap_or(&x.participant_id);
-                    pill = pill.push(self.face(u.and_then(|u| u.img_url.as_deref()), name, 16.0, 0.5));
-                }
+                    pin(self.face(u.and_then(|u| u.img_url.as_deref()), name, 16.0, 0.5)).x(10.0 * k as f32).into()
+                });
+                let shown = n.min(3) as f32;
+                pill = pill.push(Stack::with_children(faces).width(16.0 + 10.0 * (shown - 1.0)).height(16.0));
                 if n > 3 {
-                    pill = pill.push(semi(format!("+{}", n - 3), 11.0).color(look.fg.1));
+                    // `.message-reaction-count`: `label-xs`, semibold.
+                    let count = semi(format!("+{}", n - 3), 10.0).line_height(Pixels(12.0));
+                    pill = pill.push(count.color(look.fg.1));
                 }
             }
             let fill = if own { look.own } else { look.other };
@@ -3393,6 +3591,188 @@ mod tests {
         assert!(!has(&app), "another right click forgets the quote");
     }
 
+    /// The pixels of a frame of `sim`, at its scale of 2. The simulator does not find the text of overlays.
+    fn pixels(sim: &mut iced_test::Simulator<'_, UiMessage>) -> ::image::RgbaImage {
+        let dir = std::env::temp_dir().join(format!(
+            "beeper-rs-msg-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("shot"));
+        let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+        let shot = ::image::open(&png).unwrap().into_rgba8();
+        std::fs::remove_dir_all(&dir).unwrap();
+        shot
+    }
+
+    /// Whether the pixel is `c`, give or take antialiasing.
+    fn near(px: [u8; 4], c: Color) -> bool {
+        let c = c.into_rgba8();
+        (0..3).map(|i| px[i].abs_diff(c[i]) as u32).sum::<u32>() < 24
+    }
+
+    /// The message `mid` alone, the first and the last of its sender, in a pane 900 px wide.
+    fn alone<'a>(app: &'a BeeperGuiApp, mid: &str) -> iced_test::Simulator<'a, UiMessage> {
+        let st = app.store.read();
+        let m = st.message(mid);
+        let flags = (true, true, Chain::default(), false, false);
+        let view = app.view_message(&st, st.chat(&m.chat_id), &[m], flags, (None, 0), Column::new());
+        iced_test::Simulator::with_size(Default::default(), Size::new(900.0, 400.0), view)
+    }
+
+    /// Desktop's `replyLineSegments` (`C4t`): a curve into a reply that quotes the other side, a curve out of a
+    /// message that its reply follows, loops along your own messages between replies of others, and lines along
+    /// the rest of the chain.
+    #[test]
+    fn reply_line_segments_like_desktop() {
+        use crate::reply_line::Shape::*;
+        let line = |shape, top, bottom| Some(Segment::new(shape, top, bottom));
+        let chain = |prev, next, next_mine| Chain { prev, next, next_mine, next_same: next_mine, next_day: false };
+        // Your reply in a DM to a message of theirs ends the line with a curve into it.
+        let (s, _) = chain(false, false, false).segments(true, Some(false), true, false, true);
+        assert_eq!(s, Segments { body: line(End, true, true), ..Default::default() });
+        // Their reply in a group to yours: a curve beside the quote, and a line down to the avatar.
+        let (s, face) = chain(false, false, false).segments(true, Some(true), false, true, false);
+        let quote = line(Start, false, false);
+        assert_eq!(s, Segments { quote, above_face: line(Line, false, true), ..Default::default() }, "{s:?}");
+        assert!(face, "the end of a chain shows the avatar");
+        // Your message that your reply follows starts the line, which goes on along its footer.
+        let (s, _) = chain(false, true, true).segments(false, None, true, false, false);
+        assert_eq!(
+            s,
+            Segments { body: line(Start, true, false), footer: line(Line, false, false), ..Default::default() }
+        );
+        // Your message between replies of others loops.
+        let (s, _) = chain(true, true, false).segments(false, None, true, true, true);
+        assert_eq!(s.body, line(Loop, false, false));
+        // A received message in a group without its avatar has the line in the avatar's place.
+        let (s, face) = chain(true, true, false).segments(false, None, false, true, false);
+        assert_eq!((s.body, face), (line(Line, false, false), false));
+        assert_eq!(chain(false, false, false).segments(false, None, true, true, true).0, Segments::default());
+    }
+
+    /// Desktop draws the reply line along a chain of your own messages too, 15 px into the timeline.
+    #[test]
+    fn reply_lines_join_a_chain_like_desktop() {
+        let mut app = crate::fuzz::demo_app("reply-lines");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        app.pane.size = Size::new(900.0, 700.0);
+        // The last two messages, as plain text.
+        let ids: Vec<String> = {
+            let st = app.store.read();
+            app.timeline(&st).0.iter().rev().take(2).map(|m| m.id.clone()).collect()
+        };
+        for id in &ids {
+            change(&app, id, |m| {
+                (m.text, m.html, m.linked_message_id, m.message_type) = (Some("Hi".into()), None, None, None);
+                (m.attachments, m.links, m.poll, m.call, m.timer) = (vec![], vec![], None, None, None);
+                (m.is_sender, m.is_deleted, m.reactions) = (Some(true), None, vec![]);
+            });
+        }
+        // The rows of the timeline with the line's color 15 px in from its 8 px padding.
+        let line_rows = |app: &BeeperGuiApp| {
+            let st = app.store.read();
+            let chat = st.chat("!note_self:beeper.com");
+            let rows = app.conversation_rows(&st, chat);
+            let msgs: Vec<&Message> = rows.msgs.iter().map(|&i| &st.messages[i]).collect();
+            let view = app.view_messages(&st, chat, &msgs, &rows, false);
+            let shot = pixels(&mut iced_test::Simulator::with_size(Default::default(), app.pane.size, view));
+            (0..shot.height()).filter(|&y| near(shot.get_pixel(2 * (8 + 15) + 2, y).0, app.pal.reply_line)).count()
+        };
+        assert_eq!(line_rows(&app), 0, "no line without a chain");
+        change(&app, &ids[0], |m| m.linked_message_id = Some(ids[1].clone()));
+        assert!(line_rows(&app) > 2 * 22, "a line joins a message and your reply to it from curve to curve");
+    }
+
+    /// Desktop's `bfe` of a deleted message: "Message Deleted", or "Removed from Beeper", in a dashed box like the
+    /// "Loading…" one of a message that did not load (`L1t`). A group shows the quoted sender's avatar beside a quote
+    /// of someone else (`reply-avatar`).
+    #[test]
+    fn quotes_like_desktop() {
+        let mut app = crate::fuzz::demo_app("quotes");
+        app.pane.size = Size::new(900.0, 700.0);
+        let (cid, quoted, reply) = {
+            let mut st = app.store.write();
+            let i = st.chats.iter().position(|c| c.chat_type == "group").expect("a group");
+            let zed = User { id: "@zq:x".into(), full_name: Some("Zed Quinn".into()), ..Default::default() };
+            st.update_chat(i, |c| c.participants.items.push(zed));
+            let id = st.chats[i].id.clone();
+            let ids: Vec<String> =
+                st.timeline_indices(&id).iter().rev().take(2).map(|&k| st.messages[k].id.clone()).collect();
+            (id, ids[1].clone(), ids[0].clone())
+        };
+        change(&app, &quoted, |m| {
+            (m.sender_id, m.is_sender, m.attachments) = ("@zq:x".into(), Some(false), vec![]);
+            m.text = Some("the quoted text".into());
+        });
+        change(&app, &reply, |m| m.linked_message_id = Some(quoted.clone()));
+        assert_eq!(alone(&app, &reply).find("Z").expect("the reply avatar").bounds().height, 12.0, "24 px");
+        // Whether the top edge of the box around `label` has gaps.
+        let dashed = |app: &BeeperGuiApp, label: &str| {
+            let mut sim = alone(app, &reply);
+            let b = sim.find(label).expect(label).bounds();
+            let shot = pixels(&mut sim);
+            let y = ((b.y - 7.0) * 2.0).round() as u32;
+            let edge: Vec<[u8; 4]> =
+                ((b.x as u32 + 10) * 2..(b.x + b.width) as u32 * 2 - 20).map(|x| shot.get_pixel(x, y).0).collect();
+            assert!(edge.iter().any(|&px| !near(px, app.pal.card)), "a border around {label}");
+            edge.iter().any(|&px| px == app.pal.card.into_rgba8())
+        };
+        assert!(!dashed(&app, "Zed Quinn"), "a quote has a solid border");
+        change(&app, &quoted, |m| m.is_deleted = Some(true));
+        assert!(dashed(&app, "Message Deleted"));
+        change(&app, &quoted, |m| m.removed = true);
+        assert!(dashed(&app, "Removed from Beeper"));
+        change(&app, &reply, |m| m.linked_message_id = Some("$nowhere".into()));
+        assert!(dashed(&app, "Loading…"));
+        change(&app, &reply, |m| m.linked_message_id = Some(quoted.clone()));
+        {
+            let mut st = app.store.write();
+            let i = st.resolve_chat_idx(&cid).expect("the group");
+            st.update_chat(i, |c| c.chat_type = "single".into());
+        }
+        assert!(alone(&app, &reply).find("Z").is_err(), "a DM has no reply avatar");
+    }
+
+    /// Desktop's reaction pill (`.message-reaction-avatars`): up to 3 faces, each 6 px over the next one, and "+N" in
+    /// `label-xs`. Its reactions list ends with "and N more" past 20, in Desktop's `xgt` numbers.
+    #[test]
+    fn reaction_faces_like_desktop() {
+        let counts = [999, 1000, 1049, 1250, 1350, 999_999, 1_125_000, 2_500_000].map(short_count);
+        assert_eq!(counts, ["999", "1.0K", "1.0K", "1.3K", "1.4K", "1000.0K", "1.13M", "2.50M"]);
+        let app = crate::fuzz::demo_app("reaction-faces");
+        let st = app.store.read();
+        let chat = st.chats.iter().find(|c| c.chat_type == "group").expect("a group");
+        let react = |k: usize| Reaction {
+            id: format!("r{k}"),
+            participant_id: format!("@p{k}:x"),
+            reaction_key: "👍".into(),
+            animated: None,
+            img_url: None,
+            sort_key: String::new(),
+        };
+        let mut m = st.messages[0].clone();
+        m.reactions = (0..4).map(react).collect();
+        let p = &app.pal;
+        let look = PillLook {
+            group: true,
+            own: p.card,
+            other: p.received,
+            hover: None,
+            fg: (p.text, p.on_secondary),
+            ring: (p.card, 2.0),
+            gap: 2.0,
+        };
+        let mut sim = simulator(app.reaction_pills(&st, chat, &[&m], &look));
+        let (glyph, more) = (sim.find("👍").unwrap().bounds(), sim.find("+1").expect("+1").bounds());
+        let faces = more.x - (glyph.x + glyph.width) - 2.0 * 4.0;
+        assert!((faces - (16.0 + 2.0 * 10.0)).abs() < 0.01, "three faces in 36 px, not {faces}");
+        assert_eq!(more.height, 12.0, "`label-xs`");
+        m.reactions = (0..22).map(react).collect();
+        assert!(simulator(app.reaction_list(chat, &[&m])).find("and 3 more").is_ok());
+    }
+
     /// Desktop's reaction pills: one pill a group of skin tones, in the order the groups first appear, and a click
     /// that adds the group's reaction or removes your own reactions of the group.
     #[test]
@@ -3420,7 +3800,8 @@ mod tests {
         assert_eq!(removes(toggle_reaction(&st, "c", &[&m], "😂")), "😂", "or adds the group's");
     }
 
-    /// Desktop's `Seen by` of a group: the newest reader first, by first name when no other member has it.
+    /// Desktop's `Seen by` of a group: the newest reader first, by first name when no other member has it, and all the
+    /// full names in its tooltip on the left.
     #[test]
     fn seen_by_names_like_desktop() {
         let mut app = crate::fuzz::demo_app("seen-by");
@@ -3442,7 +3823,87 @@ mod tests {
             id
         };
         let _ = app.update(UiMessage::SelectChat(chat));
+        app.pane.size = Size::new(900.0, 700.0);
         assert!(simulator(app.view_conversation()).find("Seen by Bo, Ann Smith, Ann Lee").is_ok());
+        // The timeline alone, without the composer over its bottom.
+        let st = app.store.read();
+        let chat = st.chat(app.pane.selected_chat_id.as_deref().unwrap());
+        let rows = app.conversation_rows(&st, chat);
+        let msgs: Vec<&Message> = rows.msgs.iter().map(|&i| &st.messages[i]).collect();
+        let view = app.view_messages(&st, chat, &msgs, &rows, false);
+        let mut sim = iced_test::Simulator::with_size(Default::default(), app.pane.size, view);
+        let label = sim.find("Seen by Bo, Ann Smith, Ann Lee").expect("the label").bounds();
+        sim.point_at(label.center());
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: label.center() })]);
+        // The text of the tooltip left of the label is as wide as the full names.
+        let shot = pixels(&mut sim);
+        let rows = (label.y * 2.0) as u32..((label.y + label.height) * 2.0) as u32;
+        let ink: Vec<u32> = (0..(label.x * 2.0) as u32)
+            .filter(|&x| rows.clone().any(|y| near(shot.get_pixel(x, y).0, app.pal.strong)))
+            .collect();
+        let width = (ink.last().unwrap() - ink[0]) as f32 / 2.0;
+        let full = text_width("Bo Jones, Ann Smith, Ann Lee", 13.0, Weight::Medium);
+        assert!((width - full).abs() < 3.0, "the tooltip text is {width} px wide, the full names {full} px");
+    }
+
+    /// Desktop's `BrandTypingIndicator`: who types in its tooltip, in a group the first 4 faces at
+    /// `min(20, (34 + 10(n - 1)) / n)` px, and 0.32 s to show and to hide, but at once while scrolled up.
+    #[test]
+    fn typing_indicator_like_desktop() {
+        let names = |n: usize| (1..=n).map(|k| format!("P{k}")).collect::<Vec<_>>();
+        assert_eq!(typing_tip(&names(1)), "P1 is typing…");
+        assert_eq!(typing_tip(&names(3)), "P1, P2 and P3 are typing…");
+        assert_eq!(typing_tip(&names(7)), "P1, P2, P3, P4, P5, P6 and 1 other is typing…");
+        assert_eq!(typing_tip(&names(9)), "P1, P2, P3, P4, P5, P6 and 3 others are typing…");
+        let mut app = crate::fuzz::demo_app("typing-indicator");
+        let people = [("@q:x", "Qi"), ("@x:x", "Xu"), ("@z:x", "Zo"), ("@j:x", "Jo"), ("@y:x", "Yu")];
+        let ids: Vec<String> = people.iter().map(|p| p.0.to_string()).collect();
+        let cid = {
+            let mut st = app.store.write();
+            let i = st.chats.iter().position(|c| c.chat_type == "group").expect("a group");
+            let user = |(id, name): &(&str, &str)| User {
+                id: id.to_string(),
+                full_name: Some(name.to_string()),
+                ..Default::default()
+            };
+            st.update_chat(i, |c| c.participants.items.extend(people.iter().map(user)));
+            st.chats[i].id.clone()
+        };
+        let _ = app.update(UiMessage::SelectChat(cid.clone()));
+        let shown = |app: &BeeperGuiApp| app.typing_now(&app.store.read(), &cid).map(|(ids, v)| (ids.len(), v));
+        let typing = |app: &mut BeeperGuiApp, on: bool| {
+            match on {
+                true => app.store.write().typing.insert(cid.clone(), ids.clone()),
+                false => app.store.write().typing.remove(&cid),
+            };
+            let _ = app.update(UiMessage::Typing(cid.clone()));
+        };
+        let later = |app: &mut BeeperGuiApp| app.typing_shown.get_mut(&cid).unwrap().2 -= TYPING_FADE;
+        // Whether the indicator shows and started to show at `before` or after it.
+        let started = |app: &BeeperGuiApp, before| app.typing_shown.get(&cid).is_some_and(|t| t.1 && t.2 >= before);
+        app.pane.scrolled_up = Some((false, std::time::Instant::now()));
+        let before = std::time::Instant::now();
+        typing(&mut app, true);
+        assert!(started(&app, before), "it starts to show at the bottom of the timeline");
+        later(&mut app);
+        assert_eq!(shown(&app), Some((5, 1.0)));
+        {
+            let st = app.store.read();
+            let mut sim = simulator(app.typing_bubble(&st, st.chat(&cid), &ids, 1.0));
+            for l in ["Q", "X", "Z", "J"] {
+                assert_eq!(sim.find(l).expect(l).bounds().height, 8.0, "16 px faces for 4");
+            }
+            assert!(sim.find("Y").is_err(), "4 faces at most");
+        }
+        let before = std::time::Instant::now();
+        typing(&mut app, false);
+        let hiding = app.typing_shown.get(&cid).is_some_and(|t| t.0.len() == 5 && !t.1 && t.2 >= before);
+        assert!(hiding, "it hides with who typed");
+        later(&mut app);
+        assert_eq!(shown(&app), None);
+        app.pane.scrolled_up = Some((true, std::time::Instant::now()));
+        typing(&mut app, true);
+        assert_eq!(shown(&app), Some((5, 1.0)), "at once while scrolled up");
     }
 
     /// Whether the message menu of `mid` has `label`.

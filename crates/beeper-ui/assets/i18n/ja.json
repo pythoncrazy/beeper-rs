@@ -1276,6 +1276,7 @@
 "account context menu action\u0004Unmute":["ミュート解除"],
 "all":["すべて"],
 "all chats":["すべてのチャット"],
+"and %s more":["他%s件"],
 "another device":["別の端末"],
 "archive all button\u0004Archive %d chat":["%d件のチャットをアーカイブ"],
 "archive confirmation button\u0004Archive":["アーカイブ"],

@@ -1023,7 +1023,7 @@ impl BeeperGuiApp {
                 let banner = container(banner).padding(Padding::new(8.0).bottom(0.0).left(12.0));
                 let body = column![banner].push(external).push(line);
                 let body = container(body).width(Fill).style(fill_box(p.card, 18.0));
-                stack![body, dashed::dashes(hex(0x808080), 18.0)].into()
+                stack![body, dashed::dashes(hex(0x808080), 18.0, 1.0)].into()
             }
         };
 
