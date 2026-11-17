@@ -182,8 +182,9 @@ impl Cloud {
         field(&self.guest("/user/register", body)?, "token").ok_or_else(|| fail(502, "Could not create the account"))
     }
 
+    /// Desktop's `loginWithJWT`, whose SDK names the new device with `DEFAULT_DEVICE_NAME`.
     pub fn matrix_login(&self, jwt: &str) -> Result<MatrixSession, CloudError> {
-        let name = format!("beeper-rs ({})", std::env::consts::OS);
+        let name = crate::config::DEVICE_NAME;
         let body = json!({ "type": "org.matrix.login.jwt", "token": jwt, "initial_device_display_name": name });
         let v = self.call(&format!("{}/_matrix/client/v3/login", self.homeserver), None, Some(&body))?;
         let session: MatrixSession =
@@ -490,6 +491,25 @@ mod tests {
         assert_eq!((profile(&ended).plan, profile(&ended).can_subscribe), (Plan::Free, true));
         let blocked = json!({ "canSubscribe": { "STRIPE": false } });
         assert!(!profile(&blocked).can_subscribe, "the server can forbid Stripe");
+    }
+
+    /// The Matrix login names the device like Desktop on Linux, to a local stub of the homeserver.
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn matrix_login_names_the_device_like_desktop() {
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url = crate::bridge_stub::serve(move |method, path, body| {
+            log.lock().unwrap().push((method.to_string(), path.to_string(), body));
+            (200, json!({ "user_id": "@me:x", "access_token": "token", "device_id": "DEV" }))
+        })
+        .await;
+        let cloud = Cloud::new(&url, &url);
+        let session = tokio::task::spawn_blocking(move || cloud.matrix_login("jwt")).await.unwrap().unwrap();
+        assert_eq!((session.device_id.as_str(), session.jwt.as_deref()), ("DEV", Some("jwt")));
+        let body = json!({ "type": "org.matrix.login.jwt", "token": "jwt",
+            "initial_device_display_name": "Beeper Desktop v4 (Linux)" });
+        assert_eq!(*sent.lock().unwrap(), [("POST".into(), "/_matrix/client/v3/login".into(), body)]);
     }
 
     /// Desktop's Whisper request, to a local stub of Beeper's OpenAI proxy.

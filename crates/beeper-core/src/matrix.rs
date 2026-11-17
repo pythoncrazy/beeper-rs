@@ -3581,6 +3581,46 @@ pub async fn devices(client: Client) -> Result<Vec<DeviceInfo>, String> {
     Ok(out)
 }
 
+/// Desktop SDK's `DeviceMetadata` of this device. The SDK sends Go's `runtime.GOOS` and `GOARCH` as `os` and
+/// `architecture`. It leaves out `os_version` on a computer, and beeper-rs has no SDK build for the
+/// `build_git_commit`, `build_git_branch` and `build_go_version` that the SDK adds.
+fn device_metadata(device_id: &str) -> Value {
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        os => os,
+    };
+    let architecture = match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        "x86" => "386",
+        arch => arch,
+    };
+    serde_json::json!({
+        "device_id": device_id,
+        "app_type": "desktop",
+        "app_name": crate::config::DEVICE_NAME,
+        "app_version": crate::config::APP_VERSION,
+        "device_model": crate::config::DEVICE_MODEL,
+        "device_type": "computer",
+        "os": os,
+        "architecture": architecture,
+    })
+}
+
+/// Desktop SDK's `updateDeviceMetadata`, which runs at each start: it sets the `com.beeper.device_metadata.<device
+/// ID>` account data of this device when the stored one differs.
+async fn update_device_metadata(client: Client) {
+    let id = client.device_id().expect("signed-in client has a device ID").to_string();
+    let kind = format!("com.beeper.device_metadata.{id}");
+    let meta = device_metadata(&id);
+    if global(&client, &kind).await != meta {
+        let raw = Raw::from_json(serde_json::value::to_raw_value(&meta).expect("account data JSON"));
+        if let Err(e) = client.account().set_account_data_raw(kind.into(), raw).await {
+            eprintln!("Could not set the device metadata: {e}");
+        }
+    }
+}
+
 /// Desktop's `deleteDevicesByID` for another device of the account. The homeserver asks for auth, which the Beeper
 /// JWT gives.
 pub async fn delete_device(store: SharedStore, id: String) -> Result<(), String> {
@@ -3836,6 +3876,7 @@ pub async fn run(store: SharedStore) {
         (st.matrix, st.syncing) = (Some(client.clone()), true);
     }
     tokio::spawn(push_loop(store.clone()));
+    tokio::spawn(update_device_metadata(client.clone()));
     tokio::spawn(retry_undecrypted(client.clone(), store.clone()));
     tokio::spawn(retry_after_backup(client.clone(), store.clone()));
     // Like Desktop's SDK, the state is `initialized` when the device knows the identity of the account. When the
@@ -4031,6 +4072,60 @@ mod tests {
         store.write().remove_chat("!room:x");
         super::sync_left(&store, &room, Vec::new()).await;
         assert!(store.read().resolve_chat_idx("!room:x").is_none(), "a deleted chat stays deleted");
+    }
+
+    /// Like Desktop's SDK on Linux, a start sets the device metadata when the stored one is missing or differs, and
+    /// sends nothing when it matches.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[tokio::test]
+    async fn device_metadata_like_desktop() {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        use std::sync::{Arc, Mutex};
+        let meta = json!({ "device_id": "DEV", "app_type": "desktop", "app_name": "Beeper Desktop v4 (Linux)",
+            "app_version": "4.3.308", "device_model": "Linux PC", "device_type": "computer", "os": "linux",
+            "architecture": "amd64" });
+        // The account data of the second and the third sync: the metadata that the first start set, then the
+        // metadata of Desktop's SDK, with its build.
+        let stored = Arc::new(Mutex::new(Value::Null));
+        let (sent, next) = (Arc::new(Mutex::new(Vec::new())), stored.clone());
+        let (log, syncs) = (sent.clone(), AtomicUsize::new(0));
+        let url =
+            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                "/_matrix/client/v3/sync" => {
+                    let content = next.lock().unwrap().clone();
+                    let mut sync = stub_sync();
+                    // A new batch each time, since the client skips a batch that it has.
+                    sync["next_batch"] = json!(format!("s{}", syncs.fetch_add(1, Relaxed)));
+                    if !content.is_null() {
+                        let event = json!({ "type": "com.beeper.device_metadata.DEV", "content": content });
+                        sync["account_data"] = json!({ "events": [event] });
+                    }
+                    (200, sync)
+                }
+                p if p.contains("device_metadata") => {
+                    log.lock().unwrap().push((method.to_string(), p.to_string(), body));
+                    (200, json!({}))
+                }
+                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            })
+            .await;
+        let store = stub_store(&crate::testing::temp_dir("device-metadata"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        super::update_device_metadata(client.clone()).await;
+        let put = ("PUT".to_string(), "/_matrix/client/v3/user/@me:x/account_data/com.beeper.device_metadata.DEV");
+        assert_eq!(*sent.lock().unwrap(), [(put.0.clone(), put.1.to_string(), meta.clone())], "a new device sets it");
+        *stored.lock().unwrap() = meta.clone();
+        client.sync_once(super::SyncSettings::default()).await.expect("sync the metadata");
+        super::update_device_metadata(client.clone()).await;
+        assert_eq!(sent.lock().unwrap().len(), 1, "the same metadata sends nothing");
+        let mut desktop = meta.clone();
+        desktop["build_go_version"] = json!("go1.25.1");
+        *stored.lock().unwrap() = desktop;
+        client.sync_once(super::SyncSettings::default()).await.expect("sync Desktop's metadata");
+        super::update_device_metadata(client).await;
+        assert_eq!(sent.lock().unwrap()[1..], [(put.0, put.1.to_string(), meta)], "other metadata is replaced");
     }
 
     /// A device signed out from elsewhere gets M_UNKNOWN_TOKEN from the sync: the loop stops, and the next start signs

@@ -10,6 +10,27 @@ pub const APP_NAME: &str = "Beeper";
 pub const INSTALL_ID: &str = "beeper-rs";
 pub const INSTALL_NAME: &str = "Beeper-RS";
 pub const APP_VERSION: &str = "4.3.308";
+/// Desktop's `DEFAULT_DEVICE_NAME`: "Beeper Desktop v4" and the platform. It names the Matrix device at the login,
+/// and Desktop's SDK publishes it as the `app_name` of the device metadata.
+pub const DEVICE_NAME: &str = if cfg!(target_os = "macos") {
+    "Beeper Desktop v4 (macOS)"
+} else if cfg!(windows) {
+    "Beeper Desktop v4 (Windows)"
+} else if cfg!(target_os = "linux") {
+    "Beeper Desktop v4 (Linux)"
+} else {
+    "Beeper Desktop v4"
+};
+/// Desktop's device model (`_0`), which its SDK publishes as the `device_model` of the device metadata.
+pub const DEVICE_MODEL: &str = if cfg!(target_os = "macos") {
+    "Mac"
+} else if cfg!(windows) {
+    "Windows PC"
+} else if cfg!(target_os = "linux") {
+    "Linux PC"
+} else {
+    "Computer"
+};
 pub const DEFAULT_PAS_HOST: &str = "127.0.0.1";
 /// Desktop's Desktop API port. When it is busy, Desktop tries the next 50 ports, then a random port.
 pub const DEFAULT_PAS_PORT: u16 = 23373;
