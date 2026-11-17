@@ -76,6 +76,11 @@ struct Data {
     natives: HashMap<String, usize>,
 }
 
+/// Whether `s` is one emoji, in any skin tone.
+pub(crate) fn is_emoji(s: &str) -> bool {
+    !s.is_empty() && DATA.natives.contains_key(&bare(s))
+}
+
 fn bare(s: &str) -> String {
     s.chars().filter(|c| !MODIFIERS.contains(c) && !matches!(c, '\u{FE0E}' | '\u{FE0F}')).collect()
 }
