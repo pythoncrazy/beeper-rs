@@ -466,7 +466,7 @@ impl BeeperGuiApp {
                 }
             }
             if let [m] = picked[..] {
-                if crate::editable(m, rules) {
+                if crate::editable(m, chat.expect("a chat of the picked messages")) {
                     let edit = crate::edit_open(m, rules).then(|| UiMessage::RunHotkey("Message: Edit"));
                     v.push(cmd(e, trx("Edit", "message command"), edit).hotkey("Message: Edit"));
                 }
