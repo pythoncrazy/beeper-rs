@@ -450,18 +450,28 @@ impl BeeperGuiApp {
                     .padding([8, 13])
                     .style(fill_box(p.chip, 0.0));
             let (joining, error) = (self.join_room.0, self.join_room.1.as_deref());
-            let input = field(tr("Room address or Matrix link"));
+            // `.joinInputs .joinInput input`: 32 px tall on the secondary container, body-md text, radius 8.
+            let input = text_input(tr("Room address or Matrix link"), &self.new_chat_query)
+                .id("new-chat-input")
+                .on_input(|q| UiMessage::NewChat(new_chat::Msg::Query(q)))
+                .size(14)
+                .line_height(Pixels(18.0))
+                .padding([7, 10])
+                .style(input_style(p.chip, p.strong, p.sub, p.accent, 8.0));
             let input =
                 if joining { input } else { input.on_submit(UiMessage::NewChat(new_chat::Msg::JoinMatrixRoom)) };
-            let inputs = row![tinted(&MAT_LINK, 18.0, p.sub), input]
+            // `.joinError`: under the input, 4 px above and 10 px below.
+            let error = error.map(|e| {
+                container(txt(e.to_string(), 12.0).color(p.text_danger)).padding(Padding::ZERO.top(4).bottom(10))
+            });
+            let link = container(tinted(&MAT_LINK, 18.0, p.sub)).padding(Padding::ZERO.top(7));
+            let inputs = row![link, column![input].push(error).width(Fill)]
                 .spacing(8)
-                .align_y(Center)
                 .padding(Padding::new(6.0).left(13.0).right(8.0));
-            let error = error.map(|e| container(txt(e.to_string(), 12.0).color(p.text_danger)).padding([0, 13]));
             let ready = !joining && !self.new_chat_query.trim().is_empty();
             let label = if joining { tr("Joining...") } else { tr("Join") };
             let join = footer(label, "ENTER", ready.then_some(UiMessage::NewChat(new_chat::Msg::JoinMatrixRoom)));
-            let body = column![head, inputs].push(error).push(Space::new().height(Fill)).push(join);
+            let body = column![head, inputs].push(Space::new().height(Fill)).push(join);
             return container(body).width(Fill).height(Fill).style(fill_box(p.card, 18.0)).into();
         }
         let all = rail_accounts(&st);
