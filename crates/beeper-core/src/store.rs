@@ -2011,12 +2011,14 @@ impl BeeperStore {
         self.update_message(idx, |m| {
             let mut seen = std::mem::take(&mut m.seen);
             seen.extend(msg.seen);
+            let disappearing = crate::models::MessageTimer::merge(m.disappearing.take(), msg.disappearing.take());
             *m = Message {
                 reactions: std::mem::take(&mut m.reactions),
                 edit_history: std::mem::take(&mut m.edit_history),
                 is_bookmarked: m.is_bookmarked,
                 is_unread: m.is_unread,
                 seen,
+                disappearing,
                 ..msg
             }
         });
@@ -2435,6 +2437,7 @@ impl BeeperStore {
             mentions: None,
             send_status: None,
             call: None,
+            disappearing: None,
             flags: 0,
         };
         let m_idx = self.push_message(msg, true);

@@ -4710,6 +4710,18 @@ impl BeeperGuiApp {
         };
         // "Sending..." turns into "Still sending..." at its time.
         let late = late.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::AnimationTick));
+        // Desktop's `buildMessageListData` watches the clock until the next timer of the open chats runs out, or for
+        // an hour at most.
+        let expiry = {
+            let (st, now) = (self.store.read(), now_unix_millis());
+            let open = self.panes().filter_map(|p| p.selected_chat_id.as_ref()).map(|c| st.timeline_indices(c));
+            let left = open.flatten().filter_map(|&i| match st.messages[i].expiry(now) {
+                Some(Countdown::Left(left)) if left > 0 => Some(left),
+                _ => None,
+            });
+            left.min().map(|left| iced::time::every(Duration::from_millis(left.min(3_600_000))))
+        };
+        let expiry = expiry.map(|e| e.map(|_| UiMessage::AnimationTick));
         let remind = due.0.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::Reminders(reminders::Msg::Check)));
         let send = due.1.map(|at| iced::time::every(wait(at)).map(|_| UiMessage::Scheduled(scheduled::Msg::Check)));
         let typed = self.panes().filter_map(|p| p.typing.as_ref().map(|t| t.1)).min();
@@ -4770,6 +4782,7 @@ impl BeeperGuiApp {
                 .chain(shot)
                 .chain(remind)
                 .chain(late)
+                .chain(expiry)
                 .chain(send)
                 .chain(queued)
                 .chain(typing)

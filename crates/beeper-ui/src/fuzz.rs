@@ -5923,6 +5923,53 @@ fn disappearing_timer_changes_in_the_timeline_like_desktop() {
 }
 
 #[test]
+fn messages_disappear_like_desktop() {
+    let mut app = demo_app("disappearing-messages");
+    let id = "!tg_rust:beeper.com".to_string();
+    let now = beeper_core::config::now_unix_millis();
+    let timer = |kind: &str, timer: u64, read_at: Option<i64>| {
+        Some(MessageTimer { kind: Some(kind.into()), timer, order: 0, read_at })
+    };
+    let group = {
+        let mut st = app.store.write();
+        let last = st.timeline_indices(&id).last().map(|&i| st.messages[i].clone()).expect("a message");
+        let me = st.chat(&id).participants.items.iter().find(|u| u.is_self == Some(true));
+        let me = me.expect("the user").id.clone();
+        let messages = [
+            ("@tulir:beeper.com", timer("after_send", 1_000, None), now - 10_000),
+            ("@tulir:beeper.com", timer("after_read", 60_000, Some(now - 120_000)), now - 10_000),
+            ("@tulir:beeper.com", timer("after_send", 3_600_000, None), now),
+            (me.as_str(), timer("after_read_by_recipient", 60_000, None), now),
+            ("@tulir:beeper.com", timer("after_read", 3_600_000, None), now),
+        ];
+        for (n, (sender, disappearing, at)) in messages.into_iter().enumerate() {
+            st.upsert_message(Message {
+                id: format!("timed_{n}"),
+                sender_id: sender.into(),
+                is_sender: Some(sender == me),
+                sort_key: beeper_core::store::sort_key(
+                    last.sort_key.parse::<i64>().expect("a sort key") + 1 + n as i64,
+                ),
+                timestamp: beeper_core::config::rfc3339_from_millis(at),
+                disappearing,
+                ..last.clone()
+            });
+        }
+        st.chat(&id).chat_type == "group"
+    };
+    let _ = app.update(UiMessage::SelectChat(id));
+    assert!(tall(app.view_conversation()).find("2 messages disappeared").is_ok(), "one note for the timed-out ones");
+    let menu = |app: &BeeperGuiApp, mid: &str, label: &str| simulator(app.view_message_menu(mid).0).find(label).is_ok();
+    assert!(menu(&app, "timed_2", "Disappears in about 1 hour"), "the line after Sent at");
+    let recipient = match group {
+        true => "Disappears 1 minute after someone in the group reads it",
+        false => "Disappears 1 minute after the recipient reads it",
+    };
+    assert!(menu(&app, "timed_3", recipient), "your message waits for a read of the recipient");
+    assert!(menu(&app, "timed_4", "Disappears 1 hour after you mark it read"));
+}
+
+#[test]
 fn chat_info_member_actions_like_desktop() {
     let mut app = demo_app("chat-info-member-actions");
     let id = "!tg_rust:beeper.com".to_string();
