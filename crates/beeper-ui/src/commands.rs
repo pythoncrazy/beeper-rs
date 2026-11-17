@@ -281,7 +281,12 @@ impl BeeperGuiApp {
                 let accounts = accounts.enumerate().map(|(i, a)| {
                     let title = match a.as_str() {
                         "hungryserv" => st.me().full_name.clone(),
-                        _ => st.bridge_accounts.iter().find(|b| b.account_id == a).and_then(|b| b.display_text()),
+                        // Desktop's `userDisplayText`: the nickname, or the user.
+                        _ => st
+                            .bridge_accounts
+                            .iter()
+                            .find(|b| b.account_id == a)
+                            .and_then(|b| st.custom_name(&a).map(str::to_string).or_else(|| b.display_text())),
                     };
                     let title = title.unwrap_or_else(|| network_name(&a).into());
                     let pick = cmd("", title, Some(UiMessage::Rail(rail::Msg::Select(Some(a.clone())))));

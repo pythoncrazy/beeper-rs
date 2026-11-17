@@ -35,6 +35,7 @@ mod members;
 mod menubar;
 mod message;
 pub mod new_chat;
+mod nickname;
 mod notify;
 mod pins;
 mod popover;
@@ -353,6 +354,8 @@ pub enum UiMessage {
     Members(members::Msg),
     /// Desktop's block and unblock of a direct chat, with Report spam, and the Blocked users window.
     Blocking(blocking::Msg),
+    /// Desktop's account nicknames and the Account Nickname window.
+    Nickname(nickname::Msg),
     Capabilities(String, Result<serde_json::Value, String>),
     /// Desktop's Settings window.
     Settings(settings::Msg),
@@ -467,11 +470,17 @@ fn muted_by(st: &BeeperStore, c: &Chat) -> Option<String> {
         });
     }
     let off = !st.settings.account(&c.account_id).notifications;
-    off.then(|| trf("Muted by %s", &[&network_name(&c.account_id)]))
+    // Desktop's `ru`: the nickname of the account, or its network.
+    off.then(|| trf("Muted by %s", &[&st.custom_name(&c.account_id).unwrap_or(network_name(&c.account_id))]))
 }
 
-/// Desktop's `userDisplayText`: the user of a chat account, as the account's network shows them.
+/// Desktop's `userDisplayText`: the nickname of a chat account (`customName`), or its user.
 fn account_user(st: &BeeperStore, account_id: &str) -> String {
+    st.custom_name(account_id).map_or_else(|| default_account_user(st, account_id), str::to_string)
+}
+
+/// Desktop's `defaultUserDisplayText`: the user of a chat account, as the account's network shows them.
+fn default_account_user(st: &BeeperStore, account_id: &str) -> String {
     let b = st.bridge_accounts.iter().find(|b| b.account_id == account_id);
     let r = b.and_then(|b| b.remote_profile.clone()).unwrap_or_default();
     [r.name, r.username, r.phone, r.email].into_iter().flatten().find(|s| !s.is_empty()).unwrap_or_default()
@@ -512,11 +521,12 @@ fn switch_targets(st: &BeeperStore, chat: &Chat) -> Option<Vec<String>> {
     Some(std::iter::once(chat).chain(found).map(|c| c.id.clone()).collect())
 }
 
-/// Desktop's `Up`: the network of an account, and its user when another listed account has the same network.
+/// Desktop's `Up`: the network of an account, or its nickname, and its user when another listed account has the same
+/// network.
 fn account_option(st: &BeeperStore, account_id: &str, listed: &[String]) -> String {
     let n = network_label(account_id);
     if listed.iter().filter(|a| network_label(a) == n).count() < 2 {
-        return n.into();
+        return st.custom_name(account_id).unwrap_or(n).into();
     }
     format!("{n} — {} (cloud)", account_display_name(st, account_id, listed))
 }
@@ -2656,6 +2666,8 @@ pub struct BeeperGuiApp {
     pub group_window: Option<GroupDraft>,
     /// Desktop's Blocked users window.
     blocked_window: Option<window::Id>,
+    /// Desktop's Account Nickname windows, one for each account.
+    pub nickname_windows: Vec<nickname::NicknameDraft>,
     pub add_accounts: Vec<add_account::AddAccount>,
     /// The Chat Info group description while it is edited, and whether it shows all of its lines.
     pub info_desc: Option<text_editor::Content>,
@@ -2887,6 +2899,7 @@ impl BeeperGuiApp {
             label_window: None,
             group_window: None,
             blocked_window: None,
+            nickname_windows: Vec::new(),
             add_accounts: Vec::new(),
             info_desc: None,
             info_more: false,
@@ -3181,6 +3194,7 @@ impl BeeperGuiApp {
             },
             _ if self.spaces_window.as_ref().is_some_and(|d| d.id == id) => tr("Edit Spaces"),
             _ if Some(id) == self.blocked_window => tr("Blocked users"),
+            _ if self.nickname_windows.iter().any(|d| d.id == id) => tr("Account Nickname"),
             _ if let Some(d) = self.group_window.as_ref().filter(|d| d.id == id) => {
                 return tr(if d.personal { "Edit Chat for Me" } else { "Edit Group" }).into();
             }
@@ -3763,6 +3777,7 @@ impl BeeperGuiApp {
             // Each domain handles its own messages in its module.
             UiMessage::Accounts(msg) => return self.accounts(msg),
             UiMessage::Blocking(msg) => return self.blocking(msg),
+            UiMessage::Nickname(msg) => return self.nickname(msg),
             UiMessage::ChatList(msg) => return self.chat_list(msg),
             UiMessage::ChatTheme(msg) => return self.chat_theme(msg),
             UiMessage::CommandBar(msg) => return self.command_bar(msg),
@@ -3942,6 +3957,7 @@ impl BeeperGuiApp {
                     || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
                     || self.group_window.as_ref().is_some_and(|d| d.id == id)
                     || Some(id) == self.blocked_window
+                    || self.nickname_windows.iter().any(|d| d.id == id)
                     || self.add_accounts.iter().any(|a| a.id == id)
                 {
                     return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
@@ -4647,6 +4663,7 @@ impl BeeperGuiApp {
             || (self.login_window.is_some() && (self.login.busy || self.login.animated()))
             || self.reauth.busy
             || self.enter_key.busy
+            || self.nickname_windows.iter().any(|d| d.saving)
             || self.hover_fading();
         let tab_at = self.media_window.as_ref().and_then(|w| w.tab_at);
         let animated = animated || tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE);
@@ -4743,6 +4760,8 @@ impl BeeperGuiApp {
             self.view_edit_spaces(d)
         } else if let Some(d) = self.group_window.as_ref().filter(|d| d.id == id) {
             self.view_edit_group(d)
+        } else if let Some(d) = self.nickname_windows.iter().find(|d| d.id == id) {
+            self.view_nickname(d)
         } else if Some(id) == self.blocked_window {
             self.view_blocked_users()
         } else if let Some((_, chat, mid)) = self.vote_windows.iter().find(|w| w.0 == id) {
@@ -4929,8 +4948,10 @@ impl BeeperGuiApp {
                 cid.strip_prefix("account:").and_then(|e| rail_label(&self.store.read(), e).map(label_rows))
             {
                 (233.0, 8.0 + (n + 2.0) * MENU_ITEM + 11.0)
-            } else if cid.starts_with("account:") {
-                (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + 6.0 * MENU_ITEM + 22.0)
+            } else if let Some(entry) = cid.strip_prefix("account:") {
+                let st = self.store.read();
+                let nick = if nickname::can_nickname(&st, &rail_owner(&st, entry)) { MENU_ITEM } else { 0.0 };
+                (233.0 + self.chat_sub.map_or(0.0, |_| ACCOUNT_SUB_W), 8.0 + 6.0 * MENU_ITEM + 22.0 + nick)
             } else {
                 let st = self.store.read();
                 (
@@ -5177,7 +5198,7 @@ impl BeeperGuiApp {
             let r = st.bridge_accounts.iter().find(|b| b.account_id == c.account_id);
             let face = self.face(
                 r.and_then(|b| b.remote_profile.as_ref()?.avatar.as_deref()),
-                &account_user(&st, &c.account_id),
+                &default_account_user(&st, &c.account_id),
                 28.0,
                 0.0,
             );

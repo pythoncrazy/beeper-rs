@@ -570,6 +570,13 @@ pub struct BeeperStore {
     pub inbox_rules: serde_json::Value,
     /// Desktop's `mutedRoomIDs`: the `room_ids` of the global `com.beeper.muted` account data.
     pub muted_rooms: Vec<String>,
+    /// The last synced [`crate::matrix::ACCOUNT_OVERRIDES`], encrypted with MSC4483.
+    pub account_overrides_synced: serde_json::Value,
+    /// Desktop SDK's decrypted `com.beeper.bridge_account_overrides`: the account nicknames by bridge and login, or
+    /// the synced content while it cannot be decrypted.
+    pub account_overrides: serde_json::Value,
+    /// Desktop SDK's MSC4483 key of encrypted account data, once read from secret storage.
+    pub account_data_key: Option<[u8; 32]>,
     /// Desktop's `lastViewedRequestsAtByAccount`: when the Requests view last showed each account's requests, in
     /// milliseconds, by [`BeeperStore::request_key`].
     pub requests_viewed: HashMap<String, i64>,
@@ -726,6 +733,9 @@ impl BeeperStore {
             skin_tone: 0,
             inbox_rules: serde_json::Value::Null,
             muted_rooms: Vec::new(),
+            account_overrides_synced: serde_json::Value::Null,
+            account_overrides: serde_json::Value::Null,
+            account_data_key: None,
             requests_viewed: HashMap::new(),
             features,
             whoami: Profile::default(),
@@ -1249,6 +1259,13 @@ impl BeeperStore {
         self.bridge_accounts = accounts;
         self.rebuild_accounts_from_bridges();
         self.persist_state_to_sqlite();
+    }
+
+    /// Desktop's `customName` of an account: the nickname of its bridge login in [`Self::account_overrides`].
+    pub fn custom_name(&self, account_id: &str) -> Option<&str> {
+        let b = self.bridge_accounts.iter().find(|b| b.account_id == account_id)?;
+        let name = self.account_overrides["accounts"][&b.bridge_id][&b.login_id]["name"].as_str();
+        name.filter(|n| !n.is_empty())
     }
 
     pub fn set_contacts(&mut self, contacts: Vec<User>) {

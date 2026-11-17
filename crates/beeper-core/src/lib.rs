@@ -11,6 +11,7 @@ pub mod import;
 pub mod matrix;
 pub mod media;
 pub mod models;
+pub mod msc4483;
 pub mod platform;
 pub mod prefs;
 pub mod storage;

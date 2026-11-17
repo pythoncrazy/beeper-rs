@@ -432,11 +432,8 @@ impl BeeperGuiApp {
             let n = tally(&format!("rail:{acc}"), &|c| {
                 in_rail_entry(&st, &acc, c) && c.flags & CHAT_HIDDEN != 0 && c.flags & CHAT_LOW_PRIORITY == 0
             });
-            let label = match (label, space) {
-                (Some(l), _) => l.name.clone(),
-                (None, Some(n)) => format!("{} ({})", n.name, network_label(owner)),
-                (None, None) => network_label(owner).to_string(),
-            };
+            // Desktop's `iR`: the space name, with the account's nickname.
+            let label = space_name(&st, &acc);
             let error = space_error(&st, &acc);
             let label = match error {
                 Some(s) => format!("{label} ({s})"),
@@ -732,6 +729,11 @@ impl BeeperGuiApp {
         );
         let accounts = UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts));
         let settings = UiMessage::Accounts(accounts::Msg::OpenSettings(account.into()));
+        // Desktop's `Zpe` after Edit Spaces… in `rj`.
+        let nickname = nickname::can_nickname(&st, account).then(|| {
+            let open = UiMessage::Nickname(nickname::Msg::Open(account.into()));
+            menu_item(p, None, tr("Edit Account Nickname…").into(), "", Some(open))
+        });
         let rest = match kind {
             SpaceMenu::Gear => column![mute],
             SpaceMenu::Header | SpaceMenu::Options => {
@@ -746,17 +748,19 @@ impl BeeperGuiApp {
                     mute,
                     menu_rule(p),
                     menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
-                    menu_item(p, None, tr("Remove Account…").into(), "", Some(remove)),
                 ]
+                .push(nickname)
+                .push(menu_item(p, None, tr("Remove Account…").into(), "", Some(remove)))
             }
             SpaceMenu::Rail => column![
                 mute,
                 menu_rule(p),
                 menu_item(p, None, tr("Edit Spaces…").into(), "", Some(UiMessage::OpenEditSpaces)),
-                menu_item(p, None, tr("Add/Remove Accounts…").into(), "", Some(accounts)),
-                menu_rule(p),
-                menu_item(p, None, tr("Account Settings…").into(), "", Some(settings)),
-            ],
+            ]
+            .push(nickname)
+            .push(menu_item(p, None, tr("Add/Remove Accounts…").into(), "", Some(accounts)))
+            .push(menu_rule(p))
+            .push(menu_item(p, None, tr("Account Settings…").into(), "", Some(settings))),
         };
         // Desktop's Reconnect item (`App:89486`) of an account whose bridge asks for a new login.
         let again = reconnect(&st, account).filter(|_| kind != SpaceMenu::Gear);

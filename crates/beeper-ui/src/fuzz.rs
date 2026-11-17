@@ -7500,6 +7500,92 @@ fn nameless_attachments_like_desktop() {
     assert_eq!(crate::message::attachment_name(&a), "Attachment");
 }
 
+/// Desktop's "Edit Account Nickname…" (`Zpe`) after Edit Spaces… in the account menus of the sidebar and of the
+/// Accounts settings (`rj`), for an account with a bridge login other than the Beeper account.
+#[test]
+fn account_nickname_menus_like_desktop() {
+    let mut app = demo_app("nickname-menus");
+    let item = "Edit Account Nickname…";
+    let top = |sim: &mut Simulator<'_, UiMessage>, label: &str| {
+        sim.find(label).expect(label).visible_bounds().expect("visible").y
+    };
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("account:acc_whatsapp".into())));
+    let open: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_account_menu("acc_whatsapp"));
+        let ys = ["Edit Spaces…", item, "Add/Remove Accounts…"].map(|l| top(&mut sim, l));
+        assert!(ys[0] < ys[1] && ys[1] < ys[2], "Desktop's order: {ys:?}");
+        let _ = sim.click(item).expect("the nickname item");
+        sim.into_messages().collect()
+    };
+    assert!(matches!(&open[..], [UiMessage::Nickname(nickname::Msg::Open(a))] if a == "acc_whatsapp"));
+    assert!(simulator(app.view_account_menu("hungryserv")).find(item).is_err(), "the Beeper account has none");
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("prefs:acc_telegram".into())));
+    let mut sim = simulator(app.view_settings());
+    let ys = ["Edit Spaces…", item, "Remove Account…"].map(|l| top(&mut sim, l));
+    assert!(ys[0] < ys[1] && ys[1] < ys[2], "Desktop's order: {ys:?}");
+    let _ = sim.click(item).expect("the nickname item of the Accounts settings");
+    let open: Vec<UiMessage> = sim.into_messages().collect();
+    assert!(matches!(&open[..], [UiMessage::Nickname(nickname::Msg::Open(a))] if a == "acc_telegram"));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("prefs:hungryserv".into())));
+    assert!(simulator(app.view_settings()).find(item).is_err());
+}
+
+/// Desktop's Account Nickname window (`RenameAccount`): the name of the account, with its default name as the
+/// placeholder, the user of the account, and Save. The nickname then names the account wherever Desktop shows
+/// `customName`: the space, the account rows of the settings, and the account's user text.
+#[test]
+fn account_nickname_window_like_desktop() {
+    let mut app = demo_app("nickname-window");
+    let account = "acc_whatsapp";
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Open(account.into())));
+    let id = app.nickname_windows.first().expect("the window opens").id;
+    assert_eq!(app.title(id), "Account Nickname");
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Open(account.into())));
+    assert_eq!(app.nickname_windows.len(), 1, "an account has one window");
+    {
+        let d = &app.nickname_windows[0];
+        assert_eq!(d.name, "", "no nickname yet");
+        let mut sim = simulator(app.view_nickname(d));
+        let phone = fmt_phone("+14155550142");
+        let hint = "Changes how this account appears in Beeper, on all your devices.";
+        for text in ["Account Nickname", hint, "Alex Rivera", phone.as_str(), "Cancel", "Save"] {
+            assert!(sim.find(text).is_ok(), "{text}");
+        }
+    }
+    {
+        let st = app.store.read();
+        let placeholder = new_chat::default_account_display_name(&st, account, &rail_accounts(&st));
+        assert_eq!(placeholder, "WhatsApp");
+    }
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Name(id, "  Work phone ".into())));
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Save(id)));
+    {
+        let st = app.store.read();
+        assert_eq!(st.custom_name(account), Some("Work phone"), "the demo keeps the trimmed name");
+        assert_eq!(space_name(&st, account), "Work phone", "Desktop's accountDisplayName");
+        assert_eq!(account_user(&st, account), "Work phone", "Desktop's userDisplayText");
+        assert_eq!(account_display_name(&st, account, &rail_accounts(&st)), "Work phone");
+    }
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(id)));
+    assert!(app.nickname_windows.is_empty());
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
+    assert!(simulator(app.view_settings()).find("Work phone").is_ok(), "the account row shows the nickname");
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Open(account.into())));
+    let id = app.nickname_windows[0].id;
+    assert_eq!(app.nickname_windows[0].name, "Work phone", "the window starts with the nickname");
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Saved(id, Err("offline".into()))));
+    let error = "Something went wrong: offline";
+    assert!(simulator(app.view_nickname(&app.nickname_windows[0])).find(error).is_ok(), "the error toast");
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::HideError(id, error.into())));
+    assert!(simulator(app.view_nickname(&app.nickname_windows[0])).find(error).is_err());
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Name(id, String::new())));
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Save(id)));
+    let st = app.store.read();
+    assert_eq!(st.custom_name(account), None, "an empty name removes the nickname");
+    assert_eq!(space_name(&st, account), "WhatsApp");
+}
+
 /// Desktop's dot of new requests: the requests that came after the Requests view last showed their account, by
 /// `com.beeper.message_requests.last_viewed_at`, whatever their unread state.
 #[test]

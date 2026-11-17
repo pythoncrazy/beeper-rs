@@ -149,6 +149,7 @@ impl BeeperGuiApp {
                 self.spaces_window = self.spaces_window.take().filter(|d| d.id != id);
                 self.group_window = self.group_window.take().filter(|d| d.id != id);
                 self.blocked_window = self.blocked_window.filter(|w| *w != id);
+                self.nickname_windows.retain(|d| d.id != id);
                 self.verify.window = self.verify.window.filter(|w| *w != id);
                 // Desktop's `ReauthRequiredModal` closed without a code ends the logout of a device.
                 if self.reauth.window.take_if(|w| *w == id).is_some() {
@@ -303,6 +304,7 @@ impl BeeperGuiApp {
         let lists = lists.chain(self.labels_windows.iter().map(|w| w.0)).chain(self.vote_windows.iter().map(|w| w.0));
         let group = self.group_window.as_ref().map(|d| d.id);
         let lists = lists.chain(self.poll_windows.iter().map(|w| w.id)).chain(self.add_accounts.iter().map(|a| a.id));
+        let lists = lists.chain(self.nickname_windows.iter().map(|d| d.id));
         singles.chain([group, self.blocked_window]).flatten().chain(lists).collect()
     }
 
