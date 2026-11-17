@@ -622,6 +622,10 @@ pub struct ChatDraft {
     /// Desktop's `draftTs`: the Unix milliseconds of the last change of the text or the files.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ts: Option<i64>,
+    /// Desktop's draft `send_room_id` (`draftSendRoomID`) of a merged chat: the member chat that the reply or the
+    /// switcher picked, which the draft sends to when the chat opens again.
+    #[serde(rename = "sendRoomID", skip_serializing_if = "Option::is_none", default)]
+    pub send_room_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1976,6 +1980,19 @@ pub struct BeeperSettings {
     pub labels_intro_seen: bool,
     /// Desktop's local `merge_chats_intro_seen`: Merge Chats shows its intro only the first time.
     pub merge_intro_seen: bool,
+    /// Desktop's local `merge_suggestion_banner_dismissed_keys`: the `tel:`, `mailto:` and `name:` keys of the merge
+    /// suggestions that the user merged or dismissed.
+    pub merge_suggestion_dismissed_keys: Vec<String>,
+    /// Desktop's local `merge_suggestion_seen_rooms`: the chats that showed the merge suggestion banner.
+    pub merge_suggestion_seen_rooms: Vec<String>,
+    /// Desktop's local `chat_info_merge_promo_dismissed`: Chat Info shows the compact merge suggestion card instead of
+    /// the promo.
+    pub chat_info_merge_promo_dismissed: bool,
+    /// Desktop's local `target_switcher_nudge_seen_rooms`: the merged chats that showed "Click the avatar to change
+    /// chat."
+    pub target_switcher_nudge_seen_rooms: Vec<String>,
+    /// Desktop's local `target_switcher_nudge_dismissed`.
+    pub target_switcher_nudge_dismissed: bool,
     /// Desktop's local `recovery_code_reminder_dismissed_at`: the time in ms when the user closed the recovery key
     /// reminder, or 0.
     pub recovery_reminder_dismissed_at: i64,
