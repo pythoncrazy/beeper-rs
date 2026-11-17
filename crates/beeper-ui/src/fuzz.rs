@@ -6259,10 +6259,13 @@ fn link_previews_like_desktop() {
 
 #[test]
 fn email_links_and_media_items_match_desktop() {
-    assert_eq!(email("a.b+c@mail.example.com)."), Some("a.b+c@mail.example.com"));
-    assert!([email("@example.com"), email("a@b"), email("a@b.c"), email("a@b.c1"), email("ab")]
-        .iter()
-        .all(Option::is_none));
+    let address =
+        |t: &str| crate::linkify::links(t).into_iter().map(|(r, h)| (t[r].to_string(), h)).collect::<Vec<_>>();
+    assert_eq!(
+        address("a.b+c@mail.example.com)."),
+        [("a.b+c@mail.example.com".to_string(), "mailto:a.b+c@mail.example.com".to_string())]
+    );
+    assert!(["a@b", "a@b.c", "a@b.c1", "ab"].iter().all(|t| address(t).is_empty()));
     let mut app = demo_app("email-menu");
     let mid = {
         let mut st = app.store.write();
@@ -6273,8 +6276,13 @@ fn email_links_and_media_items_match_desktop() {
             (Some("Mail a.b@example.com.".into()), None, Vec::new(), Some("{}".into()));
         m.id.clone()
     };
+    // Desktop's address items are the ones of a right click on the address's `mailto:` link.
     let click = |app: &mut BeeperGuiApp, label: &str| {
-        let _ = app.update(UiMessage::Message(message::Msg::OpenMenu(mid.clone())));
+        let open = match label.contains('@') {
+            true => message::Msg::LinkMenu(mid.clone(), "mailto:a.b@example.com".into()),
+            false => message::Msg::OpenMenu(mid.clone()),
+        };
+        let _ = app.update(UiMessage::Message(open));
         let mut sim = simulator(app.view_main());
         let _ = sim.click(label).unwrap_or_else(|_| panic!("{label}"));
         sim.into_messages().collect::<Vec<_>>()
