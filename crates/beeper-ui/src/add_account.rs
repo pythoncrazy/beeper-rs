@@ -1,7 +1,7 @@
 //! Desktop's `LoginBrowserWindow` with the `BridgeV2AuthComponent` of a Beeper Cloud bridge: it adds an account of
 //! a network, or logs an account in again. The bridge describes each step (see `beeper_core::bridge_login`).
 use crate::i18n::{tr, trf};
-use crate::style::{brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, CLEAR};
+use crate::style::{brand_svg, btn_style, fill_box, ic, icon, input_style, med, semi, shadow_box, txt, Palette, CLEAR};
 use crate::{menu_item, BeeperGuiApp, El, Toast, UiMessage, ERROR_CIRCLE};
 use beeper_core::bridge_login::{self, Field, Flow, Step};
 use beeper_core::config::{cloud_bridge, find_network};
@@ -190,6 +190,39 @@ fn invalid(f: &Field, v: &str) -> Option<String> {
     // Desktop ignores a pattern that does not compile.
     let pattern = regex::Regex::new(&f.pattern).ok().filter(|_| !f.pattern.is_empty());
     pattern.filter(|p| !p.is_match(v)).map(|_| tr("Invalid format").into())
+}
+
+/// The icons in Desktop's WeChat and Viber steps: its `add` and `scan` glyphs, and its `Dots` and `QrCode` icons.
+static STEP_ICONS: LazyLock<[svg::Handle; 4]> = LazyLock::new(|| {
+    [
+        ("0 0 72 72", "M34.2 34.2V21h3.6v13.2H51v3.6H37.8V51h-3.6V37.8H21v-3.6zM36 66C19.431 66 6 52.569 6 36S19.431 6 36 6s30 13.431 30 30-13.431 30-30 30m0-3.6c14.58 0 26.4-11.82 26.4-26.4S50.58 9.6 36 9.6 9.6 21.42 9.6 36 21.42 62.4 36 62.4"),
+        ("0 0 96 96", "M71.47 79h-4.495c-4.326 0-9.105-1.616-14.298-14.036H40.99c-1.27 0-1.990-1.677-1.990-2.946v-2.866c0-1.262.725-2.212 1.990-2.212H69.2c2.366 0 3.780-2.127 3.780-4.828 0-.425-.062-.83-.15-1.223h.15v1.207c.095-.886.07-1.470-.371-3.008-.632-2.204 1.785-8.563 6.284-9.070 1.125-.128 2.493.423 2.300 1.979C79.760 53.490 84 55.655 84 67.990 84 73.724 79.570 79 71.470 79M28.810 39c-.2.037-4.864 2.190-4.864 4.888 0 .424.062.83.150 1.222h-.150v-1.205c-.094.885-.070 1.470.370 3.009.627 2.201-1.774 8.560-6.243 9.068-1.118.127-2.476-.423-2.284-1.978C17.210 42.509 13 40.344 13 28.009 13 22.276 17.401 17 25.447 17h4.464c4.299 0 9.234 2.531 14.392 14.951h11.423c1.260 0 2.274.744 2.274 2.012v2.750a2.280 2.280 0 0 1-2.274 2.286z"),
+        ("0 0 181 38", "M19 38c10.493 0 19-8.507 19-19S29.493 0 19 0 0 8.507 0 19s8.507 19 19 19M90.25 38c10.493 0 19-8.507 19-19s-8.507-19-19-19-19 8.507-19 19 8.507 19 19 19M161.5 38c10.493 0 19-8.507 19-19s-8.507-19-19-19-19 8.507-19 19 8.507 19 19 19"),
+        ("0 0 20 20", "M3.333 9.167V2.5H10v6.667zM5 7.5h3.333V4.167H5zm-1.667 10v-6.667H10V17.5zM5 15.833h3.333V12.5H5zm6.667-6.666V2.5h6.666v6.667zM13.333 7.5h3.334V4.167h-3.334zm3.334 10v-1.667h1.666V17.5zm-5-5v-1.667h1.666V12.5zm1.666 1.667V12.5H15v1.667zm-1.666 1.666v-1.666h1.666v1.666zm1.666 1.667v-1.667H15V17.5zM15 15.833v-1.666h1.667v1.666zm0-3.333v-1.667h1.667V12.5zm1.667 1.667V12.5h1.666v1.667z"),
+    ]
+    .map(|(view, d)| {
+        let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view}"><path fill-rule="evenodd" d="{d}"/></svg>"#);
+        svg::Handle::from_memory(svg.into_bytes())
+    })
+});
+
+/// A line of Desktop's `.login-steps`: 13 px text on an 18 px line.
+fn step_line<'a>(p: &Palette, t: String) -> iced::widget::Text<'a> {
+    txt(t, 13.0).line_height(iced::Pixels(18.0)).color(p.strong)
+}
+
+/// A step whose text has Desktop's `zs` tags, each in place of its icon.
+fn inline<'a>(p: &Palette, text: &str, icons: Vec<(&str, El<'a>)>) -> El<'a> {
+    let mut parts = Vec::new();
+    let mut rest = text;
+    for (tag, icon) in icons {
+        let (before, after) = rest.split_once(tag).unwrap_or((rest, ""));
+        parts.push(Some(before.trim()).filter(|t| !t.is_empty()).map(|t| step_line(p, t.into()).into()));
+        parts.push(Some(icon));
+        rest = after;
+    }
+    parts.push(Some(rest.trim()).filter(|t| !t.is_empty()).map(|t| step_line(p, t.into()).into()));
+    row(parts.into_iter().flatten()).spacing(4).align_y(Center).wrap().into()
 }
 
 /// The QR code of a `display_and_wait` step as an SVG, like Desktop's `QRCodeSVG` with level `M`.
@@ -426,13 +459,65 @@ impl BeeperGuiApp {
         Some(text.replace("%s", a.network.display_name))
     }
 
-    /// Desktop's `LoginWindow` with the `subview-add-account` of the window `a`.
-    /// Desktop's `auths` components (`A`, `f`, `T`, `b`): the numbered steps of the WhatsApp, Telegram, Signal and
-    /// Google Messages logins, with an iPhone and Android tab in the first step, in place of the bridge's instructions.
+    /// Desktop's numbered login steps in place of the bridge's instructions: its `auths` components (`A`, `f`, `T`,
+    /// `b`) of the WhatsApp, Telegram, Signal and Google Messages logins, and its `BridgeV2Instructions` of the WeChat
+    /// and Viber steps, with Desktop's icons in the text and a note under the steps.
     fn login_steps<'a>(&'a self, a: &'a AddAccount, s: &'a Step) -> Option<El<'a>> {
         let p = &self.pal;
+        let line = |t: &str| -> El<'a> { step_line(p, t.to_string()).into() };
+        let icon = |i: usize, height: f32| -> El<'a> {
+            let color = Some(p.strong);
+            svg(STEP_ICONS[i].clone()).width(18).height(height).style(move |_, _| svg::Style { color }).into()
+        };
+        let (items, note): (Vec<El<'a>>, Option<&'static str>) = match s.step_id.as_str() {
+            "fi.mau.WeChat.login.qr" => {
+                let tap = tr("Tap <add/> in the top-right corner, then <scan/> Scan");
+                let tap = inline(p, tap, vec![("<add/>", icon(0, 18.0)), ("<scan/>", icon(1, 18.0))]);
+                let note = "If WeChat warns that another device is already logged in, continuing will sign out that device. On your phone, select “Import recent chat history from this phone”, then tap “Log In”.";
+                (vec![line(tr("Open WeChat on your phone")), tap, line(tr("Scan this QR code"))], Some(note))
+            }
+            "fi.mau.viber.login.qr" => {
+                let more =
+                    inline(p, tr("Open Viber and tap <icon/> More at the bottom"), vec![("<icon/>", icon(2, 12.0))]);
+                let qr = inline(p, tr("Tap <icon/> QR code"), vec![("<icon/>", icon(3, 18.0))]);
+                (vec![more, qr, line(tr("Scan the QR code shown here"))], None)
+            }
+            DONE_STEP => {
+                // Desktop's `<b>` is a `strong`.
+                let text = tr("Tap <b>Sync</b> in the <b>Sync history</b> prompt to import older messages");
+                let bold = crate::style::fw(iced::font::Weight::Bold);
+                let spans: Vec<_> = text
+                    .split("<b>")
+                    .enumerate()
+                    .flat_map(|(i, part)| {
+                        let (strong, rest) =
+                            if i == 0 { ("", part) } else { part.split_once("</b>").unwrap_or((part, "")) };
+                        [span::<UiMessage, _>(strong).font(bold), span(rest)]
+                    })
+                    .collect();
+                let sync = rich_text(spans).size(13).line_height(iced::Pixels(18.0)).color(p.strong);
+                let note = "You can send and receive new messages without syncing your history.";
+                (vec![line(tr("Open Viber on your phone")), sync.into()], Some(note))
+            }
+            _ => (self.device_steps(a, s)?, None),
+        };
+        // `.login-steps`: 288 px of rows 12 px apart, each with its number in a 20 px tinted circle.
+        let rows = items.into_iter().enumerate().map(|(i, item)| -> El<'a> {
+            let n = container(semi((i + 1).to_string(), 14.0).color(p.strong))
+                .center(20)
+                .style(fill_box(p.strong.scale_alpha(0.06), 10.0));
+            row![n, container(item).width(Fill)].spacing(8).into()
+        });
+        let steps = container(Column::with_children(rows).spacing(12).width(288)).center_x(Fill);
+        let note = note.map(|n| txt(tr(n), 14.0).color(p.strong).center().width(Fill));
+        Some(column![steps].push(note).spacing(14).into())
+    }
+
+    /// Desktop's `auths` steps of the bridge, which start with the device tabs.
+    fn device_steps<'a>(&'a self, a: &'a AddAccount, s: &'a Step) -> Option<Vec<El<'a>>> {
+        let p = &self.pal;
+        let line = |t: String| step_line(p, t);
         let go = move |m: AddMsg| UiMessage::AddAccount(a.id, m);
-        let line = |t: String| txt(t, 13.0).line_height(iced::Pixels(18.0)).color(p.strong);
         let hint = |t: &'static str| txt(tr(t), 12.0).line_height(iced::Pixels(16.0)).color(p.sub);
         // `.TabList-module__segmented`: 10 px semibold tabs in a 2 px tinted pill, the active one on the card color.
         let tab = |label: &'static str, android: bool| -> El<'a> {
@@ -503,15 +588,7 @@ impl BeeperGuiApp {
             ),
             _ => return None,
         };
-        let items = [first, line(tr(two).into()).into(), line(tr(three).into()).into()].into_iter().chain(rest);
-        // `.login-steps`: 288 px of rows 12 px apart, each with its number in a 20 px tinted circle.
-        let rows = items.enumerate().map(|(i, item)| -> El<'a> {
-            let n = container(semi((i + 1).to_string(), 14.0).color(p.strong))
-                .center(20)
-                .style(fill_box(p.strong.scale_alpha(0.06), 10.0));
-            row![n, container(item).width(Fill)].spacing(8).into()
-        });
-        Some(container(Column::with_children(rows).spacing(12).width(288)).center_x(Fill).into())
+        Some([first, line(tr(two).into()).into(), line(tr(three).into()).into()].into_iter().chain(rest).collect())
     }
 
     pub fn view_add_account<'a>(&'a self, a: &'a AddAccount) -> El<'a> {
@@ -595,7 +672,7 @@ impl BeeperGuiApp {
                 }
                 _ => {
                     let done = primary(tr("Done").into(), Some(AddMsg::Close));
-                    column![para(s.instructions.clone()), done].spacing(16).into()
+                    column![].push(instructions(s)).push(done).spacing(16).into()
                 }
             },
         };
@@ -767,6 +844,7 @@ impl BeeperGuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fuzz::task_messages as run;
 
     #[test]
     fn fields_validate_like_desktop() {
@@ -815,6 +893,44 @@ mod tests {
         assert!(finds(&app, &["Open the side menu", "Click \"Device pairing\"", "Scan the QR code on your phone"]));
     }
 
+    /// Desktop's `BridgeV2Instructions` of the WeChat and Viber QR steps, with its icons in the text, and of the
+    /// Viber step after the login, whose Done closes the window.
+    #[test]
+    fn wechat_and_viber_steps_like_desktop() {
+        use iced_test::simulator::simulator;
+        let mut app = crate::fuzz::demo_app("wechat-viber-steps");
+        let _ = app.open_add_account("wechat", None);
+        let step = |kind: &str, id: &str| Step {
+            kind: kind.into(),
+            step_id: id.into(),
+            instructions: "The bridge's own steps".into(),
+            display_and_wait: (kind == "display_and_wait")
+                .then(|| beeper_core::bridge_login::Display { kind: "qr".into(), ..Default::default() }),
+            ..Step::default()
+        };
+        app.add_accounts[0].step = Some(step("display_and_wait", "fi.mau.WeChat.login.qr"));
+        let shows = |app: &BeeperGuiApp, texts: &[&str]| {
+            let mut sim = simulator(app.view_add_account(&app.add_accounts[0]));
+            texts.iter().all(|t| sim.find(*t).is_ok()) && sim.find("The bridge's own steps").is_err()
+        };
+        assert!(shows(
+            &app,
+            &["Open WeChat on your phone", "Tap", "in the top-right corner, then", "Scan", "Scan this QR code"]
+        ));
+        assert!(shows(&app, &["If WeChat warns that another device is already logged in, continuing will sign out that device. On your phone, select “Import recent chat history from this phone”, then tap “Log In”."]));
+        app.add_accounts[0].step = Some(step("display_and_wait", "fi.mau.viber.login.qr"));
+        assert!(shows(&app, &["Open Viber and tap", "More at the bottom", "QR code", "Scan the QR code shown here"]));
+        app.add_accounts[0].step = Some(step("complete", DONE_STEP));
+        assert!(shows(
+            &app,
+            &["Open Viber on your phone", "You can send and receive new messages without syncing your history."]
+        ));
+        let mut sim = simulator(app.view_add_account(&app.add_accounts[0]));
+        let _ = sim.click("Done").expect("the Done button");
+        let id = app.add_accounts[0].id;
+        assert!(matches!(sim.into_messages().next(), Some(UiMessage::AddAccount(w, AddMsg::Close)) if w == id));
+    }
+
     #[test]
     fn every_addable_network_has_a_cloud_bridge_but_bluesky() {
         let none: Vec<_> = crate::networks::addable(&beeper_core::features::Flags::default())
@@ -845,19 +961,6 @@ mod tests {
         let cloud = beeper_core::cloud::Cloud::new(&url, &url);
         app.cloud = std::sync::Arc::new(beeper_core::cloud::Cloud { app_api: url, ..cloud });
         (app, bridges)
-    }
-
-    /// The messages that a task outputs. The window and clipboard actions of the task do nothing here.
-    async fn run(task: Task<UiMessage>) -> Vec<UiMessage> {
-        use iced::futures::StreamExt;
-        let Some(stream) = iced_runtime::task::into_stream(task) else { return Vec::new() };
-        let out = stream.filter_map(|a| async move {
-            match a {
-                iced_runtime::Action::Output(m) => Some(m),
-                _ => None,
-            }
-        });
-        out.collect().await
     }
 
     /// Sends `msg`, and returns the messages of its task.
