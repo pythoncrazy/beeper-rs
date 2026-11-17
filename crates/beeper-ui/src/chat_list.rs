@@ -332,10 +332,19 @@ impl BeeperGuiApp {
                 self.show_filter_menu = false;
             }
             Msg::ClearFilters => (self.filters, self.space_view_account) = (0, None),
-            Msg::Hover(id, true) => self.hovered_chat = Some(id),
+            Msg::Hover(id, true) => {
+                if self.hovered_chat.as_ref() != Some(&id) {
+                    let now = std::time::Instant::now();
+                    if let Some(left) = self.hovered_chat.replace(id) {
+                        self.unhovered = Some((left, now));
+                    }
+                    self.hover_at = Some(now);
+                }
+            }
             Msg::Hover(id, false) => {
                 if self.hovered_chat.as_ref() == Some(&id) {
                     self.hovered_chat = None;
+                    self.unhovered = Some((id, std::time::Instant::now()));
                 }
             }
             Msg::DeleteDraft(cid) => {
@@ -1308,17 +1317,17 @@ impl BeeperGuiApp {
                 .push(column![top, preview].width(Fill))
                 .align_y(Center)
                 .padding(Padding::new(8.0).top(9.0).bottom(11.0).left(if selecting { 0.0 } else { 8.0 }));
-            let action =
-                (!selecting && self.hovered_chat.as_ref() == Some(&key)).then(|| match key.strip_prefix("draft:") {
-                    Some(n) => Some(self.hover_btn(
-                        5,
-                        20.0,
-                        tr("Delete Chat"),
-                        vec![],
-                        UiMessage::NewChat(new_chat::Msg::Delete(n.parse().unwrap())),
-                    )),
-                    None => self.row_action(&st.chats[st.resolve_chat_idx(&key).expect("listed chat")], hover_action),
-                });
+            let action = self.hover_progress(&key).filter(|_| !selecting).map(|t| match key.strip_prefix("draft:") {
+                Some(n) => Some(self.hover_btn(
+                    5,
+                    20.0,
+                    tr("Delete Chat"),
+                    vec![],
+                    UiMessage::NewChat(new_chat::Msg::Delete(n.parse().unwrap())),
+                    t,
+                )),
+                None => self.row_action(&st.chats[st.resolve_chat_idx(&key).expect("listed chat")], hover_action, t),
+            });
             let rule = (!on && above.as_deref() != Some(key.as_str()))
                 .then(|| container(divider(p.divider, av + 18.0)).align_bottom(Fill));
             let row = mouse_area(
@@ -1456,8 +1465,9 @@ impl BeeperGuiApp {
                 let errored = st.has_errored(&c.id).then(|| dot(hex(0xf44336)));
                 container(column![].push(unread.then(|| dot(dot_bg))).push(errored).spacing(4)).width(12)
             });
-            let count = count
-                .filter(|_| self.hovered_chat.as_ref() != Some(&c.id) || self.row_action(c, hover_action).is_none());
+            let count = count.filter(|_| {
+                self.hovered_chat.as_ref() != Some(&c.id) || self.row_action(c, hover_action, 1.0).is_none()
+            });
             let sender = show_sender.then(|| preview_sender(c, m?)).flatten();
             let digits =
                 if counts && c.unread_count > 0 { unread_label(c.unread_count as usize).len() as f32 } else { 0.0 };

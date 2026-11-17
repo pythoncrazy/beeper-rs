@@ -235,7 +235,7 @@ impl BeeperGuiApp {
     pub(crate) fn view_space_sheet(&self) -> (El<'_>, f32, f32) {
         let p = &self.pal;
         let st = self.store.read();
-        let requests = st.chats.iter().any(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0);
+        let requests = st.chats.iter().any(|c| st.new_request(c));
         let blank = || Some(Space::new().width(22).into());
         let space = |id: &String| -> El<'_> {
             let view = RAIL_VIEWS.iter().find(|v| v.0 == id);
@@ -408,9 +408,7 @@ impl BeeperGuiApp {
                 let btn = if quiet { btn } else { tip(btn, t.label(), hotkey(key)).into() };
                 container(btn).id(id).into()
             };
-        let requests = self.count("requests", || {
-            st.chats.iter().filter(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0).count()
-        });
+        let requests = self.count("requests", || st.chats.iter().filter(|c| st.new_request(c)).count());
         let g = |c: char| -> El<'static> { ic(c, 24.0).color(p.strong).into() };
         let ring_color = if self.dark { Color::WHITE } else { Color::BLACK };
         let ring = svg(DASHED_RING.clone())

@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use iced::advanced::graphics::text::cosmic_text::{Affinity, Buffer, Cursor};
+use iced::advanced::image::{self as core_image, Renderer as _};
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer::{self, Quad, Renderer as _};
 use iced::advanced::text::{self as core_text, Paragraph as _, Renderer as _, Span};
@@ -34,6 +35,9 @@ const SELECTED_TEXT: Color = Color::WHITE;
 const MULTI_CLICK: Duration = Duration::from_millis(400);
 /// Every text sees a press within this long of the one it landed on, so they can tell it from a later one.
 const SAME_PRESS: Duration = Duration::from_millis(100);
+/// The text of a span that holds the place of an inline image: an em space, which is 1em wide like Desktop's custom
+/// emoji, and a zero-width no-break space that no message text has after it.
+pub const IMAGE_SLOT: &str = "\u{2003}\u{feff}";
 
 /// The selection, shared by every selectable text so it can run across them. Each text derives its part when it
 /// needs it, so a text the view rebuilt mid-drag still shows its part.
@@ -86,6 +90,7 @@ pub fn selectable<'a, Link: Clone + 'static, Message>(
         hovered_link: None,
         on_link_click: None,
         on_link_menu: None,
+        images: Vec::new(),
     }
 }
 
@@ -99,6 +104,7 @@ pub struct Selectable<'a, Link: Clone + 'static, Message> {
     hovered_link: Option<usize>,
     on_link_click: Option<Box<dyn Fn(Link) -> Message + 'a>>,
     on_link_menu: Option<Box<dyn Fn(Link) -> Message + 'a>>,
+    images: Vec<Option<core_image::Handle>>,
 }
 
 impl<'a, Link: Clone + 'static, Message> Selectable<'a, Link, Message> {
@@ -135,6 +141,12 @@ impl<'a, Link: Clone + 'static, Message> Selectable<'a, Link, Message> {
     /// The message of a right press on a link, which then takes the press from the widgets around the text.
     pub fn on_link_menu(mut self, on_link_menu: impl Fn(Link) -> Message + 'a) -> Self {
         self.on_link_menu = Some(Box::new(on_link_menu));
+        self
+    }
+
+    /// The images of the [`IMAGE_SLOT`] spans in order, each drawn 1em high in its slot once it has loaded.
+    pub fn images(mut self, images: Vec<Option<core_image::Handle>>) -> Self {
+        self.images = images;
         self
     }
 
@@ -314,6 +326,23 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
                     renderer.fill_paragraph(white, bounds.position(), SELECTED_TEXT, clip);
                 }
             }
+        }
+        // Desktop's `.custom-emoji img`: 1em high, at the bottom of the text, raised by 0.075em.
+        let slots = self.spans().iter().enumerate().filter(|(_, s)| s.text == IMAGE_SLOT);
+        for ((index, span), handle) in slots.zip(&self.images) {
+            let (Some(handle), Some(region)) = (handle, state.paragraph.span_bounds(index).first().copied()) else {
+                continue;
+            };
+            let em = span.size.unwrap_or(size).0;
+            let line_height = span.line_height.unwrap_or(self.line_height).to_absolute(Pixels(em)).0;
+            let bottom = region.y + (line_height + em) / 2.0 - em * 0.075;
+            let image = Rectangle::new(Point::new(region.x, bottom - em), Size::new(em, em)) + translation;
+            let fit = renderer.measure_image(handle).map_or(Size::new(em, em), |s| {
+                let k = (em / s.width.max(1) as f32).min(em / s.height.max(1) as f32);
+                Size::new(s.width as f32 * k, s.height as f32 * k)
+            });
+            let image = Rectangle::new(image.position() + Vector::new((em - fit.width) / 2.0, em - fit.height), fit);
+            renderer.draw_image(core_image::Image::new(handle.clone()), image, *viewport);
         }
     }
 
@@ -597,6 +626,14 @@ mod tests {
         assert_eq!(texts(drag(Point::new(0.0, 0.0), Point::new(0.0, 300.0)), &p, bounds), "first line of text");
         assert_eq!(texts(drag(Point::new(500.0, 50.0), Point::new(36.0, 108.0)), &p, bounds), "first");
         assert!(drag(Point::new(0.0, 0.0), Point::new(0.0, 50.0)).part(p.buffer(), bounds).is_none());
+    }
+
+    #[test]
+    fn an_image_slot_is_one_em_wide() {
+        for size in [13.0, 26.0] {
+            let w = crate::style::text_width(IMAGE_SLOT, size, iced::font::Weight::Normal);
+            assert!((w - size).abs() < 0.5, "{w} at {size}");
+        }
     }
 
     #[test]

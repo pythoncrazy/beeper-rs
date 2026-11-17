@@ -7585,3 +7585,83 @@ fn account_nickname_window_like_desktop() {
     assert_eq!(st.custom_name(account), None, "an empty name removes the nickname");
     assert_eq!(space_name(&st, account), "WhatsApp");
 }
+
+/// Desktop's dot of new requests: the requests that came after the Requests view last showed their account, by
+/// `com.beeper.message_requests.last_viewed_at`, whatever their unread state.
+#[test]
+fn requests_dot_like_desktop() {
+    let mut app = demo_app("requests-dot");
+    let id = {
+        let st = app.store.read();
+        let free = |c: &&Chat| c.id != NOTE_CHAT_ID && c.is_pinned != Some(true) && c.account_id == "acc_signal";
+        st.chats.iter().find(free).expect("a Signal chat").id.clone()
+    };
+    {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&id).expect("the chat");
+        st.update_chat(i, |c| {
+            (c.is_request, c.flags, c.unread_count) = (Some(true), (c.flags | CHAT_REQUEST) & !CHAT_UNREAD, 0)
+        });
+    }
+    let new = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.chats.iter().filter(|c| st.new_request(c)).count()
+    };
+    assert_eq!(new(&app), 1, "a request that was never viewed is new, also when read");
+    let key = {
+        let st = app.store.read();
+        st.request_key(st.chat(&id)).expect("a bridge login")
+    };
+    assert_eq!(key, "signal.login_signal_01", "Desktop's <bridge ID>.<login ID>");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::Requests)));
+    assert_eq!(new(&app), 0, "the Requests view saw it");
+    app.store.write().merge_requests_viewed(&serde_json::json!({ key.clone(): 1 }));
+    assert_eq!(new(&app), 0, "another device's older time keeps the newer one");
+    {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&id).expect("the chat");
+        let later = st.requests_viewed[&key] + 1;
+        st.update_chat(i, |c| c.created_at = Some(later));
+    }
+    assert_eq!(new(&app), 1, "a request created after the view is new");
+}
+
+/// Desktop's press on a trigger dismisses its tooltip: the "Filter" tooltip does not cover the filter menu.
+#[test]
+fn no_tooltip_over_an_open_menu_like_desktop() {
+    let mut app = demo_app("tooltip-menu");
+    // The simulator does not find the text of overlays, so the test reads a pixel of the tooltip left of the menu.
+    let tip_pixel = |app: &BeeperGuiApp, name: &str| {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_main());
+        let at = Point::new(235.0, 26.0);
+        sim.point_at(at);
+        let _ = sim.simulate([iced::Event::Mouse(mouse::Event::CursorMoved { position: at })]);
+        let dir = std::env::temp_dir().join(format!("beeper-rs-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("tip"));
+        let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+        let shot = ::image::open(&png).unwrap().into_rgba8();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let k = shot.width() / 1200;
+        shot.get_pixel(214 * k, 57 * k).0
+    };
+    assert_eq!(tip_pixel(&app, "tip-shown"), [255; 4], "the filter button has its tooltip");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu));
+    assert_ne!(tip_pixel(&app, "tip-hidden"), [255; 4], "not over the open filter menu");
+}
+
+/// Desktop's hover actions of a chat row fade and grow in over 0.1 s, and back out after the pointer leaves.
+#[test]
+fn row_hover_actions_fade_like_desktop() {
+    let mut app = demo_app("row-hover-fade");
+    let id = app.visible_chats(&app.store.read())[0].id.clone();
+    let hover = |app: &mut BeeperGuiApp, on| app.update(UiMessage::ChatList(chat_list::Msg::Hover(id.clone(), on)));
+    let _ = hover(&mut app, true);
+    assert!(app.hover_progress(&id).is_some_and(|t| t < 0.5), "the actions start small and clear");
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    assert_eq!(app.hover_progress(&id), Some(1.0), "and are in after the transition");
+    let _ = hover(&mut app, false);
+    assert!(app.hover_progress(&id).is_some_and(|t| t > 0.5), "they fade back out");
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    assert_eq!(app.hover_progress(&id), None, "and are gone after it");
+}

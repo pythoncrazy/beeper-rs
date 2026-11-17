@@ -731,9 +731,11 @@ async fn lifecycle() {
     let wanted =
         pages.read().chats.iter().filter(|c| ["acc_whatsapp", "acc_telegram"].contains(&&*c.account_id)).count();
     assert!(wanted > 0 && two["items"].as_array().unwrap().len() == wanted);
-    for bad in ["limit=0", "limit=201", "cursor=nope", "direction=up"] {
+    for bad in ["limit=0", "limit=201", "limit=abc", "direction=up"] {
         assert_eq!(pager.request("GET", &format!("/v1/chats?{bad}"), None).await.0, StatusCode::BAD_REQUEST, "{bad}");
     }
+    let (_, unreadable) = pager.request("GET", "/v1/chats?cursor=nope", None).await;
+    assert_eq!((&unreadable["items"], &unreadable["oldestCursor"]), (&json!([]), &json!("nope")));
     let weekly = "!tg_weekly:beeper.com";
     for n in 0..22 {
         pager.send_message(weekly, Some(&format!("Page message {n}")), None, None).await;

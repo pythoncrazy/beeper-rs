@@ -163,6 +163,8 @@ fn account_id(bridge: &Value, accounts: &[BridgeAccountInfo]) -> String {
 }
 
 pub const RULES: &str = "com.beeper.chat_list_rules";
+/// Desktop's `LAST_VIEWED_REQUESTS_AT`: when the Requests view last showed each account's requests.
+pub const REQUESTS_VIEWED: &str = "com.beeper.message_requests.last_viewed_at";
 /// The bridge states that the homeserver keeps, in the shape of `whoami`'s `user.bridges`.
 const BRIDGE_STATE: &str = "com.beeper.bridge_state";
 
@@ -410,6 +412,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, &bridge, !dm)),
         inbox_group: !dm && bridge["com.beeper.room_type.v2"] != "group_dm",
         is_request: Some(bridge["channel"]["com.beeper.message_request"] == true),
+        created_at: states(room, "m.room.create".into()).await.first().and_then(|e| e["origin_server_ts"].as_i64()),
         network_name: s(&bridge["network"]["displayname"]),
         network_id: s(&bridge["network"]["id"]),
         img_url: room.avatar_url().filter(|u| u.is_valid()).map(|u| u.to_string()),
@@ -551,7 +554,9 @@ fn content(kind: &str, c: &Value) -> Option<(Option<String>, Vec<Attachment>, &'
         ("m.room.message", Some("m.file")) => Some((caption(c), vec![attachment(c, "unknown")], "FILE")),
         ("m.room.message", Some("m.location")) => Some((body(c), Vec::new(), "LOCATION")),
         ("m.room.message", Some("m.notice")) => Some((body(c), Vec::new(), "NOTICE")),
-        ("m.room.message", _) => Some((body(c), Vec::new(), "TEXT")),
+        // Desktop's `wi`: an emote is plain text, and another msgtype (a `com.beeper.gallery`, a `com.beeper.command`,
+        // an `m.key.verification.request`) is a `HIDDEN` row.
+        ("m.room.message", Some("m.text" | "m.emote")) => Some((body(c), Vec::new(), "TEXT")),
         _ => None,
     }
 }
@@ -3153,6 +3158,7 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
     let (flags, usage) = (global(client, crate::features::FLAGS).await, global(client, crate::features::USAGE).await);
     let bridges = global(client, BRIDGE_STATE).await;
     sync_account_overrides(client, store).await;
+    let viewed = global(client, REQUESTS_VIEWED).await;
     let muted = muted_rooms(client).await;
     let changed: Vec<String> = {
         let st = store.read();
@@ -3173,6 +3179,7 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
         flips.push((id.clone(), on));
     }
     let mut st = store.write();
+    st.merge_requests_viewed(&viewed);
     st.muted_rooms = muted;
     for (id, on) in flips {
         if st.local_flag(&id, ChatFlag::Muted).is_none() {
@@ -4632,6 +4639,23 @@ mod tests {
         assert_eq!(inbox_done(None, 5), json!({}), "Desktop unarchives with an empty object");
         assert_eq!(inbox_done(Some(-3), 5), json!({ "at_ts": 5, "updated_ts": 5, "at_order": -3 }));
         assert!([-5, 0, 7, -9_007_199_254_740_991].iter().all(|&o| order_of(&sort_key(o)) == o));
+    }
+
+    /// Desktop's `wi`: an emote is text, and a gallery, a command or a verification request is not shown as text.
+    #[tokio::test]
+    async fn msgtypes_like_desktop() {
+        let event = |id: &str, kind: &str| stub_event(id, "m.room.message", json!({ "msgtype": kind, "body": id }));
+        let kinds = [("$t", "m.text"), ("$e", "m.emote"), ("$g", "com.beeper.gallery"), ("$c", "com.beeper.command")];
+        let mut events: Vec<Value> = kinds.iter().map(|(id, kind)| event(id, kind)).collect();
+        events.push(event("$v", "m.key.verification.request"));
+        let store = stub_history("msgtypes", events, ("!other:x", Vec::new())).await;
+        sync_stub_room(&store, "!room:x").await;
+        let st = store.read();
+        let kind = |id: &str| {
+            st.messages.iter().find(|m| m.id == id).and_then(|m| m.message_type.clone()).filter(|t| t != "HIDDEN")
+        };
+        assert_eq!((kind("$t").as_deref(), kind("$e").as_deref()), (Some("TEXT"), Some("TEXT")));
+        assert!(["$g", "$c", "$v"].iter().all(|id| kind(id).is_none()), "no text rows for the other msgtypes");
     }
 
     /// Other clients send events without the fields that Desktop expects, and Desktop shows them as well as it can.

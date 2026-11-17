@@ -17,7 +17,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::ops::Bound::{Excluded, Unbounded};
+use std::ops::Bound::{self, Excluded, Included, Unbounded};
 use std::sync::{Arc, RwLock};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -97,8 +97,7 @@ fn zod_type(v: Option<&Value>) -> &'static str {
 }
 
 /// The zod `invalid_type` issue, with `keys` in the order of the zod type that makes it.
-fn type_issue(keys: [&'static str; 3], expected: &str, v: Option<&Value>, path: Value) -> Issue {
-    let received = zod_type(v);
+fn type_issue(keys: [&'static str; 3], expected: &str, received: &str, path: Value) -> Issue {
     let message = match received {
         "undefined" => "Required".to_string(),
         r => format!("Expected {expected}, received {r}"),
@@ -114,7 +113,7 @@ fn type_issue(keys: [&'static str; 3], expected: &str, v: Option<&Value>, path: 
 /// The zod issue of a string field, if the value is not a string.
 fn string_issue(v: Option<&Value>, optional: bool, path: Value) -> Option<Issue> {
     let ok = matches!(v, Some(Value::String(_))) || (optional && v.is_none());
-    (!ok).then(|| type_issue(["code", "expected", "received"], "string", v, path))
+    (!ok).then(|| type_issue(["code", "expected", "received"], "string", zod_type(v), path))
 }
 
 /// The zod issue of an enum field, if the value is not one of the options.
@@ -129,7 +128,68 @@ fn enum_issue(v: Option<&Value>, options: &[&str], path: Value) -> Option<Issue>
             ("path", path),
             ("message", format!("Invalid enum value. Expected {expected}, received '{t}'").into()),
         ])),
-        v => Some(type_issue(["expected", "received", "code"], &expected, v, path)),
+        v => Some(type_issue(["expected", "received", "code"], &expected, zod_type(v), path)),
+    }
+}
+
+/// JavaScript's `Number` of a string: a decimal or `Infinity` with blanks trimmed, 0 for a blank, and NaN for the rest.
+fn js_number(s: &str) -> f64 {
+    match s.trim() {
+        "" => 0.0,
+        "Infinity" | "+Infinity" => f64::INFINITY,
+        "-Infinity" => f64::NEG_INFINITY,
+        t if t.bytes().all(|b| b.is_ascii_digit() || b"+-.eE".contains(&b)) => t.parse().unwrap_or(f64::NAN),
+        _ => f64::NAN,
+    }
+}
+
+/// The `(minimum, inclusive)` of zod's number checks `min(1)` and `positive()`.
+const MIN_1: (i64, bool) = (1, true);
+const POSITIVE: (i64, bool) = (0, false);
+
+/// The value of zod's `z.coerce.number().int()` with the minimum `(value, inclusive)` and the inclusive `max` for a
+/// query value, a string or the strings of a repeated key that `String` joins with commas, or zod's issues.
+fn coerce_int(v: &Value, (min, inclusive): (i64, bool), max: i64, path: Value) -> Result<i64, Vec<Issue>> {
+    let n = match v {
+        Value::Array(values) => js_number(&values.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(",")),
+        v => js_number(v.as_str().expect("a string query value")),
+    };
+    if n.is_nan() {
+        return Err(vec![type_issue(["code", "expected", "received"], "number", "nan", path)]);
+    }
+    let bound = |code: &str, k, value: i64, inclusive: bool, message: String| {
+        Issue(vec![
+            ("code", json!(code)),
+            (k, json!(value)),
+            ("type", json!("number")),
+            ("inclusive", json!(inclusive)),
+            ("exact", json!(false)),
+            ("message", message.into()),
+            ("path", path.clone()),
+        ])
+    };
+    let mut issues = Vec::new();
+    // `fract` of an infinity is NaN, which is not an integer either.
+    if n.fract() != 0.0 {
+        issues.push(Issue(vec![
+            ("code", json!("invalid_type")),
+            ("expected", json!("integer")),
+            ("received", json!("float")),
+            ("message", json!("Expected integer, received float")),
+            ("path", path.clone()),
+        ]));
+    }
+    if n < min as f64 || (!inclusive && n == min as f64) {
+        let message = format!("Number must be greater than {}{min}", if inclusive { "or equal to " } else { "" });
+        issues.push(bound("too_small", "minimum", min, inclusive, message));
+    }
+    if n > max as f64 {
+        issues.push(bound("too_big", "maximum", max, true, format!("Number must be less than or equal to {max}")));
+    }
+    if issues.is_empty() {
+        Ok(n as i64)
+    } else {
+        Err(issues)
     }
 }
 
@@ -160,7 +220,7 @@ fn create_chat_issues(b: &Value) -> Vec<Issue> {
             let items = ids.iter().enumerate();
             issues.extend(items.filter_map(|(i, v)| string_issue(Some(v), false, json!(["participantIDs", i]))));
         }
-        v => issues.push(type_issue(["code", "expected", "received"], "array", v, json!(["participantIDs"]))),
+        v => issues.push(type_issue(["code", "expected", "received"], "array", zod_type(v), json!(["participantIDs"]))),
     }
     issues.extend(field("title", true));
     // zod runs the refinement when only the `too_small` issue, which does not abort, is present.
@@ -264,13 +324,18 @@ impl Req {
         ms.transpose()
     }
 
-    /// Desktop's `direction`: `before` (the default) or `after`.
-    fn after(&self) -> Result<bool, Response> {
-        match self.q("direction") {
-            None | Some("before") => Ok(false),
-            Some("after") => Ok(true),
-            Some(_) => Err(bad("direction must be before or after")),
+    /// Desktop's optional `direction` enum: `before` (the default) or `after`, or its zod issue.
+    fn direction(&self) -> Result<bool, Issue> {
+        let v = self.query.get("direction");
+        match v.and_then(|d| enum_issue(Some(d), &["after", "before"], json!(["direction"]))) {
+            Some(issue) => Err(issue),
+            None => Ok(v.is_some_and(|d| d == "after")),
         }
+    }
+
+    /// [`Self::direction`], or Desktop's answer with its zod issue.
+    fn after(&self) -> Result<bool, Response> {
+        self.direction().map_err(|issue| invalid_input(vec![issue]))
     }
 
     fn need_q(&self, k: &str) -> Result<&str, Response> {
@@ -293,12 +358,16 @@ impl Req {
         serde_json::from_value(self.body[k].clone()).map_err(|e| bad(&format!("{k}: {e}")))
     }
 
-    fn limit(&self, default: usize, max: usize) -> Result<usize, Response> {
-        let limit = self.q("limit").map_or(Ok(default), |v| v.parse().map_err(|_| bad("limit must be an integer")))?;
-        match (1..=max).contains(&limit) {
-            true => Ok(limit),
-            false => Err(bad(&format!("limit must be from 1 to {max}"))),
-        }
+    /// Desktop's `limit`, `z.coerce.number().int()` with the minimum `(value, inclusive)` and the maximum `max`, which
+    /// is `default` when missing, or its zod issues.
+    fn page_size(&self, default: usize, min: (i64, bool), max: i64) -> Result<usize, Vec<Issue>> {
+        let Some(v) = self.query.get("limit") else { return Ok(default) };
+        coerce_int(v, min, max, json!(["limit"])).map(|n| n as usize)
+    }
+
+    /// [`Self::page_size`], or Desktop's answer with its zod issues.
+    fn limit(&self, default: usize, min: (i64, bool), max: i64) -> Result<usize, Response> {
+        self.page_size(default, min, max).map_err(invalid_input)
     }
 }
 
@@ -1089,7 +1158,7 @@ fn account(st: &BeeperStore, id: &str, rest: &[&str], r: &Req) -> Reply {
             ok(&json!({ "items": users.filter(hit).collect::<Vec<_>>() }))
         }
         ["contacts", "list"] => {
-            let (limit, after) = (r.limit(50, 200)?, r.after()?);
+            let (limit, after) = (r.limit(50, MIN_1, 200)?, r.after()?);
             let all: Vec<&User> = users.filter(hit).collect();
             // A cursor is the ID of a contact: `before` pages to the contacts after it, `after` to the ones before it.
             let at = r.q("cursor").map(|c| all.iter().position(|u| u.id == c).ok_or_else(|| bad("invalid cursor")));
@@ -1320,26 +1389,67 @@ fn chat_cursor(r: &Req) -> Result<Option<(i64, String)>, Response> {
     r.q("cursor").map(|c| key(c).ok_or_else(|| bad("invalid cursor"))).transpose()
 }
 
-/// The `chat_order` keys newest first, past the cursor. Both directions take the newest chats past the cursor, like
+/// A range of `chat_order` keys.
+type ChatRange = (Bound<(i64, String)>, Bound<(i64, String)>);
+
+/// The `chat_order` keys of `range` newest first. Both directions take the newest chats past a cursor, like
 /// Desktop's `ORDER BY timestamp DESC LIMIT`.
-fn chat_keys<'a>(
-    st: &'a BeeperStore,
-    cursor: Option<&(i64, String)>,
-    after: bool,
-) -> impl Iterator<Item = (i64, &'a str)> {
-    let keys = match cursor {
-        None => st.chat_order().range::<(i64, String), _>(..),
-        Some(c) if after => st.chat_order().range((Excluded(c), Unbounded)),
-        Some(c) => st.chat_order().range(..c),
-    };
-    keys.rev().map(|(ms, id)| (*ms, id.as_str()))
+fn chat_keys(st: &BeeperStore, range: ChatRange) -> impl Iterator<Item = (i64, &str)> {
+    st.chat_order().range(range).rev().map(|(ms, id)| (*ms, id.as_str()))
 }
 
-/// Desktop's `listChats`: the chats by last activity, newest first.
+/// The `chat_order` keys past the key of a cursor: the older ones `before` it, or the newer ones `after` it.
+fn past(key: (i64, String), after: bool) -> ChatRange {
+    match after {
+        true => (Excluded(key), Unbounded),
+        false => (Unbounded, Excluded(key)),
+    }
+}
+
+/// The `chat_order` keys past a cursor of Desktop's `chatPreviewRepo.getRooms`, which reads `<timestamp>:<row ID>`
+/// with `j8`, here with the chat ID as the row ID, or a bare timestamp with `Nh`, which skips every chat of that
+/// millisecond. `None` for a cursor that it cannot read.
+fn rooms_range(cursor: &str, after: bool) -> Option<ChatRange> {
+    match cursor.split_once(':') {
+        Some((_, "")) => None,
+        Some((ms, id)) => Some(past((ms.parse().ok()?, id.into()), after)),
+        None => {
+            let ms = Some(js_number(cursor)).filter(|ms| ms.is_finite())?;
+            Some(match after {
+                true => (Included(((ms.floor() as i64).saturating_add(1), String::new())), Unbounded),
+                false => (Unbounded, Excluded((ms.ceil() as i64, String::new()))),
+            })
+        }
+    }
+}
+
+/// Desktop's `listChats` over `chatPreviewRepo.getRooms`: the chats newest first, from the `limit` rows past the
+/// cursor. `hasMore` means a full page of rows, and the rows of the member chats of merged chats do not show, like
+/// Desktop.
 fn list_chats(st: &BeeperStore, r: &Req) -> Reply {
-    let (after, limit, accounts, cursor) = (r.after()?, r.limit(25, 200)?, r.qs("accountIDs"), chat_cursor(r)?);
-    let keep = |c: &Chat| accounts.is_empty() || accounts.contains(&c.account_id.as_str());
-    chat_page(st, r, chat_keys(st, cursor.as_ref(), after), keep, limit)
+    let mut issues: Vec<Issue> = string_issue(r.query.get("cursor"), true, json!(["cursor"])).into_iter().collect();
+    let after = r.direction().map_err(|issue| issues.push(issue)).ok();
+    let limit = r.page_size(25, MIN_1, 200).map_err(|found| issues.extend(found)).ok();
+    let (Some(after), Some(limit), true) = (after, limit, issues.is_empty()) else { return Err(invalid_input(issues)) };
+    let accounts: Vec<&str> = r.qs("accountIDs").into_iter().filter(|a| !a.trim().is_empty()).collect();
+    // The part of a cursor before `|` pages the Beeper chats, and the part after it the iMessage chats of macOS.
+    let cursor = r.q("cursor").and_then(|c| c.split('|').next()).filter(|c| !c.is_empty());
+    let range = cursor.map_or(Some((Unbounded, Unbounded)), |c| rooms_range(c, after));
+    let in_accounts = |k: &(i64, &str)| accounts.is_empty() || accounts.contains(&st.chat(k.1).account_id.as_str());
+    let rows: Vec<(i64, &str)> =
+        range.map_or_else(Vec::new, |range| chat_keys(st, range).filter(in_accounts).take(limit).collect());
+    let shown: Vec<(i64, &str)> = rows.iter().copied().filter(|k| st.chat(k.1).merged_into_chat_id.is_none()).collect();
+    let (newest, oldest) = match shown.is_empty() {
+        // With only member chats, Desktop moves the cursor of the direction to a row of `getRooms`, which returns its
+        // rows oldest first: to the last one, the newest, `before`, and to the first one, the oldest, `after`.
+        true if after => (rows.last(), None),
+        true => (None, rows.first()),
+        false => (shown.first(), shown.last()),
+    };
+    let cursor_of = |k: Option<&(i64, &str)>| k.map(|(ms, id)| format!("{ms}:{id}")).or(cursor.map(str::to_string));
+    let items = shown.iter().map(|k| view::chat(st, st.chat(k.1), Some(20), true)).collect();
+    let (oldest_cursor, newest_cursor) = (cursor_of(oldest), cursor_of(newest));
+    ok(&CursorPage { items, has_more: rows.len() == limit, oldest_cursor, newest_cursor })
 }
 
 fn chats(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
@@ -1448,7 +1558,7 @@ fn search_chats(st: &BeeperStore, r: &Req) -> Reply {
         Some(_) => return Err(bad("scope must be titles or participants")),
     };
     let chat_type = r.q("type").filter(|&t| t != "any");
-    let (after, limit, accounts, label) = (r.after()?, r.limit(50, 200)?, r.qs("accountIDs"), r.q("labelID"));
+    let (after, limit, accounts, label) = (r.after()?, r.limit(50, MIN_1, 200)?, r.qs("accountIDs"), r.q("labelID"));
     let (active_before, active_after, cursor) =
         (r.date("lastActivityBefore")?, r.date("lastActivityAfter")?, chat_cursor(r)?);
     let keep = |c: &Chat| {
@@ -1461,7 +1571,8 @@ fn search_chats(st: &BeeperStore, r: &Req) -> Reply {
             && active_after.is_none_or(|a| ms() > a)
     };
     let Some(query) = r.q("query").map(str::trim).filter(|q| !q.is_empty()) else {
-        return chat_page(st, r, chat_keys(st, cursor.as_ref(), after), keep, limit);
+        let range = cursor.clone().map_or((Unbounded, Unbounded), |c| past(c, after));
+        return chat_page(st, r, chat_keys(st, range), keep, limit);
     };
     let words = tokenize(query);
     let hit = |c: &Chat| chat_hit(c, people, &words);
@@ -1798,7 +1909,7 @@ fn search_messages(st: &BeeperStore, r: &Req) -> Reply {
     if chat_type.is_some_and(|t| t != "group" && t != "single") {
         return Err(bad("chatType must be group or single"));
     }
-    let (after, cursor, limit, sender) = (r.after()?, r.q("cursor"), r.limit(20, 20)?, r.q("sender"));
+    let (after, cursor, limit, sender) = (r.after()?, r.q("cursor"), r.limit(20, POSITIVE, 20)?, r.q("sender"));
     let (date_after, date_before) = (r.date("dateAfter")?, r.date("dateBefore")?);
     if date_after.zip(date_before).is_some_and(|(a, b)| a >= b) {
         return Err(bad("'dateAfter' must be earlier than 'dateBefore' when both are provided."));

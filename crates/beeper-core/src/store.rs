@@ -577,6 +577,9 @@ pub struct BeeperStore {
     pub account_overrides: serde_json::Value,
     /// Desktop SDK's MSC4483 key of encrypted account data, once read from secret storage.
     pub account_data_key: Option<[u8; 32]>,
+    /// Desktop's `lastViewedRequestsAtByAccount`: when the Requests view last showed each account's requests, in
+    /// milliseconds, by [`BeeperStore::request_key`].
+    pub requests_viewed: HashMap<String, i64>,
     pub features: crate::features::Flags,
     pub whoami: Profile,
     next_seq: i64,
@@ -733,6 +736,7 @@ impl BeeperStore {
             account_overrides_synced: serde_json::Value::Null,
             account_overrides: serde_json::Value::Null,
             account_data_key: None,
+            requests_viewed: HashMap::new(),
             features,
             whoami: Profile::default(),
             next_seq: 1000,
@@ -1350,6 +1354,7 @@ impl BeeperStore {
             notifiable: None,
             is_hidden_from_inbox: None,
             is_request: None,
+            created_at: None,
             network_name: None,
             network_id: None,
             img_url: None,
@@ -2204,6 +2209,7 @@ impl BeeperStore {
             notifiable: None,
             is_hidden_from_inbox: None,
             is_request: None,
+            created_at: None,
             network_name: None,
             network_id: None,
             img_url: None,
@@ -2679,6 +2685,49 @@ impl BeeperStore {
         self.update_chat(idx, |c| drop(c.thread_reads.insert(root.into(), key)));
         if event.starts_with('$') {
             self.queue(chat_id, Outgoing::ThreadRead { root: root.into(), event });
+        }
+    }
+
+    /// Desktop's `getMessageRequestLastViewedAccountID`: the `<bridge ID>.<login ID>` of the bridge login of a chat,
+    /// or `hungryserv.<user ID>` for a Beeper chat.
+    pub fn request_key(&self, c: &Chat) -> Option<String> {
+        if let Some(a) = self.bridge_accounts.iter().find(|a| a.account_id == c.account_id) {
+            return Some(format!("{}.{}", a.bridge_id, a.login_id));
+        }
+        let me = &self.beeper_state.user_id;
+        (c.account_id == "hungryserv" && !me.is_empty()).then(|| format!("hungryserv.{me}"))
+    }
+
+    /// Desktop's `requestCountsTowardsUnreadBadge`: a shown request that came after the Requests view last showed the
+    /// requests of its account, by its `createdAt ?? timestamp`.
+    pub fn new_request(&self, c: &Chat) -> bool {
+        if c.flags & CHAT_REQUEST == 0 || c.flags & CHAT_HIDDEN != 0 {
+            return false;
+        }
+        let Some(seen) = self.request_key(c).and_then(|k| self.requests_viewed.get(&k).copied()) else { return true };
+        let last = || c.last_activity.as_deref().and_then(crate::config::millis_from_rfc3339);
+        c.created_at.or_else(last).unwrap_or(0) > seen
+    }
+
+    /// Desktop's `updateLastViewedRequestsAt`: the accounts of the requests were seen `now`. Gives the new
+    /// `com.beeper.message_requests.last_viewed_at`, or `None` when there is no request.
+    pub fn view_requests(&mut self, now: i64) -> Option<serde_json::Value> {
+        let requests = self.chats.iter().filter(|c| c.flags & CHAT_REQUEST != 0);
+        let keys: HashSet<String> = requests.filter_map(|c| self.request_key(c)).collect();
+        if keys.is_empty() {
+            return None;
+        }
+        self.requests_viewed.extend(keys.into_iter().map(|k| (k, now)));
+        Some(serde_json::json!(self.requests_viewed))
+    }
+
+    /// Desktop's `LAST_VIEWED_REQUESTS_AT` effect: another device's times, each kept when it is newer.
+    pub fn merge_requests_viewed(&mut self, content: &serde_json::Value) {
+        for (k, at) in content.as_object().into_iter().flatten() {
+            if let Some(at) = at.as_i64() {
+                let seen = self.requests_viewed.entry(k.clone()).or_default();
+                *seen = (*seen).max(at);
+            }
         }
     }
 

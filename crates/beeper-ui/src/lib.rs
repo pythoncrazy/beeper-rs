@@ -611,6 +611,9 @@ fn ghost(p: &Palette, r: f32) -> impl Fn(&Theme, button::Status) -> button::Styl
 }
 
 /// A row of a dropdown or context menu. Without a message it is greyed out.
+/// Desktop's `--animation-timing`, in seconds.
+const HOVER_FADE: f32 = 0.1;
+
 fn menu_item<'a>(
     p: &Palette,
     lead: Option<El<'a>>,
@@ -1178,8 +1181,7 @@ svg_static!(CHEVRON_LEFT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="
 svg_static!(TIMER, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path fill="currentColor" d="M6.5 1.553a.58.58 0 0 1-.426-.173A.57.57 0 0 1 5.9.954q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174A.57.57 0 0 1 7.1.952q0 .251-.173.426a.57.57 0 0 1-.425.175m0 8.1a.58.58 0 0 1-.426-.174.57.57 0 0 1-.175-.424q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175m2.1-6.3a.58.58 0 0 1-.426-.174A.57.57 0 0 1 8 2.756q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175m0 4.5a.58.58 0 0 1-.426-.173A.57.57 0 0 1 8 7.255q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175m.6-2.25a.58.58 0 0 1-.426-.173.57.57 0 0 1-.175-.425q0-.252.174-.427a.57.57 0 0 1 .425-.175q.251 0 .426.174a.57.57 0 0 1 .175.425q0 .251-.173.426a.57.57 0 0 1-.425.175M5 9.803a4.7 4.7 0 0 1-1.866-.375 4.84 4.84 0 0 1-2.56-2.562A4.7 4.7 0 0 1 .2 4.997q0-.993.375-1.863A4.86 4.86 0 0 1 3.134.578 4.7 4.7 0 0 1 5 .203v.9q-1.625 0-2.762 1.138T1.099 5.003t1.138 2.763 2.762 1.137zm1.674-2.675L4.55 5.003v-3h.9v2.625l1.863 1.863z"/></svg>"##);
 svg_static!(CALL, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill="currentColor" d="M16.193 17.842q-2.605 0-5.146-1.136t-4.625-3.218q-2.083-2.084-3.219-4.625T2.068 3.717q0-.375.25-.625a.85.85 0 0 1 .625-.25h3.375q.292 0 .52.198a.76.76 0 0 1 .272.468l.541 2.917q.042.333-.02.563a.9.9 0 0 1-.23.395l-2.02 2.042q.416.77.989 1.49.573.718 1.26 1.385.645.646 1.355 1.198.708.552 1.5 1.01l1.958-1.958q.187-.188.49-.281.301-.094.593-.052l2.875.583a.97.97 0 0 1 .48.302.73.73 0 0 1 .187.49v3.375q0 .375-.25.625a.85.85 0 0 1-.625.25"/></svg>"##);
 svg_static!(ADD_ACCOUNT, include_bytes!("../assets/add_account.svg"));
-// Desktop's `reply-in-thread` and `chevron-compact-right` icons, the Material `view_sidebar` and `chevron_forward`.
-svg_static!(VIEW_SIDEBAR, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M16,20H2V4h14V20z M18,8h4V4h-4V8z M18,20h4v-4h-4V20z M18,14h4v-4h-4V14z"/></svg>"##);
+// Desktop's `chevron-compact-right` icon, the Material `chevron_forward`.
 svg_static!(CHEVRON_FORWARD, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M504-480 320-664l56-56 240 240-240 240-56-56 184-184Z"/></svg>"##);
 // Desktop's `undo` icon of the Revert button of a hotkey.
 svg_static!(REVERT, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M212.333 224.333H12c-6.627 0-12-5.373-12-12V12C0 5.373 5.373 0 12 0h48c6.627 0 12 5.373 12 12v78.112C117.773 39.279 184.26 7.47 258.175 8.007c136.906.994 246.448 111.623 246.157 248.532C504.041 393.258 393.12 504 256.333 504c-64.089 0-122.496-24.313-166.51-64.215-5.099-4.622-5.334-12.554-.467-17.42l33.967-33.967c4.474-4.474 11.662-4.717 16.401-.525C170.76 415.336 211.58 432 256.333 432c97.268 0 176-78.716 176-176 0-97.267-78.716-176-176-176-58.496 0-110.28 28.476-142.274 72.333h98.274c6.627 0 12 5.373 12 12v48c0 6.627-5.373 12-12 12z"/></svg>"##);
@@ -1578,7 +1580,7 @@ fn can_edit_for_me(st: &BeeperStore, c: &Chat) -> bool {
 /// Desktop's sidebar overflow menu (`Plt`): the hidden spaces, then New Label…, Edit Spaces… and Add/Remove Accounts…,
 /// with `None` for a separator.
 fn more_menu(st: &BeeperStore) -> Vec<Option<(String, UiMessage)>> {
-    let unread = st.chats.iter().any(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0);
+    let unread = st.chats.iter().any(|c| st.new_request(c));
     let hidden = hidden_spaces(st);
     let mut items: Vec<_> = hidden
         .iter()
@@ -1677,11 +1679,11 @@ fn space_subtitle(st: &BeeperStore, id: &str) -> Option<String> {
             trn("%d Reminder", "%d Reminders", n, &[&n])
         }
         "requests" => {
-            let n = count(&|c| c.flags & CHAT_REQUEST != 0);
+            let n = count(&|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_HIDDEN == 0);
             trn("%d Request", "%d Requests", n, &[&n])
         }
         "low_priority" => {
-            let n = count(&|c| c.flags & CHAT_LOW_PRIORITY != 0);
+            let n = count(&|c| c.flags & CHAT_LOW_PRIORITY != 0 && c.flags & CHAT_HIDDEN == 0);
             trn("%d Low Priority Chat", "%d Low Priority Chats", n, &[&n])
         }
         "scheduled" => trn("%d Message", "%d Messages", st.scheduled.len(), &[&st.scheduled.len()]),
@@ -2481,6 +2483,8 @@ pub struct BeeperGuiApp {
     /// Desktop's `spaceViewAccountFilter`: the account or network space that the Archive, Low Priority or Requests
     /// view shows the chats of, from its filter menu.
     pub space_view_account: Option<String>,
+    /// The requests that the Requests view last marked as seen.
+    seen_requests: Vec<String>,
     pub hotkey_query: String,
     pub hotkey_rec: Option<HotkeyRec>,
     pub profile: profile::ProfileForm,
@@ -2598,6 +2602,9 @@ pub struct BeeperGuiApp {
     pub quick_look_target: Option<(String, String)>,
     quick_open: bool,
     pub hovered_chat: Option<String>,
+    /// When `hovered_chat` began, and the row the pointer last left with when, for the fade of the hover actions.
+    hover_at: Option<std::time::Instant>,
+    unhovered: Option<(String, std::time::Instant)>,
     pub flash: Option<(String, std::time::Instant)>,
     last_click: Option<(String, std::time::Instant)>,
     /// The opened chats, the most recent first. While `cycling`, a selection does not reorder them.
@@ -2762,6 +2769,7 @@ impl BeeperGuiApp {
             active_tab: InboxTab::AllChats,
             selected_account_filter: None,
             space_view_account: None,
+            seen_requests: Vec::new(),
             hotkey_query: String::new(),
             hotkey_rec: None,
             profile: profile::ProfileForm::default(),
@@ -2852,6 +2860,8 @@ impl BeeperGuiApp {
             quick_look_target: None,
             quick_open: false,
             hovered_chat: None,
+            hover_at: None,
+            unhovered: None,
             flash: None,
             status_banner: String::new(),
             relaunch_toast: None,
@@ -3693,6 +3703,7 @@ impl BeeperGuiApp {
     pub fn update(&mut self, msg: UiMessage) -> Task<UiMessage> {
         let (shown, dismissals) = (self.stackable_toast(), self.toast_dismissals);
         let task = self.handle(msg);
+        let task = Task::batch([task, self.view_requests()]);
         self.keep_shown();
         let replaced = |t: &(Toast, Duration)| !self.status_banner.is_empty() && t.0.text != self.status_banner;
         if let Some(t) = shown.filter(|t| dismissals == self.toast_dismissals && replaced(t)) {
@@ -4087,18 +4098,8 @@ impl BeeperGuiApp {
                 self.user_hover.shown = None;
                 if self.show_command_palette
                     || self.forward.is_some()
-                    || self.show_filter_menu
-                    || self.chat_menu.is_some()
-                    || self.pane.message_menu.is_some()
+                    || self.menu_open()
                     || self.pane.gallery_reactions.is_some()
-                    || self.pane.thread_menu.is_some()
-                    || self.unread_menu.is_some()
-                    || self.pane.edit_menu.is_some()
-                    || self.pane.sched_menu.is_some()
-                    || self.reminder_menu.is_some()
-                    || self.audio.menu.is_some()
-                    || self.selection_menu.is_some()
-                    || self.pane.show_attach_menu
                     || self.pane.picker.is_some()
                     || self.pane.emoji.is_some()
                     || self.quick_look_target.is_some()
@@ -4662,7 +4663,8 @@ impl BeeperGuiApp {
             || (self.login_window.is_some() && (self.login.busy || self.login.animated()))
             || self.reauth.busy
             || self.enter_key.busy
-            || self.nickname_windows.iter().any(|d| d.saving);
+            || self.nickname_windows.iter().any(|d| d.saving)
+            || self.hover_fading();
         let tab_at = self.media_window.as_ref().and_then(|w| w.tab_at);
         let animated = animated || tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE);
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
@@ -5602,7 +5604,25 @@ impl BeeperGuiApp {
         self.list_muted(st, c) && c.unread_mentions == 0 || c.flags & CHAT_ARCHIVED != 0
     }
 
-    fn row_action<'a>(&self, c: &Chat, pref: u8) -> Option<El<'a>> {
+    /// Desktop's `.ThreadListItem-module__hoverActions` transition: the hover actions of a row fade and grow in over
+    /// `--animation-timing` (0.1 s, ease-in-out) while the pointer is on it, and back out after it leaves. Gives how far
+    /// in they are, or `None` when they do not show.
+    pub(crate) fn hover_progress(&self, key: &str) -> Option<f32> {
+        let gone = |at: std::time::Instant| (at.elapsed().as_secs_f32() / HOVER_FADE).min(1.0);
+        match (&self.hovered_chat, &self.unhovered) {
+            (Some(k), _) if k == key => Some(crate::login::ease_in_out(self.hover_at.map_or(1.0, gone))),
+            (_, Some((k, at))) if k == key && gone(*at) < 1.0 => Some(1.0 - crate::login::ease_in_out(gone(*at))),
+            _ => None,
+        }
+    }
+
+    /// Whether a row's hover actions are fading in or out.
+    fn hover_fading(&self) -> bool {
+        let fading = |at: &std::time::Instant| at.elapsed().as_secs_f32() < HOVER_FADE;
+        self.hover_at.as_ref().is_some_and(fading) || self.unhovered.as_ref().is_some_and(|(_, at)| fading(at))
+    }
+
+    fn row_action<'a>(&self, c: &Chat, pref: u8, t: f32) -> Option<El<'a>> {
         let unread = c.is_unread();
         let archived = c.flags & CHAT_ARCHIVED != 0;
         let (glyph, size, label, keys, msg) = match pref {
@@ -5632,9 +5652,10 @@ impl BeeperGuiApp {
             }
             _ => return None,
         };
-        Some(self.hover_btn(glyph, size, label, keys, msg))
+        Some(self.hover_btn(glyph, size, label, keys, msg, t))
     }
 
+    /// A hover action `t` of the way into its fade, from 30% of its size and clear to its full size and color.
     fn hover_btn<'a>(
         &self,
         glyph: usize,
@@ -5642,19 +5663,57 @@ impl BeeperGuiApp {
         label: &'a str,
         keys: Vec<&'static str>,
         msg: UiMessage,
+        t: f32,
     ) -> El<'a> {
         let p = &self.pal;
-        let btn = button(tinted(&ROW_ACTIONS[glyph], size, p.strong)).padding(6).style(btn_style(
-            [CLEAR; 3],
-            [p.strong; 3],
-            0.0,
-        ));
+        let icon = tinted(&ROW_ACTIONS[glyph], size * (0.3 + 0.7 * t), p.strong.scale_alpha(t));
+        let btn = button(container(icon).center(size)).padding(6).style(btn_style([CLEAR; 3], [p.strong; 3], 0.0));
         let tip = self.tip(btn.on_press(msg).into(), label, keys, tooltip::Position::Right);
         let top = 22f32.min(51.0 - 12.0 - size);
         container(tip.delay(std::time::Duration::from_secs(1)))
             .align_right(Fill)
             .padding(Padding::ZERO.top(top).right(4.0))
             .into()
+    }
+
+    /// Desktop's `updateLastViewedRequestsAt` when the Requests view shows, and when its requests change while it
+    /// shows: it sets `com.beeper.message_requests.last_viewed_at`, which clears the dot of new requests.
+    fn view_requests(&mut self) -> Task<UiMessage> {
+        if self.active_tab != InboxTab::Requests || self.selected_account_filter.is_some() {
+            self.seen_requests.clear();
+            return Task::none();
+        }
+        let ids: Vec<String> = {
+            let st = self.store.read();
+            st.chats.iter().filter(|c| c.flags & CHAT_REQUEST != 0).map(|c| c.id.clone()).collect()
+        };
+        if ids.is_empty() || ids == self.seen_requests {
+            return Task::none();
+        }
+        self.seen_requests = ids;
+        let mut st = self.store.write();
+        match (st.view_requests(now_unix_millis()), st.matrix.clone()) {
+            (Some(content), Some(c)) => {
+                let write = beeper_core::matrix::set_global(c, beeper_core::matrix::REQUESTS_VIEWED, content);
+                Task::perform(write, UiMessage::Pushed)
+            }
+            _ => Task::none(),
+        }
+    }
+
+    /// Whether one of the main window's menus is open.
+    fn menu_open(&self) -> bool {
+        self.show_filter_menu
+            || self.chat_menu.is_some()
+            || self.pane.message_menu.is_some()
+            || self.pane.thread_menu.is_some()
+            || self.unread_menu.is_some()
+            || self.pane.edit_menu.is_some()
+            || self.pane.sched_menu.is_some()
+            || self.reminder_menu.is_some()
+            || self.audio.menu.is_some()
+            || self.selection_menu.is_some()
+            || self.pane.show_attach_menu
     }
 
     fn tip<'a>(
@@ -5686,6 +5745,10 @@ impl BeeperGuiApp {
                 .into()
         };
         let keys = (!keys.is_empty()).then(|| Row::with_children(keys.into_iter().map(kbd)).spacing(4));
+        // Desktop's press on a trigger dismisses its tooltip, so none shows over the menu that the press opened.
+        if self.menu_open() {
+            return tooltip(el, Space::new(), at);
+        }
         let body = row![med(label, 13.0).color(p.strong)].push(keys).spacing(8).align_y(Center);
         tooltip(el, container(body).padding([8, 11]).style(glow_box(p.card, p.shadow, 17.0, 0.0, 20.0)), at)
     }

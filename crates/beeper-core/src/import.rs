@@ -485,6 +485,7 @@ fn read_chats(db: &Connection, people: &mut HashMap<String, Vec<User>>, rules: &
                 note: note.filter(|n| !n.is_empty()),
                 notifiable: None,
                 is_request: Some(flag(&t, "isMessageRequest")),
+                created_at: t.get("createdAt").and_then(Value::as_str).and_then(crate::config::millis_from_rfc3339),
                 network_name: str_field(&t, "networkName")
                     .or_else(|| bridge.get("network").and_then(|n| str_field(n, "displayname"))),
                 network_id: bridge.get("network").and_then(|n| str_field(n, "id")),
