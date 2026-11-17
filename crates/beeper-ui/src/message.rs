@@ -3876,8 +3876,12 @@ mod tests {
             let _ = app.update(UiMessage::Typing(cid.clone()));
         };
         let later = |app: &mut BeeperGuiApp| app.typing_shown.get_mut(&cid).unwrap().2 -= TYPING_FADE;
+        // Whether the indicator shows and started to show at `before` or after it.
+        let started = |app: &BeeperGuiApp, before| app.typing_shown.get(&cid).is_some_and(|t| t.1 && t.2 >= before);
+        app.pane.scrolled_up = Some((false, std::time::Instant::now()));
+        let before = std::time::Instant::now();
         typing(&mut app, true);
-        assert!(shown(&app).is_none_or(|(_, v)| v < 0.5), "it starts to show");
+        assert!(started(&app, before), "it starts to show at the bottom of the timeline");
         later(&mut app);
         assert_eq!(shown(&app), Some((5, 1.0)));
         {
@@ -3888,8 +3892,10 @@ mod tests {
             }
             assert!(sim.find("Y").is_err(), "4 faces at most");
         }
+        let before = std::time::Instant::now();
         typing(&mut app, false);
-        assert!(shown(&app).is_some_and(|(n, v)| n == 5 && v > 0.5), "it hides with who typed");
+        let hiding = app.typing_shown.get(&cid).is_some_and(|t| t.0.len() == 5 && !t.1 && t.2 >= before);
+        assert!(hiding, "it hides with who typed");
         later(&mut app);
         assert_eq!(shown(&app), None);
         app.pane.scrolled_up = Some((true, std::time::Instant::now()));
