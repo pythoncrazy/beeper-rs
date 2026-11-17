@@ -1,4 +1,5 @@
 use crate::accounts;
+use crate::focus::Focus;
 use crate::i18n::{tr, trx, trxf};
 use crate::style::{
     bold, bordered_box, btn_style, fill_box, glow_box, gradient_text, ic, icon, input_style, med, semi, shadow_box,
@@ -222,8 +223,8 @@ pub struct Login {
     tried_codes: Vec<String>,
     /// The bubble of Chromium's `type=email` check over the email field.
     pub invalid: Option<String>,
-    /// The index of the control in `Screen::stops` that has the keyboard focus.
-    pub focus: Option<usize>,
+    /// The control of `Screen::stops` that has the keyboard focus.
+    pub focus: Focus<Stop>,
     request: String,
     lead_token: String,
     pub busy: bool,
@@ -248,6 +249,11 @@ pub struct Login {
 }
 
 impl Login {
+    /// The control with the keyboard focus, when the screen has it.
+    fn stop(&self) -> Option<Stop> {
+        self.focus.get().filter(|s| self.screen.stops().contains(s))
+    }
+
     /// The screens with the floating welcome illustration, and the toast of a pasted code until it goes.
     pub fn animated(&self) -> bool {
         matches!(self.screen, Screen::Import | Screen::Welcome | Screen::Syncing) || self.pasted() || self.waiting
@@ -645,7 +651,7 @@ impl BeeperGuiApp {
     fn show_screen(&mut self, screen: Screen) -> Task<UiMessage> {
         let l = &mut self.login;
         (l.screen, l.error, l.toast, l.invalid) = (screen, None, None, None);
-        l.focus = screen.stops().iter().position(|s| *s == Stop::Field);
+        l.focus.set(screen.field().map(|_| Stop::Field));
         // Desktop mounts a new email form, so the screen shows empty.
         if screen == Screen::Email {
             l.email.clear();
@@ -675,7 +681,7 @@ impl BeeperGuiApp {
             LoginMsg::Email(v) => {
                 l.email = v;
                 (l.toast, l.invalid) = (None, None);
-                l.focus = Screen::Email.stops().iter().position(|s| *s == Stop::Field);
+                l.focus.set(Some(Stop::Field));
             }
             LoginMsg::SubmitEmail | LoginMsg::Resend => {
                 let email = l.email.trim().to_string();
@@ -930,7 +936,7 @@ impl BeeperGuiApp {
             }
             Screen::Welcome => {
                 // Chromium's focus ring of a link: a 1 px orange outline.
-                let ring = (l.focus.map(|i| l.screen.stops()[i]) == Some(Stop::Terms))
+                let ring = (l.stop() == Some(Stop::Terms))
                     .then(|| border::rounded(2).color(Color::from_rgb8(229, 151, 0)).width(1));
                 // Desktop's one sentence with the two links in it, wrapped like `text-wrap: balance`.
                 let sentence = tr("By continuing, you agree to our %1$s and have read our %2$s.");
@@ -1011,7 +1017,7 @@ impl BeeperGuiApp {
                 // Desktop's `OTPInput`: six 41.3x56 slots 8 px apart, with a 2 px ring outside the focused slot, and
                 // red digits and rings on all slots after an error.
                 let error = l.error.is_some();
-                let focused = l.focus.map(|i| l.screen.stops()[i]) == Some(Stop::Field);
+                let focused = l.stop() == Some(Stop::Field);
                 let slots = row((0..6).map(|i| {
                     let ink = if error { ERROR_RED } else { p.strong };
                     let digit: Option<El<'_>> = l
@@ -1267,21 +1273,15 @@ impl BeeperGuiApp {
         let stops = l.screen.stops();
         match key {
             Key::Named(Named::Escape) => (l.menu, self.networks.menu) = (false, None),
-            Key::Named(Named::Tab) if !stops.is_empty() && (mods - Modifiers::SHIFT).is_empty() => {
-                let n = stops.len();
-                let at = match (l.focus, mods.shift()) {
-                    (None, false) => 0,
-                    (None, true) => n - 1,
-                    (Some(i), false) => (i + 1) % n,
-                    (Some(i), true) => (i + n - 1) % n,
+            Key::Named(Named::Tab) if (mods - Modifiers::SHIFT).is_empty() => {
+                return match l.focus.step(stops, mods.shift()) {
+                    Some(Stop::Field) => operation::focus(l.screen.field().expect("a screen with a field")),
+                    Some(_) => crate::focus::blur(),
+                    None => Task::none(),
                 };
-                l.focus = Some(at);
-                // Focusing an ID that no widget has takes the focus from the text field.
-                let id = if stops[at] == Stop::Field { l.screen.field().expect("a screen with a field") } else { "" };
-                return operation::focus(id);
             }
             Key::Named(Named::Enter) if mods.is_empty() => {
-                let stop = l.focus.map(|i| stops[i]).or(l.screen.field().map(|_| Stop::Field));
+                let stop = l.stop().or(l.screen.field().map(|_| Stop::Field));
                 return stop.and_then(|s| self.login_act(s)).map_or_else(Task::none, |m| self.update(m));
             }
             _ => {}
@@ -1294,11 +1294,11 @@ impl BeeperGuiApp {
     pub fn login_text(&mut self, text: &str) -> Task<UiMessage> {
         let l = &mut self.login;
         if l.screen == Screen::Code && text.len() == 1 && text.chars().all(|c| c.is_ascii_digit()) {
-            l.focus = Screen::Code.stops().iter().position(|s| *s == Stop::Field);
+            l.focus.set(Some(Stop::Field));
             let code = format!("{}{text}", l.code);
             return Task::batch([self.update_login(LoginMsg::Code(code)), operation::focus(CODE_INPUT)]);
         }
-        let stop = l.focus.map(|i| l.screen.stops()[i]).filter(|s| *s != Stop::Field && text == " ");
+        let stop = l.stop().filter(|s| *s != Stop::Field && text == " ");
         stop.and_then(|s| self.login_act(s)).map_or_else(Task::none, |m| self.update(m))
     }
 }
