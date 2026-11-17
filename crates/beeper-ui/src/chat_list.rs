@@ -623,12 +623,12 @@ impl BeeperGuiApp {
                     Some(UiMessage::ChatList(chat_list::Msg::SelectionRemind(Some(at)))),
                 )
             });
-            let presets = remind_presets(now).map(|(label, at)| {
+            let presets = remind_presets(&st.settings, now).into_iter().map(|(label, at)| {
                 let msg = UiMessage::Commands(vec![
-                    UiMessage::CommandBar(commands::Msg::LastTime(label.into())),
+                    UiMessage::CommandBar(commands::Msg::LastTime(label.clone())),
                     UiMessage::ChatList(chat_list::Msg::SelectionRemind(Some(at))),
                 ]);
-                item(tr(label).into(), remind_label(at, h24), Some(msg))
+                item(label, remind_label(at, h24), Some(msg))
             });
             let presets = last.into_iter().chain(presets);
             let set = chats.iter().filter(|c| c.reminder.is_some()).count();
@@ -1061,11 +1061,10 @@ impl BeeperGuiApp {
                     let can = st.feature("remind-later").on || c.reminder.is_some();
                     let set = |at| can.then(|| UiMessage::Reminders(reminders::Msg::Set(c.id.clone(), Some(at))));
                     let last = last_used(&st, now).map(|at| item(tr("Last Used"), last_used_label(at, h24), set(at)));
-                    let presets = remind_presets(now).map(|(label, at)| {
-                        let msg = set(at).map(|set| {
-                            UiMessage::Commands(vec![UiMessage::CommandBar(commands::Msg::LastTime(label.into())), set])
-                        });
-                        item(tr(label), remind_label(at, h24), msg)
+                    let presets = remind_presets(&st.settings, now).into_iter().map(|(label, at)| {
+                        let last = UiMessage::CommandBar(commands::Msg::LastTime(label.clone()));
+                        let msg = set(at).map(|set| UiMessage::Commands(vec![last, set]));
+                        item(&label, remind_label(at, h24), msg)
                     });
                     let upgrade = (!can).then(|| {
                         let open = UiMessage::Settings(settings::Msg::Open(SettingsTab::BeeperPlus));

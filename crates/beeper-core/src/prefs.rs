@@ -60,6 +60,8 @@ pub enum Item {
     ChatTheme,
     /// Desktop's zoom slider, with a text below it.
     Zoom(&'static str, &'static [&'static str]),
+    /// Desktop's `TimeSuggestionsPreference`: the editor of [`crate::models::BeeperSettings::time_suggestions`].
+    TimeSuggestions,
 }
 
 impl Pref {
@@ -251,6 +253,8 @@ pub const GENERAL: &[Item] = &[
     Item::Group(&[t("stickerPacks", "Use sticker packs", false)
         .badge(Badge::Labs)
         .desc("Send stickers from your Telegram, Signal and WhatsApp packs, and from Matrix sticker packs.")]),
+    Item::Heading("Time Suggestions"),
+    Item::TimeSuggestions,
     Item::Group(&[
         custom("downloadsDir", "Downloads location", Control::Downloads).named("Downloads Preferences"),
         t("alwaysAskDownload", "Always ask where to save files before downloading", false),
@@ -511,6 +515,7 @@ impl Item {
             Item::Theme => Some(("Theme Selector", &["light mode", "dark mode", "system mode"])),
             Item::ChatTheme => Some(("Default chat theme", &["wallpaper", "background", "bubble color", "chat theme"])),
             Item::Zoom(..) => Some(("Zoom Controls", &[])),
+            Item::TimeSuggestions => Some(("Time suggestions", &[])),
             _ => None,
         }
     }
@@ -758,6 +763,28 @@ pub fn find(key: &str) -> &'static Pref {
 
 /// Desktop's global account data with the preferences that sync between devices.
 pub const DESKTOP_PREFS: &str = "com.beeper.desktop.prefs";
+/// Desktop's `time_suggestion_options` of [`DESKTOP_PREFS`]: the time phrases of the reminder menus.
+pub const TIME_SUGGESTION_OPTIONS: &str = "time_suggestion_options";
+/// Desktop's `y0`: the most time suggestions.
+pub const TIME_SUGGESTIONS_MAX: usize = 8;
+/// Desktop's `Odt`: the time suggestions when there are none.
+pub const TIME_SUGGESTIONS: [&str; 6] =
+    ["In an Hour", "In Two Hours", "This Evening", "Tomorrow", "This Weekend", "Next Week"];
+
+/// Desktop's `xpe`: the strings of a list, trimmed, without empty or repeated ones, and at most
+/// [`TIME_SUGGESTIONS_MAX`].
+pub fn time_suggestion_options(v: &serde_json::Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in v.as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).map(str::trim) {
+        if !s.is_empty() && !out.iter().any(|o| o == s) {
+            out.push(s.to_string());
+        }
+        if out.len() == TIME_SUGGESTIONS_MAX {
+            break;
+        }
+    }
+    out
+}
 
 /// The JSON values that Desktop stores for the options of a preference.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -932,6 +959,19 @@ mod tests {
                 assert_eq!(values.decode(&values.encode(x)), Some(x), "{key}");
             }
         }
+    }
+
+    #[test]
+    fn time_suggestion_options_like_desktop() {
+        use serde_json::json;
+        let v = json!([" Tomorrow ", "", "  ", 5, null, "Tomorrow", "In 3w", "a", "b", "c", "d", "e", "f", "g"]);
+        assert_eq!(time_suggestion_options(&v), ["Tomorrow", "In 3w", "a", "b", "c", "d", "e", "f"]);
+        assert!(time_suggestion_options(&json!("Tomorrow")).is_empty(), "only a list");
+        assert!(time_suggestion_options(&serde_json::Value::Null).is_empty());
+        let mut s = crate::models::BeeperSettings::default();
+        assert_eq!(s.time_suggestions(), TIME_SUGGESTIONS, "an empty list is Desktop's `Odt`");
+        s.time_suggestions = vec!["In 3w".into()];
+        assert_eq!(s.time_suggestions(), ["In 3w"]);
     }
 
     #[test]

@@ -220,7 +220,8 @@ fn search(v: Vec<Command>, query: &str) -> Vec<Command> {
     }
 }
 
-/// Desktop's `yle`: "last used", then the suggested and typed times that are still ahead, each once.
+/// Desktop's `yle`: "last used", then the `timeSuggestionOptions`, counted and typed times that are still ahead, each
+/// once.
 fn time_commands(st: &BeeperStore, query: &str, pick: impl Fn(i64) -> UiMessage) -> Vec<Command> {
     let now = beeper_core::config::now_unix_millis();
     let count = query.parse::<u32>().ok().filter(|n| *n > 0);
@@ -229,7 +230,7 @@ fn time_commands(st: &BeeperStore, query: &str, pick: impl Fn(i64) -> UiMessage)
         let n = count.filter(|n| *n < max)?;
         Some(format!("{n} {unit}{}", if n == 1 { "" } else { "s" }))
     });
-    let phrases = crate::reminders::TIME_SUGGESTIONS.iter().map(|s| s.to_string()).chain(counted);
+    let phrases = st.settings.time_suggestions().into_iter().map(String::from).chain(counted);
     let phrases = phrases.chain(MORE_TIMES.iter().map(|s| s.to_string())).chain([query.to_string()]);
     let row = |label: String, at: i64, msg: UiMessage| {
         let (long, short) = locale_times(at);
@@ -281,7 +282,12 @@ impl BeeperGuiApp {
                 let accounts = accounts.enumerate().map(|(i, a)| {
                     let title = match a.as_str() {
                         "hungryserv" => st.me().full_name.clone(),
-                        _ => st.bridge_accounts.iter().find(|b| b.account_id == a).and_then(|b| b.display_text()),
+                        // Desktop's `userDisplayText`: the nickname, or the user.
+                        _ => st
+                            .bridge_accounts
+                            .iter()
+                            .find(|b| b.account_id == a)
+                            .and_then(|b| st.custom_name(&a).map(str::to_string).or_else(|| b.display_text())),
                     };
                     let title = title.unwrap_or_else(|| network_name(&a).into());
                     let pick = cmd("", title, Some(UiMessage::Rail(rail::Msg::Select(Some(a.clone())))));
@@ -965,7 +971,10 @@ pub enum Msg {
     TogglePalette,
     SearchRoom(String),
     ToggleMode,
-    ToggleSearchExpanded,
+    /// Desktop's `TOGGLE_EXPANDED_MORE` of a search section.
+    ToggleSearchExpanded(&'static str),
+    /// Desktop's `TOGGLE_PARTIAL_MATCHES` of the Messages section.
+    TogglePartialMatches,
     Query(String),
     ExecuteChat(String),
     JumpTo(String, String),
@@ -984,7 +993,8 @@ impl BeeperGuiApp {
                 }
                 self.show_command_palette ^= self.search_room.take().is_none() || !self.show_command_palette;
                 (self.cmd_bar_commands_mode, self.cmd_index, self.cmd_submenu) = (false, 0, None);
-                self.search_expanded = false;
+                self.search_expanded.clear();
+                self.search_partial = true;
                 if self.show_command_palette {
                     return operation::focus("cmd-palette-input");
                 }
@@ -1019,7 +1029,12 @@ impl BeeperGuiApp {
                 self.command_palette_query.clear();
                 return operation::focus("cmd-palette-input");
             }
-            Msg::ToggleSearchExpanded => self.search_expanded = !self.search_expanded,
+            Msg::ToggleSearchExpanded(section) => {
+                if !self.search_expanded.remove(section) {
+                    self.search_expanded.insert(section);
+                }
+            }
+            Msg::TogglePartialMatches => self.search_partial = !self.search_partial,
             Msg::Query(q) => {
                 (self.command_palette_query, self.cmd_index) = (q.clone(), 0);
                 if self.cmd_submenu == Some(SubMenu::AddMembers) {

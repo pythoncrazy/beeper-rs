@@ -205,7 +205,9 @@ impl BeeperGuiApp {
         let bridge = cloud_bridge(network).expect("a network with a Beeper Cloud bridge");
         let who = login.as_ref().and_then(|l| {
             let st = self.store.read();
-            st.bridge_accounts.iter().find(|a| a.bridge_id == bridge && a.login_id == *l).and_then(|a| a.display_text())
+            // Desktop's `userDisplayText` in "Reconnecting %s": the nickname, or the user.
+            let a = st.bridge_accounts.iter().find(|a| a.bridge_id == bridge && a.login_id == *l)?;
+            st.custom_name(&a.account_id).map(str::to_string).or_else(|| a.display_text())
         });
         let (id, open) = window::open(window::Settings {
             resizable: false,

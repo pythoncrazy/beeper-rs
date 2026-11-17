@@ -857,6 +857,14 @@ palette! {
     button: Color = hex(0xffffff), hex(0x505050);
     /// `--color-border-button-secondary`.
     button_border: Color = hex(0xe2e2e2), hex(0x5e5e5e);
+    /// `--button-primary-main-bg`: the fill of Desktop's primary `Button`.
+    main: Color = hex(0x0d4ffb), hex(0x0d4ffb);
+    /// `--button-secondary-main-bg`: the fill of Desktop's secondary `Button`.
+    main_muted: Color = hexa(0x0d4ffb, 0.14), hexa(0x0d4ffb, 0.26);
+    /// `--button-secondary-main-text`.
+    main_text: Color = hex(0x0d4ffb), hex(0x638efc);
+    /// `--appearance-color-border-secondary`.
+    border_secondary: Color = hex(0xdedfe3), hexa(0xffffff, 0.1);
     /// Chromium's own `input[type=range]` fill, track and track edge.
     range: Color = hex(0x0075ff), hex(0x99c8ff);
     range_track: Color = hex(0xefefef), hex(0x3b3b3b);
@@ -919,6 +927,21 @@ pub fn hidden_slider(_: &Theme, _: slider::Status) -> slider::Style {
             border_color: CLEAR,
         },
     }
+}
+
+/// CSS `cubic-bezier(x1, y1, x2, y2)` at `x` in 0..1: the curve's `y` where its `x` is `x`.
+pub fn cubic_bezier(x: f32, [x1, y1, x2, y2]: [f32; 4]) -> f32 {
+    let bezier = |s: f32, a: f32, b: f32| 3.0 * a * s * (1.0 - s) * (1.0 - s) + 3.0 * b * s * s * (1.0 - s) + s * s * s;
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..20 {
+        let mid = (lo + hi) / 2.0;
+        if bezier(mid, x1, x2) < x {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    bezier((lo + hi) / 2.0, y1, y2)
 }
 
 #[cfg(test)]

@@ -16,10 +16,10 @@ use crate::units::human_size;
 use crate::vcard::parse_vcard;
 use crate::{
     account_display_name, account_user, anim, brand_key, can_broadcast, checkbox, clipboard_paste, contact_card,
-    dashed, emoji, format, has_flag, hotkey_key, icon_btn, images, locate, menu_item, menu_rule, network_name, portal,
-    record, removable, several_accounts, spell, switch_targets, text_urls, tinted, toasts, truncate, vlist, voice,
-    BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia, Picker, Queued, Toast, UiMessage, CHEVRON_DOWN,
-    COMPOSER_ICONS, FILE_ICONS, MENU_ITEM, MESSAGE_MENU_W, SEND_ARROW,
+    dashed, default_account_user, emoji, format, has_flag, hotkey_key, icon_btn, images, locate, menu_item, menu_rule,
+    network_name, portal, record, removable, several_accounts, spell, switch_targets, text_urls, tinted, toasts,
+    truncate, vlist, voice, BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia, Picker, Queued, Toast,
+    UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MENU_ITEM, MESSAGE_MENU_W, SEND_ARROW,
 };
 use beeper_core::config::{account_network, now_unix_millis};
 use beeper_core::matrix::{Mention, ROOM_MENTION};
@@ -783,6 +783,12 @@ impl BeeperGuiApp {
         let (pri, sec) = composer_buttons(st);
         let placeholder = self.composer_placeholder(st, chat);
         let suggesting = self.suggestions(st).is_some();
+        // Desktop's `KeyboardHandlers`: Backspace in an empty composer, or ← and ↑ at its start, focus the last
+        // pending attachment.
+        let last = self.pane().attachments.len().checked_sub(1);
+        let cursor = self.pane().composer.cursor();
+        let at_start = cursor.selection.is_none() && (cursor.position.line, cursor.position.column) == (0, 0);
+        let empty = self.pane().composer.text().trim_end_matches('\n').is_empty();
         let formats = chat.formatting;
         let keys = ["Message: Send Message and Archive", "Send Message", "Insert New Line"]
             .map(|h| st.settings.hotkey_keys(h).to_string());
@@ -832,6 +838,12 @@ impl BeeperGuiApp {
                     Some(text_editor::Binding::Custom(UiMessage::Composer(Msg::DeleteTo(to, back))))
                 }
                 Key::Named(Named::ArrowUp | Named::ArrowDown) if suggesting => None,
+                Key::Named(Named::Backspace) if empty && k.modifiers.is_empty() => last
+                    .map(|i| text_editor::Binding::Custom(UiMessage::Composer(Msg::FocusAttachment(i))))
+                    .or_else(|| text_editor::Binding::from_key_press(k)),
+                Key::Named(Named::ArrowLeft | Named::ArrowUp) if at_start && last.is_some() => {
+                    last.map(|i| text_editor::Binding::Custom(UiMessage::Composer(Msg::FocusAttachment(i))))
+                }
                 Key::Named(Named::Escape) => None,
                 Key::Character(_) if k.modifiers.command() => {
                     let i = match (k.key.to_latin(k.physical_key).map(|c| c.to_ascii_lowercase()), k.modifiers.shift())
@@ -875,7 +887,7 @@ impl BeeperGuiApp {
             Some(targets) => {
                 let r = st.bridge_accounts.iter().find(|b| b.account_id == chat.account_id);
                 let url = r.and_then(|b| b.remote_profile.as_ref()?.avatar.as_deref());
-                let face = self.face(url, &account_user(st, &chat.account_id), 14.0, 0.0);
+                let face = self.face(url, &default_account_user(st, &chat.account_id), 14.0, 0.0);
                 Some(match targets.len() {
                     1 => {
                         let accounts: Vec<String> = st.bridge_accounts.iter().map(|b| b.account_id.clone()).collect();
@@ -910,38 +922,12 @@ impl BeeperGuiApp {
             || self.recorder.is_some();
         let pending = (!self.pane().attachments.is_empty()).then(|| {
             let items = self.pane().attachments.iter().enumerate().map(|(i, pm)| {
-                let vcard = pm.name.ends_with(".vcf") || pm.mime == "text/x-vcard";
-                let preview: El<'a> = if pm.frames.is_empty() && vcard {
-                    contact_card(p, &parse_vcard(&String::from_utf8_lossy(&pm.bytes)))
-                } else if pm.frames.is_empty() {
-                    let ext = std::path::Path::new(&pm.name).extension().map(|e| e.to_string_lossy().to_uppercase());
-                    let meta = ext.into_iter().chain([human_size(pm.bytes.len() as u64)]).collect::<Vec<_>>();
-                    let name = clamp(&pm.name, 190.0, 2, 11.0, Weight::Semibold).line_height(Pixels(14.0));
-                    let info = column![name, txt(meta.join(" ・ "), 11.0)].spacing(4);
-                    let icon = &FILE_ICONS[if pm.mime.starts_with("audio") { 3 } else { 0 }];
-                    let line = row![tinted(icon, 20.0, p.strong), info].spacing(8).align_y(Center);
-                    container(column![line, Space::new().width(158)])
-                        .max_width(240)
-                        .padding([8, 11])
-                        .style(fill_box(p.received, 17.0))
-                        .into()
-                } else {
-                    let fg = Color { a: 0.1, ..p.text };
-                    let fit = |f| image(f).height(66).content_fit(iced::ContentFit::Contain);
-                    // Desktop's pending `BrandVideo`: the MP4 of a GIF loops with "Autoplay GIFs", and a video is a
-                    // thumbnail with a play button.
-                    let video = pm.mime.starts_with("video/");
-                    let frames = anim::playing(&pm.frames, !video || st.settings.on("autoplayGifs"));
-                    let img = container(anim::gif(frames, self.started, fit)).max_width(120).clip(true);
-                    let img = img.style(bordered_box(CLEAR, fg, 1.0, 8.0));
-                    let play = container(tinted(&voice::ICONS[0], 20.0, p.strong))
-                        .center(36)
-                        .style(fill_box(p.received, 18.0));
-                    match video && !pm.is_gif {
-                        true => stack![img, container(play).center(Fill)].into(),
-                        false => img.into(),
-                    }
-                };
+                let preview = self.pending_preview(pm, st);
+                // Desktop's `.pending-attachments .attachment:focus`: a 3 px ring of the primary color.
+                let radius = if pm.frames.is_empty() { 17.0 } else { 8.0 };
+                let ring = if self.pane().att_focus == Some(i) { p.accent } else { CLEAR };
+                let preview = mouse_area(crate::ring::ring(preview, ring, 3.0, radius))
+                    .on_press(UiMessage::Composer(Msg::FocusAttachment(i)));
                 removable(p, preview, UiMessage::Composer(Msg::DiscardAttachment(i)))
             });
             Row::with_children(items).spacing(8).align_y(iced::Bottom)
@@ -1051,6 +1037,10 @@ impl BeeperGuiApp {
 
 #[derive(Clone)]
 pub enum Msg {
+    /// Desktop's focus on a pending attachment: from the composer's Backspace or ← and ↑ at its start, or a click.
+    FocusAttachment(usize),
+    /// A key on the focused pending attachment.
+    AttachmentKey(Key),
     Changed(String),
     Edit(text_editor::Action),
     /// Ctrl+Backspace and Ctrl+Delete: delete the selection, or the text from the caret to the motion.
@@ -1098,6 +1088,111 @@ pub enum Msg {
 }
 
 impl BeeperGuiApp {
+    /// Desktop's `j3` of a pending attachment: a contact card, a file card, or the media 66 px high.
+    fn pending_preview<'a>(&'a self, pm: &'a PendingMedia, st: &BeeperStore) -> El<'a> {
+        let p = &self.pal;
+        let vcard = pm.name.ends_with(".vcf") || pm.mime == "text/x-vcard";
+        if pm.frames.is_empty() && vcard {
+            contact_card(p, &parse_vcard(&String::from_utf8_lossy(&pm.bytes)))
+        } else if pm.frames.is_empty() {
+            let ext = std::path::Path::new(&pm.name).extension().map(|e| e.to_string_lossy().to_uppercase());
+            let meta = ext.into_iter().chain([human_size(pm.bytes.len() as u64)]).collect::<Vec<_>>();
+            let name = clamp(&pm.name, 190.0, 2, 11.0, Weight::Semibold).line_height(Pixels(14.0));
+            let info = column![name, txt(meta.join(" ・ "), 11.0)].spacing(4);
+            let icon = &FILE_ICONS[if pm.mime.starts_with("audio") { 3 } else { 0 }];
+            let line = row![tinted(icon, 20.0, p.strong), info].spacing(8).align_y(Center);
+            container(column![line, Space::new().width(158)])
+                .max_width(240)
+                .padding([8, 11])
+                .style(fill_box(p.received, 17.0))
+                .into()
+        } else {
+            let fg = Color { a: 0.1, ..p.text };
+            let fit = |f| image(f).height(66).content_fit(iced::ContentFit::Contain);
+            // Desktop's pending `BrandVideo`: the MP4 of a GIF loops with "Autoplay GIFs", and a video is a
+            // thumbnail with a play button.
+            let video = pm.mime.starts_with("video/");
+            let frames = anim::playing(&pm.frames, !video || st.settings.on("autoplayGifs"));
+            let img = container(anim::gif(frames, self.started, fit)).max_width(120).clip(true);
+            let img = img.style(bordered_box(CLEAR, fg, 1.0, 8.0));
+            let play = container(tinted(&voice::ICONS[0], 20.0, p.strong)).center(36).style(fill_box(p.received, 18.0));
+            match video && !pm.is_gif {
+                true => stack![img, container(play).center(Fill)].into(),
+                false => img.into(),
+            }
+        }
+    }
+
+    /// Desktop's `w_t` Quick Look of a pending attachment: a card with 10 px around the media, which is at most 90% of
+    /// the window, centered between 40 px from the top and 120 px from the bottom of the window.
+    pub(crate) fn view_attachment_quick_look<'a>(&'a self) -> Option<El<'a>> {
+        let p = &self.pal;
+        let pm = self.pane().attachments.get(self.pane().quick_look?)?;
+        let bg = if self.dark { hex(0x252830) } else { Color::WHITE };
+        let style = move |_: &iced::Theme| container::Style {
+            background: Some(bg.into()),
+            border: iced::Border { color: Color { a: 0.1, ..p.text }, width: 1.0, radius: 10.0.into() },
+            shadow: iced::Shadow {
+                color: Color::from_rgba8(0, 0, 0, 0.2),
+                offset: iced::Vector::new(5.0, 8.0),
+                blur_radius: 40.0,
+            },
+            ..Default::default()
+        };
+        let place = move |body: El<'a>| -> El<'a> {
+            let card = container(body).padding(10).style(style);
+            container(card).center_x(Fill).center_y(Fill).padding(Padding::ZERO.top(40.0).bottom(120.0)).into()
+        };
+        let Some(frame) = pm.frames.first().map(|f| f.0.clone()) else {
+            return Some(place(self.pending_preview(pm, &self.store.read())));
+        };
+        let (w, h) = (pm.size.0.max(1) as f32, pm.size.1.max(1) as f32);
+        let look = iced::widget::responsive(move |room| {
+            let (max_w, max_h) = (room.width * 0.9, (room.height * 0.9).min(room.height - 160.0 - 22.0));
+            let k = (max_w / w).min(max_h / h).min(1.0);
+            place(image(frame.clone()).width(w * k).height(h * k).into())
+        });
+        Some(look.into())
+    }
+
+    /// Desktop's keys of a focused pending attachment (`C_t`): ← and → move between the attachments and → past the last
+    /// one goes back to the input, ↑ leaves them and ↓ goes to the input, Backspace and Delete remove the attachment
+    /// and focus the one before, Space opens or closes its Quick Look, and Escape closes the Quick Look.
+    fn attachment_key(&mut self, key: Key) -> Task<UiMessage> {
+        let (i, n) = (self.pane.att_focus.expect("a focused attachment"), self.pane.attachments.len());
+        let input = || {
+            operation::focus(if self.pane.thread_root.is_some() { "thread-composer-input" } else { "composer-input" })
+        };
+        match key {
+            Key::Named(Named::Escape) => self.pane.quick_look = None,
+            Key::Named(Named::ArrowLeft) if i > 0 => {
+                return self.update(UiMessage::Composer(Msg::FocusAttachment(i - 1)))
+            }
+            Key::Named(Named::ArrowRight) if i + 1 < n => {
+                return self.update(UiMessage::Composer(Msg::FocusAttachment(i + 1)))
+            }
+            Key::Named(Named::ArrowRight) => {
+                (self.pane.att_focus, self.pane.quick_look) = (None, None);
+                return input();
+            }
+            Key::Named(Named::ArrowUp) => self.pane.att_focus = None,
+            Key::Named(Named::ArrowDown) => {
+                self.pane.att_focus = None;
+                return input();
+            }
+            Key::Named(Named::Backspace | Named::Delete) => {
+                self.pane.attachments.remove(i);
+                self.pane.att_focus = i.checked_sub(1);
+                self.pane.quick_look = None;
+            }
+            Key::Named(Named::Space) => {
+                self.pane.quick_look = (self.pane.quick_look != Some(i)).then_some(i);
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+
     pub(crate) fn composer(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
             Msg::EditMenu(word) => {
@@ -1134,6 +1229,10 @@ impl BeeperGuiApp {
                     }
                     MenuEdit::Paste => Task::batch([self.update(UiMessage::Composer(Msg::Paste)), focus]),
                 };
+            }
+            Msg::Edit(action) if !action.is_edit() && self.pane.att_focus.is_some() => {
+                self.pane.att_focus = None;
+                return self.update(UiMessage::Composer(Msg::Edit(action)));
             }
             Msg::Edit(action) if !action.is_edit() => {
                 self.pane.emoticon = None;
@@ -1326,7 +1425,19 @@ impl BeeperGuiApp {
                 }
                 Err(e) => self.status_banner = e,
             },
-            Msg::DiscardAttachment(i) => drop(self.pane.attachments.remove(i)),
+            Msg::DiscardAttachment(i) => {
+                self.pane.attachments.remove(i);
+                (self.pane.att_focus, self.pane.quick_look) = (None, None);
+            }
+            Msg::FocusAttachment(i) => {
+                // Desktop's `onFocus`: an open Quick Look follows the focus.
+                if self.pane.quick_look.is_some() {
+                    self.pane.quick_look = Some(i);
+                }
+                self.pane.att_focus = Some(i);
+                return operation::focus("");
+            }
+            Msg::AttachmentKey(key) => return self.attachment_key(key),
             Msg::PickFiles if self.pane.editing_message_id.is_some() => {
                 self.status_banner = tr("Attachments can't be added while editing a message").into();
             }

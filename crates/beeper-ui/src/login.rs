@@ -98,17 +98,7 @@ const SCENE_SIZE: Size = Size::new(314.0, 396.0);
 
 /// CSS `ease-in-out`, `cubic-bezier(0.42, 0, 0.58, 1)`, at `x` in 0..1.
 pub(crate) fn ease_in_out(x: f32) -> f32 {
-    let bezier = |s: f32, a: f32, b: f32| 3.0 * a * s * (1.0 - s) * (1.0 - s) + 3.0 * b * s * s * (1.0 - s) + s * s * s;
-    let (mut lo, mut hi) = (0.0, 1.0);
-    for _ in 0..20 {
-        let mid = (lo + hi) / 2.0;
-        if bezier(mid, 0.42, 0.58) < x {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    bezier((lo + hi) / 2.0, 0.0, 1.0)
+    crate::style::cubic_bezier(x, [0.42, 0.0, 0.58, 1.0])
 }
 
 /// Desktop's `AnimatedCompositeIllustration`: the shadow, then 13 layers that each float up and down by
@@ -332,6 +322,9 @@ pub enum LoginMsg {
     Recovered(Result<(), String>),
     /// "Save Key", and "Reset Recovery Key": a new recovery key.
     NewKey,
+    /// "Reset Recovery Key": Desktop's `deleteAllBridges` first, then a new key.
+    ConfirmReset,
+    BridgesDeleted(Result<(), String>),
     MadeKey(Result<String, String>),
     CopyKey,
     /// "Next" under the new key, which asks for it again.
@@ -859,6 +852,22 @@ impl BeeperGuiApp {
                 return Task::perform(recover, |r| LoginMsg::Recovered(r).into());
             }
             LoginMsg::NewKey => return self.make_recovery_key(),
+            LoginMsg::ConfirmReset => {
+                l.busy = true;
+                let (cloud, token) = (self.cloud.clone(), self.store.read().beeper_state.access_token.clone());
+                let delete = async move {
+                    tokio::task::spawn_blocking(move || cloud.delete_all_bridges(&token).map_err(|e| e.message))
+                        .await
+                        .expect("delete bridges worker thread")
+                };
+                return Task::perform(delete, |r| LoginMsg::BridgesDeleted(r).into());
+            }
+            LoginMsg::BridgesDeleted(Ok(())) => return self.make_recovery_key(),
+            LoginMsg::BridgesDeleted(Err(e)) => {
+                eprintln!("[deleteAllBridges]:: {e}");
+                l.busy = false;
+                l.toast = Some(tr("Failed to reset. Please check your connection and try again.").into());
+            }
             LoginMsg::MadeKey(r) => {
                 l.busy = false;
                 match r {

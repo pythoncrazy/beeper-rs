@@ -2619,12 +2619,134 @@ fn command_bar_searches_once_for_each_query() {
     let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
     let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("rust".into())));
     let first = hits(&app);
-    assert!(first.0.len() > 1, "the demo has messages with the word");
+    assert!(first.messages.len() > 1, "the demo has messages with the word");
     let _ = app.update(UiMessage::Relist);
     assert!(Rc::ptr_eq(&first, &hits(&app)), "a frame keeps the finds");
     let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("rus".into())));
     assert!(!Rc::ptr_eq(&first, &hits(&app)), "a key searches again");
-    assert!(first.0.windows(2).all(|w| w[0].sort_key > w[1].sort_key), "newest first");
+    assert!(first.messages.windows(2).all(|w| w[0].sort_key > w[1].sort_key), "newest first");
+}
+
+/// The command bar's search view, tall enough to lay out all of its results.
+fn search_view(app: &BeeperGuiApp) -> Simulator<'_, UiMessage> {
+    Simulator::with_size(Default::default(), Size::new(1440.0, 2000.0), app.view_command_palette())
+}
+
+/// Whether the search view shows each of `texts`, each below the one before.
+fn in_order(app: &BeeperGuiApp, texts: &[&str]) -> bool {
+    let mut sim = search_view(app);
+    let ys: Vec<f32> = texts.iter().map(|t| sim.find(*t).unwrap_or_else(|_| panic!("{t} shows")).bounds().y).collect();
+    ys.windows(2).all(|w| w[0] < w[1])
+}
+
+/// Desktop's `Jqt` sections of a search in order, with the `J5` limits: the chats by title, the chats by member, the
+/// bookmarks, three until "Show more", the media, the 10 newest images and videos without a media filter, and the
+/// messages.
+#[test]
+fn search_sections_like_desktop() {
+    let mut app = demo_app("search-sections");
+    {
+        let mut st = app.store.write();
+        let i = st.find_message("msg_1000a").expect("a message of Eric");
+        let base = st.messages[i].clone();
+        for i in 0..12 {
+            let img =
+                Attachment { attachment_type: "img".into(), file_name: Some("a.png".into()), ..Default::default() };
+            let (id, sort_key) = (format!("$zebra{i}"), format!("{:016}", 9_000_000 + i));
+            let text = Some(format!("zebra snapshot {i}"));
+            st.upsert_message(Message { id, sort_key, text, attachments: vec![img], ..base.clone() });
+        }
+        for id in ["msg_1000a", "msg_1002", "msg_1006"] {
+            assert!(st.toggle_bookmark(id), "the demo bookmarks msg_1001 only");
+        }
+    }
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    let hits = |app: &BeeperGuiApp, q: &str| app.search_hits(&app.store.read(), q);
+    let title = |app: &BeeperGuiApp, i: usize| app.store.read().chats[i].title.clone();
+    let eric = hits(&app, "eric");
+    let groups: Vec<String> = eric.in_groups.iter().map(|&i| title(&app, i)).collect();
+    assert_eq!(eric.chats.iter().map(|&i| title(&app, i)).collect::<Vec<_>>(), ["Eric Migicovsky"]);
+    assert!(groups.contains(&"#desktop-release".to_string()), "a group with Eric: {groups:?}");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("eric".into())));
+    assert!(in_order(&app, &["Chats", "In Groups", "#desktop-release"]));
+    let beeper = hits(&app, "beeper");
+    assert_eq!(beeper.bookmarks.len(), 4);
+    assert!(beeper.bookmarks.iter().all(|m| m.is_bookmarked == Some(true)));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("beeper".into())));
+    assert!(in_order(&app, &["Bookmarks", "Messages"]));
+    let msgs: Vec<UiMessage> = {
+        let mut sim = search_view(&app);
+        let _ = sim.click("Show more").expect("four bookmarks show three");
+        sim.into_messages().collect()
+    };
+    for m in msgs {
+        let _ = app.update(m);
+    }
+    assert!(search_view(&app).find("Show less").is_ok(), "Show more shows all bookmarks");
+    let zebra = hits(&app, "zebra");
+    assert_eq!(zebra.media.len(), 10, "Desktop shows 10 media without a media filter");
+    assert!(zebra.media.windows(2).all(|w| w[0].sort_key > w[1].sort_key), "newest first");
+    assert!(zebra.messages.len() == 12 && zebra.bookmarks.is_empty());
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::PickSearchFilter(SearchPick::Media(0))));
+    assert_eq!(hits(&app, "zebra").media.len(), 12, "a media filter shows all of its media");
+    assert!(hits(&app, "zebra").messages.is_empty(), "and no text messages");
+    assert!(hits(&app, "z").media.len() > 12, "a one-letter query does not search the text");
+    assert!(hits(&app, "eric").chats.is_empty(), "a media filter shows no chats");
+}
+
+/// Desktop's `Hct` operators in the query and in the filters, and its partial matches toggle.
+#[test]
+fn search_operators_and_partial_matches_like_desktop() {
+    let mut app = demo_app("search-operators");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    let ids = |app: &BeeperGuiApp, q: &str| -> HashSet<String> {
+        app.search_hits(&app.store.read(), q).messages.iter().map(|m| m.id.clone()).collect()
+    };
+    let set = |ids: &[&str]| -> HashSet<String> { ids.iter().map(|s| s.to_string()).collect() };
+    assert!(ids(&app, "beeper").len() > 2);
+    assert_eq!(ids(&app, "beeper from:me"), set(&["msg_1000b", "msg_note_4"]));
+    assert_eq!(ids(&app, "voice has:audio"), set(&["msg_1000c", "msg_1003"]));
+    assert_eq!(ids(&app, "voice has:file"), set(&["msg_1003"]));
+    assert_eq!(ids(&app, "voice in:dm"), set(&["msg_1000c"]));
+    assert_eq!(ids(&app, "voice network:acc_telegram"), set(&["msg_1003"]));
+    assert_eq!(ids(&app, "from:me").len(), 7, "only operators lists the messages that match them");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::PickSearchFilter(SearchPick::Sent(true))));
+    assert_eq!(ids(&app, "beeper"), set(&["msg_1000b", "msg_note_4"]), "a filter searches like its operator");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::PickSearchFilter(SearchPick::Sent(true))));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("rus".into())));
+    assert!(!ids(&app, "rus").is_empty(), "a partial match");
+    assert!(search_view(&app).find("Hide partial matches").is_ok());
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePartialMatches));
+    assert!(ids(&app, "rus").is_empty() && !ids(&app, "rust").is_empty(), "whole words only");
+    assert!(search_view(&app).find("Show partial matches").is_ok(), "the heading stays with the chats it found");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("zzqq".into())));
+    assert!(in_order(&app, &["No messages matching those terms", "Show partial matches"]));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    assert!(app.search_partial, "a new search shows partial matches");
+}
+
+/// Desktop's empty search: the recent chats and the chat that was archived last, and no recent searches, which
+/// Desktop 4.3 keeps but `Jqt` leaves out of the general search.
+#[test]
+fn an_empty_search_shows_the_last_archived_chat_like_desktop() {
+    let mut app = demo_app("search-archived");
+    let old = {
+        let st = app.store.read();
+        st.chats.iter().filter(|c| c.flags & CHAT_HIDDEN == 0).min_by_key(|c| c.last_activity.clone()).unwrap().clone()
+    };
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(old.id.clone(), ChatFlag::Archived)));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    assert!(in_order(&app, &["Recent chats", "Last archived", &old.title]));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query("rust".into())));
+    assert!(search_view(&app).find("Last archived").is_err(), "a query hides it");
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::PickSearchFilter(SearchPick::Sent(true))));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::Query(String::new())));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
+    assert!(search_view(&app).find("Recent searches").is_err());
+    let _ = app.update(UiMessage::SelectChat(old.id.clone()));
+    assert!(search_view(&app).find("Last archived").is_err(), "the open chat is not a result");
 }
 
 /// The work of an event does not grow with the account: a hover over a list of 2,000 chats builds as many widgets
@@ -3942,6 +4064,179 @@ fn quick_reaction_settings_like_desktop() {
     let _ = app.update(UiMessage::QuickEmoji(Some(0)));
     let _ = app.update(UiMessage::Emoji(EmojiMsg::Pick(0)));
     assert_eq!(app.store.read().settings.quick_reaction, custom[1], "any emoji is the Quick React emoji");
+}
+
+/// Desktop's `TimeSuggestionsPreference`: Add with its checks, Enter and Escape, remove, drag to reorder, and Reset.
+#[test]
+fn time_suggestions_editor_like_desktop() {
+    use crate::time_suggestions::{suggestion_date, Msg, INPUT};
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    use iced::mouse::Event as M;
+    let mut app = demo_app("time-suggestions");
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::General)));
+    fn tall(app: &BeeperGuiApp) -> Simulator<'_, UiMessage> {
+        Simulator::with_size(Default::default(), Size::new(1024.0, 4000.0), app.view_settings())
+    }
+    let list = |app: &BeeperGuiApp| -> Vec<String> {
+        app.store.read().settings.time_suggestions().into_iter().map(String::from).collect()
+    };
+    let defaults: Vec<String> = prefs::TIME_SUGGESTIONS.map(String::from).to_vec();
+    let about = "Customize time suggestions for quick reminders in the command bar and context menus. Try \
+        \"7am Tomorrow\", \"In 3 weeks\", \"Next Monday\".";
+    {
+        let mut sim = tall(&app);
+        assert!(sim.find("Time Suggestions").is_ok(), "the section heading");
+        assert!(sim.find(format!("{about} You can add up to 8.")).is_ok());
+        let at = parse_when_millis("Tomorrow", now_unix_millis()).unwrap();
+        assert!(sim.find("Tomorrow").is_ok() && sim.find(suggestion_date(at)).is_ok(), "the phrase and its time");
+        assert!(sim.find("Reset").is_ok());
+        let _ = sim.click("Add").expect("the Add button");
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        apply_all(&mut app, msgs);
+    }
+    assert_eq!(app.time_edit.input.as_deref(), Some(""), "Add opens the input");
+    assert!(tall(&app).find("Add").is_err(), "the input replaces Add and Reset");
+    let type_in = |app: &mut BeeperGuiApp, text: &str| {
+        let mut sim = tall(app);
+        let _ = sim.click(iced::widget::Id::new(INPUT)).expect("the input");
+        let _ = sim.typewrite(text);
+        let _ = sim.tap_key(Key::Named(Named::Enter));
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        apply_all(app, msgs);
+    };
+    for (text, why) in [("Tomorrow", "already listed"), ("yesterday", "a past time"), ("banana", "not a time")] {
+        type_in(&mut app, text);
+        assert_eq!(list(&app), defaults, "{why}");
+        assert_eq!(app.time_edit.input.as_deref(), Some(text), "the input stays open");
+        let _ = app.update(UiMessage::TimeSuggestions(Msg::Input(String::new())));
+    }
+    type_in(&mut app, "In 3w");
+    let at = parse_when_millis("In 3w", now_unix_millis()).unwrap();
+    assert!(tall(&app).find(suggestion_date(at)).is_ok(), "the preview of the new phrase");
+    assert_eq!(list(&app), [&defaults[..], &["In 3w".to_string()]].concat(), "Enter saves a new future time");
+    assert!(app.time_edit.input.is_none(), "the save closes the input");
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Add));
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Input("7am Tomorrow".into())));
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Save));
+    assert_eq!(list(&app).len(), 8);
+    assert!(tall(&app).find(format!("{about} You have reached the limit of 8.")).is_ok());
+    {
+        let mut sim = tall(&app);
+        let _ = sim.click("Add");
+        assert_eq!(sim.into_messages().count(), 0, "Add is disabled at the limit");
+    }
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Add));
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Input("in 5 days".into())));
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Save));
+    assert_eq!(list(&app).len(), 8, "no ninth phrase");
+    let settings = app.settings_window.expect("the settings window");
+    let _ = app.update(UiMessage::WindowKey(settings, Key::Named(Named::Escape), Modifiers::empty()));
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Cancel));
+    assert!(app.time_edit.input.is_none() && app.settings_window.is_some(), "Cancel closes the input");
+
+    // The remove button of a row, the close icon on the line of its phrase.
+    let remove = |app: &mut BeeperGuiApp, phrase: &str| {
+        let mut sim = tall(app);
+        let row = sim.find(phrase).expect("the phrase").bounds().center_y();
+        let close = icon::CLOSE.to_string();
+        let found = sim.find(move |c: iced_test::selector::Candidate<'_>| match c {
+            iced_test::selector::Candidate::Text { content, bounds, .. }
+                if content == close && (bounds.center_y() - row).abs() < 10.0 =>
+            {
+                Some(bounds.center())
+            }
+            _ => None,
+        });
+        sim.point_at(found.expect("the remove button"));
+        let _ = sim.simulate(iced_test::simulator::click());
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        apply_all(app, msgs);
+    };
+    remove(&mut app, "In Two Hours");
+    assert!(!list(&app).contains(&"In Two Hours".to_string()) && list(&app).len() == 7, "{:?}", list(&app));
+
+    // A press on a row and a move over another row, then the drop.
+    let first = list(&app)[0].clone();
+    {
+        let mut sim = tall(&app);
+        let from = sim.find(first.as_str()).expect("the first row").bounds().center();
+        sim.point_at(from);
+        let _ = sim
+            .simulate([Event::Mouse(M::CursorMoved { position: from }), Event::Mouse(M::ButtonPressed(Button::Left))]);
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        apply_all(&mut app, msgs);
+    }
+    assert_eq!(app.time_edit.drag.as_ref().map(|d| d.0), Some(0), "the press grabs the row");
+    let third = list(&app)[2].clone();
+    {
+        let mut sim = tall(&app);
+        let to = sim.find(third.as_str()).expect("the third row").bounds().center();
+        sim.point_at(to);
+        let _ = sim.simulate([Event::Mouse(M::CursorMoved { position: to })]);
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        apply_all(&mut app, msgs);
+    }
+    assert_eq!(list(&app)[0], first, "the order saves at the drop");
+    let _ = app.update(UiMessage::TimeSuggestions(Msg::Grab(None)));
+    let order = list(&app);
+    assert_eq!((order[1].as_str(), order[2].as_str()), (third.as_str(), first.as_str()), "{order:?}");
+
+    while list(&app).len() > 1 {
+        let phrase = list(&app)[0].clone();
+        remove(&mut app, &phrase);
+    }
+    let last = list(&app);
+    remove(&mut app, &last[0].clone());
+    assert_eq!(list(&app), last, "the last phrase stays");
+    {
+        let mut sim = tall(&app);
+        let _ = sim.click("Reset").expect("the Reset button");
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        apply_all(&mut app, msgs);
+    }
+    assert!(app.store.read().settings.time_suggestions.is_empty(), "Reset stores no list");
+    assert_eq!(list(&app), defaults, "which means Desktop's defaults");
+    let hits = search_settings(&app.store.read(), "time sugg");
+    assert!(hits.contains(&SettingsHit::Custom(SettingsTab::General, "Time suggestions")), "{hits:?}");
+}
+
+/// Desktop's `Cze` and `cy`: the Remind Me menus and the command bar offer the custom time suggestions.
+#[test]
+fn menus_use_the_time_suggestions_like_desktop() {
+    let mut app = demo_app("time-suggestion-menus");
+    let id = app.visible_chats(&app.store.read())[0].id.clone();
+    app.store.write().update_settings(|s| s.time_suggestions = vec!["In 3w".into(), "7am Tomorrow".into()]);
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(id.clone())));
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::ChatSub(Some(1))));
+    {
+        let mut sim = simulator(app.view_main());
+        assert!(sim.find("In 3w").is_ok() && sim.find("7am Tomorrow").is_ok(), "the chat menu has the custom phrases");
+        assert!(sim.find("In Two Hours").is_err(), "and not the defaults");
+        let _ = sim.click("In 3w").expect("the phrase");
+        let msgs: Vec<UiMessage> = sim.into_messages().collect();
+        apply_all(&mut app, msgs);
+    }
+    let at = parse_when_millis("In 3w", now_unix_millis()).unwrap();
+    let reminder = app.store.read().chat(&id).reminder.clone().map(|r| r.remind_at_ms);
+    assert!(reminder.is_some_and(|r| (r - at).abs() < 60_000), "the phrase sets the reminder");
+    assert_eq!(app.store.read().settings.last_time, "In 3w", "and is kept for Last Used");
+    let _ = app.update(UiMessage::CloseModals);
+    app.selection = app.visible_chats(&app.store.read()).iter().take(2).map(|c| c.id.clone()).collect();
+    let (menu, _) = app.view_selection_menu(0);
+    let mut sim = simulator(menu);
+    assert!(sim.find("7am Tomorrow").is_ok() && sim.find("In an Hour").is_err(), "the selection bar menu too");
+    drop(sim);
+    let _ = app.update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(id))));
+    let labels: Vec<String> =
+        app.commands(&app.store.read(), "").into_iter().filter_map(|c| c.render.map(|r| r.0)).collect();
+    assert!(labels.contains(&"in 3w".into()) && labels.contains(&"7am tomorrow".into()), "{labels:?}");
+    assert!(!labels.contains(&"in two hours".into()), "the command bar drops the defaults: {labels:?}");
+}
+
+fn apply_all(app: &mut BeeperGuiApp, msgs: Vec<UiMessage>) {
+    for m in msgs {
+        let _ = app.update(m);
+    }
 }
 
 #[test]
@@ -7561,6 +7856,92 @@ fn nameless_attachments_like_desktop() {
     assert_eq!(crate::message::attachment_name(&a), "Attachment");
 }
 
+/// Desktop's "Edit Account Nickname…" (`Zpe`) after Edit Spaces… in the account menus of the sidebar and of the
+/// Accounts settings (`rj`), for an account with a bridge login other than the Beeper account.
+#[test]
+fn account_nickname_menus_like_desktop() {
+    let mut app = demo_app("nickname-menus");
+    let item = "Edit Account Nickname…";
+    let top = |sim: &mut Simulator<'_, UiMessage>, label: &str| {
+        sim.find(label).expect(label).visible_bounds().expect("visible").y
+    };
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("account:acc_whatsapp".into())));
+    let open: Vec<UiMessage> = {
+        let mut sim = simulator(app.view_account_menu("acc_whatsapp"));
+        let ys = ["Edit Spaces…", item, "Add/Remove Accounts…"].map(|l| top(&mut sim, l));
+        assert!(ys[0] < ys[1] && ys[1] < ys[2], "Desktop's order: {ys:?}");
+        let _ = sim.click(item).expect("the nickname item");
+        sim.into_messages().collect()
+    };
+    assert!(matches!(&open[..], [UiMessage::Nickname(nickname::Msg::Open(a))] if a == "acc_whatsapp"));
+    assert!(simulator(app.view_account_menu("hungryserv")).find(item).is_err(), "the Beeper account has none");
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("prefs:acc_telegram".into())));
+    let mut sim = simulator(app.view_settings());
+    let ys = ["Edit Spaces…", item, "Remove Account…"].map(|l| top(&mut sim, l));
+    assert!(ys[0] < ys[1] && ys[1] < ys[2], "Desktop's order: {ys:?}");
+    let _ = sim.click(item).expect("the nickname item of the Accounts settings");
+    let open: Vec<UiMessage> = sim.into_messages().collect();
+    assert!(matches!(&open[..], [UiMessage::Nickname(nickname::Msg::Open(a))] if a == "acc_telegram"));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("prefs:hungryserv".into())));
+    assert!(simulator(app.view_settings()).find(item).is_err());
+}
+
+/// Desktop's Account Nickname window (`RenameAccount`): the name of the account, with its default name as the
+/// placeholder, the user of the account, and Save. The nickname then names the account wherever Desktop shows
+/// `customName`: the space, the account rows of the settings, and the account's user text.
+#[test]
+fn account_nickname_window_like_desktop() {
+    let mut app = demo_app("nickname-window");
+    let account = "acc_whatsapp";
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Open(account.into())));
+    let id = app.nickname_windows.first().expect("the window opens").id;
+    assert_eq!(app.title(id), "Account Nickname");
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Open(account.into())));
+    assert_eq!(app.nickname_windows.len(), 1, "an account has one window");
+    {
+        let d = &app.nickname_windows[0];
+        assert_eq!(d.name, "", "no nickname yet");
+        let mut sim = simulator(app.view_nickname(d));
+        let phone = fmt_phone("+14155550142");
+        let hint = "Changes how this account appears in Beeper, on all your devices.";
+        for text in ["Account Nickname", hint, "Alex Rivera", phone.as_str(), "Cancel", "Save"] {
+            assert!(sim.find(text).is_ok(), "{text}");
+        }
+    }
+    {
+        let st = app.store.read();
+        let placeholder = new_chat::default_account_display_name(&st, account, &rail_accounts(&st));
+        assert_eq!(placeholder, "WhatsApp");
+    }
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Name(id, "  Work phone ".into())));
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Save(id)));
+    {
+        let st = app.store.read();
+        assert_eq!(st.custom_name(account), Some("Work phone"), "the demo keeps the trimmed name");
+        assert_eq!(space_name(&st, account), "Work phone", "Desktop's accountDisplayName");
+        assert_eq!(account_user(&st, account), "Work phone", "Desktop's userDisplayText");
+        assert_eq!(account_display_name(&st, account, &rail_accounts(&st)), "Work phone");
+    }
+    let _ = app.update(UiMessage::Window(windows::Msg::Closed(id)));
+    assert!(app.nickname_windows.is_empty());
+    let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
+    assert!(simulator(app.view_settings()).find("Work phone").is_ok(), "the account row shows the nickname");
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Open(account.into())));
+    let id = app.nickname_windows[0].id;
+    assert_eq!(app.nickname_windows[0].name, "Work phone", "the window starts with the nickname");
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Saved(id, Err("offline".into()))));
+    let error = "Something went wrong: offline";
+    assert!(simulator(app.view_nickname(&app.nickname_windows[0])).find(error).is_ok(), "the error toast");
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::HideError(id, error.into())));
+    assert!(simulator(app.view_nickname(&app.nickname_windows[0])).find(error).is_err());
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Name(id, String::new())));
+    let _ = app.update(UiMessage::Nickname(nickname::Msg::Save(id)));
+    let st = app.store.read();
+    assert_eq!(st.custom_name(account), None, "an empty name removes the nickname");
+    assert_eq!(space_name(&st, account), "WhatsApp");
+}
+
 /// Desktop's dot of new requests: the requests that came after the Requests view last showed their account, by
 /// `com.beeper.message_requests.last_viewed_at`, whatever their unread state.
 #[test]
@@ -7625,6 +8006,46 @@ fn no_tooltip_over_an_open_menu_like_desktop() {
     assert_ne!(tip_pixel(&app, "tip-hidden"), [255; 4], "not over the open filter menu");
 }
 
+/// Desktop's keys of pending attachments (`C_t`): ← and → move between them, Space opens a Quick Look that follows
+/// the focus, Backspace removes one and focuses the one before, and → past the last goes back to the input.
+#[test]
+fn pending_attachment_keys_like_desktop() {
+    use iced::keyboard::{key::Named, Key};
+    let mut app = demo_app("attachment-keys");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let mut png = Vec::new();
+    ::image::RgbaImage::new(30, 20).write_to(&mut std::io::Cursor::new(&mut png), ::image::ImageFormat::Png).unwrap();
+    let file = |name: &str, bytes: &[u8]| {
+        let path = std::env::temp_dir().join(format!("beeper-rs-keys-{}-{name}", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let f = portal::load_file(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        PendingMedia { name: name.into(), ..f }
+    };
+    app.pane.attachments = vec![file("a.png", &png), file("b.pdf", b"%PDF"), file("c.png", &png)];
+    let press = |app: &mut BeeperGuiApp, k: Named| app.update(UiMessage::KeyPressed(Key::Named(k), Default::default()));
+    let _ = app.update(UiMessage::Composer(composer::Msg::FocusAttachment(2)));
+    let _ = press(&mut app, Named::ArrowLeft);
+    assert_eq!(app.pane.att_focus, Some(1));
+    let _ = press(&mut app, Named::ArrowLeft);
+    let _ = press(&mut app, Named::ArrowLeft);
+    assert_eq!(app.pane.att_focus, Some(0), "the first one keeps the focus");
+    let _ = press(&mut app, Named::Space);
+    assert_eq!(app.pane.quick_look, Some(0));
+    assert!(app.view_attachment_quick_look().is_some(), "the Quick Look shows");
+    let _ = press(&mut app, Named::ArrowRight);
+    assert_eq!((app.pane.att_focus, app.pane.quick_look), (Some(1), Some(1)), "the Quick Look follows the focus");
+    let _ = press(&mut app, Named::Escape);
+    assert_eq!((app.pane.att_focus, app.pane.quick_look), (Some(1), None));
+    let _ = press(&mut app, Named::Backspace);
+    let names: Vec<&str> = app.pane.attachments.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!((names, app.pane.att_focus), (vec!["a.png", "c.png"], Some(0)), "the one before takes the focus");
+    let _ = press(&mut app, Named::ArrowRight);
+    let _ = press(&mut app, Named::ArrowRight);
+    assert_eq!(app.pane.att_focus, None, "past the last one, the input");
+    drop(simulator(app.view_main()));
+}
+
 /// Desktop's hover actions of a chat row fade and grow in over 0.1 s, and back out after the pointer leaves.
 #[test]
 fn row_hover_actions_fade_like_desktop() {
@@ -7639,4 +8060,19 @@ fn row_hover_actions_fade_like_desktop() {
     assert!(app.hover_progress(&id).is_some_and(|t| t > 0.5), "they fade back out");
     std::thread::sleep(std::time::Duration::from_millis(120));
     assert_eq!(app.hover_progress(&id), None, "and are gone after it");
+}
+
+/// Desktop's `.left` transition: the space bar and the chat list slide out and back in over 0.2 s.
+#[test]
+fn sidebar_slides_like_desktop() {
+    let mut app = demo_app("sidebar-slide");
+    assert!((crate::style::cubic_bezier(0.5, [0.165, 0.84, 0.44, 1.0]) - 0.92).abs() < 0.02, "an ease-out curve");
+    let _ = app.update(UiMessage::RunHotkey("Toggle Sidebar"));
+    assert!(app.sidebar_hidden && app.sidebar_progress().is_some_and(|t| t < 0.5), "it starts to slide out");
+    drop(simulator(app.view_main()));
+    std::thread::sleep(std::time::Duration::from_millis(220));
+    assert_eq!(app.sidebar_progress(), None, "and is gone after 0.2 s");
+    let _ = app.update(UiMessage::RunHotkey("Toggle Sidebar"));
+    assert!(!app.sidebar_hidden && app.sidebar_progress().is_some());
+    drop(simulator(app.view_main()));
 }

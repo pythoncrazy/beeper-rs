@@ -137,6 +137,10 @@ impl BeeperGuiApp {
                     save_draft(&mut self.store.write(), &w.1);
                 }
                 self.chat_windows.retain(|w| w.0 != id);
+                // Desktop's `setPipState(null)`: the video stops with its Picture in Picture window.
+                if self.pip.take_if(|p| p.0 == id).is_some() {
+                    self.video = None;
+                }
                 self.theme_windows.retain(|w| w.0 != id);
                 self.labels_windows.retain(|w| w.0 != id);
                 self.poll_windows.retain(|w| w.id != id);
@@ -149,6 +153,7 @@ impl BeeperGuiApp {
                 self.spaces_window = self.spaces_window.take().filter(|d| d.id != id);
                 self.group_window = self.group_window.take().filter(|d| d.id != id);
                 self.blocked_window = self.blocked_window.filter(|w| *w != id);
+                self.nickname_windows.retain(|d| d.id != id);
                 self.verify.window = self.verify.window.filter(|w| *w != id);
                 // Desktop's `ReauthRequiredModal` closed without a code ends the logout of a device.
                 if self.reauth.window.take_if(|w| *w == id).is_some() {
@@ -157,6 +162,7 @@ impl BeeperGuiApp {
                 self.enter_key.window = self.enter_key.window.filter(|w| *w != id);
                 if Some(id) == self.settings_window {
                     self.settings_window = None;
+                    self.time_edit = Default::default();
                 } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
                     self.media_window = None;
                     self.carousel = self.carousel.take().filter(|c| !c.in_media);
@@ -303,6 +309,7 @@ impl BeeperGuiApp {
         let lists = lists.chain(self.labels_windows.iter().map(|w| w.0)).chain(self.vote_windows.iter().map(|w| w.0));
         let group = self.group_window.as_ref().map(|d| d.id);
         let lists = lists.chain(self.poll_windows.iter().map(|w| w.id)).chain(self.add_accounts.iter().map(|a| a.id));
+        let lists = lists.chain(self.nickname_windows.iter().map(|d| d.id));
         singles.chain([group, self.blocked_window]).flatten().chain(lists).collect()
     }
 
