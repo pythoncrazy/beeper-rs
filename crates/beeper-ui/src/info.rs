@@ -93,17 +93,20 @@ pub(crate) fn info_menu(
                 let shown = fmt_phone(n);
                 vec![
                     item(format!("Call {shown}"), UiMessage::OpenUrl(format!("tel:{n}"))),
-                    item(format!("Copy {shown}"), UiMessage::CopyText(shown)),
+                    item(format!("Copy {shown}"), UiMessage::Message(message::Msg::CopyText(shown))),
                 ]
             }
             "email" => {
                 let e = u.email.clone().expect("an email");
                 vec![
                     item(format!("Email {e}"), UiMessage::OpenUrl(format!("mailto:{e}"))),
-                    item(format!("Copy {e}"), UiMessage::CopyText(e)),
+                    item(format!("Copy {e}"), UiMessage::Message(message::Msg::CopyText(e))),
                 ]
             }
-            _ => vec![item(tr("Copy Username").into(), UiMessage::CopyText(handle(u).expect("a username")))],
+            _ => vec![item(
+                tr("Copy Username").into(),
+                UiMessage::Message(message::Msg::CopyText(handle(u).expect("a username"))),
+            )],
         };
     }
     if let Some((cid, mid)) = key.strip_prefix("bookmark:").and_then(|k| k.split_once(' ')) {
@@ -119,7 +122,7 @@ pub(crate) fn info_menu(
         let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
         let u = c.participants.items.iter().find(|u| u.id == uid).expect("a member of the chat");
         let copy = |label: &'static str, text: Option<String>| {
-            text.map(|t| Some((tr(label).to_string(), Some(UiMessage::CopyText(t)))))
+            text.map(|t| Some((tr(label).to_string(), Some(UiMessage::Message(message::Msg::CopyText(t))))))
         };
         let username = handle(u);
         let call = u.phone_number.as_ref().map(|n| {
@@ -168,7 +171,8 @@ pub(crate) fn info_menu(
         can_edit_for_me(st, c).then(|| (tr("Edit for Me").to_string(), Some(UiMessage::OpenEditForMe(c.id.clone()))));
     let theme = Some((tr("Chat Theme").to_string(), Some(UiMessage::ChatTheme(chat_theme::Msg::Open(c.id.clone())))));
     let text = text.unwrap_or(&c.title);
-    let title = copy.then(|| Some((trf("Copy %s", &[&text]), Some(UiMessage::CopyText(text.to_string())))));
+    let title = copy
+        .then(|| Some((trf("Copy %s", &[&text]), Some(UiMessage::Message(message::Msg::CopyText(text.to_string()))))));
     let edits = [group, personal, theme].into_iter().flatten().map(Some);
     title.into_iter().chain(copy.then_some(None)).chain(edits).collect()
 }

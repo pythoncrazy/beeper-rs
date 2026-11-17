@@ -123,7 +123,9 @@ impl BeeperGuiApp {
             items.then(|| {
                 item(trx("Edit...", ctx).into(), "Ctrl T", UiMessage::Scheduled(scheduled::Msg::Edit(ids[0].clone())))
             }),
-            items.then(|| item(trx("Copy", ctx).into(), "Ctrl C", UiMessage::CopyText(first.text.clone()))),
+            items.then(|| {
+                item(trx("Copy", ctx).into(), "Ctrl C", UiMessage::Message(message::Msg::CopyText(first.text.clone())))
+            }),
             items.then(|| Some(menu_rule(p))),
             (!canceled).then(|| match n {
                 1 => {

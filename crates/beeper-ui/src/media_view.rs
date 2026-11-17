@@ -3,6 +3,7 @@
 use crate::composer;
 use crate::forward;
 use crate::i18n::{tr, trn, trx};
+use crate::message;
 use crate::style::{
     bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, med, scroll_style, semi, shadow_box,
     text_width, txt, Bare, CLEAR,
@@ -353,7 +354,9 @@ impl BeeperGuiApp {
             Key::Named(Named::ArrowRight) if mods.is_empty() && at + 1 < items.len() => {
                 self.update(UiMessage::Media(Msg::CarouselStep(true)))
             }
-            Key::Character("d") if mods.is_empty() => self.update(UiMessage::Download(c.mid, Some(c.ai))),
+            Key::Character("d") if mods.is_empty() => {
+                self.update(UiMessage::Message(message::Msg::Download(c.mid, Some(c.ai))))
+            }
             Key::Character("r") if mods.is_empty() => self.update(UiMessage::Media(Msg::RotateCarousel)),
             _ => Task::none(),
         }
@@ -371,7 +374,8 @@ impl BeeperGuiApp {
             ])
         });
         let right = self.pane.size.width - 8.0 - 28.0 * if reply.is_some() { 4.0 } else { 3.0 };
-        let react = (c.messages.react && live).then(|| UiMessage::ReactAt(m.id.clone(), Point::new(right, 39.0)));
+        let react = (c.messages.react && live)
+            .then(|| UiMessage::Message(message::Msg::ReactAt(m.id.clone(), Point::new(right, 39.0))));
         (react, reply)
     }
 
@@ -416,7 +420,7 @@ impl BeeperGuiApp {
                 &MEDIA_ICONS[3],
                 tr("Go to Message"),
                 vec![],
-                Some(UiMessage::GoToMessage(c.id.clone(), mid.into())),
+                Some(UiMessage::Message(message::Msg::GoTo(c.id.clone(), mid.into()))),
             )
         });
         // The Media window viewer has Delete when you can delete the message, like Desktop's `MediaViewer`.
@@ -435,7 +439,7 @@ impl BeeperGuiApp {
         let (react, reply) = self.carousel_actions(car, m, c);
         let react = react.map(|msg| control(&SYS_EMOJI, action("React"), vec![], Some(msg)));
         let reply = reply.map(|msg| control(&SYS_REPLY, action("Reply"), vec![], Some(msg)));
-        let download = Some(UiMessage::Download(mid.to_string(), Some(ai)));
+        let download = Some(UiMessage::Message(message::Msg::Download(mid.to_string(), Some(ai))));
         let controls = row![]
             .push(go)
             .push(delete)
@@ -483,7 +487,9 @@ impl BeeperGuiApp {
             _ => {
                 let name = txt(a.file_name.clone().expect("attachment file name"), 13.0).color(white);
                 let link = button(name).bare(white);
-                container(link.on_press(UiMessage::Download(mid.to_string(), Some(ai)))).center(Fill).into()
+                container(link.on_press(UiMessage::Message(message::Msg::Download(mid.to_string(), Some(ai)))))
+                    .center(Fill)
+                    .into()
             }
         };
         let step = |next: bool| -> El<'a> {
@@ -573,12 +579,15 @@ impl BeeperGuiApp {
         let close = |msg| UiMessage::Commands(vec![UiMessage::Media(Msg::CloseCarousel), msg]);
         let action = |s| trx(s, "attachment carousel context menu action").to_string();
         let image = m.attachments[ai].attachment_type == "img";
-        let mut rows = vec![Some((action("Download"), UiMessage::Download(mid.clone(), Some(ai))))];
-        rows.extend(image.then(|| Some((action("Copy"), UiMessage::CopyImage(mid.clone(), ai)))));
+        let mut rows =
+            vec![Some((action("Download"), UiMessage::Message(message::Msg::Download(mid.clone(), Some(ai)))))];
+        rows.extend(
+            image.then(|| Some((action("Copy"), UiMessage::Message(message::Msg::CopyImage(mid.clone(), ai))))),
+        );
         let deletable = deletable(st, m);
         let (first, delete) = match car.in_media {
             true => (
-                vec![(tr("Go to Message").into(), UiMessage::GoToMessage(c.id.clone(), mid.clone()))],
+                vec![(tr("Go to Message").into(), UiMessage::Message(message::Msg::GoTo(c.id.clone(), mid.clone())))],
                 deletable.then(|| (tr("Delete…").into(), UiMessage::Media(Msg::AskDelete(vec![(mid.clone(), ai)])))),
             ),
             false => {
@@ -586,7 +595,7 @@ impl BeeperGuiApp {
                 let forward = close(UiMessage::Forward(forward::Msg::Open(vec![mid.clone()])));
                 let first = [(tr("Reply…"), reply), (tr("React…"), react), (tr("Forward…"), Some(forward))];
                 let first = first.into_iter().filter_map(|(label, msg)| msg.map(|msg| (label.to_string(), msg)));
-                let delete = close(UiMessage::AskDeleteMessage(vec![mid.clone()]));
+                let delete = close(UiMessage::Message(message::Msg::AskDelete(vec![mid.clone()])));
                 (first.collect(), deletable.then(|| (tr("Delete…").into(), delete)))
             }
         };
@@ -805,7 +814,7 @@ impl BeeperGuiApp {
                                 icon(file_icon, 18.0),
                                 name,
                                 line.collect::<Vec<_>>().join(" · "),
-                                UiMessage::Download(m.id.clone(), Some(k)),
+                                UiMessage::Message(message::Msg::Download(m.id.clone(), Some(k))),
                             )
                         }
                     };
@@ -879,15 +888,18 @@ impl BeeperGuiApp {
             let act = |label: &str, msg| {
                 menu_item(p, None, label.into(), "", Some(UiMessage::Media(Msg::ItemAct(Box::new(msg)))))
             };
-            let go = act(tr("Go to Message"), UiMessage::GoToMessage(m.chat_id.clone(), mid.clone()));
+            let go = act(tr("Go to Message"), UiMessage::Message(message::Msg::GoTo(m.chat_id.clone(), mid.clone())));
             let mut actions = match w.tab {
-                1 => vec![act(tr("Copy Link"), UiMessage::CopyLink(m.links[*k].url.clone()))],
-                _ => std::iter::once(act(tr("Download"), UiMessage::Download(mid.clone(), Some(*k))))
-                    .chain(
-                        (m.attachments[*k].attachment_type == "img")
-                            .then(|| act(tr("Copy Image"), UiMessage::CopyImage(mid.clone(), *k))),
-                    )
-                    .collect(),
+                1 => vec![act(tr("Copy Link"), UiMessage::Message(message::Msg::CopyLink(m.links[*k].url.clone())))],
+                _ => std::iter::once(act(
+                    tr("Download"),
+                    UiMessage::Message(message::Msg::Download(mid.clone(), Some(*k))),
+                ))
+                .chain(
+                    (m.attachments[*k].attachment_type == "img")
+                        .then(|| act(tr("Copy Image"), UiMessage::Message(message::Msg::CopyImage(mid.clone(), *k)))),
+                )
+                .collect(),
             };
             actions.extend(
                 deletable(&st, m)
@@ -1147,7 +1159,11 @@ impl BeeperGuiApp {
             Msg::Save => {
                 let w = self.media_window.as_ref().expect("the Media window is open");
                 let files = if w.tab == 1 { Vec::new() } else { w.picked.clone() };
-                return Task::batch(files.into_iter().map(|(mid, k)| self.update(UiMessage::Download(mid, Some(k)))));
+                return Task::batch(
+                    files
+                        .into_iter()
+                        .map(|(mid, k)| self.update(UiMessage::Message(message::Msg::Download(mid, Some(k))))),
+                );
             }
             Msg::AskDelete(items) => {
                 let st = self.store.read();

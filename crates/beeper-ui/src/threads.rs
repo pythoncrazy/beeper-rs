@@ -2,6 +2,7 @@
 //! timeline.
 
 use crate::i18n::{tr, trf, trn};
+use crate::message;
 use crate::style::{
     bordered_btn, brand_svg, btn_style, ell, fill_box, ic, icon, scroll_style, semi, shadow_box, txt, CLEAR,
 };
@@ -231,7 +232,7 @@ impl BeeperGuiApp {
         let view = UiMessage::Commands(vec![
             UiMessage::CloseModals,
             UiMessage::JumpTo(cid.clone(), root.clone()),
-            UiMessage::SelectMessages(vec![root.clone()]),
+            UiMessage::Message(message::Msg::Select(vec![root.clone()])),
         ]);
         let read = unread.then(|| {
             [

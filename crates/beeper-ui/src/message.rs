@@ -16,23 +16,27 @@ use crate::threads;
 use crate::windows;
 use crate::{
     anim, badged, brightness, can_thread, chat_theme, clock, commands, copy_text, day_label, day_num, day_of,
-    delete_dialog, ease_out, edit_open, editable, email, enter_key, feedback_btn, file_icon, fmt_phone,
+    delete_dialog, downloads_dir, ease_out, edit_open, editable, email, enter_key, feedback_btn, file_icon, fmt_phone,
     format_short_ts, gallery, handle, has_older, human_size, lift, locale_string, locate, member_name, membership,
-    menu_item, menu_rule, network_bot, pending, pill_btn, profile_link, reply_root, send_rise, sender_label,
-    short_title, still_sending_at, tinted, today, unavailable, video, vlist, BeeperGuiApp, El, PillLook, UiMessage,
-    BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X, CHEVRON_DOWN, ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W,
-    ORANGE, TRASH, VIEW_SIDEBAR,
+    menu_item, menu_rule, network_bot, pending, pill_btn, portal, profile_link, reply_root, safe_file_name, send_rise,
+    sender_label, short_title, still_sending_at, stored, tinted, today, unavailable, unused_path, video, vlist,
+    BeeperGuiApp, El, PillLook, UiMessage, ASK_DELETE_MESSAGE, BEEPER_ICON, BOOKMARK_ICON, BUBBLE_PAD_X, CHEVRON_DOWN,
+    ERROR_OUTLINE, ISSUES_URL, MENU_ITEM, MESSAGE_MENU_W, ORANGE, TRASH, VIEW_SIDEBAR,
 };
 use beeper_core::config::{millis_from_rfc3339, now_unix_millis};
 use beeper_core::models::*;
 use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
 use iced::font::Weight;
+use iced::widget::operation;
 use iced::widget::{
     button, column, container, image, mouse_area, pin, rich_text, row, scrollable, span, stack, svg, tooltip, Column,
     Row, Space, Stack,
 };
-use iced::{border, mouse, Bottom, Center, Color, Fill, Length, Padding, Pixels, Right, Shadow, Task, Theme, Vector};
+use iced::{
+    border, mouse, window, Bottom, Center, Color, Fill, Length, Padding, Pixels, Point, Right, Shadow, Size, Task,
+    Theme, Vector,
+};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -113,8 +117,10 @@ fn toggle_reaction(st: &BeeperStore, chat: &str, ms: &[&Message], key: &str) -> 
         m.reactions.iter().any(|r| r.reaction_key == key && (!mine || st.is_me(&r.participant_id)))
     };
     let mine = ms.iter().any(|m| has(&m, true));
-    let mut toggles =
-        ms.iter().filter(|m| has(m, mine)).map(|m| UiMessage::ToggleReaction(chat.into(), m.id.clone(), key.into()));
+    let mut toggles = ms
+        .iter()
+        .filter(|m| has(m, mine))
+        .map(|m| UiMessage::Message(Msg::ToggleReaction(chat.into(), m.id.clone(), key.into())));
     match ms.len() {
         1 => toggles.next().expect("the message has the reaction"),
         _ => UiMessage::Commands(toggles.collect()),
@@ -363,7 +369,7 @@ impl BeeperGuiApp {
         let entire = link.is_some();
         let rule = || (menu_rule(p), 11.0);
         let item = |label: String, hotkey, msg: Option<UiMessage>| {
-            (menu_item(p, None, label, hotkey, msg.map(|m| UiMessage::MessageMenu(Box::new(m)))), MENU_ITEM)
+            (menu_item(p, None, label, hotkey, msg.map(|m| UiMessage::Message(Msg::Menu(Box::new(m))))), MENU_ITEM)
         };
         let bookmark = tr(if m.is_bookmarked == Some(true) { "Remove Bookmark" } else { "Bookmark" });
         let at = trf(if mine { "Sent at %s" } else { "Received at %s" }, &[&locale_string(&m.timestamp)]);
@@ -394,13 +400,13 @@ impl BeeperGuiApp {
                     item(
                         trxf("Copy %s", "message menu action to copy an email address", &[&e]),
                         "",
-                        Some(UiMessage::CopyText(e.clone())),
+                        Some(UiMessage::Message(Msg::CopyText(e.clone()))),
                     ),
                     item(trf("Email %s…", &[&e]), "", Some(UiMessage::OpenUrl(format!("mailto:{e}")))),
                     rule(),
                 ]
             }),
-            link.map(|u| vec![item(tr("Copy Link").into(), "", Some(UiMessage::CopyText(u))), rule()]),
+            link.map(|u| vec![item(tr("Copy Link").into(), "", Some(UiMessage::Message(Msg::CopyText(u)))), rule()]),
             m.unresolved_media.as_ref().map(|raw| {
                 let state = self.resolving_media.get(&mid);
                 let label = match state {
@@ -434,18 +440,22 @@ impl BeeperGuiApp {
             privately
                 .then(|| vec![item(tr("Reply Privately…").into(), "", Some(UiMessage::ReplyPrivately(mid.clone())))]),
             Some(vec![
-                item(tr("React…").into(), "", (rules.react && m.reactable()).then(|| UiMessage::React(mid.clone()))),
-                item(bookmark.into(), "", Some(UiMessage::ToggleBookmark(mid.clone()))),
+                item(
+                    tr("React…").into(),
+                    "",
+                    (rules.react && m.reactable()).then(|| UiMessage::Message(Msg::React(mid.clone()))),
+                ),
+                item(bookmark.into(), "", Some(UiMessage::Message(Msg::ToggleBookmark(mid.clone())))),
             ]),
             (m.is_unread == Some(true)).then(|| {
-                let read = UiMessage::MarkReadThrough(cid.clone(), mid.clone());
+                let read = UiMessage::Message(Msg::MarkReadThrough(cid.clone(), mid.clone()));
                 vec![item(tr("Mark as Read").into(), "", Some(read))]
             }),
             (m.is_unread != Some(true) && m.account_id != "hungryserv").then(|| {
                 vec![item(
                     tr("Mark as Unread").into(),
                     "",
-                    Some(UiMessage::MarkUnreadFromHere(cid.clone(), mid.clone())),
+                    Some(UiMessage::Message(Msg::MarkUnreadFromHere(cid.clone(), mid.clone()))),
                 )]
             }),
             (mine
@@ -453,11 +463,13 @@ impl BeeperGuiApp {
                 && m.is_deleted != Some(true)
                 && st.feature("enable-polls").on
                 && st.chat(&cid).polls.is_some_and(|r| r.end))
-            .then(|| vec![item("End Poll".into(), "", Some(UiMessage::EndPoll(cid.clone(), mid.clone())))]),
+            .then(|| {
+                vec![item("End Poll".into(), "", Some(UiMessage::Message(Msg::EndPoll(cid.clone(), mid.clone()))))]
+            }),
             self.pane().reply_thread.is_some().then(|| {
                 let jump = UiMessage::Commands(vec![
                     UiMessage::JumpTo(cid, mid.clone()),
-                    UiMessage::SelectMessages(vec![mid.clone()]),
+                    UiMessage::Message(Msg::Select(vec![mid.clone()])),
                 ]);
                 vec![item(tr("Jump to Message").into(), "", Some(jump))]
             }),
@@ -470,7 +482,7 @@ impl BeeperGuiApp {
         // Desktop's `Zit`: no Delete… for the message that you edit.
         let editing = self.pane().editing_message_id.as_ref() == Some(&mid);
         let delete = (!editing && delete_dialog(&st, &[m]).is_some())
-            .then(|| item(tr("Delete…").into(), "", Some(UiMessage::AskDeleteMessage(vec![mid.clone()]))));
+            .then(|| item(tr("Delete…").into(), "", Some(UiMessage::Message(Msg::AskDelete(vec![mid.clone()])))));
         let tail: Vec<(El, f32)> = self.voice_menu_rows(&st, m).into_iter().chain(delete).collect();
         let rows: Vec<(El, f32)> = [
             Some(head),
@@ -481,18 +493,19 @@ impl BeeperGuiApp {
                     tr(if entire { "Copy Entire Message" } else { "Copy" }).into(),
                     if stamp { "" } else { "Ctrl C" },
                     Some(match only_image {
-                        true => UiMessage::CopyImage(mid.clone(), 0),
-                        false => UiMessage::CopyText(copy_text(m, false, false)),
+                        true => UiMessage::Message(Msg::CopyImage(mid.clone(), 0)),
+                        false => UiMessage::Message(Msg::CopyText(copy_text(m, false, false))),
                     }),
                 ),
             ]),
             (!image).then(|| {
-                let copy = UiMessage::CopyText(copy_text(m, true, false));
+                let copy = UiMessage::Message(Msg::CopyText(copy_text(m, true, false)));
                 let label = tr(if entire { "Copy Entire Message with Timestamp" } else { "Copy with Timestamp" });
                 vec![item(label.into(), if stamp { "Ctrl C" } else { "" }, Some(copy))]
             }),
-            (image && !only_image)
-                .then(|| vec![item(tr("Copy Image").into(), "", Some(UiMessage::CopyImage(mid.clone(), 0)))]),
+            (image && !only_image).then(|| {
+                vec![item(tr("Copy Image").into(), "", Some(UiMessage::Message(Msg::CopyImage(mid.clone(), 0))))]
+            }),
             (m.is_deleted != Some(true)).then(|| {
                 vec![item(
                     tr("Forward…").into(),
@@ -500,7 +513,8 @@ impl BeeperGuiApp {
                     Some(UiMessage::Forward(forward::Msg::Open(vec![mid.clone()]))),
                 )]
             }),
-            (files > 0).then(|| vec![item(download, "Ctrl D", Some(UiMessage::Download(mid.clone(), None)))]),
+            (files > 0)
+                .then(|| vec![item(download, "Ctrl D", Some(UiMessage::Message(Msg::Download(mid.clone(), None))))]),
             Some(vec![
                 item(at, "", None),
                 rule(),
@@ -632,13 +646,13 @@ impl BeeperGuiApp {
             let list = lift::tight(scroller(self.view_messages(&st, chat, &chain, &Rows::of(&st, &chain), true)));
             // Desktop blurs the chat 8px under a 0.6 background; iced has no backdrop blur.
             mouse_area(container(list).width(Fill).height(Fill).style(fill_box(p.card.scale_alpha(0.85), 0.0)))
-                .on_press(UiMessage::HideReplies)
+                .on_press(UiMessage::Message(Msg::HideReplies))
         });
         let close = replies.is_some().then(|| -> El<'_> {
             let close = button(ic(icon::CLOSE, 20.0).color(p.weak))
                 .padding(10)
                 .style(|_, _| button::Style::default())
-                .on_press(UiMessage::HideReplies);
+                .on_press(UiMessage::Message(Msg::HideReplies));
             container(close).align_right(Fill).padding(16).into()
         });
         // Desktop's `thread-header-card`: the avatar on its disc over the name pill, 4 px into it. The card shows no
@@ -1248,7 +1262,7 @@ impl BeeperGuiApp {
             };
             let q_mine = q.is_sender == Some(true);
             let col = self.linked_message(chat, q, group, on_wall, sent).filter(|_| !chained);
-            (col.map(|c| column![mouse_area(c).on_press(UiMessage::ShowReplies(q.id.clone()))]), q_mine)
+            (col.map(|c| column![mouse_area(c).on_press(UiMessage::Message(Msg::ShowReplies(q.id.clone())))]), q_mine)
         });
         // Desktop's `pM`: a link with a title, an image or a summary has a preview.
         for link in m.links.iter().filter(|l| !l.title.is_empty() || l.img.is_some() || l.summary.is_some()) {
@@ -1342,7 +1356,7 @@ impl BeeperGuiApp {
                     button(container(line).max_width(240.0 - 2.0 * BUBBLE_PAD_X))
                         .padding([8, 11])
                         .style(btn_style([p.received; 3], [p.strong; 3], 17.0))
-                        .on_press(UiMessage::Download(m.id.clone(), Some(ai)))
+                        .on_press(UiMessage::Message(Msg::Download(m.id.clone(), Some(ai))))
                         .into()
                 }
             };
@@ -1543,7 +1557,7 @@ impl BeeperGuiApp {
                 let label = semi(if open { tr("Show less") } else { tr("Show more") }, 14.0);
                 let color = if mine { fg } else { p.accent };
                 let toggle = button(label.line_height(Pixels(18.0)).color(color)).bare(color);
-                let toggle = toggle.on_press(UiMessage::ToggleClamp(m.id.clone()));
+                let toggle = toggle.on_press(UiMessage::Message(Msg::ToggleClamp(m.id.clone())));
                 // A Fill gap would widen the bubble past its text, so the time follows the label.
                 row![toggle].push(footer_time).spacing(8).align_y(Bottom)
             });
@@ -1566,7 +1580,7 @@ impl BeeperGuiApp {
             button(toggle.color(p.accent))
                 .padding(0)
                 .style(|_, _| button::Style::default())
-                .on_press(UiMessage::ToggleEditHistory(m.id.clone()))
+                .on_press(UiMessage::Message(Msg::ToggleEditHistory(m.id.clone())))
                 .into()
         });
         let replies = (replies > 0).then(|| -> El<'a> {
@@ -1574,7 +1588,7 @@ impl BeeperGuiApp {
             button(semi(n, 10.0).color(muted))
                 .padding(0)
                 .style(|_, _| button::Style::default())
-                .on_press(UiMessage::ShowReplies(m.id.clone()))
+                .on_press(UiMessage::Message(Msg::ShowReplies(m.id.clone())))
                 .into()
         });
         let broadcast =
@@ -1644,15 +1658,16 @@ impl BeeperGuiApp {
             };
             let retry = pending.then(|| match e.retrying {
                 true => action(format!("{} ...", tr("Retrying")), None),
-                false => action(tr("Retry").into(), Some(UiMessage::RetrySend(m.id.clone()))),
+                false => action(tr("Retry").into(), Some(UiMessage::Message(Msg::RetrySend(m.id.clone())))),
             });
             let remove = (!m.edited()).then(|| match pending {
-                true => {
-                    action(trx("Remove", "message error action").into(), Some(UiMessage::RemoveUnsent(m.id.clone())))
-                }
+                true => action(
+                    trx("Remove", "message error action").into(),
+                    Some(UiMessage::Message(Msg::RemoveUnsent(m.id.clone()))),
+                ),
                 false => action(
                     trx("Delete", "message error action").into(),
-                    Some(UiMessage::DeleteMessage(chat.id.clone(), m.id.clone())),
+                    Some(UiMessage::Message(Msg::Delete(chat.id.clone(), m.id.clone()))),
                 ),
             });
             container(row![].push(retry).push(remove).spacing(4)).padding(Padding::ZERO.top(4.0))
@@ -1696,14 +1711,14 @@ impl BeeperGuiApp {
                 self.tip(b.into(), tr("Reply in thread"), vec![], tooltip::Position::Top).into()
             });
             let react = (chat.messages.react && m.reactable()).then(|| {
-                mouse_area(b(icon::SMILE, UiMessage::React(m.id.clone())))
-                    .on_enter(UiMessage::ShowQuickReactions)
+                mouse_area(b(icon::SMILE, UiMessage::Message(Msg::React(m.id.clone()))))
+                    .on_enter(UiMessage::Message(Msg::ShowQuickReactions))
                     .into()
             });
             let quick =
                 (self.quick_open && st.settings.on("quickReactions")).then(|| crate::emoji::quick_reactions(st));
             let quick = quick.into_iter().flatten().map(|e| -> El<'a> {
-                let msg = UiMessage::ToggleReaction(chat.id.clone(), m.id.clone(), e.clone());
+                let msg = UiMessage::Message(Msg::ToggleReaction(chat.id.clone(), m.id.clone(), e.clone()));
                 let glyph = txt(e, 18.0);
                 button(container(glyph).center(32))
                     .padding(0)
@@ -1724,7 +1739,7 @@ impl BeeperGuiApp {
                 };
                 let button = button(ic(icon::DOWNLOAD, 20.0))
                     .bare(p.accent)
-                    .on_press(UiMessage::Download(m.id.clone(), Some(0)));
+                    .on_press(UiMessage::Message(Msg::Download(m.id.clone(), Some(0))));
                 let gap = if mine { Padding::ZERO.right(12.0) } else { Padding::ZERO.left(12.0) };
                 container(self.tip(button.into(), tip, vec![], tooltip::Position::Top)).padding(gap).into()
             });
@@ -1792,18 +1807,18 @@ impl BeeperGuiApp {
             }
         };
         let (menu, click) = match ms.len() {
-            1 => (UiMessage::OpenMessageMenu(m.id.clone()), UiMessage::ClickMessage(m.id.clone())),
+            1 => (UiMessage::Message(Msg::OpenMenu(m.id.clone())), UiMessage::Message(Msg::Click(m.id.clone()))),
             _ => {
                 let ids: Vec<String> = ms.iter().map(|g| g.id.clone()).collect();
                 (UiMessage::Gallery(gallery::Msg::Menu(ids.clone())), UiMessage::Gallery(gallery::Msg::Click(ids)))
             }
         };
         let line = mouse_area(line)
-            .on_enter(UiMessage::HoverEnter(m.id.clone()))
-            .on_exit(UiMessage::HoverExit(m.id.clone()))
+            .on_enter(UiMessage::Message(Msg::HoverEnter(m.id.clone())))
+            .on_exit(UiMessage::Message(Msg::HoverExit(m.id.clone())))
             .on_right_press(menu)
             .on_press(click)
-            .on_double_click(UiMessage::DoubleClickMessage(m.id.clone()));
+            .on_double_click(UiMessage::Message(Msg::DoubleClick(m.id.clone())));
         column![head, line].into()
     }
 
@@ -1964,5 +1979,337 @@ impl BeeperGuiApp {
             let pill = button(pill).padding([4.0 + look.ring.1, 5.0 + look.ring.1]).style(style);
             r.push(pill.on_press(toggle_reaction(st, &chat.id, ms, k)))
         })
+    }
+}
+
+#[derive(Clone)]
+pub enum Msg {
+    Delete(String, String),
+    /// Desktop's `removeFromBeeper` of the messages.
+    RemoveFromBeeper(Vec<String>),
+    ToggleReaction(String, String, String),
+    ToggleBookmark(String),
+    MarkUnreadFromHere(String, String),
+    /// Desktop's Mark as Read of the message menu.
+    MarkReadThrough(String, String),
+    /// The poll message and all the own answers.
+    VotePoll(String, Vec<String>),
+    /// Desktop's `showReplyThread`: shows the reply chain of the message over the timeline.
+    ShowReplies(String),
+    HideReplies,
+    /// Desktop's `PollVotesBrowserWindow` for a chat's poll message.
+    OpenPollVotes(String, String),
+    EndPoll(String, String),
+    OpenMenu(String),
+    /// Select the message, or unselect it when it is selected.
+    Click(String),
+    Select(Vec<String>),
+    /// Copy the text of the selected messages, with their timestamps or not.
+    CopySelected(bool),
+    /// Do the "On double-clicking a message" action.
+    DoubleClick(String),
+    /// Select the message above (`false`) or below (`true`) the selected one, as with the arrow keys.
+    /// Select the next or the previous message, or with `extend`, add it to the selection.
+    Step(bool, bool),
+    /// Open the emoji picker at the cursor to react to a message.
+    React(String),
+    /// Open the emoji picker at a point to react to a message.
+    ReactAt(String, Point),
+    /// An action picked in the message menu, which closes it.
+    Menu(Box<UiMessage>),
+    CopyText(String),
+    /// Copy a link and say so, like Desktop's Media window.
+    CopyLink(String),
+    CopyImage(String, usize),
+    /// The width, the height and the RGBA pixels of an image to copy.
+    ImageFetched(Result<(usize, usize, Vec<u8>), String>),
+    /// Open a message in the main window.
+    GoTo(String, String),
+    /// Save the attachments of a message, or only one of them, to the downloads folder.
+    Download(String, Option<usize>),
+    Downloaded(Result<String, String>),
+    /// Desktop's "Delete message?" dialog of the messages.
+    AskDelete(Vec<String>),
+    /// Desktop's `retryErroredMessage` and `removeErroredMessage` of a failed send.
+    RetrySend(String),
+    RemoveUnsent(String),
+    ToggleEditHistory(String),
+    /// "Show more" or "Show less" of a message over 40 lines.
+    ToggleClamp(String),
+    HoverEnter(String),
+    ShowQuickReactions,
+    HoverExit(String),
+}
+
+impl BeeperGuiApp {
+    pub(crate) fn message(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::Delete(cid, mid) => {
+                self.confirm = None;
+                let mut st = self.store.write();
+                st.redact_message(&cid, &mid).expect("delete message");
+            }
+            Msg::RemoveFromBeeper(ids) => self.remove_from_beeper(ids),
+            Msg::ToggleReaction(cid, mid, key) => {
+                let mut st = self.store.write();
+                let mine =
+                    stored(&st, &mid).reactions.iter().any(|r| r.reaction_key == key && st.is_me(&r.participant_id));
+                if mine {
+                    st.remove_reaction(&cid, &mid, &key).expect("remove reaction");
+                } else {
+                    st.add_reaction(&cid, &mid, &key, None).expect("add reaction");
+                    st.add_recent_emoji(&key);
+                    if let Some(c) = st.matrix.clone() {
+                        let content = serde_json::json!({ "recent_emoji": st.recent_emoji });
+                        let write = beeper_core::matrix::set_global(c, "io.element.recent_emoji", content);
+                        return Task::perform(write, UiMessage::Pushed);
+                    }
+                }
+            }
+            Msg::ToggleBookmark(mid) => {
+                self.chat_menu = None;
+                self.store.write().toggle_bookmark(&mid);
+            }
+            Msg::MarkUnreadFromHere(cid, mid) => {
+                self.store.write().mark_unread_from_message(&cid, &mid);
+                self.refresh_theme_and_tray();
+            }
+            Msg::MarkReadThrough(cid, mid) => {
+                self.store.write().mark_read_through(&cid, &mid);
+                self.refresh_theme_and_tray();
+            }
+            Msg::VotePoll(mid, answers) => {
+                let mut st = self.store.write();
+                let chat = stored(&st, &mid).chat_id;
+                st.vote_poll(&chat, &mid, answers);
+            }
+            Msg::ShowReplies(id) => (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), Some(id)),
+            Msg::HideReplies => (self.pane.selected_msgs, self.pane.reply_thread) = (Vec::new(), None),
+            Msg::EndPoll(chat, mid) => self.store.write().end_poll(&chat, &mid),
+            Msg::OpenPollVotes(chat, mid) => {
+                if let Some(w) = self.vote_windows.iter().find(|w| w.2 == mid) {
+                    return window::gain_focus(w.0);
+                }
+                let (id, open) = self.open_child(Size::new(342.0, 563.0));
+                self.vote_windows.push((id, chat, mid));
+                return open;
+            }
+            Msg::OpenMenu(mid) => {
+                self.video.iter_mut().for_each(|v| v.sub = false);
+                (self.audio.sub, self.audio.lang) = (false, false);
+                self.pane.message_menu = Some((mid, self.cursor.get()));
+                self.pane.gallery_menu.clear();
+            }
+            Msg::Select(mids) => self.pane.selected_msgs = mids,
+            Msg::CopySelected(stamp) => {
+                let st = self.store.read();
+                let (msgs, _) = self.timeline(&st);
+                let picked: Vec<&Message> =
+                    msgs.into_iter().filter(|m| self.pane.selected_msgs.contains(&m.id)).collect();
+                let many = picked.len() > 1;
+                let text: Vec<String> = picked.iter().map(|m| copy_text(m, stamp, many)).collect();
+                drop(st);
+                return self.update(UiMessage::Message(Msg::CopyText(text.join("\n"))));
+            }
+            Msg::Click(mid)
+                if !self.mods.shift()
+                    && self.store.read().settings.on("undoOnPendingClick")
+                    && self.queued.iter().any(|q| q.sends.iter().any(|s| s.0 == mid)) =>
+            {
+                return self.update(UiMessage::Composer(composer::Msg::UndoSend));
+            }
+            Msg::Click(mid) => {
+                let picked = self.pane.selected_msgs.contains(&mid);
+                if self.mods.shift() {
+                    let st = self.store.read();
+                    let (msgs, live) = self.timeline(&st);
+                    let at = |id: &str| msgs.iter().position(|m| m.id == id).expect("the message is in the open chat");
+                    let (a, b) = (at(self.pane.msg_anchor.as_deref().unwrap_or(&mid)), at(&mid));
+                    let range = (a.min(b)..=a.max(b)).filter(|&i| live[i]).map(|i| msgs[i].id.clone());
+                    let range: Vec<String> = range.filter(|id| !self.pane.selected_msgs.contains(id)).collect();
+                    drop(st);
+                    self.pane.selected_msgs.extend(range);
+                } else {
+                    match (self.mods.command(), picked) {
+                        (true, false) => self.pane.selected_msgs.push(mid.clone()),
+                        (false, false) => self.pane.selected_msgs = vec![mid.clone()],
+                        (_, true) => self.pane.selected_msgs.retain(|m| *m != mid),
+                    }
+                }
+                self.pane.msg_anchor = Some(mid);
+            }
+            Msg::DoubleClick(mid) => {
+                let st = self.store.read();
+                let action = st.settings.pref("messageDoubleClick");
+                let reactable = st.loaded(&mid).is_some_and(Message::reactable);
+                drop(st);
+                return match action {
+                    1 | 5 if !reactable => Task::none(),
+                    0 => Task::none(),
+                    1 => self.update(UiMessage::Message(Msg::React(mid))),
+                    3 => self.update(UiMessage::Forward(forward::Msg::Open(vec![mid]))),
+                    2 => {
+                        self.pane.selected_msgs = vec![mid.clone()];
+                        self.update(UiMessage::Composer(composer::Msg::StartReply(mid)))
+                    }
+                    4 => self.update(UiMessage::Message(Msg::OpenMenu(mid))),
+                    5 => self.update(self.quick_react(mid)),
+                    n => unreachable!("messageDoubleClick option {n}"),
+                };
+            }
+            Msg::Step(down, extend) => {
+                let st = self.store.read();
+                let (msgs, live) = self.timeline(&st);
+                let live = |i: &usize| live[*i];
+                let picked = |m: &&Message| self.pane.selected_msgs.contains(&m.id);
+                let (first, last) = (msgs.iter().position(picked), msgs.iter().rposition(picked));
+                let extend = extend && last.is_some();
+                let next = match (first.zip(last), down) {
+                    (None, false) => (0..msgs.len()).rev().find(live),
+                    (None, true) => None,
+                    (Some((_, l)), true) => (l + 1..msgs.len()).find(live),
+                    (Some((f, _)), false) if extend => (0..f).rev().find(live),
+                    (Some((_, l)), false) => (0..l).rev().find(live).or(Some(l).filter(live)),
+                };
+                let next = next.map(|i| msgs[i].id.clone());
+                drop(st);
+                match (extend, next) {
+                    (true, Some(mid)) => self.pane.selected_msgs.push(mid),
+                    (true, None) => return Task::none(),
+                    (false, next) => self.pane.selected_msgs = next.into_iter().collect(),
+                }
+                return match self.pane.selected_msgs.last() {
+                    Some(mid) => {
+                        self.pane.timeline.reveal(vlist::key(mid));
+                        locate(format!("msg-{mid}"), self.pane.scroll_id(), true)
+                    }
+                    None => operation::focus("composer-input"),
+                };
+            }
+            Msg::React(mid) => return self.open_emoji(Some((mid, self.cursor.get()))),
+            Msg::ReactAt(mid, at) => return self.open_emoji(Some((mid, at))),
+            Msg::Menu(msg) => {
+                self.pane.message_menu = None;
+                return self.update(*msg);
+            }
+            Msg::CopyText(s) => return iced::clipboard::write(s),
+            Msg::CopyImage(mid, ai) => {
+                let st = self.store.read();
+                let a = &stored(&st, &mid).attachments[ai];
+                let url = a.src_url.clone().expect("an image has a source");
+                let fetch = beeper_core::matrix::media(st.matrix.clone(), url);
+                let decode = async move {
+                    let bytes = fetch.await?;
+                    let decode = move || {
+                        let px = ::image::load_from_memory(&bytes).map_err(|e| e.to_string())?.into_rgba8();
+                        Ok((px.width() as usize, px.height() as usize, px.into_raw()))
+                    };
+                    tokio::task::spawn_blocking(decode).await.expect("image decode task")
+                };
+                return Task::perform(decode, |a0| UiMessage::Message(Msg::ImageFetched(a0)));
+            }
+            Msg::ImageFetched(r) => {
+                let copy = |(width, height, px): (usize, usize, Vec<u8>), c: &mut Option<arboard::Clipboard>| {
+                    let img = arboard::ImageData { width, height, bytes: px.into() };
+                    let c = match c {
+                        Some(c) => c,
+                        None => c.insert(arboard::Clipboard::new().map_err(|e| e.to_string())?),
+                    };
+                    c.set_image(img).map_err(|e| e.to_string())
+                };
+                if let Err(e) = r.and_then(|b| copy(b, &mut self.image_clipboard)) {
+                    eprintln!("copy image failed: {e}");
+                    self.status_banner = tr("Couldn't copy the image").into();
+                }
+            }
+            Msg::CopyLink(url) => {
+                self.status_banner = tr("Copied to clipboard!").into();
+                return iced::clipboard::write(url);
+            }
+            Msg::GoTo(chat, mid) => {
+                let main = window::gain_focus(self.main_window.expect("the main window is open"));
+                return Task::batch([self.update(UiMessage::JumpTo(chat, mid)), main]);
+            }
+            Msg::Download(mid, only) => {
+                let st = self.store.read();
+                let m = &stored(&st, &mid);
+                let files: Vec<(String, String)> = m
+                    .attachments
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| only.is_none_or(|o| o == *i))
+                    .map(|(_, a)| {
+                        let name = a.file_name.clone().expect("an attachment has a file name");
+                        (a.src_url.clone().expect("an attachment has a source"), name)
+                    })
+                    .collect();
+                let client = st.matrix.clone();
+                self.status_banner = trf("Downloading %s", &[&files[0].1]);
+                self.sticky_banner = Some(self.status_banner.clone());
+                let (dir, ask) = (downloads_dir(&st.settings), st.settings.on("alwaysAskDownload"));
+                return Task::perform(
+                    async move {
+                        let mut last = String::new();
+                        for (url, name) in files {
+                            let name = safe_file_name(&name);
+                            if name.trim_matches('.').is_empty() {
+                                return Err(format!("bad file name {name:?}"));
+                            }
+                            // Desktop's `always_ask_download_location`: the save dialog picks each path.
+                            let path = match ask {
+                                true => {
+                                    let save = portal::Pick::Save(name.clone());
+                                    let picked = portal::open_files(portal::PORTAL.into(), tr("Save").into(), save);
+                                    match picked.await?.into_iter().next() {
+                                        Some(path) => path,
+                                        None => continue,
+                                    }
+                                }
+                                false => {
+                                    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                                    unused_path(&dir, &name)
+                                }
+                            };
+                            let bytes = beeper_core::matrix::media(client.clone(), url).await?;
+                            std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+                            last = path.file_name().expect("a file path").to_string_lossy().into_owned();
+                        }
+                        Ok(last)
+                    },
+                    |a0| UiMessage::Message(Msg::Downloaded(a0)),
+                );
+            }
+            Msg::Downloaded(r) => {
+                self.status_banner = match r {
+                    Ok(name) => trf("Downloaded %s", &[&name]),
+                    Err(e) => trf("Download failed: %s", &[&e]),
+                }
+            }
+            Msg::AskDelete(mids) => {
+                (self.confirm, self.delete_target) = (Some(ASK_DELETE_MESSAGE), Some(mids.join(" ")))
+            }
+            Msg::RetrySend(id) => self.store.write().retry_send(&id),
+            Msg::RemoveUnsent(id) => self.store.write().remove_unsent(&id),
+            Msg::ToggleClamp(mid) => {
+                if !self.pane.unclamped.remove(&mid) {
+                    self.pane.unclamped.insert(mid);
+                }
+            }
+            Msg::ToggleEditHistory(mid) => {
+                self.pane.expanded_history_msg_id =
+                    (self.pane.expanded_history_msg_id.as_ref() != Some(&mid)).then_some(mid);
+            }
+            Msg::HoverEnter(id) => {
+                self.quick_open &= self.pane.hovered_msg.as_ref() == Some(&id);
+                self.pane.hovered_msg = Some(id);
+            }
+            Msg::ShowQuickReactions => self.quick_open = true,
+            Msg::HoverExit(id) => {
+                if self.pane.hovered_msg.as_ref() == Some(&id) {
+                    self.pane.hovered_msg = None;
+                }
+            }
+        }
+        self.settle()
     }
 }

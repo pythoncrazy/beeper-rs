@@ -1,4 +1,5 @@
 use crate::composer;
+use crate::message;
 use crate::settings;
 use crate::style::{med, mix, txt, CLEAR};
 use crate::{BeeperGuiApp, El, UiMessage};
@@ -338,7 +339,11 @@ impl BeeperGuiApp {
                 }
                 if let Some((mid, _)) = self.pane.emoji.take_if(|pk| pk.react.is_some()).and_then(|pk| pk.react) {
                     let cid = self.pane.selected_chat_id.clone().expect("an open chat");
-                    return self.update(UiMessage::ToggleReaction(cid, mid, DATA.emojis[i].skinned(tone)));
+                    return self.update(UiMessage::Message(message::Msg::ToggleReaction(
+                        cid,
+                        mid,
+                        DATA.emojis[i].skinned(tone),
+                    )));
                 }
                 let paste = iced::widget::text_editor::Edit::Paste(DATA.emojis[i].skinned(tone).into());
                 return self

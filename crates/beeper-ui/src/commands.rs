@@ -5,6 +5,7 @@ use crate::composer;
 use crate::i18n::{tr, trf, trx};
 use crate::media_view;
 use crate::members;
+use crate::message;
 use crate::new_chat;
 use crate::rail;
 use crate::reminders;
@@ -424,7 +425,7 @@ impl BeeperGuiApp {
             // Desktop's `ghe` with the source "Command Bar", only without pending messages.
             let sent = picked.iter().all(|m| !crate::pending(st, m));
             if sent && crate::delete_dialog(st, &picked).is_some() {
-                let ask = UiMessage::AskDeleteMessage(picked.iter().map(|m| m.id.clone()).collect());
+                let ask = UiMessage::Message(message::Msg::AskDelete(picked.iter().map(|m| m.id.clone()).collect()));
                 v.push(cmd(e, tr("Delete…"), Some(ask)).keys(&["unsend", "remove"]));
             } else if !rules.delete && !rules.delete_for_me {
                 let name = crate::network_name(&picked[0].account_id);
@@ -433,12 +434,12 @@ impl BeeperGuiApp {
             if live {
                 v.push(cmd(e, tr("Forward"), hot("Message: Forward")).hotkey("Message: Forward"));
             }
-            v.push(cmd(e, trx("Copy", "message command"), Some(UiMessage::CopySelected(false))));
-            v.push(cmd(e, tr("Copy with timestamps"), Some(UiMessage::CopySelected(true))));
+            v.push(cmd(e, trx("Copy", "message command"), Some(UiMessage::Message(message::Msg::CopySelected(false)))));
+            v.push(cmd(e, tr("Copy with timestamps"), Some(UiMessage::Message(message::Msg::CopySelected(true)))));
             let files: Vec<UiMessage> = picked
                 .iter()
                 .filter(|m| !m.attachments.is_empty() && m.is_deleted != Some(true))
-                .map(|m| UiMessage::Download(m.id.clone(), None))
+                .map(|m| UiMessage::Message(message::Msg::Download(m.id.clone(), None)))
                 .collect();
             if !files.is_empty() {
                 let download = cmd(e, tr("Download attachments"), Some(UiMessage::Commands(files)));
@@ -452,7 +453,7 @@ impl BeeperGuiApp {
                 _ => Some(UiMessage::OpenSubMenu(SubMenu::Links(links.clone()))),
             };
             v.extend(open.map(|open| cmd(e, tr("Open link"), Some(open))));
-            v.push(cmd(e, tr("Unselect"), Some(UiMessage::SelectMessages(Vec::new()))));
+            v.push(cmd(e, tr("Unselect"), Some(UiMessage::Message(message::Msg::Select(Vec::new())))));
             if let ([m], true) = (&picked[..], rules.reply && live) {
                 let reply = cmd(
                     e,
@@ -527,7 +528,11 @@ impl BeeperGuiApp {
             .and_then(|c| c.participants.items.iter().find(|u| u.is_self != Some(true)))
         {
             let copy = |label: &'static str, value: &str| {
-                cmd("User", tr(label).replacen("%s", value, 1), Some(UiMessage::CopyText(value.to_string())))
+                cmd(
+                    "User",
+                    tr(label).replacen("%s", value, 1),
+                    Some(UiMessage::Message(message::Msg::CopyText(value.to_string()))),
+                )
             };
             v.extend(other.full_name.as_deref().map(|n| copy("Copy name: %s", n)));
             v.extend(other.username.as_deref().map(|n| copy("Copy username: %s", n)));
@@ -730,7 +735,11 @@ impl BeeperGuiApp {
         let problem = cmd("", tr("Report a problem"), hot("Report a Problem"));
         v.push(problem.keys(&["bug", "issue", "feedback"]).hotkey("Report a Problem"));
         if let Some(c) = chat {
-            v.push(cmd("Developer", "Copy current chat ID", Some(UiMessage::CopyText(c.id.clone()))));
+            v.push(cmd(
+                "Developer",
+                "Copy current chat ID",
+                Some(UiMessage::Message(message::Msg::CopyText(c.id.clone()))),
+            ));
         }
         v.push(cmd("Developer", "Reload app", hot("Reload App")).hotkey("Reload App"));
         v.push(cmd("Developer", "Relaunch app", Some(UiMessage::Window(windows::Msg::Relaunch))));

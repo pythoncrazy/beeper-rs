@@ -985,7 +985,7 @@ mod tests {
         let id = "msg_1000c".to_string();
         app.store.write().features = beeper_core::features::Flags::free_plan();
         let _ = app.update(UiMessage::SelectChat("!wa_eric:beeper.com".into()));
-        let _ = app.update(UiMessage::OpenMessageMenu(id.clone()));
+        let _ = app.update(UiMessage::Message(crate::message::Msg::OpenMenu(id.clone())));
         let _ = app.update(UiMessage::Voice(Msg::LangSub));
         let mut sim = iced_test::simulator(app.view_main());
         assert!(sim.find("Transcription Language").is_ok() && sim.find("Auto-detect").is_ok());
