@@ -7015,7 +7015,7 @@ fn new_chat_searches_connections_like_desktop() {
     assert!(found(&app, "Connections") && found(&app, "Searching..."));
     let user = |name: &str, phone: &str| serde_json::json!({ "id": name, "mxid": format!("@x_{name}:beeper.local"), "name": name, "identifiers": [format!("tel:{phone}")] });
     let results = [user("Dana One", "+15550111"), user("Dana Two", "+15550111"), user("Ann Dana", "+15550112")];
-    let results: Vec<User> = results.iter().map(new_chat::resolved_user).collect();
+    let results: Vec<User> = results.iter().map(beeper_core::matrix::bridge_user).collect();
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::SearchedUsers(
         "dan".into(),
         account.clone(),
@@ -7051,8 +7051,10 @@ fn new_chat_reaches_matrix_users_like_desktop() {
     let key = "lookup:@vic:beeper.com".to_string();
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::ContactNetwork(key, 0, Ok(Some(vic.clone())))));
     assert!(found(&app, "Vic"));
-    let _ = app
-        .update(UiMessage::NewChat(new_chat::Msg::PickUser(matrix.clone(), Box::new(new_chat::resolved_user(&vic)))));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(
+        matrix.clone(),
+        Box::new(beeper_core::matrix::bridge_user(&vic)),
+    )));
     let n = app.creating_chat.expect("a draft");
     let _ = app.update(UiMessage::NewChat(new_chat::Msg::Start));
     assert_eq!(app.status_banner, "Composing chat...", "the Matrix client creates the direct chat");

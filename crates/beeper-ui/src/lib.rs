@@ -3601,12 +3601,13 @@ impl BeeperGuiApp {
         }
         self.status_banner = tr("Composing chat...").into();
         self.sticky_banner = Some(self.status_banner.clone());
-        let (matrix, provision) = (self.matrix_bridge(&account), self.provision(&account));
+        let bridge = self.bridge(&account);
+        let id = match bridge {
+            beeper_core::matrix::ChatBridge::Matrix(_) => user.id,
+            beeper_core::matrix::ChatBridge::Cloud(_) => phone.unwrap_or(user.id),
+        };
         let done = move |r| UiMessage::NewChat(new_chat::Msg::DmCreated(draft, account.clone(), quote.clone(), r));
-        match matrix {
-            Some(store) => Task::perform(beeper_core::matrix::create_matrix_dm(store, user.id), done),
-            None => Task::perform(beeper_core::matrix::create_dm(provision, phone.unwrap_or(user.id)), done),
-        }
+        Task::perform(bridge.create_dm(id), done)
     }
 
     /// Selects a direct chat and puts a quote before its draft, like Desktop's `replyPrivately`.
@@ -5797,14 +5798,8 @@ impl BeeperGuiApp {
         }
         self.new_chat_search = Some((q.into(), accounts.len(), Vec::new()));
         Task::batch(accounts.into_iter().map(|a| {
-            let found = match self.matrix_bridge(&a) {
-                Some(store) => Task::perform(beeper_core::matrix::search_matrix_users(store, q.into()), |r| r),
-                None => Task::perform(beeper_core::matrix::search_users(self.provision(&a), q.into()), |r| {
-                    r.map(|users| users.iter().map(new_chat::resolved_user).collect())
-                }),
-            };
-            let q = q.to_string();
-            found.map(move |r| UiMessage::NewChat(new_chat::Msg::SearchedUsers(q.clone(), a.clone(), r)))
+            let (found, q) = (self.bridge(&a).search_users(q.into()), q.to_string());
+            Task::perform(found, move |r| UiMessage::NewChat(new_chat::Msg::SearchedUsers(q.clone(), a.clone(), r)))
         }))
     }
 
@@ -5838,20 +5833,16 @@ impl BeeperGuiApp {
             for id in asks.into_iter().filter(|(c, _)| self.can(a, c)).filter_map(|(_, id)| id) {
                 let (key, slot) = (key.to_string(), nets.len());
                 let done = move |r| UiMessage::NewChat(new_chat::Msg::ContactNetwork(key.clone(), slot, r));
-                tasks.push(match self.matrix_bridge(a) {
-                    Some(store) => Task::perform(beeper_core::matrix::resolve_matrix_user(store, id.into()), done),
-                    None => Task::perform(beeper_core::matrix::resolve_identifier(self.provision(a), id.into()), done),
-                });
+                tasks.push(Task::perform(self.bridge(a).resolve_identifier(id.into()), done));
                 nets.push((a.clone(), None));
             }
         }
         (nets, Task::batch(tasks))
     }
 
-    /// Desktop's `isMatrixChat`: for the Matrix account, the store whose Matrix client does the work of the SDK's
-    /// `matrix` pseudo-bridge.
-    fn matrix_bridge(&self, account_id: &str) -> Option<SharedStore> {
-        (account_id == "hungryserv").then(|| self.store.clone())
+    /// The bridge that does the `PlatformAPI` work of a chat account.
+    fn bridge(&self, account_id: &str) -> beeper_core::matrix::ChatBridge {
+        beeper_core::matrix::ChatBridge::of(&self.store, account_id)
     }
 
     /// Whether the bridge of a chat account has a `resolve_identifier` provisioning capability.
@@ -5866,22 +5857,7 @@ impl BeeperGuiApp {
 
     /// The bridge login of a chat account, for the bridge provisioning API.
     fn provision(&self, account_id: &str) -> beeper_core::matrix::Provision {
-        let st = self.store.read();
-        let found = st.bridge_accounts.iter().find(|a| a.account_id == account_id);
-        let (bridge_id, login_id) = found.map_or_else(
-            || {
-                let (b, l) = account_id.split_once('.').unwrap_or((account_id, ""));
-                (b.to_string(), l.to_string())
-            },
-            |a| (a.bridge_id.clone(), a.login_id.clone()),
-        );
-        beeper_core::matrix::Provision {
-            homeserver: st.beeper_state.homeserver.clone(),
-            access_token: st.beeper_state.access_token.clone(),
-            user_id: st.beeper_state.user_id.clone(),
-            bridge_id,
-            login_id,
-        }
+        self.store.read().provision(account_id)
     }
 
     fn fail(&mut self, t: Toast) {
