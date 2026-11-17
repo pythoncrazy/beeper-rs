@@ -7282,6 +7282,39 @@ fn empty_new_chat_drafts_go_like_desktop() {
     assert_eq!(app.new_chats.len(), 1, "a draft with a person stays");
 }
 
+/// Desktop's `profileLink`: the network line of a DM with a profile URL opens the profile.
+#[test]
+fn chat_info_opens_the_profile_like_desktop() {
+    let mut app = demo_app("profile-link");
+    let chat = {
+        let mut st = app.store.write();
+        let i = st
+            .chats
+            .iter()
+            .position(|c| c.chat_type == "single" && crate::profile_link(c).is_none() && c.account_id != "hungryserv");
+        let i = i.expect("a DM");
+        let account = st.bridge_accounts.iter().find(|b| account_network(&b.account_id).kind == NetworkKind::Instagram);
+        let account = account.expect("an Instagram account").account_id.clone();
+        st.update_chat(i, |c| {
+            c.account_id = account;
+            let other = c.participants.items.iter_mut().find(|u| u.is_self != Some(true)).expect("the other person");
+            other.username = Some("arnayb_".into());
+        });
+        st.chats[i].id.clone()
+    };
+    let _ = app.update(UiMessage::SelectChat(chat));
+    let mut sim = tall(app.view_info());
+    let _ = sim.click("Instagram").expect("the network link");
+    let opened: Vec<String> = sim
+        .into_messages()
+        .filter_map(|m| match m {
+            UiMessage::OpenUrl(u) => Some(u),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(opened, ["https://www.instagram.com/arnayb_/"]);
+}
+
 /// A bridge can send media without a file name or body: the timeline shows it, and a file row says "Attachment" like
 /// Desktop.
 #[test]
