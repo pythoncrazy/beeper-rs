@@ -616,6 +616,9 @@ fn ghost(p: &Palette, r: f32) -> impl Fn(&Theme, button::Status) -> button::Styl
 }
 
 /// A row of a dropdown or context menu. Without a message it is greyed out.
+/// How long Desktop's flyover takes to reveal all its items, one after another.
+const FLYOVER_REVEAL: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Desktop's `--animation-timing`, in seconds.
 const HOVER_FADE: f32 = 0.1;
 
@@ -2310,6 +2313,9 @@ pub struct Pane {
     /// The messages whose spoilers were clicked open (Desktop's `.spoiler.clicked`).
     pub spoilers: HashSet<String>,
     pub hovered_msg: Option<String>,
+    /// When `hovered_msg` began, and when the pointer entered its flyover, for the flyover's staggered reveal.
+    pub hover_msg_at: Option<std::time::Instant>,
+    pub flyover_at: Option<std::time::Instant>,
     /// The selected emoji autocomplete row.
     pub suggest: usize,
     pub history: History,
@@ -4732,7 +4738,10 @@ impl BeeperGuiApp {
             || self.enter_key.busy
             || self.nickname_windows.iter().any(|d| d.saving)
             || self.hover_fading()
-            || self.sidebar_progress().is_some();
+            || self.sidebar_progress().is_some()
+            || self
+                .panes()
+                .any(|p| [p.hover_msg_at, p.flyover_at].iter().flatten().any(|t| t.elapsed() < FLYOVER_REVEAL));
         let tab_at = self.media_window.as_ref().and_then(|w| w.tab_at);
         let animated = animated || tab_at.is_some_and(|(_, at)| at.elapsed().as_secs_f32() < TAB_SLIDE);
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
