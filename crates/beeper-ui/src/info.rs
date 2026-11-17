@@ -124,6 +124,23 @@ pub(crate) fn info_menu(
             Some((tr("Remove Bookmark").into(), Some(remove))),
         ];
     }
+    // Desktop's `b2t` menu of a mention: message the person, and open their profile on the network.
+    if let Some((cid, uid)) = key.strip_prefix("mention:").and_then(|k| k.split_once(' ')) {
+        let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
+        let u = c.participants.items.iter().find(|u| u.id == uid);
+        let username = u.and_then(|u| u.username.as_deref()).map(|n| n.trim_start_matches('@'));
+        let name = username.or(u.and_then(|u| u.full_name.as_deref())).unwrap_or(uid);
+        let send = u.map(|_| UiMessage::Members(members::Msg::Message(cid.into(), uid.into())));
+        let network = crate::network_name(&c.account_id);
+        let open = u.and_then(|u| crate::user_profile_link(&c.account_id, u)).map(|url| {
+            let label = match username {
+                Some(n) => trf("Open %1$s on %2$s", &[&format!("@{n}"), &network]),
+                None => trf("Open in %s", &[&network]),
+            };
+            Some((label, Some(UiMessage::OpenUrl(url))))
+        });
+        return [Some(Some((format!("Message {name}"), send))), open].into_iter().flatten().collect();
+    }
     if let Some((cid, uid)) = key.strip_prefix("member:").and_then(|k| k.split_once(' ')) {
         let c = &st.chats[st.resolve_chat_idx(cid).expect("chat exists")];
         let u = c.participants.items.iter().find(|u| u.id == uid).expect("a member of the chat");

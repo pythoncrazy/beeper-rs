@@ -778,6 +778,23 @@ fn failed_sends_notify_like_desktop() {
     assert!(app.notified.contains(&key), "a failed send notifies");
 }
 
+/// Desktop's `b2t`: a click on a mention of someone else opens Message and the profile on the network.
+#[test]
+fn mention_menu_like_desktop() {
+    let mut app = demo_app("mention-menu");
+    let (cid, user) = {
+        let st = app.store.read();
+        let c = st.chats.iter().find(|c| c.chat_type == "group").expect("a group");
+        (c.id.clone(), c.participants.items.iter().find(|u| u.is_self != Some(true)).expect("a member").clone())
+    };
+    let _ = app.update(UiMessage::OpenUrl(format!("{}{cid} {}", crate::MENTION, user.id)));
+    let key = format!("mention:{cid} {}", user.id);
+    assert_eq!(app.chat_menu.as_ref().map(|m| m.0.as_str()), Some(key.as_str()));
+    let items = info::info_menu(&app.store.read(), &key, |_| true);
+    let first = items[0].as_ref().expect("an item");
+    assert!(first.0.starts_with("Message ") && first.1.is_some(), "{}", first.0);
+}
+
 #[test]
 fn closing_the_main_window_hides_it_like_desktop() {
     let mut app = demo_app("closehide");

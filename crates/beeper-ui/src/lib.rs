@@ -532,10 +532,15 @@ fn email(word: &str) -> Option<&str> {
 
 /// Desktop's `userProfileLink`: the web profile of the other person of a chat, on the networks that have one.
 fn profile_link(c: &Chat) -> Option<String> {
-    use beeper_core::models::NetworkKind::*;
     let u = c.participants.items.iter().find(|u| u.is_self != Some(true)).filter(|_| c.chat_type == "single")?;
+    user_profile_link(&c.account_id, u)
+}
+
+/// Desktop's `getUserProfileLink` of user `u` of account `account_id`.
+fn user_profile_link(account_id: &str, u: &User) -> Option<String> {
+    use beeper_core::models::NetworkKind::*;
     let name = u.username.as_deref().unwrap_or_default();
-    Some(match account_network(&c.account_id).kind {
+    Some(match account_network(account_id).kind {
         TwitterX => format!("https://x.com/{name}"),
         Telegram => format!("https://t.me/{name}"),
         Instagram => format!("https://www.instagram.com/{name}/"),
@@ -1497,6 +1502,8 @@ fn sender_first_name(u: &User) -> String {
 
 /// The link of a spoiler in a message: a click shows the spoilers of the message.
 pub(crate) const SPOILER: &str = "beeper-spoiler:";
+/// The link of a mention of another person in a message: the chat, a space and the user ID.
+pub(crate) const MENTION: &str = "beeper-mention:";
 
 /// Desktop's `messageSender`: the name of the sender's current member, or the name that came with the message.
 fn sender_label(chat: &Chat, m: &Message) -> String {
@@ -1558,7 +1565,7 @@ const CARD_FACE_IN: f32 = 88.0 / 3.0;
 /// The height of a user card with only its avatar and name.
 const CARD_H: f32 = 88.0 + 8.0 + 18.0 + 8.0;
 /// The Chat Info context menus: the identity header, the title, a member, a bookmark and a contact detail.
-const INFO_MENUS: [&str; 5] = ["info:", "copy:", "member:", "bookmark:", "contact:"];
+const INFO_MENUS: [&str; 6] = ["info:", "copy:", "member:", "bookmark:", "contact:", "mention:"];
 
 /// Desktop's `setPersonalRoomName` gate: the feature is on or the chat has a personal name or photo, and the chat
 /// is a Matrix room that is not merged (`canSetPersonalOverrides`, `personalOverridesApply`).
@@ -4131,6 +4138,10 @@ impl BeeperGuiApp {
             UiMessage::OpenUrl(url) if url.starts_with(SPOILER) => {
                 self.pane.spoilers.insert(url[SPOILER.len()..].to_string());
             }
+            // Desktop's `b2t`: a click on a mention opens its menu.
+            UiMessage::OpenUrl(url) if url.starts_with(MENTION) => {
+                self.chat_menu = Some((format!("mention:{}", &url[MENTION.len()..]), self.cursor.get()));
+            }
             UiMessage::OpenUrl(url) => {
                 let (cmd, args) = open_url_or_path_command(self.os, &url);
                 let open = move || match std::process::Command::new(&cmd).args(args).status() {
@@ -4796,7 +4807,8 @@ impl BeeperGuiApp {
         let known = |c: &str| {
             let chat = c.strip_prefix("info:").or(c.strip_prefix("copy:")).unwrap_or(c);
             let chat = chat.split_once('\n').map_or(chat, |k| k.0);
-            let pair = ["member:", "bookmark:", "contact:", "card:"].iter().find_map(|k| chat.strip_prefix(k));
+            let pair =
+                ["member:", "bookmark:", "contact:", "card:", "mention:"].iter().find_map(|k| chat.strip_prefix(k));
             let chat = pair.map_or(chat, |k| k.split_once(' ').map_or(k, |k| k.0));
             c == RAIL_MORE
                 || c == SIDEBAR_MENU
