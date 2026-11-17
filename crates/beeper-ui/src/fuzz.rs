@@ -7243,3 +7243,22 @@ fn matrix_contacts_start_chats_like_desktop() {
     let user = nets.iter().find(|(a, _)| *a == account).and_then(|(_, u)| u.clone().flatten()).expect("a user");
     assert_eq!((user.id.as_str(), user.full_name.as_deref()), ("@signal_alyson:beeper.local", Some("Alyson Chang")));
 }
+
+/// Desktop's `isDraftEmpty`: leaving a New Chat draft without people or text removes it, and a draft with a person stays.
+#[test]
+fn empty_new_chat_drafts_go_like_desktop() {
+    let mut app = demo_app("empty-drafts");
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    assert_eq!(app.new_chats.len(), 1);
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    assert!(app.new_chats.is_empty(), "the empty draft goes");
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    assert_eq!(app.new_chats.len(), 1, "a new draft replaces an empty one");
+    let account =
+        app.store.read().chats.iter().find(|c| c.account_id != "hungryserv").expect("a chat").account_id.clone();
+    let user = User { id: "@sam:x".into(), full_name: Some("Sam".into()), ..Default::default() };
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(account, Box::new(user))));
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    assert_eq!(app.new_chats.len(), 1, "a draft with a person stays");
+}

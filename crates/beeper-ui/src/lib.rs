@@ -3320,7 +3320,7 @@ impl BeeperGuiApp {
     }
 
     pub fn select_chat(&mut self, chat_id: &str) {
-        self.creating_chat = None;
+        self.leave_draft();
         self.join_matrix_mode = false;
         if !self.cycling {
             self.push_history(chat_id);
@@ -4089,7 +4089,8 @@ impl BeeperGuiApp {
                 } else if self.join_matrix_mode {
                     self.join_matrix_mode = false;
                 } else if self.creating_chat.is_some() {
-                    (self.creating_chat, self.pane.selected_chat_id) = (None, None);
+                    self.leave_draft();
+                    self.pane.selected_chat_id = None;
                 } else if self.pane.reply_to_message_id.is_some() {
                     self.pane.reply_to_message_id = None;
                 } else if self.pane.editing_message_id.is_some() {

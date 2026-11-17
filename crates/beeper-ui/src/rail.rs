@@ -28,7 +28,7 @@ impl BeeperGuiApp {
                 self.chat_menu = None;
                 self.active_tab = InboxTab::AllChats;
                 self.selected_account_filter = acc;
-                self.creating_chat = None;
+                self.leave_draft();
             }
             Msg::SetOrder(order) => {
                 self.patch_settings(|s| s.spaces_order = order);
