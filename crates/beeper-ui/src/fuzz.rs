@@ -8132,7 +8132,7 @@ fn sign_in_keyboard_and_errors_like_desktop() {
     let id = app.login_window.expect("the sign-in window");
     let key = |app: &mut BeeperGuiApp, k: Named, mods: Modifiers| {
         let _ = app.update(UiMessage::WindowKey(id, Key::Named(k), mods));
-        app.login.focus.map(|i| [Stop::Menu, Stop::Terms, Stop::Google, Stop::Email][i])
+        app.login.focus.get()
     };
     let tabs: Vec<_> = (0..5).map(|_| key(&mut app, Named::Tab, Modifiers::empty())).collect();
     let order = [Stop::Menu, Stop::Terms, Stop::Google, Stop::Email, Stop::Menu].map(Some);
@@ -8146,7 +8146,11 @@ fn sign_in_keyboard_and_errors_like_desktop() {
     assert!(app.login.toast.is_none(), "the close button of the toast hides it");
     key(&mut app, Named::Tab, Modifiers::empty());
     key(&mut app, Named::Enter, Modifiers::empty());
-    assert_eq!((app.login.screen, app.login.focus), (Screen::Email, Some(1)), "Enter opens the email form");
+    assert_eq!(
+        (app.login.screen, app.login.focus.get()),
+        (Screen::Email, Some(Stop::Field)),
+        "Enter opens the email form"
+    );
     key(&mut app, Named::Enter, Modifiers::empty());
     assert_eq!(app.login.toast.as_deref(), Some("Please enter your email."));
     let _ = app.update(LoginMsg::Email("foo".into()).into());

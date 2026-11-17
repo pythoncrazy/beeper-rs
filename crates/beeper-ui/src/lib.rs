@@ -16,6 +16,7 @@ mod deeplink;
 mod dialogs;
 pub mod emoji;
 mod enter_key;
+mod focus;
 mod format;
 mod forward;
 mod gallery;
@@ -371,6 +372,8 @@ pub enum UiMessage {
     Blocking(blocking::Msg),
     /// Desktop's account nicknames and the Account Nickname window.
     Nickname(nickname::Msg),
+    /// The keyboard focus of the controls of a window: Tab, and the mouse press that ends it.
+    Focus(focus::Msg),
     Capabilities(String, Result<serde_json::Value, String>),
     /// Desktop's Settings window.
     Settings(settings::Msg),
@@ -2387,6 +2390,8 @@ pub struct Pane {
     pub selected_msgs: Vec<String>,
     pub msg_anchor: Option<String>,
     pub show_attach_menu: bool,
+    /// The button of the composer row with the keyboard focus, which Tab gives it.
+    pub key_focus: focus::Focus<composer::Stop>,
     /// Desktop's `visiblePicker`.
     pub picker: Option<Picker>,
     /// The sticker packs of the open sticker picker, until they load, and its selected tab: Recent (`None`) or a pack.
@@ -2702,6 +2707,8 @@ pub struct BeeperGuiApp {
     pub show_command_palette: bool,
     pub active_settings_tab: SettingsTab,
     pub settings_query: String,
+    /// The control of the Settings window with the keyboard focus, which Tab gives it.
+    pub settings_keys: focus::Focus<settings::Stop>,
     /// A settings slider being dragged, and its value, which Desktop saves when the drag ends.
     pub settings_slider: Option<(&'static str, u8)>,
     /// The focused row of the settings search results, and the last opened one.
@@ -2780,6 +2787,8 @@ pub struct BeeperGuiApp {
     pub pin_hover: Option<String>,
     pub pin_drag: Option<PinDrag>,
     pub main_window: Option<window::Id>,
+    /// The chat window whose message `update` handles, with the pane of the window in `pane`.
+    swapped: Option<window::Id>,
     pub settings_window: Option<window::Id>,
     settings_size: Size,
     pub login_window: Option<window::Id>,
@@ -2997,6 +3006,7 @@ impl BeeperGuiApp {
             show_command_palette: false,
             active_settings_tab: SettingsTab::General,
             settings_query: String::new(),
+            settings_keys: Default::default(),
             settings_slider: None,
             settings_focus: 0,
             settings_pick: None,
@@ -3044,6 +3054,7 @@ impl BeeperGuiApp {
             rail_drag: None,
             rail_press: None,
             main_window: None,
+            swapped: None,
             settings_window: None,
             settings_size: SETTINGS_SIZE,
             login_window: None,
@@ -3584,7 +3595,8 @@ impl BeeperGuiApp {
 
     pub fn select_chat(&mut self, chat_id: &str) {
         self.leave_draft();
-        self.join_matrix_mode = false;
+        // Desktop's `setSelectedThread` gives the keyboard to the composer (`focusMessageInput`).
+        (self.join_matrix_mode, self.pane.key_focus) = (false, Default::default());
         if !self.cycling {
             self.push_history(chat_id);
         }
@@ -4025,12 +4037,17 @@ impl BeeperGuiApp {
                 | UiMessage::Composer(composer::Msg::RemoveLinkPreview(_))
         );
         self.pane.thread_focus &= !activates(&msg);
+        // A click in the chat, or a key that types into the composer, takes the keyboard from the composer's buttons.
+        if activates(&msg) || matches!(msg, UiMessage::Composer(composer::Msg::Type(_))) {
+            self.pane.key_focus.set(None);
+        }
         match msg {
             // Each domain handles its own messages in its module.
             UiMessage::Accounts(msg) => return self.accounts(msg),
             UiMessage::Networks(msg) => return self.networks(msg),
             UiMessage::Blocking(msg) => return self.blocking(msg),
             UiMessage::Nickname(msg) => return self.nickname(msg),
+            UiMessage::Focus(msg) => return self.key_focus(msg),
             UiMessage::ChatList(msg) => return self.chat_list(msg),
             UiMessage::ChatTheme(msg) => return self.chat_theme(msg),
             UiMessage::CommandBar(msg) => return self.command_bar(msg),
@@ -4193,6 +4210,13 @@ impl BeeperGuiApp {
                 return self.update(UiMessage::Composer(composer::Msg::Type(text)));
             }
             UiMessage::WindowText(id, text) if Some(id) == self.login_window => return self.login_text(&text),
+            // Chromium's Space on a focused button or `role="button"` row presses it.
+            UiMessage::WindowText(id, text) if text == " " && Some(id) == self.settings_window => {
+                return self.settings_press();
+            }
+            UiMessage::WindowText(id, text) if text == " " && self.nickname_windows.iter().any(|d| d.id == id) => {
+                return self.nickname_press(id);
+            }
             UiMessage::WindowText(..) => {}
             // Desktop's menu roles "close" and "minimize", whose accelerators work while the menu bar hides.
             UiMessage::WindowKey(id, Key::Character(c), mods)
@@ -4217,6 +4241,9 @@ impl BeeperGuiApp {
                 if Some(id) == self.settings_window {
                     return self.settings_key(key, mods);
                 }
+                if self.nickname_windows.iter().any(|d| d.id == id) {
+                    return self.nickname_key(id, key, mods);
+                }
                 if self.label_asking(id) && key == Key::Named(Named::Escape) {
                     self.confirm = None;
                     return Task::none();
@@ -4234,7 +4261,6 @@ impl BeeperGuiApp {
                     || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
                     || self.group_window.as_ref().is_some_and(|d| d.id == id)
                     || Some(id) == self.blocked_window
-                    || self.nickname_windows.iter().any(|d| d.id == id)
                     || self.add_accounts.iter().any(|a| a.id == id)
                 {
                     return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
@@ -4518,7 +4544,9 @@ impl BeeperGuiApp {
                     return self.handle(*msg);
                 }
                 self.swap_window(id);
+                let outer = self.swapped.replace(id);
                 let task = self.handle(*msg);
+                self.swapped = outer;
                 self.swap_window(id);
                 let task = task.map(move |m| UiMessage::InWindow(id, Box::new(m)));
                 // A chat window closes when it leaves its chat; a space window stays on its space.
@@ -4621,6 +4649,25 @@ impl BeeperGuiApp {
                         Key::Named(Named::Escape) => {
                             self.pane.suggest_hidden = Some(self.pane.composer.text());
                             return Task::none();
+                        }
+                        _ => {}
+                    }
+                }
+                // Desktop's `KeyboardHandlers` and Chromium: Tab and Shift+Tab move through the composer row, and
+                // Enter presses its focused button.
+                if self.composer_takes_keys() && (mods - Modifiers::SHIFT).is_empty() {
+                    match key.as_ref() {
+                        Key::Named(Named::Tab) => {
+                            let back = mods.shift();
+                            let window = self.swapped.or(self.main_window).expect("the window of the pane");
+                            return focus::caret(window, self.composer_id())
+                                .map(move |at| UiMessage::Composer(composer::Msg::Tab(back, at)));
+                        }
+                        Key::Named(Named::Enter) if mods.is_empty() => {
+                            if let Some(press) = self.composer_press() {
+                                self.pane.key_focus.set(None);
+                                return self.update(press);
+                            }
                         }
                         _ => {}
                     }
@@ -4897,6 +4944,13 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
+        // Chromium moves the keyboard focus away from the focused control on a mouse press.
+        let focus_press = self.key_focused().then(|| {
+            iced::event::listen_with(|e, _, id| match e {
+                Event::Mouse(mouse::Event::ButtonPressed(_)) => Some(UiMessage::Focus(focus::Msg::Press(id))),
+                _ => None,
+            })
+        });
         let pin_press = (self.pin_hover.is_some() && self.pin_drag.is_none()).then(|| {
             iced::event::listen_with(|e, _, _| match e {
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
@@ -5034,6 +5088,7 @@ impl BeeperGuiApp {
                 .chain(drag)
                 .chain(thread_drag)
                 .chain(rail_press)
+                .chain(focus_press)
                 .chain(rail_drag)
                 .chain(pin_press)
                 .chain(pin_drag)
@@ -5065,7 +5120,7 @@ impl BeeperGuiApp {
     pub fn view(&self, id: window::Id) -> El<'_> {
         let arrow = !self.store.read().settings.on("pointerCursor");
         self.drawing.set(self.chat_windows.iter().any(|w| w.0 == id).then_some(id));
-        let el = cursor::root(self.view_window(id), arrow, &self.cursor);
+        let el = cursor::root(self.view_window(id), arrow, &self.cursor, id);
         self.drawing.set(None);
         let el = match self.chat_windows.iter().any(|w| w.0 == id) {
             true => Element::from(el).map(move |m| UiMessage::InWindow(id, Box::new(m))),
