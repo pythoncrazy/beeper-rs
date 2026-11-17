@@ -2741,55 +2741,94 @@ impl<'a> WsFrame<'a> {
     }
 }
 
-/// Desktop's `handleClientMessage`: applies a `subscriptions.set` command, and returns its `subscriptions.updated`
-/// acknowledgement or an `error` frame. The chat IDs are sorted and unique, and `*` stands for all chats.
-/// Handles a `subscriptions.set` command: sets the chats of `subs` and the `app.state` subscription of `app`, and returns
-/// the reply.
+/// JavaScript's truthiness of a JSON value.
+fn truthy(v: &Value) -> bool {
+    match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64() != Some(0.0),
+        Value::String(s) => !s.is_empty(),
+        _ => true,
+    }
+}
+
+/// The message of the first issue of Desktop's zod schema of `subscriptions.set` (`ql`), a `.strict()` object of
+/// `type`, an optional string `requestID`, an optional array of strings `chatIDs` and an optional `.strict()` object
+/// `app` with a boolean `state`, and then its refinement on `*`.
+fn subscription_issue(o: &serde_json::Map<String, Value>) -> Option<String> {
+    let expected = |what: &str, v: &Value| format!("Expected {what}, received {}", zod_type(Some(v)));
+    let unknown = |o: &serde_json::Map<String, Value>, known: &[&str]| {
+        let extra: Vec<String> = o.keys().filter(|k| !known.contains(&k.as_str())).map(|k| format!("'{k}'")).collect();
+        (!extra.is_empty()).then(|| format!("Unrecognized key(s) in object: {}", extra.join(", ")))
+    };
+    if let Some(r) = o.get("requestID").filter(|r| !r.is_string()) {
+        return Some(expected("string", r));
+    }
+    match o.get("chatIDs") {
+        None => {}
+        Some(Value::Array(ids)) => {
+            if let Some(id) = ids.iter().find(|id| !id.is_string()) {
+                return Some(expected("string", id));
+            }
+        }
+        Some(ids) => return Some(expected("array", ids)),
+    }
+    match o.get("app") {
+        None => {}
+        Some(Value::Object(app)) => match app.get("state") {
+            None => return Some("Required".into()),
+            Some(state) if !state.is_boolean() => return Some(expected("boolean", state)),
+            _ => {
+                if let Some(message) = unknown(app, &["state"]) {
+                    return Some(message);
+                }
+            }
+        },
+        Some(app) => return Some(expected("object", app)),
+    }
+    if let Some(message) = unknown(o, &["type", "requestID", "chatIDs", "app"]) {
+        return Some(message);
+    }
+    let ids = o.get("chatIDs").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+    (ids.len() > 1 && ids.iter().any(|id| id == "*")).then(|| "chatIDs cannot combine '*' with specific IDs".into())
+}
+
+/// Desktop's `handleClientMessage`: applies a `subscriptions.set` command to the chats of `subs` and the `app.state`
+/// subscription of `app_on`, and returns its `subscriptions.updated` acknowledgement or an `error` frame. The chat IDs
+/// are sorted and unique, and `*` stands for all chats.
 fn subscribe(subs: &RwLock<Vec<String>>, app_on: &std::sync::atomic::AtomicBool, payload: &[u8]) -> Value {
+    // Desktop's `sendError`: `{type, requestID?, code, message}`, with a request ID that JavaScript finds truthy.
     let error = |code: &str, message: &str, request: Option<&Value>| {
-        let mut e = json!({ "type": "error", "code": code, "message": message });
-        if let Some(r) = request {
+        let mut e = json!({ "type": "error" });
+        if let Some(r) = request.filter(|r| truthy(r)) {
             e["requestID"] = r.clone();
         }
+        (e["code"], e["message"]) = (code.into(), message.into());
         e
     };
-    let Ok(v) = serde_json::from_slice::<Value>(payload) else {
+    let Ok(v) = serde_json::from_str::<Value>(&String::from_utf8_lossy(payload)) else {
         return error("INVALID_PAYLOAD", "Invalid JSON payload", None);
     };
     let Some(command) = v.as_object().filter(|o| o.contains_key("type")) else {
         return error("INVALID_PAYLOAD", "Payload must be an object with a type field", None);
     };
     if v["type"] != "subscriptions.set" {
-        let kind = v["type"].as_str().map_or_else(|| v["type"].to_string(), str::to_string);
+        let kind = js_string(Some(&v["type"]));
         return error("INVALID_COMMAND", &format!("Unsupported command type: {kind}"), None);
     }
-    let request = v.get("requestID").filter(|r| r.is_string());
-    let invalid = |message: &str| error("INVALID_PAYLOAD", message, request);
-    if let Some(k) = command.keys().find(|k| !["type", "requestID", "chatIDs", "app"].contains(&k.as_str())) {
-        return invalid(&format!("Unrecognized key(s) in object: '{k}'"));
+    if let Some(message) = subscription_issue(command) {
+        return error("INVALID_PAYLOAD", &message, v.get("requestID"));
     }
-    if v.get("requestID").is_some_and(|r| !r.is_string()) {
-        return invalid("requestID must be a string");
-    }
-    let ids: Option<Vec<String>> = match &v["chatIDs"] {
-        Value::Null => Some(Vec::new()),
-        ids => serde_json::from_value(ids.clone()).ok(),
-    };
-    let Some(mut ids) = ids else { return invalid("chatIDs must be an array of strings") };
-    if ids.contains(&"*".to_string()) && ids.len() > 1 {
-        return invalid("chatIDs cannot combine '*' with specific IDs");
-    }
-    let app = match &v["app"] {
-        Value::Null => false,
-        Value::Object(a) if a.len() == 1 && a["state"].is_boolean() => a["state"] == true,
-        _ => return invalid("app must be an object with a boolean state"),
-    };
+    let mut ids: Vec<String> = serde_json::from_value(v.get("chatIDs").cloned().unwrap_or(json!([])))
+        .expect("the chat IDs passed their schema");
+    let app = v["app"]["state"] == true;
     ids.sort_unstable();
     ids.dedup();
-    let mut ack = json!({ "type": "subscriptions.updated", "chatIDs": ids, "app": { "state": app } });
-    if let Some(r) = request {
+    let mut ack = json!({ "type": "subscriptions.updated" });
+    if let Some(r) = v.get("requestID").filter(|r| truthy(r)) {
         ack["requestID"] = r.clone();
     }
+    (ack["chatIDs"], ack["app"]) = (json!(ids), json!({ "state": app }));
     *subs.write().unwrap() = ids;
     app_on.store(app, std::sync::atomic::Ordering::Relaxed);
     ack
@@ -2827,10 +2866,11 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
                 0x1 => {
                     let before = reader_app.load(std::sync::atomic::Ordering::Relaxed);
                     let reply = subscribe(&reader_subs, &reader_app, &payload);
-                    out_tx.send(Some(frame(&reply))).ok();
+                    // Desktop's `applySubscriptionUpdate` sends the app state snapshot before its acknowledgement.
                     if !before && reader_app.load(std::sync::atomic::Ordering::Relaxed) {
                         out_tx.send(None).ok();
                     }
+                    out_tx.send(Some(frame(&reply))).ok();
                 }
                 0x9 | 0xA => {}
                 _ => return (None, reader),
@@ -2847,7 +2887,15 @@ async fn serve_ws(mut stream: TcpStream, leftover: Vec<u8>, msg: HttpMessage, st
         loop {
             let (opcode, bytes) = tokio::select! {
                 ev = events.recv() => {
-                    let Ok(ev) = ev else { return None };
+                    // A client that falls behind the events loses them, so Desktop closes it like a client whose
+                    // buffer passes 5 MB.
+                    let ev = match ev {
+                        Ok(ev) => ev,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            return Some((1008, "Client is too slow".into()));
+                        }
+                        Err(_) => return None,
+                    };
                     // Desktop's `processAppStateEvent`: a changed setup state goes to the `app.state` subscribers, with
                     // its verification when the verification changed.
                     if ev.event_type == "setup.updated" {
@@ -2977,5 +3025,45 @@ fn without_times(v: &Value) -> Value {
         }
         Value::Array(a) => Value::Array(a.iter().map(without_times).collect()),
         v => v.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Desktop's `handleClientMessage` answers the first zod issue of `subscriptions.set`, keeps the request ID that
+    /// JavaScript finds truthy, and writes its frames in its key order.
+    #[test]
+    fn subscriptions_are_checked_like_desktop() {
+        let (subs, app) = (RwLock::new(Vec::new()), std::sync::atomic::AtomicBool::new(false));
+        let reply = |payload: &str| subscribe(&subs, &app, payload.as_bytes()).to_string();
+        let error = |request: &str, message: &str| {
+            format!(r#"{{"type":"error",{request}"code":"INVALID_PAYLOAD","message":"{message}"}}"#)
+        };
+        let set = |rest: &str| format!(r#"{{"type":"subscriptions.set",{rest}}}"#);
+        let cases = [
+            (set(r#""requestID":5"#), error(r#""requestID":5,"#, "Expected string, received number")),
+            (set(r#""requestID":"","chatIDs":"x""#), error("", "Expected array, received string")),
+            (set(r#""requestID":"r","chatIDs":[1]"#), error(r#""requestID":"r","#, "Expected string, received number")),
+            (set(r#""chatIDs":null"#), error("", "Expected array, received null")),
+            (set(r#""app":true"#), error("", "Expected object, received boolean")),
+            (set(r#""app":{}"#), error("", "Required")),
+            (set(r#""app":{"state":"yes"}"#), error("", "Expected boolean, received string")),
+            (set(r#""app":{"state":true,"x":1}"#), error("", "Unrecognized key(s) in object: 'x'")),
+            (set(r#""a":1,"b":2,"chatIDs":["*","x"]"#), error("", "Unrecognized key(s) in object: 'a', 'b'")),
+            (set(r#""chatIDs":["*","x"]"#), error("", "chatIDs cannot combine '*' with specific IDs")),
+        ];
+        for (payload, expected) in cases {
+            assert_eq!(reply(&payload), expected, "{payload}");
+        }
+        let unsupported = r#"{"type":"error","code":"INVALID_COMMAND","message":"Unsupported command type: 1,2"}"#;
+        assert_eq!(reply(r#"{"type":[1,2]}"#), unsupported, "JavaScript's String of the type");
+        let ack = reply(&set(r#""requestID":"r","chatIDs":["b","a","b"],"app":{"state":true}"#));
+        assert_eq!(ack, r#"{"type":"subscriptions.updated","requestID":"r","chatIDs":["a","b"],"app":{"state":true}}"#);
+        assert_eq!(
+            (subs.read().unwrap().clone(), app.load(std::sync::atomic::Ordering::Relaxed)),
+            (vec!["a".into(), "b".into()], true)
+        );
     }
 }

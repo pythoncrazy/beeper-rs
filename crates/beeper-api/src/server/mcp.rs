@@ -15,11 +15,19 @@ static TOOLS: LazyLock<Vec<Value>> =
 const VERSIONS: [&str; 4] = ["2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
 const INSTRUCTIONS: &str = "Access to all chats and messages across networks using Beeper Desktop. Can be used to find, get, send, and manage messages and chats.";
 
+/// An error of the MCP SDK's transport, which writes the JSON with `writeHead`, so without a `Content-Type`.
 fn rpc_error(status: u16, code: i64, message: &str) -> Reply {
-    Ok(json_with(
-        StatusCode(status),
-        &json!({ "jsonrpc": "2.0", "error": { "code": code, "message": message }, "id": null }),
-    ))
+    transport_error(status, &json!({ "jsonrpc": "2.0", "error": { "code": code, "message": message }, "id": null }))
+}
+
+fn transport_error(status: u16, body: &Value) -> Reply {
+    let body = serde_json::to_vec(body).expect("serialize a JSON-RPC error");
+    Ok(Response { status: StatusCode(status), headers: Vec::new(), body })
+}
+
+/// An error of Desktop's Stainless MCP routes, which answer with `res.json` and no `id`.
+fn route_error(status: u16, message: &str) -> Reply {
+    Ok(json_with(StatusCode(status), &json!({ "jsonrpc": "2.0", "error": { "code": -32000, "message": message } })))
 }
 
 /// Desktop's MCP client capabilities (`uh`), which the `capability` and `no_capability` parameters of the MCP URL
@@ -413,8 +421,13 @@ pub(super) fn handle(
     match method {
         "OPTIONS" => return empty(StatusCode::NO_CONTENT, Vec::new()),
         "POST" => {}
-        _ => return rpc_error(405, -32000, "Method not supported"),
+        _ => return route_error(405, "Method not supported"),
     }
+    // Desktop's Stainless route reads the MCP URL before its transport checks the request.
+    let (tools, caps) = match tools(msg) {
+        Ok(found) => found,
+        Err(e) => return route_error(400, &format!("Invalid request: {e}")),
+    };
     let accept = msg.header("accept").unwrap_or_default();
     if !accept.contains("application/json") || !accept.contains("text/event-stream") {
         return rpc_error(
@@ -426,10 +439,6 @@ pub(super) fn handle(
     if !msg.header("content-type").is_some_and(|c| c.contains("application/json")) {
         return rpc_error(415, -32000, "Unsupported Media Type: Content-Type must be application/json");
     }
-    let (tools, caps) = match tools(msg) {
-        Ok(found) => found,
-        Err(e) => return rpc_error(400, -32000, &format!("Invalid request: {e}")),
-    };
     let Ok(body) = serde_json::from_slice::<Value>(&msg.body) else { return rpc_error(400, -32700, "Parse error") };
     let batch = match body {
         Value::Array(all) => all,
@@ -438,7 +447,7 @@ pub(super) fn handle(
     if let Some(bad) = batch.iter().find(|m| !jsonrpc(m)) {
         let data = format!("Invalid JSON-RPC message: {bad}");
         let body = json!({ "jsonrpc": "2.0", "error": { "code": -32700, "message": "Parse error", "data": data }, "id": null });
-        return Ok(json_with(StatusCode::BAD_REQUEST, &body));
+        return transport_error(400, &body);
     }
     let initialize = batch.iter().any(|m| m["method"] == "initialize");
     if initialize && batch.len() > 1 {
