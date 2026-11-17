@@ -2475,6 +2475,9 @@ pub struct BeeperGuiApp {
     pub space_view_account: Option<String>,
     /// The requests that the Requests view last marked as seen.
     seen_requests: Vec<String>,
+    /// The Picture in Picture window and the message of its video, and a video that should go there.
+    pip: Option<(window::Id, String)>,
+    pip_wanted: bool,
     pub hotkey_query: String,
     pub hotkey_rec: Option<HotkeyRec>,
     pub profile: profile::ProfileForm,
@@ -2758,6 +2761,8 @@ impl BeeperGuiApp {
             selected_account_filter: None,
             space_view_account: None,
             seen_requests: Vec::new(),
+            pip: None,
+            pip_wanted: false,
             hotkey_query: String::new(),
             hotkey_rec: None,
             profile: profile::ProfileForm::default(),
@@ -3170,6 +3175,8 @@ impl BeeperGuiApp {
     pub fn title(&self, id: window::Id) -> String {
         match () {
             _ if Some(id) == self.settings_window => tr("Settings"),
+            // Desktop's `Gyt` title, which it does not translate.
+            _ if self.pip.as_ref().is_some_and(|p| p.0 == id) => "Picture in Picture",
             _ if self.theme_windows.iter().any(|w| w.0 == id) => tr("Chat Theme"),
             _ if self.labels_windows.iter().any(|w| w.0 == id) => tr("Edit Labels"),
             _ if self.label_settings.iter().any(|w| w.id == id) => tr("Label Settings"),
@@ -3403,7 +3410,12 @@ impl BeeperGuiApp {
         self.unread_view = false;
         // A running load or retry of the last chat goes on to this chat when it ends.
         (self.pane.top.shown, self.pane.top.tries) = (false, 0);
-        self.video = None;
+        // Desktop's `maybeCreatePip`: a playing video goes on in Picture in Picture when its chat closes.
+        match self.video.as_ref() {
+            _ if self.pip.is_some() => {}
+            Some(v) if v.playing() && !v.is_full() => self.pip_wanted = true,
+            _ => self.video = None,
+        }
         drop(st);
         if let Some(root) = self.open_threads.get(chat_id).cloned() {
             self.open_thread(chat_id.into(), root);
@@ -3689,7 +3701,7 @@ impl BeeperGuiApp {
     pub fn update(&mut self, msg: UiMessage) -> Task<UiMessage> {
         let (shown, dismissals) = (self.stackable_toast(), self.toast_dismissals);
         let task = self.handle(msg);
-        let task = Task::batch([task, self.view_requests()]);
+        let task = Task::batch([task, self.view_requests(), self.pip()]);
         self.keep_shown();
         let replaced = |t: &(Toast, Duration)| !self.status_banner.is_empty() && t.0.text != self.status_banner;
         if let Some(t) = shown.filter(|t| dismissals == self.toast_dismissals && replaced(t)) {
@@ -3921,6 +3933,10 @@ impl BeeperGuiApp {
                 return self.login_key(key, mods);
             }
             UiMessage::WindowKey(_, Key::Named(Named::Escape), _) if self.menu_bar.is_some() => self.menu_bar = None,
+            // Desktop's `onEscapePressed` of the Picture in Picture window.
+            UiMessage::WindowKey(id, Key::Named(Named::Escape), _) if self.pip.as_ref().is_some_and(|p| p.0 == id) => {
+                return window::close(id);
+            }
             UiMessage::WindowKey(id, key, mods) => {
                 if Some(id) == self.settings_window {
                     return self.settings_key(key, mods);
@@ -4719,6 +4735,8 @@ impl BeeperGuiApp {
             self.view_settings()
         } else if let Some(w) = self.media_window.as_ref().filter(|w| w.id == id) {
             self.view_media(w)
+        } else if self.pip.as_ref().is_some_and(|p| p.0 == id) {
+            self.view_pip()
         } else if Some(id) == self.login_window {
             self.view_login()
         } else if Some(id) == self.verify.window {
@@ -5653,6 +5671,41 @@ impl BeeperGuiApp {
             .align_right(Fill)
             .padding(Padding::ZERO.top(top).right(4.0))
             .into()
+    }
+
+    /// Desktop's Picture in Picture window (`Gyt`): frameless and on top, 16 px from the top left corner, while the
+    /// video that went on plays out of its chat. It closes when the chat of the video opens again, where the video
+    /// goes on inline, and when another video plays.
+    fn pip(&mut self) -> Task<UiMessage> {
+        if let Some((id, mid)) = self.pip.clone() {
+            let here = self.store.read().loaded(&mid).map(|m| m.chat_id.clone()) == self.pane.selected_chat_id;
+            let gone = self.video.as_ref().is_none_or(|v| v.mid != mid);
+            if !here && !gone {
+                return Task::none();
+            }
+            self.pip = None;
+            if let Some(v) = self.video.as_mut().filter(|_| here) {
+                v.set_pip(false);
+            }
+            return window::close(id);
+        }
+        let Some(v) = self.video.as_mut().filter(|_| std::mem::take(&mut self.pip_wanted)) else {
+            return Task::none();
+        };
+        v.set_pip(true);
+        let (w, h) = v.pip_size();
+        let (id, open) = window::open(window::Settings {
+            size: Size::new(w as f32, h as f32),
+            position: window::Position::Specific(Point::new(16.0, 16.0)),
+            decorations: false,
+            resizable: false,
+            transparent: true,
+            level: window::Level::AlwaysOnTop,
+            min_size: None,
+            ..Self::window_settings(Size::new(w as f32, h as f32))
+        });
+        self.pip = Some((id, v.mid.clone()));
+        open.map(|a0| UiMessage::Window(windows::Msg::Opened(a0)))
     }
 
     /// Desktop's `updateLastViewedRequestsAt` when the Requests view shows, and when its requests change while it
