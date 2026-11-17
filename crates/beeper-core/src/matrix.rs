@@ -5944,7 +5944,7 @@ mod tests {
             let order: Vec<&str> = st.chat_timeline("!union:x").iter().map(|m| m.id.as_str()).collect();
             assert_eq!(order, ["$wa1", "$sg1", "$wa2"], "the member messages by time");
             let idx = st.chat_idx("!union:x");
-            assert_eq!(st.chats[st.send_target(idx)].id, "!wa:x", "a merged chat answers the newest message");
+            assert_eq!(st.chats[st.compose_target(idx)].id, "!wa:x", "a merged chat answers the newest message");
         }
         left.store(true, std::sync::atomic::Ordering::SeqCst);
         let client = store.read().matrix.clone().expect("a Matrix client");
