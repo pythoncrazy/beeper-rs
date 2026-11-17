@@ -54,10 +54,18 @@ impl BeeperGuiApp {
 
     /// The preview card of a link, `max` wide at most, in the colors that `dim` gives for a selected message. Like the
     /// `<a>` of Desktop's `LinkPreview`, a click on the card opens the link.
-    pub(crate) fn view_link<'a>(&'a self, link: &MessageLink, max: f32, dim: impl Fn(Color) -> Color) -> El<'a> {
+    /// A right click on the card opens the menu of message `mid` with the link's items.
+    pub(crate) fn view_link<'a>(
+        &'a self,
+        mid: &str,
+        link: &MessageLink,
+        max: f32,
+        dim: impl Fn(Color) -> Color,
+    ) -> El<'a> {
         let p = &self.pal;
+        let menu = UiMessage::Message(crate::message::Msg::LinkMenu(mid.to_string(), link.url.clone()));
         if let Some(id) = youtube_id(&link.url) {
-            return self.view_youtube(link, id, max, dim);
+            return self.view_youtube(link, id, max, dim, menu);
         }
         let host = link.url.split("://").last().and_then(|u| u.split('/').next()).unwrap_or(&link.url).to_string();
         let size = link.img_size.as_ref().and_then(|s| s.width.zip(s.height));
@@ -108,13 +116,20 @@ impl BeeperGuiApp {
                 .into()
         };
         let card = container(card).style(fill_box(dim(p.link_card), RADIUS));
-        mouse_area(card).on_press(UiMessage::OpenUrl(link.url.clone())).into()
+        mouse_area(card).on_press(UiMessage::OpenUrl(link.url.clone())).on_right_press(menu).into()
     }
 
     /// Desktop's `VideoEmbed` of a YouTube link: the platform, the title, and the `lite-youtube` thumbnail with its
     /// play button. Desktop's title links to the video and its play button starts the player. iced has no web view for
     /// the player, so a click on the card opens the video in the browser.
-    fn view_youtube<'a>(&'a self, link: &MessageLink, id: &str, max: f32, dim: impl Fn(Color) -> Color) -> El<'a> {
+    fn view_youtube<'a>(
+        &'a self,
+        link: &MessageLink,
+        id: &str,
+        max: f32,
+        dim: impl Fn(Color) -> Color,
+        menu: UiMessage,
+    ) -> El<'a> {
         let p = &self.pal;
         let w = (0.45 * self.pane().size.width).min(400.0).min(max);
         let title = (!link.title.is_empty()).then(|| {
@@ -122,6 +137,8 @@ impl BeeperGuiApp {
             t.line_height(Pixels(16.0)).color(dim(p.strong))
         });
         let name = crate::style::semi("YouTube", 11.0).line_height(Pixels(14.0)).color(dim(p.sub));
+        // Only the title is Desktop's link there.
+        let title = title.map(|t| mouse_area(t).on_right_press(menu));
         let meta = column![name].push(title).spacing(8).padding([8.0, BUBBLE_PAD_X]);
         let thumb = format!("https://i.ytimg.com/vi_webp/{id}/hqdefault.webp");
         let radius = border::Radius::default().bottom_left(RADIUS).bottom_right(RADIUS);

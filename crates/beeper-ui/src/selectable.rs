@@ -85,6 +85,7 @@ pub fn selectable<'a, Link: Clone + 'static, Message>(
         color: None,
         hovered_link: None,
         on_link_click: None,
+        on_link_menu: None,
     }
 }
 
@@ -97,6 +98,7 @@ pub struct Selectable<'a, Link: Clone + 'static, Message> {
     color: Option<Color>,
     hovered_link: Option<usize>,
     on_link_click: Option<Box<dyn Fn(Link) -> Message + 'a>>,
+    on_link_menu: Option<Box<dyn Fn(Link) -> Message + 'a>>,
 }
 
 impl<'a, Link: Clone + 'static, Message> Selectable<'a, Link, Message> {
@@ -127,6 +129,12 @@ impl<'a, Link: Clone + 'static, Message> Selectable<'a, Link, Message> {
 
     pub fn on_link_click(mut self, on_link_click: impl Fn(Link) -> Message + 'a) -> Self {
         self.on_link_click = Some(Box::new(on_link_click));
+        self
+    }
+
+    /// The message of a right press on a link, which then takes the press from the widgets around the text.
+    pub fn on_link_menu(mut self, on_link_menu: impl Fn(Link) -> Message + 'a) -> Self {
+        self.on_link_menu = Some(Box::new(on_link_menu));
         self
     }
 
@@ -366,6 +374,13 @@ impl<Link: Clone + 'static, Message> Widget<Message, Theme, Renderer> for Select
                     drag => drag,
                 });
                 select(selection, shell);
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                let link = self.hovered_link.and_then(|span| self.spans().get(span)?.link.clone());
+                if let (Some(link), Some(on_menu)) = (link, &self.on_link_menu) {
+                    shell.publish(on_menu(link));
+                    shell.capture_event();
+                }
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 // The cursor, not the event, is in the coordinates of the scrolled content the layout uses.

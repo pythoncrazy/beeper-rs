@@ -67,7 +67,10 @@ pub fn link(word: &str) -> Option<(Range<usize>, String)> {
     }
     let core = &word[lead..end];
     let lower = core.to_lowercase();
-    let href = if ["http://", "https://"].iter().any(|s| lower.starts_with(s) && lower.len() > s.len()) {
+    if let Some(found) = (!lower.contains("://")).then(|| address(core)).flatten() {
+        return Some((lead + found.0.start..lead + found.0.end, found.1));
+    }
+    let href = if ["http://", "https://", "mailto:"].iter().any(|s| lower.starts_with(s) && lower.len() > s.len()) {
         core.to_string()
     } else if host(core) {
         format!("http://{core}")
@@ -75,6 +78,26 @@ pub fn link(word: &str) -> Option<(Range<usize>, String)> {
         return None;
     };
     Some((lead..end, href))
+}
+
+/// linkifyjs's email address in a word: the local part just before the last `@` (after any `..`, without a leading
+/// dot), and a domain on a known top-level domain or `localhost`, before any port or path.
+fn address(core: &str) -> Option<(Range<usize>, String)> {
+    if core.to_lowercase().starts_with("mailto:") {
+        return None;
+    }
+    let at = core.rfind('@')?;
+    let local = &core[..at];
+    let allowed = |c: char| c.is_alphanumeric() || "._+-".contains(c);
+    let mut start = local.char_indices().rev().take_while(|&(_, c)| allowed(c)).last().map_or(at, |(i, _)| i);
+    if let Some(dots) = local[start..].rfind("..") {
+        start += dots + 2;
+    }
+    start += local[start..].len() - local[start..].trim_start_matches('.').len();
+    let domain = core[at + 1..].split(['/', '?', '#', ':']).next().unwrap_or_default();
+    let known = domain.eq_ignore_ascii_case("localhost") || host(domain);
+    let end = at + 1 + domain.len();
+    (start < at && known).then(|| (start..end, format!("mailto:{}", &core[start..end])))
 }
 
 /// Whether `s` starts with a domain on a known top-level domain, followed by a port, a path, a query or nothing.
@@ -105,7 +128,20 @@ mod tests {
             [pair("https://en.wikipedia.org/wiki/Rust_(language)", "https://en.wikipedia.org/wiki/Rust_(language)")]
         );
         assert_eq!(hrefs("read file.txt, e.g. this, or a.b"), []);
-        assert_eq!(hrefs("mail me@x.com"), [], "an address is not a link here");
+        assert_eq!(hrefs("mail me@x.com."), [pair("me@x.com", "mailto:me@x.com")], "an address is a mailto: link");
+        assert_eq!(
+            hrefs("a.b+c@ex.co.uk (Me@X.COM) me@localhost"),
+            [
+                pair("a.b+c@ex.co.uk", "mailto:a.b+c@ex.co.uk"),
+                pair("Me@X.COM", "mailto:Me@X.COM"),
+                pair("me@localhost", "mailto:me@localhost")
+            ]
+        );
+        assert_eq!(
+            hrefs("x@y.zz a..b@x.com u@x.com/p"),
+            [pair("b@x.com", "mailto:b@x.com"), pair("u@x.com", "mailto:u@x.com")]
+        );
+        assert_eq!(hrefs("mailto:me@x.com"), [pair("mailto:me@x.com", "mailto:me@x.com")]);
         assert_eq!(
             hrefs("ünï.de\nbeeper.com:8080/x"),
             [pair("ünï.de", "http://ünï.de"), pair("beeper.com:8080/x", "http://beeper.com:8080/x")]
