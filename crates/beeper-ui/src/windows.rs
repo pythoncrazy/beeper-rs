@@ -110,7 +110,7 @@ impl BeeperGuiApp {
                     _ if self.media_window.as_ref().is_some_and(|w| w.id == id) => {
                         self.save_window(id, "media-viewer").chain(window::close(id))
                     }
-                    _ if self.chat_windows.iter().any(|w| w.0 == id && w.1.thread_root.is_none())
+                    _ if self.chat_windows.iter().any(|w| w.0 == id && w.1.thread_root.is_none() && !w.1.info)
                         && !self.is_space_window(id)
                         && self.carousel_opener(id).is_none() =>
                     {

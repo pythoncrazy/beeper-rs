@@ -43,6 +43,7 @@ pub mod new_chat;
 mod nickname;
 mod notify;
 mod pdf;
+mod phone;
 mod pins;
 mod popover;
 mod portal;
@@ -2280,7 +2281,10 @@ static THEME_ART: std::sync::LazyLock<[svg::Handle; 3]> = std::sync::LazyLock::n
     ]
 });
 
-fn theme_cards<'a>(p: &Palette, current: ThemeChoice) -> El<'a> {
+/// Desktop's `.theme-button`s. The current one is `disabled`, and the others take the focus without showing it
+/// (`button { outline: 0 }`).
+fn theme_cards<'a>(app: &BeeperGuiApp, current: ThemeChoice) -> El<'a> {
+    let p = &app.pal;
     let cards = ThemeChoice::ALL.iter().zip(THEME_ART.iter()).map(|(&t, art)| {
         let on = t == current;
         let edge = if on { p.accent } else { CLEAR };
@@ -2288,11 +2292,21 @@ fn theme_cards<'a>(p: &Palette, current: ThemeChoice) -> El<'a> {
             container(svg(art.clone()).width(96).height(61)).padding(2).style(bordered_box(CLEAR, edge, 2.0, 8.0));
         let fg = if on { Color::WHITE } else { p.strong };
         let label = container(txt(t.label(), 13.0).color(fg)).padding([3, 10]).style(fill_box(edge, 12.0));
-        button(column![img, label].spacing(6).align_x(Center))
+        let pick = UiMessage::Settings(settings::Msg::SelectTheme(t));
+        let card = button(column![img, label].spacing(6).align_x(Center))
             .padding(Padding { top: 7.0, right: 13.0, bottom: 9.0, left: 13.0 })
             .style(btn_style([CLEAR, p.hover, CLEAR], [p.strong; 3], 8.0))
-            .on_press_maybe((!on).then_some(UiMessage::Settings(settings::Msg::SelectTheme(t))))
-            .into()
+            .on_press_maybe((!on).then_some(pick.clone()));
+        match on {
+            true => card.into(),
+            false => app.target(
+                app.settings_window,
+                format!("theme-{t:?}"),
+                card,
+                focus::Keys::press(pick),
+                focus::Look::Hidden,
+            ),
+        }
     });
     container(Row::with_children(cards).spacing(4)).center_x(Fill).padding([14, 0]).into()
 }
@@ -2451,6 +2465,8 @@ pub struct Pane {
     pub reply_opened: Option<std::time::Instant>,
     /// Desktop's `carouselState` of the window of the pane. A thread pane keeps none: its window's carousel shows it.
     pub(crate) carousel: Option<Carousel>,
+    /// Desktop's detached `ThreadInfoBrowserWindow`: the window shows only the Chat Info of its chat.
+    pub(crate) info: bool,
     pub top: TopOfThread,
     timeline: vlist::VList,
     thread_list: vlist::VList,
@@ -2730,8 +2746,6 @@ pub struct BeeperGuiApp {
     pub show_command_palette: bool,
     pub active_settings_tab: SettingsTab,
     pub settings_query: String,
-    /// The control of the Settings window with the keyboard focus, which Tab gives it.
-    pub settings_keys: focus::Focus<settings::Stop>,
     /// A settings slider being dragged, and its value, which Desktop saves when the drag ends.
     pub settings_slider: Option<(&'static str, u8)>,
     /// The focused row of the settings search results, and the last opened one.
@@ -2810,6 +2824,8 @@ pub struct BeeperGuiApp {
     pub pin_hover: Option<String>,
     pub pin_drag: Option<PinDrag>,
     pub main_window: Option<window::Id>,
+    /// The control of each window with the keyboard focus, which Tab gives it (see [`focus`]).
+    pub key_targets: HashMap<window::Id, iced::widget::Id>,
     /// The chat window whose message `update` handles, with the pane of the window in `pane`.
     swapped: Option<window::Id>,
     pub settings_window: Option<window::Id>,
@@ -3032,7 +3048,6 @@ impl BeeperGuiApp {
             show_command_palette: false,
             active_settings_tab: SettingsTab::General,
             settings_query: String::new(),
-            settings_keys: Default::default(),
             settings_slider: None,
             settings_focus: 0,
             settings_pick: None,
@@ -3080,6 +3095,7 @@ impl BeeperGuiApp {
             rail_drag: None,
             rail_press: None,
             main_window: None,
+            key_targets: HashMap::new(),
             swapped: None,
             settings_window: None,
             settings_size: SETTINGS_SIZE,
@@ -3361,7 +3377,8 @@ impl BeeperGuiApp {
     /// Desktop's `subwindow-state`: the chat and settings windows to open again at the next launch.
     fn save_subwindows(&self) {
         // Desktop's `zv` keeps no `space-` windows.
-        let chats = self.chat_windows.iter().filter(|w| w.1.thread_root.is_none() && !self.is_space_window(w.0));
+        let chats = self.chat_windows.iter().filter(|w| w.1.thread_root.is_none() && !w.1.info);
+        let chats = chats.filter(|w| !self.is_space_window(w.0));
         let threads = chats.filter_map(|w| w.1.selected_chat_id.as_deref());
         let threads =
             threads.map(|t| serde_json::json!({"windowId": format!("thread-{t}"), "type": "thread", "threadId": t}));
@@ -3445,9 +3462,10 @@ impl BeeperGuiApp {
                     let st = self.store.read();
                     let chat = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
                     let title = chat.map_or("Beeper".into(), |i| st.chats[i].title.clone());
-                    return match pane.thread_root {
-                        Some(_) => trf("Thread in %s", &[&title]),
-                        None => title,
+                    return match (pane.info, pane.thread_root.is_some()) {
+                        (true, _) => trf("%s — Chat Info", &[&title]),
+                        (false, true) => trf("Thread in %s", &[&title]),
+                        (false, false) => title,
                     };
                 }
                 None => {
@@ -4260,12 +4278,14 @@ impl BeeperGuiApp {
                 return self.update(UiMessage::Composer(composer::Msg::Type(text)));
             }
             UiMessage::WindowText(id, text) if Some(id) == self.login_window => return self.login_text(&text),
-            // Chromium's Space on a focused button or `role="button"` row presses it.
-            UiMessage::WindowText(id, text) if text == " " && Some(id) == self.settings_window => {
-                return self.settings_press();
+            UiMessage::WindowText(id, text) if self.add_account_dropdown(id) => {
+                return self.update_add_account(id, add_account::AddMsg::Text(text));
             }
-            UiMessage::WindowText(id, text) if text == " " && self.nickname_windows.iter().any(|d| d.id == id) => {
-                return self.nickname_press(id);
+            // Chromium's Space on a focused button or `role="button"` row presses it.
+            UiMessage::WindowText(id, text)
+                if text == " " && (self.key_targets.contains_key(&id) || self.asking(id)) =>
+            {
+                return self.focus_space(id, true).unwrap_or_else(Task::none);
             }
             UiMessage::WindowText(..) => {}
             // Desktop's menu roles "close" and "minimize", whose accelerators work while the menu bar hides.
@@ -4291,8 +4311,16 @@ impl BeeperGuiApp {
                 if Some(id) == self.settings_window {
                     return self.settings_key(key, mods);
                 }
-                if self.nickname_windows.iter().any(|d| d.id == id) {
-                    return self.nickname_key(id, key, mods);
+                // Chromium's Tab, Enter and arrows in Desktop's sheets; a confirmation over Label Settings has the
+                // focus on its default button.
+                let sheet = self.nickname_windows.iter().any(|d| d.id == id)
+                    || self.label_settings.iter().any(|w| w.id == id)
+                    || self.label_window.as_ref().is_some_and(|d| d.id == id)
+                    || self.spaces_window.as_ref().is_some_and(|d| d.id == id)
+                    || Some(id) == self.blocked_window
+                    || self.poll_windows.iter().any(|w| w.id == id);
+                if let Some(task) = sheet.then(|| self.focus_key(id, &key, mods, true)).flatten() {
+                    return task;
                 }
                 if self.label_asking(id) && key == Key::Named(Named::Escape) {
                     self.confirm = None;
@@ -4305,6 +4333,10 @@ impl BeeperGuiApp {
                         _ => Task::none(),
                     };
                 }
+                // The open dropdown of a phone field takes the keys, so Escape closes it and not the window.
+                if self.add_account_dropdown(id) {
+                    return self.update_add_account(id, add_account::AddMsg::Key(key));
+                }
                 if self.theme_windows.iter().any(|w| w.0 == id)
                     || self.labels_windows.iter().any(|w| w.0 == id)
                     || self.vote_windows.iter().any(|w| w.0 == id)
@@ -4312,6 +4344,7 @@ impl BeeperGuiApp {
                     || self.merge_window.as_ref().is_some_and(|d| d.id == id)
                     || self.group_window.as_ref().is_some_and(|d| d.id == id)
                     || Some(id) == self.blocked_window
+                    || self.nickname_windows.iter().any(|d| d.id == id)
                     || self.add_accounts.iter().any(|a| a.id == id)
                 {
                     return if key == Key::Named(Named::Escape) { window::close(id) } else { Task::none() };
@@ -4385,6 +4418,8 @@ impl BeeperGuiApp {
             }
             UiMessage::LoggedOut(Ok(())) => restart(),
             UiMessage::LoggedOut(Err(e)) => self.fail(Toast::new(format!("Could not log out: {e}"))),
+            // Desktop's "Close Chat Info" of a detached Chat Info closes its window.
+            UiMessage::ToggleRightPanel if self.pane.info => return window::close(self.swapped.expect("a window")),
             UiMessage::ToggleRightPanel => {
                 // Desktop shows Chat Info or the thread pane, not both.
                 let closed = self.pane.thread.take().is_some();
@@ -4717,13 +4752,29 @@ impl BeeperGuiApp {
                         _ => {}
                     }
                 }
+                // Chromium's focus in a confirmation dialog, and in a window without an open chat, where Desktop's
+                // `KeyboardHandlers` leave Tab to it.
+                let window = self.swapped.or(self.main_window);
+                let modal = self.show_command_palette
+                    || self.forward.is_some()
+                    || self.creating_chat.is_some()
+                    || self.pane.carousel.is_some();
+                let free = self.pane.selected_chat_id.is_none() && !modal;
+                // New Chat's own Enter starts the group from its encryption prompt.
+                let asking = window.is_some_and(|w| self.asking(w));
+                let defaults = asking && self.creating_chat.is_none();
+                if let Some(task) =
+                    window.filter(|_| asking || free).and_then(|w| self.focus_key(w, &key, mods, defaults))
+                {
+                    return task;
+                }
                 // Desktop's `KeyboardHandlers` and Chromium: Tab and Shift+Tab move through the composer row, and
                 // Enter presses its focused button.
-                if self.composer_takes_keys() && (mods - Modifiers::SHIFT).is_empty() {
+                let composer = window.filter(|_| self.composer_takes_keys() && (mods - Modifiers::SHIFT).is_empty());
+                if let Some(window) = composer {
                     match key.as_ref() {
                         Key::Named(Named::Tab) => {
                             let back = mods.shift();
-                            let window = self.swapped.or(self.main_window).expect("the window of the pane");
                             return focus::caret(window, self.composer_id())
                                 .map(move |at| UiMessage::Composer(composer::Msg::Tab(back, at)));
                         }
@@ -4983,6 +5034,16 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
+        // The Page Up and Page Down of the open dropdown of a phone field, which `keys` does not send.
+        let dropdown = self.add_accounts.iter().any(|a| self.add_account_dropdown(a.id)).then(|| {
+            iced::event::listen_with(|e, _, id| match e {
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: key @ Key::Named(Named::PageUp | Named::PageDown),
+                    ..
+                }) => Some(UiMessage::AddAccount(id, add_account::AddMsg::Key(key))),
+                _ => None,
+            })
+        });
         let drag = self.dragging.then(|| {
             iced::event::listen_with(|e, _, _| match e {
                 Event::Mouse(mouse::Event::CursorMoved { position }) => {
@@ -5164,6 +5225,7 @@ impl BeeperGuiApp {
                 .chain(poll_drag)
                 .chain(time_drag)
                 .chain(carousel)
+                .chain(dropdown)
                 .chain(tick)
                 .chain(toast)
                 .chain(shot)
@@ -5252,6 +5314,8 @@ impl BeeperGuiApp {
         {
             // A chat window that left its chat closes, and draws nothing until it is closed.
             Space::new().into()
+        } else if self.chat_windows.iter().any(|w| w.0 == id && w.1.info) {
+            self.view_info()
         } else {
             self.view_main()
         }
@@ -5899,8 +5963,8 @@ impl BeeperGuiApp {
     /// timeline, except in incognito mode.
     fn read_open_chat(&self) {
         let at_bottom = self.pane.scrolled_up.is_none_or(|(up, _)| !up);
-        let Some(id) = self.pane.selected_chat_id.clone().filter(|_| self.focused && self.pane.thread_root.is_none())
-        else {
+        let shows = self.focused && self.pane.thread_root.is_none() && !self.pane.info;
+        let Some(id) = self.pane.selected_chat_id.clone().filter(|_| shows) else {
             return;
         };
         if self.store.read().incognito() {
