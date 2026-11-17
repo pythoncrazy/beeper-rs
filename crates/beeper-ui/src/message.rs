@@ -2160,8 +2160,11 @@ impl BeeperGuiApp {
                     .border(border::rounded(4))
                     .padding(2)
             };
-            let arrow =
-                || span(icon::ARROW_UP_RIGHT.to_string()).font(iced::Font::with_name("icons")).size(11.0).color(fg);
+            // Desktop's `.ext-link-with-icon:after`: the arrow at 0.7 opacity, 2 px from the link and the text after it.
+            let arrow = || {
+                let arrow = span(icon::ARROW_UP_RIGHT.to_string()).font(iced::Font::with_name("icons")).size(11.0);
+                arrow.color(fg.scale_alpha(0.7)).padding(Padding::from([0, 2]))
+            };
             let rich = |(r, room): (beeper_core::codec::Run, bool)| {
                 if r.emoticon.is_some() {
                     return [Some(span(crate::selectable::IMAGE_SLOT).size(13.0)), None].into_iter().flatten();
