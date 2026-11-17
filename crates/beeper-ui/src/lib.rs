@@ -2859,6 +2859,8 @@ pub struct BeeperGuiApp {
     /// Desktop's Account Nickname windows, one for each account.
     pub nickname_windows: Vec<nickname::NicknameDraft>,
     pub add_accounts: Vec<add_account::AddAccount>,
+    /// The browser of the cookie logins. The tests find none, so that they never start one.
+    pub find_browser: fn() -> Option<std::path::PathBuf>,
     /// The Chat Info group description while it is edited, and whether it shows all of its lines.
     pub info_desc: Option<text_editor::Content>,
     pub info_more: bool,
@@ -3120,6 +3122,7 @@ impl BeeperGuiApp {
             how_window: None,
             nickname_windows: Vec::new(),
             add_accounts: Vec::new(),
+            find_browser: if cfg!(test) { || None } else { beeper_core::browser_login::find_browser },
             info_desc: None,
             info_more: false,
             info_all: false,
