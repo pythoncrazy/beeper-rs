@@ -3329,6 +3329,50 @@ fn the_open_chat_reads_new_messages_like_desktop() {
     assert_eq!(unread(&app), 0, "back at the bottom it is read");
 }
 
+/// Desktop's `onRangeChange`: above its bottom, the timeline reads the open chat through the last message in view
+/// once the scroll stops, and a Matrix room, whose messages keep no unread mark, counts the messages left below.
+#[test]
+fn the_open_chat_reads_through_the_last_message_in_view_like_desktop() {
+    let mut app = demo_app("read-in-view");
+    let id = app.store.read().chats.iter().find(|c| c.id != NOTE_CHAT_ID).unwrap().id.clone();
+    let _ = app.update(UiMessage::Window(windows::Msg::Focused(true)));
+    let _ = app.update(UiMessage::SelectChat(id.clone()));
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Scrolled(true)));
+    {
+        let mut st = app.store.write();
+        let last = st.messages.iter().rfind(|m| m.chat_id == id).unwrap().clone();
+        let after: u64 = last.sort_key.parse().expect("a numeric sort key");
+        for n in 0..40 {
+            let text = format!("incoming {n}");
+            let (id, sort_key) = (format!("$in{n}"), format!("{:016}", after + 1 + n));
+            st.upsert_message(Message { id, sort_key, text: Some(text), is_sender: Some(false), ..last.clone() });
+        }
+        let idx = st.resolve_chat_idx(&id).unwrap();
+        st.update_chat(idx, |c| (c.unread_count, c.last_read_message_sort_key) = (40, Some(last.sort_key.clone())));
+    }
+    let unread = |app: &BeeperGuiApp| app.store.read().chat(&id).unread_count;
+    let redraw = || iced::Event::Window(window::Event::RedrawRequested(std::time::Instant::now()));
+    let mut sim = Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view_main());
+    sim.point_at(Point::new(900.0, 450.0));
+    let wheel = iced::Event::Mouse(mouse::Event::WheelScrolled { delta: ScrollDelta::Pixels { x: 0.0, y: 600.0 } });
+    let _ = sim.simulate([redraw(), wheel, redraw()]);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let _ = sim.simulate([redraw()]);
+    let relists: Vec<_> = sim.into_messages().filter(|m| matches!(m, UiMessage::Relist)).collect();
+    assert!(!relists.is_empty(), "the stopped scroll tells the app");
+    assert_eq!(unread(&app), 40, "nothing is read while the scroll moves");
+    for m in relists {
+        let _ = app.update(m);
+    }
+    let left = unread(&app);
+    assert!((1..40).contains(&left), "read through the last message in view, {left} left below it");
+    let receipt = app.store.read().outbox.iter().rev().find_map(|(_, _, o)| match o {
+        Outgoing::Read(event) => Some(event.clone()),
+        _ => None,
+    });
+    assert_eq!(receipt, Some(format!("$in{}", 39 - left)), "the receipt goes to the last message in view");
+}
+
 /// Desktop's `getLastParticipantName` and `messageSender`: a group preview and the timeline name the sender by the
 /// member's current name, so a rename shows at once.
 #[test]
