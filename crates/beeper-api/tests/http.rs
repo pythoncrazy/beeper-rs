@@ -232,9 +232,15 @@ async fn repeated_and_bracket_query_keys_are_arrays() {
     let mut chats: Vec<&str> = found.iter().map(|(_, c)| c.as_str().unwrap()).collect();
     chats.sort();
     chats.dedup();
-    let both = found.iter().filter(|(_, x)| x == chats[0] || x == chats[1]).count();
     let (c, d) = (url_encode(chats[0]), url_encode(chats[1]));
-    assert_eq!(get(format!("/v1/messages/search?limit=20&chatIDs={c}&chatIDs={d}")).await.len(), both);
+    let mut both: Vec<String> = get(format!("/v1/messages/search?limit=20&chatIDs={c}&chatIDs={d}"))
+        .await
+        .into_iter()
+        .map(|(_, chat)| chat.as_str().unwrap().into())
+        .collect();
+    both.sort();
+    both.dedup();
+    assert_eq!(both, chats[..2], "the messages of both chats");
 }
 
 /// Desktop's `listChats`: `limit` rows past an opaque cursor in both directions, `hasMore` for a full page of rows,
@@ -809,4 +815,346 @@ async fn websocket_sends_the_app_state_like_desktop() {
     assert_eq!((changed["type"].as_str(), changed["seq"].as_u64()), (Some("app.state.updated"), Some(2)));
     let keys: Vec<&String> = changed.as_object().unwrap().keys().collect();
     assert_eq!(keys, ["type", "seq", "ts", "appState"], "Desktop's key order");
+}
+
+/// Sends a request with the token and a JSON body, and returns the status and the JSON of the response.
+async fn call(port: u16, token: &str, method: &str, target: &str, body: &str) -> (u16, serde_json::Value) {
+    let request = format!(
+        "{method} {target} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let out = text(port, &request).await;
+    let (head, body) = out.split_once("\r\n\r\n").unwrap();
+    (head[9..12].parse().unwrap(), serde_json::from_str(body).expect("a JSON body"))
+}
+
+/// Desktop's `Invalid input` answer with zod's issues.
+fn invalid(issues: serde_json::Value) -> String {
+    serde_json::json!({ "message": "Invalid input", "code": "VALIDATION_ERROR", "details": { "issues": issues } })
+        .to_string()
+}
+
+/// zod's issues of a bad enum value, a bad boolean `received`, a bad `datetime()` and a value below `minimum`.
+mod zod {
+    use serde_json::{json, Value};
+
+    pub fn choice(path: &str, options: &[&str], received: &str) -> Value {
+        let expected = options.iter().map(|o| format!("'{o}'")).collect::<Vec<_>>().join(" | ");
+        let message = format!("Invalid enum value. Expected {expected}, received '{received}'");
+        json!({ "received": received, "code": "invalid_enum_value", "options": options, "path": [path], "message": message })
+    }
+
+    pub fn boolean(path: &str, received: &str) -> Value {
+        let message = format!("Expected boolean, received {received}");
+        json!({ "code": "invalid_type", "expected": "boolean", "received": received, "path": [path], "message": message })
+    }
+
+    pub fn string(path: &str) -> Value {
+        let message = "Expected string, received array";
+        json!({ "code": "invalid_type", "expected": "string", "received": "array", "path": [path], "message": message })
+    }
+
+    pub fn datetime(path: &str) -> Value {
+        json!({ "code": "invalid_string", "validation": "datetime", "message": "Invalid datetime", "path": [path] })
+    }
+
+    pub fn small(path: &str, minimum: i64, kind: &str) -> Value {
+        let message = match kind {
+            "string" => format!("String must contain at least {minimum} character(s)"),
+            _ => format!("Number must be greater than or equal to {minimum}"),
+        };
+        json!({ "code": "too_small", "minimum": minimum, "type": kind, "inclusive": true, "exact": false, "message": message, "path": [path] })
+    }
+
+    pub fn big(maximum: i64) -> Value {
+        let message = format!("Number must be less than or equal to {maximum}");
+        json!({ "code": "too_big", "maximum": maximum, "type": "number", "inclusive": true, "exact": false, "message": message, "path": ["limit"] })
+    }
+}
+
+/// The IDs of the items of a page.
+fn ids(page: &serde_json::Value) -> Vec<String> {
+    page["items"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap().to_string()).collect()
+}
+
+/// Desktop's `searchChats`: the matches of the title and the network by the words in the title, the matches of the
+/// participants and all the chats newest first, the filters, the base64 JSON cursors in both directions, and zod's
+/// issues in the order of the schema.
+#[tokio::test]
+async fn search_chats_filters_orders_and_pages_like_desktop() {
+    use beeper_api::codec::{base64_decode, url_encode};
+    use serde_json::{json, Value};
+    let (port, token) = server("search-chats").await;
+    let get = |query: String| {
+        let token = token.clone();
+        async move { call(port, &token, "GET", &format!("/v1/chats/search?{query}"), "").await }
+    };
+    let found = |query: &str| {
+        let page = get(query.into());
+        let query = query.to_string();
+        async move {
+            let (status, page) = page.await;
+            assert_eq!(status, 200, "{query}: {page}");
+            ids(&page)
+        }
+    };
+    let patch = |id: &str, body: &str| {
+        let (token, target, body) = (token.clone(), format!("/v1/chats/{id}"), body.to_string());
+        async move { assert_eq!(call(port, &token, "PATCH", &target, &body).await.0, 200, "{target} {body}") }
+    };
+    let key = |cursor: &Value| -> Value {
+        serde_json::from_slice(&base64_decode(cursor.as_str().unwrap()).unwrap()).unwrap()
+    };
+    let ms = |c: &Value| beeper_core::config::millis_from_rfc3339(c["lastActivity"].as_str().unwrap()).unwrap();
+
+    let (_, listed) = call(port, &token, "GET", "/v1/chats?limit=200", "").await;
+    let (status, page) = get(String::new()).await;
+    let keys: Vec<&str> = page.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!((status, keys), (200, vec!["items", "hasMore", "oldestCursor", "newestCursor"]));
+    let all = ids(&listed);
+    assert_eq!((ids(&page), &page["hasMore"]), (all.clone(), &json!(false)), "all the chats, newest first");
+    let first = &page["items"][0];
+    assert!(first.get("preview").is_none(), "no preview: {first}");
+    assert_eq!(key(&page["newestCursor"]), json!({ "ts": ms(first), "id": first["id"] }));
+    assert_eq!(found("limit=3").await, all[..3]);
+
+    let (mut seen, mut cursor) = (Vec::new(), None::<String>);
+    loop {
+        let (_, page) = get(cursor.map_or("limit=4".into(), |c| format!("limit=4&cursor={}", url_encode(&c)))).await;
+        seen.extend(ids(&page));
+        cursor = page["oldestCursor"].as_str().map(str::to_string);
+        if page["hasMore"] == false {
+            break;
+        }
+    }
+    assert_eq!(seen, all, "paging `before` walks all the chats");
+    let third = url_encode(get("limit=3".into()).await.1["oldestCursor"].as_str().unwrap());
+    assert_eq!(found(&format!("limit=2&cursor={third}")).await, all[3..5]);
+    let (_, newer) = get(format!("limit=1&direction=after&cursor={third}")).await;
+    assert_eq!((ids(&newer), &newer["hasMore"]), (all[..1].to_vec(), &json!(true)), "`after` takes the newest chats");
+    let none = json!({ "items": [], "hasMore": false, "oldestCursor": null, "newestCursor": null });
+    assert_eq!(get("cursor=W10%3D".into()).await.1, none, "the keys of a cursor `[]` compare as NaN");
+    assert_eq!(found("cursor=nope").await, all, "an unreadable cursor is no cursor");
+
+    patch("!tg_pebble:beeper.com", r#"{"title":"Pebble Rust"}"#).await;
+    let rust = ["!tg_rust:beeper.com", "!tg_weekly:beeper.com", "!tg_pebble:beeper.com"];
+    assert_eq!(found("query=Rust").await, rust, "one title hit each, newest first");
+    assert_eq!(found("query=rust%20telegram").await, rust, "the network matches, and only the title counts");
+    let (_, page) = get("query=telegram%20pebble%20rust".into()).await;
+    assert_eq!((ids(&page), key(&page["newestCursor"])["score"].clone()), (vec![rust[2].to_string()], json!(2)));
+    assert_eq!(found("query=rust%20pebble%20OR%20weekly").await, Vec::<String>::new(), "every word must match");
+    assert_eq!(found("query=desing").await, ["!sl_design:beeper.com"], "a fuzzy match");
+    assert_eq!(found("query=%23desktop").await, ["!sl_infra:beeper.com"], "a query with a symbol is a phrase");
+    assert_eq!(found("query=%20eric%20").await, ["!wa_eric:beeper.com"]);
+    let people = found("query=migicovsky&scope=participants").await;
+    assert_eq!(people, ["!wa_eric:beeper.com", "!sl_infra:beeper.com"], "by time");
+    assert_eq!(found("query=eric&scope=participants").await, all, "`er.c` of `alex@beeper.com` is a fuzzy match");
+    assert_eq!(found("query=rust&accountIDs=acc_signal").await, Vec::<String>::new());
+
+    let only = |pick: &dyn Fn(&Value) -> bool| -> Vec<String> {
+        let items = listed["items"].as_array().unwrap().iter();
+        items.filter(|c| pick(c)).map(|c| c["id"].as_str().unwrap().into()).collect()
+    };
+    assert_eq!(found("type=group").await, only(&|c| c["type"] == "group"));
+    assert_eq!(found("type=single").await, only(&|c| c["type"] == "single"));
+    assert_eq!(found("type=any").await, all);
+    assert_eq!(found("unreadOnly=true").await, only(&|c| c["unreadCount"].as_u64() > Some(0)));
+    assert_eq!(found("labelID=lbl_work").await, ["!tg_rust:beeper.com", "!sl_infra:beeper.com"]);
+    assert_eq!(found("includeMuted=false").await, only(&|c| c["isMuted"] == false));
+    let slack_or_signal = only(&|c| c["accountID"] == "acc_slack" || c["accountID"] == "acc_signal");
+    assert_eq!(found("accountIDs[]=acc_slack&accountIDs[]=acc_signal").await, slack_or_signal);
+    assert_eq!(found("accountIDs=").await, Vec::<String>::new(), "no account has a blank ID");
+    let at = beeper_core::config::millis_from_rfc3339("2026-10-14T07:45:00.000Z").unwrap();
+    assert_eq!(found("lastActivityBefore=2026-10-14T07:45Z").await, only(&|c| ms(c) < at));
+    assert_eq!(found("lastActivityAfter=2026-10-14T07:45:00.0001Z").await, only(&|c| ms(c) > at));
+    for (flag, inbox) in [("isArchived", "archive"), ("isLowPriority", "low-priority")] {
+        patch("!wa_sam:beeper.com", &format!(r#"{{"{flag}":true}}"#)).await;
+        assert_eq!(found(&format!("inbox={inbox}")).await, ["!wa_sam:beeper.com"]);
+        assert!(!found("inbox=primary").await.contains(&"!wa_sam:beeper.com".to_string()));
+        patch("!wa_sam:beeper.com", &format!(r#"{{"{flag}":false}}"#)).await;
+    }
+    assert!(found("inbox=primary").await.contains(&"!wa_sam:beeper.com".to_string()));
+
+    let merge =
+        r#"{"mode":"merge","title":"Friends","merge":{"chatIDs":["!sg_lena:beeper.com","!ig_kai:beeper.com"]}}"#;
+    let (_, merged) = call(port, &token, "POST", "/v1/chats", merge).await;
+    let merged = merged["chatID"].as_str().unwrap();
+    let (members, now) = (["!sg_lena:beeper.com", "!ig_kai:beeper.com"], found("limit=200").await);
+    assert!(now[0] == merged && members.iter().all(|m| !now.contains(&m.to_string())), "{now:?}");
+    assert_eq!(found("query=fischer").await, [merged], "a member matches as its merged chat");
+    assert_eq!(found("query=fischer&accountIDs=acc_signal").await, [merged]);
+
+    let cases = [
+        ("query=", json!([zod::small("query", 1, "string")])),
+        ("query=%20%0A", json!([zod::small("query", 1, "string")])),
+        ("limit=0", json!([zod::small("limit", 1, "number")])),
+        ("limit=201", json!([zod::big(200)])),
+        ("includeMuted=1", json!([zod::boolean("includeMuted", "string")])),
+        ("lastActivityAfter=2026-10-14T07:45:00%2B02:00", json!([zod::datetime("lastActivityAfter")])),
+        ("lastActivityBefore=2026-02-29T00:00:00Z", json!([zod::datetime("lastActivityBefore")])),
+        (
+            "includeMuted=no&scope=people&query=&type=dm&limit=0&unreadOnly=1&unreadOnly=0&labelID=a&labelID=b&inbox=all&direction=up&cursor=a&cursor=b&lastActivityBefore=x",
+            json!([
+                zod::string("cursor"),
+                zod::choice("direction", &["after", "before"], "up"),
+                zod::choice("inbox", &["primary", "low-priority", "archive"], "all"),
+                zod::string("labelID"),
+                zod::boolean("unreadOnly", "array"),
+                zod::small("limit", 1, "number"),
+                zod::choice("type", &["single", "group", "any"], "dm"),
+                zod::small("query", 1, "string"),
+                zod::choice("scope", &["titles", "participants"], "people"),
+                zod::datetime("lastActivityBefore"),
+                zod::boolean("includeMuted", "string"),
+            ]),
+        ),
+    ];
+    for (query, issues) in cases {
+        let (status, body) = get(query.into()).await;
+        assert_eq!((status, body.to_string()), (400, invalid(issues)), "{query}");
+    }
+}
+
+/// Desktop's `searchMessages`: the newest messages by time past a `<time>:<row>` cursor in both directions, then in
+/// sort order, with their chats, the filters and zod's issues, and Desktop's `search` over both searches.
+#[tokio::test]
+async fn search_messages_filters_orders_and_pages_like_desktop() {
+    use beeper_api::codec::url_encode;
+    use serde_json::{json, Value};
+    let (port, token) = server("search-messages").await;
+    let get = |path: &str, query: String| {
+        let (token, target) = (token.clone(), format!("{path}?{query}"));
+        async move { call(port, &token, "GET", &target, "").await }
+    };
+    let search = |query: &str| {
+        let page = get("/v1/messages/search", query.into());
+        let query = query.to_string();
+        async move {
+            let (status, page) = page.await;
+            assert_eq!(status, 200, "{query}: {page}");
+            page
+        }
+    };
+    let keys = |page: &Value| -> Vec<String> {
+        page["items"].as_array().unwrap().iter().map(|m| m["sortKey"].as_str().unwrap()[12..].to_string()).collect()
+    };
+    let found = |query: &str| {
+        let page = search(query);
+        async move { keys(&page.await) }
+    };
+    let time = |at: &str| beeper_core::config::millis_from_rfc3339(at).unwrap().to_string();
+
+    let page = search("limit=7").await;
+    let fields: Vec<&str> = page.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(fields, ["items", "chats", "hasMore", "oldestCursor", "newestCursor"]);
+    assert_eq!(
+        keys(&page),
+        ["1004", "1003", "1002", "1001", "0999", "0998", "0997"],
+        "the newest by time, by sort key"
+    );
+    let chats: Vec<&str> = page["chats"].as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(chats, ["!tg_rust:beeper.com", "!im_sarah:beeper.com", "!wa_eric:beeper.com"]);
+    assert_eq!(page["chats"]["!tg_rust:beeper.com"]["participants"]["items"].as_array().unwrap().len(), 3);
+    let cursor = |k: &str| page[k].as_str().unwrap().split_once(':').unwrap().0.to_string();
+    assert_eq!(
+        (cursor("oldestCursor"), cursor("newestCursor")),
+        (time("2026-10-14T08:10:00Z"), time("2026-10-14T08:20:00Z"))
+    );
+    let oldest = url_encode(page["oldestCursor"].as_str().unwrap());
+    assert_eq!(found(&format!("limit=2&cursor={oldest}")).await, ["1006", "1005"]);
+    let newer = search(&format!("limit=3&direction=after&cursor={oldest}")).await;
+    assert_eq!((keys(&newer), &newer["hasMore"]), (vec!["1004".into(), "1003".into(), "1001".into()], &json!(true)));
+    let none = json!({ "items": [], "chats": {}, "hasMore": false, "oldestCursor": null, "newestCursor": null });
+    let newest = url_encode(page["newestCursor"].as_str().unwrap());
+    assert_eq!(search(&format!("direction=after&cursor={newest}")).await, none);
+
+    let (mut seen, mut cursor) = (Vec::new(), None::<String>);
+    loop {
+        let page = search(&cursor.map_or("limit=6".into(), |c| format!("limit=6&cursor={}", url_encode(&c)))).await;
+        let times = page["items"].as_array().unwrap().iter().map(|m| m["timestamp"].as_str().unwrap().to_string());
+        seen.extend(times.collect::<Vec<_>>());
+        cursor = page["oldestCursor"].as_str().map(str::to_string);
+        if page["hasMore"] == false {
+            break;
+        }
+    }
+    assert_eq!(seen.len(), 31, "paging `before` walks all the messages");
+    assert!(seen.chunks(6).zip(seen.chunks(6).skip(1)).all(|(a, b)| a.iter().min() > b.iter().max()));
+    let first = search("limit=1").await;
+    let piped = search("limit=1&cursor=%7Cimsg").await;
+    assert_eq!(piped["newestCursor"], format!("{}|imsg", first["newestCursor"].as_str().unwrap()), "the iMessage part");
+    assert_eq!(keys(&search("limit=1&cursor=nope").await), keys(&first), "an unreadable cursor is no cursor");
+    assert_eq!(search("").await["items"].as_array().unwrap().len(), 20);
+
+    assert_eq!(found("query=ship").await, ["1011", "1002"], "a prefix of a word, in sort order");
+    assert_eq!(found("query=Ship%20i").await, ["1011"]);
+    let (status, blank) = get("/v1/messages/search", "query=%20".into()).await;
+    let failed =
+        json!({ "message": "Failed to execute tool: searchMessages", "code": "TOOL_EXECUTION_ERROR", "details": {} });
+    assert_eq!((status, blank), (500, failed), "Desktop's full-text query of a blank query fails");
+    assert_eq!(found("chatIDs=!sl_infra:beeper.com").await, ["1011", "1010", "1009", "1008", "1007"]);
+    assert_eq!(found("chatIDs[]=!sl_design:beeper.com&chatIDs[]=!tg_pebble:beeper.com").await, ["2007", "2005"]);
+    assert_eq!(get("/v1/messages/search", "chatIDs=nope".into()).await.0, 404);
+    assert_eq!(found("accountIDs=acc_slack").await, ["2005", "1011", "1010", "1009", "1008", "1007"]);
+    assert_eq!(found("chatType=group").await.len(), 11);
+    assert_eq!(found("chatType=single&limit=1").await, ["1001"]);
+    assert_eq!(found("mediaTypes=image").await, ["2010", "2009", "2008", "2002"]);
+    assert_eq!(found("mediaTypes=file").await, ["1003", "0998"]);
+    assert_eq!(found("mediaTypes=link").await, ["0904", "0902", "0900"]);
+    assert_eq!(found("mediaTypes=any").await.len(), 7);
+    assert_eq!(found("mediaTypes=image&mediaTypes=file").await.len(), 6);
+    assert_eq!(found("sender=me").await.len(), 7);
+    assert_eq!(search("sender=others").await["hasMore"], true);
+    assert_eq!(found("sender=@devon:beeper.com").await, ["1010", "1009", "1007"]);
+    assert_eq!(found("dateAfter=2026-10-14T10:00:00%2B02:00").await.len(), 7);
+    assert_eq!(found("dateAfter=2026-10-14T08:10:00Z").await.len(), 6, "strictly after");
+    assert_eq!(found("dateBefore=2026-10-06T19:04Z").await, ["2007", "0900"]);
+    assert_eq!(found("includeMuted=false&limit=7").await, ["1005", "1004", "1003", "1001", "0999", "0998", "0997"]);
+    let low = r#"{"isLowPriority":true}"#;
+    assert_eq!(call(port, &token, "PATCH", "/v1/chats/!sl_infra:beeper.com", low).await.0, 200);
+    assert_eq!(found("chatIDs=!sl_infra:beeper.com").await, Vec::<String>::new(), "low priority is out by default");
+    assert_eq!(found("chatIDs=!sl_infra:beeper.com&excludeLowPriority=false").await.len(), 5);
+
+    let (_, unified) = get("/v1/search", "query=rust".into()).await;
+    let section = |path: &str, query: &str| get(path, query.into());
+    let (titles, people, messages) = (
+        section("/v1/chats/search", "query=rust&limit=30").await.1,
+        section("/v1/chats/search", "query=rust&scope=participants&limit=30").await.1,
+        section("/v1/messages/search", "query=rust").await.1,
+    );
+    let want = json!({ "results": { "chats": titles["items"], "in_groups": people["items"], "messages": messages } });
+    assert_eq!(unified, want, "Desktop's `search` is both searches");
+
+    let custom = json!({ "code": "custom", "message": "'dateAfter' must be earlier than 'dateBefore' when both are provided.", "path": ["dateAfter"] });
+    let reversed = "dateAfter=2026-02-01T00:00:00Z&dateBefore=2026-01-01T00:00:00Z";
+    let float = json!({ "code": "invalid_type", "expected": "integer", "received": "float", "message": "Expected integer, received float", "path": ["limit"] });
+    let media = ["any", "video", "image", "link", "file"];
+    let cases = [
+        ("limit=21".to_string(), json!([zod::big(20)])),
+        (reversed.into(), json!([custom])),
+        ("dateAfter=2026-01-01T00:00:00Z&dateBefore=2026-01-01T00:00:00Z".into(), json!([custom])),
+        (format!("limit=1.5&{reversed}"), json!([float, custom])),
+        ("dateAfter=2026-02-01T00:00:00Z&dateBefore=x".into(), json!([zod::datetime("dateBefore")])),
+        ("dateAfter=2026-02-30T00:00:00Z".into(), json!([zod::datetime("dateAfter")])),
+        (format!("chatType=dm&{reversed}"), json!([zod::choice("chatType", &["group", "single"], "dm")])),
+        ("mediaTypes=any&mediaTypes=audio".into(), {
+            let mut issue = zod::choice("mediaTypes", &media, "audio");
+            issue["path"] = json!(["mediaTypes", 1]);
+            json!([issue])
+        }),
+        ("dateAfter=2026-01-01".into(), json!([zod::datetime("dateAfter")])),
+        (
+            "includeMuted=1&excludeLowPriority=true&excludeLowPriority=false&sender=a&sender=b&query=a&query=b".into(),
+            json!([
+                zod::string("query"),
+                zod::string("sender"),
+                zod::boolean("excludeLowPriority", "array"),
+                zod::boolean("includeMuted", "string"),
+            ]),
+        ),
+    ];
+    for (query, issues) in cases {
+        let (status, body) = get("/v1/messages/search", query.clone()).await;
+        assert_eq!((status, body.to_string()), (400, invalid(issues)), "{query}");
+    }
 }

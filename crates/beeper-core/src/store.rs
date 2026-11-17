@@ -1,7 +1,7 @@
 use crate::config::{
-    assert_not_original_beeper_dir, millis_from_rfc3339, now_rfc3339_millis, now_unix_secs, CentralConfig,
-    DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN, DEFAULT_USER_ID, SEED_JSON,
-    WS_CHANNEL_CAPACITY,
+    assert_not_original_beeper_dir, millis_from_rfc3339, now_rfc3339_millis, now_unix_secs, rfc3339_from_millis,
+    CentralConfig, DEFAULT_DEVICE_ID, DEFAULT_HOMESERVER, DEFAULT_RECOVERY_CODE, DEFAULT_TOKEN, DEFAULT_USER_ID,
+    SEED_JSON, WS_CHANNEL_CAPACITY,
 };
 use crate::matrix::{MediaInfo, Mention, Outgoing, ThreadSend};
 use crate::models::*;
@@ -72,54 +72,6 @@ impl<G: std::ops::DerefMut> std::ops::DerefMut for Locked<'_, G> {
     }
 }
 
-pub fn tokenize(text: &str) -> Vec<String> {
-    let mut out: Vec<String> =
-        text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect();
-    out.sort_unstable();
-    out.dedup();
-    out
-}
-
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct InvertedIndex {
-    postings: BTreeMap<String, Vec<u32>>,
-}
-
-impl InvertedIndex {
-    pub fn insert_doc(&mut self, doc: u32, text: &str) {
-        for tok in tokenize(text) {
-            let list = self.postings.entry(tok).or_default();
-            let pos = list.binary_search(&doc).expect_err("document indexed twice");
-            list.insert(pos, doc);
-        }
-    }
-
-    pub fn remove_doc(&mut self, doc: u32, text: &str) {
-        for tok in tokenize(text) {
-            let list = self.postings.get_mut(&tok).expect("removed token is indexed");
-            list.remove(list.binary_search(&doc).expect("removed document is indexed"));
-        }
-    }
-
-    fn prefix_docs(&self, prefix: &str) -> Vec<u32> {
-        let mut ids: Vec<u32> = self
-            .postings
-            .range::<str, _>((std::ops::Bound::Included(prefix), std::ops::Bound::Unbounded))
-            .take_while(|(t, _)| t.starts_with(prefix))
-            .flat_map(|(_, ids)| ids.iter().copied())
-            .collect();
-        ids.sort_unstable();
-        ids.dedup();
-        ids
-    }
-
-    pub fn query_all_tokens(&self, query: &str) -> Vec<u32> {
-        let mut sets = tokenize(query).into_iter().map(|q| self.prefix_docs(&q));
-        let Some(first) = sets.next() else { return Vec::new() };
-        sets.fold(first, |acc, ids| acc.into_iter().filter(|id| ids.binary_search(id).is_ok()).collect())
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredAsset {
     pub upload_id: String,
@@ -158,7 +110,7 @@ struct SeedLabel {
     icon: Option<String>,
 }
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 const SCHEMA: &str = "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
      CREATE TABLE chats (id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;
      CREATE TABLE assets (upload_id TEXT PRIMARY KEY, json TEXT NOT NULL) STRICT;";
@@ -220,6 +172,12 @@ fn order_schema() -> String {
          CREATE INDEX messages_with_media ON messages (sort_key) WHERE {MEDIA};
          CREATE INDEX messages_by_thread ON messages ({THREAD}, sort_key) WHERE {THREAD} IS NOT NULL;"
     )
+}
+/// The time of a message: an RFC 3339 time with milliseconds in UTC, which sorts like the time.
+const TIME: &str = "(json ->> '$.timestamp')";
+/// Schema 10 orders the messages by time and row, like Desktop's `searchRoomMessages`.
+fn time_schema() -> String {
+    format!("CREATE INDEX messages_by_time ON messages ({TIME}, n);")
 }
 /// The root of a thread reply.
 const THREAD: &str = "(json ->> '$.threadRootEventID')";
@@ -333,21 +291,6 @@ fn removed_from_beeper(m: &mut Message) {
     m.links.clear();
 }
 
-fn chat_index_text(c: &Chat) -> String {
-    let people = c
-        .participants
-        .items
-        .iter()
-        .flat_map(|p| [&p.full_name, &p.custom_nickname, &p.username, &p.phone_number, &p.email]);
-    [&Some(c.title.clone()), &c.description]
-        .into_iter()
-        .chain(people)
-        .flatten()
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// The SQL conditions of a read of stored messages, with their arguments.
 #[derive(Debug, Default)]
 pub struct Query(Vec<String>, Vec<String>);
@@ -420,6 +363,16 @@ impl Query {
             Some(c) => self.and(if after { "sort_key > ?" } else { "sort_key < ?" }, c),
             None => self,
         }
+    }
+
+    /// The messages before the time and the row `n` of a cursor of Desktop's `searchRoomMessages`, or after them.
+    pub fn past_row(mut self, (ms, n): (i64, i64), after: bool) -> Self {
+        // The times of the years 0 to 9999 have four-digit years, which sort like the times.
+        let at = rfc3339_from_millis(ms.clamp(-62_167_219_200_000, 253_402_300_799_999));
+        self.1.extend([at, n.to_string()]);
+        let op = if after { ">" } else { "<" };
+        self.0.push(format!("({TIME}, n) {op} (?{}, CAST(?{} AS INTEGER))", self.1.len() - 1, self.1.len()));
+        self
     }
 
     /// The messages with attachments, links or URLs in the text.
@@ -553,8 +506,6 @@ pub struct BeeperStore {
     pub shown: Vec<String>,
     /// The replies of each thread in timeline order, by the ID of the thread root.
     thread_msg_indices: HashMap<String, Vec<usize>>,
-    /// The search index of the chats by their index, which the first chat search builds.
-    chat_search_index: std::sync::OnceLock<InvertedIndex>,
     pub assets: HashMap<String, StoredAsset>,
     assets_by_mxc: HashMap<String, String>,
     pub connect: crate::connect::Connect,
@@ -673,9 +624,10 @@ impl BeeperStore {
         match version {
             0 => conn
                 .execute_batch(&format!(
-                    "BEGIN; {SCHEMA} {} {OUTBOX} {} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;",
+                    "BEGIN; {SCHEMA} {} {OUTBOX} {} {} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;",
                     messages_schema(),
-                    order_schema()
+                    order_schema(),
+                    time_schema()
                 ))
                 .expect("create beeper-rs schema"),
             1..SCHEMA_VERSION => {
@@ -696,6 +648,7 @@ impl BeeperStore {
                     secret_flags(),
                     order_schema(),
                     transcriptions(),
+                    time_schema(),
                 ];
                 for (from, sql) in (version..).zip(&steps[version as usize - 1..]) {
                     conn.execute_batch(&format!("BEGIN; {sql} PRAGMA user_version = {}; COMMIT;", from + 1))
@@ -741,7 +694,6 @@ impl BeeperStore {
             loaded: Vec::new(),
             shown: Vec::new(),
             thread_msg_indices: HashMap::new(),
-            chat_search_index: std::sync::OnceLock::new(),
             assets: HashMap::new(),
             assets_by_mxc: HashMap::new(),
             connect: crate::connect::Connect::default(),
@@ -871,15 +823,20 @@ impl BeeperStore {
 
     /// Reads the stored messages that `filter`, the SQL after `WHERE`, selects in its order, until `f` returns false.
     pub fn scan_stored(&self, filter: &str, args: impl rusqlite::Params, mut f: impl FnMut(Message) -> bool) {
+        self.scan_rows(filter, args, |_, m| f(m));
+    }
+
+    /// [`Self::scan_stored`] with the row `n` of each message.
+    fn scan_rows(&self, filter: &str, args: impl rusqlite::Params, mut f: impl FnMut(i64, Message) -> bool) {
         let db = self.db.lock().unwrap();
         let mut q =
-            db.prepare_cached(&format!("SELECT json FROM messages WHERE {filter}")).expect("prepare a message read");
+            db.prepare_cached(&format!("SELECT n, json FROM messages WHERE {filter}")).expect("prepare a message read");
         let mut rows = q.query(args).expect("read messages");
         while let Some(row) = rows.next().expect("read a message row") {
             let mut m: Message =
-                serde_json::from_str(row.get_ref(0).unwrap().as_str().unwrap()).expect("parse a stored message");
+                serde_json::from_str(row.get_ref(1).unwrap().as_str().unwrap()).expect("parse a stored message");
             m.sync_flags();
-            if !f(m) {
+            if !f(row.get(0).expect("a message row"), m) {
                 break;
             }
         }
@@ -1686,9 +1643,6 @@ impl BeeperStore {
         let idx = self.chats.len();
         assert!(self.chat_idx_by_id.insert(chat.id.clone(), idx).is_none(), "duplicate chat {}", chat.id);
         self.chat_order.insert(activity_key(&chat));
-        if let Some(index) = self.chat_search_index.get_mut() {
-            index.insert_doc(idx as u32, &chat_index_text(&chat));
-        }
         if let Some(loc) = &chat.local_chat_id {
             self.local_chat_idx_by_id.insert(loc.clone(), idx);
         }
@@ -2011,7 +1965,6 @@ impl BeeperStore {
         for i in self.chat_idx_by_id.values_mut().chain(self.local_chat_idx_by_id.values_mut()).filter(|i| **i > idx) {
             *i -= 1;
         }
-        self.chat_search_index = std::sync::OnceLock::new();
         self.loaded.retain(|c| c != id);
         if self.chat_msg_indices.remove(id).is_some() {
             self.compact();
@@ -2070,17 +2023,12 @@ impl BeeperStore {
 
     pub fn update_chat(&mut self, idx: usize, f: impl FnOnce(&mut Chat)) -> Chat {
         let old_key = activity_key(&self.chats[idx]);
-        let old = self.chat_search_index.get().map(|_| chat_index_text(&self.chats[idx]));
         f(&mut self.chats[idx]);
         assert!(self.chat_order.remove(&old_key), "chat {} is in the chat order", old_key.1);
         self.chat_order.insert(activity_key(&self.chats[idx]));
         self.chats[idx].sync_flags();
         self.chats[idx].participants.items.shrink_to_fit();
         self.chats[idx].flags = self.label_flags(&self.chats[idx]);
-        if let (Some(index), Some(old)) = (self.chat_search_index.get_mut(), old) {
-            index.remove_doc(idx as u32, &old);
-            index.insert_doc(idx as u32, &chat_index_text(&self.chats[idx]));
-        }
         self.persist_chat(idx);
         let chat = self.chats[idx].clone();
         self.emit_ws("chat.upserted", &chat.id, None, Some(chat.clone()), None);
@@ -2783,19 +2731,6 @@ impl BeeperStore {
         c.flags & !CHAT_HIDDEN | if hidden { CHAT_HIDDEN } else { 0 }
     }
 
-    /// The chat search index. The first call builds it.
-    pub fn chat_search(&self) -> &InvertedIndex {
-        self.chat_search_index.get_or_init(|| {
-            let mut postings: HashMap<String, Vec<u32>> = HashMap::new();
-            for (i, c) in self.chats.iter().enumerate() {
-                for tok in tokenize(&chat_index_text(c)) {
-                    postings.entry(tok).or_default().push(i as u32);
-                }
-            }
-            InvertedIndex { postings: postings.into_iter().collect() }
-        })
-    }
-
     pub fn feature(&self, key: &str) -> crate::features::Feature {
         self.features.get(key, self.scheduled.len())
     }
@@ -3111,6 +3046,13 @@ impl BeeperStore {
         self.scan_stored(&format!("{all} ORDER BY sort_key DESC"), rusqlite::params_from_iter(&q.1), f);
     }
 
+    /// Reads the stored messages that `q` selects, newest first by time and then by row like Desktop's
+    /// `searchRoomMessages`, with their rows, until `f` returns false.
+    pub fn scan_by_time(&self, q: &Query, f: impl FnMut(i64, Message) -> bool) {
+        let all = if q.0.is_empty() { "1".to_string() } else { q.0.join(" AND ") };
+        self.scan_rows(&format!("{all} ORDER BY {TIME} DESC, n DESC"), rusqlite::params_from_iter(&q.1), f);
+    }
+
     /// The id, chat, Unix seconds and stored bytes of each message.
     pub fn message_sizes(&self) -> Vec<(String, String, i64, u64)> {
         let db = self.db.lock().unwrap();
@@ -3269,7 +3211,7 @@ mod tests {
         // Schema 5 is schema 8 without the outbox table, the secret flags and the message order indices.
         rusqlite::Connection::open(&config.db_path)
             .unwrap()
-            .execute_batch("DROP TABLE outbox; DROP INDEX messages_by_key; DROP INDEX messages_with_media; DROP INDEX messages_by_thread; PRAGMA user_version = 5;")
+            .execute_batch("DROP TABLE outbox; DROP INDEX messages_by_key; DROP INDEX messages_with_media; DROP INDEX messages_by_thread; DROP INDEX messages_by_time; PRAGMA user_version = 5;")
             .unwrap();
         let mut st = super::BeeperStore::from_config(config.clone());
         assert_eq!(ids(&st), want, "the message search stays");
@@ -3294,7 +3236,7 @@ mod tests {
             .unwrap()
             .execute_batch(&format!(
                 "UPDATE messages SET json = json_remove(json_set(json, {old}), '$.attachments[0].transcription')
-                     WHERE id = 'msg_1000c'; PRAGMA user_version = 8;"
+                     WHERE id = 'msg_1000c'; DROP INDEX messages_by_time; PRAGMA user_version = 8;"
             ))
             .unwrap();
         let mut st = super::BeeperStore::from_config(config);
@@ -3368,7 +3310,7 @@ mod tests {
                 "UPDATE kv SET value = json_set(value, '$.secrets.master_key', 'mk', '$.secrets.self_signing_key', '',
                      '$.secrets.user_signing_key', 'usk', '$.secrets.megolm_backup_key', '') WHERE key = 'state';
                  DROP INDEX messages_by_key; DROP INDEX messages_with_media; DROP INDEX messages_by_thread;
-                 PRAGMA user_version = 6;",
+                 DROP INDEX messages_by_time; PRAGMA user_version = 6;",
             )
             .unwrap();
         let st = super::BeeperStore::from_config(config);
@@ -3405,29 +3347,6 @@ mod tests {
         assert_eq!(st.messages.len(), st.msg_idx_by_id.len(), "the tombstones and the messages of the chat are gone");
         assert!(st.msg_idx_by_id.iter().all(|(id, &i)| st.messages[i].id == *id));
         assert!(st.chats.iter().enumerate().all(|(i, c)| st.chat_idx_by_id[&c.id] == i));
-        let title = st.chats.last().unwrap().title.clone();
-        let found = st.chat_search().query_all_tokens(&title);
-        assert!(found.iter().any(|&i| st.chats[i as usize].title == title), "the chat search finds moved chats");
-    }
-
-    #[test]
-    fn the_chat_search_follows_the_changed_chats() {
-        let config = crate::testing::demo_config("chat-search");
-        let mut st = super::BeeperStore::from_config(config);
-        assert!(st.chat_search_index.get().is_none(), "the start does not build the chat search index");
-        assert!(st.chat_search().query_all_tokens("zanzibar").is_empty());
-        let chat = crate::models::Chat {
-            id: "!new:beeper.com".into(),
-            local_chat_id: None,
-            title: "Zanzibar".into(),
-            ..st.chats[0].clone()
-        };
-        st.upsert_chat(chat);
-        st.update_chat(1, |c| c.title = "Quokka Zanzibar".into());
-        let found = st.chat_search().query_all_tokens("zanz");
-        assert_eq!(found, [1, st.chats.len() as u32 - 1]);
-        let kept = std::mem::take(&mut st.chat_search_index).into_inner().unwrap();
-        assert_eq!(&kept, st.chat_search(), "the changes keep the index equal to a new one");
     }
 
     #[test]
