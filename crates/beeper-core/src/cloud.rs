@@ -210,6 +210,12 @@ impl Cloud {
         self.send(reqwest::Method::PATCH, &url, Some(access_token), Some(&json!({ "email": email }))).map(drop)
     }
 
+    /// Desktop's `bapi.deleteAllBridges`: the reset of the recovery key disconnects every account.
+    pub fn delete_all_bridges(&self, access_token: &str) -> Result<(), CloudError> {
+        let url = format!("{}/bridge/delete-all-bridges", self.api_url);
+        self.send(reqwest::Method::POST, &url, Some(access_token), None).map(drop)
+    }
+
     /// Desktop's `bapi.deleteAccount`, which deletes the Beeper account for good.
     pub fn delete_account(&self, access_token: &str) -> Result<(), CloudError> {
         self.send(reqwest::Method::DELETE, &format!("{}/user", self.api_url), Some(access_token), None).map(drop)
@@ -510,6 +516,21 @@ mod tests {
         let body = json!({ "type": "org.matrix.login.jwt", "token": "jwt",
             "initial_device_display_name": "Beeper Desktop v4 (Linux)" });
         assert_eq!(*sent.lock().unwrap(), [("POST".into(), "/_matrix/client/v3/login".into(), body)]);
+    }
+
+    /// The reset of the recovery key deletes every bridge, like Desktop's `deleteAllBridges`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reset_deletes_all_bridges_like_desktop() {
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url = crate::bridge_stub::serve(move |method, path, _| {
+            log.lock().unwrap().push((method.to_string(), path.to_string()));
+            (200, json!({}))
+        })
+        .await;
+        let cloud = Cloud::new(&url, &url);
+        tokio::task::spawn_blocking(move || cloud.delete_all_bridges("token")).await.unwrap().unwrap();
+        assert_eq!(*sent.lock().unwrap(), [("POST".to_string(), "/bridge/delete-all-bridges".to_string())]);
     }
 
     /// Desktop's Whisper request, to a local stub of Beeper's OpenAI proxy.
