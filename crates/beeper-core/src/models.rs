@@ -1694,6 +1694,9 @@ pub struct BeeperSettings {
     pub quick_reactions: Vec<String>,
     /// Desktop's local `recent_stickers`: the last 24 stickers that you picked, the newest first.
     pub recent_stickers: Vec<Sticker>,
+    /// Desktop's synced `time_suggestion_options`, normalized by [`crate::prefs::time_suggestion_options`]; empty is
+    /// Desktop's defaults.
+    pub time_suggestions: Vec<String>,
 }
 
 /// Desktop's image pack with stickers (`OCt` and `z0e`): the id, the tab title, the avatar, and the stickers.
@@ -1849,6 +1852,15 @@ impl BeeperSettings {
             panic!("{key} is in seconds")
         };
         u64::try_from(values[usize::from(self.pref(key))]).expect("positive seconds")
+    }
+
+    /// Desktop's `timeSuggestionOptions` (`jdt`): the time suggestions, or [`crate::prefs::TIME_SUGGESTIONS`] when
+    /// there are none.
+    pub fn time_suggestions(&self) -> Vec<&str> {
+        match self.time_suggestions.is_empty() {
+            true => crate::prefs::TIME_SUGGESTIONS.to_vec(),
+            false => self.time_suggestions.iter().map(String::as_str).collect(),
+        }
     }
 
     pub fn on(&self, key: &str) -> bool {

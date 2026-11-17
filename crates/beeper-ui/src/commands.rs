@@ -220,7 +220,8 @@ fn search(v: Vec<Command>, query: &str) -> Vec<Command> {
     }
 }
 
-/// Desktop's `yle`: "last used", then the suggested and typed times that are still ahead, each once.
+/// Desktop's `yle`: "last used", then the `timeSuggestionOptions`, counted and typed times that are still ahead, each
+/// once.
 fn time_commands(st: &BeeperStore, query: &str, pick: impl Fn(i64) -> UiMessage) -> Vec<Command> {
     let now = beeper_core::config::now_unix_millis();
     let count = query.parse::<u32>().ok().filter(|n| *n > 0);
@@ -229,7 +230,7 @@ fn time_commands(st: &BeeperStore, query: &str, pick: impl Fn(i64) -> UiMessage)
         let n = count.filter(|n| *n < max)?;
         Some(format!("{n} {unit}{}", if n == 1 { "" } else { "s" }))
     });
-    let phrases = crate::reminders::TIME_SUGGESTIONS.iter().map(|s| s.to_string()).chain(counted);
+    let phrases = st.settings.time_suggestions().into_iter().map(String::from).chain(counted);
     let phrases = phrases.chain(MORE_TIMES.iter().map(|s| s.to_string())).chain([query.to_string()]);
     let row = |label: String, at: i64, msg: UiMessage| {
         let (long, short) = locale_times(at);

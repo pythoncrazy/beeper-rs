@@ -51,6 +51,7 @@ pub mod settings;
 mod sound;
 mod spell;
 mod time;
+mod time_suggestions;
 mod timeline;
 pub mod toasts;
 #[cfg(target_os = "linux")]
@@ -298,6 +299,8 @@ pub enum UiMessage {
     Gifs(gifs::Msg),
     /// Desktop's chat reminders: Remind me, If no reply, the due reminders and the Reminders list.
     Reminders(reminders::Msg),
+    /// Desktop's `TimeSuggestionsPreference` in General settings.
+    TimeSuggestions(time_suggestions::Msg),
     /// Desktop's command bar.
     CommandBar(commands::Msg),
     /// Desktop's Send Later: the time of the composer, and the scheduled messages with their menu.
@@ -2574,6 +2577,8 @@ pub struct BeeperGuiApp {
     report_spam: bool,
     mods: keyboard::Modifiers,
     reminder_menu: Option<Point>,
+    /// Desktop's `TimeSuggestionsPreference`: the add input and the drag of its list.
+    time_edit: time_suggestions::TimeEdit,
     audio: voice::Player,
     recorder: Option<record::Recorder>,
     talk: Option<record::Talk>,
@@ -2836,6 +2841,7 @@ impl BeeperGuiApp {
             devices_busy: false,
             report_spam: false,
             reminder_menu: None,
+            time_edit: Default::default(),
             audio,
             recorder: None,
             talk: None,
@@ -3800,6 +3806,7 @@ impl BeeperGuiApp {
             UiMessage::Rail(msg) => return self.rail(msg),
             UiMessage::Record(msg) => return self.record(msg),
             UiMessage::Reminders(msg) => return self.reminders(msg),
+            UiMessage::TimeSuggestions(msg) => return self.time_suggestions(msg),
             UiMessage::Scheduled(msg) => return self.scheduled(msg),
             UiMessage::Settings(msg) => return self.settings(msg),
             UiMessage::Thread(msg) => return self.threads(msg),
@@ -4624,6 +4631,14 @@ impl BeeperGuiApp {
                 _ => None,
             })
         });
+        let time_drag = self.time_edit.drag.is_some().then(|| {
+            iced::event::listen_with(|e, _, _| match e {
+                Event::Mouse(mouse::Event::ButtonReleased(_)) => {
+                    Some(UiMessage::TimeSuggestions(time_suggestions::Msg::Grab(None)))
+                }
+                _ => None,
+            })
+        });
         let (rising, due) = {
             let st = self.store.read();
             let last = self.pane().selected_chat_id.as_ref().and_then(|c| st.timeline_indices(c).last());
@@ -4695,6 +4710,7 @@ impl BeeperGuiApp {
                 .chain(pin_press)
                 .chain(pin_drag)
                 .chain(poll_drag)
+                .chain(time_drag)
                 .chain(carousel)
                 .chain(tick)
                 .chain(toast)

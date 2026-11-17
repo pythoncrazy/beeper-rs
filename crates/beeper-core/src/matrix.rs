@@ -3280,8 +3280,14 @@ async fn sync_prefs(client: &Client, store: &SharedStore) {
     if let Some(e) = events[crate::prefs::DESKTOP_PREFS][crate::prefs::QUICK_REACTION].as_str() {
         settings.quick_reaction = e.to_string();
     }
+    if let Some(v) = events[crate::prefs::DESKTOP_PREFS].get(crate::prefs::TIME_SUGGESTION_OPTIONS) {
+        settings.time_suggestions = crate::prefs::time_suggestion_options(v);
+    }
     st.synced_prefs = events;
-    if settings.prefs != st.settings.prefs || settings.quick_reaction != st.settings.quick_reaction {
+    let s = &st.settings;
+    if (&settings.prefs, &settings.quick_reaction, &settings.time_suggestions)
+        != (&s.prefs, &s.quick_reaction, &s.time_suggestions)
+    {
         st.update_settings(|s| *s = settings);
         st.emit_ws("settings.updated", "", None, None, None);
     }
@@ -3301,6 +3307,12 @@ pub fn pref_write(st: &mut BeeperStore, key: &str) -> Option<(&'static str, Valu
 pub fn quick_reaction_write(st: &mut BeeperStore) -> Option<(&'static str, Value)> {
     let emoji = st.settings.quick_reaction.clone().into();
     synced_write(st, crate::prefs::DESKTOP_PREFS, crate::prefs::QUICK_REACTION, emoji)
+}
+
+/// The account data write of Desktop's `setTimeSuggestionOptions`, which syncs the time suggestions.
+pub fn time_suggestions_write(st: &mut BeeperStore) -> Option<(&'static str, Value)> {
+    let options = st.settings.time_suggestions.clone().into();
+    synced_write(st, crate::prefs::DESKTOP_PREFS, crate::prefs::TIME_SUGGESTION_OPTIONS, options)
 }
 
 fn synced_write(st: &mut BeeperStore, kind: &'static str, field: &str, value: Value) -> Option<(&'static str, Value)> {
@@ -5940,6 +5952,59 @@ mod tests {
         assert_eq!(t("ban", "leave", ("Ann", false), None), "Ann was banned");
         assert_eq!(t("invite", "", ("Ann", false), Some(Some("Bob"))), "Bob invited Ann to the chat");
         assert_eq!(t("invite", "", ("Ann", true), Some(None)), "You were invited to the chat");
+    }
+
+    /// Desktop's `time_suggestion_options` comes in normalized from `com.beeper.desktop.prefs`, and
+    /// `setTimeSuggestionOptions` writes the list back with the other Desktop prefs, which the next sync reads again.
+    #[tokio::test]
+    async fn time_suggestions_sync_like_desktop() {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        use std::sync::{Arc, Mutex};
+        let options = json!([" Tomorrow ", "", 7, "Tomorrow", "In 3w", "a", "b", "c", "d", "e", "f", "g"]);
+        let stored = Arc::new(Mutex::new(json!({ "time_suggestion_options": options, "sticker_packs": true })));
+        let (sent, next, syncs) = (Arc::new(Mutex::new(Vec::new())), stored.clone(), AtomicUsize::new(0));
+        let log = sent.clone();
+        let url =
+            crate::bridge_stub::serve(move |method, path, body| match path.split_once('?').map_or(path, |p| p.0) {
+                "/_matrix/client/versions" => (200, json!({ "versions": ["v1.11"] })),
+                "/_matrix/client/v3/keys/upload" => (200, json!({ "one_time_key_counts": {} })),
+                "/_matrix/client/v3/sync" => {
+                    let mut sync = stub_sync();
+                    sync["next_batch"] = json!(format!("s{}", syncs.fetch_add(1, Relaxed)));
+                    let event = json!({ "type": "com.beeper.desktop.prefs", "content": next.lock().unwrap().clone() });
+                    sync["account_data"] = json!({ "events": [event] });
+                    (200, sync)
+                }
+                p if p.ends_with("/account_data/com.beeper.desktop.prefs") => {
+                    log.lock().unwrap().push((method.to_string(), body));
+                    (200, json!({}))
+                }
+                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            })
+            .await;
+        let store = stub_store(&crate::testing::temp_dir("time-suggestions"), &url).await;
+        let client = store.read().matrix.clone().expect("a Matrix client");
+        super::sync_prefs(&client, &store).await;
+        let read = store.read().settings.time_suggestions.clone();
+        assert_eq!(read, ["Tomorrow", "In 3w", "a", "b", "c", "d", "e", "f"], "Desktop's `xpe`");
+        let (kind, content) = {
+            let mut st = store.write();
+            st.update_settings(|s| s.time_suggestions = vec!["In 3w".into(), "Tomorrow".into()]);
+            super::time_suggestions_write(&mut st).expect("the prefs are synced")
+        };
+        assert_eq!(content, json!({ "time_suggestion_options": ["In 3w", "Tomorrow"], "sticker_packs": true }));
+        super::set_global(client.clone(), kind, content.clone()).await.expect("the write");
+        assert_eq!(*sent.lock().unwrap(), [("PUT".to_string(), content.clone())]);
+        store.write().update_settings(|s| s.time_suggestions.clear());
+        *stored.lock().unwrap() = content;
+        client.sync_once(super::SyncSettings::default()).await.expect("sync the written prefs");
+        super::sync_prefs(&client, &store).await;
+        assert_eq!(store.read().settings.time_suggestions, ["In 3w", "Tomorrow"], "the write comes back");
+        *stored.lock().unwrap() = json!({ "time_suggestion_options": [] });
+        client.sync_once(super::SyncSettings::default()).await.expect("sync a reset");
+        super::sync_prefs(&client, &store).await;
+        let st = store.read();
+        assert_eq!(st.settings.time_suggestions(), crate::prefs::TIME_SUGGESTIONS, "a reset is Desktop's defaults");
     }
 
     #[test]
