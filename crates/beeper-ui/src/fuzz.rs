@@ -7216,6 +7216,25 @@ fn chat_info_sets_the_notification_sound_like_desktop() {
     assert_eq!(app.store.read().chat(chat).notification_sound.as_deref(), Some("silent"));
 }
 
+/// Desktop's space sheet is as wide as its longest space name, which stays on one line.
+#[test]
+fn the_space_sheet_fits_its_names_like_desktop() {
+    let app = demo_app("space-sheet");
+    let narrow = app.view_space_sheet().1;
+    {
+        let mut st = app.store.write();
+        let kind = |a: &str| account_network(a).kind;
+        let other =
+            |b: &&BridgeAccountInfo| !matches!(kind(&b.account_id), NetworkKind::WhatsApp | NetworkKind::Telegram);
+        let account = st.bridge_accounts.iter().find(other).expect("a network with spaces").account_id.clone();
+        let name = "supersketchy's very long server name".into();
+        st.network_spaces.push(NetworkSpace { id: "!long:beeper.local".into(), account_id: account, name });
+    }
+    let wide = app.view_space_sheet().1;
+    assert_eq!(narrow, 233.0, "short names keep the usual width");
+    assert!(wide > 233.0, "a long name widens the sheet: {wide}");
+}
+
 /// Desktop's `sit` and `ihe`: a contact of a bridge's contact list with a Matrix user and no phone number shows in
 /// New Chat, and its own account offers that user at once.
 #[test]
