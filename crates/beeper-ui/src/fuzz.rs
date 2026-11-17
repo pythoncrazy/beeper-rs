@@ -11,7 +11,9 @@ use crate::rail::{draft_rail_spaces, rail_accounts, rail_owner, rail_spaces, RAI
 use crate::rail::{SpacesEdit, SPACES_DIVIDER, SPACES_SIZE};
 use crate::reminders::reminder_day;
 use crate::scheduled::send_day;
+use crate::time::{clock, format_short_ts, list_ts};
 use crate::toasts::{TOAST_TIMEOUT, UNDO_NOTE_TIMEOUT};
+use crate::units::{compact, grouped, human_size};
 use crate::windows::write_window_state;
 use beeper_core::config::CentralConfig;
 use beeper_core::matrix::ROOM_MENTION;
@@ -5851,7 +5853,7 @@ fn chat_info_bookmarks_like_desktop() {
 
 #[test]
 fn timer_labels_like_date_fns() {
-    let labels: Vec<String> = DEFAULT_TIMERS.iter().map(|&ms| crate::timer_label(ms)).collect();
+    let labels: Vec<String> = DEFAULT_TIMERS.iter().map(|&ms| crate::time::timer_label(ms)).collect();
     assert_eq!(
         labels,
         [
@@ -5868,8 +5870,8 @@ fn timer_labels_like_date_fns() {
             "1 year",
         ]
     );
-    assert_eq!(crate::timer_label(7_776_000_000), "3 months");
-    assert_eq!(crate::timer_label(0), "Off");
+    assert_eq!(crate::time::timer_label(7_776_000_000), "3 months");
+    assert_eq!(crate::time::timer_label(0), "Off");
 }
 
 #[test]

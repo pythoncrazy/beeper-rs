@@ -226,13 +226,13 @@ fn time_commands(st: &BeeperStore, query: &str, pick: impl Fn(i64) -> UiMessage)
         let n = count.filter(|n| *n < max)?;
         Some(format!("{n} {unit}{}", if n == 1 { "" } else { "s" }))
     });
-    let phrases = crate::TIME_SUGGESTIONS.iter().map(|s| s.to_string()).chain(counted);
+    let phrases = crate::reminders::TIME_SUGGESTIONS.iter().map(|s| s.to_string()).chain(counted);
     let phrases = phrases.chain(MORE_TIMES.iter().map(|s| s.to_string())).chain([query.to_string()]);
     let row = |label: String, at: i64, msg: UiMessage| {
         let (long, short) = locale_times(at);
         Command { render: Some((label.clone(), short)), ..cmd("", format!("{label} — {long}"), Some(msg)) }
     };
-    let last = crate::last_used(st, now).map(|at| row(tr("last used").into(), at, pick(at)));
+    let last = crate::reminders::last_used(st, now).map(|at| row(tr("last used").into(), at, pick(at)));
     let times = phrases.filter_map(|phrase| {
         let at = beeper_core::config::parse_when_millis(&phrase, now).filter(|at| *at > now)?;
         let label = phrase.trim().to_lowercase();
