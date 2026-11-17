@@ -1330,7 +1330,8 @@ const ASK_UNBLOCK_OFFLINE: u8 = 21;
 const ASK_TRANSCRIBE: u8 = 22;
 /// Desktop's logout of another device of the account in Settings > Devices.
 const ASK_LOGOUT_DEVICE: u8 = 23;
-const SETTINGS_SIZE: Size = Size::new(793.0, 705.0);
+/// Desktop opens its `prefs` window at 800 x 740, in the middle of the screen.
+const SETTINGS_SIZE: Size = Size::new(800.0, 740.0);
 /// Desktop's default "Quick reaction emoji".
 /// Wide enough for "Copy Entire Message with Timestamp" on one line.
 const MESSAGE_MENU_W: f32 = 270.0;
