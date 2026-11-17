@@ -9,7 +9,7 @@ pub const APP_NAME: &str = "Beeper";
 /// answers with Desktop's bundle ID, which clients check.
 pub const INSTALL_ID: &str = "beeper-rs";
 pub const INSTALL_NAME: &str = "Beeper-RS";
-pub const APP_VERSION: &str = "4.3.176";
+pub const APP_VERSION: &str = "4.3.308";
 pub const DEFAULT_PAS_HOST: &str = "127.0.0.1";
 /// Desktop's Desktop API port. When it is busy, Desktop tries the next 50 ports, then a random port.
 pub const DEFAULT_PAS_PORT: u16 = 23373;

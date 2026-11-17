@@ -506,7 +506,7 @@ async fn handle_connection(mut stream: TcpStream, store: SharedStore, cloud: Arc
             }
             continue;
         }
-        if msg.start_line.starts_with("GET /v1/ws ") && msg.header_is("upgrade", "websocket") {
+        if msg.start_line.starts_with("GET ") && msg.path() == "/v1/ws" && msg.header_is("upgrade", "websocket") {
             let refused = auth::authorize(&store.read(), auth::access_token(&msg), &[beeper_core::connect::READ]).err();
             if let Some((status, message)) = refused {
                 let head = format!("HTTP/1.1 {status} {message}\r\nConnection: close\r\n\r\n");
@@ -623,6 +623,9 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     }
     if let ("GET", ["focus", rest @ ..]) = (method.as_str(), &segs[..]) {
         return focus_page(&mut store.write(), rest, &req);
+    }
+    if let ("GET", ["deeplink", rest @ ..]) = (method.as_str(), &segs[..]) {
+        return deeplink_page(&store.read(), rest, &req);
     }
     if let Some(reply) = bridge_login(store, cloud, &method, &segs, &req) {
         return reply;
@@ -992,7 +995,7 @@ fn info(cfg: &CentralConfig, base_url: &str) -> InfoResponse {
             }
             .into(),
             os: OsKind::current().node_platform_str().into(),
-            release: "7.0.14".into(),
+            release: "v24.20.0".into(),
         },
         server: InfoServer {
             hostname: cfg.host.clone(),
@@ -1992,6 +1995,22 @@ fn focus_page(st: &mut BeeperStore, path: &[&str], r: &Req) -> Reply {
         st.update_chat(i, |c| c.draft = Some(draft));
     }
     st.focus_tx.send(idx.map(|i| st.chats[i].id.clone())).ok();
+    let body = r#"<div class="message">You can close this window</div><div class="hint">Having issues? Contact help@beeper.com.</div>"#;
+    auth::html(200, "Beeper Client API", body, Vec::new())
+}
+
+/// Desktop's `GET /deeplink{/*path}` (`handleDeeplink`): opens `beeper://<path>` in the app, like a click on such a
+/// link, with the HTML answer of `/focus`.
+fn deeplink_page(st: &BeeperStore, path: &[&str], r: &Req) -> Reply {
+    auth::reject_browser(&r.msg)?;
+    let path = path.join("/");
+    if path.is_empty() {
+        return Err(error(StatusCode::BAD_REQUEST, "Missing deeplink parameter", "missing_parameter"));
+    }
+    // `decodeURIComponent`, which keeps a "+".
+    let link = format!("beeper://{path}");
+    let link = beeper_core::codec::url_decode(&link.replace('+', "%2B")).unwrap_or(link);
+    st.launch_tx.send(vec![link]).ok();
     let body = r#"<div class="message">You can close this window</div><div class="hint">Having issues? Contact help@beeper.com.</div>"#;
     auth::html(200, "Beeper Client API", body, Vec::new())
 }

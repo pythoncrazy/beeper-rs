@@ -658,6 +658,13 @@ async fn lifecycle() {
     );
     assert_eq!(anon.send("GET", "/focus?draft=x", &[], None).await.0, StatusCode::BAD_REQUEST);
     assert_eq!(anon.send("GET", "/focus/nope", &[], None).await.0, StatusCode::NOT_FOUND);
+    // Desktop's `/deeplink{/*path}` opens `beeper://<path>` in the app, and wants a path.
+    let mut launches = pages.read().launch_tx.subscribe();
+    let (status, page) = anon.send("GET", "/deeplink/chat/a%20b+c", &[], None).await;
+    assert!(status == StatusCode::OK && String::from_utf8(page).unwrap().contains("You can close this window"));
+    assert_eq!(launches.recv().await.unwrap(), ["beeper://chat/a b+c"]);
+    let (status, missing) = anon.send("GET", "/deeplink", &[], None).await;
+    assert!(status == StatusCode::BAD_REQUEST && String::from_utf8(missing).unwrap().contains("missing_parameter"));
     pager.patch_chat_draft("!wa_eric:beeper.com", None).await;
     let upload = json!({ "content": "aGVsbG8=", "fileName": "hello.txt", "mimeType": "text/plain" });
     let (status, uploaded) = pager.request("POST", "/v1/assets/upload", Some(upload)).await;

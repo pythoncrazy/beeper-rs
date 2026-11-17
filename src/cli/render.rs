@@ -1434,12 +1434,12 @@ mod tests {
     #[test]
     fn rows_shrink_and_round_like_yoga() {
         // The doctor row of upstream: the long detail shrinks the glyph to nothing and cuts the name.
-        let detail = "{\"reachable\":true,\"version\":\"4.3.176\",\"bundleID\":\"com.automattic.beeper.desktop\",\"actualType\":\"desktop\"}".to_string();
+        let detail = "{\"reachable\":true,\"version\":\"4.3.308\",\"bundleID\":\"com.automattic.beeper.desktop\",\"actualType\":\"desktop\"}".to_string();
         let el = row(vec![t("✓", MINE), plain("  "), t("target     ", TEXT), t(detail, MUTED)]).ml(2);
         let out = text(&el);
         assert_eq!(
             out.lines().next(),
-            Some("    target   {\"reachable\":true,\"version\":\"4.3.176\",\"bundleID\":\"com.automattic.be")
+            Some("    target   {\"reachable\":true,\"version\":\"4.3.308\",\"bundleID\":\"com.automattic.be")
         );
         assert_eq!(out.lines().nth(1), Some("             eper.desktop\",\"actualType\":\"desktop\"}"));
     }
