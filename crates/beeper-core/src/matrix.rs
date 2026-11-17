@@ -2875,6 +2875,148 @@ async fn global(client: &Client, kind: &str) -> Value {
     raw.map_or(Value::Null, |r| r.deserialize_as().expect("account data JSON"))
 }
 
+/// Desktop SDK's `AccountDataBridgeAccountOverrides`: the account nicknames, encrypted with MSC4483.
+pub const ACCOUNT_OVERRIDES: &str = "com.beeper.bridge_account_overrides";
+/// Desktop SDK's tries of a write of the overrides while other devices change them.
+const OVERRIDE_TRIES: usize = 5;
+/// Desktop SDK's `ErrRevisionIDMismatch`: the account data has another revision than the write expects.
+const REVISION_MISMATCH: &str = "COM.BEEPER.REVISION_ID_MISMATCH";
+
+/// Desktop SDK's `bridgeAccountOverrides`: the nickname of each login of each bridge, and the revision.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct AccountOverrides {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    accounts: BTreeMap<String, BTreeMap<String, AccountOverride>>,
+    #[serde(rename = "com.beeper.revision_id", default, skip_serializing_if = "String::is_empty")]
+    revision_id: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AccountOverride {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    name: String,
+}
+
+/// Desktop SDK's `setName` on the overrides `content`: the nickname of the login `account` of `bridge`, or its removal
+/// for an empty `name`, with a new revision.
+pub fn with_account_name(content: &Value, bridge: &str, account: &str, name: &str) -> Result<Value, String> {
+    let mut o: AccountOverrides = match content {
+        Value::Null => AccountOverrides::default(),
+        c => serde_json::from_value(c.clone()).map_err(|e| format!("failed to parse bridge account overrides: {e}"))?,
+    };
+    match name {
+        "" => {
+            if let Some(logins) = o.accounts.get_mut(bridge) {
+                logins.remove(account);
+                if logins.is_empty() {
+                    o.accounts.remove(bridge);
+                }
+            }
+        }
+        _ => {
+            _ = o
+                .accounts
+                .entry(bridge.into())
+                .or_default()
+                .insert(account.into(), AccountOverride { name: name.into() })
+        }
+    }
+    o.revision_id = matrix_sdk::ruma::TransactionId::new().to_string();
+    Ok(serde_json::to_value(o).expect("overrides JSON"))
+}
+
+/// Desktop SDK's `getEncryptedAccountDataKey`: the MSC4483 key from secret storage, which the stored recovery key
+/// opens. With `create`, a new key goes to secret storage when it has none (`generateAndStoreEncryptedAccountDataKey`).
+async fn account_data_key(client: &Client, store: &SharedStore, create: bool) -> Result<[u8; 32], String> {
+    let (key, code) = {
+        let st = store.read();
+        (st.account_data_key, st.beeper_state.secrets.recovery_code.clone())
+    };
+    if let Some(key) = key {
+        return Ok(key);
+    }
+    if code.is_empty() {
+        return Err("encrypted account data key unavailable: no stored recovery code to access SSSS".into());
+    }
+    let storage = client.encryption().secret_storage();
+    let secrets =
+        storage.open_secret_store(&code).await.map_err(|e| format!("failed to load default SSSS key: {e}"))?;
+    let found = secrets.get_secret(crate::msc4483::KEY_SECRET).await;
+    let key = match found.map_err(|e| format!("cannot look up encrypted account data key in SSSS: {e}"))? {
+        Some(secret) => crate::msc4483::key_from_secret(&secret)?,
+        None if create => {
+            let key = crate::msc4483::new_key();
+            let put = secrets.put_secret(crate::msc4483::KEY_SECRET, &vodozemac::base64_encode(key)).await;
+            put.map_err(|e| format!("failed to upload encrypted account data key to SSSS: {e}"))?;
+            key
+        }
+        None => return Err("encrypted account data key unavailable".into()),
+    };
+    store.write().account_data_key = Some(key);
+    Ok(key)
+}
+
+/// Desktop SDK's `MaybeDecryptAccountData` of the synced overrides. Content that cannot be decrypted yet stays as it
+/// is, and the next recovery key tries again.
+async fn sync_account_overrides(client: &Client, store: &SharedStore) {
+    let synced = global(client, ACCOUNT_OVERRIDES).await;
+    if store.read().account_overrides_synced == synced {
+        return;
+    }
+    let decrypted = match crate::msc4483::is_encrypted(&synced) {
+        true => account_data_key(client, store, false)
+            .await
+            .and_then(|key| crate::msc4483::decrypt(&key, ACCOUNT_OVERRIDES, &synced)),
+        false => Ok(synced.clone()),
+    };
+    let content = decrypted.unwrap_or_else(|e| {
+        eprintln!("Could not decrypt {ACCOUNT_OVERRIDES}: {e}");
+        synced.clone()
+    });
+    let mut st = store.write();
+    (st.account_overrides_synced, st.account_overrides) = (synced, content);
+    st.emit_ws("setup.updated", "", None, None, None);
+}
+
+/// Desktop SDK's `setBridgeAccountName`: the nickname of the login `account` of `bridge`, or none for an empty `name`,
+/// in the encrypted overrides. The write expects the revision that it read. When another device wrote first, the
+/// homeserver answers with the current content, and the name goes on that, up to 5 tries.
+pub async fn set_bridge_account_name(
+    store: SharedStore,
+    bridge: String,
+    account: String,
+    name: String,
+) -> Result<(), String> {
+    let client = store.read().matrix.clone().ok_or("Matrix is not connected yet")?;
+    let mut current = store.read().account_overrides.clone();
+    if crate::msc4483::is_encrypted(&current) {
+        return Err("bridge account overrides are not decrypted yet".into());
+    }
+    let path = ["user", &own_id(&client), "account_data", ACCOUNT_OVERRIDES];
+    for _ in 0..OVERRIDE_TRIES {
+        let next = with_account_name(&current, &bridge, &account, name.trim())?;
+        let key = account_data_key(&client, &store, true).await?;
+        let body = crate::msc4483::encrypt(&key, ACCOUNT_OVERRIDES, &next).to_string();
+        let expected = current["com.beeper.revision_id"].as_str().unwrap_or_default().to_string();
+        let query = [("com.beeper.expect_revision_id", expected.as_str())];
+        let sent = client_request(&client, reqwest::Method::PUT, &path, &query, Some(body)).await;
+        let (status, text) = sent.map_err(|e| format!("failed to set bridge account overrides: {e}"))?;
+        if status.is_success() {
+            store.write().account_overrides = next;
+            return Ok(());
+        }
+        let v: Value = serde_json::from_str(&text).unwrap_or_default();
+        current = match (v["errcode"].as_str(), v.get("com.beeper.current_content")) {
+            (Some(REVISION_MISMATCH), Some(c)) if crate::msc4483::is_encrypted(c) => {
+                crate::msc4483::decrypt(&key, ACCOUNT_OVERRIDES, c)?
+            }
+            (Some(REVISION_MISMATCH), Some(c)) => c.clone(),
+            _ => return Err(format!("failed to set bridge account overrides: {}", matrix_error(status, &v))),
+        };
+    }
+    Err(format!("bridge account overrides kept changing after {OVERRIDE_TRIES} attempts"))
+}
+
 /// Desktop's room image pack event types (`_u`): the stable type, and the older type that it replaces (`MR`).
 const PACK_TYPES: [&str; 2] = ["m.room.image_pack", "im.ponies.room_emotes"];
 /// Desktop's `space_children` depth limit (`RT`) of the packs of the spaces of a room.
@@ -3010,6 +3152,7 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
     let tone = global(client, "com.beeper.emoji_skin_tone").await["tone"].as_u64().map_or(0, |t| t as u8);
     let (flags, usage) = (global(client, crate::features::FLAGS).await, global(client, crate::features::USAGE).await);
     let bridges = global(client, BRIDGE_STATE).await;
+    sync_account_overrides(client, store).await;
     let muted = muted_rooms(client).await;
     let changed: Vec<String> = {
         let st = store.read();
@@ -3178,6 +3321,29 @@ async fn client_api(
     query: &[(&str, &str)],
     body: Option<String>,
 ) -> Result<String, String> {
+    let (status, text) = client_request(client, method, path, query, body).await?;
+    match status.is_success() {
+        true => Ok(text),
+        false => Err(matrix_error(status, &serde_json::from_str(&text).unwrap_or_default())),
+    }
+}
+
+/// The Matrix error `v` of a reply as `M_CODE (HTTP 404): error`.
+fn matrix_error(status: reqwest::StatusCode, v: &Value) -> String {
+    match v["errcode"].as_str() {
+        Some(code) => format!("{code} (HTTP {}): {}", status.as_u16(), v["error"].as_str().unwrap_or_default()),
+        None => format!("HTTP {status}"),
+    }
+}
+
+/// The status and the body of a request of the client-server API at `/_matrix/client/v3/{path}`.
+async fn client_request(
+    client: &Client,
+    method: reqwest::Method,
+    path: &[&str],
+    query: &[(&str, &str)],
+    body: Option<String>,
+) -> Result<(reqwest::StatusCode, String), String> {
     let mut url = client.homeserver();
     url.path_segments_mut().expect("a base URL").pop_if_empty().extend(["_matrix", "client", "v3"]).extend(path);
     if !query.is_empty() {
@@ -3190,15 +3356,7 @@ async fn client_api(
     }
     let res = req.send().await.map_err(|e| e.without_url().to_string())?;
     let status = res.status();
-    let text = res.text().await.map_err(|e| e.without_url().to_string())?;
-    if status.is_success() {
-        return Ok(text);
-    }
-    let v: Value = serde_json::from_str(&text).unwrap_or_default();
-    match v["errcode"].as_str() {
-        Some(code) => Err(format!("{code} (HTTP {}): {}", status.as_u16(), v["error"].as_str().unwrap_or_default())),
-        None => Err(format!("HTTP {status}")),
-    }
+    Ok((status, res.text().await.map_err(|e| e.without_url().to_string())?))
 }
 
 fn own_id(client: &Client) -> String {
@@ -3487,10 +3645,11 @@ pub async fn recover(store: SharedStore, key: String) -> Result<(), String> {
         RecoveryError::SecretStorage(SecretStorageError::SecretStorageKey(e)) => format!("Invalid recovery key: {e}"),
         e => e.to_string(),
     })?;
-    // Desktop's SDK keeps the recovery key that verified this device.
+    // Desktop's SDK keeps the recovery key that verified this device, and decrypts the account data again with it.
     {
         let mut st = store.write();
         st.beeper_state.secrets.recovery_code = key;
+        st.account_overrides_synced = Value::Null;
         st.persist_state_to_sqlite();
         st.emit_ws("setup.updated", "", None, None, None);
     }
@@ -4955,6 +5114,88 @@ mod tests {
         }
         super::sync_account_data(&client, &store).await;
         assert!(events.try_recv().is_err(), "the same states change nothing");
+    }
+
+    /// Desktop SDK's account nicknames: `com.beeper.bridge_account_overrides` is encrypted with the MSC4483 key of
+    /// secret storage, which the stored recovery key opens. The synced nickname is the account's `customName`, and
+    /// `setBridgeAccountName` writes a new revision that expects the read one. When another device wrote first, the
+    /// homeserver answers with its content, and the name goes on that.
+    #[tokio::test]
+    async fn account_nicknames_are_encrypted_account_data_like_desktop() {
+        use matrix_sdk::ruma::events::secret::request::SecretName;
+        let ssss = matrix_sdk_crypto::secret_storage::SecretStorageKey::new();
+        let key = [7; 32];
+        let name = SecretName::from(crate::msc4483::KEY_SECRET);
+        let secret = ssss.encrypt(vodozemac::base64_encode(key).into_bytes(), &name);
+        let secret = json!({ "encrypted": { ssss.key_id(): secret } });
+        let default_key = json!({ "key": ssss.key_id() });
+        let key_info = serde_json::to_value(ssss.event_content()).expect("the key info JSON");
+        let key_path = format!("/_matrix/client/v3/user/@me:x/account_data/m.secret_storage.key.{}", ssss.key_id());
+        let kind = super::ACCOUNT_OVERRIDES;
+        let synced = json!({ "accounts": { "whatsapp": { "a": { "name": "Work" } } }, "com.beeper.revision_id": "r1" });
+        let theirs =
+            json!({ "accounts": { "telegram": { "t": { "name": "Phone" } } }, "com.beeper.revision_id": "r2" });
+        let mut sync = stub_sync();
+        let event = json!({ "type": kind, "content": crate::msc4483::encrypt(&key, kind, &synced) });
+        sync["account_data"] = json!({ "events": [event] });
+        let conflict = json!({ "errcode": "COM.BEEPER.REVISION_ID_MISMATCH", "error": "revision mismatch",
+            "com.beeper.current_content": crate::msc4483::encrypt(&key, kind, &theirs) });
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url = crate::bridge_stub::serve(move |method, path, body| {
+            match (method, path.split_once('?').map_or(path, |p| p.0)) {
+                (_, "/_matrix/client/versions") => (200, json!({ "versions": ["v1.11"] })),
+                (_, "/_matrix/client/v3/sync") => (200, sync.clone()),
+                (_, "/_matrix/client/v3/keys/upload") => (200, json!({ "one_time_key_counts": {} })),
+                ("GET", "/_matrix/client/v3/user/@me:x/account_data/m.secret_storage.default_key") => {
+                    (200, default_key.clone())
+                }
+                ("GET", p) if p == key_path => (200, key_info.clone()),
+                ("GET", "/_matrix/client/v3/user/@me:x/account_data/dev.zirco.msc4483.account_data.key") => {
+                    (200, secret.clone())
+                }
+                ("PUT", "/_matrix/client/v3/user/@me:x/account_data/com.beeper.bridge_account_overrides") => {
+                    let mut log = log.lock().unwrap();
+                    log.push((path.to_string(), body));
+                    match log.len() {
+                        1 => (409, conflict.clone()),
+                        _ => (200, json!({})),
+                    }
+                }
+                _ => (404, json!({ "errcode": "M_NOT_FOUND", "error": "not in the stub" })),
+            }
+        })
+        .await;
+        let store = stub_store(&crate::testing::temp_dir("account-nicknames"), &url).await;
+        let on = json!({ "state_event": "CONNECTED" });
+        let bridges =
+            json!({ "whatsapp": { "bridgeState": { "bridgeType": "whatsapp" }, "remoteState": { "a": on } } });
+        let accounts = crate::cloud::cloud_accounts(&bridges).expect("valid bridge states");
+        store.write().set_cloud_accounts(accounts);
+        store.write().beeper_state.secrets.recovery_code = ssss.to_base58();
+        let client = store.read().matrix.clone().expect("a client");
+        super::sync_account_data(&client, &store).await;
+        assert_eq!(store.read().custom_name("whatsapp"), Some("Work"), "the synced nickname is decrypted");
+        let set =
+            |name: &str| super::set_bridge_account_name(store.clone(), "whatsapp".into(), "a".into(), name.into());
+        set("  Personal ").await.expect("the second try writes the name");
+        let puts = sent.lock().unwrap().clone();
+        let expected: Vec<&str> = puts.iter().map(|(p, _)| p.split_once('?').expect("a query").1).collect();
+        assert_eq!(expected, ["com.beeper.expect_revision_id=r1", "com.beeper.expect_revision_id=r2"]);
+        let body = &puts[1].1;
+        let fields: Vec<&String> = body.as_object().expect("an object").keys().collect();
+        assert_eq!(fields, ["com.beeper.revision_id", "encrypted"], "only the revision stays in plaintext");
+        let revision = body["com.beeper.revision_id"].as_str().expect("a new revision");
+        assert!(!["r1", "r2"].contains(&revision));
+        let names = json!({ "telegram": { "t": { "name": "Phone" } }, "whatsapp": { "a": { "name": "Personal" } } });
+        let plain = crate::msc4483::decrypt(&key, kind, body).expect("the body decrypts with the key");
+        assert_eq!(plain, json!({ "accounts": names, "com.beeper.revision_id": revision }));
+        assert_eq!(store.read().custom_name("whatsapp"), Some("Personal"));
+        set("").await.expect("the removal writes");
+        let body = sent.lock().unwrap()[2].1.clone();
+        let plain = crate::msc4483::decrypt(&key, kind, &body).expect("the body decrypts with the key");
+        assert_eq!(plain["accounts"], json!({ "telegram": { "t": { "name": "Phone" } } }), "an empty name removes it");
+        assert_eq!(store.read().custom_name("whatsapp"), None);
     }
 
     /// Desktop's SDK reports `initialized` after it reads the encryption state, and an account without cross-signing
