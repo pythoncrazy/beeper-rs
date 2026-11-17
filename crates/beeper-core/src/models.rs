@@ -679,6 +679,9 @@ pub struct Chat {
     pub inbox_group: bool,
     #[serde(rename = "isRequest", skip_serializing_if = "Option::is_none")]
     pub is_request: Option<bool>,
+    /// Desktop's `createdAt`: the time of the room's `m.room.create`, in milliseconds.
+    #[serde(rename = "createdAt", default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
     #[serde(rename = "networkName", skip_serializing_if = "Option::is_none")]
     pub network_name: Option<String>,
     #[serde(rename = "networkID", skip_serializing_if = "Option::is_none")]

@@ -7499,3 +7499,43 @@ fn nameless_attachments_like_desktop() {
     let a = Attachment { attachment_type: "unknown".into(), ..Attachment::default() };
     assert_eq!(crate::message::attachment_name(&a), "Attachment");
 }
+
+/// Desktop's dot of new requests: the requests that came after the Requests view last showed their account, by
+/// `com.beeper.message_requests.last_viewed_at`, whatever their unread state.
+#[test]
+fn requests_dot_like_desktop() {
+    let mut app = demo_app("requests-dot");
+    let id = {
+        let st = app.store.read();
+        let free = |c: &&Chat| c.id != NOTE_CHAT_ID && c.is_pinned != Some(true) && c.account_id == "acc_signal";
+        st.chats.iter().find(free).expect("a Signal chat").id.clone()
+    };
+    {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&id).expect("the chat");
+        st.update_chat(i, |c| {
+            (c.is_request, c.flags, c.unread_count) = (Some(true), (c.flags | CHAT_REQUEST) & !CHAT_UNREAD, 0)
+        });
+    }
+    let new = |app: &BeeperGuiApp| {
+        let st = app.store.read();
+        st.chats.iter().filter(|c| st.new_request(c)).count()
+    };
+    assert_eq!(new(&app), 1, "a request that was never viewed is new, also when read");
+    let key = {
+        let st = app.store.read();
+        st.request_key(st.chat(&id)).expect("a bridge login")
+    };
+    assert_eq!(key, "signal.login_signal_01", "Desktop's <bridge ID>.<login ID>");
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::Requests)));
+    assert_eq!(new(&app), 0, "the Requests view saw it");
+    app.store.write().merge_requests_viewed(&serde_json::json!({ key.clone(): 1 }));
+    assert_eq!(new(&app), 0, "another device's older time keeps the newer one");
+    {
+        let mut st = app.store.write();
+        let i = st.resolve_chat_idx(&id).expect("the chat");
+        let later = st.requests_viewed[&key] + 1;
+        st.update_chat(i, |c| c.created_at = Some(later));
+    }
+    assert_eq!(new(&app), 1, "a request created after the view is new");
+}
