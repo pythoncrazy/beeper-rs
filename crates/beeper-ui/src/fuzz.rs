@@ -8070,6 +8070,7 @@ fn sign_in_code_screen_like_desktop() {
         status: 401,
         message: "Invalid code. Please try again.".into(),
         errcode: None,
+        body: None,
     };
     let _ = app.update(LoginMsg::Done(Err(refused)).into());
     let _ = app.update(LoginMsg::KeyOnFocus(Some("123456".into())).into());

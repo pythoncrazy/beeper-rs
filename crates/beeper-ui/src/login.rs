@@ -462,7 +462,24 @@ fn open_email_client() -> Task<UiMessage> {
 
 /// An error of beeper-rs itself, which shows in the toast like a network error.
 fn local_error(message: String) -> CloudError {
-    CloudError { status: 0, message, errcode: None }
+    CloudError { status: 0, message, errcode: None, body: None }
+}
+
+/// Desktop's `uge`: the text of a refused sign-in code. After two wrong codes it is "Invalid code. Please try again.";
+/// before, the message of the `BeeperAPIError`, or of a failed request, or "Invalid code. Please try again or
+/// contact support." without one. The code screen shows it under the heading, or in the toast for a 5xx or a
+/// request that got no answer.
+fn code_error(e: CloudError) -> CloudError {
+    let message = match (e.retries(), e.status) {
+        (2.., _) => tr("Invalid code. Please try again.").to_string(),
+        (_, 0) => e.message.clone(),
+        _ => e.api_message(),
+    };
+    let message = match message.is_empty() {
+        true => tr("Invalid code. Please try again or contact support.").to_string(),
+        false => message,
+    };
+    CloudError { message, ..e }
 }
 
 fn session(cloud: &Cloud, jwt: &str) -> Result<Outcome, CloudError> {
@@ -851,7 +868,7 @@ impl BeeperGuiApp {
             LoginMsg::SubmitCode => {
                 let (request, code) = (l.request.clone(), l.code.clone());
                 l.tried_codes.push(code.clone());
-                return self.background(move |c| match c.send_login_code(&request, &code)? {
+                return self.background(move |c| match c.send_login_code(&request, &code).map_err(code_error)? {
                     CodeResult::Token(jwt) => session(c, &jwt),
                     CodeResult::Registration { lead_token, username_suggestions } => {
                         Ok(Outcome::Lead(lead_token, username_suggestions))
@@ -1602,6 +1619,29 @@ mod tests {
         while let Some(m) = queue.pop() {
             queue.extend(task_messages(app.update(m)).await);
         }
+    }
+
+    /// Desktop's texts of a refused code: the server's `errorMessage` under the heading, "Invalid code. Please try
+    /// again." once the server counts two retries, and the message of a 5xx in the toast.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refused_codes_show_desktops_text() {
+        let url = beeper_core::bridge_stub::serve(|_, path, body| match (path, body["response"].as_str()) {
+            ("/user/login/response", Some("111111")) => (401, json!({ "errorMessage": "Wrong code", "retries": 1 })),
+            ("/user/login/response", Some("222222")) => (401, json!({ "errorMessage": "Wrong code", "retries": 2 })),
+            ("/user/login/response", _) => (503, json!({ "error": "Service unavailable" })),
+            _ => (404, json!({ "errcode": "M_UNRECOGNIZED" })),
+        })
+        .await;
+        let mut app = stub_sign_in("code-errors", &url);
+        let _ = app.update(LoginMsg::Done(Ok(Outcome::Requested("req".into()))).into());
+        let texts = |app: &BeeperGuiApp| (app.login.error.clone(), app.login.toast.clone());
+        settle(&mut app, LoginMsg::Code("111111".into()).into()).await;
+        assert_eq!(texts(&app), (Some("Wrong code".into()), None), "the server's message");
+        assert!(shows(&app, "Wrong code"), "under the heading");
+        settle(&mut app, LoginMsg::Code("222222".into()).into()).await;
+        assert_eq!(texts(&app), (Some("Invalid code. Please try again.".into()), None), "after two retries");
+        settle(&mut app, LoginMsg::Code("333333".into()).into()).await;
+        assert_eq!(texts(&app), (None, Some("Service unavailable".into())), "a 5xx in the toast");
     }
 
     fn shows(app: &BeeperGuiApp, text: &str) -> bool {
