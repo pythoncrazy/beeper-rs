@@ -1428,6 +1428,8 @@ static SELECTION_ICONS: std::sync::LazyLock<[svg::Handle; 8]> = std::sync::LazyL
 
 svg_static!(DROP_ARROW, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M12.625 14.375 17 10l-4.375-4.375-1.062 1.063 2.562 2.562H4.5V7H3v3.75h11.125l-2.562 2.563z"/></svg>"##);
 
+// Desktop's `thumbnail-bar` system icon of "Show Sidebar".
+svg_static!(THUMBNAIL_BAR, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M3.5 16q-.62 0-1.06-.44A1.45 1.45 0 0 1 2 14.5V5.493q0-.62.44-1.056A1.45 1.45 0 0 1 3.5 4h13q.62 0 1.06.44.44.442.44 1.06v9.006q0 .62-.44 1.056A1.45 1.45 0 0 1 16.5 16zM8 14.5h8.5v-9H8zm-1.5 0v-9h-3v9z"/></svg>"##);
 svg_static!(SYS_ARROW_BACK, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="m6.52 10.833 4.668 4.667L10 16.666 3.333 10 10 3.333 11.188 4.5 6.52 9.166h10.146v1.667z"/></svg>"##);
 
 svg_static!(SYS_ROTATE, br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="#000"><path d="M10 18.25q-1.083 0-2.052-.302a6.9 6.9 0 0 1-1.802-.865L7.229 16a5.5 5.5 0 0 0 2.771.75q2.271 0 3.885-1.615Q15.5 13.521 15.5 11.25t-1.615-3.906-4.01-1.594l1.188 1.188L10 8 7 5l3-3 1.063 1.063L9.875 4.25q3-.063 5.063 2.01T17 11.25q0 1.458-.552 2.73a7.1 7.1 0 0 1-1.5 2.218 7.1 7.1 0 0 1-2.219 1.5A6.8 6.8 0 0 1 10 18.25m-5-2-5-5 5-5 5 5zm0-2.125 2.875-2.875L5 8.375 2.125 11.25z"/></svg>"##);

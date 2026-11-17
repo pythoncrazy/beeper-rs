@@ -997,8 +997,26 @@ impl BeeperGuiApp {
                 .padding(0)
                 .style(btn_style([CLEAR; 3], [ORANGE; 3], 30.0))
                 .on_press(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(cid.into()))));
-            container(pill).padding(Padding::ZERO.top(9.0).left(8.0))
+            container(pill).padding(Padding::ZERO.top(9.0))
         });
+        // Desktop's `thread-header-lhs`: "Show Sidebar" while the main window hides the sidebar, then the reminder.
+        let show_sidebar = (self.sidebar_hidden && self.drawing.get().is_none()).then(|| {
+            let muted = p.muted;
+            let icon = svg(crate::THUMBNAIL_BAR.clone())
+                .width(20)
+                .height(20)
+                .style(move |_, _| svg::Style { color: Some(muted) });
+            // `button.btn-icon`: 4 px around the icon inside a 1 px transparent border, radius 6.
+            let show =
+                button(icon).padding(5).style(crate::ghost(p, 6.0)).on_press(UiMessage::RunHotkey("Toggle Sidebar"));
+            let keys = st.settings.hotkey_keys("Toggle Sidebar").to_string();
+            let caps = prefs::hotkey_label(keys.split(", ").next().unwrap_or_default());
+            let caps = caps.split_whitespace().map(String::from).collect();
+            container(self.tip_caps(show.into(), tr("Show Sidebar"), caps, tooltip::Position::Bottom))
+                .padding(Padding::ZERO.top(3.0))
+        });
+        let lhs = (show_sidebar.is_some() || reminder.is_some())
+            .then(|| row![].push(show_sidebar).push(reminder).spacing(1).padding(Padding::ZERO.left(8.0)));
         let feedback = st
             .settings
             .on("feedbackWidget")
@@ -1025,7 +1043,7 @@ impl BeeperGuiApp {
         // from the top right corner.
         let overlay = match in_chat {
             true if chat.is_request == Some(true) => stack![fade, self.view_info_toggle(&st)],
-            true => stack![fade, header].push(feedback).push(reminder),
+            true => stack![fade, header].push(feedback).push(lhs),
             false => stack![fade],
         };
         let verify = (in_chat && st.matrix.is_some() && !st.beeper_state.verified).then(|| {
