@@ -1,6 +1,7 @@
 //! Desktop's command bar commands (`Efe`): the categories, the titles, the search keywords and the hotkeys.
 use crate::accounts;
 use crate::blocking;
+use crate::chat_list;
 use crate::composer;
 use crate::i18n::{tr, trf, trx};
 use crate::media_view;
@@ -268,7 +269,11 @@ impl BeeperGuiApp {
                 false => UiMessage::Scheduled(scheduled::Msg::RescheduleTo(ids.clone(), at, self.cmd_no_reply)),
             }),
             SubMenu::FilterAccount => {
-                let all = cmd("", tr("All Accounts"), Some(UiMessage::SelectTab(InboxTab::AllChats)));
+                let all = cmd(
+                    "",
+                    tr("All Accounts"),
+                    Some(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::AllChats))),
+                );
                 let accounts = crate::rail_accounts(st).into_iter().filter(|a| crate::network_space(st, a).is_none());
                 let accounts = accounts.enumerate().map(|(i, a)| {
                     let title = match a.as_str() {
@@ -291,7 +296,11 @@ impl BeeperGuiApp {
                 ];
                 let open = |t: &InboxTab| *t == self.active_tab && self.selected_account_filter.is_none();
                 let folders = folders.into_iter().filter(|(t, _)| !open(t));
-                search(folders.map(|(t, name)| cmd("", tr(name), Some(UiMessage::SelectTab(t)))).collect())
+                search(
+                    folders
+                        .map(|(t, name)| cmd("", tr(name), Some(UiMessage::ChatList(chat_list::Msg::SelectTab(t)))))
+                        .collect(),
+                )
             }
             SubMenu::Members(kind) => {
                 let Some(c) = self.pane.selected_chat_id.as_deref().and_then(|id| st.resolve_chat_idx(id)) else {
@@ -473,7 +482,7 @@ impl BeeperGuiApp {
         if let Some(c) = chat {
             let id = || c.id.clone();
             let e = trx("Chat", "Command bar category");
-            let flag = |f| Some(UiMessage::ToggleFlag(id(), f));
+            let flag = |f| Some(UiMessage::ChatList(chat_list::Msg::ToggleFlag(id(), f)));
             let remind = UiMessage::CommandBar(Msg::OpenSubMenu(SubMenu::Remind(id())));
             v.push(cmd(e, tr("Remind me later"), Some(remind)).keys(&["reminder"]).hotkey("Remind Later"));
             let low = has_flag(c, ChatFlag::LowPriority);
@@ -482,7 +491,10 @@ impl BeeperGuiApp {
                 cmd(e, low_title, flag(ChatFlag::LowPriority)).sub((!low).then(|| tr("Hides chat from your inbox"))),
             );
             let read = if c.flags & CHAT_UNREAD != 0 { tr("Mark as read") } else { tr("Mark as unread") };
-            v.push(cmd(e, read, Some(UiMessage::ToggleRead(id()))).hotkey("Chat: Toggle Mark As Read"));
+            v.push(
+                cmd(e, read, Some(UiMessage::ChatList(chat_list::Msg::ToggleRead(id()))))
+                    .hotkey("Chat: Toggle Mark As Read"),
+            );
             let pin = if has_flag(c, ChatFlag::Pinned) { "Unpin" } else { "Pin" };
             v.push(cmd(e, trx(pin, "chat command"), flag(ChatFlag::Pinned)).hotkey("Chat: Toggle Pin"));
             let mute = if has_flag(c, ChatFlag::Muted) { "Unmute" } else { "Mute" };
@@ -494,7 +506,7 @@ impl BeeperGuiApp {
                 v.push(cmd(e, title, flag(ChatFlag::Archived)).sub(sub).hotkey("Chat: Toggle Archive"));
             }
             if st.feature("delete-chats").on {
-                let delete = (c.delete_modes != 0).then(|| UiMessage::AskDeleteChat(id()));
+                let delete = (c.delete_modes != 0).then(|| UiMessage::ChatList(chat_list::Msg::AskDelete(id())));
                 v.push(cmd(e, trx("Delete", "chat command"), delete).keys(&["delete", "leave"]));
             }
             v.extend(crate::block_action(st, c).map(|block| {
@@ -571,7 +583,7 @@ impl BeeperGuiApp {
                 v.push(kick.keys(&["delete", "kick", "participant", "user"]));
             }
             if c.member_actions & MEMBER_LEAVE != 0 {
-                let leave = cmd(e, tr("Leave chat"), Some(UiMessage::AskLeaveChat(c.id.clone())));
+                let leave = cmd(e, tr("Leave chat"), Some(UiMessage::ChatList(chat_list::Msg::AskLeave(c.id.clone()))));
                 v.push(leave.keys(&["delete", "leave"]));
             }
             if c.chat_type == "group" && can(MANAGE_ROLE) {
@@ -602,7 +614,11 @@ impl BeeperGuiApp {
                 let keys = &["attachment", "image", "video"];
                 v.push(cmd(e, tr("Send Sticker"), sticker).keys(keys).hotkey("Message: Send Sticker"));
             }
-            v.push(cmd(e, tr("Export all loaded messages to .txt file"), Some(UiMessage::ExportChat)));
+            v.push(cmd(
+                e,
+                tr("Export all loaded messages to .txt file"),
+                Some(UiMessage::ChatList(chat_list::Msg::Export)),
+            ));
             let a = c.account_id.as_str();
             let props = st.settings.account(a);
             let user = match a {
@@ -659,7 +675,7 @@ impl BeeperGuiApp {
             true => (tr("Show default inbox"), InboxTab::AllChats),
             false => (tr("Show message requests"), InboxTab::Requests),
         };
-        v.push(cmd("", inbox, Some(UiMessage::SelectTab(tab))).keys(&["dm", "unknown"]));
+        v.push(cmd("", inbox, Some(UiMessage::ChatList(chat_list::Msg::SelectTab(tab)))).keys(&["dm", "unknown"]));
         let prefs = &["Preferences"];
         let settings = tr("Settings");
         let open =
@@ -837,7 +853,7 @@ impl BeeperGuiApp {
         let body = container(body).padding([0, 6]).id(format!("cmd-{i}"));
         let hit = mouse_area(body).on_enter(UiMessage::CommandBar(Msg::Highlight(i)));
         let hit = match c.chat.as_ref().filter(|id| st.resolve_chat_idx(id).is_some()) {
-            Some(id) => hit.on_right_press(UiMessage::OpenChatMenu(id.clone())),
+            Some(id) => hit.on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(id.clone()))),
             None => hit,
         };
         match c.msg.clone() {

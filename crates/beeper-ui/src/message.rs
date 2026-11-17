@@ -2,6 +2,7 @@
 //! menu, and the dividers and the scroll button of the timeline.
 
 use crate::blocking;
+use crate::chat_list;
 use crate::composer;
 use crate::forward;
 use crate::i18n::{tr, trf, trn, trnx, trx, trxf};
@@ -437,8 +438,13 @@ impl BeeperGuiApp {
                 && st.threaded(chat)
                 && st.thread_replies(&mid).next().is_some())
             .then(|| vec![(self.follow_item(&st, chat, &mid), MENU_ITEM)]),
-            privately
-                .then(|| vec![item(tr("Reply Privately…").into(), "", Some(UiMessage::ReplyPrivately(mid.clone())))]),
+            privately.then(|| {
+                vec![item(
+                    tr("Reply Privately…").into(),
+                    "",
+                    Some(UiMessage::ChatList(chat_list::Msg::ReplyPrivately(mid.clone()))),
+                )]
+            }),
             Some(vec![
                 item(
                     tr("React…").into(),
@@ -585,8 +591,13 @@ impl BeeperGuiApp {
         };
         let id = &chat.id;
         let actions = row![]
-            .push(decline.then(|| pill("Decline", hex(0xdc362e), UiMessage::DeleteChat(id.clone(), false))))
-            .push(accept.then(|| pill("Accept", p.strong, UiMessage::AcceptRequest(id.clone()))))
+            .push(decline.then(|| {
+                pill("Decline", hex(0xdc362e), UiMessage::ChatList(chat_list::Msg::Delete(id.clone(), false)))
+            }))
+            .push(
+                accept
+                    .then(|| pill("Accept", p.strong, UiMessage::ChatList(chat_list::Msg::AcceptRequest(id.clone())))),
+            )
             .spacing(8);
         let avatar = container(self.chat_avatar(chat, 40.0, 0.0)).padding(Padding::ZERO.top(14.0).bottom(8.0));
         let content = column![avatar].push(column![].push(inviter).push(text).align_x(Center)).push(title).push(about);
@@ -601,7 +612,7 @@ impl BeeperGuiApp {
             let p = &self.pal;
             let link = button(semi(tr("Mark as Read"), 11.0).color(p.accent))
                 .bare(p.accent)
-                .on_press(UiMessage::MarkRead(chat.id.clone()));
+                .on_press(UiMessage::ChatList(chat_list::Msg::MarkRead(chat.id.clone())));
             let tip = self.tip(link.into(), tr("Mark as Read"), vec!["Ctrl", "Shift", "U"], tooltip::Position::Top);
             container(tip).center_x(Fill).padding(Padding::new(10.0).bottom(6.5).left(0.0).right(0.0)).into()
         })
@@ -675,7 +686,7 @@ impl BeeperGuiApp {
         let card = mouse_area(card)
             .interaction(mouse::Interaction::Pointer)
             .on_press(UiMessage::ToggleRightPanel)
-            .on_right_press(UiMessage::OpenChatMenu(cid.into()))
+            .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(cid.into())))
             .on_enter(UiMessage::HeaderHover(true))
             .on_exit(UiMessage::HeaderHover(false));
         let header = container(card).center_x(Fill).padding(Padding::ZERO.top(8.0));
@@ -717,7 +728,7 @@ impl BeeperGuiApp {
         let bar = mouse_area(container(Space::new()).width(Fill).height(36.0))
             .interaction(mouse::Interaction::Idle)
             .on_double_click(UiMessage::Window(windows::Msg::ToggleMaximize(self.drawing.get())))
-            .on_right_press(UiMessage::OpenChatMenu(cid.into()));
+            .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(cid.into())));
         // An iced `Stack` takes the size of its first layer, so a spacer as tall as the card goes first.
         let header = stack![Space::new().width(Fill).height(84.0), bar, header];
         let members = self.header_hover.0.then(|| self.header_members(chat)).flatten();
@@ -1382,9 +1393,11 @@ impl BeeperGuiApp {
             parts = parts.push(section.style(bordered_box(CLEAR, p.chip, 2.0, 4.0)));
         } else if let Some(call) = call {
             // A 2 px `secondary-container` outline with a 17 px radius, `8px 11px` inside it, and an 8 px gap.
-            let tag = if call.is_video() { crate::VIDEO_TAG } else { crate::CALL_TAG };
-            let line =
-                row![tinted(crate::tag_glyph(tag), 16.0, p.strong), txt(crate::call_label(call), 13.0).color(p.strong)];
+            let tag = if call.is_video() { crate::chat_list::VIDEO_TAG } else { crate::chat_list::CALL_TAG };
+            let line = row![
+                tinted(crate::chat_list::tag_glyph(tag), 16.0, p.strong),
+                txt(crate::chat_list::call_label(call), 13.0).color(p.strong)
+            ];
             let pill = container(line.spacing(8).align_y(Center)).padding([9, 13]);
             parts = parts.push(pill.style(bordered_box(CLEAR, p.chip, 2.0, 17.0)));
         } else if jumbo(&text) {

@@ -1,4 +1,5 @@
 //! Desktop's `beeper://` links (`deep-link-CFIhWY4D.js` `Ld`): from the launch arguments, and from a later launch.
+use crate::chat_list;
 use crate::commands;
 use crate::composer;
 use crate::i18n::tr;
@@ -302,7 +303,7 @@ impl BeeperGuiApp {
             "select-thread" => {
                 let Some((cid, request)) = thread else { return toast(self, missing) };
                 if request {
-                    let _ = self.update(UiMessage::SelectTab(InboxTab::Requests));
+                    let _ = self.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::Requests)));
                 }
                 self.select_chat(&cid);
                 if let Some(t) = text {

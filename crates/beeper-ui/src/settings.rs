@@ -4,6 +4,7 @@
 use crate::accounts;
 use crate::blocking;
 use crate::blocking::blocked_chats;
+use crate::chat_list;
 use crate::hotkeys;
 use crate::i18n::{tr, trf, trn, trnx, trs, trx};
 use crate::integrations;
@@ -832,7 +833,9 @@ impl BeeperGuiApp {
                     .padding(Padding::ZERO.left(x).top(y))
                     .width(Fill)
                     .height(Fill);
-                mouse_area(menu).on_press(UiMessage::CloseChatMenu).on_right_press(UiMessage::CloseChatMenu)
+                mouse_area(menu)
+                    .on_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
+                    .on_right_press(UiMessage::ChatList(chat_list::Msg::CloseMenu))
             });
         let profile = self.profile_overlay();
         let picker = self.pane.emoji.as_ref().filter(|pk| pk.pref.is_some()).map(|_| {
@@ -1013,7 +1016,9 @@ impl BeeperGuiApp {
                     let row = button(line)
                         .bare(p.strong)
                         .on_press(UiMessage::Accounts(accounts::Msg::Open(Some(logo.into()))));
-                    mouse_area(row).on_right_press(UiMessage::OpenChatMenu(format!("prefs:{logo}"))).into()
+                    mouse_area(row)
+                        .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("prefs:{logo}"))))
+                        .into()
                 };
                 let me = st.me();
                 let rows = std::iter::once(account(
@@ -2029,7 +2034,7 @@ impl BeeperGuiApp {
                             0 => tr("Archive chats").into(),
                             n => trnx("Archive %d chat", "Archive %d chats", n, "auto-archive catch-up button", &[&n]),
                         },
-                        UiMessage::ArchiveStale
+                        UiMessage::ChatList(chat_list::Msg::ArchiveStale)
                     )
                 ]
                 .spacing(8)

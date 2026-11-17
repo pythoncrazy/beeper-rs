@@ -204,12 +204,12 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         return (what, UiMessage::Noop);
     }
     let m = match branch {
-        0 => UiMessage::SelectTab(tab),
+        0 => UiMessage::ChatList(chat_list::Msg::SelectTab(tab)),
         1 => UiMessage::SelectChat(chat),
-        2 => UiMessage::ClickChat(chat),
-        3 => UiMessage::OpenChatMenu(chat),
-        4 => UiMessage::ToggleFlag(chat, flag),
-        5 => UiMessage::ToggleRead(chat),
+        2 => UiMessage::ChatList(chat_list::Msg::Click(chat)),
+        3 => UiMessage::ChatList(chat_list::Msg::OpenMenu(chat)),
+        4 => UiMessage::ChatList(chat_list::Msg::ToggleFlag(chat, flag)),
+        5 => UiMessage::ChatList(chat_list::Msg::ToggleRead(chat)),
         6 => UiMessage::Reminders(reminders::Msg::Set(chat, rng.coin().then_some(now + 3_600_000))),
         7 => UiMessage::Message(message::Msg::OpenMenu(msg)),
         8 => UiMessage::Message(message::Msg::Click(msg)),
@@ -239,13 +239,13 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         30 => UiMessage::ToggleRightPanel,
         31 => UiMessage::CommandBar(commands::Msg::TogglePalette),
         32 => UiMessage::CommandBar(commands::Msg::Query(text)),
-        33 => UiMessage::ToggleFilterMenu,
-        34 => UiMessage::PickFilter(rng.below(8) as u8),
+        33 => UiMessage::ChatList(chat_list::Msg::ToggleFilterMenu),
+        34 => UiMessage::ChatList(chat_list::Msg::PickFilter(rng.below(8) as u8)),
         35 => UiMessage::NewChat(new_chat::Msg::Open),
         36 => UiMessage::NewChat(new_chat::Msg::Query(text)),
-        37 => UiMessage::BeginSelecting(chat),
-        38 => UiMessage::ToggleSelected(chat),
-        39 => UiMessage::SelectionSet(flag, rng.coin()),
+        37 => UiMessage::ChatList(chat_list::Msg::BeginSelecting(chat)),
+        38 => UiMessage::ChatList(chat_list::Msg::ToggleSelected(chat)),
+        39 => UiMessage::ChatList(chat_list::Msg::SelectionSet(flag, rng.coin())),
         40 => UiMessage::CommandBar(commands::Msg::SearchRoom(text)),
         41 => UiMessage::Media(media_view::Msg::Open),
         42 => UiMessage::CloseModals,
@@ -253,10 +253,10 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         44 => UiMessage::Window(windows::Msg::OpenChat(chat)),
         45 => UiMessage::Window(windows::Msg::CloseRequested(*rng.pick(&windows(app)))),
         46..=48 => UiMessage::KeyPressed(key, mods),
-        49 if !deletable.is_empty() => UiMessage::AskDeleteChat(rng.pick(&deletable).clone()),
+        49 if !deletable.is_empty() => UiMessage::ChatList(chat_list::Msg::AskDelete(rng.pick(&deletable).clone())),
         50 => UiMessage::Reminders(reminders::Msg::Menu),
         51 => UiMessage::CommandBar(commands::Msg::ChatSub(Some(rng.below(SUB_MENU_W.len()) as u8))),
-        52 => UiMessage::ArchiveStale,
+        52 => UiMessage::ChatList(chat_list::Msg::ArchiveStale),
         53 => UiMessage::Forward(forward::Msg::Open(vec![msg])),
         54 if app.forward.is_some() => UiMessage::Forward(forward::Msg::Pick(chat)),
         55 => UiMessage::Rail(rail::Msg::Select(rng.coin().then(|| rng.pick(&accounts).clone()))),
@@ -268,7 +268,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
             rng.pick(&accounts).clone(),
             beeper_core::models::AccountProps { notifications: rng.coin(), previews: rng.coin(), silent: rng.coin() },
         )),
-        61 => UiMessage::OpenChatMenu(format!("account:{}", rng.pick(&rail))),
+        61 => UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("account:{}", rng.pick(&rail)))),
         62 => UiMessage::Message(message::Msg::Select(vec![msg])),
         63 => UiMessage::Message(message::Msg::CopySelected(rng.coin())),
         _ => UiMessage::ToggleDnd,
@@ -385,7 +385,7 @@ fn composer_enter_follows_the_hotkeys() {
     press(&mut app, true, [tick()]);
     assert_eq!(text(&app), "`b``", "a backtick without a selection is a backtick");
     let _ = app.update(UiMessage::Composer(composer::Msg::Changed("b".into())));
-    let _ = app.update(UiMessage::ToggleFlag(note.into(), ChatFlag::Pinned));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(note.into(), ChatFlag::Pinned)));
     press(&mut app, true, [key(Named::Enter, Modifiers::CTRL)]);
     assert!(text(&app).is_empty() && archived(&app), "Ctrl Enter sends and archives");
     let _ = app.update(UiMessage::SelectChat(note.into()));
@@ -820,14 +820,14 @@ fn remind_submenu_like_desktop() {
     assert_eq!(app.store.read().settings.last_time, "friday at 5pm", "the phrase is kept for Last Used");
     assert_eq!(labels(&app, "")[0], "last used");
     let _ = app.update(UiMessage::CloseModals);
-    let _ = app.update(UiMessage::OpenChatMenu(id.clone()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(id.clone())));
     let _ = app.update(UiMessage::CommandBar(commands::Msg::ChatSub(Some(1))));
     assert!(simulator(app.view_main()).find("Last Used").is_ok(), "the chat menu offers the last phrase too");
     assert!(simulator(app.view_main()).find("Upgrade to Beeper Plus").is_err(), "free uses are left");
     let other = app.visible_chats(&app.store.read()).iter().find(|c| c.reminder.is_none()).map(|c| c.id.clone());
     let other = other.expect("a chat without a reminder");
     app.store.write().features.usage = serde_json::json!({ "remind-later": { "used": 5 } });
-    let _ = app.update(UiMessage::OpenChatMenu(other.clone()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(other.clone())));
     let _ = app.update(UiMessage::CommandBar(commands::Msg::ChatSub(Some(1))));
     let picked: Vec<UiMessage> = {
         let mut sim = simulator(app.view_main());
@@ -890,7 +890,7 @@ fn send_later_like_desktop() {
         let mut sim = simulator(app.view_main());
         assert!(sim.find(format!("Send {when}")).is_ok() && sim.find("see you then").is_ok(), "the timeline");
     }
-    let _ = app.update(UiMessage::SelectTab(InboxTab::SendLater));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::SendLater)));
     assert_eq!(app.visible_chats(&app.store.read()).iter().map(|c| &c.id).collect::<Vec<_>>(), [&id]);
     let _ = app.update(UiMessage::Scheduled(scheduled::Msg::RescheduleTo(vec![s.id.clone()], at + 60_000, false)));
     assert!(!app.store.read().scheduled[0].send_only_on_no_response);
@@ -1186,9 +1186,10 @@ fn unread_threads_pill_counts_the_listed_chats() {
     let mut app = demo_app("unread-threads-listed");
     let pill = |app: &BeeperGuiApp| simulator(app.view_sidebar()).find("Unread threads").is_ok();
     assert!(pill(&app), "the inbox lists the chat of the unread thread");
-    let _ = app.update(UiMessage::ToggleFlag("!sl_infra:beeper.com".into(), ChatFlag::Archived));
+    let _ =
+        app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag("!sl_infra:beeper.com".into(), ChatFlag::Archived)));
     assert!(!pill(&app), "the archived chat takes its thread out of the inbox");
-    let _ = app.update(UiMessage::SelectTab(InboxTab::Archived));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::Archived)));
     assert!(pill(&app), "the archive lists the chat of the unread thread");
 }
 
@@ -1220,7 +1221,7 @@ fn thread_follows_like_desktop() {
     )))));
     let _ = app.update(UiMessage::InThread(Box::new(UiMessage::Composer(composer::Msg::Submit))));
     assert!(follows(&app).unfollowed.is_empty(), "a reply ends the unfollow like Desktop's refollowThread");
-    let _ = app.update(UiMessage::OpenChatMenu(chat.into()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(chat.into())));
     let mut sim = simulator(app.view_main());
     let _ = sim.click("Stop Following All Threads").expect("the chat menu of a room with threads");
     for m in sim.into_messages().collect::<Vec<_>>() {
@@ -1663,11 +1664,11 @@ fn media_carousel_draws() {
     };
     let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), ai, true)));
     drop(app.view(id));
-    let _ = app.update(UiMessage::ToggleFlag(chat.clone(), ChatFlag::LowPriority));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(chat.clone(), ChatFlag::LowPriority)));
     drop(app.view(id));
     let _ = app.update(UiMessage::StoreChanged);
     assert!(app.carousel.is_none(), "the carousel closes when its image leaves the Media window");
-    let _ = app.update(UiMessage::ToggleFlag(chat.clone(), ChatFlag::LowPriority));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(chat.clone(), ChatFlag::LowPriority)));
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
     let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), ai, false)));
     for next in [false, true] {
@@ -2462,12 +2463,12 @@ fn views_keep_the_chat_list_until_the_store_changes() {
         app.visible_chats(&st).iter().filter(|c| c.flags & CHAT_PINNED == 0).take(4).map(|c| c.id.clone()).collect();
     drop(st);
     for chat in &ids {
-        let _ = app.update(UiMessage::HoverChat(chat.clone(), true));
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::Hover(chat.clone(), true)));
         let _ = app.update(UiMessage::Relist);
         assert!(Rc::ptr_eq(&first, &list(&app)), "a hover keeps the chat list");
     }
     assert_eq!(app.store.generation(), Some(generation), "a hover does not write to the store");
-    let _ = app.update(UiMessage::ToggleFlag(ids[0].clone(), ChatFlag::Archived));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(ids[0].clone(), ChatFlag::Archived)));
     let after = list(&app);
     assert!(!Rc::ptr_eq(&first, &after), "a change of the store sorts the chat list again");
     assert!(!app.visible_chats(&app.store.read()).iter().any(|c| c.id == ids[0]), "the archived chat leaves");
@@ -2485,7 +2486,7 @@ fn timeline_rows_stay_until_the_store_changes() {
     };
     let first = rows(&app);
     assert!(!first.msgs.is_empty(), "the note chat has messages");
-    let _ = app.update(UiMessage::HoverChat(NOTE_CHAT_ID.into(), true));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::Hover(NOTE_CHAT_ID.into(), true)));
     assert!(Rc::ptr_eq(&first, &rows(&app)), "a hover keeps the rows");
     let _ = app.store.write().send_message(NOTE_CHAT_ID, Some("new".into()), None, None).unwrap();
     let next = rows(&app);
@@ -2502,7 +2503,7 @@ fn unread_threads_stay_until_the_store_changes() {
         app.memo.threads.borrow().clone().expect("the chat list read the unread threads")
     };
     let first = threads(&app);
-    let _ = app.update(UiMessage::HoverChat(NOTE_CHAT_ID.into(), true));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::Hover(NOTE_CHAT_ID.into(), true)));
     assert!(Rc::ptr_eq(&first, &threads(&app)), "a hover keeps the unread threads");
 }
 
@@ -2554,7 +2555,7 @@ fn a_hover_builds_as_many_widgets_with_2000_chats_as_with_200() {
             }
         }
         let first = app.visible_chats(&app.store.read())[0].id.clone();
-        let _ = app.update(UiMessage::HoverChat(first, true));
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::Hover(first, true)));
         let id = app.main_window.expect("a main window");
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut sim = Simulator::with_size(Default::default(), Size::new(1440.0, 900.0), app.view(id));
@@ -2586,7 +2587,10 @@ fn forward_rows_open_the_chat_menu_like_desktop() {
         );
         sim.into_messages().collect()
     };
-    assert!(matches!(&open[..], [UiMessage::OpenChatMenu(c)] if *c == id), "the chat menu of the row");
+    assert!(
+        matches!(&open[..], [UiMessage::ChatList(chat_list::Msg::OpenMenu(c))] if *c == id),
+        "the chat menu of the row"
+    );
     for m in open {
         let _ = app.update(m);
     }
@@ -2594,7 +2598,10 @@ fn forward_rows_open_the_chat_menu_like_desktop() {
         let left = [mouse::Event::ButtonPressed(Button::Left), mouse::Event::ButtonReleased(Button::Left)];
         left.map(iced::Event::Mouse).to_vec()
     });
-    assert!(matches!(&outside[..], [UiMessage::CloseChatMenu]), "a click outside the menu keeps the picker");
+    assert!(
+        matches!(&outside[..], [UiMessage::ChatList(chat_list::Msg::CloseMenu)]),
+        "a click outside the menu keeps the picker"
+    );
     for m in outside {
         let _ = app.update(m);
     }
@@ -3399,14 +3406,14 @@ fn drafts_move_chats_like_desktop() {
         app.visible_chats(&st).iter().filter(|c| c.is_pinned != Some(true)).map(|c| c.id.clone()).collect()
     };
     let id = unpinned(&app).into_iter().rfind(|c| c != NOTE_CHAT_ID).expect("an old chat");
-    let _ = app.update(UiMessage::ToggleFlag(id.clone(), ChatFlag::Archived));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(id.clone(), ChatFlag::Archived)));
     assert!(!unpinned(&app).contains(&id), "archived");
-    let _ = app.update(UiMessage::SelectTab(InboxTab::Archived));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::Archived)));
     let _ = app.update(UiMessage::SelectChat(id.clone()));
     let _ = app.update(UiMessage::Composer(composer::Msg::Type("not done yet".into())));
     let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
     assert!(!unpinned(&app).contains(&id), "a chat with a draft leaves the archive list");
-    let _ = app.update(UiMessage::SelectTab(InboxTab::AllChats));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::AllChats)));
     assert_eq!(unpinned(&app).first(), Some(&id), "and comes back to the top of the inbox");
 }
 
@@ -3858,7 +3865,10 @@ fn polls_like_desktop() {
         assert!(sim.find("Select one option").is_ok() && sim.find("2 votes").is_ok());
         let st = app.store.read();
         let m = st.message(mid);
-        assert_eq!((crate::message_tag(m), crate::preview_body(m)), (Some((crate::POLL_TAG, "Poll", None)), None));
+        assert_eq!(
+            (crate::chat_list::message_tag(m), crate::chat_list::preview_body(m)),
+            (Some((crate::chat_list::POLL_TAG, "Poll", None)), None)
+        );
     }
     let mut sim = simulator(app.view_main());
     let _ = sim.click("2 votes").expect("the votes button");
@@ -4154,7 +4164,7 @@ fn create_label_like_desktop() {
 #[test]
 fn edit_and_delete_labels_like_desktop() {
     let mut app = demo_app("label-menu");
-    let _ = app.update(UiMessage::OpenChatMenu("account:label:lbl_work".into()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("account:label:lbl_work".into())));
     let menu = |app: &BeeperGuiApp| simulator(app.view_account_menu("label:lbl_work")).find("Label Settings").is_ok();
     assert!(menu(&app));
     let _ = app.update(UiMessage::Labels(labels::Msg::Edit("lbl_work".into())));
@@ -4220,7 +4230,7 @@ fn sidebar_follows_the_spaces_order_like_desktop() {
 #[test]
 fn edit_spaces_like_desktop() {
     let mut app = demo_app("edit-spaces");
-    let _ = app.update(UiMessage::OpenChatMenu("account:label:lbl_work".into()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("account:label:lbl_work".into())));
     let open: Vec<UiMessage> = {
         let mut sim = simulator(app.view_account_menu("label:lbl_work"));
         let _ = sim.click("Edit Spaces…").expect("an Edit Spaces item");
@@ -4344,19 +4354,19 @@ fn archive_and_low_priority_toasts_undo_like_desktop() {
             let _ = app.update(m);
         }
     };
-    let _ = app.update(UiMessage::ToggleFlag(ids[0].clone(), ChatFlag::Archived));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(ids[0].clone(), ChatFlag::Archived)));
     assert_eq!(app.status_banner, "Archived");
     undo(&mut app);
     assert!(!flag(&app, &ids[0], ChatFlag::Archived) && app.status_banner.is_empty());
     assert_eq!(app.pane.selected_chat_id.as_deref(), Some(ids[0].as_str()), "Undo selects the chat");
     app.selection = ids.clone();
-    let _ = app.update(UiMessage::SelectionSet(ChatFlag::LowPriority, true));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectionSet(ChatFlag::LowPriority, true)));
     assert_eq!(app.status_banner, "Moved 2 chats to Low Priority");
     assert!(ids.iter().all(|id| flag(&app, id, ChatFlag::LowPriority)));
     undo(&mut app);
     assert!(ids.iter().all(|id| !flag(&app, id, ChatFlag::LowPriority)));
     assert_eq!(app.selection, ids, "Undo selects the chats again");
-    let _ = app.update(UiMessage::SelectionSet(ChatFlag::Archived, true));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectionSet(ChatFlag::Archived, true)));
     assert!(app.status_banner == "Archived 2 chats" && app.toast.as_ref().unwrap().icon.is_none());
     let _ = app.update(UiMessage::Composer(composer::Msg::Undo(false)));
     assert!(ids.iter().all(|id| !flag(&app, id, ChatFlag::Archived)) && app.selection == ids, "Mod-z runs the Undo");
@@ -4375,8 +4385,8 @@ fn toasts_stack_like_desktop() {
         let st = app.store.read();
         has_flag(&st.chats[st.resolve_chat_idx(&ids[0]).unwrap()], ChatFlag::Archived)
     };
-    let _ = app.update(UiMessage::ToggleFlag(ids[0].clone(), ChatFlag::Archived));
-    let _ = app.update(UiMessage::ToggleFlag(ids[1].clone(), ChatFlag::LowPriority));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(ids[0].clone(), ChatFlag::Archived)));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(ids[1].clone(), ChatFlag::LowPriority)));
     assert_eq!(app.older_toasts.iter().map(|t| t.0.text.as_str()).collect::<Vec<_>>(), ["Archived"]);
     let picked: Vec<UiMessage> = {
         let mut sim = simulator(app.view_main());
@@ -4389,7 +4399,7 @@ fn toasts_stack_like_desktop() {
     }
     assert!(!archived(&app) && app.older_toasts.is_empty(), "the Undo of an older toast closes it");
     assert!(!app.status_banner.is_empty(), "the newest toast stays");
-    let _ = app.update(UiMessage::ToggleFlag(ids[0].clone(), ChatFlag::Archived));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(ids[0].clone(), ChatFlag::Archived)));
     let _ = app.update(UiMessage::Composer(composer::Msg::Undo(false)));
     assert!(!archived(&app) && app.older_toasts.len() == 1, "Mod-z closes the newest toast and keeps the others");
     let _ = app.update(UiMessage::Toast(toasts::Msg::Hover(true)));
@@ -4457,7 +4467,7 @@ fn accounts_settings_rows_have_the_account_menu_like_desktop() {
     let mut app = demo_app("prefs-account-menu");
     let _ = app.update(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts)));
     let account = app.store.read().bridge_accounts[0].account_id.clone();
-    let _ = app.update(UiMessage::OpenChatMenu(format!("prefs:{account}")));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("prefs:{account}"))));
     let ask: Vec<UiMessage> = {
         let mut sim = simulator(app.view_settings());
         for item in ["Show in Inbox", "Mute Space", "Edit Spaces…"] {
@@ -4480,10 +4490,10 @@ fn accounts_settings_rows_have_the_account_menu_like_desktop() {
     let text = format!("There was an error disconnecting account {account}. offline");
     assert!(simulator(app.view_main()).find(text.as_str()).is_ok());
     let _ = app.update(UiMessage::Ask(None));
-    let _ = app.update(UiMessage::OpenChatMenu("prefs:hungryserv".into()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("prefs:hungryserv".into())));
     let mut sim = simulator(app.view_settings());
     let _ = sim.click("Remove Account…").expect("Desktop's Remove Account item of the Beeper account");
-    assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::CloseChatMenu]));
+    assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::ChatList(chat_list::Msg::CloseMenu)]));
 }
 
 #[test]
@@ -4491,7 +4501,7 @@ fn sidebar_menus_open_accounts_like_desktop() {
     let mut app = demo_app("rail-menus");
     let account = app.store.read().bridge_accounts[0].account_id.clone();
     for entry in [account.as_str(), "label:lbl_work"] {
-        let _ = app.update(UiMessage::OpenChatMenu(format!("account:{entry}")));
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("account:{entry}"))));
         let mut sim = simulator(app.view_account_menu(entry));
         assert!(entry.starts_with("label:") || sim.find("Mute Space").is_ok());
         let _ = sim.click("Add/Remove Accounts…").expect("an Add/Remove Accounts item");
@@ -4500,7 +4510,7 @@ fn sidebar_menus_open_accounts_like_desktop() {
         let _ = app.update(open.expect("the Accounts settings"));
         assert!(app.chat_menu.is_none() && app.settings_window.is_some());
     }
-    let _ = app.update(UiMessage::OpenChatMenu(format!("account:{account}")));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("account:{account}"))));
     let open: Vec<UiMessage> = {
         let mut sim = simulator(app.view_account_menu(&account));
         let _ = sim.click("Account Settings…").expect("an Account Settings item");
@@ -4639,9 +4649,9 @@ fn background_menus_like_desktop() {
     }
     assert!(app.select_mode && app.selection.is_empty() && app.chat_menu.is_none());
     let first = app.list_ids(&app.store.read())[0].clone();
-    let _ = app.update(UiMessage::ToggleSelected(first.clone()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleSelected(first.clone())));
     assert!(!app.select_mode && app.selection == [first.clone()]);
-    let _ = app.update(UiMessage::ToggleSelected(first));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleSelected(first)));
     assert!(app.selection.is_empty() && !app.select_mode, "the mode ends with the last chat");
     let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("label:lbl_work".into()))));
     let has = |app: &BeeperGuiApp, key: &str, items: &[&str]| {
@@ -4657,14 +4667,14 @@ fn background_menus_like_desktop() {
     let _ = app.update(UiMessage::Rail(rail::Msg::Select(None)));
 
     let chat = app.store.read().chats[0].id.clone();
-    let _ = app.update(UiMessage::ClickChat(chat.clone()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::Click(chat.clone())));
     let at = Point::new(68.0 + SIDEBAR_WIDTH + 40.0, 20.0);
     assert_eq!(right_click(&mut app, at), Some(chat.clone()), "the chat header has the chat menu");
     let _ = app.update(UiMessage::CloseModals);
     let _ = app.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
-    let _ = app.update(UiMessage::OpenChatMenu(chat));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(chat)));
     assert!(simulator(app.view_main()).find("Begin Selecting").is_ok(), "the chat menu shows over the command bar");
-    let _ = app.update(UiMessage::CloseChatMenu);
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::CloseMenu));
     assert!(app.show_command_palette && app.chat_menu.is_none());
 }
 
@@ -4679,7 +4689,7 @@ fn space_sheet_like_desktop() {
     }
     assert_eq!(app.chat_menu.as_ref().map(|m| m.0.as_str()), Some(SPACE_SHEET), "the header title opens the sheet");
     let pick = |app: &mut BeeperGuiApp, item: &str, has: &[&str], lacks: &[&str]| {
-        let _ = app.update(UiMessage::OpenChatMenu(SPACE_SHEET.into()));
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(SPACE_SHEET.into())));
         let msgs: Vec<UiMessage> = {
             let mut sim = simulator(app.view_main());
             for i in has {
@@ -4706,7 +4716,7 @@ fn space_sheet_like_desktop() {
     let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some(account))));
     pick(&mut app, "Space Options", &actions, &["Label Settings", "Account Settings..."]);
     assert_eq!(app.chat_sub, Some(1), "Space Options opens its submenu");
-    let _ = app.update(UiMessage::OpenChatMenu(SPACE_SHEET.into()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(SPACE_SHEET.into())));
     let _ = app.update(UiMessage::CommandBar(commands::Msg::ChatSub(Some(1))));
     let mut sim = simulator(app.view_main());
     assert!(sim.find("Show in Inbox").is_ok() && sim.find("Account Settings...").is_ok());
@@ -4716,7 +4726,7 @@ fn space_sheet_like_desktop() {
 fn label_settings_like_desktop() {
     let mut app = demo_app("label-settings");
     let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("label:lbl_work".into()))));
-    let _ = app.update(UiMessage::OpenChatMenu(SPACE_SHEET.into()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(SPACE_SHEET.into())));
     let picked: Vec<UiMessage> = {
         let mut sim = simulator(app.view_main());
         let _ = sim.click("Label Settings").expect("Label Settings");
@@ -4843,27 +4853,27 @@ fn pinned_grid_and_range_selection_like_desktop() {
         let idx = st.resolve_chat_idx(&pinned).expect("the pin");
         st.set_chat_flag(idx, ChatFlag::LowPriority, Some(true));
     }
-    let _ = app.update(UiMessage::SelectTab(InboxTab::LowPriority));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::LowPriority)));
     assert!(app.pins_and_rows(&app.store.read()).0.iter().any(|c| c.id == pinned), "Low Priority has the grid");
-    let _ = app.update(UiMessage::SelectTab(InboxTab::Reminders));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::Reminders)));
     assert!(app.pins_and_rows(&app.store.read()).0.is_empty(), "Reminders has no grid");
     {
         let mut sim = simulator(app.view_filter_menu());
         assert!(sim.find("Requests").is_ok());
     }
-    let _ = app.update(UiMessage::SelectTab(InboxTab::Archived));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::Archived)));
     {
         let mut sim = simulator(app.view_filter_menu());
         assert!(sim.find("Low Priority").is_ok() && sim.find("Requests").is_err() && sim.find("Archived").is_err());
     }
-    let _ = app.update(UiMessage::SelectTab(InboxTab::AllChats));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::AllChats)));
     let list = app.list_ids(&app.store.read());
-    let _ = app.update(UiMessage::ClickChat(list[2].clone()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::Click(list[2].clone())));
     app.mods = keyboard::Modifiers::SHIFT;
-    let _ = app.update(UiMessage::ClickChat(list[5].clone()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::Click(list[5].clone())));
     assert_eq!(app.selection, list[2..=5], "Shift-click selects the range from the open chat");
     app.mods = keyboard::Modifiers::CTRL;
-    let _ = app.update(UiMessage::ClickChat(list[7].clone()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::Click(list[7].clone())));
     assert!(app.selection.len() == 5 && app.selection.contains(&list[7]), "Ctrl-click adds a chat");
 }
 
@@ -4936,7 +4946,7 @@ fn request_rows_like_desktop() {
     app.patch_settings(|s| {
         s.prefs.insert("showMessagePreviews".into(), 0);
     });
-    let _ = app.update(UiMessage::SelectTab(InboxTab::Requests));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::SelectTab(InboxTab::Requests)));
     let mut sim = simulator(app.view_sidebar());
     assert!(sim.find("Message Request").is_ok() && sim.find("Group Invitation").is_ok());
     // Desktop names the inviter of a group invite: the member who added the own pending member.
@@ -4991,7 +5001,9 @@ fn matrix_invites_show_their_details_like_desktop() {
         assert!(sim.find(text.as_str()).is_ok(), "{text}");
     }
     let _ = sim.click("Accept").expect("Accept");
-    assert!(sim.into_messages().any(|m| matches!(m, UiMessage::AcceptRequest(id) if id == group)));
+    assert!(sim
+        .into_messages()
+        .any(|m| matches!(m, UiMessage::ChatList(chat_list::Msg::AcceptRequest(id)) if id == group)));
 }
 
 #[test]
@@ -5003,9 +5015,9 @@ fn label_menu_labels_the_selection_like_desktop() {
         st.chats.iter().filter(free).take(2).map(|c| c.id.clone()).collect()
     };
     for id in &ids {
-        let _ = app.update(UiMessage::ToggleSelected(id.clone()));
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleSelected(id.clone())));
     }
-    let _ = app.update(UiMessage::OpenChatMenu(ids[0].clone()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(ids[0].clone())));
     let _ = app.update(UiMessage::CommandBar(commands::Msg::ChatSub(Some(2))));
     let picks: Vec<UiMessage> = {
         let mut sim = simulator(app.view_chat_menu(&ids[0], false, 900.0));
@@ -5055,7 +5067,7 @@ fn message_requests_like_desktop() {
         let c = &st.chats[st.resolve_chat_idx(first).expect("the accepted chat")];
         assert!(c.is_request == Some(false) && c.flags & CHAT_REQUEST == 0 && app.chat_menu.is_none());
     }
-    let _ = app.update(UiMessage::ClickChat(second.clone()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::Click(second.clone())));
     let heading = {
         let st = app.store.read();
         let c = &st.chats[st.resolve_chat_idx(second).expect("a request")];
@@ -5095,7 +5107,7 @@ fn request_head_like_desktop() {
         sim.into_messages().collect()
     };
     assert!(matches!(&picked[..], [UiMessage::OpenUrl(u)] if *u == url));
-    let _ = app.update(UiMessage::AcceptRequest(id));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::AcceptRequest(id)));
     assert!(simulator(app.view_conversation()).find("View Profile").is_err(), "only requests have the header");
 }
 
@@ -5238,7 +5250,7 @@ fn sidebar_overflow_menu_lists_hidden_spaces_like_desktop() {
     let hide = |id: &str| SpaceOrder { id: id.into(), visible: false };
     app.patch_settings(|s| s.spaces_order = vec![hide("requests"), hide("label:lbl_work")]);
     let unread = app.store.read().chats.iter().any(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0);
-    let _ = app.update(UiMessage::OpenChatMenu(RAIL_MORE.into()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(RAIL_MORE.into())));
     let picked: Vec<UiMessage> = {
         let mut sim = simulator(app.view_chat_menu(RAIL_MORE, false, 900.0));
         assert!(sim.find(if unread { "• Requests" } else { "Requests" }).is_ok());
@@ -5264,7 +5276,7 @@ fn chat_menu_acts_on_the_selection_like_desktop() {
     };
     let (unread, read) = (pick(&app, true), pick(&app, false));
     app.selection = vec![unread.clone(), read.clone()];
-    let _ = app.update(UiMessage::OpenChatMenu(read.clone()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(read.clone())));
     let picked: Vec<UiMessage> = {
         let mut sim = simulator(app.view_chat_menu(&read, false, 900.0));
         assert!(sim.find("2 chats selected").is_ok() && sim.find("Mark All as Unread").is_ok());
@@ -5318,7 +5330,7 @@ fn label_inbox_rules_like_desktop() {
 fn label_chats_from_the_chat_menu_like_desktop() {
     let mut app = demo_app("chat-labels");
     let chat = "!note_self:beeper.com";
-    let _ = app.update(UiMessage::OpenChatMenu(chat.into()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(chat.into())));
     let _ = app.update(UiMessage::CommandBar(commands::Msg::ChatSub(Some(2))));
     let picks: Vec<UiMessage> = {
         let mut sim = simulator(app.view_chat_menu(chat, false, 900.0));
@@ -5826,7 +5838,7 @@ fn chat_info_bookmarks_like_desktop() {
     let menu = info_menu(&app.store.read(), &format!("bookmark:{id} {mid}"), |_| true);
     let labels: Vec<_> = menu.iter().map(|i| i.as_ref().map(|i| i.0.as_str())).collect();
     assert_eq!(labels, [Some("Jump to Message"), None, Some("Remove Bookmark")]);
-    let _ = app.update(UiMessage::OpenChatMenu(format!("bookmark:{id} {mid}")));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("bookmark:{id} {mid}"))));
     let _ = app.update(menu[2].clone().and_then(|i| i.1).expect("Remove Bookmark"));
     assert!(app.chat_menu.is_none());
     assert!(tall(app.view_info()).find("No Bookmarks").is_ok());
@@ -5858,7 +5870,7 @@ fn timer_labels_like_date_fns() {
 #[test]
 fn mute_labels_like_desktop() {
     let mut app = demo_app("label-mute");
-    let _ = app.update(UiMessage::OpenChatMenu("account:label:lbl_work".into()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu("account:label:lbl_work".into())));
     let picks: Vec<UiMessage> = {
         let mut sim = simulator(app.view_account_menu("label:lbl_work"));
         assert!(sim.find("Edit Spaces…").is_ok() && sim.find("Delete Label").is_err());
@@ -5887,7 +5899,7 @@ fn mute_labels_like_desktop() {
         let mut sim = simulator(app.view_chat_menu(&only, false, 900.0));
         sim.find("Muted by Label Work").expect("the mute reason");
         let _ = sim.click("Unmute").expect("an Unmute item");
-        let toggles = sim.into_messages().filter(|m| matches!(m, UiMessage::ToggleFlag(..)));
+        let toggles = sim.into_messages().filter(|m| matches!(m, UiMessage::ChatList(chat_list::Msg::ToggleFlag(..))));
         assert_eq!(toggles.count(), 0, "a label mute is not undone from the chat");
     }
     let i = app.store.read().chat_idx(&only);
@@ -6200,7 +6212,7 @@ fn mod_z_undoes_actions_like_desktop() {
     let _ = app.update(UiMessage::Spaces(SpacesEdit::Drop));
     assert_ne!(app.store.read().settings.spaces_order, order);
     let chat = "!note_self:beeper.com";
-    let _ = app.update(UiMessage::ToggleFlag(chat.into(), ChatFlag::Muted));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(chat.into(), ChatFlag::Muted)));
     let _ = app.update(UiMessage::Labels(labels::Msg::SetInbox("lbl_work".into(), Some("none"))));
     assert!(app.status_banner.is_empty(), "these actions have no toast");
     let muted = |app: &BeeperGuiApp| {
@@ -6348,7 +6360,7 @@ fn reply_privately_like_desktop() {
     let has = |app: &BeeperGuiApp, mid: &str| simulator(app.view_message_menu(mid).0).find("Reply Privately…").is_ok();
     assert!(has(&app, &theirs.id));
     assert!(mine.is_none_or(|m| !has(&app, &m)), "not for your own messages");
-    let _ = app.update(UiMessage::ReplyPrivately(theirs.id.clone()));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::ReplyPrivately(theirs.id.clone())));
     assert_eq!(app.status_banner, "Composing chat...");
     let quote = format!("> {}\n", theirs.text.clone().expect("text").lines().next().expect("a line"));
     let room = "!sg_security:beeper.com".to_string();
@@ -6561,7 +6573,7 @@ fn chat_info_header_like_desktop() {
     set_edits(&mut app, 0);
     let menu = format!("info:{id}");
     assert!(
-        matches!(&click(&app, "Edit")[..], [UiMessage::OpenChatMenu(k)] if *k == menu),
+        matches!(&click(&app, "Edit")[..], [UiMessage::ChatList(chat_list::Msg::OpenMenu(k))] if *k == menu),
         "Edit for Me and Chat Theme"
     );
     app.store.write().features.flags["features"]["*"]["personal-room-overrides"] = false.into();
@@ -6570,16 +6582,18 @@ fn chat_info_header_like_desktop() {
         "one action runs at once"
     );
     set_edits(&mut app, ALL_EDITS);
-    assert!(matches!(&click(&app, "Edit")[..], [UiMessage::OpenChatMenu(k)] if *k == menu));
-    let _ = app.update(UiMessage::OpenChatMenu(menu));
+    assert!(matches!(&click(&app, "Edit")[..], [UiMessage::ChatList(chat_list::Msg::OpenMenu(k))] if *k == menu));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(menu)));
     {
         let mut sim = simulator(app.view_main());
         assert!(sim.find("Edit Group").is_ok() && sim.find("Chat Theme").is_ok());
         assert!(sim.find("Copy Beeper Rust Core Team").is_err(), "the Edit menu has no copy item");
     }
     let copy = format!("copy:{id}");
-    assert!(matches!(&click(&app, "Beeper Rust Core Team")[..], [UiMessage::OpenChatMenu(k)] if *k == copy));
-    let _ = app.update(UiMessage::OpenChatMenu(copy));
+    assert!(
+        matches!(&click(&app, "Beeper Rust Core Team")[..], [UiMessage::ChatList(chat_list::Msg::OpenMenu(k))] if *k == copy)
+    );
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(copy)));
     let mut sim = simulator(app.view_main());
     let _ = sim.click("Copy Beeper Rust Core Team").expect("the title menu copies the title");
     assert!(
@@ -6652,7 +6666,7 @@ fn chat_info_members_like_desktop() {
     let _ = app.update(UiMessage::Info(info::Msg::All));
     let _ = app.update(UiMessage::Info(info::Msg::Query("member 4".into())));
     assert!(has(&app, "Member 4") && !has(&app, "Member 3"), "the search filters the members");
-    let _ = app.update(UiMessage::OpenChatMenu(format!("member:{id} @m0:beeper.local")));
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("member:{id} @m0:beeper.local"))));
     let mut sim = simulator(app.view_main());
     assert!(sim.find("Call").is_ok() && sim.find("Copy Phone Number").is_ok() && sim.find("Copy Email").is_err());
     let _ = sim.click("Copy Name").expect("the menu copies the name");
@@ -6694,8 +6708,10 @@ fn chat_info_leave_chat_like_desktop() {
     set(&mut app, ALL_MEMBER_ACTIONS);
     let mut sim = tall(app.view_info());
     let _ = sim.click("Leave Chat").expect("a Leave Chat link");
-    assert!(matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::AskLeaveChat(c)] if *c == id));
-    let _ = app.update(UiMessage::AskLeaveChat(id.clone()));
+    assert!(
+        matches!(&sim.into_messages().collect::<Vec<_>>()[..], [UiMessage::ChatList(chat_list::Msg::AskLeave(c))] if *c == id)
+    );
+    let _ = app.update(UiMessage::ChatList(chat_list::Msg::AskLeave(id.clone())));
     let msgs: Vec<UiMessage> = {
         let mut sim = simulator(app.view_confirm(ASK_LEAVE_CHAT));
         assert!(sim.find("Are you sure you want to leave Beeper Rust Core Team?").is_ok());
@@ -6720,7 +6736,7 @@ fn edit_group_like_desktop() {
         st.update_chat(i, |c| c.edits = edits);
     };
     let in_menu = |app: &mut BeeperGuiApp| {
-        let _ = app.update(UiMessage::OpenChatMenu(id.clone()));
+        let _ = app.update(UiMessage::ChatList(chat_list::Msg::OpenMenu(id.clone())));
         simulator(app.view_main()).find("Edit Group...").is_ok()
     };
     set_edits(&mut app, 0);
@@ -6801,7 +6817,7 @@ fn edit_for_me_like_desktop() {
         );
         sim.into_messages().collect()
     };
-    let [UiMessage::OpenChatMenu(key)] = &open[..] else { panic!("{open:?}") };
+    let [UiMessage::ChatList(chat_list::Msg::OpenMenu(key))] = &open[..] else { panic!("{open:?}") };
     assert_eq!(
         labels(&app, key),
         [
@@ -7160,14 +7176,14 @@ fn calls_like_desktop() {
     let voice = call(1, Some("voice"));
     assert!(!voice.reactable(), "nobody reacts to a call");
     assert_eq!(
-        (crate::message_tag(&voice), crate::preview_body(&voice)),
-        (Some((crate::CALL_TAG, "Voice call", None)), None),
+        (crate::chat_list::message_tag(&voice), crate::chat_list::preview_body(&voice)),
+        (Some((crate::chat_list::CALL_TAG, "Voice call", None)), None),
         "the chat list shows the badge alone"
     );
     let video = call(2, Some("video"));
-    assert_eq!(crate::message_tag(&video), Some((crate::VIDEO_TAG, "Video call", None)));
+    assert_eq!(crate::chat_list::message_tag(&video), Some((crate::chat_list::VIDEO_TAG, "Video call", None)));
     let other = call(3, None);
-    assert_eq!(crate::message_tag(&other).map(|t| t.1), Some("Call"));
+    assert_eq!(crate::chat_list::message_tag(&other).map(|t| t.1), Some("Call"));
     app.store.write().upsert_message(voice);
     let mut sim = simulator(app.view_main());
     assert!(sim.find("Voice call").is_ok(), "the call pill");

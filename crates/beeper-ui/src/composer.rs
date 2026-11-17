@@ -1,6 +1,7 @@
 //! The composer: its drafts, the autocomplete, the attachments and link previews, the composer buttons, and the send
 //! of a message.
 
+use crate::chat_list::{message_tag, preview_body};
 use crate::gifs;
 use crate::gifs::gif_width;
 use crate::i18n::{tr, trf};
@@ -14,10 +15,9 @@ use crate::threads;
 use crate::{
     account_display_name, account_user, anim, brand_key, can_broadcast, checkbox, clipboard_paste, contact_card,
     dashed, emoji, format, has_flag, hotkey_key, human_size, icon_btn, images, locate, menu_item, menu_rule,
-    message_tag, network_name, parse_vcard, portal, preview_body, record, removable, several_accounts, spell,
-    switch_targets, text_urls, tinted, toasts, truncate, vlist, voice, BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane,
-    PendingMedia, Picker, Queued, Toast, UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MENU_ITEM,
-    MESSAGE_MENU_W, SEND_ARROW,
+    network_name, parse_vcard, portal, record, removable, several_accounts, spell, switch_targets, text_urls, tinted,
+    toasts, truncate, vlist, voice, BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia, Picker, Queued,
+    Toast, UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MENU_ITEM, MESSAGE_MENU_W, SEND_ARROW,
 };
 use beeper_core::config::{account_network, now_unix_millis};
 use beeper_core::matrix::{Mention, ROOM_MENTION};

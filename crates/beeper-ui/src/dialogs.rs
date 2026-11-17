@@ -3,6 +3,7 @@
 use crate::accounts;
 use crate::blocking;
 use crate::blocking::blocked_chats;
+use crate::chat_list;
 use crate::i18n::{tr, trf, trn, trx};
 use crate::info;
 use crate::integrations;
@@ -330,7 +331,7 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let id = self.delete_target.clone().expect("a chat to delete");
                 let c = &st.chats[st.resolve_chat_idx(&id).expect("the chat to delete exists")];
-                let delete = |label, everyone| (label, UiMessage::DeleteChat(id.clone(), everyone));
+                let delete = |label, everyone| (label, UiMessage::ChatList(chat_list::Msg::Delete(id.clone(), everyone)));
                 let (body, actions) = match c.delete_modes {
                     DELETE_FOR_ME => {
                         (tr("This action will permanently delete this chat."), vec![delete(tr("Delete Chat"), false)])
@@ -351,7 +352,7 @@ impl BeeperGuiApp {
                 let st = self.store.read();
                 let title = &st.chats[st.resolve_chat_idx(&id).expect("the chat to leave exists")].title;
                 let body = trf("Are you sure you want to leave %s?", &[title]);
-                (tr("Leave chat").into(), body, vec![(tr("Leave"), UiMessage::LeaveRoom(id))])
+                (tr("Leave chat").into(), body, vec![(tr("Leave"), UiMessage::ChatList(chat_list::Msg::Leave(id)))])
             }
             ASK_MAKE_ADMIN | ASK_REMOVE_MEMBER => {
                 let target = self.delete_target.as_deref().expect("a member");
@@ -400,19 +401,19 @@ impl BeeperGuiApp {
                     n,
                     &[&n],
                 );
-                let archive = vec![(trx("Archive", "archive confirmation button"), UiMessage::ArchiveAll(read, 0))];
+                let archive = vec![(trx("Archive", "archive confirmation button"), UiMessage::ChatList(chat_list::Msg::ArchiveAll(read, 0)))];
                 (tr(if read { "Archive all read chats" } else { "Archive all chats" }).into(), body, archive)
             }
             ASK_ARCHIVE_WEEK => (
                 tr("Archive all chats older than a week").into(),
                 tr("This will also archive any other older chats from a week ago").into(),
-                vec![(trx("Archive", "archive confirmation button"), UiMessage::ArchiveAll(false, 7))],
+                vec![(trx("Archive", "archive confirmation button"), UiMessage::ChatList(chat_list::Msg::ArchiveAll(false, 7)))],
             ),
             ASK_MARK_ALL_READ => {
                 let n = self.visible_chats(&self.store.read()).iter().filter(|c| c.flags & CHAT_UNREAD != 0).count();
                 let title = trn("Mark %d thread as read", "Mark %d threads as read", n, &[&n]);
                 let body = tr("Are you sure you want to mark all chats as read?").into();
-                (title, body, vec![(tr("Mark as Read"), UiMessage::MarkAllRead)])
+                (title, body, vec![(tr("Mark as Read"), UiMessage::ChatList(chat_list::Msg::MarkAllRead))])
             }
             ASK_CLEAR_STORAGE | ASK_CLEAR_CACHE | ASK_CLEAR_CHAT => {
                 let which = dialog - ASK_CLEAR_STORAGE;

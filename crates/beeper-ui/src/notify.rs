@@ -1,4 +1,5 @@
 //! Desktop's message notifications (`maybeSendNotification` and `sendNotification`).
+use crate::chat_list;
 use crate::commands;
 use crate::message;
 use crate::reminders;
@@ -344,7 +345,7 @@ impl BeeperGuiApp {
         let hours =
             |h: i64| UiMessage::Reminders(reminders::Msg::Set(chat.clone(), Some(now_unix_millis() + h * 3_600_000)));
         match action.as_deref() {
-            Some("markRead") if msg.is_empty() => self.update(UiMessage::MarkRead(chat)),
+            Some("markRead") if msg.is_empty() => self.update(UiMessage::ChatList(chat_list::Msg::MarkRead(chat))),
             Some("markRead") => self.update(UiMessage::Message(message::Msg::MarkReadThrough(chat, msg))),
             Some("remind1h") => self.update(hours(1)),
             Some("remind8h") => self.update(hours(8)),

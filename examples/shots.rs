@@ -40,11 +40,11 @@ fn main() {
     let (choice, theme) = if dark { (ThemeChoice::Dark, Theme::Dark) } else { (ThemeChoice::Light, Theme::Light) };
     let _ = app.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTheme(choice)));
     shot(&out, "main", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::FilterButton);
+    let _ = app.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::FilterButton));
     shot(&out, "main_unread", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::ToggleFilterMenu);
+    let _ = app.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::ToggleFilterMenu));
     shot(&out, "main_filter_menu", (1200.0, 800.0), &theme, app.view_main());
-    let _ = app.update(UiMessage::PickFilter(0));
+    let _ = app.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::PickFilter(0)));
     let _ = app.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
     shot(&out, "main_search", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::NewChat(beeper_ui::new_chat::Msg::Open));
@@ -70,7 +70,7 @@ fn main() {
     let _ = app.update(UiMessage::Emoji(beeper_ui::emoji::EmojiMsg::Pointer(0, true)));
     shot(&out, "main_emoji", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::CloseModals);
-    let _ = app.update(UiMessage::BeginSelecting(dm.clone()));
+    let _ = app.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::BeginSelecting(dm.clone())));
     shot(&out, "main_selecting", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::CloseModals);
     app.select_chat("!wa_eric:beeper.com");

@@ -1,6 +1,7 @@
 //! Desktop's Chat Info panel: the description, the note, the media and bookmarks lists, the personal name and disappearing messages.
 
 use super::*;
+use crate::chat_list::preview_body;
 use iced::widget::column;
 
 #[derive(Clone)]
@@ -185,7 +186,7 @@ impl BeeperGuiApp {
         let cid = self.pane().selected_chat_id.clone().expect("a chat is selected");
         let chat = &st.chats[st.resolve_chat_idx(&cid).expect("selected chat exists")];
         let on = |v: Option<bool>| v == Some(true);
-        let flag = |f: ChatFlag| UiMessage::ToggleFlag(cid.clone(), f);
+        let flag = |f: ChatFlag| UiMessage::ChatList(chat_list::Msg::ToggleFlag(cid.clone(), f));
         let pane_btn = |glyph: char, pressed: bool, label: &'static str, msg: Option<UiMessage>| -> El<'_> {
             let (bg, fg) = if pressed { (p.accent, Color::WHITE) } else { (CLEAR, p.strong) };
             let btn = button(container(ic(glyph, 16.0)).center(28))
@@ -213,18 +214,22 @@ impl BeeperGuiApp {
         let edits = info_menu(&st, &format!("info:{cid}"), |a| self.can(a, "create_dm"));
         let edit = match &edits[..] {
             [Some((_, msg))] => msg.clone(),
-            _ => edits.iter().flatten().any(|i| i.1.is_some()).then(|| UiMessage::OpenChatMenu(format!("info:{cid}"))),
+            _ => edits
+                .iter()
+                .flatten()
+                .any(|i| i.1.is_some())
+                .then(|| UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("info:{cid}")))),
         };
         let edit = button(semi(trx("Edit", "chat info edit button"), 11.0).color(p.accent))
             .bare(p.accent)
             .on_press_maybe(edit);
-        let copy = UiMessage::OpenChatMenu(format!("copy:{cid}"));
+        let copy = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("copy:{cid}")));
         let title = mouse_area(
             button(semi(chat.title.clone(), 15.0).color(p.strong).center()).bare(p.strong).on_press(copy.clone()),
         )
         .on_right_press(copy);
         let meta = |s: String| {
-            let copy = UiMessage::OpenChatMenu(format!("copy:{cid}\n{s}"));
+            let copy = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("copy:{cid}\n{s}")));
             mouse_area(txt(s, 11.0).color(Color { a: 0.6, ..p.strong })).on_right_press(copy)
         };
         let other =
@@ -337,7 +342,7 @@ impl BeeperGuiApp {
             container(details).padding(Padding::new(16.0).bottom(if adding { 0.0 } else { 8.0 })),
             container(edit).align_right(Fill).padding(Padding::ZERO.top(12.0).right(8.0)),
         ])
-        .on_right_press(UiMessage::OpenChatMenu(format!("info:{cid}")));
+        .on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("info:{cid}"))));
         let archived = chat.flag(ChatFlag::Archived);
         let pinned = !archived && chat.flag(ChatFlag::Pinned);
         let tool = |glyph: char, fg: Color, label: &'static str, keys, msg: Option<UiMessage>| -> El<'_> {
@@ -374,7 +379,7 @@ impl BeeperGuiApp {
                     p.strong,
                     tr("Remind Me"),
                     vec!["Ctrl", "L"],
-                    Some(UiMessage::OpenChatMenu(cid.clone())),
+                    Some(UiMessage::ChatList(chat_list::Msg::OpenMenu(cid.clone()))),
                 ),
             },
             tool(
@@ -384,7 +389,13 @@ impl BeeperGuiApp {
                 vec!["Ctrl", "F"],
                 Some(UiMessage::CommandBar(commands::Msg::SearchRoom(cid.clone())))
             ),
-            tool(icon::EXPAND_MORE, p.strong, tr("More Options"), vec![], Some(UiMessage::OpenChatMenu(cid.clone()))),
+            tool(
+                icon::EXPAND_MORE,
+                p.strong,
+                tr("More Options"),
+                vec![],
+                Some(UiMessage::ChatList(chat_list::Msg::OpenMenu(cid.clone())))
+            ),
         ]
         .align_y(Center)
         .padding([8, 12]);
@@ -510,7 +521,7 @@ impl BeeperGuiApp {
                 let leave = button(semi(tr("Leave Chat"), 14.0).line_height(Pixels(18.0)).color(p.strong))
                     .padding([0, 8])
                     .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
-                    .on_press(UiMessage::AskLeaveChat(cid.clone()));
+                    .on_press(UiMessage::ChatList(chat_list::Msg::AskLeave(cid.clone())));
                 container(leave).padding(Padding::ZERO.top(8.0))
             }))
             .padding(Padding::new(8.0).top(0.0));
@@ -652,7 +663,7 @@ impl BeeperGuiApp {
         let rows: Vec<El> = marked[..shown]
             .iter()
             .map(|&(target, m)| {
-                let menu = UiMessage::OpenChatMenu(format!("bookmark:{} {target}", chat.id));
+                let menu = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("bookmark:{} {target}", chat.id)));
                 let blank = || Space::new().width(24).height(24);
                 let lines = |title: El<'a>, text: &str| {
                     let preview = ell(text, 220.0, 11.0, Weight::Normal).line_height(Pixels(14.0)).color(dim);

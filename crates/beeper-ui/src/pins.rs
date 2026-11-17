@@ -1,6 +1,7 @@
 //! Desktop's pinned chats grid: the hover of a tile, and the drag that orders the pins.
 
 use super::*;
+use crate::chat_list::{message_tag, preview_body};
 
 #[derive(Clone)]
 pub enum Msg {

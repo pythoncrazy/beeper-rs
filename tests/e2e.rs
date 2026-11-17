@@ -1265,16 +1265,16 @@ async fn lifecycle() {
         assert_eq!(gui.active_tab, InboxTab::Requests);
     }
 
-    let _ = gui.update(UiMessage::SelectTab(InboxTab::AllChats));
-    let _ = gui.update(UiMessage::FilterButton);
-    let _ = gui.update(UiMessage::ToggleFilterMenu);
+    let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::SelectTab(InboxTab::AllChats)));
+    let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::FilterButton));
+    let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::ToggleFilterMenu));
     {
         let mut sim = simulator(gui.view_main());
         for label in ["Unread", "Ctrl Shift Y", "Low Priority"] {
             assert!(sim.find(label).is_ok(), "filter menu shows {label}");
         }
     }
-    let _ = gui.update(UiMessage::PickFilter(1));
+    let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::PickFilter(1)));
     assert!(gui.filters == 0 && !gui.show_filter_menu, "picking the only active filter clears it");
     let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
     {
@@ -1509,7 +1509,7 @@ async fn lifecycle() {
         let cid = store.read().chats[0].id.clone();
         let was = store.read().chats[0].is_muted == Some(true);
         take_outbox(&mut store.write());
-        let _ = gui.update(UiMessage::ToggleFlag(cid.clone(), ChatFlag::Muted));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::ToggleFlag(cid.clone(), ChatFlag::Muted)));
         let mut st = store.write();
         assert_eq!(st.chats[0].is_muted, Some(!was), "the mute toggle changes the chat");
         let queued = matches!(take_outbox(&mut st).as_slice(), [(c, Outgoing::Flag(ChatFlag::Muted, on))] if *c == cid && *on != was);
@@ -1519,13 +1519,13 @@ async fn lifecycle() {
         assert!(st.outbox.is_empty());
         let read = st.chats[0].unread_count == 0 && st.chats[0].is_marked_unread != Some(true);
         drop(st);
-        let _ = gui.update(UiMessage::OpenChatMenu(cid.clone()));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::OpenMenu(cid.clone())));
         assert!(gui.chat_menu.as_ref().is_some_and(|(c, _)| *c == cid), "right-click opens the chat menu");
-        let _ = gui.update(UiMessage::ToggleRead(cid.clone()));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::ToggleRead(cid.clone())));
         assert!(gui.chat_menu.is_none(), "a menu action closes the menu");
         let c = store.read().chats[0].clone();
         assert_eq!(c.unread_count == 0 && c.is_marked_unread != Some(true), !read, "the read toggle flips the chat");
-        let _ = gui.update(UiMessage::OpenChatMenu(cid.clone()));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::OpenMenu(cid.clone())));
         let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::ChatSub(Some(1))));
         assert!(simulator(gui.view_main()).find("In an Hour").is_ok(), "Remind Me opens the presets");
         let at = beeper_core::config::now_unix_millis() + 3_600_000;
@@ -1547,7 +1547,7 @@ async fn lifecycle() {
                 st.set_reminder(i, Some(ChatReminder { remind_at_ms: at, dismiss_on_incoming_message: true }));
             }
         }
-        let _ = gui.update(UiMessage::SelectTab(InboxTab::Reminders));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::SelectTab(InboxTab::Reminders)));
         let order = |gui: &BeeperGuiApp| {
             let st = store.read();
             gui.visible_chats(&st).iter().map(|c| c.reminder.as_ref().unwrap().remind_at_ms).collect::<Vec<_>>()
@@ -1562,7 +1562,7 @@ async fn lifecycle() {
         assert!(simulator(gui.view_main()).find("Dismiss All Reminders?").is_ok());
         let _ = gui.update(UiMessage::Reminders(beeper_ui::reminders::Msg::DismissAll));
         assert!(order(&gui).is_empty() && gui.confirm.is_none(), "dismiss all clears every reminder");
-        let _ = gui.update(UiMessage::SelectTab(InboxTab::AllChats));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::SelectTab(InboxTab::AllChats)));
         {
             let mut st = store.write();
             st.chats[1].is_pinned = Some(false);
@@ -1596,10 +1596,10 @@ async fn lifecycle() {
         assert_eq!(gui.search_filters, SearchFilters::default(), "a new search starts without filters");
         let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
         let other = store.read().chats[1].id.clone();
-        let _ = gui.update(UiMessage::HoverChat(cid.clone(), true));
-        let _ = gui.update(UiMessage::HoverChat(other.clone(), false));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::Hover(cid.clone(), true)));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::Hover(other.clone(), false)));
         assert_eq!(gui.hovered_chat.as_deref(), Some(cid.as_str()), "leaving another row keeps the hover");
-        let _ = gui.update(UiMessage::HoverChat(cid.clone(), false));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::Hover(cid.clone(), false)));
         assert!(gui.hovered_chat.is_none());
         for _ in 0..2 {
             let _ = gui.update(UiMessage::Composer(beeper_ui::composer::Msg::Changed("draft".into())));
@@ -1607,7 +1607,7 @@ async fn lifecycle() {
             let _ = gui.update(UiMessage::SelectChat(cid.clone()));
             assert_eq!(gui.pane.composer.text(), "draft", "a chat keeps its draft");
         }
-        let _ = gui.update(UiMessage::DeleteDraft(cid.clone()));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::DeleteDraft(cid.clone())));
         let c = store.read().chats[0].clone();
         assert!(c.draft.is_none() && gui.pane.composer.is_empty(), "the hover action deletes the draft");
         let note = beeper_core::store::NOTE_CHAT_ID;
@@ -1632,27 +1632,27 @@ async fn lifecycle() {
             c.delete_modes = DELETE_FOR_ME | DELETE_FOR_EVERYONE;
             c.id.clone()
         };
-        let _ = gui.update(UiMessage::OpenChatMenu(doomed.clone()));
-        let _ = gui.update(UiMessage::AskDeleteChat(doomed.clone()));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::OpenMenu(doomed.clone())));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::AskDelete(doomed.clone())));
         assert!(gui.chat_menu.is_none() && simulator(gui.view_main()).find("Delete for Everyone").is_ok());
         take_outbox(&mut store.write());
-        let _ = gui.update(UiMessage::DeleteChat(doomed.clone(), true));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::Delete(doomed.clone(), true)));
         let mut st = store.write();
         let sent = matches!(take_outbox(&mut st).as_slice(), [(c, Outgoing::DeleteChat { for_everyone: true })] if *c == doomed);
         assert!(sent && st.resolve_chat_idx(&doomed).is_none(), "Delete Chat asks the bridge and drops the chat");
         let picks: Vec<String> =
             st.chats.iter().filter(|c| c.is_muted != Some(true)).take(2).map(|c| c.id.clone()).collect();
         drop(st);
-        let _ = gui.update(UiMessage::BeginSelecting(picks[0].clone()));
-        let _ = gui.update(UiMessage::ToggleSelected(picks[1].clone()));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::BeginSelecting(picks[0].clone())));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::ToggleSelected(picks[1].clone())));
         assert!(simulator(gui.view_main()).find("2 chats selected").is_ok(), "Begin Selecting shows the selection bar");
-        let _ = gui.update(UiMessage::SelectionSet(ChatFlag::Muted, true));
+        let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::SelectionSet(ChatFlag::Muted, true)));
         let st = store.read();
         let muted = picks.iter().all(|id| st.chats[st.resolve_chat_idx(id).unwrap()].is_muted == Some(true));
         assert!(muted && gui.selection.is_empty(), "a selection action applies to every chat and ends the selection");
         drop(st);
         for id in &picks {
-            let _ = gui.update(UiMessage::ToggleFlag(id.clone(), ChatFlag::Muted));
+            let _ = gui.update(UiMessage::ChatList(beeper_ui::chat_list::Msg::ToggleFlag(id.clone(), ChatFlag::Muted)));
         }
         take_outbox(&mut store.write());
     }

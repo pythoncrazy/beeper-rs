@@ -147,8 +147,8 @@ impl BeeperGuiApp {
                 .push(Row::with_children(tags).spacing(4))
                 .spacing(8)
                 .align_y(Center);
-            let menu = UiMessage::OpenChatMenu(format!("member:{} {}", chat.id, u.id));
-            let card = UiMessage::OpenChatMenu(format!("card:{} {}", chat.id, u.id));
+            let menu = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("member:{} {}", chat.id, u.id)));
+            let card = UiMessage::ChatList(chat_list::Msg::OpenMenu(format!("card:{} {}", chat.id, u.id)));
             let btn = button(line).padding(4).width(Fill).style(btn_style([CLEAR, shade, shade], [p.strong; 3], 8.0));
             mouse_area(btn.on_press(card)).on_right_press(menu).into()
         };
