@@ -284,6 +284,15 @@ impl BeeperGuiApp {
             .style(bordered_btn([bg, p.hover, p.hover], [p.text; 3], edge, 1.0, 999.0))
             .on_press(UiMessage::Thread(Msg::ShowUnread));
         let pill = mouse_area(pill).on_right_press(UiMessage::Thread(Msg::UnreadMenu(true)));
+        // A `<button>` of Desktop, whose focus does not show.
+        let keys = crate::focus::Keys::press(UiMessage::Thread(Msg::ShowUnread));
+        let pill = self.target(
+            self.drawing.get().or(self.main_window),
+            "unread-threads",
+            pill,
+            keys,
+            crate::focus::Look::Hidden,
+        );
         container(pill).padding([4, 0]).into()
     }
 

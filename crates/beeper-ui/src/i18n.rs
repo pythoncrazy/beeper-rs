@@ -393,6 +393,7 @@ mod tests {
             "chat info menu row\u{4}Hides this chat",
             "chat info menu row\u{4}Mutes this chat",
             "chat info menu row\u{4}Shows and notifies",
+            "status of a blocked person, after their username in a list of chats\u{4}Blocked",
         ];
         // The source files, with those of the folders of modules.
         let mut files = Vec::new();

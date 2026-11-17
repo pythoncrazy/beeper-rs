@@ -1153,6 +1153,7 @@
 "Switch Chat":["Alternar chat"],
 "Switch First 9 Chats Modifier":["Mudar modificador dos primeiros 9 chats"],
 "Switch First 9 Spaces Modifier":["Mudar modificador dos primeiros 9 espaços"],
+"Switch chats":["Trocar chats"],
 "Synced %(processed)d of %(total)d chat.":["%(processed)d de %(total)d chat sincronizado.", "%(processed)d de %(total)d chats sincronizados."],
 "Syncing your data":["Sincronizando seus dados"],
 "Syncing...":["Sincronizando…"],

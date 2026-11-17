@@ -673,7 +673,7 @@ impl BeeperGuiApp {
             let links = !self.pane.composer_links.is_empty();
             // A merged chat sends to its `composeTarget`, and a reply to the chat of its message.
             let to = match reply_to {
-                None => st.chats[st.compose_target(idx)].id.clone(),
+                None => st.chats[self.compose_target_of(&st, idx)].id.clone(),
                 Some(_) => chat_id.clone(),
             };
             let draft = Draft { text, reply_to, mentions, preview, thread: self.pane.send_thread(), files, links };
@@ -823,7 +823,7 @@ impl BeeperGuiApp {
         // A merged chat names the member chat that it sends to.
         let idx = st.chat_idx(&chat.id);
         if !st.members(idx).is_empty() {
-            let target = &st.chats[st.compose_target(idx)];
+            let target = &st.chats[self.compose_target_of(st, idx)];
             return format!("Message {} on {}", target.title, protocol(target));
         }
         let to = match (pane.send_later, pane.reply_thread.is_some() || pane.reply_to_message_id.is_some()) {
@@ -1059,8 +1059,20 @@ impl BeeperGuiApp {
         // Desktop's `AccountAvatar` takes the place of the network icon when you have more accounts of the bridge.
         let switch =
             switch_targets(st, chat).filter(|_| self.pane().thread_root.is_none() && self.drawing.get().is_none());
-        let net: Option<El<'a>> = match switch {
-            Some(targets) => {
+        // Desktop's merged chat switcher: the 20 px avatar of the target member chat, with the card of the member
+        // chats on hover, or the title of the only one in a tooltip.
+        let merged =
+            self.merged_targets(st).filter(|_| self.pane().thread_root.is_none() && self.drawing.get().is_none());
+        let net: Option<El<'a>> = match (merged, switch) {
+            (Some(members), _) => {
+                let target = &st.chats[self.compose_target_of(st, st.chat_idx(&chat.id))];
+                let face = container(self.chat_avatar(target, 20.0, 1.25)).padding(Padding::ZERO.right(4.0));
+                Some(match members.len() {
+                    1 => self.tip(face.into(), target.title.clone(), vec![], tooltip::Position::Top).into(),
+                    _ => mouse_area(face).on_enter(UiMessage::SwitchCard).into(),
+                })
+            }
+            (None, Some(targets)) => {
                 let r = st.bridge_accounts.iter().find(|b| b.account_id == chat.account_id);
                 let url = r.and_then(|b| b.remote_profile.as_ref()?.avatar.as_deref());
                 let face = self.face(url, &default_account_user(st, &chat.account_id), 14.0, 0.0);
@@ -1073,7 +1085,7 @@ impl BeeperGuiApp {
                     _ => mouse_area(face).on_enter(UiMessage::SwitchCard).into(),
                 })
             }
-            None => (st.settings.on("showNetworkIcons") && empty && !several_accounts(st, &chat.account_id))
+            (None, None) => (st.settings.on("showNetworkIcons") && empty && !several_accounts(st, &chat.account_id))
                 .then(|| svg(brand_svg(brand_key(&chat.account_id))).width(14).height(14).into()),
         };
         let inline = Row::with_children([pri, sec].into_iter().flatten().map(&action_btn)).spacing(2).align_y(Center);
@@ -1422,6 +1434,7 @@ impl BeeperGuiApp {
             }
             Msg::Edit(action) => {
                 use text_editor::{Action, Edit};
+                self.hold_compose_target();
                 let old = self.pane.composer.text();
                 match (action, self.pane.emoticon.take().filter(|(after, ..)| *after == old)) {
                     (Action::Edit(Edit::Backspace), Some((_, typed, at))) => {
@@ -1580,6 +1593,7 @@ impl BeeperGuiApp {
                 if !self.composer_takes_keys() {
                     return Task::none();
                 }
+                self.hold_compose_target();
                 let old = self.pane.composer.text();
                 self.pane.composer.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
                 for c in text.chars() {

@@ -355,7 +355,13 @@ impl BeeperGuiApp {
             let actions = vec![(trx("Save", "button label"), UiMessage::Profile(Msg::Leave(true)))];
             let body = tr("Would you like to save your changes before leaving?").into();
             let discard = (trx("Discard", "button label"), UiMessage::Profile(Msg::Leave(false)));
-            return Some(self.dialog(tr("You have unsaved changes").into(), body, actions, discard));
+            return Some(self.dialog(
+                self.settings_window,
+                tr("You have unsaved changes").into(),
+                body,
+                actions,
+                discard,
+            ));
         }
         let card = |content: El<'a>, width: f32, close: UiMessage| -> El<'a> {
             let card =

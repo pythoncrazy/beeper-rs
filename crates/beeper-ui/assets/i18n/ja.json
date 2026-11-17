@@ -1122,6 +1122,7 @@
 "Switch Chat":["チャットを切り替え"],
 "Switch First 9 Chats Modifier":["最初の9件のチャットを切り替えるモディファイア"],
 "Switch First 9 Spaces Modifier":["最初の9個のスペースを切り替えるモディファイア"],
+"Switch chats":["チャットを切り替え"],
 "Synced %(processed)d of %(total)d chat.":["%(total)d件中%(processed)d件のチャットを同期しました。"],
 "Syncing your data":["データを同期しています"],
 "Syncing...":["同期しています..."],

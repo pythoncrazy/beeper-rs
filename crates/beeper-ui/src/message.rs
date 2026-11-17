@@ -1478,9 +1478,10 @@ impl BeeperGuiApp {
         let verify = verify.map(|v| container(v).padding([0, 12]));
         // Desktop's `ThreadComposerDisabled` in place of the composer: a link to the new chat of an upgraded chat, or
         // "You blocked __NAME__. Unblock".
-        let disabled = |lead: String, link: &str, end: &str, msg| -> El<'_> {
+        let disabled = |leading: Option<El<'static>>, lead: String, link: &str, end: &str, msg| -> El<'static> {
             let part = |t: String, c: Color| txt(t, 13.0).color(c);
-            let link = row![part(lead, p.sub), part(link.into(), p.text), part(end.into(), p.sub)];
+            let link = row![].push(leading).push(part(lead, p.sub)).push(part(link.into(), p.text));
+            let link = link.push(part(end.into(), p.sub)).align_y(Center);
             let link = button(container(link).center_x(Fill).center_y(36))
                 .padding(8)
                 .style(btn_style([CLEAR; 3], [p.sub; 3], 0.0))
@@ -1490,13 +1491,20 @@ impl BeeperGuiApp {
         let upgraded = chat.replacement_room.as_deref().and_then(|r| st.resolve_chat_idx(r)).map(|i| {
             let lead = format!("{} ", tr("Chat was upgraded."));
             let msg = UiMessage::SelectChat(st.chats[i].id.clone());
-            disabled(lead, tr("Click here to follow the conversation"), ".", msg)
+            disabled(None, lead, tr("Click here to follow the conversation"), ".", msg)
         });
-        let blocked = (st.user_blocked(chat) && chat.block & NO_UNBLOCK == 0).then(|| {
-            let lead = tr("You blocked __NAME__. __UNBLOCK__").replace("__NAME__", &chat.title);
+        // Desktop's `blockedComposerThread`: a merged chat whose target member chat is blocked leads with its switcher.
+        let merged = !st.members(st.chat_idx(&chat.id)).is_empty();
+        let target = if merged { &st.chats[self.compose_target_of(&st, st.chat_idx(&chat.id))] } else { chat };
+        let blocked = (st.user_blocked(target) && target.block & NO_UNBLOCK == 0).then(|| {
+            let lead = tr("You blocked __NAME__. __UNBLOCK__").replace("__NAME__", &target.title);
             let lead = lead.trim_end_matches("__UNBLOCK__").to_string();
             let unblock = trx("Unblock", "action to unblock the other person in a DM");
-            disabled(lead, unblock, "", UiMessage::Blocking(blocking::Msg::Ask(chat.id.clone(), false)))
+            let switcher = merged.then(|| -> El<'static> {
+                let face = container(self.chat_avatar(target, 20.0, 1.25)).padding(Padding::ZERO.right(6.0));
+                mouse_area(face).on_enter(UiMessage::SwitchCard).into()
+            });
+            disabled(switcher, lead, unblock, "", UiMessage::Blocking(blocking::Msg::Ask(target.id.clone(), false)))
         });
         // Desktop's `ThreadComposer` draws nothing once the user left the chat or was removed from it.
         let composer = match upgraded.or(blocked) {
