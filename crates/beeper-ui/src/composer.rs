@@ -16,10 +16,10 @@ use crate::units::human_size;
 use crate::vcard::parse_vcard;
 use crate::{
     account_display_name, account_user, anim, brand_key, can_broadcast, checkbox, clipboard_paste, contact_card,
-    dashed, emoji, format, has_flag, hotkey_key, icon_btn, images, locate, menu_item, menu_rule, network_name, portal,
-    record, removable, several_accounts, spell, switch_targets, text_urls, tinted, toasts, truncate, vlist, voice,
-    BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia, Picker, Queued, Toast, UiMessage, CHEVRON_DOWN,
-    COMPOSER_ICONS, FILE_ICONS, MENU_ITEM, MESSAGE_MENU_W, SEND_ARROW,
+    dashed, default_account_user, emoji, format, has_flag, hotkey_key, icon_btn, images, locate, menu_item, menu_rule,
+    network_name, portal, record, removable, several_accounts, spell, switch_targets, text_urls, tinted, toasts,
+    truncate, vlist, voice, BeeperGuiApp, Clip, El, Frames, MenuEdit, Pane, PendingMedia, Picker, Queued, Toast,
+    UiMessage, CHEVRON_DOWN, COMPOSER_ICONS, FILE_ICONS, MENU_ITEM, MESSAGE_MENU_W, SEND_ARROW,
 };
 use beeper_core::config::{account_network, now_unix_millis};
 use beeper_core::matrix::{Mention, ROOM_MENTION};
@@ -887,7 +887,7 @@ impl BeeperGuiApp {
             Some(targets) => {
                 let r = st.bridge_accounts.iter().find(|b| b.account_id == chat.account_id);
                 let url = r.and_then(|b| b.remote_profile.as_ref()?.avatar.as_deref());
-                let face = self.face(url, &account_user(st, &chat.account_id), 14.0, 0.0);
+                let face = self.face(url, &default_account_user(st, &chat.account_id), 14.0, 0.0);
                 Some(match targets.len() {
                     1 => {
                         let accounts: Vec<String> = st.bridge_accounts.iter().map(|b| b.account_id.clone()).collect();

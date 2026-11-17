@@ -127,6 +127,7 @@ impl Default for BeeperSettings {
             quick_reaction: "❤️".into(),
             quick_reactions: ["👍", "❤️", "😂"].map(String::from).to_vec(),
             recent_stickers: Vec::new(),
+            time_suggestions: Vec::new(),
         }
     }
 }
@@ -343,14 +344,23 @@ pub fn local_millis(utc_ms: i64) -> i64 {
 
 /// Desktop's `K0` for its time suggestions and typed times: chrono-node with forward dates, which tries the text and
 /// then "in " and the text, and compromise for "this weekend", which starts on Saturday at midnight. Like chrono-node,
-/// a weekday falls at noon, and a relative day keeps the time of `now`.
+/// a weekday falls at noon, and a relative day keeps the time of `now`. chrono-node also reads its short units, as in
+/// "In 3w", and a time before the day, as in "7am Tomorrow".
 pub fn parse_when<Tz: chrono::TimeZone>(text: &str, now: &chrono::DateTime<Tz>) -> Option<chrono::DateTime<Tz>> {
     use chrono::{Datelike, Days, Months, NaiveDateTime, NaiveTime, TimeDelta};
     const WEEKDAYS: [&str; 7] = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
     const NUMBERS: [&str; 13] =
         ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
     let text = text.trim().to_lowercase();
-    let mut w: Vec<String> = text.split_whitespace().map(String::from).collect();
+    let mut w: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        // A number with its unit, like "3w", but not a time like "7am".
+        let (n, unit) = word.split_at(word.find(|c: char| !c.is_ascii_digit()).unwrap_or(word.len()));
+        match !n.is_empty() && !unit.is_empty() && unit.chars().all(|c| c.is_ascii_alphabetic()) {
+            true if !matches!(unit, "am" | "pm") => w.extend([n.to_string(), unit.to_string()]),
+            _ => w.push(word.to_string()),
+        }
+    }
     if w.len() > 1 && matches!(w.last().map(String::as_str), Some("am" | "pm")) {
         let half = w.pop()?;
         w.last_mut()?.push_str(&half);
@@ -386,6 +396,16 @@ pub fn parse_when<Tz: chrono::TimeZone>(text: &str, now: &chrono::DateTime<Tz>) 
         }
         w.pop();
     }
+    if w.len() > 2 && matches!(w[1].as_str(), "am" | "pm") {
+        let half = w.remove(1);
+        w[0].push_str(&half);
+    }
+    if hm.is_none() && w.len() > 1 {
+        hm = clock(&w[0], false);
+        if hm.is_some() {
+            w.remove(0);
+        }
+    }
     let part = match w.last().map(String::as_str) {
         Some("morning") => Some(6),
         Some("afternoon") => Some(15),
@@ -409,7 +429,17 @@ pub fn parse_when<Tz: chrono::TimeZone>(text: &str, now: &chrono::DateTime<Tz>) 
     let at_time =
         |d: chrono::NaiveDate, (h, m): (u32, u32)| d.and_time(NaiveTime::from_hms_opt(h, m, 0).expect("a clock"));
     let add = |n: u32, unit: &str| -> Option<NaiveDateTime> {
-        match unit.strip_suffix('s').unwrap_or(unit) {
+        let unit = match unit {
+            "s" | "sec" | "secs" => "second",
+            "m" | "min" | "mins" => "minute",
+            "h" | "hr" | "hrs" => "hour",
+            "d" => "day",
+            "w" => "week",
+            "mo" | "mon" | "mos" => "month",
+            "y" | "yr" | "yrs" => "year",
+            unit => unit.strip_suffix('s').unwrap_or(unit),
+        };
+        match unit {
             "second" => base.checked_add_signed(TimeDelta::seconds(n.into())),
             "minute" => base.checked_add_signed(TimeDelta::minutes(n.into())),
             "hour" => base.checked_add_signed(TimeDelta::hours(n.into())),
@@ -525,6 +555,12 @@ mod tests {
             ("tonight", "Tue 2026-10-20 22:00"),
             ("at 9", "Wed 2026-10-21 09:00"),
             ("noon", "Wed 2026-10-21 12:00"),
+            ("In 3w", "Tue 2026-11-10 15:30"),
+            ("in 2 hrs", "Tue 2026-10-20 17:30"),
+            ("45m", "Tue 2026-10-20 16:15"),
+            ("In 3 weeks", "Tue 2026-11-10 15:30"),
+            ("7am Tomorrow", "Wed 2026-10-21 07:00"),
+            ("9:15 am friday", "Fri 2026-10-23 09:15"),
         ];
         for (text, at) in cases {
             assert_eq!(when(text).as_deref(), Some(at), "{text}");

@@ -368,9 +368,50 @@ impl Query {
     /// Desktop's message search with partial matches (`searchRoomMessages` with `useFts`): the messages that contain
     /// `text` as a phrase, where the last word can be the start of a word.
     pub fn text(self, text: &str) -> Self {
+        self.phrase(text, true)
+    }
+
+    /// Desktop's `pT`: the messages that contain `text` as a phrase, where with `partial` the last word can be the
+    /// start of a word.
+    pub fn phrase(self, text: &str, partial: bool) -> Self {
         assert!(!text.trim().is_empty(), "a message search has words");
-        let phrase = format!("\"{}\"*", text.trim().replace('"', "\"\""));
+        let phrase = format!("\"{}\"{}", text.trim().replace('"', "\"\""), if partial { "*" } else { "" });
         self.and("n IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)", phrase)
+    }
+
+    /// Desktop's `bookmarkedOnly`: the bookmarked messages.
+    pub fn bookmarked(mut self) -> Self {
+        self.0.push("IFNULL(json ->> '$.isBookmarked', 0) = 1".into());
+        self
+    }
+
+    /// Desktop's `isSentByMe` condition of `from:me` (`me`) and `from:others`.
+    pub fn sent(mut self, me: bool) -> Self {
+        self.0.push(format!("IFNULL(json ->> '$.isSender', 0) = {}", u8::from(me)));
+        self
+    }
+
+    /// Desktop's `has:` condition: an attachment for `None`, else an attachment of one of the `types`, where the
+    /// type `link` takes the messages with link previews too.
+    pub fn has(mut self, types: Option<&[&str]>) -> Self {
+        let Some(types) = types else {
+            self.0.push("json_array_length(messages.json, '$.attachments') > 0".into());
+            return self;
+        };
+        let typed = "EXISTS (SELECT 1 FROM json_each(messages.json, '$.attachments') a \
+                     WHERE a.value ->> '$.type' IN (SELECT value FROM json_each(?)))";
+        let cond = match types.contains(&"link") {
+            true => format!("({typed} OR json_array_length(messages.json, '$.links') > 0)"),
+            false => typed.into(),
+        };
+        self.and(&cond, serde_json::to_string(types).expect("attachment type JSON"))
+    }
+
+    /// Desktop's `after:` (`after`) or `before:` condition: the messages strictly after or before the Unix
+    /// milliseconds `ms`.
+    pub fn time(self, ms: i64, after: bool) -> Self {
+        let op = if after { '>' } else { '<' };
+        self.and(&format!("unixepoch(json ->> '$.timestamp', 'subsec') * 1000 {op} CAST(? AS INTEGER)"), ms.to_string())
     }
 
     /// The messages after the sort key `cursor`, or before it.
@@ -570,6 +611,13 @@ pub struct BeeperStore {
     pub inbox_rules: serde_json::Value,
     /// Desktop's `mutedRoomIDs`: the `room_ids` of the global `com.beeper.muted` account data.
     pub muted_rooms: Vec<String>,
+    /// The last synced [`crate::matrix::ACCOUNT_OVERRIDES`], encrypted with MSC4483.
+    pub account_overrides_synced: serde_json::Value,
+    /// Desktop SDK's decrypted `com.beeper.bridge_account_overrides`: the account nicknames by bridge and login, or
+    /// the synced content while it cannot be decrypted.
+    pub account_overrides: serde_json::Value,
+    /// Desktop SDK's MSC4483 key of encrypted account data, once read from secret storage.
+    pub account_data_key: Option<[u8; 32]>,
     /// Desktop's `lastViewedRequestsAtByAccount`: when the Requests view last showed each account's requests, in
     /// milliseconds, by [`BeeperStore::request_key`].
     pub requests_viewed: HashMap<String, i64>,
@@ -726,6 +774,9 @@ impl BeeperStore {
             skin_tone: 0,
             inbox_rules: serde_json::Value::Null,
             muted_rooms: Vec::new(),
+            account_overrides_synced: serde_json::Value::Null,
+            account_overrides: serde_json::Value::Null,
+            account_data_key: None,
             requests_viewed: HashMap::new(),
             features,
             whoami: Profile::default(),
@@ -1249,6 +1300,13 @@ impl BeeperStore {
         self.bridge_accounts = accounts;
         self.rebuild_accounts_from_bridges();
         self.persist_state_to_sqlite();
+    }
+
+    /// Desktop's `customName` of an account: the nickname of its bridge login in [`Self::account_overrides`].
+    pub fn custom_name(&self, account_id: &str) -> Option<&str> {
+        let b = self.bridge_accounts.iter().find(|b| b.account_id == account_id)?;
+        let name = self.account_overrides["accounts"][&b.bridge_id][&b.login_id]["name"].as_str();
+        name.filter(|n| !n.is_empty())
     }
 
     pub fn set_contacts(&mut self, contacts: Vec<User>) {

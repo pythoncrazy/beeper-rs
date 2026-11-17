@@ -452,7 +452,9 @@ dependencies = [
 name = "beeper-core"
 version = "4.3.308"
 dependencies = [
+ "aes",
  "chrono",
+ "ctr",
  "futures-util",
  "image",
  "imagesize",
