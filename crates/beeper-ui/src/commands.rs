@@ -771,7 +771,7 @@ impl BeeperGuiApp {
                 cmd(settings, title, pick).keys(&[r.desc.unwrap_or_default(), "Preferences"])
             }));
         }
-        v.extend(crate::networks::addable().map(|n| {
+        v.extend(crate::networks::addable(&st.features).map(|n| {
             let title = format!("{} → {}", tr("Accounts"), n.display_name);
             cmd(
                 settings,

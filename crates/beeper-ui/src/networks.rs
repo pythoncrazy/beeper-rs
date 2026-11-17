@@ -4,6 +4,8 @@
 
 use super::*;
 use beeper_core::config::{cloud_bridge, NETWORK_SPECS};
+use beeper_core::features::Flags;
+use beeper_core::models::NetworkKind;
 use iced::widget::{column, row, stack};
 
 /// Desktop's Add an Account window size (`Ds` and `Us` of sentry-common).
@@ -64,9 +66,13 @@ impl Entry<'_> {
     }
 }
 
-/// The networks that you can add an account on here.
-pub(crate) fn addable() -> impl Iterator<Item = &'static NetworkSpec> {
-    NETWORK_SPECS[1..].iter().filter(|n| cfg!(target_os = "macos") || n.bridge_id != "imessage")
+/// The networks that you can add an account on here: Desktop's `addablePlatforms`, whose bridges the account's flags
+/// turn on, and iMessage on a Mac.
+pub(crate) fn addable(f: &Flags) -> impl Iterator<Item = &'static NetworkSpec> + '_ {
+    NETWORK_SPECS[1..].iter().filter(|n| match n.kind {
+        NetworkKind::IMessage => cfg!(target_os = "macos"),
+        _ => f.network_on(n),
+    })
 }
 
 /// Desktop's `addableNetworks`, in its order: a network connects when its bridge takes another account
@@ -74,7 +80,7 @@ pub(crate) fn addable() -> impl Iterator<Item = &'static NetworkSpec> {
 pub fn entries(st: &BeeperStore) -> Vec<Entry<'_>> {
     let f = &st.features;
     let out = f.accounts_remaining() == 0;
-    addable()
+    addable(f)
         .map(|n| {
             let accounts: Vec<_> =
                 st.bridge_accounts.iter().filter(|a| account_network(&a.bridge_id).bridge_id == n.bridge_id).collect();
@@ -359,6 +365,7 @@ mod tests {
         let mut st = app.store.write();
         st.bridge_accounts = vec![account(&st, "signal", "Ada Lovelace"), account(&st, "whatsapp", "Ada")];
         st.features.flags["features"]["*"]["bridge:signal:multi-account"] = true.into();
+        st.features.flags["features"]["*"]["bridge:local-bluesky"] = true.into();
         st.features.summary = json!({
             "current": { "num_accounts_against_limit": 2, "bridges": { "signal": 1, "whatsapp": 1 } },
             "max": { "num_accounts_against_limit": 10, "bridges": { "signal": 1, "telegram": 1, "whatsapp": 1 } },
@@ -389,6 +396,24 @@ mod tests {
         app.store.write().features.summary["max"]["bridges"]["signal"] = json!(2);
         app.store.write().features.summary["current"]["num_accounts_against_limit"] = json!(2);
         assert_eq!(tip(&app, "signal"), ("Add another".into(), false));
+    }
+
+    /// Desktop's `addablePlatforms` in its order (`Pn`): the networks whose bridge flag is on, then the others.
+    #[test]
+    fn the_flags_pick_the_networks_like_desktop() {
+        let mut f = Flags::free_plan();
+        let names = |f: &Flags| addable(f).map(|n| n.display_name).collect::<Vec<_>>().join(", ");
+        let imessage = if cfg!(target_os = "macos") { "iMessage, " } else { "" };
+        let all = format!(
+            "WhatsApp, X, Telegram, Slack, Discord, Facebook, Instagram, LinkedIn, Google Messages, Signal, Google Chat, \
+             LINE, Google Voice, Tumblr, Viber, Snapchat, GroupMe, WeChat, Reddit, ChatGPT Dots, {imessage}Grok Bot, Muse"
+        );
+        assert_eq!(names(&f), all, "Bluesky has no flag on the free plan");
+        f.flags["features"]["*"]["bridge:groupme"] = false.into();
+        f.flags["features"]["appType:desktop"] = json!({ "bridge:slackgo": false, "bridge:local-slack": true });
+        assert!(!names(&f).contains("GroupMe"), "a network without its bridge flag");
+        assert!(names(&f).contains("Slack"), "a network on its on-device bridge");
+        assert!(names(&Flags::default()).contains("Bluesky"), "every network before the flags come");
     }
 
     /// Desktop's tile presses: a network that takes an account connects, a gray one with accounts opens their menu
