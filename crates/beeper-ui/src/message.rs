@@ -6,6 +6,7 @@ use crate::chat_list;
 use crate::composer;
 use crate::forward;
 use crate::i18n::{tr, trf, trn, trnx, trx, trxf};
+use crate::loads;
 use crate::media_view;
 use crate::members;
 use crate::reminders::reminder_day;
@@ -14,6 +15,7 @@ use crate::style::{
     scroll_style, semi, shadow_box, stable_bar, txt, Bare, CLEAR, GUTTER,
 };
 use crate::threads;
+use crate::timeline;
 use crate::windows;
 use crate::{
     anim, badged, brightness, can_thread, chat_theme, clock, commands, copy_text, day_label, day_num, day_of,
@@ -333,7 +335,7 @@ impl BeeperGuiApp {
         self.quotes.extend(new.iter().map(|(_, id)| (id.clone(), None)));
         Task::batch(new.into_iter().map(|(chat, id)| {
             let fetch = beeper_core::matrix::fetch_message(self.store.clone(), chat, id.clone());
-            Task::perform(fetch, move |r| UiMessage::QuoteLoaded(id.clone(), r.map(Box::new)))
+            Task::perform(fetch, move |r| UiMessage::Loaded(loads::Msg::Quote(id.clone(), r.map(Box::new))))
         }))
     }
 
@@ -414,7 +416,7 @@ impl BeeperGuiApp {
                     Some(false) => trx("Try Loading Media Again", "message menu action"),
                     _ => trx("Load Media", "message menu action"),
                 };
-                let load = UiMessage::ResolveMedia(m.account_id.clone(), mid.clone(), raw.clone());
+                let load = UiMessage::Loaded(loads::Msg::ResolveMedia(m.account_id.clone(), mid.clone(), raw.clone()));
                 vec![item(label.into(), "", (state != Some(&true)).then_some(load)), rule()]
             }),
             (editable(m, rules) && !text.is_empty()).then(|| {
@@ -648,8 +650,11 @@ impl BeeperGuiApp {
         // Desktop's `processScroll`: the timeline is pinned to its bottom until you scroll up. A sensor at the bottom
         // tells it without a message for each scroll step, which would build the view again.
         let bottom = iced::widget::sensor(Space::new()).key(chat.id.clone()).anticipate(1);
-        let col =
-            col.push(bottom.on_show(|_| UiMessage::TimelineScrolled(false)).on_hide(UiMessage::TimelineScrolled(true)));
+        let col = col.push(
+            bottom
+                .on_show(|_| UiMessage::Timeline(timeline::Msg::Scrolled(false)))
+                .on_hide(UiMessage::Timeline(timeline::Msg::Scrolled(true))),
+        );
         let list = lift::tight(scroller(col).id(self.pane().scroll_id()));
         let replies = self.pane().reply_thread.as_ref().map(|id| {
             let root = st.loaded_idx(id).map_or(id.as_str(), |i| reply_root(&st, &st.messages[i]));
@@ -883,8 +888,8 @@ impl BeeperGuiApp {
         let top = column![].push(loading).push(icon).push(request).width(Fill);
         iced::widget::sensor(top)
             .key(chat.id.clone())
-            .on_show(|_| UiMessage::TopShown(true))
-            .on_hide(UiMessage::TopShown(false))
+            .on_show(|_| UiMessage::Timeline(timeline::Msg::TopShown(true)))
+            .on_hide(UiMessage::Timeline(timeline::Msg::TopShown(false)))
             .into()
     }
 
@@ -930,8 +935,10 @@ impl BeeperGuiApp {
             shadow,
             ..Default::default()
         };
-        let button =
-            button(body).padding(4).style(move |_, _| style).on_press_maybe(shown.then_some(UiMessage::ScrollToBottom));
+        let button = button(body)
+            .padding(4)
+            .style(move |_, _| style)
+            .on_press_maybe(shown.then_some(UiMessage::Timeline(timeline::Msg::ScrollToBottom)));
         let at = container(button).center_x(Fill).align_bottom(Fill);
         Some(at.padding(Padding::ZERO.bottom(21.0 + 6.5)).into())
     }
@@ -1333,27 +1340,32 @@ impl BeeperGuiApp {
                             .style(fill_box(p.link_card, 17.0))
                             .into(),
                     };
-                    let (slot, press): (El<'_>, _) =
-                        if let Some(raw) = m.unresolved_media.as_ref().filter(|_| !is_video) {
-                            let failed = self.resolving_media.get(&m.id) == Some(&false);
-                            let (label, alpha) = match failed {
-                                true => (tr("Could not load. Click to try again"), 0.45),
-                                false => (tr("Click to load"), 0.25),
-                            };
-                            (
-                                stack![base, pill(label, alpha)].into(),
-                                UiMessage::ResolveMedia(m.account_id.clone(), m.id.clone(), raw.clone()),
-                            )
-                        } else if thumb_url.as_ref().and_then(|u| self.media_at(u)).is_some_and(Result::is_err) {
-                            (base, UiMessage::RetryMedia(thumb_url.expect("a failed media has a URL")))
-                        } else if let Some(src) = a.src_url.as_ref().filter(|_| is_video && a.is_gif != Some(true)) {
-                            parts = parts.push(self.view_video(&m.id, src, base, (w, h), video::Place::Inline(ai)));
-                            continue;
-                        } else if is_video && a.is_gif != Some(true) {
-                            (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))
-                        } else {
-                            (base, UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)))
+                    let (slot, press): (El<'_>, _) = if let Some(raw) =
+                        m.unresolved_media.as_ref().filter(|_| !is_video)
+                    {
+                        let failed = self.resolving_media.get(&m.id) == Some(&false);
+                        let (label, alpha) = match failed {
+                            true => (tr("Could not load. Click to try again"), 0.45),
+                            false => (tr("Click to load"), 0.25),
                         };
+                        (
+                            stack![base, pill(label, alpha)].into(),
+                            UiMessage::Loaded(loads::Msg::ResolveMedia(
+                                m.account_id.clone(),
+                                m.id.clone(),
+                                raw.clone(),
+                            )),
+                        )
+                    } else if thumb_url.as_ref().and_then(|u| self.media_at(u)).is_some_and(Result::is_err) {
+                        (base, UiMessage::Loaded(loads::Msg::RetryMedia(thumb_url.expect("a failed media has a URL"))))
+                    } else if let Some(src) = a.src_url.as_ref().filter(|_| is_video && a.is_gif != Some(true)) {
+                        parts = parts.push(self.view_video(&m.id, src, base, (w, h), video::Place::Inline(ai)));
+                        continue;
+                    } else if is_video && a.is_gif != Some(true) {
+                        (base, UiMessage::OpenQuickLook(name, "Video attachment".into()))
+                    } else {
+                        (base, UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)))
+                    };
                     button(slot).padding(0).style(btn_style([CLEAR; 3], [p.text; 3], 17.0)).on_press(press).into()
                 }
                 _ => {

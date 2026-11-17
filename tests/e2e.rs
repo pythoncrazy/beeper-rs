@@ -1323,18 +1323,18 @@ async fn lifecycle() {
     let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("timeFormat", 1)));
     let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SetPref("showMessagePreviews", 0)));
     for (step, zoom) in [(1, 1.1), (1, 1.2), (-1, 1.1), (0, 1.0), (-1, 0.9)] {
-        let _ = gui.update(UiMessage::Zoom(step));
+        let _ = gui.update(UiMessage::Zoom(beeper_ui::zoom::Msg::Step(step)));
         assert_eq!(gui.zoom, zoom);
     }
     for _ in 0..9 {
-        let _ = gui.update(UiMessage::Zoom(-1));
+        let _ = gui.update(UiMessage::Zoom(beeper_ui::zoom::Msg::Step(-1)));
     }
     assert_eq!(gui.zoom, 0.4, "Desktop zooms out to 40%");
-    let _ = gui.update(UiMessage::ZoomDrag(4.0));
+    let _ = gui.update(UiMessage::Zoom(beeper_ui::zoom::Msg::Drag(4.0)));
     assert_eq!(gui.zoom, 0.4, "the slider zooms on release");
-    let _ = gui.update(UiMessage::ZoomRelease);
+    let _ = gui.update(UiMessage::Zoom(beeper_ui::zoom::Msg::Release));
     assert_eq!(gui.zoom, 1.4);
-    let _ = gui.update(UiMessage::Zoom(0));
+    let _ = gui.update(UiMessage::Zoom(beeper_ui::zoom::Msg::Step(0)));
     {
         let st = store.read();
         assert!(!st.settings.on("showMessagePreviews") && st.settings.pref("timeFormat") == 1);

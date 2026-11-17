@@ -3,6 +3,7 @@
 use crate::composer;
 use crate::forward;
 use crate::i18n::{tr, trn, trx};
+use crate::loads;
 use crate::message;
 use crate::style::{
     bar, bordered_box, btn_style, ell, fill_box, ic, icon, input_style, med, scroll_style, semi, shadow_box,
@@ -264,7 +265,7 @@ impl BeeperGuiApp {
                     let decode = move || if looped { decode_loop(&bytes) } else { decode_media(bytes) };
                     tokio::task::spawn_blocking(decode).await.expect("media decode task")
                 },
-                move |r| UiMessage::MediaLoaded(url, r),
+                move |r| UiMessage::Loaded(loads::Msg::Media(url, r)),
             )
         }))
         .chain(audio)

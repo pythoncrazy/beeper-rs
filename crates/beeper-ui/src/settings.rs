@@ -14,6 +14,7 @@ use crate::style::{
     icon, input_style, med, scroll_style, semi, text_width, txt, Bare, Palette, Token, CLEAR,
 };
 use crate::windows;
+use crate::zoom;
 use crate::{
     ago, avatar, badge, brand_key, checkbox, compact, distance, divider, downloads_dir, duration, ease_out,
     feedback_btn, first_groups, fmt_phone, group, grouped, human_size, icon_btn, inbox_label, locate, login,
@@ -1839,8 +1840,10 @@ impl BeeperGuiApp {
         let at = (level + 4.0) as u16;
         let knob =
             row![Space::new().width(Length::FillPortion(at)), knob, Space::new().width(Length::FillPortion(8 - at))];
-        let input = slider(-4.0..=4.0, level, UiMessage::ZoomDrag).on_release(UiMessage::ZoomRelease).height(20).style(
-            |_, _| slider::Style {
+        let input = slider(-4.0..=4.0, level, |a0| UiMessage::Zoom(zoom::Msg::Drag(a0)))
+            .on_release(UiMessage::Zoom(zoom::Msg::Release))
+            .height(20)
+            .style(|_, _| slider::Style {
                 rail: slider::Rail {
                     backgrounds: (CLEAR.into(), CLEAR.into()),
                     width: 0.0,
@@ -1852,8 +1855,7 @@ impl BeeperGuiApp {
                     border_width: 0.0,
                     border_color: CLEAR,
                 },
-            },
-        );
+            });
         let track = stack![container(rail).center_y(20), container(ticks).center_y(20), knob, input]
             .width(Length::FillPortion(34));
         let icon = |size, pad: Padding| {

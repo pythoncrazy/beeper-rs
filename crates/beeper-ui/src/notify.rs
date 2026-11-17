@@ -185,7 +185,7 @@ impl BeeperGuiApp {
         let queued = self.pending.queued.entry(chat.clone()).or_default();
         queued.0 = self.pending.timer;
         queued.1.push(note);
-        wait(delay, UiMessage::NotifyTimer(chat, self.pending.timer))
+        wait(delay, UiMessage::Notify(Msg::Timer(chat, self.pending.timer)))
     }
 
     /// Show a notification, and with `repeat` show it again after "Repeat notification if still unread after".
@@ -195,9 +195,11 @@ impl BeeperGuiApp {
         let again = (repeat && secs > 0).then(|| {
             self.pending.timer += 1;
             self.pending.repeat.insert(chat.clone(), (self.pending.timer, note.clone()));
-            wait(secs, UiMessage::NotifyTimer(chat.clone(), self.pending.timer))
+            wait(secs, UiMessage::Notify(Msg::Timer(chat.clone(), self.pending.timer)))
         });
-        let show = Task::perform(show(note.toast), move |r| UiMessage::Notified(r.map(|id| (id, (chat, message)))));
+        let show = Task::perform(show(note.toast), move |r| {
+            UiMessage::Notify(Msg::Notified(r.map(|id| (id, (chat, message)))))
+        });
         Task::batch([show].into_iter().chain(again))
     }
 
@@ -390,7 +392,7 @@ impl BeeperGuiApp {
         stale.iter().for_each(|id| _ = self.notifications.remove(id));
         iced::Task::future(close(stale))
             .map(Result::err)
-            .and_then(|e| iced::Task::done(crate::UiMessage::Notified(Err(e))))
+            .and_then(|e| iced::Task::done(crate::UiMessage::Notify(Msg::Notified(Err(e)))))
     }
 }
 
@@ -569,13 +571,13 @@ mod tests {
             st.messages[st.timeline_indices(&chat.id)[0]].id.clone()
         };
         app.notifications.insert(7, (chat.id.clone(), mid.clone()));
-        let _ = app.update(UiMessage::NotificationEvent(7, Some("default".into())));
+        let _ = app.update(UiMessage::Notify(Msg::Event(7, Some("default".into()))));
         assert_eq!(app.pane.selected_chat_id.as_ref(), Some(&chat.id));
         assert_eq!(app.flash.as_ref().map(|f| &f.0), Some(&mid), "a click jumps to the message");
         // Desktop's actions of its macOS notifications: Mark as Read, a reminder, and a reply.
         let event = |app: &mut BeeperGuiApp, action: String| {
             app.notifications.insert(8, (chat.id.clone(), mid.clone()));
-            let _ = app.update(UiMessage::NotificationEvent(8, Some(action)));
+            let _ = app.update(UiMessage::Notify(Msg::Event(8, Some(action))));
         };
         app.store.write().mark_unread_from_message(&chat.id, &mid);
         event(&mut app, "markRead".into());
@@ -621,5 +623,26 @@ mod tests {
         assert_eq!(otp_code("Total 1,234.56 today"), None);
         assert_eq!(otp_code("Call 555"), None);
         assert_eq!(otp_code("abc123456"), None);
+    }
+}
+
+#[derive(Clone)]
+pub enum Msg {
+    Timer(String, u64),
+    /// A shown notification, with its chat and message.
+    Notified(Result<(u32, (String, String)), String>),
+    Event(u32, Option<String>),
+}
+
+impl BeeperGuiApp {
+    pub(crate) fn notify_event(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::Timer(chat, timer) => return self.notify_timer(chat, timer),
+            Msg::Notified(Ok((id, note))) => _ = self.notifications.insert(id, note),
+            // Like Desktop, a desktop without a notification server shows no notifications and no error.
+            Msg::Notified(Err(e)) => eprintln!("notification: {e}"),
+            Msg::Event(id, action) => return self.notification_event(id, action),
+        }
+        self.settle()
     }
 }

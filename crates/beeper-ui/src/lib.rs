@@ -24,6 +24,7 @@ mod integrations;
 mod labels;
 mod lift;
 mod links;
+mod loads;
 pub mod login;
 mod media_view;
 mod members;
@@ -43,6 +44,7 @@ mod scheduled;
 pub mod settings;
 mod sound;
 mod spell;
+mod timeline;
 pub mod toasts;
 #[cfg(target_os = "linux")]
 mod tray;
@@ -78,7 +80,7 @@ mod vlist;
 mod voice;
 mod wants;
 pub mod windows;
-mod zoom;
+pub mod zoom;
 
 use crate::composer::{composer_with, load_draft, save_draft, Typo};
 pub use crate::composer::{LinkState, Stash, Suggestion};
@@ -272,10 +274,8 @@ pub enum UiMessage {
     Upserted(Box<Message>),
     ChatUpserted(Box<Chat>),
     Typing(String),
-    NotifyTimer(String, u64),
-    /// A shown notification, with its chat and message.
-    Notified(Result<(u32, (String, String)), String>),
-    NotificationEvent(u32, Option<String>),
+    /// Desktop notifications.
+    Notify(notify::Msg),
     /// The windows: their open, close, focus, resize and maximize, the tray, the relaunch, and a second launch of the app.
     Window(windows::Msg),
     /// Desktop's `toggleIncognitoMode` from a hotkey or the command bar, with its toast.
@@ -349,34 +349,20 @@ pub enum UiMessage {
     ToggleDnd,
     /// Settings > Hotkeys: the hotkey switches, the shortcut recorder, and the Keyboard Shortcuts list.
     Hotkeys(hotkeys::Msg),
-    Zoom(i8),
-    /// The zoom slider moved to a level from -4 to 4, in steps of 10%.
-    ZoomDrag(f32),
-    ZoomRelease,
-    AvatarLoaded(String, Result<image::Handle, String>),
-    MediaLoaded(String, Result<Frames, String>),
-    TileBaked(String, image::Handle),
-    /// A quoted message that the timeline did not have, or why it could not load.
-    QuoteLoaded(String, Result<Box<Message>, String>),
+    /// Desktop's zoom.
+    Zoom(zoom::Msg),
+    /// The avatars, media, quotes and media resolves that tasks load for the views.
+    Loaded(loads::Msg),
     Voice(voice::Msg),
     Record(record::Msg),
-    RetryMedia(String),
-    ResolveMedia(String, String, String),
-    MediaResolved(String, String, String, Result<(), String>),
     Video(video::Msg),
     Gallery(gallery::Msg),
     /// Opens the emoji picker for a quick reaction (see [`emoji::Picker::pref`]), or closes it.
     QuickEmoji(Option<u8>),
     AnimationTick,
     Pushed(Result<(), String>),
-    /// The timeline moved, and is above its bottom (true) or at it.
-    TimelineScrolled(bool),
-    ScrollToBottom,
-    /// The top of the timeline came on screen (true) or went off screen.
-    TopShown(bool),
-    LoadOlder,
-    /// A load of older messages ended.
-    LoadedOlder(Result<(), String>),
+    /// The scroll of the timeline: the jump to its bottom, and the load of older messages at its top.
+    Timeline(timeline::Msg),
     Ask(Option<u8>),
     /// The close of Desktop's recovery key reminder (`dismissRecoveryCodeReminder`).
     DismissRecoveryReminder,
@@ -393,12 +379,8 @@ pub enum UiMessage {
     HeaderHover(bool),
     /// The 500 ms after the pointer left the header card of this generation ran out.
     HeaderHoverEnd(u32),
-    /// Desktop's menu bar: hidden (`None`), shown, or shown with a menu open.
-    MenuBar(Option<Option<usize>>),
-    /// The pointer came onto a menu title, which opens its menu while another menu is open.
-    MenuBarHover(usize),
-    /// An item of the menu bar: the menu bar hides, and the item runs.
-    MenuBarRun(Box<UiMessage>),
+    /// Desktop's menu bar.
+    MenuBar(menubar::Msg),
     /// Desktop's pinned chats grid: the hover of a tile, and the drag that orders the pins.
     Pins(pins::Msg),
     /// A message from a chat window, handled with its pane.
@@ -3146,7 +3128,7 @@ impl BeeperGuiApp {
                     let bytes = beeper_core::matrix::thumbnail(client, u).await?;
                     tokio::task::spawn_blocking(move || round_avatar(&bytes)).await.expect("avatar worker thread")
                 },
-                move |r| UiMessage::AvatarLoaded(url, r),
+                move |r| UiMessage::Loaded(loads::Msg::Avatar(url, r)),
             )
         }))
     }
@@ -3760,7 +3742,7 @@ impl BeeperGuiApp {
         drop(st);
         self.pane.top.loading = Some((std::time::Instant::now(), id.clone(), before));
         let load = beeper_core::matrix::load_older(self.store.clone(), id);
-        Task::perform(load, UiMessage::LoadedOlder)
+        Task::perform(load, |a0| UiMessage::Timeline(timeline::Msg::LoadedOlder(a0)))
     }
 
     /// Desktop's `TopOfThread` loads again when the chat gets older messages while its top is on screen, as when the
@@ -3796,7 +3778,7 @@ impl BeeperGuiApp {
         let top = &mut self.pane.top;
         (top.tries, top.waiting) = (if count == Some(before) { top.tries + 1 } else { 0 }, true);
         let wait = Duration::from_millis((100 * 2u64.pow(top.tries)).min(3000));
-        Task::perform(async move { tokio::time::sleep(wait).await }, |()| UiMessage::LoadOlder)
+        Task::perform(async move { tokio::time::sleep(wait).await }, |()| UiMessage::Timeline(timeline::Msg::LoadOlder))
     }
 
     /// The hotkey with the modifiers and the key, or with the modifiers alone before the digit 1 to 9.
@@ -3934,7 +3916,7 @@ impl BeeperGuiApp {
             "Quit App" => return self.quit(),
             "Reload App" => Some(UiMessage::Window(windows::Msg::Relaunch)),
             "Report a Problem" => Some(UiMessage::OpenUrl(ISSUES_URL.into())),
-            "Reset Zoom" => Some(UiMessage::Zoom(0)),
+            "Reset Zoom" => Some(UiMessage::Zoom(zoom::Msg::Step(0))),
             "Search" => Some(UiMessage::CommandBar(commands::Msg::TogglePalette)),
             "Search: Room" => chat.map(|a0| UiMessage::CommandBar(commands::Msg::SearchRoom(a0))),
             "Select Next Account" | "Select Previous Account" => {
@@ -3969,8 +3951,8 @@ impl BeeperGuiApp {
                 let on = self.store.read().settings.on("showSidebar");
                 Some(UiMessage::Settings(settings::Msg::SetPref("showSidebar", u8::from(!on))))
             }
-            "Zoom In" => Some(UiMessage::Zoom(1)),
-            "Zoom Out" => Some(UiMessage::Zoom(-1)),
+            "Zoom In" => Some(UiMessage::Zoom(zoom::Msg::Step(1))),
+            "Zoom Out" => Some(UiMessage::Zoom(zoom::Msg::Step(-1))),
             "Download Attachments" => selected
                 .filter(|_| self.selected_message().is_some_and(|m| !m.attachments.is_empty()))
                 .map(|m| UiMessage::Message(message::Msg::Download(m, None))),
@@ -4388,44 +4370,7 @@ impl BeeperGuiApp {
                 Ok(v) => drop(self.caps.insert(account, v)),
                 Err(e) => eprintln!("provisioning capabilities failed: {e}"),
             },
-            UiMessage::AvatarLoaded(url, Ok(h)) => {
-                self.avatars.insert(url, Some(h));
-            }
-            UiMessage::AvatarLoaded(_, Err(_)) => {}
-            UiMessage::MediaLoaded(url, r) => {
-                self.media.insert(url, Some(r));
-            }
-            UiMessage::TileBaked(key, h) => self.tiles.insert(key, Some(h)),
-            UiMessage::RetryMedia(url) => {
-                self.media.remove(&url);
-                return self.load_media();
-            }
-            UiMessage::ResolveMedia(account_id, event_id, raw) => {
-                if self.resolving_media.get(&event_id) == Some(&true) {
-                    return Task::none();
-                }
-                self.resolving_media.insert(event_id.clone(), true);
-                let p = self.provision(&account_id);
-                let (eid, again) = (event_id.clone(), (account_id, raw.clone()));
-                // Like Desktop, a resolve whose edit does not arrive in 30 s fails.
-                let resolve = async move {
-                    beeper_core::matrix::resolve_media(p, eid, raw).await?;
-                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                    Ok(())
-                };
-                return Task::perform(resolve, move |r| UiMessage::MediaResolved(again.0, event_id, again.1, r));
-            }
-            UiMessage::MediaResolved(account_id, event_id, raw, r) => {
-                self.resolving_media.insert(event_id.clone(), false);
-                if let Err(e) = r {
-                    eprintln!("resolve media failed: {e}");
-                    let again = UiMessage::ResolveMedia(account_id, event_id, raw);
-                    self.fail(Toast {
-                        buttons: vec![(tr("Try again"), again)],
-                        ..Toast::new(tr("Could not load this media.").into())
-                    });
-                }
-            }
+            UiMessage::Loaded(msg) => return self.loaded(msg),
             UiMessage::Video(msg) => return self.video(msg),
             UiMessage::Gallery(msg) => return self.gallery(msg),
             UiMessage::QuickEmoji(Some(slot)) => {
@@ -4468,11 +4413,7 @@ impl BeeperGuiApp {
                 let note = self.notify_typing(chat);
                 return Task::batch([self.update(UiMessage::StoreChanged), note]);
             }
-            UiMessage::NotifyTimer(chat, timer) => return self.notify_timer(chat, timer),
-            UiMessage::Notified(Ok((id, note))) => _ = self.notifications.insert(id, note),
-            // Like Desktop, a desktop without a notification server shows no notifications and no error.
-            UiMessage::Notified(Err(e)) => eprintln!("notification: {e}"),
-            UiMessage::NotificationEvent(id, action) => return self.notification_event(id, action),
+            UiMessage::Notify(msg) => return self.notify_event(msg),
             UiMessage::Toast(msg) => return self.toasts(msg),
             UiMessage::Gifs(msg) => return self.gifs(msg),
             UiMessage::AnimationTick => {}
@@ -4482,22 +4423,7 @@ impl BeeperGuiApp {
                 self.patch_settings(|s| s.recovery_reminder_dismissed_at = now);
             }
             UiMessage::Pushed(Err(e)) => self.fail(Toast::new(format!("Could not send to Matrix: {e}"))),
-            UiMessage::TimelineScrolled(up) => {
-                self.timeline_scrolled(up);
-                self.read_open_chat();
-            }
-            UiMessage::ScrollToBottom => {
-                return operation::scroll_to(self.pane.scroll_id(), operation::AbsoluteOffset { x: 0.0, y: 0.0 });
-            }
-            UiMessage::TopShown(shown) => {
-                self.pane.top.shown = shown;
-                return self.load_older();
-            }
-            UiMessage::LoadOlder => {
-                self.pane.top.waiting = false;
-                return self.load_older();
-            }
-            UiMessage::LoadedOlder(r) => return self.loaded_older(r),
+            UiMessage::Timeline(msg) => return self.timeline_scroll(msg),
             UiMessage::Integrations(msg) => return self.integrations(msg),
             UiMessage::OpenQuickLook(title, detail) => {
                 self.quick_look_target = Some((title, detail));
@@ -4581,7 +4507,6 @@ impl BeeperGuiApp {
             UiMessage::Noop => {}
             UiMessage::Relist => return Task::none(),
             UiMessage::LoadWanted => return Task::batch([self.load_avatars(), self.load_media(), self.load_quotes()]),
-            UiMessage::QuoteLoaded(id, r) => _ = self.quotes.insert(id, Some(r.map(|m| *m))),
             UiMessage::OpenUrl(url) if url.starts_with(SPOILER) => {
                 self.pane.spoilers.insert(url[SPOILER.len()..].to_string());
             }
@@ -4625,18 +4550,7 @@ impl BeeperGuiApp {
                 return task;
             }
             UiMessage::Hotkeys(msg) => return self.hotkeys(msg),
-            UiMessage::Zoom(step) => self.patch_settings(|s| {
-                s.zoom_percent = if step == 0 {
-                    100
-                } else {
-                    s.zoom_percent.saturating_add_signed(10 * i16::from(step)).clamp(40, 300)
-                };
-            }),
-            UiMessage::ZoomDrag(level) => self.zoom_drag = Some(level),
-            UiMessage::ZoomRelease => {
-                let level = self.zoom_drag.take().expect("the zoom slider was dragged");
-                self.patch_settings(|s| s.zoom_percent = (100.0 + 10.0 * level) as u16);
-            }
+            UiMessage::Zoom(msg) => return self.set_zoom(msg),
             UiMessage::UserCard(msg) => return self.user_card(msg),
             UiMessage::Pins(msg) => return self.pins(msg),
             UiMessage::HeaderHover(on) => {
@@ -4652,16 +4566,7 @@ impl BeeperGuiApp {
             }
             UiMessage::HeaderHoverEnd(n) if n == self.header_hover.1 => self.header_hover.0 = false,
             UiMessage::HeaderHoverEnd(_) => {}
-            UiMessage::MenuBar(state) => self.menu_bar = state,
-            UiMessage::MenuBarHover(i) => {
-                if let Some(Some(_)) = self.menu_bar {
-                    self.menu_bar = Some(Some(i));
-                }
-            }
-            UiMessage::MenuBarRun(msg) => {
-                self.menu_bar = None;
-                return self.update(*msg);
-            }
+            UiMessage::MenuBar(msg) => return self.menu_bar(msg),
             UiMessage::InWindow(id, msg) => {
                 let Some(i) = self.chat_windows.iter().position(|w| w.0 == id) else { return self.handle(*msg) };
                 std::mem::swap(&mut self.pane, &mut self.chat_windows[i].1);
@@ -5108,8 +5013,9 @@ impl BeeperGuiApp {
         let tray = (cfg!(target_os = "linux") && self.store.read().settings.on("showTrayIcon"))
             .then(|| Subscription::run(tray::events).map(|a0| UiMessage::Window(windows::Msg::Tray(a0))));
         let online = cfg!(target_os = "linux").then(|| Subscription::run(portal::online).map(UiMessage::Online));
-        let notes = (!self.notifications.is_empty() || self.verify.note.is_some())
-            .then(|| Subscription::run(notify::events).map(|(id, action)| UiMessage::NotificationEvent(id, action)));
+        let notes = (!self.notifications.is_empty() || self.verify.note.is_some()).then(|| {
+            Subscription::run(notify::events).map(|(id, action)| UiMessage::Notify(notify::Msg::Event(id, action)))
+        });
         let toast =
             self.toast_running().then(|| iced::time::every(TOAST_TICK).map(|_| UiMessage::Toast(toasts::Msg::Tick)));
         let tick =
@@ -5308,7 +5214,7 @@ impl BeeperGuiApp {
             let (menu, x) = self.view_menu_dropdown(i);
             let at = Padding::ZERO.left(x).top(menubar::BAR_H);
             mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
-                .on_press(UiMessage::MenuBar(None))
+                .on_press(UiMessage::MenuBar(menubar::Msg::Show(None)))
         });
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),

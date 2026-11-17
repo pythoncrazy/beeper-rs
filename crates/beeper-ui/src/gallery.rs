@@ -2,6 +2,7 @@
 //! show as one gallery of up to four tiles.
 use crate::forward;
 use crate::i18n::{tr, trx};
+use crate::loads;
 use crate::media_view;
 use crate::message;
 use crate::style::{bordered_box, fill_box, semi, shadow_box, Palette};
@@ -317,7 +318,11 @@ impl BeeperGuiApp {
             })
             .collect();
         self.tiles.extend(tasks.iter().map(|(k, _)| (k.clone(), None)));
-        Task::batch(tasks.into_iter().map(|(k, task)| Task::perform(task, move |h| UiMessage::TileBaked(k.clone(), h))))
+        Task::batch(
+            tasks
+                .into_iter()
+                .map(|(k, task)| Task::perform(task, move |h| UiMessage::Loaded(loads::Msg::Tile(k.clone(), h)))),
+        )
     }
 
     /// Desktop's `GalleryAttachments` of the messages of a gallery: each tile opens its item in the carousel, and a

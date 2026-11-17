@@ -82,7 +82,7 @@ fn local(m: &UiMessage) -> bool {
         UiMessage::OpenUrl(_)
         | UiMessage::OpenAddAccount(..)
         | UiMessage::Window(windows::Msg::Relaunch)
-        | UiMessage::NotifyTimer(..)
+        | UiMessage::Notify(notify::Msg::Timer(..))
         | UiMessage::Record(_)
         | UiMessage::Voice(_)
         | UiMessage::Video(_)
@@ -231,7 +231,7 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         }
         25 => UiMessage::Hotkeys(hotkeys::Msg::Toggle(rng.pick(&hotkeys))),
         26 => UiMessage::Hotkeys(hotkeys::Msg::RevertAll),
-        27 => UiMessage::Zoom(*rng.pick(&[-1, 0, 1])),
+        27 => UiMessage::Zoom(zoom::Msg::Step(*rng.pick(&[-1, 0, 1]))),
         28 => UiMessage::Settings(settings::Msg::SelectTheme(*rng.pick(&ThemeChoice::ALL))),
         29 => UiMessage::Settings(settings::Msg::SystemTheme(
             *rng.pick(&[iced::theme::Mode::Dark, iced::theme::Mode::Light]),
@@ -3056,7 +3056,7 @@ fn scroll_to_bottom_shows_when_you_scroll_up_like_desktop() {
         let wheel = iced::Event::Mouse(mouse::Event::WheelScrolled { delta: ScrollDelta::Pixels { x: 0.0, y } });
         let _ = sim.simulate([redraw(), wheel, redraw()]);
         let ups = sim.into_messages().filter_map(|m| match m {
-            UiMessage::TimelineScrolled(up) => Some(up),
+            UiMessage::Timeline(timeline::Msg::Scrolled(up)) => Some(up),
             _ => None,
         });
         ups.collect::<Vec<bool>>()
@@ -3065,16 +3065,16 @@ fn scroll_to_bottom_shows_when_you_scroll_up_like_desktop() {
     assert_eq!(scroll(&app, 300.0), [false, true], "a scroll up leaves the bottom");
     let fade = || std::thread::sleep(std::time::Duration::from_millis(250));
     assert!(simulator(app.view_main()).find("New Messages").is_err(), "the bottom of the timeline shows");
-    let _ = app.update(UiMessage::TimelineScrolled(true));
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Scrolled(true)));
     fade();
     let mut sim = simulator(app.view_main());
     assert!(sim.find("2").is_ok() && sim.find("Ctrl").is_ok() && sim.find("↓").is_ok(), "the pill shows the hotkey");
     let _ = sim.click("New Messages");
-    assert!(matches!(sim.into_messages().last(), Some(UiMessage::ScrollToBottom)));
-    let _ = app.update(UiMessage::TimelineScrolled(false));
+    assert!(matches!(sim.into_messages().last(), Some(UiMessage::Timeline(timeline::Msg::ScrollToBottom))));
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Scrolled(false)));
     fade();
     assert!(simulator(app.view_main()).find("New Messages").is_err(), "at the bottom the pill goes away");
-    let _ = app.update(UiMessage::TimelineScrolled(true));
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Scrolled(true)));
     let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
     assert!(app.pane.scrolled_up.is_none(), "another chat opens at its bottom");
 }
@@ -3101,10 +3101,10 @@ fn the_open_chat_reads_new_messages_like_desktop() {
     assert_eq!(unread(&app), 0, "focusing the window reads it");
     arrive(&mut app);
     assert_eq!(unread(&app), 0, "a new message in view is read");
-    let _ = app.update(UiMessage::TimelineScrolled(true));
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Scrolled(true)));
     arrive(&mut app);
     assert_eq!(unread(&app), 1, "scrolled up, it stays unread");
-    let _ = app.update(UiMessage::TimelineScrolled(false));
+    let _ = app.update(UiMessage::Timeline(timeline::Msg::Scrolled(false)));
     assert_eq!(unread(&app), 0, "back at the bottom it is read");
 }
 
@@ -3270,9 +3270,9 @@ fn unloaded_quotes_like_desktop() {
     let shows = |app: &BeeperGuiApp, t: &str| simulator(app.view_conversation()).find(t).is_ok();
     assert!(shows(&app, "Loading…"), "the quote loads");
     assert!(app.wants.quotes.borrow().contains(&(id.clone(), "$old".to_string())), "the view asks for it");
-    let _ = app.update(UiMessage::QuoteLoaded("$old".into(), Err("gone".into())));
+    let _ = app.update(UiMessage::Loaded(loads::Msg::Quote("$old".into(), Err("gone".into()))));
     assert!(shows(&app, "Message unavailable"));
-    let _ = app.update(UiMessage::QuoteLoaded("$old".into(), Ok(Box::new(quoted))));
+    let _ = app.update(UiMessage::Loaded(loads::Msg::Quote("$old".into(), Ok(Box::new(quoted)))));
     assert!(shows(&app, "a quote from long ago"), "the loaded quote shows");
 }
 
@@ -3297,7 +3297,7 @@ fn quote_details_like_desktop() {
         }
     };
     let quote = |app: &mut BeeperGuiApp, m: Message| {
-        let _ = app.update(UiMessage::QuoteLoaded("$q".into(), Ok(Box::new(m))));
+        let _ = app.update(UiMessage::Loaded(loads::Msg::Quote("$q".into(), Ok(Box::new(m)))));
     };
     let name = crate::sender_label(app.store.read().chat(&id), &base);
     let shows = |app: &BeeperGuiApp, t: &str| simulator(app.view_conversation()).find(t).is_ok();
@@ -3388,12 +3388,12 @@ fn the_menu_bar_shows_with_alt_like_desktop() {
     assert_eq!(app.menu_bar, None, "and Alt hides it");
     alt(&mut app, &[Some(Key::Character("f".into()))]);
     assert_eq!(app.menu_bar, None, "Alt with another key is no toggle");
-    let _ = app.update(UiMessage::MenuBar(Some(Some(0))));
-    let _ = app.update(UiMessage::MenuBarHover(3));
+    let _ = app.update(UiMessage::MenuBar(menubar::Msg::Show(Some(Some(0)))));
+    let _ = app.update(UiMessage::MenuBar(menubar::Msg::Hover(3)));
     assert_eq!(app.menu_bar, Some(Some(3)), "an open menu follows the pointer");
     assert!(simulator(app.view(id)).find("Hide Sidebar").is_ok(), "the View menu shows its items");
     let hidden = app.sidebar_hidden;
-    let _ = app.update(UiMessage::MenuBarRun(Box::new(UiMessage::RunHotkey("Toggle Sidebar"))));
+    let _ = app.update(UiMessage::MenuBar(menubar::Msg::Run(Box::new(UiMessage::RunHotkey("Toggle Sidebar")))));
     assert_eq!((app.menu_bar, app.sidebar_hidden), (None, !hidden), "the item runs and the menu bar hides");
 }
 
@@ -6127,7 +6127,7 @@ fn email_links_and_media_items_match_desktop() {
         matches!(&mail[..], [UiMessage::Message(message::Msg::Menu(m))] if matches!(&**m, UiMessage::OpenUrl(u) if u == "mailto:a.b@example.com"))
     );
     assert!(
-        matches!(&click(&mut app, "Load Media")[..], [UiMessage::Message(message::Msg::Menu(m))] if matches!(**m, UiMessage::ResolveMedia(..)))
+        matches!(&click(&mut app, "Load Media")[..], [UiMessage::Message(message::Msg::Menu(m))] if matches!(**m, UiMessage::Loaded(loads::Msg::ResolveMedia(..))))
     );
     app.resolving_media.insert(mid.clone(), true);
     let off = click(&mut app, "Load Media");
@@ -6142,12 +6142,16 @@ fn email_links_and_media_items_match_desktop() {
 #[test]
 fn errors_toast_like_desktop() {
     let mut app = demo_app("error-toast");
-    let failed = UiMessage::MediaResolved("acc".into(), "$ev".into(), "{}".into(), Err("timeout".into()));
+    let failed =
+        UiMessage::Loaded(loads::Msg::MediaResolved("acc".into(), "$ev".into(), "{}".into(), Err("timeout".into())));
     let _ = app.update(failed);
     let t = app.shown_toast().expect("an error toast");
     assert!(t.error && app.status_banner == "Could not load this media.");
     let [(label, again)] = &t.buttons[..] else { panic!("one button") };
-    assert!(*label == "Try again" && matches!(again, UiMessage::ResolveMedia(a, e, _) if a == "acc" && e == "$ev"));
+    assert!(
+        *label == "Try again"
+            && matches!(again, UiMessage::Loaded(loads::Msg::ResolveMedia(a, e, _)) if a == "acc" && e == "$ev")
+    );
     let _ = app.update(again.clone());
     assert_eq!(app.resolving_media.get("$ev"), Some(&true), "Try again resolves the media again");
     let _ = app.update(UiMessage::Message(message::Msg::CopyLink("https://example.com".into())));

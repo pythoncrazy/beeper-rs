@@ -7,7 +7,7 @@ use crate::style::{fill_box, shadow_box, text_width, txt};
 use crate::windows;
 use crate::{menu_item, menu_rule, BeeperGuiApp, El, SettingsTab, UiMessage, ASK_LOGOUT};
 use iced::widget::{container, mouse_area, row, text_editor, Column};
-use iced::{font::Weight, Fill, Padding};
+use iced::{font::Weight, Fill, Padding, Task};
 
 /// The height of the menu bar.
 pub(crate) const BAR_H: f32 = 26.0;
@@ -101,8 +101,8 @@ impl BeeperGuiApp {
             let label = container(txt(title, 13.0).color(p.strong)).padding([0.0, TITLE_PAD]).center_y(BAR_H);
             let label = container(label).style(fill_box(if on { p.selected } else { p.window }, 4.0));
             mouse_area(label)
-                .on_press(UiMessage::MenuBar(Some((!on).then_some(i))))
-                .on_enter(UiMessage::MenuBarHover(i))
+                .on_press(UiMessage::MenuBar(Msg::Show(Some((!on).then_some(i)))))
+                .on_enter(UiMessage::MenuBar(Msg::Hover(i)))
                 .into()
         });
         let bar = row(titles).padding(Padding::ZERO.left(BAR_PAD));
@@ -122,11 +122,39 @@ impl BeeperGuiApp {
                     "" => String::new(),
                     name => beeper_core::prefs::hotkey_label(st.settings.hotkey_keys(name)),
                 };
-                menu_item(p, None, label, keys, Some(UiMessage::MenuBarRun(Box::new(msg))))
+                menu_item(p, None, label, keys, Some(UiMessage::MenuBar(Msg::Run(Box::new(msg)))))
             }
             None => menu_rule(p),
         });
         let menu = container(Column::with_children(rows).padding([4, 0]));
         (menu.width(MENU_W).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into(), x)
+    }
+}
+
+#[derive(Clone)]
+pub enum Msg {
+    /// Desktop's menu bar: hidden (`None`), shown, or shown with a menu open.
+    Show(Option<Option<usize>>),
+    /// The pointer came onto a menu title, which opens its menu while another menu is open.
+    Hover(usize),
+    /// An item of the menu bar: the menu bar hides, and the item runs.
+    Run(Box<UiMessage>),
+}
+
+impl BeeperGuiApp {
+    pub(crate) fn menu_bar(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::Show(state) => self.menu_bar = state,
+            Msg::Hover(i) => {
+                if let Some(Some(_)) = self.menu_bar {
+                    self.menu_bar = Some(Some(i));
+                }
+            }
+            Msg::Run(msg) => {
+                self.menu_bar = None;
+                return self.update(*msg);
+            }
+        }
+        self.settle()
     }
 }
