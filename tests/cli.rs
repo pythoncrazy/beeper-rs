@@ -22,7 +22,8 @@ fn run(args: &[&str]) -> (Option<i32>, String, String) {
 fn bad_command_lines_print_the_usage_and_exit_with_the_oclif_codes() {
     let usage = "See more help with --help\n\nUSAGE\n  $ beeper-rs [COMMAND] [FLAGS] [LINK]\n";
     for (args, error, code) in [
-        (&["--bogus"][..], "Nonexistent flag: --bogus", 2),
+        // The app ignores unknown switches like Chromium, and a command rejects them like oclif.
+        (&["serve", "--bogus"][..], "Nonexistent flag: --bogus", 2),
         (&["--port", "abc"], "Parsing --port: Expected an integer from 1 to 65535 but received: abc", 2),
         (&["--data-dir"], "Flag --data-dir expects a value", 2),
     ] {

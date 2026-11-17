@@ -1,0 +1,17 @@
+This directory is sctk-adwaita 0.10.1 from crates.io with these changes:
+
+- The `gtk` module draws the title bar, its buttons, the title and the window shadow with the GTK 3 theme, the way
+  Electron's Linux frame (`ClientFrameViewLinux`, with Chromium's `WindowFrameProviderGtk` and
+  `NavButtonProviderGtk`) does: style contexts for `window.background.csd decoration` and
+  `headerbar.titlebar.default-decoration` rendered with `gtk_render_*` and pango into the frame's buffers. GTK is
+  opened at run time on a thread of its own (`preload` starts it early), and the built-in drawing remains for
+  systems without it.
+- The title bar's height and the buttons' sizes and places come from the theme (`theme::metrics`).
+- The buttons are GTK's `gtk-decoration-layout`, so GNOME's default shows only the close button.
+- A double or right click on the title bar does what GTK's `gtk-titlebar-double-click` and
+  `gtk-titlebar-right-click` say, as in Chromium's `GtkUi::GetWindowFrameAction`.
+- A button acts when released over the button it was pressed on, and shows its pressed state.
+- The buttons are placed again when the compositor's capabilities change, instead of at the left edge until the next
+  resize.
+- The colors follow the desktop rather than the application's theme, like Electron's frame.
+- Lifetimes that newer compilers warn about are spelled out.
