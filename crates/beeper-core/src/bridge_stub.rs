@@ -257,6 +257,12 @@ fn reply(st: &mut State, method: &str, path: &str, body: &Value) -> (u16, Value)
         }
         return (200, json!({ "userInfo": { "username": "me" }, "user": { "bridges": bridges } }));
     }
+    // Desktop's app API: Google Messages logins are off, and Signal logins ask to continue.
+    if path == "/platform-status" {
+        let gmessages = json!({ "message": "Google Messages logins are paused.", "disabled": true });
+        let signal = json!({ "message": "Signal logins may be slow.", "confirm": true });
+        return (200, json!({ "bridge-gmessages": gmessages, "bridge-signal": signal }));
+    }
     if let Some(b) = path.strip_prefix("/bridge/").and_then(|p| p.strip_suffix("/start")) {
         st.started.insert(b.into());
         return (200, json!({}));
@@ -338,7 +344,7 @@ fn reply(st: &mut State, method: &str, path: &str, body: &Value) -> (u16, Value)
     }
 }
 
-/// A homeserver and Beeper API on one free port, with the stub bridges behind the homeserver.
+/// A homeserver, Beeper API and Desktop app API on one free port, with the stub bridges behind the homeserver.
 pub async fn homeserver() -> (String, Bridges) {
     crate::cloud::install_tls();
     let bridges = Bridges(Arc::default());
