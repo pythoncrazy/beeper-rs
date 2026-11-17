@@ -1657,7 +1657,7 @@ async fn lifecycle() {
     assert!(simulator(gui.view_main()).find("Inbox").is_ok(), "the language changes after a relaunch");
     assert!(simulator(gui.view_main()).find("App language will change after relaunch").is_ok());
     let _ = gui.update(UiMessage::SetPref("appLanguage", 1));
-    let _ = gui.update(UiMessage::DismissBanner);
+    let _ = gui.update(UiMessage::Toast(beeper_ui::toasts::Msg::DismissBanner));
     let _ = gui.update(UiMessage::CloseModals);
 
     let final_wa_msgs = client.list_messages("!wa_eric:beeper.com").await;

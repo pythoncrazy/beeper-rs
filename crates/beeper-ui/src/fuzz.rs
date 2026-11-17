@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::composer::{composer_action, hidden_actions, mention_label};
+use crate::toasts::{TOAST_TIMEOUT, UNDO_NOTE_TIMEOUT};
 use beeper_core::config::CentralConfig;
 use beeper_core::matrix::ROOM_MENTION;
 use beeper_core::store::StoreLock;
@@ -630,13 +631,13 @@ fn incognito_toggle_like_desktop() {
     assert_eq!(app.status_banner, "Incognito mode off. Also show when you're typing to recipients?");
     app.status_banner = "Copied".into();
     assert!(simulator(app.view_main()).find("Show typing").is_err(), "another banner has no stale button");
-    let _ = app.update(UiMessage::DismissBanner);
+    let _ = app.update(UiMessage::Toast(toasts::Msg::DismissBanner));
     let _ = app.update(UiMessage::RunHotkey("Toggle Incognito Mode"));
     assert_eq!(app.status_banner, "Incognito mode on.");
     let _ = app.update(UiMessage::Undo(false));
     assert!(!on(&app, "incognito") && app.status_banner == "Undo: Enable Incognito Mode");
     let _ = app.update(UiMessage::SetPref("typingIndicators", 1));
-    let _ = app.update(UiMessage::DismissBanner);
+    let _ = app.update(UiMessage::Toast(toasts::Msg::DismissBanner));
     let _ = app.update(UiMessage::SetPref("incognito", 1));
     assert!(app.status_banner.is_empty(), "Settings change incognito mode without a toast");
     let _ = app.update(UiMessage::RunHotkey("Toggle Incognito Mode"));
@@ -4332,14 +4333,14 @@ fn toasts_stack_like_desktop() {
     let _ = app.update(UiMessage::ToggleFlag(ids[0].clone(), ChatFlag::Archived));
     let _ = app.update(UiMessage::Undo(false));
     assert!(!archived(&app) && app.older_toasts.len() == 1, "Mod-z closes the newest toast and keeps the others");
-    let _ = app.update(UiMessage::ToastHover(true));
+    let _ = app.update(UiMessage::Toast(toasts::Msg::Hover(true)));
     assert!(!app.toast_running(), "the toasts wait while the pointer is on them");
-    let _ = app.update(UiMessage::ToastHover(false));
+    let _ = app.update(UiMessage::Toast(toasts::Msg::Hover(false)));
     for _ in 0..TOAST_TIMEOUT.as_millis() / TOAST_TICK.as_millis() {
-        let _ = app.update(UiMessage::ToastTick);
+        let _ = app.update(UiMessage::Toast(toasts::Msg::Tick));
     }
     assert!(app.older_toasts.is_empty() && app.status_banner.is_empty(), "each toast closes after its timeout");
-    let _ = app.update(UiMessage::DismissOlderToast(0));
+    let _ = app.update(UiMessage::Toast(toasts::Msg::DismissOlder(0)));
     assert!(app.older_toasts.is_empty(), "the second click of a double click on a close button closes nothing");
 }
 
@@ -5270,7 +5271,7 @@ fn label_chats_from_the_chat_menu_like_desktop() {
     assert!(app.toast.is_none() && app.undo_stack.is_empty(), "the undo is not an action");
     app.focused = true;
     for _ in 0..(UNDO_NOTE_TIMEOUT.as_millis() / TOAST_TICK.as_millis()) {
-        let _ = app.update(UiMessage::ToastTick);
+        let _ = app.update(UiMessage::Toast(toasts::Msg::Tick));
     }
     assert!(app.status_banner.is_empty(), "the Undo: toast closes after a second");
     let _ = app.update(UiMessage::ToggleLabel("lbl_work".into(), vec![chat.into()], true));
@@ -5828,15 +5829,15 @@ fn toasts_time_out_like_desktop() {
     let _ = app.update(UiMessage::CopyLink("https://example.com".into()));
     let shown = app.status_banner.clone();
     assert!(!shown.is_empty() && app.toast_running());
-    let _ = app.update(UiMessage::ToastHover(true));
+    let _ = app.update(UiMessage::Toast(toasts::Msg::Hover(true)));
     assert!(!app.toast_running(), "hover pauses the toast");
-    let _ = app.update(UiMessage::ToastHover(false));
+    let _ = app.update(UiMessage::Toast(toasts::Msg::Hover(false)));
     let ticks = (TOAST_TIMEOUT.as_millis() / TOAST_TICK.as_millis()) as usize;
     for _ in 1..ticks {
-        let _ = app.update(UiMessage::ToastTick);
+        let _ = app.update(UiMessage::Toast(toasts::Msg::Tick));
     }
     assert_eq!(app.status_banner, shown);
-    let _ = app.update(UiMessage::ToastTick);
+    let _ = app.update(UiMessage::Toast(toasts::Msg::Tick));
     assert!(app.status_banner.is_empty() && !app.toast_running());
     app.status_banner = "a".into();
     app.sticky_banner = Some("a".into());
