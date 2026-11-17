@@ -186,6 +186,22 @@ fn forms(key: &str) -> Option<&'static [String]> {
     table().and_then(|t| t.1.get(key)).map(Vec::as_slice)
 }
 
+/// The translations of language `code` of [`LANGS`].
+fn table_of(code: &str) -> Option<&'static HashMap<String, Vec<String>>> {
+    let i = LANGS.iter().position(|l| l.0 == code)?;
+    Some(TABLES[i].get_or_init(|| serde_json::from_str(LANGS[i].1).expect("valid translations")))
+}
+
+/// The translation into language `code` (`None` for the current one) of a key that the program builds, like Desktop's
+/// `t(key, context)`: its context entry, else its plain entry.
+pub fn translate_in(code: Option<&str>, key: &str, context: &str) -> Option<String> {
+    let t = match code {
+        Some(c) => table_of(c)?,
+        None => table()?.1,
+    };
+    t.get(&format!("{context}\u{4}{key}")).or_else(|| t.get(key)).map(|f| f[0].clone())
+}
+
 /// The translation of a UI string.
 pub fn tr(s: &'static str) -> &'static str {
     forms(s).map_or(s, |f| &f[0])
