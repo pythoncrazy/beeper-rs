@@ -8400,6 +8400,33 @@ fn allowed_reactions_like_desktop() {
     assert!(matches!(app.quick_react(mid), UiMessage::Noop), "a double click does not send what the network refuses");
 }
 
+/// Desktop's `thread-header-disappearing-timer`: a chat whose messages disappear shows a timer after its name in the
+/// header, which makes the name pill wider.
+#[test]
+fn the_header_shows_the_disappearing_timer_like_desktop() {
+    let mut app = demo_app("header-timer");
+    let _ = app.update(UiMessage::SelectChat(NOTE_CHAT_ID.into()));
+    let header = |app: &BeeperGuiApp| {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(1200.0, 800.0), app.view_conversation());
+        let dir = std::env::temp_dir().join(format!("beeper-rs-header-timer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = sim.snapshot(&iced::Theme::Light).unwrap().matches_image(dir.join("header"));
+        let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+        let shot = ::image::open(&png).unwrap().into_rgba8();
+        std::fs::remove_dir_all(&dir).unwrap();
+        // The row of the name pill, under the avatar.
+        let k = shot.width() / 1200;
+        (0..shot.width()).filter(|&x| shot.get_pixel(x, 62 * k).0 != shot.get_pixel(0, 62 * k).0).count()
+    };
+    let plain = header(&app);
+    {
+        let mut st = app.store.write();
+        let i = st.chat_idx(NOTE_CHAT_ID);
+        st.update_chat(i, |c| c.disappearing = Some(86_400_000));
+    }
+    assert!(header(&app) > plain, "the timer widens the name pill");
+}
+
 /// Desktop's `.left` transition: the space bar and the chat list slide out and back in over 0.2 s.
 #[test]
 fn sidebar_slides_like_desktop() {
