@@ -18,11 +18,12 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::ops::Bound::{self, Excluded, Included, Unbounded};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 mod auth;
+mod json_error;
 mod mcp;
 mod new_chat;
 mod proxy;
@@ -274,6 +275,101 @@ fn too_short(k: &str) -> Issue {
     ])
 }
 
+/// zod's `string().email()`: the regex of zod 3, `^(?!\.)(?!.*\.\.)([A-Z0-9_'+\-\.]*)[A-Z0-9_+-]@([A-Z0-9][A-Z0-9\-]*\.)+[A-Z]{2,}$`
+/// without case.
+fn zod_email(s: &str) -> bool {
+    let Some((local, domain)) = s.split_once('@') else { return false };
+    let label = |l: &str| {
+        l.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
+            && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    };
+    let Some((labels, top)) = domain.rsplit_once('.') else { return false };
+    !s.starts_with('.')
+        && !s.contains("..")
+        && local.bytes().all(|b| b.is_ascii_alphanumeric() || b"_'+-.".contains(&b))
+        && local.bytes().last().is_some_and(|b| b.is_ascii_alphanumeric() || b"_+-".contains(&b))
+        && labels.split('.').all(label)
+        && top.len() >= 2
+        && top.bytes().all(|b| b.is_ascii_alphabetic())
+}
+
+/// A field of the zod `.strict()` objects of Desktop's setup bodies.
+#[derive(Clone, Copy)]
+enum Field {
+    /// `string()`.
+    Text,
+    /// `string().min(1)`.
+    Filled,
+    /// `string().email()`.
+    Email,
+    /// `string().optional()`.
+    Optional,
+    /// `literal(true)`.
+    True,
+    /// An enum with a default.
+    Choice(&'static [&'static str]),
+}
+
+/// The zod issues of a body for a `.strict()` object of the fields: the issues of the fields in their order, then the
+/// unknown keys. `None` is a request without a body, which Express leaves `undefined`.
+fn strict_issues(body: Option<&Value>, fields: &[(&'static str, Field)]) -> Vec<Issue> {
+    let Some(Value::Object(o)) = body else {
+        return vec![type_issue(["code", "expected", "received"], "object", zod_type(body), json!([]))];
+    };
+    let mut issues = Vec::new();
+    for &(k, field) in fields {
+        let (v, path) = (o.get(k), json!([k]));
+        match (field, v) {
+            (Field::Filled, Some(Value::String(s))) if s.is_empty() => issues.push(too_short(k)),
+            (Field::Email, Some(Value::String(s))) if !zod_email(s) => issues.push(Issue(vec![
+                ("validation", json!("email")),
+                ("code", json!("invalid_string")),
+                ("message", json!("Invalid email")),
+                ("path", path),
+            ])),
+            (Field::Text | Field::Filled | Field::Email, v) => issues.extend(string_issue(v, false, path)),
+            (Field::Optional, v) => issues.extend(string_issue(v, true, path)),
+            (Field::True, Some(Value::Bool(true))) | (Field::Choice(_), None) => {}
+            (Field::True, v) => {
+                // zod's `received` is `undefined` for a missing key, which JSON leaves out.
+                let received = v.map(|v| ("received", v.clone()));
+                issues.push(Issue(
+                    received
+                        .into_iter()
+                        .chain([
+                            ("code", json!("invalid_literal")),
+                            ("expected", json!(true)),
+                            ("path", path),
+                            ("message", json!("Invalid literal value, expected true")),
+                        ])
+                        .collect(),
+                ));
+            }
+            (Field::Choice(options), v) => issues.extend(enum_issue(v, options, path)),
+        }
+    }
+    let extra: Vec<&String> = o.keys().filter(|k| !fields.iter().any(|(f, _)| f == k)).collect();
+    if !extra.is_empty() {
+        let names = extra.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ");
+        issues.push(Issue(vec![
+            ("code", json!("unrecognized_keys")),
+            ("keys", json!(extra)),
+            ("path", json!([])),
+            ("message", format!("Unrecognized key(s) in object: {names}").into()),
+        ]));
+    }
+    issues
+}
+
+/// Desktop's `Re` of its setup routes: the body passes the zod `.strict()` object of the fields, or the answer names
+/// its first issue.
+fn validate(body: Option<&Value>, fields: &[(&'static str, Field)]) -> Result<(), Response> {
+    let issues = strict_issues(body, fields);
+    let Some(first) = issues.first() else { return Ok(()) };
+    let message = first.get("message").and_then(Value::as_str).unwrap_or("Invalid request body").to_string();
+    Err(error_with(StatusCode::BAD_REQUEST, &message, "VALIDATION_ERROR", json!(Issues { issues })))
+}
+
 /// The value of a query parameter, or `None` once its zod issue joins `issues`.
 fn check<T>(issues: &mut Vec<Issue>, v: Result<T, Issue>) -> Option<T> {
     v.map_err(|issue| issues.push(issue)).ok()
@@ -320,6 +416,11 @@ fn bad(message: &str) -> Response {
 
 fn missing(message: &str) -> Response {
     error(StatusCode::NOT_FOUND, message, "NOT_FOUND")
+}
+
+/// Desktop's `getChatMeta` error, which names the chat ID of the request.
+fn no_chat(id: &str) -> Response {
+    missing(&format!("Chat not found: {id}"))
 }
 
 /// The required-input check of Desktop's tools.
@@ -470,6 +571,17 @@ impl Req {
         self.body[k].as_str()
     }
 
+    /// The body as Express's JSON parser leaves it: `None` (`undefined`) without a JSON body, and `{}` for an empty
+    /// one with a length.
+    fn sent(&self) -> Option<&Value> {
+        static EMPTY: LazyLock<Value> = LazyLock::new(|| json!({}));
+        let json = self.msg.header("content-type").is_some_and(|t| t.starts_with("application/json"));
+        match self.msg.body.is_empty() {
+            true => (json && self.msg.header("content-length").is_some()).then(|| &*EMPTY),
+            false => json.then_some(&self.body),
+        }
+    }
+
     fn owned(&self, k: &str) -> Option<String> {
         self.str(k).map(str::to_string)
     }
@@ -490,12 +602,22 @@ impl Req {
     }
 }
 
-fn parse_body(msg: &HttpMessage) -> Option<Value> {
-    Some(match msg.header("content-type") {
+/// The body of a request, or the answer of Desktop's body parser to a malformed JSON body.
+fn parse_body(msg: &HttpMessage) -> Result<Value, Response> {
+    let malformed = || bad("malformed request body");
+    Ok(match msg.header("content-type") {
         _ if msg.body.is_empty() => Value::Null,
-        Some(ct) if ct.starts_with("application/json") => serde_json::from_slice(&msg.body).ok()?,
+        Some(ct) if ct.starts_with("application/json") => {
+            // body-parser decodes the bytes like iconv-lite: without a byte order mark, and bad UTF-8 as U+FFFD.
+            let text = String::from_utf8_lossy(&msg.body);
+            let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+            if let Some(message) = json_error::message(text) {
+                return Err(error(StatusCode::BAD_REQUEST, &message, "UNKNOWN_ERROR"));
+            }
+            serde_json::from_str(text).map_err(|_| malformed())?
+        }
         Some(ct) if ct.starts_with("application/x-www-form-urlencoded") => {
-            Value::Object(parse_query(std::str::from_utf8(&msg.body).ok()?))
+            Value::Object(parse_query(std::str::from_utf8(&msg.body).map_err(|_| malformed())?))
         }
         _ => Value::Null,
     })
@@ -763,7 +885,7 @@ fn refusal(st: &BeeperStore, head: &HttpMessage) -> Option<Response> {
 /// The info and the spec, which read only the config, so that they answer while the store loads its chats.
 fn config_route(config: &CentralConfig, msg: &HttpMessage) -> Option<Response> {
     let path = routes::find(msg.method(), msg.path()).ok()?.0.path;
-    parse_body(msg)?;
+    parse_body(msg).ok()?;
     match path {
         "/v1/info" => Some(json_with(StatusCode::OK, &info(config, &base_url(config, msg)))),
         "/v1/spec" => Some(Response {
@@ -788,6 +910,10 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
         if method != "OPTIONS" && auth::authorize(&store.read(), token, &[]).is_err() {
             return Err(auth::mcp_refusal(&store.read(), &msg));
         }
+        // Desktop's JSON parser reads a POST body after the token, before the MCP transport.
+        if method == "POST" && msg.header("content-type").is_some_and(|t| t.starts_with("application/json")) {
+            parse_body(&msg)?;
+        }
         return mcp::handle(store, cloud, &method, &msg, token);
     }
     let granted = require_auth(&store.read(), route, &msg)?;
@@ -795,7 +921,7 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     if let routes::Auth::Matrix = route.auth {
         return proxy::handle(store, &method, &segs, &query, &msg);
     }
-    let body = parse_body(&msg).ok_or_else(|| bad("malformed request body"))?;
+    let body = parse_body(&msg)?;
     let req = Req { query, msg, body };
     if let Some(reply) = auth::route(store, &method, &segs, &req, granted.as_ref()) {
         return reply;
@@ -869,17 +995,19 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
         }
         ("POST", ["verification", "recovery-key"]) => {
             not_ready()?;
-            let key = r.need("recoveryKey")?.to_string();
+            validate(r.sent(), &[("recoveryKey", Field::Filled)])?;
+            let key = r.str("recoveryKey").expect("the body passed its schema").to_string();
             rt.block_on(matrix::recover(store.clone(), key)).map_err(|e| {
                 match e.to_lowercase().contains("invalid recovery key") {
                     true => error(StatusCode::BAD_REQUEST, "The recovery key is invalid", "invalid_recovery_code"),
                     false => failed(&e),
                 }
             })?;
-            progress(store, false)
+            ok(&json!({ "session": store.read().app_state() }))
         }
         ("POST", ["verification", "recovery-key", "reset"]) => {
             not_ready()?;
+            validate(r.sent(), &[("existingRecoveryKey", Field::Optional)])?;
             let key = rt.block_on(matrix::new_recovery_key(store)).map_err(|e| failed(&e))?;
             ok(&json!({ "recoveryKey": key, "session": store.read().app_state() }))
         }
@@ -889,8 +1017,10 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
             if store.read().pending_recovery_key.is_none() {
                 not_ready()?;
             }
-            matrix::confirm_recovery_key(store, r.need("recoveryKey")?).map_err(|e| failed(&e))?;
-            progress(store, false)
+            validate(r.sent(), &[("recoveryKey", Field::Filled)])?;
+            let key = r.str("recoveryKey").expect("the body passed its schema");
+            matrix::confirm_recovery_key(store, key).map_err(|e| failed(&e))?;
+            ok(&json!({ "session": store.read().app_state() }))
         }
         ("GET", ["verifications"]) => {
             signed_in()?;
@@ -898,11 +1028,10 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
         }
         ("POST", ["verifications"]) => {
             signed_in()?;
-            let purpose = match r.str("purpose") {
-                None | Some("device") => "device",
-                Some("login") => "login",
-                Some(_) => return Err(bad("purpose must be login or device")),
-            };
+            let empty = json!({});
+            let fields = [("purpose", Field::Choice(&["login", "device"])), ("userID", Field::Optional)];
+            validate(Some(r.sent().filter(|b| !b.is_null()).unwrap_or(&empty)), &fields)?;
+            let purpose = if r.str("purpose") == Some("login") { "login" } else { "device" };
             if r.str("userID").is_some_and(|u| u != store.read().beeper_state.user_id) {
                 return Err(failed("Verification of other users is not supported"));
             }
@@ -928,7 +1057,8 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
         }
         ("POST", ["verifications", "qr", "scan"]) => {
             signed_in()?;
-            let data = r.need("data")?.to_string();
+            validate(r.sent(), &[("data", Field::Filled)])?;
+            let data = r.str("data").expect("the body passed its schema").to_string();
             rt.block_on(matrix::scan_qr(store, &data)).map_err(|e| failed(&e))?;
             progress(store, false)
         }
@@ -943,6 +1073,11 @@ fn e2ee_setup(store: &SharedStore, method: &str, path: &[&str], r: &Req) -> Repl
             };
             signed_in()?;
             available(&store.read(), id, action)?;
+            if action == "cancel" {
+                let empty = json!({});
+                let body = r.sent().filter(|b| !b.is_null()).unwrap_or(&empty);
+                validate(Some(body), &[("code", Field::Optional), ("reason", Field::Optional)])?;
+            }
             match action {
                 "accept" => rt.block_on(matrix::accept_verification(store, id)).map_err(|e| failed(&e))?,
                 "cancel" => rt.block_on(matrix::cancel_verification(store, id)).map_err(|e| failed(&e))?,
@@ -1006,7 +1141,9 @@ fn get(store: &SharedStore, path: &[&str], r: &Req) -> Reply {
         ["v1", "chats"] => list_chats(st, r),
         ["v1", "chats", "search"] => search_chats(st, r),
         ["v1", "chats", id, rest @ ..] => {
-            let idx = st.resolve_chat_idx(id).ok_or_else(|| missing("Chat not found"))?;
+            // Desktop's `getChat` names no chat, unlike its `getChatMeta` of the other chat routes.
+            let unknown = || if rest.is_empty() { missing("Chat not found") } else { no_chat(id) };
+            let idx = st.resolve_chat_idx(id).ok_or_else(unknown)?;
             match rest {
                 [] => {
                     let max = r.q("maxParticipantCount").map_or(Ok(100), |v| match v.parse::<i64>() {
@@ -1204,10 +1341,18 @@ fn sign_in_step(store: &SharedStore, cloud: &Cloud, step: &str, r: &Req) -> Repl
     if store.read().signed_in() {
         return Err(already());
     }
-    let upstream = |e: CloudError| match e.status {
-        401 => error(StatusCode::UNAUTHORIZED, &e.message, "invalid_sign_in_code"),
+    // Desktop's own errors for a cloud answer without a request or a token. The other cloud errors keep their message,
+    // and only the code step names a refused code.
+    let upstream = |e: CloudError| match (e.status, e.message.as_str()) {
+        (502, "Could not start sign-in" | "Could not finish sign-in") => {
+            error(StatusCode::BAD_GATEWAY, &e.message, "invalid_sign_in_response")
+        }
+        (502, "Could not create the account") => {
+            error(StatusCode::BAD_GATEWAY, &e.message, "invalid_registration_response")
+        }
         _ => failed(&e.message),
     };
+    let text = |k: &str| r.str(k).expect("the body passed its schema");
     let jwt = match step {
         "start" => {
             let (request, methods) = cloud.start_login().map_err(upstream)?;
@@ -1221,32 +1366,43 @@ fn sign_in_step(store: &SharedStore, cloud: &Cloud, step: &str, r: &Req) -> Repl
             return ok(&json!({ "setupRequestID": request, "signInMethods": methods }));
         }
         "email" => {
-            cloud.send_login_email(r.need("setupRequestID")?, r.need("email")?).map_err(upstream)?;
+            validate(r.sent(), &[("setupRequestID", Field::Text), ("email", Field::Email)])?;
+            cloud.send_login_email(text("setupRequestID"), text("email")).map_err(upstream)?;
             return empty(StatusCode::NO_CONTENT, Vec::new());
         }
-        "response" => match cloud.send_login_code(r.need("setupRequestID")?, r.need("response")?).map_err(upstream)? {
-            CodeResult::Token(jwt) => jwt,
-            CodeResult::Registration { lead_token, username_suggestions } => {
-                return ok(&json!({
-                    "registrationRequired": true,
-                    "setupRequestID": r.need("setupRequestID")?,
-                    "leadToken": lead_token,
-                    "usernameSuggestions": username_suggestions,
-                    "copy": {
-                        "title": "Choose your username",
-                        "usernamePlaceholder": "Username",
-                        "submit": "Continue",
-                        "terms": "By continuing, you agree to the Terms of Use and acknowledge the Privacy Policy."
-                    }
-                }));
+        "response" => {
+            validate(r.sent(), &[("setupRequestID", Field::Text), ("response", Field::Text)])?;
+            let refused = |e: CloudError| match e.status {
+                401 => error(StatusCode::UNAUTHORIZED, &e.message, "invalid_sign_in_code"),
+                _ => upstream(e),
+            };
+            match cloud.send_login_code(text("setupRequestID"), text("response")).map_err(refused)? {
+                CodeResult::Token(jwt) => jwt,
+                CodeResult::Registration { lead_token, username_suggestions } => {
+                    return ok(&json!({
+                        "registrationRequired": true,
+                        "setupRequestID": text("setupRequestID"),
+                        "leadToken": lead_token,
+                        "usernameSuggestions": username_suggestions,
+                        "copy": {
+                            "title": "Choose your username",
+                            "usernamePlaceholder": "Username",
+                            "submit": "Continue",
+                            "terms": "By continuing, you agree to the Terms of Use and acknowledge the Privacy Policy."
+                        }
+                    }));
+                }
             }
-        },
+        }
         "register" => {
-            if r.body["acceptTerms"] != true {
-                return Err(bad("acceptTerms must be true"));
-            }
-            let (request, lead) = (r.need("setupRequestID")?, r.need("leadToken")?);
-            cloud.register(request, lead, r.need("username")?).map_err(upstream)?
+            let fields = [
+                ("setupRequestID", Field::Text),
+                ("leadToken", Field::Text),
+                ("username", Field::Filled),
+                ("acceptTerms", Field::True),
+            ];
+            validate(r.sent(), &fields)?;
+            cloud.register(text("setupRequestID"), text("leadToken"), text("username")).map_err(upstream)?
         }
         other => unreachable!("sign-in step {other}"),
     };
@@ -1520,7 +1676,7 @@ fn chats(st: &mut BeeperStore, method: &str, path: &[&str], r: &Req) -> Reply {
     match (method, path) {
         ("POST", []) => merge_chats(st, r),
         (_, [id, rest @ ..]) => {
-            let idx = st.resolve_chat_idx(id).ok_or_else(|| missing("Chat not found"))?;
+            let idx = st.resolve_chat_idx(id).ok_or_else(|| no_chat(id))?;
             chat(st, method, idx, id, rest, r)
         }
         _ => Err(no_route()),
@@ -2171,7 +2327,7 @@ struct MessagePage<'a> {
 fn message_search(st: &BeeperStore, s: &MessageSearch) -> Result<Value, Response> {
     let mut rooms = Vec::new();
     for id in &s.chat_ids {
-        let chat = &st.chats[st.resolve_chat_idx(id).ok_or_else(|| missing("Chat not found"))?];
+        let chat = &st.chats[st.resolve_chat_idx(id).ok_or_else(|| no_chat(id))?];
         match &chat.merge {
             Some(m) => {
                 rooms.extend(m.chat_ids.iter().map(|id| st.resolve_canonical_chat_id(id).expect("member exists")))
@@ -2537,7 +2693,7 @@ fn serve_asset(path: std::path::PathBuf, r: &Req) -> Reply {
 
 fn focus(st: &mut BeeperStore, r: &Req) -> Reply {
     // Desktop's `focusApp` uses the message and the draft only with a chat, and fails on a draft text without one.
-    let idx = r.str("chatID").map(|id| st.resolve_chat_idx(id).ok_or_else(|| missing("Chat not found"))).transpose()?;
+    let idx = r.str("chatID").map(|id| st.resolve_chat_idx(id).ok_or_else(|| no_chat(id))).transpose()?;
     let (text, path) = (r.owned("draftText"), r.owned("draftAttachmentPath"));
     if idx.is_none() && text.is_some() {
         let message = "Failed to execute tool: focusApp";
