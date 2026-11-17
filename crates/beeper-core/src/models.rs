@@ -746,6 +746,10 @@ pub struct Chat {
     /// checks the image size only after the conversion. Without them, `file` and the other features are defaults.
     #[serde(rename = "hasRoomFeatures", default)]
     pub room_features: bool,
+    /// Desktop's `features`: the content of the room's `com.beeper.room_features`, which the Desktop API maps to the
+    /// chat's `capabilities`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub features: Option<Box<serde_json::Value>>,
     /// The poll features of the network, or `None` when it has no polls.
     #[serde(default = "beeper_polls")]
     pub polls: Option<PollRules>,
