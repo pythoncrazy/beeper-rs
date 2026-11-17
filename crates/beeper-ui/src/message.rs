@@ -403,6 +403,54 @@ impl BeeperGuiApp {
         (menu.into(), 8.0 + 2.0 * MENU_ITEM + 11.0, 0.0)
     }
 
+    /// Desktop's `Yit` for several selected messages: the items that act on the whole selection.
+    fn selected_messages_menu(&self) -> (El<'_>, f32, f32) {
+        let p = &self.pal;
+        let st = self.store.read();
+        let (msgs, _) = self.timeline(&st);
+        let picked: Vec<&Message> = msgs.into_iter().filter(|m| self.pane().selected_msgs.contains(&m.id)).collect();
+        let n = picked.len();
+        let item = |label: String, hotkey, msg: Option<UiMessage>| {
+            (menu_item(p, None, label, hotkey, msg.map(|m| UiMessage::Message(Msg::Menu(Box::new(m))))), MENU_ITEM)
+        };
+        let stamp = st.settings.on("copyTimestamps");
+        let earliest = picked.first().filter(|m| m.account_id != "hungryserv");
+        let mut rows = vec![item(
+            trn("Quote reply %d message…", "Quote reply %d messages…", n, &[&n]),
+            "Ctrl R",
+            Some(UiMessage::Message(Msg::QuoteSelected)),
+        )];
+        rows.extend(earliest.map(|m| {
+            let unread = UiMessage::Message(Msg::MarkUnreadFromHere(m.chat_id.clone(), m.id.clone()));
+            item(tr("Mark as Unread").into(), "", Some(unread))
+        }));
+        rows.push((menu_rule(p), 11.0));
+        rows.push(item(
+            tr("Copy").into(),
+            if stamp { "" } else { "Ctrl C" },
+            Some(UiMessage::Message(Msg::CopySelected(false))),
+        ));
+        rows.push(item(
+            tr("Copy with Timestamp").into(),
+            if stamp { "Ctrl C" } else { "" },
+            Some(UiMessage::Message(Msg::CopySelected(true))),
+        ));
+        if picked.iter().all(|m| m.is_deleted != Some(true)) {
+            rows.push(item(tr("Forward…").into(), "Ctrl Shift F", Some(UiMessage::RunHotkey("Message: Forward"))));
+        }
+        let ids: Vec<String> = picked.iter().map(|m| m.id.clone()).collect();
+        if delete_dialog(&st, &picked).is_some() {
+            rows.push(item(tr("Delete…").into(), "", Some(UiMessage::Message(Msg::AskDelete(ids)))));
+        }
+        rows.push((menu_rule(p), 11.0));
+        rows.push(item(tr("Report a Problem").into(), "Ctrl Shift P", Some(UiMessage::OpenUrl(ISSUES_URL.into()))));
+        let h = 8.0 + rows.iter().map(|r| r.1).sum::<f32>();
+        let col = Column::with_children(rows.into_iter().map(|r| r.0));
+        let menu =
+            container(col.padding([4, 0])).width(MESSAGE_MENU_W).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
+        (menu.into(), h, 0.0)
+    }
+
     pub(crate) fn view_message_menu(&self, mid: &str) -> (El<'_>, f32, f32) {
         if let Some(menu) = self.view_gallery_menu(mid) {
             return menu;
@@ -410,6 +458,9 @@ impl BeeperGuiApp {
         let p = &self.pal;
         if let Some(selection) = &self.pane().menu_selection {
             return self.selection_menu(selection);
+        }
+        if self.pane().selected_msgs.len() > 1 && self.pane().selected_msgs.iter().any(|s| s == mid) {
+            return self.selected_messages_menu();
         }
         let st = self.store.read();
         let m = st.message(mid);
@@ -2118,6 +2169,8 @@ pub enum Msg {
     Select(Vec<String>),
     /// Copy the text of the selected messages, with their timestamps or not.
     CopySelected(bool),
+    /// Desktop's `quoteAndReply` of the selected messages: each line quoted in the composer.
+    QuoteSelected,
     /// Do the "On double-clicking a message" action.
     DoubleClick(String),
     /// Select the message above (`false`) or below (`true`) the selected one, as with the arrow keys.
@@ -2215,12 +2268,35 @@ impl BeeperGuiApp {
             Msg::OpenMenu(mid) => {
                 // With text selected, Desktop leaves the menu to Electron's, which offers the selection.
                 self.pane.menu_selection = crate::selectable::has_selection().then(crate::selectable::text);
+                // Desktop's `selectOnly`: a right click on a message outside the selection selects it alone.
+                if self.pane.menu_selection.is_none() && !self.pane.selected_msgs.contains(&mid) {
+                    self.pane.selected_msgs = vec![mid.clone()];
+                }
                 self.video.iter_mut().for_each(|v| v.sub = false);
                 (self.audio.sub, self.audio.lang) = (false, false);
                 self.pane.message_menu = Some((mid, self.cursor.get()));
                 self.pane.gallery_menu.clear();
             }
             Msg::Select(mids) => self.pane.selected_msgs = mids,
+            Msg::QuoteSelected => {
+                let st = self.store.read();
+                let (msgs, _) = self.timeline(&st);
+                let picked: Vec<&Message> =
+                    msgs.into_iter().filter(|m| self.pane.selected_msgs.contains(&m.id)).collect();
+                let quote: Vec<String> = picked
+                    .iter()
+                    .flat_map(|m| {
+                        crate::copy_text(m, false, true).lines().map(|l| format!("> {l}")).collect::<Vec<_>>()
+                    })
+                    .filter(|l| l.len() > 2)
+                    .collect();
+                drop(st);
+                if quote.is_empty() {
+                    return Task::none();
+                }
+                let text = format!("{}{}\n\n", self.pane.composer.text(), quote.join("\n"));
+                return self.update(UiMessage::Composer(composer::Msg::Changed(text)));
+            }
             Msg::CopySelected(stamp) => {
                 let st = self.store.read();
                 let (msgs, _) = self.timeline(&st);
@@ -2572,6 +2648,31 @@ impl BeeperGuiApp {
 mod tests {
     use super::*;
     use iced_test::simulator::simulator;
+
+    /// Desktop's right click on a selection: it acts on all the selected messages, and a right click outside the
+    /// selection selects that message alone.
+    #[test]
+    fn menu_of_a_selection_like_desktop() {
+        let mut app = crate::fuzz::demo_app("selection-menu");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let ids: Vec<String> = {
+            let st = app.store.read();
+            app.timeline(&st).0.iter().rev().take(3).map(|m| m.id.clone()).collect()
+        };
+        app.pane.selected_msgs = ids[..2].to_vec();
+        let _ = app.update(UiMessage::Message(Msg::OpenMenu(ids[0].clone())));
+        assert_eq!(app.pane.selected_msgs, ids[..2], "the selection stays");
+        {
+            let (menu, _, _) = app.view_message_menu(&ids[0]);
+            let mut sim = simulator(menu);
+            assert!(sim.find("Quote reply 2 messages…").is_ok() && sim.find("Copy with Timestamp").is_ok());
+        }
+        let _ = app.update(UiMessage::Message(Msg::OpenMenu(ids[2].clone())));
+        assert_eq!(app.pane.selected_msgs, [ids[2].clone()], "a message outside the selection is selected alone");
+        app.pane.selected_msgs = ids[..2].to_vec();
+        let _ = app.update(UiMessage::Message(Msg::QuoteSelected));
+        assert!(app.pane.composer.text().starts_with("> "), "the selection is quoted in the composer");
+    }
 
     /// Desktop's reaction pills: one pill a group of skin tones, in the order the groups first appear, and a click
     /// that adds the group's reaction or removes your own reactions of the group.
