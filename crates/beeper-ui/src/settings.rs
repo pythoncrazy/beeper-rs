@@ -17,14 +17,14 @@ use crate::units::{compact, grouped, human_size};
 use crate::windows;
 use crate::zoom;
 use crate::{
-    ago, avatar, badge, brand_key, checkbox, distance, divider, downloads_dir, duration, ease_out, feedback_btn,
-    first_groups, fmt_phone, group, icon_btn, inbox_label, locate, login, outline_input, pill_btn, pill_style,
-    plan_pill, portal, pref_row, reconnect, record, select, slider_style, status_text, style, svg_size, theme_cards,
-    tinted, toggle, toggle_faded, BeeperGuiApp, El, Toast, UiMessage, ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE,
-    ASK_CLEAR_CHAT, ASK_CLEAR_STORAGE, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT,
-    ASK_REVOKE_CONNECTION, CHANGELOG_URL, CHEVRON_LEFT, CLAUDE_LOGO, COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS,
-    ERROR_CIRCLE, INBOX_OPTIONS, ISSUES_URL, LOGO, MENU_ITEM, ORANGE, QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE,
-    TAKE_BEEPER, VSCODE_LOGO, ZOOM_LEVEL,
+    ago, badge, brand_key, checkbox, distance, divider, downloads_dir, duration, ease_out, feedback_btn, first_groups,
+    fmt_phone, group, icon_btn, inbox_label, locate, login, outline_input, pill_btn, pill_style, plan_pill, portal,
+    pref_row, reconnect, record, select, slider_style, status_text, style, svg_size, theme_cards, tinted, toggle,
+    toggle_faded, BeeperGuiApp, El, Toast, UiMessage, ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT,
+    ASK_CLEAR_STORAGE, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT, ASK_REVOKE_CONNECTION,
+    CHANGELOG_URL, CHEVRON_LEFT, CLAUDE_LOGO, COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS, ERROR_CIRCLE,
+    INBOX_OPTIONS, ISSUES_URL, LOGO, MENU_ITEM, ORANGE, QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE, TAKE_BEEPER,
+    VSCODE_LOGO, ZOOM_LEVEL,
 };
 use beeper_core::config::{now_unix_millis, now_unix_secs, APP_VERSION};
 use beeper_core::matrix::DeviceInfo;
@@ -999,8 +999,15 @@ impl BeeperGuiApp {
                 self.account_page(st, self.account_page.as_deref().expect("an account page"))
             }
             SettingsTab::Accounts => {
-                let account = |logo: &str, owner: &str, name: String, cloud: bool, sub: Option<String>| -> El<'_> {
-                    let title = row![avatar(owner, 14.0, 0.0, p), semi(name, 14.0).color(p.strong)]
+                // Desktop's account row: the account user's photo (`userImage`), the network, and the user.
+                let account = |logo: &str,
+                               owner: &str,
+                               photo: Option<&str>,
+                               name: String,
+                               cloud: bool,
+                               sub: Option<String>|
+                 -> El<'_> {
+                    let title = row![self.face(photo, owner, 14.0, 0.0), semi(name, 14.0).color(p.strong)]
                         .push(cloud.then(|| ic(icon::CLOUD, 13.0).color(p.sub)))
                         .spacing(4)
                         .align_y(Center);
@@ -1025,16 +1032,27 @@ impl BeeperGuiApp {
                         .into()
                 };
                 let me = st.me();
+                // Desktop's `defaultUserDisplayText` of the Beeper account is the profile's full name.
                 let rows = std::iter::once(account(
                     "hungryserv",
                     me.full_name.as_deref().expect("self name"),
+                    me.img_url.as_deref(),
                     "Beeper".into(),
                     false,
-                    me.username.clone(),
+                    me.full_name.clone().or_else(|| me.username.clone()),
                 ))
                 .chain(st.bridge_accounts.iter().map(|b| {
-                    let owner = b.remote_profile.as_ref().and_then(|r| r.name.as_deref()).unwrap_or("");
-                    account(&b.account_id, owner, b.network_name.clone(), b.mode == BridgeMode::Cloud, b.display_text())
+                    let r = b.remote_profile.as_ref();
+                    let owner = r.and_then(|r| r.name.as_deref()).unwrap_or("");
+                    let photo = r.and_then(|r| r.avatar.as_deref());
+                    account(
+                        &b.account_id,
+                        owner,
+                        photo,
+                        b.network_name.clone(),
+                        b.mode == BridgeMode::Cloud,
+                        b.display_text_with(crate::fmt_phone),
+                    )
                 }));
                 let rows = rows
                     .enumerate()
@@ -1670,14 +1688,15 @@ impl BeeperGuiApp {
         let p = &self.pal;
         let bridge = (id != "hungryserv")
             .then(|| st.bridge_accounts.iter().find(|b| b.account_id == id).expect("the account of the page"));
-        let (network, [name, username, phone, email]) = match bridge {
+        let (network, photo, [name, username, phone, email]) = match bridge {
             None => {
                 let me = st.me();
-                ("Beeper".into(), [&me.full_name, &me.username, &me.phone_number, &me.email].map(Clone::clone))
+                let user = [&me.full_name, &me.username, &me.phone_number, &me.email].map(Clone::clone);
+                ("Beeper".into(), me.img_url.clone(), user)
             }
             Some(b) => {
                 let r = b.remote_profile.clone().unwrap_or_default();
-                (b.network_name.clone(), [r.name, r.username, r.phone, r.email])
+                (b.network_name.clone(), r.avatar, [r.name, r.username, r.phone, r.email])
             }
         };
         let back = button(tinted(&CHEVRON_LEFT, 16.0, p.strong))
@@ -1689,7 +1708,10 @@ impl BeeperGuiApp {
         let head = row![back, container(title).center_x(Fill), Space::new().width(16)].align_y(Center);
         let lines = [username.map(|u| format!("@{u}")), phone.map(|n| fmt_phone(&n)), email].into_iter().flatten();
         let user = column![]
-            .push(name.as_deref().map(|n| container(avatar(n, 28.0, 0.0, p)).padding(Padding::ZERO.bottom(8.0))))
+            .push(
+                name.as_deref()
+                    .map(|n| container(self.face(photo.as_deref(), n, 28.0, 0.0)).padding(Padding::ZERO.bottom(8.0))),
+            )
             .push(name.map(|n| semi(n, 14.0).color(p.strong)))
             .extend(lines.map(|l| txt(l, 13.0).color(p.weak).into()))
             .align_x(Center);

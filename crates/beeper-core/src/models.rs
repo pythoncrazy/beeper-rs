@@ -1567,9 +1567,21 @@ pub struct BridgeAccountInfo {
 
 impl BridgeAccountInfo {
     pub fn display_text(&self) -> Option<String> {
-        self.remote_name.clone().or_else(|| {
-            let p = self.remote_profile.as_ref()?;
-            p.email.clone().or(p.phone.clone()).or(p.username.as_ref().map(|u| format!("@{u}"))).or(p.name.clone())
+        self.display_text_with(str::to_string)
+    }
+
+    /// The account's user as Desktop shows it, with `phone` formatting a phone number: the remote name, as a
+    /// `@username` or a formatted number when it is the profile's username or phone.
+    pub fn display_text_with(&self, phone: impl Fn(&str) -> String) -> Option<String> {
+        let p = self.remote_profile.clone().unwrap_or_default();
+        let shown = |name: String| match name {
+            n if p.username.as_deref() == Some(&n) => format!("@{n}"),
+            n if p.phone.as_deref() == Some(&n) => phone(&n),
+            n => n,
+        };
+        self.remote_name.clone().map(shown).or_else(|| {
+            let user = p.username.as_ref().map(|u| format!("@{u}"));
+            p.email.clone().or(p.phone.as_deref().map(phone)).or(user).or(p.name.clone())
         })
     }
 }
@@ -1934,6 +1946,29 @@ mod tests {
 #[cfg(test)]
 mod title_tests {
     use super::*;
+
+    /// Desktop's account user line: the remote name, as `@username` or a formatted number when it is one of them.
+    #[test]
+    fn account_text_like_desktop() {
+        let account = |name: Option<&str>, username: Option<&str>, phone: Option<&str>| {
+            let profile = RemoteProfile {
+                username: username.map(String::from),
+                phone: phone.map(String::from),
+                email: Some("a@b.c".into()),
+                ..RemoteProfile::default()
+            };
+            let v = serde_json::json!({
+                "accountID": "x", "bridgeID": "x", "bridgeType": "x", "isRunning": true, "loginID": "x",
+                "mode": "cloud", "networkName": "X", "state": "CONNECTED",
+                "remoteName": name, "remoteProfile": profile,
+            });
+            serde_json::from_value::<BridgeAccountInfo>(v).unwrap().display_text_with(|p| format!("({p})"))
+        };
+        assert_eq!(account(Some("ann"), Some("ann"), Some("+1")).as_deref(), Some("@ann"));
+        assert_eq!(account(Some("+1"), None, Some("+1")).as_deref(), Some("(+1)"));
+        assert_eq!(account(Some("Team - a@b.c"), Some("ann"), None).as_deref(), Some("Team - a@b.c"));
+        assert_eq!(account(None, Some("ann"), None).as_deref(), Some("a@b.c"));
+    }
 
     fn user(id: &str, name: Option<&str>) -> User {
         User { id: id.into(), full_name: name.map(String::from), ..User::default() }
