@@ -1567,7 +1567,7 @@ fn can_edit_for_me(st: &BeeperStore, c: &Chat) -> bool {
 /// Desktop's sidebar overflow menu (`Plt`): the hidden spaces, then New Label…, Edit Spaces… and Add/Remove Accounts…,
 /// with `None` for a separator.
 fn more_menu(st: &BeeperStore) -> Vec<Option<(String, UiMessage)>> {
-    let unread = st.chats.iter().any(|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_UNREAD != 0);
+    let unread = st.chats.iter().any(|c| st.new_request(c));
     let hidden = hidden_spaces(st);
     let mut items: Vec<_> = hidden
         .iter()
@@ -1666,11 +1666,11 @@ fn space_subtitle(st: &BeeperStore, id: &str) -> Option<String> {
             trn("%d Reminder", "%d Reminders", n, &[&n])
         }
         "requests" => {
-            let n = count(&|c| c.flags & CHAT_REQUEST != 0);
+            let n = count(&|c| c.flags & CHAT_REQUEST != 0 && c.flags & CHAT_HIDDEN == 0);
             trn("%d Request", "%d Requests", n, &[&n])
         }
         "low_priority" => {
-            let n = count(&|c| c.flags & CHAT_LOW_PRIORITY != 0);
+            let n = count(&|c| c.flags & CHAT_LOW_PRIORITY != 0 && c.flags & CHAT_HIDDEN == 0);
             trn("%d Low Priority Chat", "%d Low Priority Chats", n, &[&n])
         }
         "scheduled" => trn("%d Message", "%d Messages", st.scheduled.len(), &[&st.scheduled.len()]),
@@ -2470,6 +2470,8 @@ pub struct BeeperGuiApp {
     /// Desktop's `spaceViewAccountFilter`: the account or network space that the Archive, Low Priority or Requests
     /// view shows the chats of, from its filter menu.
     pub space_view_account: Option<String>,
+    /// The requests that the Requests view last marked as seen.
+    seen_requests: Vec<String>,
     pub hotkey_query: String,
     pub hotkey_rec: Option<HotkeyRec>,
     pub profile: profile::ProfileForm,
@@ -2749,6 +2751,7 @@ impl BeeperGuiApp {
             active_tab: InboxTab::AllChats,
             selected_account_filter: None,
             space_view_account: None,
+            seen_requests: Vec::new(),
             hotkey_query: String::new(),
             hotkey_rec: None,
             profile: profile::ProfileForm::default(),
@@ -3678,6 +3681,7 @@ impl BeeperGuiApp {
     pub fn update(&mut self, msg: UiMessage) -> Task<UiMessage> {
         let (shown, dismissals) = (self.stackable_toast(), self.toast_dismissals);
         let task = self.handle(msg);
+        let task = Task::batch([task, self.view_requests()]);
         self.keep_shown();
         let replaced = |t: &(Toast, Duration)| !self.status_banner.is_empty() && t.0.text != self.status_banner;
         if let Some(t) = shown.filter(|t| dismissals == self.toast_dismissals && replaced(t)) {
@@ -5623,6 +5627,31 @@ impl BeeperGuiApp {
             .align_right(Fill)
             .padding(Padding::ZERO.top(top).right(4.0))
             .into()
+    }
+
+    /// Desktop's `updateLastViewedRequestsAt` when the Requests view shows, and when its requests change while it
+    /// shows: it sets `com.beeper.message_requests.last_viewed_at`, which clears the dot of new requests.
+    fn view_requests(&mut self) -> Task<UiMessage> {
+        if self.active_tab != InboxTab::Requests || self.selected_account_filter.is_some() {
+            self.seen_requests.clear();
+            return Task::none();
+        }
+        let ids: Vec<String> = {
+            let st = self.store.read();
+            st.chats.iter().filter(|c| c.flags & CHAT_REQUEST != 0).map(|c| c.id.clone()).collect()
+        };
+        if ids.is_empty() || ids == self.seen_requests {
+            return Task::none();
+        }
+        self.seen_requests = ids;
+        let mut st = self.store.write();
+        match (st.view_requests(now_unix_millis()), st.matrix.clone()) {
+            (Some(content), Some(c)) => {
+                let write = beeper_core::matrix::set_global(c, beeper_core::matrix::REQUESTS_VIEWED, content);
+                Task::perform(write, UiMessage::Pushed)
+            }
+            _ => Task::none(),
+        }
     }
 
     /// Whether one of the main window's menus is open.

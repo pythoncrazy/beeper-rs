@@ -163,6 +163,8 @@ fn account_id(bridge: &Value, accounts: &[BridgeAccountInfo]) -> String {
 }
 
 pub const RULES: &str = "com.beeper.chat_list_rules";
+/// Desktop's `LAST_VIEWED_REQUESTS_AT`: when the Requests view last showed each account's requests.
+pub const REQUESTS_VIEWED: &str = "com.beeper.message_requests.last_viewed_at";
 /// The bridge states that the homeserver keeps, in the shape of `whoami`'s `user.bridges`.
 const BRIDGE_STATE: &str = "com.beeper.bridge_state";
 
@@ -410,6 +412,7 @@ async fn chat(room: &Room, accounts: &[BridgeAccountInfo], rules: &Value) -> Cha
         is_hidden_from_inbox: Some(hidden_from_inbox(rules, &account_id, &bridge, !dm)),
         inbox_group: !dm && bridge["com.beeper.room_type.v2"] != "group_dm",
         is_request: Some(bridge["channel"]["com.beeper.message_request"] == true),
+        created_at: states(room, "m.room.create".into()).await.first().and_then(|e| e["origin_server_ts"].as_i64()),
         network_name: s(&bridge["network"]["displayname"]),
         network_id: s(&bridge["network"]["id"]),
         img_url: room.avatar_url().filter(|u| u.is_valid()).map(|u| u.to_string()),
@@ -3012,6 +3015,7 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
     let tone = global(client, "com.beeper.emoji_skin_tone").await["tone"].as_u64().map_or(0, |t| t as u8);
     let (flags, usage) = (global(client, crate::features::FLAGS).await, global(client, crate::features::USAGE).await);
     let bridges = global(client, BRIDGE_STATE).await;
+    let viewed = global(client, REQUESTS_VIEWED).await;
     let muted = muted_rooms(client).await;
     let changed: Vec<String> = {
         let st = store.read();
@@ -3032,6 +3036,7 @@ async fn sync_account_data(client: &Client, store: &SharedStore) {
         flips.push((id.clone(), on));
     }
     let mut st = store.write();
+    st.merge_requests_viewed(&viewed);
     st.muted_rooms = muted;
     for (id, on) in flips {
         if st.local_flag(&id, ChatFlag::Muted).is_none() {
