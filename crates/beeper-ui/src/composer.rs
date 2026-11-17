@@ -1382,7 +1382,7 @@ impl BeeperGuiApp {
                 drop(st);
                 // Desktop scrolls the edited message into view (`scrollIntoView` of the editing target).
                 self.pane.timeline.reveal(vlist::key(&mid));
-                let shown = locate(format!("msg-{mid}"), self.pane.scroll_id(), false);
+                let shown = locate(format!("msg-{mid}"), self.pane.scroll_id(), crate::Align::Center);
                 self.pane.start_edit(mid, &old_txt, html.map_or(Vec::new(), |h| html_pills(&h)));
                 return Task::batch([operation::focus("composer-input"), shown]);
             }

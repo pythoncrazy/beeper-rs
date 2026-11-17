@@ -1929,18 +1929,28 @@ fn activates(msg: &UiMessage) -> bool {
     )
 }
 
-/// Finds the offset of a scrollable that shows a container: in the middle, or with the least scroll when `nearest`.
-/// The offset of the timeline counts from its bottom, because it is anchored there.
+/// Where `locate` puts a container in its scrollable.
+#[derive(Clone, Copy)]
+enum Align {
+    /// With the least scroll.
+    Nearest,
+    Center,
+    /// Its top this far under the top of the scrollable, like `virtua`'s `align: "start"` with a negative offset.
+    Start(f32),
+}
+
+/// Finds the offset of a scrollable that shows a container where `Align` puts it. The offset of the timeline counts
+/// from its bottom, because it is anchored there.
 struct Locate(
     iced::widget::Id,
     Option<(iced::Rectangle, iced::Rectangle, f32)>,
     Option<iced::Rectangle>,
-    bool,
+    Align,
     &'static str,
 );
 
-fn locate(target: impl Into<iced::widget::Id>, scroll: &'static str, nearest: bool) -> Task<UiMessage> {
-    iced::advanced::widget::operate(Locate(target.into(), None, None, nearest, scroll))
+fn locate(target: impl Into<iced::widget::Id>, scroll: &'static str, align: Align) -> Task<UiMessage> {
+    iced::advanced::widget::operate(Locate(target.into(), None, None, align, scroll))
         .then(move |y| operation::scroll_to(scroll, operation::AbsoluteOffset { x: 0.0, y }))
 }
 
@@ -1974,8 +1984,9 @@ impl iced::advanced::widget::Operation<f32> for Locate {
         let max = (content.height - view.height).max(0.0);
         let y = msg.y - content.y;
         let top = match self.3 {
-            true => at.max(y + msg.height - view.height).min(y),
-            false => y - (view.height - msg.height) / 2.0,
+            Align::Nearest => at.max(y + msg.height - view.height).min(y),
+            Align::Center => y - (view.height - msg.height) / 2.0,
+            Align::Start(gap) => y - gap,
         };
         let top = top.clamp(0.0, max);
         let anchored = matches!(self.4, "timeline" | "thread-timeline");
@@ -2376,8 +2387,8 @@ pub struct Pane {
     pub draft_due: bool,
     /// Desktop's `ScrollToBottom`: whether you scrolled up from the bottom of the timeline, and since when.
     pub scrolled_up: Option<(bool, std::time::Instant)>,
-    /// Desktop's `unreadDividerMessageSortKey`: the read position of the chat when it opened, which keeps the "New"
-    /// divider in place while the chat is read.
+    /// Desktop's `unreadDividerMessageSortKey`: the message after the read position of the chat when it opened,
+    /// which keeps the "New" divider in place while the chat is read.
     pub unread_divider: Option<String>,
     /// Desktop's `ThreadedRepliesView`: the root of the thread that this pane shows in place of the chat.
     pub thread_root: Option<String>,
@@ -3488,12 +3499,11 @@ impl BeeperGuiApp {
         }
         let idx = st.resolve_chat_idx(chat_id).expect("selected chat exists");
         self.pane.selected_chat_id = Some(chat_id.to_string());
-        // Desktop's `updateUnreadDividerMessageSortKey`: the read position, when a message is after it.
         let id = st.chats[idx].id.clone();
         st.load_chat(&id);
-        let last = st.timeline(&id).next_back().map(|m| m.sort_key.clone());
-        self.pane.unread_divider = st.chats[idx].last_read_message_sort_key.clone().filter(|k| Some(k) < last.as_ref());
-        if !st.incognito() {
+        self.pane.unread_divider = message::divider_at(&st.chats[idx], &self.pane_msgs(&st));
+        // Desktop reads a chat with an unread divider from there, through the last message in view (`onRangeChange`).
+        if !st.incognito() && self.pane.unread_divider.is_none() {
             st.mark_read(idx, false);
         }
         let chat = st.chats[idx].clone();
@@ -3948,8 +3958,8 @@ impl BeeperGuiApp {
             // Desktop's composer `autofocus = "end"` when a chat opens.
             UiMessage::SelectChat(id) => {
                 self.select_chat(&id);
-                let previews = self.fetch_link_previews();
-                return Task::batch([previews, self.close_notifications(), operation::focus("composer-input")]);
+                let (previews, unread) = (self.fetch_link_previews(), self.scroll_to_unread());
+                return Task::batch([previews, self.close_notifications(), operation::focus("composer-input"), unread]);
             }
             UiMessage::SwitchCard => self.chat_menu = Some((SWITCH_CARD.into(), self.cursor.get())),
             UiMessage::SwitchChat(id) => self.switch_chat(id),
@@ -4488,7 +4498,7 @@ impl BeeperGuiApp {
                     if let Some(by) = step {
                         self.cmd_index = (self.cmd_index + by) % n;
                         self.command_list.reveal(cmds[self.cmd_index].key());
-                        return locate(format!("cmd-{}", self.cmd_index), commands::COMMANDS, true);
+                        return locate(format!("cmd-{}", self.cmd_index), commands::COMMANDS, Align::Nearest);
                     }
                 }
                 match key.as_ref() {
