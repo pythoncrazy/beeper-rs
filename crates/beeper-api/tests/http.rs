@@ -237,6 +237,110 @@ async fn repeated_and_bracket_query_keys_are_arrays() {
     assert_eq!(get(format!("/v1/messages/search?limit=20&chatIDs={c}&chatIDs={d}")).await.len(), both);
 }
 
+/// Desktop's `listChats`: `limit` rows past an opaque cursor in both directions, `hasMore` for a full page of rows,
+/// `accountIDs`, and the zod issues of a bad query.
+#[tokio::test]
+async fn list_chats_pages_and_validates_like_desktop() {
+    use serde_json::{json, Value};
+    let (port, token) = server("list-chats").await;
+    let get = |target: String| {
+        let request =
+            format!("GET {target} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\nconnection: close\r\n\r\n");
+        async move {
+            let out = text(port, &request).await;
+            let (head, body) = out.split_once("\r\n\r\n").unwrap();
+            (head[9..12].parse::<u16>().unwrap(), serde_json::from_str::<Value>(body).expect("a JSON body"))
+        }
+    };
+    let page = |query: String| async move {
+        let (status, body) = get(format!("/v1/chats?{query}")).await;
+        assert_eq!(status, 200, "{query}: {body}");
+        let ids: Vec<String> =
+            body["items"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap().into()).collect();
+        let cursor = |k: &str| body[k].as_str().map(str::to_string);
+        (ids, body["hasMore"].as_bool().unwrap(), cursor("oldestCursor"), cursor("newestCursor"))
+    };
+    let enc = beeper_api::codec::url_encode;
+
+    let (all, more, ..) = page("limit=200".into()).await;
+    assert!(all.len() > 6 && !more, "{} chats", all.len());
+    assert_eq!(page(String::new()).await.0, all[..all.len().min(25)], "limit defaults to 25");
+    let (two, more, _, newest) = page("limit=2".into()).await;
+    assert_eq!((two, more), (all[..2].to_vec(), true));
+    assert!(page(format!("limit={}", all.len())).await.1, "a full page of rows has more");
+
+    let (mut seen, mut cursor) = (Vec::new(), None::<String>);
+    loop {
+        let query = cursor.as_ref().map_or("limit=2".into(), |c| format!("limit=2&cursor={}", enc(c)));
+        let (ids, more, oldest, _) = page(query).await;
+        seen.extend(ids);
+        cursor = oldest;
+        if !more {
+            break;
+        }
+    }
+    assert_eq!(seen, all, "paging `before` with the oldest cursor walks all the chats");
+
+    let (_, _, third, _) = page("limit=3".into()).await;
+    let third = third.unwrap();
+    let (ms, _) = third.split_once(':').expect("a <timestamp>:<chat> cursor");
+    assert_eq!(page(format!("limit=2&cursor={}", enc(&third))).await.0, all[3..5]);
+    let (ids, more, _, newest_after) = page(format!("limit=2&direction=after&cursor={}", enc(&third))).await;
+    assert_eq!((ids, more, newest_after), (all[..2].to_vec(), true, newest.clone()), "`after` takes the newest rows");
+    let (ids, more, ..) = page(format!("limit=3&direction=after&cursor={}", enc(&third))).await;
+    assert_eq!((ids, more), (all[..2].to_vec(), false));
+    let same = |c: String| async move { page(format!("limit=200&cursor={}", enc(&c))).await };
+    assert_eq!(same(format!("{third}|abc")).await, same(third.clone()).await, "the iMessage part is ignored");
+    assert_eq!(same("|abc".into()).await, page("limit=200".into()).await, "a cursor without its Beeper part");
+
+    let (older, ..) = page(format!("limit=200&cursor={ms}")).await;
+    let (newer, ..) = page(format!("limit=200&direction=after&cursor={ms}")).await;
+    assert!(all.ends_with(&older) && all.starts_with(&newer) && !older.contains(&all[2]) && !newer.contains(&all[2]));
+
+    let empty = json!({ "items": [], "hasMore": false, "oldestCursor": "nope", "newestCursor": "nope" });
+    assert_eq!(get("/v1/chats?cursor=nope".into()).await, (200, empty), "an unreadable cursor is an empty page");
+
+    let account = get("/v1/chats?limit=200".into()).await.1["items"][0]["accountID"].as_str().unwrap().to_string();
+    let (status, body) = get(format!("/v1/chats?limit=200&accountIDs[]={}", enc(&account))).await;
+    let items = body["items"].as_array().unwrap();
+    assert!(status == 200 && !items.is_empty() && items.iter().all(|c| c["accountID"] == account.as_str()));
+    assert!(items.len() < all.len());
+    assert_eq!(page("limit=200&accountIDs=nope".into()).await.0, Vec::<String>::new());
+    assert_eq!(page("limit=200&accountIDs=%20".into()).await.0, all, "blank account IDs are dropped");
+
+    let invalid = |issues: Value| json!({ "message": "Invalid input", "code": "VALIDATION_ERROR", "details": { "issues": issues } });
+    let nan = json!({ "code": "invalid_type", "expected": "number", "received": "nan", "path": ["limit"], "message": "Expected number, received nan" });
+    let float = json!({ "code": "invalid_type", "expected": "integer", "received": "float", "message": "Expected integer, received float", "path": ["limit"] });
+    let bound = |code: &str, k: &str, v: i64, inclusive: bool, message: &str| json!({ "code": code, k: v, "type": "number", "inclusive": inclusive, "exact": false, "message": message, "path": ["limit"] });
+    let small = bound("too_small", "minimum", 1, true, "Number must be greater than or equal to 1");
+    let big = bound("too_big", "maximum", 200, true, "Number must be less than or equal to 200");
+    let cases = [
+        ("/v1/chats?limit=abc", invalid(json!([nan]))),
+        ("/v1/chats?limit=0", invalid(json!([small]))),
+        ("/v1/chats?limit=", invalid(json!([small]))),
+        ("/v1/chats?limit=201", invalid(json!([big]))),
+        ("/v1/chats?limit=1.5", invalid(json!([float]))),
+        ("/v1/chats?limit=-Infinity", invalid(json!([float, small]))),
+        (
+            "/v1/chats?cursor=a&cursor=b&direction=up&limit=0",
+            invalid(json!([
+                { "code": "invalid_type", "expected": "string", "received": "array", "path": ["cursor"], "message": "Expected string, received array" },
+                { "received": "up", "code": "invalid_enum_value", "options": ["after", "before"], "path": ["direction"], "message": "Invalid enum value. Expected 'after' | 'before', received 'up'" },
+                small,
+            ])),
+        ),
+        (
+            "/v1/messages/search?limit=0",
+            invalid(json!([bound("too_small", "minimum", 0, false, "Number must be greater than 0")])),
+        ),
+    ];
+    for (target, want) in cases {
+        let (status, body) = get(target.into()).await;
+        assert_eq!((status, body.to_string()), (400, want.to_string()), "{target}");
+    }
+    assert_eq!(page("limit=%205%20".into()).await.0.len(), 5, "`Number` trims the limit");
+}
+
 /// The head of a response without the `Date` header, and the body.
 fn without_date(out: &str) -> (String, &str) {
     let (head, body) = out.split_once("\r\n\r\n").expect("a response head");
