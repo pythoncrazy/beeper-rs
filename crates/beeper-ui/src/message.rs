@@ -468,7 +468,7 @@ impl BeeperGuiApp {
             }),
             self.pane().reply_thread.is_some().then(|| {
                 let jump = UiMessage::Commands(vec![
-                    UiMessage::JumpTo(cid, mid.clone()),
+                    UiMessage::CommandBar(commands::Msg::JumpTo(cid, mid.clone())),
                     UiMessage::Message(Msg::Select(vec![mid.clone()])),
                 ]);
                 vec![item(tr("Jump to Message").into(), "", Some(jump))]
@@ -706,7 +706,7 @@ impl BeeperGuiApp {
             let pill = button(self.tip(pill.into(), tip, vec![], tooltip::Position::Bottom))
                 .padding(0)
                 .style(btn_style([CLEAR; 3], [ORANGE; 3], 30.0))
-                .on_press(UiMessage::OpenSubMenu(commands::SubMenu::Remind(cid.into())));
+                .on_press(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(cid.into()))));
             container(pill).padding(Padding::ZERO.top(9.0).left(8.0))
         });
         let feedback = st
@@ -821,7 +821,7 @@ impl BeeperGuiApp {
             drop(st);
             if let Some(root) = root {
                 self.open_thread(cid.clone(), root);
-                return self.in_thread(UiMessage::JumpTo(cid, mid));
+                return self.in_thread(UiMessage::CommandBar(commands::Msg::JumpTo(cid, mid)));
             }
             self.pane.thread_focus = false;
         }
@@ -2228,7 +2228,7 @@ impl BeeperGuiApp {
             }
             Msg::GoTo(chat, mid) => {
                 let main = window::gain_focus(self.main_window.expect("the main window is open"));
-                return Task::batch([self.update(UiMessage::JumpTo(chat, mid)), main]);
+                return Task::batch([self.update(UiMessage::CommandBar(commands::Msg::JumpTo(chat, mid))), main]);
             }
             Msg::Download(mid, only) => {
                 let st = self.store.read();

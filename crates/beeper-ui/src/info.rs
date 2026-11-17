@@ -110,7 +110,8 @@ pub(crate) fn info_menu(
         };
     }
     if let Some((cid, mid)) = key.strip_prefix("bookmark:").and_then(|k| k.split_once(' ')) {
-        let jump = st.loaded(mid).is_some().then(|| UiMessage::JumpTo(cid.into(), mid.into()));
+        let jump =
+            st.loaded(mid).is_some().then(|| UiMessage::CommandBar(commands::Msg::JumpTo(cid.into(), mid.into())));
         let remove = UiMessage::Info(info::Msg::RemoveBookmark(mid.into()));
         return vec![
             Some((tr("Jump to Message").into(), jump)),
@@ -376,7 +377,13 @@ impl BeeperGuiApp {
                     Some(UiMessage::OpenChatMenu(cid.clone())),
                 ),
             },
-            tool(icon::SEARCH, p.strong, tr("Search"), vec!["Ctrl", "F"], Some(UiMessage::SearchRoom(cid.clone()))),
+            tool(
+                icon::SEARCH,
+                p.strong,
+                tr("Search"),
+                vec!["Ctrl", "F"],
+                Some(UiMessage::CommandBar(commands::Msg::SearchRoom(cid.clone())))
+            ),
             tool(icon::EXPAND_MORE, p.strong, tr("More Options"), vec![], Some(UiMessage::OpenChatMenu(cid.clone()))),
         ]
         .align_y(Center)
@@ -584,7 +591,7 @@ impl BeeperGuiApp {
                     button(face)
                         .padding(0)
                         .style(btn_style([CLEAR; 3], [p.strong; 3], 4.0))
-                        .on_press(UiMessage::JumpTo(chat.id.clone(), m.id.clone()))
+                        .on_press(UiMessage::CommandBar(commands::Msg::JumpTo(chat.id.clone(), m.id.clone())))
                         .into()
                 })
             })
@@ -664,8 +671,10 @@ impl BeeperGuiApp {
                         .align_y(iced::Bottom);
                         let text = preview_body(m).unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
                         let face = self.face(u.and_then(|u| u.img_url.as_deref()), &name, 24.0, 0.0);
-                        let jump =
-                            st.loaded(target).is_some().then(|| UiMessage::JumpTo(chat.id.clone(), m.id.clone()));
+                        let jump = st
+                            .loaded(target)
+                            .is_some()
+                            .then(|| UiMessage::CommandBar(commands::Msg::JumpTo(chat.id.clone(), m.id.clone())));
                         (row![face, lines(title.into(), &text)], jump)
                     }
                     None if st.bookmarked.contains_key(target) => {

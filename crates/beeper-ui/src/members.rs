@@ -37,8 +37,9 @@ impl BeeperGuiApp {
                 return self.search_users(q, account);
             }
             Msg::OpenAdd(q) => {
-                let open = self.update(UiMessage::OpenSubMenu(commands::SubMenu::AddMembers));
-                return Task::batch([open, self.update(UiMessage::CommandQueryChanged(q))]);
+                let open =
+                    self.update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::AddMembers)));
+                return Task::batch([open, self.update(UiMessage::CommandBar(commands::Msg::Query(q)))]);
             }
             Msg::Add(chat, user) => {
                 let mut st = self.store.write();

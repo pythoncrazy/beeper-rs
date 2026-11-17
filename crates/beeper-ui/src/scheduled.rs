@@ -29,7 +29,9 @@ impl BeeperGuiApp {
             }
             Msg::Open => {
                 if self.pane.selected_chat_id.is_some() {
-                    return self.update(UiMessage::OpenSubMenu(commands::SubMenu::Schedule(Vec::new())));
+                    return self.update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(
+                        commands::SubMenu::Schedule(Vec::new()),
+                    )));
                 }
             }
             Msg::Set(config) => {
@@ -48,7 +50,8 @@ impl BeeperGuiApp {
             }
             Msg::Reschedule(ids) => {
                 self.pane.sched_menu = None;
-                return self.update(UiMessage::OpenSubMenu(commands::SubMenu::Schedule(ids)));
+                return self
+                    .update(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Schedule(ids))));
             }
             Msg::RescheduleTo(ids, at, no_reply) => {
                 let mut st = self.store.write();

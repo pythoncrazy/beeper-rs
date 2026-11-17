@@ -1,6 +1,7 @@
 //! Desktop's threaded replies: the thread pane and window, the unread threads list, and the thread parts of the
 //! timeline.
 
+use crate::commands;
 use crate::i18n::{tr, trf, trn};
 use crate::message;
 use crate::style::{
@@ -231,7 +232,7 @@ impl BeeperGuiApp {
         drop(st);
         let view = UiMessage::Commands(vec![
             UiMessage::CloseModals,
-            UiMessage::JumpTo(cid.clone(), root.clone()),
+            UiMessage::CommandBar(commands::Msg::JumpTo(cid.clone(), root.clone())),
             UiMessage::Message(message::Msg::Select(vec![root.clone()])),
         ]);
         let read = unread.then(|| {

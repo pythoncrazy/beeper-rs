@@ -17,15 +17,16 @@ use crate::windows;
 use crate::{
     has_flag, network_name, shown, BeeperGuiApp, El, InboxTab, SettingsHit, SettingsTab, UiMessage, ASK_LOGOUT,
 };
-use crate::{ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_MARK_ALL_READ};
+use crate::{Find, SearchFilters, SearchPick, ASK_ARCHIVE_ALL, ASK_ARCHIVE_READ, ASK_ARCHIVE_WEEK, ASK_MARK_ALL_READ};
 use beeper_core::models::{
     AccountProps, Chat, ChatFlag, Message, ThemeChoice, User, CHAT_UNREAD, MANAGE_KICK, MANAGE_ROLE, MEMBER_INVITE,
     MEMBER_KICK, MEMBER_LEAVE,
 };
 use beeper_core::prefs;
 use beeper_core::store::BeeperStore;
+use iced::widget::operation;
 use iced::widget::{column, container, mouse_area, row, scrollable, svg, Row, Space};
-use iced::{Center, Fill, Padding, Pixels};
+use iced::{Center, Fill, Padding, Pixels, Task};
 
 /// A command: Desktop shows a disabled command, which has no message, at 70% opacity.
 pub(crate) struct Command {
@@ -234,7 +235,7 @@ fn time_commands(st: &BeeperStore, query: &str, pick: impl Fn(i64) -> UiMessage)
     let times = phrases.filter_map(|phrase| {
         let at = beeper_core::config::parse_when_millis(&phrase, now).filter(|at| *at > now)?;
         let label = phrase.trim().to_lowercase();
-        Some(row(label, at, UiMessage::Commands(vec![UiMessage::LastTime(phrase), pick(at)])))
+        Some(row(label, at, UiMessage::Commands(vec![UiMessage::CommandBar(Msg::LastTime(phrase)), pick(at)])))
     });
     let mut seen = std::collections::HashSet::new();
     let mut v = search(last.into_iter().chain(times).collect(), query);
@@ -450,7 +451,7 @@ impl BeeperGuiApp {
             let open = match &links[..] {
                 [] => None,
                 [(url, _)] => Some(UiMessage::OpenUrl(url.clone())),
-                _ => Some(UiMessage::OpenSubMenu(SubMenu::Links(links.clone()))),
+                _ => Some(UiMessage::CommandBar(Msg::OpenSubMenu(SubMenu::Links(links.clone())))),
             };
             v.extend(open.map(|open| cmd(e, tr("Open link"), Some(open))));
             v.push(cmd(e, tr("Unselect"), Some(UiMessage::Message(message::Msg::Select(Vec::new())))));
@@ -473,7 +474,7 @@ impl BeeperGuiApp {
             let id = || c.id.clone();
             let e = trx("Chat", "Command bar category");
             let flag = |f| Some(UiMessage::ToggleFlag(id(), f));
-            let remind = UiMessage::OpenSubMenu(SubMenu::Remind(id()));
+            let remind = UiMessage::CommandBar(Msg::OpenSubMenu(SubMenu::Remind(id())));
             v.push(cmd(e, tr("Remind me later"), Some(remind)).keys(&["reminder"]).hotkey("Remind Later"));
             let low = has_flag(c, ChatFlag::LowPriority);
             let low_title = if low { tr("Move to Inbox") } else { tr("Move to Low Priority") };
@@ -506,7 +507,8 @@ impl BeeperGuiApp {
             v.push(cmd(e, tr("Open in new window"), Some(UiMessage::Window(windows::Msg::OpenChat(id())))));
         }
         v.push(
-            cmd(CHATS, tr("Search chats"), Some(UiMessage::ToggleCommandPalette)).keys(&["search", "find", "filter"]),
+            cmd(CHATS, tr("Search chats"), Some(UiMessage::CommandBar(Msg::TogglePalette)))
+                .keys(&["search", "find", "filter"]),
         );
         let list = self.visible_chats(st);
         let at = self.pane.selected_chat_id.as_ref().and_then(|id| list.iter().position(|c| &c.id == id));
@@ -558,10 +560,10 @@ impl BeeperGuiApp {
         }
         if let Some(c) = chat {
             let e = "Chat";
-            let members = |kind| Some(UiMessage::OpenSubMenu(SubMenu::Members(kind)));
+            let members = |kind| Some(UiMessage::CommandBar(Msg::OpenSubMenu(SubMenu::Members(kind))));
             let can = |bit| c.participants.items.iter().any(|u| u.manage & bit != 0);
             if c.member_actions & MEMBER_INVITE != 0 {
-                let add = cmd(e, tr("Add members"), Some(UiMessage::OpenSubMenu(SubMenu::AddMembers)));
+                let add = cmd(e, tr("Add members"), Some(UiMessage::CommandBar(Msg::OpenSubMenu(SubMenu::AddMembers))));
                 v.push(add.keys(&["participant", "user", "invite"]));
             }
             if c.member_actions & MEMBER_KICK != 0 {
@@ -618,7 +620,11 @@ impl BeeperGuiApp {
             let later = cmd(trx("Message", "Command bar category"), tr("Send later"), later);
             v.push(later.keys(&["schedule", "past", "future", "time"]).hotkey("Message: Send Later"));
         }
-        let history = cmd(CHATS, tr("Open recently viewed chats"), Some(UiMessage::OpenSubMenu(SubMenu::History)));
+        let history = cmd(
+            CHATS,
+            tr("Open recently viewed chats"),
+            Some(UiMessage::CommandBar(Msg::OpenSubMenu(SubMenu::History))),
+        );
         v.push(history.keys(&["history"]));
         let new_chat = cmd("", tr("Create new chat"), Some(UiMessage::NewChat(new_chat::Msg::Open)));
         v.push(new_chat.keys(&["compose", "create", "person", "chat"]).hotkey("Chat: Start New"));
@@ -627,17 +633,25 @@ impl BeeperGuiApp {
             UiMessage::NewChat(new_chat::Msg::ToggleJoinMatrix),
         ]);
         v.push(cmd("", tr("Join a Matrix room"), Some(join)).keys(&["matrix", "room", "join", "address", "alias"]));
-        let all = cmd("", tr("Search messages in all chats"), Some(UiMessage::ToggleCommandPalette));
+        let all = cmd("", tr("Search messages in all chats"), Some(UiMessage::CommandBar(Msg::TogglePalette)));
         v.push(all.keys(&["find", "grep"]).hotkey("Search"));
         if let Some(c) = chat {
-            let here = cmd("", tr("Search messages in current chat"), Some(UiMessage::SearchRoom(c.id.clone())));
+            let here = cmd(
+                "",
+                tr("Search messages in current chat"),
+                Some(UiMessage::CommandBar(Msg::SearchRoom(c.id.clone()))),
+            );
             v.push(here.keys(&["find", "grep"]).hotkey("Search: Room"));
         }
-        let folders = (self.active_tab != InboxTab::Requests).then_some(UiMessage::OpenSubMenu(SubMenu::Folders));
+        let folders = (self.active_tab != InboxTab::Requests)
+            .then_some(UiMessage::CommandBar(Msg::OpenSubMenu(SubMenu::Folders)));
         v.push(cmd("Filter Chats", tr("Filter by folder type"), folders));
         if crate::rail_accounts(st).len() > 1 {
-            let filter =
-                cmd("Filter Chats", tr("Filter by account"), Some(UiMessage::OpenSubMenu(SubMenu::FilterAccount)));
+            let filter = cmd(
+                "Filter Chats",
+                tr("Filter by account"),
+                Some(UiMessage::CommandBar(Msg::OpenSubMenu(SubMenu::FilterAccount))),
+            );
             v.push(filter.hotkey("Filter By Account"));
         }
         let requests = self.active_tab == InboxTab::Requests;
@@ -821,7 +835,7 @@ impl BeeperGuiApp {
         let bg = if lit { p.chip } else { CLEAR };
         let body = container(line).center_y(36).padding([0, 6]).style(fill_box(bg, 8.0));
         let body = container(body).padding([0, 6]).id(format!("cmd-{i}"));
-        let hit = mouse_area(body).on_enter(UiMessage::CommandHighlight(i));
+        let hit = mouse_area(body).on_enter(UiMessage::CommandBar(Msg::Highlight(i)));
         let hit = match c.chat.as_ref().filter(|id| st.resolve_chat_idx(id).is_some()) {
             Some(id) => hit.on_right_press(UiMessage::OpenChatMenu(id.clone())),
             None => hit,
@@ -860,5 +874,119 @@ impl BeeperGuiApp {
         .spacing(4)
         .align_y(Center);
         column![row![self.chat_avatar(c, 28.0, 0.0), title].spacing(8).align_y(Center)].into()
+    }
+}
+
+#[derive(Clone)]
+pub enum Msg {
+    OpenSubMenu(SubMenu),
+    NoReply(bool),
+    /// Keeps the time phrase for Desktop's "Last Used".
+    LastTime(String),
+    ChatSub(Option<u8>),
+    Highlight(usize),
+    TogglePalette,
+    SearchRoom(String),
+    ToggleMode,
+    ToggleSearchExpanded,
+    Query(String),
+    ExecuteChat(String),
+    JumpTo(String, String),
+    OpenSearchSelect(usize),
+    SearchSelect(Option<(usize, iced::Rectangle)>),
+    PickSearchFilter(SearchPick),
+}
+
+impl BeeperGuiApp {
+    pub(crate) fn command_bar(&mut self, msg: Msg) -> Task<UiMessage> {
+        match msg {
+            Msg::ChatSub(sub) => self.chat_sub = sub,
+            Msg::TogglePalette => {
+                if !self.show_command_palette {
+                    self.search_filters = SearchFilters::default();
+                }
+                self.show_command_palette ^= self.search_room.take().is_none() || !self.show_command_palette;
+                (self.cmd_bar_commands_mode, self.cmd_index, self.cmd_submenu) = (false, 0, None);
+                self.search_expanded = false;
+                if self.show_command_palette {
+                    return operation::focus("cmd-palette-input");
+                }
+            }
+            Msg::SearchRoom(cid) => {
+                (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, false, None);
+                (self.search_room, self.chat_menu) = (Some(cid), None);
+                self.search_filters.accounts.clear();
+                return operation::focus("cmd-palette-input");
+            }
+            Msg::ToggleMode => {
+                (self.cmd_bar_commands_mode, self.cmd_index) = (!self.cmd_bar_commands_mode, 0);
+                return operation::focus("cmd-palette-input");
+            }
+            Msg::NoReply(on) => self.cmd_no_reply = on,
+            Msg::LastTime(phrase) => self.patch_settings(|s| s.last_time = phrase),
+            Msg::OpenSubMenu(menu) => {
+                let st = self.store.read();
+                self.cmd_no_reply = match &menu {
+                    SubMenu::Schedule(ids) => {
+                        let initial = match ids.first() {
+                            Some(id) => st.scheduled.iter().find(|s| s.id == *id).map(|s| s.send_only_on_no_response),
+                            None => self.pane.send_later.map(|c| c.1),
+                        };
+                        initial.unwrap_or(st.settings.pref("sendLaterDefault") == 0)
+                    }
+                    _ => st.settings.pref("remindLaterDefault") == 0,
+                };
+                drop(st);
+                (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, true, Some(menu));
+                (self.search_room, self.chat_menu, self.cmd_index) = (None, None, 0);
+                self.command_palette_query.clear();
+                return operation::focus("cmd-palette-input");
+            }
+            Msg::ToggleSearchExpanded => self.search_expanded = !self.search_expanded,
+            Msg::Query(q) => {
+                (self.command_palette_query, self.cmd_index) = (q.clone(), 0);
+                if self.cmd_submenu == Some(SubMenu::AddMembers) {
+                    self.new_chat_search = None;
+                    let wait = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
+                    return Task::perform(wait, move |()| UiMessage::Members(members::Msg::Search(q.clone())));
+                }
+            }
+            Msg::Highlight(i) => self.cmd_index = i,
+            Msg::JumpTo(cid, mid) => return self.jump_to(cid, mid),
+            Msg::ExecuteChat(cid) => {
+                self.show_command_palette = false;
+                self.command_palette_query.clear();
+                self.select_chat(&cid);
+            }
+            Msg::OpenSearchSelect(chip) => {
+                let find = Find(format!("search-chip-{chip}").into(), None);
+                return iced::advanced::widget::operate(find)
+                    .map(move |r| UiMessage::CommandBar(Msg::SearchSelect(Some((chip, r)))));
+            }
+            Msg::SearchSelect(open) => self.search_select = open,
+            Msg::PickSearchFilter(pick) => {
+                let f = &mut self.search_filters;
+                match pick {
+                    SearchPick::Account(a) => match f.accounts.iter().position(|x| *x == a) {
+                        Some(i) => drop(f.accounts.remove(i)),
+                        None => f.accounts.push(a),
+                    },
+                    SearchPick::Sent(v) => f.sent = (f.sent != Some(v)).then_some(v),
+                    SearchPick::Group(v) => f.group = (f.group != Some(v)).then_some(v),
+                    SearchPick::Media(v) => match f.media.iter().position(|&x| x == v) {
+                        Some(i) => drop(f.media.remove(i)),
+                        None => f.media.push(v),
+                    },
+                    SearchPick::Period(v) => {
+                        f.period = (f.period != Some(v)).then_some(v);
+                        self.search_select = None;
+                    }
+                }
+                if matches!(self.search_select, Some((1, _))) {
+                    self.search_select = None;
+                }
+            }
+        }
+        self.settle()
     }
 }

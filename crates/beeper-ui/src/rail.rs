@@ -304,7 +304,7 @@ impl BeeperGuiApp {
             Some((e, None)) => Some(e),
             None => None,
         };
-        let open = UiMessage::ChatSub(Some(1));
+        let open = UiMessage::CommandBar(commands::Msg::ChatSub(Some(1)));
         let item = menu_item(p, blank(), tr("Space Options").into(), "›", Some(open.clone()));
         let options_item = options.map(|_| mouse_area(item).on_enter(open));
         let options_top = h;
@@ -329,8 +329,8 @@ impl BeeperGuiApp {
                 Some(UiMessage::Settings(settings::Msg::Open(SettingsTab::Accounts))),
             ));
         h += 8.0 + f32::from(u8::from(options.is_some()) + 3 + u8::from(labels)) * MENU_ITEM + 11.0;
-        let top = mouse_area(Column::with_children(top)).on_enter(UiMessage::ChatSub(None));
-        let rest = mouse_area(rest).on_enter(UiMessage::ChatSub(None));
+        let top = mouse_area(Column::with_children(top)).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)));
+        let rest = mouse_area(rest).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)));
         let sheet = column![top].push(options_item).push(rest).padding([4, 0]);
         let sheet = container(sheet).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         drop(st);

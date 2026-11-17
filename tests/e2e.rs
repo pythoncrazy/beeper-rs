@@ -1276,7 +1276,7 @@ async fn lifecycle() {
     }
     let _ = gui.update(UiMessage::PickFilter(1));
     assert!(gui.filters == 0 && !gui.show_filter_menu, "picking the only active filter clears it");
-    let _ = gui.update(UiMessage::ToggleCommandPalette);
+    let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
     {
         let mut sim = simulator(gui.view_main());
         for label in ["Commands", "Accounts", "Message type", "Recent chats"] {
@@ -1383,7 +1383,7 @@ async fn lifecycle() {
     let _ = gui.update(UiMessage::Hotkeys(beeper_ui::hotkeys::Msg::RevertAll));
     let _ = gui.update(ctrl_k());
     assert!(gui.show_command_palette, "Revert all enables the hotkey again");
-    let _ = gui.update(UiMessage::ToggleCommandPalette);
+    let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
     let _ = gui.update(UiMessage::Settings(beeper_ui::settings::Msg::SelectTab(SettingsTab::Hotkeys)));
     assert!(simulator(gui.view_settings()).find("Ctrl Shift Alt R").is_ok(), "Reload App shows Desktop's keys");
     assert!(simulator(gui.view_settings()).find("Record Shortcut").is_err());
@@ -1429,17 +1429,17 @@ async fn lifecycle() {
         let _ = gui.update(UiMessage::KeyPressed(Key::Character("j".into()), Modifiers::CTRL));
         assert!(gui.show_command_palette && gui.cmd_bar_commands_mode, "Ctrl J opens the commands");
         for title in ["Archive all chats", "Toggle sidebar", "Media viewer", "Report a problem"] {
-            let _ = gui.update(UiMessage::CommandQueryChanged(title.to_lowercase()));
+            let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::Query(title.to_lowercase())));
             let mut sim = simulator(gui.view_main());
             assert!(sim.find(title).is_ok(), "the commands have {title}");
             assert!(title != "Media viewer" || sim.find("Window").is_ok(), "the commands have their category");
         }
-        let _ = gui.update(UiMessage::CommandQueryChanged("toggle sidebar".into()));
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::Query("toggle sidebar".into())));
         let _ = gui.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
         assert!(gui.sidebar_hidden && !gui.show_command_palette, "Enter runs the best match and closes the bar");
         let _ = gui.update(UiMessage::RunHotkey("Toggle Sidebar"));
         let _ = gui.update(UiMessage::KeyPressed(Key::Character("j".into()), Modifiers::CTRL));
-        let _ = gui.update(UiMessage::CommandQueryChanged("magnify".into()));
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::Query("magnify".into())));
         let _ = gui.update(UiMessage::KeyPressed(Key::Named(Named::ArrowDown), Modifiers::empty()));
         assert_eq!(gui.cmd_index, 1, "Down highlights the next command");
         let _ = gui.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
@@ -1526,7 +1526,7 @@ async fn lifecycle() {
         let c = store.read().chats[0].clone();
         assert_eq!(c.unread_count == 0 && c.is_marked_unread != Some(true), !read, "the read toggle flips the chat");
         let _ = gui.update(UiMessage::OpenChatMenu(cid.clone()));
-        let _ = gui.update(UiMessage::ChatSub(Some(1)));
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::ChatSub(Some(1))));
         assert!(simulator(gui.view_main()).find("In an Hour").is_ok(), "Remind Me opens the presets");
         let at = beeper_core::config::now_unix_millis() + 3_600_000;
         take_outbox(&mut store.write());
@@ -1576,25 +1576,25 @@ async fn lifecycle() {
         gui.select_chat(&other);
         gui.select_chat(&cid);
         assert!(store.read().chats[1].reminder.is_none(), "leaving a reminded chat dismisses the reminder");
-        let _ = gui.update(UiMessage::SearchRoom(cid.clone()));
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::SearchRoom(cid.clone())));
         assert!(gui.show_command_palette && gui.search_room.as_deref() == Some(cid.as_str()));
-        let _ = gui.update(UiMessage::ToggleCommandPalette);
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
         assert!(gui.show_command_palette && gui.search_room.is_none(), "Ctrl K widens a chat search");
         let mid = store.read().messages.iter().find(|m| m.chat_id == cid).expect("chat has messages").id.clone();
-        let _ = gui.update(UiMessage::JumpTo(cid.clone(), mid.clone()));
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::JumpTo(cid.clone(), mid.clone())));
         assert!(!gui.show_command_palette && gui.pane.selected_chat_id.as_deref() == Some(cid.as_str()));
         assert!(gui.flash.as_ref().is_some_and(|(id, _)| *id == mid), "a message hit flashes the message");
-        let _ = gui.update(UiMessage::ToggleCommandPalette);
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
         let picks = [SearchPick::Sent(true), SearchPick::Sent(false), SearchPick::Period(2), SearchPick::Period(2)];
         for pick in picks.into_iter().chain([SearchPick::Media(0), SearchPick::Media(3), SearchPick::Media(0)]) {
-            let _ = gui.update(UiMessage::PickSearchFilter(pick));
+            let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::PickSearchFilter(pick)));
         }
         assert_eq!((gui.search_filters.sent, gui.search_filters.period), (Some(false), None), "a second pick clears");
         assert_eq!(gui.search_filters.media, [3], "media kinds toggle one by one");
-        let _ = gui.update(UiMessage::ToggleCommandPalette);
-        let _ = gui.update(UiMessage::ToggleCommandPalette);
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
         assert_eq!(gui.search_filters, SearchFilters::default(), "a new search starts without filters");
-        let _ = gui.update(UiMessage::ToggleCommandPalette);
+        let _ = gui.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
         let other = store.read().chats[1].id.clone();
         let _ = gui.update(UiMessage::HoverChat(cid.clone(), true));
         let _ = gui.update(UiMessage::HoverChat(other.clone(), false));

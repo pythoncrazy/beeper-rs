@@ -1,4 +1,5 @@
 //! Desktop's `beeper://` links (`deep-link-CFIhWY4D.js` `Ld`): from the launch arguments, and from a later launch.
+use crate::commands;
 use crate::composer;
 use crate::i18n::tr;
 use crate::login::LoginMsg;
@@ -307,7 +308,8 @@ impl BeeperGuiApp {
                 if let Some(t) = text {
                     self.pane.composer = composer_with(&t);
                 }
-                let jump = sorted.map_or_else(Task::none, |mid| self.update(UiMessage::JumpTo(cid, mid)));
+                let jump = sorted
+                    .map_or_else(Task::none, |mid| self.update(UiMessage::CommandBar(commands::Msg::JumpTo(cid, mid))));
                 let files = attachment
                     .map(|p| self.update(UiMessage::Composer(composer::Msg::FilesPicked(Ok(vec![p.into()])))));
                 Task::batch([jump].into_iter().chain(files))
@@ -315,7 +317,7 @@ impl BeeperGuiApp {
             "highlight-message" => {
                 let Some((cid, _)) = thread else { return toast(self, missing) };
                 let mid = part(3).unwrap_or_default().to_string();
-                self.update(UiMessage::JumpTo(cid, mid))
+                self.update(UiMessage::CommandBar(commands::Msg::JumpTo(cid, mid)))
             }
             _ => toast(self, format!("Unrecognized deep link: {link}")),
         }

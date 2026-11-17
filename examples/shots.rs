@@ -45,7 +45,7 @@ fn main() {
     let _ = app.update(UiMessage::ToggleFilterMenu);
     shot(&out, "main_filter_menu", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::PickFilter(0));
-    let _ = app.update(UiMessage::ToggleCommandPalette);
+    let _ = app.update(UiMessage::CommandBar(beeper_ui::commands::Msg::TogglePalette));
     shot(&out, "main_search", (1200.0, 800.0), &theme, app.view_main());
     let _ = app.update(UiMessage::NewChat(beeper_ui::new_chat::Msg::Open));
     shot(&out, "main_new_chat", (1200.0, 800.0), &theme, app.view_main());

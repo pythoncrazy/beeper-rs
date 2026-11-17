@@ -3,7 +3,7 @@ mod add_account;
 mod anim;
 mod blocking;
 mod chat_theme;
-mod commands;
+pub mod commands;
 pub mod composer;
 mod cursor;
 mod dashed;
@@ -314,11 +314,8 @@ pub enum UiMessage {
     Gifs(gifs::Msg),
     /// Desktop's chat reminders: Remind me, If no reply, the due reminders and the Reminders list.
     Reminders(reminders::Msg),
-    OpenSubMenu(commands::SubMenu),
-    CmdNoReply(bool),
-    /// Keeps the time phrase for Desktop's "Last Used".
-    LastTime(String),
-    ChatSub(Option<u8>),
+    /// Desktop's command bar.
+    CommandBar(commands::Msg),
     /// Desktop's Send Later: the time of the composer, and the scheduled messages with their menu.
     Scheduled(scheduled::Msg),
     /// Ends the typing notices 3 seconds after the last key.
@@ -381,20 +378,9 @@ pub enum UiMessage {
     RunHotkey(&'static str),
     /// Runs the messages in order.
     Commands(Vec<UiMessage>),
-    CommandHighlight(usize),
     ToggleFilterMenu,
     FilterButton,
     PickFilter(u8),
-    ToggleCommandPalette,
-    SearchRoom(String),
-    ToggleCommandMode,
-    ToggleSearchExpanded,
-    CommandQueryChanged(String),
-    ExecuteCommandChat(String),
-    JumpTo(String, String),
-    OpenSearchSelect(usize),
-    SearchSelect(Option<(usize, iced::Rectangle)>),
-    PickSearchFilter(SearchPick),
     /// Desktop's New Chat: its drafts, the contact and user search, the networks of a contact, and the start of a chat or group.
     NewChat(new_chat::Msg),
     /// Desktop's `replyPrivately`: the direct chat with the sender of a message, with the message quoted.
@@ -4070,14 +4056,18 @@ impl BeeperGuiApp {
                 id.map(UiMessage::SelectChat)
             }
             "Toggle Chat Info" => Some(UiMessage::ToggleRightPanel),
-            "Command Bar" if self.show_command_palette => Some(UiMessage::ToggleCommandMode),
+            "Command Bar" if self.show_command_palette => Some(UiMessage::CommandBar(commands::Msg::ToggleMode)),
             "Command Bar" => {
-                let open = self.update(UiMessage::ToggleCommandPalette);
+                let open = self.update(UiMessage::CommandBar(commands::Msg::TogglePalette));
                 self.cmd_bar_commands_mode = true;
                 return open;
             }
-            "Filter By Account" => Some(UiMessage::OpenSubMenu(commands::SubMenu::FilterAccount)),
-            "Remind Later" => chat.map(|id| UiMessage::OpenSubMenu(commands::SubMenu::Remind(id))),
+            "Filter By Account" => {
+                Some(UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::FilterAccount)))
+            }
+            "Remind Later" => {
+                chat.map(|id| UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(id))))
+            }
             "Cycle Filters" => {
                 self.filters = match self.filters {
                     f if f == 1 << 4 => 0,
@@ -4111,8 +4101,8 @@ impl BeeperGuiApp {
             "Reload App" => Some(UiMessage::Window(windows::Msg::Relaunch)),
             "Report a Problem" => Some(UiMessage::OpenUrl(ISSUES_URL.into())),
             "Reset Zoom" => Some(UiMessage::Zoom(0)),
-            "Search" => Some(UiMessage::ToggleCommandPalette),
-            "Search: Room" => chat.map(UiMessage::SearchRoom),
+            "Search" => Some(UiMessage::CommandBar(commands::Msg::TogglePalette)),
+            "Search: Room" => chat.map(|a0| UiMessage::CommandBar(commands::Msg::SearchRoom(a0))),
             "Select Next Account" | "Select Previous Account" => {
                 let rail = rail_accounts(&self.store.read());
                 let at = self.selected_account_filter.as_ref().and_then(|a| rail.iter().position(|r| r == a));
@@ -4350,7 +4340,7 @@ impl BeeperGuiApp {
             UiMessage::Composer(msg) => return self.composer(msg),
             UiMessage::Message(msg) => return self.message(msg),
             UiMessage::Reminders(msg) => return self.reminders(msg),
-            UiMessage::ChatSub(sub) => self.chat_sub = sub,
+            UiMessage::CommandBar(msg) => return self.command_bar(msg),
             UiMessage::Scheduled(msg) => return self.scheduled(msg),
             UiMessage::Thread(msg) => return self.threads(msg),
             UiMessage::SwitchCard => self.chat_menu = Some((SWITCH_CARD.into(), self.cursor.get())),
@@ -4669,56 +4659,6 @@ impl BeeperGuiApp {
                 }
             }
             UiMessage::Forward(msg) => return self.forward(msg),
-            UiMessage::ToggleCommandPalette => {
-                if !self.show_command_palette {
-                    self.search_filters = SearchFilters::default();
-                }
-                self.show_command_palette ^= self.search_room.take().is_none() || !self.show_command_palette;
-                (self.cmd_bar_commands_mode, self.cmd_index, self.cmd_submenu) = (false, 0, None);
-                self.search_expanded = false;
-                if self.show_command_palette {
-                    return operation::focus("cmd-palette-input");
-                }
-            }
-            UiMessage::SearchRoom(cid) => {
-                (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, false, None);
-                (self.search_room, self.chat_menu) = (Some(cid), None);
-                self.search_filters.accounts.clear();
-                return operation::focus("cmd-palette-input");
-            }
-            UiMessage::ToggleCommandMode => {
-                (self.cmd_bar_commands_mode, self.cmd_index) = (!self.cmd_bar_commands_mode, 0);
-                return operation::focus("cmd-palette-input");
-            }
-            UiMessage::CmdNoReply(on) => self.cmd_no_reply = on,
-            UiMessage::LastTime(phrase) => self.patch_settings(|s| s.last_time = phrase),
-            UiMessage::OpenSubMenu(menu) => {
-                let st = self.store.read();
-                self.cmd_no_reply = match &menu {
-                    commands::SubMenu::Schedule(ids) => {
-                        let initial = match ids.first() {
-                            Some(id) => st.scheduled.iter().find(|s| s.id == *id).map(|s| s.send_only_on_no_response),
-                            None => self.pane.send_later.map(|c| c.1),
-                        };
-                        initial.unwrap_or(st.settings.pref("sendLaterDefault") == 0)
-                    }
-                    _ => st.settings.pref("remindLaterDefault") == 0,
-                };
-                drop(st);
-                (self.show_command_palette, self.cmd_bar_commands_mode, self.cmd_submenu) = (true, true, Some(menu));
-                (self.search_room, self.chat_menu, self.cmd_index) = (None, None, 0);
-                self.command_palette_query.clear();
-                return operation::focus("cmd-palette-input");
-            }
-            UiMessage::ToggleSearchExpanded => self.search_expanded = !self.search_expanded,
-            UiMessage::CommandQueryChanged(q) => {
-                (self.command_palette_query, self.cmd_index) = (q.clone(), 0);
-                if self.cmd_submenu == Some(commands::SubMenu::AddMembers) {
-                    self.new_chat_search = None;
-                    let wait = async { tokio::time::sleep(std::time::Duration::from_millis(300)).await };
-                    return Task::perform(wait, move |()| UiMessage::Members(members::Msg::Search(q.clone())));
-                }
-            }
             UiMessage::Members(msg) => return self.members(msg),
             UiMessage::ExportChat => {
                 let st = self.store.read();
@@ -4733,7 +4673,6 @@ impl BeeperGuiApp {
                     Err(e) => format!("Export failed: {e}"),
                 };
             }
-            UiMessage::CommandHighlight(i) => self.cmd_index = i,
             UiMessage::Commands(msgs) => {
                 return Task::batch(msgs.into_iter().map(|m| self.update(m)).collect::<Vec<_>>())
             }
@@ -4742,12 +4681,6 @@ impl BeeperGuiApp {
                 return self.run_hotkey(name, 0);
             }
             UiMessage::Window(msg) => return self.windows(msg),
-            UiMessage::JumpTo(cid, mid) => return self.jump_to(cid, mid),
-            UiMessage::ExecuteCommandChat(cid) => {
-                self.show_command_palette = false;
-                self.command_palette_query.clear();
-                self.select_chat(&cid);
-            }
             UiMessage::NewChat(msg) => return self.new_chat(msg),
             UiMessage::ReplyPrivately(mid) => {
                 let st = self.store.read();
@@ -4996,33 +4929,6 @@ impl BeeperGuiApp {
             UiMessage::Integrations(msg) => return self.integrations(msg),
             UiMessage::OpenQuickLook(title, detail) => {
                 self.quick_look_target = Some((title, detail));
-            }
-            UiMessage::OpenSearchSelect(chip) => {
-                let find = Find(format!("search-chip-{chip}").into(), None);
-                return iced::advanced::widget::operate(find).map(move |r| UiMessage::SearchSelect(Some((chip, r))));
-            }
-            UiMessage::SearchSelect(open) => self.search_select = open,
-            UiMessage::PickSearchFilter(pick) => {
-                let f = &mut self.search_filters;
-                match pick {
-                    SearchPick::Account(a) => match f.accounts.iter().position(|x| *x == a) {
-                        Some(i) => drop(f.accounts.remove(i)),
-                        None => f.accounts.push(a),
-                    },
-                    SearchPick::Sent(v) => f.sent = (f.sent != Some(v)).then_some(v),
-                    SearchPick::Group(v) => f.group = (f.group != Some(v)).then_some(v),
-                    SearchPick::Media(v) => match f.media.iter().position(|&x| x == v) {
-                        Some(i) => drop(f.media.remove(i)),
-                        None => f.media.push(v),
-                    },
-                    SearchPick::Period(v) => {
-                        f.period = (f.period != Some(v)).then_some(v);
-                        self.search_select = None;
-                    }
-                }
-                if matches!(self.search_select, Some((1, _))) {
-                    self.search_select = None;
-                }
             }
             UiMessage::CloseModals if self.search_select.is_some() => self.search_select = None,
             UiMessage::CloseModals
@@ -5871,7 +5777,7 @@ impl BeeperGuiApp {
                     .width(Fill)
                     .height(Fill),
             )
-            .on_press(UiMessage::SearchSelect(None))
+            .on_press(UiMessage::CommandBar(commands::Msg::SearchSelect(None)))
         });
         let filter_menu = self.show_filter_menu.then(|| (self.view_filter_menu(), self.sidebar_width - 22.5, 26.0));
         let reminder_menu = self.reminder_menu.map(|at| (self.view_reminder_menu(), at.x, at.y));
@@ -6229,8 +6135,10 @@ impl BeeperGuiApp {
                 item(tr("Last Used").into(), last_used_label(at, h24), Some(UiMessage::SelectionRemind(Some(at))))
             });
             let presets = remind_presets(now).map(|(label, at)| {
-                let msg =
-                    UiMessage::Commands(vec![UiMessage::LastTime(label.into()), UiMessage::SelectionRemind(Some(at))]);
+                let msg = UiMessage::Commands(vec![
+                    UiMessage::CommandBar(commands::Msg::LastTime(label.into())),
+                    UiMessage::SelectionRemind(Some(at)),
+                ]);
                 item(tr(label).into(), remind_label(at, h24), Some(msg))
             });
             let presets = last.into_iter().chain(presets);
@@ -6570,7 +6478,7 @@ impl BeeperGuiApp {
     fn view_search_select(&self, chip: usize, at: iced::Rectangle) -> El<'_> {
         let p = &self.pal;
         let f = &self.search_filters;
-        let pick = |m: SearchPick| Some(UiMessage::PickSearchFilter(m));
+        let pick = |m: SearchPick| Some(UiMessage::CommandBar(commands::Msg::PickSearchFilter(m)));
         let radio = |on: bool, label: &str, m: SearchPick| {
             let lead = container(on.then(|| ic(icon::CHECK, 14.0))).center_x(14).padding(Padding::ZERO.right(6.0));
             menu_item(p, Some(lead.into()), label.into(), "", pick(m))
@@ -6596,7 +6504,12 @@ impl BeeperGuiApp {
                 .spacing(8)
                 .align_y(Center);
                 let style = btn_style([CLEAR, hover, hover], [fg; 3], 4.0);
-                button(line).padding([6, 4]).width(Fill).style(style).on_press(UiMessage::PickSearchFilter(m)).into()
+                button(line)
+                    .padding([6, 4])
+                    .width(Fill)
+                    .style(style)
+                    .on_press(UiMessage::CommandBar(commands::Msg::PickSearchFilter(m)))
+                    .into()
             });
             let head = row![
                 semi(f.label(chip).unwrap_or_else(|| tr(SEARCH_CHIPS[chip]).into()), 13.0).color(p.text),
@@ -6656,7 +6569,7 @@ impl BeeperGuiApp {
         let st = self.store.read();
         let select = (kind == SpaceMenu::Header).then(|| {
             let item = menu_item(p, None, tr("Select Chats").into(), "", Some(UiMessage::ToggleSelectMode));
-            mouse_area(item).on_enter(UiMessage::ChatSub(None))
+            mouse_area(item).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)))
         });
         if kind == SpaceMenu::Header && RAIL_VIEWS.iter().any(|v| v.0 == entry) {
             let menu = container(column![select].padding([4, 0])).width(233);
@@ -6729,7 +6642,13 @@ impl BeeperGuiApp {
             let body = container(Column::with_children(items).padding([4, 0])).width(ACCOUNT_SUB_W);
             body.style(shadow_box(p.menu, p.menu_border, 6.0, 16.0))
         });
-        let inbox = menu_item(p, None, tr("Show in Inbox").into(), "›", Some(UiMessage::ChatSub(Some(0))));
+        let inbox = menu_item(
+            p,
+            None,
+            tr("Show in Inbox").into(),
+            "›",
+            Some(UiMessage::CommandBar(commands::Msg::ChatSub(Some(0)))),
+        );
         let mute = beeper_core::models::AccountProps { notifications: muted, ..props };
         let gear = kind == SpaceMenu::Gear;
         let label = match (gear, muted) {
@@ -6777,8 +6696,9 @@ impl BeeperGuiApp {
         let again = again.map(|m| column![menu_rule(p), menu_item(p, None, tr("Reconnect").into(), "", Some(m))]);
         let col = column![
             select,
-            mouse_area(inbox).on_enter(UiMessage::ChatSub(Some(0))),
-            mouse_area(rest.push(again)).on_enter(UiMessage::ChatSub((kind == SpaceMenu::Options).then_some(1)))
+            mouse_area(inbox).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(Some(0)))),
+            mouse_area(rest.push(again))
+                .on_enter(UiMessage::CommandBar(commands::Msg::ChatSub((kind == SpaceMenu::Options).then_some(1))))
         ];
         let menu = container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0));
         (menu.into(), sub.map(Into::into))
@@ -7009,11 +6929,19 @@ impl BeeperGuiApp {
         let flag = |f: ChatFlag| Some(UiMessage::ToggleFlag(c.id.clone(), f));
         let archived = c.flag(ChatFlag::Archived);
         let unread = c.is_unread();
-        let close_sub = |items: Column<'static, UiMessage>| mouse_area(items).on_enter(UiMessage::ChatSub(None));
+        let close_sub = |items: Column<'static, UiMessage>| {
+            mouse_area(items).on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(None)))
+        };
         let item = |label: &str, key: &'static str, msg| menu_item(p, None, label.into(), key, msg);
         let open_sub = |i: u8, label: &str| {
-            mouse_area(menu_item(p, None, label.into(), "›", Some(UiMessage::ChatSub(Some(i)))))
-                .on_enter(UiMessage::ChatSub(Some(i)))
+            mouse_area(menu_item(
+                p,
+                None,
+                label.into(),
+                "›",
+                Some(UiMessage::CommandBar(commands::Msg::ChatSub(Some(i)))),
+            ))
+            .on_enter(UiMessage::CommandBar(commands::Msg::ChatSub(Some(i))))
         };
         let pick = |on: bool, yes, no| if on { yes } else { no };
         let selecting = self.selection.is_empty();
@@ -7141,7 +7069,7 @@ impl BeeperGuiApp {
             open_sub(0, tr("Copy")),
             close_sub(column![
                 menu_rule(p),
-                item(tr("Search…"), "Ctrl F", Some(UiMessage::SearchRoom(c.id.clone()))),
+                item(tr("Search…"), "Ctrl F", Some(UiMessage::CommandBar(commands::Msg::SearchRoom(c.id.clone())))),
                 menu_rule(p),
                 low,
             ]),
@@ -7212,7 +7140,9 @@ impl BeeperGuiApp {
                     let set = |at| can.then(|| UiMessage::Reminders(reminders::Msg::Set(c.id.clone(), Some(at))));
                     let last = last_used(&st, now).map(|at| item(tr("Last Used"), last_used_label(at, h24), set(at)));
                     let presets = remind_presets(now).map(|(label, at)| {
-                        let msg = set(at).map(|set| UiMessage::Commands(vec![UiMessage::LastTime(label.into()), set]));
+                        let msg = set(at).map(|set| {
+                            UiMessage::Commands(vec![UiMessage::CommandBar(commands::Msg::LastTime(label.into())), set])
+                        });
                         item(tr(label), remind_label(at, h24), msg)
                     });
                     let upgrade = (!can).then(|| {
@@ -7222,7 +7152,8 @@ impl BeeperGuiApp {
                     let presets = upgrade.into_iter().flatten().chain(last).chain(presets);
                     let dismiss =
                         c.reminder.is_some().then(|| UiMessage::Reminders(reminders::Msg::Set(c.id.clone(), None)));
-                    let custom = UiMessage::OpenSubMenu(commands::SubMenu::Remind(c.id.clone()));
+                    let custom =
+                        UiMessage::CommandBar(commands::Msg::OpenSubMenu(commands::SubMenu::Remind(c.id.clone())));
                     let custom = item(tr("Custom…"), String::new(), can.then_some(custom));
                     let dismiss = item(tr("Dismiss Reminder"), String::new(), dismiss);
                     let rules = if can { 2.0 } else { 3.0 };
@@ -7696,7 +7627,7 @@ impl BeeperGuiApp {
             .push(filter)
             .push(options)
             .push(below(
-                head_btn(icon::SEARCH, 23.0, [7.5, 10.0], UiMessage::ToggleCommandPalette).into(),
+                head_btn(icon::SEARCH, 23.0, [7.5, 10.0], UiMessage::CommandBar(commands::Msg::TogglePalette)).into(),
                 tr("Search Chats"),
                 vec!["Ctrl", "K"],
             ))
@@ -8265,7 +8196,7 @@ impl BeeperGuiApp {
         };
         let input = text_input(&placeholder, &self.command_palette_query)
             .id("cmd-palette-input")
-            .on_input(UiMessage::CommandQueryChanged)
+            .on_input(|a0| UiMessage::CommandBar(commands::Msg::Query(a0)))
             .size(13)
             .padding([6, 0])
             .style(input_style(CLEAR, p.strong, p.sub, p.accent, 0.0));
@@ -8294,12 +8225,12 @@ impl BeeperGuiApp {
         )
         .padding([2, 6])
         .style(ghost(p, 8.0))
-        .on_press(UiMessage::ToggleCommandMode);
+        .on_press(UiMessage::CommandBar(commands::Msg::ToggleMode));
         let schedule = matches!(self.cmd_submenu, Some(commands::SubMenu::Schedule(_)));
         let no_reply = [tr("If no reply"), if schedule { tr("Regardless") } else { tr("Always") }];
         let inputs = match &self.cmd_submenu {
             Some(commands::SubMenu::Remind(_) | commands::SubMenu::Schedule(_)) => {
-                let pick = move |c: &str| UiMessage::CmdNoReply(c == no_reply[0]);
+                let pick = move |c: &str| UiMessage::CommandBar(commands::Msg::NoReply(c == no_reply[0]));
                 let pad = Padding::new(4.0).left(6.0).right(22.0);
                 row![input, sized_select(p, no_reply, no_reply[usize::from(!self.cmd_no_reply)], pick, 13.0, pad)]
             }
@@ -8371,10 +8302,12 @@ impl BeeperGuiApp {
             .spacing(4)
             .align_y(Center);
             let chip = button(body).padding([4, 13]).style(btn_style([CLEAR; 3], [fg; 3], 20.0));
-            container(chip.on_press_maybe((!disabled).then_some(UiMessage::OpenSearchSelect(i))))
-                .id(format!("search-chip-{i}"))
-                .style(style)
-                .into()
+            container(
+                chip.on_press_maybe((!disabled).then_some(UiMessage::CommandBar(commands::Msg::OpenSearchSelect(i)))),
+            )
+            .id(format!("search-chip-{i}"))
+            .style(style)
+            .into()
         }))
         .spacing(12)
         .padding(Padding::new(6.0).left(13.0).right(13.0));
@@ -8407,7 +8340,7 @@ impl BeeperGuiApp {
             button(semi(if self.search_expanded { tr("Show less") } else { tr("Show more") }, 11.0).color(p.accent))
                 .padding(0)
                 .style(ghost(p, 4.0))
-                .on_press(UiMessage::ToggleSearchExpanded)
+                .on_press(UiMessage::CommandBar(commands::Msg::ToggleSearchExpanded))
         }))
         .align_y(Center)
         .padding(Padding::new(4.0).left(13.0).right(13.0).bottom(2.0));
@@ -8459,7 +8392,7 @@ impl BeeperGuiApp {
                         .padding([4, 13])
                         .width(Fill)
                         .style(btn_style([CLEAR; 3], [p.text; 3], 0.0))
-                        .on_press(UiMessage::JumpTo(c.id.clone(), m.id.clone())),
+                        .on_press(UiMessage::CommandBar(commands::Msg::JumpTo(c.id.clone(), m.id.clone()))),
                 )
             });
         let tiles = media.iter().map(|m| -> El<'_> {
@@ -8510,7 +8443,7 @@ impl BeeperGuiApp {
             button(tile)
                 .padding(0)
                 .style(btn_style([CLEAR; 3], [p.text; 3], 8.0))
-                .on_press(UiMessage::JumpTo(c.id.clone(), m.id.clone()))
+                .on_press(UiMessage::CommandBar(commands::Msg::JumpTo(c.id.clone(), m.id.clone())))
                 .into()
         });
         let mut grid = Column::new().spacing(6.5).padding(Padding::new(0.0).left(13.0).right(13.0).bottom(4.0));
@@ -8553,7 +8486,7 @@ impl BeeperGuiApp {
                             .padding([0, 6])
                             .width(Fill)
                             .style(btn_style([bg, p.chip, p.selected], [p.text; 3], 8.0))
-                            .on_press(UiMessage::ExecuteCommandChat(c.id.clone())),
+                            .on_press(UiMessage::CommandBar(commands::Msg::ExecuteChat(c.id.clone()))),
                     )
                     .on_right_press(UiMessage::OpenChatMenu(c.id.clone())),
                 )
@@ -8691,7 +8624,7 @@ impl BeeperGuiApp {
             }
             SpacesEdit::Menu(id) => (d.menu, self.chat_sub) = (id.map(|id| (id, self.cursor.get())), None),
             SpacesEdit::Act(m) => {
-                if !matches!(*m, UiMessage::ChatSub(_)) {
+                if !matches!(*m, UiMessage::CommandBar(commands::Msg::ChatSub(_))) {
                     d.menu = None;
                 }
                 return self.update(*m);
