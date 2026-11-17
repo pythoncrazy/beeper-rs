@@ -293,7 +293,8 @@ impl BeeperGuiApp {
             // Desktop's `Ait`: Clear all filters while one is on, then each filter.
             SubMenu::Filters => {
                 let pick = |bit| Some(UiMessage::ChatList(chat_list::Msg::PickFilter(bit)));
-                let clear = (self.filters != 0).then(|| cmd("", tr("Clear all filters"), pick(self.filters)));
+                let clear = UiMessage::ChatList(chat_list::Msg::ClearFilters);
+                let clear = (self.filters != 0).then(|| cmd("", tr("Clear all filters"), Some(clear)));
                 let each = chat_list::FILTERS.iter().enumerate().map(|(i, f)| cmd("", tr(f.0), pick(1 << i)));
                 search(clear.into_iter().chain(each).collect())
             }

@@ -29,6 +29,11 @@ pub enum Msg {
     ToggleFilterMenu,
     FilterButton,
     PickFilter(u8),
+    /// Desktop's `setSpaceViewAccountFilter`: shows only the chats of an account or network space in a space view,
+    /// or every chat again when it is the one shown.
+    PickAccount(String),
+    /// Desktop's `clearThreadsFilters`: the filters and the space view account.
+    ClearFilters,
     /// Desktop's `replyPrivately`: the direct chat with the sender of a message, with the message quoted.
     ReplyPrivately(String),
     /// Desktop's `exportLoadedMessagesAsTextFile`: the loaded messages of the open chat in a text file on the desktop.
@@ -53,6 +58,7 @@ impl BeeperGuiApp {
                 self.chat_menu = None;
                 self.active_tab = tab;
                 self.selected_account_filter = None;
+                self.space_view_account = None;
                 self.show_filter_menu = false;
                 self.leave_draft();
             }
@@ -313,11 +319,19 @@ impl BeeperGuiApp {
                 return self.update(UiMessage::StoreChanged);
             }
             Msg::ToggleFilterMenu => self.show_filter_menu = !self.show_filter_menu,
-            Msg::FilterButton => self.filters = u8::from(self.filters == 0),
+            Msg::FilterButton if self.filters != 0 || self.space_view_account.is_some() => {
+                return self.update(UiMessage::ChatList(Msg::ClearFilters));
+            }
+            Msg::FilterButton => self.filters = 1,
             Msg::PickFilter(bit) => {
                 self.filters = if self.filters == bit { 0 } else { bit };
                 self.show_filter_menu = false;
             }
+            Msg::PickAccount(id) => {
+                self.space_view_account = (self.space_view_account.as_ref() != Some(&id)).then_some(id);
+                self.show_filter_menu = false;
+            }
+            Msg::ClearFilters => (self.filters, self.space_view_account) = (0, None),
             Msg::Hover(id, true) => self.hovered_chat = Some(id),
             Msg::Hover(id, false) => {
                 if self.hovered_chat.as_ref() == Some(&id) {
@@ -680,16 +694,43 @@ impl BeeperGuiApp {
             let hotkey = prefs::hotkey_label(st.settings.hotkey_keys(FILTER_HOTKEYS[i]));
             item(self.filters & 1 << i != 0, FILTERS[i].1, format!("{} ({n})", tr(FILTERS[i].0)), hotkey, 1 << i)
         });
+        let in_view = matches!(self.active_tab, InboxTab::Archived | InboxTab::LowPriority | InboxTab::Requests);
         let views: &[usize] = match self.active_tab {
             InboxTab::Archived => &[F_LOW_PRIORITY],
             InboxTab::LowPriority => &[F_ARCHIVED],
             InboxTab::Requests => &[],
-            _ => &[F_ARCHIVED, F_REQUESTS, F_LOW_PRIORITY],
+            // Desktop's `anySelectedSpaceSupportsRequests`.
+            _ if self.selected_account_filter.as_deref().is_none_or(|id| takes_requests(&st, id)) => {
+                &[F_ARCHIVED, F_REQUESTS, F_LOW_PRIORITY]
+            }
+            _ => &[F_ARCHIVED, F_LOW_PRIORITY],
         };
         let rule = (!views.is_empty()).then(|| menu_rule(p));
         let views = views
             .iter()
             .map(|&i| item(self.filters & 1 << i != 0, FILTERS[i].1, tr(FILTERS[i].0).into(), String::new(), 1 << i));
+        // Desktop's account spaces of a space view, which in Requests are the ones whose bridge takes requests.
+        let accounts: Vec<String> = match in_view {
+            true => rail_spaces(&st)
+                .into_iter()
+                .filter(|id| rail_label(&st, id).is_none() && !RAIL_VIEWS.iter().any(|v| v.0 == id))
+                .filter(|id| self.active_tab != InboxTab::Requests || takes_requests(&st, id))
+                .collect(),
+            false => Vec::new(),
+        };
+        let account_rule = (!accounts.is_empty()).then(|| menu_rule(p));
+        let names: Vec<String> = accounts.iter().map(|id| space_name(&st, id)).collect();
+        // Desktop's menu grows past its least width for a long account name.
+        let width = names.iter().map(|n| 104.0 + text_width(n, 13.0, Weight::Normal)).fold(233.0, f32::max);
+        let accounts = accounts.into_iter().zip(names).map(|(id, name)| {
+            let lead = row![
+                container((self.space_view_account.as_ref() == Some(&id)).then(|| ic(icon::CHECK, 14.0))).center_x(14),
+                container(svg(brand_svg(brand_key(&rail_owner(&st, &id)))).width(14).height(14))
+                    .padding(Padding::ZERO.left(9.0).right(4.0)),
+            ];
+            let msg = UiMessage::ChatList(chat_list::Msg::PickAccount(id.clone()));
+            menu_item(p, Some(lead.into()), name, "", Some(msg))
+        });
         let col = Column::with_children(
             std::iter::once(item(
                 self.filters == 0,
@@ -700,9 +741,11 @@ impl BeeperGuiApp {
             ))
             .chain(counted)
             .chain(rule)
-            .chain(views),
+            .chain(views)
+            .chain(account_rule)
+            .chain(accounts),
         );
-        container(col.padding([4, 0])).width(233).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
+        container(col.padding([4, 0])).width(width).style(shadow_box(p.menu, p.menu_border, 6.0, 16.0)).into()
     }
 
     /// The chat menu, with `room` pixels from its top to the bottom of the window.
@@ -1068,8 +1111,11 @@ impl BeeperGuiApp {
         let compact = st.settings.on("compactChatList");
         let (av, lines, title_size, ts_size, pin_av) =
             if compact { (28.0, 1, 13.0, 10.0, 40.0) } else { (46.0, 2, 14.0, 11.0, 52.0) };
-        let names: Vec<&str> =
-            (0..FILTERS.len()).filter(|i| self.filters & 1 << i != 0).map(|i| tr(FILTERS[i].0)).collect();
+        let names: Vec<String> = (0..FILTERS.len())
+            .filter(|i| self.filters & 1 << i != 0)
+            .map(|i| tr(FILTERS[i].0).to_string())
+            .chain(self.space_view_account.as_deref().map(|id| space_name(&st, id)))
+            .collect();
         let heading = self
             .selected_account_filter
             .as_deref()
@@ -1105,9 +1151,10 @@ impl BeeperGuiApp {
                 .on_press(msg)
         };
         let filter = self.active_tab.filterable().then(|| {
-            let active = self.filters != 0;
+            let count = self.filters.count_ones() + u32::from(self.space_view_account.is_some());
+            let active = count > 0;
             let fg = if active { p.accent } else { p.strong };
-            let trigger: El<'_> = match self.filters.count_ones() {
+            let trigger: El<'_> = match count {
                 0 => Space::new().into(),
                 1 => ic(icon::EXPAND_MORE, 10.0).color(fg).into(),
                 n => txt(n.to_string(), 11.0).color(fg).into(),
@@ -1588,4 +1635,14 @@ impl BeeperGuiApp {
         let sidebar = container(sidebar).width(w).height(Fill);
         mouse_area(sidebar).on_right_press(UiMessage::ChatList(chat_list::Msg::OpenMenu(SIDEBAR_MENU.into()))).into()
     }
+}
+
+/// Desktop's `ope`: whether the bridge of an account or network space takes message requests (the
+/// `message_request` of its `defaultFeatures`). Other spaces do.
+pub(crate) fn takes_requests(st: &BeeperStore, id: &str) -> bool {
+    if rail_label(st, id).is_some() || RAIL_VIEWS.iter().any(|v| v.0 == id) {
+        return true;
+    }
+    let network = beeper_core::config::find_network(&rail_owner(st, id));
+    network.is_some_and(|n| matches!(n.kind, NetworkKind::Beeper | NetworkKind::Signal | NetworkKind::TwitterX))
 }
