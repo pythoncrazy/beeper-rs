@@ -1274,27 +1274,32 @@ impl BeeperStore {
         self.put_kv(KEY_SETUP, how.key());
     }
 
-    pub fn import_beeper(&mut self, data: crate::import::BeeperData) {
-        assert!(self.setup.is_none() && !self.signed_in(), "import into a store that is already set up");
-        assert!(self.chats.is_empty() && self.messages.is_empty(), "import into a store that has chats");
+    /// Adds new chats and their messages in one SQLite transaction. A message without a sort key takes the next one.
+    pub fn add_all(&mut self, chats: Vec<Chat>, messages: Vec<Message>) {
         self.db.lock().unwrap().execute_batch("BEGIN IMMEDIATE;").expect("begin import transaction");
-        self.finish_setup(Setup::Imported);
-        let (chats, messages) = (self.chats.len(), self.messages.len());
-        for c in data.chats {
+        let (first_chat, first_message) = (self.chats.len(), self.messages.len());
+        for c in chats {
             self.push_chat(c, true);
         }
-        for mut m in data.messages {
+        for mut m in messages {
             if m.sort_key.is_empty() {
                 self.next_seq += 1;
                 m.sort_key = sort_key(self.next_seq);
             }
             self.push_message(m, false);
         }
-        (chats..self.chats.len()).for_each(|i| self.persist_chat(i));
-        (messages..self.messages.len()).for_each(|i| self.persist_message(i));
+        (first_chat..self.chats.len()).for_each(|i| self.persist_chat(i));
+        (first_message..self.messages.len()).for_each(|i| self.persist_message(i));
         self.persist_seq();
         self.db.lock().unwrap().execute_batch("COMMIT;").expect("commit import transaction");
         self.unload_old();
+    }
+
+    pub fn import_beeper(&mut self, data: crate::import::BeeperData) {
+        assert!(self.setup.is_none() && !self.signed_in(), "import into a store that is already set up");
+        assert!(self.chats.is_empty() && self.messages.is_empty(), "import into a store that has chats");
+        self.finish_setup(Setup::Imported);
+        self.add_all(data.chats, data.messages);
         self.pin_rank = data.pin_rank;
         self.recent_chat_ids = data.recent_chat_ids;
         if let Some(theme) = data.theme {

@@ -6799,6 +6799,9 @@ pub type Networks = Vec<(String, Option<Option<User>>)>;
 mod fuzz;
 
 #[cfg(test)]
+mod perf;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::media_view::{filmstrip, slide};
