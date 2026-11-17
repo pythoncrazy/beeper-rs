@@ -73,6 +73,27 @@ pub(crate) fn demo_app(name: &str) -> BeeperGuiApp {
     BeeperGuiApp::boot(beeper_core::testing::demo_store(name)).0
 }
 
+/// The messages that a task outputs. The window and clipboard actions of the task do nothing here: each is dropped
+/// as it comes, so that a task that waits for its answer goes on.
+pub(crate) async fn task_messages(task: Task<UiMessage>) -> Vec<UiMessage> {
+    use iced::futures::StreamExt;
+    let Some(stream) = iced_runtime::task::into_stream(task) else { return Vec::new() };
+    let out = stream.filter_map(|a| async move {
+        match a {
+            iced_runtime::Action::Output(m) => Some(m),
+            _ => None,
+        }
+    });
+    out.collect().await
+}
+
+/// The actions of a task that does not wait for the answer of an action.
+pub(crate) async fn task_actions(task: Task<UiMessage>) -> Vec<iced_runtime::Action<UiMessage>> {
+    use iced::futures::StreamExt;
+    let Some(stream) = iced_runtime::task::into_stream(task) else { return Vec::new() };
+    stream.collect().await
+}
+
 fn windows(app: &BeeperGuiApp) -> Vec<window::Id> {
     let media = app.media_window.as_ref().map(|w| w.id);
     let chats = app.chat_windows.iter().map(|w| w.0);
@@ -90,7 +111,7 @@ fn local(m: &UiMessage) -> bool {
         | UiMessage::Voice(_)
         | UiMessage::Video(_)
         | UiMessage::Logout
-        | UiMessage::Message(message::Msg::CopyImage(..)) => false,
+        | UiMessage::Message(message::Msg::CopyImage(..) | message::Msg::PressButton(..)) => false,
         UiMessage::KeyPressed(Key::Character(c), mods) => !(c == "p" && mods.command() && mods.shift()),
         UiMessage::InWindow(_, m)
         | UiMessage::Message(message::Msg::Menu(m))
@@ -4305,6 +4326,39 @@ fn profile_page_like_desktop() {
     assert_eq!(hits.first(), Some(&SettingsHit::Section(SettingsTab::Profile, true)));
 }
 
+/// Desktop's backup banner and `ShowRecoveryKeyModal`: a key this device made over a day ago shows "If you lose your
+/// device..." over the chat list, and the key typed again after its copy marks it backed up.
+#[test]
+fn recovery_key_backup_like_desktop() {
+    use crate::profile::{KeyStep, Msg};
+    let mut app = demo_app("recovery-backup");
+    let key = "EsTc LW2K PGiF wKEo 9bCn nYwJ 3bR7 jAxZ hLoh 6Ycm Nkx5 YTqh";
+    {
+        let mut st = app.store.write();
+        st.features.flags["features"]["*"]["deferred-recovery-code-setup"] = true.into();
+        let s = &mut st.beeper_state;
+        (s.secrets.recovery_code, s.has_backed_up_code) = (key.into(), false);
+        s.recovery_code_generated_at = beeper_core::config::now_unix_millis() - 2 * 24 * 60 * 60 * 1000;
+    }
+    let banner = |app: &BeeperGuiApp| simulator(app.view_sidebar()).find("If you lose your device...").is_ok();
+    assert!(banner(&app), "an unsaved key a day old shows the banner");
+    let _ = app.update(UiMessage::Profile(Msg::SaveKeyNow));
+    assert!(!banner(&app) && app.settings_window.is_some(), "Save key now opens the key and closes the banner");
+    let shows = |app: &BeeperGuiApp, text: &str| simulator(app.view_settings()).find(text).is_ok();
+    assert!(shows(&app, "Copy to Clipboard"));
+    let _ = app.update(UiMessage::Profile(Msg::CopyRecoveryKey));
+    assert!(shows(&app, "Next"), "an unsaved key goes on to its check");
+    let _ = app.update(UiMessage::Profile(Msg::KeyNext));
+    assert!(shows(&app, "Verify recovery key"));
+    let wrong = key.replace("EsTc", "AAAA");
+    let _ = app.update(UiMessage::Profile(Msg::KeyPasted(Some(wrong))));
+    assert!(shows(&app, "Entered key does not match your recovery key"));
+    let _ = app.update(UiMessage::Profile(Msg::KeyPasted(Some(key.into()))));
+    assert!(matches!(app.profile.recovery_key, Some(KeyStep::Verify(_, true, None))), "the right key verifies");
+    let _ = app.update(UiMessage::Profile(Msg::KeyVerified(Ok(()))));
+    assert!(shows(&app, "Verified") && app.store.read().beeper_state.has_backed_up_code);
+}
+
 #[test]
 fn downloads_location_like_desktop() {
     let mut app = demo_app("downloads-location");
@@ -7902,7 +7956,7 @@ fn main_window_keeps_its_state_like_desktop() {
 }
 
 /// A new install on the sign-in window.
-fn signed_out_app(name: &str) -> BeeperGuiApp {
+pub(crate) fn signed_out_app(name: &str) -> BeeperGuiApp {
     let config = CentralConfig::new(beeper_core::testing::temp_dir(name), "127.0.0.1".into(), 23391, None);
     let app = BeeperGuiApp::boot(StoreLock::shared(BeeperStore::from_config(config))).0;
     assert!(app.login_window.is_some() && app.main_window.is_none(), "a new install opens the sign-in window");
@@ -7999,7 +8053,11 @@ fn sign_in_code_screen_like_desktop() {
     let _ = app.update(LoginMsg::KeyOnFocus(Some("123 456".into())).into());
     assert!(app.login.code == "123456" && app.login.busy, "a code in the clipboard goes in and is sent");
     assert!(simulator(app.view_login()).find("Code auto pasted from clipboard").is_ok());
-    let refused = beeper_core::cloud::CloudError { status: 401, message: "Invalid code. Please try again.".into() };
+    let refused = beeper_core::cloud::CloudError {
+        status: 401,
+        message: "Invalid code. Please try again.".into(),
+        errcode: None,
+    };
     let _ = app.update(LoginMsg::Done(Err(refused)).into());
     let _ = app.update(LoginMsg::KeyOnFocus(Some("123456".into())).into());
     assert!(!app.login.busy, "a code that was sent does not go again");
@@ -8023,10 +8081,13 @@ fn sign_in_username_and_continue_like_desktop() {
     assert_eq!(app.login.username, "alex2", "the sync icon shows the next suggestion");
     let _ = app.update(LoginMsg::Username("SupportBot".into()).into());
     assert_eq!(app.login.username, "supportbot", "the field takes lower case letters, digits and dashes");
+    // Desktop's rules refuse the name when its debounced check runs, without asking the server.
+    let _ = app.update(LoginMsg::CheckUsername(app.login.check).into());
     assert!(simulator(app.view_login()).find("Username is not available. Try something else.").is_ok());
     let _ = app.update(UiMessage::WindowKey(id, Key::Named(Named::Enter), Modifiers::empty()));
     assert!(!app.login.busy, "Enter does not send a name that Next refuses");
     let _ = app.update(LoginMsg::Username("alex-rs".into()).into());
+    let _ = app.update(LoginMsg::UsernameChecked(app.login.check, Ok(true)).into());
     let _ = app.update(UiMessage::WindowKey(id, Key::Named(Named::Enter), Modifiers::empty()));
     assert!(app.login.busy, "Enter sends a valid name");
 

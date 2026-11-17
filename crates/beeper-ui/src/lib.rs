@@ -843,14 +843,28 @@ const LABEL_COLORS: [(u32, u32); 12] = [
     (0x5583FC, 0x1E54E1),
 ];
 
+/// Desktop's `fD`: the Material icons by name, which labels and action buttons show. Each icon keeps the middle
+/// `share` of its view box, as a box that clips the icon drawn larger.
+fn material_icons(share: f32) -> HashMap<&'static str, svg::Handle> {
+    let icon = |line: &'static str| {
+        let [name, view, d] = line.split('\t').collect::<Vec<_>>()[..] else { panic!("a Material icon line") };
+        let box_of = view.split(' ').map(|v| v.parse::<f32>().expect("a view box number")).collect::<Vec<_>>();
+        let [x, y, w, h] = box_of[..] else { panic!("a view box") };
+        let (x, y, w, h) = (x + w * (1.0 - share) / 2.0, y + h * (1.0 - share) / 2.0, w * share, h * share);
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{x} {y} {w} {h}"><path fill="currentColor" d="{d}"/></svg>"#
+        );
+        (name, svg::Handle::from_memory(svg.into_bytes()))
+    };
+    include_str!("../assets/material_icons.tsv").lines().map(icon).collect()
+}
+
 /// Desktop's `yD`: the label icons by id, in the order of the picker.
 static LABEL_ICONS: std::sync::LazyLock<Vec<(&str, svg::Handle)>> = std::sync::LazyLock::new(|| {
+    let icons = material_icons(1.0);
     let icon = |line: &'static str| {
-        let [id, _, d] = line.split('\t').collect::<Vec<_>>()[..] else { panic!("a label icon line") };
-        let svg = format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path fill="currentColor" d="{d}"/></svg>"#
-        );
-        (id, svg::Handle::from_memory(svg.into_bytes()))
+        let (id, name) = line.split_once('\t').expect("a label icon line");
+        (id, icons[name].clone())
     };
     include_str!("../assets/label_icons.tsv").lines().map(icon).collect()
 });
@@ -2615,6 +2629,8 @@ pub struct BeeperGuiApp {
     media_window: Option<MediaWindow>,
     /// On X11 the copied image stays available only while its clipboard lives.
     image_clipboard: Option<arboard::Clipboard>,
+    /// Desktop's `pendingButtonIDs`: the action buttons whose callback runs, as (message, button).
+    pressing: HashSet<(String, String)>,
     emoji_gen: u32,
     emoji_hovered: [bool; 2],
     booted: String,
@@ -2725,6 +2741,8 @@ pub struct BeeperGuiApp {
     pub status_banner: String,
     /// The text of Desktop's toast with a "Relaunch app" button, after a change that needs a relaunch.
     relaunch_toast: Option<&'static str>,
+    /// Desktop's backup banner of the recovery key was clicked in this session.
+    key_banner_closed: bool,
     /// The newest toast with its icon and buttons, shown only while the banner still is the text it was made for.
     toast: Option<Toast>,
     /// The earlier toasts of Desktop's `toasts-list` that still show above the newest, each with the time it showed.
@@ -2743,6 +2761,8 @@ pub struct BeeperGuiApp {
     pill_hover: bool,
     /// A toast that stays until it is replaced, like Desktop's timeout 0.
     sticky_banner: Option<String>,
+    /// Desktop's `DownloadMobileApps` toast after the onboarding, which stays until it is closed.
+    pub mobile_apps_toast: bool,
     pub dnd_muted: bool,
     pub sidebar_width: f32,
     /// Whether the hidden space bar floats over the chat list, like Desktop's `account-switcher--floating`.
@@ -2923,6 +2943,7 @@ impl BeeperGuiApp {
             search_select: None,
             cursor: Default::default(),
             image_clipboard: None,
+            pressing: HashSet::new(),
             forward: None,
             carousel: None,
             media_window: None,
@@ -3006,6 +3027,7 @@ impl BeeperGuiApp {
             typing_shown: HashMap::new(),
             status_banner: String::new(),
             relaunch_toast: None,
+            key_banner_closed: false,
             toast: None,
             older_toasts: Vec::new(),
             toast_dismissals: 0,
@@ -3015,6 +3037,7 @@ impl BeeperGuiApp {
             online: true,
             pill_hover: false,
             sticky_banner: None,
+            mobile_apps_toast: false,
             dnd_muted: false,
             sidebar_width,
             rail_float: false,
@@ -5028,6 +5051,7 @@ impl BeeperGuiApp {
             || self.reauth.busy
             || self.enter_key.busy
             || self.nickname_windows.iter().any(|d| d.saving)
+            || !self.pressing.is_empty()
             || !self.fetching.is_empty()
             || self.group_window.as_ref().is_some_and(|d| d.saving)
             || self.hover_fading()

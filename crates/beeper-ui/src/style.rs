@@ -959,6 +959,8 @@ palette! {
     /// `--app-focus-ring`, which is `--semantic-colors-bg-fill-main`: the `:focus-visible` outline of Desktop's
     /// `Button`, `Toggle` and `Checkbox`.
     focus_ring: Color = hex(0x0d4ffb), hex(0x0d4ffb);
+    /// `--appearance-color-bg-secondary`: the fill of Desktop's action buttons.
+    bg_secondary: Color = hex(0xeaebf0), hex(0x1c1d1e);
     /// `--appearance-color-border-secondary`.
     border_secondary: Color = hex(0xdedfe3), hexa(0xffffff, 0.1);
     /// Chromium's own `input[type=range]` fill, track and track edge.
