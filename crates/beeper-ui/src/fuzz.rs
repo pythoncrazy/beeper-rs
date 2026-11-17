@@ -7960,3 +7960,18 @@ fn row_hover_actions_fade_like_desktop() {
     std::thread::sleep(std::time::Duration::from_millis(120));
     assert_eq!(app.hover_progress(&id), None, "and are gone after it");
 }
+
+/// Desktop's `.left` transition: the space bar and the chat list slide out and back in over 0.2 s.
+#[test]
+fn sidebar_slides_like_desktop() {
+    let mut app = demo_app("sidebar-slide");
+    assert!((crate::style::cubic_bezier(0.5, [0.165, 0.84, 0.44, 1.0]) - 0.92).abs() < 0.02, "an ease-out curve");
+    let _ = app.update(UiMessage::RunHotkey("Toggle Sidebar"));
+    assert!(app.sidebar_hidden && app.sidebar_progress().is_some_and(|t| t < 0.5), "it starts to slide out");
+    drop(simulator(app.view_main()));
+    std::thread::sleep(std::time::Duration::from_millis(220));
+    assert_eq!(app.sidebar_progress(), None, "and is gone after 0.2 s");
+    let _ = app.update(UiMessage::RunHotkey("Toggle Sidebar"));
+    assert!(!app.sidebar_hidden && app.sidebar_progress().is_some());
+    drop(simulator(app.view_main()));
+}

@@ -98,17 +98,7 @@ const SCENE_SIZE: Size = Size::new(314.0, 396.0);
 
 /// CSS `ease-in-out`, `cubic-bezier(0.42, 0, 0.58, 1)`, at `x` in 0..1.
 pub(crate) fn ease_in_out(x: f32) -> f32 {
-    let bezier = |s: f32, a: f32, b: f32| 3.0 * a * s * (1.0 - s) * (1.0 - s) + 3.0 * b * s * s * (1.0 - s) + s * s * s;
-    let (mut lo, mut hi) = (0.0, 1.0);
-    for _ in 0..20 {
-        let mid = (lo + hi) / 2.0;
-        if bezier(mid, 0.42, 0.58) < x {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    bezier((lo + hi) / 2.0, 0.0, 1.0)
+    crate::style::cubic_bezier(x, [0.42, 0.0, 0.58, 1.0])
 }
 
 /// Desktop's `AnimatedCompositeIllustration`: the shadow, then 13 layers that each float up and down by

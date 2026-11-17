@@ -1070,3 +1070,18 @@ mod tests {
         }
     }
 }
+
+/// CSS `cubic-bezier(x1, y1, x2, y2)` at `x` in 0..1: the curve's `y` where its `x` is `x`.
+pub fn cubic_bezier(x: f32, [x1, y1, x2, y2]: [f32; 4]) -> f32 {
+    let bezier = |s: f32, a: f32, b: f32| 3.0 * a * s * (1.0 - s) * (1.0 - s) + 3.0 * b * s * s * (1.0 - s) + s * s * s;
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..20 {
+        let mid = (lo + hi) / 2.0;
+        if bezier(mid, x1, x2) < x {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    bezier((lo + hi) / 2.0, y1, y2)
+}
