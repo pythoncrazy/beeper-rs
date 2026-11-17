@@ -1900,8 +1900,8 @@ fn file_rows_like_desktop() {
     assert_eq!(sim.find("beeper-v4-spec.pdf").expect("the file name").bounds().height, 16.0);
 }
 
-/// Desktop's carousel shows every attachment of the chat but audio: a video plays with its controls, and a file is a
-/// link that downloads it. A step away from a playing video pauses it.
+/// Desktop's carousel shows every attachment of the chat but audio: a video plays with its controls, and a file other
+/// than a PDF is a link that downloads it. A step away from a playing video pauses it.
 #[test]
 fn carousel_steps_through_videos_and_files_like_desktop() {
     let note = "!note_self:beeper.com";
@@ -1910,7 +1910,7 @@ fn carousel_steps_through_videos_and_files_like_desktop() {
         let st = app.store.read();
         st.messages[*st.timeline_indices(note).last().unwrap()].clone()
     };
-    let kinds = [("img", "a.png"), ("unknown", "spec.pdf"), ("audio", "voice.ogg"), ("video", "clip.mp4")];
+    let kinds = [("img", "a.png"), ("unknown", "spec.zip"), ("audio", "voice.ogg"), ("video", "clip.mp4")];
     {
         let mut st = app.store.write();
         for (i, (kind, name)) in kinds.into_iter().enumerate() {

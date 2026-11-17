@@ -8,6 +8,8 @@ pub enum Msg {
     Media(String, Result<Frames, String>),
     /// A contact card of the timeline, read from its `.vcf` file.
     VCard(String, Result<crate::vcard::VCard, String>),
+    /// A PDF of the carousel, read from its file.
+    Pdf(String, Result<crate::pdf::Doc, String>),
     Tile(String, image::Handle),
     /// A quoted message that the timeline did not have, or why it could not load.
     Quote(String, Result<Box<Message>, String>),
@@ -28,6 +30,12 @@ impl BeeperGuiApp {
             }
             Msg::VCard(url, r) => {
                 self.vcards.insert(url, Some(r));
+            }
+            // A PDF that loads after the carousel closed stays out.
+            Msg::Pdf(url, r) => {
+                if let Some(doc) = self.pdfs.get_mut(&url) {
+                    *doc = Some(r);
+                }
             }
             Msg::Tile(key, h) => self.tiles.insert(key, Some(h)),
             Msg::RetryMedia(url) => {

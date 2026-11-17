@@ -706,6 +706,11 @@ impl BeeperGuiApp {
             }),
             (files > 0)
                 .then(|| vec![item(download, "Ctrl D", Some(UiMessage::Message(Msg::Download(mid.clone(), None))))]),
+            // Desktop opens the first PDF of the message in the carousel.
+            m.attachments.iter().position(crate::pdf::is_pdf).map(|ai| {
+                let open = UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), ai, false));
+                vec![item(tr("Preview in Carousel").into(), "", Some(open))]
+            }),
             Some(vec![
                 item(at, "", None),
                 rule(),
@@ -1585,10 +1590,15 @@ impl BeeperGuiApp {
                         .push((!meta.is_empty()).then(|| txt(meta.join(" · "), 11.0).color(p.sub)))
                         .spacing(4);
                     let line = row![tinted(file_icon(a), 24.0, p.strong), info].spacing(8).align_y(Center);
+                    // Desktop's `onOpenPreview`: a PDF opens in the carousel.
+                    let press = match a.src_url.is_some() && crate::pdf::is_pdf(a) {
+                        true => UiMessage::Media(media_view::Msg::OpenCarousel(m.id.clone(), ai, false)),
+                        false => UiMessage::Message(Msg::Download(m.id.clone(), Some(ai))),
+                    };
                     button(container(line).max_width(240.0 - 2.0 * BUBBLE_PAD_X))
                         .padding([8, 11])
                         .style(btn_style([p.received; 3], [p.strong; 3], 17.0))
-                        .on_press(UiMessage::Message(Msg::Download(m.id.clone(), Some(ai))))
+                        .on_press(press)
                         .into()
                 }
             };

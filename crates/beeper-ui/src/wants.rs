@@ -22,6 +22,8 @@ pub struct Wants {
     pub transcribe: RefCell<BTreeSet<String>>,
     /// The URLs of the shown contact cards (`.vcf` attachments) to read.
     pub vcards: RefCell<BTreeSet<String>>,
+    /// The URLs of the PDFs that the carousel shows.
+    pub pdfs: RefCell<BTreeSet<String>>,
     /// A view asked for a URL after the last frame.
     fresh: Cell<bool>,
 }
