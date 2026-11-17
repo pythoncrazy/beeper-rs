@@ -5,24 +5,40 @@ use iced::{Element, Event, Length, Rectangle, Renderer, Size, Theme, Transformat
 
 /// Draws `content` lowered by `dy` and scaled by `scale` from its bottom right corner, like Desktop's
 /// `message-send-insert` keyframes. The layout does not change, except that a `tight` lift gives `content`
-/// its full size as the minimum size.
+/// its full size as the minimum size. A `press` lift draws `content` at `scale` from its center while the left
+/// button that went down on it stays down, like a CSS `:active` transform.
 pub struct Lift<'a, Message> {
     content: Element<'a, Message>,
     dy: f32,
     scale: f32,
     tight: bool,
+    press: bool,
 }
 
 pub fn lift<'a, Message>(content: impl Into<Element<'a, Message>>, dy: f32, scale: f32) -> Lift<'a, Message> {
-    Lift { content: content.into(), dy, scale, tight: false }
+    Lift { content: content.into(), dy, scale, tight: false, press: false }
 }
 
 /// Gives a scrollable its viewport as the minimum size of its content, like a CSS `min-height: 100%`.
 pub fn tight<'a, Message>(content: impl Into<Element<'a, Message>>) -> Lift<'a, Message> {
-    Lift { content: content.into(), dy: 0.0, scale: 1.0, tight: true }
+    Lift { content: content.into(), dy: 0.0, scale: 1.0, tight: true, press: false }
+}
+
+/// Draws `content` at `scale` while it is pressed, like Desktop's `:active { transform: scale(...) }`.
+pub fn press<'a, Message>(content: impl Into<Element<'a, Message>>, scale: f32) -> Lift<'a, Message> {
+    Lift { content: content.into(), dy: 0.0, scale, tight: false, press: true }
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for Lift<'_, Message> {
+    /// Whether a `press` lift is pressed.
+    fn tag(&self) -> widget::tree::Tag {
+        widget::tree::Tag::of::<bool>()
+    }
+
+    fn state(&self) -> widget::tree::State {
+        widget::tree::State::new(false)
+    }
+
     fn children(&self) -> Vec<widget::Tree> {
         vec![widget::Tree::new(&self.content)]
     }
@@ -61,6 +77,18 @@ impl<Message> Widget<Message, Theme, Renderer> for Lift<'_, Message> {
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        if self.press {
+            let pressed = tree.state.downcast_mut::<bool>();
+            let now = match event {
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => cursor.is_over(layout.bounds()),
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => false,
+                _ => *pressed,
+            };
+            if now != *pressed {
+                *pressed = now;
+                shell.request_redraw();
+            }
+        }
         let tree = &mut tree.children[0];
         self.content.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
     }
@@ -87,9 +115,12 @@ impl<Message> Widget<Message, Theme, Renderer> for Lift<'_, Message> {
         viewport: &Rectangle,
     ) {
         let b = layout.bounds();
-        let (x, y) = (b.x + b.width, b.y + b.height);
+        let (x, y, scale) = match self.press {
+            true => (b.center_x(), b.center_y(), if *tree.state.downcast_ref::<bool>() { self.scale } else { 1.0 }),
+            false => (b.x + b.width, b.y + b.height, self.scale),
+        };
         let t = Transformation::translate(x, y + self.dy)
-            * Transformation::scale(self.scale)
+            * Transformation::scale(scale)
             * Transformation::translate(-x, -y);
         renderer.with_transformation(t, |r| {
             self.content.as_widget().draw(&tree.children[0], r, theme, style, layout, cursor, viewport);

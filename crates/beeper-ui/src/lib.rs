@@ -242,7 +242,8 @@ const FILTER_HOTKEYS: [&str; 5] =
     ["Filter: Unread", "Filter: Drafts", "Filter: Unanswered", "Filter: DMs", "Filter: Groups"];
 /// The hotkeys that act on the sign-in window and before sign-in. Desktop binds all hotkeys there, but the others act
 /// on chats and on the command bar, which Desktop does not draw before the onboarding ends.
-const SIGN_IN_HOTKEYS: [&str; 10] = [
+const SIGN_IN_HOTKEYS: [&str; 11] = [
+    "Keyboard Shortcuts",
     "Minimize To Tray",
     "Quit App",
     "Reload App",
@@ -4259,7 +4260,7 @@ impl BeeperGuiApp {
                 match (was == Modifiers::ALT, mods == Modifiers::ALT) {
                     (false, true) if was.is_empty() => self.alt_alone = true,
                     (true, false) if mods.is_empty() && std::mem::take(&mut self.alt_alone) => {
-                        if self.main_window.is_some() {
+                        if self.main_window.or(self.login_window).is_some() {
                             self.menu_bar = if self.menu_bar.is_some() { None } else { Some(None) };
                         }
                     }
@@ -5438,17 +5439,10 @@ impl BeeperGuiApp {
             .style(fill_box(self.pal.window, 0.0))
             .into(),
         };
-        // Desktop's menu bar, which Alt shows over the content of the main window.
-        let base = match self.menu_bar.filter(|_| in_main) {
-            Some(open) => column![self.view_menu_bar(open), base].into(),
-            None => base,
+        let (base, menu_drop) = match in_main {
+            true => self.with_menu_bar(base),
+            false => (base, None),
         };
-        let menu_drop = self.menu_bar.flatten().filter(|_| in_main).map(|i| {
-            let (menu, x) = self.view_menu_dropdown(i);
-            let at = Padding::ZERO.left(x).top(menubar::BAR_H);
-            mouse_area(container(mouse_area(menu).on_press(UiMessage::Noop)).padding(at).width(Fill).height(Fill))
-                .on_press(UiMessage::MenuBar(menubar::Msg::Show(None)))
-        });
         let modal = match (&self.quick_look_target, self.show_command_palette) {
             (Some((title, detail)), _) => Some(self.view_quick_look(title, detail)),
             (None, true) => Some(self.view_command_palette()),
@@ -5642,7 +5636,8 @@ impl BeeperGuiApp {
         let thread = self.selection.is_empty() && self.pane().thread.is_some();
         let zoom =
             (self.info_zoom && self.show_right_panel && in_main && open && !thread).then(|| self.view_avatar_zoom());
-        let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q));
+        let window = self.pane().size * (1.0 / self.zoom);
+        let hotkeys = self.hotkeys_modal.as_deref().filter(|_| in_main).map(|q| self.view_hotkeys_modal(q, window));
         // The menus and the emoji picker of the carousel show over it.
         let hover = self.view_hover_card().filter(|_| in_main);
         let quick_look = self.view_attachment_quick_look().filter(|_| in_main);

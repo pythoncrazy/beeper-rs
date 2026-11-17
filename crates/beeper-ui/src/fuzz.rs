@@ -8231,6 +8231,86 @@ fn hotkeys_on_the_sign_in_window_like_desktop() {
     assert!(simulator(accounts.view(settings)).find(about).is_ok(), "the Accounts screen comes after sign-in");
 }
 
+/// Desktop's onboarding window has the menu bar too: Alt shows it, its items act on the sign-in window, and Escape
+/// hides it. Ctrl+/ shows the Keyboard Shortcuts over the sign-in window, and Escape hides them.
+#[test]
+fn the_sign_in_window_has_the_menu_bar_and_the_shortcuts_like_desktop() {
+    let mut app = signed_out_app("sign-in-menu-bar");
+    let id = app.login_window.expect("the sign-in window");
+    let alt = |app: &mut BeeperGuiApp| {
+        let _ = app.update(UiMessage::Modifiers(Modifiers::ALT));
+        let _ = app.update(UiMessage::Modifiers(Modifiers::empty()));
+    };
+    alt(&mut app);
+    assert_eq!(app.menu_bar, Some(None), "Alt shows the menu bar");
+    let shows = |app: &BeeperGuiApp, label: &str| simulator(app.view(id)).find(label).is_ok();
+    assert!(shows(&app, "Window") && shows(&app, "Continue with Email"), "the menu bar is over the sign-in screen");
+    let _ = app.update(UiMessage::MenuBar(menubar::Msg::Show(Some(Some(0)))));
+    for item in ["About Beeper", "Minimize to Tray", "Alt+Ctrl+Q", "Logout of Beeper...", "Quit Beeper", "Ctrl+Q"] {
+        assert!(shows(&app, item), "the Beeper menu has {item}");
+    }
+    assert!(!shows(&app, "Preferences"), "the items of a signed-in account wait for the sign-in");
+    let _ = app.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), Modifiers::empty()));
+    assert_eq!(app.menu_bar, None, "Escape hides the menu bar");
+    let _ = app.update(UiMessage::WindowKey(id, Key::Character("/".into()), Modifiers::CTRL));
+    assert!(shows(&app, "Keyboard Shortcuts") && shows(&app, "Bold Text Selection"), "Ctrl+/ shows the shortcuts");
+    let _ = app.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), Modifiers::empty()));
+    assert!(!shows(&app, "Bold Text Selection"), "Escape hides the shortcuts");
+    // Every item before sign-in acts on the sign-in window or does nothing, without a panic.
+    for (_, items) in app.menus() {
+        for (_, _, msg) in items.into_iter().flatten() {
+            let _ = app.update(UiMessage::MenuBar(menubar::Msg::Run(Box::new(msg))));
+        }
+    }
+    let _ = app.update(UiMessage::Window(windows::Msg::Tray(Ok(tray::Event::Show))));
+    // The chevron menu shows the accelerator of Report a Problem like Desktop's native menu.
+    let _ = app.update(login::LoginMsg::Menu.into());
+    assert!(shows(&app, "Ctrl+Shift+P"));
+}
+
+/// Electron's native menus write the modifiers of an accelerator in Chromium's order, with "+" between the keys.
+#[test]
+fn native_menus_write_accelerators_like_electron() {
+    for (keys, label) in [
+        ("ctrl+alt+q", "Alt+Ctrl+Q"),
+        ("ctrl+shift+p", "Ctrl+Shift+P"),
+        ("ctrl+,", "Ctrl+,"),
+        ("ctrl+/, ctrl+shift+/", "Ctrl+/"),
+        ("disabled", ""),
+    ] {
+        assert_eq!(menubar::accelerator(keys), label, "{keys}");
+    }
+}
+
+/// Desktop's `BrandButton` shrinks to 98 % while the pointer presses it, and not while it is disabled.
+#[test]
+fn brand_buttons_shrink_while_pressed_like_desktop() {
+    // The pixel at the left edge of the button at y 570, which spans x 26 to 304, with the pointer down on it or not.
+    let edge = |app: &BeeperGuiApp, press: bool| {
+        let mut sim = Simulator::with_size(Default::default(), Size::new(330.0, 620.0), app.view_login());
+        sim.point_at(Point::new(165.0, 570.0));
+        if press {
+            let _ = sim.simulate([iced::Event::Mouse(iced::mouse::Event::ButtonPressed(Button::Left))]);
+        }
+        let dir = std::env::temp_dir().join(format!("beeper-rs-press-{}-{press}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = sim.snapshot(&app.iced_theme()).unwrap().matches_image(dir.join("press"));
+        let png = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+        let shot = ::image::open(&png).unwrap().into_rgba8();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let k = shot.width() / 330;
+        let [r, g, b, _] = shot[(28 * k, 570 * k)].0;
+        Color::from_rgb8(r, g, b)
+    };
+    let mut app = signed_out_app("sign-in-press");
+    let card = app.pal.primary_container;
+    assert_ne!(edge(&app, false), card, "Continue with Email covers its left edge");
+    assert_eq!(edge(&app, true), card, "a pressed button shrinks from its left edge");
+    let _ = app.update(login::LoginMsg::Show(login::Screen::Email).into());
+    app.login.busy = true;
+    assert_eq!(edge(&app, true), app.pal.chip, "a disabled Next does not shrink");
+}
+
 /// Each hotkey with no open chat does nothing or acts on the app, like Desktop.
 #[test]
 fn hotkeys_without_an_open_chat_like_desktop() {
