@@ -487,7 +487,7 @@ impl BeeperGuiApp {
                     .into()
             }
             _ => {
-                let name = txt(a.file_name.clone().expect("attachment file name"), 13.0).color(white);
+                let name = txt(crate::message::attachment_name(a), 13.0).color(white);
                 let link = button(name).bare(white);
                 container(link.on_press(UiMessage::Message(message::Msg::Download(mid.to_string(), Some(ai)))))
                     .center(Fill)

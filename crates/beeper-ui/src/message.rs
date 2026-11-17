@@ -46,6 +46,11 @@ use iced::{
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+/// The name of an attachment, or Desktop's "Attachment" for one that a bridge sent without a file name or body.
+pub(crate) fn attachment_name(a: &Attachment) -> String {
+    a.file_name.clone().unwrap_or_else(|| tr("Attachment").into())
+}
+
 /// The HTML elements that keep Desktop from balancing the lines of a message (`MessageText`).
 const BLOCK_TAGS: [&str; 15] =
     ["pre", "blockquote", "table", "ol", "ul", "details", "hr", "p>", "p ", "h1", "h2", "h3", "h4", "h5", "h6"];
@@ -1297,7 +1302,7 @@ impl BeeperGuiApp {
             parts = parts.push(self.view_gallery(ms));
         }
         for (ai, a) in m.attachments.iter().enumerate().filter(|_| ms.len() == 1) {
-            let name = a.file_name.clone().expect("attachment file name");
+            let name = attachment_name(a);
             let content: El<'a> = match (a.is_voice_note == Some(true), a.attachment_type.as_str()) {
                 (_, "audio") if self.playable(a) => {
                     let ts = shows_time.then(|| {
@@ -2287,7 +2292,7 @@ impl BeeperGuiApp {
                     .enumerate()
                     .filter(|(i, _)| only.is_none_or(|o| o == *i))
                     .map(|(_, a)| {
-                        let name = a.file_name.clone().expect("an attachment has a file name");
+                        let name = attachment_name(a);
                         (a.src_url.clone().expect("an attachment has a source"), name)
                     })
                     .collect();
