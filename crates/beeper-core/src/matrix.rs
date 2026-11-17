@@ -1536,6 +1536,9 @@ pub enum Outgoing {
         /// The thread of a thread reply, whose `quoted` is `reply_to`.
         #[serde(default)]
         thread: Option<ThreadSend>,
+        /// The text has links that go without a preview: Desktop then sends an empty list, so the bridge makes none.
+        #[serde(default)]
+        links: bool,
     },
     Edit {
         target: String,
@@ -2104,6 +2107,23 @@ pub async fn typing(client: matrix_sdk::Client, chat: String, on: bool) -> Resul
 
 /// Desktop's `formatMessage`: the text, its HTML with a `matrix.to` link for each user mention, and `m.mentions` with
 /// the mentioned users, the sender of `reply_to`, and "@room".
+/// Uploads the image of a link preview: the key of the preview that names it, and its value.
+async fn preview_image(
+    client: &Client,
+    room: &Room,
+    p: &Value,
+    bytes: Vec<u8>,
+) -> Result<(&'static str, Value), String> {
+    let e = |x: &dyn std::fmt::Display| x.to_string();
+    if room.latest_encryption_state().await.map_err(|x| e(&x))?.is_encrypted() {
+        let file = client.upload_encrypted_file(&mut bytes.as_slice()).await.map_err(|x| e(&x))?;
+        return Ok(("beeper:image:encryption", serde_json::to_value(file).expect("encrypted file JSON")));
+    }
+    let mime: mime::Mime = p["og:image:type"].as_str().ok_or("no image type")?.parse().map_err(|x| e(&x))?;
+    let uri = client.media().upload(&mime, bytes, None).await.map_err(|x| e(&x))?.content_uri;
+    Ok(("og:image", uri.to_string().into()))
+}
+
 /// Desktop's `getCaptionEditableAttachmentContent`: the media fields of the attachment message `target` (as last
 /// edited), which an edit of its caption keeps.
 async fn caption_attachment(
@@ -2210,7 +2230,7 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
     let e = PushError::from;
     let sent = |txn: String, id: OwnedEventId| store.write().sent.insert(txn, id.to_string());
     match out {
-        Outgoing::Send { txn, text, reply_to, preview, mentions, thread } => {
+        Outgoing::Send { txn, text, reply_to, preview, mentions, thread, links } => {
             // Desktop mentions the sender of the quoted message, but not of the fallback reply of a thread reply.
             let sender = reply_to.as_ref().filter(|_| thread.as_ref().is_none_or(|t| t.chosen)).and_then(|r| {
                 let st = store.read();
@@ -2236,18 +2256,16 @@ async fn push(store: &SharedStore, chat: String, out: Outgoing) -> Result<(), Pu
                 }
             }
             if let Some((mut p, image)) = preview {
+                // Desktop's `buildLinkPreview` sends the preview without its image when the upload fails.
                 if let Some(bytes) = image {
-                    if room.latest_encryption_state().await.map_err(e)?.is_encrypted() {
-                        let file = client.upload_encrypted_file(&mut bytes.as_slice()).await.map_err(e)?;
-                        p["beeper:image:encryption"] = serde_json::to_value(file).expect("encrypted file JSON");
-                    } else {
-                        let mime: mime::Mime =
-                            p["og:image:type"].as_str().expect("an image type").parse().expect("a MIME type");
-                        let uri = client.media().upload(&mime, bytes, None).await.map_err(e)?.content_uri;
-                        p["og:image"] = uri.to_string().into();
+                    match preview_image(&client, &room, &p, bytes).await {
+                        Ok((key, value)) => p[key] = value,
+                        Err(err) => eprintln!("link preview: dropping its image: {err}"),
                     }
                 }
                 content["com.beeper.linkpreviews"] = Value::Array(vec![p]);
+            } else if links {
+                content["com.beeper.linkpreviews"] = Value::Array(Vec::new());
             }
             let id = room.send_raw("m.room.message", content).with_transaction_id(txn.as_str().into());
             sent(txn, id.await.map_err(e)?.response.event_id);
@@ -4477,6 +4495,7 @@ mod tests {
             preview: None,
             mentions: Vec::new(),
             thread: Some(t.clone()),
+            links: true,
         };
         store.write().queue("!room:x", out);
         let (bytes, name, mime) = (b"%PDF".to_vec(), "a.pdf".to_string(), "application/pdf".to_string());
@@ -4517,6 +4536,7 @@ mod tests {
         let rel = json!({ "rel_type": "m.thread", "event_id": "$e1", "is_falling_back": true, "m.in_reply_to": { "event_id": "$e5" } });
         assert_eq!((&body["m.relates_to"], &body["com.beeper.broadcast_outside_thread"]), (&rel, &json!(true)));
         assert_eq!(body["m.mentions"], json!({}), "Desktop does not mention the sender of the fallback reply");
+        assert_eq!(body["com.beeper.linkpreviews"], json!([]), "links without a preview get none from the bridge");
         let (_, body) =
             sent.iter().find(|(p, b)| p.contains("/send/m.room.message/") && b["msgtype"] == "m.file").expect("a file");
         assert_eq!(body["com.beeper.broadcast_outside_thread"], json!(true), "a file has \"Also send to chat\" too");

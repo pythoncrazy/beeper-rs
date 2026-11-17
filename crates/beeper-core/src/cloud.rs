@@ -456,8 +456,9 @@ pub async fn link_preview(url: String) -> Result<Option<PagePreview>, String> {
     if let Some(s) = summary {
         p["og:description"] = s.into();
     }
+    // Desktop keeps a preview whose image does not load, without the image.
     let bytes = match image {
-        Some(i) => Some(http_bytes(i.as_str()).await?),
+        Some(i) => http_bytes(i.as_str()).await.ok(),
         None => None,
     };
     Ok(Some((p, bytes)))

@@ -156,9 +156,10 @@ fn load_upload(st: &BeeperStore, id: &str) -> Result<PendingMedia, String> {
     Ok(PendingMedia { name: st.assets[id].file_name.clone(), ..portal::load_file(&path)? })
 }
 
-/// Desktop's caption rule: the text goes with a single file as its caption.
-fn caption(text: &str, files: &[PendingMedia]) -> Option<String> {
-    (!text.is_empty() && files.len() == 1).then(|| text.to_string())
+/// Desktop's caption rule: the text goes with a single file as its caption where the chat takes captions on it.
+fn caption(text: &str, files: &[PendingMedia], rules: &FileRules) -> Option<String> {
+    let takes = |f: &PendingMedia| beeper_core::media::takes_caption(rules, &f.mime, f.is_gif, false);
+    (!text.is_empty() && matches!(files, [f] if takes(f))).then(|| text.to_string())
 }
 
 /// Desktop's `KFe`: a composer file to send. A video and an audio file go with their measured length and size. An
@@ -458,7 +459,7 @@ impl BeeperGuiApp {
             // Desktop's `scheduleCurrentDraft`: one entry for each content part, with the reply on the first.
             let mut reply_to = self.pane.reply_target();
             let files = std::mem::take(&mut self.pane.attachments);
-            let caption = caption(&text, &files);
+            let caption = caption(&text, &files, &st.chats[idx].file);
             if !text.is_empty() && caption.is_none() {
                 st.schedule(&chat_id, text, reply_to.take(), (at, no_reply), None);
             }
@@ -490,7 +491,8 @@ impl BeeperGuiApp {
             });
             let files = files.into_iter().map(|f| out_file(&mut self.media, &mut st, f)).collect();
             let text = Some(text).filter(|t| !t.is_empty());
-            let draft = Draft { text, reply_to, mentions, preview, thread: self.pane.send_thread(), files };
+            let links = !self.pane.composer_links.is_empty();
+            let draft = Draft { text, reply_to, mentions, preview, thread: self.pane.send_thread(), files, links };
             let (_, sends) = st.echo_draft(&chat_id, draft).expect("send a message");
             // Desktop's `queuePendingMessages` sends the earlier queue of the chat first.
             if let Some(i) = self.queued.iter().position(|q| q.chat == chat_id) {

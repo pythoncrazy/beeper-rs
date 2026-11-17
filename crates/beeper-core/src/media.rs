@@ -113,6 +113,27 @@ fn target(mime: &str, listed: &[&str]) -> Option<&'static str> {
     targets.iter().copied().find(|a| listed.iter().any(|r| r == a || *r == "*/*" || *r == wild))
 }
 
+/// Desktop's `rP`: whether the chat takes text as the caption of a file, which a GIF asks of images and a voice note
+/// of audio when its own kind does not say. Otherwise the text goes as a message of its own before the file.
+pub fn takes_caption(rules: &FileRules, mime: &str, gif: bool, voice: bool) -> bool {
+    let base = base(mime);
+    let kind = match top(&base) {
+        _ if voice => FILE_VOICE,
+        _ if gif || base == "image/gif" => FILE_GIF,
+        Some("image") => FILE_IMAGE,
+        Some("audio") => FILE_AUDIO,
+        Some("video") => FILE_VIDEO,
+        _ => FILE_FILE,
+    };
+    let fallback = match kind {
+        FILE_GIF => Some(FILE_IMAGE),
+        FILE_VOICE => Some(FILE_AUDIO),
+        _ => None,
+    };
+    let level = rules.get(kind).and_then(|r| r.caption).or_else(|| rules.get(fallback?)?.caption);
+    level.unwrap_or(0) > 0
+}
+
 /// Desktop's `Cc` without the Data Saving Mode, which cloud uploads do not use.
 pub fn decide(f: &Facts, rules: &FileRules) -> Action {
     if f.size > ABSOLUTE_MAX {
@@ -660,6 +681,22 @@ mod tests {
 
     fn rule(types: &[(&str, i8)]) -> FileRule {
         FileRule { mime_types: types.iter().map(|(m, l)| (m.to_string(), *l)).collect(), ..Default::default() }
+    }
+
+    /// Desktop's `rP`: a caption where the kind takes one, a GIF asking images and a voice note audio.
+    #[test]
+    fn captions_follow_the_room_features_like_desktop() {
+        let with = |caption| FileRule { caption, ..rule(&[("*/*", 2)]) };
+        let rules: FileRules =
+            [(FILE_IMAGE.into(), with(Some(2))), (FILE_AUDIO.into(), with(Some(0))), (FILE_FILE.into(), with(None))]
+                .into_iter()
+                .collect();
+        assert!(takes_caption(&rules, "image/jpeg", false, false));
+        assert!(takes_caption(&rules, "image/gif", false, false), "a GIF without its own kind asks images");
+        assert!(!takes_caption(&rules, "audio/ogg", false, true), "a voice note asks audio, which says no");
+        assert!(!takes_caption(&rules, "application/pdf", false, false), "no caption level is no caption");
+        assert!(!takes_caption(&FileRules::new(), "image/png", false, false));
+        assert!(takes_caption(&crate::models::beeper_files(), "application/pdf", false, false), "Beeper's defaults");
     }
 
     /// A phone photo stores its pixels sideways with an EXIF orientation; Chromium shows it upright.
