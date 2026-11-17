@@ -11,10 +11,12 @@ const GUEST_TOKEN: &str = "BEEPER-PRIVATE-API-PLEASE-DONT-USE";
 pub struct CloudError {
     pub status: u16,
     pub message: String,
+    /// The Matrix `errcode` of a refusal, which Desktop's SDK errors carry.
+    pub errcode: Option<String>,
 }
 
 fn fail(status: u16, message: impl Into<String>) -> CloudError {
-    CloudError { status, message: message.into() }
+    CloudError { status, message: message.into(), errcode: None }
 }
 
 pub enum CodeResult {
@@ -141,8 +143,10 @@ impl Cloud {
         .map_err(|e: reqwest::Error| fail(0, format!("Could not reach {url}: {e}")))?;
         let json = serde_json::from_str::<Value>(&text);
         if status >= 300 {
-            let msg = json.ok().and_then(|v| ["error", "message", "errcode"].iter().find_map(|k| field(&v, k)));
-            return Err(fail(status, msg.unwrap_or(format!("HTTP {status}: {text}"))));
+            let v = json.unwrap_or_default();
+            let msg = ["error", "message", "errcode"].iter().find_map(|k| field(&v, k));
+            let errcode = field(&v, "errcode");
+            return Err(CloudError { errcode, ..fail(status, msg.unwrap_or(format!("HTTP {status}: {text}"))) });
         }
         match text.is_empty() {
             true => Ok(Value::Null),
@@ -194,6 +198,32 @@ impl Cloud {
         let session: MatrixSession =
             serde_json::from_value(v).map_err(|e| fail(502, format!("Bad Matrix login response: {e}")))?;
         Ok(MatrixSession { jwt: Some(jwt.into()), ..session })
+    }
+
+    /// Desktop's `loginWithUsername`, the SDK's Matrix password login of the hidden "Login with password".
+    pub fn password_login(&self, username: &str, password: &str) -> Result<MatrixSession, CloudError> {
+        let body = json!({
+            "type": "m.login.password",
+            "identifier": { "type": "m.id.user", "user": username },
+            "password": password,
+            "initial_device_display_name": crate::config::DEVICE_NAME
+        });
+        let v = self.call(&format!("{}/_matrix/client/v3/login", self.homeserver), None, Some(&body))?;
+        serde_json::from_value(v).map_err(|e| fail(502, format!("Bad Matrix login response: {e}")))
+    }
+
+    /// Desktop's `isUsernameAvailable`: the SDK's `RegisterAvailable` on the homeserver, which refuses a name that is
+    /// taken, invalid or reserved.
+    pub fn username_available(&self, username: &str) -> Result<bool, CloudError> {
+        let name = crate::codec::url_encode(username);
+        let url = format!("{}/_matrix/client/v3/register/available?username={name}", self.homeserver);
+        match self.call(&url, None, None) {
+            Ok(v) => Ok(v["available"] == true),
+            Err(e) if matches!(e.errcode.as_deref(), Some("M_USER_IN_USE" | "M_INVALID_USERNAME" | "M_EXCLUSIVE")) => {
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     pub fn whoami(&self, access_token: &str) -> Result<(Profile, Vec<BridgeAccountInfo>), CloudError> {
@@ -535,6 +565,56 @@ mod tests {
         let body = json!({ "type": "org.matrix.login.jwt", "token": "jwt",
             "initial_device_display_name": "Beeper Desktop v4 (Linux)" });
         assert_eq!(*sent.lock().unwrap(), [("POST".into(), "/_matrix/client/v3/login".into(), body)]);
+    }
+
+    /// The hidden password login is a Matrix `m.login.password`, and a refusal keeps its `errcode` for the sign-in.
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn password_login_like_desktop() {
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let url = crate::bridge_stub::serve(move |_, _, body| {
+            log.lock().unwrap().push(body.clone());
+            match body["password"] == "right" {
+                true => (200, json!({ "user_id": "@alex:x", "access_token": "token", "device_id": "DEV" })),
+                false => (403, json!({ "errcode": "M_FORBIDDEN", "error": "Invalid username or password" })),
+            }
+        })
+        .await;
+        let cloud = std::sync::Arc::new(Cloud::new(&url, &url));
+        let login = |password: &'static str| {
+            let cloud = cloud.clone();
+            tokio::task::spawn_blocking(move || cloud.password_login("alex", password))
+        };
+        let session = login("right").await.unwrap().unwrap();
+        assert_eq!((session.user_id.as_str(), session.jwt), ("@alex:x", None));
+        let body = json!({ "type": "m.login.password", "identifier": { "type": "m.id.user", "user": "alex" },
+            "password": "right", "initial_device_display_name": "Beeper Desktop v4 (Linux)" });
+        assert_eq!(sent.lock().unwrap()[0], body);
+        let refused = login("wrong").await.unwrap().unwrap_err();
+        assert_eq!((refused.status, refused.errcode.as_deref()), (403, Some("M_FORBIDDEN")));
+    }
+
+    /// Desktop's `isUsernameAvailable` asks the homeserver's `register/available`, where a taken name is a refusal.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn username_availability_like_desktop() {
+        let url = crate::bridge_stub::serve(|_, path, _| match path {
+            "/_matrix/client/v3/register/available?username=free-name" => (200, json!({ "available": true })),
+            "/_matrix/client/v3/register/available?username=taken" => {
+                (400, json!({ "errcode": "M_USER_IN_USE", "error": "User ID already taken." }))
+            }
+            _ => (500, json!({ "errcode": "M_UNKNOWN", "error": "Internal server error" })),
+        })
+        .await;
+        let cloud = std::sync::Arc::new(Cloud::new(&url, &url));
+        let check = |name: &'static str| {
+            let cloud = cloud.clone();
+            tokio::task::spawn_blocking(move || cloud.username_available(name))
+        };
+        assert_eq!(check("free-name").await.unwrap(), Ok(true));
+        assert_eq!(check("taken").await.unwrap(), Ok(false));
+        let failed = check("boom").await.unwrap().unwrap_err();
+        assert_eq!((failed.status, failed.message.as_str()), (500, "Internal server error"));
     }
 
     /// The reset of the recovery key deletes every bridge, like Desktop's `deleteAllBridges`.
