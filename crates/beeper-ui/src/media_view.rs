@@ -1283,6 +1283,8 @@ impl BeeperGuiApp {
     pub(crate) fn media_view(&mut self, msg: Msg) -> Task<UiMessage> {
         match msg {
             Msg::OpenCarousel(mid, ai, in_media) => {
+                // Desktop's `AttachmentCarousel` closes Picture in Picture when it opens.
+                self.stop_pip();
                 self.leave_carousel_video();
                 if in_media {
                     self.media_mut().advance = false;

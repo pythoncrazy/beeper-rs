@@ -620,7 +620,7 @@ impl BeeperGuiApp {
             .into(),
         };
         // Desktop's video menu takes the place of the message menu for a right click on the video, with Bookmark.
-        if let Some(rows) = self.video_menu_rows(&mid).filter(|_| self.pane().video_menu) {
+        if let Some(rows) = self.video_menu_rows(&mid, false).filter(|_| self.pane().video_menu) {
             let mark = bookmarkable(&st, m).then(|| {
                 [rule(), item(bookmark.into(), "", Some(UiMessage::Message(Msg::ToggleBookmark(mid.clone()))))]
             });

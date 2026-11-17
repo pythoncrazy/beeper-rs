@@ -2556,6 +2556,8 @@ pub struct BeeperGuiApp {
     pip_wanted: bool,
     /// The video went to Picture in Picture from the video menu, so it stays there while its chat is open.
     pip_manual: bool,
+    /// Where the video menu of the Picture in Picture window is open.
+    pip_menu: Option<Point>,
     pub hotkey_query: String,
     pub hotkey_rec: Option<HotkeyRec>,
     pub profile: profile::ProfileForm,
@@ -2864,6 +2866,7 @@ impl BeeperGuiApp {
             pip: None,
             pip_wanted: false,
             pip_manual: false,
+            pip_menu: None,
             hotkey_query: String::new(),
             hotkey_rec: None,
             profile: profile::ProfileForm::default(),
@@ -4099,7 +4102,9 @@ impl BeeperGuiApp {
             UiMessage::WindowKey(_, Key::Named(Named::Escape), _) if self.menu_bar.is_some() => self.menu_bar = None,
             // Desktop's `onEscapePressed` of the Picture in Picture window.
             UiMessage::WindowKey(id, Key::Named(Named::Escape), _) if self.pip.as_ref().is_some_and(|p| p.0 == id) => {
-                return window::close(id);
+                if self.pip_menu.take().is_none() {
+                    return window::close(id);
+                }
             }
             UiMessage::WindowKey(id, key, mods) => {
                 if Some(id) == self.settings_window {
@@ -5318,7 +5323,8 @@ impl BeeperGuiApp {
             let x = if at.x + MESSAGE_MENU_W > self.pane().size.width { at.x - MESSAGE_MENU_W } else { at.x };
             let y = at.y.min(self.pane().size.height - h - 8.0);
             let (sub, sub_w) = match self.view_speed_menu(mid) {
-                Some(sub) => (Some(sub), video::SPEED_MENU_W),
+                // Level with its row, under Fullscreen, Open in PiP, Download and Mute.
+                Some(sub) => (Some(column![Space::new().height(4.0 * MENU_ITEM), sub].into()), video::SPEED_MENU_W),
                 None if self.pane().remind_sub => {
                     let st = self.store.read();
                     let rows = self.message_remind_items(&st, mid);
@@ -6028,20 +6034,16 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's Picture in Picture window (`Gyt`): frameless and on top, 16 px from the top left corner, while the
-    /// video that went on plays out of its chat. It closes when the chat of the video opens again, where the video
-    /// goes on inline, and when another video plays.
+    /// video that went on plays out of its chat or out of view. It closes when the video stops or another video
+    /// plays, and when the video goes back inline (`restore_pip`). Desktop's main process makes it at least 150 px
+    /// on each side and without a shadow; iced has no shadow setting on Linux, where an undecorated window has none.
     fn pip(&mut self) -> Task<UiMessage> {
-        if let Some((id, mid)) = self.pip.clone() {
-            let here = !self.pip_manual
-                && self.store.read().loaded(&mid).map(|m| m.chat_id.clone()) == self.pane.selected_chat_id;
-            let gone = self.video.as_ref().is_none_or(|v| v.mid != mid);
-            if !here && !gone {
+        if let Some((id, mid)) = &self.pip {
+            if self.video.as_ref().is_some_and(|v| &v.mid == mid) {
                 return Task::none();
             }
-            (self.pip, self.pip_manual) = (None, false);
-            if let Some(v) = self.video.as_mut().filter(|_| here) {
-                v.set_pip(false);
-            }
+            let id = *id;
+            (self.pip, self.pip_manual, self.pip_menu) = (None, false, None);
             return window::close(id);
         }
         let Some(v) = self.video.as_mut().filter(|_| std::mem::take(&mut self.pip_wanted)) else {
@@ -6056,7 +6058,7 @@ impl BeeperGuiApp {
             resizable: false,
             transparent: true,
             level: window::Level::AlwaysOnTop,
-            min_size: None,
+            min_size: Some(Size::new(150.0, 150.0)),
             ..Self::window_settings(Size::new(w as f32, h as f32))
         });
         self.pip = Some((id, v.mid.clone()));

@@ -306,10 +306,12 @@ impl BeeperGuiApp {
                     t.since = Some(Instant::now());
                     audio.output();
                 }
+                // Desktop's `toggleTrack` closes Picture in Picture when another track plays.
                 _ => {
                     audio.pause();
                     audio.switch(Track { chat, mid, url, at: 0.0, since: Some(Instant::now()) });
                     audio.output();
+                    self.stop_pip();
                 }
             },
             Msg::Skip(forward) => {
