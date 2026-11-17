@@ -5,6 +5,7 @@ use crate::accounts;
 use crate::blocking;
 use crate::blocking::blocked_chats;
 use crate::chat_list;
+use crate::focus::{self, Caret, Focus};
 use crate::hotkeys;
 use crate::i18n::{tr, trf, trn, trnx, trs, trx};
 use crate::integrations;
@@ -20,7 +21,7 @@ use crate::{
     ago, badge, brand_key, checkbox, distance, divider, downloads_dir, duration, ease_out, feedback_btn, first_groups,
     fmt_phone, group, icon_btn, inbox_label, locate, outline_input, pill_btn, pill_style, plan_pill, portal, pref_row,
     reconnect, record, select, slider_style, status_text, style, svg_size, theme_cards, tinted, toggle, toggle_faded,
-    BeeperGuiApp, El, Toast, UiMessage, ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT,
+    Align, BeeperGuiApp, El, Toast, UiMessage, ACCOUNT_SUB_W, ADD_ICON, APP_QR, ASK_CLEAR_CACHE, ASK_CLEAR_CHAT,
     ASK_CLEAR_STORAGE, ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT, ASK_REVOKE_CONNECTION,
     CHANGELOG_URL, CHEVRON_LEFT, CLAUDE_LOGO, COPIED_ICON, COPY_ICON, CURSOR_LOGO, DEVICE_ICONS, ERROR_CIRCLE,
     INBOX_OPTIONS, ISSUES_URL, LOGO, MENU_ITEM, ORANGE, QR_CODE, REVERT, SELECT_ARROW, SETTINGS_SIZE, TAKE_BEEPER,
@@ -247,6 +248,40 @@ fn hotkey_shown(st: &BeeperStore, name: &str) -> bool {
     usable && prefs::hotkey_feature(name).is_none_or(|f| st.feature(f).show)
 }
 
+/// The controls of the Settings window that Tab reaches, in Desktop's DOM order: the search field, then the
+/// `label-wrapper` rows of the pane, which are the account rows and the switch rows. The other controls of the panes
+/// take no keyboard focus in beeper-rs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    Search,
+    /// The row of the account at this index, after the Beeper account at 0.
+    Account(usize),
+    /// The switch row of a preference.
+    Pref(&'static prefs::Pref),
+}
+
+impl Stop {
+    /// The ID of the search field, or of the row, which Tab scrolls into view.
+    fn id(self) -> String {
+        match self {
+            Stop::Search => "settings-search".into(),
+            Stop::Account(i) => format!("settings-account-{i}"),
+            Stop::Pref(r) => format!("settings-pref-{}", r.key),
+        }
+    }
+}
+
+/// The preferences of a pane of preferences.
+fn pref_page(tab: SettingsTab) -> &'static [prefs::Item] {
+    match tab {
+        SettingsTab::General => prefs::GENERAL,
+        SettingsTab::Appearance => prefs::APPEARANCE,
+        SettingsTab::Notifications => prefs::NOTIFICATIONS,
+        SettingsTab::Ai => prefs::AI,
+        _ => &[],
+    }
+}
+
 /// Desktop's `Rx`: a settings row of a feature shows when the account shows the feature.
 pub(crate) fn shown(st: &BeeperStore, r: &prefs::Pref) -> bool {
     let control = match r.control {
@@ -278,7 +313,7 @@ pub fn search_settings(st: &BeeperStore, query: &str) -> Vec<SettingsHit> {
     let mut out = Vec::new();
     for tab in SettingsTab::listed(st) {
         let rows: Vec<_> = match tab {
-            SettingsTab::Accounts => crate::networks::addable()
+            SettingsTab::Accounts => crate::networks::addable(&st.features)
                 .filter(|n| has(n.display_name))
                 .map(|n| SettingsHit::Network(n.display_name))
                 .collect(),
@@ -497,6 +532,12 @@ impl BeeperGuiApp {
             Key::Named(Named::Escape) => {
                 return window::close(self.settings_window.expect("the settings window is open"))
             }
+            Key::Named(Named::Tab) if self.confirm.is_none() && self.integrations.add.is_none() => {
+                let (id, back) = (self.settings_window.expect("the settings window is open"), mods.shift());
+                return focus::caret(id, "settings-search")
+                    .map(move |at| UiMessage::Focus(focus::Msg::Tab(id, back, at)));
+            }
+            Key::Named(Named::Enter) if self.settings_keys.get().is_some() => return self.settings_press(),
             Key::Named(k @ (Named::ArrowUp | Named::ArrowDown)) if n > 0 => {
                 let step = if k == Named::ArrowDown { 1 } else { n - 1 };
                 return operation::is_focused("settings-search").then(move |on| {
@@ -510,6 +551,71 @@ impl BeeperGuiApp {
             _ => {}
         }
         Task::none()
+    }
+
+    /// The stops of the Settings window, in their order.
+    fn settings_stops(&self) -> Vec<Stop> {
+        let st = self.store.read();
+        let rows: Vec<Stop> = match self.active_settings_tab {
+            SettingsTab::Accounts if !self.account_page_shown(&st) => {
+                (0..=st.bridge_accounts.len()).map(Stop::Account).collect()
+            }
+            tab => pref_page(tab)
+                .iter()
+                .flat_map(|item| match item {
+                    prefs::Item::Group(rows) => *rows,
+                    _ => &[],
+                })
+                .filter(|r| matches!(r.control, prefs::Control::Toggle(_)) && shown(&st, r))
+                .map(Stop::Pref)
+                .collect(),
+        };
+        std::iter::once(Stop::Search).chain(rows).collect()
+    }
+
+    /// Tab (Shift+Tab with `back`) in the Settings window, from its search field when it has the caret. Chromium
+    /// scrolls the focused row into view.
+    pub(crate) fn settings_tab(&mut self, back: bool, caret: Caret) -> Task<UiMessage> {
+        let stops = self.settings_stops();
+        if caret == Caret::Field {
+            self.settings_keys.set(Some(Stop::Search));
+        }
+        match self.settings_keys.step(&stops, back) {
+            Some(Stop::Search) | None => {
+                self.settings_keys.set(None);
+                operation::focus(Stop::Search.id())
+            }
+            // iced draws the scroll of an operation at the next message.
+            Some(row) => {
+                let shown = locate(row.id(), "settings-pane", Align::Nearest).chain(Task::done(UiMessage::Noop));
+                Task::batch([focus::blur(), shown])
+            }
+        }
+    }
+
+    /// Enter or Space on the focused row of the Settings window. Desktop's account rows are `dnd-kit` sortables,
+    /// whose keys pick the row up to reorder the accounts, which beeper-rs does not do.
+    pub(crate) fn settings_press(&mut self) -> Task<UiMessage> {
+        let stop = self.settings_keys.get().filter(|s| self.settings_stops().contains(s));
+        let press = match stop {
+            Some(Stop::Pref(r)) => self.toggle_press(r, &self.store.read()),
+            Some(Stop::Search | Stop::Account(_)) | None => None,
+        };
+        press.map_or_else(Task::none, |m| self.update(m))
+    }
+
+    /// Desktop's `.label-wrapper:focus-visible`: the row with the keyboard focus takes
+    /// `rgba(var(--color-fg-rgb) / 0.1)`.
+    fn focus_row<'a>(&self, row: El<'a>, stop: Stop) -> El<'a> {
+        let on = self.settings_keys.is(stop);
+        let tint = if on { self.pal.fg.scale_alpha(0.1) } else { CLEAR };
+        container(row).id(stop.id()).style(fill_box(tint, 0.0)).into()
+    }
+
+    /// Whether the Accounts pane shows the page of an account rather than the list.
+    fn account_page_shown(&self, st: &BeeperStore) -> bool {
+        let known = |id: &str| id == "hungryserv" || st.bridge_accounts.iter().any(|b| b.account_id == id);
+        self.account_page.as_deref().is_some_and(known)
     }
 
     /// Desktop's `ShortcutRecorder` keys: Escape moves the focus to the Save and Cancel buttons, where Enter and Escape
@@ -1055,12 +1161,7 @@ impl BeeperGuiApp {
     fn settings_content(&self, st: &BeeperStore) -> El<'_> {
         let p = &self.pal;
         let groups: Vec<El<'_>> = match self.active_settings_tab {
-            SettingsTab::Accounts
-                if self
-                    .account_page
-                    .as_deref()
-                    .is_some_and(|id| id == "hungryserv" || st.bridge_accounts.iter().any(|b| b.account_id == id)) =>
-            {
+            SettingsTab::Accounts if self.account_page_shown(st) => {
                 self.account_page(st, self.account_page.as_deref().expect("an account page"))
             }
             SettingsTab::Accounts => {
@@ -1129,7 +1230,7 @@ impl BeeperGuiApp {
                             (i > 0).then(|| {
                                 container(Space::new()).width(Fill).height(1).style(fill_box(p.chip, 0.0)).into()
                             }),
-                            Some(r),
+                            Some(self.focus_row(r, Stop::Account(i))),
                         ]
                     })
                     .flatten();
@@ -1149,9 +1250,9 @@ impl BeeperGuiApp {
                 ));
                 vec![column![head, column![card, self.accounts_foot(st, add)].spacing(11)].spacing(8).into()]
             }
-            SettingsTab::General => self.pref_items(prefs::GENERAL, st),
-            SettingsTab::Appearance => self.pref_items(prefs::APPEARANCE, st),
-            SettingsTab::Notifications => self.pref_items(prefs::NOTIFICATIONS, st),
+            tab @ (SettingsTab::General | SettingsTab::Appearance | SettingsTab::Notifications | SettingsTab::Ai) => {
+                self.pref_items(pref_page(tab), st)
+            }
             SettingsTab::Hotkeys => vec![self.hotkeys_page(st)],
             // Desktop's `DevicesPane`: the app card, the lists of devices, and the error.
             SettingsTab::Devices => {
@@ -1174,7 +1275,6 @@ impl BeeperGuiApp {
                 let page = column![self.take_beeper(), Space::new().height(8)].extend(lists);
                 vec![page.into()]
             }
-            SettingsTab::Ai => self.pref_items(prefs::AI, st),
             SettingsTab::BeeperPlus => vec![group(
                 p,
                 None,
@@ -1989,13 +2089,9 @@ impl BeeperGuiApp {
         let mut press = None;
         let control = match r.control {
             prefs::Control::Toggle(_) => {
-                let v = s.pref(r.key);
                 let off = r.requires.is_some_and(|k| !s.on(k)) || locked;
-                press = match locked {
-                    true => Some(upsell.clone()),
-                    false => (!off).then_some(UiMessage::Settings(Msg::SetPref(r.key, 1 - v))),
-                };
-                toggle_faded(p, v == 1 && !locked, press.clone(), if off { 0.5 } else { 1.0 })
+                press = self.toggle_press(r, st);
+                toggle_faded(p, s.pref(r.key) == 1 && !locked, press.clone(), if off { 0.5 } else { 1.0 })
             }
             prefs::Control::ReactionEmoji { .. } => {
                 press = Some(UiMessage::QuickEmoji(Some(0)));
@@ -2141,10 +2237,24 @@ impl BeeperGuiApp {
         let desc = r.desc.map(|d| [trs(d, args).as_str()].into_iter().chain(paid).collect::<Vec<_>>().join("\n\n"));
         let row = pref_row(p, trs(r.label, label), desc.as_deref(), r.badge.map(|b| badge(p, b)), control);
         // Desktop's `label-wrapper` toggles the checkbox on a click anywhere in the row.
-        match press {
+        let row = match press {
             Some(m) => mouse_area(row).on_press(m).into(),
             None => row,
+        };
+        match r.control {
+            prefs::Control::Toggle(_) => self.focus_row(row, Stop::Pref(r)),
+            _ => row,
         }
+    }
+
+    /// The press of a switch row (Desktop's `WrappedSwitch`): a locked feature opens the Beeper Plus prompt
+    /// (`onFeatureInteraction`), and a row whose `requires` is off does nothing.
+    fn toggle_press(&self, r: &'static prefs::Pref, st: &BeeperStore) -> Option<UiMessage> {
+        if r.feature.is_some_and(|f| st.feature(f).locked()) {
+            return Some(UiMessage::Settings(Msg::SelectTab(SettingsTab::BeeperPlus)));
+        }
+        let off = r.requires.is_some_and(|k| !st.settings.on(k));
+        (!off).then_some(UiMessage::Settings(Msg::SetPref(r.key, 1 - st.settings.pref(r.key))))
     }
 }
 
@@ -2209,7 +2319,7 @@ impl BeeperGuiApp {
             Msg::SelectTab(t) => {
                 let top = operation::scroll_to("settings-pane", operation::AbsoluteOffset { x: 0.0, y: 0.0 });
                 self.active_settings_tab = t;
-                (self.account_page, self.app_qr) = (None, false);
+                (self.account_page, self.app_qr, self.settings_keys) = (None, false, Focus::default());
                 return Task::batch([top, self.load_devices()]);
             }
             Msg::DevicesLoaded(r) => (self.devices, self.devices_busy) = (Some(r), false),
@@ -2378,8 +2488,9 @@ impl BeeperGuiApp {
                     // Desktop's network hit: the account on that network, or the Add Account window for it.
                     SettingsHit::Network(name) => {
                         let st = self.store.read();
-                        let net =
-                            crate::networks::addable().find(|n| n.display_name == name).expect("an addable network");
+                        let net = crate::networks::addable(&st.features)
+                            .find(|n| n.display_name == name)
+                            .expect("an addable network");
                         let account = st
                             .bridge_accounts
                             .iter()

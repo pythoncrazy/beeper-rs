@@ -140,6 +140,13 @@ fn bridge(id: &str) -> Option<Vec<(Value, Vec<Value>)>> {
                     { "type": "password", "id": "fi.mau.telegram.login.password", "name": "Password" }]),
                         true,
                     ),
+                    form(
+                        "fi.mau.telegram.login.password.incorrect",
+                        "Incorrect password, please try again.",
+                        json!([
+                    { "type": "password", "id": "fi.mau.telegram.login.password", "name": "Password" }]),
+                        true,
+                    ),
                     done("fi.mau.telegram.login.complete", "12345"),
                 ],
             ),
@@ -321,8 +328,16 @@ fn reply(st: &mut State, method: &str, path: &str, body: &Value) -> (u16, Value)
                     return (200, step(st, id));
                 }
                 kind if kind != current["type"] => return err(400, "M_BAD_STATE", "Step type does not match"),
+                // A wrong value goes to the step's `.incorrect` retry when the flow has one, else it is an error.
                 "user_input" if values.contains(&WRONG_CODE) => {
-                    return err(400, "FI.MAU.INVALID_CODE", "Invalid phone code")
+                    let retry = format!("{}.incorrect", current["step_id"].as_str().unwrap_or_default());
+                    let retry = retry.replace(".incorrect.incorrect", ".incorrect");
+                    let p = st.processes.get_mut(*id).expect("a known process");
+                    let Some(i) = flows[p.1].1.iter().position(|s| s["step_id"] == retry.as_str()) else {
+                        return err(400, "FI.MAU.INVALID_CODE", "Invalid phone code");
+                    };
+                    p.2 = i;
+                    return (200, step(st, id));
                 }
                 "user_input"
                     if current["user_input"]["fields"][0]["type"] == "phone_number"
@@ -337,6 +352,10 @@ fn reply(st: &mut State, method: &str, path: &str, body: &Value) -> (u16, Value)
             }
             let p = st.processes.get_mut(*id).expect("a known process");
             p.2 += 1;
+            // The retry steps only follow a wrong value.
+            while flows[p.1].1[p.2]["step_id"].as_str().is_some_and(|s| s.ends_with(".incorrect")) {
+                p.2 += 1;
+            }
             let next = step(st, id);
             if next["type"] == "complete" {
                 st.logins.push((b.into(), next["complete"]["user_login_id"].as_str().expect("a login ID").into()));

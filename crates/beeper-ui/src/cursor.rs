@@ -2,20 +2,22 @@ use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{self, Widget};
 use iced::advanced::{mouse, overlay, renderer, Clipboard, Shell};
 use iced::keyboard;
-use iced::{Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector};
+use iced::{window, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector};
 use std::cell::Cell;
 
 /// The root of a window. It keeps the cursor position in `at` without a message, so a mouse move does not
 /// rebuild the view. With `arrow`, it shows the arrow cursor instead of the pointer over `content` and its
-/// overlays, like Desktop when "Use pointer cursor for interactive elements" is off.
-pub struct Root<'a, Message>(Element<'a, Message>, bool, &'a Cell<Point>);
+/// overlays, like Desktop when "Use pointer cursor for interactive elements" is off. It marks the widgets of
+/// `window` for the operations, which go through all the windows.
+pub struct Root<'a, Message>(Element<'a, Message>, bool, &'a Cell<Point>, window::Id);
 
 pub fn root<'a, Message>(
     content: impl Into<Element<'a, Message>>,
     arrow: bool,
     at: &'a Cell<Point>,
+    window: window::Id,
 ) -> Root<'a, Message> {
-    Root(content.into(), arrow, at)
+    Root(content.into(), arrow, at, window)
 }
 
 fn unpoint(arrow: bool, i: mouse::Interaction) -> mouse::Interaction {
@@ -64,6 +66,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Root<'_, Message> {
         renderer: &Renderer,
         operation: &mut dyn widget::Operation,
     ) {
+        operation.custom(None, layout.bounds(), &mut crate::focus::WindowMark(self.3));
         self.0.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
     }
 

@@ -602,6 +602,31 @@ impl BeeperGuiApp {
         Some(column![steps].push(note).spacing(14).into())
     }
 
+    /// Desktop's Telegram help under a wrong two-step verification password: 12 px text over its `.list`, a 320 px
+    /// column of steps 16 px apart, each with its number in a 24 px gray circle.
+    fn password_help<'a>(&self, a: &AddAccount, s: &Step) -> Option<El<'a>> {
+        if (a.bridge, s.step_id.as_str()) != ("telegram", "fi.mau.telegram.login.password.incorrect") {
+            return None;
+        }
+        let fg = if self.dark { crate::hex(0xdfdfdf) } else { crate::hex(0x171717) };
+        let circle = if self.dark { crate::hex(0x313131) } else { crate::hex(0xe8e8e8) };
+        let steps = [
+            "Open the Telegram app.",
+            "Go to Settings → Privacy and Security → Two-Step Verification → Forgot Password.",
+            "Follow the prompts to reset your password, then return to Beeper.",
+        ];
+        let rows = steps.iter().enumerate().map(|(i, t)| -> El<'a> {
+            let n = container(med((i + 1).to_string(), 14.0).color(fg)).center(24).style(fill_box(circle, 12.0));
+            let text = txt(tr(t), 13.0).line_height(iced::Pixels(18.2)).color(fg);
+            row![n, container(text).width(Fill)].spacing(12).align_y(Center).into()
+        });
+        let list = container(Column::with_children(rows).spacing(16).width(320).padding([8, 0])).center_x(Fill);
+        let lead = txt(tr("If you've forgotten your password, reset it in Telegram:"), 12.0)
+            .line_height(iced::Pixels(16.8))
+            .color(fg);
+        Some(column![lead, list].spacing(4).padding([0, 16]).into())
+    }
+
     /// Desktop's `auths` steps of the bridge, which start with the device tabs.
     fn device_steps<'a>(&'a self, a: &'a AddAccount, s: &'a Step) -> Option<Vec<El<'a>>> {
         let p = &self.pal;
@@ -752,7 +777,7 @@ impl BeeperGuiApp {
                     let col = column![].push(instructions(s)).push(shown).push(error_box(label)).push(back(s));
                     col.spacing(16).align_x(Center).into()
                 }
-                "user_input" => self.view_add_form(a, s),
+                "user_input" => column![self.view_add_form(a, s)].push(self.password_help(a, s)).spacing(16).into(),
                 "cookies" => {
                     let text =
                         trf("Click the button below to open the browser and begin authentication with %s.", &[&name]);
@@ -1025,8 +1050,10 @@ mod tests {
 
     #[test]
     fn every_addable_network_has_a_cloud_bridge_but_bluesky() {
-        let none: Vec<_> =
-            crate::networks::addable().filter(|n| cloud_bridge(n).is_none()).map(|n| n.bridge_id).collect();
+        let none: Vec<_> = crate::networks::addable(&beeper_core::features::Flags::default())
+            .filter(|n| cloud_bridge(n).is_none())
+            .map(|n| n.bridge_id)
+            .collect();
         // macOS also adds iMessage, which runs on the Mac and not in Beeper Cloud.
         let local: &[&str] = if cfg!(target_os = "macos") { &["imessage", "bluesky"] } else { &["bluesky"] };
         assert_eq!(none, local);
@@ -1086,7 +1113,8 @@ mod tests {
     }
 
     /// The Telegram flows of the stub: the QR code of the preferred flow, the phone flow of "Login options", a
-    /// wrong phone number, a wrong code and Start Over, and the cancel of the login when the window closes.
+    /// wrong phone number, a wrong code and Start Over, Desktop's help under a wrong password, and the cancel of the
+    /// login when the window closes.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_new_telegram_account_goes_through_the_bridge_steps() {
         let (mut app, bridges) = stub_app("telegram").await;
@@ -1113,7 +1141,7 @@ mod tests {
         let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(field.clone(), "+112".into()))).await;
         assert!(shows(&app, id, "Please enter a valid phone number"));
         assert!(send(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await.is_empty(), "a bad form is not sent");
-        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(field, "+12015550123".into()))).await;
+        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(field.clone(), "+12015550123".into()))).await;
         let sent = {
             let m = click(&app, id, "Continue");
             one(send(&mut app, m).await)
@@ -1122,12 +1150,28 @@ mod tests {
         assert!(shows(&app, id, "Please enter the code sent to your phone") && shows(&app, id, "Back"));
         let code = "fi.mau.telegram.login.code".to_string();
         let wrong = beeper_core::bridge_stub::WRONG_CODE.to_string();
-        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(code, wrong))).await;
+        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(code.clone(), wrong.clone()))).await;
         settle(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await;
         assert!(shows(&app, id, "Something went wrong and we couldn't add your account."));
         assert!(shows(&app, id, "Invalid phone code"));
         settle(&mut app, UiMessage::AddAccount(id, AddMsg::StartOver)).await;
         assert!(shows(&app, id, "Please enter your phone number"), "Start Over starts the flow again");
+        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(field, "+12015550123".into()))).await;
+        settle(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await;
+        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(code, "12345".into()))).await;
+        settle(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await;
+        assert!(shows(&app, id, "You have two-factor authentication enabled."));
+        let help = "If you've forgotten your password, reset it in Telegram:";
+        assert!(!shows(&app, id, help), "the help is only for a wrong password");
+        let password = "fi.mau.telegram.login.password".to_string();
+        let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Field(password.clone(), wrong))).await;
+        settle(&mut app, UiMessage::AddAccount(id, AddMsg::Submit)).await;
+        assert!(shows(&app, id, "Incorrect password, please try again."));
+        for text in
+            [help, "Open the Telegram app.", "Follow the prompts to reset your password, then return to Beeper."]
+        {
+            assert!(shows(&app, id, text), "Desktop's help under a wrong password shows {text}");
+        }
         let process = app.add_accounts[0].process.clone().expect("a running login");
         settle(&mut app, UiMessage::Window(crate::windows::Msg::Closed(id))).await;
         assert!(app.add_accounts.is_empty());

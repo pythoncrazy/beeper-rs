@@ -1874,8 +1874,7 @@ fn message_rules(st: &mut BeeperStore, chat: &str, id: &str) -> Result<(Message,
 
 /// The canonical IDs of the chat `idx` and of the member chats of a merged chat.
 fn chat_and_members(st: &BeeperStore, idx: usize) -> Vec<&str> {
-    let members = st.chats[idx].merge.iter().flat_map(|m| &m.chat_ids);
-    let members = members.map(|id| st.chats[st.resolve_chat_idx(id).expect("merged member chat exists")].id.as_str());
+    let members = st.members(idx).into_iter().map(|i| st.chats[i].id.as_str());
     std::iter::once(st.chats[idx].id.as_str()).chain(members).collect()
 }
 

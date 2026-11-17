@@ -72,6 +72,10 @@ impl Flags {
                 { "name": "labels", "type": "count", "default_limit": 1 },
             ],
         });
+        let mut flags = flags;
+        // The networks that the account can add, each on its Beeper Cloud bridge.
+        let bridges = crate::config::NETWORK_SPECS.iter().filter_map(crate::config::cloud_bridge);
+        bridges.for_each(|b| flags["features"]["*"][format!("bridge:{b}")] = true.into());
         // The limits of the free plan: ten accounts, one on each network.
         let networks = crate::config::NETWORK_SPECS[1..].iter().map(|n| (network_key(n).to_string(), 1.into()));
         let max = serde_json::json!({ "num_accounts_against_limit": 10, "bridges": Value::Object(networks.collect()) });
@@ -102,6 +106,14 @@ impl Flags {
         }
     }
 
+    /// Desktop's `addablePlatforms` of a network: the flag `bridge:{bridge}` of its Beeper Cloud or on-device bridge
+    /// is on. Before the flags come, every network is.
+    pub fn network_on(&self, network: &NetworkSpec) -> bool {
+        let local = format!("local-{}", network_key(network));
+        let mut bridges = crate::config::cloud_bridge(network).into_iter().chain([local.as_str()]);
+        self.flags.is_null() || bridges.any(|b| self.flag(&format!("bridge:{b}")).on)
+    }
+
     /// Desktop's `isPlanCapped` (`iC`) of a network: its accounts reached the plan's limit for it. Without a limit
     /// for it, a paid plan has none and the free plan allows none.
     pub fn plan_capped(&self, network: &NetworkSpec) -> bool {
@@ -119,6 +131,18 @@ impl Flags {
             on,
             upgrade: true,
         })
+    }
+
+    /// Desktop's `maxMergeChats`: the `max-merge-chats` flag, a whole number from -1 for no limit, else 1.
+    pub fn max_merge_chats(&self) -> i64 {
+        let all = &self.flags["features"];
+        let v = all["appType:desktop"].get("max-merge-chats").or_else(|| all["*"].get("max-merge-chats"));
+        let n = match v {
+            Some(Value::Number(n)) => n.as_f64(),
+            Some(Value::String(s)) if !s.trim().is_empty() => s.trim().parse().ok(),
+            _ => None,
+        };
+        n.filter(|n| n.fract() == 0.0 && *n >= -1.0).map_or(1, |n| n as i64)
     }
 
     /// Desktop's `freebieStore.deriveState`: whether a free use or a trial is open, and the free uses left.
@@ -322,6 +346,22 @@ mod tests {
         assert_eq!((f.accounts_remaining(), f.unlimited_accounts()), (usize::MAX, true));
         assert_eq!(Flags::free_plan().accounts_remaining(), 10);
         assert!(!Flags::free_plan().plan_capped(network("whatsapp")), "the free plan allows one account a network");
+    }
+
+    #[test]
+    fn bridge_flags_turn_networks_on_like_desktop() {
+        let network = |id| crate::config::find_network(id).expect("a known network");
+        assert!(Flags::default().network_on(network("groupme")), "every network before the flags come");
+        let f = Flags {
+            flags: json!({ "features": { "*": {
+                "bridge:groupme": true, "bridge:reddit": false, "bridge:local-tumblrdms": true, "bridge:discordgo": true,
+            } } }),
+            ..Flags::default()
+        };
+        assert!(f.network_on(network("groupme")) && !f.network_on(network("reddit")));
+        assert!(f.network_on(network("discord")), "on its Beeper Cloud bridge discordgo");
+        assert!(f.network_on(network("tumblr")), "on its on-device bridge local-tumblrdms");
+        assert!(!f.network_on(network("muse")), "without a flag");
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! of a message.
 
 use crate::chat_list::{message_tag, preview_body};
+use crate::focus::Caret;
 use crate::gifs;
 use crate::gifs::gif_width;
 use crate::i18n::{tr, trf};
@@ -271,7 +272,92 @@ fn composer_buttons(st: &BeeperStore) -> (Option<u8>, Option<u8>) {
     (pri, action("secondaryComposerButton").filter(|&x| Some(x) != pri))
 }
 
+/// The message of a composer action button (Desktop's `onClick` in `Ome`).
+fn action_msg(id: u8, chat: &str) -> Option<UiMessage> {
+    match id {
+        0 => Some(UiMessage::Emoji(emoji::EmojiMsg::Toggle)),
+        2 => Some(UiMessage::Composer(Msg::TogglePicker(Picker::Gif))),
+        3 => Some(UiMessage::Composer(Msg::PickFiles)),
+        4 => Some(UiMessage::Scheduled(scheduled::Msg::Open)),
+        1 => Some(UiMessage::Record(record::Msg::Talk)),
+        5 => Some(UiMessage::Record(record::Msg::Start)),
+        6 => Some(UiMessage::OpenPollCreator(chat.into())),
+        7 => Some(UiMessage::Composer(Msg::TogglePicker(Picker::Sticker))),
+        _ => None,
+    }
+}
+
+/// The controls of the composer row that Tab reaches, in Desktop's DOM order: the toggle of the hidden actions, the
+/// unveiled actions, the text field, the actions in the pill, and Send while it works. Desktop's emoji action is a
+/// `div`, and a disabled button takes no focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    Toggle,
+    Action(u8),
+    Field,
+    Send,
+}
+
 impl BeeperGuiApp {
+    /// The ID of the text field of the pane's composer.
+    pub(crate) fn composer_id(&self) -> &'static str {
+        if self.pane().thread_root.is_some() {
+            "thread-composer-input"
+        } else {
+            "composer-input"
+        }
+    }
+
+    /// Desktop's `hasDraft` of the send button: a text, an attachment, or a recording.
+    fn has_draft(&self) -> bool {
+        !self.pane().composer.text().trim().is_empty() || !self.pane().attachments.is_empty() || self.recorder.is_some()
+    }
+
+    /// Whether keys outside a text field go to the composer: a chat that takes messages shows, with no dialog over it.
+    pub(crate) fn composer_takes_keys(&self) -> bool {
+        self.can_compose()
+            && self.confirm.is_none()
+            && !self.show_command_palette
+            && self.forward.is_none()
+            && self.creating_chat.is_none()
+            && self.pane.carousel.is_none()
+            && self.recorder.is_none()
+    }
+
+    /// The stops of the composer row of the pane, in their order.
+    pub(crate) fn composer_stops(&self) -> Vec<Stop> {
+        let st = self.store.read();
+        let pane = self.pane();
+        let Some(chat) = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c)).map(|i| &st.chats[i])
+        else {
+            return Vec::new();
+        };
+        let editing = pane.editing_message_id.is_some();
+        let works = |id: &u8| *id != 0 && composer_action(&st, chat, *id, editing).2;
+        let hidden = if pane.show_attach_menu { hidden_actions(&st) } else { Vec::new() };
+        let (pri, sec) = composer_buttons(&st);
+        let inline = [pri, sec].into_iter().flatten().filter(works).map(Stop::Action);
+        let send = (editing || self.has_draft()).then_some(Stop::Send);
+        std::iter::once(Stop::Toggle)
+            .chain(hidden.into_iter().filter(works).map(Stop::Action))
+            .chain([Stop::Field])
+            .chain(inline)
+            .chain(send)
+            .collect()
+    }
+
+    /// The message of the focused button of the composer row, which Enter presses.
+    pub(crate) fn composer_press(&self) -> Option<UiMessage> {
+        let stop = self.pane.key_focus.get().filter(|s| self.composer_stops().contains(s))?;
+        let chat = self.pane.selected_chat_id.as_deref()?;
+        match stop {
+            Stop::Toggle => Some(UiMessage::Composer(Msg::ToggleAttachMenu)),
+            Stop::Action(id) => action_msg(id, chat),
+            Stop::Send => Some(UiMessage::Composer(Msg::Submit)),
+            Stop::Field => None,
+        }
+    }
+
     /// Desktop's `processAttachment`: attaches each file that the open chat accepts, and shows a toast for the others.
     pub(crate) fn attach_files(&mut self, files: Vec<Result<PendingMedia, String>>) {
         let st = self.store.read();
@@ -510,25 +596,39 @@ impl BeeperGuiApp {
             let files = files.into_iter().map(|f| out_file(&mut self.media, &mut st, f)).collect();
             let text = Some(text).filter(|t| !t.is_empty());
             let links = !self.pane.composer_links.is_empty();
+            // A merged chat sends to its `composeTarget`, and a reply to the chat of its message.
+            let to = match reply_to {
+                None => st.chats[st.compose_target(idx)].id.clone(),
+                Some(_) => chat_id.clone(),
+            };
             let draft = Draft { text, reply_to, mentions, preview, thread: self.pane.send_thread(), files, links };
-            let (_, sends) = st.echo_draft(&chat_id, draft).expect("send a message");
+            let (to, sends) = st.echo_draft(&to, draft).expect("send a message");
             // Desktop's `queuePendingMessages` sends the earlier queue of the chat first.
             if let Some(i) = self.queued.iter().position(|q| q.chat == chat_id) {
-                for (_, out) in self.queued.remove(i).sends {
-                    st.queue(&chat_id, out);
+                let q = self.queued.remove(i);
+                for (_, out) in q.sends {
+                    st.queue(&q.to, out);
                 }
             }
             match (delay, restore) {
                 (Some(ms), Some((text, reply_to, files))) => {
                     let due = now_unix_millis() + ms;
                     let sends = sends.into_iter().map(|o| (o.message().expect("an echo").to_string(), o)).collect();
-                    self.queued.push(Queued { chat: chat_id.clone(), due, sends, text, reply_to, files });
+                    self.queued.push(Queued {
+                        chat: chat_id.clone(),
+                        to: to.clone(),
+                        due,
+                        sends,
+                        text,
+                        reply_to,
+                        files,
+                    });
                 }
-                _ => sends.into_iter().for_each(|out| st.queue(&chat_id, out)),
+                _ => sends.into_iter().for_each(|out| st.queue(&to, out)),
             }
             // A reply in the thread pane reads the thread, not the chat.
             if self.pane.thread_root.is_none() {
-                st.mark_chat_read(&chat_id, true);
+                st.mark_chat_read(&to, true);
             }
         }
         if edit {
@@ -638,6 +738,19 @@ impl BeeperGuiApp {
         if pane.thread_root.is_some() {
             return tr("Reply in thread…").into();
         }
+        // Desktop's `bridgeProtocolDisplayName`: the user of the account, when you have more accounts of its bridge.
+        let protocol = |c: &Chat| {
+            let several = several_accounts(st, &c.account_id);
+            let user = Some(account_user(st, &c.account_id)).filter(|u| several && !u.is_empty());
+            let net = network_name(&c.account_id);
+            user.map_or(net.to_string(), |u| format!("{net} ({u})"))
+        };
+        // A merged chat names the member chat that it sends to.
+        let idx = st.chat_idx(&chat.id);
+        if !st.members(idx).is_empty() {
+            let target = &st.chats[st.compose_target(idx)];
+            return format!("Message {} on {}", target.title, protocol(target));
+        }
         let to = match (pane.send_later, pane.reply_thread.is_some() || pane.reply_to_message_id.is_some()) {
             (Some(_), _) => "Send Later".into(),
             (None, reply) => {
@@ -649,12 +762,7 @@ impl BeeperGuiApp {
             (true, true) => " to join the group",
             (true, false) => " to accept the request",
         };
-        // Desktop's `bridgeProtocolDisplayName`: the user of the account, when you have more accounts of its bridge.
-        let several = several_accounts(st, &chat.account_id);
-        let user = Some(account_user(st, &chat.account_id)).filter(|u| several && !u.is_empty());
-        let net = network_name(&chat.account_id);
-        let net = user.map_or(net.to_string(), |u| format!("{net} ({u})"));
-        format!("{to} on {net}{request}")
+        format!("{to} on {}{request}", protocol(chat))
     }
 
     pub(crate) fn view_composer<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {
@@ -736,18 +844,7 @@ impl BeeperGuiApp {
         let editing = self.pane().editing_message_id.is_some();
         let action_btn = |id: u8| -> El<'a> {
             let (label, hotkey, on) = composer_action(st, chat, id, editing);
-            let msg = match id {
-                0 => Some(UiMessage::Emoji(emoji::EmojiMsg::Toggle)),
-                2 => Some(UiMessage::Composer(Msg::TogglePicker(Picker::Gif))),
-                3 => Some(UiMessage::Composer(Msg::PickFiles)),
-                4 => Some(UiMessage::Scheduled(scheduled::Msg::Open)),
-                1 => Some(UiMessage::Record(record::Msg::Talk)),
-                5 => Some(UiMessage::Record(record::Msg::Start)),
-                6 => Some(UiMessage::OpenPollCreator(chat.id.clone())),
-                7 => Some(UiMessage::Composer(Msg::TogglePicker(Picker::Sticker))),
-                _ => None,
-            }
-            .filter(|_| on);
+            let msg = action_msg(id, &chat.id).filter(|_| on);
             let active = (id == 2 && self.pane().picker == Some(Picker::Gif))
                 || (id == 7 && self.pane().picker == Some(Picker::Sticker))
                 || (id == 0 && self.pane().emoji.as_ref().is_some_and(|pk| pk.react.is_none() && pk.pref.is_none()));
@@ -803,7 +900,7 @@ impl BeeperGuiApp {
             mark: p.tertiary,
         };
         let input = text_editor(&self.pane().composer)
-            .id(if self.pane().thread_root.is_some() { "thread-composer-input" } else { "composer-input" })
+            .id(self.composer_id())
             .placeholder(placeholder)
             .on_action(|a0| UiMessage::Composer(Msg::Edit(a0)))
             .key_binding(move |k| match k.key.as_ref() {
@@ -920,9 +1017,7 @@ impl BeeperGuiApp {
                 .align_y(Center)
         });
         let plus = row![toggle].push(unveiled).spacing(6).align_y(Center);
-        let ready = !self.pane().composer.text().trim().is_empty()
-            || !self.pane().attachments.is_empty()
-            || self.recorder.is_some();
+        let ready = self.has_draft();
         let pending = (!self.pane().attachments.is_empty()).then(|| {
             let items = self.pane().attachments.iter().enumerate().map(|(i, pm)| {
                 let preview = self.pending_preview(pm, st);
@@ -1088,6 +1183,8 @@ pub enum Msg {
     Clip(bool),
     /// Desktop's type-to-focus: the composer of the pane takes the text at its end.
     Type(String),
+    /// Tab (Shift+Tab with `back`) in the window, after a look for the caret.
+    Tab(bool, Caret),
 }
 
 impl BeeperGuiApp {
@@ -1168,9 +1265,8 @@ impl BeeperGuiApp {
     /// and focus the one before, Space opens or closes its Quick Look, and Escape closes the Quick Look.
     fn attachment_key(&mut self, key: Key) -> Task<UiMessage> {
         let (i, n) = (self.pane.att_focus.expect("a focused attachment"), self.pane.attachments.len());
-        let input = || {
-            operation::focus(if self.pane.thread_root.is_some() { "thread-composer-input" } else { "composer-input" })
-        };
+        let id = self.composer_id();
+        let input = || operation::focus(id);
         match key {
             Key::Named(Named::Escape) => self.pane.quick_look = None,
             Key::Named(Named::ArrowLeft) if i > 0 => {
@@ -1390,14 +1486,7 @@ impl BeeperGuiApp {
                 return Task::batch([operation::focus("composer-input"), shown]);
             }
             Msg::Type(text) => {
-                let open = self.can_compose();
-                let quiet = self.confirm.is_none()
-                    && !self.show_command_palette
-                    && self.forward.is_none()
-                    && self.creating_chat.is_none()
-                    && self.carousel.is_none()
-                    && self.recorder.is_none();
-                if !(open && quiet) {
+                if !self.composer_takes_keys() {
                     return Task::none();
                 }
                 let old = self.pane.composer.text();
@@ -1406,6 +1495,23 @@ impl BeeperGuiApp {
                     self.pane.composer.perform(text_editor::Action::Edit(text_editor::Edit::Insert(c)));
                 }
                 return Task::batch([self.composer_changed(old), operation::focus("composer-input")]);
+            }
+            // Desktop's `KeyboardHandlers` give any key outside a text field to the composer, Tab too. In a text
+            // field, Tab is Chromium's: from the composer it moves to the next button of the row.
+            Msg::Tab(_, Caret::Other) => {}
+            Msg::Tab(back, Caret::Field) => {
+                let stops = self.composer_stops();
+                let focus = &mut self.pane.key_focus;
+                focus.set(Some(Stop::Field));
+                if !matches!(focus.step(&stops, back), Some(Stop::Field) | None) {
+                    return crate::focus::blur();
+                }
+                focus.set(None);
+                return operation::focus(self.composer_id());
+            }
+            Msg::Tab(_, Caret::None) => {
+                self.pane.key_focus.set(None);
+                return operation::focus(self.composer_id());
             }
             Msg::Paste => return Task::perform(clipboard_paste(), |r| UiMessage::Composer(Msg::Pasted(r))),
             // Desktop's `paste` handler: copied files go to the attachments, and a text goes into the composer.
@@ -1422,7 +1528,7 @@ impl BeeperGuiApp {
                     sticker: None,
                 })]),
                 Ok(Clip::Text) => {
-                    let id = if self.pane.thread_root.is_some() { "thread-composer-input" } else { "composer-input" };
+                    let id = self.composer_id();
                     let paste = iced::clipboard::read().map(|t| match t {
                         Some(t) => UiMessage::Composer(Msg::Edit(text_editor::Action::Edit(text_editor::Edit::Paste(
                             t.into(),
@@ -1564,8 +1670,7 @@ impl BeeperGuiApp {
                     .partition(|q| chat.as_ref().map_or(q.due <= now, |c| q.chat == *c));
                 self.queued = keep;
                 let mut st = self.store.write();
-                for q in send.into_iter().flat_map(|q: Queued| q.sends.into_iter().map(move |s| (q.chat.clone(), s.1)))
-                {
+                for q in send.into_iter().flat_map(|q: Queued| q.sends.into_iter().map(move |s| (q.to.clone(), s.1))) {
                     st.queue(&q.0, q.1);
                 }
             }

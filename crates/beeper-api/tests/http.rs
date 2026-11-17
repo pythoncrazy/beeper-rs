@@ -1054,7 +1054,8 @@ async fn search_chats_filters_orders_and_pages_like_desktop() {
     let (_, merged) = call(port, &token, "POST", "/v1/chats", merge).await;
     let merged = merged["chatID"].as_str().unwrap();
     let (members, now) = (["!sg_lena:beeper.com", "!ig_kai:beeper.com"], found("limit=200").await);
-    assert!(now[0] == merged && members.iter().all(|m| !now.contains(&m.to_string())), "{now:?}");
+    // Desktop's `sortTimestamp` of a merged chat is the newest activity of its member chats.
+    assert!(now.contains(&merged.to_string()) && members.iter().all(|m| !now.contains(&m.to_string())), "{now:?}");
     assert_eq!(found("query=fischer").await, [merged], "a member matches as its merged chat");
     assert_eq!(found("query=fischer&accountIDs=acc_signal").await, [merged]);
 

@@ -207,6 +207,11 @@ pub enum NetworkKind {
     Tumblr,
     Snapchat,
     WeChat,
+    GroupMe,
+    Reddit,
+    ChatGptDots,
+    GrokBot,
+    Muse,
     Bluesky,
 }
 
@@ -1937,6 +1942,8 @@ pub struct BeeperSettings {
     pub ever_labeled: bool,
     /// Desktop's local `labels_intro_seen`: New Label shows its intro only the first time.
     pub labels_intro_seen: bool,
+    /// Desktop's local `merge_chats_intro_seen`: Merge Chats shows its intro only the first time.
+    pub merge_intro_seen: bool,
     /// Desktop's local `recovery_code_reminder_dismissed_at`: the time in ms when the user closed the recovery key
     /// reminder, or 0.
     pub recovery_reminder_dismissed_at: i64,

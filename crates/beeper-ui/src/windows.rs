@@ -111,7 +111,8 @@ impl BeeperGuiApp {
                         self.save_window(id, "media-viewer").chain(window::close(id))
                     }
                     _ if self.chat_windows.iter().any(|w| w.0 == id && w.1.thread_root.is_none())
-                        && !self.is_space_window(id) =>
+                        && !self.is_space_window(id)
+                        && self.carousel_opener(id).is_none() =>
                     {
                         self.save_window(id, POP_OUT).chain(window::close(id))
                     }
@@ -165,11 +166,23 @@ impl BeeperGuiApp {
                 return self.add_account_closed(id);
             }
             Msg::Closed(id) => {
+                let mut tasks = Vec::new();
+                // Desktop's "Media in %s" window closes its carousel when it closes, which plays the inline video
+                // again, and focuses its thread window.
+                if let Some(opener) = self.carousel_opener(id) {
+                    self.swap_window(id);
+                    let close = self.carousel().is_some().then(|| self.media_view(media_view::Msg::CloseCarousel));
+                    self.swap_window(id);
+                    tasks.extend(close.into_iter().chain([window::gain_focus(opener)]));
+                }
+                // A thread window closes its "Media in %s" window.
+                tasks.extend(self.carousel_windows.iter().filter(|w| w.1 == id).map(|w| window::close(w.0)));
                 if let Some(w) = self.chat_windows.iter().find(|w| w.0 == id) {
                     save_draft(&mut self.store.write(), &w.1);
                 }
                 self.chat_windows.retain(|w| w.0 != id);
                 self.space_windows.retain(|w| w.0 != id);
+                self.carousel_windows.retain(|w| w.0 != id);
                 // Desktop's `setPipState(null)`: the video stops with its Picture in Picture window.
                 if self.pip.take_if(|p| p.0 == id).is_some() {
                     (self.video, self.pip_manual, self.pip_menu) = (None, false, None);
@@ -184,6 +197,7 @@ impl BeeperGuiApp {
                 }
                 self.label_settings.retain(|w| w.id != id);
                 self.spaces_window = self.spaces_window.take().filter(|d| d.id != id);
+                self.merge_window = self.merge_window.take().filter(|d| d.id != id);
                 self.group_window = self.group_window.take().filter(|d| d.id != id);
                 self.blocked_window = self.blocked_window.filter(|w| *w != id);
                 if self.networks.window.take_if(|w| *w == id).is_some() {
@@ -202,12 +216,12 @@ impl BeeperGuiApp {
                     self.time_edit = Default::default();
                 } else if self.media_window.as_ref().is_some_and(|w| w.id == id) {
                     self.media_window = None;
-                    self.carousel = self.carousel.take().filter(|c| !c.in_media);
                 } else if [self.main_window, self.login_window].contains(&Some(id)) {
                     self.main_window = None;
                     return self.quit();
                 }
                 self.save_subwindows();
+                return Task::batch(tasks.into_iter().chain([self.settle()]));
             }
             Msg::ScreenshotCaptured(id, shot) => {
                 let is_settings = Some(id) == self.settings_window;
@@ -285,6 +299,16 @@ pub(crate) fn badge_sync(_unread: u32, _visible: bool) -> Task<UiMessage> {
     Task::none()
 }
 
+/// Moves window `id` of `size` over the middle of window `parent` of size `around`, like Desktop's `center: "parent"`,
+/// with its left and top edges on the screen.
+fn center_over(id: window::Id, parent: window::Id, around: Size, size: Size) -> Task<UiMessage> {
+    let offset = Vector::new((around.width - size.width) / 2.0, (around.height - size.height) / 2.0);
+    window::position(parent).then(move |at| match at {
+        Some(at) => window::move_to(id, Point::new((at.x + offset.x).max(0.0), (at.y + offset.y).max(0.0))),
+        None => Task::none(),
+    })
+}
+
 /// Desktop's `ga`: the bounds of a window at `at` and `old` size that takes `size`, at most the `screen`, around its
 /// center and on the screen.
 pub(crate) fn grown(at: Point, old: Size, size: Size, screen: Size) -> (Point, Size) {
@@ -306,15 +330,7 @@ impl BeeperGuiApp {
             Some(main) => (main, self.pane.size),
             None => (self.login_window.expect("the main or the sign-in window is open"), login::SIZE),
         };
-        let offset = Vector::new((around.width - size.width) / 2.0, (around.height - size.height) / 2.0);
-        // Desktop keeps the left and the top edge of a modal on the screen.
-        let center = move |_| {
-            window::position(parent).then(move |at| match at {
-                Some(at) => window::move_to(id, Point::new((at.x + offset.x).max(0.0), (at.y + offset.y).max(0.0))),
-                None => Task::none(),
-            })
-        };
-        (id, open.then(center))
+        (id, open.then(move |_| center_over(id, parent, around, size)))
     }
 
     pub(crate) fn window_settings(size: Size) -> window::Settings {
@@ -341,6 +357,32 @@ impl BeeperGuiApp {
     /// Whether window `id` is a space window, whose pane is also among the chat windows.
     pub(crate) fn is_space_window(&self, id: window::Id) -> bool {
         self.space_windows.iter().any(|w| w.0 == id)
+    }
+
+    /// The thread window of the "Media in %s" window `id`, whose pane is also among the chat windows.
+    pub(crate) fn carousel_opener(&self, id: window::Id) -> Option<window::Id> {
+        self.carousel_windows.iter().find(|w| w.0 == id).map(|w| w.1)
+    }
+
+    /// The thread window of the "Media in %s" window that `view` draws.
+    pub(crate) fn drawn_opener(&self) -> Option<window::Id> {
+        self.drawing.get().and_then(|id| self.carousel_opener(id))
+    }
+
+    /// Desktop's `AttachmentCarouselBrowserWindow.show`: the carousel of thread window `opener` in its "Media in %s"
+    /// window, which opens at least 800 by 600 and the size of the thread window, over its middle.
+    pub(crate) fn show_carousel_window(&mut self, opener: window::Id, carousel: Carousel) -> Task<UiMessage> {
+        if let Some(&(id, _)) = self.carousel_windows.iter().find(|w| w.1 == opener) {
+            let pane = &mut self.chat_windows.iter_mut().find(|w| w.0 == id).expect("an open carousel window").1;
+            pane.carousel = Some(carousel);
+            return window::gain_focus(id);
+        }
+        let around = self.chat_windows.iter().find(|w| w.0 == opener).expect("an open thread window").1.size;
+        let size = Size::new(around.width.max(800.0), around.height.max(600.0));
+        let (id, open) = window::open(Self::window_settings(size));
+        self.chat_windows.push((id, Pane { carousel: Some(carousel), size, ..Pane::default() }));
+        self.carousel_windows.push((id, opener));
+        open.then(move |_| center_over(id, opener, around, size))
     }
 
     /// Swaps the pane, and the chat list of a space window, of window `id` with those of the main window, around the
@@ -372,7 +414,8 @@ impl BeeperGuiApp {
 
     /// The windows besides the main window, Desktop's `subWindows`.
     pub(crate) fn sub_windows(&self) -> Vec<window::Id> {
-        let drafts = [self.label_window.as_ref().map(|d| d.id), self.spaces_window.as_ref().map(|d| d.id)];
+        let merge = self.merge_window.as_ref().map(|d| d.id);
+        let drafts = [self.label_window.as_ref().map(|d| d.id), self.spaces_window.as_ref().map(|d| d.id), merge];
         let singles = [self.settings_window, self.media_window.as_ref().map(|w| w.id)].into_iter().chain(drafts);
         let lists = self.chat_windows.iter().map(|w| w.0).chain(self.theme_windows.iter().map(|w| w.0));
         let lists = lists.chain(self.labels_windows.iter().map(|w| w.0)).chain(self.vote_windows.iter().map(|w| w.0));

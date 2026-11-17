@@ -5,12 +5,14 @@ use iced::advanced::{mouse, overlay, Clipboard, Shell};
 use iced::{border, Background, Color, Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector};
 
 /// CSS `box-shadow: 0 0 0 <width>px <color>`: a ring of `width` around `content`, outside its box like a spread
-/// shadow, so the layout does not move. Desktop draws its focus rings this way.
+/// shadow, so the layout does not move. Desktop draws its focus rings this way, or as an `outline` with an
+/// `outline-offset`, which leaves a gap between the box and the ring.
 pub struct Ring<'a, Message> {
     content: Element<'a, Message>,
     color: Color,
     width: f32,
     radius: f32,
+    offset: f32,
 }
 
 /// A ring of `width` and `color` around `content`, whose corners have `radius`.
@@ -20,7 +22,14 @@ pub fn ring<'a, Message>(
     width: f32,
     radius: f32,
 ) -> Ring<'a, Message> {
-    Ring { content: content.into(), color, width, radius }
+    Ring { content: content.into(), color, width, radius, offset: 0.0 }
+}
+
+impl<Message> Ring<'_, Message> {
+    /// CSS `outline-offset`: the gap between the box and the ring, whose corners grow by it.
+    pub fn offset(self, offset: f32) -> Self {
+        Self { offset, ..self }
+    }
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for Ring<'_, Message> {
@@ -87,10 +96,11 @@ impl<Message> Widget<Message, Theme, Renderer> for Ring<'_, Message> {
         viewport: &Rectangle,
     ) {
         self.content.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
-        let w = self.width;
+        let (w, out) = (self.width, self.width + self.offset);
         let b = layout.bounds();
-        let bounds = Rectangle::new(b.position() - Vector::new(w, w), Size::new(b.width + 2.0 * w, b.height + 2.0 * w));
-        let border = border::rounded(self.radius + w).color(self.color).width(w);
+        let bounds =
+            Rectangle::new(b.position() - Vector::new(out, out), Size::new(b.width + 2.0 * out, b.height + 2.0 * out));
+        let border = border::rounded(self.radius + out).color(self.color).width(w);
         renderer.fill_quad(Quad { bounds, border, ..Quad::default() }, Background::Color(Color::TRANSPARENT));
     }
 

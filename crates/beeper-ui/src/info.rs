@@ -164,6 +164,16 @@ pub(crate) fn info_menu(
             )],
         };
     }
+    // Desktop's Manage menu of the Merged Chats section (`R7t`).
+    if let Some(cid) = key.strip_prefix("merged:") {
+        let edit = UiMessage::Merged(merged::Msg::Open(Some(cid.into()), Vec::new()));
+        let unmerge = UiMessage::Merged(merged::Msg::Ask(cid.into()));
+        return vec![
+            Some((trx("Edit", "merged chat manage menu").into(), Some(edit))),
+            None,
+            Some((trx("Unmerge", "merged chat manage menu").into(), Some(unmerge))),
+        ];
+    }
     if let Some((cid, mid)) = key.strip_prefix("bookmark:").and_then(|k| k.split_once(' ')) {
         let jump =
             st.loaded(mid).is_some().then(|| UiMessage::CommandBar(commands::Msg::JumpTo(cid.into(), mid.into())));
@@ -318,7 +328,7 @@ impl BeeperGuiApp {
             .filter(|p| p.title.as_ref().is_some_and(|t| *t != p.room_title) && !p.room_title.is_empty())
             .map(|p| meta(trf("Originally %s", &[&p.room_title])));
         // Desktop's `profileLink`: the network of a DM with a profile URL opens the profile.
-        let network = network_name(&chat.account_id);
+        let network = merged::chat_platform(chat);
         let network: El = match profile_link(chat) {
             Some(url) => {
                 let fg = Color { a: 0.6, ..p.strong };
@@ -637,6 +647,7 @@ impl BeeperGuiApp {
             });
         let body = column![header]
             .push(behavior)
+            .push(self.view_merged_section(&st, chat))
             .push(desc)
             .push(members)
             .push(media)
@@ -659,7 +670,8 @@ impl BeeperGuiApp {
                     .on_press(UiMessage::Blocking(blocking::Msg::Ask(cid.clone(), block)));
                 container(row).padding(Padding::ZERO.top(8.0))
             }))
-            .push((chat.member_actions & MEMBER_LEAVE != 0).then(|| {
+            // A merged chat has no Leave Chat (`F0e`); Unmerge splits it.
+            .push((chat.member_actions & MEMBER_LEAVE != 0 && chat.merge.is_none()).then(|| {
                 let leave = button(semi(tr("Leave Chat"), 14.0).line_height(Pixels(18.0)).color(p.strong))
                     .padding([0, 8])
                     .style(btn_style([CLEAR; 3], [p.strong; 3], 0.0))
@@ -717,7 +729,8 @@ impl BeeperGuiApp {
         const TILE: f32 = 124.0;
         let p = &self.pal;
         let mut found: Vec<&Message> = st
-            .timeline(&chat.id)
+            .chat_timeline(&chat.id)
+            .into_iter()
             .filter(|m| m.is_deleted != Some(true) && m.view_limit.is_none())
             .filter(|m| !m.links.is_empty() || !m.attachments.is_empty())
             .collect();
@@ -831,9 +844,11 @@ impl BeeperGuiApp {
     pub(crate) fn view_bookmarks<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> El<'a> {
         const SHOWN: usize = 15;
         let p = &self.pal;
-        let loaded = st.timeline(&chat.id);
+        // Desktop's `syncMergedBookmarks`: a merged chat lists the bookmarks of its member chats.
+        let idx = st.chat_idx(&chat.id);
+        let loaded = st.chat_timeline(&chat.id).into_iter();
         let loaded = loaded.filter(|m| m.is_bookmarked == Some(true) && m.is_deleted != Some(true));
-        let others = st.bookmarks.iter().filter(|(t, b)| b.room_id == chat.id && st.loaded(t).is_none());
+        let others = st.bookmarks.iter().filter(|(t, b)| st.in_chat(idx, &b.room_id) && st.loaded(t).is_none());
         let others = others.filter_map(|(t, _)| match st.bookmarked.get(t) {
             Some(Some(m)) if m.is_deleted == Some(true) => None,
             Some(m) => Some((t.as_str(), m.as_ref())),

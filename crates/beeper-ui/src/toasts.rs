@@ -248,20 +248,30 @@ impl BeeperGuiApp {
             if let Some(t) = self.shown_toast() {
                 return self.toast_card(t, None);
             }
-            let text = txt(banner.to_string(), 13.0).color(p.strong);
+            let pill_w =
+                self.relaunch_toast.map_or(0.0, |_| text_width(tr("Relaunch app"), 13.0, Weight::Normal) + 20.0);
+            let text =
+                txt(banner.to_string(), 13.0).color(p.strong).wrapping(iced::widget::text::Wrapping::WordOrGlyph);
+            let text = container(text).max_width(self.toast_width() - 40.0 - pill_w);
             let relaunch =
                 self.relaunch_toast.map(|_| pill_btn(p, tr("Relaunch app"), UiMessage::Window(windows::Msg::Relaunch)));
-            let card = row![text.wrapping(iced::widget::text::Wrapping::WordOrGlyph)].push(relaunch).push(close);
+            let card = row![text].push(relaunch).push(close);
             let card = card.spacing(8).align_y(Center);
             container(card).padding(8).style(toast_box(p.card, p)).into()
         });
         let toasts: Vec<El> = older.chain(newest).collect();
         (!toasts.is_empty()).then(|| {
-            let list = mouse_area(Column::with_children(toasts).spacing(8))
+            let list = mouse_area(Column::with_children(toasts).spacing(8).max_width(self.toast_width()))
                 .on_enter(UiMessage::Toast(toasts::Msg::Hover(true)))
                 .on_exit(UiMessage::Toast(toasts::Msg::Hover(false)));
             container(list).width(Fill).align_bottom(Fill).padding(Padding::new(8.0).left(left)).into()
         })
+    }
+
+    /// The width that a toast takes at most: Desktop's `toasts-list` is `sidebarWidth - accountSwitcherWidth` wide,
+    /// at least 300 px, inside 8 px sides.
+    fn toast_width(&self) -> f32 {
+        self.sidebar_width.max(300.0) - 16.0
     }
 
     /// Desktop's `Toast`: the newest toast, or the toast at an index of `older_toasts`.
@@ -304,7 +314,11 @@ impl BeeperGuiApp {
             let first = buttons.next().expect("a button");
             Row::with_children(std::iter::once(first).chain(buttons.flat_map(|b| [dot(), b])))
         });
-        let body = column![text].push(below).spacing(16);
+        // The text wraps inside Desktop's toast list, beside the icon, the right button and the close button.
+        let pad = if t.icon.is_some() { 14.0 } else { 16.0 };
+        let icon_w = if t.icon.is_some() { 26.0 } else { 0.0 };
+        let right_w = t.right.as_ref().map_or(0.0, |(label, _)| text_width(label, 13.0, Weight::Semibold) + 8.0);
+        let body = column![text].push(below).spacing(16).max_width(self.toast_width() - pad - icon_w - right_w - 24.0);
         let right = t.right.as_ref().map(|b| btn(b, p.accent));
         let dismiss = match &t.dismiss {
             Some(m) => m.clone(),

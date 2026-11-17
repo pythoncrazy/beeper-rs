@@ -1730,17 +1730,20 @@ fn media_viewer_deletes_like_desktop() {
     };
     let delete = click(&app);
     assert!(
-        matches!(&delete[..], [UiMessage::Media(media_view::Msg::AskDelete(v))] if v[..] == [(mid.clone(), ai)]),
+        matches!(&delete[..], [UiMessage::InWindow(w, m)] if *w == id && matches!(&**m, UiMessage::Media(media_view::Msg::AskDelete(v)) if v[..] == [(mid.clone(), ai)])),
         "Delete shows"
     );
     let _ = app.update(delete.into_iter().next().unwrap());
     assert!(simulator(app.view(id)).find("Are you sure you want to delete this message?").is_ok());
     let _ = app.update(UiMessage::WindowKey(id, Key::Named(Named::Escape), Modifiers::empty()));
     let w = app.media_window.as_ref().unwrap();
-    assert!(w.deleting.is_none() && app.carousel.is_some(), "Escape closes the dialog first");
+    assert!(w.deleting.is_none() && w.viewer.is_some(), "Escape closes the dialog first");
     app.store.write().chats[chat].messages.delete_max_age = Some(60);
     let go = click(&app);
-    assert!(matches!(&go[..], [UiMessage::Message(message::Msg::GoTo(..))]), "an old message has no Delete");
+    assert!(
+        matches!(&go[..], [UiMessage::InWindow(_, m)] if matches!(**m, UiMessage::Message(message::Msg::GoTo(..)))),
+        "an old message has no Delete"
+    );
     let _ = app.update(UiMessage::Media(media_view::Msg::AskDelete(vec![(mid, ai)])));
     assert_eq!(app.status_banner, "These messages can’t be deleted");
 }
@@ -1764,13 +1767,15 @@ fn media_filmstrip_scrolls_like_desktop() {
         sim.into_messages().collect::<Vec<_>>()
     };
     assert!(
-        matches!(&wheel[..], [UiMessage::Media(media_view::Msg::ScrollFilmstrip(1.0))]),
+        matches!(&wheel[..], [UiMessage::InWindow(_, m)] if matches!(**m, UiMessage::Media(media_view::Msg::ScrollFilmstrip(1.0)))),
         "the wheel scrolls the filmstrip"
     );
-    let _ = app.update(UiMessage::Media(media_view::Msg::ScrollFilmstrip(2.0)));
-    assert_eq!(app.carousel.as_ref().unwrap().strip, Some(2));
-    let _ = app.update(UiMessage::Media(media_view::Msg::CarouselStep(true)));
-    assert_eq!(app.carousel.as_ref().unwrap().strip, None, "a step centers the current item");
+    let viewer = |app: &mut BeeperGuiApp, m| drop(app.update(UiMessage::InWindow(id, Box::new(UiMessage::Media(m)))));
+    let strip = |app: &BeeperGuiApp| app.media_window.as_ref().unwrap().viewer.as_ref().unwrap().strip;
+    viewer(&mut app, media_view::Msg::ScrollFilmstrip(2.0));
+    assert_eq!(strip(&app), Some(2));
+    viewer(&mut app, media_view::Msg::CarouselStep(true));
+    assert_eq!(strip(&app), None, "a step centers the current item");
 }
 
 #[test]
@@ -1789,7 +1794,8 @@ fn media_carousel_draws() {
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(chat.clone(), ChatFlag::LowPriority)));
     drop(app.view(id));
     let _ = app.update(UiMessage::StoreChanged);
-    assert!(app.carousel.is_some(), "like Desktop's loaded items, the image stays when its chat goes low priority");
+    let viewer = app.media_window.as_ref().unwrap().viewer.is_some();
+    assert!(viewer, "like Desktop's loaded items, the image stays when its chat goes low priority");
     let _ = app.update(UiMessage::ChatList(chat_list::Msg::ToggleFlag(chat.clone(), ChatFlag::LowPriority)));
     let _ = app.update(UiMessage::SelectChat(chat.clone()));
     let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid.clone(), ai, false)));
@@ -1801,7 +1807,7 @@ fn media_carousel_draws() {
     app.store.write().delete_message(&chat, &mid).expect("a sync deletes the image");
     drop(simulator(app.view_main()));
     let _ = app.update(UiMessage::StoreChanged);
-    assert!(app.carousel.is_none(), "the carousel closes when a sync deletes its image");
+    assert!(app.pane.carousel.is_none(), "the carousel closes when a sync deletes its image");
 }
 
 /// Desktop's `GalleryGrouper`: photos of one sender, 60 seconds apart and 2 minutes from the first, show as one
@@ -1887,12 +1893,12 @@ fn galleries_select_and_have_a_menu_like_desktop() {
     app.mods = Modifiers::COMMAND;
     let _ = app.update(UiMessage::Gallery(gallery::Msg::Tile(ids[1].clone())));
     assert!(
-        !app.pane.selected_msgs.contains(&ids[1]) && app.carousel.is_none(),
+        !app.pane.selected_msgs.contains(&ids[1]) && app.pane.carousel.is_none(),
         "Ctrl/Cmd and a tile unselect a photo"
     );
     app.mods = Modifiers::empty();
     let _ = app.update(UiMessage::Gallery(gallery::Msg::Tile(ids[1].clone())));
-    assert!(app.carousel.is_some(), "a tile opens the carousel");
+    assert!(app.pane.carousel.is_some(), "a tile opens the carousel");
     let _ = app.update(UiMessage::Media(media_view::Msg::CloseCarousel));
     let _ = app.update(UiMessage::Gallery(gallery::Msg::Menu(ids.clone())));
     assert_eq!(app.pane.selected_msgs, ids, "a right click selects the gallery");
@@ -1960,7 +1966,7 @@ fn carousel_steps_through_videos_and_files_like_desktop() {
     let download = |m: &UiMessage| matches!(m, UiMessage::Message(message::Msg::Download(m, Some(0))) if m == "$item1");
     assert!(msgs.iter().any(download), "the link downloads the file");
     let _ = app.update(UiMessage::Media(media_view::Msg::CarouselStep(true)));
-    assert_eq!(app.carousel.as_ref().unwrap().mid, "$item3", "the carousel skips the audio");
+    assert_eq!(app.pane.carousel.as_ref().unwrap().mid, "$item3", "the carousel skips the audio");
     let _ =
         app.update(UiMessage::Video(video::Msg::Play("$item3".into(), "https://example.com/clip.mp4".into(), 2, 2)));
     drop(app.view_main());
@@ -2002,7 +2008,7 @@ fn inline_videos_open_the_carousel_like_desktop() {
         "a click on the video opens the carousel"
     );
     let _ = app.update(UiMessage::Video(open.clone()));
-    assert_eq!(app.carousel.as_ref().unwrap().mid, "$clip");
+    assert_eq!(app.pane.carousel.as_ref().unwrap().mid, "$clip");
     let _ = app.update(UiMessage::Media(media_view::Msg::CloseCarousel));
     assert!(app.video.as_ref().is_some_and(|v| v.url == clip && v.playing()), "the inline video plays on close");
     let _ = app.update(UiMessage::Video(open));
@@ -2012,7 +2018,10 @@ fn inline_videos_open_the_carousel_like_desktop() {
     assert!(app.video.as_ref().unwrap().is_full(), "F fills the screen with the video");
     drop(app.view_main());
     key(&mut app, Key::Named(Named::Escape));
-    assert!(!app.video.as_ref().unwrap().is_full() && app.carousel.is_some(), "Escape leaves the full screen first");
+    assert!(
+        !app.video.as_ref().unwrap().is_full() && app.pane.carousel.is_some(),
+        "Escape leaves the full screen first"
+    );
     let file = std::env::temp_dir().join(format!("beeper-rs-clip-{}.mp4", std::process::id()));
     let lavfi = ["-f", "lavfi", "-i", "testsrc=size=320x180:rate=30", "-t", "2", "-pix_fmt", "yuv420p", "-y"];
     assert!(std::process::Command::new("ffmpeg").args(lavfi).arg(&file).output().unwrap().status.success());
@@ -2120,12 +2129,12 @@ fn carousel_menu_like_desktop() {
         "Forward… closes the carousel"
     );
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Escape), Modifiers::empty()));
-    assert!(app.carousel.as_ref().is_some_and(|c| c.menu.is_none()), "Escape closes only the menu");
+    assert!(app.pane.carousel.as_ref().is_some_and(|c| c.menu.is_none()), "Escape closes only the menu");
     let _ = app.update(UiMessage::Media(media_view::Msg::Open));
     let id = app.media_window.as_ref().unwrap().id;
     media_view::load_all_media(&mut app);
     let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(mid, 0, true)));
-    let _ = app.update(UiMessage::Media(media_view::Msg::CarouselMenu(true)));
+    let _ = app.update(UiMessage::InWindow(id, Box::new(UiMessage::Media(media_view::Msg::CarouselMenu(true)))));
     let mut sim = simulator(app.view(id));
     assert!(sim.find("Go to Message").is_ok() && sim.find("Reply…").is_err(), "the Media window menu");
 }
@@ -2179,7 +2188,7 @@ fn carousel_react_and_reply_like_desktop() {
     let _ = app.update(react.into_iter().next().unwrap());
     assert!(simulator(app.view_main()).find("Search").is_ok(), "the picker shows over the carousel");
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Escape), Modifiers::empty()));
-    assert!(app.pane.emoji.is_none() && app.carousel.is_some(), "Escape closes the picker first");
+    assert!(app.pane.emoji.is_none() && app.pane.carousel.is_some(), "Escape closes the picker first");
 }
 
 /// Desktop's carousel controls have tooltips with their keys.
@@ -8132,7 +8141,7 @@ fn sign_in_keyboard_and_errors_like_desktop() {
     let id = app.login_window.expect("the sign-in window");
     let key = |app: &mut BeeperGuiApp, k: Named, mods: Modifiers| {
         let _ = app.update(UiMessage::WindowKey(id, Key::Named(k), mods));
-        app.login.focus.map(|i| [Stop::Menu, Stop::Terms, Stop::Google, Stop::Email][i])
+        app.login.focus.get()
     };
     let tabs: Vec<_> = (0..5).map(|_| key(&mut app, Named::Tab, Modifiers::empty())).collect();
     let order = [Stop::Menu, Stop::Terms, Stop::Google, Stop::Email, Stop::Menu].map(Some);
@@ -8146,7 +8155,11 @@ fn sign_in_keyboard_and_errors_like_desktop() {
     assert!(app.login.toast.is_none(), "the close button of the toast hides it");
     key(&mut app, Named::Tab, Modifiers::empty());
     key(&mut app, Named::Enter, Modifiers::empty());
-    assert_eq!((app.login.screen, app.login.focus), (Screen::Email, Some(1)), "Enter opens the email form");
+    assert_eq!(
+        (app.login.screen, app.login.focus.get()),
+        (Screen::Email, Some(Stop::Field)),
+        "Enter opens the email form"
+    );
     key(&mut app, Named::Enter, Modifiers::empty());
     assert_eq!(app.login.toast.as_deref(), Some("Please enter your email."));
     let _ = app.update(LoginMsg::Email("foo".into()).into());
