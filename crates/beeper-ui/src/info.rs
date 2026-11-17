@@ -249,10 +249,25 @@ impl BeeperGuiApp {
             .as_ref()
             .filter(|p| p.title.as_ref().is_some_and(|t| *t != p.room_title) && !p.room_title.is_empty())
             .map(|p| meta(trf("Originally %s", &[&p.room_title])));
+        // Desktop's `profileLink`: the network of a DM with a profile URL opens the profile.
+        let network = network_name(&chat.account_id);
+        let network: El = match profile_link(chat) {
+            Some(url) => {
+                let fg = Color { a: 0.6, ..p.strong };
+                let label = row![txt(network, 11.0).color(fg), ic(icon::ARROW_UP_RIGHT, 11.0).color(fg)].spacing(2);
+                let open = button(label).bare(fg).on_press(UiMessage::OpenUrl(url));
+                let tip = match other.and_then(|u| u.username.as_deref()) {
+                    Some(u) => trf("Open @%1$s on %2$s", &[&u.trim_start_matches('@'), &network]),
+                    None => trf("Open in %s", &[&network]),
+                };
+                self.tip(open.into(), tip, vec!["Ctrl", "Shift", "O"], tooltip::Position::Bottom).into()
+            }
+            None => meta(network.to_string()).into(),
+        };
         let details = column![self.chat_avatar(chat, 64.0, 1.25), title]
             .push(originally)
             .push(contact)
-            .push(meta(network_name(&chat.account_id).to_string()))
+            .push(network)
             .spacing(4)
             .align_x(Center)
             .width(Fill);
@@ -611,7 +626,13 @@ impl BeeperGuiApp {
             .flat_map(|m| {
                 let atts = m.attachments.iter().filter(|a| kinds.contains(&a.attachment_type.as_str()));
                 let atts = atts.map(|a| match a.attachment_type.as_str() {
-                    "img" | "video" => self.thumb(a, TILE, 4.0),
+                    "img" => self.thumb(a, TILE, 4.0),
+                    // Desktop's `BrandVideo` play button: a 36 px `secondary-container` disc in the middle.
+                    "video" => {
+                        let play =
+                            container(ic(icon::PLAY, 14.0).color(p.strong)).center(36).style(fill_box(p.chip, 18.0));
+                        stack![self.thumb(a, TILE, 4.0), container(play).center(TILE)].into()
+                    }
                     _ => {
                         let kind = ell(file_kind(a.mime_type.as_deref()), TILE - 16.0, 10.0, Weight::Semibold);
                         file(
