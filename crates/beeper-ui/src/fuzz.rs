@@ -4999,9 +4999,14 @@ fn hidden_space_bar_floats_like_desktop() {
             id: "!acme:beeper.local".into(),
             account_id: account.clone(),
             name: "Acme".into(),
+            avatar: Some("mxc://beeper.local/acme".into()),
+            ..NetworkSpace::default()
         });
         account
     };
+    // Desktop's `JO`: a network space with its own picture shows it in the space bar.
+    drop(simulator(app.view_rail()));
+    assert!(app.wants.avatars.borrow().contains("mxc://beeper.local/acme"), "the space bar loads the space's picture");
     let _ = app.update(UiMessage::Rail(rail::Msg::Select(Some("!acme:beeper.local".into()))));
     let title = format!("Acme ({})", network_label(&account));
     assert!(
@@ -7307,7 +7312,12 @@ fn the_space_sheet_fits_its_names_like_desktop() {
             |b: &&BridgeAccountInfo| !matches!(kind(&b.account_id), NetworkKind::WhatsApp | NetworkKind::Telegram);
         let account = st.bridge_accounts.iter().find(other).expect("a network with spaces").account_id.clone();
         let name = "supersketchy's very long server name".into();
-        st.network_spaces.push(NetworkSpace { id: "!long:beeper.local".into(), account_id: account, name });
+        st.network_spaces.push(NetworkSpace {
+            id: "!long:beeper.local".into(),
+            account_id: account,
+            name,
+            avatar: None,
+        });
     }
     let wide = app.view_space_sheet().1;
     assert_eq!(narrow, 233.0, "short names keep the usual width");

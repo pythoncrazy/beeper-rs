@@ -1154,7 +1154,8 @@ async fn sync_space(store: &SharedStore, room: &Room) {
     }
     let (Some(id), Some(name)) = (s(&bridge["network"]["id"]), s(&bridge["network"]["displayname"])) else { return };
     let mut st = store.write();
-    let space = NetworkSpace { id, account_id: account_id(&bridge, &st.bridge_accounts), name };
+    let avatar = s(&bridge["network"]["avatar_url"]).filter(|u| u.starts_with("mxc://"));
+    let space = NetworkSpace { id, account_id: account_id(&bridge, &st.bridge_accounts), name, avatar };
     match st.network_spaces.iter().position(|n| n.id == space.id) {
         Some(i) => st.network_spaces[i] = space,
         None => st.network_spaces.push(space),

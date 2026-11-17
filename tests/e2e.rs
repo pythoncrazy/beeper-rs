@@ -1476,6 +1476,7 @@ async fn lifecycle() {
             id: id.into(),
             account_id,
             name: name.into(),
+            avatar: None,
         };
         let (signal, whatsapp) = (account("signal"), account("whatsapp"));
         st.network_spaces.extend([space("g1", signal, "Guild"), space("c1", whatsapp, "Community")]);

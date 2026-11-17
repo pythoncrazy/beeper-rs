@@ -397,11 +397,13 @@ struct ThreadRow {
 }
 
 /// A network inside a bridged account, like a Discord server. Its chats have the same `network_id`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NetworkSpace {
     pub id: String,
     pub account_id: String,
     pub name: String,
+    /// The network's own picture (`m.bridge` `network.avatar_url`), like a Discord server's icon.
+    pub avatar: Option<String>,
 }
 
 /// A message to send, as Desktop's composer sends it: the text is one message and each file is one message, except
