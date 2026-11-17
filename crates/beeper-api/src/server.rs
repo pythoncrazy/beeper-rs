@@ -1747,7 +1747,14 @@ fn backfill(store: &SharedStore, id: &str, r: &Req) -> Result<(), Response> {
 /// back in time has more while the homeserver has older messages, like Desktop's `is_fully_paginated`.
 fn list_messages(st: &BeeperStore, idx: usize, r: &Req) -> Reply {
     let after = r.after()?;
-    let q = Query::default().chats(&chat_and_members(st, idx)).past(r.q("cursor"), after);
+    // Desktop's `getRoomMessages` reads the cursor as a number of the message order, and its message IDs are numbers
+    // of the rows, so the CLI's `messages context` passes a message ID as the cursor. Here an ID of a message of the
+    // chat stands for its sort key.
+    let cursor = r.q("cursor").map(|c| {
+        let message = st.stored_message(c).filter(|m| st.in_chat(idx, &m.chat_id));
+        message.map_or_else(|| c.to_string(), |m| m.sort_key)
+    });
+    let q = Query::default().chats(&chat_and_members(st, idx)).past(cursor.as_deref(), after);
     let (items, has_more) = message_page(st, &q, MESSAGE_PAGE, |_| true);
     let has_more = has_more || (!after && !unpaginated(st, idx).is_empty());
     let (oldest, newest) = (items.last().map(|m| m.sort_key.clone()), items.first().map(|m| m.sort_key.clone()));
