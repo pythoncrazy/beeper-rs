@@ -14,6 +14,7 @@ pub mod models;
 pub mod msc4483;
 pub mod platform;
 pub mod prefs;
+pub mod search;
 pub mod storage;
 pub mod store;
 #[cfg(any(test, feature = "stub"))]

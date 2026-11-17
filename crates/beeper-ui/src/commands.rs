@@ -971,7 +971,10 @@ pub enum Msg {
     TogglePalette,
     SearchRoom(String),
     ToggleMode,
-    ToggleSearchExpanded,
+    /// Desktop's `TOGGLE_EXPANDED_MORE` of a search section.
+    ToggleSearchExpanded(&'static str),
+    /// Desktop's `TOGGLE_PARTIAL_MATCHES` of the Messages section.
+    TogglePartialMatches,
     Query(String),
     ExecuteChat(String),
     JumpTo(String, String),
@@ -990,7 +993,8 @@ impl BeeperGuiApp {
                 }
                 self.show_command_palette ^= self.search_room.take().is_none() || !self.show_command_palette;
                 (self.cmd_bar_commands_mode, self.cmd_index, self.cmd_submenu) = (false, 0, None);
-                self.search_expanded = false;
+                self.search_expanded.clear();
+                self.search_partial = true;
                 if self.show_command_palette {
                     return operation::focus("cmd-palette-input");
                 }
@@ -1025,7 +1029,12 @@ impl BeeperGuiApp {
                 self.command_palette_query.clear();
                 return operation::focus("cmd-palette-input");
             }
-            Msg::ToggleSearchExpanded => self.search_expanded = !self.search_expanded,
+            Msg::ToggleSearchExpanded(section) => {
+                if !self.search_expanded.remove(section) {
+                    self.search_expanded.insert(section);
+                }
+            }
+            Msg::TogglePartialMatches => self.search_partial = !self.search_partial,
             Msg::Query(q) => {
                 (self.command_palette_query, self.cmd_index) = (q.clone(), 0);
                 if self.cmd_submenu == Some(SubMenu::AddMembers) {
