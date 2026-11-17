@@ -2448,6 +2448,8 @@ pub struct Pane {
     pub reply_opened: Option<std::time::Instant>,
     /// Desktop's `carouselState` of the window of the pane. A thread pane keeps none: its window's carousel shows it.
     pub(crate) carousel: Option<Carousel>,
+    /// Desktop's detached `ThreadInfoBrowserWindow`: the window shows only the Chat Info of its chat.
+    pub(crate) info: bool,
     pub top: TopOfThread,
     timeline: vlist::VList,
     thread_list: vlist::VList,
@@ -3358,7 +3360,8 @@ impl BeeperGuiApp {
     /// Desktop's `subwindow-state`: the chat and settings windows to open again at the next launch.
     fn save_subwindows(&self) {
         // Desktop's `zv` keeps no `space-` windows.
-        let chats = self.chat_windows.iter().filter(|w| w.1.thread_root.is_none() && !self.is_space_window(w.0));
+        let chats = self.chat_windows.iter().filter(|w| w.1.thread_root.is_none() && !w.1.info);
+        let chats = chats.filter(|w| !self.is_space_window(w.0));
         let threads = chats.filter_map(|w| w.1.selected_chat_id.as_deref());
         let threads =
             threads.map(|t| serde_json::json!({"windowId": format!("thread-{t}"), "type": "thread", "threadId": t}));
@@ -3442,9 +3445,10 @@ impl BeeperGuiApp {
                     let st = self.store.read();
                     let chat = pane.selected_chat_id.as_deref().and_then(|c| st.resolve_chat_idx(c));
                     let title = chat.map_or("Beeper".into(), |i| st.chats[i].title.clone());
-                    return match pane.thread_root {
-                        Some(_) => trf("Thread in %s", &[&title]),
-                        None => title,
+                    return match (pane.info, pane.thread_root.is_some()) {
+                        (true, _) => trf("%s — Chat Info", &[&title]),
+                        (false, true) => trf("Thread in %s", &[&title]),
+                        (false, false) => title,
                     };
                 }
                 None => {
@@ -4376,6 +4380,8 @@ impl BeeperGuiApp {
             }
             UiMessage::LoggedOut(Ok(())) => restart(),
             UiMessage::LoggedOut(Err(e)) => self.fail(Toast::new(format!("Could not log out: {e}"))),
+            // Desktop's "Close Chat Info" of a detached Chat Info closes its window.
+            UiMessage::ToggleRightPanel if self.pane.info => return window::close(self.swapped.expect("a window")),
             UiMessage::ToggleRightPanel => {
                 // Desktop shows Chat Info or the thread pane, not both.
                 let closed = self.pane.thread.take().is_some();
@@ -5243,6 +5249,8 @@ impl BeeperGuiApp {
         {
             // A chat window that left its chat closes, and draws nothing until it is closed.
             Space::new().into()
+        } else if self.chat_windows.iter().any(|w| w.0 == id && w.1.info) {
+            self.view_info()
         } else {
             self.view_main()
         }
@@ -5886,8 +5894,8 @@ impl BeeperGuiApp {
     /// timeline, except in incognito mode.
     fn read_open_chat(&self) {
         let at_bottom = self.pane.scrolled_up.is_none_or(|(up, _)| !up);
-        let Some(id) = self.pane.selected_chat_id.clone().filter(|_| self.focused && self.pane.thread_root.is_none())
-        else {
+        let shows = self.focused && self.pane.thread_root.is_none() && !self.pane.info;
+        let Some(id) = self.pane.selected_chat_id.clone().filter(|_| shows) else {
             return;
         };
         if self.store.read().incognito() {

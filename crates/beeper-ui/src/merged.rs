@@ -15,6 +15,8 @@ pub enum Msg {
     /// Desktop's `D3`: the editor of a merged chat, or of a new one of the chats.
     Open(Option<String>, Vec<String>),
     Edit(MergeEdit),
+    /// Desktop's `ThreadInfoBrowserWindow` of a member chat: its Chat Info in a window of its own.
+    Info(String),
 }
 
 impl BeeperGuiApp {
@@ -22,6 +24,7 @@ impl BeeperGuiApp {
         match msg {
             Msg::Open(union, chats) => self.open_merge(union, chats),
             Msg::Edit(e) => self.merge_edit(e),
+            Msg::Info(chat) => self.open_chat_info(chat),
             Msg::Ask(id) => {
                 self.list.chat_menu = None;
                 (self.confirm, self.delete_target) = (Some(ASK_UNMERGE), Some(id));
@@ -47,6 +50,23 @@ impl BeeperGuiApp {
 }
 
 impl BeeperGuiApp {
+    /// Desktop's `ThreadInfoBrowserWindow.open`: a 330 by 560 window 20 px right of and below the main window, or the
+    /// open one of the chat. It reads nothing.
+    fn open_chat_info(&mut self, chat: String) -> Task<UiMessage> {
+        if let Some((id, _)) =
+            self.chat_windows.iter().find(|w| w.1.info && w.1.selected_chat_id.as_ref() == Some(&chat))
+        {
+            return window::gain_focus(*id);
+        }
+        self.store.write().load_chat(&chat);
+        let size = Size::new(330.0, 560.0);
+        let (id, open) = window::open(Self::window_settings(size));
+        self.chat_windows.push((id, Pane { selected_chat_id: Some(chat), info: true, size, ..Pane::default() }));
+        let Some(main) = self.main_window else { return open.discard() };
+        open.then(move |_| window::position(main))
+            .then(move |at| at.map_or_else(Task::none, |at| window::move_to(id, at + Vector::new(20.0, 20.0))))
+    }
+
     /// Desktop's `BrandChatInfoPaneMergedChats` (`R7t`) of a merged chat: "Merged Chats" with Manage, and its member
     /// chats with the default one marked, or a note when none is on this device.
     pub(crate) fn view_merged_section<'a>(&'a self, st: &BeeperStore, chat: &Chat) -> Option<El<'a>> {
@@ -77,7 +97,12 @@ impl BeeperGuiApp {
                             .padding([2, 4])
                             .style(fill_box(p.card, 4.0))
                     });
-                    row![self.chat_avatar(c, 28.0, 1.25), name].push(mark).spacing(8).align_y(Center).padding(4).into()
+                    let row = row![self.chat_avatar(c, 28.0, 1.25), name].push(mark).spacing(8).align_y(Center);
+                    button(row.padding(4))
+                        .padding(0)
+                        .style(btn_style([CLEAR, p.hover, p.hover], [p.strong; 3], 6.0))
+                        .on_press(UiMessage::Merged(Msg::Info(c.id.clone())))
+                        .into()
                 });
                 container(Column::with_children(rows).spacing(6)).padding(8).style(fill_box(p.chip, 10.0)).into()
             }
@@ -198,6 +223,35 @@ mod tests {
         assert_eq!(app.pane.selected_chat_id.as_deref(), Some(LENA), "the newest member chat opens");
         let leave = |o: &beeper_core::matrix::Outgoing| matches!(o, beeper_core::matrix::Outgoing::Leave(true));
         assert!(st.outbox.iter().any(|(_, c, o)| *c == id && leave(o)), "the user leaves and forgets its room");
+    }
+
+    /// Desktop's `ThreadInfoBrowserWindow`: a member chat in the Merged Chats section opens its Chat Info in a window
+    /// "%s — Chat Info", which reads nothing, opens once, and whose "Close Chat Info" closes it.
+    #[test]
+    fn member_chats_open_their_chat_info_like_desktop() {
+        let (mut app, _) = merged_app("merged-info");
+        app.show_right_panel = true;
+        let lena = app.store.read().chat_idx(LENA);
+        app.store.write().update_chat(lena, |c| c.unread_count = 2);
+        let picked: Vec<UiMessage> = {
+            let mut sim = simulator(app.view_main());
+            let _ = sim.click("Lena Fischer").expect("the member row");
+            sim.into_messages().collect()
+        };
+        assert!(matches!(&picked[..], [UiMessage::Merged(Msg::Info(c))] if c == LENA), "{picked:?}");
+        let _ = app.update(UiMessage::Merged(Msg::Info(LENA.into())));
+        let _ = app.update(UiMessage::Merged(Msg::Info(LENA.into())));
+        let windows: Vec<window::Id> = app.chat_windows.iter().filter(|w| w.1.info).map(|w| w.0).collect();
+        let [id] = windows[..] else { panic!("one Chat Info window: {windows:?}") };
+        assert_eq!(app.title(id), "Lena Fischer — Chat Info");
+        assert!(
+            simulator(app.view(id)).find("Mute Chat").is_ok() || simulator(app.view(id)).find("Lena Fischer").is_ok()
+        );
+        app.focused = true;
+        let _ = app.update(UiMessage::InWindow(id, Box::new(UiMessage::Window(crate::windows::Msg::Focused(true)))));
+        assert_eq!(app.store.read().chats[lena].unread_count, 2, "the Chat Info window reads nothing");
+        let _ = app.update(UiMessage::InWindow(id, Box::new(UiMessage::ToggleRightPanel)));
+        assert!(app.show_right_panel, "its Close Chat Info closes the window, not the main window's Chat Info");
     }
 
     /// Desktop's `notificationSender` and `threadForNotificationReply`: a message of a member chat notifies as the
