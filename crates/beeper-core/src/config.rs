@@ -163,7 +163,7 @@ const T: bool = true;
 const F: bool = false;
 
 #[rustfmt::skip]
-pub const NETWORK_SPECS: [NetworkSpec; 20] = [
+pub const NETWORK_SPECS: [NetworkSpec; 25] = [
     net(Beeper, "hungryserv", "hungryserv", "Beeper", [37, 97, 251], [F, T, F, T, T]),
     net(WhatsApp, "whatsapp", "whatsapp", "WhatsApp", [37, 211, 102], [T, T, F, T, T]),
     net(TwitterX, "twitter", "twitter", "X", [29, 155, 240], [T, T, F, F, F]),
@@ -181,8 +181,13 @@ pub const NETWORK_SPECS: [NetworkSpec; 20] = [
     net(Tumblr, "tumblr", "tumblr", "Tumblr", [0, 25, 53], [T, F, F, F, F]),
     net(Viber, "viber", "viber", "Viber", [115, 96, 242], [T, F, F, T, T]),
     net(Snapchat, "snapchat", "snapchat", "Snapchat", [255, 252, 0], [F, T, F, F, F]),
+    net(GroupMe, "groupme", "groupme", "GroupMe", [32, 108, 248], [T, T, F, F, F]),
     net(WeChat, "wechat", "wechat", "WeChat", [7, 193, 96], [T, T, F, F, F]),
+    net(Reddit, "reddit", "reddit", "Reddit", [255, 69, 0], [T, T, F, F, F]),
+    net(ChatGptDots, "chatgpt-dots", "chatgpt-dots", "ChatGPT Dots", [255, 255, 255], [F, T, F, F, F]),
     net(IMessage, "imessage", "imessage", "iMessage", [52, 199, 89], [T, T, T, T, F]),
+    net(GrokBot, "grokbot", "grokbot", "Grok Bot", [0, 0, 0], [F, T, F, F, F]),
+    net(Muse, "muse", "muse", "Muse", [255, 255, 255], [F, T, F, F, F]),
     net(Bluesky, "bluesky", "bluesky", "Bluesky", [0, 133, 255], [T, F, F, F, F]),
 ];
 

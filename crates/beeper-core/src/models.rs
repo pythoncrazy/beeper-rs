@@ -207,6 +207,11 @@ pub enum NetworkKind {
     Tumblr,
     Snapchat,
     WeChat,
+    GroupMe,
+    Reddit,
+    ChatGptDots,
+    GrokBot,
+    Muse,
     Bluesky,
 }
 
