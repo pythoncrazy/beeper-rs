@@ -2648,6 +2648,8 @@ pub struct BeeperGuiApp {
     pub devices: Option<Result<Vec<DeviceInfo>, String>>,
     pub confirm: Option<u8>,
     delete_target: Option<String>,
+    /// The chats of Desktop's `confirmDeleteThread`: the selected chats, or the chat of the menu.
+    delete_chats: Vec<String>,
     /// Desktop's `loading` of the device list: a logout of another device runs.
     devices_busy: bool,
     /// The "Report spam" checkbox of the Block dialog.
@@ -2931,6 +2933,7 @@ impl BeeperGuiApp {
             mics: None,
             confirm: None,
             delete_target: None,
+            delete_chats: Vec::new(),
             devices_busy: false,
             report_spam: false,
             reminder_menu: None,
