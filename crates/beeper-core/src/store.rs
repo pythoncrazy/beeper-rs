@@ -3158,10 +3158,11 @@ impl BeeperStore {
     }
 
     /// Reads the stored messages that `q` selects, newest first by time and then by row like Desktop's
-    /// `searchRoomMessages`, with their rows, until `f` returns false.
-    pub fn scan_by_time(&self, q: &Query, f: impl FnMut(i64, Message) -> bool) {
+    /// `searchRoomMessages`, or oldest first like its `sortOrder: "asc"`, with their rows, until `f` returns false.
+    pub fn scan_by_time(&self, q: &Query, oldest: bool, f: impl FnMut(i64, Message) -> bool) {
         let all = if q.0.is_empty() { "1".to_string() } else { q.0.join(" AND ") };
-        self.scan_rows(&format!("{all} ORDER BY {TIME} DESC, n DESC"), rusqlite::params_from_iter(&q.1), f);
+        let dir = if oldest { "ASC" } else { "DESC" };
+        self.scan_rows(&format!("{all} ORDER BY {TIME} {dir}, n {dir}"), rusqlite::params_from_iter(&q.1), f);
     }
 
     /// The id, chat, Unix seconds and stored bytes of each message.
@@ -3248,6 +3249,28 @@ mod tests {
         let mut ids = HashSet::new();
         st.scan(&super::Query::default().text(q), |m| ids.insert(m.id) || true);
         ids
+    }
+
+    /// Desktop's `searchRoomMessages` with `sortOrder: "asc"` reads oldest first by time and row, and its `after`
+    /// cursor takes the messages past a row.
+    #[test]
+    fn message_search_reads_oldest_first() {
+        let st = super::BeeperStore::from_config(crate::testing::demo_config("oldest-first"));
+        let rows = |q: super::Query, oldest| {
+            let mut rows = Vec::new();
+            st.scan_by_time(&q, oldest, |n, m| {
+                rows.push((crate::config::millis_from_rfc3339(&m.timestamp).expect("a message time"), n));
+                true
+            });
+            rows
+        };
+        let oldest = rows(super::Query::default().has(None), true);
+        assert!(oldest.len() > 2, "the demo has attachments");
+        assert!(oldest.is_sorted(), "oldest first");
+        let mut newest = rows(super::Query::default().has(None), false);
+        newest.reverse();
+        assert_eq!(newest, oldest);
+        assert_eq!(rows(super::Query::default().has(None).past_row(oldest[1], true), true), oldest[2..]);
     }
 
     #[test]
