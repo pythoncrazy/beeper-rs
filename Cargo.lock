@@ -439,7 +439,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "beeper-api"
-version = "4.3.176"
+version = "4.3.308"
 dependencies = [
  "beeper-core",
  "serde",
@@ -450,7 +450,7 @@ dependencies = [
 
 [[package]]
 name = "beeper-core"
-version = "4.3.176"
+version = "4.3.308"
 dependencies = [
  "chrono",
  "futures-util",
@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "beeper-rs"
-version = "4.3.176"
+version = "4.3.308"
 dependencies = [
  "beeper-api",
  "beeper-core",
@@ -492,7 +492,7 @@ dependencies = [
 
 [[package]]
 name = "beeper-ui"
-version = "4.3.176"
+version = "4.3.308"
 dependencies = [
  "arboard",
  "beeper-core",

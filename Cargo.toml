@@ -4,7 +4,7 @@ exclude = ["vendor/iced_tiny_skia", "vendor/sctk-adwaita"]
 resolver = "2"
 
 [workspace.package]
-version = "4.3.176"
+version = "4.3.308"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/pythoncrazy/beeper-rs"

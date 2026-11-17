@@ -137,6 +137,8 @@ pub(super) const ROUTES: &[Route] = &[
     other("GET", "/focus", Open),
     other("GET", "/focus/{chatID}", Open),
     other("GET", "/focus/{chatID}/{messageID}", Open),
+    other("GET", "/deeplink", Open),
+    other("GET", "/deeplink/{*path}", Open),
     other("GET", "/_matrix/client/v3/user/{userID}/account_data/{eventType}", Matrix),
     other("PUT", "/_matrix/client/v3/user/{userID}/account_data/{eventType}", Matrix),
     other("GET", "/_matrix/client/v3/user/{userID}/rooms/{roomID}/account_data/{eventType}", Matrix),
