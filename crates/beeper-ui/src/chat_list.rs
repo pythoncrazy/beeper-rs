@@ -1466,12 +1466,26 @@ impl BeeperGuiApp {
                         .style(fill_box(p.strong.scale_alpha(0.105), 4.0))
                         .into()
                 }))
-                .push(body.map(|b| {
-                    clamp(&b, text_w - reserve, if flowed { 1 } else { lines }, 13.0, Weight::Normal)
-                        .width(text_w - reserve)
+                .push(body.map(|b| -> El<'_> {
+                    let lines = if flowed { 1 } else { lines };
+                    let shown = crate::style::clamped(&b, text_w - reserve, lines, 13.0, Weight::Normal);
+                    if !shown.contains('\u{fe0f}') {
+                        let text = clamp(&b, text_w - reserve, lines, 13.0, Weight::Normal);
+                        return text.width(text_w - reserve).line_height(Pixels(16.0)).font(body_font).color(fg).into();
+                    }
+                    let spans = crate::emoji::with_emoji_font(vec![span::<(), _>(shown.to_string()).font(body_font)]);
+                    let wrap = if lines == 1 {
+                        iced::widget::text::Wrapping::None
+                    } else {
+                        iced::widget::text::Wrapping::WordOrGlyph
+                    };
+                    rich_text(spans)
+                        .size(13)
                         .line_height(Pixels(16.0))
-                        .font(body_font)
                         .color(fg)
+                        .width(text_w - reserve)
+                        .wrapping(wrap)
+                        .into()
                 }))
                 .push(draft.filter(|_| previews).map(|t| {
                     let label = trx("Draft:", "thread list draft preview prefix");
