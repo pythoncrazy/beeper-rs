@@ -460,7 +460,7 @@ macro_rules! brands {
     };
 }
 
-const BRANDS: [(&str, &str, &str); 21] = brands!(
+const BRANDS: [(&str, &str, &str); 26] = brands!(
     "whatsapp",
     "twitter",
     "telegram",
@@ -477,8 +477,13 @@ const BRANDS: [(&str, &str, &str); 21] = brands!(
     "tumblr",
     "viber",
     "snapchat",
+    "groupme",
     "wechat",
+    "reddit",
+    "chatgpt-dots",
     "imessage",
+    "grokbot",
+    "muse",
     "bluesky",
     "hungryserv",
     // Desktop's `fP`, the brand of a merged chat.

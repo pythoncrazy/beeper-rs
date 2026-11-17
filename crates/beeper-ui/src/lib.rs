@@ -2764,6 +2764,8 @@ pub struct BeeperGuiApp {
     pill_hover: bool,
     /// A toast that stays until it is replaced, like Desktop's timeout 0.
     sticky_banner: Option<String>,
+    /// Desktop's `DownloadMobileApps` toast after the onboarding, which stays until it is closed.
+    pub mobile_apps_toast: bool,
     pub dnd_muted: bool,
     pub sidebar_width: f32,
     /// Whether the hidden space bar floats over the chat list, like Desktop's `account-switcher--floating`.
@@ -3035,6 +3037,7 @@ impl BeeperGuiApp {
             online: true,
             pill_hover: false,
             sticky_banner: None,
+            mobile_apps_toast: false,
             dnd_muted: false,
             sidebar_width,
             rail_float: false,
