@@ -65,6 +65,8 @@ impl BeeperGuiApp {
             }
             Msg::Drawn(_) => {}
             Msg::Resized(id, size) => {
+                // Desktop's `KeyboardSensor` cancels on a resize of the window.
+                self.key_sort.take_if(|s| s.window == id);
                 if self.main_window == Some(id) {
                     let narrow = |s: Size| s.width / self.zoom < 600.0;
                     if narrow(self.pane.size) != narrow(size) {
@@ -167,6 +169,7 @@ impl BeeperGuiApp {
             }
             Msg::Closed(id) => {
                 let mut tasks = Vec::new();
+                self.key_sort.take_if(|s| s.window == id);
                 // Desktop's "Media in %s" window closes its carousel when it closes, which plays the inline video
                 // again, and focuses its thread window.
                 if let Some(opener) = self.carousel_opener(id) {
