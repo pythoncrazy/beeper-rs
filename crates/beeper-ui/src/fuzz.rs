@@ -4,6 +4,7 @@
 use super::*;
 use crate::composer::{composer_action, hidden_actions, mention_label};
 use crate::forward::forward_chats;
+use crate::new_chat::{account_display_name, chat_people, typed_phone};
 use crate::toasts::{TOAST_TIMEOUT, UNDO_NOTE_TIMEOUT};
 use beeper_core::config::CentralConfig;
 use beeper_core::matrix::ROOM_MENTION;
@@ -228,8 +229,8 @@ fn random_message(rng: &mut Rng, app: &BeeperGuiApp) -> (String, UiMessage) {
         32 => UiMessage::CommandQueryChanged(text),
         33 => UiMessage::ToggleFilterMenu,
         34 => UiMessage::PickFilter(rng.below(8) as u8),
-        35 => UiMessage::NewChat,
-        36 => UiMessage::NewChatQueryChanged(text),
+        35 => UiMessage::NewChat(new_chat::Msg::Open),
+        36 => UiMessage::NewChat(new_chat::Msg::Query(text)),
         37 => UiMessage::BeginSelecting(chat),
         38 => UiMessage::ToggleSelected(chat),
         39 => UiMessage::SelectionSet(flag, rng.coin()),
@@ -3428,46 +3429,46 @@ fn account_space_titles_like_desktop() {
 #[test]
 fn join_a_matrix_room_like_desktop() {
     let mut app = demo_app("join-matrix");
-    let _ = app.update(UiMessage::NewChat);
-    let _ = app.update(UiMessage::ToggleJoinMatrix);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::ToggleJoinMatrix));
     assert!(simulator(app.view_main()).find("Room address or Matrix link").is_ok());
     for (input, error) in [
         ("#!x:y", "This starts with both # and !, so it isn't a valid Matrix address."),
         ("room", "Enter a valid Matrix room address like #room:server, or paste a Matrix room link."),
     ] {
-        let _ = app.update(UiMessage::NewChatQueryChanged(input.into()));
-        let _ = app.update(UiMessage::JoinMatrixRoom);
+        let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query(input.into())));
+        let _ = app.update(UiMessage::NewChat(new_chat::Msg::JoinMatrixRoom));
         assert!(app.join_room.1.as_deref().is_some_and(|e| e.starts_with(error)), "{input}");
         let shown = app.join_room.1.clone().unwrap();
         assert!(simulator(app.view_main()).find(shown).is_ok(), "the error shows under the field");
     }
     let known = app.store.read().chats.iter().find(|c| c.id.starts_with('!') && c.id.contains(':')).unwrap().id.clone();
-    let _ = app.update(UiMessage::NewChatQueryChanged(known.clone()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query(known.clone())));
     assert!(app.join_room.1.is_none(), "typing clears the error");
-    let _ = app.update(UiMessage::JoinMatrixRoom);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::JoinMatrixRoom));
     assert!(
         !app.join_matrix_mode && app.pane.selected_chat_id.as_deref() == Some(known.as_str()),
         "a known room opens"
     );
     assert!(app.new_chats.is_empty(), "the opened room drops its draft");
     let join = |app: &mut BeeperGuiApp| {
-        let _ = app.update(UiMessage::NewChat);
-        let _ = app.update(UiMessage::ToggleJoinMatrix);
+        let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+        let _ = app.update(UiMessage::NewChat(new_chat::Msg::ToggleJoinMatrix));
         app.join_room.0 = true;
         app.creating_chat
     };
     let draft = join(&mut app);
-    let _ = app.update(UiMessage::MatrixRoomJoined(draft, Ok("!new:localhost".into()), false));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::MatrixRoomJoined(draft, Ok("!new:localhost".into()), false)));
     assert_eq!(
         app.join_room,
         (false, Some("You joined the room, but Beeper couldn't open it yet. Try again.".into())),
         "a room the sync has not brought shows why in the view"
     );
-    let _ = app.update(UiMessage::MatrixRoomJoined(draft, Ok(known.clone()), false));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::MatrixRoomJoined(draft, Ok(known.clone()), false)));
     assert!(app.new_chats.is_empty() && app.pane.selected_chat_id.as_deref() == Some(known.as_str()), "it opens");
     let draft = join(&mut app);
     let _ = app.update(UiMessage::SelectChat(known.clone()));
-    let _ = app.update(UiMessage::MatrixRoomJoined(draft, Err("forbidden".into()), true));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::MatrixRoomJoined(draft, Err("forbidden".into()), true)));
     assert_eq!(
         app.toast.as_ref().map(|t| t.text.as_str()),
         Some("Couldn't join this Matrix room without routing information. Try a link with routing information, or check your access."),
@@ -5611,7 +5612,7 @@ fn new_group_like_desktop() {
         let others = c.participants.items.iter().filter(|u| u.is_self != Some(true)).cloned();
         (c.account_id.clone(), others.collect::<Vec<User>>())
     };
-    let _ = app.update(UiMessage::NewChat);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     let click = |app: &mut BeeperGuiApp, label: &str| {
         let msgs: Vec<UiMessage> = {
             let mut sim = simulator(app.view_main());
@@ -5624,13 +5625,13 @@ fn new_group_like_desktop() {
     };
     click(&mut app, "New Group");
     assert!(app.new_chats[0].group && !found(&app, "New Group") && found(&app, "Start group chat"));
-    let _ = app.update(UiMessage::PickUser(account.clone(), Box::new(people[0].clone())));
-    let _ = app.update(UiMessage::GroupTitle("Rustaceans".into()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(account.clone(), Box::new(people[0].clone()))));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::GroupTitle("Rustaceans".into())));
     assert_eq!(app.new_chats[0].title, "Rustaceans");
     assert!(found(&app, "Rustaceans"), "the name bar shows when the bridge allows a name");
     click(&mut app, "Start group chat");
     assert!(app.sticky_banner.is_none(), "the demo bridge needs two people");
-    let _ = app.update(UiMessage::PickUser(account, Box::new(people[1].clone())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(account, Box::new(people[1].clone()))));
     click(&mut app, "Start group chat");
     assert_eq!(app.sticky_banner.as_deref(), Some("Creating group chat..."));
 }
@@ -5867,55 +5868,56 @@ fn new_chats_start_like_desktop() {
         account_display_name(&st, &account, &rail_accounts(&st))
     };
     let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
-    let _ = app.update(UiMessage::NewChat);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     let n = app.creating_chat.expect("a draft");
     assert!(found(&app, "Sam Example") && found(&app, "Bo Example") && !found(&app, &label));
-    let _ = app.update(UiMessage::StartChat);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Start));
     assert_eq!(app.creating_chat, Some(n), "Start chat needs a person");
-    let _ = app.update(UiMessage::NewChatQueryChanged("sam".into()));
-    let _ = app.update(UiMessage::ToggleContact(sam.id.clone()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("sam".into())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::ToggleContact(sam.id.clone())));
     assert!(found(&app, &label), "an account with any_phone reaches the phone number");
     let nets = &app.contact_networks.as_ref().expect("the networks").1;
     let user = nets.iter().find(|(a, _)| *a == account).and_then(|(_, u)| u.clone().flatten()).expect("a user");
     assert_eq!((user.id.as_str(), user.phone_number.as_deref()), ("+15550100", Some("+15550100")));
-    let _ = app.update(UiMessage::PickUser(account.clone(), Box::new(user.clone())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(account.clone(), Box::new(user.clone()))));
     assert!(app.new_chat_query.is_empty() && app.new_chats[0].users.len() == 1);
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Backspace), Modifiers::empty()));
     assert!(app.new_chats[0].users.is_empty(), "Backspace removes the pill");
-    let _ = app.update(UiMessage::PickUser(account.clone(), Box::new(user)));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(account.clone(), Box::new(user))));
     let _ = app.update(UiMessage::KeyPressed(Key::Named(Named::Enter), Modifiers::empty()));
     assert!(app.new_chats.is_empty() && app.creating_chat.is_none(), "the draft goes");
     assert_eq!(app.pane.selected_chat_id.as_deref(), Some(dm.as_str()), "the DM with the same phone opens");
 
     let caps = serde_json::json!({ "resolve_identifier": { "create_dm": true, "lookup_phone": true } });
     let _ = app.update(UiMessage::Capabilities(account.clone(), Ok(caps)));
-    let _ = app.update(UiMessage::NewChat);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     let n = app.creating_chat.expect("a draft");
-    let _ = app.update(UiMessage::ToggleContact(bo.id.clone()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::ToggleContact(bo.id.clone())));
     assert!(!found(&app, &label) && !found(&app, "No networks found"), "the lookup loads");
     let slot = |app: &BeeperGuiApp| {
         app.contact_networks.as_ref().expect("the networks").1.iter().position(|(a, _)| *a == account).expect("a slot")
     };
-    let _ = app.update(UiMessage::ContactNetwork(bo.id.clone(), slot(&app), Ok(None)));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::ContactNetwork(bo.id.clone(), slot(&app), Ok(None))));
     assert!(!found(&app, &label) && !found(&app, "No networks found"), "the other accounts reach the phone number");
-    let _ = app.update(UiMessage::NewChatAccount(Some(account.clone())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Account(Some(account.clone()))));
     assert!(found(&app, "No networks found"), "the other accounts are not picked");
-    let _ = app.update(UiMessage::NewChatAccount(None));
-    let _ = app.update(UiMessage::ToggleContact(bo.id.clone()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Account(None)));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::ToggleContact(bo.id.clone())));
     assert!(app.contact_networks.is_none() && !found(&app, "No networks found"), "a second click collapses");
-    let _ = app.update(UiMessage::ToggleContact(bo.id.clone()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::ToggleContact(bo.id.clone())));
     let ghost = serde_json::json!({ "id": "199", "mxid": "@bridge_199:beeper.local", "name": "Bo Example" });
-    let _ = app.update(UiMessage::ContactNetwork(bo.id.clone(), slot(&app), Ok(Some(ghost))));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::ContactNetwork(bo.id.clone(), slot(&app), Ok(Some(ghost)))));
     assert!(found(&app, &label));
     let nets = &app.contact_networks.as_ref().expect("the networks").1;
     let user = nets.iter().find(|(a, _)| *a == account).and_then(|(_, u)| u.clone().flatten()).expect("a user");
     assert_eq!(user.id, "@bridge_199:beeper.local", "a resolved user has its Matrix ID");
-    let _ = app.update(UiMessage::PickUser(account, Box::new(user)));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(account, Box::new(user))));
     assert!(found(&app, "Bo Example"), "the draft is titled with the person");
-    let _ = app.update(UiMessage::StartChat);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Start));
     assert_eq!(app.status_banner, "Composing chat...");
     assert!(!app.toast_running(), "the composing toast stays");
-    let _ = app.update(UiMessage::DmCreated(Some(n), String::new(), None, Err("timeout".into())));
+    let _ =
+        app.update(UiMessage::NewChat(new_chat::Msg::DmCreated(Some(n), String::new(), None, Err("timeout".into()))));
     assert!(
         app.status_banner.starts_with("Something went wrong creating thread (")
             && app.status_banner.ends_with(")\ntimeout")
@@ -5923,8 +5925,13 @@ fn new_chats_start_like_desktop() {
     assert!(
         matches!(&app.shown_toast().expect("a toast").buttons[..], [("Copy Error", UiMessage::CopyText(e))] if e == "timeout")
     );
-    let _ = app.update(UiMessage::StartChat);
-    let _ = app.update(UiMessage::DmCreated(Some(n), String::new(), None, Ok("!new:beeper.local".into())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Start));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::DmCreated(
+        Some(n),
+        String::new(),
+        None,
+        Ok("!new:beeper.local".into()),
+    )));
     assert!(app.new_chats.is_empty() && app.creating_chat.is_none() && app.status_banner.is_empty());
     assert_eq!(app.pending_dm, Some(("!new:beeper.local".into(), None)), "the room opens when it syncs");
 }
@@ -5940,8 +5947,8 @@ fn contacts_without_a_phone_number_resolve_like_desktop() {
         serde_json::from_value(serde_json::json!({ "id": "contact:t:lee", "fullName": "Lee", "username": "lee" }))
             .expect("a user");
     app.store.write().set_contacts(vec![lee.clone()]);
-    let _ = app.update(UiMessage::NewChat);
-    let _ = app.update(UiMessage::ToggleContact(lee.id.clone()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::ToggleContact(lee.id.clone())));
     let nets = &app.contact_networks.as_ref().expect("the networks").1;
     assert!(
         matches!(&nets[..], [(a, None)] if *a == account),
@@ -5954,19 +5961,19 @@ fn new_chat_accounts_filter_like_desktop() {
     let mut app = demo_app("new-chat-accounts");
     let account = rail_accounts(&app.store.read()).into_iter().find(|a| a.contains("telegram")).expect("telegram");
     let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
-    let _ = app.update(UiMessage::NewChat);
-    let _ = app.update(UiMessage::ToggleNewChatAccounts);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::ToggleAccounts));
     assert!(found(&app, "Telegram") && found(&app, "WhatsApp"));
-    let _ = app.update(UiMessage::NewChatAccount(Some(account.clone())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Account(Some(account.clone()))));
     assert!(!app.new_chat_accounts_open && app.new_chat_account.as_deref() == Some(account.as_str()));
     let _ = app.update(UiMessage::Capabilities(account.clone(), Ok(serde_json::json!({ "resolve_identifier": {} }))));
-    let _ = app.update(UiMessage::NewChat);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     assert!(app.new_chat_account.is_none(), "a new draft shows all accounts");
-    let _ = app.update(UiMessage::ToggleNewChatAccounts);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::ToggleAccounts));
     assert!(!found(&app, "Telegram") && found(&app, "WhatsApp"), "a bridge without create_dm is not listed");
     let (n, drafts) = (app.creating_chat.expect("a draft"), app.new_chats.len());
-    let _ = app.update(UiMessage::DeleteNewChat(n));
-    let _ = app.update(UiMessage::DeleteNewChat(n));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Delete(n)));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Delete(n)));
     assert_eq!(app.new_chats.len(), drafts - 1, "the second click of a double click removes nothing");
 }
 
@@ -6128,9 +6135,9 @@ fn mod_z_undoes_actions_like_desktop() {
 fn new_chat_lists_chat_people_like_desktop() {
     let mut app = demo_app("new-chat-people");
     let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
-    let _ = app.update(UiMessage::NewChat);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     assert!(!found(&app, "Chats"), "Desktop lists chat people only for a query");
-    let _ = app.update(UiMessage::NewChatQueryChanged("ERIC".into()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("ERIC".into())));
     assert!(found(&app, "Chats"));
     let people = {
         let st = app.store.read();
@@ -6147,11 +6154,11 @@ fn new_chat_lists_chat_people_like_desktop() {
         let dms = st.chats.iter().filter(|c| c.account_id == account && c.chat_type == "single");
         dms.into_iter().find(|c| c.participants.items.iter().any(|u| u.id == eric.id)).expect("the DM").id.clone()
     };
-    let _ = app.update(UiMessage::PickUser(account, Box::new(eric)));
-    let _ = app.update(UiMessage::StartChat);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(account, Box::new(eric))));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Start));
     assert_eq!(app.pane.selected_chat_id.as_deref(), Some(dm.as_str()), "the DM with the Matrix ID opens");
-    let _ = app.update(UiMessage::NewChat);
-    let _ = app.update(UiMessage::NewChatQueryChanged("zzzz".into()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("zzzz".into())));
     assert!(found(&app, "No results found") && !found(&app, "Chats"));
 }
 
@@ -6160,26 +6167,26 @@ fn new_chat_looks_up_identifiers_like_desktop() {
     let mut app = demo_app("new-chat-lookup");
     let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
     assert!(typed_phone("+1 (415) 555-0177") && !typed_phone("555") && !typed_phone("call 4155550177"));
-    let _ = app.update(UiMessage::NewChat);
-    let _ = app.update(UiMessage::NewChatQueryChanged("+1 415 555 0177".into()));
-    let _ = app.update(UiMessage::LookupIdentifier("+1 415".into()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("+1 415 555 0177".into())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::LookupIdentifier("+1 415".into())));
     assert!(app.new_chat_lookup.is_none(), "a lookup of an old query does nothing");
-    let _ = app.update(UiMessage::LookupIdentifier("+1 415 555 0177".into()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::LookupIdentifier("+1 415 555 0177".into())));
     let nets = &app.new_chat_lookup.as_ref().expect("a lookup").1;
     assert!(nets.len() > 1 && nets.iter().all(|(_, n)| n.as_ref().is_some_and(Option::is_some)), "any_phone");
     assert!(found(&app, &fmt_phone("+14155550177")) && !found(&app, "No results found"));
     let account = rail_accounts(&app.store.read()).into_iter().next().expect("an account");
     let caps = serde_json::json!({ "resolve_identifier": { "create_dm": true, "lookup_username": true } });
     let _ = app.update(UiMessage::Capabilities(account.clone(), Ok(caps)));
-    let _ = app.update(UiMessage::NewChatQueryChanged("@samx".into()));
-    let _ = app.update(UiMessage::LookupIdentifier("@samx".into()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("@samx".into())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::LookupIdentifier("@samx".into())));
     let nets = &app.new_chat_lookup.as_ref().expect("a lookup").1;
     assert!(matches!(&nets[..], [(a, None)] if *a == account), "only the account with lookup_username asks");
     assert!(found(&app, "No results found"), "rows show when all lookups end");
     let user = serde_json::json!({ "id": "x", "mxid": "@x_samx:beeper.local", "name": "Sam X", "identifiers": ["mailto:sam@example.com"] });
-    let _ = app.update(UiMessage::ContactNetwork("lookup:@samx".into(), 0, Ok(Some(user))));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::ContactNetwork("lookup:@samx".into(), 0, Ok(Some(user)))));
     assert!(found(&app, "Sam X") && found(&app, "sam@example.com"));
-    let _ = app.update(UiMessage::NewChatQueryChanged("@sam".into()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("@sam".into())));
     assert!(app.new_chat_lookup.is_none() && !found(&app, "Sam X"), "typing drops the lookup");
 }
 
@@ -6188,22 +6195,26 @@ fn new_chat_searches_connections_like_desktop() {
     let mut app = demo_app("new-chat-connections");
     let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
     let account = rail_accounts(&app.store.read()).into_iter().next().expect("an account");
-    let _ = app.update(UiMessage::NewChat);
-    let _ = app.update(UiMessage::NewChatQueryChanged("dana".into()));
-    let _ = app.update(UiMessage::LookupIdentifier("dana".into()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("dana".into())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::LookupIdentifier("dana".into())));
     assert!(app.new_chat_search.is_none(), "no bridge can search");
     let caps = serde_json::json!({ "resolve_identifier": { "create_dm": true, "search": true } });
     let _ = app.update(UiMessage::Capabilities(account.clone(), Ok(caps)));
-    let _ = app.update(UiMessage::LookupIdentifier("dana".into()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::LookupIdentifier("dana".into())));
     assert!(found(&app, "Connections") && found(&app, "Searching..."));
     let user = |name: &str, phone: &str| serde_json::json!({ "id": name, "mxid": format!("@x_{name}:beeper.local"), "name": name, "identifiers": [format!("tel:{phone}")] });
     let results = vec![user("Dana One", "+15550111"), user("Dana Two", "+15550111"), user("Ann Dana", "+15550112")];
-    let _ = app.update(UiMessage::SearchedUsers("dan".into(), account.clone(), Ok(results.clone())));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::SearchedUsers(
+        "dan".into(),
+        account.clone(),
+        Ok(results.clone()),
+    )));
     assert!(found(&app, "Searching..."), "results of an old query do nothing");
-    let _ = app.update(UiMessage::SearchedUsers("dana".into(), account, Ok(results)));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::SearchedUsers("dana".into(), account, Ok(results))));
     assert!(!found(&app, "Searching...") && found(&app, "Dana One") && found(&app, "Ann Dana"));
     assert!(!found(&app, "Dana Two"), "one row per bridge and phone number");
-    let _ = app.update(UiMessage::NewChatQueryChanged("danae".into()));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Query("danae".into())));
     assert!(app.new_chat_search.is_none() && !found(&app, "Connections"));
 }
 
@@ -6212,22 +6223,22 @@ fn new_chat_groups_follow_bridge_capabilities_like_desktop() {
     let mut app = demo_app("new-chat-groups");
     let accounts: Vec<String> = rail_accounts(&app.store.read()).into_iter().filter(|a| app.can_group(a)).collect();
     let found = |app: &BeeperGuiApp, s: &str| simulator(app.view_main()).find(s).is_ok();
-    let _ = app.update(UiMessage::NewChat);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     assert!(accounts.len() > 1 && found(&app, "New Group"));
     let user = |id: &str| Box::new(User { id: id.into(), full_name: Some(id.into()), ..Default::default() });
     let (a, b) = (accounts[0].clone(), accounts[1].clone());
-    let _ = app.update(UiMessage::PickUser(a.clone(), user("@one:x")));
-    let _ = app.update(UiMessage::PickUser(a.clone(), user("@two:x")));
-    let _ = app.update(UiMessage::PickUser(a.clone(), user("@two:x")));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(a.clone(), user("@one:x"))));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(a.clone(), user("@two:x"))));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(a.clone(), user("@two:x"))));
     let ids = |app: &BeeperGuiApp| app.new_chats[0].users.iter().map(|(_, u)| u.id.clone()).collect::<Vec<_>>();
     assert_eq!(ids(&app), ["@one:x", "@two:x"], "a group bridge adds people once");
     let single = serde_json::json!({ "resolve_identifier": { "create_dm": true } });
     for acc in &accounts {
         let _ = app.update(UiMessage::Capabilities(acc.clone(), Ok(single.clone())));
     }
-    let _ = app.update(UiMessage::PickUser(b, user("@three:x")));
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::PickUser(b, user("@three:x"))));
     assert_eq!(ids(&app), ["@three:x"], "a bridge without groups replaces the person");
-    let _ = app.update(UiMessage::NewChat);
+    let _ = app.update(UiMessage::NewChat(new_chat::Msg::Open));
     assert!(!found(&app, "New Group"), "no bridge can create groups");
 }
 
@@ -6252,7 +6263,8 @@ fn reply_privately_like_desktop() {
     assert_eq!(app.status_banner, "Composing chat...");
     let quote = format!("> {}\n", theirs.text.clone().expect("text").lines().next().expect("a line"));
     let room = "!sg_security:beeper.com".to_string();
-    let _ = app.update(UiMessage::DmCreated(None, account, Some(quote.clone()), Ok(room.clone())));
+    let _ =
+        app.update(UiMessage::NewChat(new_chat::Msg::DmCreated(None, account, Some(quote.clone()), Ok(room.clone()))));
     assert_eq!(app.pane.selected_chat_id.as_deref(), Some(room.as_str()));
     assert!(app.pane.composer.text().starts_with(&quote), "the composer quotes the message");
 }

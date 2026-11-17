@@ -1,5 +1,6 @@
 //! Desktop's command bar commands (`Efe`): the categories, the titles, the search keywords and the hotkeys.
 use crate::i18n::{tr, trf, trx};
+use crate::new_chat;
 use crate::style::{bar, brand_svg, ell, fill_box, scroll_style, semi, text_width, txt, Palette, CLEAR};
 use crate::{
     has_flag, network_name, shown, BeeperGuiApp, El, InboxTab, SettingsHit, SettingsTab, UiMessage, ASK_LOGOUT,
@@ -585,9 +586,12 @@ impl BeeperGuiApp {
         }
         let history = cmd(CHATS, tr("Open recently viewed chats"), Some(UiMessage::OpenSubMenu(SubMenu::History)));
         v.push(history.keys(&["history"]));
-        let new_chat = cmd("", tr("Create new chat"), Some(UiMessage::NewChat));
+        let new_chat = cmd("", tr("Create new chat"), Some(UiMessage::NewChat(new_chat::Msg::Open)));
         v.push(new_chat.keys(&["compose", "create", "person", "chat"]).hotkey("Chat: Start New"));
-        let join = UiMessage::Commands(vec![UiMessage::NewChat, UiMessage::ToggleJoinMatrix]);
+        let join = UiMessage::Commands(vec![
+            UiMessage::NewChat(new_chat::Msg::Open),
+            UiMessage::NewChat(new_chat::Msg::ToggleJoinMatrix),
+        ]);
         v.push(cmd("", tr("Join a Matrix room"), Some(join)).keys(&["matrix", "room", "join", "address", "alias"]));
         let all = cmd("", tr("Search messages in all chats"), Some(UiMessage::ToggleCommandPalette));
         v.push(all.keys(&["find", "grep"]).hotkey("Search"));

@@ -1,6 +1,7 @@
 //! Desktop's `beeper://` links (`deep-link-CFIhWY4D.js` `Ld`): from the launch arguments, and from a later launch.
 use crate::i18n::tr;
 use crate::login::LoginMsg;
+use crate::new_chat;
 use crate::{composer_with, encode_uri_component, BeeperGuiApp, InboxTab, SettingsTab, Toast, UiMessage, User};
 use beeper_core::codec::url_decode;
 use beeper_core::config::{account_network, find_network, NETWORK_SPECS};
@@ -147,7 +148,7 @@ impl BeeperGuiApp {
         let unrouted = room.starts_with('!') && vias.is_empty();
         self.join_room = (true, None);
         let join = beeper_core::matrix::join_via(self.store.clone(), room, vias);
-        Task::perform(join, move |r| UiMessage::MatrixRoomJoined(draft, r, unrouted))
+        Task::perform(join, move |r| UiMessage::NewChat(new_chat::Msg::MatrixRoomJoined(draft, r, unrouted)))
     }
 
     /// The end of a join of the Join a Matrix room view of the `draft`: Desktop opens the room and drops the draft,
