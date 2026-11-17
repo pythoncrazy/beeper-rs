@@ -108,6 +108,51 @@ fn raised(
     }
 }
 
+/// Desktop's `.message-contents blockquote` around the runs of blocks deeper than `level`: a 4 px bar and a tint of
+/// the text color `ink`, a box in a box for each level.
+fn quotes<'a>(items: Vec<(u8, El<'a>)>, level: u8, ink: Color) -> Vec<El<'a>> {
+    let mut out: Vec<El<'a>> = Vec::new();
+    let mut items = items.into_iter().peekable();
+    while let Some((depth, item)) = items.next() {
+        if depth <= level {
+            out.push(item);
+            continue;
+        }
+        let mut run = vec![(depth, item)];
+        while let Some(next) = items.next_if(|(d, _)| *d > level) {
+            run.push(next);
+        }
+        let bar = container(Space::new().width(4.0).height(Fill)).style(fill_box(Color { a: 0.2, ..ink }, 0.0));
+        let inner = container(Column::with_children(quotes(run, level + 1, ink))).padding(Padding::from([4.5, 13.0]));
+        out.push(
+            container(row![bar, inner].height(Length::Shrink)).style(fill_box(Color { a: 0.1, ..ink }, 0.0)).into(),
+        );
+    }
+    out
+}
+
+/// Desktop's `.message-contents h1` to `h6`: the title and body type sizes, at 590 for `h1` and 510 for the rest.
+fn heading<'a>(
+    spans: Vec<iced::advanced::text::Span<'a, String>>,
+    level: u8,
+) -> Vec<iced::advanced::text::Span<'a, String>> {
+    let (size, line, weight) = match level {
+        0 => return spans,
+        1 => (18.0, 26.0, Weight::Semibold),
+        2 => (16.0, 20.0, Weight::Medium),
+        3 => (15.0, 20.0, Weight::Medium),
+        _ => (14.0, 18.0, Weight::Medium),
+    };
+    let line = iced::widget::text::LineHeight::Absolute(line.into());
+    spans
+        .into_iter()
+        .map(|s| {
+            let font = s.font.unwrap_or_default();
+            s.size(size).line_height(line).font(iced::Font { weight, ..font })
+        })
+        .collect()
+}
+
 /// Desktop's file type label: the extension in capitals, or a name for some MIME types.
 fn file_label(a: &Attachment) -> Option<String> {
     let ext = a.file_name.as_deref().and_then(|n| n.rsplit_once('.')).filter(|(stem, e)| {
@@ -1273,7 +1318,9 @@ impl BeeperGuiApp {
         let group = chat.chat_type == "group";
         let selected = ms.iter().any(|g| self.pane().selected_msgs.contains(&g.id));
         let rise = send_rise(st, m).unwrap_or(1.0);
-        let dim = move |c: Color| (if selected { brightness(c, 0.7) } else { c }).scale_alpha(rise);
+        // Desktop's `isNotice` bubble (a bot's `m.notice`) at 0.7 opacity.
+        let notice = if m.message_type.as_deref() == Some("NOTICE") { 0.7 } else { 1.0 };
+        let dim = move |c: Color| (if selected { brightness(c, 0.7) } else { c }).scale_alpha(rise * notice);
         // Desktop's `isErrored` bubble takes the secondary container colors.
         let failed = m.send_error.as_ref().filter(|_| mine);
         let (bg, fg) = match (mine, failed) {
@@ -1521,7 +1568,9 @@ impl BeeperGuiApp {
                 };
                 let mention = r.link.as_deref().and_then(|l| l.strip_prefix("https://matrix.to/#/"));
                 let mention = mention.and_then(beeper_core::codec::url_decode).filter(|id| id.starts_with('@'));
-                let s = span(r.text).size(13.0).color(fg).font(font).strikethrough(r.strike);
+                // Desktop's `data-mx-color` paints the text.
+                let ink = r.color.as_deref().and_then(|c| c.parse::<Color>().ok()).unwrap_or(fg);
+                let s = span(r.text).size(13.0).color(ink).font(font).strikethrough(r.strike).underline(r.underline);
                 let s = match r.code {
                     true => s
                         .size(13.0 * 0.9)
@@ -1553,7 +1602,7 @@ impl BeeperGuiApp {
                         s.font(bold).color(Color::WHITE).background(pill).border(border::rounded(4)).padding(2)
                     }
                     Some(_) => s.font(bold).color(if mine { fg } else { p.accent }),
-                    None => s.underline(r.link.is_some()).link_maybe(r.link.clone()),
+                    None => s.underline(r.underline || r.link.is_some()).link_maybe(r.link.clone()),
                 };
                 let arrow = s.link.is_some().then(arrow);
                 [Some(s), arrow].into_iter().flatten()
@@ -1571,16 +1620,19 @@ impl BeeperGuiApp {
                     .into_iter()
                     .flatten()
             };
-            let blocks: Vec<(Option<String>, Vec<_>, String)> = match m.html.as_deref() {
+            // Each block: its list marker, spans, plain text, blockquote depth and heading level.
+            let blocks: Vec<(Option<String>, Vec<_>, String, u8, u8)> = match m.html.as_deref() {
                 Some(html) => beeper_core::codec::html_blocks(html)
                     .into_iter()
                     .map(|b| {
                         let plain = b.runs.iter().map(|r| r.text.as_str()).collect();
-                        (b.marker, with_emoji_font(b.runs.into_iter().flat_map(rich).collect()), plain)
+                        let spans = with_emoji_font(b.runs.into_iter().flat_map(rich).collect());
+                        (b.marker, heading(spans, b.heading), plain, b.quote, b.heading)
                     })
                     .collect(),
                 None => {
-                    vec![(None, with_emoji_font(text.split_inclusive(' ').flat_map(plain).collect()), text.clone())]
+                    let spans = with_emoji_font(text.split_inclusive(' ').flat_map(plain).collect());
+                    vec![(None, spans, text.clone(), 0, 0)]
                 }
             };
             let max = 0.45 * self.pane().size.width - 2.0 * BUBBLE_PAD_X;
@@ -1616,31 +1668,35 @@ impl BeeperGuiApp {
                 }
                 true => Length::Fixed(max),
             };
-            let body = Column::with_children(blocks.into_iter().enumerate().map(|(i, (marker, mut spans, _))| {
-                // iced does not draw an empty last line.
-                if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
-                    spans.push(span("\u{200b}").size(13.0));
-                }
-                if i == last && room > 0.0 {
-                    spans.push(span(pad.clone()).size(13.0));
-                }
-                let line = crate::selectable::selectable(spans)
-                    .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
-                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
-                    .on_link_click(UiMessage::OpenUrl);
-                let gap = match (prev_item.replace(marker.is_some()), marker.is_some()) {
-                    (None, _) => 0.0,
-                    (Some(true), true) => 6.0,
-                    _ => 9.0,
-                };
-                let indent = |m: &String| if m == "•" { 15.6 } else { 23.4 };
-                let marker = marker.map(|m| {
-                    let w = indent(&m);
-                    container(txt(m, 13.0).color(fg)).width(w).align_right(w).padding(Padding::ZERO.right(5.0))
-                });
-                container(row![].push(marker).push(line)).padding(Padding::ZERO.top(gap)).into()
-            }))
-            .width(width);
+            let items: Vec<(u8, El<'_>)> = blocks
+                .into_iter()
+                .enumerate()
+                .map(|(i, (marker, mut spans, _, quote, level))| {
+                    // iced does not draw an empty last line.
+                    if spans.last().is_some_and(|s| s.text.ends_with('\n')) {
+                        spans.push(span("\u{200b}").size(13.0));
+                    }
+                    if i == last && room > 0.0 {
+                        spans.push(span(pad.clone()).size(13.0));
+                    }
+                    let line = crate::selectable::selectable(spans)
+                        .line_height(iced::widget::text::LineHeight::Absolute(16.0.into()))
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                        .on_link_click(UiMessage::OpenUrl);
+                    let gap = match (prev_item.replace(marker.is_some()), marker.is_some()) {
+                        (None, _) => 0.0,
+                        (Some(true), true) => 6.0,
+                        _ => 9.0,
+                    } + if level > 0 { 9.0 } else { 0.0 };
+                    let indent = |m: &String| if m == "•" { 15.6 } else { 23.4 };
+                    let marker = marker.map(|m| {
+                        let w = indent(&m);
+                        container(txt(m, 13.0).color(fg)).width(w).align_right(w).padding(Padding::ZERO.right(5.0))
+                    });
+                    (quote, container(row![].push(marker).push(line)).padding(Padding::ZERO.top(gap)).into())
+                })
+                .collect();
+            let body = Column::with_children(quotes(items, 0, p.strong)).width(width);
             let cut = cut.map(|(t, left)| {
                 txt(cut_lines(&t, max, left), 13.0).color(fg).wrapping(iced::widget::text::Wrapping::WordOrGlyph)
             });
