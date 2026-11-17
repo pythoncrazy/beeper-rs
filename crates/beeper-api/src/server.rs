@@ -24,6 +24,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 mod auth;
 mod mcp;
+mod proxy;
 mod routes;
 mod view;
 
@@ -548,18 +549,27 @@ fn require_auth(st: &BeeperStore, route: &routes::Route, msg: &HttpMessage) -> R
         routes::Auth::Token(scopes) => {
             Ok(Some(auth::authorize(st, auth::access_token(msg), scopes).map_err(auth::refusal)?))
         }
+        routes::Auth::Matrix => {
+            let scopes: &[&str] = if route.method == "GET" { &[READ] } else { &[beeper_core::connect::WRITE] };
+            Ok(Some(auth::authorize(st, auth::access_token(msg), scopes).map_err(proxy::refusal)?))
+        }
         _ => Ok(None),
     }
 }
 
-/// The answer to a request that does not depend on its body: no route, or a refused token. The server sends it in
-/// place of 413 for a body that is too large, because Desktop checks the route and the token before the body.
+/// The answer to a request that does not depend on its body: no route, a refused token, or a Matrix client that has
+/// not started. The server sends it in place of 413 for a body that is too large, because Desktop checks these
+/// before the body.
 fn refusal(st: &BeeperStore, head: &HttpMessage) -> Option<Response> {
     let (route, _) = match routes::find(head.method(), head.path()) {
         Ok(found) => found,
         Err(resp) => return Some(resp),
     };
-    require_auth(st, route, head).err()
+    let refused = require_auth(st, route, head).err();
+    match route.auth {
+        routes::Auth::Matrix => refused.or_else(|| st.matrix.is_none().then(proxy::not_ready)),
+        _ => refused,
+    }
 }
 
 /// The info and the spec, which read only the config, so that they answer while the store loads its chats.
@@ -594,6 +604,9 @@ fn respond(store: &SharedStore, cloud: &Cloud, msg: HttpMessage) -> Reply {
     }
     let granted = require_auth(&store.read(), route, &msg)?;
     let query = parse_query(query);
+    if let routes::Auth::Matrix = route.auth {
+        return proxy::handle(store, &method, &segs, &query, &msg);
+    }
     let body = parse_body(&msg).ok_or_else(|| bad("malformed request body"))?;
     let req = Req { query, msg, body };
     if let Some(reply) = auth::route(store, &method, &segs, &req, granted.as_ref()) {
