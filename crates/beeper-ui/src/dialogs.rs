@@ -10,6 +10,7 @@ use crate::integrations;
 use crate::labels;
 use crate::labels::label_fill;
 use crate::members;
+use crate::merged;
 use crate::rail;
 use crate::reminders;
 use crate::settings;
@@ -26,7 +27,7 @@ use crate::{
     ASK_CLEAR_STORAGE, ASK_DELETE_CHAT, ASK_DELETE_LABEL, ASK_DELETE_MESSAGE, ASK_DISMISS_REMINDERS, ASK_LEAVE_CHAT,
     ASK_LOGOUT, ASK_LOGOUT_DEVICE, ASK_MAKE_ADMIN, ASK_MARK_ALL_READ, ASK_REMOTE_ACCESS, ASK_REMOVE_ACCOUNT,
     ASK_REMOVE_MEMBER, ASK_REVOKE_CONNECTION, ASK_ROOM_ENCRYPTION, ASK_TRANSCRIBE, ASK_UNBLOCK, ASK_UNBLOCK_OFFLINE,
-    DELETE, DRAG_HANDLE, INBOX_OPTIONS, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
+    ASK_UNMERGE, DELETE, DRAG_HANDLE, INBOX_OPTIONS, LABEL_COLORS, LABEL_ICONS, NEW_LABEL, STORAGE_DAYS,
 };
 use beeper_core::models::*;
 use beeper_core::prefs;
@@ -98,7 +99,7 @@ pub enum LabelStep {
 const LABEL_SHEET_SIZE: Size = Size::new(395.0, 504.0);
 
 /// Desktop's `intro-avatar` faces of the New Label intro.
-static LABEL_INTRO_FACES: std::sync::LazyLock<[image::Handle; 3]> = std::sync::LazyLock::new(|| {
+pub(crate) static LABEL_INTRO_FACES: std::sync::LazyLock<[image::Handle; 3]> = std::sync::LazyLock::new(|| {
     [
         include_bytes!("../assets/label_intro/1.png").as_slice(),
         include_bytes!("../assets/label_intro/2.png").as_slice(),
@@ -553,6 +554,16 @@ impl BeeperGuiApp {
                 let cancel = (trx("Cancel", "button label"), UiMessage::Ask(None));
                 return self.dialog_with(tr("Room encryption").into(), String::new(), Some(extra.into()), start, cancel);
             }
+            ASK_UNMERGE => {
+                let id = self.delete_target.clone().expect("a merged chat to unmerge");
+                let unmerge = vec![(
+                    trx("Unmerge", "merged chat unmerge confirm button"),
+                    UiMessage::Merged(merged::Msg::Unmerge(id)),
+                )];
+                let body = tr("This will split this merged chat back into individual chats.").into();
+                let keep = (tr("Keep chats merged"), UiMessage::Ask(None));
+                return self.dialog_with(tr("Unmerge Chat?").into(), body, None, unmerge, keep);
+            }
             _ => unreachable!("dialog {dialog}"),
         };
         let spam = (dialog == ASK_BLOCK).then(|| self.report_spam_box()).flatten();
@@ -700,7 +711,7 @@ impl BeeperGuiApp {
     /// Desktop's `CreateLabel` list: the search results, or the selected, recent and other chats.
     fn label_rows<'s>(&self, st: &'s BeeperStore, d: &LabelDraft) -> Vec<LabelRow<'s>> {
         let picked = |c: &Chat| d.chats.contains(&c.id);
-        let shown = |c: &&Chat| c.merged_into_chat_id.is_none() && (c.flags & CHAT_LOW_PRIORITY == 0 || picked(c));
+        let shown = |c: &&Chat| c.listed() && (c.flags & CHAT_LOW_PRIORITY == 0 || picked(c));
         let mut all: Vec<&Chat> = st.chats.iter().filter(shown).collect();
         all.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
         let q = d.search.trim().to_lowercase();

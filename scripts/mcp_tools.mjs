@@ -1,4 +1,4 @@
-// Copies the MCP tools of Beeper Desktop, with the API route of each, to crates/beeper-api/assets/mcp_tools.json.
+// Copies the MCP tools of Beeper Desktop, with the API route and the filter metadata of each, to crates/beeper-api/assets/mcp_tools.json.
 //
 // Usage: node scripts/mcp_tools.mjs <the extracted app.asar of Beeper Desktop>
 import fs from "node:fs";
@@ -29,9 +29,10 @@ const tools = order.map((entry) => {
   const t = s.lastIndexOf("{name:", s.lastIndexOf("annotations:", at));
   const meta = literal(s.lastIndexOf("{resource:", t));
   const text = s.slice(t, at).includes(".text()") ? { text: true } : {};
-  return { method: meta.httpMethod.toUpperCase(), path: meta.httpPath, ...text, tool: literal(t) };
+  const { resource, operation, tags } = meta;
+  return { method: meta.httpMethod.toUpperCase(), path: meta.httpPath, ...text, resource, operation, tags, tool: literal(t) };
 });
 const docs = s.indexOf('{name:"search_docs",description:');
 const url = s.slice(docs).match(/DOCS_SEARCH_URL\|\|"([^"]+)"/)[1];
-tools.push({ method: "GET", path: url, tool: literal(docs) });
+tools.push({ method: "GET", path: url, resource: "all", operation: "read", tags: [], docs: true, tool: literal(docs) });
 fs.writeFileSync("crates/beeper-api/assets/mcp_tools.json", JSON.stringify(tools, null, 1) + "\n");

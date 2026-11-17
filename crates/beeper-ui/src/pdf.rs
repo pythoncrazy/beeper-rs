@@ -371,6 +371,6 @@ mod tests {
         let _ = app.update(UiMessage::Media(media_view::Msg::CloseCarousel));
         assert!(app.pdfs.is_empty(), "the close lets go of the PDF");
         let _ = app.update(UiMessage::Media(media_view::Msg::OpenCarousel(MID.into(), 1, false)));
-        assert_eq!(app.carousel.as_ref().unwrap().page, 1, "a new carousel starts on page 1");
+        assert_eq!(app.pane.carousel.as_ref().unwrap().page, 1, "a new carousel starts on page 1");
     }
 }

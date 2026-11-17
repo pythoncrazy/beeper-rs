@@ -460,7 +460,7 @@ macro_rules! brands {
     };
 }
 
-const BRANDS: [(&str, &str, &str); 25] = brands!(
+const BRANDS: [(&str, &str, &str); 26] = brands!(
     "whatsapp",
     "twitter",
     "telegram",
@@ -485,7 +485,9 @@ const BRANDS: [(&str, &str, &str); 25] = brands!(
     "grokbot",
     "muse",
     "bluesky",
-    "hungryserv"
+    "hungryserv",
+    // Desktop's `fP`, the brand of a merged chat.
+    "merged-chat"
 );
 
 static BRAND_SVGS: LazyLock<HashMap<&'static str, [svg::Handle; 4]>> = LazyLock::new(|| {
@@ -915,6 +917,10 @@ palette! {
     primary_container: Color = hex(0xffffff), hex(0x1c1c1d);
     /// `--color-tertiary-container`: the composer.
     input: Color = hex(0xf4f4f5), hex(0x1c1c1d);
+    /// `--color-bg-fill-primary`: the fields of the bridge login form.
+    fill_primary: Color = hexa(0x000000, 0.06), hexa(0xffffff, 0.1);
+    /// `--color-border-input-active`: the border of a focused field.
+    input_active: Color = hex(0xc7c7c7), hex(0x505050);
     /// `--bubble-out-bg`.
     sent: Color = hex(0x0d4ffb), hex(0x2561fb);
     /// `--color-text-on-accent-weak`: the metadata of sent bubbles.

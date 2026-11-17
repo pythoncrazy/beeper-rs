@@ -122,9 +122,9 @@ pub(crate) fn otp_code(text: &str) -> Option<&str> {
 /// A notification of a chat, for the message with the ID `message`.
 #[derive(Clone)]
 pub(crate) struct Note {
-    chat: String,
+    pub(crate) chat: String,
     message: String,
-    toast: Toast,
+    pub(crate) toast: Toast,
 }
 
 /// Desktop's notification state of each chat.
@@ -320,6 +320,8 @@ impl BeeperGuiApp {
     pub(crate) fn notification(&mut self, m: &Message) -> Option<(Note, Option<String>)> {
         let st = self.store.read();
         let chat = st.find_chat(&m.chat_id)?;
+        // Desktop's `notificationSender` of a merged chat: a member chat notifies as its merged chat.
+        let shown_as = chat.merged_into_chat_id.as_deref().and_then(|p| st.find_chat(p)).unwrap_or(chat);
         let group = chat.chat_type == "group";
         let prefs = &st.settings;
         let otp_network = matches!(account_network(&chat.account_id).kind, IMessage | GoogleMessages | GoogleVoice);
@@ -346,7 +348,7 @@ impl BeeperGuiApp {
                     !m.thread_only(st.threaded(chat)) || m.flags & MSG_MENTION != 0 || st.follows_thread(chat, r)
                 })
                 && !(self.focused
-                    && (self.pane.selected_chat_id.as_ref() == Some(&chat.id) || !prefs.on("notifyInFocus")));
+                    && (self.pane.selected_chat_id.as_ref() == Some(&shown_as.id) || !prefs.on("notifyInFocus")));
         if !shown || !self.notified.insert(m.id.clone()) {
             return None;
         }
@@ -376,8 +378,8 @@ impl BeeperGuiApp {
             let replies = chat.messages.reply || st.threaded(chat);
             reply = (account.previews && !chat.is_read_only && replies).then(|| crate::i18n::tr("Reply").to_string());
         }
-        let toast = Toast { title: chat.title.clone(), body, silent, buttons, reply };
-        Some((Note { chat: chat.id.clone(), message: m.id.clone(), toast }, otp))
+        let toast = Toast { title: shown_as.title.clone(), body, silent, buttons, reply };
+        Some((Note { chat: shown_as.id.clone(), message: m.id.clone(), toast }, otp))
     }
 
     /// Desktop's notification click: jumps to the message, then shows the window.
@@ -397,7 +399,12 @@ impl BeeperGuiApp {
             Some(a) if a.starts_with(REPLY) => {
                 let text = a[REPLY.len()..].to_string();
                 let draft = beeper_core::store::Draft { text: Some(text), ..Default::default() };
-                if let Err(e) = self.store.write().send(&chat, draft) {
+                let mut st = self.store.write();
+                // Desktop's `threadForNotificationReply`: a merged chat answers in the chat of the message.
+                let to = st.find_message(&msg).map_or(chat, |i| st.messages[i].chat_id.clone());
+                let sent = st.send(&to, draft);
+                drop(st);
+                if let Err(e) = sent {
                     self.status_banner = e.to_string();
                 }
                 self.refresh_theme_and_tray();

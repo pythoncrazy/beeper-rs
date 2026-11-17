@@ -1502,7 +1502,7 @@ fn list_chats(st: &BeeperStore, r: &Req) -> Reply {
     let in_accounts = |k: &(i64, &str)| accounts.is_empty() || accounts.contains(&st.chat(k.1).account_id.as_str());
     let rows: Vec<(i64, &str)> =
         range.map_or_else(Vec::new, |range| chat_keys(st, range).filter(in_accounts).take(limit).collect());
-    let shown: Vec<(i64, &str)> = rows.iter().copied().filter(|k| st.chat(k.1).merged_into_chat_id.is_none()).collect();
+    let shown: Vec<(i64, &str)> = rows.iter().copied().filter(|k| st.chat(k.1).listed()).collect();
     let (newest, oldest) = match shown.is_empty() {
         // With only member chats, Desktop moves the cursor of the direction to a row of `getRooms`, which returns its
         // rows oldest first: to the last one, the newest, `before`, and to the first one, the oldest, `after`.
@@ -1695,7 +1695,9 @@ fn decode_chat_cursor(cursor: &str) -> Option<Value> {
 /// chats show as their merged chat, with the most hits of the members. Both directions take the first chats past
 /// the cursor, whose keys are base64 JSON.
 fn chat_search<'a>(st: &'a BeeperStore, s: &ChatSearch) -> CursorPage<view::ApiChat<'a>> {
-    let pool = st.chats.iter().filter(|c| s.accounts.is_empty() || s.accounts.contains(&c.account_id.as_str()));
+    let accounts = |c: &&Chat| s.accounts.is_empty() || s.accounts.contains(&c.account_id.as_str());
+    // Desktop hides a merged chat past the plan's limit.
+    let pool = st.chats.iter().filter(|c| c.flags & CHAT_INACTIVE_UNION == 0).filter(accounts);
     let found: Vec<(&Chat, usize)> = match s.query {
         "" => pool.map(|c| (c, 0)).collect(),
         q => search::search(pool, q, s.people),
@@ -1874,8 +1876,7 @@ fn message_rules(st: &mut BeeperStore, chat: &str, id: &str) -> Result<(Message,
 
 /// The canonical IDs of the chat `idx` and of the member chats of a merged chat.
 fn chat_and_members(st: &BeeperStore, idx: usize) -> Vec<&str> {
-    let members = st.chats[idx].merge.iter().flat_map(|m| &m.chat_ids);
-    let members = members.map(|id| st.chats[st.resolve_chat_idx(id).expect("merged member chat exists")].id.as_str());
+    let members = st.members(idx).into_iter().map(|i| st.chats[i].id.as_str());
     std::iter::once(st.chats[idx].id.as_str()).chain(members).collect()
 }
 
