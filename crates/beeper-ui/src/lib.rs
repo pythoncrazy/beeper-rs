@@ -2289,6 +2289,8 @@ pub struct Pane {
     pub menu_selection: Option<String>,
     /// The `href` of the link whose right click opened the message menu: an `https://` or `mailto:` one.
     pub menu_link: Option<String>,
+    /// The quoted message whose right click opened the message menu (Desktop's `selectedLinkedMessage`).
+    pub menu_linked: Option<String>,
     /// The messages of the gallery whose menu is open.
     pub gallery_menu: Vec<String>,
     /// The reactions list of the messages of a gallery, at a point, from the gallery menu.

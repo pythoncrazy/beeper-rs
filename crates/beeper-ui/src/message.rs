@@ -643,13 +643,19 @@ impl BeeperGuiApp {
             .then(|| {
                 vec![item("End Poll".into(), "", Some(UiMessage::Message(Msg::EndPoll(cid.clone(), mid.clone()))))]
             }),
-            self.pane().reply_thread.is_some().then(|| {
-                let jump = UiMessage::Commands(vec![
-                    UiMessage::CommandBar(commands::Msg::JumpTo(cid, mid.clone())),
-                    UiMessage::Message(Msg::Select(vec![mid.clone()])),
-                ]);
-                vec![item(tr("Jump to Message").into(), "", Some(jump))]
-            }),
+            // Desktop's `Z`: from the reply chain, the thread pane, or a right click on a quote, which jumps to the
+            // quoted message. The jump closes the reply chain and the thread pane.
+            (self.pane().reply_thread.is_some() || self.pane().thread.is_some() || self.pane().menu_linked.is_some())
+                .then(|| {
+                    let target = self.pane().menu_linked.clone().unwrap_or_else(|| mid.clone());
+                    let jump = UiMessage::Commands(vec![
+                        UiMessage::Message(Msg::HideReplies),
+                        UiMessage::Thread(threads::Msg::Hide),
+                        UiMessage::CommandBar(commands::Msg::JumpTo(cid, target.clone())),
+                        UiMessage::Message(Msg::Select(vec![target])),
+                    ]);
+                    vec![item(tr("Jump to Message").into(), "", Some(jump))]
+                }),
         ]
         .into_iter()
         .flatten()
@@ -1459,7 +1465,12 @@ impl BeeperGuiApp {
             };
             let q_mine = q.is_sender == Some(true);
             let col = self.linked_message(chat, q, group, on_wall, sent).filter(|_| !chained);
-            (col.map(|c| column![mouse_area(c).on_press(UiMessage::Message(Msg::ShowReplies(q.id.clone())))]), q_mine)
+            let quote = col.map(|c| {
+                mouse_area(c)
+                    .on_press(UiMessage::Message(Msg::ShowReplies(q.id.clone())))
+                    .on_right_press(UiMessage::Message(Msg::LinkedMenu(m.id.clone(), q.id.clone())))
+            });
+            (quote.map(|q| column![q]), q_mine)
         });
         // Desktop's `pM`: a link with a title, an image or a summary has a preview.
         for link in m.links.iter().filter(|l| !l.title.is_empty() || l.img.is_some() || l.summary.is_some()) {
@@ -2391,6 +2402,8 @@ pub enum Msg {
     OpenMenu(String),
     /// A right click on a link of a message, by its `href`.
     LinkMenu(String, String),
+    /// A right click on the quote in a message, by the quoted message.
+    LinkedMenu(String, String),
     /// Desktop's `createThreadWithPhoneNumber` and `createThreadWithEmail` of a contact card.
     MessageContact(String, Box<User>),
     /// Select the message, or unselect it when it is selected.
@@ -2510,8 +2523,13 @@ impl BeeperGuiApp {
             // Desktop leaves the right click on another link to Electron, which has no menu for it.
             Msg::LinkMenu(..) => {}
             Msg::MessageContact(account, user) => return self.open_dm(account, *user, None, None),
+            Msg::LinkedMenu(mid, linked) => {
+                let open = self.update(UiMessage::Message(Msg::OpenMenu(mid)));
+                self.pane.menu_linked = Some(linked);
+                return open;
+            }
             Msg::OpenMenu(mid) => {
-                self.pane.menu_link = None;
+                (self.pane.menu_link, self.pane.menu_linked) = (None, None);
                 // With text selected, Desktop leaves the menu to Electron's, which offers the selection.
                 self.pane.menu_selection = crate::selectable::has_selection().then(crate::selectable::text);
                 // Desktop's `selectOnly`: a right click on a message outside the selection selects it alone.
@@ -3004,6 +3022,25 @@ mod tests {
         let _ = app.update(UiMessage::Message(Msg::HoverEnter(mine)));
         let _ = app.update(UiMessage::Message(Msg::ShowQuickReactions));
         assert!(!quick_shown(&app), "never on your own");
+    }
+
+    /// Desktop's "Jump to Message" comes with a right click on a quote, which jumps to the quoted message, and not
+    /// with a right click on the message elsewhere.
+    #[test]
+    fn jump_to_a_quoted_message_like_desktop() {
+        let mut app = crate::fuzz::demo_app("jump-quote");
+        let _ = app.update(UiMessage::SelectChat("!note_self:beeper.com".into()));
+        let ids: Vec<String> = {
+            let st = app.store.read();
+            app.timeline(&st).0.iter().rev().take(2).map(|m| m.id.clone()).collect()
+        };
+        let has = |app: &BeeperGuiApp| simulator(app.view_message_menu(&ids[0]).0).find("Jump to Message").is_ok();
+        let _ = app.update(UiMessage::Message(Msg::OpenMenu(ids[0].clone())));
+        assert!(!has(&app));
+        let _ = app.update(UiMessage::Message(Msg::LinkedMenu(ids[0].clone(), ids[1].clone())));
+        assert!(has(&app) && app.pane.menu_linked.as_deref() == Some(ids[1].as_str()));
+        let _ = app.update(UiMessage::Message(Msg::OpenMenu(ids[0].clone())));
+        assert!(!has(&app), "another right click forgets the quote");
     }
 
     /// Desktop's reaction pills: one pill a group of skin tones, in the order the groups first appear, and a click
