@@ -1375,6 +1375,21 @@ fn profile_links_match_desktop() {
     }
 }
 
+/// Desktop's suggestion match takes only letters, digits and `+-_` after the trigger.
+#[test]
+fn emoticons_and_urls_suggest_nothing_like_desktop() {
+    let mut app = demo_app("suggest-words");
+    let picks = |app: &mut BeeperGuiApp, text: &str| {
+        let _ = app.update(UiMessage::Composer(composer::Msg::Changed(text.into())));
+        let st = app.store.read();
+        app.suggestions(&st).map_or(0, |(_, rows)| rows.len())
+    };
+    assert!(picks(&mut app, "hi :smi") > 0, "a word suggests emoji");
+    assert_eq!(picks(&mut app, "hi :)"), 0, "an emoticon waits for its space");
+    assert_eq!(picks(&mut app, "see https://x"), 0);
+    assert_eq!(picks(&mut app, "mail @a.b"), 0);
+}
+
 #[test]
 fn mentions_like_desktop() {
     let mut app = demo_app("mentions");
