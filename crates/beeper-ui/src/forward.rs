@@ -40,8 +40,17 @@ impl BeeperGuiApp {
                 let Some(Forward { mids, picked, .. }) = self.forward.take() else { return Task::none() };
                 assert!(!picked.is_empty() && !mids.is_empty(), "forward needs a chat and a message");
                 let mut st = self.store.write();
+                let mut failed = Vec::new();
                 for cid in &picked {
                     for mid in &mids {
+                        // Desktop forwards a copy of a scheduled message, without its reply.
+                        if let Some(s) = st.scheduled.iter().find(|s| s.id == *mid).cloned() {
+                            match crate::composer::scheduled_draft(&mut self.media, &mut st, &s, None) {
+                                Ok(draft) => drop(st.send(cid, draft).expect("forward a scheduled message")),
+                                Err(e) => failed.push(e),
+                            }
+                            continue;
+                        }
                         let m = stored(&st, mid);
                         let (_, txn, _) = st
                             .send_message(cid, m.text.clone(), None, m.attachments.first().cloned())
@@ -51,6 +60,7 @@ impl BeeperGuiApp {
                     }
                 }
                 drop(st);
+                failed.into_iter().for_each(|e| self.fail(Toast::new(e)));
                 if let [one] = picked.as_slice() {
                     self.select_chat(one);
                 }

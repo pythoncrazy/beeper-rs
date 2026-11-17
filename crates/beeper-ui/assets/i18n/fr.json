@@ -1360,6 +1360,7 @@
 "read":["lire"],
 "remove group participant confirmation button\u0004Remove":["Supprimer"],
 "required":["obligatoire"],
+"scheduled message menu action\u0004Forward...":["Transférer…"],
 "seen %(lastSeen)s":["vu %(lastSeen)s"],
 "server environment fallback label\u0004Default":["Par défaut"],
 "signal/qr":["signal/qr"],
