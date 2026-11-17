@@ -112,6 +112,8 @@ pub struct AddAccount {
     emoji: Option<image::Handle>,
     /// Counts the login processes, so that the replies of an earlier process are dropped.
     run: u32,
+    /// The device tab of Desktop's login steps: iPhone (`false`) or Android (`true`).
+    android: bool,
 }
 
 #[derive(Clone)]
@@ -128,6 +130,8 @@ pub enum AddMsg {
     Flow(String),
     Menu,
     Copy(String),
+    /// The iPhone (`false`) or Android (`true`) tab of the login steps.
+    Device(bool),
     Close,
 }
 
@@ -235,6 +239,7 @@ impl BeeperGuiApp {
             qr: None,
             emoji: None,
             run: 0,
+            android: false,
         });
         let p = self.add_provision(self.add_accounts.len() - 1);
         let flows = bridge_login::flows(p, self.cloud.api_url.clone());
@@ -375,6 +380,7 @@ impl BeeperGuiApp {
             }
             AddMsg::Flow(f) => return self.start_flow(i, f),
             AddMsg::Menu => a.menu ^= true,
+            AddMsg::Device(android) => a.android = android,
             AddMsg::Copy(code) => return iced::clipboard::write(code),
             AddMsg::Close => return window::close(id),
         }
@@ -388,6 +394,93 @@ impl BeeperGuiApp {
     }
 
     /// Desktop's `LoginWindow` with the `subview-add-account` of the window `a`.
+    /// Desktop's `auths` components (`A`, `f`, `T`, `b`): the numbered steps of the WhatsApp, Telegram, Signal and
+    /// Google Messages logins, with an iPhone and Android tab in the first step, in place of the bridge's instructions.
+    fn login_steps<'a>(&'a self, a: &'a AddAccount, s: &'a Step) -> Option<El<'a>> {
+        let p = &self.pal;
+        let go = move |m: AddMsg| UiMessage::AddAccount(a.id, m);
+        let line = |t: String| txt(t, 13.0).line_height(iced::Pixels(18.0)).color(p.strong);
+        let hint = |t: &'static str| txt(tr(t), 12.0).line_height(iced::Pixels(16.0)).color(p.sub);
+        // `.TabList-module__segmented`: 10 px semibold tabs in a 2 px tinted pill, the active one on the card color.
+        let tab = |label: &'static str, android: bool| -> El<'a> {
+            let on = a.android == android;
+            let bg = if on { p.card } else { CLEAR };
+            button(container(semi(label, 10.0).color(p.strong)).center_y(14).padding([0, 4]))
+                .padding(0)
+                .style(btn_style([bg; 3], [p.strong; 3], 4.0))
+                .on_press(go(AddMsg::Device(android)))
+                .into()
+        };
+        let tabs = container(row![tab("iPhone", false), tab("Android", true)])
+            .padding(2)
+            .style(fill_box(p.strong.scale_alpha(0.06), 6.0));
+        // "Open %s on your <device/>", with the tabs in place of `<device/>`.
+        let open = |app: &str| -> El<'a> {
+            let text = tr(match app {
+                "WhatsApp" => "Open WhatsApp on your <device/>",
+                "Telegram" => "Open Telegram on your <device/>",
+                _ => "Open Signal on your <device/>",
+            });
+            let (before, after) = text.split_once("<device/>").unwrap_or((text, ""));
+            row![line(before.trim_end().to_string()), tabs, line(after.trim_start().to_string())]
+                .spacing(4)
+                .align_y(Center)
+                .into()
+        };
+        let qr =
+            |app: &'static str| -> El<'a> { column![line(tr("Scan the QR code").into()), hint(app)].spacing(2).into() };
+        let (first, [two, three], rest): (El<'a>, [&'static str; 2], Vec<El<'a>>) = match (a.bridge, a.android) {
+            ("whatsapp", android) => {
+                let code = s.step_id == "fi.mau.whatsapp.login.code"
+                    || s.display_and_wait.as_ref().is_some_and(|d| d.kind == "code");
+                let rest = match code {
+                    true => vec![
+                        line(tr("Tap \"Link with phone number instead\"").into()).into(),
+                        line(tr("Enter the code below").into()).into(),
+                    ],
+                    false => vec![qr("Grant WhatsApp camera access if prompted")],
+                };
+                let steps = match android {
+                    false => ["Tap \"Settings\" in the bottom right", "Tap \"Linked Devices\" → \"Link device\""],
+                    true => ["Tap the menu (⋮) in the top right", "Tap \"Linked devices\" → \"Link a device\""],
+                };
+                (open("WhatsApp"), steps, rest)
+            }
+            ("telegram", android) if s.step_id == "fi.mau.telegram.login.show_qr" => {
+                let steps = match android {
+                    false => ["Tap \"Settings\" in the bottom right → \"Devices\"", "Tap \"Link Desktop Device\""],
+                    true => ["Tap the top left (☰) → \"Settings\"", "Tap \"Devices\" → \"Link Desktop Device\""],
+                };
+                (open("Telegram"), steps, vec![qr("Grant Telegram camera access if prompted")])
+            }
+            ("signal", android) => {
+                let steps = match android {
+                    false => [
+                        "Tap your profile in the top left → \"Settings\"",
+                        "Tap \"Linked Devices\" → \"Link a New Device\"",
+                    ],
+                    true => ["Tap your profile in the top left", "Tap \"Linked Devices\" → \"Link a new Device\""],
+                };
+                (open("Signal"), steps, vec![qr("Grant Signal camera access if prompted")])
+            }
+            ("gmessages", _) => (
+                line(tr("Open Messages by Google on your Android phone").into()).into(),
+                ["Open the side menu", "Click \"Device pairing\""],
+                vec![line(s.instructions.clone()).into()],
+            ),
+            _ => return None,
+        };
+        let items = [first, line(tr(two).into()).into(), line(tr(three).into()).into()].into_iter().chain(rest);
+        // `.login-steps`: 288 px of rows 12 px apart, each with its number in a 20 px tinted circle.
+        let rows = items.enumerate().map(|(i, item)| -> El<'a> {
+            let n = container(semi((i + 1).to_string(), 14.0).color(p.strong))
+                .center(20)
+                .style(fill_box(p.strong.scale_alpha(0.06), 10.0));
+            row![n, container(item).width(Fill)].spacing(8).into()
+        });
+        Some(container(Column::with_children(rows).spacing(12).width(288)).center_x(Fill).into())
+    }
+
     pub fn view_add_account<'a>(&'a self, a: &'a AddAccount) -> El<'a> {
         let p = &self.pal;
         let go = move |m: AddMsg| UiMessage::AddAccount(a.id, m);
@@ -431,7 +524,10 @@ impl BeeperGuiApp {
                     .into()
             })
         };
-        let instructions = |s: &'a Step| (!s.instructions.is_empty()).then(|| para(s.instructions.clone()));
+        // Desktop's `auths` steps take the place of the bridge's instructions when it has them.
+        let instructions = |s: &'a Step| {
+            (!s.instructions.is_empty()).then(|| self.login_steps(a, s).unwrap_or_else(|| para(s.instructions.clone())))
+        };
         let loading = || para(tr("Loading...").into());
         let body: El<'a> = match (&a.failed, &a.step) {
             (Some(_), _) => para(tr("Something went wrong and we couldn't add your account.").into()),
@@ -648,6 +744,37 @@ mod tests {
         assert_eq!(invalid(&Field { pattern: "(".into(), ..field("text") }, "x"), None, "a bad pattern is ignored");
     }
 
+    /// Desktop's `auths` steps: WhatsApp's numbered steps with the iPhone and Android tabs in place of the bridge's
+    /// instructions, the pairing-code variant, and Google Messages with the bridge's instructions as the last step.
+    #[test]
+    fn login_steps_like_desktop() {
+        use iced_test::simulator::simulator;
+        let mut app = crate::fuzz::demo_app("login-steps");
+        let _ = app.open_add_account("whatsapp", None);
+        let step = |id: &str, kind: &str| Step {
+            kind: "display_and_wait".into(),
+            step_id: id.into(),
+            instructions: "Scan the QR code on your phone".into(),
+            display_and_wait: Some(beeper_core::bridge_login::Display { kind: kind.into(), ..Default::default() }),
+            ..Step::default()
+        };
+        app.add_accounts[0].step = Some(step("fi.mau.whatsapp.login.qr", "qr"));
+        let finds = |app: &BeeperGuiApp, texts: &[&str]| {
+            let mut sim = simulator(app.view_add_account(&app.add_accounts[0]));
+            texts.iter().all(|t| sim.find(*t).is_ok())
+        };
+        assert!(finds(&app, &["Open WhatsApp on your", "iPhone", "Android", "Tap \"Settings\" in the bottom right"]));
+        assert!(finds(&app, &["Scan the QR code", "Grant WhatsApp camera access if prompted"]));
+        let id = app.add_accounts[0].id;
+        let _ = app.update(UiMessage::AddAccount(id, AddMsg::Device(true)));
+        assert!(finds(&app, &["Tap the menu (⋮) in the top right", "Tap \"Linked devices\" → \"Link a device\""]));
+        app.add_accounts[0].step = Some(step("fi.mau.whatsapp.login.code", "code"));
+        assert!(finds(&app, &["Tap \"Link with phone number instead\"", "Enter the code below"]));
+        app.add_accounts[0].bridge = "gmessages";
+        app.add_accounts[0].step = Some(step("fi.mau.gmessages.qr", "qr"));
+        assert!(finds(&app, &["Open the side menu", "Click \"Device pairing\"", "Scan the QR code on your phone"]));
+    }
+
     #[test]
     fn every_addable_network_has_a_cloud_bridge_but_bluesky() {
         let none: Vec<_> = crate::login::addable().filter(|n| cloud_bridge(n).is_none()).map(|n| n.bridge_id).collect();
@@ -732,7 +859,9 @@ mod tests {
         let started = one(send(&mut app, flows).await);
         let wait = one(send(&mut app, started).await);
         assert!(app.add_accounts[0].qr.is_some(), "Desktop prefers the QR flow of Telegram");
-        assert!(shows(&app, id, "Scan the QR code on your phone to log in"));
+        // Desktop's Telegram steps take the place of the bridge's instructions.
+        assert!(shows(&app, id, "Open Telegram on your") && shows(&app, id, "Tap \"Link Desktop Device\""));
+        assert!(!shows(&app, id, "Scan the QR code on your phone to log in"));
         assert!(shows(&app, id, "Not supported:"), "the fine print has the Beeper Cloud limitations");
         assert!(!shows(&app, id, "Phone Number"), "the Login options menu is closed");
         let _ = send(&mut app, UiMessage::AddAccount(id, AddMsg::Menu)).await;
